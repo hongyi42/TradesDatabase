@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git branch*)",
+      "Bash(git rev-parse*)",
+      "Bash(ls*)",
+      "Bash(find . *)",
+      "Bash(grep*)",
+      "Bash(cat *)",
+      "Bash(node --version)",
+      "Bash(node --check*)",
+      "Bash(npm list*)",
+      "Bash(npm run typecheck*)",
+      "Bash(npm run lint*)",
+      "Bash(npm run build*)",
+      "Bash(npm test*)",
+      "Bash(npx tsc*)",
+      "Bash(curl -s http://localhost*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in */node_modules/*) ;; *.js|*.mjs|*.cjs) node --check \"$f\" || exit 2;; esac",
+            "statusMessage": "Checking JS syntax"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "trades-database",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsc -p tsconfig.json",
+    "mcp:serve": "node dist/mcp/server.js",
+    "db:push": "npx supabase db push",
+    "gen:types": "mkdir -p src/db && npx supabase gen types typescript --linked > src/db/database.types.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "@types/pg": "^8.20.0",
+    "eslint": "^10.5.0",
+    "pg": "^8.22.0",
+    "supabase": "^2.107.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1",
+    "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.105.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@supabase/supabase-js": "^2.108.2",
+    "dotenv": "^17.4.2",
+    "googleapis": "^173.0.0"
+  }
+}

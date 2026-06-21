@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Env / secrets — never commit
+.env
+supabase/.env
+
+# Supabase CLI local state
+supabase/.temp/

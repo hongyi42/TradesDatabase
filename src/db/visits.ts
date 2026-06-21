@@ -44,3 +44,15 @@ export async function listVisitsForJob(jobId: string): Promise<Visit[]> {
   if (error) throw new Error(`listVisitsForJob failed: ${error.message}`);
   return data ?? [];
 }
+
+// All visits across a customer's jobs, newest first. Visits carry no customer_id,
+// so we reach them through the jobs relation and flatten.
+export async function listVisitsForCustomer(customerId: string): Promise<Visit[]> {
+  const { data, error } = await getClient()
+    .from('jobs')
+    .select('visits(*)')
+    .eq('customer_id', customerId);
+  if (error) throw new Error(`listVisitsForCustomer failed: ${error.message}`);
+  const visits = (data ?? []).flatMap((job) => job.visits as Visit[]);
+  return visits.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+}

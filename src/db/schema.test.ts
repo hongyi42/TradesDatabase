@@ -68,6 +68,21 @@ describe('context spine schema', () => {
     }
   });
 
+  test('schedule_entries exists with a unique (tenant_id, external_row_key) index', async () => {
+    const cols = await columns('schedule_entries');
+    expect(cols.size, 'schedule_entries table exists').toBeGreaterThan(0);
+    expect(cols.get('external_row_key')?.is_nullable, 'external_row_key NOT NULL').toBe('NO');
+    expect(cols.get('technician_ref')?.is_nullable, 'technician_ref NOT NULL').toBe('NO');
+
+    const { rows } = await client.query<{ indexdef: string }>(
+      `select indexdef from pg_indexes where schemaname = 'public' and tablename = 'schedule_entries'`,
+    );
+    const hasUnique = rows.some(
+      (r) => /unique/i.test(r.indexdef) && /\(tenant_id, external_row_key\)/i.test(r.indexdef),
+    );
+    expect(hasUnique, 'unique index on (tenant_id, external_row_key)').toBe(true);
+  });
+
   // The L1 invariant: raw_captures is append-only. The whole probe runs inside a
   // transaction that is rolled back, so nothing persists (and DELETE is blocked
   // by the same trigger, so a committed probe row could not be cleaned up).

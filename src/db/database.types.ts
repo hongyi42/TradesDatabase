@@ -240,6 +240,91 @@ export type Database = {
           },
         ]
       }
+      schedule_entries: {
+        Row: {
+          address_line1: string | null
+          attributes: Json
+          city: string | null
+          created_at: string
+          customer_id: string | null
+          customer_name: string | null
+          external_row_key: string
+          id: string
+          job_id: string | null
+          phone: string | null
+          postal_code: string | null
+          scheduled_end: string | null
+          scheduled_start: string | null
+          source: string
+          state: string | null
+          technician_ref: string
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          address_line1?: string | null
+          attributes?: Json
+          city?: string | null
+          created_at?: string
+          customer_id?: string | null
+          customer_name?: string | null
+          external_row_key: string
+          id?: string
+          job_id?: string | null
+          phone?: string | null
+          postal_code?: string | null
+          scheduled_end?: string | null
+          scheduled_start?: string | null
+          source?: string
+          state?: string | null
+          technician_ref: string
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          address_line1?: string | null
+          attributes?: Json
+          city?: string | null
+          created_at?: string
+          customer_id?: string | null
+          customer_name?: string | null
+          external_row_key?: string
+          id?: string
+          job_id?: string | null
+          phone?: string | null
+          postal_code?: string | null
+          scheduled_end?: string | null
+          scheduled_start?: string | null
+          source?: string
+          state?: string | null
+          technician_ref?: string
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "schedule_entries_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "schedule_entries_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "schedule_entries_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tenants: {
         Row: {
           created_at: string

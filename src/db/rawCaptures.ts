@@ -36,3 +36,34 @@ export async function appendRawCapture(input: AppendRawCaptureInput): Promise<Ra
   if (error || !data) throw new Error(`appendRawCapture failed: ${error?.message ?? 'no row returned'}`);
   return data;
 }
+
+// Read-only lookup (the append-only trigger only blocks UPDATE/DELETE). Used by
+// the write-path to reload a capture's verbatim text on a confirmation resume.
+export async function getRawCapture(id: string): Promise<RawCapture | null> {
+  const { data, error } = await getClient().from('raw_captures').select().eq('id', id).maybeSingle();
+  if (error) throw new Error(`getRawCapture failed: ${error.message}`);
+  return data;
+}
+
+// Captures directly stamped with a job_id, newest first. (Tech notes resolved via
+// L2.source_capture_id won't appear here — getCustomerContext unions those in.)
+export async function listRawCapturesForJob(jobId: string): Promise<RawCapture[]> {
+  const { data, error } = await getClient()
+    .from('raw_captures')
+    .select()
+    .eq('job_id', jobId)
+    .order('captured_at', { ascending: false });
+  if (error) throw new Error(`listRawCapturesForJob failed: ${error.message}`);
+  return data ?? [];
+}
+
+// Captures directly stamped with a customer_id, newest first.
+export async function listRawCapturesForCustomer(customerId: string): Promise<RawCapture[]> {
+  const { data, error } = await getClient()
+    .from('raw_captures')
+    .select()
+    .eq('customer_id', customerId)
+    .order('captured_at', { ascending: false });
+  if (error) throw new Error(`listRawCapturesForCustomer failed: ${error.message}`);
+  return data ?? [];
+}

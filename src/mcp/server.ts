@@ -12,6 +12,13 @@ import {
 } from '../db/index.js';
 import { recordFieldNote } from '../writePath/recordFieldNote.js';
 import type { Extractor } from '../writePath/extract.js';
+import {
+  sonnetBriefer,
+  sonnetAnswerer,
+  type Briefer,
+  type Answerer,
+  type BriefFocus,
+} from '../synthesis/index.js';
 
 // The single boundary the agent calls. The agent never holds the Supabase or
 // Anthropic keys — this server (launched by the gateway with those secrets in
@@ -19,9 +26,12 @@ import type { Extractor } from '../writePath/extract.js';
 // DEFAULT_TENANT_ID, so the agent cannot address another firm's data.
 export interface ServerDeps {
   extract?: Extractor; // injectable so tests don't call the live model
+  brief?: Briefer; // injectable briefing synthesizer (same reason)
+  answer?: Answerer; // injectable Q&A synthesizer (same reason)
 }
 
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
+const BRIEF_FOCUSES: BriefFocus[] = ['next_visit', 'full_history'];
 
 function requireTenant(): string {
   const tenantId = process.env.DEFAULT_TENANT_ID;
@@ -87,6 +97,35 @@ const TOOLS = [
       properties: { jobId: { type: 'string' }, customerId: { type: 'string' } },
     },
   },
+  {
+    name: 'brief_customer',
+    description:
+      'Generate a grounded, cited briefing on a customer from their record. focus=next_visit ' +
+      '(pre-visit cheat-sheet, default) or full_history (the relationship over time). ' +
+      'Returns {briefing, citations:[{claim, captureId}]}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        customerId: { type: 'string' },
+        focus: { type: 'string', enum: ['next_visit', 'full_history'] },
+      },
+      required: ['customerId'],
+    },
+  },
+  {
+    name: 'answer_customer_question',
+    description:
+      'Answer a free-text question about a customer using only their record (says so if the ' +
+      'record lacks the answer). Returns {answer, citations:[{claim, captureId}]}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        customerId: { type: 'string' },
+        question: { type: 'string' },
+      },
+      required: ['customerId', 'question'],
+    },
+  },
 ];
 
 async function dispatch(
@@ -141,6 +180,30 @@ async function dispatch(
       if (jobId) return listRawCapturesForJob(jobId);
       if (customerId) return listRawCapturesForCustomer(customerId);
       throw new Error('list_recent_captures requires jobId or customerId');
+    }
+    case 'brief_customer': {
+      const customerId = str('customerId');
+      if (!customerId) throw new Error('customerId is required');
+      const focusArg = str('focus');
+      // The SDK doesn't validate args against inputSchema, so check the enum here
+      // (mirrors the channel guard on record_field_note).
+      if (focusArg && !BRIEF_FOCUSES.includes(focusArg as BriefFocus)) {
+        throw new Error(`invalid focus: ${focusArg}`);
+      }
+      const ctx = await getCustomerContext(customerId);
+      // Guard a bad id with a clean error before spending a model call on an empty record.
+      if (!ctx.customer) throw new Error('customer not found');
+      const focus = (focusArg as BriefFocus | undefined) ?? 'next_visit';
+      return (deps.brief ?? sonnetBriefer)(ctx, focus);
+    }
+    case 'answer_customer_question': {
+      const customerId = str('customerId');
+      if (!customerId) throw new Error('customerId is required');
+      const question = str('question');
+      if (!question) throw new Error('question is required');
+      const ctx = await getCustomerContext(customerId);
+      if (!ctx.customer) throw new Error('customer not found');
+      return (deps.answer ?? sonnetAnswerer)(ctx, question);
     }
     default:
       throw new Error(`unknown tool: ${name}`);

@@ -21,7 +21,15 @@ beforeAll(async () => {
   tenantId = data.id;
   process.env.DEFAULT_TENANT_ID = tenantId;
 
-  const server = createServer({ extract: async () => ({ workPerformed: 'did the work' }) });
+  const server = createServer({
+    extract: async () => ({ workPerformed: 'did the work' }),
+    // Stub the synthesizers so the MCP tests never call the live model.
+    brief: async (ctx) => ({ briefing: `stub briefing for ${ctx.customer?.name}`, citations: [] }),
+    answer: async (ctx, question) => ({
+      answer: `stub answer to "${question}" for ${ctx.customer?.name}`,
+      citations: [],
+    }),
+  });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   client = new Client({ name: 'test-client', version: '0.0.0' });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -52,6 +60,8 @@ describe('MCP server', () => {
         'get_customer_context',
         'get_job',
         'list_recent_captures',
+        'brief_customer',
+        'answer_customer_question',
       ]),
     );
   });
@@ -103,6 +113,46 @@ describe('MCP server', () => {
     expect(data.jobs.length).toBeGreaterThanOrEqual(1);
     expect(Array.isArray(data.recentVisits)).toBe(true);
     expect(Array.isArray(data.recentCaptures)).toBe(true);
+  });
+
+  test('brief_customer returns a briefing + citations (stubbed synthesizer)', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Brief Me', phone: '555-4400' });
+    await createJob({ tenantId, customerId: customer.id, title: 'J' });
+
+    const { isError, data } = await call('brief_customer', { customerId: customer.id });
+    expect(isError).toBe(false);
+    expect(typeof data.briefing).toBe('string');
+    expect(Array.isArray(data.citations)).toBe(true);
+  });
+
+  test('answer_customer_question returns an answer + citations (stubbed synthesizer)', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Ask Me', phone: '555-5500' });
+
+    const { isError, data } = await call('answer_customer_question', {
+      customerId: customer.id,
+      question: 'What is going on with this customer?',
+    });
+    expect(isError).toBe(false);
+    expect(typeof data.answer).toBe('string');
+    expect(Array.isArray(data.citations)).toBe(true);
+  });
+
+  test('a synthesis tool on a bogus customerId is a clean "customer not found" error', async () => {
+    const { isError, text } = await call('brief_customer', {
+      customerId: '00000000-0000-0000-0000-000000000000',
+    });
+    expect(isError).toBe(true);
+    expect(text).toContain('customer not found');
+  });
+
+  test('brief_customer rejects an invalid focus value', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Focus Test', phone: '555-6600' });
+    const { isError, text } = await call('brief_customer', {
+      customerId: customer.id,
+      focus: 'deep_dive',
+    });
+    expect(isError).toBe(true);
+    expect(text).toContain('invalid focus');
   });
 
   test('an invalid channel is rejected as a tool error', async () => {

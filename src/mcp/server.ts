@@ -4,6 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { fileURLToPath } from 'node:url';
 import {
   getJob,
+  getCustomer,
   searchCustomers,
   getCustomerContext,
   listRawCapturesForJob,
@@ -19,25 +20,23 @@ import {
   type Answerer,
   type BriefFocus,
 } from '../synthesis/index.js';
+import { identityFromEnv, type RequestIdentity } from './identity.js';
 
 // The single boundary the agent calls. The agent never holds the Supabase or
 // Anthropic keys — this server (launched by the gateway with those secrets in
-// env) is the only thing that touches the spine. Tenant is fixed server-side via
-// DEFAULT_TENANT_ID, so the agent cannot address another firm's data.
+// env) is the only thing that touches the spine. The (tenant, technician)
+// identity is supplied per request via deps.identity — env-pinned for stdio, the
+// gateway's signed header for the central HTTP server — never from model args, so
+// the agent cannot address another firm's data or claim another technician.
 export interface ServerDeps {
   extract?: Extractor; // injectable so tests don't call the live model
   brief?: Briefer; // injectable briefing synthesizer (same reason)
   answer?: Answerer; // injectable Q&A synthesizer (same reason)
+  identity?: RequestIdentity; // gateway-pinned tenant + technician for this request
 }
 
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
 const BRIEF_FOCUSES: BriefFocus[] = ['next_visit', 'full_history'];
-
-function requireTenant(): string {
-  const tenantId = process.env.DEFAULT_TENANT_ID;
-  if (!tenantId) throw new Error('DEFAULT_TENANT_ID is not set');
-  return tenantId;
-}
 
 const TOOLS = [
   {
@@ -49,7 +48,6 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        technicianRef: { type: 'string', description: 'Stable id of the technician (chat sender).' },
         text: { type: 'string', description: 'The note text (voice already transcribed to text).' },
         blobPath: { type: 'string', description: 'Optional object-store pointer for audio/photo.' },
         channel: { type: 'string', enum: TECH_CHANNELS, description: 'Defaults to technician_note.' },
@@ -59,7 +57,7 @@ const TOOLS = [
           properties: { customerId: { type: 'string' }, address: { type: 'string' } },
         },
       },
-      required: ['technicianRef'],
+      required: [],
     },
   },
   {
@@ -133,28 +131,39 @@ async function dispatch(
   args: Record<string, unknown>,
   deps: ServerDeps,
 ): Promise<unknown> {
-  const tenantId = requireTenant();
+  const identity = deps.identity;
+  if (!identity) throw new Error('identity is required');
+  const { tenantId } = identity;
   const str = (k: string): string | undefined =>
     typeof args[k] === 'string' ? (args[k] as string) : undefined;
 
   switch (name) {
     case 'record_field_note': {
-      const technicianRef = str('technicianRef');
-      if (!technicianRef) throw new Error('technicianRef is required');
       const channelArg = str('channel');
       if (channelArg && !TECH_CHANNELS.includes(channelArg as CaptureChannel)) {
         throw new Error(`invalid channel: ${channelArg}`);
       }
       const channel: CaptureChannel = (channelArg as CaptureChannel | undefined) ?? 'technician_note';
+      const confirmed = args.confirmed as { customerId?: string; address?: string } | undefined;
+      // Tenant-guard the WRITE path too: a model-supplied confirmed.customerId wins
+      // outright in matchIdentity, so without this a forged id would attach the
+      // visit to another firm's customer/job. (The read-tool guards don't cover
+      // writes; the address/phone/schedule match branches are already tenant-scoped.)
+      if (confirmed?.customerId) {
+        const customer = await getCustomer(confirmed.customerId);
+        if (!customer || customer.tenant_id !== tenantId) {
+          throw new Error('customer not found');
+        }
+      }
       return recordFieldNote(
         {
           tenantId,
-          technicianRef,
+          technicianRef: identity.technicianRef,
           text: str('text') ?? null,
           blobPath: str('blobPath') ?? null,
           channel,
           captureId: str('captureId'),
-          confirmed: args.confirmed as { customerId?: string; address?: string } | undefined,
+          confirmed,
         },
         { extract: deps.extract },
       );
@@ -167,18 +176,35 @@ async function dispatch(
     case 'get_customer_context': {
       const customerId = str('customerId');
       if (!customerId) throw new Error('customerId is required');
-      return getCustomerContext(customerId);
+      const ctx = await getCustomerContext(customerId);
+      // Tenant guard: a cross-tenant (or unknown) id reads as an empty record.
+      if (!ctx.customer || ctx.customer.tenant_id !== tenantId) {
+        return { customer: null, jobs: [], recentVisits: [], recentCaptures: [] };
+      }
+      return ctx;
     }
     case 'get_job': {
       const jobId = str('jobId');
       if (!jobId) throw new Error('jobId is required');
-      return getJob(jobId);
+      const job = await getJob(jobId);
+      // Tenant guard: a cross-tenant (or unknown) id reads as not found.
+      return job && job.tenant_id === tenantId ? job : null;
     }
     case 'list_recent_captures': {
       const jobId = str('jobId');
       const customerId = str('customerId');
-      if (jobId) return listRawCapturesForJob(jobId);
-      if (customerId) return listRawCapturesForCustomer(customerId);
+      // Tenant guard via the parent: captures inherit the job's/customer's tenant,
+      // so verifying the parent gates the whole list (a mismatch reads as empty).
+      if (jobId) {
+        const job = await getJob(jobId);
+        if (!job || job.tenant_id !== tenantId) return [];
+        return listRawCapturesForJob(jobId);
+      }
+      if (customerId) {
+        const customer = await getCustomer(customerId);
+        if (!customer || customer.tenant_id !== tenantId) return [];
+        return listRawCapturesForCustomer(customerId);
+      }
       throw new Error('list_recent_captures requires jobId or customerId');
     }
     case 'brief_customer': {
@@ -191,8 +217,10 @@ async function dispatch(
         throw new Error(`invalid focus: ${focusArg}`);
       }
       const ctx = await getCustomerContext(customerId);
-      // Guard a bad id with a clean error before spending a model call on an empty record.
-      if (!ctx.customer) throw new Error('customer not found');
+      // Guard a bad/cross-tenant id with a clean error before spending a model call.
+      if (!ctx.customer || ctx.customer.tenant_id !== tenantId) {
+        throw new Error('customer not found');
+      }
       const focus = (focusArg as BriefFocus | undefined) ?? 'next_visit';
       return (deps.brief ?? sonnetBriefer)(ctx, focus);
     }
@@ -202,7 +230,9 @@ async function dispatch(
       const question = str('question');
       if (!question) throw new Error('question is required');
       const ctx = await getCustomerContext(customerId);
-      if (!ctx.customer) throw new Error('customer not found');
+      if (!ctx.customer || ctx.customer.tenant_id !== tenantId) {
+        throw new Error('customer not found');
+      }
       return (deps.answer ?? sonnetAnswerer)(ctx, question);
     }
     default:
@@ -235,7 +265,7 @@ export function createServer(deps: ServerDeps = {}): Server {
 }
 
 async function main(): Promise<void> {
-  const server = createServer();
+  const server = createServer({ identity: identityFromEnv() });
   await server.connect(new StdioServerTransport());
 }
 

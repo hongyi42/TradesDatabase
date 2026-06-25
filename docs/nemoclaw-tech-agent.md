@@ -59,6 +59,29 @@ secrets via env/SecretRef so they never enter the model context:
 
 Build first (`npm run build`); the entrypoint is `npm run mcp:serve` → `node dist/mcp/server.js`.
 
+## 3b. Centralized deployment (Architecture A)
+The stdio registration above is **one server per sandbox** (the server runs inside each box, pinned to
+one identity via `DEFAULT_TENANT_ID`/`DEFAULT_TECHNICIAN_REF`). The central alternative is **one shared
+HTTP server every bot calls**, with identity asserted per request by the gateway:
+
+- One host runs `npm run mcp:serve:http` → `node dist/mcp/httpServer.js` (Streamable HTTP, **stateless**).
+  Secrets (`SUPABASE_*`, `ANTHROPIC_API_KEY`, `GATEWAY_IDENTITY_SECRET`) live **only on this host** —
+  no sandbox holds them, which closes the per-box key-exfiltration risk.
+- The gateway reaches it over **mTLS on a private network** + an optional IP allowlist (`ALLOWED_CLIENT_IPS`).
+  This restricts *who may connect*; it is **deploy-time infra, not in this repo**.
+- On every request the gateway sets identity headers and signs them with the shared secret:
+  - `x-tenant-id`, `x-technician-ref`
+  - `x-identity-signature` = `HMAC-SHA256(GATEWAY_IDENTITY_SECRET, "<tenantId>.<technicianRef>")` (hex)
+  - **and** `Accept: application/json, text/event-stream` + `Content-Type: application/json` — the
+    stateless transport returns `406`/`415` without both. (The MCP SDK client sets these automatically.)
+- The server rejects a missing/forged signature with `401`, then resolves `(tenant, technician)` from the
+  verified header — never from tool args. `record_field_note` no longer accepts a `technicianRef` arg.
+- **Stateless ⇒ horizontally scalable:** the `record_field_note` confirmation resume keys off a
+  DB-persisted `captureId`, so any replica can serve any request — no session affinity behind a load balancer.
+
+The future **Option B** (per-bot JWT / OAuth Resource Server) swaps only the header-verification step
+(`resolveIdentityFromHeaders`); the tools and tenant guards are unchanged.
+
 ## 4. Restrict the tool surface
 Allowlist only the spine tools for the technician profile (`tools.profile` / allowlist):
 `record_field_note`, `find_customer`, `get_customer_context`, `get_job`, `list_recent_captures`.

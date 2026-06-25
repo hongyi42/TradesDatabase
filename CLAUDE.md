@@ -11,6 +11,8 @@ each L2 row). Every structured field links back to the raw evidence it came from
 - TypeScript, ESM (`"type":"module"`, `NodeNext`) — use explicit `.js` extensions on relative imports.
 - All database access goes through the typed layer in `src/db/`; don't hand-write Supabase queries elsewhere.
 - **L1 (`raw_captures`) is append-only** — insert only, never update or delete (enforced by a DB trigger too).
+  Because there is no delete path, **any filtering/classification (e.g. work-vs-personal email) must gate
+  the L1 insert — run it _before_ writing, never after**, or misrouted rows are retained permanently.
 - Test writes target the **test** Supabase project only; **prod is read-only**. Tests self-clean rows they create.
 
 ## Verification

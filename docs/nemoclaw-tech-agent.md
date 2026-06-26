@@ -100,6 +100,10 @@ Outbound network policy should allow only the gateway + our server's host.
 A second input channel pulls the technician's email and feeds **only work-related** mail through the
 same write-path (`channel: 'email'`). This does **not** require NemoClaw — `ingestEmail`
 ([src/email/ingest.ts](../src/email/ingest.ts)) calls Gmail directly via `googleapis`:
+
+> **Note — under Option B (§7) this fetcher is superseded by Composio's Gmail trigger.** The per-tenant
+> `googleapis` creds below are replaced by Composio-managed OAuth; the **classifier + write-path are
+> unchanged**. Keep the direct creds only for the single-mailbox dev/test path.
 - Provide Gmail OAuth2 creds in env: `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`
   (or swap in a Workspace service account with domain-wide delegation).
 - A Sonnet classifier ([src/email/classify.ts](../src/email/classify.ts)) drops personal/marketing
@@ -109,6 +113,92 @@ same write-path (`channel: 'email'`). This does **not** require NemoClaw — `in
   default fetcher uses an overlapping `newer_than:7d` window, so repeated runs would create duplicate
   L1/L2 rows. Advance a watermark or skip already-seen message ids first.
 
+## 7. Third-party app connectors (Composio — Option B, decided 2026-06-25)
+The agent reaches third-party apps (Gmail, Google Sheets, Microsoft Excel, calendar, …) through
+**Composio** as a per-tenant connector layer. **Decision: Option B — Composio manages *all* OAuth tokens
+(inbound + outbound).** Composio delivers raw data; **our classifier + write-path stay the system of
+record**. Guiding rule: **let Composio carry the credential, never the judgment** — it never decides
+what's "work mail" and never writes to the spine (see §5 of
+[the overview](../Three-Layer-Context-Spine-Overview.md): hardcode identity matching / permission
+boundaries; outsource only the plumbing).
+
+**Composio is complementary to `trades-spine`, not a replacement.** The spine MCP stays the only writer
+to the canonical record (holds Supabase keys; does identity-match + provenance + tenant guards). Both
+register side-by-side in the gateway's `mcp.servers`.
+
+### Multi-tenant model
+- **One business = one tenant UUID = Composio `user_id` = gateway `x-tenant-id`** (`DEFAULT_TENANT_ID`).
+  Same value everywhere → structurally impossible for business A's agent to touch B's accounts or B's
+  spine. Never use Composio `user_id="default"`.
+- **One OAuth client per platform, not per company.** Create one Google OAuth client (one for Gmail, one
+  for Sheets) and one Azure app registration; register each in Composio once as a custom **Auth Config**.
+  Each company authorizes *their* account against your single client via a **Connect Link** → a
+  per-company **connected account** keyed by `user_id`. Onboarding company #N = send a Connect Link; no
+  new GCP/Azure project, no new creds in our env.
+- Use **Connect Link / hosted auth** (`composio.connectedAccounts.link()` / `session.authorize()`). The
+  old `initiate()` managed-OAuth flow is **dead for all orgs 2026-07-03** — don't follow tutorials using it.
+
+### Secret custody + gateway wiring
+- The **Composio API key** (mints access for all tenants) and each tenant's Tool Router **`mcp.url`** live
+  **only on the central control plane / host** — never in a sandbox (same rule as `GATEWAY_IDENTITY_SECRET`,
+  §3b).
+- The control plane runs `composio.create(tenantId)` → `{ mcp }` and injects that tenant's `mcp.url` into
+  its sandbox, registered next to `trades-spine`:
+  ```jsonc
+  { "mcp": { "servers": {
+      "trades-spine": { /* HTTP server + signed x-tenant-id headers (§3b) */ },
+      "composio":     { "url": { "secretRef": "composio-mcp-url-<tenantId>" } }
+  }}}
+  ```
+- Allowlist only the actions each tier needs (e.g. `GMAIL_SEND_EMAIL`, `GOOGLESHEETS_BATCH_GET`) — mirror §4.
+
+### Scopes (least privilege)
+- **Outbound** uses send-only scopes (`gmail.send`) — the stored token literally cannot read the inbox.
+- **Inbound needs full-mailbox read** (Gmail read scope is all-or-nothing; no "work-only" scope exists),
+  and under Option B that read-capable token lives in **Composio's** storage — a trust boundary to note
+  in any customer data-handling review. Restricted read scopes need one-time Google app verification
+  (per client, not per company).
+
+### "Both" spreadsheets
+- **Google Sheets** — existing GCP OAuth client + Sheets API.
+- **Microsoft Excel** — separate **Azure app registration** + Microsoft Graph delegated perms
+  (`Files.ReadWrite`, `offline_access`); the workbook must live in **OneDrive/SharePoint** (a work/Entra
+  account is the smooth path). One client each — not per company.
+- The agent sees `googlesheets` *or* `excel` tools via `session.toolkits()` based on what the tenant
+  connected; normalize behind a thin spine tool so prompts aren't app-specific (cell/range vs Graph-object
+  shapes differ).
+
+### Inbound email filtering (work vs personal)
+Filtering is downstream of the token (read scope can't restrict to "work only"), so it's the same
+classifier path we already have — now fed by Composio's Gmail trigger. Defense-in-depth, cheapest first:
+1. **Trigger-side** (`GMAIL_NEW_GMAIL_MESSAGE` `query`/`labelIds`) — only fire for matching mail; also
+   minimizes personal mail transiting our infra.
+2. **Cheap deterministic drop** in the webhook handler (list/marketing headers, sender denylist).
+3. **Sonnet classifier** ([src/email/classify.ts](../src/email/classify.ts)) — the real work/personal call.
+- **Classify _before_ the L1 insert.** `raw_captures` is append-only (no delete path), so personal mail
+  written to L1 is retained forever — the classifier must gate the insert, never run after it.
+- Bias low-confidence to a **review bucket**, not a silent drop (dropping a real work email is costlier).
+- **Dedup by Gmail message id** before insert — Composio's trigger doesn't dedup, and managed-auth polling
+  is **≥15 min** (not real-time).
+
+### Stay connector-agnostic (don't overfit to Gmail)
+Gmail + spreadsheets are the first connectors, **not** the design center. **Outbound** generalizes for
+free — the per-tenant Tool Router `mcp.url` exposes whatever toolkits the tenant connected (allowlist is
+per-tenant policy; keep agent prompts provider-neutral). **Inbound** is just more channels into the
+already channel-agnostic write-path (overview §4): a generic webhook routes by `toolkit`+`triggerType` →
+a per-source **normalizer** (`payload → { channel, rawText|blobRef, externalId, occurredAt }`) → the
+**shared** dedup-by-externalId / classify-before-L1 / extract pipeline. The "work vs personal" classifier
+is a Gmail-specific, *optional* per-source filter — other sources (e.g. a dispatch Slack channel) may need
+none. Prove the seam by shipping **two differently-shaped connectors** (Gmail inbound+outbound;
+Sheets/Excel outbound); don't build a speculative framework for connectors you don't have yet (YAGNI).
+Adding connector #N should then be: a Composio Auth Config + a config entry + (inbound) one normalizer —
+no pipeline change.
+
+### Build note
+The code-touching pieces — control-plane onboarding endpoint, per-tenant `mcp.url` injection, the inbound
+trigger webhook handler (verify Composio's HMAC `webhook-signature`) — are non-trivial: run them through
+**/research → /plan → /implement** (CLAUDE.md).
+
 ## Live verification (run once provisioned)
 - **Chat channel:** send a Telegram voice note → confirm the address in chat → read back over `pg`
   that an L1 `raw_captures` row (`channel='technician_voice'`) exists **and** an L2 job/visit links
@@ -117,3 +207,6 @@ same write-path (`channel: 'email'`). This does **not** require NemoClaw — `in
 - **Email channel:** send a real **work** email → it appears in the spine (L1 `channel='email'` + L2
   when it matches a customer); send a **non-work** email → it is filtered out (no rows). Spot-check
   the classifier's precision on a sample of real inbox mail.
+- **Connector isolation (Option B):** create a second test tenant with a *different* connected Google
+  account and confirm tenant A's `mcp.url` cannot see tenant B's mail/sheets — the one test that proves
+  the `user_id`=tenant invariant holds.

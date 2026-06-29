@@ -2,7 +2,39 @@
 date: 2026-06-25
 task: Build the testable-now Composio inbound connector seam (capture idempotency + normalizer + webhook)
 research: thoughts/shared/research/2026-06-25-composio-connector-layer.md
-status: draft
+status: complete
+---
+
+## Post-review remediation (2026-06-28)
+
+A high-effort `/code-review` over the full diff surfaced bugs (none caught by the
+per-phase reviews because they only manifest with `ALLOWED_CLIENT_IPS` set + a live
+Composio sender). All fixed, with tests; gates green (78 tests):
+
+- **#1 webhook unreachable in prod** — the IP allowlist 403'd `/inbound/` before HMAC.
+  Moved the `/inbound/` branch above `allowed()` in `httpServer.ts`; webhooks now auth
+  by HMAC, the MCP path keeps the IP allowlist + identity header unchanged.
+- **#2 retry storm** — the catch-all mapped every throw to 401. `handleInboundWebhook`
+  now returns discriminated statuses; `httpServer` maps them with correct retry
+  semantics (200 ack / 401 bad_signature / 400 bad_payload / 422 unknown_tenant /
+  503 transient / 500 server fault). Deterministic failures don't retry; transient do.
+- **#3 partial-failure healing** — the `external_id` dedup no-op'd orphans (L1 written,
+  L2 build failed). `recordFieldNote` now checks `captureHasLinkedL2`: linked → real
+  duplicate; orphan → reuse the L1 row and re-run extract→L2 on redelivery.
+- **#4 unvalidated tenant** — webhook now `tenantExists()`-pre-checks `userId` →
+  `unknown_tenant` (422) before any write; FK 23503 is the backstop.
+- **#5 inconsistent classifier input** — webhook fed the classifier the header-prefixed
+  `rawText`; now feeds the clean body via `sourceMeta.body`, matching the pull path.
+  `formatEmailRawText` is the single source of the L1 storage string (was #9 too).
+- **Privacy — content-free drop audit** — non-work drops now write a metadata-only
+  `dropped_audit` receipt (tenant/channel/external_id/sender_domain/reason — NO body,
+  subject, or full address) so a mis-drop is detectable/recoverable from the source
+  without retaining personal mail. Both the pull and webhook paths write it.
+
+Deferred (still capability-blocked): the live Composio webhook E2E (Phase 3 live check).
+Noted for later (not done): FP/erasure-vs-append-only (crypto-shred), a relationship-
+judge override (known-customer cross-check), and a local DLP/redaction stage.
+
 ---
 
 ## Overview
@@ -69,13 +101,13 @@ documented gap, [src/email/ingest.ts:63-66](../../../src/email/ingest.ts#L63-L66
 **test** project (`--linked` ref must be `daqapdlkgxfrhquacprv`, never prod) → (c) `npm run gen:types`
 (so `database.types.ts` gains `raw_captures.external_id`) → (d) write the `rawCaptures`/`recordFieldNote`/
 `ingest` edits → (e) run the gates below. Running `typecheck` before (c) will fail on the new column.
-- [ ] `npm run typecheck` && `npm run lint` && `npm run build` pass.
-- [ ] `npm test` passes, incl. new cases in [recordFieldNote.test.ts](../../../src/writePath/recordFieldNote.test.ts): (a) a note with `externalId` persists `external_id` + `metadata.occurredAt` (pg read-back); (b) a second call with the same `(tenant, externalId)` returns `status:'duplicate'`, **no** second L1 row and **no** second job/visit (assert via `select count(*) from raw_captures where external_id = $1` → 1, and job/visit counts unchanged).
-- [ ] Updated [ingest.test.ts](../../../src/email/ingest.test.ts): within **one** test, run `ingestEmail` twice over the same `Email.id` set; assert `count(*) from raw_captures where channel='email'` is unchanged between pass 1 and pass 2 (the **load-bearing** assertion — `result.ingested` is incremented unconditionally at [ingest.ts:93](../../../src/email/ingest.ts#L93) and proves nothing on its own).
+- [x] `npm run typecheck` && `npm run lint` && `npm run build` pass.
+- [x] `npm test` passes, incl. new cases in [recordFieldNote.test.ts](../../../src/writePath/recordFieldNote.test.ts): (a) a note with `externalId` persists `external_id` + `metadata.occurredAt` (pg read-back); (b) a second call with the same `(tenant, externalId)` returns `status:'duplicate'`, **no** second L1 row and **no** second job/visit (assert via `select count(*) from raw_captures where external_id = $1` → 1, and job/visit counts unchanged).
+- [x] Updated [ingest.test.ts](../../../src/email/ingest.test.ts): within **one** test, run `ingestEmail` twice over the same `Email.id` set; assert `count(*) from raw_captures where channel='email'` is unchanged between pass 1 and pass 2 (the **load-bearing** assertion — `result.ingested` is incremented unconditionally at [ingest.ts:93](../../../src/email/ingest.ts#L93) and proves nothing on its own).
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP (or `DATABASE_URL` + `npm run db:push`) — test project ref `daqapdlkgxfrhquacprv`.
-- [ ] Apply the migration to the **test** project and confirm `external_id` + `uq_raw_captures_external_id` exist (`list_tables` / `information_schema`). **Never touch prod (read-only).**
+- [x] Apply the migration to the **test** project and confirm `external_id` + `uq_raw_captures_external_id` exist (`list_tables` / `information_schema`). **Never touch prod (read-only).** — applied via `supabase db push` to linked test ref `daqapdlkgxfrhquacprv`; `information_schema` read-back confirmed column `external_id` (text) + indexes `uq_raw_captures_external_id`, `idx_raw_captures_external_id`.
 
 ### Manual verification
 - None.
@@ -110,8 +142,8 @@ Keeps the design connector-agnostic (research doc "Stay connector-agnostic") rat
   one mapping function if needed.
 
 ### Automated verification
-- [ ] `npm run typecheck` && `npm run lint` && `npm run build` pass.
-- [ ] `npm test` passes, incl. new `src/inbound/normalize.test.ts`: a fixture Gmail payload → the expected
+- [x] `npm run typecheck` && `npm run lint` && `npm run build` pass.
+- [x] `npm test` passes, incl. new `src/inbound/normalize.test.ts`: a fixture Gmail payload → the expected
   envelope (channel `'email'`, `externalId`, `requiresWorkClassifier:true`, text shape); `resolveNormalizer`
   round-trips a registered key and returns `null` for an unknown `toolkit`/`triggerType`.
 
@@ -157,8 +189,8 @@ identity is the convention `connector:<toolkit>`.
 **`.env.example`** — add `COMPOSIO_WEBHOOK_SECRET=` under a new "Composio inbound webhook" section.
 
 ### Automated verification
-- [ ] `npm run typecheck` && `npm run lint` && `npm run build` pass.
-- [ ] `npm test` passes, incl. new `src/inbound/webhook.test.ts` (HMAC cases mirror [identity.test.ts](../../../src/mcp/identity.test.ts)):
+- [x] `npm run typecheck` && `npm run lint` && `npm run build` pass.
+- [x] `npm test` passes, incl. new `src/inbound/webhook.test.ts` (HMAC cases mirror [identity.test.ts](../../../src/mcp/identity.test.ts)):
   valid signature + Gmail payload + stub `classify`(isWork:true) + stub `recordFieldNote` → `ingested` and `recordFieldNote` called with channel `'email'`, `externalId`, `technicianRef:'connector:gmail'`;
   missing/tampered/wrong-length signature → throws;
   stub `classify`(isWork:false) → `skipped_non_work` **and `recordFieldNote` NOT called** (classify-before-L1 proven);

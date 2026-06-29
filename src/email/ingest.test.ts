@@ -21,7 +21,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await pg.query('truncate table schedule_entries, customers, jobs, visits, raw_captures cascade');
+  await pg.query('truncate table schedule_entries, customers, jobs, visits, raw_captures, dropped_audit cascade');
   await pg.end();
 });
 
@@ -29,6 +29,13 @@ const emails: Email[] = [
   { id: 'e1', from: 'jane@homeowner.com', subject: 'AC repair follow-up', body: 'unit still noisy' },
   { id: 'e2', from: 'deals@newsletter.com', subject: '50% OFF sale', body: 'shop now' },
 ];
+
+async function emailCaptureCount(): Promise<number> {
+  const { rows } = await pg.query<{ n: string }>(
+    "select count(*)::int as n from raw_captures where channel = 'email'",
+  );
+  return Number(rows[0].n);
+}
 
 // Non-work = anything from a "newsletter" sender.
 const stubClassify: WorkClassifier = async (email) => ({
@@ -59,5 +66,34 @@ describe('ingestEmail', () => {
     // The work email matched the customer → an L2 job was created for them.
     const jobs = await listJobsForCustomer(customer.id);
     expect(jobs.length).toBe(1);
+
+    // The dropped newsletter left a CONTENT-FREE audit receipt: domain + external_id
+    // only, no body/subject stored (the email itself was never persisted).
+    const audit = await pg.query<{ external_id: string | null; sender_domain: string | null }>(
+      'select external_id, sender_domain from dropped_audit where tenant_id = $1',
+      [tenantId],
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0].external_id).toBe('e2'); // the newsletter message id
+    expect(audit.rows[0].sender_domain).toBe('newsletter.com'); // domain only
+  });
+
+  test('re-ingesting the same Gmail message ids does not duplicate L1 rows (externalId dedup)', async () => {
+    const dedupEmails: Email[] = [
+      { id: 'dedup-msg-1', from: 'owner@home.com', subject: 'Furnace', body: 'no heat' },
+    ];
+    const stubExtract: Extractor = async () => ({ workPerformed: 'no heat' });
+    const deps = { fetch: async () => dedupEmails, classify: stubClassify, extract: stubExtract };
+
+    const before = await emailCaptureCount();
+    await ingestEmail(tenantId, 'tech-email', deps);
+    const afterFirst = await emailCaptureCount();
+    expect(afterFirst).toBe(before + 1);
+
+    // Second run over the SAME message id (the overlapping newer_than:7d window) — the
+    // load-bearing assertion: the L1 email count is unchanged, so no duplicate row.
+    // (result.ingested is incremented unconditionally and proves nothing on its own.)
+    await ingestEmail(tenantId, 'tech-email', deps);
+    expect(await emailCaptureCount()).toBe(afterFirst);
   });
 });

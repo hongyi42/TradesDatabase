@@ -31,6 +31,11 @@ async function rawCaptureCount(): Promise<number> {
   return Number(rows[0].n);
 }
 
+async function visitCount(): Promise<number> {
+  const { rows } = await pg.query<{ n: string }>('select count(*)::int as n from visits');
+  return Number(rows[0].n);
+}
+
 describe('recordFieldNote', () => {
   test('matched note writes L1 + reuses customer + creates job/visit with provenance & labor hours; a completed-signal on a new (open) job is skipped, not thrown', async () => {
     const customer = await createCustomer({ tenantId, name: 'Reuse Me', phone: '555-0177' });
@@ -168,5 +173,115 @@ describe('recordFieldNote', () => {
       [resumed.visitId],
     );
     expect(visit.rows[0].source_capture_id).toBe(first.captureId);
+  });
+
+  test('an externalId capture persists external_id + occurredAt/sourceMeta in metadata JSONB', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Ext Meta', phone: '555-3030' });
+    const externalId = 'gmail-msg-meta-1';
+    const occurredAt = '2026-06-02T08:30:00.000Z';
+
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'connector:gmail',
+        channel: 'email',
+        text: 'noisy unit',
+        externalId,
+        occurredAt,
+        sourceMeta: { from: 'cust@x.com', subject: 'AC repair' },
+      },
+      stub({ phone: '555-3030', workPerformed: 'noisy AC' }),
+    );
+    expect(r.status).toBe('matched');
+    expect(r.customerId).toBe(customer.id);
+
+    // Cross-channel read-back: external_id column + metadata fields persisted.
+    const cap = await pg.query<{
+      external_id: string | null;
+      metadata: { occurredAt?: string; from?: string; subject?: string };
+    }>('select external_id, metadata from raw_captures where id = $1', [r.captureId]);
+    expect(cap.rows[0].external_id).toBe(externalId);
+    expect(cap.rows[0].metadata.occurredAt).toBe(occurredAt);
+    expect(cap.rows[0].metadata.from).toBe('cust@x.com');
+    expect(cap.rows[0].metadata.subject).toBe('AC repair');
+  });
+
+  test('a repeat call with the same (tenant, externalId) is a duplicate no-op: no second L1 row, no second job/visit', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Dedup Cust', phone: '555-4040' });
+    const externalId = 'gmail-msg-dedup-1';
+    const note = {
+      tenantId,
+      technicianRef: 'connector:gmail',
+      channel: 'email' as const,
+      text: 'leak under sink',
+      externalId,
+      sourceMeta: { from: 'cust@y.com', subject: 'Leak' },
+    };
+
+    const first = await recordFieldNote(note, stub({ phone: '555-4040', workPerformed: 'fixed leak' }));
+    expect(first.status).toBe('matched');
+    const jobsAfterFirst = (await listJobsForCustomer(customer.id)).length;
+    const visitsAfterFirst = await visitCount();
+
+    // Second delivery of the same message id → no-op duplicate (pre-check short-circuit).
+    const second = await recordFieldNote(note, stub({ phone: '555-4040', workPerformed: 'fixed leak' }));
+    expect(second.status).toBe('duplicate');
+    expect(second.captureId).toBe(first.captureId);
+
+    // Exactly one L1 row for that external id; no new job, no new visit.
+    const l1 = await pg.query<{ n: string }>(
+      'select count(*)::int as n from raw_captures where external_id = $1',
+      [externalId],
+    );
+    expect(Number(l1.rows[0].n)).toBe(1);
+    expect((await listJobsForCustomer(customer.id)).length).toBe(jobsAfterFirst);
+    expect(await visitCount()).toBe(visitsAfterFirst);
+  });
+
+  test('#3: an orphan capture (L1 written, extract failed) is healed on redelivery — reuse L1, build L2, no second row', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Heal Me', phone: '555-5050' });
+    const externalId = 'gmail-msg-heal-1';
+    const note = {
+      tenantId,
+      technicianRef: 'connector:gmail',
+      channel: 'email' as const,
+      text: 'broken furnace',
+      externalId,
+      sourceMeta: { from: 'c@d.com', subject: 'furnace' },
+    };
+
+    // A flaky extractor: throws on the FIRST call (after L1 is written → orphan), then
+    // succeeds — simulating a transient model failure mid-write.
+    let calls = 0;
+    const flaky: Extractor = async () => {
+      calls++;
+      if (calls === 1) throw new Error('extractor timeout');
+      return { phone: '555-5050', workPerformed: 'fixed furnace' };
+    };
+
+    // First delivery: L1 lands, extract throws → orphan, no L2.
+    await expect(recordFieldNote(note, { extract: flaky })).rejects.toThrow();
+    const l1a = await pg.query<{ n: string }>(
+      'select count(*)::int as n from raw_captures where external_id = $1',
+      [externalId],
+    );
+    expect(Number(l1a.rows[0].n)).toBe(1);
+    expect((await listJobsForCustomer(customer.id)).length).toBe(0); // orphan: no job yet
+
+    // Redelivery: reuse the orphan L1 (no second row), extract succeeds → L2 built.
+    const healed = await recordFieldNote(note, { extract: flaky });
+    expect(healed.status).toBe('matched');
+    expect(healed.customerId).toBe(customer.id);
+    const l1b = await pg.query<{ n: string }>(
+      'select count(*)::int as n from raw_captures where external_id = $1',
+      [externalId],
+    );
+    expect(Number(l1b.rows[0].n)).toBe(1); // SAME row reused, not re-appended
+    expect((await listJobsForCustomer(customer.id)).length).toBe(1); // healed → job exists
+
+    // Third delivery now finds linked L2 → real duplicate no-op (no new job).
+    const third = await recordFieldNote(note, { extract: flaky });
+    expect(third.status).toBe('duplicate');
+    expect((await listJobsForCustomer(customer.id)).length).toBe(1);
   });
 });

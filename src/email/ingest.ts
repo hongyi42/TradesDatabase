@@ -1,7 +1,9 @@
 import { google } from 'googleapis';
 import { recordFieldNote } from '../writePath/recordFieldNote.js';
+import { upsertDroppedAudit } from '../db/index.js';
 import type { Extractor } from '../writePath/extract.js';
 import { sonnetClassifier, type WorkClassifier, type EmailInput } from './classify.js';
+import { formatEmailRawText } from './format.js';
 
 export interface Email extends EmailInput {
   id: string;
@@ -60,10 +62,16 @@ const gmailFetcher: MailFetcher = async () => {
 // No human-in-the-loop here, so an unmatched work email still lands verbatim in
 // L1 (raw preserved for later resolution); only matched ones gain L2 rows.
 //
-// ⚠️ IDEMPOTENCY (must be handled before enabling the cron): this does NOT dedup
-// by message id, and the default gmailFetcher uses an overlapping `newer_than:7d`
-// window — so re-running re-ingests the same message as duplicate L1/L2 rows. The
-// fetcher must advance a watermark (or skip already-seen ids) before scheduling.
+// IDEMPOTENCY: each email's Gmail message id is passed as recordFieldNote's
+// externalId, which dedups the L1 insert per tenant (uq_raw_captures_external_id).
+// So the default gmailFetcher's overlapping `newer_than:7d` window re-fetches the
+// same message but it does NOT write duplicate L1/L2 rows — a watermark in the
+// fetcher is now an efficiency optimization, not a correctness requirement.
+//   - A previously MATCHED email re-fetches to a 'duplicate' no-op (its L2 links back).
+//   - An email whose L2 never built (extract failed, OR work-but-unmatched) re-runs
+//     extract on re-fetch (the heal path) — harmless (writes nothing new if still
+//     unresolved), but it does re-incur the model call each window. Acceptable; a
+//     watermark eliminates it.
 export async function ingestEmail(
   tenantId: string,
   technicianRef: string,
@@ -76,21 +84,33 @@ export async function ingestEmail(
   let ingested = 0;
   let skipped = 0;
   for (const email of emails) {
-    const { isWork } = await classify({ subject: email.subject, body: email.body, from: email.from });
+    const { isWork, reason } = await classify({ subject: email.subject, body: email.body, from: email.from });
     if (!isWork) {
+      // classify-before-L1: the email itself is NOT stored (privacy — append-only L1
+      // must not retain personal mail). Record only a content-free audit receipt so a
+      // mis-drop is detectable/recoverable from the source by message id.
+      await upsertDroppedAudit({
+        tenantId,
+        channel: 'email',
+        externalId: email.id,
+        from: email.from,
+        reason,
+      });
       skipped++;
       continue;
     }
-    await recordFieldNote(
+    const r = await recordFieldNote(
       {
         tenantId,
         technicianRef,
         channel: 'email',
-        text: `Subject: ${email.subject}\nFrom: ${email.from}\n\n${email.body}`,
+        text: formatEmailRawText({ from: email.from, subject: email.subject, body: email.body }),
+        externalId: email.id, // Gmail message id → per-tenant L1 dedup
+        sourceMeta: { from: email.from, subject: email.subject },
       },
       { extract: deps.extract },
     );
-    ingested++;
+    if (r.status !== 'duplicate') ingested++; // a re-fetched dup is not a new ingest
   }
   return { ingested, skipped };
 }

@@ -105,6 +105,47 @@ export type Database = {
           },
         ]
       }
+      dropped_audit: {
+        Row: {
+          channel: Database["public"]["Enums"]["capture_channel"]
+          classifier_reason: string | null
+          dropped_at: string
+          expires_at: string
+          external_id: string | null
+          id: string
+          sender_domain: string | null
+          tenant_id: string
+        }
+        Insert: {
+          channel: Database["public"]["Enums"]["capture_channel"]
+          classifier_reason?: string | null
+          dropped_at?: string
+          expires_at?: string
+          external_id?: string | null
+          id?: string
+          sender_domain?: string | null
+          tenant_id: string
+        }
+        Update: {
+          channel?: Database["public"]["Enums"]["capture_channel"]
+          classifier_reason?: string | null
+          dropped_at?: string
+          expires_at?: string
+          external_id?: string | null
+          id?: string
+          sender_domain?: string | null
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "dropped_audit_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       jobs: {
         Row: {
           attributes: Json
@@ -176,6 +217,7 @@ export type Database = {
           channel: Database["public"]["Enums"]["capture_channel"]
           created_at: string
           customer_id: string | null
+          external_id: string | null
           id: string
           job_id: string | null
           metadata: Json
@@ -189,6 +231,7 @@ export type Database = {
           channel: Database["public"]["Enums"]["capture_channel"]
           created_at?: string
           customer_id?: string | null
+          external_id?: string | null
           id?: string
           job_id?: string | null
           metadata?: Json
@@ -202,6 +245,7 @@ export type Database = {
           channel?: Database["public"]["Enums"]["capture_channel"]
           created_at?: string
           customer_id?: string | null
+          external_id?: string | null
           id?: string
           job_id?: string | null
           metadata?: Json

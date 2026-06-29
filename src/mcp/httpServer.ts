@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer } from './server.js';
 import { resolveIdentityFromHeaders } from './identity.js';
+import { handleInboundWebhook } from '../inbound/webhook.js';
 
 // Central HTTP entrypoint (Architecture A). Every NemoClaw bot reaches this one
 // server through the gateway. It runs STATELESS (sessionIdGenerator: undefined):
@@ -24,15 +25,95 @@ function allowed(req: http.IncomingMessage): boolean {
   return !!ip && ips.includes(ip);
 }
 
-async function readBody(req: http.IncomingMessage): Promise<unknown> {
+// The request stream is consumable once, so the webhook path reads the RAW string
+// (HMAC is over the exact bytes) while the MCP path parses JSON — never both.
+async function readRawBody(req: http.IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
-  const raw = Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function readBody(req: http.IncomingMessage): Promise<unknown> {
+  const raw = await readRawBody(req);
   return raw.length ? JSON.parse(raw) : undefined;
+}
+
+// Inbound handler status → HTTP code, with deliberate retry semantics: 2xx and 4xx
+// tell Composio "stop" (deterministic — a retry yields the same result); 503 tells it
+// "retry" (a transient fault a retry could fix). Collapsing all of these to one code
+// would either retry-storm poison pills or drop recoverable captures.
+const INBOUND_STATUS_CODES: Record<string, number> = {
+  ingested: 200,
+  duplicate: 200,
+  unrouted: 200,
+  skipped_non_work: 200,
+  bad_signature: 401,
+  bad_payload: 400,
+  unknown_tenant: 422,
+  transient_error: 503,
+};
+
+// Composio connector webhooks. Authenticated by their OWN HMAC over the body
+// (webhook-signature) — NOT the gateway identity header and NOT the source-IP
+// allowlist (Composio posts from the public internet, not the gateway). So this runs
+// BEFORE allowed(). Its own try/catch maps handler status → HTTP code; a genuine
+// server fault (e.g. COMPOSIO_WEBHOOK_SECRET unset) → 500 so Composio retries.
+async function handleInbound(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  try {
+    const raw = await readRawBody(req);
+    // Set INBOUND_DEBUG=1 to print the exact payload + headers Composio sends, so the
+    // real envelope/field names can be read off a live trigger (the normalizer mapping
+    // is a best-effort guess until then). Dev-only; leave unset in any real deployment.
+    if (process.env.INBOUND_DEBUG) {
+      console.error('[INBOUND_DEBUG] url=', req.url);
+      console.error('[INBOUND_DEBUG] headers=', JSON.stringify(req.headers, null, 2));
+      console.error('[INBOUND_DEBUG] body=', raw);
+      // Persist the exact raw bytes + signing headers so the signature scheme can be
+      // verified offline (re-typing the body would corrupt the bytes the HMAC covers).
+      try {
+        const { writeFileSync } = await import('node:fs');
+        writeFileSync(
+          process.env.INBOUND_DEBUG_FILE ?? 'inbound-last.json',
+          JSON.stringify({
+            id: req.headers['webhook-id'],
+            timestamp: req.headers['webhook-timestamp'],
+            signature: req.headers['webhook-signature'],
+            body: raw,
+          }),
+        );
+      } catch {
+        /* best-effort */
+      }
+    }
+    // Standard Webhooks (Svix) scheme: all three headers feed the signature check.
+    const pick = (h: string | string[] | undefined): string | undefined =>
+      Array.isArray(h) ? h[0] : h;
+    const result = await handleInboundWebhook(
+      raw,
+      {
+        id: pick(req.headers['webhook-id']),
+        timestamp: pick(req.headers['webhook-timestamp']),
+        signature: pick(req.headers['webhook-signature']),
+      },
+      {},
+    );
+    res.writeHead(INBOUND_STATUS_CODES[result.status] ?? 200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(result));
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
 }
 
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
+    // Webhooks first — gated by HMAC, not by the gateway IP allowlist below.
+    if (req.url?.startsWith('/inbound/')) {
+      await handleInbound(req, res);
+      return;
+    }
     if (!allowed(req)) {
       res.writeHead(403);
       res.end();

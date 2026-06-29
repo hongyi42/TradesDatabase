@@ -1,6 +1,10 @@
 import {
   appendRawCapture,
   getRawCapture,
+  getRawCaptureByExternalId,
+  captureHasLinkedL2,
+  isUniqueViolation,
+  type RawCapture,
   createCustomer,
   createJob,
   getJob,
@@ -27,10 +31,15 @@ export interface RecordFieldNoteInput {
   // Set on a resume turn — points at the L1 capture from the first call so we
   // never write a second raw_capture for the same note.
   captureId?: string;
+  // Inbound-connector provenance (Composio webhooks, Gmail message id). externalId
+  // dedups the L1 insert per tenant; occurredAt/sourceMeta land in metadata JSONB.
+  externalId?: string | null;
+  occurredAt?: string | null;
+  sourceMeta?: Json;
 }
 
 export interface RecordFieldNoteResult {
-  status: 'matched' | 'needs_confirmation' | 'needs_disambiguation';
+  status: 'matched' | 'needs_confirmation' | 'needs_disambiguation' | 'duplicate';
   captureId: string;
   customerId?: string;
   jobId?: string;
@@ -66,15 +75,56 @@ export async function recordFieldNote(
     rawText = existing.raw_text ?? input.text ?? '';
     capturedAt = existing.captured_at;
   } else {
-    const capture = await appendRawCapture({
-      tenantId,
-      channel,
-      rawText: input.text ?? null,
-      blobPath: input.blobPath ?? null,
-    });
-    captureId = capture.id;
-    rawText = capture.raw_text ?? input.text ?? '';
-    capturedAt = capture.captured_at;
+    // Dedup with partial-failure healing. A capture with this (tenant, externalId)
+    // may already exist from a prior delivery:
+    //   - fully processed (an L2 row links back) → real duplicate, no-op.
+    //   - orphan (L1 written, but extract/match threw before L2) → REUSE that L1 row
+    //     and re-run extract→L2 now, so a redelivery (pull-window overlap or webhook
+    //     retry) heals it instead of being short-circuited to a no-op forever.
+    // Note: a work-but-UNMATCHED email also has no L2 (by design — raw kept, no match
+    // yet), so it is indistinguishable from an orphan here and re-runs extract on every
+    // redelivery. Harmless (it writes nothing while still unresolved), just a repeat
+    // model call. Append-only L1 can't carry a "processed" flag, so we accept the
+    // re-run rather than mutate the capture.
+    let landed: RawCapture | null = null;
+
+    if (input.externalId) {
+      const dup = await getRawCaptureByExternalId(tenantId, input.externalId);
+      if (dup) {
+        if (await captureHasLinkedL2(dup.id)) return { status: 'duplicate', captureId: dup.id };
+        landed = dup; // orphan → heal on this delivery
+      }
+    }
+
+    if (!landed) {
+      try {
+        landed = await appendRawCapture({
+          tenantId,
+          channel,
+          rawText: input.text ?? null,
+          blobPath: input.blobPath ?? null,
+          externalId: input.externalId,
+          metadata: buildCaptureMetadata(input.sourceMeta, input.occurredAt),
+        });
+      } catch (err) {
+        // TOCTOU backstop: a concurrent delivery of the same externalId won the race
+        // on uq_raw_captures_external_id. Re-read its row; if already processed →
+        // duplicate, else heal it. (Append-only forbids upsert, so insert-then-catch
+        // -23505 is the only correct path.)
+        if (input.externalId && isUniqueViolation(err)) {
+          const dup = await getRawCaptureByExternalId(tenantId, input.externalId);
+          if (!dup) throw err;
+          if (await captureHasLinkedL2(dup.id)) return { status: 'duplicate', captureId: dup.id };
+          landed = dup;
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    captureId = landed.id;
+    rawText = landed.raw_text ?? input.text ?? '';
+    capturedAt = landed.captured_at;
   }
 
   // (2-3) AI extraction of candidate fields.
@@ -150,6 +200,18 @@ export async function recordFieldNote(
   }
 
   return { status: 'matched', captureId, customerId, jobId: job.id, visitId: visit.id };
+}
+
+// L1 metadata for an inbound capture: the normalizer's sourceMeta (from/subject/…)
+// plus occurredAt. occurredAt/sourceMeta have no columns — metadata JSONB is their
+// schema home. Undefined keys are omitted (mirrors buildVisitAttributes).
+function buildCaptureMetadata(sourceMeta: Json | undefined, occurredAt: string | null | undefined): Json {
+  const base: Record<string, Json> =
+    sourceMeta && typeof sourceMeta === 'object' && !Array.isArray(sourceMeta)
+      ? { ...(sourceMeta as Record<string, Json>) }
+      : {};
+  if (occurredAt != null) base.occurredAt = occurredAt;
+  return base;
 }
 
 function buildVisitAttributes(extracted: ExtractedFields): Json {

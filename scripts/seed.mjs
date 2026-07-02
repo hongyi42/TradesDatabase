@@ -69,6 +69,7 @@ async function seed() {
   const aIntake = await appendRawCapture({
     tenantId: TENANT_ID,
     channel: 'phone_call',
+    technicianRef: 'office-dispatch',
     rawText:
       'Intake call: customer says the AC is not cooling, wants service this week. ' +
       'Callback 555-0142. Mentioned a dog in the backyard and a gate code.',
@@ -102,6 +103,7 @@ async function seed() {
   const aTechNote = await appendRawCapture({
     tenantId: TENANT_ID,
     channel: 'technician_voice',
+    technicianRef: 'tech-jane', // matches the visit's technicianName below
     rawText:
       'Replaced the run capacitor, unit is cooling again. Compressor is showing wear — ' +
       'recommend a full unit replacement next season before summer peak.',
@@ -125,6 +127,7 @@ async function seed() {
   const bWeb = await appendRawCapture({
     tenantId: TENANT_ID,
     channel: 'web_form',
+    technicianRef: 'connector:web',
     rawText: 'Web form: furnace is making a loud rattling noise when it kicks on.',
   });
   const tom = await createCustomer({
@@ -168,6 +171,7 @@ async function seed() {
   const cEmail = await appendRawCapture({
     tenantId: TENANT_ID,
     channel: 'email',
+    technicianRef: 'connector:gmail',
     rawText: formatEmailRawText({
       from: 'facilities@acme.example',
       subject: 'Quarterly HVAC maintenance',

@@ -56,13 +56,12 @@ describe('recordFieldNote', () => {
     expect(r.visitId).toBeDefined();
 
     // Cross-channel read-back via direct pg.
-    const cap = await pg.query<{ channel: string; customer_id: string | null; technician_ref: string | null }>(
-      'select channel, customer_id, technician_ref from raw_captures where id = $1',
+    const cap = await pg.query<{ channel: string; customer_id: string | null }>(
+      'select channel, customer_id from raw_captures where id = $1',
       [r.captureId],
     );
     expect(cap.rows[0].channel).toBe('technician_voice');
     expect(cap.rows[0].customer_id).toBeNull(); // append-only: provenance not back-written
-    expect(cap.rows[0].technician_ref).toBe('tech-jane'); // person attribution on L1
 
     const job = await pg.query<{ status: string }>('select status from jobs where id = $1', [r.jobId]);
     expect(job.rows[0].status).toBe('open'); // completed-signal skipped, no throw

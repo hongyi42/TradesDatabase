@@ -127,52 +127,16 @@ to the canonical record (holds Supabase keys; does identity-match + provenance +
 register side-by-side in the gateway's `mcp.servers`.
 
 ### Multi-tenant model
-- **One business = one tenant UUID; Composio `user_id` is per PERSON (revised 2026-07-01):**
-  `user_id = "<tenantUuid>:<technicianRef>"` — one connected account + one trigger per person, so ten
-  employees' personal inboxes pair to ten isolated connected accounts under one shared spine tenant.
-  The inbound webhook splits on the FIRST colon (`src/inbound/webhook.ts`) → tenant scopes the spine
-  rows, ref becomes the capture/visit attribution. Bare-uuid `user_id`s stay valid (legacy
-  whole-business pairing; attributed `connector:<toolkit>`). A person's handle can only reach their
-  own connected account → A's agent structurally cannot touch B's mail or another tenant's spine
-  (Composio scopes credentials and data per `user_id`: "User A's agent never touches user B's data" —
-  [Authentication](https://docs.composio.dev/docs/authentication)). Never use Composio `user_id="default"`.
-- **Pairing rules (consequences of per-tenant dedup + append-only L1):** (1) **One pairing per
-  mailbox** — when migrating a mailbox from bare-uuid to composite, delete the legacy connected
-  account + trigger first; if both fire, both deliveries share one Gmail `message_id`, whichever
-  lands first permanently stamps the capture's `technician_ref` (L1 has no update path) and the
-  other is discarded as a duplicate. (2) An email CC'd to N paired people yields N captures (Gmail
-  message ids are mailbox-local) — accepted: each person really received it; identity-match reuses
-  the customer/job. (3) **Vocabulary contract:** the `technicianRef` minted into the `user_id` must
-  byte-equal the doorman badge ref and the schedule sheet's technician column
-  (`schedule_entries.technician_ref`, exact case-sensitive match) — otherwise schedule-assisted
-  matching is silently dead for that person and L1↔badge joins fail. The `connector:` prefix is
-  reserved (webhook rejects composite refs that use it). (4) **Refs are unique per tenant — mint
-  from full-name slugs or employee ids, never bare first names** (two Janes as `…:jane` would merge
-  both inboxes into one identity, permanently — L1 is append-only). Nothing in the DB enforces this
-  yet (no technicians table; that belongs to the future self-serve-onboarding cycle); the reconnect
-  script refuses to relink an already-connected ref without `--replace` as the interim guard.
-- **One Auth Config per platform, not per company — Composio-managed (decided 2026-07-01, supersedes
-  the earlier custom-Auth-Config plan).** We ride Composio's own pre-verified OAuth app: no Google OAuth
-  client of ours, no Google CASA verification, no creds in our env. Verified in the dashboard: auth config
-  `gmail-test` (`ac_5CdPk4l3GV2V`) is **Composio Managed** with 11 scopes including
-  `https://mail.google.com/` (full read + compose + send), so inbound full-mailbox read and outbound
-  draft/send are all covered by the managed defaults. Each company authorizes *their* account against
-  this shared config via a **Connect Link** → a per-company **connected account** keyed by `user_id`.
-  Onboarding company #N = send a Connect Link.
-  Accepted tradeoffs (per [Managed vs custom auth](https://docs.composio.dev/docs/custom-app-vs-managed-app)
-  and the [Gmail toolkit FAQ](https://docs.composio.dev/toolkits/gmail)): Google's consent screen says
-  "Composio" (not our brand), quota is shared ("managed apps share quota across all Composio users"),
-  and scopes are pinned to Composio's verified defaults (adding scopes beyond them breaks — "scopes
-  that Google hasn't verified for that client"). If branding/quota/scopes ever bite, the switch path
-  is a custom **Auth Config** (our own Google OAuth client + CASA verification) — a dashboard-level
-  change; no repo code assumes either mode.
-- Use **Connect Link / hosted auth** (`composio.connectedAccounts.link()` / `session.authorize()`). Only the
-  `initiate()` **method** (`POST /connected_accounts`) for **Composio-managed** OAuth is being retired — it
-  returns `400 BadRequest` starting **2026-05-08** (new orgs) / **2026-07-03** (all orgs). `link()` is
-  unaffected and works with managed OAuth; custom Auth Configs and non-OAuth schemes (API key/bearer/basic)
-  are exempt. Managed OAuth as a *strategy* is not going away — only the `initiate()` call is; migrate any
-  `initiate()` usage to `link()`. Source: [Composio changelog](https://docs.composio.dev/docs/changelog) and
-  [Connected Accounts](https://docs.composio.dev/docs/auth-configuration/connected-accounts).
+- **One business = one tenant UUID = Composio `user_id` = gateway `x-tenant-id`** (`DEFAULT_TENANT_ID`).
+  Same value everywhere → structurally impossible for business A's agent to touch B's accounts or B's
+  spine. Never use Composio `user_id="default"`.
+- **One OAuth client per platform, not per company.** Create one Google OAuth client (one for Gmail, one
+  for Sheets) and one Azure app registration; register each in Composio once as a custom **Auth Config**.
+  Each company authorizes *their* account against your single client via a **Connect Link** → a
+  per-company **connected account** keyed by `user_id`. Onboarding company #N = send a Connect Link; no
+  new GCP/Azure project, no new creds in our env.
+- Use **Connect Link / hosted auth** (`composio.connectedAccounts.link()` / `session.authorize()`). The
+  old `initiate()` managed-OAuth flow is **dead for all orgs 2026-07-03** — don't follow tutorials using it.
 
 ### Secret custody + gateway wiring
 - The **Composio API key** (mints access for all tenants) and each tenant's Tool Router **`mcp.url`** live
@@ -187,32 +151,13 @@ register side-by-side in the gateway's `mcp.servers`.
   }}}
   ```
 - Allowlist only the actions each tier needs (e.g. `GMAIL_SEND_EMAIL`, `GOOGLESHEETS_BATCH_GET`) — mirror §4.
-- **Per-person capability control lives at the gateway, not in Composio (decided 2026-07-01):** the
-  doorman badge already resolves `{tenantId, technicianRef}` per bot, and a future per-tier tool
-  allowlist attaches there. Composio's **Execution Allowlist** is configured per auth config
-  (dashboard-observed 2026-07-01: "Restrict which tools agents can execute. Leave empty to allow
-  all"), and our shared-config model means one config serves every tenant and person — so it is only
-  the **global ceiling** (e.g. "no send anywhere"), never per-person policy. ⚠ Whether the allowlist
-  blocks *execution* or merely hides tools from *discovery* is unverified against Composio docs —
-  confirm during outbound live-verification before treating it as an enforcement boundary.
 
 ### Scopes (least privilege)
-- **Managed OAuth means one broad token per connected account** — the managed app grants
-  `https://mail.google.com/` (read + compose + send together; dashboard-observed 2026-07-01), so a
-  send-only-token split is not available. Least privilege moves to the **action layer**: Composio's
-  per-auth-config **Execution Allowlist** (global ceiling — see gateway bullet above, semantics
-  to-verify) plus the per-tier gateway allowlist (§4). ⚠ **Interim gap, accepted:** the per-tier
-  gateway allowlist is not built yet, so until it ships, any agent holding a tenant's Tool Router
-  `mcp.url` can both read the full mailbox and (if the ceiling permits) send — a capability the old
-  send-only-token design made structurally impossible. Set the dashboard ceiling to draft-only until
-  the gateway tier allowlist exists.
+- **Outbound** uses send-only scopes (`gmail.send`) — the stored token literally cannot read the inbox.
 - **Inbound needs full-mailbox read** (Gmail read scope is all-or-nothing; no "work-only" scope exists),
-  and that read-capable token lives in **Composio's** storage — a trust boundary to note in any customer
-  data-handling review. The managed defaults also include profile/contacts read scopes — list them in any
-  customer-facing privacy summary.
-- *(Only if we switch to a custom Auth Config:)* outbound could then use send-only scopes (`gmail.send`)
-  so the stored token literally cannot read the inbox; restricted read scopes would need one-time Google
-  app verification (per client, not per company).
+  and under Option B that read-capable token lives in **Composio's** storage — a trust boundary to note
+  in any customer data-handling review. Restricted read scopes need one-time Google app verification
+  (per client, not per company).
 
 ### "Both" spreadsheets
 - **Google Sheets** — existing GCP OAuth client + Sheets API.

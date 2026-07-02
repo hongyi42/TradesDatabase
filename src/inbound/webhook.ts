@@ -20,8 +20,6 @@ import './gmail.js'; // self-registers the Gmail normalizer
 // reject stale timestamps (replay guard). Returns false (never throws) on bad input.
 const WEBHOOK_TOLERANCE_SECONDS = 300;
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export interface WebhookHeaders {
   id?: string;
   timestamp?: string;
@@ -96,10 +94,8 @@ export interface InboundWebhookResult {
 
 // Composio V3 webhook envelope (confirmed against a live GMAIL_NEW_GMAIL_MESSAGE):
 //   { id, type:'composio.trigger.message', metadata:{ user_id, trigger_slug, ... }, data }
-// metadata.user_id is either a bare tenant uuid (legacy whole-business pairing) or
-// "<tenantUuid>:<technicianRef>" (per-person pairing — one connected account per
-// person), split on the FIRST colon. The trigger slug is metadata.trigger_slug; there
-// is no explicit toolkit field, so we derive it from the slug prefix (GMAIL_… → GMAIL).
+// The tenant is metadata.user_id; the trigger slug is metadata.trigger_slug; there is
+// no explicit toolkit field, so we derive it from the slug prefix (GMAIL_… → GMAIL).
 interface InboundEvent {
   type?: string;
   metadata?: { user_id?: string; trigger_slug?: string };
@@ -149,27 +145,7 @@ export async function handleInboundWebhook(
     return { status: 'bad_payload' };
   }
 
-  // Composio user_id is either a bare tenant uuid (legacy: whole-business pairing)
-  // or "<tenantUuid>:<technicianRef>" (per-person pairing, one connected account
-  // per person). Split on the FIRST colon; the ref may itself contain colons.
-  const sep = userId.indexOf(':');
-  const tenantId = sep === -1 ? userId : userId.slice(0, sep);
-  const personRef = sep === -1 ? undefined : userId.slice(sep + 1);
-  if (sep !== -1 && (!tenantId || !personRef)) return { status: 'bad_payload' };
-  // `connector:` is the reserved fallback namespace for unattributed (bare-uuid)
-  // pairings — a composite ref like "…:connector:gmail" would be indistinguishable
-  // from that sentinel downstream, so reject it at the boundary.
-  if (personRef?.startsWith('connector:')) return { status: 'bad_payload' };
-  // Tenant must be uuid-shaped. PostgREST raises 22P02 (an error, NOT an empty
-  // result) for a non-uuid eq against the uuid column, which would be classified
-  // transient_error below and retried forever. A non-uuid tenant is
-  // deterministically unknown — say so once, with no retry.
-  if (!UUID_RE.test(tenantId)) return { status: 'unknown_tenant' };
-
-  // Attribution for everything this delivery writes (L1 capture, visit, drop
-  // receipt): the person named by the composite user_id, else the channel label.
-  const technicianRef = personRef ?? `connector:${toolkit.toLowerCase()}`;
-
+  const tenantId = userId;
   const meta = (envelope.sourceMeta ?? {}) as { from?: string; subject?: string; body?: string };
 
   // From here on, any THROW is a transient fault (DB/model blip) → transient_error
@@ -192,16 +168,12 @@ export async function handleInboundWebhook(
       });
       if (!isWork) {
         // Content-free audit receipt only — the dropped email itself is not stored.
-        // technicianRef says WHOSE mailbox this arrived in: Gmail message ids are
-        // mailbox-local, so re-fetching a misclassified message under per-person
-        // pairing needs the mailbox, not just the external id.
         await recordDrop({
           tenantId,
           channel: envelope.channel,
           externalId: envelope.externalId,
           from: meta.from,
           reason,
-          technicianRef,
         });
         return { status: 'skipped_non_work' };
       }
@@ -209,7 +181,7 @@ export async function handleInboundWebhook(
 
     const r = await recordFieldNote({
       tenantId,
-      technicianRef,
+      technicianRef: `connector:${toolkit.toLowerCase()}`,
       channel: envelope.channel,
       text: envelope.rawText,
       blobPath: envelope.blobRef,

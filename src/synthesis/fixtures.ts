@@ -62,7 +62,6 @@ export const capture = (over: Partial<RawCapture> = {}): RawCapture => ({
   raw_text: 'Capacitor failing, recommend full unit replacement soon.',
   blob_path: null,
   external_id: null,
-  technician_ref: null,
   metadata: {},
   captured_at: '2026-06-03T00:00:00.000Z',
   created_at: '2026-06-03T00:00:00.000Z',

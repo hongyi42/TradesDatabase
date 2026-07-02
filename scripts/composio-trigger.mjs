@@ -7,12 +7,28 @@
 //   2) `node -r dotenv/config scripts/composio-trigger.mjs --create`   → creates it.
 //
 // user id defaults to the test tenant uuid (must match the user id the Gmail
-// account was connected under). Override with a 2nd arg if Composio assigned its own.
+// account was connected under). Override with `user=<id>` — per-person pairing
+// passes the composite `user=<tenantUuid>:<technicianRef>`.
 
 import { Composio } from '@composio/core';
 
-const USER_ID = process.argv.find((a) => a.startsWith('user='))?.slice(5)
-  ?? '82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18';
+// Same fail-closed shape check as composio-reconnect.mjs: a trigger minted on a
+// malformed composite (e.g. trailing colon) fires webhooks that are ALL rejected
+// bad_payload — the connection looks healthy while every email is lost.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const USER_ID = (process.argv.find((a) => a.startsWith('user='))?.slice(5) ?? '').trim()
+  || '82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18'; // trimmed: bare/blank `user=` falls back, not ''
+const sepIdx = USER_ID.indexOf(':');
+const tenantPart = sepIdx === -1 ? USER_ID : USER_ID.slice(0, sepIdx);
+const refPart = sepIdx === -1 ? null : USER_ID.slice(sepIdx + 1);
+if (!UUID_RE.test(tenantPart) || (sepIdx !== -1 && (!refPart || refPart.startsWith('connector:')))) {
+  console.error(
+    `Invalid user id '${USER_ID}': expected <tenantUuid> or <tenantUuid>:<technicianRef> ` +
+      `(uuid tenant; ref non-empty, not 'connector:*').`,
+  );
+  process.exit(1);
+}
+console.log(`Target user id: ${USER_ID}`);
 const SLUG = 'GMAIL_NEW_GMAIL_MESSAGE';
 
 if (!process.env.COMPOSIO_API_KEY) {

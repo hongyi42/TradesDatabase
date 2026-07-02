@@ -114,6 +114,7 @@ export type Database = {
           external_id: string | null
           id: string
           sender_domain: string | null
+          technician_ref: string | null
           tenant_id: string
         }
         Insert: {
@@ -124,6 +125,7 @@ export type Database = {
           external_id?: string | null
           id?: string
           sender_domain?: string | null
+          technician_ref?: string | null
           tenant_id: string
         }
         Update: {
@@ -134,6 +136,7 @@ export type Database = {
           external_id?: string | null
           id?: string
           sender_domain?: string | null
+          technician_ref?: string | null
           tenant_id?: string
         }
         Relationships: [
@@ -222,6 +225,7 @@ export type Database = {
           job_id: string | null
           metadata: Json
           raw_text: string | null
+          technician_ref: string | null
           tenant_id: string
           visit_id: string | null
         }
@@ -236,6 +240,7 @@ export type Database = {
           job_id?: string | null
           metadata?: Json
           raw_text?: string | null
+          technician_ref?: string | null
           tenant_id: string
           visit_id?: string | null
         }
@@ -250,6 +255,7 @@ export type Database = {
           job_id?: string | null
           metadata?: Json
           raw_text?: string | null
+          technician_ref?: string | null
           tenant_id?: string
           visit_id?: string | null
         }

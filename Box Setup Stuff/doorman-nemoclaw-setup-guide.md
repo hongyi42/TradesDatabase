@@ -16,7 +16,7 @@ End-to-end instructions to stand up, on a **fresh CPU-only cloud box**:
 
 - **Doorman**: a small Node HTTP service on the host. Binds the docker-bridge gateway `172.18.0.1:3001`. Reads `Authorization: Bearer <badge>`, looks the badge up in `/etc/doorman/badges.json`, computes the identity signature with the host-only secret, forwards to the Render upstream. Returns **200** (valid badge), **403** (unknown/revoked badge), **401** (no badge).  
 - **Badge**: a low-value, revocable token. Lives in the sandbox's OpenShell provider store (never in the image, never on disk in plaintext). Reference badge (identity `tech-jane`): `3a6fb336ec39071493a98a1a44773a7b7fa09e73df61c9c71c9f11b3cd7e27ba`.  
-- **The 7 trades-spine tools** (technician-tier badges — every count below assumes one): `record_field_note`, `find_customer`, `get_customer_context`, `get_job`, `list_recent_captures`, `brief_customer`, `answer_customer_question`. A badge whose roster row is an ACTIVE `tier='manager'` (the `technicians` table is the tier source; nemoclaw-tech-agent.md §4, 2026-07-02) lists **12** — plus `add_technician_seat`, `deactivate_technician_seat`, `list_team`, `list_pending_reviews`, `resolve_review`.
+- **The 7 trades-spine tools** (what a technician-tier badge sees — every count below assumes one): `record_field_note`, `find_customer`, `get_customer_context`, `get_job`, `list_recent_captures`, `brief_customer`, `answer_customer_question`. A badge whose `technicianRef` matches an **ACTIVE `tier='manager'`** row in the server's `technicians` table sees **12** — the 7 plus the seat-management tools `add_technician_seat`, `deactivate_technician_seat`, `list_team`, `list_pending_reviews`, `resolve_review`. The tier is decided **server-side by that roster row, not by the badge**; a badge with no matching active manager row acts as a plain technician (7 tools). The host/doorman does nothing tier-specific — it just forwards the badge.
 
 **Naming convention used below** (don't mix these up):
 
@@ -186,6 +186,8 @@ sudo chown \-R doorman:doorman /etc/doorman
 sudo chmod 600 /etc/doorman/doorman.env /etc/doorman/badges.json
 
 **Deployment-specific:** `GATEWAY_IDENTITY_SECRET` (must match Render — obtain it, never generate locally), `MCP_UPSTREAM_URL`, and the bridge gateway IP. The badge above is reusable (same `tech-jane` identity); mint a new one only if you want a distinct identity.
+
+**Badge ↔ roster (since 2026-07-02) — read before minting a NON-technician badge.** The `technicianRef` you put here is looked up in the server's `technicians` table, and that row's **tier** decides what the badge can do: an active `tier='manager'` row → 12 tools (incl. seat management); anything else (technician, inactive, or no row) → the plain 7. So a *manager* badge is a two-part action you can't complete from the host alone: whoever manages the server DB must have an **active manager roster row** for that ref FIRST, then you mint the badge here with the byte-identical ref. To mint another badge: `openssl rand -hex 32` for a fresh hash, add a sibling entry to the JSON object above with the desired `technicianRef` (mind the comma). `tech-jane` maps to an active technician row and is fine as-is for the technician path.
 
 ### 3d. systemd unit \+ reboot-race hardening
 

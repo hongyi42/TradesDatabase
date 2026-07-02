@@ -49,6 +49,15 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
 - Reference badge (identity `tech-jane`, tenant `82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18`):
   `3a6fb336ec39071493a98a1a44773a7b7fa09e73df61c9c71c9f11b3cd7e27ba`. Reusable across boxes (the doorman's
   `badges.json` + secret define validity).
+- **A badge's POWER comes from a matching roster row on the server, not from the badge itself
+  (since 2026-07-02).** The badge only maps to `{tenantId, technicianRef}`; the trades-spine server
+  looks that `technicianRef` up in its `technicians` table and grants tools by the row's **tier**. So
+  minting a badge is now a TWO-PART action: (1) the server side must already have an ACTIVE row for that
+  ref — `tier='manager'` for a manager, `tier='technician'` otherwise; (2) mint the badge here with the
+  byte-identical `technicianRef`. If no active row matches, the badge still authenticates but silently
+  acts as a plain technician (7 tools; the 5 seat-management admin tools are denied). The reference
+  `tech-jane` badge above maps to an active technician row. You (host side) cannot see or change the
+  roster — it lives in the server's DB; coordinate with whoever manages it when minting a manager badge.
 - The badge is registered as a **provider credential**:
   `openshell provider update <AGENT>-telegram-bridge --credential TRADES_SPINE_BADGE=<badge>`
   (a secret-store write — in a restricted Claude session this is BLOCKED; have the user run it).
@@ -101,11 +110,14 @@ Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config
 
 ## Verify (end-to-end)
 - Host→doorman→Render: `curl -X POST http://172.18.0.1:3001/mcp -H "Authorization: Bearer <badge>" …
-  '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + 7 tools (technician-tier badge;
-  an ACTIVE manager-tier roster row lists 12 — nemoclaw-tech-agent.md §4, 2026-07-02).
+  '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + **7 tools** for a technician-tier
+  badge, or **12** for a badge whose ref maps to an active manager roster row (the extra 5 are the
+  seat-management tools; see the badge↔roster note above). A manager badge returning only 7 means the
+  server has no active `tier='manager'` row for that ref (or is running older code).
 - Agent: message the bot ("list recent captures") → OCSF on host shows
   `ALLOWED /usr/local/bin/node(<pid>) -> host.openshell.internal:3001 [policy:trades_spine_doorman]` and the bot
   returns real data.
 
-## The 7 trades-spine tools
-record_field_note, find_customer, get_customer_context, get_job, list_recent_captures, brief_customer, answer_customer_question.
+## Tools by tier (what `tools/list` returns)
+- **Technician badge — 7:** record_field_note, find_customer, get_customer_context, get_job, list_recent_captures, brief_customer, answer_customer_question.
+- **Manager badge — 12:** the 7 above PLUS the seat-management admin tools: add_technician_seat, deactivate_technician_seat, list_team, list_pending_reviews, resolve_review. Only an ACTIVE `tier='manager'` roster row on the server unlocks these (see the badge↔roster note above); the doorman/host does nothing tier-specific — same badge plumbing either way.

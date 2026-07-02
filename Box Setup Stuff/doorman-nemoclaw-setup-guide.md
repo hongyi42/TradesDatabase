@@ -285,7 +285,7 @@ curl \-s \-o /dev/null \-w 'HTTP %{http\_code} in %{time\_total}s\\n' \\
 
 nemoclaw onboard      \# if port 8080 is blocked: sudo kill \<PID\>; sudo lsof \-i :8080; re-run
 
-Answer the prompts: provider **1 (NVIDIA Endpoints)**; API key (reuses stored / paste `nvapi-…`); cloud model **1 \= Super 120B** (`nvidia/nemotron-3-super-120b-a12b`); **Sandbox name \= `<AGENT>`**; Apply config **Y**; Brave search **N**; messaging channel (e.g. Telegram — paste bot token \+ your user ID); Resource profile **2 (gamer 25%)**; Policy tier **Enter**; Presets **Enter**. First build ≈ 8 min.
+Answer the prompts: provider **1 (NVIDIA Endpoints)**; API key (reuses stored / paste `nvapi-…`); cloud model: **the target model is GLM-5.1** (decided 2026-07-02 — Nemotron-3 Super proved too weak; don't pick it). If GLM-5.1 isn't offered in the onboard menu, pick anything and set the model id in the config afterward. **Model-id trap:** the NIM API id is most likely `z-ai/glm5.1` (NO dash; the dashed `z-ai/glm-5.1` returned 410 on every run, observed 2026-07-02) — confirm the exact string against `GET https://integrate.api.nvidia.com/v1/models` with the stored key before trusting it. Then: **Sandbox name \= `<AGENT>`**; Apply config **Y**; Brave search **N**; messaging channel (e.g. Telegram — paste bot token \+ your user ID); Resource profile **2 (gamer 25%)**; Policy tier **Enter**; Presets **Enter**. First build ≈ 8 min.
 
 nemoclaw list
 
@@ -409,7 +409,7 @@ and the bot returns real trades-spine data. (Pre-warm Render with the §3f curl 
 
 A container **recreate** wipes `/sandbox/.openclaw/openclaw.json`. The bake-in regenerates it at image-build time from 4 source edits in `/home/ubuntu/.nemoclaw/source/`. **A fresh box's source is upstream/clean — you must re-apply these 4 edits there before building.** None of them contain the secret (badge stays in the provider store).
 
-**(1) New manifest** — `nemoclaw-blueprint/model-specific-setup/openclaw/nemotron-3-super-toolsearch-off.json` (declarative `toolSearch:false` for Nemotron, consumed by the generator):
+**(1) New manifest** — `nemoclaw-blueprint/model-specific-setup/openclaw/nemotron-3-super-toolsearch-off.json` (declarative `toolSearch:false` for Nemotron, consumed by the generator). **⚠ Model note (2026-07-02): this manifest matches ONLY the Nemotron modelId. The target model is now GLM-5.1, so it does NOT apply — whether GLM-5.1 needs `toolSearch:false` is unverified. If the agent's tool calls fail with "run bridge code failed", clone this manifest with the GLM modelId in `match.modelIds` (or set `tools.toolSearch:false` directly) and update this note with the verified answer.**
 
 {
 

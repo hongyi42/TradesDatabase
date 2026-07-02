@@ -367,6 +367,15 @@ openshell provider get \<AGENT\>-telegram-bridge | grep \-i 'Credential keys'   
 
 In a security-restricted Claude session this command is blocked as a secret-store write — run it yourself.
 
+**WARNING — a provider credential write like this can silently kill OTHER channels.** At container
+boot, the start script rewrites canonical placeholders in openclaw.json to a revision-scoped form
+(`openshell:resolve:env:v<NUM>_KEY`) frozen to that boot's provider generation; the version bump this
+`provider update` causes then breaks any placeholder still carrying the OLD frozen version (observed
+2026-07-02: the Telegram bot token — bridge logs `credential placeholder mismatch`, bot goes deaf).
+If a channel dies after a credential write, see the **"Placeholder VERSIONING trap"** gotcha in
+`doorman-architecture-memory.md` for the diagnostic and fix (restore the canonical placeholder +
+recompute the config hash + restart).
+
 ### 5c. MCP config \+ toolSearch (only if NOT using the §6 bake-in)
 
 The agent config is `/sandbox/.openclaw/openclaw.json` (agent runs as user `sandbox`, HOME `/sandbox`). It's on the container **writable layer** — a *recreate* wipes it (that's why §6 exists). Manual form (container id from `docker ps`):

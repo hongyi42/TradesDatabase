@@ -128,6 +128,24 @@ Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config
 - **`device pairing required` loop after a rebuild** — a rebuild can reset `gateway.controlUi.dangerouslyDisableDeviceAuth`;
   the agent may run tools but fail to deliver its channel reply. Restore that flag in openclaw.json if replies vanish.
 - Egress public IP rotates across stop/start but currently does NOT gate doorman→Render. Don't pin it anywhere.
+- **Placeholder VERSIONING trap (observed live 2026-07-02; killed the Telegram bridge for 2 days).**
+  Configs are GENERATED with canonical placeholders (`openshell:resolve:env:KEY` — e.g.
+  `TELEGRAM_BOT_TOKEN`, `TRADES_SPINE_BADGE`), but at **container boot**
+  `refresh_openclaw_provider_placeholders` in `~/.nemoclaw/source/scripts/nemoclaw-start.sh` rewrites
+  them in openclaw.json to a revision-scoped form (`openshell:resolve:env:v<NUM>_KEY`) frozen to that
+  boot's provider generation. Any later provider resource-version bump (adding/updating ANY credential,
+  e.g. a badge swap) invalidates the frozen version — the egress proxy can't resolve it, the bridge
+  logs `credential placeholder mismatch` + `bridge did not start within 15s`, and the bot goes deaf.
+  The refresher only maps canonical→current, so it can NOT heal a stale versioned form; nothing
+  self-heals at runtime. **Fix:** set the placeholder in `/sandbox/.openclaw/openclaw.json` back to
+  the CANONICAL form, recompute `/sandbox/.openclaw/.config-hash` the way the start script does, keep
+  `sandbox:sandbox` ownership, then kill openclaw + `nemoclaw <AGENT> recover`. **Diagnostic:** compare
+  the `v<NUM>` in the agent's `/proc/<pid>/environ` against the one in the config — a mismatch is this
+  bug. The mismatch warning lines may KEEP printing after the fix (literal string compare, canonical vs
+  versioned) — the OCSF egress log is ground truth: `ALLOWED … getUpdates` polling = bridge is up.
+  A recreate/rebuild does NOT need the fix re-applied (the generator bakes canonical), but the next
+  container boot re-versions the config and re-arms the trap for the next provider bump. Durable fix
+  (recommended, not yet applied): patch the refresher to map any `v*_KEY` form → current, then rebuild.
 - **Editing badges.json: restore `doorman:doorman` + mode 600 after EVERY edit or ALL badges 403.**
   The doorman runs as user `doorman` and `loadBadges()` swallows read errors (returns `{}`), so a
   file it can't read silently 403s every badge — including previously-working ones. `sudo mv` of a

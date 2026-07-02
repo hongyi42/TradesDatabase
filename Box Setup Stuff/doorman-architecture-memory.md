@@ -107,6 +107,11 @@ Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config
 - **`device pairing required` loop after a rebuild** — a rebuild can reset `gateway.controlUi.dangerouslyDisableDeviceAuth`;
   the agent may run tools but fail to deliver its channel reply. Restore that flag in openclaw.json if replies vanish.
 - Egress public IP rotates across stop/start but currently does NOT gate doorman→Render. Don't pin it anywhere.
+- **Editing badges.json: restore `doorman:doorman` + mode 600 after EVERY edit or ALL badges 403.**
+  The doorman runs as user `doorman` and `loadBadges()` swallows read errors (returns `{}`), so a
+  file it can't read silently 403s every badge — including previously-working ones. `sudo mv` of a
+  temp file leaves it owned by your user (observed live 2026-07-02):
+  `sudo chown doorman:doorman /etc/doorman/badges.json && sudo chmod 600 /etc/doorman/badges.json`.
 
 ## Verify (end-to-end)
 - Host→doorman→Render: `curl -X POST http://172.18.0.1:3001/mcp -H "Authorization: Bearer <badge>" …

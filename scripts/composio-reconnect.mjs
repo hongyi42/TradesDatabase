@@ -6,7 +6,9 @@
 //
 // user id: pass `user=<id>` — a bare tenant uuid (whole-business pairing) or
 // `<tenantUuid>:<technicianRef>` (per-person pairing). Defaults to the test tenant.
-// Run with `node -r dotenv/config` so COMPOSIO_API_KEY loads from .env.
+// If the user id already has a Gmail connection, pass `--replace` to confirm the
+// swap (see the same-ref guard below). Run with `node -r dotenv/config` so
+// COMPOSIO_API_KEY loads from .env.
 
 import { Composio } from '@composio/core';
 
@@ -17,7 +19,9 @@ import { Composio } from '@composio/core';
 // malformed id (e.g. trailing colon) would mint a pairing the webhook rejects on
 // every delivery (bad_payload 400, no drop receipt: mail silently lost).
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const unrecognized = process.argv.slice(2).filter((a) => a !== '--wait' && !a.startsWith('user='));
+const unrecognized = process.argv
+  .slice(2)
+  .filter((a) => a !== '--wait' && a !== '--replace' && !a.startsWith('user='));
 if (unrecognized.length) {
   console.error(`Unrecognized argument(s): ${unrecognized.join(' ')} — did you mean user=<id>? Aborting.`);
   process.exit(1);
@@ -50,14 +54,28 @@ if (process.argv.includes('--wait')) {
   process.exit(0);
 }
 
-// 1) Remove the old basic-scope Gmail connection(s).
+// Same-ref guard: reconnect REPLACES the pairing for this exact user id. An
+// existing connection means either the same person re-consenting (fine — pass
+// --replace to confirm) or a SECOND person minted onto an already-taken ref
+// (e.g. two Janes both as "…:jane"): abort, so one person's pairing is never
+// silently swapped for another's mailbox. Refs must be unique per tenant.
 const list = await c.connectedAccounts.list({ userIds: [TENANT] });
 const items = list.items ?? list.data ?? list;
-for (const it of items) {
-  if (it.toolkit?.slug === 'gmail') {
-    await c.connectedAccounts.delete(it.id);
-    console.log('Deleted old connection:', it.id);
-  }
+const existing = items.filter((it) => it.toolkit?.slug === 'gmail');
+if (existing.length && !process.argv.includes('--replace')) {
+  console.error(
+    `User id '${TENANT}' already has ${existing.length} Gmail connection(s) ` +
+      `(${existing.map((it) => it.id).join(', ')}).\n` +
+      `Same person reconnecting? Re-run with --replace.\n` +
+      `Different person? Pick a different technicianRef — this ref is taken.`,
+  );
+  process.exit(1);
+}
+
+// 1) Remove the old Gmail connection(s) for this user id (confirmed via --replace).
+for (const it of existing) {
+  await c.connectedAccounts.delete(it.id);
+  console.log('Deleted old connection:', it.id);
 }
 
 // 2) Start a fresh OAuth flow. (Managed OAuth uses link(), not the retired initiate().)

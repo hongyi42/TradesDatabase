@@ -146,7 +146,11 @@ register side-by-side in the gateway's `mcp.servers`.
   byte-equal the doorman badge ref and the schedule sheet's technician column
   (`schedule_entries.technician_ref`, exact case-sensitive match) — otherwise schedule-assisted
   matching is silently dead for that person and L1↔badge joins fail. The `connector:` prefix is
-  reserved (webhook rejects composite refs that use it).
+  reserved (webhook rejects composite refs that use it). (4) **Refs are unique per tenant — mint
+  from full-name slugs or employee ids, never bare first names** (two Janes as `…:jane` would merge
+  both inboxes into one identity, permanently — L1 is append-only). Nothing in the DB enforces this
+  yet (no technicians table; that belongs to the future self-serve-onboarding cycle); the reconnect
+  script refuses to relink an already-connected ref without `--replace` as the interim guard.
 - **One Auth Config per platform, not per company — Composio-managed (decided 2026-07-01, supersedes
   the earlier custom-Auth-Config plan).** We ride Composio's own pre-verified OAuth app: no Google OAuth
   client of ours, no Google CASA verification, no creds in our env. Verified in the dashboard: auth config

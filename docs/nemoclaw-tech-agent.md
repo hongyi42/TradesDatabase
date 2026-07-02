@@ -87,6 +87,14 @@ Allowlist only the spine tools for the technician profile (`tools.profile` / all
 `record_field_note`, `find_customer`, `get_customer_context`, `get_job`, `list_recent_captures`.
 Outbound network policy should allow only the gateway + our server's host.
 
+**Manager profile (2026-07-02):** an ACTIVE `tier='manager'` roster row (the `technicians`
+table, not the badge, is the tier source of truth) additionally exposes the seat-management
+tools: `add_technician_seat`, `deactivate_technician_seat` (two-step confirm), `list_team`,
+`list_pending_reviews`, `resolve_review`. The server both filters `tools/list` by tier and
+re-gates every admin call at dispatch — a technician badge structurally has no admin surface.
+Seat caps (`tenants.manager_seats`/`technician_seats`) are DB-enforced; the agent cannot talk
+past them.
+
 ## 5. Conversation contract
 - The agent calls `record_field_note({ technicianRef, text, channel })`.
 - If the result `status` is `needs_confirmation` (a scheduled address to confirm) or
@@ -119,7 +127,7 @@ The agent reaches third-party apps (Gmail, Google Sheets, Microsoft Excel, calen
 (inbound + outbound).** Composio delivers raw data; **our classifier + write-path stay the system of
 record**. Guiding rule: **let Composio carry the credential, never the judgment** — it never decides
 what's "work mail" and never writes to the spine (see §5 of
-[the overview](../Three-Layer-Context-Spine-Overview.md): hardcode identity matching / permission
+[the overview](Three-Layer-Context-Spine-Overview.md): hardcode identity matching / permission
 boundaries; outsource only the plumbing).
 
 **Composio is complementary to `trades-spine`, not a replacement.** The spine MCP stays the only writer
@@ -131,8 +139,12 @@ register side-by-side in the gateway's `mcp.servers`.
   `user_id = "<tenantUuid>:<technicianRef>"` — one connected account + one trigger per person, so ten
   employees' personal inboxes pair to ten isolated connected accounts under one shared spine tenant.
   The inbound webhook splits on the FIRST colon (`src/inbound/webhook.ts`) → tenant scopes the spine
-  rows, ref becomes the capture/visit attribution. Bare-uuid `user_id`s stay valid (legacy
-  whole-business pairing; attributed `connector:<toolkit>`). A person's handle can only reach their
+  rows, ref becomes the capture/visit attribution. The webhook also consults the `technicians`
+  roster: an offboarding/offboarded person's mail is dropped with a receipt (never ingested); an
+  unknown ref is ingested AND flagged for manager review (`review_items`) — mail is never lost to
+  a provisioning slip. **Bare-uuid `user_id`s were retired 2026-07-02**
+  (the webhook rejects them `bad_payload`; the last legacy pairing was deleted the same day —
+  every pairing is per-person now). A person's handle can only reach their
   own connected account → A's agent structurally cannot touch B's mail or another tenant's spine
   (Composio scopes credentials and data per `user_id`: "User A's agent never touches user B's data" —
   [Authentication](https://docs.composio.dev/docs/authentication)). Never use Composio `user_id="default"`.
@@ -145,12 +157,15 @@ register side-by-side in the gateway's `mcp.servers`.
   the customer/job. (3) **Vocabulary contract:** the `technicianRef` minted into the `user_id` must
   byte-equal the doorman badge ref and the schedule sheet's technician column
   (`schedule_entries.technician_ref`, exact case-sensitive match) — otherwise schedule-assisted
-  matching is silently dead for that person and L1↔badge joins fail. The `connector:` prefix is
-  reserved (webhook rejects composite refs that use it). (4) **Refs are unique per tenant — mint
+  matching is dead for that person and L1↔badge joins fail. No longer *silent* since 2026-07-02:
+  the sheet sync flags refs that match no roster row to the manager (`review_items`, with a
+  did-you-mean suggestion); the row still imports (loose enforcement — a typo never breaks the
+  sync). The `connector:` prefix is reserved (webhook rejects composite refs that use it). (4) **Refs are unique per tenant — mint
   from full-name slugs or employee ids, never bare first names** (two Janes as `…:jane` would merge
-  both inboxes into one identity, permanently — L1 is append-only). Nothing in the DB enforces this
-  yet (no technicians table; that belongs to the future self-serve-onboarding cycle); the reconnect
-  script refuses to relink an already-connected ref without `--replace` as the interim guard.
+  both inboxes into one identity, permanently — L1 is append-only). **DB-enforced since 2026-07-02:**
+  the `technicians` roster's `unique (tenant_id, ref)` spans ALL rows (offboarded included), so a
+  ref is never reused across humans. The reconnect script's `--replace` guard remains as the
+  Composio-side complement (it checks live connections, not the roster).
 - **One Auth Config per platform, not per company — Composio-managed (decided 2026-07-01, supersedes
   the earlier custom-Auth-Config plan).** We ride Composio's own pre-verified OAuth app: no Google OAuth
   client of ours, no Google CASA verification, no creds in our env. Verified in the dashboard: auth config

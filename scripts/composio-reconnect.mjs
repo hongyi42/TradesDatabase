@@ -33,8 +33,18 @@ const tenantPart = sepIdx === -1 ? TENANT : TENANT.slice(0, sepIdx);
 const refPart = sepIdx === -1 ? null : TENANT.slice(sepIdx + 1);
 if (!UUID_RE.test(tenantPart) || (sepIdx !== -1 && (!refPart || refPart.startsWith('connector:')))) {
   console.error(
-    `Invalid user id '${TENANT}': expected <tenantUuid> or <tenantUuid>:<technicianRef> ` +
+    `Invalid user id '${TENANT}': expected <tenantUuid>:<technicianRef> ` +
       `(uuid tenant; ref non-empty, not 'connector:*' — the webhook rejects those).`,
+  );
+  process.exit(1);
+}
+// Bare-uuid (whole-business) pairing was RETIRED 2026-07-02: the webhook rejects
+// its deliveries 400 bad_payload with no drop receipt — mail silently lost. A
+// bare uuid may still be used with --wait (read-only listing), never to pair.
+if (sepIdx === -1 && !process.argv.includes('--wait')) {
+  console.error(
+    `Bare-uuid pairing is retired (2026-07-02). Pair per person: user=${TENANT}:<technicianRef>. ` +
+      `(Bare uuid is still accepted with --wait to LIST legacy connections.)`,
   );
   process.exit(1);
 }

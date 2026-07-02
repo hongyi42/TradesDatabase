@@ -23,6 +23,9 @@ import {
   updateJobStatus,
   appendRawCapture,
   upsertScheduleEntry,
+  insertTechnician,
+  setTechnicianState,
+  setTenantSeats,
 } from '../dist/db/index.js';
 import { formatEmailRawText } from '../dist/email/format.js';
 
@@ -56,11 +59,31 @@ async function truncateSpine() {
   await client.connect();
   try {
     await client.query(
-      'truncate table customers, jobs, visits, raw_captures, schedule_entries, dropped_audit cascade',
+      'truncate table customers, jobs, visits, raw_captures, schedule_entries, dropped_audit, technicians, review_items cascade',
     );
   } finally {
     await client.end();
   }
+}
+
+// Roster rows matching the refs used across the seed captures/schedule. Insert
+// lands as 'invited'; flip to 'active' so schedule-matching and admin-tool
+// paths see a live team.
+async function seedRoster() {
+  // Seat capacity first (typed layer): the migration defaults are 1 manager /
+  // 0 technician seats, which would make the roster inserts below hit the
+  // seat-cap trigger. Known values also anchor the admin-tool live probes.
+  await setTenantSeats(TENANT_ID, { managerSeats: 2, technicianSeats: 5 });
+  const roster = [
+    { ref: 'manager-sam', displayName: 'Sam Rivera', tier: 'manager' },
+    { ref: 'tech-jane', displayName: 'Jane Alvarez', tier: 'technician' },
+    { ref: 'office-dispatch', displayName: 'Office Dispatch', tier: 'technician' },
+  ];
+  for (const person of roster) {
+    const row = await insertTechnician({ tenantId: TENANT_ID, ...person });
+    await setTechnicianState(row.id, 'active');
+  }
+  return roster.map((r) => r.ref);
 }
 
 async function seed() {
@@ -210,12 +233,15 @@ async function main() {
   console.log(`Seeding TEST project ${TEST_REF} (tenant ${TENANT_ID})…`);
   await truncateSpine();
   console.log('Truncated spine tables.');
+  const refs = await seedRoster();
+  console.log(`Roster seeded: ${refs.join(', ')}`);
   const ids = await seed();
   console.log('Seed complete:');
   console.log(JSON.stringify(ids, null, 2));
   console.log(
     '\nSummary: 3 customers (Maria full history + invoiced job + visit; ' +
-      'Tom open furnace job scheduled today; Acme email-sourced open job).',
+      'Tom open furnace job scheduled today; Acme email-sourced open job); ' +
+      '3 roster rows (manager-sam, tech-jane, office-dispatch).',
   );
 }
 

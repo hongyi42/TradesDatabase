@@ -1,6 +1,13 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { recordFieldNote as liveRecordFieldNote } from '../writePath/recordFieldNote.js';
-import { isForeignKeyViolation, tenantExists as liveTenantExists, upsertDroppedAudit } from '../db/index.js';
+import {
+  flagUnknownRefCapture,
+  getTechnician as liveGetTechnician,
+  isForeignKeyViolation,
+  isInactiveState,
+  tenantExists as liveTenantExists,
+  upsertDroppedAudit,
+} from '../db/index.js';
 import { sonnetClassifier } from '../email/classify.js';
 import type { WorkClassifier } from '../email/classify.js';
 import { resolveNormalizer as liveResolveNormalizer } from './normalize.js';
@@ -71,6 +78,8 @@ export interface InboundWebhookDeps {
   resolveNormalizer?: (toolkit: string, triggerType: string) => Normalizer | null;
   tenantExists?: (tenantId: string) => Promise<boolean>;
   recordDrop?: typeof upsertDroppedAudit;
+  getTechnician?: typeof liveGetTechnician;
+  flagReview?: typeof flagUnknownRefCapture;
 }
 
 // The handler classifies every outcome into one status; httpServer maps each status
@@ -84,6 +93,7 @@ export type InboundWebhookStatus =
   | 'duplicate'
   | 'unrouted'
   | 'skipped_non_work'
+  | 'skipped_offboarded'
   | 'bad_signature'
   | 'bad_payload'
   | 'unknown_tenant'
@@ -96,10 +106,11 @@ export interface InboundWebhookResult {
 
 // Composio V3 webhook envelope (confirmed against a live GMAIL_NEW_GMAIL_MESSAGE):
 //   { id, type:'composio.trigger.message', metadata:{ user_id, trigger_slug, ... }, data }
-// metadata.user_id is either a bare tenant uuid (legacy whole-business pairing) or
-// "<tenantUuid>:<technicianRef>" (per-person pairing — one connected account per
-// person), split on the FIRST colon. The trigger slug is metadata.trigger_slug; there
-// is no explicit toolkit field, so we derive it from the slug prefix (GMAIL_… → GMAIL).
+// metadata.user_id must be the composite "<tenantUuid>:<technicianRef>" (per-person
+// pairing — one connected account per person), split on the FIRST colon. The bare-uuid
+// whole-business mode was retired 2026-07-02 (zero live pairings existed; roster-based
+// attribution needs a person). The trigger slug is metadata.trigger_slug; there is no
+// explicit toolkit field, so we derive it from the slug prefix (GMAIL_… → GMAIL).
 interface InboundEvent {
   type?: string;
   metadata?: { user_id?: string; trigger_slug?: string };
@@ -126,6 +137,8 @@ export async function handleInboundWebhook(
   const resolveNormalizer = deps.resolveNormalizer ?? liveResolveNormalizer;
   const tenantExists = deps.tenantExists ?? liveTenantExists;
   const recordDrop = deps.recordDrop ?? upsertDroppedAudit;
+  const getTechnician = deps.getTechnician ?? liveGetTechnician;
+  const flagReview = deps.flagReview ?? flagUnknownRefCapture;
 
   // Deterministic payload failures → bad_payload (400, no retry — same body, same fail).
   let event: InboundEvent;
@@ -149,26 +162,26 @@ export async function handleInboundWebhook(
     return { status: 'bad_payload' };
   }
 
-  // Composio user_id is either a bare tenant uuid (legacy: whole-business pairing)
-  // or "<tenantUuid>:<technicianRef>" (per-person pairing, one connected account
-  // per person). Split on the FIRST colon; the ref may itself contain colons.
+  // Composio user_id must be composite "<tenantUuid>:<technicianRef>" (one
+  // connected account per person). Split on the FIRST colon; the ref may itself
+  // contain colons. A bare uuid (the retired whole-business mode) is a
+  // deterministic reject — no live pairing sends it.
   const sep = userId.indexOf(':');
-  const tenantId = sep === -1 ? userId : userId.slice(0, sep);
-  const personRef = sep === -1 ? undefined : userId.slice(sep + 1);
-  if (sep !== -1 && (!tenantId || !personRef)) return { status: 'bad_payload' };
-  // `connector:` is the reserved fallback namespace for unattributed (bare-uuid)
-  // pairings — a composite ref like "…:connector:gmail" would be indistinguishable
-  // from that sentinel downstream, so reject it at the boundary.
-  if (personRef?.startsWith('connector:')) return { status: 'bad_payload' };
+  if (sep === -1) return { status: 'bad_payload' };
+  const tenantId = userId.slice(0, sep);
+  // Attribution for everything this delivery writes (L1 capture, visit, drop
+  // receipt, review flag): the person named by the composite user_id.
+  const technicianRef = userId.slice(sep + 1);
+  if (!tenantId || !technicianRef) return { status: 'bad_payload' };
+  // `connector:` stays reserved for non-webhook channel attribution (e.g. seeded
+  // web_form captures) — a composite ref like "…:connector:gmail" would be
+  // indistinguishable from that sentinel downstream, so reject it at the boundary.
+  if (technicianRef.startsWith('connector:')) return { status: 'bad_payload' };
   // Tenant must be uuid-shaped. PostgREST raises 22P02 (an error, NOT an empty
   // result) for a non-uuid eq against the uuid column, which would be classified
   // transient_error below and retried forever. A non-uuid tenant is
   // deterministically unknown — say so once, with no retry.
   if (!UUID_RE.test(tenantId)) return { status: 'unknown_tenant' };
-
-  // Attribution for everything this delivery writes (L1 capture, visit, drop
-  // receipt): the person named by the composite user_id, else the channel label.
-  const technicianRef = personRef ?? `connector:${toolkit.toLowerCase()}`;
 
   const meta = (envelope.sourceMeta ?? {}) as { from?: string; subject?: string; body?: string };
 
@@ -176,10 +189,29 @@ export async function handleInboundWebhook(
   // (503, retried), except an FK violation (unknown/deleted tenant) → unknown_tenant
   // (no retry). Deterministic outcomes still `return` their own status above/below.
   try {
-    // The HMAC proves the body is authentic, NOT that user_id is a provisioned tenant.
-    // Validate up front so an unknown tenant gives up cleanly (422) instead of failing
-    // the L1 insert's FK deep in the write-path and becoming a retry storm.
-    if (!(await tenantExists(tenantId))) return { status: 'unknown_tenant' };
+    // Roster first (a tenant-scoped read, so a hit also proves the tenant —
+    // one roundtrip on the hot known-person path, before the classifier so no
+    // model call is spent on a person we already know is gone). The HMAC proves
+    // the body is authentic, NOT that user_id is provisioned: only when the ref
+    // is unknown do we pay the explicit tenantExists check to distinguish a
+    // misprovisioned tenant (422, give up) from an unknown person under a real
+    // tenant (ingest + flag — mail must not be lost to a provisioning slip).
+    const tech = await getTechnician(tenantId, technicianRef);
+    if (!tech && !(await tenantExists(tenantId))) return { status: 'unknown_tenant' };
+    // An offboarded/offboarding person's mailbox can still deliver during
+    // teardown (or if the Composio deletion failed): drop with a receipt,
+    // never ingest (decided 2026-07-02).
+    if (tech && isInactiveState(tech.state)) {
+      await recordDrop({
+        tenantId,
+        channel: envelope.channel,
+        externalId: envelope.externalId,
+        from: meta.from,
+        reason: 'offboarded',
+        technicianRef,
+      });
+      return { status: 'skipped_offboarded' };
+    }
 
     // classify-before-L1: gate the append, since L1 is append-only and a misrouted
     // (non-work) row could never be removed (CLAUDE.md). Feed the CLEAN body (sourceMeta),
@@ -203,6 +235,16 @@ export async function handleInboundWebhook(
           reason,
           technicianRef,
         });
+        // A misprovisioned (unknown-ref) pairing must surface even when its
+        // first deliveries are personal mail — otherwise the typo'd pairing
+        // stays invisible until a work email happens to arrive. Advisory.
+        if (!tech) {
+          try {
+            await flagReview({ tenantId, subjectRef: technicianRef, externalId: envelope.externalId });
+          } catch {
+            /* advisory */
+          }
+        }
         return { status: 'skipped_non_work' };
       }
     }
@@ -219,6 +261,22 @@ export async function handleInboundWebhook(
       // so don't duplicate it into metadata JSONB.
       sourceMeta: { from: meta.from, subject: meta.subject },
     });
+    // Unknown ref: keep the capture (ground truth), flag for manager review.
+    // Redeliveries must not re-open a resolved item — the 'duplicate' gate covers
+    // L2-linked captures, and flagUnknownRefCapture's per-message (externalId)
+    // dedup covers unmatched ones (whose redelivery heals as 'ingested').
+    // Advisory: a flag failure never fails an already-landed ingest.
+    if (!tech && r.status !== 'duplicate') {
+      try {
+        await flagReview({
+          tenantId,
+          subjectRef: technicianRef,
+          externalId: envelope.externalId,
+        });
+      } catch {
+        /* advisory */
+      }
+    }
     return { status: r.status === 'duplicate' ? 'duplicate' : 'ingested', captureId: r.captureId };
   } catch (err) {
     if (isForeignKeyViolation(err)) return { status: 'unknown_tenant' };

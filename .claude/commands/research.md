@@ -44,7 +44,8 @@ topic: <what was researched>
 ---
 
 ## Summary
-One paragraph. What is this area of the codebase? What problem does it solve?
+One paragraph, in plain language a non-expert can follow (expand jargon on first use).
+What is this area of the codebase? What problem does it solve?
 
 ## Entry Points
 Files/routes/components where this area begins. Include file paths and line numbers.
@@ -54,6 +55,7 @@ Annotated list of every relevant file — path, role, key exports.
 
 ## Data Flows
 How data moves through the system. Be specific: function names, argument shapes, return values.
+When a flow spans 3+ components, include a simple diagram (ASCII or mermaid) of the hops.
 
 ## External Dependencies
 Any third-party APIs, services, or packages this area depends on.
@@ -61,11 +63,16 @@ Any third-party APIs, services, or packages this area depends on.
 ## Constraints and Invariants
 Non-obvious rules the code relies on. Hardcoded assumptions. Known limitations.
 
+## Decision Points
+Choice points the current code creates for upcoming work, stated factually and in plain
+language: what the choice is, and what each option would involve given how the code works
+today. No recommendations — just make the fork in the road visible.
+
 ## Open Questions
 Anything unclear from reading alone that would need testing or asking to resolve.
 ```
 
-After writing the file, print its path and a one-paragraph summary of the most important finding.
+After writing the file, print its path, a one-paragraph plain-language summary of the most important finding, and the Decision Points list (if any) — the user should not have to ask "what decisions am I facing" as a follow-up.
 
 ## Hard constraints
 

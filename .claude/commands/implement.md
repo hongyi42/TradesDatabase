@@ -15,6 +15,7 @@ Implement the plan at: **$ARGUMENTS**
 3. **Build a todo list** of all phases and their steps. Confirm scope with the user if anything is ambiguous.
 
 4. **Implement one phase at a time:**
+   - **Env preflight — before writing any code for the phase:** check the plan's *Secrets & env preflight* list for this phase and verify each named key exists in the env file (check key names only, e.g. `grep -c '^NAME='` — **never print or echo values**). If the plan predates that section, scan the phase's changes for new env vars and check those. If anything is missing, STOP and ask the user for **everything the phase needs at once**, passing along the plan's where-to-get-it notes. After the user says it's filled, re-run the key-name check before starting — this catches the filled-but-not-saved case.
    - Make all changes for the phase
    - Run the automated verification commands listed in the plan (including `npm test`)
    - Fix any failures before proceeding

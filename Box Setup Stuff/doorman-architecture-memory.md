@@ -91,11 +91,20 @@ could not drive it (hallucinated `openclaw.tools.list()` / `require(...)`; every
 with "**run bridge code failed**"), so we baked `tools.toolSearch:false` via the
 model-specific-setup manifest — **but that manifest matches ONLY modelId
 `nvidia/nemotron-3-super-120b-a12b`, so under GLM it does NOT apply.** On s1, `toolSearch` is
-still `false` (leftover from the Nemotron bake — confirmed 2026-07-02), so the direct-function
-path keeps working there; a FRESH box on GLM would come up with toolSearch on. Whether GLM-5.2
-can drive code mode is **UNVERIFIED**: if a live turn's tool calls fail with "run bridge code
-failed", set `tools.toolSearch:false` for GLM too (clone the manifest keyed on the GLM modelId,
-or set it directly in openclaw.json) — then record the verified answer here.
+still `false` (leftover from the Nemotron bake), so the direct-function path applies there.
+**CONFIRMED live 2026-07-02: GLM-5.2 drives the `toolSearch:false` direct-function surface fine** —
+a full multi-turn seat-management conversation with real MCP tool calls (incl. a two-step
+destructive confirm), zero "run bridge code failed" all day. Whether GLM-5.2 can drive code mode
+(`toolSearch:true`, the FRESH-box default since the manifest won't match) is still **UNVERIFIED**:
+if a fresh box's tool calls fail with "run bridge code failed", set `tools.toolSearch:false` for
+GLM too (clone the manifest keyed on the GLM modelId, or set it directly in openclaw.json) — then
+record the verified answer here.
+
+**Observability: Telegram channel turns do NOT emit `embedded_run_agent_end` in the openclaw JSON
+log** — that event belongs to the heartbeat lane. Verify a channel turn happened via the OCSF
+egress log instead: `ALLOWED … sendMessage` (+ `sendChatAction`) is the ground truth that the
+agent ran and delivered. Watching the openclaw log for agent-end on a channel turn is a false
+"nothing happened".
 
 ## The bake-in = 4 edits in /home/ubuntu/.nemoclaw/source (re-apply on a fresh box; upstream source is clean)
 1. NEW `nemoclaw-blueprint/model-specific-setup/openclaw/nemotron-3-super-toolsearch-off.json` (toolSearch:false).

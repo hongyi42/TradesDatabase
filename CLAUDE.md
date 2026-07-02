@@ -31,22 +31,6 @@ If a gate fails, fix the root cause — never suppress the error or loosen the g
 For verifying **behavior** (live/agent-driven checks, test-environment safety, cross-channel
 verification) — not just these static gates — follow the `verifying-behavior` skill.
 
-## External services — verify against live docs first
-
-When a question or design decision involves a third-party service (Composio, Supabase, Google
-OAuth, Twilio, …), **check the service's current documentation before answering — never answer
-from memory or from this repo's summaries alone.** Repo docs record point-in-time findings and go
-stale; vendor products change under us.
-
-- Cite the doc page (URL) for any load-bearing claim, and record the citation in the design
-  doc/research artifact so the next reader doesn't have to re-derive it.
-- Read deprecation notices precisely: *which method/endpoint*, *which mode*, *which dates*, and
-  what is explicitly **unaffected**. (Case study: we briefly concluded "Composio managed OAuth is
-  dead" when only the `initiate()` *method* was being retired — `link()` + managed OAuth were fine.
-  An uncited one-liner in a design doc propagated the error.)
-- If a doc claim in this repo has no citation, treat it as unverified — confirm it upstream before
-  building on it.
-
 ## Development workflow (RPI)
 
 For non-trivial features, use the Research → Plan → Implement workflow:

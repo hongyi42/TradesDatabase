@@ -12,9 +12,6 @@ export interface AppendRawCaptureInput {
   // The source's stable id (Gmail message id, webhook event id, …). Per-tenant
   // unique (uq_raw_captures_external_id, partial — null for technician/MCP captures).
   externalId?: string | null;
-  // Person attribution: the badge-mapped technician ref, or `connector:<toolkit>`
-  // for unattributed connector captures. Nullable — pre-column rows stay NULL.
-  technicianRef?: string | null;
   metadata?: Json;
   // Provenance: which entity this capture informed, as known at capture time.
   customerId?: string | null;
@@ -33,7 +30,6 @@ export async function appendRawCapture(input: AppendRawCaptureInput): Promise<Ra
       raw_text: input.rawText ?? null,
       blob_path: input.blobPath ?? null,
       external_id: input.externalId ?? null,
-      technician_ref: input.technicianRef ?? null,
       metadata: input.metadata ?? {},
       customer_id: input.customerId ?? null,
       job_id: input.jobId ?? null,

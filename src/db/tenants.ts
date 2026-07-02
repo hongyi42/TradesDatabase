@@ -1,10 +1,9 @@
 import { getClient } from './client.js';
 
-// Does this tenant id exist? The inbound webhook validates the tenant part of
-// Composio's user_id (bare uuid, or the "<tenant>:<technicianRef>" composite's
-// prefix) BEFORE writing, so an unknown/misprovisioned tenant is rejected cleanly
-// (no retry storm) instead of failing the L1 insert's FK deep in the write-path.
-// The FK constraint remains the backstop (defense in depth).
+// Does this tenant id exist? The inbound webhook validates Composio's user_id (used
+// verbatim as tenant_id) BEFORE writing, so an unknown/misprovisioned tenant is
+// rejected cleanly (no retry storm) instead of failing the L1 insert's FK deep in
+// the write-path. The FK constraint remains the backstop (defense in depth).
 export async function tenantExists(tenantId: string): Promise<boolean> {
   const { data, error } = await getClient()
     .from('tenants')

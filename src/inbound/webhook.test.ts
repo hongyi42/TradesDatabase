@@ -25,7 +25,7 @@ function body(over: Record<string, unknown> = {}): string {
   return JSON.stringify({
     id: 'msg_test',
     type: 'composio.trigger.message',
-    metadata: { user_id: '11111111-1111-1111-1111-111111111111', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' },
+    metadata: { user_id: 'tenant-uuid-1', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' },
     data: {
       message_id: 'gmail-msg-1',
       sender: 'jane@homeowner.com',
@@ -127,7 +127,7 @@ describe('handleInboundWebhook', () => {
     expect(result).toEqual({ status: 'ingested', captureId: 'cap-1' });
     expect(rec.calls).toHaveLength(1);
     expect(rec.calls[0]).toMatchObject({
-      tenantId: '11111111-1111-1111-1111-111111111111',
+      tenantId: 'tenant-uuid-1',
       technicianRef: 'connector:gmail',
       channel: 'email',
       externalId: 'gmail-msg-1',
@@ -144,102 +144,6 @@ describe('handleInboundWebhook', () => {
     expect(cls.calls[0].body).toBe('still noisy'); // exactly messageText — no "Subject:/From:" prefix
     expect(cls.calls[0].body).not.toContain('Subject:');
     expect(cls.calls[0]).toMatchObject({ from: 'jane@homeowner.com', subject: 'AC repair' });
-  });
-
-  test('composite user_id → tenant split + person attribution; tenantExists sees only the tenant part', async () => {
-    const raw = body({
-      metadata: { user_id: '11111111-1111-1111-1111-111111111111:alice', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' },
-    });
-    const rec = recorder();
-    const tenantChecks: string[] = [];
-    const result = await handleInboundWebhook(
-      raw,
-      sign(raw),
-      baseDeps({
-        recordFieldNote: rec.fn,
-        tenantExists: async (id) => {
-          tenantChecks.push(id);
-          return true;
-        },
-      }),
-    );
-
-    expect(result).toEqual({ status: 'ingested', captureId: 'cap-1' });
-    expect(rec.calls[0]).toMatchObject({ tenantId: '11111111-1111-1111-1111-111111111111', technicianRef: 'alice' });
-    expect(tenantChecks).toEqual(['11111111-1111-1111-1111-111111111111']); // validated on the SPLIT tenant, not the composite
-  });
-
-  test('ref containing a colon: only the FIRST colon splits', async () => {
-    const raw = body({
-      metadata: { user_id: '11111111-1111-1111-1111-111111111111:crew:alice', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' },
-    });
-    const rec = recorder();
-    await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
-    expect(rec.calls[0]).toMatchObject({ tenantId: '11111111-1111-1111-1111-111111111111', technicianRef: 'crew:alice' });
-  });
-
-  test('malformed composites ("tenant:" / ":alice") → bad_payload, recordFieldNote NOT called', async () => {
-    const rec = recorder();
-    const deps = baseDeps({ recordFieldNote: rec.fn });
-
-    const emptyRef = body({ metadata: { user_id: '11111111-1111-1111-1111-111111111111:', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' } });
-    expect(await handleInboundWebhook(emptyRef, sign(emptyRef), deps)).toEqual({ status: 'bad_payload' });
-
-    const emptyTenant = body({ metadata: { user_id: ':alice', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' } });
-    expect(await handleInboundWebhook(emptyTenant, sign(emptyTenant), deps)).toEqual({ status: 'bad_payload' });
-
-    expect(rec.calls).toHaveLength(0);
-  });
-
-  test('non-work composite → skipped_non_work; drop receipt keyed by SPLIT tenant + person mailbox', async () => {
-    const raw = body({
-      metadata: { user_id: '11111111-1111-1111-1111-111111111111:alice', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' },
-    });
-    const rec = recorder();
-    const drop = dropRecorder();
-    const result = await handleInboundWebhook(
-      raw,
-      sign(raw),
-      baseDeps({ recordFieldNote: rec.fn, classify: classifyStub(false).fn, recordDrop: drop.fn }),
-    );
-    expect(result).toEqual({ status: 'skipped_non_work' });
-    expect(rec.calls).toHaveLength(0);
-    expect(drop.calls[0]).toMatchObject({
-      tenantId: '11111111-1111-1111-1111-111111111111',
-      technicianRef: 'alice', // re-fetch needs the mailbox: Gmail message ids are mailbox-local
-    });
-  });
-
-  test('non-uuid tenant (bare or composite prefix) → unknown_tenant BEFORE any DB call — a PostgREST 22P02 would otherwise become a retryable 503', async () => {
-    const rec = recorder();
-    const tenantChecks: string[] = [];
-    const deps = baseDeps({
-      recordFieldNote: rec.fn,
-      tenantExists: async (id) => {
-        tenantChecks.push(id);
-        return true;
-      },
-    });
-
-    const bare = body({ metadata: { user_id: 'acme', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' } });
-    expect(await handleInboundWebhook(bare, sign(bare), deps)).toEqual({ status: 'unknown_tenant' });
-
-    const composite = body({ metadata: { user_id: 'acme:alice', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' } });
-    expect(await handleInboundWebhook(composite, sign(composite), deps)).toEqual({ status: 'unknown_tenant' });
-
-    expect(tenantChecks).toHaveLength(0); // guarded before tenantExists — no 22P02 possible
-    expect(rec.calls).toHaveLength(0);
-  });
-
-  test('composite ref impersonating the reserved connector: namespace → bad_payload', async () => {
-    const rec = recorder();
-    const forged = body({
-      metadata: { user_id: '11111111-1111-1111-1111-111111111111:connector:gmail', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' },
-    });
-    expect(await handleInboundWebhook(forged, sign(forged), baseDeps({ recordFieldNote: rec.fn }))).toEqual({
-      status: 'bad_payload',
-    });
-    expect(rec.calls).toHaveLength(0);
   });
 
   test('duplicate from recordFieldNote surfaces as duplicate', async () => {
@@ -308,7 +212,7 @@ describe('handleInboundWebhook', () => {
     expect(rec.calls).toHaveLength(0); // classify-before-L1 proven
     expect(drop.calls).toHaveLength(1);
     expect(drop.calls[0]).toMatchObject({
-      tenantId: '11111111-1111-1111-1111-111111111111',
+      tenantId: 'tenant-uuid-1',
       channel: 'email',
       externalId: 'gmail-msg-1',
       from: 'jane@homeowner.com',
@@ -316,7 +220,7 @@ describe('handleInboundWebhook', () => {
   });
 
   test('unknown toolkit → unrouted, recordFieldNote NOT called', async () => {
-    const raw = body({ metadata: { user_id: '11111111-1111-1111-1111-111111111111', trigger_slug: 'SLACK_NEW_MESSAGE' } });
+    const raw = body({ metadata: { user_id: 'tenant-uuid-1', trigger_slug: 'SLACK_NEW_MESSAGE' } });
     const rec = recorder();
     const result = await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
     expect(result).toEqual({ status: 'unrouted' });

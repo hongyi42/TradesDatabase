@@ -101,7 +101,6 @@ export async function recordFieldNote(
         landed = await appendRawCapture({
           tenantId,
           channel,
-          technicianRef,
           rawText: input.text ?? null,
           blobPath: input.blobPath ?? null,
           externalId: input.externalId,

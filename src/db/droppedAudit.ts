@@ -10,10 +10,6 @@ export interface DroppedAuditInput {
   // stays content-free and is safe to read without exposing personal mail.
   from?: string | null;
   reason?: string | null;
-  // WHICH mailbox the message arrived in (person ref or `connector:<toolkit>`).
-  // Needed for re-fetch under per-person pairing: Gmail message ids are
-  // mailbox-local, so external_id alone can't say whose account to query.
-  technicianRef?: string | null;
 }
 
 // Extract just the domain from a sender string. "Mike <mike@acme.com>" → "acme.com".
@@ -36,7 +32,6 @@ export async function upsertDroppedAudit(input: DroppedAuditInput): Promise<void
     external_id: input.externalId ?? null,
     sender_domain: senderDomain(input.from),
     classifier_reason: input.reason ?? null,
-    technician_ref: input.technicianRef ?? null,
   };
   // Insert; a 23505 on the partial unique (tenant_id, external_id) index means this
   // message was already audited (overlapping pull window / webhook retry) → no-op.

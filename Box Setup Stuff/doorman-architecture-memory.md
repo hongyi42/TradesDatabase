@@ -69,16 +69,20 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
 - Note: OpenClaw's streamable-http MCP loader does NOT itself resolve placeholders (its `resolveEnvPlaceholder`
   with format `Bearer ${VAR}` only covers the codex/gemini path). The egress proxy is what resolves it.
 
-## The agent model: GLM-5.1 on NVIDIA NIM (decided 2026-07-02; Nemotron deprecated for us)
-The target model is **GLM-5.1** (Z.ai, served by NVIDIA NIM). Nemotron-3 Super 120B was the
-original model but proved too weak — do NOT "restore" it when debugging model errors.
-- **Model-id naming trap:** NVIDIA's API id is most likely `z-ai/glm5.1` (NO dash — same pattern
-  as `z-ai/glm4.7`), while build.nvidia.com marketing pages show the dashed `z-ai/glm-5.1`. A
-  config with the dashed id got **HTTP 410 Gone on every run** (observed 2026-07-02). Also:
-  GLM-5 (`z-ai/glm5`) was deprecated by NVIDIA 2026-04-20. **Always confirm the exact id against
-  the live model list** — `GET https://integrate.api.nvidia.com/v1/models` with the stored key —
-  never trust a page URL.
-- A 410 from inference = bad/retired model route (config-side fix); 401/403 = key problem;
+## The agent model: z-ai/glm-5.2 on NVIDIA NIM (GLM line per user 2026-07-02; Nemotron deprecated)
+The running model is **`z-ai/glm-5.2`** (applied + verified config-consistent 2026-07-02). The
+standing decision is the GLM line — Nemotron-3 Super 120B proved too weak; do NOT "restore" it
+when debugging model errors. GLM-5.1 was the first pick but NVIDIA retired it.
+- **Verify model ids against the LIVE catalog, from the HOST:**
+  `curl -s https://integrate.api.nvidia.com/v1/models` — it is **public, no key needed**. As of
+  2026-07-02 it lists exactly ONE GLM: `z-ai/glm-5.2`. Observed: `z-ai/glm-5.1` → 410 Gone
+  (retired); `z-ai/glm5.1` → 404 model_not_found. Never trust page URLs or guesses.
+- **nemoclaw's own `--verify` CANNOT reach NVIDIA** — it runs inside the egress-restricted
+  gateway container and fails on connection (not auth). Run catalog checks from the host shell.
+- **Change models the supported way:** `nemoclaw inference set --provider nvidia-prod
+  --model <id> --sandbox <AGENT>` — updates the gateway route AND all three openclaw.json refs
+  (agents.defaults.model.primary + registry id/name). No hand-edit of the writable layer.
+- Error decoding: 410 = retired model route; 404 = id never existed; 401/403 = key problem;
   5xx/timeout = provider blip.
 
 ## toolSearch (code mode) — decided per MODEL, manifest is currently Nemotron-only
@@ -86,11 +90,12 @@ With `tools.toolSearch:true` ("code mode") OpenClaw hides tools behind a code br
 could not drive it (hallucinated `openclaw.tools.list()` / `require(...)`; every tool call failed
 with "**run bridge code failed**"), so we baked `tools.toolSearch:false` via the
 model-specific-setup manifest — **but that manifest matches ONLY modelId
-`nvidia/nemotron-3-super-120b-a12b`, so under GLM-5.1 it does NOT apply** and toolSearch may be
-back on. Whether GLM-5.1 can drive code mode is **UNVERIFIED**: on the first live agent turn,
-if tool calls fail with "run bridge code failed", set `tools.toolSearch:false` for GLM too
-(add a manifest keyed on the GLM modelId, or set it directly in openclaw.json) — then record the
-verified answer here.
+`nvidia/nemotron-3-super-120b-a12b`, so under GLM it does NOT apply.** On s1, `toolSearch` is
+still `false` (leftover from the Nemotron bake — confirmed 2026-07-02), so the direct-function
+path keeps working there; a FRESH box on GLM would come up with toolSearch on. Whether GLM-5.2
+can drive code mode is **UNVERIFIED**: if a live turn's tool calls fail with "run bridge code
+failed", set `tools.toolSearch:false` for GLM too (clone the manifest keyed on the GLM modelId,
+or set it directly in openclaw.json) — then record the verified answer here.
 
 ## The bake-in = 4 edits in /home/ubuntu/.nemoclaw/source (re-apply on a fresh box; upstream source is clean)
 1. NEW `nemoclaw-blueprint/model-specific-setup/openclaw/nemotron-3-super-toolsearch-off.json` (toolSearch:false).

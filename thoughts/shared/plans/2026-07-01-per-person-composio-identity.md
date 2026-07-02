@@ -2,7 +2,7 @@
 date: 2026-07-01
 task: Per-person Composio pairing — composite user_id, person attribution on inbound captures, L1 technician_ref column
 research: thoughts/shared/research/2026-07-01-composio-identity-pairing-model.md
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -205,7 +205,8 @@ model (composite user_id; gateway-side capability control).
 - (none — script behavior against live Composio is Phase 4)
 
 ### Manual verification
-- [ ] Read the §7 diff: the invariant text matches what Phase 2 implemented (no doc/code drift).
+- [x] Read the §7 diff: the invariant text matches what Phase 2 implemented (no doc/code drift).
+      (User approved §7 on 2026-07-01.)
 
 ---
 *Pause after this phase: manual doc-review is listed.*
@@ -223,31 +224,62 @@ question #2 (does the envelope carry a `connected_account_id`?) from the capture
   `thoughts/shared/research/` as an addendum.
 
 ### Automated verification
-- [ ] All CLAUDE.md gates still pass (`typecheck`, `lint`, `test`, `build` before PR)
+- [x] All CLAUDE.md gates still pass (`typecheck`, `lint`, `test` 84/84, `build` — re-run 2026-07-02 after the E2E)
 
 ### Live verification (agent-executable)
 - Prerequisites: **`COMPOSIO_API_KEY` in `.env`** (user is obtaining); the deployed webhook
   endpoint (or a local server + tunnel) with `COMPOSIO_WEBHOOK_SECRET` set; `supabase-test` MCP;
   a throwaway/test Gmail account to connect; ability to send an email to it.
-- [ ] Seed the test spine first (`npm run seed`) so `matchIdentity` has a customer to resolve.
-- [ ] `node -r dotenv/config scripts/composio-reconnect.mjs user=<testTenantUuid>:e2e-alice` →
+- [x] Seed the test spine first (`npm run seed`) so `matchIdentity` has a customer to resolve.
+- [x] `node -r dotenv/config scripts/composio-reconnect.mjs user=<testTenantUuid>:e2e-alice` →
       OAuth approved → `--wait` shows the connection ACTIVE under the composite user_id.
       (Both scripts need `-r dotenv/config` — neither loads `.env` itself.)
-- [ ] `node -r dotenv/config scripts/composio-trigger.mjs user=<testTenantUuid>:e2e-alice --create`
-      succeeds.
-- [ ] Send a work-shaped email whose body contains a seeded customer's unique phone or address
+      (Run expanded to TWO people: `e2e-alice` + `e2e-bob`, distinct throwaway mailboxes.)
+- [x] `node -r dotenv/config scripts/composio-trigger.mjs user=<testTenantUuid>:e2e-alice --create`
+      succeeds. (Both refs; triggers `ti_DmiUZFATaABC` / `ti_UFUWZS2tZfRI`.)
+- [x] Send a work-shaped email whose body contains a seeded customer's unique phone or address
       (so extract → match resolves and a visit is created — an unmatched work email is still
       `ingested` but L1-only); within the poll interval, webhook returns `ingested`.
-- [ ] `mcp__supabase-test__execute_sql`: the new `raw_captures` row has
+- [x] `mcp__supabase-test__execute_sql`: the new `raw_captures` row has
       `tenant_id = <testTenantUuid>`, `technician_ref = 'e2e-alice'`, `channel = 'email'`,
       non-null `external_id`; the linked visit has `technician_name = 'e2e-alice'`.
 - [ ] Capture one raw envelope with `INBOUND_DEBUG=1`; record whether `metadata` includes a
       connected-account identifier (closes research open question #2).
-- [ ] Cleanup: delete the test trigger + connected account; tests' truncate handles spine rows.
+      (NOT captured — `INBOUND_DEBUG` was not enabled on the deployed service during the run;
+      open question #2 stays open.)
+- [x] Cleanup: delete the test trigger + connected account; tests' truncate handles spine rows.
+      (Both triggers + both E2E accounts deleted 2026-07-02; legacy June pairing
+      `ca_HfiWAMe4IZkZ` left for the user to decide.)
 
 ### Manual verification
-- [ ] Approve the OAuth consent screen in a browser (inherently human; confirm it shows the
-      Composio-managed app, not an unverified-app warning).
+- [x] Approve the OAuth consent screen in a browser (inherently human; confirm it shows the
+      Composio-managed app, not an unverified-app warning). (User approved both consents
+      2026-07-02; no warning reported.)
 
 ---
 *Pause after this phase for the human OAuth step and final review.*
+
+### Phase 4 run notes (2026-07-02)
+
+Run expanded from one person to two (`e2e-alice` = one throwaway Gmail, `e2e-bob` = another),
+plus a CC test. Evidence (test-DB read-back, tenant `82bbc6f8-…`):
+
+- 4 L1 captures, one per (mailbox × email): alice×2, bob×2. All `tenant_id` correct, all
+  `technician_ref` matching the mailbox's composite ref — cross-mailbox isolation holds.
+- The email CC'd to both mailboxes produced **two** captures with **distinct** `external_id`s
+  (Gmail message ids are mailbox-local), each attributed to its own person — as designed.
+- Every capture's linked visit has `technician_name` = the person's ref; identity match resolved
+  all three seeded customers (Maria / Tom / Acme) from phone/address in the bodies.
+- 0 drop receipts (all four classified as work). L1 dedup held: no duplicate captures despite
+  Composio delivery retries.
+- Known pre-existing issue observed (NOT a regression): 3 of 4 captures got a duplicate visit
+  ~5–6s apart — Composio retries (~5s cadence) while the handler is still awaiting the two
+  Sonnet calls race the orphan-heal path into a second extract→L2 run. Documented in
+  `thoughts/shared/research/2026-06-29-async-webhook-ingestion.md`; fix belongs to the async
+  ingestion work, not this plan.
+- Environment fixes needed to get deliveries flowing (all config, no code): the Composio
+  webhook subscription (`ws_mfL3RD8klzYo`, SDK-managed via `triggers.setWebhookSubscription()`,
+  no dashboard page) still pointed at the dead June dev tunnel → repointed to
+  `https://tradesdatabase.onrender.com/inbound/composio`; `COMPOSIO_WEBHOOK_SECRET` was unset on
+  Render → set (raw string, no `whsec_` prefix); Render was running pre-merge code → fixed by
+  merging PR #7 + redeploy, confirmed by signed probes (composite fake-uuid: 503→422).

@@ -15,6 +15,15 @@ each L2 row). Every structured field links back to the raw evidence it came from
   the L1 insert — run it _before_ writing, never after**, or misrouted rows are retained permanently.
 - Test writes target the **test** Supabase project only; **prod is read-only**. Tests self-clean rows they create.
 
+## Communication defaults
+
+The user is a hands-on learner, not a career engineer. For every explanation, in any session:
+- Plain language first — expand jargon and acronyms on first use.
+- Draw a simple diagram (ASCII or mermaid) whenever structure matters: architecture, data
+  flows, request paths, sequences.
+- When the work involves choices, lead with a decision brief — each decision, the options,
+  their trade-offs in practical terms, and a recommendation — before diving into detail.
+
 ## Verification
 These are the pass/fail gates. Run the relevant ones after every change, and all of them before any
 commit. Show the actual command output — never assert success without it.

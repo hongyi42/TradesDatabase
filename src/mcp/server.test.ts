@@ -6,6 +6,9 @@ import { getClient } from '../db/client.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
 import { upsertScheduleEntry } from '../db/scheduleEntries.js';
+import { insertTechnician, setTechnicianState } from '../db/technicians.js';
+import { createTenant, setTenantSeats } from '../db/tenants.js';
+import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { createServer } from './server.js';
 
 // Drive the MCP server over the SDK's in-memory transport (no network/stdio).
@@ -16,9 +19,34 @@ let client: Client;
 
 beforeAll(async () => {
   await pg.connect();
-  const { data, error } = await getClient().from('tenants').select('id').limit(1).single();
+  // Pick the seed tenant BY NAME: `limit(1)` returns an unspecified row once a
+  // test has created a second tenant, and every customer this file creates
+  // would silently attach to the wrong one.
+  const { data, error } = await getClient()
+    .from('tenants')
+    .select('id')
+    .eq('name', 'Default Tenant')
+    .single();
   if (error || !data) throw new Error(`could not load seed tenant: ${error?.message ?? 'none'}`);
   tenantId = data.id;
+
+  // Known roster + capacity for the admin-tool tests: an active manager
+  // ('mgr-test') and an active technician ('tech-mcp' — also the main client's
+  // identity, so requireManager's negative path runs against a REAL roster row,
+  // not a missing one). technician_seats=3: tech-mcp holds one, two are free —
+  // so the duplicate-name case hits the 23505 'ref taken' mapping with a seat
+  // still free (at cap the BEFORE-trigger reports the cap error instead).
+  await pg.query('truncate table technicians, review_items cascade');
+  await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 3 });
+  const mgr = await insertTechnician({
+    tenantId,
+    ref: 'mgr-test',
+    displayName: 'Manager Test',
+    tier: 'manager',
+  });
+  await setTechnicianState(mgr.id, 'active');
+  const tech = await insertTechnician({ tenantId, ref: 'tech-mcp', displayName: 'Tech MCP' });
+  await setTechnicianState(tech.id, 'active');
 
   const server = createServer({
     // Identity is injected here (the gateway/env source in prod); the agent never
@@ -39,7 +67,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await client.close();
-  await pg.query('truncate table schedule_entries, customers, jobs, visits, raw_captures cascade');
+  await pg.query(
+    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items cascade',
+  );
+  // Restore the seed capacity (2/5) so post-suite live checks see known values.
+  await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
   await pg.end();
 });
 
@@ -68,7 +100,7 @@ async function clientFor(identity: { tenantId: string; technicianRef: string }) 
     const res = await isolated.callTool({ name, arguments: args });
     const content = res.content as Array<{ type: string; text: string }>;
     const isError = res.isError === true;
-    return { isError, data: isError ? undefined : JSON.parse(content[0].text) };
+    return { isError, text: content[0].text, data: isError ? undefined : JSON.parse(content[0].text) };
   };
   return { client: isolated, callWith };
 }
@@ -229,6 +261,187 @@ describe('MCP server', () => {
       ).toBe(true);
     } finally {
       await otherClient.close();
+    }
+  });
+
+  // Long timeout: this walks the whole seat lifecycle (~15 live DB round-trips).
+  test('admin tools: tier-filtered listing and manager-only dispatch', { timeout: 30_000 }, async () => {
+    // The technician-identity client neither lists nor may call ANY admin tool.
+    const { tools } = await client.listTools();
+    const names = tools.map((t) => t.name);
+    expect(names).not.toContain('add_technician_seat');
+    expect(names).not.toContain('list_team');
+    for (const [tool, args] of [
+      ['add_technician_seat', { displayName: 'Eve Attacker' }],
+      ['deactivate_technician_seat', { ref: 'mgr-test' }],
+      ['list_team', {}],
+      ['list_pending_reviews', {}],
+      ['resolve_review', { reviewItemId: 'x', resolution: 'resolved' }],
+    ] as const) {
+      const denied = await call(tool, args as Record<string, unknown>);
+      expect(denied.isError).toBe(true);
+      expect(denied.text).toContain('manager badge');
+    }
+
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
+      expect(mgrTools).toEqual(
+        expect.arrayContaining([
+          'add_technician_seat',
+          'deactivate_technician_seat',
+          'list_team',
+          'list_pending_reviews',
+          'resolve_review',
+        ]),
+      );
+
+      // Add: mints the slug ref, lands as invited technician.
+      const added = await callWith('add_technician_seat', { displayName: 'Bob Marley' });
+      expect(added.isError).toBe(false);
+      expect(added.data).toMatchObject({ ref: 'bob-marley', tier: 'technician', state: 'invited' });
+
+      // Duplicate display name WITH a seat still free → the 23505 disambiguation
+      // error (at cap the trigger would report the cap instead — Phase 1 probe).
+      const dup = await callWith('add_technician_seat', { displayName: 'Bob Marley' });
+      expect(dup.isError).toBe(true);
+      expect(dup.text).toContain("ref 'bob-marley' is taken");
+
+      // Fill the last seat, then exceed: the purchase error, verbatim tier name.
+      const carlEarly = await callWith('add_technician_seat', { displayName: 'Carl Sagan' });
+      expect(carlEarly.isError).toBe(false); // seat 3/3
+      const capped = await callWith('add_technician_seat', { displayName: 'Dan Dare' });
+      expect(capped.isError).toBe(true);
+      expect(capped.text).toContain('no free technician seats');
+
+      // Deactivate is two-step; repeat first calls return the SAME confirmId.
+      const first = await callWith('deactivate_technician_seat', { ref: 'bob-marley' });
+      expect(first.data.status).toBe('needs_confirmation');
+      expect(first.data.displayName).toBe('Bob Marley');
+      const again = await callWith('deactivate_technician_seat', { ref: 'bob-marley' });
+      expect(again.data.confirmId).toBe(first.data.confirmId);
+
+      // A forged confirmId must not deactivate (nor resolve anything else).
+      const forged = await callWith('deactivate_technician_seat', {
+        ref: 'bob-marley',
+        confirmId: '00000000-0000-0000-0000-000000000000',
+      });
+      expect(forged.isError).toBe(true);
+
+      const confirmed = await callWith('deactivate_technician_seat', {
+        ref: 'bob-marley',
+        confirmId: first.data.confirmId,
+      });
+      expect(confirmed.data).toEqual({ status: 'deactivated', ref: 'bob-marley' });
+      const state = await pg.query<{ state: string }>(
+        "select state from technicians where tenant_id = $1 and ref = 'bob-marley'",
+        [tenantId],
+      );
+      expect(state.rows[0].state).toBe('offboarding'); // cross-channel read-back
+
+      // Repeat deactivation is idempotent, not an error.
+      const repeat = await callWith('deactivate_technician_seat', { ref: 'bob-marley' });
+      expect(repeat.data).toEqual({ status: 'already_deactivated', ref: 'bob-marley' });
+
+      // The freed seat is immediately usable — the earlier capped add now works.
+      const dan = await callWith('add_technician_seat', { displayName: 'Dan Dare' });
+      expect(dan.isError).toBe(false);
+      expect(dan.data.ref).toBe('dan-dare');
+
+      // Self-deactivation is refused outright.
+      const self = await callWith('deactivate_technician_seat', { ref: 'mgr-test' });
+      expect(self.isError).toBe(true);
+      expect(self.text).toContain('cannot deactivate yourself');
+
+      // list_team: roster facts only — no Composio ids in the payload.
+      const team = await callWith('list_team', {});
+      const bob = team.data.find((t: { ref: string }) => t.ref === 'bob-marley');
+      expect(bob).toMatchObject({ displayName: 'Bob Marley', state: 'offboarding' });
+      expect(Object.keys(bob)).not.toContain('composio_connected_account_id');
+
+      // Reviews: open item listed; resolve closes it; bogus id → not found.
+      const item = await upsertOpenReviewItem({
+        tenantId,
+        kind: 'sheet_ref_mismatch',
+        subjectRef: 'tehc-bob',
+        suggestion: 'bob-marley',
+      });
+      const pending = await callWith('list_pending_reviews', {});
+      expect(pending.data.map((i: { id: string }) => i.id)).toContain(item.id);
+      const resolved = await callWith('resolve_review', {
+        reviewItemId: item.id,
+        resolution: 'dismissed',
+        note: 'sheet fixed',
+      });
+      expect(resolved.data.status).toBe('dismissed');
+      const missing = await callWith('resolve_review', {
+        reviewItemId: '00000000-0000-0000-0000-000000000000',
+        resolution: 'resolved',
+      });
+      expect(missing.isError).toBe(true);
+
+      // A pending_deactivation token cannot be closed as "resolved" via the
+      // generic tool (that would fake a completed deactivation) — but
+      // dismissing it (= cancel) is allowed.
+      const pendingDan = await callWith('deactivate_technician_seat', { ref: 'dan-dare' });
+      expect(pendingDan.data.status).toBe('needs_confirmation');
+      const fakeResolve = await callWith('resolve_review', {
+        reviewItemId: pendingDan.data.confirmId,
+        resolution: 'resolved',
+      });
+      expect(fakeResolve.isError).toBe(true);
+      expect(fakeResolve.text).toContain('pending deactivation');
+      const cancel = await callWith('resolve_review', {
+        reviewItemId: pendingDan.data.confirmId,
+        resolution: 'dismissed',
+      });
+      expect(cancel.isError).toBe(false);
+      const danState = await pg.query<{ state: string }>(
+        "select state from technicians where tenant_id = $1 and ref = 'dan-dare'",
+        [tenantId],
+      );
+      expect(danState.rows[0].state).toBe('invited'); // cancelled — never deactivated
+
+      // Cross-tenant: another tenant's MANAGER (passes requireManager in their
+      // own tenant) still cannot resolve this tenant's item — the DB tenant
+      // guard reads it as not found.
+      const crossItem = await upsertOpenReviewItem({
+        tenantId,
+        kind: 'unknown_ref_capture',
+        subjectRef: 'cross-tenant-probe',
+      });
+      const otherTenantId = (await createTenant('cross-tenant-test', { managerSeats: 1 })).id;
+      const otherMgr = await insertTechnician({
+        tenantId: otherTenantId,
+        ref: 'other-mgr',
+        displayName: 'Other Manager',
+        tier: 'manager',
+      });
+      await setTechnicianState(otherMgr.id, 'active');
+      const { client: otherClient, callWith: otherCall } = await clientFor({
+        tenantId: otherTenantId,
+        technicianRef: 'other-mgr',
+      });
+      try {
+        const cross = await otherCall('resolve_review', {
+          reviewItemId: crossItem.id,
+          resolution: 'dismissed',
+        });
+        expect(cross.isError).toBe(true);
+        expect(cross.text).toContain('review item not found');
+      } finally {
+        await otherClient.close();
+        // The extra tenant goes explicitly, BY ID (tenants is never truncated;
+        // deleting by name once swept up a leftover from a crashed run that
+        // other rows had attached to). Children first — FK.
+        await pg.query('delete from technicians where tenant_id = $1', [otherTenantId]);
+        await pg.query('delete from tenants where id = $1', [otherTenantId]);
+      }
+    } finally {
+      await mgrClient.close();
     }
   });
 

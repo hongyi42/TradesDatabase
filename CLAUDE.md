@@ -5,7 +5,7 @@ This repo builds the **three-layer context spine**: a single customer/job record
 **L1 raw** (`raw_captures`, append-only verbatim capture), **L2 structured**
 (`customers ─(1:N)─ jobs ─(1:N)─ visits`), and **L3 attributes** (an `attributes` JSONB column on
 each L2 row). Every structured field links back to the raw evidence it came from. See
-[Three-Layer-Context-Spine-Overview.md](Three-Layer-Context-Spine-Overview.md) for the full design.
+[Three-Layer-Context-Spine-Overview.md](docs/Three-Layer-Context-Spine-Overview.md) for the full design.
 
 ## Conventions
 - TypeScript, ESM (`"type":"module"`, `NodeNext`) — use explicit `.js` extensions on relative imports.

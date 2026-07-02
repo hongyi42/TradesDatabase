@@ -23,8 +23,17 @@ const tenantPart = sepIdx === -1 ? USER_ID : USER_ID.slice(0, sepIdx);
 const refPart = sepIdx === -1 ? null : USER_ID.slice(sepIdx + 1);
 if (!UUID_RE.test(tenantPart) || (sepIdx !== -1 && (!refPart || refPart.startsWith('connector:')))) {
   console.error(
-    `Invalid user id '${USER_ID}': expected <tenantUuid> or <tenantUuid>:<technicianRef> ` +
+    `Invalid user id '${USER_ID}': expected <tenantUuid>:<technicianRef> ` +
       `(uuid tenant; ref non-empty, not 'connector:*').`,
+  );
+  process.exit(1);
+}
+// Bare-uuid pairing was RETIRED 2026-07-02: a trigger on a bare uuid fires
+// webhooks that are ALL rejected 400 bad_payload (no drop receipt) — the
+// connection looks healthy while every email is lost. Refuse to create one.
+if (sepIdx === -1 && process.argv.includes('--create')) {
+  console.error(
+    `Bare-uuid triggers are retired (2026-07-02). Use user=${USER_ID}:<technicianRef>.`,
   );
   process.exit(1);
 }

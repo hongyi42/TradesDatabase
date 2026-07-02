@@ -12,31 +12,6 @@ export type Database = {
   __InternalSupabase: {
     PostgrestVersion: "14.5"
   }
-  graphql_public: {
-    Tables: {
-      [_ in never]: never
-    }
-    Views: {
-      [_ in never]: never
-    }
-    Functions: {
-      graphql: {
-        Args: {
-          extensions?: Json
-          operationName?: string
-          query?: string
-          variables?: Json
-        }
-        Returns: Json
-      }
-    }
-    Enums: {
-      [_ in never]: never
-    }
-    CompositeTypes: {
-      [_ in never]: never
-    }
-  }
   public: {
     Tables: {
       customers: {
@@ -290,6 +265,53 @@ export type Database = {
           },
         ]
       }
+      review_items: {
+        Row: {
+          created_at: string
+          detail: Json
+          id: string
+          kind: string
+          resolution: string | null
+          resolved_at: string | null
+          status: Database["public"]["Enums"]["review_status"]
+          subject_ref: string
+          suggestion: string | null
+          tenant_id: string
+        }
+        Insert: {
+          created_at?: string
+          detail?: Json
+          id?: string
+          kind: string
+          resolution?: string | null
+          resolved_at?: string | null
+          status?: Database["public"]["Enums"]["review_status"]
+          subject_ref: string
+          suggestion?: string | null
+          tenant_id: string
+        }
+        Update: {
+          created_at?: string
+          detail?: Json
+          id?: string
+          kind?: string
+          resolution?: string | null
+          resolved_at?: string | null
+          status?: Database["public"]["Enums"]["review_status"]
+          subject_ref?: string
+          suggestion?: string | null
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "review_items_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       schedule_entries: {
         Row: {
           address_line1: string | null
@@ -375,21 +397,80 @@ export type Database = {
           },
         ]
       }
+      technicians: {
+        Row: {
+          composio_connected_account_id: string | null
+          composio_trigger_id: string | null
+          connected_email: string | null
+          created_at: string
+          display_name: string
+          id: string
+          ref: string
+          sandbox_ref: string | null
+          state: Database["public"]["Enums"]["technician_state"]
+          tenant_id: string
+          tier: Database["public"]["Enums"]["technician_tier"]
+          updated_at: string
+        }
+        Insert: {
+          composio_connected_account_id?: string | null
+          composio_trigger_id?: string | null
+          connected_email?: string | null
+          created_at?: string
+          display_name: string
+          id?: string
+          ref: string
+          sandbox_ref?: string | null
+          state?: Database["public"]["Enums"]["technician_state"]
+          tenant_id: string
+          tier?: Database["public"]["Enums"]["technician_tier"]
+          updated_at?: string
+        }
+        Update: {
+          composio_connected_account_id?: string | null
+          composio_trigger_id?: string | null
+          connected_email?: string | null
+          created_at?: string
+          display_name?: string
+          id?: string
+          ref?: string
+          sandbox_ref?: string | null
+          state?: Database["public"]["Enums"]["technician_state"]
+          tenant_id?: string
+          tier?: Database["public"]["Enums"]["technician_tier"]
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "technicians_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tenants: {
         Row: {
           created_at: string
           id: string
+          manager_seats: number
           name: string
+          technician_seats: number
         }
         Insert: {
           created_at?: string
           id?: string
+          manager_seats?: number
           name: string
+          technician_seats?: number
         }
         Update: {
           created_at?: string
           id?: string
+          manager_seats?: number
           name?: string
+          technician_seats?: number
         }
         Relationships: []
       }
@@ -481,6 +562,7 @@ export type Database = {
         | "crm_import"
         | "accounting_event"
         | "iot"
+        | "outbound_email"
       job_status:
         | "open"
         | "in_progress"
@@ -489,6 +571,14 @@ export type Database = {
         | "paid"
         | "cancelled"
         | "declined"
+      review_status: "open" | "resolved" | "dismissed"
+      technician_state:
+        | "invited"
+        | "pending_verification"
+        | "active"
+        | "offboarding"
+        | "offboarded"
+      technician_tier: "manager" | "technician"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -614,9 +704,6 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
-  graphql_public: {
-    Enums: {},
-  },
   public: {
     Enums: {
       capture_channel: [
@@ -635,6 +722,7 @@ export const Constants = {
         "crm_import",
         "accounting_event",
         "iot",
+        "outbound_email",
       ],
       job_status: [
         "open",
@@ -645,6 +733,15 @@ export const Constants = {
         "cancelled",
         "declined",
       ],
+      review_status: ["open", "resolved", "dismissed"],
+      technician_state: [
+        "invited",
+        "pending_verification",
+        "active",
+        "offboarding",
+        "offboarded",
+      ],
+      technician_tier: ["manager", "technician"],
     },
   },
 } as const

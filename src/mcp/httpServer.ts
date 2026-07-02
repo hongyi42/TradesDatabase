@@ -47,6 +47,7 @@ const INBOUND_STATUS_CODES: Record<string, number> = {
   duplicate: 200,
   unrouted: 200,
   skipped_non_work: 200,
+  skipped_offboarded: 200,
   bad_signature: 401,
   bad_payload: 400,
   unknown_tenant: 422,

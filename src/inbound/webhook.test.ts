@@ -7,7 +7,7 @@ import {
   type WebhookHeaders,
 } from './webhook.js';
 import type { RecordFieldNoteInput, RecordFieldNoteResult } from '../writePath/recordFieldNote.js';
-import type { DroppedAuditInput } from '../db/index.js';
+import type { DroppedAuditInput, ReviewItem, Technician } from '../db/index.js';
 import type { EmailInput, WorkClassifier } from '../email/classify.js';
 
 // Pure/stubbed unit tests — no DB, no live model. HMAC cases mirror identity.test.ts;
@@ -19,13 +19,16 @@ const SECRET = 'test-webhook-secret';
 const OTHER_SECRET = 'other-secret';
 
 // Mirrors the live Composio V3 envelope: metadata.user_id + metadata.trigger_slug,
-// snake_case data fields. `over` replaces top-level keys wholesale (pass
-// `{ metadata: {...} }` or `{ data: {...} }` to override a whole sub-object).
+// snake_case data fields. Default user_id is the composite "<tenant>:<ref>" —
+// the only shape the webhook accepts since bare-uuid retirement (2026-07-02).
+// `over` replaces top-level keys wholesale (pass `{ metadata: {...} }` or
+// `{ data: {...} }` to override a whole sub-object).
+const TENANT = '11111111-1111-1111-1111-111111111111';
 function body(over: Record<string, unknown> = {}): string {
   return JSON.stringify({
     id: 'msg_test',
     type: 'composio.trigger.message',
-    metadata: { user_id: '11111111-1111-1111-1111-111111111111', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' },
+    metadata: { user_id: `${TENANT}:tech-test`, trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' },
     data: {
       message_id: 'gmail-msg-1',
       sender: 'jane@homeowner.com',
@@ -75,13 +78,49 @@ function dropRecorder() {
   return { calls, fn };
 }
 
-// Default deps: tenant exists, classifier says work, nothing hits the DB.
+// A full roster Row for the getTechnician stub (only ref/state/tier vary in tests).
+function techRow(over: Partial<Technician> = {}): Technician {
+  return {
+    id: 'tech-row-1',
+    tenant_id: TENANT,
+    ref: 'tech-test',
+    display_name: 'Tech Test',
+    tier: 'technician',
+    state: 'active',
+    sandbox_ref: null,
+    composio_connected_account_id: null,
+    composio_trigger_id: null,
+    connected_email: null,
+    created_at: '2026-07-02T00:00:00.000Z',
+    updated_at: '2026-07-02T00:00:00.000Z',
+    ...over,
+  };
+}
+
+// Recording stub for the unknown-ref review flag.
+function flagRecorder() {
+  const calls: Array<{ tenantId: string; subjectRef: string; externalId?: string | null }> = [];
+  const fn = async (input: {
+    tenantId: string;
+    subjectRef: string;
+    externalId?: string | null;
+  }): Promise<ReviewItem | null> => {
+    calls.push(input);
+    return { id: 'review-1' } as ReviewItem;
+  };
+  return { calls, fn };
+}
+
+// Default deps: tenant exists, roster knows the person (active), classifier says
+// work, nothing hits the DB.
 function baseDeps(over: InboundWebhookDeps = {}): InboundWebhookDeps {
   return {
     recordFieldNote: recorder().fn,
     classify: classifyStub(true).fn,
     tenantExists: async () => true,
     recordDrop: dropRecorder().fn,
+    getTechnician: async () => techRow(),
+    flagReview: flagRecorder().fn,
     ...over,
   };
 }
@@ -119,7 +158,7 @@ describe('handleInboundWebhook', () => {
     else process.env.COMPOSIO_WEBHOOK_SECRET = prev;
   });
 
-  test('valid signature + work payload → ingested; recordFieldNote gets the right fields', async () => {
+  test('valid signature + work payload → ingested; recordFieldNote gets the split identity', async () => {
     const raw = body();
     const rec = recorder();
     const result = await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: rec.fn }));
@@ -127,12 +166,32 @@ describe('handleInboundWebhook', () => {
     expect(result).toEqual({ status: 'ingested', captureId: 'cap-1' });
     expect(rec.calls).toHaveLength(1);
     expect(rec.calls[0]).toMatchObject({
-      tenantId: '11111111-1111-1111-1111-111111111111',
-      technicianRef: 'connector:gmail',
+      tenantId: TENANT,
+      technicianRef: 'tech-test',
       channel: 'email',
       externalId: 'gmail-msg-1',
       occurredAt: '2026-06-02T08:30:00.000Z',
     });
+  });
+
+  test('bare-uuid user_id (retired whole-business mode) → bad_payload, nothing called', async () => {
+    const raw = body({ metadata: { user_id: TENANT, trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' } });
+    const rec = recorder();
+    const tenantChecks: string[] = [];
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: rec.fn,
+        tenantExists: async (id) => {
+          tenantChecks.push(id);
+          return true;
+        },
+      }),
+    );
+    expect(result).toEqual({ status: 'bad_payload' });
+    expect(rec.calls).toHaveLength(0);
+    expect(tenantChecks).toHaveLength(0);
   });
 
   test('#5: classifier is fed the CLEAN body, not the header-prefixed rawText', async () => {
@@ -152,11 +211,15 @@ describe('handleInboundWebhook', () => {
     });
     const rec = recorder();
     const tenantChecks: string[] = [];
+    // Unknown ref (roster miss) forces the explicit tenantExists fallback —
+    // for a KNOWN ref the tenant-scoped roster hit already proves the tenant
+    // and tenantExists is skipped (asserted below).
     const result = await handleInboundWebhook(
       raw,
       sign(raw),
       baseDeps({
         recordFieldNote: rec.fn,
+        getTechnician: async () => null,
         tenantExists: async (id) => {
           tenantChecks.push(id);
           return true;
@@ -167,6 +230,23 @@ describe('handleInboundWebhook', () => {
     expect(result).toEqual({ status: 'ingested', captureId: 'cap-1' });
     expect(rec.calls[0]).toMatchObject({ tenantId: '11111111-1111-1111-1111-111111111111', technicianRef: 'alice' });
     expect(tenantChecks).toEqual(['11111111-1111-1111-1111-111111111111']); // validated on the SPLIT tenant, not the composite
+  });
+
+  test('known ref skips the tenantExists roundtrip (roster hit proves the tenant)', async () => {
+    const raw = body();
+    const tenantChecks: string[] = [];
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        tenantExists: async (id) => {
+          tenantChecks.push(id);
+          return true;
+        },
+      }),
+    );
+    expect(result.status).toBe('ingested');
+    expect(tenantChecks).toHaveLength(0);
   });
 
   test('ref containing a colon: only the FIRST colon splits', async () => {
@@ -210,7 +290,7 @@ describe('handleInboundWebhook', () => {
     });
   });
 
-  test('non-uuid tenant (bare or composite prefix) → unknown_tenant BEFORE any DB call — a PostgREST 22P02 would otherwise become a retryable 503', async () => {
+  test('non-uuid tenant prefix → unknown_tenant BEFORE any DB call — a PostgREST 22P02 would otherwise become a retryable 503', async () => {
     const rec = recorder();
     const tenantChecks: string[] = [];
     const deps = baseDeps({
@@ -220,9 +300,6 @@ describe('handleInboundWebhook', () => {
         return true;
       },
     });
-
-    const bare = body({ metadata: { user_id: 'acme', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' } });
-    expect(await handleInboundWebhook(bare, sign(bare), deps)).toEqual({ status: 'unknown_tenant' });
 
     const composite = body({ metadata: { user_id: 'acme:alice', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' } });
     expect(await handleInboundWebhook(composite, sign(composite), deps)).toEqual({ status: 'unknown_tenant' });
@@ -240,6 +317,100 @@ describe('handleInboundWebhook', () => {
       status: 'bad_payload',
     });
     expect(rec.calls).toHaveLength(0);
+  });
+
+  test('offboarded person → skipped_offboarded drop receipt; no classify, no ingest', async () => {
+    const raw = body();
+    const rec = recorder();
+    const cls = classifyStub(true);
+    const drop = dropRecorder();
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: rec.fn,
+        classify: cls.fn,
+        recordDrop: drop.fn,
+        getTechnician: async () => techRow({ state: 'offboarded' }),
+      }),
+    );
+    expect(result).toEqual({ status: 'skipped_offboarded' });
+    expect(rec.calls).toHaveLength(0);
+    expect(cls.calls).toHaveLength(0); // roster check runs before the model call
+    expect(drop.calls[0]).toMatchObject({
+      tenantId: TENANT,
+      technicianRef: 'tech-test',
+      reason: 'offboarded',
+      externalId: 'gmail-msg-1',
+    });
+  });
+
+  test('offboarding (grace period) is treated the same as offboarded', async () => {
+    const raw = body();
+    const drop = dropRecorder();
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({ recordDrop: drop.fn, getTechnician: async () => techRow({ state: 'offboarding' }) }),
+    );
+    expect(result).toEqual({ status: 'skipped_offboarded' });
+    expect(drop.calls).toHaveLength(1);
+  });
+
+  test('unknown ref → ingested AND flagged for manager review (keep the mail, never lose it)', async () => {
+    const raw = body();
+    const rec = recorder();
+    const flag = flagRecorder();
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({ recordFieldNote: rec.fn, flagReview: flag.fn, getTechnician: async () => null }),
+    );
+    expect(result).toEqual({ status: 'ingested', captureId: 'cap-1' });
+    expect(rec.calls).toHaveLength(1); // the capture landed
+    expect(flag.calls[0]).toMatchObject({
+      tenantId: TENANT,
+      subjectRef: 'tech-test',
+      externalId: 'gmail-msg-1',
+    });
+  });
+
+  test('unknown ref + duplicate redelivery → NOT re-flagged (resolved items stay resolved)', async () => {
+    const raw = body();
+    const flag = flagRecorder();
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: recorder({ status: 'duplicate', captureId: 'cap-dup' }).fn,
+        flagReview: flag.fn,
+        getTechnician: async () => null,
+      }),
+    );
+    expect(result).toEqual({ status: 'duplicate', captureId: 'cap-dup' });
+    expect(flag.calls).toHaveLength(0);
+  });
+
+  test('active (known) ref → no review flag', async () => {
+    const raw = body();
+    const flag = flagRecorder();
+    await handleInboundWebhook(raw, sign(raw), baseDeps({ flagReview: flag.fn }));
+    expect(flag.calls).toHaveLength(0);
+  });
+
+  test('a failing flag write is advisory: the ingest still succeeds', async () => {
+    const raw = body();
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        getTechnician: async () => null,
+        flagReview: async () => {
+          throw new Error('review_items unavailable');
+        },
+      }),
+    );
+    expect(result).toEqual({ status: 'ingested', captureId: 'cap-1' });
   });
 
   test('duplicate from recordFieldNote surfaces as duplicate', async () => {
@@ -281,18 +452,59 @@ describe('handleInboundWebhook', () => {
     expect(rec.calls).toHaveLength(0);
   });
 
-  test('#4: unknown tenant → unknown_tenant, classifier and recordFieldNote NOT called', async () => {
+  test('#4: unknown tenant (roster miss + tenantExists false) → unknown_tenant, classifier and recordFieldNote NOT called', async () => {
     const raw = body();
     const rec = recorder();
     const cls = classifyStub(true);
     const result = await handleInboundWebhook(
       raw,
       sign(raw),
-      baseDeps({ tenantExists: async () => false, recordFieldNote: rec.fn, classify: cls.fn }),
+      baseDeps({
+        getTechnician: async () => null,
+        tenantExists: async () => false,
+        recordFieldNote: rec.fn,
+        classify: cls.fn,
+      }),
     );
     expect(result).toEqual({ status: 'unknown_tenant' });
     expect(cls.calls).toHaveLength(0);
     expect(rec.calls).toHaveLength(0);
+  });
+
+  test('bare NON-uuid user_id (no colon) → bad_payload at the shape check, before any lookup', async () => {
+    const raw = body({ metadata: { user_id: 'acme', trigger_slug: 'GMAIL_NEW_GMAIL_MESSAGE' } });
+    const tenantChecks: string[] = [];
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        tenantExists: async (id) => {
+          tenantChecks.push(id);
+          return true;
+        },
+      }),
+    );
+    expect(result).toEqual({ status: 'bad_payload' }); // shape check wins over uuid check
+    expect(tenantChecks).toHaveLength(0);
+  });
+
+  test('non-work mail from an UNKNOWN ref is dropped AND flagged (typo pairing surfaces on personal mail too)', async () => {
+    const raw = body();
+    const drop = dropRecorder();
+    const flag = flagRecorder();
+    const result = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        getTechnician: async () => null,
+        classify: classifyStub(false).fn,
+        recordDrop: drop.fn,
+        flagReview: flag.fn,
+      }),
+    );
+    expect(result).toEqual({ status: 'skipped_non_work' });
+    expect(drop.calls).toHaveLength(1);
+    expect(flag.calls[0]).toMatchObject({ subjectRef: 'tech-test', externalId: 'gmail-msg-1' });
   });
 
   test('non-work → skipped_non_work, recordFieldNote NOT called, content-free audit written', async () => {

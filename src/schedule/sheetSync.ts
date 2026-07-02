@@ -1,5 +1,6 @@
 import { google } from 'googleapis';
-import { upsertScheduleEntry } from '../db/index.js';
+import { isInactiveState, listTeam, upsertOpenReviewItem, upsertScheduleEntry } from '../db/index.js';
+import { closestRef } from './refSuggest.js';
 
 // One row read from the manager's schedule sheet. rowKey is a STABLE id for the
 // sheet row so re-syncing updates in place rather than duplicating.
@@ -75,13 +76,39 @@ const googleSheetReader: SheetReader = async (spreadsheetId) => {
 // One-way Sheet → spine sync (manager edits the sheet; we mirror it). Idempotent
 // via upsertScheduleEntry's (tenant_id, external_row_key) conflict target.
 // Write-back of resolved customer/job ids is deferred to a later phase.
+//
+// LOOSE ref enforcement (decided 2026-07-02): a row whose technician column
+// matches no roster ref is STILL upserted (the sheet is the manager's ground
+// truth; a typo must not break the whole sync) but flagged to the manager with
+// a did-you-mean suggestion — an unmatched ref otherwise disables
+// schedule-assisted matching for that person with no error anywhere.
 export async function syncScheduleFromSheet(
   tenantId: string,
   spreadsheetId: string,
-  deps: { read?: SheetReader } = {},
-): Promise<{ upserted: number }> {
+  deps: {
+    read?: SheetReader;
+    roster?: typeof listTeam;
+    flagReview?: typeof upsertOpenReviewItem;
+  } = {},
+): Promise<{ upserted: number; flagged: number }> {
   const read = deps.read ?? googleSheetReader;
+  const roster = deps.roster ?? listTeam;
+  const flagReview = deps.flagReview ?? upsertOpenReviewItem;
   const rows = await read(spreadsheetId);
+  // One roster read per sync. Offboarding/offboarded people are not valid
+  // schedule targets — their refs flag like any other unknown value.
+  // A roster-read failure hard-fails the sync ON PURPOSE: nothing has been
+  // upserted yet (no partial state) and the periodic sync retries next run —
+  // unlike the per-row flag write below, which is advisory.
+  const team = await roster(tenantId);
+  const known = new Set(team.filter((t) => !isInactiveState(t.state)).map((t) => t.ref));
+  const knownRefs = [...known]; // hoisted: closestRef runs per unmatched row
+  // An EMPTY roster means this tenant hasn't adopted the technicians table yet
+  // (pre-backfill) — flagging would open one review item per unique sheet ref,
+  // all with null suggestions: a queue flood with zero signal. Validate only
+  // once at least one active roster row exists.
+  const rosterAdopted = known.size > 0;
+  let flagged = 0;
   for (const row of rows) {
     await upsertScheduleEntry({
       tenantId,
@@ -96,6 +123,24 @@ export async function syncScheduleFromSheet(
       scheduledStart: row.scheduledStart ?? null,
       scheduledEnd: row.scheduledEnd ?? null,
     });
+    if (rosterAdopted && !known.has(row.technicianRef)) {
+      // Advisory, like the webhook's unknown-ref flag: a failed flag write must
+      // not abort the import mid-loop (the upsert above is the ground truth).
+      // Concrete trigger: upsertOpenReviewItem throws if the manager resolves
+      // the open item between its insert-conflict and follow-up select.
+      try {
+        await flagReview({
+          tenantId,
+          kind: 'sheet_ref_mismatch',
+          subjectRef: row.technicianRef,
+          suggestion: closestRef(row.technicianRef, knownRefs),
+          detail: { rowKey: row.rowKey },
+        });
+        flagged++;
+      } catch {
+        /* advisory */
+      }
+    }
   }
-  return { upserted: rows.length };
+  return { upserted: rows.length, flagged };
 }

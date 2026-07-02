@@ -101,7 +101,8 @@ Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config
 
 ## Verify (end-to-end)
 - Host→doorman→Render: `curl -X POST http://172.18.0.1:3001/mcp -H "Authorization: Bearer <badge>" …
-  '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + 7 tools.
+  '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + 7 tools (technician-tier badge;
+  an ACTIVE manager-tier roster row lists 12 — nemoclaw-tech-agent.md §4, 2026-07-02).
 - Agent: message the bot ("list recent captures") → OCSF on host shows
   `ALLOWED /usr/local/bin/node(<pid>) -> host.openshell.internal:3001 [policy:trades_spine_doorman]` and the bot
   returns real data.

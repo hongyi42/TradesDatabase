@@ -13,6 +13,12 @@ each L2 row). Every structured field links back to the raw evidence it came from
 - **L1 (`raw_captures`) is append-only** — insert only, never update or delete (enforced by a DB trigger too).
   Because there is no delete path, **any filtering/classification (e.g. work-vs-personal email) must gate
   the L1 insert — run it _before_ writing, never after**, or misrouted rows are retained permanently.
+  - *Recorded exception (2026-07-02):* mail arriving while a Gmail pairing is still
+    `pending_verification` (the window between OAuth consent and the manager confirming the
+    account) is ingested normally rather than gated — silently dropping real work mail in that
+    window is worse than retaining rows from a mis-paired mailbox. Each such capture is stamped
+    in its source metadata (`pendingVerification: true` + `pendingAccount: <connected-account id>`,
+    see `src/inbound/webhook.ts`) so a bad pairing's rows are findable for forensics.
 - Test writes target the **test** Supabase project only; **prod is read-only**. Tests self-clean rows they create.
 
 ## Communication defaults

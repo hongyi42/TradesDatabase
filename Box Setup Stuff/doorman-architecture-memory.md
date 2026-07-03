@@ -59,7 +59,18 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
   the only copy of the plaintext: install it as the sandbox's provider credential
   (`openshell provider update <AGENT>-telegram-bridge --credential TRADES_SPINE_BADGE=<badge>`,
   mind the Placeholder VERSIONING trap below), then delete the line. Deactivated people flip to
-  `revoked:true` on the next pull. Hand edits remain the bootstrap/faster-than-poll fallback.
+  `revoked:true` on the next pull.
+  **Pull-host rules (hard-won):** (1) BEFORE enabling the timer on a host with existing badges,
+  have the server side register each badge's fingerprint (`assign-host.mjs set-badge ref=… hash=…`)
+  — the pull regenerates the file WHOLESALE from the roster, so unregistered entries are erased
+  and competing badges minted (installed credentials then 403 with no signal). (2) Hand edits
+  last at most one poll: a hand-set `revoked:true` is silently UN-revoked ≤5 min later while the
+  roster row is active — leaked badge = server-side `rotate-badge` (old badge dies next pull,
+  replacement mints), person removal = deactivate in the roster. (3) Upgrading a legacy
+  plaintext-keyed host: copy the new doorman.mjs, rekey every key to its sha256
+  (`python3` one-liner over the file), restore doorman:doorman 600, `systemctl restart doorman`
+  back-to-back — a few seconds of 403s; NO dual-read fallback exists ON PURPOSE (it would turn a
+  leaked file's fingerprints into usable bearer tokens).
 - Reference badge (identity `tech-jane`, tenant `82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18`):
   `3a6fb336ec39071493a98a1a44773a7b7fa09e73df61c9c71c9f11b3cd7e27ba`. Reusable across boxes (the doorman's
   `badges.json` + secret define validity) — its badges.json KEY is now that value's sha256.

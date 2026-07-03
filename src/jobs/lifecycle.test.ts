@@ -46,7 +46,7 @@ function row(over: Partial<Technician>): Technician {
   };
 }
 
-const EXPIRE_OK = { scanned: 0, stamped: 0, reminded: 0, expired: 0, failed: 0 };
+const EXPIRE_OK = { scanned: 0, stamped: 0, reminded: 0, expired: 0, raced: 0, failed: 0 };
 
 describe('runLifecycle', () => {
   test('sweeps only rows with a link issued; counts paired; sheet skipped when unconfigured', async () => {

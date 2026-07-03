@@ -37,15 +37,23 @@ function tech(over: Partial<Technician> = {}): Technician {
   };
 }
 
-// Recording stubs for the two db seams.
-function dbStubs() {
+// Recording stubs for the db seams. casMiss simulates a concurrent writer
+// having won the state race (casTechnician → null).
+function dbStubs(opts: { casMiss?: boolean } = {}) {
   const patches: Array<{ id: string; patch: TechnicianPatch }> = [];
+  const casCalls: Array<{ id: string; from: string; patch: TechnicianPatch }> = [];
   const items: UpsertOpenReviewItemInput[] = [];
   return {
     patches,
+    casCalls,
     items,
     update: async (id: string, patch: TechnicianPatch) => {
       patches.push({ id, patch });
+      return tech({ id, ...patch } as Partial<Technician>);
+    },
+    cas: async (id: string, from: string, patch: TechnicianPatch) => {
+      casCalls.push({ id, from, patch });
+      if (opts.casMiss) return null;
       return tech({ id, ...patch } as Partial<Technician>);
     },
     openReviewItem: async (input: UpsertOpenReviewItemInput) => {
@@ -53,6 +61,11 @@ function dbStubs() {
       return { id: 'item-1' } as ReviewItem;
     },
   };
+}
+
+// Everything checkPairing/unpair need, from one stub set.
+function pairingDeps(db: ReturnType<typeof dbStubs>, client: PairingClient) {
+  return { client, update: db.update, cas: db.cas, openReviewItem: db.openReviewItem };
 }
 
 // Configurable Composio client stub; records every call.
@@ -148,11 +161,7 @@ describe('checkPairing', () => {
     const db = dbStubs();
     const { client, calls } = clientStub({ accounts: [ACTIVE_GMAIL] });
     for (const state of ['pending_verification', 'active', 'offboarding', 'offboarded'] as const) {
-      const r = await checkPairing(tech({ state }), {
-        client,
-        update: db.update,
-        openReviewItem: db.openReviewItem,
-      });
+      const r = await checkPairing(tech({ state }), pairingDeps(db, client));
       expect(r).toEqual({ status: 'no_op', reason: `state is ${state}` });
     }
     expect(calls).toHaveLength(0); // never even lists accounts
@@ -164,44 +173,77 @@ describe('checkPairing', () => {
     const { client } = clientStub({
       accounts: [{ id: 'ca_x', status: 'INITIATED', toolkit: { slug: 'gmail' } }],
     });
-    const r = await checkPairing(tech(), { client, update: db.update, openReviewItem: db.openReviewItem });
+    const r = await checkPairing(tech(), pairingDeps(db, client));
     expect(r).toEqual({ status: 'not_connected' });
-    expect(db.patches).toHaveLength(0);
+    expect(db.casCalls).toHaveLength(0);
   });
 
-  test('paired: ensures trigger, fetches email, persists inventory, advances state, opens the item', async () => {
+  test('paired: claims via CAS, opens the item, then ensures the trigger LAST', async () => {
     const db = dbStubs();
     const { client, calls } = clientStub({ accounts: [ACTIVE_GMAIL] });
-    const r = await checkPairing(tech(), { client, update: db.update, openReviewItem: db.openReviewItem });
+    const r = await checkPairing(tech(), pairingDeps(db, client));
     expect(r).toEqual({ status: 'paired', connectedAccountId: 'ca_abc123', email: 'jane.doe@gmail.com' });
 
-    // Trigger created (none existed), PINNED to the verified account, and the
-    // adoption list filtered to our trigger type.
-    const listCall = calls.find((c) => c.method === 'triggers.listActive')!;
-    expect(listCall.args[0]).toMatchObject({
+    // The claim carries the inventory + state and races on 'invited'.
+    expect(db.casCalls[0]).toMatchObject({
+      from: 'invited',
+      patch: {
+        composio_connected_account_id: 'ca_abc123',
+        connected_email: 'jane.doe@gmail.com',
+        state: 'pending_verification',
+      },
+    });
+    // Trigger created (none existed), PINNED to the verified account, adoption
+    // list filtered to our trigger type — and only AFTER the claim, so the
+    // earliest deliveries can't dodge the webhook's pending stamp.
+    const listIdx = calls.findIndex((c) => c.method === 'triggers.listActive');
+    const createIdx = calls.findIndex((c) => c.method === 'triggers.create');
+    const execIdx = calls.findIndex((c) => c.method === 'tools.execute');
+    expect(execIdx).toBeLessThan(listIdx); // profile fetched before the claim/trigger
+    expect(calls[listIdx].args[0]).toMatchObject({
       connectedAccountIds: ['ca_abc123'],
       triggerNames: ['GMAIL_NEW_GMAIL_MESSAGE'],
     });
-    const create = calls.find((c) => c.method === 'triggers.create')!;
-    expect(create.args[2]).toMatchObject({ connectedAccountId: 'ca_abc123' });
-    const exec = calls.find((c) => c.method === 'tools.execute')!;
-    expect(exec.args[0]).toBe('GMAIL_GET_PROFILE');
-    expect(exec.args[1]).toMatchObject({
+    expect(calls[createIdx].args[2]).toMatchObject({ connectedAccountId: 'ca_abc123' });
+    expect(calls[execIdx].args[1]).toMatchObject({
       connectedAccountId: 'ca_abc123',
       dangerouslySkipVersionCheck: true,
     });
-
-    expect(db.patches[0].patch).toMatchObject({
-      composio_connected_account_id: 'ca_abc123',
-      composio_trigger_id: 'ti_new123',
-      connected_email: 'jane.doe@gmail.com',
-      state: 'pending_verification',
-    });
+    // The trigger id lands in a follow-up write; the item detail is complete.
+    expect(db.patches[0].patch).toEqual({ composio_trigger_id: 'ti_new123' });
     expect(db.items[0]).toMatchObject({
       kind: 'pairing_verification',
       subjectRef: 'jane-doe',
       detail: { email: 'jane.doe@gmail.com', connectedAccountId: 'ca_abc123' },
     });
+  });
+
+  test('a lost CAS (concurrent deactivate or second sweep) stops before any trigger exists', async () => {
+    const db = dbStubs({ casMiss: true });
+    const { client, calls } = clientStub({ accounts: [ACTIVE_GMAIL] });
+    const r = await checkPairing(tech(), pairingDeps(db, client));
+    expect(r).toEqual({ status: 'no_op', reason: 'state changed concurrently' });
+    expect(calls.map((c) => c.method)).not.toContain('triggers.create'); // no duplicate trigger
+    expect(db.items).toHaveLength(0); // and no review item for a row we don't own
+  });
+
+  test('healing branch: a claimed row missing its trigger gets one, nothing else moves', async () => {
+    const db = dbStubs();
+    const { client, calls } = clientStub();
+    const r = await checkPairing(
+      tech({
+        state: 'pending_verification',
+        composio_connected_account_id: 'ca_abc123',
+        connected_email: 'jane.doe@gmail.com',
+        composio_trigger_id: null,
+      }),
+      pairingDeps(db, client),
+    );
+    expect(r).toEqual({ status: 'paired', connectedAccountId: 'ca_abc123', email: 'jane.doe@gmail.com' });
+    expect(calls.map((c) => c.method)).toContain('triggers.create');
+    expect(db.patches[0].patch).toEqual({ composio_trigger_id: 'ti_new123' });
+    expect(db.casCalls).toHaveLength(0); // no re-claim
+    expect(db.items).toHaveLength(0); // the item opened once, at the claim
   });
 
   test('idempotent on an existing trigger: adopts it, never calls create', async () => {
@@ -210,17 +252,17 @@ describe('checkPairing', () => {
       accounts: [ACTIVE_GMAIL],
       activeTriggers: [{ id: 'ti_existing' }],
     });
-    await checkPairing(tech(), { client, update: db.update, openReviewItem: db.openReviewItem });
+    await checkPairing(tech(), pairingDeps(db, client));
     expect(calls.map((c) => c.method)).not.toContain('triggers.create');
     expect(db.patches[0].patch.composio_trigger_id).toBe('ti_existing');
   });
 
-  test('profile fetch failure is advisory: still paired, email null in row and item', async () => {
+  test('profile fetch failure is advisory: still paired, email null in claim and item', async () => {
     const db = dbStubs();
     const { client } = clientStub({ accounts: [ACTIVE_GMAIL], profileThrows: true });
-    const r = await checkPairing(tech(), { client, update: db.update, openReviewItem: db.openReviewItem });
+    const r = await checkPairing(tech(), pairingDeps(db, client));
     expect(r).toEqual({ status: 'paired', connectedAccountId: 'ca_abc123', email: null });
-    expect(db.patches[0].patch.connected_email).toBeNull();
+    expect(db.casCalls[0].patch.connected_email).toBeNull();
     expect(db.items[0].detail).toMatchObject({ email: null });
   });
 
@@ -230,7 +272,7 @@ describe('checkPairing', () => {
       accounts: [ACTIVE_GMAIL],
       profileData: { response_data: { emailAddress: 'nested@gmail.com' } },
     });
-    const r = await checkPairing(tech(), { client, update: db.update, openReviewItem: db.openReviewItem });
+    const r = await checkPairing(tech(), pairingDeps(db, client));
     expect(r).toMatchObject({ email: 'nested@gmail.com' });
   });
 });
@@ -245,43 +287,49 @@ describe('unpair', () => {
       link_issued_at: '2026-07-02T20:00:00.000Z',
     });
 
-  test('deletes trigger then account, clears the inventory, returns to invited', async () => {
+  test('deletes trigger then account, clears the inventory via CAS, returns to invited', async () => {
     const db = dbStubs();
     const { client, calls } = clientStub();
-    await unpair(paired(), { client, update: db.update });
+    await unpair(paired(), pairingDeps(db, client));
     expect(calls.map((c) => c.method)).toEqual(['triggers.delete', 'accounts.delete']); // trigger FIRST
-    expect(db.patches[0].patch).toEqual({
-      composio_connected_account_id: null,
-      composio_trigger_id: null,
-      connected_email: null,
-      link_issued_at: null,
-      state: 'invited',
+    // CAS from pending_verification: a deactivation landing mid-teardown wins
+    // and its state is left alone.
+    expect(db.casCalls[0]).toMatchObject({
+      from: 'pending_verification',
+      patch: {
+        composio_connected_account_id: null,
+        composio_trigger_id: null,
+        connected_email: null,
+        link_issued_at: null,
+        state: 'invited',
+      },
     });
   });
 
-  test('swallows 404s (already deleted); rethrows anything else', async () => {
+  test('swallows only REAL API 404s; network errors and lying 500s rethrow', async () => {
     const db = dbStubs();
-    // Status-attached API error (the client's real shape) — swallowed.
+    // Status-attached API 404 (the client's real already-deleted shape) — swallowed.
     const apiNotFound = clientStub({
       deleteThrows: () => Object.assign(new Error('boom'), { status: 404 }),
     });
-    await unpair(paired(), { client: apiNotFound.client, update: db.update });
-    // Message-only fallback for non-API error shapes — also swallowed.
-    const notFound = clientStub({ deleteThrows: () => new Error('404 not found') });
-    await unpair(paired(), { client: notFound.client, update: db.update });
-    expect(db.patches).toHaveLength(2); // teardown completed despite the 404s
+    await unpair(paired(), pairingDeps(db, apiNotFound.client));
+    expect(db.casCalls).toHaveLength(1); // teardown completed despite the 404s
+
+    // A DNS failure whose message happens to contain "NOTFOUND" must RETHROW —
+    // swallowing it would let a network outage masquerade as already-deleted
+    // (review finding: /not[ _-]?found/i matched ENOTFOUND).
+    const dnsDown = clientStub({
+      deleteThrows: () => new Error('getaddrinfo ENOTFOUND backend.composio.dev'),
+    });
+    await expect(unpair(paired(), pairingDeps(db, dnsDown.client))).rejects.toThrow('ENOTFOUND');
 
     const broken = clientStub({ deleteThrows: () => new Error('500 internal error') });
-    await expect(unpair(paired(), { client: broken.client, update: db.update })).rejects.toThrow(
-      '500',
-    );
+    await expect(unpair(paired(), pairingDeps(db, broken.client))).rejects.toThrow('500');
     // A 500 whose BODY mentions "not found" must NOT be swallowed (status wins).
     const lying = clientStub({
       deleteThrows: () => Object.assign(new Error('upstream said not found'), { status: 500 }),
     });
-    await expect(unpair(paired(), { client: lying.client, update: db.update })).rejects.toThrow(
-      'not found',
-    );
-    expect(db.patches).toHaveLength(2); // no extra patches — inventory NOT cleared on failure
+    await expect(unpair(paired(), pairingDeps(db, lying.client))).rejects.toThrow('not found');
+    expect(db.casCalls).toHaveLength(1); // no extra writes — inventory NOT cleared on failure
   });
 });

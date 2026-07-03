@@ -55,18 +55,23 @@ export async function runLifecycle(
     );
     let paired = 0;
     let rowErrors = 0;
+    let attempts = 0;
     for (const row of rows) {
       try {
-        if ((await check(row)).status === 'paired') paired++;
+        const result = await check(row);
+        if (result.status !== 'no_op') attempts++; // no_op rows can't error
+        if (result.status === 'paired') paired++;
       } catch {
+        attempts++;
         rowErrors++;
       }
     }
     pairing = { checked: rows.length, paired, rowErrors };
-    // EVERY row failing is systemic (bad/revoked key, Composio down), not a
-    // blip — go red so Render surfaces it instead of showing green while
-    // pairing is dead indefinitely (review finding).
-    if (rows.length > 0 && rowErrors === rows.length) ok = false;
+    // EVERY attempted row failing is systemic (bad/revoked key, Composio
+    // down), not a blip — go red so Render surfaces it. Measured against
+    // ATTEMPTS, not rows: pending_verification no-ops never call Composio and
+    // would dilute the detector into permanent green (review finding).
+    if (attempts > 0 && rowErrors === attempts) ok = false;
   } catch (err) {
     pairing = { stepError: msg(err) };
     ok = false;
@@ -101,7 +106,12 @@ export async function runLifecycle(
 
 async function main(): Promise<void> {
   const summary = await runLifecycle(new Date().toISOString());
-  console.log(JSON.stringify(summary));
+  // Drain stdout BEFORE exiting: on a pipe (Render cron logs) process.exit
+  // tears the process down without flushing async writes, losing the one
+  // diagnostic line exactly on the failed runs that need it (review finding).
+  await new Promise<void>((resolve) => {
+    process.stdout.write(JSON.stringify(summary) + '\n', () => resolve());
+  });
   process.exit(summary.ok ? 0 : 1);
 }
 

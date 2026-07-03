@@ -1,7 +1,7 @@
 import {
+  claimBadgeHash,
   isInactiveState,
   listTechniciansForHost,
-  updateTechnician,
   type Technician,
 } from '../db/index.js';
 import { mintBadge } from './badges.js';
@@ -34,11 +34,11 @@ export async function buildBadgeResponse(
   hostId: string,
   deps: {
     list?: typeof listTechniciansForHost;
-    update?: typeof updateTechnician;
+    claim?: typeof claimBadgeHash;
   } = {},
 ): Promise<BadgeResponse> {
   const list = deps.list ?? listTechniciansForHost;
-  const update = deps.update ?? updateTechnician;
+  const claim = deps.claim ?? claimBadgeHash;
   const rows = await list(hostId);
   const badgesFile: BadgeResponse['badgesFile'] = {};
   const newBadges: BadgeResponse['newBadges'] = [];
@@ -46,14 +46,27 @@ export async function buildBadgeResponse(
   for (const row of rows) {
     let current: Technician = row;
     if (!current.badge_hash && !isInactiveState(current.state)) {
-      const minted = mintBadge();
-      current = await update(current.id, { badge_hash: minted.hash });
-      newBadges.push({
-        ref: current.ref,
-        tenantId: current.tenant_id,
-        sandboxRef: current.sandbox_ref,
-        badge: minted.badge,
-      });
+      // Per-row isolation: one row's failed write must not abort the pull —
+      // earlier rows' plaintexts (the only copy) would die with the 500
+      // (review finding). A skipped row simply mints on the next pull.
+      try {
+        const minted = mintBadge();
+        // claim = write-if-still-null: two overlapping pulls can't each mint
+        // and overwrite the other's hash, which would hand one installer a
+        // dead credential (review finding). The loser ships nothing this
+        // round and returns the winner's entry on its next pull.
+        const claimed = await claim(current.id, minted.hash);
+        if (!claimed) continue;
+        current = claimed;
+        newBadges.push({
+          ref: current.ref,
+          tenantId: current.tenant_id,
+          sandboxRef: current.sandbox_ref,
+          badge: minted.badge,
+        });
+      } catch {
+        continue;
+      }
     }
     if (!current.badge_hash) continue; // never-minted inactive row — nothing to ship
     badgesFile[current.badge_hash] = {

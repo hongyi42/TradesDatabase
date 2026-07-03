@@ -120,6 +120,54 @@ export async function updateTechnician(id: string, patch: TechnicianPatch): Prom
   return data;
 }
 
+// Compare-and-swap state transition: the patch lands ONLY if the row is still
+// in fromState — null means another writer got there first and the caller must
+// treat its snapshot as stale. Every lifecycle transition goes through this:
+// the deactivate/reactivate tools and the cron's pairing/expiry sweeps all
+// read-then-write with seconds of Composio I/O in between, and an unguarded
+// UPDATE-by-id lets the slower writer silently reverse the faster one
+// (observed candidates: expiry permanently offboarding a just-reactivated
+// person; a pairing sweep resurrecting a just-deactivated one).
+export async function casTechnician(
+  id: string,
+  fromState: TechnicianState,
+  patch: TechnicianPatch,
+): Promise<Technician | null> {
+  const { data, error } = await getClient()
+    .from('technicians')
+    .update(patch)
+    .eq('id', id)
+    .eq('state', fromState)
+    .select()
+    .maybeSingle();
+  if (error) {
+    throw Object.assign(new Error(`casTechnician failed: ${error.message}`), {
+      code: error.code,
+    });
+  }
+  return data;
+}
+
+// Mint-claim for a badge fingerprint: writes ONLY if no badge exists yet, so
+// two overlapping pulls can't each mint and overwrite the other's hash (the
+// installed plaintext would then match nothing — a dead credential with no
+// error signal). Loser gets null and ships the winner's entry instead.
+export async function claimBadgeHash(id: string, hash: string): Promise<Technician | null> {
+  const { data, error } = await getClient()
+    .from('technicians')
+    .update({ badge_hash: hash })
+    .eq('id', id)
+    .is('badge_hash', null)
+    .select()
+    .maybeSingle();
+  if (error) {
+    throw Object.assign(new Error(`claimBadgeHash failed: ${error.message}`), {
+      code: error.code,
+    });
+  }
+  return data;
+}
+
 export async function setTechnicianState(
   id: string,
   state: TechnicianState,

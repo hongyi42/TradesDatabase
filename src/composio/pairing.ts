@@ -1,5 +1,6 @@
 import { Composio } from '@composio/core';
 import {
+  casTechnician,
   updateTechnician,
   upsertOpenReviewItem,
   type Technician,
@@ -70,6 +71,7 @@ function asItems(listResult: unknown): ConnectedAccountItem[] {
 export interface PairingDeps {
   client?: PairingClient;
   update?: typeof updateTechnician;
+  cas?: typeof casTechnician;
   openReviewItem?: typeof upsertOpenReviewItem;
 }
 
@@ -104,38 +106,33 @@ export async function checkPairing(
   tech: Technician,
   deps: PairingDeps = {},
 ): Promise<CheckPairingResult> {
-  if (tech.state !== 'invited') return { status: 'no_op', reason: `state is ${tech.state}` };
   const client = deps.client ?? getComposio();
   const update = deps.update ?? updateTechnician;
+  const cas = deps.cas ?? casTechnician;
   const openReviewItem = deps.openReviewItem ?? upsertOpenReviewItem;
+
+  // Healing branch: a prior run CLAIMED the row (state advanced, item open)
+  // but died before the trigger landed. Finish the trigger, touch nothing else.
+  if (
+    tech.state === 'pending_verification' &&
+    tech.composio_connected_account_id &&
+    !tech.composio_trigger_id
+  ) {
+    const healedId = await ensureTrigger(client, tech, tech.composio_connected_account_id);
+    await update(tech.id, { composio_trigger_id: healedId ?? null });
+    return {
+      status: 'paired',
+      connectedAccountId: tech.composio_connected_account_id,
+      email: tech.connected_email,
+    };
+  }
+  if (tech.state !== 'invited') return { status: 'no_op', reason: `state is ${tech.state}` };
 
   const accounts = asItems(await client.connectedAccounts.list({ userIds: [compositeUserId(tech)] }));
   const active = accounts.find(
     (it) => it.toolkit?.slug === 'gmail' && String(it.status).toUpperCase() === 'ACTIVE',
   );
   if (!active) return { status: 'not_connected' };
-
-  // Ensure the Gmail trigger — triggers.create errors on repeat, so list first
-  // (filtered to OUR trigger type, so an unrelated trigger on the account can
-  // never be adopted as ti_* and later disabled/deleted by offboarding).
-  const existing = asItems(
-    await client.triggers.listActive({
-      connectedAccountIds: [active.id],
-      triggerNames: ['GMAIL_NEW_GMAIL_MESSAGE'],
-    }),
-  );
-  let triggerId = existing[0]?.id as string | undefined;
-  if (!triggerId) {
-    const created = await client.triggers.create(compositeUserId(tech), 'GMAIL_NEW_GMAIL_MESSAGE', {
-      // Pin to the verified ACTIVE account: without this the SDK attaches the
-      // trigger to "the first connected account for the user" — which can be a
-      // stale INITIATED request from an abandoned link, silently leaving the
-      // real mailbox untriggered (review finding).
-      connectedAccountId: active.id,
-      triggerConfig: { interval: 1, labelIds: 'INBOX', userId: 'me' },
-    });
-    triggerId = (created.triggerId ?? created.id) as string | undefined;
-  }
 
   // Which mailbox actually connected? The SDK's typed account object exposes
   // no email field (verified offline 2026-07-02), so ask Gmail itself, pinned
@@ -163,30 +160,70 @@ export async function checkPairing(
     `[pairing] account object keys for ${tech.ref}: ${Object.keys(active).join(', ')}`,
   );
 
-  await update(tech.id, {
+  // CLAIM the row before the trigger goes live (CAS on 'invited'). Three races
+  // die here at the DB level (review findings):
+  //  - a concurrent deactivate is never overwritten — the CAS misses and this
+  //    sweep stops instead of resurrecting a removed person;
+  //  - a concurrent second checkPairing (cron tick + get_connect_link) loses
+  //    the CAS before it can create a duplicate trigger;
+  //  - deliveries can only start once the trigger exists (below), by which
+  //    time the row is already pending_verification — the webhook's
+  //    pendingVerification stamp can no longer miss the earliest captures.
+  const claimed = await cas(tech.id, 'invited', {
     composio_connected_account_id: active.id,
-    composio_trigger_id: triggerId ?? null,
     connected_email: email,
     state: 'pending_verification',
   });
+  if (!claimed) return { status: 'no_op', reason: 'state changed concurrently' };
   await openReviewItem({
     tenantId: tech.tenant_id,
     kind: 'pairing_verification',
     subjectRef: tech.ref,
     detail: { email, connectedAccountId: active.id },
   });
+  // Trigger LAST (see the claim comment). If this throws, the claim + item
+  // stand and the next sweep's healing branch finishes the trigger.
+  const triggerId = await ensureTrigger(client, tech, active.id);
+  await update(tech.id, { composio_trigger_id: triggerId ?? null });
   return { status: 'paired', connectedAccountId: active.id, email };
 }
 
-// Already-deleted detection: the client attaches `.status` to API errors —
-// check that first; the message regex is only a fallback for non-API error
-// shapes (a 500 whose body says "not found" must NOT be swallowed).
-export function isGoneError(err: unknown): boolean {
-  return (
-    (err as { status?: number })?.status === 404 ||
-    (!(err as { status?: number })?.status &&
-      /404|not[ _-]?found/i.test(String((err as Error)?.message ?? err)))
+// Idempotent trigger provisioning: adopt OUR trigger type if it already exists
+// (triggers.create errors on repeat; the triggerNames filter keeps an
+// unrelated trigger from being adopted as ti_* and later torn down), else
+// create it PINNED to the verified account — without the pin the SDK attaches
+// to "the first connected account for the user", which can be a stale
+// INITIATED request from an abandoned link (review finding).
+async function ensureTrigger(
+  client: PairingClient,
+  tech: Technician,
+  connectedAccountId: string,
+): Promise<string | undefined> {
+  const existing = asItems(
+    await client.triggers.listActive({
+      connectedAccountIds: [connectedAccountId],
+      triggerNames: ['GMAIL_NEW_GMAIL_MESSAGE'],
+    }),
   );
+  let triggerId = existing[0]?.id as string | undefined;
+  if (!triggerId) {
+    const created = await client.triggers.create(compositeUserId(tech), 'GMAIL_NEW_GMAIL_MESSAGE', {
+      connectedAccountId,
+      triggerConfig: { interval: 1, labelIds: 'INBOX', userId: 'me' },
+    });
+    triggerId = (created.triggerId ?? created.id) as string | undefined;
+  }
+  return triggerId;
+}
+
+// Already-deleted detection: ONLY a real API 404 counts (the Composio client
+// attaches `.status` to API errors). No message-text fallback — the obvious
+// regex (/not[ _-]?found/i) also matches DNS failures like "getaddrinfo
+// ENOTFOUND backend.composio.dev" (review finding), which would let a network
+// outage masquerade as "already deleted" and permanently offboard people whose
+// Gmail grants were never actually torn down.
+export function isGoneError(err: unknown): boolean {
+  return (err as { status?: number })?.status === 404;
 }
 
 // Delete the Composio objects for a pairing — trigger FIRST (no deliveries
@@ -216,9 +253,12 @@ export async function deleteComposioPairing(tech: Technician, deps: PairingDeps 
 // so a fresh connect link can be issued (re-link() on an ACTIVE account would
 // throw ComposioMultipleConnectedAccountsError).
 export async function unpair(tech: Technician, deps: PairingDeps = {}): Promise<void> {
-  const update = deps.update ?? updateTechnician;
+  const cas = deps.cas ?? casTechnician;
   await deleteComposioPairing(tech, deps);
-  await update(tech.id, {
+  // CAS: only a still-pending row returns to invited. If a deactivation landed
+  // mid-teardown, leave its state alone — the ids then point at objects this
+  // call just deleted, which the expiry teardown treats as already-gone (404).
+  await cas(tech.id, 'pending_verification', {
     composio_connected_account_id: null,
     composio_trigger_id: null,
     connected_email: null,

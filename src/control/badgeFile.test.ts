@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { Technician, TechnicianPatch } from '../db/technicians.js';
+import type { Technician } from '../db/technicians.js';
 import { sha256hex } from './badges.js';
 import { buildBadgeResponse } from './badgeFile.js';
 
@@ -29,16 +29,20 @@ function row(over: Partial<Technician>): Technician {
   };
 }
 
-// In-memory stand-ins for the two db calls buildBadgeResponse makes.
-function stubs(rows: Technician[]) {
-  const patches: Array<{ id: string; patch: TechnicianPatch }> = [];
+// In-memory stand-ins for the two db calls buildBadgeResponse makes. claim
+// mirrors claimBadgeHash's write-if-still-null contract; failIds simulates a
+// transient DB error for specific rows.
+function stubs(rows: Technician[], opts: { failIds?: string[] } = {}) {
+  const claims: Array<{ id: string; hash: string }> = [];
   return {
-    patches,
+    claims,
     list: async () => rows,
-    update: async (id: string, patch: TechnicianPatch) => {
-      patches.push({ id, patch });
+    claim: async (id: string, hash: string) => {
+      if (opts.failIds?.includes(id)) throw new Error('transient db blip');
+      claims.push({ id, hash });
       const target = rows.find((r) => r.id === id)!;
-      Object.assign(target, patch);
+      if (target.badge_hash) return null; // another pull already minted
+      target.badge_hash = hash;
       return target;
     },
   };
@@ -61,7 +65,44 @@ describe('buildBadgeResponse', () => {
     const second = await buildBadgeResponse(HOST, s);
     expect(second.newBadges).toHaveLength(0); // plaintext existed exactly once
     expect(second.badgesFile[hash]).toBeDefined();
-    expect(s.patches).toHaveLength(1); // no re-mint write either
+    expect(s.claims).toHaveLength(1); // no re-mint write either
+  });
+
+  test('one failing row is isolated; earlier rows still deliver their plaintext', async () => {
+    const rows = [
+      row({ id: 'ok-1', ref: 'first-fine' }),
+      row({ id: 'bad', ref: 'blips' }),
+      row({ id: 'ok-2', ref: 'also-fine' }),
+    ];
+    const s = stubs(rows, { failIds: ['bad'] });
+    const result = await buildBadgeResponse(HOST, s);
+    // Without isolation the whole pull 500s and rows minted before the failure
+    // lose their only plaintext copy (review finding).
+    expect(result.newBadges.map((b) => b.ref)).toEqual(['first-fine', 'also-fine']);
+    expect(Object.keys(result.badgesFile)).toHaveLength(2); // 'blips' mints next pull
+  });
+
+  test('overlapping pulls cannot double-mint: the loser ships nothing and self-heals next pull', async () => {
+    const winner = 'c'.repeat(64);
+    const snapshot = row({ id: 'a', ref: 'contested' }); // loser's stale read: badge_hash null
+    let dbHash: string | null = null;
+    const claim = async (_id: string, hash: string) => {
+      if (dbHash) return null; // the concurrent pull's write landed first
+      dbHash = hash;
+      return row({ id: 'a', ref: 'contested', badge_hash: hash });
+    };
+    dbHash = winner; // winner already minted between the loser's list and claim
+    const lost = await buildBadgeResponse(HOST, { list: async () => [snapshot], claim });
+    expect(lost.newBadges).toHaveLength(0); // loser hands out NO plaintext…
+    expect(Object.keys(lost.badgesFile)).toHaveLength(0); // …and no stale-guess entry
+
+    // The next pull lists the winner's hash from the DB and ships it normally.
+    const healed = await buildBadgeResponse(HOST, {
+      list: async () => [row({ id: 'a', ref: 'contested', badge_hash: winner })],
+      claim,
+    });
+    expect(healed.newBadges).toHaveLength(0);
+    expect(healed.badgesFile[winner]).toMatchObject({ technicianRef: 'contested' });
   });
 
   test('offboarding row WITH a badge ships revoked; never-minted inactive row is omitted (no "null" key)', async () => {

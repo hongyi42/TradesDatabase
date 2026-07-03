@@ -26,6 +26,14 @@
 #   EOF
 #   systemd: a oneshot service running this script + a timer (OnCalendar=*:0/5,
 #   Persistent=true). Needs curl + jq.
+#
+# ⚠ BEFORE the first enabled run on a host with EXISTING badges: this script
+#   replaces badges.json WHOLESALE with the server's roster view. Any badge the
+#   server doesn't know (hand-minted, bootstrap) is erased and a competitor
+#   minted — register each one first, server-side:
+#     assign-host.mjs set-badge ref=<ref> hash=<sha256 of the badge>
+#   The doorman must also be the fingerprint-lookup version (see the upgrade
+#   note in doorman-architecture-memory.md's badge section).
 set -euo pipefail
 
 ENV_FILE=/etc/doorman/badge-pull.env

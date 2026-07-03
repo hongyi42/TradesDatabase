@@ -703,10 +703,13 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(row2.rows[0].state).toBe('active');
       expect(row2.rows[0].offboarding_started_at).toBeNull();
 
-      // Not-deactivated and permanently-offboarded refusals.
-      const notOff = await callWith('reactivate_technician_seat', { ref: 'pair-probe' });
-      expect(notOff.isError).toBe(true);
-      expect(notOff.text).toContain('not deactivated');
+      // Reactivating an ACTIVE person with a pairing is the enablePairing
+      // RETRY surface (review finding: a Composio blip during reactivation
+      // otherwise left mail dark with no tool able to re-enable).
+      const retry = await callWith('reactivate_technician_seat', { ref: 'pair-probe' });
+      expect(retry.isError).toBe(false);
+      expect(retry.data).toMatchObject({ status: 'already_active', pairingRestored: true });
+      expect(enableCalls).toEqual(['pair-probe', 'pair-probe']); // the retry re-ran enable
       await updateTechnician(
         (await pg.query<{ id: string }>(
           "select id from technicians where tenant_id = $1 and ref = 'pair-two'",

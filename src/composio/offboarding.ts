@@ -1,8 +1,8 @@
 import {
+  casTechnician,
   flagOffboardingReminder,
-  findOpenReviewItem,
   listTechniciansInStates,
-  resolveReviewItem,
+  resolveOpenReviewItemFor,
   updateTechnician,
   type Technician,
 } from '../db/index.js';
@@ -30,10 +30,10 @@ export function graceDays(): number {
 export interface OffboardingDeps {
   client?: PairingClient;
   update?: typeof updateTechnician;
+  cas?: typeof casTechnician;
   listInStates?: typeof listTechniciansInStates;
   flagReminder?: typeof flagOffboardingReminder;
-  findOpenItem?: typeof findOpenReviewItem;
-  resolveItem?: typeof resolveReviewItem;
+  resolveItemFor?: typeof resolveOpenReviewItemFor;
 }
 
 // Switch a pairing OFF without destroying it. Throws on real failures —
@@ -72,7 +72,8 @@ export interface ExpireResult {
   stamped: number; // NULL clocks self-healed (deactivated between deploys)
   reminded: number;
   expired: number;
-  failed: number; // teardown failures — retried next run, state unchanged
+  raced: number; // reactivated between the list read and the claim — skipped
+  failed: number; // per-row write/teardown failures (see teardown note below)
 }
 
 // The grace-period sweep the lifecycle cron runs every 15 minutes.
@@ -81,15 +82,22 @@ export async function expireOffboarding(
   deps: OffboardingDeps = {},
 ): Promise<ExpireResult> {
   const update = deps.update ?? updateTechnician;
+  const cas = deps.cas ?? casTechnician;
   const listInStates = deps.listInStates ?? listTechniciansInStates;
   const flagReminder = deps.flagReminder ?? flagOffboardingReminder;
-  const findOpenItem = deps.findOpenItem ?? findOpenReviewItem;
-  const resolveItem = deps.resolveItem ?? resolveReviewItem;
+  const resolveItemFor = deps.resolveItemFor ?? resolveOpenReviewItemFor;
 
   const graceMs = graceDays() * 86_400_000;
   const now = Date.parse(nowIso);
   const rows = await listInStates(['offboarding']);
-  const result: ExpireResult = { scanned: rows.length, stamped: 0, reminded: 0, expired: 0, failed: 0 };
+  const result: ExpireResult = {
+    scanned: rows.length,
+    stamped: 0,
+    reminded: 0,
+    expired: 0,
+    raced: 0,
+    failed: 0,
+  };
 
   for (const row of rows) {
     // Self-heal a NULL clock (row deactivated before the stamping code
@@ -108,8 +116,23 @@ export async function expireOffboarding(
     const remaining = graceMs - (now - Date.parse(row.offboarding_started_at));
     if (remaining <= 0) {
       try {
-        await deleteComposioPairing(row, deps); // throws → retry next run
-        await update(row.id, { state: 'offboarded' });
+        // CLAIM before the destructive teardown (CAS on 'offboarding'): a
+        // reactivation landing between the list read and here must WIN — the
+        // unguarded order (teardown first, blind state write after) would
+        // delete the just-re-enabled pairing and terminally offboard someone
+        // the manager was told is active (review finding). A lost claim skips
+        // the row entirely.
+        const claimed = await cas(row.id, 'offboarding', { state: 'offboarded' });
+        if (!claimed) {
+          result.raced++;
+          continue;
+        }
+        // Teardown AFTER the claim. If it throws now, the row stays offboarded
+        // with the Composio objects left behind — acceptable: they were
+        // disabled at deactivation and the webhook roster gate drops their
+        // mail regardless; the alternative (claim-after) risks destroying a
+        // reactivated person's pairing, which is worse than inert clutter.
+        await deleteComposioPairing(row, deps);
         result.expired++;
       } catch {
         result.failed++;
@@ -117,10 +140,13 @@ export async function expireOffboarding(
       }
       // Close the reminder if one is open — advisory once the state landed.
       try {
-        const reminder = await findOpenItem(row.tenant_id, 'offboarding_reminder', row.ref);
-        if (reminder) {
-          await resolveItem(reminder.id, row.tenant_id, 'resolved', 'offboarding completed');
-        }
+        await resolveItemFor(
+          row.tenant_id,
+          'offboarding_reminder',
+          row.ref,
+          'resolved',
+          'offboarding completed',
+        );
       } catch {
         /* advisory */
       }

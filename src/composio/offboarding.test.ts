@@ -62,32 +62,40 @@ function clientStub(opts: { deleteThrows?: Error } = {}) {
   return { client, calls };
 }
 
-function sweepStubs(rows: Technician[]) {
+function sweepStubs(rows: Technician[], opts: { casMissIds?: string[] } = {}) {
   const patches: Array<{ id: string; patch: TechnicianPatch }> = [];
+  const casCalls: Array<{ id: string; from: string; patch: TechnicianPatch }> = [];
   const reminders: Array<{ subjectRef: string; startedAt: string }> = [];
-  const resolved: string[] = [];
-  let openReminder: ReviewItem | null = null;
+  const closed: Array<{ kind: string; subjectRef: string; resolution?: string | null }> = [];
   return {
     patches,
+    casCalls,
     reminders,
-    resolved,
-    setOpenReminder(item: ReviewItem | null) {
-      openReminder = item;
-    },
+    closed,
     deps: {
       listInStates: async () => rows,
       update: async (id: string, patch: TechnicianPatch) => {
         patches.push({ id, patch });
         return row({ id, ...patch } as Partial<Technician>);
       },
+      cas: async (id: string, from: string, patch: TechnicianPatch) => {
+        casCalls.push({ id, from, patch });
+        if (opts.casMissIds?.includes(id)) return null; // a reactivation won the race
+        return row({ id, ...patch } as Partial<Technician>);
+      },
       flagReminder: async (input: { subjectRef: string; startedAt: string }) => {
         reminders.push(input);
         return { id: 'reminder-1' } as ReviewItem;
       },
-      findOpenItem: async () => openReminder,
-      resolveItem: async (id: string) => {
-        resolved.push(id);
-        return { id } as ReviewItem;
+      resolveItemFor: async (
+        _tenantId: string,
+        kind: string,
+        subjectRef: string,
+        _status: string,
+        resolution?: string | null,
+      ) => {
+        closed.push({ kind, subjectRef, resolution });
+        return { id: 'closed-1' } as ReviewItem;
       },
     },
   };
@@ -141,27 +149,39 @@ describe('expireOffboarding', () => {
     expect(soon.reminders[0]).toMatchObject({ subjectRef: 'gone-guy', startedAt: daysAgo(6) });
   });
 
-  test('expired: teardown (trigger first), state → offboarded, ids KEPT, open reminder resolved', async () => {
+  test('expired: CLAIM first (CAS offboarding→offboarded), then teardown trigger-first; ids KEPT; reminder closed', async () => {
     const s = sweepStubs([row({ offboarding_started_at: daysAgo(8) })]);
-    s.setOpenReminder({ id: 'reminder-open' } as ReviewItem);
     const { client, calls } = clientStub();
     const r = await expireOffboarding(NOW, { ...s.deps, client });
-    expect(r).toMatchObject({ expired: 1, failed: 0 });
+    expect(r).toMatchObject({ expired: 1, raced: 0, failed: 0 });
+    expect(s.casCalls).toEqual([
+      { id: 'row-1', from: 'offboarding', patch: { state: 'offboarded' } }, // no id nulling
+    ]);
     expect(calls).toEqual([
       { method: 'triggers.delete', id: 'ti_gone' },
       { method: 'accounts.delete', id: 'ca_gone' },
     ]);
-    expect(s.patches).toEqual([{ id: 'row-1', patch: { state: 'offboarded' } }]); // no id nulling
-    expect(s.resolved).toEqual(['reminder-open']);
+    expect(s.closed).toEqual([
+      { kind: 'offboarding_reminder', subjectRef: 'gone-guy', resolution: 'offboarding completed' },
+    ]);
   });
 
-  test('teardown failure: failed++, state unchanged — the next run retries', async () => {
+  test('a reactivation that wins the race is NEVER torn down: lost claim skips the row', async () => {
+    const s = sweepStubs([row({ offboarding_started_at: daysAgo(8) })], { casMissIds: ['row-1'] });
+    const { client, calls } = clientStub();
+    const r = await expireOffboarding(NOW, { ...s.deps, client });
+    expect(r).toMatchObject({ expired: 0, raced: 1, failed: 0 });
+    expect(calls).toHaveLength(0); // the just-re-enabled pairing survives untouched
+    expect(s.closed).toHaveLength(0);
+  });
+
+  test('teardown failure AFTER the claim: failed++, row stays offboarded (objects are disabled+inert)', async () => {
     const s = sweepStubs([row({ offboarding_started_at: daysAgo(8) })]);
     const { client } = clientStub({ deleteThrows: new Error('503 unavailable') });
     const r = await expireOffboarding(NOW, { ...s.deps, client });
     expect(r).toMatchObject({ expired: 0, failed: 1 });
-    expect(s.patches).toHaveLength(0); // still 'offboarding' — retryable
-    expect(s.resolved).toHaveLength(0);
+    expect(s.casCalls).toHaveLength(1); // claim happened — reactivate can no longer race in
+    expect(s.closed).toHaveLength(0);
   });
 
   test('GRACE_DAYS env changes the boundary (1 day: yesterday is already expired)', async () => {

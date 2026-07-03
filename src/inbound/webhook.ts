@@ -265,7 +265,14 @@ export async function handleInboundWebhook(
       sourceMeta: {
         from: meta.from,
         subject: meta.subject,
-        ...(tech?.state === 'pending_verification' && { pendingVerification: true }),
+        // The account id keys the stamp to a pairing EPISODE: across a
+        // wrong-mailbox → dismiss → re-pair loop, a bare boolean couldn't say
+        // which rows came from which mailbox (review finding), and L1's
+        // append-only rule makes that ambiguity permanent.
+        ...(tech?.state === 'pending_verification' && {
+          pendingVerification: true,
+          pendingAccount: tech.composio_connected_account_id,
+        }),
       },
     });
     // Unknown ref: keep the capture (ground truth), flag for manager review.

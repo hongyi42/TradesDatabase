@@ -217,6 +217,30 @@ on every request, so issuing or revoking a badge takes effect with no restart.
 > provider credential). Deactivated people arrive as `revoked: true` on the next pull. The manual
 > procedure above remains the bootstrap/fallback path. See `Box Setup Stuff/badge-pull.sh` for the
 > polling updater.
+>
+> **BEFORE enabling the pull timer on a host with existing badges:** register each existing
+> badge's fingerprint server-side (`scripts/assign-host.mjs set-badge ref=<ref> hash=<sha256>`),
+> or the first pull ERASES those entries (the file is regenerated wholesale from the roster) and
+> mints competing replacements — the installed credentials then 403 with no error signal.
+
+### Upgrading a legacy host (plaintext-keyed badges.json → fingerprints, one-time)
+
+Hosts deployed before 2026-07-02 have badges.json keyed by the badge itself and the old doorman
+code. There is deliberately NO dual-read fallback (it would turn a leaked hash-keyed file's
+fingerprints into usable bearer tokens), so upgrade atomically — expect a few seconds of 403s:
+
+```bash
+sudo cp doorman.mjs /opt/doorman/doorman.mjs      # new code (inert until restart)
+sudo python3 - <<'EOF'                            # rekey the file in place
+import json, hashlib
+p = '/etc/doorman/badges.json'
+d = json.load(open(p))
+json.dump({hashlib.sha256(k.encode()).hexdigest(): v for k, v in d.items()}, open(p, 'w'), indent=2)
+EOF
+sudo chown doorman:doorman /etc/doorman/badges.json && sudo chmod 600 /etc/doorman/badges.json
+sudo systemctl restart doorman                    # immediately — old code + hashed file 403s
+# verify: Step 6(a) curl with the PLAINTEXT badge still lists the 7 tools
+```
 
 ## Step 3 — Run it as a hardened service
 
@@ -313,18 +337,26 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
 
 Roster-driven (preferred, 2026-07-02): issue = assign the person to this host
 (`scripts/assign-host.mjs assign ref=… host=… sandbox=…`) — the badge mints on the host's next
-pull; revoke = deactivate the person in the roster — the entry flips to `revoked: true` on the
-next pull (the roster gate on the server cuts mail/tools instantly regardless).
+pull. **Remove a person** = deactivate them in the roster — the entry flips to `revoked: true`
+on the next pull, and the server rejects their badge's tool calls immediately regardless.
+**Leaked/lost badge (person stays)** = `assign-host.mjs rotate-badge ref=…` — the old badge
+vanishes from the file on the next pull and a replacement mints in that same response.
 
-Manual fallback (also how to act faster than the poll interval):
+⚠ **On a pull-enabled host, hand edits to badges.json last at most one poll interval** — the
+file is regenerated wholesale from the roster. Hand-revoking `revoked: true` gets silently
+UN-revoked ≤5 min later if the roster row is still active; a hand-added badge gets erased unless
+its fingerprint is registered (`set-badge`). Use the server-side operations above; the manual
+procedure below is for hosts WITHOUT the pull timer (bootstrap/fallback):
 
 ```bash
 # issue a badge for a new sandbox (file is keyed by sha256 fingerprint)
 NEW=$(openssl rand -hex 32); echo "$NEW"
 HASH=$(printf %s "$NEW" | sha256sum | cut -d' ' -f1)
 # → add  "<HASH>": { "tenantId": "...", "technicianRef": "...", "revoked": false }  to badges.json
+# → if this host will EVER enable badge-pull: also register it —
+#   scripts/assign-host.mjs set-badge ref=<ref> hash=<HASH>
 
-# revoke one sandbox without touching others
+# revoke one sandbox without touching others (non-pull hosts only — see ⚠ above)
 # → set its "revoked": true in badges.json  (takes effect on the next request)
 # → chown doorman:doorman + chmod 600 after EVERY hand edit (silent all-403 otherwise)
 ```

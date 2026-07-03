@@ -71,9 +71,15 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
   (`python3` one-liner over the file), restore doorman:doorman 600, `systemctl restart doorman`
   back-to-back — a few seconds of 403s; NO dual-read fallback exists ON PURPOSE (it would turn a
   leaked file's fingerprints into usable bearer tokens).
-- Reference badge (identity `tech-jane`, tenant `82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18`):
-  `3a6fb336ec39071493a98a1a44773a7b7fa09e73df61c9c71c9f11b3cd7e27ba`. Reusable across boxes (the doorman's
-  `badges.json` + secret define validity) — its badges.json KEY is now that value's sha256.
+- **There is NO reference badge — never record a badge plaintext in any doc/memory.** The one this
+  file used to carry leaked into chat transcripts and was rotated dead on 2026-07-03 (403 live-tested).
+  Badges exist in plaintext exactly twice: the pull response (`pending-badges.jsonl`, delete after
+  install) and the provider store. Everything else records only sha256 fingerprints. Cheap integrity
+  check before installing a minted badge: `sha256sum` the pending value and confirm the digest is a
+  key in the freshly pulled badges.json — catches file/roster mismatch without exposing plaintext.
+- **Live state (nemoclaw-box, since 2026-07-03):** fingerprint doorman + roster-driven badge-pull
+  timer are DEPLOYED and E2E-verified (Jane turn confirmed via bot reply + server dispatch logs +
+  OCSF `ALLOWED …:3001 [policy:trades_spine_doorman]`). Tenant `82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18`.
 - **A badge's POWER comes from a matching roster row on the server, not from the badge itself
   (since 2026-07-02).** The badge only maps to `{tenantId, technicianRef}`; the trades-spine server
   looks that `technicianRef` up in its `technicians` table and grants tools by the row's **tier**. So
@@ -180,6 +186,24 @@ Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config
   A recreate/rebuild does NOT need the fix re-applied (the generator bakes canonical), but the next
   container boot re-versions the config and re-arms the trap for the next provider bump. Durable fix
   (recommended, not yet applied): patch the refresher to map any `v*_KEY` form → current, then rebuild.
+- **A provider credential VALUE swap does NOT need an openclaw restart** (verified 2026-07-03) —
+  the egress proxy resolves the badge per-request from the provider store. The setup guide's
+  "register badge → restart openclaw" applies only to the FIRST-ever registration (lazy MCP
+  connect). Do NOT `pkill openclaw` after a swap: the in-container supervisor does not respawn it,
+  and `nemoclaw <AGENT> recover` revives the agent early but then stalls ~3 min on its
+  port-forward step — check `pgrep -x openclaw` in the container instead of waiting on recover.
+- **`nemoclaw list` does NOT show custom policy presets** in its per-sandbox summary (standard ones
+  only). `nemoclaw <AGENT> policy-list` is authoritative — check it before re-applying anything
+  (observed 2026-07-03: `trades-spine-doorman` showed ● applied there after `list` suggested it
+  was missing).
+- **badge-pull vs Render cold start:** the script's 30s curl cap fails CLOSED on a cold free-tier
+  Render (~32s spin-up), and that failed request itself warms the service — a cold timer tick
+  self-heals on the next one. For an immediate manual pull, pre-warm with any host curl first.
+- **The openclaw agent's gateway (18789) listens in a NESTED network namespace** inside the sandbox
+  container — invisible to plain `docker exec` (ss shows nothing; CLI gets ws 1006 + misleading
+  TLS noise). Reach it with `nsenter -t <openclaw-pid> -n …` as root inside the container.
+- **Device pairing approval (`openclaw devices approve`) is a PERSISTENT operator grant** — a
+  Claude session must not self-approve it; surface the pending requestId to the user.
 - **Editing badges.json: restore `doorman:doorman` + mode 600 after EVERY edit or ALL badges 403.**
   The doorman runs as user `doorman` and `loadBadges()` swallows read errors (returns `{}`), so a
   file it can't read silently 403s every badge — including previously-working ones. `sudo mv` of a

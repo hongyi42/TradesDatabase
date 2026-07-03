@@ -15,7 +15,7 @@ End-to-end instructions to stand up, on a **fresh CPU-only cloud box**:
 ## 0\. Concepts & the 7 tools
 
 - **Doorman**: a small Node HTTP service on the host. Binds the docker-bridge gateway `172.18.0.1:3001`. Reads `Authorization: Bearer <badge>`, looks the badge up in `/etc/doorman/badges.json`, computes the identity signature with the host-only secret, forwards to the Render upstream. Returns **200** (valid badge), **403** (unknown/revoked badge), **401** (no badge).  
-- **Badge**: a low-value, revocable token. Lives in the sandbox's OpenShell provider store (never in the image, never on disk in plaintext). Reference badge (identity `tech-jane`): `3a6fb336ec39071493a98a1a44773a7b7fa09e73df61c9c71c9f11b3cd7e27ba`.  
+- **Badge**: a low-value, revocable token. Lives in the sandbox's OpenShell provider store (never in the image, never on disk in plaintext). **No badge plaintext appears anywhere in this guide, ever** — badges are minted by the server in the badge-pull response (`/root/pending-badges.jsonl` holds the one and only plaintext copy; install it as the provider credential, then delete the line). The old "reference badge" this guide used to print leaked into a transcript and was rotated dead on 2026-07-03.  
 - **The 7 trades-spine tools** (what a technician-tier badge sees — every count below assumes one): `record_field_note`, `find_customer`, `get_customer_context`, `get_job`, `list_recent_captures`, `brief_customer`, `answer_customer_question`. A badge whose `technicianRef` matches an **ACTIVE `tier='manager'`** row in the server's `technicians` table sees **14** (since 2026-07-02) — the 7 plus the seat/lifecycle tools `add_technician_seat`, `deactivate_technician_seat`, `reactivate_technician_seat`, `get_connect_link`, `list_team`, `list_pending_reviews`, `resolve_review`. The tier is decided **server-side by that roster row, not by the badge**; a badge with no matching active manager row acts as a plain technician (7 tools). The host/doorman does nothing tier-specific — it just forwards the badge.
 
 **Naming convention used below** (don't mix these up):
@@ -165,24 +165,13 @@ GATEWAY\_IDENTITY\_SECRET=\<PASTE\_THE\_REAL\_SECRET\_FROM\_YOUR\_PASSWORD\_MANA
 EOF
 
 \# Badge table (sha256-of-badge \-\> identity). Re-read per request, so revocation is instant.
-\# The KEY below is sha256("3a6fb336…27ba") — the reference tech-jane badge's fingerprint.
-\# The sandbox still presents the PLAINTEXT badge; the doorman hashes it before lookup.
+\# Start EMPTY — the badge-pull timer (§ roster-driven badges below) populates it from the
+\# server's roster and mints this box's badges in its first response. The sandbox presents
+\# the PLAINTEXT badge; the doorman hashes it before lookup, so this file can't authenticate.
 
 sudo tee /etc/doorman/badges.json \>/dev/null \<\<'EOF'
 
-{
-
-  "025d11d5cde035beb88a1ecaef50bf296978a4361e0f5c39d90389a6f0d687e4": {
-
-    "tenantId": "82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18",
-
-    "technicianRef": "tech-jane",
-
-    "revoked": false
-
-  }
-
-}
+{}
 
 EOF
 
@@ -190,7 +179,7 @@ sudo chown \-R doorman:doorman /etc/doorman
 
 sudo chmod 600 /etc/doorman/doorman.env /etc/doorman/badges.json
 
-**Deployment-specific:** `GATEWAY_IDENTITY_SECRET` (must match Render — obtain it, never generate locally), `MCP_UPSTREAM_URL`, and the bridge gateway IP. The badge above is reusable (same `tech-jane` identity); mint a new one only if you want a distinct identity.
+**Deployment-specific:** `GATEWAY_IDENTITY_SECRET` (must match Render — obtain it, never generate locally), `MCP_UPSTREAM_URL`, and the bridge gateway IP. Badges come from the server: get this box registered (`create-host` + `assign` on the server side), deploy the pull (next sections), and the first pull mints them.
 
 **Badge ↔ roster (since 2026-07-02) — read before minting a NON-technician badge.** The `technicianRef` you put here is looked up in the server's `technicians` table, and that row's **tier** decides what the badge can do: an active `tier='manager'` row → the manager tool surface (incl. seat management); anything else (technician, inactive, or no row) → the plain 7. So a *manager* badge is a two-part action you can't complete from the host alone: whoever manages the server DB must have an **active manager roster row** for that ref FIRST, then you mint the badge here with the byte-identical ref. To mint another badge BY HAND: `BADGE=$(openssl rand -hex 32)` (give the plaintext to exactly one sandbox), key its entry by the FINGERPRINT `printf %s "$BADGE" | sha256sum | cut -d' ' -f1` — a plaintext-keyed entry silently 403s — add it as a sibling in the JSON object above (mind the comma), then **restore ownership — load-bearing**: `sudo chown doorman:doorman /etc/doorman/badges.json && sudo chmod 600 /etc/doorman/badges.json`. The doorman (user `doorman`) swallows read errors into an empty badge table, so a file left owned by your user (e.g. after `sudo mv` of a temp file) silently 403s EVERY badge, not just the new one (observed live 2026-07-02). `tech-jane` maps to an active technician row and is fine as-is for the technician path.
 
@@ -270,7 +259,10 @@ sudo ufw allow from 172.18.0.0/16 to $GW port 8080 proto tcp comment 'openshell 
 
 ### 3f. Verify host → doorman → Render \= 200 \+ 7 tools
 
-BADGE=3a6fb336ec39071493a98a1a44773a7b7fa09e73df61c9c71c9f11b3cd7e27ba
+\# Use a badge minted by the pull: the plaintext is the "badge" field of the person's line
+\# in /root/pending-badges.jsonl (or, if already installed+deleted, re-mint via server-side
+\# rotate-badge and take it from the next pull). Never paste a badge into chat or docs.
+BADGE=\<badge plaintext from /root/pending-badges.jsonl\>
 
 curl \-s \-o /dev/null \-w 'HTTP %{http\_code} in %{time\_total}s\\n' \\
 
@@ -368,11 +360,11 @@ Uses the **provider** name `<AGENT>-telegram-bridge`. OpenShell's egress proxy s
 
 openshell provider update \<AGENT\>-telegram-bridge \\
 
-  \--credential TRADES\_SPINE\_BADGE=3a6fb336ec39071493a98a1a44773a7b7fa09e73df61c9c71c9f11b3cd7e27ba
+  \--credential TRADES\_SPINE\_BADGE=\<badge plaintext from /root/pending-badges.jsonl\>
 
 openshell provider get \<AGENT\>-telegram-bridge | grep \-i 'Credential keys'   \# \-\> TRADES\_SPINE\_BADGE, TELEGRAM\_BOT\_TOKEN
 
-In a security-restricted Claude session this command is blocked as a secret-store write — run it yourself.
+Integrity check first: `sha256sum` the pending badge value and confirm the digest is a key in the freshly pulled `/etc/doorman/badges.json` — catches a file/roster mismatch without exposing plaintext. Then install, then delete the pending line. A credential **value swap** does not need an openclaw restart (the egress proxy resolves per-request); only the FIRST-ever registration needs one (lazy MCP connect). In a security-restricted Claude session this command is blocked as a secret-store write — run it yourself.
 
 **WARNING — a provider credential write like this can silently kill OTHER channels.** At container
 boot, the start script rewrites canonical placeholders in openclaw.json to a revision-scoped form

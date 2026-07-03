@@ -34,6 +34,11 @@
 #     assign-host.mjs set-badge ref=<ref> hash=<sha256 of the badge>
 #   The doorman must also be the fingerprint-lookup version (see the upgrade
 #   note in doorman-architecture-memory.md's badge section).
+#
+# Cold-start note (observed live 2026-07-03): a cold free-tier Render spins up
+# in ~32s, past the 30s curl cap below — the tick fails CLOSED, but that very
+# request warms the service, so the next tick succeeds. For an immediate
+# manual pull, pre-warm with any host curl to the service first.
 set -euo pipefail
 
 ENV_FILE=/etc/doorman/badge-pull.env

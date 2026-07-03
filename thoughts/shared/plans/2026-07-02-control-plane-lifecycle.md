@@ -2,7 +2,7 @@
 date: 2026-07-02
 task: Control-plane lifecycle (Plan 2) — badge generate+pull, Composio pairing/offboarding automation, verify-after-connection, grace-period expiry via a scheduled job
 research: thoughts/shared/research/2026-07-02-control-plane-lifecycle-surface.md
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -402,13 +402,44 @@ others; exit-code contract.
       First run (empty state): all-zero sweep, sheet skipped-not-failed, exit 0.
 
 ### Manual verification
-- [ ] User creates the Render Cron Job + sets env vars (incl. COMPOSIO_API_KEY on the web
-      service) per docs/control-plane.md; agent then verifies a live run's output.
-- [ ] Full-cycle E2E with the host Claude + real Gmail: add seat → assign host → badge pulled
-      (host) → connect link → OAuth consent → verification item → resolve → active → real email
-      ingests attributed → deactivate → badge revoked on next pull + mail drops → force-expire →
-      Composio objects gone (SDK list read-back) → offboarded. Evidence at every hop (DB rows,
-      OCSF logs, Composio list calls).
+- [x] Done live 2026-07-03: user added COMPOSIO_API_KEY + COMPOSIO_GMAIL_AUTH_CONFIG_ID to the
+      web service and created the Cron Job (`*/15 * * * *`). Run output (user-pasted from
+      Render logs): `{"pairing":{"checked":1,"paired":0,"rowErrors":0},"offboarding":{"scanned":0,
+      ...,"failed":0},"sheetSync":{"skipped":"SCHEDULE_SHEET_ID / DEFAULT_TENANT_ID unset"},
+      "ok":true}`. Cross-channel: Supabase API logs show the sweep's two signature roster reads
+      (state=in.(invited,pending_verification) then state=in.(offboarding)) at 03:33:48–49Z,
+      200s, no writes — correct for a nothing-due tick. Deployed stack points at the TEST
+      Supabase project (prod API logs empty over the window) — prod cutover is out of scope.
+- [x] Done live 2026-07-03 (full cycle, evidence at every hop). Prep surprise: the box was
+      still running the LEGACY plaintext-keyed doorman (docs described the target state) and
+      the old tech-jane badge leaked into transcripts → plan changed from preserve (set-badge)
+      to ROTATE: no registration, first pull minted fresh badges for tech-jane + pair-drill,
+      new fingerprint doorman installed, old badge live-tested 403, plaintexts purged on-box.
+      Then: pull timer visible every 5 min in Supabase API logs; Jane live Telegram turn
+      confirmed on 3 channels (bot reply, server dispatch logs `ref=eq.tech-jane` +
+      find_customer at 06:44Z, OCSF `ALLOWED …:3001 [policy:trades_spine_doorman]`);
+      manager surface exercised via signed direct calls (manager-sam roster row, no badge):
+      tools/list=14, list_pending_reviews → resolve_review → pair-drill ACTIVE (SQL read-back);
+      real informal email ("re: thursday") ingested in ~48s, `technician_ref=pair-drill`,
+      NO pendingVerification stamp (verified-pairing negative check); two-step deactivate →
+      offboarding + clock stamped, Composio account INACTIVE + 0 active triggers (SDK);
+      second email → ZERO new captures (drop confirmed); clock backdated 8d → the SCHEDULED
+      15-min cron tick expired it unattended → offboarded, Composio account + trigger DELETED
+      (SDK read-back; expired-link residue ca_iWrhg8B3pQQC also cleaned, 0 accounts remain).
+      Badge revocation on the box CONFIRMED (host read-back 07:30Z): badges.json has exactly
+      pair-drill revoked:true + tech-jane revoked:false; badge-pull timer firing on schedule
+      (07:20/07:25/07:30, all status=0), file stable ("no change" once revocation landed).
+      Known accepted exposure: HOST_PULL_TOKEN transited both transcripts — rotate if they
+      ever leave the user's control.
+      POST-DRILL INCIDENT (2026-07-03 07:35Z, resolved 07:43Z): running server.test.ts as a
+      pre-commit gate truncated technicians/review_items/raw_captures/customers (its cleanup
+      truncates tables, not rows-it-created) → the 07:35 pull shipped an EMPTY badges.json →
+      Jane 403 ~8 min. Recovery: timer stopped on box; rows re-inserted with the EXACT
+      fingerprints (preserved by the host's earlier read); manual pull restored a byte-identical
+      2-entry file, newBadges=0 (no credential churn on the box); timer resumed. Root-cause
+      follow-ups: (1) scope test cleanup to created rows / move tests to a branch DB — until
+      then NO test runs against this project without stopping the box timer; (2) badge-pull.sh
+      should refuse a 0-entry file when the current file is non-empty.
 
 ---
 *Cycle ends: badge rollout to the real host + Box Setup Stuff self-contained updates ship with

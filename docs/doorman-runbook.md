@@ -215,7 +215,7 @@ on every request, so issuing or revoking a badge takes effect with no restart.
 > only its fingerprint is stored server-side). Brand-new people get their badge minted inside the
 > pull response (`newBadges` — the only moment the plaintext exists; install it as the sandbox's
 > provider credential). Deactivated people arrive as `revoked: true` on the next pull. The manual
-> procedure above remains the bootstrap/fallback path. See `Box Setup Stuff/badge-pull.sh` for the
+> procedure above remains the bootstrap/fallback path. See `Box_Setup_Stuff/badge-pull.sh` for the
 > polling updater.
 >
 > **BEFORE enabling the pull timer on a host with existing badges:** register each existing

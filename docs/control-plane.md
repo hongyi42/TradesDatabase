@@ -66,7 +66,7 @@ JSON summary line; a failed step exits 1 so Render marks the run failed:
    that already exists on the host: `… set-badge ref=<ref> hash=<sha256>` — unregistered
    entries are ERASED by the first pull.
 3. Host side: upgrade the doorman to the fingerprint-lookup version (legacy hosts: the atomic
-   rekey+restart step in doorman-runbook.md), then deploy `Box Setup Stuff/badge-pull.sh` per
+   rekey+restart step in doorman-runbook.md), then deploy `Box_Setup_Stuff/badge-pull.sh` per
    its header (root env file with the token, 5-min systemd timer). New badges land in
    `/root/pending-badges.jsonl` for provider-credential install.
 

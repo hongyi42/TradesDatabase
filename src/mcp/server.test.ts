@@ -640,7 +640,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
     );
     try {
       // The full manager surface is now 14 tools (7 spine + 7 seat/lifecycle) —
-      // the count the runbook/Box Setup Stuff verification steps cite.
+      // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
       expect(mgrTools).toHaveLength(14);

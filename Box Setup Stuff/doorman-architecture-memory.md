@@ -26,7 +26,7 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
 ## Components & where they live
 - **Doorman** (host): `/opt/doorman/doorman.mjs`, unit `doorman.service` (+ drop-in
   `doorman.service.d/override.conf`), config in `/etc/doorman/` (`doorman.env` = `GATEWAY_IDENTITY_SECRET`,
-  `badges.json` = badge→{tenantId,technicianRef,revoked}, mode 600 owned `doorman`). Reads badge from
+  `badges.json` = sha256(badge)→{tenantId,technicianRef,revoked}, mode 600 owned `doorman`). Reads badge from
   `Authorization: Bearer <badge>`. Returns 200 valid / 403 unknown-or-revoked / 401 no-badge.
   Node must be copied to `/usr/local/bin/node` because the unit's `ProtectHome=true` hides the nvm node in /home.
 - **NemoClaw source** (host): `/home/ubuntu/.nemoclaw/source/` — a real git repo (Dockerfile + `scripts/` +
@@ -46,9 +46,23 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
   `openshell provider … <AGENT>-telegram-bridge`. The provider holds the channel + badge credentials.
 
 ## The badge & the runtime-secret mechanism (the clean path — VERIFIED working)
+- **badges.json is keyed by sha256 FINGERPRINTS since 2026-07-02** — the doorman hashes the
+  presented badge before lookup (`createHash('sha256')`, see doorman.mjs), so the file at rest
+  can't authenticate. When hand-writing an entry, the key is `sha256hex(<badge>)`
+  (`printf %s "$BADGE" | sha256sum`), NEVER the badge itself. A plaintext-keyed entry silently
+  403s (the hash lookup misses) — if every badge 403s after an edit, check keys AND ownership.
+- **Badges are ROSTER-DRIVEN now**: the server generates this host's badges.json from its
+  `technicians` roster; the host syncs it with `badge-pull.sh` (root, 5-min systemd timer,
+  copy alongside this file) calling `GET /control/badges` with a per-host pull token
+  (root-only `/etc/doorman/badge-pull.env`; server stores only its fingerprint). New people's
+  badges are MINTED IN THE PULL RESPONSE (`newBadges` → `/root/pending-badges.jsonl`) — that is
+  the only copy of the plaintext: install it as the sandbox's provider credential
+  (`openshell provider update <AGENT>-telegram-bridge --credential TRADES_SPINE_BADGE=<badge>`,
+  mind the Placeholder VERSIONING trap below), then delete the line. Deactivated people flip to
+  `revoked:true` on the next pull. Hand edits remain the bootstrap/faster-than-poll fallback.
 - Reference badge (identity `tech-jane`, tenant `82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18`):
   `3a6fb336ec39071493a98a1a44773a7b7fa09e73df61c9c71c9f11b3cd7e27ba`. Reusable across boxes (the doorman's
-  `badges.json` + secret define validity).
+  `badges.json` + secret define validity) — its badges.json KEY is now that value's sha256.
 - **A badge's POWER comes from a matching roster row on the server, not from the badge itself
   (since 2026-07-02).** The badge only maps to `{tenantId, technicianRef}`; the trades-spine server
   looks that `technicianRef` up in its `technicians` table and grants tools by the row's **tier**. So

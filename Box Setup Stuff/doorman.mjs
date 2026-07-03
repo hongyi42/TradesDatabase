@@ -1,6 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 const PORT   = Number(process.env.DOORMAN_PORT || 3001);
@@ -20,7 +20,10 @@ const badgeOf = (req) => { const m = /^Bearer\s+(.+)$/i.exec(req.headers['author
 http.createServer((req, res) => {
   const badge = badgeOf(req);
   if (!badge) { res.writeHead(401); return res.end('missing badge'); }
-  const entry = loadBadges()[badge];                       // re-read per request: revocation is instant
+  // badges.json keys are sha256 FINGERPRINTS (since 2026-07-02): hash the
+  // presented badge before lookup, so the file at rest can't authenticate.
+  const fingerprint = createHash('sha256').update(badge).digest('hex');
+  const entry = loadBadges()[fingerprint];                 // re-read per request: revocation is instant
   if (!entry || entry.revoked) { res.writeHead(403); return res.end('badge not authorized'); }
 
   const chunks = [];

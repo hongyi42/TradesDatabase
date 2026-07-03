@@ -99,7 +99,7 @@ sudo cp doorman.mjs /opt/doorman/doorman.mjs        \# copy the doorman service 
 –begin–  
 import http from 'node:http';  
 import https from 'node:https';  
-import { createHmac } from 'node:crypto';  
+import { createHash, createHmac } from 'node:crypto';  
 import { readFileSync } from 'node:fs';
 
 const PORT   \= Number(process.env.DOORMAN\_PORT || 3001);  
@@ -119,7 +119,10 @@ const badgeOf \= (req) \=\> { const m \= /^Bearer\\s+(.+)$/i.exec(req.headers\['
 http.createServer((req, res) \=\> {  
   const badge \= badgeOf(req);  
   if (\!badge) { res.writeHead(401); return res.end('missing badge'); }  
-  const entry \= loadBadges()\[badge\];                       // re-read per request: revocation is instant  
+  // badges.json keys are sha256 FINGERPRINTS (since 2026-07-02): hash the  
+  // presented badge before lookup, so the file at rest can't authenticate.  
+  const fingerprint \= createHash('sha256').update(badge).digest('hex');  
+  const entry \= loadBadges()\[fingerprint\];                 // re-read per request: revocation is instant  
   if (\!entry || entry.revoked) { res.writeHead(403); return res.end('badge not authorized'); }
 
   const chunks \= \[\];  
@@ -161,13 +164,15 @@ GATEWAY\_IDENTITY\_SECRET=\<PASTE\_THE\_REAL\_SECRET\_FROM\_YOUR\_PASSWORD\_MANA
 
 EOF
 
-\# Badge table (badge-hash \-\> identity). Re-read per request, so revocation is instant.
+\# Badge table (sha256-of-badge \-\> identity). Re-read per request, so revocation is instant.
+\# The KEY below is sha256("3a6fb336…27ba") — the reference tech-jane badge's fingerprint.
+\# The sandbox still presents the PLAINTEXT badge; the doorman hashes it before lookup.
 
 sudo tee /etc/doorman/badges.json \>/dev/null \<\<'EOF'
 
 {
 
-  "3a6fb336ec39071493a98a1a44773a7b7fa09e73df61c9c71c9f11b3cd7e27ba": {
+  "025d11d5cde035beb88a1ecaef50bf296978a4361e0f5c39d90389a6f0d687e4": {
 
     "tenantId": "82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18",
 
@@ -187,7 +192,9 @@ sudo chmod 600 /etc/doorman/doorman.env /etc/doorman/badges.json
 
 **Deployment-specific:** `GATEWAY_IDENTITY_SECRET` (must match Render — obtain it, never generate locally), `MCP_UPSTREAM_URL`, and the bridge gateway IP. The badge above is reusable (same `tech-jane` identity); mint a new one only if you want a distinct identity.
 
-**Badge ↔ roster (since 2026-07-02) — read before minting a NON-technician badge.** The `technicianRef` you put here is looked up in the server's `technicians` table, and that row's **tier** decides what the badge can do: an active `tier='manager'` row → 12 tools (incl. seat management); anything else (technician, inactive, or no row) → the plain 7. So a *manager* badge is a two-part action you can't complete from the host alone: whoever manages the server DB must have an **active manager roster row** for that ref FIRST, then you mint the badge here with the byte-identical ref. To mint another badge: `openssl rand -hex 32` for a fresh hash, add a sibling entry to the JSON object above with the desired `technicianRef` (mind the comma), then **restore ownership — load-bearing**: `sudo chown doorman:doorman /etc/doorman/badges.json && sudo chmod 600 /etc/doorman/badges.json`. The doorman (user `doorman`) swallows read errors into an empty badge table, so a file left owned by your user (e.g. after `sudo mv` of a temp file) silently 403s EVERY badge, not just the new one (observed live 2026-07-02). `tech-jane` maps to an active technician row and is fine as-is for the technician path.
+**Badge ↔ roster (since 2026-07-02) — read before minting a NON-technician badge.** The `technicianRef` you put here is looked up in the server's `technicians` table, and that row's **tier** decides what the badge can do: an active `tier='manager'` row → the manager tool surface (incl. seat management); anything else (technician, inactive, or no row) → the plain 7. So a *manager* badge is a two-part action you can't complete from the host alone: whoever manages the server DB must have an **active manager roster row** for that ref FIRST, then you mint the badge here with the byte-identical ref. To mint another badge BY HAND: `BADGE=$(openssl rand -hex 32)` (give the plaintext to exactly one sandbox), key its entry by the FINGERPRINT `printf %s "$BADGE" | sha256sum | cut -d' ' -f1` — a plaintext-keyed entry silently 403s — add it as a sibling in the JSON object above (mind the comma), then **restore ownership — load-bearing**: `sudo chown doorman:doorman /etc/doorman/badges.json && sudo chmod 600 /etc/doorman/badges.json`. The doorman (user `doorman`) swallows read errors into an empty badge table, so a file left owned by your user (e.g. after `sudo mv` of a temp file) silently 403s EVERY badge, not just the new one (observed live 2026-07-02). `tech-jane` maps to an active technician row and is fine as-is for the technician path.
+
+**Roster-driven badges (2026-07-02, preferred over hand edits once the box is stable):** the server can GENERATE this file from its roster and this host can keep itself in sync. Deploy `badge-pull.sh` (copied alongside this guide — its header has the full setup: root-only `/etc/doorman/badge-pull.env` holding `PULL_URL=https://<svc>.onrender.com/control/badges` + `HOST_PULL_TOKEN`, plus a 5-minute systemd timer; needs curl + jq). The token is printed ONCE by whoever runs `assign-host.mjs create-host` on the server side — obtain it from them. New team members' badges arrive in the pull response (`/root/pending-badges.jsonl`, plaintext exists only there): install each as the sandbox's provider credential (`openshell provider update <AGENT>-telegram-bridge --credential TRADES_SPINE_BADGE=<badge>` — mind the Placeholder VERSIONING trap in the architecture memory), then delete the line. Deactivations flip entries to `revoked:true` on the next pull — no hand edit, ownership handled by the script.
 
 ### 3d. systemd unit \+ reboot-race hardening
 

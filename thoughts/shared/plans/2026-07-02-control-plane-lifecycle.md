@@ -206,13 +206,17 @@ inactive row omitted entirely (the combination case); endpoint: bad/missing toke
 token → shape.
 
 ### Automated verification
-- [ ] gates + new tests pass
+- [x] gates + new tests pass (118/118, 22 files; +3 badgeFile unit, +2 endpoint integration)
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP; local `npm run mcp:serve:http`.
-- [ ] Create a probe host + assign a probe technician (script), curl the endpoint twice: first
-      returns plaintext badge once, second only the hash entry; SQL read-back `badge_hash` =
-      sha256 of the returned badge. Delete probe rows.
+- [x] Ran live 2026-07-02: `assign-host.mjs create-host` (one-time token) + `assign` on a probe
+      row; local server :8097 — no-auth 401, wrong-token 401 (bare); pull 1 returned plaintext
+      badge once + fingerprint-keyed entry, pull 2 `newBadges: []`; sha256(badge) `236f42b1…`
+      matched both the file key and the DB `badge_hash` read-back; probe rows deleted.
+      Adversarial review: 3 MINOR (mv-atomicity fixed in badge-pull.sh; checkbox recording —
+      this entry; .DS_Store left unstaged). Doorman hash-lookup exercised on a real host in
+      Phase 5's E2E.
 
 ### Manual verification
 - (none — real-host rollout happens with the host Claude after deploy, tracked in Phase 5)

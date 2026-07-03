@@ -124,6 +124,27 @@ export type Database = {
           },
         ]
       }
+      hosts: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          token_hash: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          token_hash: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          token_hash?: string
+        }
+        Relationships: []
+      }
       jobs: {
         Row: {
           attributes: Json
@@ -399,12 +420,16 @@ export type Database = {
       }
       technicians: {
         Row: {
+          badge_hash: string | null
           composio_connected_account_id: string | null
           composio_trigger_id: string | null
           connected_email: string | null
           created_at: string
           display_name: string
+          host_id: string | null
           id: string
+          link_issued_at: string | null
+          offboarding_started_at: string | null
           ref: string
           sandbox_ref: string | null
           state: Database["public"]["Enums"]["technician_state"]
@@ -413,12 +438,16 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          badge_hash?: string | null
           composio_connected_account_id?: string | null
           composio_trigger_id?: string | null
           connected_email?: string | null
           created_at?: string
           display_name: string
+          host_id?: string | null
           id?: string
+          link_issued_at?: string | null
+          offboarding_started_at?: string | null
           ref: string
           sandbox_ref?: string | null
           state?: Database["public"]["Enums"]["technician_state"]
@@ -427,12 +456,16 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          badge_hash?: string | null
           composio_connected_account_id?: string | null
           composio_trigger_id?: string | null
           connected_email?: string | null
           created_at?: string
           display_name?: string
+          host_id?: string | null
           id?: string
+          link_issued_at?: string | null
+          offboarding_started_at?: string | null
           ref?: string
           sandbox_ref?: string | null
           state?: Database["public"]["Enums"]["technician_state"]
@@ -441,6 +474,13 @@ export type Database = {
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "technicians_host_id_fkey"
+            columns: ["host_id"]
+            isOneToOne: false
+            referencedRelation: "hosts"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "technicians_tenant_id_fkey"
             columns: ["tenant_id"]

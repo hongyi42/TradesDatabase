@@ -61,6 +61,65 @@ export async function insertTechnician(input: InsertTechnicianInput): Promise<Te
   return data;
 }
 
+// All roster rows wired to one host — the badge-pull endpoint's working set.
+export async function listTechniciansForHost(hostId: string): Promise<Technician[]> {
+  const { data, error } = await getClient()
+    .from('technicians')
+    .select()
+    .eq('host_id', hostId)
+    .order('ref', { ascending: true });
+  if (error) throw new Error(`listTechniciansForHost failed: ${error.message}`);
+  return data ?? [];
+}
+
+// Cross-tenant control-plane read: the lifecycle job sweeps every tenant's
+// rows in the given states (pairing checks, grace-period expiry). Not for
+// tenant-scoped surfaces — those go through getTechnician/listTeam.
+export async function listTechniciansInStates(
+  states: TechnicianState[],
+): Promise<Technician[]> {
+  const { data, error } = await getClient()
+    .from('technicians')
+    .select()
+    .in('state', states)
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`listTechniciansInStates failed: ${error.message}`);
+  return data ?? [];
+}
+
+// Control-plane fields a lifecycle step may set. One typed setter so callers
+// stay explicit about what they change; state transitions that need the
+// seat-cap trigger's semantics still read clearer through setTechnicianState.
+export interface TechnicianPatch {
+  badge_hash?: string | null;
+  host_id?: string | null;
+  sandbox_ref?: string | null;
+  offboarding_started_at?: string | null;
+  link_issued_at?: string | null;
+  composio_connected_account_id?: string | null;
+  composio_trigger_id?: string | null;
+  connected_email?: string | null;
+  state?: TechnicianState;
+}
+
+export async function updateTechnician(id: string, patch: TechnicianPatch): Promise<Technician> {
+  const { data, error } = await getClient()
+    .from('technicians')
+    .update(patch)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error || !data) {
+    // Preserve the SQLSTATE (badge_hash unique 23505, seat-cap trigger on a
+    // state patch) — same idiom as insertTechnician.
+    throw Object.assign(
+      new Error(`updateTechnician failed: ${error?.message ?? 'no row returned'}`),
+      { code: error?.code },
+    );
+  }
+  return data;
+}
+
 export async function setTechnicianState(
   id: string,
   state: TechnicianState,

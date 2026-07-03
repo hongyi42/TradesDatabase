@@ -7,7 +7,9 @@ import {
   insertTechnician,
   isSeatCapError,
   listTeam,
+  listTechniciansInStates,
   setTechnicianState,
+  updateTechnician,
 } from './technicians.js';
 import {
   flagUnknownRefCapture,
@@ -96,6 +98,42 @@ describe('technicians roster', () => {
       reErr = e;
     });
     expect(isSeatCapError(reErr)).toBe(true);
+  });
+});
+
+describe('control-plane fields (Plan 2)', () => {
+  test('updateTechnician round-trip; badge_hash is unique across rows', async () => {
+    // The cap test above leaves both technician seats occupied (tech-b, tech-c)
+    // — raise capacity for the two probe rows; afterAll restores seed values.
+    await setTenantSeats(tenantId, { managerSeats: 1, technicianSeats: 4 });
+    const p = await insertTechnician({ tenantId, ref: 'patch-probe', displayName: 'Patch Probe' });
+    const patched = await updateTechnician(p.id, {
+      badge_hash: 'a'.repeat(64),
+      sandbox_ref: 's9',
+      link_issued_at: new Date().toISOString(),
+    });
+    expect(patched.badge_hash).toBe('a'.repeat(64));
+    expect(patched.sandbox_ref).toBe('s9');
+    expect(patched.link_issued_at).toBeTruthy();
+    expect(patched.offboarding_started_at).toBeNull();
+
+    // A second row cannot claim the same badge fingerprint (unique constraint).
+    const q = await insertTechnician({ tenantId, ref: 'patch-probe-2', displayName: 'Probe Two' });
+    await expect(updateTechnician(q.id, { badge_hash: 'a'.repeat(64) })).rejects.toMatchObject({
+      code: '23505',
+    });
+
+    // Cross-tenant sweep read used by the lifecycle job: finds rows by state.
+    const invited = await listTechniciansInStates(['invited']);
+    expect(invited.map((t) => t.ref)).toContain('patch-probe');
+    expect(await listTechniciansInStates(['offboarding'])).not.toContainEqual(
+      expect.objectContaining({ ref: 'patch-probe' }),
+    );
+
+    // Free the seats for the tests below (this describe runs before 'review
+    // items' but after the cap test consumed capacity).
+    await updateTechnician(p.id, { state: 'offboarded' });
+    await updateTechnician(q.id, { state: 'offboarded' });
   });
 });
 

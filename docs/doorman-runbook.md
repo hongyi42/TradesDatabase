@@ -130,7 +130,7 @@ Write `/opt/doorman/doorman.mjs`:
 ```js
 import http from 'node:http';
 import https from 'node:https';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 const PORT   = Number(process.env.DOORMAN_PORT || 3001);
@@ -150,7 +150,10 @@ const badgeOf = (req) => { const m = /^Bearer\s+(.+)$/i.exec(req.headers['author
 http.createServer((req, res) => {
   const badge = badgeOf(req);
   if (!badge) { res.writeHead(401); return res.end('missing badge'); }
-  const entry = loadBadges()[badge];                       // re-read per request: revocation is instant
+  // badges.json keys are sha256 FINGERPRINTS (since 2026-07-02): hash the
+  // presented badge before lookup, so the file at rest can't authenticate.
+  const fingerprint = createHash('sha256').update(badge).digest('hex');
+  const entry = loadBadges()[fingerprint];                 // re-read per request: revocation is instant
   if (!entry || entry.revoked) { res.writeHead(403); return res.end('badge not authorized'); }
 
   const chunks = [];
@@ -188,11 +191,13 @@ DOORMAN_PORT=3001
 DOORMAN_BIND=172.17.0.1
 EOF
 
-# issue the first badge (random 256-bit token)
+# issue the first badge (random 256-bit token). Since 2026-07-02 badges.json is
+# keyed by the badge's sha256 FINGERPRINT — the file at rest can't authenticate.
 BADGE=$(openssl rand -hex 32)
+HASH=$(printf %s "$BADGE" | sha256sum | cut -d' ' -f1)   # macOS: shasum -a 256
 sudo tee /etc/doorman/badges.json >/dev/null <<EOF
 {
-  "$BADGE": { "tenantId": "<firm-tenant-uuid>", "technicianRef": "<technician>", "revoked": false }
+  "$HASH": { "tenantId": "<firm-tenant-uuid>", "technicianRef": "<technician>", "revoked": false }
 }
 EOF
 echo "issued badge for this sandbox: $BADGE"     # give this to exactly one sandbox
@@ -203,6 +208,39 @@ sudo chmod 600 /etc/doorman/doorman.env /etc/doorman/badges.json
 
 The badge file is the badge→identity table and the revocation list in one. The doorman re-reads it
 on every request, so issuing or revoking a badge takes effect with no restart.
+
+> **Roster-driven mode (2026-07-02, preferred):** the server generates this file from the
+> `technicians` roster — the host fetches it from `GET /control/badges` on the Render service,
+> authenticated by a per-host pull token (registered with `scripts/assign-host.mjs create-host`;
+> only its fingerprint is stored server-side). Brand-new people get their badge minted inside the
+> pull response (`newBadges` — the only moment the plaintext exists; install it as the sandbox's
+> provider credential). Deactivated people arrive as `revoked: true` on the next pull. The manual
+> procedure above remains the bootstrap/fallback path. See `Box Setup Stuff/badge-pull.sh` for the
+> polling updater.
+>
+> **BEFORE enabling the pull timer on a host with existing badges:** register each existing
+> badge's fingerprint server-side (`scripts/assign-host.mjs set-badge ref=<ref> hash=<sha256>`),
+> or the first pull ERASES those entries (the file is regenerated wholesale from the roster) and
+> mints competing replacements — the installed credentials then 403 with no error signal.
+
+### Upgrading a legacy host (plaintext-keyed badges.json → fingerprints, one-time)
+
+Hosts deployed before 2026-07-02 have badges.json keyed by the badge itself and the old doorman
+code. There is deliberately NO dual-read fallback (it would turn a leaked hash-keyed file's
+fingerprints into usable bearer tokens), so upgrade atomically — expect a few seconds of 403s:
+
+```bash
+sudo cp doorman.mjs /opt/doorman/doorman.mjs      # new code (inert until restart)
+sudo python3 - <<'EOF'                            # rekey the file in place
+import json, hashlib
+p = '/etc/doorman/badges.json'
+d = json.load(open(p))
+json.dump({hashlib.sha256(k.encode()).hexdigest(): v for k, v in d.items()}, open(p, 'w'), indent=2)
+EOF
+sudo chown doorman:doorman /etc/doorman/badges.json && sudo chmod 600 /etc/doorman/badges.json
+sudo systemctl restart doorman                    # immediately — old code + hashed file 403s
+# verify: Step 6(a) curl with the PLAINTEXT badge still lists the 7 tools
+```
 
 ## Step 3 — Run it as a hardened service
 
@@ -282,8 +320,10 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
 
 - (a) should list the 7 tools for a technician-tier badge: `record_field_note`, `find_customer`,
   `get_customer_context`, `get_job`, `list_recent_captures`, `brief_customer`,
-  `answer_customer_question`. (A badge whose roster row is an ACTIVE `tier='manager'` lists 12 —
-  the 5 seat-management tools are added; see nemoclaw-tech-agent.md §4, 2026-07-02.)
+  `answer_customer_question`. (A badge whose roster row is an ACTIVE `tier='manager'` lists **14**
+  — the 7 seat/lifecycle-management tools are added: add/deactivate/reactivate technician seat,
+  list_team, list_pending_reviews, resolve_review, get_connect_link; see nemoclaw-tech-agent.md
+  §4, updated 2026-07-02.)
   - `401 / bad identity signature` from upstream → `GATEWAY_IDENTITY_SECRET` differs between host and
     Render (Invariant 2).
   - connection error to upstream → the host isn't on Render's `ALLOWED_CLIENT_IPS` (Step 4).
@@ -295,13 +335,30 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
 
 ## Ongoing ops
 
-```bash
-# issue a badge for a new sandbox
-NEW=$(openssl rand -hex 32); echo "$NEW"
-# → add  "<NEW>": { "tenantId": "...", "technicianRef": "...", "revoked": false }  to badges.json
+Roster-driven (preferred, 2026-07-02): issue = assign the person to this host
+(`scripts/assign-host.mjs assign ref=… host=… sandbox=…`) — the badge mints on the host's next
+pull. **Remove a person** = deactivate them in the roster — the entry flips to `revoked: true`
+on the next pull, and the server rejects their badge's tool calls immediately regardless.
+**Leaked/lost badge (person stays)** = `assign-host.mjs rotate-badge ref=…` — the old badge
+vanishes from the file on the next pull and a replacement mints in that same response.
 
-# revoke one sandbox without touching others
+⚠ **On a pull-enabled host, hand edits to badges.json last at most one poll interval** — the
+file is regenerated wholesale from the roster. Hand-revoking `revoked: true` gets silently
+UN-revoked ≤5 min later if the roster row is still active; a hand-added badge gets erased unless
+its fingerprint is registered (`set-badge`). Use the server-side operations above; the manual
+procedure below is for hosts WITHOUT the pull timer (bootstrap/fallback):
+
+```bash
+# issue a badge for a new sandbox (file is keyed by sha256 fingerprint)
+NEW=$(openssl rand -hex 32); echo "$NEW"
+HASH=$(printf %s "$NEW" | sha256sum | cut -d' ' -f1)
+# → add  "<HASH>": { "tenantId": "...", "technicianRef": "...", "revoked": false }  to badges.json
+# → if this host will EVER enable badge-pull: also register it —
+#   scripts/assign-host.mjs set-badge ref=<ref> hash=<HASH>
+
+# revoke one sandbox without touching others (non-pull hosts only — see ⚠ above)
 # → set its "revoked": true in badges.json  (takes effect on the next request)
+# → chown doorman:doorman + chmod 600 after EVERY hand edit (silent all-403 otherwise)
 ```
 
 ## Definition of done

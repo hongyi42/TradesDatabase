@@ -4,6 +4,9 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createServer } from './server.js';
 import { resolveIdentityFromHeaders } from './identity.js';
 import { handleInboundWebhook } from '../inbound/webhook.js';
+import { sha256hex } from '../control/badges.js';
+import { buildBadgeResponse } from '../control/badgeFile.js';
+import { getHostByTokenHash } from '../db/index.js';
 
 // Central HTTP entrypoint (Architecture A). Every NemoClaw bot reaches this one
 // server through the gateway. It runs STATELESS (sessionIdGenerator: undefined):
@@ -108,11 +111,41 @@ async function handleInbound(req: http.IncomingMessage, res: http.ServerResponse
   }
 }
 
+// Badge pull for host machines. Authenticated by the host's own bearer token
+// (stored server-side only as a sha256 fingerprint) — NOT the gateway identity
+// header and NOT the IP allowlist (hosts' egress IPs rotate), so like /inbound/
+// it runs BEFORE allowed(). Every failure is a bare 401: an unauthenticated
+// probe learns nothing (not even whether the route exists behind auth).
+async function handleBadgePull(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  try {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
+    const host = m ? await getHostByTokenHash(sha256hex(m[1].trim())) : null;
+    if (!host) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    const body = await buildBadgeResponse(host.id);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     // Webhooks first — gated by HMAC, not by the gateway IP allowlist below.
     if (req.url?.startsWith('/inbound/')) {
       await handleInbound(req, res);
+      return;
+    }
+    // Host badge pull — gated by the host token, same pre-allowlist placement.
+    if (req.url === '/control/badges' && req.method === 'GET') {
+      await handleBadgePull(req, res);
       return;
     }
     if (!allowed(req)) {

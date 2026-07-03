@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { fileURLToPath } from 'node:url';
 import {
+  casTechnician,
   getJob,
   getCustomer,
   getOpenReviewItem,
@@ -17,13 +18,22 @@ import {
   listRawCapturesForJob,
   listRawCapturesForCustomer,
   listTeam,
+  resolveOpenReviewItemFor,
   resolveReviewItem,
-  setTechnicianState,
   upsertOpenReviewItem,
   type CaptureChannel,
   type TechnicianTier,
 } from '../db/index.js';
 import { recordFieldNote } from '../writePath/recordFieldNote.js';
+import {
+  checkPairing as liveCheckPairing,
+  createConnectLink as liveCreateConnectLink,
+  unpair as liveUnpair,
+} from '../composio/pairing.js';
+import {
+  disablePairing as liveDisablePairing,
+  enablePairing as liveEnablePairing,
+} from '../composio/offboarding.js';
 import type { Extractor } from '../writePath/extract.js';
 import {
   sonnetBriefer,
@@ -45,6 +55,12 @@ export interface ServerDeps {
   brief?: Briefer; // injectable briefing synthesizer (same reason)
   answer?: Answerer; // injectable Q&A synthesizer (same reason)
   identity?: RequestIdentity; // gateway-pinned tenant + technician for this request
+  // Composio pairing seams — injectable so tests never need COMPOSIO_API_KEY.
+  connectLink?: typeof liveCreateConnectLink;
+  checkPairing?: typeof liveCheckPairing;
+  unpair?: typeof liveUnpair;
+  disablePairing?: typeof liveDisablePairing;
+  enablePairing?: typeof liveEnablePairing;
 }
 
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
@@ -190,9 +206,36 @@ const ADMIN_TOOLS = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'reactivate_technician_seat',
+    description:
+      'Undo a deactivation during its grace period (manager only): the person returns to ' +
+      'active, their seat is re-occupied, and their mail connection is switched back on. ' +
+      'Not possible once the grace period has expired (permanently offboarded).',
+    inputSchema: {
+      type: 'object',
+      properties: { ref: { type: 'string', description: 'The roster ref to reactivate.' } },
+      required: ['ref'],
+    },
+  },
+  {
+    name: 'get_connect_link',
+    description:
+      "Get a Gmail connect link for a team member (manager only). Forward it to that person — " +
+      "they sign in to Google and approve; the link is SENSITIVE, share it only with them. " +
+      "Once they approve, a verification item appears in list_pending_reviews asking you to " +
+      "confirm the connected mailbox address.",
+    inputSchema: {
+      type: 'object',
+      properties: { ref: { type: 'string', description: 'The roster ref to pair.' } },
+      required: ['ref'],
+    },
+  },
+  {
     name: 'resolve_review',
     description:
-      'Close a review item (manager only) as resolved (handled) or dismissed (not an issue).',
+      'Close a review item (manager only) as resolved (handled) or dismissed (not an issue). ' +
+      'For a pairing verification: resolved = the mailbox is right (person goes active); ' +
+      'dismissed = wrong mailbox (pairing is torn down for a fresh connect link).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -219,6 +262,13 @@ function slugify(displayName: string): string {
 // before the switch, so adding an admin tool cannot forget its guard.
 const ADMIN_TOOL_NAMES = new Set(ADMIN_TOOLS.map((t) => t.name));
 
+// The one manager-facing seat-cap message — every tool that can hit the DB
+// trigger says the same thing (three call sites; drift means inconsistent
+// guidance depending on which tool hit the cap).
+function seatCapMessage(tier: TechnicianTier): string {
+  return `no free ${tier} seats — deactivate someone or purchase a seat`;
+}
+
 // Admin tools require an ACTIVE manager-tier roster row for the caller's badge
 // identity. Tier lives in the technicians table (single source of truth), not
 // in the badge — so revoking manager status is a DB update, no badge rotation.
@@ -240,9 +290,20 @@ async function dispatch(
   const str = (k: string): string | undefined =>
     typeof args[k] === 'string' ? (args[k] as string) : undefined;
 
+  // ONE roster read gates every call. Badge revocation propagates to hosts on
+  // the ≤5-min pull, so a deactivated person's badge can briefly outlive their
+  // roster state — this check makes "deactivation cuts access instantly" true
+  // server-side for ALL tools, not just admin ones (review finding: the docs
+  // claimed it while only mail + admin tools enforced it). A badge with NO
+  // roster row keeps the documented plain-technician surface.
+  const caller = await getTechnician(tenantId, identity.technicianRef);
+  if (caller && isInactiveState(caller.state)) {
+    throw new Error('this badge belongs to a deactivated team member');
+  }
   // The real tier gate (the tools/list filter is cosmetic): applied by tool
-  // NAME so no admin case can be added without it.
-  if (ADMIN_TOOL_NAMES.has(name) && !(await isActiveManager(identity))) {
+  // NAME so no admin case can be added without it. Reuses the read above —
+  // same predicate as isActiveManager.
+  if (ADMIN_TOOL_NAMES.has(name) && !(caller && caller.tier === 'manager' && caller.state === 'active')) {
     throw new Error('admin tools require a manager badge');
   }
 
@@ -425,7 +486,33 @@ async function dispatch(
       // State change FIRST, token cleanup second: if the state write fails the
       // token stays open and the confirm is retryable; the reverse order would
       // consume the token and record a "confirmed" deactivation that never ran.
-      await setTechnicianState(target.id, 'offboarding');
+      // One CAS write from the state we validated: a concurrent transition
+      // (e.g. the pairing sweep advancing invited→pending_verification) makes
+      // this confirm restart rather than being blindly overwritten. The same
+      // write stamps the grace-period clock the expiry sweep reads.
+      const claimed = await casTechnician(target.id, target.state, {
+        state: 'offboarding',
+        offboarding_started_at: new Date().toISOString(),
+      });
+      if (!claimed) {
+        throw new Error('state changed while confirming — call again without confirmId to restart');
+      }
+      // Disable-first grace period: switch the pairing OFF (reversible via
+      // reactivate). Advisory — the roster gate already drops their mail, and
+      // the expiry teardown is the backstop if Composio is unreachable now.
+      try {
+        await (deps.disablePairing ?? liveDisablePairing)(target);
+      } catch {
+        /* advisory */
+      }
+      // A still-open pairing_verification item must not survive into
+      // offboarding — resolving it later could read as a verification verdict
+      // for someone already removed (plan review finding). Advisory close.
+      try {
+        await resolveOpenReviewItemFor(tenantId, 'pairing_verification', ref, 'resolved', 'person deactivated');
+      } catch {
+        /* advisory */
+      }
       try {
         await resolveReviewItem(item.id, tenantId, 'resolved',
           `deactivation confirmed by ${identity.technicianRef}`);
@@ -434,6 +521,130 @@ async function dispatch(
         // branch) or the next deactivate call self-heals the open item.
       }
       return { status: 'deactivated', ref };
+    }
+    case 'reactivate_technician_seat': {
+      const ref = str('ref');
+      if (!ref) throw new Error('ref is required');
+      const target = await getTechnician(tenantId, ref);
+      if (!target) throw new Error(`technician '${ref}' not found`);
+      // RETRY SURFACE: reactivation already ran but the pairing re-enable
+      // failed (Composio blip) — calling again re-runs the enable instead of
+      // erroring, because no other tool can (review finding: mail stays dark
+      // indefinitely otherwise; enable is idempotent on an enabled account).
+      if (target.state === 'active' && target.composio_connected_account_id) {
+        let pairingRestored = true;
+        try {
+          await (deps.enablePairing ?? liveEnablePairing)(target);
+        } catch {
+          pairingRestored = false;
+        }
+        return { status: 'already_active', ref, pairingRestored };
+      }
+      if (target.state === 'offboarded') {
+        throw new Error(`'${ref}' is permanently offboarded — add a new seat instead`);
+      }
+      if (target.state !== 'offboarding') {
+        throw new Error(`'${ref}' is not deactivated (state: ${target.state})`);
+      }
+      // Back to 'active' when a pairing exists (the realistic case — known
+      // accepted edge: a pending_verification deactivation returns as active
+      // without a mailbox confirmation, the manager drove both actions).
+      // NO pairing (deactivated while still invited) → back to 'invited':
+      // 'active' would be a dead-end — get_connect_link refuses active rows
+      // and checkPairing only acts on invited, so their mailbox could never
+      // be paired (review finding).
+      const restoredState = target.composio_connected_account_id ? 'active' : 'invited';
+      // ONE CAS write restores state + clears the clock atomically: no window
+      // where a crash leaves an active row still carrying a grace clock, and
+      // a concurrent expiry claim (offboarding→offboarded) wins cleanly — we
+      // report the truth instead of resurrecting into a torn-down pairing.
+      let restored;
+      try {
+        restored = await casTechnician(target.id, 'offboarding', {
+          state: restoredState,
+          offboarding_started_at: null,
+        });
+      } catch (err) {
+        if (isSeatCapError(err)) throw new Error(seatCapMessage(target.tier));
+        throw err;
+      }
+      if (!restored) {
+        throw new Error(`'${ref}' changed state while reactivating — check list_team and retry`);
+      }
+      // An open grace-period reminder is now moot — and if it stayed open, a
+      // SECOND deactivation episode's reminder would collide with it and show
+      // the stale deadline (review finding). Advisory close.
+      try {
+        await resolveOpenReviewItemFor(tenantId, 'offboarding_reminder', ref, 'resolved', 'reactivated during grace period');
+      } catch {
+        /* advisory */
+      }
+      // Switch the pairing back on. Advisory, but SURFACED: if this fails the
+      // person is active with dark mail — the manager retries via this tool.
+      let pairingRestored: boolean | null = null;
+      if (target.composio_connected_account_id) {
+        try {
+          await (deps.enablePairing ?? liveEnablePairing)(target);
+          pairingRestored = true;
+        } catch {
+          pairingRestored = false;
+        }
+      }
+      return {
+        status: 'reactivated',
+        ref,
+        state: restoredState,
+        pairingRestored,
+        ...(restoredState === 'invited' && {
+          note: 'no mailbox was ever connected — use get_connect_link to pair them',
+        }),
+      };
+    }
+    case 'get_connect_link': {
+      const ref = str('ref');
+      if (!ref) throw new Error('ref is required');
+      const target = await getTechnician(tenantId, ref);
+      if (!target) throw new Error(`technician '${ref}' not found`);
+      if (isInactiveState(target.state)) {
+        throw new Error(`'${ref}' is deactivated — reactivate the seat first`);
+      }
+      if (target.state === 'active') {
+        throw new Error(`'${ref}' is already connected and active`);
+      }
+      // One definition for both "already connected" exits below — the literal
+      // was duplicated and would drift (review finding).
+      const awaiting = (email: string | null) => ({
+        status: 'awaiting_verification',
+        ref,
+        email,
+        note: 'already connected — confirm or dismiss the pairing in list_pending_reviews',
+      });
+      if (target.state === 'pending_verification') {
+        return awaiting(target.connected_email);
+      }
+      // state === 'invited'. Cooldown BEFORE any Composio call — the one rate
+      // limit on the link-minting surface (structural, replica-safe: the clock
+      // lives on the roster row).
+      if (
+        target.link_issued_at &&
+        Date.now() - Date.parse(target.link_issued_at) < 5 * 60_000
+      ) {
+        throw new Error('a link was just issued for this person — wait a few minutes, then try again');
+      }
+      // Consent may already have completed before any sweep ran: checkPairing
+      // advances the row and opens the verification item itself.
+      const check = await (deps.checkPairing ?? liveCheckPairing)(target);
+      if (check.status === 'paired') {
+        return awaiting(check.email);
+      }
+      const { url } = await (deps.connectLink ?? liveCreateConnectLink)(target);
+      return {
+        status: 'link_created',
+        ref,
+        url,
+        note: 'Forward this link ONLY to this person. They sign in to Google and approve; ' +
+          'you will then get a verification item to confirm the mailbox.',
+      };
     }
     case 'list_team': {
       // Roster facts only — Composio account/trigger ids stay server-side.
@@ -455,18 +666,41 @@ async function dispatch(
       if (resolution !== 'resolved' && resolution !== 'dismissed') {
         throw new Error(`invalid resolution: ${resolution ?? '(missing)'}`);
       }
+      // ONE point read, then dispatch on the item's kind — behavioral kinds
+      // add a branch here, not another guaranteed-null DB probe per call
+      // (review finding: the sequential kind-filtered reads pattern costs two
+      // wasted round trips on every common resolve and won't scale).
+      const open = await getOpenReviewItem(reviewItemId, tenantId);
+      if (!open) throw new Error('review item not found');
       // A pending_deactivation item is a live confirm token, not a review to
       // "handle": marking it resolved here would read as a completed
-      // deactivation that never ran. Dismissing it (= cancel the deactivation)
-      // is legitimate; resolving it is only done by the deactivate flow itself.
-      const token = await getOpenReviewItem(reviewItemId, tenantId, {
-        kind: 'pending_deactivation',
-      });
-      if (token && resolution === 'resolved') {
+      // deactivation that never ran. Dismissing it (= cancel) is legitimate.
+      if (open.kind === 'pending_deactivation' && resolution === 'resolved') {
         throw new Error(
-          `this is a pending deactivation for '${token.subject_ref}' — confirm it via ` +
+          `this is a pending deactivation for '${open.subject_ref}' — confirm it via ` +
             `deactivate_technician_seat, or dismiss it to cancel`,
         );
+      }
+      // A pairing_verification verdict acts BEFORE the item closes (state-first,
+      // mirroring deactivate): resolved = right mailbox → active; dismissed =
+      // wrong mailbox → unpair back to invited. Both act ONLY while the row is
+      // still pending_verification — a stale item on an offboarding/offboarded
+      // row must neither resurrect nor unpair anyone; it just closes. The
+      // state advance is a CAS so a deactivate landing mid-call wins.
+      if (open.kind === 'pairing_verification') {
+        const target = await getTechnician(tenantId, open.subject_ref);
+        if (target && target.state === 'pending_verification') {
+          if (resolution === 'resolved') {
+            try {
+              await casTechnician(target.id, 'pending_verification', { state: 'active' });
+            } catch (err) {
+              if (isSeatCapError(err)) throw new Error(seatCapMessage(target.tier));
+              throw err;
+            }
+          } else {
+            await (deps.unpair ?? liveUnpair)(target);
+          }
+        }
       }
       const item = await resolveReviewItem(reviewItemId, tenantId, resolution, str('note') ?? null);
       if (!item) throw new Error('review item not found');

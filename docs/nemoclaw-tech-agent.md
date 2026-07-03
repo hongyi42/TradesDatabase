@@ -88,12 +88,16 @@ Allowlist only the spine tools for the technician profile (`tools.profile` / all
 Outbound network policy should allow only the gateway + our server's host.
 
 **Manager profile (2026-07-02):** an ACTIVE `tier='manager'` roster row (the `technicians`
-table, not the badge, is the tier source of truth) additionally exposes the seat-management
-tools: `add_technician_seat`, `deactivate_technician_seat` (two-step confirm), `list_team`,
-`list_pending_reviews`, `resolve_review`. The server both filters `tools/list` by tier and
-re-gates every admin call at dispatch — a technician badge structurally has no admin surface.
-Seat caps (`tenants.manager_seats`/`technician_seats`) are DB-enforced; the agent cannot talk
-past them.
+table, not the badge, is the tier source of truth) additionally exposes the seat/lifecycle
+tools — 7 of them, for a 14-tool manager surface: `add_technician_seat`,
+`deactivate_technician_seat` (two-step confirm; starts the disable-first grace period),
+`reactivate_technician_seat` (the grace-period undo), `get_connect_link` (mint a Gmail
+Connect Link; 5-min per-person cooldown), `list_team`, `list_pending_reviews`,
+`resolve_review` (also carries pairing-verification verdicts: resolved = mailbox confirmed →
+active; dismissed = wrong mailbox → pairing torn down). The server both filters `tools/list`
+by tier and re-gates every admin call at dispatch — a technician badge structurally has no
+admin surface. Seat caps (`tenants.manager_seats`/`technician_seats`) are DB-enforced; the
+agent cannot talk past them.
 
 ## 5. Conversation contract
 - The agent calls `record_field_note({ technicianRef, text, channel })`.

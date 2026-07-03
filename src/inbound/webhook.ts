@@ -258,8 +258,22 @@ export async function handleInboundWebhook(
       externalId: envelope.externalId,
       occurredAt: envelope.occurredAt,
       // L1 metadata carries from/subject only — the body already lives in raw_text,
-      // so don't duplicate it into metadata JSONB.
-      sourceMeta: { from: meta.from, subject: meta.subject },
+      // so don't duplicate it into metadata JSONB. Captures landing before the
+      // manager confirmed the mailbox are stamped, so if verification later
+      // FAILS (wrong account connected) the affected rows are findable —
+      // stamping is the only after-the-fact handle L1's append-only rule allows.
+      sourceMeta: {
+        from: meta.from,
+        subject: meta.subject,
+        // The account id keys the stamp to a pairing EPISODE: across a
+        // wrong-mailbox → dismiss → re-pair loop, a bare boolean couldn't say
+        // which rows came from which mailbox (review finding), and L1's
+        // append-only rule makes that ambiguity permanent.
+        ...(tech?.state === 'pending_verification' && {
+          pendingVerification: true,
+          pendingAccount: tech.composio_connected_account_id,
+        }),
+      },
     });
     // Unknown ref: keep the capture (ground truth), flag for manager review.
     // Redeliveries must not re-open a resolved item — the 'duplicate' gate covers

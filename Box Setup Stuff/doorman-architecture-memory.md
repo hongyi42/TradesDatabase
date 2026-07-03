@@ -26,7 +26,7 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
 ## Components & where they live
 - **Doorman** (host): `/opt/doorman/doorman.mjs`, unit `doorman.service` (+ drop-in
   `doorman.service.d/override.conf`), config in `/etc/doorman/` (`doorman.env` = `GATEWAY_IDENTITY_SECRET`,
-  `badges.json` = badge→{tenantId,technicianRef,revoked}, mode 600 owned `doorman`). Reads badge from
+  `badges.json` = sha256(badge)→{tenantId,technicianRef,revoked}, mode 600 owned `doorman`). Reads badge from
   `Authorization: Bearer <badge>`. Returns 200 valid / 403 unknown-or-revoked / 401 no-badge.
   Node must be copied to `/usr/local/bin/node` because the unit's `ProtectHome=true` hides the nvm node in /home.
 - **NemoClaw source** (host): `/home/ubuntu/.nemoclaw/source/` — a real git repo (Dockerfile + `scripts/` +
@@ -46,16 +46,41 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
   `openshell provider … <AGENT>-telegram-bridge`. The provider holds the channel + badge credentials.
 
 ## The badge & the runtime-secret mechanism (the clean path — VERIFIED working)
+- **badges.json is keyed by sha256 FINGERPRINTS since 2026-07-02** — the doorman hashes the
+  presented badge before lookup (`createHash('sha256')`, see doorman.mjs), so the file at rest
+  can't authenticate. When hand-writing an entry, the key is `sha256hex(<badge>)`
+  (`printf %s "$BADGE" | sha256sum`), NEVER the badge itself. A plaintext-keyed entry silently
+  403s (the hash lookup misses) — if every badge 403s after an edit, check keys AND ownership.
+- **Badges are ROSTER-DRIVEN now**: the server generates this host's badges.json from its
+  `technicians` roster; the host syncs it with `badge-pull.sh` (root, 5-min systemd timer,
+  copy alongside this file) calling `GET /control/badges` with a per-host pull token
+  (root-only `/etc/doorman/badge-pull.env`; server stores only its fingerprint). New people's
+  badges are MINTED IN THE PULL RESPONSE (`newBadges` → `/root/pending-badges.jsonl`) — that is
+  the only copy of the plaintext: install it as the sandbox's provider credential
+  (`openshell provider update <AGENT>-telegram-bridge --credential TRADES_SPINE_BADGE=<badge>`,
+  mind the Placeholder VERSIONING trap below), then delete the line. Deactivated people flip to
+  `revoked:true` on the next pull.
+  **Pull-host rules (hard-won):** (1) BEFORE enabling the timer on a host with existing badges,
+  have the server side register each badge's fingerprint (`assign-host.mjs set-badge ref=… hash=…`)
+  — the pull regenerates the file WHOLESALE from the roster, so unregistered entries are erased
+  and competing badges minted (installed credentials then 403 with no signal). (2) Hand edits
+  last at most one poll: a hand-set `revoked:true` is silently UN-revoked ≤5 min later while the
+  roster row is active — leaked badge = server-side `rotate-badge` (old badge dies next pull,
+  replacement mints), person removal = deactivate in the roster. (3) Upgrading a legacy
+  plaintext-keyed host: copy the new doorman.mjs, rekey every key to its sha256
+  (`python3` one-liner over the file), restore doorman:doorman 600, `systemctl restart doorman`
+  back-to-back — a few seconds of 403s; NO dual-read fallback exists ON PURPOSE (it would turn a
+  leaked file's fingerprints into usable bearer tokens).
 - Reference badge (identity `tech-jane`, tenant `82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18`):
   `3a6fb336ec39071493a98a1a44773a7b7fa09e73df61c9c71c9f11b3cd7e27ba`. Reusable across boxes (the doorman's
-  `badges.json` + secret define validity).
+  `badges.json` + secret define validity) — its badges.json KEY is now that value's sha256.
 - **A badge's POWER comes from a matching roster row on the server, not from the badge itself
   (since 2026-07-02).** The badge only maps to `{tenantId, technicianRef}`; the trades-spine server
   looks that `technicianRef` up in its `technicians` table and grants tools by the row's **tier**. So
   minting a badge is now a TWO-PART action: (1) the server side must already have an ACTIVE row for that
   ref — `tier='manager'` for a manager, `tier='technician'` otherwise; (2) mint the badge here with the
   byte-identical `technicianRef`. If no active row matches, the badge still authenticates but silently
-  acts as a plain technician (7 tools; the 5 seat-management admin tools are denied). The reference
+  acts as a plain technician (7 tools; the 7 seat/lifecycle admin tools are denied). The reference
   `tech-jane` badge above maps to an active technician row. You (host side) cannot see or change the
   roster — it lives in the server's DB; coordinate with whoever manages it when minting a manager badge.
 - The badge is registered as a **provider credential**:
@@ -164,7 +189,7 @@ Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config
 ## Verify (end-to-end)
 - Host→doorman→Render: `curl -X POST http://172.18.0.1:3001/mcp -H "Authorization: Bearer <badge>" …
   '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + **7 tools** for a technician-tier
-  badge, or **12** for a badge whose ref maps to an active manager roster row (the extra 5 are the
+  badge, or **14** for a badge whose ref maps to an active manager roster row (the extra 7 are the
   seat-management tools; see the badge↔roster note above). A manager badge returning only 7 means the
   server has no active `tier='manager'` row for that ref (or is running older code).
 - Agent: message the bot ("list recent captures") → OCSF on host shows
@@ -173,4 +198,4 @@ Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config
 
 ## Tools by tier (what `tools/list` returns)
 - **Technician badge — 7:** record_field_note, find_customer, get_customer_context, get_job, list_recent_captures, brief_customer, answer_customer_question.
-- **Manager badge — 12:** the 7 above PLUS the seat-management admin tools: add_technician_seat, deactivate_technician_seat, list_team, list_pending_reviews, resolve_review. Only an ACTIVE `tier='manager'` roster row on the server unlocks these (see the badge↔roster note above); the doorman/host does nothing tier-specific — same badge plumbing either way.
+- **Manager badge — 14 (since 2026-07-02):** the 7 above PLUS the seat/lifecycle admin tools: add_technician_seat, deactivate_technician_seat, reactivate_technician_seat, get_connect_link, list_team, list_pending_reviews, resolve_review. Only an ACTIVE `tier='manager'` roster row on the server unlocks these (see the badge↔roster note above); the doorman/host does nothing tier-specific — same badge plumbing either way.

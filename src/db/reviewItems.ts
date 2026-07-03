@@ -11,7 +11,8 @@ export type ReviewKind =
   | 'sheet_ref_mismatch'
   | 'unknown_ref_capture'
   | 'pairing_verification'
-  | 'pending_deactivation';
+  | 'pending_deactivation'
+  | 'offboarding_reminder';
 
 export interface UpsertOpenReviewItemInput {
   tenantId: string;
@@ -43,20 +44,12 @@ export async function upsertOpenReviewItem(input: UpsertOpenReviewItemInput): Pr
   if (!isUniqueViolation(error)) {
     throw new Error(`upsertOpenReviewItem failed: ${error?.message ?? 'no row returned'}`);
   }
-  const existing = await getClient()
-    .from('review_items')
-    .select()
-    .eq('tenant_id', input.tenantId)
-    .eq('kind', input.kind)
-    .eq('subject_ref', input.subjectRef)
-    .eq('status', 'open')
-    .maybeSingle();
-  if (existing.error || !existing.data) {
-    throw new Error(
-      `upsertOpenReviewItem failed: conflict but no open row found: ${existing.error?.message ?? 'none'}`,
-    );
+  // Same lookup findOpenReviewItem does — one definition of "the open row".
+  const existing = await findOpenReviewItem(input.tenantId, input.kind, input.subjectRef);
+  if (!existing) {
+    throw new Error('upsertOpenReviewItem failed: conflict but no open row found');
   }
-  return existing.data;
+  return existing;
 }
 
 // Flag an unknown-ref capture, at most once per source MESSAGE: a redelivery of
@@ -92,6 +85,92 @@ export async function flagUnknownRefCapture(input: {
     kind: 'unknown_ref_capture',
     subjectRef: input.subjectRef,
     detail: { externalId },
+  });
+}
+
+// The open item for a (kind, subject), if any — WITHOUT creating one (the
+// upsert would). Used to close a stale item on deactivation and to resolve
+// the reminder when an offboarding completes. At most one row can match
+// (partial unique index on open items).
+export async function findOpenReviewItem(
+  tenantId: string,
+  kind: ReviewKind,
+  subjectRef: string,
+): Promise<ReviewItem | null> {
+  const { data, error } = await getClient()
+    .from('review_items')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('kind', kind)
+    .eq('subject_ref', subjectRef)
+    .eq('status', 'open')
+    .maybeSingle();
+  if (error) throw new Error(`findOpenReviewItem failed: ${error.message}`);
+  return data;
+}
+
+// Close the open item of a (kind, subject) in ONE conditional UPDATE — legal
+// because the partial unique index guarantees at most one open row. Returns
+// the closed row, or null if nothing was open. Replaces the find-then-resolve
+// two-round-trip pattern at every lifecycle transition (deactivate closes the
+// pairing item, reactivate/expiry close the reminder), which also closes the
+// read-to-write race window those pairs had.
+export async function resolveOpenReviewItemFor(
+  tenantId: string,
+  kind: ReviewKind,
+  subjectRef: string,
+  status: 'resolved' | 'dismissed',
+  resolution?: string | null,
+): Promise<ReviewItem | null> {
+  const { data, error } = await getClient()
+    .from('review_items')
+    .update({ status, resolution: resolution ?? null, resolved_at: new Date().toISOString() })
+    .eq('tenant_id', tenantId)
+    .eq('kind', kind)
+    .eq('subject_ref', subjectRef)
+    .eq('status', 'open')
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`resolveOpenReviewItemFor failed: ${error.message}`);
+  return data;
+}
+
+// Remind the manager an offboarding is about to become permanent — ONCE per
+// offboarding episode: any-status dedup on detail.startedAt (the same pattern
+// as flagUnknownRefCapture), so a dismissed reminder stays dismissed even
+// though the 15-min cron keeps observing "remaining ≤ 2 days" until expiry.
+export async function flagOffboardingReminder(input: {
+  tenantId: string;
+  subjectRef: string;
+  startedAt: string; // the episode key: the row's offboarding_started_at
+  graceEndsAt: string;
+}): Promise<ReviewItem | null> {
+  const { data, error } = await getClient()
+    .from('review_items')
+    .select('id')
+    .eq('tenant_id', input.tenantId)
+    .eq('kind', 'offboarding_reminder')
+    .eq('subject_ref', input.subjectRef)
+    .eq('detail->>startedAt', input.startedAt)
+    .limit(1);
+  if (error) throw new Error(`flagOffboardingReminder failed: ${error.message}`);
+  if (data && data.length > 0) return null; // this episode was already reminded
+  // Supersede a stale open reminder from a PREVIOUS episode (e.g. reactivate's
+  // advisory close failed): without this, the insert below hits the one-open-
+  // item index and returns the old row — the manager would keep seeing the old
+  // episode's already-past deadline while the new episode never surfaces.
+  await resolveOpenReviewItemFor(
+    input.tenantId,
+    'offboarding_reminder',
+    input.subjectRef,
+    'resolved',
+    'superseded by a new offboarding episode',
+  );
+  return upsertOpenReviewItem({
+    tenantId: input.tenantId,
+    kind: 'offboarding_reminder',
+    subjectRef: input.subjectRef,
+    detail: { startedAt: input.startedAt, graceEndsAt: input.graceEndsAt },
   });
 }
 

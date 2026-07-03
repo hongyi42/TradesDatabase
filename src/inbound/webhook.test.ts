@@ -91,6 +91,10 @@ function techRow(over: Partial<Technician> = {}): Technician {
     composio_connected_account_id: null,
     composio_trigger_id: null,
     connected_email: null,
+    badge_hash: null,
+    host_id: null,
+    offboarding_started_at: null,
+    link_issued_at: null,
     created_at: '2026-07-02T00:00:00.000Z',
     updated_at: '2026-07-02T00:00:00.000Z',
     ...over,
@@ -571,5 +575,38 @@ describe('handleInboundWebhook', () => {
     } finally {
       process.env.COMPOSIO_WEBHOOK_SECRET = SECRET;
     }
+  });
+});
+
+describe('pending_verification capture stamping', () => {
+  let prev: string | undefined;
+  beforeAll(() => {
+    prev = process.env.COMPOSIO_WEBHOOK_SECRET;
+    process.env.COMPOSIO_WEBHOOK_SECRET = SECRET;
+  });
+  afterAll(() => {
+    process.env.COMPOSIO_WEBHOOK_SECRET = prev;
+  });
+
+  test('a pending-verification person\'s capture is stamped; an active person\'s is not', async () => {
+    // Window captures are permanent (L1 append-only) — the stamp is the only
+    // after-the-fact handle if verification later fails (wrong mailbox).
+    const pending = recorder();
+    const raw = body();
+    const r1 = await handleInboundWebhook(
+      raw,
+      sign(raw),
+      baseDeps({
+        recordFieldNote: pending.fn,
+        getTechnician: async () => techRow({ state: 'pending_verification' }),
+      }),
+    );
+    expect(r1.status).toBe('ingested'); // pending ingests exactly like active
+    expect(pending.calls[0].sourceMeta).toMatchObject({ pendingVerification: true });
+
+    const active = recorder();
+    const r2 = await handleInboundWebhook(raw, sign(raw), baseDeps({ recordFieldNote: active.fn }));
+    expect(r2.status).toBe('ingested');
+    expect(active.calls[0].sourceMeta).not.toHaveProperty('pendingVerification');
   });
 });

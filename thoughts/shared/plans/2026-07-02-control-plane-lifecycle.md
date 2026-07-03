@@ -387,12 +387,19 @@ env: Supabase + COMPOSIO_* + DEFAULT_TENANT_ID + GRACE_DAYS), badge-pull rollout
 others; exit-code contract.
 
 ### Automated verification
-- [ ] gates + new tests pass; `npm run build` produces `dist/jobs/lifecycle.js`
+- [x] gates + new tests pass (141/141, 25 files; +3 lifecycle unit); `npm run build` produces
+      `dist/jobs/lifecycle.js`
 
 ### Live verification (agent-executable)
 - Prerequisites: `.env` fully populated incl. Composio; `supabase-test` MCP.
-- [ ] Run `job:lifecycle` locally against the test project: pairing check + expiry counts in
-      output match SQL read-back evidence.
+- [x] Ran live 2026-07-02 — twice, and the second run proved RECONCILIATION: the test suite
+      had truncated the staged `pair-drill` row (note: `npm test` wipes the roster — staged
+      fixtures don't survive it), leaving the Composio pairing orphaned; re-creating the row
+      as `invited`+link-stamped and running `job:lifecycle` re-discovered the SAME account
+      (`ca_Hq76Mg0HgFjQ`), ADOPTED the existing trigger (`ti_oLojd17kwEwd` — idempotent
+      listActive path live, no duplicate), re-fetched the email, advanced to
+      `pending_verification`, re-opened the item; summary `{checked:1,paired:1}`, exit 0.
+      First run (empty state): all-zero sweep, sheet skipped-not-failed, exit 0.
 
 ### Manual verification
 - [ ] User creates the Render Cron Job + sets env vars (incl. COMPOSIO_API_KEY on the web

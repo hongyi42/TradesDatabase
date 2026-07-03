@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { fileURLToPath } from 'node:url';
 import {
+  findOpenReviewItem,
   getJob,
   getCustomer,
   getOpenReviewItem,
@@ -19,6 +20,7 @@ import {
   listTeam,
   resolveReviewItem,
   setTechnicianState,
+  updateTechnician,
   upsertOpenReviewItem,
   type CaptureChannel,
   type TechnicianTier,
@@ -29,6 +31,10 @@ import {
   createConnectLink as liveCreateConnectLink,
   unpair as liveUnpair,
 } from '../composio/pairing.js';
+import {
+  disablePairing as liveDisablePairing,
+  enablePairing as liveEnablePairing,
+} from '../composio/offboarding.js';
 import type { Extractor } from '../writePath/extract.js';
 import {
   sonnetBriefer,
@@ -54,6 +60,8 @@ export interface ServerDeps {
   connectLink?: typeof liveCreateConnectLink;
   checkPairing?: typeof liveCheckPairing;
   unpair?: typeof liveUnpair;
+  disablePairing?: typeof liveDisablePairing;
+  enablePairing?: typeof liveEnablePairing;
 }
 
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
@@ -197,6 +205,18 @@ const ADMIN_TOOLS = [
       'List open review items needing a decision (manager only): schedule-sheet name typos ' +
       '(with a did-you-mean suggestion), email from unrecognized team refs, pending confirmations.',
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'reactivate_technician_seat',
+    description:
+      'Undo a deactivation during its grace period (manager only): the person returns to ' +
+      'active, their seat is re-occupied, and their mail connection is switched back on. ' +
+      'Not possible once the grace period has expired (permanently offboarded).',
+    inputSchema: {
+      type: 'object',
+      properties: { ref: { type: 'string', description: 'The roster ref to reactivate.' } },
+      required: ['ref'],
+    },
   },
   {
     name: 'get_connect_link',
@@ -449,7 +469,30 @@ async function dispatch(
       // State change FIRST, token cleanup second: if the state write fails the
       // token stays open and the confirm is retryable; the reverse order would
       // consume the token and record a "confirmed" deactivation that never ran.
-      await setTechnicianState(target.id, 'offboarding');
+      // One write also stamps the grace-period clock the expiry sweep reads.
+      await updateTechnician(target.id, {
+        state: 'offboarding',
+        offboarding_started_at: new Date().toISOString(),
+      });
+      // Disable-first grace period: switch the pairing OFF (reversible via
+      // reactivate). Advisory — the roster gate already drops their mail, and
+      // the expiry teardown is the backstop if Composio is unreachable now.
+      try {
+        await (deps.disablePairing ?? liveDisablePairing)(target);
+      } catch {
+        /* advisory */
+      }
+      // A still-open pairing_verification item must not survive into
+      // offboarding — resolving it later could read as a verification verdict
+      // for someone already removed (plan review finding). Advisory close.
+      try {
+        const stalePairing = await findOpenReviewItem(tenantId, 'pairing_verification', ref);
+        if (stalePairing) {
+          await resolveReviewItem(stalePairing.id, tenantId, 'resolved', 'person deactivated');
+        }
+      } catch {
+        /* advisory */
+      }
       try {
         await resolveReviewItem(item.id, tenantId, 'resolved',
           `deactivation confirmed by ${identity.technicianRef}`);
@@ -458,6 +501,66 @@ async function dispatch(
         // branch) or the next deactivate call self-heals the open item.
       }
       return { status: 'deactivated', ref };
+    }
+    case 'reactivate_technician_seat': {
+      const ref = str('ref');
+      if (!ref) throw new Error('ref is required');
+      const target = await getTechnician(tenantId, ref);
+      if (!target) throw new Error(`technician '${ref}' not found`);
+      if (target.state === 'offboarded') {
+        throw new Error(`'${ref}' is permanently offboarded — add a new seat instead`);
+      }
+      if (target.state !== 'offboarding') {
+        throw new Error(`'${ref}' is not deactivated (state: ${target.state})`);
+      }
+      // Back to 'active' when a pairing exists (the realistic case — known
+      // accepted edge: a pending_verification deactivation returns as active
+      // without a mailbox confirmation, the manager drove both actions).
+      // NO pairing (deactivated while still invited) → back to 'invited':
+      // 'active' would be a dead-end — get_connect_link refuses active rows
+      // and checkPairing only acts on invited, so their mailbox could never
+      // be paired (review finding).
+      const restoredState = target.composio_connected_account_id ? 'active' : 'invited';
+      try {
+        await setTechnicianState(target.id, restoredState);
+      } catch (err) {
+        if (isSeatCapError(err)) {
+          throw new Error(`no free ${target.tier} seats — deactivate someone or purchase a seat`);
+        }
+        throw err;
+      }
+      await updateTechnician(target.id, { offboarding_started_at: null });
+      // An open grace-period reminder is now moot — and if it stayed open, a
+      // SECOND deactivation episode's reminder would collide with it and show
+      // the stale deadline (review finding). Advisory close.
+      try {
+        const reminder = await findOpenReviewItem(tenantId, 'offboarding_reminder', ref);
+        if (reminder) {
+          await resolveReviewItem(reminder.id, tenantId, 'resolved', 'reactivated during grace period');
+        }
+      } catch {
+        /* advisory */
+      }
+      // Switch the pairing back on. Advisory, but SURFACED: if this fails the
+      // person is active with dark mail — the manager must know to retry.
+      let pairingRestored: boolean | null = null;
+      if (target.composio_connected_account_id) {
+        try {
+          await (deps.enablePairing ?? liveEnablePairing)(target);
+          pairingRestored = true;
+        } catch {
+          pairingRestored = false;
+        }
+      }
+      return {
+        status: 'reactivated',
+        ref,
+        state: restoredState,
+        pairingRestored,
+        ...(restoredState === 'invited' && {
+          note: 'no mailbox was ever connected — use get_connect_link to pair them',
+        }),
+      };
     }
     case 'get_connect_link': {
       const ref = str('ref');

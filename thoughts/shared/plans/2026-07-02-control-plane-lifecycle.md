@@ -287,9 +287,15 @@ called; webhook.test.ts: pending stub → metadata stamp present, active stub �
       second Composio call; read-back `link_issued_at` stamped, state still `invited`.
 
 ### Manual verification
-- [ ] User opens the link with the test Gmail, approves; then agent runs `checkPairing` live and
-      SQL-verifies ca_*/ti_*/connected_email + open `pairing_verification` item + state
-      `pending_verification`. (Full-cycle drill continues in Phase 5's E2E.)
+- [x] Done live 2026-07-02: user approved `hongyi23360228@gmail.com` via a fresh link (first
+      link expired within ~25 min — links are EPHEMERAL, forward immediately, re-issue if
+      unused); `checkPairing` → `paired` (`ca_Hq76Mg0HgFjQ`); SQL read-back: state
+      `pending_verification`, `ti_oLojd17kwEwd`, `connected_email` exact, open
+      `pairing_verification` item w/ matching detail. Raw account object logged: NO email
+      field (id/authConfig/wordId/alias/data/status/…) — decision 6's GMAIL_GET_PROFILE
+      path confirmed necessary. `pair-drill` left staged for Phase 5's E2E.
+      Adversarial review: 1 IMPORTANT (trigger not pinned to the verified account) +
+      2 MINOR (status-first 404 detection, triggerNames filter) — all fixed + test-asserted.
 
 ---
 *Pause after Phase 3 for the OAuth consent drill.*
@@ -342,12 +348,16 @@ offboarded → refused; deactivate stamps clock + disables + closes an open pair
 resolve_review on a stale pairing item (offboarding row) does not change state.
 
 ### Automated verification
-- [ ] gates + new tests pass
+- [x] gates + new tests pass (137/137, 24 files; +7 offboarding unit, +1 server lifecycle —
+      incl. exact 14-tool manager surface assertion)
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP.
-- [ ] Probe row walked offboarding→(force clock back via SQL)→expire → SQL read-back
-      `offboarded` + reminder item lifecycle. (Composio calls stubbed here; live in Phase 5.)
+- [x] Ran live 2026-07-02 (real DB, stub Composio client): 4-sweep drill — day 6 → reminded=1;
+      re-sweep → reminded=0 (episode dedup held); clock forced to day 8 → expired=1 with
+      teardown order [triggers.delete, accounts.delete]; re-sweep → scanned=0. SQL read-back:
+      state `offboarded`, ca_* KEPT, reminder item resolved "offboarding completed" with
+      startedAt/graceEndsAt detail. Probe rows deleted.
 
 ### Manual verification
 - (none)

@@ -81,6 +81,14 @@ function clientStub(opts: {
         if (err) throw err;
         return {};
       },
+      disable: async (id) => {
+        rec('accounts.disable', id);
+        return {};
+      },
+      enable: async (id) => {
+        rec('accounts.enable', id);
+        return {};
+      },
     },
     triggers: {
       listActive: async (q) => {
@@ -95,6 +103,14 @@ function clientStub(opts: {
         rec('triggers.delete', id);
         const err = opts.deleteThrows?.(id);
         if (err) throw err;
+        return {};
+      },
+      disable: async (id) => {
+        rec('triggers.disable', id);
+        return {};
+      },
+      enable: async (id) => {
+        rec('triggers.enable', id);
         return {};
       },
     },

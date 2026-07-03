@@ -25,11 +25,15 @@ export interface PairingClient {
     list(q: { userIds: string[] }): Promise<unknown>;
     link(userId: string, authConfigId: string): Promise<Record<string, unknown>>;
     delete(id: string): Promise<unknown>;
+    disable(id: string): Promise<unknown>;
+    enable(id: string): Promise<unknown>;
   };
   triggers: {
     listActive(q: { connectedAccountIds: string[]; triggerNames?: string[] }): Promise<unknown>;
     create(userId: string, slug: string, opts: unknown): Promise<Record<string, unknown>>;
     delete(id: string): Promise<unknown>;
+    disable(id: string): Promise<unknown>;
+    enable(id: string): Promise<unknown>;
   };
   tools: {
     execute(slug: string, body: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -37,12 +41,14 @@ export interface PairingClient {
 }
 
 // Lazy singleton: importing this module must not require the key (the MCP
-// server imports it unconditionally; tests inject a stub client).
+// server imports it unconditionally; tests inject a stub client). Shared by
+// pairing and offboarding.
 let liveClient: PairingClient | null = null;
-function getComposio(): PairingClient {
+export function getComposioClient(): PairingClient {
   if (!liveClient) liveClient = new Composio() as unknown as PairingClient;
   return liveClient;
 }
+const getComposio = getComposioClient;
 
 function authConfigId(): string {
   const id = process.env.COMPOSIO_GMAIL_AUTH_CONFIG_ID;
@@ -172,35 +178,46 @@ export async function checkPairing(
   return { status: 'paired', connectedAccountId: active.id, email };
 }
 
-// "That's not their mailbox" — the manager dismissed the verification item.
-// Tear the pairing down (trigger first: no deliveries racing the account
-// delete), clear the inventory, and return the row to 'invited' so a fresh
-// connect link can be issued (re-link() on an ACTIVE account would throw
-// ComposioMultipleConnectedAccountsError).
-export async function unpair(tech: Technician, deps: PairingDeps = {}): Promise<void> {
-  const client = deps.client ?? getComposio();
-  const update = deps.update ?? updateTechnician;
-  // Already-deleted detection: the client attaches `.status` to API errors —
-  // check that first; the message regex is only a fallback for non-API error
-  // shapes (a 500 whose body says "not found" must NOT be swallowed).
-  const gone = (err: unknown) =>
+// Already-deleted detection: the client attaches `.status` to API errors —
+// check that first; the message regex is only a fallback for non-API error
+// shapes (a 500 whose body says "not found" must NOT be swallowed).
+export function isGoneError(err: unknown): boolean {
+  return (
     (err as { status?: number })?.status === 404 ||
     (!(err as { status?: number })?.status &&
-      /404|not[ _-]?found/i.test(String((err as Error)?.message ?? err)));
+      /404|not[ _-]?found/i.test(String((err as Error)?.message ?? err)))
+  );
+}
+
+// Delete the Composio objects for a pairing — trigger FIRST (no deliveries
+// racing the account delete). Idempotent: already-deleted (404) is success;
+// any other failure throws so the caller can retry (offboarding expiry runs
+// again next cron tick). Does NOT touch the roster row.
+export async function deleteComposioPairing(tech: Technician, deps: PairingDeps = {}): Promise<void> {
+  const client = deps.client ?? getComposio();
   if (tech.composio_trigger_id) {
     try {
       await client.triggers.delete(tech.composio_trigger_id);
     } catch (err) {
-      if (!gone(err)) throw err; // already-deleted is fine; anything else must surface
+      if (!isGoneError(err)) throw err; // already-deleted is fine; anything else must surface
     }
   }
   if (tech.composio_connected_account_id) {
     try {
       await client.connectedAccounts.delete(tech.composio_connected_account_id);
     } catch (err) {
-      if (!gone(err)) throw err;
+      if (!isGoneError(err)) throw err;
     }
   }
+}
+
+// "That's not their mailbox" — the manager dismissed the verification item.
+// Tear the pairing down, clear the inventory, and return the row to 'invited'
+// so a fresh connect link can be issued (re-link() on an ACTIVE account would
+// throw ComposioMultipleConnectedAccountsError).
+export async function unpair(tech: Technician, deps: PairingDeps = {}): Promise<void> {
+  const update = deps.update ?? updateTechnician;
+  await deleteComposioPairing(tech, deps);
   await update(tech.id, {
     composio_connected_account_id: null,
     composio_trigger_id: null,

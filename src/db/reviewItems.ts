@@ -11,7 +11,8 @@ export type ReviewKind =
   | 'sheet_ref_mismatch'
   | 'unknown_ref_capture'
   | 'pairing_verification'
-  | 'pending_deactivation';
+  | 'pending_deactivation'
+  | 'offboarding_reminder';
 
 export interface UpsertOpenReviewItemInput {
   tenantId: string;
@@ -92,6 +93,55 @@ export async function flagUnknownRefCapture(input: {
     kind: 'unknown_ref_capture',
     subjectRef: input.subjectRef,
     detail: { externalId },
+  });
+}
+
+// The open item for a (kind, subject), if any — WITHOUT creating one (the
+// upsert would). Used to close a stale item on deactivation and to resolve
+// the reminder when an offboarding completes. At most one row can match
+// (partial unique index on open items).
+export async function findOpenReviewItem(
+  tenantId: string,
+  kind: ReviewKind,
+  subjectRef: string,
+): Promise<ReviewItem | null> {
+  const { data, error } = await getClient()
+    .from('review_items')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('kind', kind)
+    .eq('subject_ref', subjectRef)
+    .eq('status', 'open')
+    .maybeSingle();
+  if (error) throw new Error(`findOpenReviewItem failed: ${error.message}`);
+  return data;
+}
+
+// Remind the manager an offboarding is about to become permanent — ONCE per
+// offboarding episode: any-status dedup on detail.startedAt (the same pattern
+// as flagUnknownRefCapture), so a dismissed reminder stays dismissed even
+// though the 15-min cron keeps observing "remaining ≤ 2 days" until expiry.
+export async function flagOffboardingReminder(input: {
+  tenantId: string;
+  subjectRef: string;
+  startedAt: string; // the episode key: the row's offboarding_started_at
+  graceEndsAt: string;
+}): Promise<ReviewItem | null> {
+  const { data, error } = await getClient()
+    .from('review_items')
+    .select('id')
+    .eq('tenant_id', input.tenantId)
+    .eq('kind', 'offboarding_reminder')
+    .eq('subject_ref', input.subjectRef)
+    .eq('detail->>startedAt', input.startedAt)
+    .limit(1);
+  if (error) throw new Error(`flagOffboardingReminder failed: ${error.message}`);
+  if (data && data.length > 0) return null; // this episode was already reminded
+  return upsertOpenReviewItem({
+    tenantId: input.tenantId,
+    kind: 'offboarding_reminder',
+    subjectRef: input.subjectRef,
+    detail: { startedAt: input.startedAt, graceEndsAt: input.graceEndsAt },
   });
 }
 

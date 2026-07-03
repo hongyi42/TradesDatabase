@@ -296,8 +296,10 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
 
 - (a) should list the 7 tools for a technician-tier badge: `record_field_note`, `find_customer`,
   `get_customer_context`, `get_job`, `list_recent_captures`, `brief_customer`,
-  `answer_customer_question`. (A badge whose roster row is an ACTIVE `tier='manager'` lists 12 —
-  the 5 seat-management tools are added; see nemoclaw-tech-agent.md §4, 2026-07-02.)
+  `answer_customer_question`. (A badge whose roster row is an ACTIVE `tier='manager'` lists **14**
+  — the 7 seat/lifecycle-management tools are added: add/deactivate/reactivate technician seat,
+  list_team, list_pending_reviews, resolve_review, get_connect_link; see nemoclaw-tech-agent.md
+  §4, updated 2026-07-02.)
   - `401 / bad identity signature` from upstream → `GATEWAY_IDENTITY_SECRET` differs between host and
     Render (Invariant 2).
   - connection error to upstream → the host isn't on Render's `ALLOWED_CLIENT_IPS` (Step 4).

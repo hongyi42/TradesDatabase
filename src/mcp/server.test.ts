@@ -611,3 +611,152 @@ describe('pairing lifecycle tools (Composio seams stubbed)', () => {
     }
   });
 });
+
+describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
+  test('deactivate stamps clock + disables + closes pairing item; reactivate is the undo', { timeout: 30_000 }, async () => {
+    const disableCalls: string[] = [];
+    const enableCalls: string[] = [];
+    const stubs: Partial<ServerDeps> = {
+      disablePairing: async (t) => {
+        disableCalls.push(t.ref);
+      },
+      enablePairing: async (t) => {
+        enableCalls.push(t.ref);
+      },
+      // The reactivated-to-invited case re-opens the pairing path — stub the
+      // link seams so that probe never touches live Composio.
+      checkPairing: async () => ({ status: 'not_connected' }),
+      connectLink: async () => ({ url: 'https://connect.composio.example/reopened' }),
+    };
+
+    // Technician identity: denied before any stub runs.
+    const denied = await call('reactivate_technician_seat', { ref: 'pair-probe' });
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain('manager badge');
+
+    const { client: mgrClient, callWith } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      stubs,
+    );
+    try {
+      // The full manager surface is now 14 tools (7 spine + 7 seat/lifecycle) —
+      // the count the runbook/Box Setup Stuff verification steps cite.
+      const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
+      expect(mgrTools).toContain('reactivate_technician_seat');
+      expect(mgrTools).toHaveLength(14);
+
+      // pair-probe is active w/ a recorded pairing (from the pairing suite).
+      // Give it an open verification item to prove deactivation closes it.
+      const stale = await upsertOpenReviewItem({
+        tenantId,
+        kind: 'pairing_verification',
+        subjectRef: 'pair-probe',
+      });
+      const ask = await callWith('deactivate_technician_seat', { ref: 'pair-probe' });
+      expect(ask.data.status).toBe('needs_confirmation');
+      const done = await callWith('deactivate_technician_seat', {
+        ref: 'pair-probe',
+        confirmId: ask.data.confirmId,
+      });
+      expect(done.data.status).toBe('deactivated');
+
+      // Read-backs: clock stamped, pairing disabled, stale item closed.
+      const row1 = await pg.query<{ state: string; offboarding_started_at: string | null }>(
+        "select state, offboarding_started_at from technicians where tenant_id = $1 and ref = 'pair-probe'",
+        [tenantId],
+      );
+      expect(row1.rows[0].state).toBe('offboarding');
+      expect(row1.rows[0].offboarding_started_at).not.toBeNull();
+      expect(disableCalls).toEqual(['pair-probe']);
+      const staleAfter = await pg.query<{ status: string }>(
+        'select status from review_items where id = $1',
+        [stale.id],
+      );
+      expect(staleAfter.rows[0].status).toBe('resolved');
+
+      // An open grace-period reminder must not survive reactivation (a stale
+      // one would collide with a second episode's reminder).
+      const reminder = await upsertOpenReviewItem({
+        tenantId,
+        kind: 'offboarding_reminder',
+        subjectRef: 'pair-probe',
+        detail: { startedAt: 'episode-1' },
+      });
+
+      // Reactivate: back to active, clock cleared, pairing re-enabled.
+      const undo = await callWith('reactivate_technician_seat', { ref: 'pair-probe' });
+      expect(undo.data).toMatchObject({
+        status: 'reactivated',
+        state: 'active',
+        pairingRestored: true,
+      });
+      const reminderAfter = await pg.query<{ status: string }>(
+        'select status from review_items where id = $1',
+        [reminder.id],
+      );
+      expect(reminderAfter.rows[0].status).toBe('resolved');
+      expect(enableCalls).toEqual(['pair-probe']);
+      const row2 = await pg.query<{ state: string; offboarding_started_at: string | null }>(
+        "select state, offboarding_started_at from technicians where tenant_id = $1 and ref = 'pair-probe'",
+        [tenantId],
+      );
+      expect(row2.rows[0].state).toBe('active');
+      expect(row2.rows[0].offboarding_started_at).toBeNull();
+
+      // Not-deactivated and permanently-offboarded refusals.
+      const notOff = await callWith('reactivate_technician_seat', { ref: 'pair-probe' });
+      expect(notOff.isError).toBe(true);
+      expect(notOff.text).toContain('not deactivated');
+      await updateTechnician(
+        (await pg.query<{ id: string }>(
+          "select id from technicians where tenant_id = $1 and ref = 'pair-two'",
+          [tenantId],
+        )).rows[0].id,
+        { state: 'offboarded' },
+      );
+      const perma = await callWith('reactivate_technician_seat', { ref: 'pair-two' });
+      expect(perma.isError).toBe(true);
+      expect(perma.text).toContain('permanently offboarded');
+
+      // A never-paired person (deactivated while invited) reactivates to
+      // INVITED, not active — otherwise get_connect_link refuses them and
+      // their mailbox could never be paired (review finding).
+      const askCarl = await callWith('deactivate_technician_seat', { ref: 'carl-sagan' });
+      await callWith('deactivate_technician_seat', {
+        ref: 'carl-sagan',
+        confirmId: askCarl.data.confirmId,
+      });
+      const carlBack = await callWith('reactivate_technician_seat', { ref: 'carl-sagan' });
+      expect(carlBack.data).toMatchObject({
+        status: 'reactivated',
+        state: 'invited',
+        pairingRestored: null,
+      });
+      const carlRow = await pg.query<{ state: string }>(
+        "select state from technicians where tenant_id = $1 and ref = 'carl-sagan'",
+        [tenantId],
+      );
+      expect(carlRow.rows[0].state).toBe('invited');
+      // ...and the pairing path is open again, not dead-ended.
+      const carlLink = await callWith('get_connect_link', { ref: 'carl-sagan' });
+      expect(carlLink.isError).toBe(false);
+
+      // Reactivate AT CAP: free pair-probe's seat again, fill every seat, then
+      // the undo must hit the purchase message (seat cap is never bypassed).
+      const ask2 = await callWith('deactivate_technician_seat', { ref: 'pair-probe' });
+      const done2 = await callWith('deactivate_technician_seat', {
+        ref: 'pair-probe',
+        confirmId: ask2.data.confirmId,
+      });
+      expect(done2.data.status).toBe('deactivated');
+      // Occupied now: tech-mcp, carl-sagan, dan-dare, pair-early (4 of 6).
+      await callWith('add_technician_seat', { displayName: 'Cap Filler Five' });
+      await callWith('add_technician_seat', { displayName: 'Cap Filler Six' });
+      const blocked = await callWith('reactivate_technician_seat', { ref: 'pair-probe' });
+      expect(blocked.isError).toBe(true);
+      expect(blocked.text).toContain('no free technician seats');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+});

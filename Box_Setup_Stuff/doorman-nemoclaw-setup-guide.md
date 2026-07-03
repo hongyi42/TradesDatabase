@@ -366,14 +366,16 @@ openshell provider get \<AGENT\>-telegram-bridge | grep \-i 'Credential keys'   
 
 Integrity check first: `sha256sum` the pending badge value and confirm the digest is a key in the freshly pulled `/etc/doorman/badges.json` — catches a file/roster mismatch without exposing plaintext. Then install, then delete the pending line. A credential **value swap** does not need an openclaw restart (the egress proxy resolves per-request); only the FIRST-ever registration needs one (lazy MCP connect). In a security-restricted Claude session this command is blocked as a secret-store write — run it yourself.
 
-**WARNING — a provider credential write like this can silently kill OTHER channels.** At container
-boot, the start script rewrites canonical placeholders in openclaw.json to a revision-scoped form
-(`openshell:resolve:env:v<NUM>_KEY`) frozen to that boot's provider generation; the version bump this
-`provider update` causes then breaks any placeholder still carrying the OLD frozen version (observed
-2026-07-02: the Telegram bot token — bridge logs `credential placeholder mismatch`, bot goes deaf).
-If a channel dies after a credential write, see the **"Placeholder VERSIONING trap"** gotcha in
-`doorman-architecture-memory.md` for the diagnostic and fix (restore the canonical placeholder +
-recompute the config hash + restart).
+**WARNING — on an UNPATCHED box, a provider credential write like this can silently kill OTHER
+channels.** At container boot, the stock start script rewrites canonical placeholders in
+openclaw.json to a revision-scoped form (`openshell:resolve:env:v<NUM>_KEY`) frozen to that boot's
+provider generation; the version bump this `provider update` causes then breaks any placeholder
+still carrying the OLD frozen version (observed 2026-07-02: the Telegram bot token — bridge logs
+`credential placeholder mismatch`, bot goes deaf). **FIXED at boot since 2026-07-03 by bake-in
+edit (3b)** (§6) — with it applied, every container boot self-heals any stale versioned form, so
+recovery from a killed channel is just a container restart. On a box without (3b), see the
+**"Placeholder VERSIONING trap"** gotcha in `doorman-architecture-memory.md` for the manual fix
+(restore the canonical placeholder + recompute the config hash + restart).
 
 ### 5c. MCP config \+ toolSearch (only if NOT using the §6 bake-in)
 
@@ -415,7 +417,7 @@ and the bot returns real trades-spine data. (Pre-warm Render with the §3f curl 
 
 ## 6\. Bake-in — make trades-spine survive a container recreate/rebuild
 
-A container **recreate** wipes `/sandbox/.openclaw/openclaw.json`. The bake-in regenerates it at image-build time from 4 source edits in `/home/ubuntu/.nemoclaw/source/`. **A fresh box's source is upstream/clean — you must re-apply these 4 edits there before building.** None of them contain the secret (badge stays in the provider store).
+A container **recreate** wipes `/sandbox/.openclaw/openclaw.json`. The bake-in regenerates it at image-build time from 5 source edits in `/home/ubuntu/.nemoclaw/source/`. **A fresh box's source is upstream/clean — you must re-apply these 5 edits there before building.** None of them contain the secret (badge stays in the provider store).
 
 **(1) New manifest** — `nemoclaw-blueprint/model-specific-setup/openclaw/nemotron-3-super-toolsearch-off.json` (declarative `toolSearch:false` for Nemotron, consumed by the generator). **⚠ Model note (2026-07-02): this manifest matches ONLY the Nemotron modelId. The running model is now `z-ai/glm-5.2`, so on a FRESH box it does NOT apply and toolSearch comes up on (s1 still carries `toolSearch:false` from the old bake). Whether GLM-5.2 can drive code mode is unverified — if the agent's tool calls fail with "run bridge code failed", clone this manifest with `z-ai/glm-5.2` in `match.modelIds` (or set `tools.toolSearch:false` directly) and update this note with the verified answer.**
 
@@ -504,6 +506,61 @@ if isinstance(trades\_server, dict) and isinstance(trades\_server.get("headers")
             trades\_server\["headers"\]\["Authorization"\] \= auth.replace(trades\_placeholder, trades\_badge)
 
             refreshed.add("TRADES\_SPINE\_BADGE")
+
+**(3b) Placeholder self-heal (the versioning-trap fix, applied+verified live 2026-07-03)** — same file (`scripts/nemoclaw-start.sh`), same `PYPLACEHOLDERS` heredoc, in `refresh_openclaw_provider_placeholders()`. Replaces the canonical-only mapping with one that heals ANY on-disk form — canonical OR a stale revision-scoped `v<NUM>_KEY` frozen by a previous boot — to the CURRENT generation's form (the runtime env's placeholder when the provider snapshot exposes one, else canonical, which the egress proxy resolves to current). Without it, any provider credential write after a boot kills the channel until manual surgery (the trap in §5b's WARNING). Two hunks:
+
+```diff
+@@ import block @@
+ import json
+ import os
++import re
+ import sys
+
+ config_file = sys.argv[1]
+ prefix = "openshell:resolve:env:"
+ keys = os.environ.get("NEMOCLAW_PROVIDER_PLACEHOLDER_KEYS", "").split()
+-replacements = {}
+ warnings = []
+
+-for key in keys:
++# Map ANY on-disk form of a managed placeholder — canonical or a stale
++# revision-scoped v<NUM>_KEY frozen by a previous boot — to the CURRENT
++# generation's form: the runtime env's placeholder when the provider snapshot
++# exposes one, else canonical (which the egress proxy resolves to current).
++# A config frozen to an old provider generation therefore heals on every boot
++# instead of requiring manual surgery.
++heal_keys = list(keys)
++if "TRADES_SPINE_BADGE" not in heal_keys:
++    heal_keys.append("TRADES_SPINE_BADGE")
++targets = {}
++for key in heal_keys:
+     value = os.environ.get(key, "")
+-    if value.startswith(prefix) and value != f"{prefix}{key}":
+-        replacements[f"{prefix}{key}"] = (key, value)
++    targets[key] = value if value.startswith(prefix) else f"{prefix}{key}"
++placeholder_re = re.compile(
++    re.escape(prefix)
++    + r"(?:v\d+_)?("
++    + "|".join(re.escape(key) for key in heal_keys)
++    + r")(?![A-Za-z0-9_])"
++)
+@@ def rewrite(value): @@
+     if isinstance(value, str):
+-        for old, (key, new) in replacements.items():
+-            if old in value:
+-                value = value.replace(old, new)
+-                refreshed.add(key)
+-        return value
++        def _heal(match):
++            key = match.group(1)
++            target = targets[key]
++            if match.group(0) != target:
++                refreshed.add(key)
++            return target
++        return placeholder_re.sub(_heal, value)
+```
+
+Design notes: the `(?![A-Za-z0-9_])` guard prevents partial-key matches (e.g. an unmanaged `SLACK_BOT_TOKEN_EXTRA`); `TRADES_SPINE_BADGE` is force-added to the heal set so a stale versioned badge header canonicalizes (which also re-enables edit (3)'s raw-badge fallback downstream); an all-canonical config with no env placeholders is left byte-identical (no spurious config-hash churn). **Deploy to a RUNNING container without a rebuild** by hot-copying the patched script over the container's boot path (`/usr/local/bin/nemoclaw-start`, root:root 755) — it takes effect at the next container boot; restarts and box reboots keep it, but a container **recreate** reverts to the unpatched image copy until the source edit is baked by a rebuild.
 
 **(4) Dockerfile** — add the build flags next to `ARG NEMOCLAW_WEB_SEARCH_ENABLED`, and promote them in the `ENV` block (set ENABLED=1 to turn the bake-in on):
 

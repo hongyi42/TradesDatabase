@@ -137,11 +137,15 @@ egress log instead: `ALLOWED … sendMessage` (+ `sendChatAction`) is the ground
 agent ran and delivered. Watching the openclaw log for agent-end on a channel turn is a false
 "nothing happened".
 
-## The bake-in = 4 edits in /home/ubuntu/.nemoclaw/source (re-apply on a fresh box; upstream source is clean)
+## The bake-in = 5 edits in /home/ubuntu/.nemoclaw/source (re-apply on a fresh box; upstream source is clean)
 1. NEW `nemoclaw-blueprint/model-specific-setup/openclaw/nemotron-3-super-toolsearch-off.json` (toolSearch:false).
 2. `scripts/generate-openclaw-config.py` — gated block (env `NEMOCLAW_TRADES_SPINE_ENABLED`) writing
    `mcp.servers.trades-spine` with the placeholder header.
 3. `scripts/nemoclaw-start.sh` — fallback resolver in the PYPLACEHOLDERS heredoc (harmless no-op; egress is the real path).
+3b. `scripts/nemoclaw-start.sh` — placeholder SELF-HEAL in the same heredoc (the versioning-trap fix,
+   2026-07-03): maps any stale `v<NUM>_KEY` placeholder to the current generation at every boot. On a
+   running container it must ALSO be hot-copied to `/usr/local/bin/nemoclaw-start` (a recreate reverts
+   to the image copy until a rebuild bakes it).
 4. `Dockerfile` — `ARG/ENV NEMOCLAW_TRADES_SPINE_ENABLED` (set =1 to enable) + `NEMOCLAW_TRADES_SPINE_URL`.
 Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config.py`). Exact contents are in the setup guide §6.
 
@@ -168,24 +172,24 @@ Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config
 - **`device pairing required` loop after a rebuild** — a rebuild can reset `gateway.controlUi.dangerouslyDisableDeviceAuth`;
   the agent may run tools but fail to deliver its channel reply. Restore that flag in openclaw.json if replies vanish.
 - Egress public IP rotates across stop/start but currently does NOT gate doorman→Render. Don't pin it anywhere.
-- **Placeholder VERSIONING trap (observed live 2026-07-02; killed the Telegram bridge for 2 days).**
-  Configs are GENERATED with canonical placeholders (`openshell:resolve:env:KEY` — e.g.
-  `TELEGRAM_BOT_TOKEN`, `TRADES_SPINE_BADGE`), but at **container boot**
-  `refresh_openclaw_provider_placeholders` in `~/.nemoclaw/source/scripts/nemoclaw-start.sh` rewrites
-  them in openclaw.json to a revision-scoped form (`openshell:resolve:env:v<NUM>_KEY`) frozen to that
-  boot's provider generation. Any later provider resource-version bump (adding/updating ANY credential,
-  e.g. a badge swap) invalidates the frozen version — the egress proxy can't resolve it, the bridge
-  logs `credential placeholder mismatch` + `bridge did not start within 15s`, and the bot goes deaf.
-  The refresher only maps canonical→current, so it can NOT heal a stale versioned form; nothing
-  self-heals at runtime. **Fix:** set the placeholder in `/sandbox/.openclaw/openclaw.json` back to
-  the CANONICAL form, recompute `/sandbox/.openclaw/.config-hash` the way the start script does, keep
-  `sandbox:sandbox` ownership, then kill openclaw + `nemoclaw <AGENT> recover`. **Diagnostic:** compare
-  the `v<NUM>` in the agent's `/proc/<pid>/environ` against the one in the config — a mismatch is this
-  bug. The mismatch warning lines may KEEP printing after the fix (literal string compare, canonical vs
-  versioned) — the OCSF egress log is ground truth: `ALLOWED … getUpdates` polling = bridge is up.
-  A recreate/rebuild does NOT need the fix re-applied (the generator bakes canonical), but the next
-  container boot re-versions the config and re-arms the trap for the next provider bump. Durable fix
-  (recommended, not yet applied): patch the refresher to map any `v*_KEY` form → current, then rebuild.
+- **Placeholder VERSIONING trap — FIXED 2026-07-03 by bake-in edit (3b)** (patch text in the setup
+  guide §6; applied + 12/12 unit-verified on the live box: source repo edited AND hot-copied over the
+  running container's `/usr/local/bin/nemoclaw-start`). With the patch, every container boot maps ANY
+  on-disk placeholder form — canonical or a stale `v<NUM>_KEY` frozen by a previous boot — to the
+  current generation's form, so a config frozen to an old provider generation self-heals at boot and
+  recovery from a killed channel is just a container restart. **Recreate caveat:** a container
+  recreate reverts to the unpatched image copy until a rebuild bakes the source edit — until that
+  rebuild, re-hot-copy after any recreate. **History (unpatched boxes; keep for diagnosis):** the
+  stock refresher rewrites canonical placeholders (`openshell:resolve:env:KEY`) at boot to a
+  revision-scoped form frozen to that boot's provider generation; any later credential write bumps
+  the generation, the egress proxy can't resolve the frozen form, the bridge logs
+  `credential placeholder mismatch` + `bridge did not start within 15s`, and the bot goes deaf
+  (killed the Telegram bridge for 2 days, 2026-07-02). Manual fix on such a box: restore the
+  CANONICAL placeholder in `/sandbox/.openclaw/openclaw.json`, recompute
+  `/sandbox/.openclaw/.config-hash` the way the start script does, keep `sandbox:sandbox` ownership,
+  then kill openclaw + `nemoclaw <AGENT> recover`. Diagnostic: compare the `v<NUM>` in the agent's
+  `/proc/<pid>/environ` against the config — a mismatch is this bug; ignore lingering mismatch
+  warning lines (literal string compare) — OCSF `ALLOWED … getUpdates` polling is ground truth.
 - **A provider credential VALUE swap does NOT need an openclaw restart** (verified 2026-07-03) —
   the egress proxy resolves the badge per-request from the provider store. The setup guide's
   "register badge → restart openclaw" applies only to the FIRST-ever registration (lazy MCP

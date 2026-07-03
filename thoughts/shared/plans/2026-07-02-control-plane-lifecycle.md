@@ -275,13 +275,16 @@ invited); server.test.ts: cooldown error, resolve_review resolved → active, di
 called; webhook.test.ts: pending stub → metadata stamp present, active stub → absent.
 
 ### Automated verification
-- [ ] gates + new tests pass (`npm run build` too — runtime dep moved)
+- [x] gates + new tests pass (129/129, 23 files; +8 pairing unit, +1 server lifecycle,
+      +1 webhook stamp); `npm run build` clean with `@composio/core` as a runtime dep
 
 ### Live verification (agent-executable)
 - Prerequisites: `COMPOSIO_API_KEY` + `COMPOSIO_GMAIL_AUTH_CONFIG_ID` in `.env`; `supabase-test`
   MCP. OAuth consent itself is HUMAN (below).
-- [ ] `createConnectLink` against a probe roster row returns a live `redirectUrl` (evidence:
-      URL shape, no secrets); `link_issued_at` set (SQL read-back); cooldown blocks a second call.
+- [x] Ran live 2026-07-02 through the REAL tool path (in-memory MCP client, identity
+      `drill-mgr`, no stubs): `get_connect_link ref=pair-drill` → `link_created` with
+      `https://connect.composio.dev/link/lk_…`; immediate second call → cooldown error, no
+      second Composio call; read-back `link_issued_at` stamped, state still `invited`.
 
 ### Manual verification
 - [ ] User opens the link with the test Gmail, approves; then agent runs `checkPairing` live and

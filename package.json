@@ -16,7 +16,6 @@
     "gen:types": "mkdir -p src/db && npx supabase gen types typescript --linked > src/db/database.types.ts"
   },
   "devDependencies": {
-    "@composio/core": "^0.13.1",
     "@types/node": "^26.0.0",
     "@types/pg": "^8.20.0",
     "eslint": "^10.5.0",
@@ -28,6 +27,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",
+    "@composio/core": "^0.13.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@supabase/supabase-js": "^2.108.2",
     "dotenv": "^17.4.2",

@@ -24,6 +24,11 @@ import {
   type TechnicianTier,
 } from '../db/index.js';
 import { recordFieldNote } from '../writePath/recordFieldNote.js';
+import {
+  checkPairing as liveCheckPairing,
+  createConnectLink as liveCreateConnectLink,
+  unpair as liveUnpair,
+} from '../composio/pairing.js';
 import type { Extractor } from '../writePath/extract.js';
 import {
   sonnetBriefer,
@@ -45,6 +50,10 @@ export interface ServerDeps {
   brief?: Briefer; // injectable briefing synthesizer (same reason)
   answer?: Answerer; // injectable Q&A synthesizer (same reason)
   identity?: RequestIdentity; // gateway-pinned tenant + technician for this request
+  // Composio pairing seams — injectable so tests never need COMPOSIO_API_KEY.
+  connectLink?: typeof liveCreateConnectLink;
+  checkPairing?: typeof liveCheckPairing;
+  unpair?: typeof liveUnpair;
 }
 
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
@@ -190,9 +199,24 @@ const ADMIN_TOOLS = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'get_connect_link',
+    description:
+      "Get a Gmail connect link for a team member (manager only). Forward it to that person — " +
+      "they sign in to Google and approve; the link is SENSITIVE, share it only with them. " +
+      "Once they approve, a verification item appears in list_pending_reviews asking you to " +
+      "confirm the connected mailbox address.",
+    inputSchema: {
+      type: 'object',
+      properties: { ref: { type: 'string', description: 'The roster ref to pair.' } },
+      required: ['ref'],
+    },
+  },
+  {
     name: 'resolve_review',
     description:
-      'Close a review item (manager only) as resolved (handled) or dismissed (not an issue).',
+      'Close a review item (manager only) as resolved (handled) or dismissed (not an issue). ' +
+      'For a pairing verification: resolved = the mailbox is right (person goes active); ' +
+      'dismissed = wrong mailbox (pairing is torn down for a fresh connect link).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -435,6 +459,54 @@ async function dispatch(
       }
       return { status: 'deactivated', ref };
     }
+    case 'get_connect_link': {
+      const ref = str('ref');
+      if (!ref) throw new Error('ref is required');
+      const target = await getTechnician(tenantId, ref);
+      if (!target) throw new Error(`technician '${ref}' not found`);
+      if (isInactiveState(target.state)) {
+        throw new Error(`'${ref}' is deactivated — reactivate the seat first`);
+      }
+      if (target.state === 'active') {
+        throw new Error(`'${ref}' is already connected and active`);
+      }
+      if (target.state === 'pending_verification') {
+        return {
+          status: 'awaiting_verification',
+          ref,
+          email: target.connected_email,
+          note: 'already connected — confirm or dismiss the pairing in list_pending_reviews',
+        };
+      }
+      // state === 'invited'. Cooldown BEFORE any Composio call — the one rate
+      // limit on the link-minting surface (structural, replica-safe: the clock
+      // lives on the roster row).
+      if (
+        target.link_issued_at &&
+        Date.now() - Date.parse(target.link_issued_at) < 5 * 60_000
+      ) {
+        throw new Error('a link was just issued for this person — wait a few minutes, then try again');
+      }
+      // Consent may already have completed before any sweep ran: checkPairing
+      // advances the row and opens the verification item itself.
+      const check = await (deps.checkPairing ?? liveCheckPairing)(target);
+      if (check.status === 'paired') {
+        return {
+          status: 'awaiting_verification',
+          ref,
+          email: check.email,
+          note: 'already connected — confirm or dismiss the pairing in list_pending_reviews',
+        };
+      }
+      const { url } = await (deps.connectLink ?? liveCreateConnectLink)(target);
+      return {
+        status: 'link_created',
+        ref,
+        url,
+        note: 'Forward this link ONLY to this person. They sign in to Google and approve; ' +
+          'you will then get a verification item to confirm the mailbox.',
+      };
+    }
     case 'list_team': {
       // Roster facts only — Composio account/trigger ids stay server-side.
       return (await listTeam(tenantId)).map((t) => ({
@@ -467,6 +539,34 @@ async function dispatch(
           `this is a pending deactivation for '${token.subject_ref}' — confirm it via ` +
             `deactivate_technician_seat, or dismiss it to cancel`,
         );
+      }
+      // A pairing_verification verdict acts BEFORE the item closes (state-first,
+      // mirroring deactivate): resolved = right mailbox → active; dismissed =
+      // wrong mailbox → unpair back to invited. Both act ONLY while the row is
+      // still pending_verification — a stale item on an offboarding/offboarded
+      // row must neither resurrect nor unpair anyone (plan review finding);
+      // it just closes.
+      const pairing = await getOpenReviewItem(reviewItemId, tenantId, {
+        kind: 'pairing_verification',
+      });
+      if (pairing) {
+        const target = await getTechnician(tenantId, pairing.subject_ref);
+        if (target && target.state === 'pending_verification') {
+          if (resolution === 'resolved') {
+            try {
+              await setTechnicianState(target.id, 'active');
+            } catch (err) {
+              if (isSeatCapError(err)) {
+                throw new Error(
+                  `no free ${target.tier} seats — deactivate someone or purchase a seat`,
+                );
+              }
+              throw err;
+            }
+          } else {
+            await (deps.unpair ?? liveUnpair)(target);
+          }
+        }
       }
       const item = await resolveReviewItem(reviewItemId, tenantId, resolution, str('note') ?? null);
       if (!item) throw new Error('review item not found');

@@ -6,10 +6,10 @@ import { getClient } from '../db/client.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
 import { upsertScheduleEntry } from '../db/scheduleEntries.js';
-import { insertTechnician, setTechnicianState } from '../db/technicians.js';
+import { insertTechnician, setTechnicianState, updateTechnician } from '../db/technicians.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
-import { createServer } from './server.js';
+import { createServer, type ServerDeps } from './server.js';
 
 // Drive the MCP server over the SDK's in-memory transport (no network/stdio).
 // The extractor is stubbed so record_field_note never calls the live model.
@@ -86,12 +86,17 @@ async function call(name: string, args: Record<string, unknown>) {
 
 // Build an isolated client whose server is pinned to a specific identity — used
 // to exercise the tenant guards from a *different* tenant than the seeded rows.
-async function clientFor(identity: { tenantId: string; technicianRef: string }) {
+// `extra` injects additional seams (e.g. the Composio pairing stubs).
+async function clientFor(
+  identity: { tenantId: string; technicianRef: string },
+  extra: Partial<ServerDeps> = {},
+) {
   const server = createServer({
     identity,
     extract: async () => ({ workPerformed: 'did the work' }),
     brief: async (ctx) => ({ briefing: `stub for ${ctx.customer?.name}`, citations: [] }),
     answer: async (ctx, question) => ({ answer: `stub: ${question}`, citations: [] }),
+    ...extra,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const isolated = new Client({ name: 'test-client-other-tenant', version: '0.0.0' });
@@ -468,5 +473,141 @@ describe('MCP server', () => {
       "select count(*)::text as n from raw_captures where raw_text = 'sneaky cross-tenant write'",
     );
     expect(caps.rows[0].n).toBe('0');
+  });
+});
+
+describe('pairing lifecycle tools (Composio seams stubbed)', () => {
+  test('get_connect_link states + cooldown; resolve_review verdicts', { timeout: 30_000 }, async () => {
+    // The earlier admin test leaves technician seats 3/3 occupied — make room.
+    await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
+
+    // Configurable pairing stubs, recorded per call.
+    let checkResult: Awaited<ReturnType<NonNullable<ServerDeps['checkPairing']>>> = {
+      status: 'not_connected',
+    };
+    const linkCalls: string[] = [];
+    const unpairCalls: string[] = [];
+    const pairingStubs: Partial<ServerDeps> = {
+      checkPairing: async () => checkResult,
+      connectLink: async (t) => {
+        linkCalls.push(t.ref);
+        // Mirror the real seam's one side effect — the cooldown stamp.
+        await updateTechnician(t.id, { link_issued_at: new Date().toISOString() });
+        return { url: 'https://connect.composio.example/xyz' };
+      },
+      unpair: async (t) => {
+        unpairCalls.push(t.ref);
+      },
+    };
+
+    // Technician identity: the tool is denied before any stub runs.
+    const denied = await call('get_connect_link', { ref: 'tech-mcp' });
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain('manager badge');
+
+    const { client: mgrClient, callWith } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      pairingStubs,
+    );
+    try {
+      // Managers see the new tool in the tier-filtered list.
+      const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
+      expect(mgrTools).toContain('get_connect_link');
+
+      expect((await callWith('get_connect_link', { ref: 'nobody' })).isError).toBe(true);
+      // An active person has nothing to connect.
+      const active = await callWith('get_connect_link', { ref: 'tech-mcp' });
+      expect(active.isError).toBe(true);
+      expect(active.text).toContain('already connected and active');
+
+      // Invited person: link minted; immediate repeat hits the cooldown.
+      const probe = await insertTechnician({ tenantId, ref: 'pair-probe', displayName: 'Pair Probe' });
+      const linked = await callWith('get_connect_link', { ref: 'pair-probe' });
+      expect(linked.data).toMatchObject({
+        status: 'link_created',
+        url: 'https://connect.composio.example/xyz',
+      });
+      expect(linkCalls).toEqual(['pair-probe']);
+      const cooled = await callWith('get_connect_link', { ref: 'pair-probe' });
+      expect(cooled.isError).toBe(true);
+      expect(cooled.text).toContain('wait a few minutes');
+      expect(linkCalls).toHaveLength(1); // no second Composio call
+
+      // Consent already completed (checkPairing reports paired): no link minted.
+      await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 6 });
+      await insertTechnician({ tenantId, ref: 'pair-early', displayName: 'Pair Early' });
+      checkResult = { status: 'paired', connectedAccountId: 'ca_x', email: 'early@gmail.com' };
+      const early = await callWith('get_connect_link', { ref: 'pair-early' });
+      expect(early.data).toMatchObject({ status: 'awaiting_verification', email: 'early@gmail.com' });
+      expect(linkCalls).toHaveLength(1);
+      checkResult = { status: 'not_connected' };
+
+      // Simulate the sweep having advanced the probe: pending_verification.
+      await updateTechnician(probe.id, {
+        state: 'pending_verification',
+        connected_email: 'jane.probe@gmail.com',
+        composio_connected_account_id: 'ca_probe',
+      });
+      const pending = await callWith('get_connect_link', { ref: 'pair-probe' });
+      expect(pending.data).toMatchObject({
+        status: 'awaiting_verification',
+        email: 'jane.probe@gmail.com',
+      });
+
+      // Verification verdict RESOLVED: right mailbox → active (state-first).
+      const item = await upsertOpenReviewItem({
+        tenantId,
+        kind: 'pairing_verification',
+        subjectRef: 'pair-probe',
+        detail: { email: 'jane.probe@gmail.com', connectedAccountId: 'ca_probe' },
+      });
+      const confirmed = await callWith('resolve_review', {
+        reviewItemId: item.id,
+        resolution: 'resolved',
+      });
+      expect(confirmed.isError).toBe(false);
+      const state1 = await pg.query<{ state: string }>(
+        "select state from technicians where tenant_id = $1 and ref = 'pair-probe'",
+        [tenantId],
+      );
+      expect(state1.rows[0].state).toBe('active'); // cross-channel read-back
+      expect(unpairCalls).toHaveLength(0);
+
+      // Verification verdict DISMISSED: wrong mailbox → unpair seam invoked.
+      const two = await insertTechnician({ tenantId, ref: 'pair-two', displayName: 'Pair Two' });
+      await updateTechnician(two.id, { state: 'pending_verification' });
+      const item2 = await upsertOpenReviewItem({
+        tenantId,
+        kind: 'pairing_verification',
+        subjectRef: 'pair-two',
+      });
+      const dismissed = await callWith('resolve_review', {
+        reviewItemId: item2.id,
+        resolution: 'dismissed',
+      });
+      expect(dismissed.isError).toBe(false);
+      expect(unpairCalls).toEqual(['pair-two']);
+
+      // STALE item on an offboarding row: resolved must NOT resurrect anyone.
+      await updateTechnician(two.id, { state: 'offboarding' });
+      const stale = await upsertOpenReviewItem({
+        tenantId,
+        kind: 'pairing_verification',
+        subjectRef: 'pair-two',
+      });
+      const staleResolve = await callWith('resolve_review', {
+        reviewItemId: stale.id,
+        resolution: 'resolved',
+      });
+      expect(staleResolve.isError).toBe(false); // the item closes...
+      const state2 = await pg.query<{ state: string }>(
+        "select state from technicians where tenant_id = $1 and ref = 'pair-two'",
+        [tenantId],
+      );
+      expect(state2.rows[0].state).toBe('offboarding'); // ...the state does not move
+      expect(unpairCalls).toHaveLength(1); // and no teardown ran either
+    } finally {
+      await mgrClient.close();
+    }
   });
 });

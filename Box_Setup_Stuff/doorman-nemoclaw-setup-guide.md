@@ -8,6 +8,11 @@ End-to-end instructions to stand up, on a **fresh CPU-only cloud box**:
 4. **bake-in** so the trades-spine config survives a container recreate/rebuild,  
 5. **reboot-resilience** so it all comes back after a stop/start.
 
+**Automation (2026-07-03):** `bootstrap-box.sh` in this folder scripts the mechanical phases of
+this guide (`apply-bakein.py` applies the §6 edits, anchor-checked and idempotent), and
+`migration-runbook-lightsail.md` sequences a full host migration. This guide remains the
+authority — the scripts cite its sections and fall back to it whenever an anchor drifts.
+
 **Architecture (Option A — gateway-mediated).** The sandbox holds only a **revocable badge**. The badge goes **sandbox → host doorman (`172.18.0.1:3001`) → Render**. The doorman validates the badge, adds the signed-identity headers, and forwards to Render. **The signing secret never leaves the host, and the sandbox never talks to Render directly.** (The older "direct-to-Render" approach — a signed `x-identity-signature` baked into the sandbox config — is **deprecated and excluded** from this guide.)
 
 ---
@@ -417,6 +422,17 @@ and the bot returns real trades-spine data. (Pre-warm Render with the §3f curl 
 
 ## 6\. Bake-in — make trades-spine survive a container recreate/rebuild
 
+**⚠ Upstream drift (observed 2026-07-04 on a fresh install):** NVIDIA restructured the NemoClaw
+source since this section was written. The config generator is now **TypeScript**
+(`scripts/generate-openclaw-config.mts` — the `.py` no longer exists), and the PYPLACEHOLDERS
+heredoc in `nemoclaw-start.sh` was rewritten around a `replacement_patterns` list (which still
+only rewrites CANONICAL placeholder tokens — **the versioning trap is still present upstream**,
+so edit (3b) is still required, in an adapted form). `apply-bakein.py` (this folder) auto-detects
+old vs new layout and applies the correct variant of every edit; the manual instructions below
+describe the OLD layout and remain valid only for boxes of that generation (e.g. the original
+Brev box). The new manifest mechanism natively validates `effects.openclawTools.toolSearch`, so
+edit (1) is unchanged. Edit (4)'s Dockerfile anchors are unchanged.
+
 A container **recreate** wipes `/sandbox/.openclaw/openclaw.json`. The bake-in regenerates it at image-build time from 5 source edits in `/home/ubuntu/.nemoclaw/source/`. **A fresh box's source is upstream/clean — you must re-apply these 5 edits there before building.** None of them contain the secret (badge stays in the provider store).
 
 **(1) New manifest** — `nemoclaw-blueprint/model-specific-setup/openclaw/nemotron-3-super-toolsearch-off.json` (declarative `toolSearch:false` for Nemotron, consumed by the generator). **⚠ Model note (2026-07-02): this manifest matches ONLY the Nemotron modelId. The running model is now `z-ai/glm-5.2`, so on a FRESH box it does NOT apply and toolSearch comes up on (s1 still carries `toolSearch:false` from the old bake). Whether GLM-5.2 can drive code mode is unverified — if the agent's tool calls fail with "run bridge code failed", clone this manifest with `z-ai/glm-5.2` in `match.modelIds` (or set `tools.toolSearch:false` directly) and update this note with the verified answer.**
@@ -592,7 +608,22 @@ sudo docker exec \<NEW\_CID\> sh \-lc 'python3 \-c "import json;d=json.load(open
 
 ## 7\. Reboot-resilience (survive box stop/start)
 
-After a host reboot, three things otherwise need manual nudging:
+**⚠ New-generation NemoClaw (2026-07-04, discovered on the Lightsail box):** the table below
+describes the OLD architecture. In the new one there is NO in-container supervisor that
+respawns the agent — `nemoclaw-start` runs only as the create/rebuild flow's startup
+transaction (`openshell sandbox create -- env nemoclaw-start`), so after ANY container
+restart or box reboot the sandbox comes up as a bare shell and every recovery command
+(`doctor`, `recover`, `gateway restart`) fails with `SUPERVISOR_UNAVAILABLE`. **A rebuild is
+NOT required**: the working revival is a gateway-mediated re-exec of the startup command
+(raw `docker exec` is rejected by the startup-owner guard) followed by a managed
+`nemoclaw <AGENT> gateway restart` to clear the device-pairing residue. This is automated by
+`nemoclaw-agent-revive.sh` + a per-agent `nemoclaw-agent-<AGENT>.service`
+(installed by `bootstrap-box.sh boot <AGENT>`), which also self-heals runtime container
+restarts (systemd re-runs the wrapper when the exec session drops). Verified end-to-end
+2026-07-04: reboot AND Lightsail console stop/start both recover hands-off. Scales per
+sandbox: one unit per agent, revivals run in parallel, seconds each.
+
+After a host reboot, three things otherwise need manual nudging (OLD architecture):
 
 | Component | Default | Fix |
 | :---- | :---- | :---- |

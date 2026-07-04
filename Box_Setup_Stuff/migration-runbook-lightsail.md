@@ -148,11 +148,21 @@ For each real person currently served by the old box:
 
 ## Phase 7 — retire the Brev box
 
-1. `brev stop nemoclaw-box` — keep it STOPPED (data intact, ~zero cost) as rollback
-   insurance for a soak week. Rollback = the reverse of Phase 6 (restart it if it will
-   start, re-`assign` people back, swap bot tokens back).
-2. After a clean week: `brev delete nemoclaw-box`. Nothing on it is unique anymore — config
-   is in this folder + the snapshot; badges/roster live server-side.
+**DECIDED 2026-07-04: retirement is immediate — Lightsail (`trades-box-1`) is the home from
+now on; no soak period.** Remaining operational checklist (each is quick):
+
+1. Server-side roster: any ref still assigned to host `nemoclaw-box` (e.g. `pair-drill`,
+   `manager-sam`) either gets re-`assign`ed to `trades-box-1` + `rotate-badge` (badge mints
+   on the new box's next pull — install per §5b, mind the versioning trap) or stays parked
+   (an inactive/testing ref pointing at a dead host is harmless; its badge simply never
+   resolves anywhere).
+2. If the old box's sandbox still holds the production Telegram bot token, swap it onto the
+   new box's sandbox per Phase 6 (stop the old sandbox container first — two pollers on one
+   token conflict).
+3. `brev stop nemoclaw-box`, then `brev delete nemoclaw-box`. Nothing on it is unique —
+   config is in this folder + the golden snapshot; badges/roster live server-side. The
+   server's `nemoclaw-box` hosts-registry row can stay (its pull token simply goes unused);
+   there is no delete-host command and none is needed.
 
 ## Phase 8 — reattach the Brev workflow (chosen: yes)  📦
 

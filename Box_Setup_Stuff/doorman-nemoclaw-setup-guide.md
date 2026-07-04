@@ -34,9 +34,13 @@ authority — the scripts cite its sections and fall back to it whenever an anch
 
 Inference runs on NVIDIA's cloud, so the box only needs CPU \+ RAM.
 
-brev search cpu \--min-vcpu 4 \--min-ram 16 \--stoppable \--sort price
+**Host platform is AWS Lightsail since 2026-07-04** (the Brev `nemoclaw-box` is retired — Brev
+restarts were a capacity dice-roll and stuck-"starting" instances forced full rebuilds; see
+`migration-runbook-lightsail.md` for the migration record and provisioning walkthrough).
 
-brev create nemoclaw-box \--type cpu-d3.4vcpu-16gb \--stoppable
+Provision per the runbook Phase 1: Lightsail → OS Only → Ubuntu 22.04 LTS → the **16 GB bundle**
+(4 vCPU / 16 GB / 320 GB, $84/mo — 16 GB is a hard floor, the image push OOMs below it) → attach a
+**static IP** → firewall: SSH :22 only → add the `Host tradesbox` block to `~/.ssh/config`.
 
 - `--min-ram 16` is a floor (below 16 GB the image push can OOM during onboarding).  
 - Sizing: \~1 active agent/vCPU; \~1 GB RAM per provisioned agent \+ \~6 GB base. Validate with `nemoclaw resources` / `free -h`.  
@@ -46,7 +50,7 @@ brev create nemoclaw-box \--type cpu-d3.4vcpu-16gb \--stoppable
 
 ## 2\. One-time box setup (do once per box)
 
-brev shell nemoclaw-box           \# connect
+ssh tradesbox                     \# connect (plain SSH; Lightsail console "Connect" as fallback)
 
 nproc; free \-h; df \-h             \# confirm specs
 
@@ -671,7 +675,7 @@ sudo systemctl daemon-reload && sudo systemctl enable nemoclaw-boot.service
 
 ## 8\. Lifecycle, costs, gotchas
 
-- **Pause billing:** `brev stop nemoclaw-box` / `brev start nemoclaw-box` (`brev refresh` if the CLI loses the instance). Box bills per running hour regardless of agent count; idle agents cost nothing on inference but hold RAM.  
+- **Stop/start (Lightsail):** console Stop → Start is safe and fully self-reviving (verified 2026-07-04: doorman, gateway oneshot, badge timer, and the agent-revive service all recover hands-off; the static IP stays attached). Note a **stopped Lightsail instance still bills** — to truly pause spending, snapshot then delete the instance and restore later. Idle agents cost nothing on inference but hold RAM.  
 - **`export NVIDIA_API_KEY=…` every new shell** — onboard/rebuild fail without it.  
 - **Render cold start (\~32s) \> the agent's 30s MCP connect timeout.** Keep Render warm (paid/always-on, or pre-warm with the §3f curl) so the agent's first tool call doesn't time out.  
 - **Container *recreate* wipes `/sandbox/.openclaw/openclaw.json`** → use §6 bake-in. *Restart/reboot* preserve it.  
@@ -684,7 +688,7 @@ sudo systemctl daemon-reload && sudo systemctl enable nemoclaw-boot.service
 
 ## 9\. Quick reference — order of operations on a fresh box
 
-1. `brev create` CPU box → `brev shell` → install Docker → `export NVIDIA_API_KEY` → install NemoClaw.  
+1. Provision the Lightsail box (runbook Phase 1) → `ssh tradesbox` → `sudo ./bootstrap-box.sh prep` → `export NVIDIA_API_KEY` → `./bootstrap-box.sh nemoclaw`.  
 2. (optional but recommended) apply the §6 bake-in edits to `/home/ubuntu/.nemoclaw/source/`.  
 3. `nemoclaw onboard` → creates sandbox `<AGENT>` \+ provider `<AGENT>-telegram-bridge` \+ the `openshell-docker` bridge.  
 4. Deploy the doorman (§3) → verify §3f \= 200 \+ 7 tools.  

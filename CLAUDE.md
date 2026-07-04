@@ -19,7 +19,15 @@ each L2 row). Every structured field links back to the raw evidence it came from
     window is worse than retaining rows from a mis-paired mailbox. Each such capture is stamped
     in its source metadata (`pendingVerification: true` + `pendingAccount: <connected-account id>`,
     see `src/inbound/webhook.ts`) so a bad pairing's rows are findable for forensics.
-- Test writes target the **test** Supabase project only; **prod is read-only**. Tests self-clean rows they create.
+- **Tests run ONLY against the local Supabase stack** (`npx supabase start`, values in `.env.test` —
+  see `.env.test.example`; enforced by `src/testEnvGuard.ts`, which refuses to start the suite
+  against any non-local URL). The hosted "test" project (`daqapdlkgxfrhquacprv`) is the **deployed
+  pilot's live database** — Render web + cron and the trades-box-1 badge-pull read it — never point
+  tests at it. Seeding: `npm run seed:local` rebuilds the local playground (roster included);
+  seeding the pilot requires an explicit `npm run seed -- --hosted` and touches spine demo data
+  only (`--with-roster` additionally resets the roster — churns box credentials and bumps sandbox
+  provider generations). **Prod remains read-only.**
+  (Why: a test run truncated the pilot's roster on 2026-07-03 and locked a technician out.)
 
 ## Communication defaults
 

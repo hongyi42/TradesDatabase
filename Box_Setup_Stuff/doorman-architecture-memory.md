@@ -60,6 +60,11 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
   (`openshell provider update <AGENT>-telegram-bridge --credential TRADES_SPINE_BADGE=<badge>`,
   mind the Placeholder VERSIONING trap below), then delete the line. Deactivated people flip to
   `revoked:true` on the next pull.
+  **Empty-roster guard (since 2026-07-03, post-incident hardening):** a pull whose badgesFile is
+  EMPTY while the current badges.json is non-empty is REFUSED — the script exits 1 (unit shows
+  failed) and the last good file stays; that shape has only ever meant upstream data loss, never
+  a real roster. Deliberate full wipe: set `ALLOW_EMPTY_BADGES=1` in badge-pull.env, re-run,
+  remove it.
   **Pull-host rules (hard-won):** (1) BEFORE enabling the timer on a host with existing badges,
   have the server side register each badge's fingerprint (`assign-host.mjs set-badge ref=… hash=…`)
   — the pull regenerates the file WHOLESALE from the roster, so unregistered entries are erased
@@ -77,9 +82,12 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
   install) and the provider store. Everything else records only sha256 fingerprints. Cheap integrity
   check before installing a minted badge: `sha256sum` the pending value and confirm the digest is a
   key in the freshly pulled badges.json — catches file/roster mismatch without exposing plaintext.
-- **Live state (nemoclaw-box, since 2026-07-03):** fingerprint doorman + roster-driven badge-pull
-  timer are DEPLOYED and E2E-verified (Jane turn confirmed via bot reply + server dispatch logs +
-  OCSF `ALLOWED …:3001 [policy:trades_spine_doorman]`). Tenant `82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18`.
+- **Live state (trades-box-1 on AWS Lightsail since 2026-07-04; the Brev nemoclaw-box is RETIRED
+  — see migration-runbook-lightsail.md):** fingerprint doorman + roster-driven badge-pull timer
+  (with the empty-file guard) are DEPLOYED via `bootstrap-box.sh` and E2E-verified (Jane turn via
+  bot reply + OCSF `ALLOWED …:3001 [policy:trades_spine_doorman]`; hands-off recovery from reboot
+  AND console stop/start incl. the agent-revive service). Tenant
+  `82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18`. Box access: `ssh tradesbox` (plain keys, agent-reachable).
 - **A badge's POWER comes from a matching roster row on the server, not from the badge itself
   (since 2026-07-02).** The badge only maps to `{tenantId, technicianRef}`; the trades-spine server
   looks that `technicianRef` up in its `technicians` table and grants tools by the row's **tier**. So

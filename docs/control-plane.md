@@ -73,6 +73,11 @@ JSON summary line; a failed step exits 1 so Render marks the run failed:
 Leaked badge: `… rotate-badge ref=<ref>` (old badge 403s within one poll; replacement mints in
 that pull). Hand edits to badges.json on a pull host last at most one poll interval.
 
+Empty-roster guard (2026-07-03, post-incident): `badge-pull.sh` refuses to replace a non-empty
+badges.json with a 0-entry response — the systemd unit fails loudly and the last good file stays.
+A deliberate full-roster wipe requires `ALLOW_EMPTY_BADGES=1` in `/etc/doorman/badge-pull.env`
+(remove it again afterwards). The guard is covered by `src/control/badgePullScript.test.ts`.
+
 ## Operational notes
 
 - **Connect links are ephemeral** (observed: expired within ~25 minutes) — the manager should

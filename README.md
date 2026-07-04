@@ -4,6 +4,12 @@ This folder is a de-projectified copy of the Research → Plan → Implement (RP
 loop-engineering verification layer, ready to drop into a **different Node/JS or TS** repository.
 All project-specific content from the source repo has been stripped or replaced with placeholders.
 
+> **Note (2026-07-04):** this description predates later work in THIS repo. The in-repo
+> `.claude/skills/verifying-behavior/SKILL.md` §1/§5 have since been **bound to this project's
+> live environments** (local Supabase stack, `supabase-test`/`supabase-prod` MCP, trades-box-1) —
+> the "live bindings = TODO / none wired" lines below no longer describe it. If you export this
+> tree to another repo, re-strip those two sections first.
+
 ## What's here
 
 ```

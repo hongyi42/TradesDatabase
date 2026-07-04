@@ -22,6 +22,13 @@ max_rows = 1000
 # default. Set to `true` to keep the legacy behaviour of auto-exposing new entities; this is
 # deprecated and the field is removed on 2026-10-30 once the always-revoked behaviour is permanent.
 # auto_expose_new_tables = true
+#
+# Local parity with the hosted test project (created under the legacy behaviour):
+# without this, migration-created tables get no Data API grants locally and every
+# supabase-js (PostgREST) call fails `permission denied`. ⚠ This flag is removed
+# 2026-10-30 — before then, replace it with an explicit GRANT/default-privileges
+# migration (tracked in thoughts/shared/plans/2026-07-03-local-test-stack-and-roster-safety.md).
+auto_expose_new_tables = true
 
 [api.tls]
 # Enable HTTPS endpoints locally using a self-signed certificate.

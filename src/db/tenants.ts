@@ -18,6 +18,20 @@ export async function tenantExists(tenantId: string): Promise<boolean> {
   return !!data;
 }
 
+// Look a tenant up by name. Exists for callers that must work on any
+// environment — e.g. scripts/seed.mjs: the migration-seeded 'Default Tenant'
+// has a different generated id on every fresh database (local stack vs hosted),
+// so hardcoding an id is wrong by construction. NOTE: tenants.name has no
+// unique constraint — if the name is ever ambiguous, .maybeSingle() errors
+// loudly rather than silently picking a row; that's a data bug to fix, not
+// something this helper resolves.
+export async function getTenantByName(name: string): Promise<Tenant> {
+  const { data, error } = await getClient().from('tenants').select().eq('name', name).maybeSingle();
+  if (error) throw new Error(`getTenantByName failed: ${error.message}`);
+  if (!data) throw new Error(`getTenantByName: no tenant named '${name}'`);
+  return data;
+}
+
 export async function createTenant(
   name: string,
   seats: { managerSeats?: number; technicianSeats?: number } = {},

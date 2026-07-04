@@ -11,10 +11,6 @@ the row land, does the auth flow work. This skill is how we verify *behavior*, s
 consistently. Follow it whenever you run live/agent-driven verification or plan a phase's
 verification steps.
 
-> **Setup status:** no live test environment is wired in this repo yet. Until one is (see §5),
-> bucket-2 live E2E checks are **blocked** — apply the missing-capability rule (§4) rather than
-> silently degrading. Codified tests (§3, bucket 1) need no infrastructure and are the default now.
-
 ## 1. Test-environment safety (non-negotiable)
 
 - **All verification *writes* go to a disposable test environment** (test DB / test tenant /
@@ -23,8 +19,15 @@ verification steps.
   Never create or mutate verification data in production.
 - **Self-clean.** Prefer temp tables / scoped fixtures, or delete rows you created. Don't leave
   residue in the sandbox — it accumulates and makes later runs flaky.
-- *(Fill in the concrete environments — connection names, project IDs, which is writable vs
-  read-only — once they exist; see §5.)*
+- **Concrete environments (since 2026-07-04):**
+  - **LOCAL Supabase stack** (Docker; `npx supabase start`, creds in `.env.test`) — the ONLY
+    writable test environment. `npm test` is pinned to it by `src/testEnvGuard.ts`; wipe/rebuild
+    freely (`npx supabase db reset`).
+  - **Hosted "test" project `daqapdlkgxfrhquacprv`** — despite the name, this is the deployed
+    pilot's LIVE database (Render web + cron, trades-box-1 badge-pull read it). Treat it like
+    production: read-back/inspection yes, verification writes NO. (A test run truncated its
+    roster on 2026-07-03 → real lockout.)
+  - **Prod project** — read-only, always.
 
 ## 2. The verification-subagent recipe (maker ≠ checker)
 
@@ -62,15 +65,20 @@ token-heavy).
 - **Classify why a check can't run:** *missing capability* → name it and ask; *inherently human* →
   hand off for a glance. Never collapse the first into the second.
 
-## 5. Wired verification tools (current state)
+## 5. Wired verification tools (current state, 2026-07-04)
 
-- **None wired yet.** When you add one, document it here so the rest of this skill has concrete
-  bindings. Typical additions for a Node/TS project:
-  - a **browser MCP** (e.g. Playwright) for frontend/UI checks — the app must be running;
-  - a **database MCP or direct client** for read-back, with a clear writable-test vs read-only-prod
-    split;
-  - any **third-party API sandbox** the product integrates with.
-- Until then, every live check is bucket 3 by default. Apply §4 — name what's needed, don't fake it.
+- **Local Supabase stack** (writes) — via Bash: `docker exec supabase_db_TradesDatabase psql -U
+  postgres -c "<sql>"` for read-back, `npx supabase db reset` to rebuild. Tests reach it through
+  `.env.test` (see `.env.test.example`).
+- **`supabase-test` MCP** — the hosted pilot DB (`daqapdlkgxfrhquacprv`). Production-adjacent:
+  `execute_sql` SELECT read-backs yes (this is the cross-channel read channel for anything the
+  deployed stack wrote), verification WRITES no (§1). Also carries `search_docs` for Supabase docs.
+- **`supabase-prod` MCP** — prod project, read-only, inspection only.
+- **trades-box-1** (deployed box, AWS Lightsail) — agent-reachable over `ssh tradesbox`; use for
+  box-side evidence (`journalctl -u badge-pull`, doorman logs). The Brev nemoclaw-box is RETIRED —
+  never target it or use `brev` CLI.
+- Still unwired: a browser MCP (no UI exists yet) and third-party sandboxes (Composio/Google run
+  live-only). For checks needing those, apply §4 — name what's missing, don't fake it.
 
 ## 6. Don't automate third-party SSO logins
 

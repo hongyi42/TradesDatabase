@@ -74,6 +74,13 @@ cleanup fix) starts from facts, not recollection.
    minted/stored at purchase time (currently: manually, at onboard).
 5. Whether unbind rides deactivation (instant) or expiry (end of grace) — deactivation is
    reversible, so unbinding at deactivate requires re-bind on reactivate.
+6. **The cold-pool auto-allocator (required for full self-serve).** Person→host/sandbox
+   assignment is today a deliberately operator-side CLI (`scripts/assign-host.mjs assign`).
+   Since pool sandboxes are identical and identity-empty, the server can claim the next free
+   sandbox on the tenant's host when a seat is added — no human judgment involved. Without this
+   in scope, an operator stays in every hire. Product principle (user, 2026-07-03): the Telegram
+   chat is the ONLY user-facing surface — onboarding/offboarding must run end to end from the
+   manager's chat, with operators involved only at initial setup and breakage.
 
 ## Host experiment (issued 2026-07-03)
 

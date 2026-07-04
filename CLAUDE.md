@@ -85,3 +85,22 @@ gate — not the code diff.
 
 Artifacts live in `thoughts/shared/research/` and `thoughts/shared/plans/`. Commit them alongside
 the code changes they describe.
+
+### Two concurrent features — plan both first
+
+When building two features at once, **never start implementing either until both plans exist**:
+research + plan are read-only, so run both cycles concurrently, then compare the two plans' file
+footprints. Disjoint footprints → implement in parallel; overlapping → stack them (land A, then
+re-check/rebase B's plan on the result). Parallel implementation runs as **two separate Claude
+Code sessions**, each in its own `git worktree` running `/implement` (keeps the skill's
+stop-and-ask human gates intact — don't wrap `/implement` in subagents, which can't pause).
+
+Each extra worktree gets its **own local Supabase stack** via `scripts/second-stack.sh [N]` (run
+inside the worktree): it rewrites that worktree's `supabase/config.toml` — unique `project_id`,
+ports shifted 543xx→54(3+N)xx, leave uncommitted — starts the stack, and generates `.env.test`,
+so `npm test` and `npm run seed:local` target that stack automatically (`testEnvGuard` is
+host-based and port-agnostic, so the pilot-DB protection still holds). Note: a fresh worktree has
+no `.env`, so key-gated live-model tests are skipped there; copy `.env` in if a phase needs them.
+Integration gate after both features pass alone: merge A → `npm test` → merge B → `npm test` →
+review the **combined** diff for cross-feature interactions. Scratch-stack cleanup:
+`npx supabase stop --no-backup` inside the worktree.

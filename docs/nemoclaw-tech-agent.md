@@ -89,7 +89,7 @@ Outbound network policy should allow only the gateway + our server's host.
 
 **Manager profile (2026-07-02):** an ACTIVE `tier='manager'` roster row (the `technicians`
 table, not the badge, is the tier source of truth) additionally exposes the seat/lifecycle
-tools — 7 of them, for a 14-tool manager surface: `add_technician_seat`,
+tools — 7 of them, for a 15-tool manager surface (the technician surface itself is 8 incl. send_email since 2026-07-04): `add_technician_seat`,
 `deactivate_technician_seat` (two-step confirm; starts the disable-first grace period),
 `reactivate_technician_seat` (the grace-period undo), `get_connect_link` (mint a Gmail
 Connect Link; 5-min per-person cooldown), `list_team`, `list_pending_reviews`,
@@ -137,6 +137,65 @@ boundaries; outsource only the plumbing).
 **Composio is complementary to `trades-spine`, not a replacement.** The spine MCP stays the only writer
 to the canonical record (holds Supabase keys; does identity-match + provenance + tenant guards). Both
 register side-by-side in the gateway's `mcp.servers`.
+
+### Outbound architecture of record (amended 2026-07-04 — implemented)
+**Per-PERSON Composio sessions (Tool Router GA) carry outbound**, superseding the per-tenant
+`mcp.url` sketch below (kept for history). User decisions 2026-07-04:
+- **One session per person**, keyed by the composite `"<tenantUuid>:<technicianRef>"` user id and
+  created by the lifecycle cron for every ACTIVE roster row (`src/composio/sessions.ts` —
+  `ensurePersonSession`; id persisted as `technicians.composio_session_id`, deleted at offboarding
+  expiry, kept as a column for audit). Session restrictions are **execution-enforced** (verified —
+  see the "Verified 2026-07-04" block in *Secret custody* below; match error code `4310`, not HTTP
+  status).
+- **Manager tier = the ENTIRE catalog + self-serve pairing** (`manageConnections: true`): managers
+  pair new connectors themselves via OAuth links from their agent. NO structural block on
+  destructive tools — safety = the "AI can make errors" disclosure + confirmation behavior
+  context-engineered into the manager agent's instructions (Box_Setup_Stuff setup guide §0b).
+  Deliberate, accepted risk (user decision).
+- **Technician tier = pinned `direct_tools` list** (`TECHNICIAN_GMAIL_TOOLS`: fetch/draft/profile;
+  product-configurable), `manageConnections: false`, **send structurally impossible** (4310).
+  Technician send goes through the spine's `send_email` tool: persisted two-step confirm
+  (stage → confirmId → consume-token-then-send, at-most-once) + synchronous L1 capture
+  (`outbound_email`).
+- **Manager actions are audited asynchronously**: the lifecycle cron pulls the v3.1 execution logs
+  (`src/composio/logIngest.ts`, 60-min overlapping window) into L1 — email sends as
+  `outbound_email` (verbatim, business correspondence), other state-changing calls as
+  `agent_action` with **keys-only redaction** (argument key names, never values — L1 is
+  undeletable) and `sensitivity='manager_only'` (filtered out of technician-tier spine reads).
+  Reads are skipped; when unsure, capture. **Capture-all, no work/personal classifier** — recorded
+  exception in CLAUDE.md.
+- **mcp.url delivery is operator-run in v1** (`scripts/provision-session.mjs` prints the url + the
+  gateway snippet registered beside `trades-spine`; custody: host-only secretRef). Automated
+  injection (e.g. via badge-pull) is future work. Note for feature A's rebase: a chat-only hire
+  gets a spine connection automatically but their session `mcp.url` still needs this operator
+  step.
+
+**Phase-5 live verification (2026-07-04, fresh-context probe against the live project):**
+- **Enforcement re-confirmed with the production configs**: technician session rejects
+  `GMAIL_SEND_EMAIL` with HTTP **400** `code 4310 / ToolRouterV2_ToolNotInEnabledList` (docs say
+  403 — match code/slug); pinned tools pass the gate (4302 downstream); the restriction is stored
+  server-side (`tool_router_tools` = exactly the three pinned slugs, `manage_connections.enabled
+  = false`).
+- **DIRECT_TOOLS surface**: the technician MCP endpoint exposes EXACTLY the three pinned tools —
+  no meta-tools at all. Adversarial connection-minting attempts (`COMPOSIO_MANAGE_CONNECTIONS`,
+  `COMPOSIO_INITIATE_CONNECTION`, search, multi-execute, direct `tools/call GMAIL_SEND_EMAIL`)
+  all `-32602 not found` — **no connection-minting route exists**; the
+  `manageConnections:{enable:false}` contingency is not needed. All three
+  `TECHNICIAN_GMAIL_TOOLS` slugs exist in the current catalog, `is_deprecated:false`.
+- **Manager session**: full meta-tool set incl. `COMPOSIO_MANAGE_CONNECTIONS`; catalog breadth
+  proven (search plans cite `GOOGLESHEETS_*`/`GOOGLEDRIVE_*`); self-serve pairing mints a real
+  `connect.composio.dev/link/...` redirect (10-min expiry).
+- **Logs API v3.1 (the ingestion contract)**: envelope rows under **`logs`** (not items/data);
+  `next_cursor` epoch-ms string, `null` when exhausted, request field `cursor`; `time_range`
+  MUST be epoch-ms numbers (ISO strings → 400). Item: `{id, timestamp, type, status, level,
+  metadata, metrics, parent}` — `status` top-level; `metadata.user_id` (string, composite);
+  **`metadata.tool` is an object `{slug, version, is_deprecated}`**; `metadata.toolkit` an object
+  `{slug, icon}`. Detail `GET …/{id}` adds `data = {success, request:{payload:{…}},
+  response:{status_code, body:{…}}, logs}`. **Permission-gate rejections (4310) are NOT logged**
+  — the audit sweep sees only executions that ran. Retention: windows back to 400 days accepted
+  (no upper bound observed; sparse data today, so depth is unproven — the 60-min sweep window is
+  safely inside any plausible retention). `src/composio/logIngest.ts` parses these verified
+  shapes with the older assumed spellings kept as fallbacks.
 
 ### Multi-tenant model
 - **One business = one tenant UUID; Composio `user_id` is per PERSON (revised 2026-07-01):**
@@ -211,16 +270,45 @@ register side-by-side in the gateway's `mcp.servers`.
   allowlist attaches there. Composio's **Execution Allowlist** is configured per auth config
   (dashboard-observed 2026-07-01: "Restrict which tools agents can execute. Leave empty to allow
   all"), and our shared-config model means one config serves every tenant and person — so it is only
-  the **global ceiling** (e.g. "no send anywhere"), never per-person policy. ⚠ Whether the allowlist
-  blocks *execution* or merely hides tools from *discovery* is unverified against Composio docs —
-  confirm during outbound live-verification before treating it as an enforcement boundary.
+  the **global ceiling** (e.g. "no send anywhere"), never per-person policy.
+- **Verified 2026-07-04 (docs research + live probe) — this changes the premise above; decision under
+  review with the user:**
+  - **Auth-config Execution Allowlist: still UNVERIFIED as an enforcement boundary.** The API field is
+    `tool_access_config.tools_available_for_execution` (live OpenAPI,
+    https://backend.composio.dev/api/v3/openapi.json); the prose docs never state that executing a
+    non-allowlisted tool fails — the only blocking claim is marketing
+    (https://composio.dev/protection). Treat as defense-in-depth only, never the boundary. Note: before
+    the Jan 14, 2026 "True PATCH Semantics" fix, omitting `tool_access_config` on an auth-config update
+    silently reset it to `{}` (https://docs.composio.dev/reference/changelog).
+  - **Composio SESSIONS (Tool Router GA, Dec 2025) ARE an execution-time enforcement boundary —
+    live-verified 2026-07-04 against our project.** A session is created per user
+    (`composio.sessions.create(userId, { toolkits, tools:{gmail:[...]}, mcp: true })`,
+    SDK ≥0.13.1) and its restriction is enforced at execution on BOTH paths: session execute returns
+    HTTP 400 `code 4310 / slug "ToolRouterV2_ToolNotInEnabledList"` ("[Session Restriction] Tool
+    'GMAIL_GET_PROFILE' is not enabled for this session"), and the session's MCP endpoint (meta-tool
+    `COMPOSIO_MULTI_EXECUTE_TOOL` route) rejects identically, while a control session with the tool
+    enabled passes the gate (fails later at connection resolution, `4302 /
+    ToolRouterV2_NoActiveConnection` — proving the layers). Docs:
+    https://docs.composio.dev/docs/configuring-sessions, https://docs.composio.dev/docs/sessions-via-mcp.
+    ⚠ Doc discrepancy: docs say 403; live API returns 400 with code `4310` — match on the code/slug,
+    not HTTP status. ⚠ Default session preset exposes only six meta-tools over MCP `tools/list`
+    (app tools run via `COMPOSIO_MULTI_EXECUTE_TOOL`); a fixed direct list needs the `DIRECT_TOOLS`
+    preset. Consequence: per-person AND per-tier policy CAN live in Composio session config (one
+    session per person, keyed by our composite `"<tenant>:<ref>"` user id) — the 2026-07-01 "only the
+    gateway can do per-person" premise no longer holds. Caveats before relying on it as the ONLY
+    boundary: over MCP our code is not in the request path ("you can't intercept, reshape, log, or
+    gate calls" — sessions-via-mcp docs), and Composio had a tool-execution-sandbox breach May 21–25,
+    2026 (https://composio.dev/blog/composio-may-2026-security-incident). If tool slugs are pinned in
+    session configs, re-check them after Composio catalog releases (May 2026 consolidation renamed
+    tools; a stale slug silently enables nothing).
 
 ### Scopes (least privilege)
 - **Managed OAuth means one broad token per connected account** — the managed app grants
   `https://mail.google.com/` (read + compose + send together; dashboard-observed 2026-07-01), so a
-  send-only-token split is not available. Least privilege moves to the **action layer**: Composio's
-  per-auth-config **Execution Allowlist** (global ceiling — see gateway bullet above, semantics
-  to-verify) plus the per-tier gateway allowlist (§4). ⚠ **Interim gap, accepted:** the per-tier
+  send-only-token split is not available. Least privilege moves to the **action layer**: per-person
+  Composio **session** tool configs (execution-enforced — verified 2026-07-04, see gateway bullet
+  above) with the per-auth-config Execution Allowlist as unverified defense-in-depth, plus the
+  per-tier gateway allowlist (§4). ⚠ **Interim gap, accepted:** the per-tier
   gateway allowlist is not built yet, so until it ships, any agent holding a tenant's Tool Router
   `mcp.url` can both read the full mailbox and (if the ceiling permits) send — a capability the old
   send-only-token design made structurally impossible. Set the dashboard ceiling to draft-only until

@@ -95,6 +95,7 @@ function techRow(over: Partial<Technician> = {}): Technician {
     host_id: null,
     offboarding_started_at: null,
     link_issued_at: null,
+    composio_session_id: null,
     created_at: '2026-07-02T00:00:00.000Z',
     updated_at: '2026-07-02T00:00:00.000Z',
     ...over,

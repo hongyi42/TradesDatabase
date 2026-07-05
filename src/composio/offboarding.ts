@@ -74,6 +74,7 @@ export interface ExpireResult {
   expired: number;
   raced: number; // reactivated between the list read and the claim — skipped
   failed: number; // per-row write/teardown failures (see teardown note below)
+  sessionsCleaned: number; // leaked sessions on offboarded rows deleted by the retry pass
 }
 
 // The grace-period sweep the lifecycle cron runs every 15 minutes.
@@ -89,7 +90,14 @@ export async function expireOffboarding(
 
   const graceMs = graceDays() * 86_400_000;
   const now = Date.parse(nowIso);
-  const rows = await listInStates(['offboarding']);
+  const listed = await listInStates(['offboarding', 'offboarded']);
+  const rows = listed.filter((r) => r.state === 'offboarding');
+  // LEAKED sessions: an offboarded row still carrying a session id means a
+  // prior tick's delete failed after the CAS claim (or the roster null-out
+  // did). Retried here every tick until the delete lands (review finding:
+  // these were previously unreachable forever once the row left the
+  // 'offboarding' set).
+  const leaked = listed.filter((r) => r.state === 'offboarded' && r.composio_session_id);
   const result: ExpireResult = {
     scanned: rows.length,
     stamped: 0,
@@ -97,7 +105,23 @@ export async function expireOffboarding(
     expired: 0,
     raced: 0,
     failed: 0,
+    sessionsCleaned: 0,
   };
+
+  for (const row of leaked) {
+    try {
+      const client = requireClient(deps);
+      try {
+        await client.sessions.delete(row.composio_session_id as string);
+      } catch (err) {
+        if (!isGoneError(err)) throw err;
+      }
+      await update(row.id, { composio_session_id: null });
+      result.sessionsCleaned++;
+    } catch {
+      result.failed++; // retried next tick — the row stays marked
+    }
+  }
 
   for (const row of rows) {
     // Self-heal a NULL clock (row deactivated before the stamping code
@@ -133,6 +157,30 @@ export async function expireOffboarding(
         // mail regardless; the alternative (claim-after) risks destroying a
         // reactivated person's pairing, which is worse than inert clutter.
         await deleteComposioPairing(row, deps);
+        // The person's Composio session goes with the pairing (same 404-is-
+        // gone idiom). Deliberately NOT inside deleteComposioPairing — unpair
+        // reuses that for people who STAY on the roster (wrong-mailbox
+        // re-pair), and their session must survive. Deactivation normally
+        // tears the session down already (server.ts, review finding: a live
+        // manager session can mint NEW accounts, so the disabled-account 4302
+        // backstop doesn't cover it) — this is the backstop for rows whose
+        // deactivation-time teardown failed. The column is NULLED on success:
+        // a non-null id on an offboarded row marks a LEAKED session for the
+        // retry pass below (review finding: post-claim failures were never
+        // retried, leaking a live session permanently).
+        if (row.composio_session_id) {
+          const client = requireClient(deps);
+          try {
+            await client.sessions.delete(row.composio_session_id);
+          } catch (err) {
+            if (!isGoneError(err)) throw err;
+          }
+          try {
+            await update(row.id, { composio_session_id: null });
+          } catch {
+            /* advisory — the retry pass re-runs the (idempotent) delete */
+          }
+        }
         result.expired++;
       } catch {
         result.failed++;

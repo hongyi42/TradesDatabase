@@ -239,7 +239,7 @@ json.dump({hashlib.sha256(k.encode()).hexdigest(): v for k, v in d.items()}, ope
 EOF
 sudo chown doorman:doorman /etc/doorman/badges.json && sudo chmod 600 /etc/doorman/badges.json
 sudo systemctl restart doorman                    # immediately — old code + hashed file 403s
-# verify: Step 6(a) curl with the PLAINTEXT badge still lists the 7 tools
+# verify: Step 6(a) curl with the PLAINTEXT badge still lists the 8 tools
 ```
 
 ## Step 3 — Run it as a hardened service
@@ -305,7 +305,7 @@ Run on the host. Responses may be SSE, so use `-N`.
 ```bash
 BADGE=<the issued badge>
 
-# (a) positive: valid badge → tools/list returns the 7 tools
+# (a) positive: valid badge → tools/list returns the 8 tools
 curl -sN -X POST http://172.17.0.1:3001/ \
   -H "Authorization: Bearer $BADGE" \
   -H "Accept: application/json, text/event-stream" \
@@ -318,9 +318,9 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'   # expect 403
 ```
 
-- (a) should list the 7 tools for a technician-tier badge: `record_field_note`, `find_customer`,
+- (a) should list the 8 tools for a technician-tier badge: `record_field_note`, `find_customer`,
   `get_customer_context`, `get_job`, `list_recent_captures`, `brief_customer`,
-  `answer_customer_question`. (A badge whose roster row is an ACTIVE `tier='manager'` lists **14**
+  `answer_customer_question`, `send_email`. (A badge whose roster row is an ACTIVE `tier='manager'` lists **15**
   — the 7 seat/lifecycle-management tools are added: add/deactivate/reactivate technician seat,
   list_team, list_pending_reviews, resolve_review, get_connect_link; see nemoclaw-tech-agent.md
   §4, updated 2026-07-02.)
@@ -364,7 +364,7 @@ HASH=$(printf %s "$NEW" | sha256sum | cut -d' ' -f1)
 ## Definition of done
 
 - `systemctl status doorman` is active; logs show the bind line.
-- Step 6(a) lists all 7 tools; 6(b) returns 403.
+- Step 6(a) lists all 8 tools; 6(b) returns 403.
 - An agent in a wired sandbox successfully calls a tool.
 - No secret or signed header exists inside any sandbox — only a badge.
 

@@ -17,16 +17,59 @@ authority — the scripts cite its sections and fall back to it whenever an anch
 
 ---
 
-## 0\. Concepts & the 7 tools
+## 0\. Concepts & the 8 tools
 
 - **Doorman**: a small Node HTTP service on the host. Binds the docker-bridge gateway `172.18.0.1:3001`. Reads `Authorization: Bearer <badge>`, looks the badge up in `/etc/doorman/badges.json`, computes the identity signature with the host-only secret, forwards to the Render upstream. Returns **200** (valid badge), **403** (unknown/revoked badge), **401** (no badge).  
 - **Badge**: a low-value, revocable token. Lives in the sandbox's OpenShell provider store (never in the image, never on disk in plaintext). **No badge plaintext appears anywhere in this guide, ever** — badges are minted by the server in the badge-pull response (`/root/pending-badges.jsonl` holds the one and only plaintext copy; install it as the provider credential, then delete the line). The old "reference badge" this guide used to print leaked into a transcript and was rotated dead on 2026-07-03.  
-- **The 7 trades-spine tools** (what a technician-tier badge sees — every count below assumes one): `record_field_note`, `find_customer`, `get_customer_context`, `get_job`, `list_recent_captures`, `brief_customer`, `answer_customer_question`. A badge whose `technicianRef` matches an **ACTIVE `tier='manager'`** row in the server's `technicians` table sees **14** (since 2026-07-02) — the 7 plus the seat/lifecycle tools `add_technician_seat`, `deactivate_technician_seat`, `reactivate_technician_seat`, `get_connect_link`, `list_team`, `list_pending_reviews`, `resolve_review`. The tier is decided **server-side by that roster row, not by the badge**; a badge with no matching active manager row acts as a plain technician (7 tools). The host/doorman does nothing tier-specific — it just forwards the badge.
+- **The 8 trades-spine tools** (what a technician-tier badge sees — every count below assumes one): `record_field_note`, `find_customer`, `get_customer_context`, `get_job`, `list_recent_captures`, `brief_customer`, `answer_customer_question`, `send_email` (two-step confirm; since 2026-07-04). A badge whose `technicianRef` matches an **ACTIVE `tier='manager'`** row in the server's `technicians` table sees **15** (since 2026-07-04; was 14) — the 8 plus the seat/lifecycle tools `add_technician_seat`, `deactivate_technician_seat`, `reactivate_technician_seat`, `get_connect_link`, `list_team`, `list_pending_reviews`, `resolve_review`. The tier is decided **server-side by that roster row, not by the badge**; a badge with no matching active manager row acts as a plain technician (8 tools). The host/doorman does nothing tier-specific — it just forwards the badge.
 
 **Naming convention used below** (don't mix these up):
 
 - **`<AGENT>`** \= the sandbox name you pick at onboard (e.g. `s1`, `d1`). Used by **`nemoclaw <AGENT> …`**.  
 - **`<AGENT>-telegram-bridge`** \= the OpenShell **provider** auto-created for that sandbox+channel. Used by **`openshell provider … <AGENT>-telegram-bridge`**.
+
+## 0b. Per-person Composio session (outbound connectors — since 2026-07-04)
+
+Beside `trades-spine`, each sandbox registers its person's **Composio session `mcp.url`** — the
+outbound connector surface (Gmail/Sheets/…, tier-scoped). The session is created automatically by
+the Render lifecycle cron for every ACTIVE roster row; the **operator wires the url into the
+sandbox once** at setup:
+
+1. On the control plane (repo checkout with `.env`): `npm run build && node -r dotenv/config
+   scripts/provision-session.mjs tenant=<uuid> ref=<ref>` → prints the `mcp.url` + the exact
+   gateway snippet.
+2. Store the url as a host-side secretRef (`composio-mcp-url-<ref>`, root-only) and add the
+   printed `composio` entry to the sandbox's `mcp.servers`, next to `trades-spine`. **Custody: the
+   url grants that person's whole session — never in the sandbox filesystem, logs, or this repo.**
+
+**Tier shape (enforced by Composio at execution — error code 4310, verified 2026-07-04):**
+managers get the ENTIRE catalog + self-serve connector pairing (`manageConnections:true`);
+technicians get a pinned read/draft list (`direct_tools` preset) with **send structurally
+impossible** — technician sends go through the spine `send_email` tool (two-step confirm).
+
+**Manager-agent instruction block (context-engineered safety — REQUIRED in every manager
+sandbox's agent instructions; user decision 2026-07-04, no structural block on destructive
+tools):**
+
+> You can use many third-party tools, including ones that change things irreversibly (sending
+> money, deleting records, emailing customers). Before ANY irreversible or destructive action:
+> (1) tell the manager exactly what you are about to do, with the exact values; (2) wait for
+> their explicit "yes" in this conversation; (3) only then act. Never chain multiple destructive
+> actions on one approval. Remind the manager when relevant: **you are an AI and can make
+> mistakes, and actions taken through you are logged by the business.**
+
+**Disclosure (rollout obligation):** managers AND technicians must be told "emails sent via the
+assistant are logged" — every send and state-changing connector action lands in the company's
+permanent record (CLAUDE.md recorded exception 2026-07-04).
+
+**Session lifecycle gotchas (operator):**
+- **Deactivation deletes the person's session** (a live manager session could self-serve-pair NEW
+  accounts during the grace period — so it goes down with the badge). On **reactivation** the
+  15-min sweep mints a FRESH session at the person's current tier → **the sandbox's
+  `composio-mcp-url-<ref>` secretRef must be re-provisioned** (`provision-session.mjs` again).
+- **Tier change (e.g. manager demotion)** is a DB tier update PLUS a session teardown (null
+  `composio_session_id`; the sweep re-mints at the new tier). Skipping the teardown leaves the
+  old tier's session live — a demoted manager would keep the full catalog.
 
 ---
 
@@ -266,7 +309,7 @@ sudo ufw allow from 172.18.0.0/16 to $GW port 3001 proto tcp comment 'doorman'
 
 sudo ufw allow from 172.18.0.0/16 to $GW port 8080 proto tcp comment 'openshell gateway'   \# if not already present
 
-### 3f. Verify host → doorman → Render \= 200 \+ 7 tools
+### 3f. Verify host → doorman → Render \= 200 \+ 8 tools
 
 \# Use a badge minted by the pull: the plaintext is the "badge" field of the person's line
 \# in /root/pending-badges.jsonl (or, if already installed+deleted, re-mint via server-side
@@ -410,7 +453,7 @@ EOF'
 
 Then clean-restart the agent: `sudo docker exec <CID> pkill -9 -x openclaw` (the in-container supervisor respawns it).
 
-**Why `toolSearch:false`?** With `toolSearch:true` ("code mode") OpenClaw hides tools behind a code bridge; the Nemotron model can't drive it (it invents `openclaw.tools.list()` / `require(...)`) and every tool call fails with "**run bridge code failed**". `false` exposes the 7 tools as direct function calls.
+**Why `toolSearch:false`?** With `toolSearch:true` ("code mode") OpenClaw hides tools behind a code bridge; the Nemotron model can't drive it (it invents `openclaw.tools.list()` / `require(...)`) and every tool call fails with "**run bridge code failed**". `false` exposes the 8 tools as direct function calls.
 
 ### 5d. Verify end-to-end
 
@@ -691,7 +734,7 @@ sudo systemctl daemon-reload && sudo systemctl enable nemoclaw-boot.service
 1. Provision the Lightsail box (runbook Phase 1) → `ssh tradesbox` → `sudo ./bootstrap-box.sh prep` → `export NVIDIA_API_KEY` → `./bootstrap-box.sh nemoclaw`.  
 2. (optional but recommended) apply the §6 bake-in edits to `/home/ubuntu/.nemoclaw/source/`.  
 3. `nemoclaw onboard` → creates sandbox `<AGENT>` \+ provider `<AGENT>-telegram-bridge` \+ the `openshell-docker` bridge.  
-4. Deploy the doorman (§3) → verify §3f \= 200 \+ 7 tools.  
+4. Deploy the doorman (§3) → verify §3f \= 200 \+ 8 tools.  
 5. `nemoclaw <AGENT> policy-add` egress preset (§5a) \+ `openshell provider update` badge (§5b).  
 6. If you skipped the bake-in: write the MCP config \+ `toolSearch:false` (§5c).  
 7. Message the bot → confirm a trades-spine tool returns real data (§5d).  

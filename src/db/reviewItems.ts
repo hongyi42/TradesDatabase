@@ -12,6 +12,7 @@ export type ReviewKind =
   | 'unknown_ref_capture'
   | 'pairing_verification'
   | 'pending_deactivation'
+  | 'pending_outbound_send'
   | 'offboarding_reminder';
 
 export interface UpsertOpenReviewItemInput {
@@ -205,6 +206,29 @@ export async function listOpenReviewItems(tenantId: string): Promise<ReviewItem[
     .order('created_at', { ascending: true });
   if (error) throw new Error(`listOpenReviewItems failed: ${error.message}`);
   return data ?? [];
+}
+
+// Re-annotate an already-CLOSED item's resolution text. The one caller is the
+// send_email confirm path: the token is consumed ('send confirmed by …')
+// BEFORE the send for at-most-once, so a send failure must rewrite the
+// resolution or the durable record reads as a confirmed send that never ran
+// (review finding). Never touches open items — consuming stays the job of
+// resolveReviewItem.
+export async function annotateResolvedReviewItem(
+  id: string,
+  tenantId: string,
+  resolution: string,
+): Promise<ReviewItem | null> {
+  const { data, error } = await getClient()
+    .from('review_items')
+    .update({ resolution })
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .neq('status', 'open')
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`annotateResolvedReviewItem failed: ${error.message}`);
+  return data;
 }
 
 // Close an item. Tenant-guarded: a cross-tenant (or unknown) id resolves nothing

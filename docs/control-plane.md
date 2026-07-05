@@ -30,17 +30,27 @@ mint-on-first-pull, fingerprint-keyed file, revocation on deactivation).
 
 ## The heartbeat: one Render Cron Job
 
-`src/jobs/lifecycle.ts` (`npm run job:lifecycle`) runs three isolated sweeps and prints one
+`src/jobs/lifecycle.ts` (`npm run job:lifecycle`) runs five isolated sweeps and prints one
 JSON summary line; a failed step exits 1 so Render marks the run failed:
 
 1. **Pairing sweep** — every `invited`/`pending_verification` row with a link issued gets
    `checkPairing` (detects completed OAuth consents; advances the row; opens the manager's
    verification item exactly once per episode).
 2. **Grace-period expiry** — NULL-clock self-heal; "2 days left" reminder (once per episode);
-   past-grace teardown (trigger then account, per-row failure isolation, retried next tick).
+   past-grace teardown (trigger, account, then the person's Composio session — per-row failure
+   isolation, retried next tick).
 3. **Schedule-sheet sync** — `syncScheduleFromSheet` (its first-ever caller); runs only when
    `SCHEDULE_SHEET_ID` + `DEFAULT_TENANT_ID` are set. *Interim limitation: single-tenant —
    one configured sheet for the default tenant; per-tenant sheet config is future work.*
+4. **Session provisioning (since 2026-07-04)** — every ACTIVE roster row missing a
+   `composio_session_id` gets its tier-scoped Composio session (`ensurePersonSession`,
+   `src/composio/sessions.ts`; manager = full catalog + self-serve pairing, technician = pinned
+   `direct_tools` list, send impossible). **Skipped cleanly when `COMPOSIO_API_KEY` is unset** —
+   a cron deployed without the key reports `{skipped}` instead of going permanently red.
+5. **Execution-log ingestion (since 2026-07-04)** — `runLogIngestion`
+   (`src/composio/logIngest.ts`): pulls Composio's v3.1 tool-execution logs over an overlapping
+   60-min window and appends state-changing actions into L1 (`outbound_email` / `agent_action`,
+   keys-only redaction, `manager_only` sensitivity). Same `COMPOSIO_API_KEY` skip gate.
 
 ## Render setup (dashboard, one-time)
 
@@ -50,7 +60,9 @@ JSON summary line; a failed step exits 1 so Render marks the run failed:
    - Build: `npm install && npm run build`
    - Command: `npm run job:lifecycle`
    - Schedule: `*/15 * * * *` (UTC; Render guarantees at most one concurrent run)
-   - Environment — required: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `COMPOSIO_API_KEY`.
+   - Environment — required: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `COMPOSIO_API_KEY`
+     (without it, steps 1-2 still need it per-row for Composio calls, and steps 4-5 skip
+     cleanly — see the step notes above).
      Optional: `GRACE_DAYS` (default 7); `SCHEDULE_SHEET_ID` + `DEFAULT_TENANT_ID` +
      `GOOGLE_APPLICATION_CREDENTIALS` together enable the sheet sync (skipped if unset).
      It does NOT need `COMPOSIO_GMAIL_AUTH_CONFIG_ID` (only link *minting* on the web service

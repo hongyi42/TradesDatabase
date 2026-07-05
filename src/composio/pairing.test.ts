@@ -31,6 +31,7 @@ function tech(over: Partial<Technician> = {}): Technician {
     host_id: null,
     offboarding_started_at: null,
     link_issued_at: null,
+    composio_session_id: null,
     created_at: '2026-07-02T00:00:00.000Z',
     updated_at: '2026-07-02T00:00:00.000Z',
     ...over,
@@ -132,6 +133,19 @@ function clientStub(opts: {
         rec('tools.execute', slug, body);
         if (opts.profileThrows) throw new Error('tool execution failed');
         return { data: opts.profileData ?? { emailAddress: 'jane.doe@gmail.com' } };
+      },
+    },
+    // Pairing never touches sessions — throwing stubs prove it (Phase 3 owns
+    // the behavior tests).
+    sessions: {
+      create: async () => {
+        throw new Error('pairing must not create sessions');
+      },
+      use: async () => {
+        throw new Error('pairing must not use sessions');
+      },
+      delete: async () => {
+        throw new Error('pairing must not delete sessions');
       },
     },
   };

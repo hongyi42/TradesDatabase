@@ -39,6 +39,14 @@ export interface PairingClient {
   tools: {
     execute(slug: string, body: Record<string, unknown>): Promise<Record<string, unknown>>;
   };
+  // Sessions (Tool Router GA) — per-person, tier-scoped tool access. Same
+  // structural tolerance as the rest of this surface (@composio/core ≥0.13.1
+  // has sessions.create/use/delete; verified in installed typings 2026-07-04).
+  sessions: {
+    create(userId: string, config: Record<string, unknown>): Promise<Record<string, unknown>>;
+    use(id: string, opts?: Record<string, unknown>): Promise<Record<string, unknown>>;
+    delete(id: string): Promise<unknown>;
+  };
 }
 
 // Lazy singleton: importing this module must not require the key (the MCP
@@ -58,7 +66,9 @@ function authConfigId(): string {
 }
 
 // The vocabulary-contract composite user id (webhook splits on the 1st colon).
-function compositeUserId(tech: Technician): string {
+// Exported: outbound + sessions must build the IDENTICAL id — never duplicate
+// the definition.
+export function compositeUserId(tech: Technician): string {
   return `${tech.tenant_id}:${tech.ref}`;
 }
 

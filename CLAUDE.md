@@ -19,6 +19,15 @@ each L2 row). Every structured field links back to the raw evidence it came from
     window is worse than retaining rows from a mis-paired mailbox. Each such capture is stamped
     in its source metadata (`pendingVerification: true` + `pendingAccount: <connected-account id>`,
     see `src/inbound/webhook.ts`) so a bad pairing's rows are findable for forensics.
+  - *Recorded exception (2026-07-04, user decision):* **outbound/agent-action captures are
+    classifier-free** — every send via the spine `send_email` tool and every state-changing
+    Composio execution ingested by `src/composio/logIngest.ts` is captured with NO work/personal
+    gate. An outbound action is something the agent *performed* on the business's behalf; the
+    audit record matters most exactly when the action was personal or inappropriate, so dropping
+    it is worse than retaining it. The classify-before-L1 rule above targets the *inbound*
+    category only. Consequences: (a) disclosure obligation — managers/technicians must be told
+    "emails sent via the assistant are logged"; (b) non-send captures store argument KEY NAMES
+    only, never values (keys-only redaction — L1 is undeletable).
 - **Tests run ONLY against the local Supabase stack** (`npx supabase start`, values in `.env.test` —
   see `.env.test.example`; enforced by `src/testEnvGuard.ts`, which refuses to start the suite
   against any non-local URL). The hosted "test" project (`daqapdlkgxfrhquacprv`) is the **deployed

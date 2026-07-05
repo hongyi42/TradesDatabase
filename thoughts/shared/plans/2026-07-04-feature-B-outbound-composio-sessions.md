@@ -2,7 +2,7 @@
 date: 2026-07-04
 task: "Feature B — Outbound Composio actions via NemoClaw: per-person Composio SESSIONS (tiered), spine send_email for technicians, and a log-ingestion audit job into L1"
 research: thoughts/shared/research/2026-07-04-feature-B-outbound-composio-actions.md
-status: draft
+status: complete
 supersedes: thoughts/shared/plans/2026-07-04-feature-B-outbound-composio-actions.md
 ---
 
@@ -487,9 +487,12 @@ project has ZERO connected accounts today.
       executed AS manager-sam through session trs_51pqHfPLVgcs → next cron tick ingested exactly
       one L1 row: channel agent_action, sensitivity manager_only, keys-only rawText ("argument
       keys: toolkits"), external_id composio-exec:log_-ZL2fvSIaC2r. A prior FAILED call
-      (validation error) was correctly NOT captured. Technician-view omission: PENDING user
-      check via jane's Telegram list_recent_captures; manager-badge read-back DEFERRED until a
-      manager sandbox/badge exists (no manager badge mintable today — roster row has no host).
+      (validation error) was correctly NOT captured. Technician-view omission: STRUCTURAL in v1
+      — list_recent_captures is L2-scoped (jobId/customerId required) and audit rows carry no L2
+      link (L2 fixed in v1), so no technician-nameable filter can reach a manager_only row at
+      all; the dropSensitive filter is the second layer (unit-tested, becomes load-bearing only
+      if audit rows are ever L2-linked). Manager-badge read-back DEFERRED until a manager
+      sandbox/badge exists (no manager badge mintable today — roster row has no host).
       ⚠ SECURITY FINDING during this probe: the session mcp.url 401s alone; the SDK's session
       auth header is the MASTER COMPOSIO_API_KEY (require_mcp_api_key, project-level, default-on
       since Mar 2026; no session-scoped tokens yet) → §0b sandbox wiring BLOCKED as written,

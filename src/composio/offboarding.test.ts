@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'vitest';
 import type { Technician, TechnicianPatch } from '../db/technicians.js';
 import type { ReviewItem } from '../db/index.js';
 import { disablePairing, enablePairing, expireOffboarding } from './offboarding.js';
-import type { PairingClient } from './pairing.js';
+import { unpair, type PairingClient } from './pairing.js';
 
 // Pure unit tests — every seam injected (no DB, no COMPOSIO_API_KEY).
 
@@ -29,6 +29,7 @@ function row(over: Partial<Technician> = {}): Technician {
     host_id: null,
     offboarding_started_at: daysAgo(1),
     link_issued_at: null,
+    composio_session_id: null,
     created_at: '2026-06-20T00:00:00.000Z',
     updated_at: '2026-06-20T00:00:00.000Z',
     ...over,
@@ -58,6 +59,15 @@ function clientStub(opts: { deleteThrows?: Error } = {}) {
       enable: rec('triggers.enable'),
     },
     tools: { execute: async () => ({}) },
+    sessions: {
+      create: async () => {
+        throw new Error('offboarding must not create sessions');
+      },
+      use: async () => {
+        throw new Error('offboarding must not use sessions');
+      },
+      delete: rec('sessions.delete'),
+    },
   };
   return { client, calls };
 }
@@ -207,5 +217,126 @@ describe('expireOffboarding', () => {
       client: clientStub().client,
     });
     expect(r).toMatchObject({ scanned: 2, stamped: 0, failed: 1, expired: 1 });
+  });
+
+  test('expiry deletes the Composio session AFTER the pairing teardown; the column is NULLED on success', async () => {
+    const s = sweepStubs([
+      row({ offboarding_started_at: daysAgo(8), composio_session_id: 'trs_gone' }),
+    ]);
+    const { client, calls } = clientStub();
+    const r = await expireOffboarding(NOW, { ...s.deps, client });
+    expect(r).toMatchObject({ expired: 1, failed: 0, sessionsCleaned: 0 });
+    expect(calls).toEqual([
+      { method: 'triggers.delete', id: 'ti_gone' },
+      { method: 'accounts.delete', id: 'ca_gone' },
+      { method: 'sessions.delete', id: 'trs_gone' },
+    ]);
+    expect(s.casCalls).toEqual([
+      { id: 'row-1', from: 'offboarding', patch: { state: 'offboarded' } },
+    ]);
+    // Null-out marks "nothing leaked" — a non-null id on an offboarded row is
+    // the retry pass's work queue.
+    expect(s.patches).toEqual([{ id: 'row-1', patch: { composio_session_id: null } }]);
+  });
+
+  test('a LEAKED session on an offboarded row is retried every tick until the delete lands', async () => {
+    const leakedRow = row({
+      id: 'row-leak',
+      ref: 'leaked-guy',
+      state: 'offboarded',
+      composio_session_id: 'trs_leaked',
+      offboarding_started_at: daysAgo(9),
+    });
+    const s = sweepStubs([leakedRow]);
+    const { client, calls } = clientStub();
+    const r = await expireOffboarding(NOW, { ...s.deps, client });
+    // Not counted as scanned/expired — it's the retry pass, not the grace sweep.
+    expect(r).toMatchObject({ scanned: 0, expired: 0, failed: 0, sessionsCleaned: 1 });
+    expect(calls).toEqual([{ method: 'sessions.delete', id: 'trs_leaked' }]);
+    expect(s.patches).toEqual([{ id: 'row-leak', patch: { composio_session_id: null } }]);
+
+    // A still-failing delete stays queued (failed++, column untouched).
+    const s2 = sweepStubs([leakedRow]);
+    const err = clientStub({ deleteThrows: new Error('503 unavailable') });
+    const r2 = await expireOffboarding(NOW, { ...s2.deps, client: err.client });
+    expect(r2).toMatchObject({ sessionsCleaned: 0, failed: 1 });
+    expect(s2.patches).toEqual([]);
+
+    // An already-gone session (404) still clears the mark.
+    const s3 = sweepStubs([leakedRow]);
+    const gone = clientStub({ deleteThrows: Object.assign(new Error('nf'), { status: 404 }) });
+    const r3 = await expireOffboarding(NOW, { ...s3.deps, client: gone.client });
+    expect(r3).toMatchObject({ sessionsCleaned: 1, failed: 0 });
+    expect(s3.patches).toEqual([{ id: 'row-leak', patch: { composio_session_id: null } }]);
+
+    // Offboarded rows with NO session id are ignored entirely.
+    const s4 = sweepStubs([row({ id: 'row-clean', state: 'offboarded', composio_session_id: null })]);
+    const quiet = clientStub();
+    const r4 = await expireOffboarding(NOW, { ...s4.deps, client: quiet.client });
+    expect(r4).toMatchObject({ scanned: 0, sessionsCleaned: 0, failed: 0 });
+    expect(quiet.calls).toHaveLength(0);
+  });
+
+  test('an already-deleted session (404) is success; other session errors → failed', async () => {
+    const gone = Object.assign(new Error('not found'), { status: 404 });
+    const s404 = sweepStubs([
+      row({ offboarding_started_at: daysAgo(8), composio_session_id: 'trs_404' }),
+    ]);
+    // deleteThrows applies to every *.delete call — pairing deletes must survive,
+    // so use a client whose sessions.delete alone 404s.
+    const base = clientStub();
+    const client404: typeof base.client = {
+      ...base.client,
+      sessions: {
+        ...base.client.sessions,
+        delete: async (id: string) => {
+          base.calls.push({ method: 'sessions.delete', id });
+          throw gone;
+        },
+      },
+    };
+    const r404 = await expireOffboarding(NOW, { ...s404.deps, client: client404 });
+    expect(r404).toMatchObject({ expired: 1, failed: 0 });
+
+    const sErr = sweepStubs([
+      row({ offboarding_started_at: daysAgo(8), composio_session_id: 'trs_err' }),
+    ]);
+    const base2 = clientStub();
+    const clientErr: typeof base2.client = {
+      ...base2.client,
+      sessions: {
+        ...base2.client.sessions,
+        delete: async () => {
+          throw new Error('503 unavailable');
+        },
+      },
+    };
+    const rErr = await expireOffboarding(NOW, { ...sErr.deps, client: clientErr });
+    expect(rErr).toMatchObject({ expired: 0, failed: 1 });
+    expect(sErr.casCalls).toHaveLength(1); // claim landed; clutter is inert, retried never
+  });
+
+  test('unpair never deletes the session (wrong-mailbox re-pair keeps it)', async () => {
+    const { client, calls } = clientStub();
+    const casCalls: Array<{ id: string }> = [];
+    await unpair(
+      row({
+        state: 'pending_verification',
+        composio_session_id: 'trs_keep',
+      }),
+      {
+        client,
+        cas: async (id: string) => {
+          casCalls.push({ id });
+          return null;
+        },
+      },
+    );
+    // Pairing objects torn down, session untouched.
+    expect(calls).toEqual([
+      { method: 'triggers.delete', id: 'ti_gone' },
+      { method: 'accounts.delete', id: 'ca_gone' },
+    ]);
+    expect(casCalls).toHaveLength(1);
   });
 });

@@ -94,7 +94,7 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
   minting a badge is now a TWO-PART action: (1) the server side must already have an ACTIVE row for that
   ref — `tier='manager'` for a manager, `tier='technician'` otherwise; (2) mint the badge here with the
   byte-identical `technicianRef`. If no active row matches, the badge still authenticates but silently
-  acts as a plain technician (7 tools; the 7 seat/lifecycle admin tools are denied). The reference
+  acts as a plain technician (8 tools; the 7 seat/lifecycle admin tools are denied). The reference
   `tech-jane` badge above maps to an active technician row. You (host side) cannot see or change the
   roster — it lives in the server's DB; coordinate with whoever manages it when minting a manager badge.
 - The badge is registered as a **provider credential**:
@@ -224,14 +224,15 @@ Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config
 
 ## Verify (end-to-end)
 - Host→doorman→Render: `curl -X POST http://172.18.0.1:3001/mcp -H "Authorization: Bearer <badge>" …
-  '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + **7 tools** for a technician-tier
-  badge, or **14** for a badge whose ref maps to an active manager roster row (the extra 7 are the
-  seat-management tools; see the badge↔roster note above). A manager badge returning only 7 means the
+  '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + **8 tools** for a technician-tier
+  badge, or **15** for a badge whose ref maps to an active manager roster row (the extra 7 are the
+  seat-management tools; see the badge↔roster note above). A manager badge returning only 8 means the
   server has no active `tier='manager'` row for that ref (or is running older code).
 - Agent: message the bot ("list recent captures") → OCSF on host shows
   `ALLOWED /usr/local/bin/node(<pid>) -> host.openshell.internal:3001 [policy:trades_spine_doorman]` and the bot
   returns real data.
 
 ## Tools by tier (what `tools/list` returns)
-- **Technician badge — 7:** record_field_note, find_customer, get_customer_context, get_job, list_recent_captures, brief_customer, answer_customer_question.
-- **Manager badge — 14 (since 2026-07-02):** the 7 above PLUS the seat/lifecycle admin tools: add_technician_seat, deactivate_technician_seat, reactivate_technician_seat, get_connect_link, list_team, list_pending_reviews, resolve_review. Only an ACTIVE `tier='manager'` roster row on the server unlocks these (see the badge↔roster note above); the doorman/host does nothing tier-specific — same badge plumbing either way.
+- **Technician badge — 8:** record_field_note, find_customer, get_customer_context, get_job, list_recent_captures, brief_customer, answer_customer_question, send_email (two-step confirm; since 2026-07-04).
+- **Manager badge — 15 (since 2026-07-04; 14 from 2026-07-02):** the 8 above PLUS the seat/lifecycle admin tools: add_technician_seat, deactivate_technician_seat, reactivate_technician_seat, get_connect_link, list_team, list_pending_reviews, resolve_review. Only an ACTIVE `tier='manager'` roster row on the server unlocks these (see the badge↔roster note above); the doorman/host does nothing tier-specific — same badge plumbing either way.
+- **Second MCP server per sandbox (since 2026-07-04): the person's Composio session `mcp.url`** — the outbound connector surface, registered beside `trades-spine` (setup guide §0b). Tier is enforced INSIDE Composio's session config (execution-time, error code `4310` — not the gateway): manager = full catalog + `manageConnections:true` (self-serve pairing); technician = pinned `direct_tools` read/draft list, send impossible (spine `send_email` is the only technician send path). Sessions are minted by the Render lifecycle cron for ACTIVE rows; the operator wires the url once via `scripts/provision-session.mjs` (host-only secretRef — the url grants the whole session). Manager sandboxes REQUIRE the destructive-action confirmation instruction block (§0b) — that is the only guard on destructive tools, by decision.

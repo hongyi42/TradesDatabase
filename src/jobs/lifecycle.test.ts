@@ -6,11 +6,12 @@ import { runLifecycle } from './lifecycle.js';
 // (main() maps ok:false → exit 1 so Render marks the run failed).
 
 // The test setup loads .env, which legitimately carries SCHEDULE_SHEET_ID /
-// DEFAULT_TENANT_ID — clear them BEFORE each test (not just after), or the
-// un-injected sheet gate would route to the LIVE Google Sheets reader.
+// DEFAULT_TENANT_ID / COMPOSIO_API_KEY — clear them BEFORE each test (not just
+// after), or the un-injected sheet gate would route to the LIVE Google Sheets
+// reader and the sessions gate would sweep against LIVE Composio.
 const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
-  for (const k of ['SCHEDULE_SHEET_ID', 'DEFAULT_TENANT_ID'] as const) {
+  for (const k of ['SCHEDULE_SHEET_ID', 'DEFAULT_TENANT_ID', 'COMPOSIO_API_KEY'] as const) {
     if (!(k in saved)) saved[k] = process.env[k];
     delete process.env[k];
   }
@@ -40,13 +41,23 @@ function row(over: Partial<Technician>): Technician {
     host_id: null,
     offboarding_started_at: null,
     link_issued_at: '2026-07-02T11:00:00.000Z',
+    composio_session_id: null,
     created_at: '2026-07-01T00:00:00.000Z',
     updated_at: '2026-07-01T00:00:00.000Z',
     ...over,
   };
 }
 
-const EXPIRE_OK = { scanned: 0, stamped: 0, reminded: 0, expired: 0, raced: 0, failed: 0 };
+const EXPIRE_OK = { scanned: 0, stamped: 0, reminded: 0, expired: 0, raced: 0, failed: 0, sessionsCleaned: 0 };
+const INGEST_OK = {
+  scanned: 0,
+  captured: 0,
+  skippedReads: 0,
+  skippedNonComposite: 0,
+  skippedTechnicianSends: 0,
+  deduped: 0,
+  rowErrors: 0,
+};
 
 describe('runLifecycle', () => {
   test('sweeps only rows with a link issued; counts paired; sheet skipped when unconfigured', async () => {
@@ -129,5 +140,123 @@ describe('runLifecycle', () => {
     });
     expect(summary.pairing).toEqual({ checked: 2, paired: 0, rowErrors: 2 });
     expect(summary.ok).toBe(false);
+  });
+
+  test('sessions step: skipped cleanly when COMPOSIO_API_KEY is unset — never red', async () => {
+    const summary = await runLifecycle(NOW, {
+      listInStates: async () => [],
+      expire: async () => EXPIRE_OK,
+      syncSheet: async () => {
+        throw new Error('unit test must not reach the sheet reader');
+      },
+      ensureSession: async () => {
+        throw new Error('unit test must not reach the session sweep when the key is unset');
+      },
+    });
+    expect(summary.sessions).toEqual({ skipped: 'COMPOSIO_API_KEY unset' });
+    expect(summary.ok).toBe(true);
+  });
+
+  test('sessions step: sweeps ACTIVE rows, counts creations, tolerates row blips', async () => {
+    process.env.COMPOSIO_API_KEY = 'test-key';
+    const ensured: string[] = [];
+    const summary = await runLifecycle(NOW, {
+      listInStates: async (states) =>
+        states.includes('active')
+          ? [
+              row({ ref: 'needs-session', state: 'active' }),
+              row({ id: 'r2', ref: 'has-session', state: 'active', composio_session_id: 'trs_x' }),
+              row({ id: 'r3', ref: 'flaky', state: 'active' }),
+            ]
+          : [],
+      checkPairing: async () => ({ status: 'not_connected' }),
+      expire: async () => EXPIRE_OK,
+      syncSheet: async () => {
+        throw new Error('unit test must not reach the sheet reader');
+      },
+      ensureSession: async (t) => {
+        ensured.push(t.ref);
+        if (t.ref === 'flaky') throw new Error('composio blip');
+        if (t.composio_session_id) return { status: 'exists', sessionId: t.composio_session_id };
+        return { status: 'created', sessionId: 'trs_new' };
+      },
+      ingestLogs: async () => INGEST_OK,
+    });
+    expect(ensured).toEqual(['needs-session', 'has-session', 'flaky']);
+    expect(summary.sessions).toEqual({ checked: 3, created: 1, rowErrors: 1 });
+    expect(summary.ok).toBe(true); // one blip is not systemic
+  });
+
+  test('sessions step: EVERY attempted row failing goes red (exists-rows never dilute it)', async () => {
+    process.env.COMPOSIO_API_KEY = 'test-key';
+    const summary = await runLifecycle(NOW, {
+      listInStates: async (states) =>
+        states.includes('active')
+          ? [
+              row({ ref: 'a', state: 'active' }),
+              row({ id: 'r2', ref: 'has-session', state: 'active', composio_session_id: 'trs_x' }),
+            ]
+          : [],
+      checkPairing: async () => ({ status: 'not_connected' }),
+      expire: async () => EXPIRE_OK,
+      syncSheet: async () => {
+        throw new Error('unit test must not reach the sheet reader');
+      },
+      ensureSession: async (t) => {
+        if (t.composio_session_id) return { status: 'exists', sessionId: t.composio_session_id };
+        throw new Error('401 invalid api key');
+      },
+      ingestLogs: async () => INGEST_OK,
+    });
+    expect(summary.sessions).toEqual({ checked: 2, created: 0, rowErrors: 1 });
+    expect(summary.ok).toBe(false); // 1 attempt, 1 failure — systemic
+  });
+
+  test('logIngest step: skipped when the key is unset; reported when set; stepError goes red', async () => {
+    // Unset key: skipped, and the injected thrower proves no reach-through.
+    const skipped = await runLifecycle(NOW, {
+      listInStates: async () => [],
+      expire: async () => EXPIRE_OK,
+      syncSheet: async () => {
+        throw new Error('unit test must not reach the sheet reader');
+      },
+      ingestLogs: async () => {
+        throw new Error('unit test must not reach log ingestion when the key is unset');
+      },
+    });
+    expect(skipped.logIngest).toEqual({ skipped: 'COMPOSIO_API_KEY unset' });
+    expect(skipped.ok).toBe(true);
+
+    // Key set: the summary is reported; per-row errors do not go red.
+    process.env.COMPOSIO_API_KEY = 'test-key';
+    const ran = await runLifecycle(NOW, {
+      listInStates: async () => [],
+      expire: async () => EXPIRE_OK,
+      syncSheet: async () => {
+        throw new Error('unit test must not reach the sheet reader');
+      },
+      ensureSession: async () => ({ status: 'skipped', reason: 'state is invited' }),
+      ingestLogs: async (nowIso) => {
+        expect(nowIso).toBe(NOW);
+        return { ...INGEST_OK, scanned: 5, captured: 2, rowErrors: 1 };
+      },
+    });
+    expect(ran.logIngest).toMatchObject({ scanned: 5, captured: 2, rowErrors: 1 });
+    expect(ran.ok).toBe(true);
+
+    // A step-level throw goes red but never blocks the other steps.
+    const red = await runLifecycle(NOW, {
+      listInStates: async () => [],
+      expire: async () => EXPIRE_OK,
+      syncSheet: async () => {
+        throw new Error('unit test must not reach the sheet reader');
+      },
+      ensureSession: async () => ({ status: 'skipped', reason: 'state is invited' }),
+      ingestLogs: async () => {
+        throw new Error('logs API 500');
+      },
+    });
+    expect(red.logIngest).toEqual({ stepError: 'logs API 500' });
+    expect(red.ok).toBe(false);
   });
 });

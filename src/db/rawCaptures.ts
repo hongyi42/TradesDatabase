@@ -16,6 +16,9 @@ export interface AppendRawCaptureInput {
   // for unattributed connector captures. Nullable — pre-column rows stay NULL.
   technicianRef?: string | null;
   metadata?: Json;
+  // Access marker: 'manager_only' rows are filtered out of technician-tier
+  // spine reads (dispatch post-filter). Null = visible to every tier.
+  sensitivity?: string | null;
   // Provenance: which entity this capture informed, as known at capture time.
   customerId?: string | null;
   jobId?: string | null;
@@ -35,6 +38,13 @@ export async function appendRawCapture(input: AppendRawCaptureInput): Promise<Ra
       external_id: input.externalId ?? null,
       technician_ref: input.technicianRef ?? null,
       metadata: input.metadata ?? {},
+      // Only name the column when a value is actually set: PostgREST rejects
+      // insert bodies naming a column the deployed schema lacks (PGRST204),
+      // so an unconditional `sensitivity: null` would take down EVERY L1
+      // insert if this code ships before the 20260704120000 migration is
+      // applied to the pilot (review finding, empirically verified). Null and
+      // omitted are identical outcomes (column default null).
+      ...(input.sensitivity != null ? { sensitivity: input.sensitivity } : {}),
       customer_id: input.customerId ?? null,
       job_id: input.jobId ?? null,
       visit_id: input.visitId ?? null,

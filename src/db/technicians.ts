@@ -98,6 +98,7 @@ export interface TechnicianPatch {
   link_issued_at?: string | null;
   composio_connected_account_id?: string | null;
   composio_trigger_id?: string | null;
+  composio_session_id?: string | null;
   connected_email?: string | null;
   state?: TechnicianState;
 }

@@ -7,10 +7,30 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
-  __InternalSupabase: {
-    PostgrestVersion: "14.5"
+  graphql_public: {
+    Tables: {
+      [_ in never]: never
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      graphql: {
+        Args: {
+          extensions?: Json
+          operationName?: string
+          query?: string
+          variables?: Json
+        }
+        Returns: Json
+      }
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
   }
   public: {
     Tables: {
@@ -221,6 +241,7 @@ export type Database = {
           job_id: string | null
           metadata: Json
           raw_text: string | null
+          sensitivity: string | null
           technician_ref: string | null
           tenant_id: string
           visit_id: string | null
@@ -236,6 +257,7 @@ export type Database = {
           job_id?: string | null
           metadata?: Json
           raw_text?: string | null
+          sensitivity?: string | null
           technician_ref?: string | null
           tenant_id: string
           visit_id?: string | null
@@ -251,6 +273,7 @@ export type Database = {
           job_id?: string | null
           metadata?: Json
           raw_text?: string | null
+          sensitivity?: string | null
           technician_ref?: string | null
           tenant_id?: string
           visit_id?: string | null
@@ -422,6 +445,7 @@ export type Database = {
         Row: {
           badge_hash: string | null
           composio_connected_account_id: string | null
+          composio_session_id: string | null
           composio_trigger_id: string | null
           connected_email: string | null
           created_at: string
@@ -440,6 +464,7 @@ export type Database = {
         Insert: {
           badge_hash?: string | null
           composio_connected_account_id?: string | null
+          composio_session_id?: string | null
           composio_trigger_id?: string | null
           connected_email?: string | null
           created_at?: string
@@ -458,6 +483,7 @@ export type Database = {
         Update: {
           badge_hash?: string | null
           composio_connected_account_id?: string | null
+          composio_session_id?: string | null
           composio_trigger_id?: string | null
           connected_email?: string | null
           created_at?: string
@@ -603,6 +629,7 @@ export type Database = {
         | "accounting_event"
         | "iot"
         | "outbound_email"
+        | "agent_action"
       job_status:
         | "open"
         | "in_progress"
@@ -744,6 +771,9 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
+  graphql_public: {
+    Enums: {},
+  },
   public: {
     Enums: {
       capture_channel: [
@@ -763,6 +793,7 @@ export const Constants = {
         "accounting_event",
         "iot",
         "outbound_email",
+        "agent_action",
       ],
       job_status: [
         "open",
@@ -785,3 +816,4 @@ export const Constants = {
     },
   },
 } as const
+

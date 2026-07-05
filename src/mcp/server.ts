@@ -3,6 +3,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { fileURLToPath } from 'node:url';
 import {
+  annotateResolvedReviewItem,
+  appendRawCapture,
   casTechnician,
   getJob,
   getCustomer,
@@ -25,6 +27,12 @@ import {
   type TechnicianTier,
 } from '../db/index.js';
 import { recordFieldNote } from '../writePath/recordFieldNote.js';
+import {
+  requireOutboundCapable,
+  sendGmailEmail as liveSendGmailEmail,
+} from '../composio/outbound.js';
+import { teardownPersonSession as liveTeardownSession } from '../composio/sessions.js';
+import { formatEmailRawText } from '../email/format.js';
 import {
   checkPairing as liveCheckPairing,
   createConnectLink as liveCreateConnectLink,
@@ -61,6 +69,8 @@ export interface ServerDeps {
   unpair?: typeof liveUnpair;
   disablePairing?: typeof liveDisablePairing;
   enablePairing?: typeof liveEnablePairing;
+  sendEmail?: typeof liveSendGmailEmail;
+  teardownSession?: typeof liveTeardownSession;
 }
 
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
@@ -68,7 +78,7 @@ const BRIEF_FOCUSES: BriefFocus[] = ['next_visit', 'full_history'];
 const TIERS: TechnicianTier[] = ['manager', 'technician'];
 
 // The technician tool surface — what every badge sees (the doorman runbook's
-// "7 tools" verification counts exactly these).
+// "8 tools" verification counts exactly these).
 const TOOLS = [
   {
     name: 'record_field_note',
@@ -153,6 +163,25 @@ const TOOLS = [
         question: { type: 'string' },
       },
       required: ['customerId', 'question'],
+    },
+  },
+  {
+    name: 'send_email',
+    description:
+      'Send an email from your own paired mailbox — two-step. First call with to/subject/body: ' +
+      'nothing is sent; you get {status:"needs_confirmation", confirmId} back. Show the person ' +
+      'EXACTLY what will be sent (to, subject, body). Only when they approve, call again with ' +
+      'ONLY confirmId — the STAGED copy is what gets sent, fresh args are ignored. Every sent ' +
+      'email is permanently recorded.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: 'Recipient email address (first call only).' },
+        subject: { type: 'string', description: 'Subject line (first call only).' },
+        body: { type: 'string', description: 'Plain-text body (first call only).' },
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
+      },
+      required: [],
     },
   },
 ];
@@ -272,6 +301,11 @@ function seatCapMessage(tier: TechnicianTier): string {
 // Admin tools require an ACTIVE manager-tier roster row for the caller's badge
 // identity. Tier lives in the technicians table (single source of truth), not
 // in the badge — so revoking manager status is a DB update, no badge rotation.
+// ⚠ Demotion procedure MUST also tear down the person's Composio session
+// (teardownPersonSession — nulls composio_session_id so the sweep re-mints at
+// the new tier): ensurePersonSession short-circuits on an existing id, so a
+// stale manager session otherwise keeps the full catalog + manageConnections
+// indefinitely (review finding; see Box_Setup_Stuff §0b).
 // One predicate shared by the dispatch gate and the tools/list filter, so the
 // two can never disagree about who counts as a manager.
 async function isActiveManager(identity: RequestIdentity): Promise<boolean> {
@@ -300,12 +334,23 @@ async function dispatch(
   if (caller && isInactiveState(caller.state)) {
     throw new Error('this badge belongs to a deactivated team member');
   }
+  // ONE definition of "active manager" for this request — the admin-tool gate
+  // and the sensitivity filter must never drift apart (same predicate as
+  // isActiveManager; review finding: it was hand-written three times).
+  const activeManager = !!caller && caller.tier === 'manager' && caller.state === 'active';
   // The real tier gate (the tools/list filter is cosmetic): applied by tool
-  // NAME so no admin case can be added without it. Reuses the read above —
-  // same predicate as isActiveManager.
-  if (ADMIN_TOOL_NAMES.has(name) && !(caller && caller.tier === 'manager' && caller.state === 'active')) {
+  // NAME so no admin case can be added without it.
+  if (ADMIN_TOOL_NAMES.has(name) && !activeManager) {
     throw new Error('admin tools require a manager badge');
   }
+  // Sensitivity filter: manager-only L1 rows (e.g. payment agent_actions from
+  // the log-ingestion audit) are dropped from every capture-bearing read for
+  // non-manager badges. In-memory post-filter — deliberately NOT a PostgREST
+  // neq filter (NULL-vs-neq trap). The REQUIRED `sensitivity` key on the
+  // constraint is load-bearing: a narrowed `.select('col, …')` that drops the
+  // column must fail typecheck here, not silently fail open (review finding).
+  const dropSensitive = <T extends { sensitivity: string | null }>(rows: T[]): T[] =>
+    activeManager ? rows : rows.filter((r) => r.sensitivity !== 'manager_only');
 
   switch (name) {
     case 'record_field_note': {
@@ -351,7 +396,7 @@ async function dispatch(
       if (!ctx.customer || ctx.customer.tenant_id !== tenantId) {
         return { customer: null, jobs: [], recentVisits: [], recentCaptures: [] };
       }
-      return ctx;
+      return { ...ctx, recentCaptures: dropSensitive(ctx.recentCaptures) };
     }
     case 'get_job': {
       const jobId = str('jobId');
@@ -368,12 +413,12 @@ async function dispatch(
       if (jobId) {
         const job = await getJob(jobId);
         if (!job || job.tenant_id !== tenantId) return [];
-        return listRawCapturesForJob(jobId);
+        return dropSensitive(await listRawCapturesForJob(jobId));
       }
       if (customerId) {
         const customer = await getCustomer(customerId);
         if (!customer || customer.tenant_id !== tenantId) return [];
-        return listRawCapturesForCustomer(customerId);
+        return dropSensitive(await listRawCapturesForCustomer(customerId));
       }
       throw new Error('list_recent_captures requires jobId or customerId');
     }
@@ -392,7 +437,10 @@ async function dispatch(
         throw new Error('customer not found');
       }
       const focus = (focusArg as BriefFocus | undefined) ?? 'next_visit';
-      return (deps.brief ?? sonnetBriefer)(ctx, focus);
+      return (deps.brief ?? sonnetBriefer)(
+        { ...ctx, recentCaptures: dropSensitive(ctx.recentCaptures) },
+        focus,
+      );
     }
     case 'answer_customer_question': {
       const customerId = str('customerId');
@@ -403,7 +451,139 @@ async function dispatch(
       if (!ctx.customer || ctx.customer.tenant_id !== tenantId) {
         throw new Error('customer not found');
       }
-      return (deps.answer ?? sonnetAnswerer)(ctx, question);
+      return (deps.answer ?? sonnetAnswerer)(
+        { ...ctx, recentCaptures: dropSensitive(ctx.recentCaptures) },
+        question,
+      );
+    }
+    case 'send_email': {
+      // Both steps require an active, paired caller — checked FIRST so a
+      // roster-less badge sending only confirmId gets the clean 'no roster
+      // row' error, never a TypeError on caller.ref.
+      requireOutboundCapable(caller);
+      const confirmId = str('confirmId');
+      if (!confirmId) {
+        // STAGE. The staged copy is the send of record; a re-stage supersedes
+        // any open token (differing or not) so exactly one confirmable payload
+        // exists per person at a time.
+        const to = str('to');
+        const subject = str('subject');
+        const body = str('body');
+        if (!to || !subject || !body) {
+          throw new Error('to, subject, and body are required to stage a send');
+        }
+        await resolveOpenReviewItemFor(
+          tenantId,
+          'pending_outbound_send',
+          caller.ref,
+          'dismissed',
+          'superseded by a new send request',
+        );
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_outbound_send',
+          subjectRef: caller.ref,
+          detail: { to, subject, body, stagedAt: new Date().toISOString() },
+        });
+        // Echo the ITEM's detail, not the local args: two racing stage calls
+        // can make the upsert return the other call's open row (partial-unique
+        // conflict), and the staged copy is what gets sent — the person must
+        // be shown exactly that copy (review finding).
+        const staged = (item.detail ?? {}) as { to?: string; subject?: string; body?: string };
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          to: staged.to ?? to,
+          subject: staged.subject ?? subject,
+          body: staged.body ?? body,
+          note: 'Nothing was sent. Show the person exactly this content; on their approval call send_email again with ONLY confirmId.',
+        };
+      }
+      // CONFIRM. Token lookup with every guard in the WHERE clause: a forged
+      // or another person's confirmId matches nothing.
+      const item = await getOpenReviewItem(confirmId, tenantId, {
+        kind: 'pending_outbound_send',
+        subjectRef: caller.ref,
+      });
+      if (!item) {
+        throw new Error('confirmation not found — call send_email again with to/subject/body to restage');
+      }
+      const detail = (item.detail ?? {}) as { to?: string; subject?: string; body?: string; stagedAt?: string };
+      if (!detail.to || !detail.subject || detail.body === undefined) {
+        throw new Error('staged send is malformed — restage with to/subject/body');
+      }
+      if (detail.stagedAt && Date.now() - Date.parse(detail.stagedAt) > 15 * 60_000) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
+        throw new Error('confirmation expired — restage the send and confirm again');
+      }
+      // CONSUME FIRST, send second (at-most-once): losing this race means
+      // someone else already confirmed or cancelled — never send twice.
+      const consumed = await resolveReviewItem(
+        item.id,
+        tenantId,
+        'resolved',
+        `send confirmed by ${identity.technicianRef}`,
+      );
+      if (!consumed) {
+        throw new Error('already confirmed or cancelled — nothing was sent by this call');
+      }
+      let sent;
+      try {
+        sent = await (deps.sendEmail ?? liveSendGmailEmail)(caller, {
+          to: detail.to,
+          subject: detail.subject,
+          body: detail.body,
+        });
+      } catch (err) {
+        // The token is consumed and the email was NOT sent: report plainly and
+        // require a fresh stage (at-most-once — a retry on a consumed token
+        // could otherwise double-send). Re-annotate the consumed item so the
+        // durable record never reads as a confirmed send that ran (review
+        // finding); advisory — the caller-facing error is the authority.
+        const msg = err instanceof Error ? err.message : String(err);
+        try {
+          await annotateResolvedReviewItem(
+            confirmId,
+            tenantId,
+            `confirmed but send FAILED (${msg}) — nothing was sent`,
+          );
+        } catch {
+          /* advisory */
+        }
+        throw new Error(`email NOT sent: ${msg} — restage with to/subject/body to try again`);
+      }
+      // Advisory L1 capture (capture-all, no classifier — recorded exception):
+      // a capture failure never un-reports a real send.
+      let captured = false;
+      try {
+        await appendRawCapture({
+          tenantId,
+          channel: 'outbound_email',
+          technicianRef: caller.ref,
+          rawText: formatEmailRawText({
+            from: caller.connected_email ?? caller.ref,
+            subject: detail.subject,
+            body: detail.body,
+          }),
+          externalId: sent.messageId ? `sent:${sent.messageId}` : `sent:confirm:${confirmId}`,
+          metadata: {
+            to: detail.to,
+            subject: detail.subject,
+            sentVia: 'GMAIL_SEND_EMAIL',
+            threadId: sent.threadId,
+          },
+        });
+        captured = true;
+      } catch {
+        /* advisory */
+      }
+      return {
+        status: 'sent',
+        to: detail.to,
+        subject: detail.subject,
+        messageId: sent.messageId,
+        captured,
+      };
     }
     case 'add_technician_seat': {
       const displayName = str('displayName')?.trim();
@@ -504,6 +684,20 @@ async function dispatch(
         await (deps.disablePairing ?? liveDisablePairing)(target);
       } catch {
         /* advisory */
+      }
+      // Session teardown at deactivation (review finding): unlike the paired
+      // account, a session cannot be "disabled" — and a live MANAGER session
+      // carries manageConnections, which can mint a NEW connected account and
+      // bypass the disable above for the whole grace period. Delete it now
+      // (both tiers, uniform); the column is nulled so reactivation re-mints
+      // with the person's CURRENT tier on the next 15-min sweep. Cost: the
+      // sandbox's session mcp.url must be re-wired by the operator after a
+      // reactivation (documented in Box_Setup_Stuff §0b). Advisory — the
+      // expiry sweep retries leaked sessions every tick.
+      try {
+        await (deps.teardownSession ?? liveTeardownSession)(target);
+      } catch {
+        /* advisory — expiry retry pass is the backstop */
       }
       // A still-open pairing_verification item must not survive into
       // offboarding — resolving it later could read as a verification verdict
@@ -681,6 +875,14 @@ async function dispatch(
             `deactivate_technician_seat, or dismiss it to cancel`,
         );
       }
+      // Same live-token rule for a staged send: "resolved" here would read as
+      // a confirmed send that never ran. Dismissing (= cancel) is legitimate.
+      if (open.kind === 'pending_outbound_send' && resolution === 'resolved') {
+        throw new Error(
+          `this is a staged email send for '${open.subject_ref}' — confirm it via send_email, ` +
+            `or dismiss it to cancel`,
+        );
+      }
       // A pairing_verification verdict acts BEFORE the item closes (state-first,
       // mirroring deactivate): resolved = right mailbox → active; dismissed =
       // wrong mailbox → unpair back to invited. Both act ONLY while the row is
@@ -718,7 +920,7 @@ export function createServer(deps: ServerDeps = {}): Server {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    // Tier-filtered surface: technician badges see exactly the 7 spine tools
+    // Tier-filtered surface: technician badges see exactly the 8 spine tools
     // (the doorman runbook's verification count); active managers additionally
     // see the seat-management tools. Discovery is cosmetic — dispatch re-gates
     // every admin call — so a roster hiccup degrades to the technician surface

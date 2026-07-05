@@ -3,6 +3,7 @@ import { Client as PgClient } from 'pg';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { getClient } from '../db/client.js';
+import { appendRawCapture } from '../db/rawCaptures.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
 import { upsertScheduleEntry } from '../db/scheduleEntries.js';
@@ -111,9 +112,10 @@ async function clientFor(
 }
 
 describe('MCP server', () => {
-  test('lists the technician tool surface', async () => {
+  test('lists the technician tool surface (exactly 8 tools)', async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name)).toEqual(
+    const names = tools.map((t) => t.name);
+    expect(names).toEqual(
       expect.arrayContaining([
         'record_field_note',
         'find_customer',
@@ -122,8 +124,10 @@ describe('MCP server', () => {
         'list_recent_captures',
         'brief_customer',
         'answer_customer_question',
+        'send_email',
       ]),
     );
+    expect(names).toHaveLength(8);
   });
 
   test('record_field_note returns needs_confirmation, then resolves on resume', async () => {
@@ -639,11 +643,11 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       stubs,
     );
     try {
-      // The full manager surface is now 14 tools (7 spine + 7 seat/lifecycle) —
+      // The full manager surface is now 15 tools (8 spine + 7 seat/lifecycle) —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
-      expect(mgrTools).toHaveLength(14);
+      expect(mgrTools).toHaveLength(15);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -758,6 +762,279 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       const blocked = await callWith('reactivate_technician_seat', { ref: 'pair-probe' });
       expect(blocked.isError).toBe(true);
       expect(blocked.text).toContain('no free technician seats');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+});
+
+describe('send_email tool (outbound seam stubbed)', () => {
+  test('two-step stage/confirm, at-most-once, L1 capture, guards', { timeout: 30_000 }, async () => {
+    // Earlier suites leave 6/6 technician seats occupied — make room for the
+    // three roster rows this block creates.
+    await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 10 });
+    const jane = await insertTechnician({ tenantId, ref: 'sender-jane', displayName: 'Sender Jane' });
+    await setTechnicianState(jane.id, 'active');
+    await updateTechnician(jane.id, {
+      composio_connected_account_id: 'ca_sender',
+      connected_email: 'sender.jane@gmail.com',
+    });
+
+    const sendCalls: Array<{ ref: string; to: string; subject: string; body: string }> = [];
+    let sendThrows: Error | null = null;
+    const stubs: Partial<ServerDeps> = {
+      // The seam records the ROSTER row it was handed — identity, never args.
+      sendEmail: async (t, msg) => {
+        sendCalls.push({ ref: t.ref, ...msg });
+        if (sendThrows) throw sendThrows;
+        return { messageId: 'm-1', threadId: 't-1' };
+      },
+    };
+    const { client: techClient, callWith } = await clientFor(
+      { tenantId, technicianRef: 'sender-jane' },
+      stubs,
+    );
+    try {
+      // Technician surface count including send_email: exactly 8.
+      const tools = (await techClient.listTools()).tools.map((t) => t.name);
+      expect(tools).toContain('send_email');
+      expect(tools).toHaveLength(8);
+
+      // Staging requires the full payload.
+      const missing = await callWith('send_email', { to: 'cust@example.com' });
+      expect(missing.isError).toBe(true);
+      expect(missing.text).toContain('to, subject, and body are required');
+
+      // Stage: nothing sent, a confirm token comes back.
+      const staged = await callWith('send_email', {
+        to: 'cust@example.com',
+        subject: 'Quote',
+        body: 'Hello v1',
+      });
+      expect(staged.data.status).toBe('needs_confirmation');
+      expect(sendCalls).toHaveLength(0);
+
+      // Restage supersedes: new token, the old one is dead.
+      const staged2 = await callWith('send_email', {
+        to: 'cust@example.com',
+        subject: 'Quote v2',
+        body: 'Hello v2',
+      });
+      expect(staged2.data.confirmId).not.toBe(staged.data.confirmId);
+      const oldToken = await callWith('send_email', { confirmId: staged.data.confirmId });
+      expect(oldToken.isError).toBe(true);
+      expect(sendCalls).toHaveLength(0);
+
+      // Confirm sends the STAGED copy — fresh args on the confirm are ignored.
+      const confirmed = await callWith('send_email', {
+        confirmId: staged2.data.confirmId,
+        to: 'attacker@evil.example',
+        subject: 'IGNORED',
+        body: 'IGNORED',
+      });
+      expect(confirmed.data).toMatchObject({
+        status: 'sent',
+        to: 'cust@example.com',
+        subject: 'Quote v2',
+        messageId: 'm-1',
+        captured: true,
+      });
+      expect(sendCalls).toEqual([
+        { ref: 'sender-jane', to: 'cust@example.com', subject: 'Quote v2', body: 'Hello v2' },
+      ]);
+
+      // Cross-channel read-back: ONE outbound_email L1 row, sent:<id>, right ref.
+      const cap = await pg.query<{ channel: string; technician_ref: string }>(
+        "select channel, technician_ref from raw_captures where external_id = 'sent:m-1'",
+      );
+      expect(cap.rows).toHaveLength(1);
+      expect(cap.rows[0]).toEqual({ channel: 'outbound_email', technician_ref: 'sender-jane' });
+
+      // Double-confirm: token consumed → clean error, seam called exactly once.
+      const dbl = await callWith('send_email', { confirmId: staged2.data.confirmId });
+      expect(dbl.isError).toBe(true);
+      expect(sendCalls).toHaveLength(1);
+
+      // Send failure AFTER consumption: clear not-sent error, no L1 row, no retry
+      // on the same token (at-most-once).
+      sendThrows = new Error('gmail 500');
+      const s3 = await callWith('send_email', { to: 'x@y.example', subject: 'S3', body: 'B3' });
+      const failed = await callWith('send_email', { confirmId: s3.data.confirmId });
+      expect(failed.isError).toBe(true);
+      expect(failed.text).toContain('email NOT sent');
+      const noRow = await pg.query<{ n: string }>(
+        "select count(*)::text as n from raw_captures where metadata->>'subject' = 'S3'",
+      );
+      expect(noRow.rows[0].n).toBe('0');
+      const consumedRetry = await callWith('send_email', { confirmId: s3.data.confirmId });
+      expect(consumedRetry.isError).toBe(true);
+      expect(consumedRetry.text).toContain('confirmation not found');
+      sendThrows = null;
+
+      // Capture failure (duplicate sent:<id> external id) still reports sent.
+      const s4 = await callWith('send_email', { to: 'x@y.example', subject: 'S4', body: 'B4' });
+      const dupCapture = await callWith('send_email', { confirmId: s4.data.confirmId });
+      expect(dupCapture.data).toMatchObject({ status: 'sent', captured: false });
+
+      // Expiry: a >15-min-old staged token dies cleanly.
+      const s5 = await callWith('send_email', { to: 'x@y.example', subject: 'S5', body: 'B5' });
+      await pg.query(
+        "update review_items set detail = jsonb_set(detail, '{stagedAt}', to_jsonb($2::text)) where id = $1",
+        [s5.data.confirmId, new Date(Date.now() - 16 * 60_000).toISOString()],
+      );
+      const expired = await callWith('send_email', { confirmId: s5.data.confirmId });
+      expect(expired.isError).toBe(true);
+      expect(expired.text).toContain('expired');
+      const expiredItem = await pg.query<{ status: string }>(
+        'select status from review_items where id = $1',
+        [s5.data.confirmId],
+      );
+      expect(expiredItem.rows[0].status).toBe('dismissed');
+
+      // Forged and cross-person tokens match nothing.
+      const s6 = await callWith('send_email', { to: 'x@y.example', subject: 'S6', body: 'B6' });
+      const forged = await callWith('send_email', {
+        confirmId: '00000000-0000-0000-0000-000000000000',
+      });
+      expect(forged.isError).toBe(true);
+      const bob = await insertTechnician({ tenantId, ref: 'sender-bob', displayName: 'Sender Bob' });
+      await setTechnicianState(bob.id, 'active');
+      await updateTechnician(bob.id, { composio_connected_account_id: 'ca_bob' });
+      const { client: bobClient, callWith: bobCall } = await clientFor(
+        { tenantId, technicianRef: 'sender-bob' },
+        stubs,
+      );
+      try {
+        const cross = await bobCall('send_email', { confirmId: s6.data.confirmId });
+        expect(cross.isError).toBe(true);
+        expect(cross.text).toContain('confirmation not found');
+      } finally {
+        await bobClient.close();
+      }
+      expect(sendCalls).toHaveLength(3); // staged2 + s3(threw) + s4 — nothing else sent
+
+      // resolve_review: a staged send is a live token — "resolved" is refused,
+      // dismiss (= cancel) is allowed. Manager surface counts exactly 15.
+      const { client: mgrClient, callWith: mgrCall } = await clientFor(
+        { tenantId, technicianRef: 'mgr-test' },
+        stubs,
+      );
+      try {
+        const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
+        expect(mgrTools).toHaveLength(15);
+        const fakeResolve = await mgrCall('resolve_review', {
+          reviewItemId: s6.data.confirmId,
+          resolution: 'resolved',
+        });
+        expect(fakeResolve.isError).toBe(true);
+        expect(fakeResolve.text).toContain('staged email send');
+        const cancel = await mgrCall('resolve_review', {
+          reviewItemId: s6.data.confirmId,
+          resolution: 'dismissed',
+        });
+        expect(cancel.isError).toBe(false);
+      } finally {
+        await mgrClient.close();
+      }
+
+      // Roster gates: active-but-unpaired and roster-less badges get clean errors.
+      const uma = await insertTechnician({ tenantId, ref: 'unpaired-uma', displayName: 'Unpaired Uma' });
+      await setTechnicianState(uma.id, 'active');
+      const { client: umaClient, callWith: umaCall } = await clientFor(
+        { tenantId, technicianRef: 'unpaired-uma' },
+        stubs,
+      );
+      try {
+        const noPair = await umaCall('send_email', { to: 'a@b.example', subject: 's', body: 'b' });
+        expect(noPair.isError).toBe(true);
+        expect(noPair.text).toContain('no paired mailbox');
+      } finally {
+        await umaClient.close();
+      }
+      const { client: ghostClient, callWith: ghostCall } = await clientFor(
+        { tenantId, technicianRef: 'no-such-ref' },
+        stubs,
+      );
+      try {
+        const ghost = await ghostCall('send_email', { confirmId: s6.data.confirmId });
+        expect(ghost.isError).toBe(true);
+        expect(ghost.text).toContain('no roster row for this badge');
+      } finally {
+        await ghostClient.close();
+      }
+    } finally {
+      await techClient.close();
+    }
+  });
+});
+
+describe('sensitivity filtering (manager_only L1 rows)', () => {
+  test('technician reads omit manager_only captures; manager reads include them; synthesizer ctx is filtered', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Sensitive Cust', phone: '555-9900' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Paid Job' });
+    await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      customerId: customer.id,
+      jobId: job.id,
+      rawText: 'ordinary visit note',
+      technicianRef: 'tech-mcp',
+    });
+    await appendRawCapture({
+      tenantId,
+      channel: 'agent_action',
+      customerId: customer.id,
+      jobId: job.id,
+      rawText: 'Agent action: STRIPE_CREATE_PAYMENT (stripe) — argument keys: amount_cents',
+      technicianRef: 'mgr-test',
+      externalId: 'composio-exec:sens-test-1',
+      sensitivity: 'manager_only',
+    });
+
+    // Technician badge (the main client): the marked row is invisible on every
+    // capture-bearing read.
+    const byCust = await call('list_recent_captures', { customerId: customer.id });
+    expect(byCust.data.map((c: { raw_text: string }) => c.raw_text)).toEqual(['ordinary visit note']);
+    const byJob = await call('list_recent_captures', { jobId: job.id });
+    expect(byJob.data).toHaveLength(1);
+    const ctx = await call('get_customer_context', { customerId: customer.id });
+    expect(
+      ctx.data.recentCaptures.some((c: { sensitivity: string | null }) => c.sensitivity === 'manager_only'),
+    ).toBe(false);
+
+    // The synthesizers receive the FILTERED ctx (a technician cannot leak the
+    // row through a briefing).
+    let brieferSaw: string[] = [];
+    const { client: briefClient, callWith: briefCall } = await clientFor(
+      { tenantId, technicianRef: 'tech-mcp' },
+      {
+        brief: async (bctx) => {
+          brieferSaw = bctx.recentCaptures.map((c) => c.raw_text ?? '');
+          return { briefing: 'stub', citations: [] };
+        },
+      },
+    );
+    try {
+      await briefCall('brief_customer', { customerId: customer.id });
+      expect(brieferSaw).toEqual(['ordinary visit note']);
+    } finally {
+      await briefClient.close();
+    }
+
+    // Manager badge sees both rows.
+    const { client: mgrClient, callWith: mgrCall } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const mgrList = await mgrCall('list_recent_captures', { customerId: customer.id });
+      expect(mgrList.data).toHaveLength(2);
+      const mgrCtx = await mgrCall('get_customer_context', { customerId: customer.id });
+      expect(
+        mgrCtx.data.recentCaptures.some(
+          (c: { sensitivity: string | null }) => c.sensitivity === 'manager_only',
+        ),
+      ).toBe(true);
     } finally {
       await mgrClient.close();
     }

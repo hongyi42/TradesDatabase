@@ -64,6 +64,7 @@ export const capture = (over: Partial<RawCapture> = {}): RawCapture => ({
   external_id: null,
   technician_ref: null,
   metadata: {},
+  sensitivity: null,
   captured_at: '2026-06-03T00:00:00.000Z',
   created_at: '2026-06-03T00:00:00.000Z',
   ...over,

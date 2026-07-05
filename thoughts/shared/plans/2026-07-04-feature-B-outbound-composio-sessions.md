@@ -471,16 +471,25 @@ project has ZERO connected accounts today.
       logged; windows to 400 days accepted. TWO CRITICAL parser fixes applied to logIngest.ts
       (envelope key, tool.slug path) + toolkit/detail-shape fixes; tests rewritten to the real
       shapes with flat fallbacks kept; recorded in docs §7.)*
-- [ ] **Send E2E *(needs pairing)*:** spine `send_email` stage→confirm → message arrives at a
+- [x] **Send E2E *(needs pairing)*:** spine `send_email` stage→confirm → message arrives at a
       controlled recipient; `supabase-test` SELECT shows ONE `outbound_email` row (`sent:<id>`);
       after the next cron tick, STILL one row (ingestion dedup proven live).
+      *(2026-07-05: user staged+confirmed from tech-jane's Telegram; message received; L1 shows
+      exactly one `outbound_email` row, external_id `sent:19f340413ad07d4f`, captured 20:41:50Z;
+      re-queried 25+ min later (≥1 cron tick over the send window): still exactly one row.
+      Wrinkle: the agent transcribed the recipient address wrong in the FIRST staged draft —
+      caught by the user at confirm; fix = accuracy-rules block (setup guide §0c) in every
+      sandbox's AGENTS.md.)*
 - [ ] **Ingestion E2E *(needs pairing)*:** a manager-session action (e.g. a draft via full-catalog
       session) appears as an L1 row per policy; a technician badge's `list_recent_captures` omits a
       `manager_only` row, a manager badge sees it (read back both ways).
 
 ### Manual verification
-- [ ] Confirmation/error wording (`needs_confirmation`, not-sent, disclosure text) reads sensibly in
+- [x] Confirmation/error wording (`needs_confirmation`, not-sent, disclosure text) reads sensibly in
       a real Telegram conversation.
+      *(2026-07-05, user: "The wording on the email was fine." Separate issue raised — staged
+      values must be self-checked by the agent (miswritten address); addressed via §0c
+      accuracy-rules block, not a tool-wording change.)*
 
 ---
 *Pause after Phase 5 (manual check non-empty); Phases 1–4 continue on green automated gates.*

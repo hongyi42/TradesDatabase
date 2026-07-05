@@ -157,7 +157,13 @@ agent ran and delivered. Watching the openclaw log for agent-end on a channel tu
 4. `Dockerfile` — `ARG/ENV NEMOCLAW_TRADES_SPINE_ENABLED` (set =1 to enable) + `NEMOCLAW_TRADES_SPINE_URL`.
 Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config.py`). Exact contents are in the setup guide §6.
 
-## Reboot-resilience (3 systemd pieces)
+## Reboot-resilience (4 systemd pieces)
+- `sandbox-token-medic.service` (oneshot, root, Before= the revive chain; since 2026-07-05) → the gateway
+  mints each sandbox's JWT ONCE at create (`gateway_jwt.ttl_secs`, vendor-hardcoded 1h — patched to 30d by
+  source edit #6) and the supervisor refreshes it IN MEMORY ONLY, so any reboot >ttl after create is an
+  `ExpiredSignature` crash loop the revive unit cannot fix (PID1 never comes up). The medic re-mints from
+  the gateway's own signing key and restarts the container. Took trades-box-1 down 2026-07-05 (Lightsail
+  restart at 20:03; healed same day, no rebuild). Upstream bug: supervisor should persist refreshed tokens.
 - doorman drop-in: `StartLimitIntervalSec=0` + `RestartSec=5` + `After=docker.service` → survives the
   EADDRNOTAVAIL bridge-startup race (otherwise it gives up `failed` after 5 quick crashes).
 - `nemoclaw-boot.service` (oneshot, User=ubuntu, sleep 25, runs `nemoclaw <AGENT> doctor || true`) → revives

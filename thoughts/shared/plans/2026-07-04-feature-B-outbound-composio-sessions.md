@@ -480,9 +480,21 @@ project has ZERO connected accounts today.
       Wrinkle: the agent transcribed the recipient address wrong in the FIRST staged draft —
       caught by the user at confirm; fix = accuracy-rules block (setup guide §0c) in every
       sandbox's AGENTS.md.)*
-- [ ] **Ingestion E2E *(needs pairing)*:** a manager-session action (e.g. a draft via full-catalog
+- [x] **Ingestion E2E *(needs pairing)*:** a manager-session action (e.g. a draft via full-catalog
       session) appears as an L1 row per policy; a technician badge's `list_recent_captures` omits a
       `manager_only` row, a manager badge sees it (read back both ways).
+      *(2026-07-05, user-approved probe: COMPOSIO_MANAGE_CONNECTIONS (gmail link mint, abandoned)
+      executed AS manager-sam through session trs_51pqHfPLVgcs → next cron tick ingested exactly
+      one L1 row: channel agent_action, sensitivity manager_only, keys-only rawText ("argument
+      keys: toolkits"), external_id composio-exec:log_-ZL2fvSIaC2r. A prior FAILED call
+      (validation error) was correctly NOT captured. Technician-view omission: PENDING user
+      check via jane's Telegram list_recent_captures; manager-badge read-back DEFERRED until a
+      manager sandbox/badge exists (no manager badge mintable today — roster row has no host).
+      ⚠ SECURITY FINDING during this probe: the session mcp.url 401s alone; the SDK's session
+      auth header is the MASTER COMPOSIO_API_KEY (require_mcp_api_key, project-level, default-on
+      since Mar 2026; no session-scoped tokens yet) → §0b sandbox wiring BLOCKED as written,
+      warning added to the setup guide; wiring options recorded there (host-side composio-doorman
+      proxy recommended).)*
 
 ### Manual verification
 - [x] Confirmation/error wording (`needs_confirmation`, not-sent, disclosure text) reads sensibly in

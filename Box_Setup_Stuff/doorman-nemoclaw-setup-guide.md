@@ -35,6 +35,19 @@ outbound connector surface (Gmail/Sheets/…, tier-scoped). The session is creat
 the Render lifecycle cron for every ACTIVE roster row; the **operator wires the url into the
 sandbox once** at setup:
 
+**⚠ WIRING BLOCKED — DO NOT APPLY AS WRITTEN (live-verified 2026-07-05):** the session's
+`mcp.url` alone gets **HTTP 401** — since March 2026 Composio enforces `require_mcp_api_key`
+(project-level, default-on for new orgs), and the auth header the SDK returns with the session is
+**the MASTER control-plane `COMPOSIO_API_KEY`**, not a session-scoped token (none exists yet;
+"scoped API keys" are still rolling out per Composio's changelog). Putting that header in a
+sandbox would let the sandbox act as ANY user and bypass ALL tier enforcement — never do it.
+Until the wiring approach below is decided+built, sandboxes get NO direct Composio MCP entry.
+Options on the table: (a) host-side composio-doorman proxy (master key stays on the host,
+badge-gated per-sandbox routing — mirrors the trades-spine doorman; RECOMMENDED), (b) disable
+`require_mcp_api_key` project-wide so the tokenized url is the sole credential (vendor
+recommends against; weakens every MCP surface in the project), (c) wait for Composio scoped
+API keys. The steps below describe the INTENDED end state once (a) exists:
+
 1. On the control plane (repo checkout with `.env`): `npm run build && node -r dotenv/config
    scripts/provision-session.mjs tenant=<uuid> ref=<ref>` → prints the `mcp.url` + the exact
    gateway snippet.

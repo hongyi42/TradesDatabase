@@ -1,7 +1,13 @@
 import { getCustomer, type Customer } from './customers.js';
 import { listJobsForCustomer, type Job } from './jobs.js';
 import { listVisitsForCustomer, type Visit } from './visits.js';
-import { getRawCapture, listRawCapturesForCustomer, type RawCapture } from './rawCaptures.js';
+import {
+  findRetractionsFor,
+  foldRetractions,
+  getRawCapture,
+  listRawCapturesForCustomer,
+  type RawCapture,
+} from './rawCaptures.js';
 
 export interface CustomerContext {
   customer: Customer | null;
@@ -15,7 +21,15 @@ export interface CustomerContext {
 // AND the captures linked from this customer's jobs/visits via source_capture_id —
 // because a tech note lands in L1 before identity is resolved, so its
 // raw_captures.customer_id is null and provenance lives only on the L2 row.
-export async function getCustomerContext(customerId: string): Promise<CustomerContext> {
+//
+// Retraction fold (default): retracted captures, the retraction rows themselves,
+// AND visits whose source capture is retracted are all dropped — every consumer
+// (context tool, briefings, Q&A) inherits the folded view by construction.
+// includeRetracted is the audit escape hatch; the caller gates who may use it.
+export async function getCustomerContext(
+  customerId: string,
+  opts: { includeRetracted?: boolean } = {},
+): Promise<CustomerContext> {
   const [customer, jobs, recentVisits, capturesByCustomer] = await Promise.all([
     getCustomer(customerId),
     listJobsForCustomer(customerId),
@@ -34,9 +48,23 @@ export async function getCustomerContext(customerId: string): Promise<CustomerCo
   const fetched = await Promise.all([...new Set(sourceIds)].map((id) => getRawCapture(id)));
   for (const capture of fetched) if (capture) byId.set(capture.id, capture);
 
-  const recentCaptures = [...byId.values()].sort((a, b) =>
+  let recentCaptures = [...byId.values()].sort((a, b) =>
     a.captured_at < b.captured_at ? 1 : -1,
   );
 
-  return { customer, jobs, recentVisits, recentCaptures };
+  let visits = recentVisits;
+  if (!opts.includeRetracted) {
+    const retractions = await findRetractionsFor(recentCaptures.map((c) => c.id));
+    recentCaptures = foldRetractions(recentCaptures, retractions);
+    const retractedIds = new Set(
+      retractions.map((r) => r.retracts_capture_id).filter((id): id is string => !!id),
+    );
+    // A visit is this note's trip: its source capture retracted ⇒ the visit's
+    // facts (labor hours, L3 attributes) must not surface either.
+    visits = recentVisits.filter(
+      (v) => !v.source_capture_id || !retractedIds.has(v.source_capture_id),
+    );
+  }
+
+  return { customer, jobs, recentVisits: visits, recentCaptures };
 }

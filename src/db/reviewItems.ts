@@ -13,6 +13,8 @@ export type ReviewKind =
   | 'pairing_verification'
   | 'pending_deactivation'
   | 'pending_outbound_send'
+  | 'pending_field_note'
+  | 'pending_retraction'
   | 'offboarding_reminder';
 
 export interface UpsertOpenReviewItemInput {
@@ -173,6 +175,28 @@ export async function flagOffboardingReminder(input: {
     subjectRef: input.subjectRef,
     detail: { startedAt: input.startedAt, graceEndsAt: input.graceEndsAt },
   });
+}
+
+// Replace an OPEN item's detail payload (all guards in the WHERE clause: id +
+// tenant + open). Returns null if the item is no longer open — the caller
+// restarts instead of writing into a consumed/cancelled token. One caller: the
+// record_field_note identity-resume step, which stores the resolved customer on
+// the staged note so commit uses exactly what the preview showed.
+export async function updateOpenReviewItemDetail(
+  id: string,
+  tenantId: string,
+  detail: Json,
+): Promise<ReviewItem | null> {
+  const { data, error } = await getClient()
+    .from('review_items')
+    .update({ detail })
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'open')
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`updateOpenReviewItemDetail failed: ${error.message}`);
+  return data;
 }
 
 // Point-read of one OPEN item, tenant-guarded and optionally shape-guarded —

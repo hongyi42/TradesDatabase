@@ -23,6 +23,9 @@ export interface AppendRawCaptureInput {
   customerId?: string | null;
   jobId?: string | null;
   visitId?: string | null;
+  // Option-B retraction: this capture neutralizes the pointed-at capture.
+  // At most one retraction per target (uq_raw_captures_one_retraction).
+  retractsCaptureId?: string | null;
 }
 
 // L1 is append-only. This module exposes insert only — no update or delete —
@@ -45,6 +48,13 @@ export async function appendRawCapture(input: AppendRawCaptureInput): Promise<Ra
       // applied to the pilot (review finding, empirically verified). Null and
       // omitted are identical outcomes (column default null).
       ...(input.sensitivity != null ? { sensitivity: input.sensitivity } : {}),
+      // Same PGRST204 guard SHAPE as sensitivity, but do not read it as
+      // ship-ahead safety: unlike sensitivity, the READ paths
+      // (findRetractionsFor, the retract_capture stage guards) name the
+      // column unconditionally, so the 20260706090000 migration MUST be
+      // applied before this code serves reads (review finding). The spread
+      // only keeps the insert body stable.
+      ...(input.retractsCaptureId != null ? { retracts_capture_id: input.retractsCaptureId } : {}),
       customer_id: input.customerId ?? null,
       job_id: input.jobId ?? null,
       visit_id: input.visitId ?? null,
@@ -108,9 +118,10 @@ function pgErrorCode(error: unknown): string | undefined {
 }
 
 // True if any L2 row (customer/job/visit) links back to this capture via
-// source_capture_id — i.e. extract→match→L2 succeeded for it. The write-path uses
-// this to tell a FULLY-processed capture (real duplicate) from a HALF-processed one
-// (L1 written, L2 build failed → orphan to be healed on redelivery).
+// source_capture_id — i.e. extract→match→L2 progressed for it. NOTE: "any link"
+// is NOT "complete" — the L2 build is customer → job → visit, so a crash can
+// leave a customer/job with no visit; callers needing completeness use
+// captureHasLinkedVisit (the visit is always the last write).
 export async function captureHasLinkedL2(captureId: string): Promise<boolean> {
   const client = getClient();
   for (const table of ['visits', 'jobs', 'customers'] as const) {
@@ -136,6 +147,49 @@ export async function listRawCapturesForJob(jobId: string): Promise<RawCapture[]
     .order('captured_at', { ascending: false });
   if (error) throw new Error(`listRawCapturesForJob failed: ${error.message}`);
   return data ?? [];
+}
+
+// True if a visit links back to this capture — the completeness marker for a
+// processed note (recordFieldNote always writes the visit LAST, so a linked
+// visit implies the whole L2 build ran). The staged-confirm duplicate path
+// uses this to distinguish "already fully recorded" from "an earlier commit
+// crashed mid-L2" (review finding: reporting the latter as a clean duplicate
+// silently loses the note's labor hours/attributes forever).
+export async function captureHasLinkedVisit(captureId: string): Promise<boolean> {
+  const { data, error } = await getClient()
+    .from('visits')
+    .select('id')
+    .eq('source_capture_id', captureId)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`captureHasLinkedVisit failed: ${error.message}`);
+  return !!data;
+}
+
+// The retraction rows targeting any of the given captures. "Retracted" is a
+// derived property — a row is retracted iff a retraction points at it — so read
+// paths call this on the ids they fetched and fold with foldRetractions. Not
+// derivable from the fetched list alone: a tech-note capture usually has NULL
+// customer_id/job_id stamps (identity resolves after L1, which is immutable),
+// so its retraction may not appear in the same stamped list.
+export async function findRetractionsFor(captureIds: string[]): Promise<RawCapture[]> {
+  if (captureIds.length === 0) return [];
+  const { data, error } = await getClient()
+    .from('raw_captures')
+    .select()
+    .in('retracts_capture_id', captureIds);
+  if (error) throw new Error(`findRetractionsFor failed: ${error.message}`);
+  return data ?? [];
+}
+
+// Pure fold: drop every capture a retraction points at, and drop retraction
+// rows themselves (their own retracts_capture_id is non-null — they never
+// appear in folded views even when stamped into a customer/job list).
+export function foldRetractions(rows: RawCapture[], retractions: RawCapture[]): RawCapture[] {
+  const retracted = new Set(
+    retractions.map((r) => r.retracts_capture_id).filter((id): id is string => !!id),
+  );
+  return rows.filter((row) => !retracted.has(row.id) && row.retracts_capture_id === null);
 }
 
 // Captures directly stamped with a customer_id, newest first.

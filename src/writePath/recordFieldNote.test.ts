@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from '../db/client.js';
+import { appendRawCapture } from '../db/rawCaptures.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob, listJobsForCustomer } from '../db/jobs.js';
 import { upsertScheduleEntry } from '../db/scheduleEntries.js';
@@ -77,7 +78,7 @@ describe('recordFieldNote', () => {
     expect(visit.rows[0].technician_name).toBe('tech-jane');
   });
 
-  test('create-from-schedule: an unlinked scheduled entry prefills the new customer from the sheet row, not the (empty) extraction', async () => {
+  test('inbound contract: an unmatched note proposes the scheduled address (L1 kept, no L2)', async () => {
     const tech = 'tech-sched-rfn';
     const day = new Date().toISOString().slice(0, 10); // align with the capture's UTC day
     await upsertScheduleEntry({
@@ -90,36 +91,89 @@ describe('recordFieldNote', () => {
       scheduledStart: `${day}T12:00:00.000Z`,
     });
 
-    // First call: the note matches no existing customer → propose the scheduled address.
     const first = await recordFieldNote(
       { tenantId, technicianRef: tech, channel: 'technician_voice', text: 'all done here' },
       stub({ workPerformed: 'all done here' }), // extraction has NO customer details
     );
     expect(first.status).toBe('needs_confirmation');
     expect(first.suggestion?.address).toBe('88 Sheet St');
+    expect(first.captureId).toBeDefined(); // inbound path: raw kept, unresolved
+  });
 
-    // Resume confirming that address → create-new prefilled from the sheet row.
-    const resumed = await recordFieldNote(
+  test('staged-confirm contract: resolved.createFrom commits exactly the previewed draft', async () => {
+    // The staged flow resolves identity BEFORE commit and passes the full
+    // draft through — commit must use it verbatim, not re-derive from the
+    // (empty) extraction or a schedule lookup that may have gone stale.
+    const r = await recordFieldNote(
       {
         tenantId,
-        technicianRef: tech,
+        technicianRef: 'tech-sched-rfn',
         channel: 'technician_voice',
-        captureId: first.captureId,
-        confirmed: { address: '88 Sheet St' },
+        text: 'all done here',
+        resolved: {
+          createFrom: {
+            customerName: 'Sheet Cust',
+            phone: '555-7700',
+            addressLine1: '88 Sheet St',
+            city: null,
+            state: null,
+            postalCode: null,
+          },
+        },
       },
       stub({ workPerformed: 'all done here' }),
     );
-    expect(resumed.status).toBe('matched');
+    expect(r.status).toBe('matched');
 
-    const cust = await pg.query<{ name: string; phone: string | null; address_line1: string | null }>(
-      'select name, phone, address_line1 from customers where id = $1',
-      [resumed.customerId],
-    );
+    const cust = await pg.query<{
+      name: string;
+      phone: string | null;
+      address_line1: string | null;
+      source_capture_id: string | null;
+    }>('select name, phone, address_line1, source_capture_id from customers where id = $1', [
+      r.customerId,
+    ]);
     expect(cust.rows[0]).toMatchObject({
-      name: 'Sheet Cust', // from the sheet (createFrom), not 'Unknown customer'
+      name: 'Sheet Cust', // the draft, not 'Unknown customer'
       phone: '555-7700',
       address_line1: '88 Sheet St',
+      source_capture_id: r.captureId, // provenance: created rows link to the L1 evidence
     });
+  });
+
+  test('a retracted unmatched capture is terminal: redelivery reports duplicate and never heals into L2', async () => {
+    const externalId = 'gmail-msg-retracted-1';
+    const note = {
+      tenantId,
+      technicianRef: 'connector:gmail',
+      channel: 'email' as const,
+      text: 'personal mail — retracted by manager',
+      externalId,
+    };
+    // First delivery: unmatched → L1 only (raw kept, no L2).
+    const first = await recordFieldNote(note, stub({ workPerformed: 'n/a' }));
+    expect(first.status).toBe('needs_disambiguation');
+
+    // A manager retracts the capture (Option-B retraction row).
+    await appendRawCapture({
+      tenantId,
+      channel: 'retraction',
+      technicianRef: 'mgr-x',
+      rawText: 'personal mail, recorded in error',
+      retractsCaptureId: first.captureId,
+    });
+
+    // A customer now exists that the redelivered extraction WOULD match —
+    // without the retraction guard the orphan heal would build L2 from a
+    // recorded-in-error capture.
+    const customer = await createCustomer({ tenantId, name: 'Now Exists', phone: '555-8181' });
+    const redelivered = await recordFieldNote(
+      note,
+      stub({ phone: '555-8181', workPerformed: 'would match now' }),
+    );
+    expect(redelivered.status).toBe('duplicate');
+    expect(redelivered.captureId).toBe(first.captureId);
+    expect((await listJobsForCustomer(customer.id)).length).toBe(0); // no L2 was built
   });
 
   test('a matched customer with an existing non-terminal job reuses it rather than creating a new one', async () => {
@@ -136,44 +190,44 @@ describe('recordFieldNote', () => {
     expect((await listJobsForCustomer(customer.id)).length).toBe(1);
   });
 
-  test('an unresolvable first call writes L1 once and returns needs_disambiguation; resume creates a new customer without a second L1', async () => {
+  test('inbound contract: an unresolvable call writes L1 once and returns needs_disambiguation (raw kept, no L2)', async () => {
     const before = await rawCaptureCount();
+    const visitsBefore = await visitCount();
 
-    // First call: nothing matches → ask.
     const first = await recordFieldNote(
       { tenantId, technicianRef: 'tech-bob', channel: 'technician_note', text: 'fixed a leak' },
       stub({ workPerformed: 'fixed a leak', address: '77 Unmatched Way' }),
     );
     expect(first.status).toBe('needs_disambiguation');
     expect(await rawCaptureCount()).toBe(before + 1); // exactly one L1 appended
+    expect(await visitCount()).toBe(visitsBefore); // and no L2 was built
+  });
 
-    // Resume with a confirmed address that still matches nothing → create-new.
-    const resumed = await recordFieldNote(
+  test('staged-confirm contract: resolved.customerId bypasses matchIdentity — a conflicting extraction cannot re-route the note', async () => {
+    // Two customers; the extraction's phone points at Y, but the technician
+    // confirmed X during staging. Commit must attach to X — the preview is
+    // the contract, never a commit-time re-match.
+    const confirmedCust = await createCustomer({ tenantId, name: 'Confirmed X', phone: '555-6061' });
+    await createCustomer({ tenantId, name: 'Distractor Y', phone: '555-6062' });
+
+    const r = await recordFieldNote(
       {
         tenantId,
         technicianRef: 'tech-bob',
         channel: 'technician_note',
-        captureId: first.captureId,
-        confirmed: { address: '77 Unmatched Way' },
+        text: 'note for X',
+        resolved: { customerId: confirmedCust.id },
       },
-      stub({ customerName: 'Brand New', address: '77 Unmatched Way', workPerformed: 'fixed a leak' }),
+      stub({ phone: '555-6062', workPerformed: 'note for X' }), // would match Y
     );
-    expect(resumed.status).toBe('matched');
-    expect(resumed.captureId).toBe(first.captureId); // same capture
-    expect(await rawCaptureCount()).toBe(before + 1); // NO second L1
-
-    const created = await pg.query<{ address_line1: string | null; source_capture_id: string | null }>(
-      'select address_line1, source_capture_id from customers where id = $1',
-      [resumed.customerId],
-    );
-    expect(created.rows[0].address_line1).toBe('77 Unmatched Way');
-    expect(created.rows[0].source_capture_id).toBe(first.captureId);
+    expect(r.status).toBe('matched');
+    expect(r.customerId).toBe(confirmedCust.id);
 
     const visit = await pg.query<{ source_capture_id: string | null }>(
       'select source_capture_id from visits where id = $1',
-      [resumed.visitId],
+      [r.visitId],
     );
-    expect(visit.rows[0].source_capture_id).toBe(first.captureId);
+    expect(visit.rows[0].source_capture_id).toBe(r.captureId);
   });
 
   test('an externalId capture persists external_id + occurredAt/sourceMeta in metadata JSONB', async () => {

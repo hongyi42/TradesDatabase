@@ -5,10 +5,15 @@ import { fileURLToPath } from 'node:url';
 import {
   annotateResolvedReviewItem,
   appendRawCapture,
+  captureHasLinkedVisit,
   casTechnician,
+  findRetractionsFor,
+  foldRetractions,
   getJob,
   getCustomer,
   getOpenReviewItem,
+  getRawCapture,
+  getRawCaptureByExternalId,
   searchCustomers,
   getCustomerContext,
   getTechnician,
@@ -22,11 +27,15 @@ import {
   listTeam,
   resolveOpenReviewItemFor,
   resolveReviewItem,
+  updateOpenReviewItemDetail,
   upsertOpenReviewItem,
   type CaptureChannel,
+  type Json,
   type TechnicianTier,
 } from '../db/index.js';
-import { recordFieldNote } from '../writePath/recordFieldNote.js';
+import { recordFieldNote, type ResolvedIdentity } from '../writePath/recordFieldNote.js';
+import { matchIdentity, type MatchResult } from '../writePath/identityMatch.js';
+import { sonnetExtractor, type ExtractedFields } from '../writePath/extract.js';
 import {
   requireOutboundCapable,
   sendGmailEmail as liveSendGmailEmail,
@@ -83,18 +92,22 @@ const TOOLS = [
   {
     name: 'record_field_note',
     description:
-      'Record a technician field note into the spine (L1 → extract → identity match → L2/L3). ' +
-      'Returns {status, captureId, ...}. If status is needs_confirmation or needs_disambiguation, ' +
-      'ask the technician, then call again with the same captureId plus confirmed:{address} (or {customerId}).',
+      'Record a technician field note into the permanent company record — two-step. First call ' +
+      'with text: NOTHING is recorded; you get back needs_identity (ask the technician which ' +
+      'customer, then call again with confirmId + confirmed:{customerId|address}) or ' +
+      'needs_confirmation with a preview. Show the technician EXACTLY the preview (customer + ' +
+      'note text); only on their explicit yes call again with ONLY confirmId — the STAGED copy ' +
+      'is what gets recorded, permanently (there is no delete; a mistake needs retract_capture).',
     inputSchema: {
       type: 'object',
       properties: {
-        text: { type: 'string', description: 'The note text (voice already transcribed to text).' },
-        blobPath: { type: 'string', description: 'Optional object-store pointer for audio/photo.' },
-        channel: { type: 'string', enum: TECH_CHANNELS, description: 'Defaults to technician_note.' },
-        captureId: { type: 'string', description: 'Set only when resuming after a confirmation.' },
+        text: { type: 'string', description: 'The note text (voice already transcribed to text). First call only.' },
+        blobPath: { type: 'string', description: 'Optional object-store pointer for audio/photo. First call only.' },
+        channel: { type: 'string', enum: TECH_CHANNELS, description: 'Defaults to technician_note. First call only.' },
+        confirmId: { type: 'string', description: 'Set on follow-up calls; ALONE it records the staged note.' },
         confirmed: {
           type: 'object',
+          description: 'With confirmId: the technician\'s answer to a needs_identity question.',
           properties: { customerId: { type: 'string' }, address: { type: 'string' } },
         },
       },
@@ -130,10 +143,19 @@ const TOOLS = [
   },
   {
     name: 'list_recent_captures',
-    description: 'List raw captures for a job (jobId) or a customer (customerId), newest first.',
+    description:
+      'List raw captures for a job (jobId) or a customer (customerId), newest first. Retracted ' +
+      'captures are hidden; managers may pass includeRetracted:true for the full labeled trail.',
     inputSchema: {
       type: 'object',
-      properties: { jobId: { type: 'string' }, customerId: { type: 'string' } },
+      properties: {
+        jobId: { type: 'string' },
+        customerId: { type: 'string' },
+        includeRetracted: {
+          type: 'boolean',
+          description: 'Manager badges only: include retracted captures, labeled with their retraction.',
+        },
+      },
     },
   },
   {
@@ -179,6 +201,31 @@ const TOOLS = [
         to: { type: 'string', description: 'Recipient email address (first call only).' },
         subject: { type: 'string', description: 'Subject line (first call only).' },
         body: { type: 'string', description: 'Plain-text body (first call only).' },
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'retract_capture',
+    description:
+      'Retract a wrongly recorded capture — two-step. The record is append-only, so this never ' +
+      'deletes: it permanently marks the capture as recorded-in-error (with your reason); the ' +
+      'note and its visit stop appearing in briefings/context/lists (facts the note already ' +
+      'wrote onto the job/customer record — e.g. a status change — are NOT auto-reverted). ' +
+      'First call with captureId + reason: nothing happens yet; you get ' +
+      '{status:"needs_confirmation", confirmId}. Show the person the capture and the reason; ' +
+      "only on their explicit yes call again with ONLY confirmId. Only the capture's author or " +
+      'a manager may retract; agent-action audit records are manager-only. To fix a wrong note: ' +
+      'record the corrected note first, then retract the wrong one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        captureId: { type: 'string', description: 'The capture to retract (first call only).' },
+        reason: {
+          type: 'string',
+          description: 'Why it is being retracted (first call only; stored permanently).',
+        },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
       required: [],
@@ -291,6 +338,94 @@ function slugify(displayName: string): string {
 // before the switch, so adding an admin tool cannot forget its guard.
 const ADMIN_TOOL_NAMES = new Set(ADMIN_TOOLS.map((t) => t.name));
 
+// Audit channels: L1 rows that exist to hold the ACTOR accountable for an
+// agent-performed action. Self-retraction would defeat their purpose (recorded
+// exception 2026-07-04: the audit matters most when the action was personal or
+// inappropriate), so retracting one requires a manager badge even for its
+// author — logIngest and the send_email capture stamp the acting person's own
+// roster ref, so an author-only rule would allow self-cleanup (review finding).
+const AUDIT_CHANNELS = new Set<CaptureChannel>(['outbound_email', 'agent_action']);
+
+// The staged copy of a field note (review_items.detail, kind pending_field_note).
+// The staged copy is the note of record: commit reads ONLY this — never fresh
+// args — so what the technician confirmed is exactly what lands.
+interface StagedNoteDetail {
+  text: string | null;
+  blobPath: string | null;
+  channel: CaptureChannel;
+  extracted: ExtractedFields;
+  stagedAt: string;
+  resolved?: ResolvedIdentity;
+  // The identity question, stored so the needs_identity response can echo the
+  // ITEM's question — racing stages may return the other call's row, and the
+  // question must describe the note that will actually commit (review finding).
+  suggestion?: { address: string; scheduleEntryId: string };
+  identityReason?: string;
+}
+
+// MatchResult → the staged resolution, or undefined while identity is unknown.
+// A confirmed answer that matched no existing customer resolves to create-new;
+// the FULL draft is built here (schedule prefill > extracted/confirmed) so the
+// preview shows exactly the customer commit will create.
+function resolutionFrom(
+  match: MatchResult,
+  confirmed: { customerId?: string; address?: string } | undefined,
+  extracted: ExtractedFields,
+): ResolvedIdentity | undefined {
+  if (match.status === 'matched' && match.customerId) {
+    return { customerId: match.customerId, ...(match.jobId ? { jobId: match.jobId } : {}) };
+  }
+  if (confirmed && (match.createFrom || confirmed.address)) {
+    const draft = match.createFrom;
+    return {
+      createFrom: {
+        // Trim-normalize the name so preview and commit agree: '' / whitespace
+        // must read as "no name" in BOTH (commit falls through to 'Unknown
+        // customer'; the preview must not invent a stand-in — review finding).
+        customerName: (draft?.customerName ?? extracted.customerName)?.trim() || null,
+        phone: draft?.phone ?? extracted.phone ?? null,
+        addressLine1: draft?.addressLine1 ?? confirmed.address ?? extracted.address ?? null,
+        city: draft?.city ?? extracted.city ?? null,
+        state: draft?.state ?? extracted.state ?? null,
+        postalCode: draft?.postalCode ?? extracted.postalCode ?? null,
+      },
+    };
+  }
+  return undefined;
+}
+
+// What the technician must be shown before confirming. newCustomer flags a
+// create-on-confirm so the agent can say "…for NEW customer Jane, 12 Oak St".
+async function stagedNotePreview(detail: StagedNoteDetail): Promise<{
+  customerName: string | null;
+  newCustomer: boolean;
+  address: string | null;
+  text: string | null;
+  channel: CaptureChannel;
+}> {
+  if (detail.resolved?.customerId) {
+    const customer = await getCustomer(detail.resolved.customerId);
+    return {
+      customerName: customer?.name ?? null,
+      newCustomer: false,
+      address: customer?.address_line1 ?? null,
+      text: detail.text,
+      channel: detail.channel,
+    };
+  }
+  const draft = detail.resolved?.createFrom;
+  return {
+    // Exactly what commit will name the customer — a nameless draft becomes
+    // 'Unknown customer' there, so the preview must say so, not substitute
+    // the address as a stand-in name (preview == commit; review finding).
+    customerName: draft?.customerName ?? 'Unknown customer',
+    newCustomer: true,
+    address: draft?.addressLine1 ?? null,
+    text: detail.text,
+    channel: detail.channel,
+  };
+}
+
 // The one manager-facing seat-cap message — every tool that can hit the DB
 // trigger says the same thing (three call sites; drift means inconsistent
 // guidance depending on which tool hit the cap).
@@ -360,28 +495,236 @@ async function dispatch(
       }
       const channel: CaptureChannel = (channelArg as CaptureChannel | undefined) ?? 'technician_note';
       const confirmed = args.confirmed as { customerId?: string; address?: string } | undefined;
-      // Tenant-guard the WRITE path too: a model-supplied confirmed.customerId wins
-      // outright in matchIdentity, so without this a forged id would attach the
-      // visit to another firm's customer/job. (The read-tool guards don't cover
-      // writes; the address/phone/schedule match branches are already tenant-scoped.)
+      // Tenant-guard any model-supplied customerId BEFORE it can enter a staged
+      // resolution: a forged id would otherwise attach the note to another
+      // firm's customer/job at commit. (The address/phone/schedule branches are
+      // already tenant-scoped inside matchIdentity.)
       if (confirmed?.customerId) {
         const customer = await getCustomer(confirmed.customerId);
         if (!customer || customer.tenant_id !== tenantId) {
           throw new Error('customer not found');
         }
       }
-      return recordFieldNote(
-        {
+      // subjectRef is the badge identity, NOT caller.ref: this tool serves
+      // roster-less badges too (caller is null for them), unlike send_email.
+      const subjectRef = identity.technicianRef;
+      const confirmId = str('confirmId');
+
+      if (!confirmId) {
+        // STAGE. Nothing is written to L1/L2 here — the note is held as a
+        // review item until the technician's explicit yes.
+        const text = str('text');
+        const blobPath = str('blobPath');
+        if (!text && !blobPath) throw new Error('text or blobPath is required to stage a note');
+        // The ?? fallback is mandatory: production constructs the server with
+        // no extract dep (stdio main() / httpServer) — only tests inject stubs.
+        const extracted = await (deps.extract ?? sonnetExtractor)(text ?? '');
+        const stagedAt = new Date().toISOString();
+        const match = await matchIdentity({
           tenantId,
-          technicianRef: identity.technicianRef,
-          text: str('text') ?? null,
-          blobPath: str('blobPath') ?? null,
-          channel,
-          captureId: str('captureId'),
+          technicianRef: subjectRef,
+          capturedAt: stagedAt,
+          extracted,
           confirmed,
-        },
-        { extract: deps.extract },
-      );
+        });
+        const resolved = resolutionFrom(match, confirmed, extracted);
+        // One staged note per person: a re-stage supersedes any open one.
+        await resolveOpenReviewItemFor(
+          tenantId,
+          'pending_field_note',
+          subjectRef,
+          'dismissed',
+          'superseded by a new note',
+        );
+        const detail: StagedNoteDetail = {
+          text: text ?? null,
+          blobPath: blobPath ?? null,
+          channel,
+          extracted,
+          stagedAt,
+          ...(resolved ? { resolved } : {}),
+          ...(match.suggestion ? { suggestion: match.suggestion } : {}),
+          ...(match.reason ? { identityReason: match.reason } : {}),
+        };
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_field_note',
+          subjectRef,
+          detail: detail as unknown as Json,
+        });
+        // Echo the ITEM's detail for EVERY field, not local state: two racing
+        // stage calls can make the upsert return the other call's open row,
+        // and both the staged copy AND the identity question shown must
+        // describe the note that will commit (same rule as send_email).
+        const staged = (item.detail ?? {}) as unknown as StagedNoteDetail;
+        if (!staged.resolved) {
+          return {
+            status: 'needs_identity',
+            confirmId: item.id,
+            suggestion: staged.suggestion,
+            reason: staged.identityReason,
+            note: 'Nothing was recorded. Ask the technician which customer this is, then call again with confirmId + confirmed:{customerId} (or {address}).',
+          };
+        }
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          preview: await stagedNotePreview(staged),
+          note: 'Nothing was recorded yet. Show the technician exactly this preview; on their explicit yes call again with ONLY confirmId.',
+        };
+      }
+
+      // Guarded token lookup: forged / another person's / consumed confirmId
+      // matches nothing (every predicate in the WHERE clause).
+      const item = await getOpenReviewItem(confirmId, tenantId, {
+        kind: 'pending_field_note',
+        subjectRef,
+      });
+      if (!item) {
+        throw new Error('confirmation not found — call record_field_note again with the note text to restage');
+      }
+      const detail = (item.detail ?? {}) as unknown as StagedNoteDetail;
+
+      // One outcome for "the commit already landed" (late retry after a crash
+      // between commit and consume). Complete (visit linked) → report the
+      // duplicate honestly; partial (crash mid-L2) → do NOT reassure: the
+      // note's visit facts are missing and only a fresh full record + a
+      // manager retraction of the partial capture heals it (review findings).
+      const reportExisting = async (existingCaptureId: string) => {
+        if (await captureHasLinkedVisit(existingCaptureId)) {
+          try {
+            await resolveReviewItem(item.id, tenantId, 'resolved', `note recorded by ${subjectRef}`);
+          } catch {
+            /* advisory */
+          }
+          return {
+            status: 'duplicate',
+            captureId: existingCaptureId,
+            note: 'this staged note was already recorded by an earlier confirm — nothing was written twice',
+          };
+        }
+        try {
+          await resolveReviewItem(
+            item.id,
+            tenantId,
+            'dismissed',
+            'earlier commit left a partial record (no visit)',
+          );
+        } catch {
+          /* advisory */
+        }
+        throw new Error(
+          `an earlier confirm only PARTIALLY recorded this note (capture ${existingCaptureId} is missing its visit details) — ` +
+            'restage the note to record it fully, then have a manager retract the partial capture',
+        );
+      };
+
+      if (detail.stagedAt && Date.now() - Date.parse(detail.stagedAt) > 15 * 60_000) {
+        // Before dismissing into a restage, check whether a commit already
+        // landed under this token: a restage mints a NEW externalId stamp, so
+        // dismissing here after a commit-then-crash would double-write the
+        // note permanently (review finding).
+        const landed = await getRawCaptureByExternalId(tenantId, `note:${item.id}`);
+        if (landed) return reportExisting(landed.id);
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'staging expired');
+        throw new Error('staged note expired — restage with the note text and confirm again');
+      }
+
+      if (confirmed) {
+        // IDENTITY RESUME: re-match the STORED extraction with the technician's
+        // answer; the resolution is persisted so commit uses exactly it.
+        // capturedAt = stagedAt keeps the schedule branch on the staging day
+        // (a re-match across midnight must not resolve differently).
+        const extracted = detail.extracted ?? {};
+        const match = await matchIdentity({
+          tenantId,
+          technicianRef: subjectRef,
+          capturedAt: detail.stagedAt ?? new Date().toISOString(),
+          extracted,
+          confirmed,
+        });
+        const resolved = resolutionFrom(match, confirmed, extracted);
+        if (!resolved) {
+          return {
+            status: 'needs_identity',
+            confirmId: item.id,
+            suggestion: match.suggestion,
+            reason: match.reason,
+            note: 'Still ambiguous — ask the technician and call again with confirmId + confirmed:{customerId} (or {address}).',
+          };
+        }
+        const newDetail: StagedNoteDetail = { ...detail, resolved };
+        const updated = await updateOpenReviewItemDetail(
+          item.id,
+          tenantId,
+          newDetail as unknown as Json,
+        );
+        if (!updated) {
+          throw new Error('confirmation not found — call record_field_note again with the note text to restage');
+        }
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          preview: await stagedNotePreview(newDetail),
+          note: 'Nothing was recorded yet. Show the technician exactly this preview; on their explicit yes call again with ONLY confirmId.',
+        };
+      }
+
+      // FINAL CONFIRM (confirmId alone). The staged copy is the note of record.
+      if (!detail.resolved) {
+        throw new Error('customer not resolved — call again with confirmId + confirmed:{customerId|address} first');
+      }
+      if (detail.text == null && detail.blobPath == null) {
+        throw new Error('staged note is malformed — restage with the note text');
+      }
+      // COMMIT FIRST, consume second: the commit is idempotent (externalId
+      // stamp `note:<confirmId>` + orphan heal), so a crash mid-commit leaves
+      // the token open and a retried confirm converges on ONE L1 row —
+      // consume-first would orphan a half-written permanent row instead.
+      let result;
+      try {
+        result = await recordFieldNote(
+          {
+            tenantId,
+            technicianRef: subjectRef,
+            text: detail.text,
+            blobPath: detail.blobPath,
+            channel: detail.channel ?? 'technician_note',
+            resolved: detail.resolved,
+            externalId: `note:${item.id}`,
+            sourceMeta: { stagedConfirmId: item.id },
+          },
+          // Replay the staged extraction: no model call, and commit cannot
+          // extract differently than what the technician was shown.
+          { extract: async () => detail.extracted ?? {} },
+        );
+      } catch (err) {
+        // The token is still open (consume hasn't run): a retry with the SAME
+        // confirmId re-runs this commit under the SAME externalId and heals.
+        // Restaging instead would mint a new stamp and could double-write.
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `note NOT recorded: ${msg} — the staged note is still held; retry with the SAME confirmId (do not restage)`,
+        );
+      }
+      if (result.status === 'duplicate') {
+        // Idempotent retry after a crash between commit and consume — but
+        // only reassure if the earlier commit actually completed (visit
+        // linked); a mid-L2 crash must surface, not read as success.
+        return await reportExisting(result.captureId);
+      }
+      try {
+        await resolveReviewItem(item.id, tenantId, 'resolved', `note recorded by ${subjectRef}`);
+      } catch {
+        /* advisory — a retried confirm hits the externalId dedup (duplicate) */
+      }
+      return {
+        status: 'recorded',
+        captureId: result.captureId,
+        customerId: result.customerId,
+        jobId: result.jobId,
+        visitId: result.visitId,
+      };
     }
     case 'find_customer': {
       const query = str('query');
@@ -408,19 +751,47 @@ async function dispatch(
     case 'list_recent_captures': {
       const jobId = str('jobId');
       const customerId = str('customerId');
+      // Audit toggle is manager-only (user decision 2026-07-06): technicians
+      // always get the folded view.
+      const includeRetracted = args.includeRetracted === true;
+      if (includeRetracted && !activeManager) {
+        throw new Error('includeRetracted requires a manager badge');
+      }
       // Tenant guard via the parent: captures inherit the job's/customer's tenant,
       // so verifying the parent gates the whole list (a mismatch reads as empty).
+      let rows;
       if (jobId) {
         const job = await getJob(jobId);
         if (!job || job.tenant_id !== tenantId) return [];
-        return dropSensitive(await listRawCapturesForJob(jobId));
-      }
-      if (customerId) {
+        rows = dropSensitive(await listRawCapturesForJob(jobId));
+      } else if (customerId) {
         const customer = await getCustomer(customerId);
         if (!customer || customer.tenant_id !== tenantId) return [];
-        return dropSensitive(await listRawCapturesForCustomer(customerId));
+        rows = dropSensitive(await listRawCapturesForCustomer(customerId));
+      } else {
+        throw new Error('list_recent_captures requires jobId or customerId');
       }
-      throw new Error('list_recent_captures requires jobId or customerId');
+      const retractions = await findRetractionsFor(rows.map((r) => r.id));
+      if (!includeRetracted) return foldRetractions(rows, retractions);
+      // Manager full trail: retracted rows labeled with their retraction (at
+      // most one per target — unique index); retraction rows stamped into
+      // this list appear as-is.
+      const byTarget = new Map(retractions.map((r) => [r.retracts_capture_id, r]));
+      return rows.map((row) => {
+        const retraction = byTarget.get(row.id);
+        return retraction
+          ? {
+              ...row,
+              retracted: true,
+              retraction: {
+                id: retraction.id,
+                reason: retraction.raw_text,
+                by: retraction.technician_ref,
+                at: retraction.captured_at,
+              },
+            }
+          : row;
+      });
     }
     case 'brief_customer': {
       const customerId = str('customerId');
@@ -584,6 +955,142 @@ async function dispatch(
         messageId: sent.messageId,
         captured,
       };
+    }
+    case 'retract_capture': {
+      const subjectRef = identity.technicianRef;
+      const confirmId = str('confirmId');
+      if (!confirmId) {
+        // STAGE. Nothing is written; the request is held as a review item.
+        const captureId = str('captureId');
+        const reason = str('reason')?.trim();
+        if (!captureId) throw new Error('captureId is required');
+        if (!reason) {
+          throw new Error('reason is required — say why this capture is being retracted');
+        }
+        const target = await getRawCapture(captureId);
+        // Tenant guard: a cross-tenant (or unknown) id reads as not found.
+        if (!target || target.tenant_id !== tenantId) throw new Error('capture not found');
+        if (target.retracts_capture_id !== null) {
+          throw new Error('cannot retract a retraction');
+        }
+        if ((await findRetractionsFor([target.id])).length > 0) {
+          throw new Error('this capture is already retracted');
+        }
+        // Audit rows are manager-only retractions EVEN FOR THEIR AUTHOR: the
+        // send capture and logIngest stamp the acting person's own roster ref,
+        // so an author-only rule would let someone scrub their own audit trail
+        // from default views (review finding; recorded exception 2026-07-04).
+        if (AUDIT_CHANNELS.has(target.channel) && !activeManager) {
+          throw new Error('this is an agent-action audit record — only a manager can retract it');
+        }
+        // Otherwise: author or active manager (user decision 2026-07-06).
+        if (target.technician_ref !== subjectRef && !activeManager) {
+          throw new Error('only the author or a manager can retract a capture');
+        }
+        await resolveOpenReviewItemFor(
+          tenantId,
+          'pending_retraction',
+          subjectRef,
+          'dismissed',
+          'superseded by a new retraction request',
+        );
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_retraction',
+          subjectRef,
+          detail: {
+            captureId: target.id,
+            reason,
+            targetPreview: (target.raw_text ?? '').slice(0, 200),
+            stagedAt: new Date().toISOString(),
+          },
+        });
+        // Echo the ITEM's detail (racing stages — same rule as send_email).
+        const staged = (item.detail ?? {}) as {
+          captureId?: string;
+          reason?: string;
+          targetPreview?: string;
+        };
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          captureId: staged.captureId ?? target.id,
+          reason: staged.reason ?? reason,
+          targetPreview: staged.targetPreview,
+          note: 'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows).',
+        };
+      }
+      // CONFIRM. Guarded token lookup, then commit-first (the unique index +
+      // externalId stamp make the commit race- and retry-safe), consume second.
+      const item = await getOpenReviewItem(confirmId, tenantId, {
+        kind: 'pending_retraction',
+        subjectRef,
+      });
+      if (!item) {
+        throw new Error('confirmation not found — call retract_capture again with captureId + reason to restage');
+      }
+      const detail = (item.detail ?? {}) as {
+        captureId?: string;
+        reason?: string;
+        stagedAt?: string;
+      };
+      if (detail.stagedAt && Date.now() - Date.parse(detail.stagedAt) > 15 * 60_000) {
+        // Late retry after a commit-then-crash: if this token's retraction
+        // already landed, report success instead of expiring into a confusing
+        // restage → "already retracted" dead end.
+        const landed = await getRawCaptureByExternalId(tenantId, `retract:${item.id}`);
+        if (landed) {
+          try {
+            await resolveReviewItem(item.id, tenantId, 'resolved', `retraction confirmed by ${subjectRef}`);
+          } catch {
+            /* advisory */
+          }
+          return { status: 'retracted', captureId: landed.retracts_capture_id, retractionId: landed.id };
+        }
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
+        throw new Error('confirmation expired — restage the retraction and confirm again');
+      }
+      if (!detail.captureId || !detail.reason) {
+        throw new Error('staged retraction is malformed — restage with captureId + reason');
+      }
+      const target = await getRawCapture(detail.captureId);
+      if (!target || target.tenant_id !== tenantId) throw new Error('capture not found');
+      let retractionId: string;
+      try {
+        const row = await appendRawCapture({
+          tenantId,
+          channel: 'retraction',
+          technicianRef: subjectRef,
+          rawText: detail.reason,
+          retractsCaptureId: target.id,
+          // Copy the target's stamps so the retraction surfaces in the same
+          // stamped lists its target does.
+          customerId: target.customer_id,
+          jobId: target.job_id,
+          visitId: target.visit_id,
+          externalId: `retract:${item.id}`,
+          metadata: { retractedBy: subjectRef },
+        });
+        retractionId = row.id;
+      } catch (err) {
+        if (!isUniqueViolation(err)) throw err;
+        // Two indexes can fire: our own externalId (this confirm's retry after
+        // a crash between commit and consume → success) or the one-retraction-
+        // per-target index (a concurrent retraction won → report, cancel token).
+        const existing = (await findRetractionsFor([target.id]))[0];
+        if (existing && existing.external_id === `retract:${item.id}`) {
+          retractionId = existing.id;
+        } else {
+          await resolveReviewItem(item.id, tenantId, 'dismissed', 'already retracted by a concurrent confirm');
+          throw new Error('this capture was already retracted — nothing was written twice');
+        }
+      }
+      try {
+        await resolveReviewItem(item.id, tenantId, 'resolved', `retraction confirmed by ${subjectRef}`);
+      } catch {
+        /* advisory — the retry path above treats the landed row as success */
+      }
+      return { status: 'retracted', captureId: target.id, retractionId };
     }
     case 'add_technician_seat': {
       const displayName = str('displayName')?.trim();
@@ -881,6 +1388,21 @@ async function dispatch(
         throw new Error(
           `this is a staged email send for '${open.subject_ref}' — confirm it via send_email, ` +
             `or dismiss it to cancel`,
+        );
+      }
+      // Same rule for a staged field note: it commits only via
+      // record_field_note's confirm call.
+      if (open.kind === 'pending_field_note' && resolution === 'resolved') {
+        throw new Error(
+          `this is a staged field note for '${open.subject_ref}' — confirm it via ` +
+            `record_field_note, or dismiss it to cancel`,
+        );
+      }
+      // And for a staged retraction: it commits only via retract_capture.
+      if (open.kind === 'pending_retraction' && resolution === 'resolved') {
+        throw new Error(
+          `this is a staged retraction for '${open.subject_ref}' — confirm it via ` +
+            `retract_capture, or dismiss it to cancel`,
         );
       }
       // A pairing_verification verdict acts BEFORE the item closes (state-first,

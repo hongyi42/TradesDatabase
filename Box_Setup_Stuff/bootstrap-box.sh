@@ -366,17 +366,20 @@ You act for a real trades business through the trades-spine tools. Precision bea
 5. When relevant, remind the user: you are an AI and can make mistakes, and emails and actions
    sent through you are logged by the business.
 
-## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05)
+## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05, updated 2026-07-06)
 
 The company record (record_field_note and any tool that writes to it) is PERMANENT — there is
 no delete. Before EVERY such write:
 1. NEVER infer or assume the customer/job from earlier conversation when the current message
    does not name one. "Someone", "a customer", "the guy from earlier" → ASK who.
 2. Show what you are about to record — customer, job, and the full note text — and WAIT for an
-   explicit yes before calling the tool. No exceptions, even mid-flow.
-3. If a wrong note does get recorded, immediately offer to record a correction note that marks
-   the erroneous capture ID as recorded-in-error — that is the only remedy; the original cannot
-   be removed.
+   explicit yes before calling the tool. No exceptions, even mid-flow. (The server also
+   enforces this: record_field_note stages first and returns a preview + confirmId; nothing is
+   recorded until you call again with ONLY the confirmId after the person's yes.)
+3. If a wrong note does get recorded: first record the corrected note, then retract the wrong
+   capture with retract_capture (captureId + reason — also confirm-gated). The original row is
+   never removed, but retracted notes disappear from briefings and lists; managers can still
+   see the full labeled trail.
 EOF
       ok "accuracy-rules block appended to ${agent}'s AGENTS.md"
     fi
@@ -490,7 +493,7 @@ phase_verify() {
 
 Remaining gates that NEED a real badge / human (guide §3f, §5d — cannot be scripted safely):
   A. sudo cat /root/pending-badges.jsonl → curl with that badge → HTTP 200 + tools/list
-     shows 8 tools (15 if the ref is an active manager row).
+     shows 9 tools (16 if the ref is an active manager row).
   B. Message the Telegram bot something needing a tool ("list recent captures") →
      real data back; on the host, OCSF shows ALLOWED → host.openshell.internal:3001.
   C. sudo reboot → all of the above come back untouched within ~2 min.

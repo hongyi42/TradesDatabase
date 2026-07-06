@@ -112,7 +112,7 @@ async function clientFor(
 }
 
 describe('MCP server', () => {
-  test('lists the technician tool surface (exactly 8 tools)', async () => {
+  test('lists the technician tool surface (exactly 9 tools)', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
     expect(names).toEqual(
@@ -125,12 +125,13 @@ describe('MCP server', () => {
         'brief_customer',
         'answer_customer_question',
         'send_email',
+        'retract_capture',
       ]),
     );
-    expect(names).toHaveLength(8);
+    expect(names).toHaveLength(9);
   });
 
-  test('record_field_note returns needs_confirmation, then resolves on resume', async () => {
+  test('record_field_note stages (NO L1), resolves identity, and records only on the final confirm', async () => {
     const tech = 'tech-mcp';
     const day = new Date().toISOString().slice(0, 10);
     await upsertScheduleEntry({
@@ -142,36 +143,181 @@ describe('MCP server', () => {
       scheduledStart: `${day}T12:00:00.000Z`,
     });
 
+    const noteRows = async () =>
+      Number(
+        (
+          await pg.query<{ n: string }>(
+            "select count(*)::int as n from raw_captures where raw_text = 'all wrapped up'",
+          )
+        ).rows[0].n,
+      );
+
+    // Stage: identity ambiguous → ask, and NOTHING lands in L1.
     const first = await call('record_field_note', {
       text: 'all wrapped up',
       channel: 'technician_voice',
     });
     expect(first.isError).toBe(false);
-    expect(first.data.status).toBe('needs_confirmation');
+    expect(first.data.status).toBe('needs_identity');
     expect(first.data.suggestion.address).toBe('12 MCP St');
+    expect(await noteRows()).toBe(0);
 
+    // Identity resume: sheet prefill becomes the previewed create-new customer.
     const resumed = await call('record_field_note', {
-      captureId: first.data.captureId,
+      confirmId: first.data.confirmId,
       confirmed: { address: '12 MCP St' },
     });
-    expect(resumed.data.status).toBe('matched');
-    expect(resumed.data.customerId).toBeDefined();
+    expect(resumed.data.status).toBe('needs_confirmation');
+    expect(resumed.data.preview.customerName).toBe('MCP Cust');
+    expect(resumed.data.preview.newCustomer).toBe(true);
+    expect(resumed.data.preview.text).toBe('all wrapped up');
+    expect(await noteRows()).toBe(0); // still nothing recorded
 
-    // Cross-channel read-back: the L1 capture exists with the voice channel.
-    const cap = await pg.query<{ channel: string }>(
-      'select channel from raw_captures where id = $1',
-      [first.data.captureId],
+    // Final confirm: NOW the permanent rows land — exactly what was previewed.
+    const done = await call('record_field_note', { confirmId: first.data.confirmId });
+    expect(done.data.status).toBe('recorded');
+    expect(await noteRows()).toBe(1);
+
+    const cap = await pg.query<{ channel: string; technician_ref: string; external_id: string }>(
+      'select channel, technician_ref, external_id from raw_captures where id = $1',
+      [done.data.captureId],
     );
     expect(cap.rows[0].channel).toBe('technician_voice');
+    expect(cap.rows[0].technician_ref).toBe('tech-mcp'); // identity, not args
+    expect(cap.rows[0].external_id).toBe(`note:${first.data.confirmId}`);
 
-    // Identity, not call args, is the source of technicianRef: the visit's
-    // technician_name comes from the injected identity ('tech-mcp'), even though
-    // no technicianRef was passed in the tool call.
+    const cust = await pg.query<{ name: string }>(
+      'select name from customers where id = $1',
+      [done.data.customerId],
+    );
+    expect(cust.rows[0].name).toBe('MCP Cust'); // preview == commit
+
     const vis = await pg.query<{ technician_name: string }>(
       'select technician_name from visits where id = $1',
-      [resumed.data.visitId],
+      [done.data.visitId],
     );
     expect(vis.rows[0].technician_name).toBe('tech-mcp');
+
+    // The token is consumed: a repeat confirm errors cleanly, nothing doubles.
+    const again = await call('record_field_note', { confirmId: first.data.confirmId });
+    expect(again.isError).toBe(true);
+    expect(again.text).toContain('confirmation not found');
+    expect(await noteRows()).toBe(1);
+  });
+
+  test('staging with a known customer goes straight to needs_confirmation; re-stage supersedes the old token', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Stage Direct', phone: '555-2211' });
+
+    const a = await call('record_field_note', {
+      text: 'first attempt',
+      confirmed: { customerId: customer.id },
+    });
+    expect(a.data.status).toBe('needs_confirmation');
+    expect(a.data.preview.customerName).toBe('Stage Direct');
+    expect(a.data.preview.newCustomer).toBe(false);
+
+    // Re-stage before confirming: one staged note per person.
+    const b = await call('record_field_note', {
+      text: 'second attempt',
+      confirmed: { customerId: customer.id },
+    });
+    expect(b.data.status).toBe('needs_confirmation');
+    expect(b.data.confirmId).not.toBe(a.data.confirmId);
+
+    // The superseded token is dead; the live one commits its own staged copy.
+    const dead = await call('record_field_note', { confirmId: a.data.confirmId });
+    expect(dead.isError).toBe(true);
+    expect(dead.text).toContain('confirmation not found');
+
+    const done = await call('record_field_note', { confirmId: b.data.confirmId });
+    expect(done.data.status).toBe('recorded');
+    const cap = await pg.query<{ raw_text: string }>(
+      'select raw_text from raw_captures where id = $1',
+      [done.data.captureId],
+    );
+    expect(cap.rows[0].raw_text).toBe('second attempt'); // the STAGED copy, not the first
+  });
+
+  test('a forged confirmId is rejected; an expired staged note is dismissed', async () => {
+    const forged = await call('record_field_note', {
+      confirmId: '00000000-0000-0000-0000-000000000000',
+    });
+    expect(forged.isError).toBe(true);
+    expect(forged.text).toContain('confirmation not found');
+
+    const customer = await createCustomer({ tenantId, name: 'Expiry Cust', phone: '555-2222' });
+    const staged = await call('record_field_note', {
+      text: 'about to expire',
+      confirmed: { customerId: customer.id },
+    });
+    // Backdate the staging clock past the 15-min window (review_items is mutable).
+    await pg.query(
+      "update review_items set detail = jsonb_set(detail, '{stagedAt}', to_jsonb($1::text)) where id = $2",
+      [new Date(Date.now() - 20 * 60_000).toISOString(), staged.data.confirmId],
+    );
+    const expired = await call('record_field_note', { confirmId: staged.data.confirmId });
+    expect(expired.isError).toBe(true);
+    expect(expired.text).toContain('expired');
+    // And nothing was recorded.
+    const caps = await pg.query<{ n: string }>(
+      "select count(*)::int as n from raw_captures where raw_text = 'about to expire'",
+    );
+    expect(Number(caps.rows[0].n)).toBe(0);
+  });
+
+  test('crash-heal: commit landed but the token was left open — a retried confirm converges on ONE L1 row', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Heal Confirm', phone: '555-2233' });
+    const staged = await call('record_field_note', {
+      text: 'healed note',
+      confirmed: { customerId: customer.id },
+    });
+    const done = await call('record_field_note', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('recorded');
+
+    // Simulate the crash window: commit succeeded but the consume never ran.
+    await pg.query(
+      "update review_items set status = 'open', resolution = null, resolved_at = null where id = $1",
+      [staged.data.confirmId],
+    );
+    const retried = await call('record_field_note', { confirmId: staged.data.confirmId });
+    expect(retried.isError).toBe(false);
+    expect(retried.data.status).toBe('duplicate'); // honest: already recorded once
+    expect(retried.data.captureId).toBe(done.data.captureId); // same row, not a second
+
+    const caps = await pg.query<{ n: string }>(
+      'select count(*)::int as n from raw_captures where external_id = $1',
+      [`note:${staged.data.confirmId}`],
+    );
+    expect(Number(caps.rows[0].n)).toBe(1);
+  });
+
+  test('resolve_review refuses to "resolve" a staged field note (live token); dismiss cancels it', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Cancel Cust', phone: '555-2244' });
+    const staged = await call('record_field_note', {
+      text: 'to be cancelled',
+      confirmed: { customerId: customer.id },
+    });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const refused = await callWith('resolve_review', {
+        reviewItemId: staged.data.confirmId,
+        resolution: 'resolved',
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('staged field note');
+
+      const dismissed = await callWith('resolve_review', {
+        reviewItemId: staged.data.confirmId,
+        resolution: 'dismissed',
+      });
+      expect(dismissed.isError).toBe(false);
+    } finally {
+      await mgrClient.close();
+    }
+    // The cancelled token no longer commits anything.
+    const confirm = await call('record_field_note', { confirmId: staged.data.confirmId });
+    expect(confirm.isError).toBe(true);
+    expect(confirm.text).toContain('confirmation not found');
   });
 
   test('get_customer_context returns the aggregated record', async () => {
@@ -480,6 +626,257 @@ describe('MCP server', () => {
   });
 });
 
+describe('retract_capture + retraction folding', () => {
+  test('author two-step retraction; context stops showing the capture and its visit', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Retract Cust', phone: '555-3311' });
+    // Record a note via the staged flow (creates capture + visit).
+    const staged = await call('record_field_note', {
+      text: 'bad note to retract',
+      confirmed: { customerId: customer.id },
+    });
+    const done = await call('record_field_note', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('recorded');
+
+    const retractionRows = async () =>
+      Number(
+        (
+          await pg.query<{ n: string }>(
+            'select count(*)::int as n from raw_captures where retracts_capture_id = $1',
+            [done.data.captureId],
+          )
+        ).rows[0].n,
+      );
+
+    // Stage the retraction: nothing written yet.
+    const r1 = await call('retract_capture', {
+      captureId: done.data.captureId,
+      reason: 'wrong customer',
+    });
+    expect(r1.isError).toBe(false);
+    expect(r1.data.status).toBe('needs_confirmation');
+    expect(r1.data.targetPreview).toContain('bad note to retract');
+    expect(await retractionRows()).toBe(0);
+
+    // Confirm: the retraction row lands, pointing at the target.
+    const r2 = await call('retract_capture', { confirmId: r1.data.confirmId });
+    expect(r2.data.status).toBe('retracted');
+    expect(r2.data.captureId).toBe(done.data.captureId);
+    expect(await retractionRows()).toBe(1);
+
+    // Folded context: neither the capture nor its visit surfaces.
+    const ctx = await call('get_customer_context', { customerId: customer.id });
+    expect(ctx.data.recentCaptures.map((c: { id: string }) => c.id)).not.toContain(
+      done.data.captureId,
+    );
+    expect(ctx.data.recentVisits.map((v: { id: string }) => v.id)).not.toContain(
+      done.data.visitId,
+    );
+  });
+
+  test('permissions: a non-author technician cannot retract; a manager can', async () => {
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'perm target',
+    });
+    const { client: otherTech, callWith: callOther } = await clientFor({
+      tenantId,
+      technicianRef: 'tech-other',
+    });
+    try {
+      const denied = await callOther('retract_capture', { captureId: cap.id, reason: 'nope' });
+      expect(denied.isError).toBe(true);
+      expect(denied.text).toContain('only the author or a manager');
+    } finally {
+      await otherTech.close();
+    }
+
+    const { client: mgrClient, callWith: callMgr } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const s = await callMgr('retract_capture', { captureId: cap.id, reason: 'manager cleanup' });
+      expect(s.data.status).toBe('needs_confirmation');
+      const c = await callMgr('retract_capture', { confirmId: s.data.confirmId });
+      expect(c.data.status).toBe('retracted');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('double-retract blocked at stage AND at a racing confirm (one retraction row total)', async () => {
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'race target',
+    });
+    // The tech stages first...
+    const techStage = await call('retract_capture', { captureId: cap.id, reason: 'tech reason' });
+    expect(techStage.data.status).toBe('needs_confirmation');
+    // ...and a manager stages AND confirms while the tech token is still open.
+    const { client: mgrClient, callWith: callMgr } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const mgrStage = await callMgr('retract_capture', { captureId: cap.id, reason: 'mgr reason' });
+      const mgrDone = await callMgr('retract_capture', { confirmId: mgrStage.data.confirmId });
+      expect(mgrDone.data.status).toBe('retracted');
+    } finally {
+      await mgrClient.close();
+    }
+    // The tech's confirm loses the race cleanly (unique index, not a 500).
+    const lost = await call('retract_capture', { confirmId: techStage.data.confirmId });
+    expect(lost.isError).toBe(true);
+    expect(lost.text).toContain('already retracted');
+    // The stage-time guard also refuses now.
+    const restage = await call('retract_capture', { captureId: cap.id, reason: 'again' });
+    expect(restage.isError).toBe(true);
+    expect(restage.text).toContain('already retracted');
+    // Exactly one permanent retraction row.
+    const n = await pg.query<{ n: string }>(
+      'select count(*)::int as n from raw_captures where retracts_capture_id = $1',
+      [cap.id],
+    );
+    expect(Number(n.rows[0].n)).toBe(1);
+  });
+
+  test('audit rows (outbound_email) are manager-only retractions, even for their author', async () => {
+    // The send capture stamps the SENDER's own ref — author-permission alone
+    // would let a person scrub their own audit trail from default views.
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'outbound_email',
+      technicianRef: 'tech-mcp',
+      rawText: 'From: tech-mcp\nSubject: personal\n\nbody',
+    });
+    const denied = await call('retract_capture', { captureId: cap.id, reason: 'tidy up' });
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain('only a manager can retract it');
+
+    const { client: mgrClient, callWith: callMgr } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const s = await callMgr('retract_capture', { captureId: cap.id, reason: 'sent in error' });
+      expect(s.data.status).toBe('needs_confirmation');
+      const c = await callMgr('retract_capture', { confirmId: s.data.confirmId });
+      expect(c.data.status).toBe('retracted');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('cannot retract a retraction', async () => {
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'chain target',
+    });
+    const s = await call('retract_capture', { captureId: cap.id, reason: 'first' });
+    const c = await call('retract_capture', { confirmId: s.data.confirmId });
+    const denied = await call('retract_capture', {
+      captureId: c.data.retractionId,
+      reason: 'undo',
+    });
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain('cannot retract a retraction');
+  });
+
+  test('list_recent_captures folds by default; manager toggle returns the labeled trail; technicians may not toggle', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Trail Cust', phone: '555-3322' });
+    const kept = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'kept note',
+      customerId: customer.id,
+    });
+    const bad = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'bad stamped note',
+      customerId: customer.id,
+    });
+    const s = await call('retract_capture', { captureId: bad.id, reason: 'belongs to Tom' });
+    const c = await call('retract_capture', { confirmId: s.data.confirmId });
+    expect(c.data.status).toBe('retracted');
+
+    // Folded (default): target gone, retraction row gone, good row kept.
+    const folded = await call('list_recent_captures', { customerId: customer.id });
+    const foldedIds = folded.data.map((r: { id: string }) => r.id);
+    expect(foldedIds).toContain(kept.id);
+    expect(foldedIds).not.toContain(bad.id);
+    expect(foldedIds).not.toContain(c.data.retractionId);
+
+    // Technician toggle rejected.
+    const deniedToggle = await call('list_recent_captures', {
+      customerId: customer.id,
+      includeRetracted: true,
+    });
+    expect(deniedToggle.isError).toBe(true);
+    expect(deniedToggle.text).toContain('manager badge');
+
+    // Manager toggle: labeled full trail.
+    const { client: mgrClient, callWith: callMgr } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const trail = await callMgr('list_recent_captures', {
+        customerId: customer.id,
+        includeRetracted: true,
+      });
+      const badRow = trail.data.find((r: { id: string }) => r.id === bad.id);
+      expect(badRow.retracted).toBe(true);
+      expect(badRow.retraction.reason).toBe('belongs to Tom');
+      expect(badRow.retraction.by).toBe('tech-mcp');
+      // The retraction row itself appears in the trail, as-is.
+      expect(trail.data.map((r: { id: string }) => r.id)).toContain(c.data.retractionId);
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('resolve_review refuses to "resolve" a staged retraction (live token); dismiss cancels', async () => {
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'cancel-retract target',
+    });
+    const s = await call('retract_capture', { captureId: cap.id, reason: 'oops' });
+    const { client: mgrClient, callWith: callMgr } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const refused = await callMgr('resolve_review', {
+        reviewItemId: s.data.confirmId,
+        resolution: 'resolved',
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('staged retraction');
+      const dismissed = await callMgr('resolve_review', {
+        reviewItemId: s.data.confirmId,
+        resolution: 'dismissed',
+      });
+      expect(dismissed.isError).toBe(false);
+    } finally {
+      await mgrClient.close();
+    }
+    const confirm = await call('retract_capture', { confirmId: s.data.confirmId });
+    expect(confirm.isError).toBe(true);
+    expect(confirm.text).toContain('confirmation not found');
+  });
+});
+
 describe('pairing lifecycle tools (Composio seams stubbed)', () => {
   test('get_connect_link states + cooldown; resolve_review verdicts', { timeout: 30_000 }, async () => {
     // The earlier admin test leaves technician seats 3/3 occupied — make room.
@@ -647,7 +1044,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
-      expect(mgrTools).toHaveLength(15);
+      expect(mgrTools).toHaveLength(16);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -798,7 +1195,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       // Technician surface count including send_email: exactly 8.
       const tools = (await techClient.listTools()).tools.map((t) => t.name);
       expect(tools).toContain('send_email');
-      expect(tools).toHaveLength(8);
+      expect(tools).toHaveLength(9);
 
       // Staging requires the full payload.
       const missing = await callWith('send_email', { to: 'cust@example.com' });
@@ -921,7 +1318,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(15);
+        expect(mgrTools).toHaveLength(16);
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',

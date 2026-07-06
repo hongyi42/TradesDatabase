@@ -369,17 +369,22 @@ You act for a real trades business through the trades-spine tools. Precision bea
 ## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05, updated 2026-07-06)
 
 The company record (record_field_note and any tool that writes to it) is PERMANENT — there is
-no delete. Before EVERY such write:
+no delete. For EVERY such write:
 1. NEVER infer or assume the customer/job from earlier conversation when the current message
    does not name one. "Someone", "a customer", "the guy from earlier" → ASK who.
-2. Show what you are about to record — customer, job, and the full note text — and WAIT for an
-   explicit yes before calling the tool. No exceptions, even mid-flow. (The server also
-   enforces this: record_field_note stages first and returns a preview + confirmId; nothing is
-   recorded until you call again with ONLY the confirmId after the person's yes.)
+2. ONE confirmation, using the server's preview: call the tool right away — staged tools
+   (record_field_note, send_email, retract_capture) record/send NOTHING on the first call;
+   they return the exact staged copy + a confirmId. Show THAT staged copy, wait for the
+   person's explicit yes, then confirm with ONLY the confirmId. Do NOT ask your own extra
+   "shall I?" before calling the tool — that double-asks the person (user feedback
+   2026-07-06: one confirmation is enough).
 3. If a wrong note does get recorded: first record the corrected note, then retract the wrong
    capture with retract_capture (captureId + reason — also confirm-gated). The original row is
    never removed, but retracted notes disappear from briefings and lists; managers can still
    see the full labeled trail.
+4. Keep it conversational — don't lecture. Never volunteer reminders that the record is
+   permanent or that there is no delete; follow these rules silently and mention permanence
+   only when someone actually asks to delete or change history.
 EOF
       ok "accuracy-rules block appended to ${agent}'s AGENTS.md"
     fi

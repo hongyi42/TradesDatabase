@@ -120,17 +120,22 @@ no delete). Append this block to every sandbox alongside the accuracy rules:
 > ## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05, updated 2026-07-06)
 >
 > The company record (record_field_note and any tool that writes to it) is PERMANENT — there is
-> no delete. Before EVERY such write:
+> no delete. For EVERY such write:
 > 1. NEVER infer or assume the customer/job from earlier conversation when the current message
 >    does not name one. "Someone", "a customer", "the guy from earlier" → ASK who.
-> 2. Show what you are about to record — customer, job, and the full note text — and WAIT for an
->    explicit yes before calling the tool. No exceptions, even mid-flow. (The server also
->    enforces this: record_field_note stages first and returns a preview + confirmId; nothing is
->    recorded until you call again with ONLY the confirmId after the person's yes.)
+> 2. ONE confirmation, using the server's preview: call the tool right away — staged tools
+>    (record_field_note, send_email, retract_capture) record/send NOTHING on the first call;
+>    they return the exact staged copy + a confirmId. Show THAT staged copy, wait for the
+>    person's explicit yes, then confirm with ONLY the confirmId. Do NOT ask your own extra
+>    "shall I?" before calling the tool — that double-asks the person (user feedback
+>    2026-07-06: one confirmation is enough).
 > 3. If a wrong note does get recorded: first record the corrected note, then retract the wrong
 >    capture with retract_capture (captureId + reason — also confirm-gated). The original row is
 >    never removed, but retracted notes disappear from briefings and lists; managers can still
 >    see the full labeled trail.
+> 4. Keep it conversational — don't lecture. Never volunteer reminders that the record is
+>    permanent or that there is no delete; follow these rules silently and mention permanence
+>    only when someone actually asks to delete or change history.
 
 *(Prompt-level is layer 1. Layer 2 — the structural two-step stage→confirm on record_field_note,
 mirroring send_email's pending_outbound_send — SHIPPED 2026-07-06 alongside retract_capture
@@ -403,6 +408,20 @@ curl \-s \-o /dev/null \-w 'HTTP %{http\_code} in %{time\_total}s\\n' \\
 ## 4\. Create the sandbox agent (onboard)
 
 nemoclaw onboard      \# if port 8080 is blocked: sudo kill \<PID\>; sudo lsof \-i :8080; re-run
+
+> **Provider update 2026-07-06 — inference now routes to DeepInfra.** NVIDIA's free tier
+> rate-limited live conversations (40 req/min), so the gateway inference route was flipped to
+> metered DeepInfra: `openshell provider create -g nemoclaw --name deepinfra-prod --type
+> deepinfra --credential DEEPINFRA_API_KEY=…` then `openshell inference set -g nemoclaw
+> --provider deepinfra-prod --model zai-org/GLM-5.2` (NOTE the DeepInfra id spelling; NVIDIA's
+> was `z-ai/glm-5.2`). The route FORCES the model id per request, so sandbox configs need no
+> change — the sandbox banner still displaying "NVIDIA Endpoints" is cosmetic. `nvidia-prod`
+> stays configured as instant rollback (`openshell inference set … --provider nvidia-prod
+> --model z-ai/glm-5.2`). Gateway-level custom providers (e.g. OpenRouter) are NOT possible:
+> cluster inference accepts only openai/anthropic/nvidia/deepinfra/google-vertex-ai/aws-bedrock.
+> DeepInfra limit: 200 CONCURRENT requests per model (not per-minute); raiseable by contacting
+> them. The onboarding prompts below still describe the original NVIDIA setup — fine for a
+> fresh box; flip to DeepInfra afterwards with the two commands above.
 
 Answer the prompts: provider **1 (NVIDIA Endpoints)**; API key (reuses stored / paste `nvapi-…`); cloud model: **the target model is the GLM line — `z-ai/glm-5.2` as of 2026-07-02** (Nemotron-3 Super proved too weak; don't pick it. GLM-5.1 was retired by NVIDIA — 410s). If the GLM model isn't offered in the onboard menu, pick anything and set it afterward with `nemoclaw inference set --provider nvidia-prod --model z-ai/glm-5.2 --sandbox <AGENT>` (the supported path — updates the gateway route + all openclaw.json refs). **Confirm the exact id first** against the live catalog **from the HOST** — `curl -s https://integrate.api.nvidia.com/v1/models` is public, no key (nemoclaw's `--verify` can't reach NVIDIA from inside the gateway container; it fails on connection, not auth). Then: **Sandbox name \= `<AGENT>`**; Apply config **Y**; Brave search **N**; messaging channel (e.g. Telegram — paste bot token \+ your user ID); Resource profile **2 (gamer 25%)**; Policy tier **Enter**; Presets **Enter**. First build ≈ 8 min.
 

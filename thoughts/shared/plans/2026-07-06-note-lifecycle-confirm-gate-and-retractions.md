@@ -221,7 +221,7 @@ this part of the same change, not a follow-up), then runs the full gates + build
 - [x] Fresh `npx supabase db reset` replay passed all 5 steps 2026-07-06: 12 migrations applied, schema + unique index + append-only trigger verified on pristine DB, full record→retract→folded-context flow with psql row proof (counts 1|1|1), full suite green on the fresh stack.
 
 ### Manual verification
-- [ ] Read the rewritten §0c prompt block and §5 contract as a human — do they read correctly to a non-engineer operator? (judgment call on wording)
+- [x] Read the rewritten §0c prompt block and §5 contract as a human — approved by the user 2026-07-06 ("I agree with the conversation contract and the section 0 block").
 
 ---
 *Pause after Phase 4 for the manual doc-read check.*

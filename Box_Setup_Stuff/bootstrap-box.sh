@@ -344,7 +344,7 @@ EOF
     if docker exec "$cid" grep -q "Trades assistant — accuracy rules" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
       ok "accuracy-rules block already present"
     else
-      docker exec -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
 ## Trades assistant — accuracy rules (host-managed; keep at top priority)
 
@@ -365,6 +365,18 @@ You act for a real trades business through the trades-spine tools. Precision bea
    value that will leave the building.
 5. When relevant, remind the user: you are an AI and can make mistakes, and emails and actions
    sent through you are logged by the business.
+
+## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05)
+
+The company record (record_field_note and any tool that writes to it) is PERMANENT — there is
+no delete. Before EVERY such write:
+1. NEVER infer or assume the customer/job from earlier conversation when the current message
+   does not name one. "Someone", "a customer", "the guy from earlier" → ASK who.
+2. Show what you are about to record — customer, job, and the full note text — and WAIT for an
+   explicit yes before calling the tool. No exceptions, even mid-flow.
+3. If a wrong note does get recorded, immediately offer to record a correction note that marks
+   the erroneous capture ID as recorded-in-error — that is the only remedy; the original cannot
+   be removed.
 EOF
       ok "accuracy-rules block appended to ${agent}'s AGENTS.md"
     fi

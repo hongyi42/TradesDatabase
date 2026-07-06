@@ -112,6 +112,28 @@ AGENTS.md to the stock template — re-append after any rebuild** (§6 warning).
 > 5. When relevant, remind the user: you are an AI and can make mistakes, and emails and
 >    actions sent through you are logged by the business.
 
+**Second required block — permanent-record writes (added 2026-07-05 after a live incident):**
+jane's agent inferred a customer from conversation context ("someone" → the previously-discussed
+customer) and called record_field_note immediately — wrong-customer capture, permanent (L1 has
+no delete). Append this block to every sandbox alongside the accuracy rules:
+
+> ## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05)
+>
+> The company record (record_field_note and any tool that writes to it) is PERMANENT — there is
+> no delete. Before EVERY such write:
+> 1. NEVER infer or assume the customer/job from earlier conversation when the current message
+>    does not name one. "Someone", "a customer", "the guy from earlier" → ASK who.
+> 2. Show what you are about to record — customer, job, and the full note text — and WAIT for an
+>    explicit yes before calling the tool. No exceptions, even mid-flow.
+> 3. If a wrong note does get recorded, immediately offer to record a correction note that marks
+>    the erroneous capture ID as recorded-in-error — that is the only remedy; the original cannot
+>    be removed.
+
+*(Prompt-level is layer 1. Layer 2 — a structural two-step stage→confirm on record_field_note,
+mirroring send_email's pending_outbound_send — is a recorded pending feature (user decision
+2026-07-05): "technician notes are pretty important so we need to get confirmation before
+recording to L1".)*
+
 (Manager sandboxes get this block PLUS the §0b manager instruction block.)
 
 ---
@@ -386,6 +408,42 @@ nemoclaw list
 nemoclaw \<AGENT\> status         \# Connected: yes (field can lag; trust the agent log)
 
 A second agent on another port: `NEMOCLAW_GATEWAY_PORT=<port> nemoclaw onboard`.
+
+### 4b. Non-interactive onboard (scriptable — verified live 2026-07-05, s2/manager-sam)
+
+The wizard has an undocumented-but-working unattended mode; this is the seat-provisioning
+recipe (a SECOND sandbox on the same box reuses the running gateway; dashboard port
+auto-shifts). Every future seat should use this instead of the interactive wizard:
+
+1. Build the messaging plan and **hydrate it with the vendor's own function** (a hand-written
+   plan fails a strict validator, then a hooks-shape crash — hydration derives hooks/
+   credentialBindings/displayName from the channel manifest):
+   `node -e` → `require(dist/lib/messaging/persistence.js).hydrateDerivedSandboxMessagingPlanFields(plan)`
+   → `require(dist/lib/messaging/applier/setup-applier.js).MessagingSetupApplier.encodePlan(hydrated)`
+   → write to a root-only file. Minimal plan: `{schemaVersion:1, sandboxName, agent:"openclaw",
+   workflow:"onboard", disabledChannels:[], networkPolicy:{presets:["telegram"],entries:[…]},
+   channels:[{channelId:"telegram", active:true, configured:true, disabled:false, hooks:[],
+   inputs:[{inputId:"allowedIds",value:"<tg-user-id>"},{inputId:"botToken",value:"<token>"},
+   {inputId:"groupPolicy",value:"open"}]}]}` (+ empty arrays for credentialBindings/agentRender/
+   buildSteps/stateUpdates/healthChecks).
+   **⚠ Validate the bot token FIRST**: `curl -s https://api.telegram.org/bot<TOKEN>/getMe` must
+   return ok:true — an invalid token surfaces only as a deep `deleteWebhook failed (404)`
+   channel crash-loop after the whole build. **⚠ Transport the token base64-encoded** — shell
+   heredoc quoting mangled it once (rejected by Telegram, cost a full debug cycle).
+2. Run: `export NVIDIA_INFERENCE_API_KEY=nvapi-…` (required unconditionally in non-interactive
+   mode, no stored-key reuse) + `NEMOCLAW_MESSAGING_PLAN_B64=$(cat <planfile>)` +
+   `NEMOCLAW_MODEL=z-ai/glm-5.2`, then
+   `nemoclaw onboard --non-interactive --yes --name <AGENT> --no-gpu --yes-i-accept-third-party-software`.
+3. **The non-interactive path does NOT create the host-side provider** (the interactive wizard
+   does). Create + attach it yourself, both credentials in one shot (values via files/env, never
+   inline): `openshell provider create --name <AGENT>-telegram-bridge --type generic
+   --credential TELEGRAM_BOT_TOKEN="$TOK" --credential TRADES_SPINE_BADGE="$BADGE"` then
+   `openshell sandbox provider attach <AGENT> <AGENT>-telegram-bridge`. Without it the channel
+   placeholder can't resolve and the bot is silently deaf.
+4. Then the usual: §5a wire (egress + §0c blocks), §0b block for managers, `boot <AGENT>`
+   (revive unit), badge flow (§3c/§5b), one `nemoclaw <AGENT> gateway restart` to clear
+   device-pairing residue, and confirm `getUpdates` polling in the container logs — for BOTH
+   sandboxes (provider writes + the versioning trap; this box does not boot-heal placeholders).
 
 **Bake-in note:** if you applied §6 **before** this onboard, the sandbox already comes up with `toolSearch:false` \+ the trades-spine MCP block. If not, the manual wiring in §5 still works now and you can adopt the bake-in later.
 

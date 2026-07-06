@@ -76,20 +76,24 @@ HTTP server every bot calls**, with identity asserted per request by the gateway
     stateless transport returns `406`/`415` without both. (The MCP SDK client sets these automatically.)
 - The server rejects a missing/forged signature with `401`, then resolves `(tenant, technician)` from the
   verified header — never from tool args. `record_field_note` no longer accepts a `technicianRef` arg.
-- **Stateless ⇒ horizontally scalable:** the `record_field_note` confirmation resume keys off a
-  DB-persisted `captureId`, so any replica can serve any request — no session affinity behind a load balancer.
+- **Stateless ⇒ horizontally scalable:** the `record_field_note` stage→confirm flow keys off a
+  DB-persisted review-item token (`confirmId`, same store as `send_email`'s staged sends), so any
+  replica can serve any request — no session affinity behind a load balancer.
 
 The future **Option B** (per-bot JWT / OAuth Resource Server) swaps only the header-verification step
 (`resolveIdentityFromHeaders`); the tools and tenant guards are unchanged.
 
 ## 4. Restrict the tool surface
-Allowlist only the spine tools for the technician profile (`tools.profile` / allowlist):
-`record_field_note`, `find_customer`, `get_customer_context`, `get_job`, `list_recent_captures`.
+Allowlist only the spine tools for the technician profile (`tools.profile` / allowlist) — the
+9-tool technician surface: `record_field_note`, `find_customer`, `get_customer_context`,
+`get_job`, `list_recent_captures`, `brief_customer`, `answer_customer_question`, `send_email`,
+`retract_capture`.
 Outbound network policy should allow only the gateway + our server's host.
 
 **Manager profile (2026-07-02):** an ACTIVE `tier='manager'` roster row (the `technicians`
 table, not the badge, is the tier source of truth) additionally exposes the seat/lifecycle
-tools — 7 of them, for a 15-tool manager surface (the technician surface itself is 8 incl. send_email since 2026-07-04): `add_technician_seat`,
+tools — 7 of them, for a 16-tool manager surface (the technician surface itself is 9 incl.
+send_email since 2026-07-04 and retract_capture since 2026-07-06): `add_technician_seat`,
 `deactivate_technician_seat` (two-step confirm; starts the disable-first grace period),
 `reactivate_technician_seat` (the grace-period undo), `get_connect_link` (mint a Gmail
 Connect Link; 5-min per-person cooldown), `list_team`, `list_pending_reviews`,
@@ -99,12 +103,25 @@ by tier and re-gates every admin call at dispatch — a technician badge structu
 admin surface. Seat caps (`tenants.manager_seats`/`technician_seats`) are DB-enforced; the
 agent cannot talk past them.
 
-## 5. Conversation contract
-- The agent calls `record_field_note({ technicianRef, text, channel })`.
-- If the result `status` is `needs_confirmation` (a scheduled address to confirm) or
-  `needs_disambiguation` (no match — ask which address), the agent asks the technician, then calls
-  again with the **same `captureId`** plus `confirmed: { address }` (or `{ customerId }`).
-- The L1 note is already saved on the first call; the resume never writes a second capture.
+## 5. Conversation contract (stage→confirm since 2026-07-06)
+- The agent calls `record_field_note({ text, channel })`. **Nothing is recorded by this call** —
+  the note is staged server-side (a review-item token) and the response carries a `confirmId`.
+- If the result `status` is `needs_identity`, the agent asks the technician which customer
+  (a `suggestion` carries the scheduled address when there is one), then calls again with
+  `confirmId` + `confirmed: { customerId }` (or `{ address }`).
+- On `needs_confirmation` the response includes a `preview` (customer name, new-customer flag,
+  note text). The agent shows the technician exactly that preview and waits for an explicit yes,
+  then calls again with **ONLY `confirmId`** — that final call writes L1 + L2 in one step and
+  returns `status: 'recorded'`. The STAGED copy is what commits; fresh args are ignored.
+- Staged notes expire after 15 minutes; one staged note per person (a re-stage supersedes).
+- **Fixing a mistake:** the record is append-only — nothing is ever deleted. The agent records
+  the corrected note first, then calls `retract_capture({ captureId, reason })` on the wrong
+  capture (also two-step: stage → show → confirm with only `confirmId`). Retracted captures and
+  their visits disappear from briefings/context/lists; managers can pass
+  `includeRetracted: true` to `list_recent_captures` for the full labeled trail. Only the
+  capture's author or a manager may retract; agent-action audit rows (`outbound_email`,
+  `agent_action`) are manager-only, even for their author. Facts a note already wrote onto the
+  job/customer record (e.g. a status change) are not auto-reverted by a retraction.
 - For questions ("what did the last tech do here?"), the agent uses `find_customer` →
   `get_customer_context` / `list_recent_captures`.
 

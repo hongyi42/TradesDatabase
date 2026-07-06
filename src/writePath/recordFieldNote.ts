@@ -1,6 +1,6 @@
 import {
   appendRawCapture,
-  getRawCapture,
+  findRetractionsFor,
   getRawCaptureByExternalId,
   captureHasLinkedL2,
   isUniqueViolation,
@@ -18,7 +18,18 @@ import {
   type Json,
 } from '../db/index.js';
 import { sonnetExtractor, type Extractor, type ExtractedFields } from './extract.js';
-import { matchIdentity } from './identityMatch.js';
+import { matchIdentity, type MatchResult, type ScheduledCustomerDraft } from './identityMatch.js';
+
+// Identity resolved during the staged-confirm flow (MCP tool path): commit must
+// use EXACTLY what the preview showed, so the resolution travels here and
+// matchIdentity is skipped entirely — a commit-time re-match could resolve
+// differently (e.g. the schedule branch keys on the calendar day, which can
+// change between stage and confirm).
+export interface ResolvedIdentity {
+  customerId?: string;
+  jobId?: string;
+  createFrom?: ScheduledCustomerDraft;
+}
 
 export interface RecordFieldNoteInput {
   tenantId: string;
@@ -26,13 +37,15 @@ export interface RecordFieldNoteInput {
   text?: string | null;
   blobPath?: string | null;
   channel: CaptureChannel;
-  // Set on a resume turn (after the agent asked the tech to confirm/clarify).
-  confirmed?: { customerId?: string; address?: string };
-  // Set on a resume turn — points at the L1 capture from the first call so we
-  // never write a second raw_capture for the same note.
-  captureId?: string;
-  // Inbound-connector provenance (Composio webhooks, Gmail message id). externalId
-  // dedups the L1 insert per tenant; occurredAt/sourceMeta land in metadata JSONB.
+  // Staged-confirm path only: pre-resolved identity; skips matchIdentity.
+  // (There is deliberately NO `confirmed` passthrough here: a caller-supplied
+  // customerId would win outright in matchIdentity with no tenant check at
+  // this layer — the tenant guard lives in the MCP dispatch, which resolves
+  // identity itself and passes the result via `resolved`.)
+  resolved?: ResolvedIdentity;
+  // Inbound-connector provenance (Composio webhooks, Gmail message id) AND the
+  // staged-confirm idempotency stamp (`note:<confirmId>`). externalId dedups
+  // the L1 insert per tenant; occurredAt/sourceMeta land in metadata JSONB.
   externalId?: string | null;
   occurredAt?: string | null;
   sourceMeta?: Json;
@@ -64,17 +77,11 @@ export async function recordFieldNote(
   const extract = deps.extract ?? sonnetExtractor;
   const { tenantId, technicianRef, channel } = input;
 
-  // (1) L1 first — append the verbatim note, or reload it on a resume turn.
+  // (1) L1 first — append the verbatim note.
   let captureId: string;
   let rawText: string;
   let capturedAt: string;
-  if (input.captureId) {
-    const existing = await getRawCapture(input.captureId);
-    if (!existing) throw new Error(`recordFieldNote: capture ${input.captureId} not found`);
-    captureId = existing.id;
-    rawText = existing.raw_text ?? input.text ?? '';
-    capturedAt = existing.captured_at;
-  } else {
+  {
     // Dedup with partial-failure healing. A capture with this (tenant, externalId)
     // may already exist from a prior delivery:
     //   - fully processed (an L2 row links back) → real duplicate, no-op.
@@ -92,6 +99,12 @@ export async function recordFieldNote(
       const dup = await getRawCaptureByExternalId(tenantId, input.externalId);
       if (dup) {
         if (await captureHasLinkedL2(dup.id)) return { status: 'duplicate', captureId: dup.id };
+        // A RETRACTED unmatched capture is NOT an orphan to heal: rebuilding
+        // L2 from a row someone marked recorded-in-error would resurrect it
+        // (review finding — webhook redelivery after a manager retraction).
+        if ((await findRetractionsFor([dup.id])).length > 0) {
+          return { status: 'duplicate', captureId: dup.id };
+        }
         landed = dup; // orphan → heal on this delivery
       }
     }
@@ -116,6 +129,10 @@ export async function recordFieldNote(
           const dup = await getRawCaptureByExternalId(tenantId, input.externalId);
           if (!dup) throw err;
           if (await captureHasLinkedL2(dup.id)) return { status: 'duplicate', captureId: dup.id };
+          // Same retracted-is-terminal rule as the fast path above.
+          if ((await findRetractionsFor([dup.id])).length > 0) {
+            return { status: 'duplicate', captureId: dup.id };
+          }
           landed = dup;
         } else {
           throw err;
@@ -131,17 +148,25 @@ export async function recordFieldNote(
   // (2-3) AI extraction of candidate fields.
   const extracted = await extract(rawText);
 
-  // (4) deterministic identity match.
-  const match = await matchIdentity({
-    tenantId,
-    technicianRef,
-    capturedAt,
-    extracted,
-    confirmed: input.confirmed,
-  });
+  // (4) identity: pre-resolved (staged-confirm path — preview == commit, no
+  // re-match) or the deterministic matcher (inbound path).
+  let match: MatchResult;
+  if (input.resolved) {
+    match = input.resolved.customerId
+      ? { status: 'matched', customerId: input.resolved.customerId, jobId: input.resolved.jobId }
+      : { status: 'needs_disambiguation', createFrom: input.resolved.createFrom };
+  } else {
+    match = await matchIdentity({
+      tenantId,
+      technicianRef,
+      capturedAt,
+      extracted,
+    });
+  }
 
-  // (6) Unresolved and nothing confirmed yet → hand back to the agent to ask.
-  if (match.status !== 'matched' && !input.confirmed) {
+  // (6) Unresolved and nothing resolved → hand back to the caller.
+  // (Inbound: the capture stays L1-only until a later delivery resolves it.)
+  if (match.status !== 'matched' && !input.resolved) {
     return { status: match.status, captureId, suggestion: match.suggestion };
   }
 
@@ -158,7 +183,7 @@ export async function recordFieldNote(
       tenantId,
       name: draft?.customerName?.trim() || extracted.customerName?.trim() || 'Unknown customer',
       phone: draft?.phone ?? extracted.phone ?? null,
-      addressLine1: draft?.addressLine1 ?? input.confirmed?.address ?? extracted.address ?? null,
+      addressLine1: draft?.addressLine1 ?? extracted.address ?? null,
       city: draft?.city ?? extracted.city ?? null,
       state: draft?.state ?? extracted.state ?? null,
       postalCode: draft?.postalCode ?? extracted.postalCode ?? null,

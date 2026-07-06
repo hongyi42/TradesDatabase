@@ -241,6 +241,7 @@ export type Database = {
           job_id: string | null
           metadata: Json
           raw_text: string | null
+          retracts_capture_id: string | null
           sensitivity: string | null
           technician_ref: string | null
           tenant_id: string
@@ -257,6 +258,7 @@ export type Database = {
           job_id?: string | null
           metadata?: Json
           raw_text?: string | null
+          retracts_capture_id?: string | null
           sensitivity?: string | null
           technician_ref?: string | null
           tenant_id: string
@@ -273,6 +275,7 @@ export type Database = {
           job_id?: string | null
           metadata?: Json
           raw_text?: string | null
+          retracts_capture_id?: string | null
           sensitivity?: string | null
           technician_ref?: string | null
           tenant_id?: string
@@ -291,6 +294,13 @@ export type Database = {
             columns: ["job_id"]
             isOneToOne: false
             referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raw_captures_retracts_capture_id_fkey"
+            columns: ["retracts_capture_id"]
+            isOneToOne: false
+            referencedRelation: "raw_captures"
             referencedColumns: ["id"]
           },
           {
@@ -630,6 +640,7 @@ export type Database = {
         | "iot"
         | "outbound_email"
         | "agent_action"
+        | "retraction"
       job_status:
         | "open"
         | "in_progress"
@@ -794,6 +805,7 @@ export const Constants = {
         "iot",
         "outbound_email",
         "agent_action",
+        "retraction",
       ],
       job_status: [
         "open",

@@ -17,11 +17,11 @@ authority — the scripts cite its sections and fall back to it whenever an anch
 
 ---
 
-## 0\. Concepts & the 8 tools
+## 0\. Concepts & the 9 tools
 
 - **Doorman**: a small Node HTTP service on the host. Binds the docker-bridge gateway `172.18.0.1:3001`. Reads `Authorization: Bearer <badge>`, looks the badge up in `/etc/doorman/badges.json`, computes the identity signature with the host-only secret, forwards to the Render upstream. Returns **200** (valid badge), **403** (unknown/revoked badge), **401** (no badge).  
 - **Badge**: a low-value, revocable token. Lives in the sandbox's OpenShell provider store (never in the image, never on disk in plaintext). **No badge plaintext appears anywhere in this guide, ever** — badges are minted by the server in the badge-pull response (`/root/pending-badges.jsonl` holds the one and only plaintext copy; install it as the provider credential, then delete the line). The old "reference badge" this guide used to print leaked into a transcript and was rotated dead on 2026-07-03.  
-- **The 8 trades-spine tools** (what a technician-tier badge sees — every count below assumes one): `record_field_note`, `find_customer`, `get_customer_context`, `get_job`, `list_recent_captures`, `brief_customer`, `answer_customer_question`, `send_email` (two-step confirm; since 2026-07-04). A badge whose `technicianRef` matches an **ACTIVE `tier='manager'`** row in the server's `technicians` table sees **15** (since 2026-07-04; was 14) — the 8 plus the seat/lifecycle tools `add_technician_seat`, `deactivate_technician_seat`, `reactivate_technician_seat`, `get_connect_link`, `list_team`, `list_pending_reviews`, `resolve_review`. The tier is decided **server-side by that roster row, not by the badge**; a badge with no matching active manager row acts as a plain technician (8 tools). The host/doorman does nothing tier-specific — it just forwards the badge.
+- **The 9 trades-spine tools** (what a technician-tier badge sees — every count below assumes one): `record_field_note` (two-step stage→confirm; since 2026-07-06), `find_customer`, `get_customer_context`, `get_job`, `list_recent_captures`, `brief_customer`, `answer_customer_question`, `send_email` (two-step confirm; since 2026-07-04), `retract_capture` (two-step; author-or-manager; since 2026-07-06). A badge whose `technicianRef` matches an **ACTIVE `tier='manager'`** row in the server's `technicians` table sees **16** (since 2026-07-06; was 15 from 2026-07-04, 14 before) — the 9 plus the seat/lifecycle tools `add_technician_seat`, `deactivate_technician_seat`, `reactivate_technician_seat`, `get_connect_link`, `list_team`, `list_pending_reviews`, `resolve_review`. The tier is decided **server-side by that roster row, not by the badge**; a badge with no matching active manager row acts as a plain technician (9 tools). The host/doorman does nothing tier-specific — it just forwards the badge.
 
 **Naming convention used below** (don't mix these up):
 
@@ -117,22 +117,25 @@ jane's agent inferred a customer from conversation context ("someone" → the pr
 customer) and called record_field_note immediately — wrong-customer capture, permanent (L1 has
 no delete). Append this block to every sandbox alongside the accuracy rules:
 
-> ## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05)
+> ## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05, updated 2026-07-06)
 >
 > The company record (record_field_note and any tool that writes to it) is PERMANENT — there is
 > no delete. Before EVERY such write:
 > 1. NEVER infer or assume the customer/job from earlier conversation when the current message
 >    does not name one. "Someone", "a customer", "the guy from earlier" → ASK who.
 > 2. Show what you are about to record — customer, job, and the full note text — and WAIT for an
->    explicit yes before calling the tool. No exceptions, even mid-flow.
-> 3. If a wrong note does get recorded, immediately offer to record a correction note that marks
->    the erroneous capture ID as recorded-in-error — that is the only remedy; the original cannot
->    be removed.
+>    explicit yes before calling the tool. No exceptions, even mid-flow. (The server also
+>    enforces this: record_field_note stages first and returns a preview + confirmId; nothing is
+>    recorded until you call again with ONLY the confirmId after the person's yes.)
+> 3. If a wrong note does get recorded: first record the corrected note, then retract the wrong
+>    capture with retract_capture (captureId + reason — also confirm-gated). The original row is
+>    never removed, but retracted notes disappear from briefings and lists; managers can still
+>    see the full labeled trail.
 
-*(Prompt-level is layer 1. Layer 2 — a structural two-step stage→confirm on record_field_note,
-mirroring send_email's pending_outbound_send — is a recorded pending feature (user decision
-2026-07-05): "technician notes are pretty important so we need to get confirmation before
-recording to L1".)*
+*(Prompt-level is layer 1. Layer 2 — the structural two-step stage→confirm on record_field_note,
+mirroring send_email's pending_outbound_send — SHIPPED 2026-07-06 alongside retract_capture
+(Option-B retraction rows). The server now refuses to write without a confirmed token; these
+prompt rules remain as defense-in-depth and for conversation quality.)*
 
 (Manager sandboxes get this block PLUS the §0b manager instruction block.)
 
@@ -374,7 +377,7 @@ sudo ufw allow from 172.18.0.0/16 to $GW port 3001 proto tcp comment 'doorman'
 
 sudo ufw allow from 172.18.0.0/16 to $GW port 8080 proto tcp comment 'openshell gateway'   \# if not already present
 
-### 3f. Verify host → doorman → Render \= 200 \+ 8 tools
+### 3f. Verify host → doorman → Render \= 200 \+ 9 tools
 
 \# Use a badge minted by the pull: the plaintext is the "badge" field of the person's line
 \# in /root/pending-badges.jsonl (or, if already installed+deleted, re-mint via server-side
@@ -554,7 +557,7 @@ EOF'
 
 Then clean-restart the agent: `sudo docker exec <CID> pkill -9 -x openclaw` (the in-container supervisor respawns it).
 
-**Why `toolSearch:false`?** With `toolSearch:true` ("code mode") OpenClaw hides tools behind a code bridge; the Nemotron model can't drive it (it invents `openclaw.tools.list()` / `require(...)`) and every tool call fails with "**run bridge code failed**". `false` exposes the 8 tools as direct function calls.
+**Why `toolSearch:false`?** With `toolSearch:true` ("code mode") OpenClaw hides tools behind a code bridge; the Nemotron model can't drive it (it invents `openclaw.tools.list()` / `require(...)`) and every tool call fails with "**run bridge code failed**". `false` exposes the 9 tools as direct function calls.
 
 ### 5d. Verify end-to-end
 
@@ -871,7 +874,7 @@ sudo systemctl daemon-reload && sudo systemctl enable nemoclaw-boot.service
 1. Provision the Lightsail box (runbook Phase 1) → `ssh tradesbox` → `sudo ./bootstrap-box.sh prep` → `export NVIDIA_API_KEY` → `./bootstrap-box.sh nemoclaw`.  
 2. (optional but recommended) apply the §6 bake-in edits to `/home/ubuntu/.nemoclaw/source/`.  
 3. `nemoclaw onboard` → creates sandbox `<AGENT>` \+ provider `<AGENT>-telegram-bridge` \+ the `openshell-docker` bridge.  
-4. Deploy the doorman (§3) → verify §3f \= 200 \+ 8 tools.  
+4. Deploy the doorman (§3) → verify §3f \= 200 \+ 9 tools.  
 5. `nemoclaw <AGENT> policy-add` egress preset (§5a) \+ `openshell provider update` badge (§5b).  
 6. If you skipped the bake-in: write the MCP config \+ `toolSearch:false` (§5c).  
 7. Message the bot → confirm a trades-spine tool returns real data (§5d).  

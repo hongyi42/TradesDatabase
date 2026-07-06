@@ -173,6 +173,29 @@ describe('runLogIngestion — classification', () => {
     expect(h.appended).toHaveLength(0);
   });
 
+  test('Excel reads are skipped; Excel writes are captured (user decision 2026-07-05)', async () => {
+    // Slugs are the live-observed catalog names from the 2026-07-05 scenario run.
+    const h = harness({
+      items: [
+        item({ id: 'x1', metadata: { tool: { slug: 'EXCEL_LIST_FILES' } } }),
+        item({ id: 'x2', metadata: { tool: { slug: 'EXCEL_GET_RANGE' } } }),
+        item({ id: 'x3', metadata: { tool: { slug: 'EXCEL_SEARCH_FILES' } } }),
+        item({ id: 'x4', metadata: { tool: { slug: 'EXCEL_LIST_TABLE_ROWS' } } }),
+        item({ id: 'x5', metadata: { tool: { slug: 'EXCEL_ADD_TABLE_ROW' } } }),
+        item({ id: 'x6', metadata: { tool: { slug: 'EXCEL_UPDATE_RANGE' } } }),
+        item({ id: 'x7', metadata: { tool: { slug: 'EXCEL_ADD_TABLE' } } }),
+      ],
+      roster: { [`${TENANT}:sam`]: tech() },
+    });
+    const summary = await runLogIngestion(NOW, h.deps);
+    expect(summary).toMatchObject({ scanned: 7, captured: 3, skippedReads: 4 });
+    const slugs = h.appended.map((a) => (a.metadata as Record<string, unknown>).toolSlug).sort();
+    expect(slugs).toEqual(['EXCEL_ADD_TABLE', 'EXCEL_ADD_TABLE_ROW', 'EXCEL_UPDATE_RANGE']);
+    // Writes stay keys-only + manager_only — the redaction policy is unchanged.
+    expect(h.appended[0].sensitivity).toBe('manager_only');
+    expect(h.appended[0].rawText).toContain('argument keys:');
+  });
+
   test('non-composite / default / connector / non-uuid user ids are skipped with a counter', async () => {
     const h = harness({
       items: [

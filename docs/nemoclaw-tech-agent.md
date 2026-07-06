@@ -152,6 +152,13 @@ register side-by-side in the gateway's `mcp.servers`.
   destructive tools — safety = the "AI can make errors" disclosure + confirmation behavior
   context-engineered into the manager agent's instructions (Box_Setup_Stuff setup guide §0b).
   Deliberate, accepted risk (user decision).
+- **Every sandbox (both tiers) also carries the accuracy-rules block** (setup guide §0c, since
+  2026-07-05): copy user-given values (email addresses, amounts, dates…) character-for-character
+  into tool arguments and self-check the staged copy against the user's message BEFORE showing
+  the confirmation. Origin: the first live send E2E staged a mistyped recipient address — caught
+  by the user at the confirm step, which is one step later than it should be. NOTE: the block
+  lives in the sandbox's workspace `AGENTS.md`, which a container rebuild resets — re-append
+  after any rebuild (bootstrap-box.sh `wire` phase does this).
 - **Technician tier = pinned `direct_tools` list** (`TECHNICIAN_GMAIL_TOOLS`: fetch/draft/profile;
   product-configurable), `manageConnections: false`, **send structurally impossible** (4310).
   Technician send goes through the spine's `send_email` tool: persisted two-step confirm

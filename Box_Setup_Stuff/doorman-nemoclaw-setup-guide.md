@@ -35,6 +35,19 @@ outbound connector surface (Gmail/Sheets/…, tier-scoped). The session is creat
 the Render lifecycle cron for every ACTIVE roster row; the **operator wires the url into the
 sandbox once** at setup:
 
+**⚠ WIRING BLOCKED — DO NOT APPLY AS WRITTEN (live-verified 2026-07-05):** the session's
+`mcp.url` alone gets **HTTP 401** — since March 2026 Composio enforces `require_mcp_api_key`
+(project-level, default-on for new orgs), and the auth header the SDK returns with the session is
+**the MASTER control-plane `COMPOSIO_API_KEY`**, not a session-scoped token (none exists yet;
+"scoped API keys" are still rolling out per Composio's changelog). Putting that header in a
+sandbox would let the sandbox act as ANY user and bypass ALL tier enforcement — never do it.
+Until the wiring approach below is decided+built, sandboxes get NO direct Composio MCP entry.
+Options on the table: (a) host-side composio-doorman proxy (master key stays on the host,
+badge-gated per-sandbox routing — mirrors the trades-spine doorman; RECOMMENDED), (b) disable
+`require_mcp_api_key` project-wide so the tokenized url is the sole credential (vendor
+recommends against; weakens every MCP surface in the project), (c) wait for Composio scoped
+API keys. The steps below describe the INTENDED end state once (a) exists:
+
 1. On the control plane (repo checkout with `.env`): `npm run build && node -r dotenv/config
    scripts/provision-session.mjs tenant=<uuid> ref=<ref>` → prints the `mcp.url` + the exact
    gateway snippet.
@@ -70,6 +83,58 @@ permanent record (CLAUDE.md recorded exception 2026-07-04).
 - **Tier change (e.g. manager demotion)** is a DB tier update PLUS a session teardown (null
   `composio_session_id`; the sweep re-mints at the new tier). Skipping the teardown leaves the
   old tier's session live — a demoted manager would keep the full catalog.
+
+## 0c. Accuracy-rules block (REQUIRED in every sandbox, both tiers — since 2026-07-05)
+
+Append the block below to the sandbox's `/sandbox/.openclaw/workspace/AGENTS.md` (loaded into
+the agent's context at session start). Origin: in the first live send E2E the agent transcribed
+the recipient's email address wrong in the staged draft — the user caught it at the confirm
+step; this block makes the agent catch it first. **A container recreate/rebuild resets
+AGENTS.md to the stock template — re-append after any rebuild** (§6 warning). Apply with:
+`sudo docker exec -u sandbox <CID> sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF' … EOF`
+
+> ## Trades assistant — accuracy rules (host-managed; keep at top priority)
+>
+> You act for a real trades business through the trades-spine tools. Precision beats speed.
+>
+> 1. **Copy values character-for-character.** Email addresses, phone numbers, street addresses,
+>    names, dollar amounts, job numbers, dates and times: NEVER retype these from memory.
+>    Re-read the exact characters in the user's message and copy them into tool arguments.
+> 2. **Double-check before showing anything for confirmation.** After staging an action (e.g.
+>    send_email), compare every critical value in the staged copy against the user's original
+>    message, character by character. If ANY character differs, fix it and re-stage BEFORE
+>    showing it. The user should never be the one to catch a transcription error.
+> 3. **Show, then wait.** Never treat your own message as approval. Show the exact staged
+>    content and wait for an explicit yes. If the user corrects anything, re-stage and show the
+>    corrected version in full.
+> 4. **Missing or ambiguous detail? Ask.** Which Jones, which address, which date — never guess
+>    a value that will leave the building.
+> 5. When relevant, remind the user: you are an AI and can make mistakes, and emails and
+>    actions sent through you are logged by the business.
+
+**Second required block — permanent-record writes (added 2026-07-05 after a live incident):**
+jane's agent inferred a customer from conversation context ("someone" → the previously-discussed
+customer) and called record_field_note immediately — wrong-customer capture, permanent (L1 has
+no delete). Append this block to every sandbox alongside the accuracy rules:
+
+> ## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05)
+>
+> The company record (record_field_note and any tool that writes to it) is PERMANENT — there is
+> no delete. Before EVERY such write:
+> 1. NEVER infer or assume the customer/job from earlier conversation when the current message
+>    does not name one. "Someone", "a customer", "the guy from earlier" → ASK who.
+> 2. Show what you are about to record — customer, job, and the full note text — and WAIT for an
+>    explicit yes before calling the tool. No exceptions, even mid-flow.
+> 3. If a wrong note does get recorded, immediately offer to record a correction note that marks
+>    the erroneous capture ID as recorded-in-error — that is the only remedy; the original cannot
+>    be removed.
+
+*(Prompt-level is layer 1. Layer 2 — a structural two-step stage→confirm on record_field_note,
+mirroring send_email's pending_outbound_send — is a recorded pending feature (user decision
+2026-07-05): "technician notes are pretty important so we need to get confirmation before
+recording to L1".)*
+
+(Manager sandboxes get this block PLUS the §0b manager instruction block.)
 
 ---
 
@@ -344,6 +409,42 @@ nemoclaw \<AGENT\> status         \# Connected: yes (field can lag; trust the ag
 
 A second agent on another port: `NEMOCLAW_GATEWAY_PORT=<port> nemoclaw onboard`.
 
+### 4b. Non-interactive onboard (scriptable — verified live 2026-07-05, s2/manager-sam)
+
+The wizard has an undocumented-but-working unattended mode; this is the seat-provisioning
+recipe (a SECOND sandbox on the same box reuses the running gateway; dashboard port
+auto-shifts). Every future seat should use this instead of the interactive wizard:
+
+1. Build the messaging plan and **hydrate it with the vendor's own function** (a hand-written
+   plan fails a strict validator, then a hooks-shape crash — hydration derives hooks/
+   credentialBindings/displayName from the channel manifest):
+   `node -e` → `require(dist/lib/messaging/persistence.js).hydrateDerivedSandboxMessagingPlanFields(plan)`
+   → `require(dist/lib/messaging/applier/setup-applier.js).MessagingSetupApplier.encodePlan(hydrated)`
+   → write to a root-only file. Minimal plan: `{schemaVersion:1, sandboxName, agent:"openclaw",
+   workflow:"onboard", disabledChannels:[], networkPolicy:{presets:["telegram"],entries:[…]},
+   channels:[{channelId:"telegram", active:true, configured:true, disabled:false, hooks:[],
+   inputs:[{inputId:"allowedIds",value:"<tg-user-id>"},{inputId:"botToken",value:"<token>"},
+   {inputId:"groupPolicy",value:"open"}]}]}` (+ empty arrays for credentialBindings/agentRender/
+   buildSteps/stateUpdates/healthChecks).
+   **⚠ Validate the bot token FIRST**: `curl -s https://api.telegram.org/bot<TOKEN>/getMe` must
+   return ok:true — an invalid token surfaces only as a deep `deleteWebhook failed (404)`
+   channel crash-loop after the whole build. **⚠ Transport the token base64-encoded** — shell
+   heredoc quoting mangled it once (rejected by Telegram, cost a full debug cycle).
+2. Run: `export NVIDIA_INFERENCE_API_KEY=nvapi-…` (required unconditionally in non-interactive
+   mode, no stored-key reuse) + `NEMOCLAW_MESSAGING_PLAN_B64=$(cat <planfile>)` +
+   `NEMOCLAW_MODEL=z-ai/glm-5.2`, then
+   `nemoclaw onboard --non-interactive --yes --name <AGENT> --no-gpu --yes-i-accept-third-party-software`.
+3. **The non-interactive path does NOT create the host-side provider** (the interactive wizard
+   does). Create + attach it yourself, both credentials in one shot (values via files/env, never
+   inline): `openshell provider create --name <AGENT>-telegram-bridge --type generic
+   --credential TELEGRAM_BOT_TOKEN="$TOK" --credential TRADES_SPINE_BADGE="$BADGE"` then
+   `openshell sandbox provider attach <AGENT> <AGENT>-telegram-bridge`. Without it the channel
+   placeholder can't resolve and the bot is silently deaf.
+4. Then the usual: §5a wire (egress + §0c blocks), §0b block for managers, `boot <AGENT>`
+   (revive unit), badge flow (§3c/§5b), one `nemoclaw <AGENT> gateway restart` to clear
+   device-pairing residue, and confirm `getUpdates` polling in the container logs — for BOTH
+   sandboxes (provider writes + the versioning trap; this box does not boot-heal placeholders).
+
 **Bake-in note:** if you applied §6 **before** this onboard, the sandbox already comes up with `toolSearch:false` \+ the trades-spine MCP block. If not, the manual wiring in §5 still works now and you can adopt the bake-in later.
 
 ---
@@ -480,7 +581,9 @@ describe the OLD layout and remain valid only for boxes of that generation (e.g.
 Brev box). The new manifest mechanism natively validates `effects.openclawTools.toolSearch`, so
 edit (1) is unchanged. Edit (4)'s Dockerfile anchors are unchanged.
 
-A container **recreate** wipes `/sandbox/.openclaw/openclaw.json`. The bake-in regenerates it at image-build time from 5 source edits in `/home/ubuntu/.nemoclaw/source/`. **A fresh box's source is upstream/clean — you must re-apply these 5 edits there before building.** None of them contain the secret (badge stays in the provider store).
+A container **recreate** wipes `/sandbox/.openclaw/openclaw.json`. The bake-in regenerates it at image-build time from 5 source edits in `/home/ubuntu/.nemoclaw/source/`. **A fresh box's source is upstream/clean — you must re-apply these 5 edits there before building.** None of them contain the secret (badge stays in the provider store). *(A 6th source edit — the gateway-JWT `ttl_secs` constant — lives in the same tree but affects gateway-config generation, not the image; see the token-expiry gotcha in §7.)*
+
+**⚠ Recreate/rebuild also wipes the workspace instruction files** (`/sandbox/.openclaw/workspace/AGENTS.md` etc.) back to stock templates — the trades **accuracy-rules block** (§0c) must be re-appended after any rebuild. It is not part of the image bake.
 
 **(1) New manifest** — `nemoclaw-blueprint/model-specific-setup/openclaw/nemotron-3-super-toolsearch-off.json` (declarative `toolSearch:false` for Nemotron, consumed by the generator). **⚠ Model note (2026-07-02): this manifest matches ONLY the Nemotron modelId. The running model is now `z-ai/glm-5.2`, so on a FRESH box it does NOT apply and toolSearch comes up on (s1 still carries `toolSearch:false` from the old bake). Whether GLM-5.2 can drive code mode is unverified — if the agent's tool calls fail with "run bridge code failed", clone this manifest with `z-ai/glm-5.2` in `match.modelIds` (or set `tools.toolSearch:false` directly) and update this note with the verified answer.**
 
@@ -669,6 +772,40 @@ NOT required**: the working revival is a gateway-mediated re-exec of the startup
 restarts (systemd re-runs the wrapper when the exec session drops). Verified end-to-end
 2026-07-04: reboot AND Lightsail console stop/start both recover hands-off. Scales per
 sandbox: one unit per agent, revivals run in parallel, seconds each.
+
+**⚠ Sandbox-token expiry on reboot (2026-07-05, took trades-box-1 down after a Lightsail
+restart):** the gateway mints each sandbox's auth JWT ONCE at create with
+`gateway_jwt.ttl_secs` (**vendor default 3600 — one hour**), writes it to the host-side token
+file (`~/.local/state/openshell/docker-sandbox-tokens/<pool>/<sandbox-id>/sandbox.jwt`,
+bind-mounted into the container), and the running supervisor refreshes it **in memory only —
+the file is never rewritten**. So ANY reboot later than ttl_secs after sandbox creation brings
+the container up with an expired token it cannot refresh (`invalid token: ExpiredSignature`,
+`static token sources cannot rebootstrap automatically`) and it crash-loops; the revive unit
+can't help because PID1 never gets far enough to accept an exec. Two-part fix, both installed
+on trades-box-1 2026-07-05:
+
+1. **Source edit #6 (TTL):** `DOCKER_DRIVER_GATEWAY_JWT_TTL_SECS = 3600` is a hardcoded
+   constant in `~/.nemoclaw/source/{src/lib/onboard/docker-driver-gateway-config.ts,
+   dist/lib/onboard/docker-driver-gateway-config.js}` — the gateway TOML is REGENERATED from it
+   by `nemoclaw doctor` (hand-editing the TOML does not stick, and a validator asserts
+   TOML == constant). Patch the constant to `2592000` (30 days) in BOTH files, then kill the
+   gateway (`kill $(pgrep -x openshell-gatew)` — never `pgrep -f`, the pattern matches your own
+   shell) and re-run `nemoclaw <AGENT> doctor` to regenerate.
+2. **`sandbox-token-medic` (boot self-heal, this folder):** a oneshot systemd unit
+   (`sandbox-token-medic.service`, ordered Before= the revive chain) that runs
+   `sandbox-token-medic.mjs`: for every sandbox token file, if the JWT is expired (or expires
+   within 10 min) it mints a replacement from the gateway's own signing key
+   (`~/.local/state/nemoclaw/openshell-docker-gateway/jwt/`) with the same claims and restarts
+   that container. Install:
+   `sudo install -m 0755 sandbox-token-medic.mjs /usr/local/sbin/` +
+   `sudo install -m 0644 sandbox-token-medic.service /etc/systemd/system/` +
+   `sudo systemctl daemon-reload && sudo systemctl enable sandbox-token-medic.service`.
+   Manual-run knobs: `RENEW_AHEAD_SECS=<n>` forces early re-mint, `NO_RESTART=1` heals the file
+   without touching a healthy container. Coupling warning: it mints the vendor's token format
+   (captured from OpenShell supervisor 0.0.71) — if a vendor upgrade changes the format, fall
+   back to `nemoclaw <AGENT> rebuild --yes` and re-capture.
+
+Upstream bug to report: the supervisor should persist refreshed tokens back to the token file.
 
 After a host reboot, three things otherwise need manual nudging (OLD architecture):
 

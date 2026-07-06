@@ -1,0 +1,16 @@
+# Re-mint expired OpenShell sandbox tokens before the agent revive chain runs.
+# See sandbox-token-medic.mjs for the why (reboot >ttl_secs after sandbox
+# create = crash loop). Install: /etc/systemd/system/sandbox-token-medic.service
+[Unit]
+Description=Re-mint expired OpenShell sandbox tokens (boot self-heal)
+After=docker.service
+Requires=docker.service
+Before=nemoclaw-boot.service nemoclaw-agent-s1.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/node /usr/local/sbin/sandbox-token-medic.mjs
+
+[Install]
+WantedBy=multi-user.target

@@ -32,6 +32,16 @@ export const READ_SLUG_PREFIXES = [
   'GMAIL_GET_',
   'GMAIL_LIST_',
   'GMAIL_SEARCH_',
+  // Excel reads excluded per user decision 2026-07-05 ("I don't think we need
+  // to record the read excel calls in L1") after the live scenario run showed
+  // EXCEL_LIST_FILES etc. flooding the audit. Slugs observed live: LIST_FILES,
+  // LIST_WORKSHEETS, LIST_TABLES, LIST_TABLE_ROWS, LIST_TABLE_COLUMNS,
+  // GET_RANGE, GET_WORKSHEET, GET_WORKSHEET_USED_RANGE, GET_SESSION,
+  // SEARCH_FILES. Writes (ADD_TABLE, ADD_TABLE_ROW, UPDATE_RANGE) and the
+  // ambiguous CLOSE_SESSION stay captured (when unsure, capture).
+  'EXCEL_GET_',
+  'EXCEL_LIST_',
+  'EXCEL_SEARCH_',
 ];
 // Composio meta-tools are session plumbing (search/schemas/execute wrappers),
 // not business actions — except connection management, which mints real

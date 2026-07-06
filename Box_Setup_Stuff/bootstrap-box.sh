@@ -104,6 +104,22 @@ phase_bakein() {
   need_not_root
   log "applying §6 bake-in edits (apply-bakein.py — idempotent, fail-loud)"
   python3 "$SCRIPT_DIR/apply-bakein.py" "$NEMOCLAW_HOME/.nemoclaw/source"
+
+  log "source edit #6 (§7 token-expiry gotcha): gateway JWT ttl 3600 -> 30 days"
+  # The gateway TOML is regenerated from this constant by 'nemoclaw doctor';
+  # editing the TOML alone does not stick. Idempotent: sed only matches 3600.
+  local f
+  for f in \
+    "$NEMOCLAW_HOME/.nemoclaw/source/src/lib/onboard/docker-driver-gateway-config.ts" \
+    "$NEMOCLAW_HOME/.nemoclaw/source/dist/lib/onboard/docker-driver-gateway-config.js"; do
+    if [ -f "$f" ]; then
+      sed -i 's/DOCKER_DRIVER_GATEWAY_JWT_TTL_SECS = 3600;/DOCKER_DRIVER_GATEWAY_JWT_TTL_SECS = 2592000; \/\/ trades edit #6: 1h default expires tokens across reboots (see sandbox-token-medic)/' "$f"
+      grep -q "TTL_SECS = 2592000" "$f" || fail "edit #6 did not apply to $f (vendor layout changed?)"
+    else
+      echo "    WARN: $f not found — vendor layout changed; apply edit #6 by hand (§7)"
+    fi
+  done
+  ok "gateway JWT ttl constant patched (takes effect on next gateway [re]start)"
   echo
   echo "NEXT: run 'nemoclaw onboard' yourself (interactive)."
   echo "      Cheat sheet: ./bootstrap-box.sh onboard-help"
@@ -321,6 +337,53 @@ EOF
   ok "trades-spine-doorman preset applied to ${agent}"
   echo "    NOTE: this preset is NOT restored by 'nemoclaw ${agent} rebuild' — re-run this phase after every rebuild (§6)."
 
+  log "accuracy-rules block (§0c — REQUIRED both tiers; wiped by rebuild, re-run after one)"
+  local cid
+  cid=$(docker ps -q --filter "name=openshell-${agent}-" | head -1)
+  if [ -n "$cid" ]; then
+    if docker exec "$cid" grep -q "Trades assistant — accuracy rules" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+      ok "accuracy-rules block already present"
+    else
+      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+
+## Trades assistant — accuracy rules (host-managed; keep at top priority)
+
+You act for a real trades business through the trades-spine tools. Precision beats speed.
+
+1. **Copy values character-for-character.** Email addresses, phone numbers, street addresses,
+   names, dollar amounts, job numbers, dates and times: NEVER retype these from memory. Re-read
+   the exact characters in the user's message and copy them into tool arguments.
+2. **Double-check before showing anything for confirmation.** After staging an action (for
+   example send_email), compare every critical value in the staged copy against the user's
+   original message, character by character. If ANY character differs, fix it and re-stage
+   BEFORE showing it to the user. The user should never be the one to catch a transcription
+   error.
+3. **Show, then wait.** Never treat your own message as approval. Show the exact staged content
+   and wait for an explicit yes. If the user corrects anything, re-stage and show the corrected
+   version in full.
+4. **Missing or ambiguous detail? Ask.** Which Jones, which address, which date — never guess a
+   value that will leave the building.
+5. When relevant, remind the user: you are an AI and can make mistakes, and emails and actions
+   sent through you are logged by the business.
+
+## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05)
+
+The company record (record_field_note and any tool that writes to it) is PERMANENT — there is
+no delete. Before EVERY such write:
+1. NEVER infer or assume the customer/job from earlier conversation when the current message
+   does not name one. "Someone", "a customer", "the guy from earlier" → ASK who.
+2. Show what you are about to record — customer, job, and the full note text — and WAIT for an
+   explicit yes before calling the tool. No exceptions, even mid-flow.
+3. If a wrong note does get recorded, immediately offer to record a correction note that marks
+   the erroneous capture ID as recorded-in-error — that is the only remedy; the original cannot
+   be removed.
+EOF
+      ok "accuracy-rules block appended to ${agent}'s AGENTS.md"
+    fi
+  else
+    echo "    WARN: no running container for ${agent} — append the §0c block manually once it's up"
+  fi
+
   cat <<EOF
 
 MANUAL — badge install (§5b; plaintext stays between the pending file and the provider store):
@@ -363,6 +426,13 @@ EOF
   systemctl daemon-reload
   systemctl enable nemoclaw-boot.service
   ok "enabled (runs at boot; harmless if already healthy)"
+
+  log "sandbox-token-medic (§7 — 2026-07-05: sandbox JWT file expires across reboots)"
+  install -o root -g root -m 755 "$SCRIPT_DIR/sandbox-token-medic.mjs" /usr/local/sbin/sandbox-token-medic.mjs
+  install -o root -g root -m 644 "$SCRIPT_DIR/sandbox-token-medic.service" /etc/systemd/system/sandbox-token-medic.service
+  systemctl daemon-reload
+  systemctl enable sandbox-token-medic.service
+  ok "sandbox-token-medic.service enabled (heals expired sandbox tokens before revive)"
 
   log "agent-revive service (2026-07-04: agent supervisor does NOT survive container restarts)"
   install -o root -g root -m 755 "$SCRIPT_DIR/nemoclaw-agent-revive.sh" /usr/local/sbin/nemoclaw-agent-revive.sh

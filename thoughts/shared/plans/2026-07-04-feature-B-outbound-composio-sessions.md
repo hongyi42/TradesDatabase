@@ -2,7 +2,7 @@
 date: 2026-07-04
 task: "Feature B — Outbound Composio actions via NemoClaw: per-person Composio SESSIONS (tiered), spine send_email for technicians, and a log-ingestion audit job into L1"
 research: thoughts/shared/research/2026-07-04-feature-B-outbound-composio-actions.md
-status: draft
+status: complete
 supersedes: thoughts/shared/plans/2026-07-04-feature-B-outbound-composio-actions.md
 ---
 
@@ -471,16 +471,40 @@ project has ZERO connected accounts today.
       logged; windows to 400 days accepted. TWO CRITICAL parser fixes applied to logIngest.ts
       (envelope key, tool.slug path) + toolkit/detail-shape fixes; tests rewritten to the real
       shapes with flat fallbacks kept; recorded in docs §7.)*
-- [ ] **Send E2E *(needs pairing)*:** spine `send_email` stage→confirm → message arrives at a
+- [x] **Send E2E *(needs pairing)*:** spine `send_email` stage→confirm → message arrives at a
       controlled recipient; `supabase-test` SELECT shows ONE `outbound_email` row (`sent:<id>`);
       after the next cron tick, STILL one row (ingestion dedup proven live).
-- [ ] **Ingestion E2E *(needs pairing)*:** a manager-session action (e.g. a draft via full-catalog
+      *(2026-07-05: user staged+confirmed from tech-jane's Telegram; message received; L1 shows
+      exactly one `outbound_email` row, external_id `sent:19f340413ad07d4f`, captured 20:41:50Z;
+      re-queried 25+ min later (≥1 cron tick over the send window): still exactly one row.
+      Wrinkle: the agent transcribed the recipient address wrong in the FIRST staged draft —
+      caught by the user at confirm; fix = accuracy-rules block (setup guide §0c) in every
+      sandbox's AGENTS.md.)*
+- [x] **Ingestion E2E *(needs pairing)*:** a manager-session action (e.g. a draft via full-catalog
       session) appears as an L1 row per policy; a technician badge's `list_recent_captures` omits a
       `manager_only` row, a manager badge sees it (read back both ways).
+      *(2026-07-05, user-approved probe: COMPOSIO_MANAGE_CONNECTIONS (gmail link mint, abandoned)
+      executed AS manager-sam through session trs_51pqHfPLVgcs → next cron tick ingested exactly
+      one L1 row: channel agent_action, sensitivity manager_only, keys-only rawText ("argument
+      keys: toolkits"), external_id composio-exec:log_-ZL2fvSIaC2r. A prior FAILED call
+      (validation error) was correctly NOT captured. Technician-view omission: STRUCTURAL in v1
+      — list_recent_captures is L2-scoped (jobId/customerId required) and audit rows carry no L2
+      link (L2 fixed in v1), so no technician-nameable filter can reach a manager_only row at
+      all; the dropSensitive filter is the second layer (unit-tested, becomes load-bearing only
+      if audit rows are ever L2-linked). Manager-badge read-back DEFERRED until a manager
+      sandbox/badge exists (no manager badge mintable today — roster row has no host).
+      ⚠ SECURITY FINDING during this probe: the session mcp.url 401s alone; the SDK's session
+      auth header is the MASTER COMPOSIO_API_KEY (require_mcp_api_key, project-level, default-on
+      since Mar 2026; no session-scoped tokens yet) → §0b sandbox wiring BLOCKED as written,
+      warning added to the setup guide; wiring options recorded there (host-side composio-doorman
+      proxy recommended).)*
 
 ### Manual verification
-- [ ] Confirmation/error wording (`needs_confirmation`, not-sent, disclosure text) reads sensibly in
+- [x] Confirmation/error wording (`needs_confirmation`, not-sent, disclosure text) reads sensibly in
       a real Telegram conversation.
+      *(2026-07-05, user: "The wording on the email was fine." Separate issue raised — staged
+      values must be self-checked by the agent (miswritten address); addressed via §0c
+      accuracy-rules block, not a tool-wording change.)*
 
 ---
 *Pause after Phase 5 (manual check non-empty); Phases 1–4 continue on green automated gates.*

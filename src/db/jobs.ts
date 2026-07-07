@@ -4,6 +4,14 @@ import { getClient } from './client.js';
 export type Job = Database['public']['Tables']['jobs']['Row'];
 export type JobStatus = Database['public']['Enums']['job_status'];
 
+// The customer fields a route/day view needs alongside a job — one embedded
+// select instead of a per-row customer lookup.
+export type JobCustomerAddress = Pick<
+  Database['public']['Tables']['customers']['Row'],
+  'name' | 'address_line1' | 'address_line2' | 'city' | 'state' | 'postal_code'
+>;
+export type JobWithCustomer = Job & { customers: JobCustomerAddress | null };
+
 // Hardcoded, auditable state machine (overview §5: identity/pricing/status are
 // code, not the model's guess). The authoritative "done" is a downstream event
 // (invoice paid), so paid/cancelled/declined are terminal here.
@@ -61,6 +69,25 @@ export async function listJobsForCustomer(customerId: string): Promise<Job[]> {
     .order('created_at', { ascending: true });
   if (error) throw new Error(`listJobsForCustomer failed: ${error.message}`);
   return data ?? [];
+}
+
+// Jobs (with their customer's name + address embedded) for a set of ids —
+// the day-route reader's batch lookup. Tenant-scoped in the query itself:
+// this fans out to customer PII, so the guard lives here, not two files up
+// in whichever caller happened to scope its ids. Empty input short-circuits:
+// PostgREST's `in.()` with zero values is an error, not an empty result.
+export async function listJobsWithCustomerByIds(
+  tenantId: string,
+  jobIds: string[],
+): Promise<JobWithCustomer[]> {
+  if (jobIds.length === 0) return [];
+  const { data, error } = await getClient()
+    .from('jobs')
+    .select('*, customers(name, address_line1, address_line2, city, state, postal_code)')
+    .eq('tenant_id', tenantId)
+    .in('id', jobIds);
+  if (error) throw new Error(`listJobsWithCustomerByIds failed: ${error.message}`);
+  return (data ?? []) as JobWithCustomer[];
 }
 
 export async function updateJobStatus(id: string, next: JobStatus): Promise<Job> {

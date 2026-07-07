@@ -17,6 +17,7 @@ import {
   searchCustomers,
   getCustomerContext,
   getTechnician,
+  getTenant,
   insertTechnician,
   isInactiveState,
   isSeatCapError,
@@ -60,6 +61,10 @@ import {
   type BriefFocus,
 } from '../synthesis/index.js';
 import { identityFromEnv, type RequestIdentity } from './identity.js';
+import { listDayStops } from '../routes/daySource.js';
+import { optimizeStopOrder as liveOptimizeStopOrder } from '../routes/googleRoutes.js';
+import { buildMapsDeepLink, type RouteStop } from '../routes/deepLink.js';
+import { localDateISO } from '../schedule/availability.js';
 
 // The single boundary the agent calls. The agent never holds the Supabase or
 // Anthropic keys — this server (launched by the gateway with those secrets in
@@ -80,6 +85,7 @@ export interface ServerDeps {
   enablePairing?: typeof liveEnablePairing;
   sendEmail?: typeof liveSendGmailEmail;
   teardownSession?: typeof liveTeardownSession;
+  optimizeStopOrder?: typeof liveOptimizeStopOrder; // Google Routes seam — tests never need the key
 }
 
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
@@ -87,7 +93,7 @@ const BRIEF_FOCUSES: BriefFocus[] = ['next_visit', 'full_history'];
 const TIERS: TechnicianTier[] = ['manager', 'technician'];
 
 // The technician tool surface — what every badge sees (the doorman runbook's
-// "8 tools" verification counts exactly these).
+// "10 tools" verification counts exactly these).
 const TOOLS = [
   {
     name: 'record_field_note',
@@ -185,6 +191,26 @@ const TOOLS = [
         question: { type: 'string' },
       },
       required: ['customerId', 'question'],
+    },
+  },
+  {
+    name: 'get_schedule',
+    description:
+      "Your schedule as a day-by-day route: for each day in [from,to] (YYYY-MM-DD; both " +
+      "optional — default is today in the firm's timezone; range is capped at 14 days) returns " +
+      'your stops in best driving order, total drive minutes, and a Google Maps link (mapsUrl) ' +
+      "that opens the whole day's route for navigation. Relay each day's mapsUrl to the person " +
+      'VERBATIM as a tappable link. days:[] means no stops in the range. driveMinutes null = ' +
+      'not measured; optimizeFailed true = stops are in scheduled (not drive-optimized) order; ' +
+      'a day may also carry unroutableStops (time-ordered, no usable address, not in the ' +
+      'link) — mention them to the person alongside the driving list.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Start date YYYY-MM-DD (default: today, UTC).' },
+        to: { type: 'string', description: 'End date YYYY-MM-DD inclusive (default: from).' },
+      },
+      required: [],
     },
   },
   {
@@ -827,6 +853,82 @@ async function dispatch(
         question,
       );
     }
+    case 'get_schedule': {
+      // Whose schedule = the badge identity, never an arg — a technician can
+      // only ever fetch their own days.
+      // Non-string args must be rejected, not coerced: str() maps {from: 123}
+      // to undefined and the default would silently answer about TODAY with
+      // status ok (the SDK does not validate args against inputSchema).
+      if (
+        (args.from !== undefined && typeof args.from !== 'string') ||
+        (args.to !== undefined && typeof args.to !== 'string')
+      ) {
+        return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD strings' };
+      }
+      // Default "today" is the FIRM's local day, not UTC: for a Pacific-time
+      // tenant every evening ask would otherwise default to tomorrow.
+      let from = str('from');
+      let to = str('to');
+      if (!from) {
+        const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+        from = localDateISO(new Date().toISOString(), tz);
+      }
+      to ??= from;
+      const DATE = /^\d{4}-\d{2}-\d{2}$/;
+      if (!DATE.test(from) || !DATE.test(to) || from > to) {
+        return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD with from <= to' };
+      }
+      const spanDays =
+        (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+      // Regex-valid but impossible dates (month 13) parse to NaN — reject them
+      // with an accurate note, distinct from the span cap.
+      if (!Number.isFinite(spanDays)) {
+        return { status: 'invalid_range', note: 'from/to is not a real calendar date' };
+      }
+      if (spanDays > 14) {
+        return { status: 'invalid_range', note: 'range is capped at 14 days' };
+      }
+      const optimize = deps.optimizeStopOrder ?? liveOptimizeStopOrder;
+      const dayStops = await listDayStops(tenantId, identity.technicianRef, from, to);
+      // Days are independent — optimize them concurrently (a 14-day ask is one
+      // round-trip's latency, not fourteen). Promise.all preserves input order.
+      const days = await Promise.all(
+        dayStops.map(async (day) => {
+          // `order` from the optimizer indexes the ROUTABLE list only.
+          // Unroutable stops (no usable address) go in their own time-ordered
+          // field: splicing them into the drive-ordered list would misstate
+          // the driving sequence, and appending them at the end would misstate
+          // the day's chronology.
+          const routable = day.stops.filter(
+            (s): s is RouteStop & { address: string } => s.address !== null,
+          );
+          const unroutableStops = day.stops.filter((s) => s.address === null);
+          let ordered: RouteStop[] = routable;
+          let driveMinutes: number | null = null;
+          let optimizeFailed = false;
+          try {
+            const result = await optimize(routable);
+            ordered = result.order.map((i) => routable[i]);
+            driveMinutes = result.totalMinutes;
+          } catch {
+            // Google failure must not eat the schedule: deliver the day in
+            // scheduled order with no drive estimate.
+            optimizeFailed = true;
+          }
+          const link = buildMapsDeepLink(ordered);
+          return {
+            date: day.date,
+            stops: ordered,
+            ...(unroutableStops.length > 0 ? { unroutableStops } : {}),
+            driveMinutes,
+            mapsUrl: link.url,
+            linkTruncated: link.linkTruncated,
+            ...(optimizeFailed ? { optimizeFailed: true } : {}),
+          };
+        }),
+      );
+      return { status: 'ok', from, to, days };
+    }
     case 'send_email': {
       // Both steps require an active, paired caller — checked FIRST so a
       // roster-less badge sending only confirmId gets the clean 'no roster
@@ -1442,7 +1544,7 @@ export function createServer(deps: ServerDeps = {}): Server {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    // Tier-filtered surface: technician badges see exactly the 8 spine tools
+    // Tier-filtered surface: technician badges see exactly the 10 spine tools
     // (the doorman runbook's verification count); active managers additionally
     // see the seat-management tools. Discovery is cosmetic — dispatch re-gates
     // every admin call — so a roster hiccup degrades to the technician surface

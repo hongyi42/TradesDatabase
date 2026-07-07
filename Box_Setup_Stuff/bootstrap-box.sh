@@ -493,7 +493,7 @@ phase_verify() {
 
 Remaining gates that NEED a real badge / human (guide §3f, §5d — cannot be scripted safely):
   A. sudo cat /root/pending-badges.jsonl → curl with that badge → HTTP 200 + tools/list
-     shows 9 tools (16 if the ref is an active manager row).
+     shows 10 tools (17 if the ref is an active manager row).
   B. Message the Telegram bot something needing a tool ("list recent captures") →
      real data back; on the host, OCSF shows ALLOWED → host.openshell.internal:3001.
   C. sudo reboot → all of the above come back untouched within ~2 min.

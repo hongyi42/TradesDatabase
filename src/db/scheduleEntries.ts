@@ -55,6 +55,28 @@ export async function upsertScheduleEntry(input: UpsertScheduleEntryInput): Prom
   return data;
 }
 
+// Entries for one technician whose scheduled_start falls inside [fromDate,
+// toDate] (YYYY-MM-DD, both inclusive, UTC days — same v1 simplification as
+// the on-date query below). Rows with NULL scheduled_start never match the
+// range predicate, so unscheduled mirror rows are excluded here by shape.
+export async function listScheduleForTechnicianInRange(
+  tenantId: string,
+  technicianRef: string,
+  fromDate: string,
+  toDate: string,
+): Promise<ScheduleEntry[]> {
+  const { data, error } = await getClient()
+    .from('schedule_entries')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('technician_ref', technicianRef)
+    .gte('scheduled_start', `${fromDate.slice(0, 10)}T00:00:00.000Z`)
+    .lte('scheduled_start', `${toDate.slice(0, 10)}T23:59:59.999Z`)
+    .order('scheduled_start', { ascending: true });
+  if (error) throw new Error(`listScheduleForTechnicianInRange failed: ${error.message}`);
+  return data ?? [];
+}
+
 // Entries for one technician whose scheduled_start falls on the UTC calendar day
 // of isoDate. (UTC day is a deliberate v1 simplification; per-tenant timezones
 // are deferred along with multi-tenant work.)

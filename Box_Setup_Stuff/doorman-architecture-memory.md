@@ -94,7 +94,7 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
   minting a badge is now a TWO-PART action: (1) the server side must already have an ACTIVE row for that
   ref — `tier='manager'` for a manager, `tier='technician'` otherwise; (2) mint the badge here with the
   byte-identical `technicianRef`. If no active row matches, the badge still authenticates but silently
-  acts as a plain technician (9 tools; the 7 seat/lifecycle admin tools are denied). The reference
+  acts as a plain technician (10 tools; the 7 seat/lifecycle admin tools are denied). The reference
   `tech-jane` badge above maps to an active technician row. You (host side) cannot see or change the
   roster — it lives in the server's DB; coordinate with whoever manages it when minting a manager badge.
 - The badge is registered as a **provider credential**:
@@ -230,15 +230,15 @@ Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config
 
 ## Verify (end-to-end)
 - Host→doorman→Render: `curl -X POST http://172.18.0.1:3001/mcp -H "Authorization: Bearer <badge>" …
-  '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + **9 tools** for a technician-tier
-  badge, or **16** for a badge whose ref maps to an active manager roster row (the extra 7 are the
-  seat-management tools; see the badge↔roster note above). A manager badge returning only 9 means the
+  '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + **10 tools** for a technician-tier
+  badge, or **17** for a badge whose ref maps to an active manager roster row (the extra 7 are the
+  seat-management tools; see the badge↔roster note above). A manager badge returning only 10 means the
   server has no active `tier='manager'` row for that ref (or is running older code).
 - Agent: message the bot ("list recent captures") → OCSF on host shows
   `ALLOWED /usr/local/bin/node(<pid>) -> host.openshell.internal:3001 [policy:trades_spine_doorman]` and the bot
   returns real data.
 
 ## Tools by tier (what `tools/list` returns)
-- **Technician badge — 9:** record_field_note (two-step stage→confirm; since 2026-07-06), find_customer, get_customer_context, get_job, list_recent_captures, brief_customer, answer_customer_question, send_email (two-step confirm; since 2026-07-04), retract_capture (two-step; author-or-manager, but audit rows outbound_email/agent_action are manager-only; since 2026-07-06).
-- **Manager badge — 16 (since 2026-07-06; 15 from 2026-07-04, 14 from 2026-07-02):** the 9 above PLUS the seat/lifecycle admin tools: add_technician_seat, deactivate_technician_seat, reactivate_technician_seat, get_connect_link, list_team, list_pending_reviews, resolve_review. Only an ACTIVE `tier='manager'` roster row on the server unlocks these (see the badge↔roster note above); the doorman/host does nothing tier-specific — same badge plumbing either way.
+- **Technician badge — 10:** record_field_note (two-step stage→confirm; since 2026-07-06), find_customer, get_customer_context, get_job, list_recent_captures, brief_customer, answer_customer_question, send_email (two-step confirm; since 2026-07-04), retract_capture (two-step; author-or-manager, but audit rows outbound_email/agent_action are manager-only; since 2026-07-06), get_schedule (day-route: best stop order + Google Maps deep link; since 2026-07-06 — must ALSO be added to the sandbox tool allowlist or the agent can't call it).
+- **Manager badge — 17 (since 2026-07-06 route release; 16 earlier on 2026-07-06 with retract_capture, 15 from 2026-07-04, 14 from 2026-07-02 — a badge listing 16/9 today means the upstream is one release behind, redeploy; NOT a roster/badge fault):** the 10 above PLUS the seat/lifecycle admin tools: add_technician_seat, deactivate_technician_seat, reactivate_technician_seat, get_connect_link, list_team, list_pending_reviews, resolve_review. Only an ACTIVE `tier='manager'` roster row on the server unlocks these (see the badge↔roster note above); the doorman/host does nothing tier-specific — same badge plumbing either way.
 - **Second MCP server per sandbox (since 2026-07-04): the person's Composio session `mcp.url`** — the outbound connector surface, registered beside `trades-spine` (setup guide §0b). Tier is enforced INSIDE Composio's session config (execution-time, error code `4310` — not the gateway): manager = full catalog + `manageConnections:true` (self-serve pairing); technician = pinned `direct_tools` read/draft list, send impossible (spine `send_email` is the only technician send path). Sessions are minted by the Render lifecycle cron for ACTIVE rows; the operator wires the url once via `scripts/provision-session.mjs` (host-only secretRef — the url grants the whole session). Manager sandboxes REQUIRE the destructive-action confirmation instruction block (§0b) — that is the only guard on destructive tools, by decision.

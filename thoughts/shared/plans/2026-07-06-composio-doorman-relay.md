@@ -280,13 +280,18 @@ unchanged. Update the setup guide's inline copy of doorman.mjs (§3c) — byte-c
 ### Live verification (agent-executable)
 - Prerequisites: `ssh tradesbox`; a minted badge available per the §3f procedure (never pasted
   into chat).
-- [ ] Host curl `http://172.18.0.1:3001/mcp` (spine) still returns the tool list — regression.
-- [ ] Host curl `http://172.18.0.1:3001/composio/` with the badge: MCP **initialize, THEN a
-  tools/list carrying the returned `Mcp-Session-Id` if probe 5 found the endpoint stateful** —
-  both succeed, NOT 401/502 (a lone initialize can false-pass; review finding 4). Evidence:
-  HTTP statuses + first lines.
-- [ ] Bogus badge on `/composio/` → 403 at the doorman (never reaches Render).
-- [ ] Render logs show the relay route hit (Render dashboard or `journalctl` equivalent).
+- [x] Doorman deployed to trades-box-1 (2026-07-07 UTC): old version backed up
+      `/opt/doorman/doorman.mjs.bak-prerelay`, new installed (`node --check` OK, `RELAY_PREFIX`
+      present), `systemctl restart` → active, log shows `doorman 172.18.0.1:3001 -> …onrender.com/`.
+- [x] Bogus badge on `/composio/` → **403** at the doorman (never reaches Render); no badge →
+      **401**; bogus badge on `/` (spine) → **403** — fail-closed proven both branches. Render
+      pre-warm reachable.
+- [→] **Positive round-trip (spine regression + `/composio` initialize+tools/list) DEFERRED to
+      Phase 4's agent E2E.** `pending-badges.jsonl` is empty (all badges installed into
+      sandboxes), and minting a throwaway badge would churn the pilot roster (the 2026-07-03
+      incident surface). The plaintext-free way to present a valid badge is a real agent turn —
+      the manager sandbox does exactly that once wired in Phase 4, which also surfaces the Render
+      relay-route log hit. Triaged per `verifying-behavior` (avoid handling badge plaintext).
 
 ### Manual verification
 - [ ] none — the Telegram-visible behavior is Phase 4's.
@@ -326,19 +331,28 @@ env var is a trap).
 - `docs/doorman-runbook.md` — lines 92-94 ("the server ignores the request path entirely") and
   the one-upstream wording become false once `/composio*` routes differently on both hops —
   update both statements (review finding 8).
-- `scripts/provision-session.mjs` — header comment: diagnostics-only now (no code change).
+- `scripts/provision-session.mjs` — header + printout: diagnostics-only now (review finding 2 —
+  the body's secretRef snippet was replaced with a relay explanation so it no longer contradicts
+  the header).
+- `docs/nemoclaw-tech-agent.md` §5 bullet (line 191) — the "mcp.url delivery is operator-run"
+  note repointed at the relay (review finding 3 — it contradicted the §7 rewrite).
 
 ### Automated verification
-- [ ] `npm run typecheck && npm run lint && npm test && npm run build` (docs + bake-in script
-      changes can't break them — this is the standing pre-commit gate)
+- [x] `npm run typecheck && npm run lint && npm test && npm run build` — 2026-07-06: all green
+      (249 tests); `apply-bakein.py` py_compile OK + simulated against an already-baked (edits
+      2/4 present) tree AND a decoy-early-`return config` tree → edits 5/6 land beside
+      trades-spine, idempotent on rerun (review findings 1 + 5 covered).
 
 ### Live verification (agent-executable)
 - Prerequisites: `ssh tradesbox`; `supabase-test` MCP (read-only); OCSF log access on the box.
-- [ ] Manager sandbox `tools/list` via the relay shows Composio meta-tools (OCSF: `ALLOWED …
-      host.openshell.internal:3001` for the composio server) — evidence: log lines + tool names.
-- [ ] Technician sandbox via relay lists EXACTLY the 3 pinned Gmail tools (4310-shaped surface).
-- [ ] After a manager action, the log-ingestion sweep lands the L1 row within ~75 min —
-      `supabase-test` SELECT on `raw_captures` (channel `agent_action`/`outbound_email`).
+- [x] Both sandboxes wired (2026-07-07 UTC): `composio` MCP entry added to s2 (manager-sam) and
+      s1 (tech-jane) `/sandbox/.openclaw/openclaw.json` beside `trades-spine` (same badge
+      placeholder, zero new secrets); backups at `openclaw.json.bak-prerelay`. Agents restarted
+      via `nemoclaw-agent-sN.service` (up in ~5s each); s2 log shows `[reload] config hot reload
+      applied (mcp.servers.composio)` — clean, no MCP load error.
+- [→] Per-tier surface + the L1 audit-row read-back are confirmed by the Telegram E2E below (the
+      composio MCP connects lazily on the first agent turn, so the credentialed sandbox→doorman
+      →Render→Composio round-trip is proven there rather than by a startup handshake).
 
 ### Manual verification
 - [ ] Telegram E2E: manager asks their agent to read a real spreadsheet/inbox item via Composio;

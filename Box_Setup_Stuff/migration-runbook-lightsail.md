@@ -205,6 +205,19 @@ door. Undo anytime with `brev deregister` (documented full cleanup).
 - Render free-tier cold start ~32s > 30s timeouts — pre-warm before first pulls/tool calls.
 - `nemoclaw <AGENT> rebuild` restores only standard presets → re-run
   `./bootstrap-box.sh wire <AGENT>` after every rebuild.
+- **`nemoclaw <AGENT> rebuild` can BLANK the sandbox's device private key** (its state
+  sanitizer rewrites `identity/device.json` `privateKeyPem` → `[STRIPPED_BY_MIGRATION]`), which
+  drops the sandbox into an endless device-pairing loop with **no MCP and no Telegram polling** —
+  diagnosed on s1 2026-07-04, and NOT the documented "rebuild resets `dangerouslyDisableDeviceAuth`"
+  gotcha (that flag was fine). Guard every rebuild:
+  1. **Before:** `./bootstrap-box.sh backup-identity <AGENT>` (snapshots the intact key to
+     `~/identity-backups/`).
+  2. **After:** `sudo ./bootstrap-box.sh verify` — it now checks every sandbox's `device.json`
+     and flags `STRIPPED_BY_MIGRATION`.
+  3. **If stripped:** restore the pre-rebuild backup (same approved identity → no re-pairing), or
+     regenerate (delete → restart → an operator runs `openclaw devices approve <requestId>`).
+  Same risk applies to a fresh PROD box — bake steps 1–2 into its cutover. Full detail: memory
+  note `nemoclaw-rebuild-strips-device-key`.
 - Badge plaintext exists only in `/root/pending-badges.jsonl` → provider store. Never in
   chat, docs, or shell history you'd paste elsewhere.
 - No `npm test` until the suite's roster-truncation cleanup is fixed (see Phase 0).

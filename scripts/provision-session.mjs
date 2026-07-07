@@ -1,14 +1,19 @@
-// Operator helper: print one person's Composio session mcp.url + the gateway
-// registration snippet for their sandbox (registered beside trades-spine).
+// Operator helper: print one person's Composio session mcp.url for DIAGNOSTICS.
 // The session itself is created by the lifecycle sweep (ensurePersonSession);
-// this script only READS it back for the one-time sandbox wiring.
+// this script only READS it back.
+//
+// ⚠ DIAGNOSTICS-ONLY SINCE 2026-07-06 — no longer part of sandbox wiring. The
+// composio-doorman relay (src/composio/relayHandler.ts) is how sandboxes reach
+// their session now: sandbox → doorman /composio/ → Render relay → the session,
+// with the Composio key attached server-side. Sandboxes get NO session url and
+// NO secretRef. Use this script only to inspect/confirm a person's session url
+// out-of-band (e.g. debugging the relay); the printed snippet is historical.
 //
 // Usage (run with `node -r dotenv/config`, after `npm run build`):
 //   scripts/provision-session.mjs tenant=<uuid> ref=<ref>
 //
-// CUSTODY: the printed mcp.url grants that person's whole session. It goes
-// into the sandbox's gateway config as a secretRef — never into logs, the
-// repo, or the model context. COMPOSIO_API_KEY stays control-plane-only.
+// CUSTODY: the printed mcp.url grants that person's whole session — never into
+// logs, the repo, or a sandbox. COMPOSIO_API_KEY stays control-plane-only.
 
 import { getTechnician } from '../dist/db/index.js';
 import { getSessionMcpUrl } from '../dist/composio/sessions.js';
@@ -58,22 +63,11 @@ if (!tech.composio_session_id) {
 
 const url = await getSessionMcpUrl(tech);
 console.log(`Session for ${tech.ref} (tier=${tech.tier}, session=${tech.composio_session_id}):\n`);
-console.log(`mcp.url (SENSITIVE — deliver via secretRef only):\n${url}\n`);
-console.log(`Gateway registration snippet (beside trades-spine in the sandbox's mcp.servers):`);
+console.log(`mcp.url (SENSITIVE — diagnostics only, do NOT wire into a sandbox):\n${url}\n`);
 console.log(
-  JSON.stringify(
-    {
-      mcp: {
-        servers: {
-          composio: { url: { secretRef: `composio-mcp-url-${tech.ref}` } },
-        },
-      },
-    },
-    null,
-    2,
-  ),
-);
-console.log(
-  `\nStore the url under the secretRef 'composio-mcp-url-${tech.ref}' on the HOST (root-only), ` +
-    `never in the sandbox filesystem or this repo.`,
+  `Sandboxes reach this session through the composio-doorman RELAY, not this url:\n` +
+    `  sandbox → doorman /composio/ → Render relay → this session (key attached server-side).\n` +
+    `The sandbox's 'composio' MCP entry is baked by apply-bakein.py (§6 edits 5+6) and holds only\n` +
+    `the badge — no url, no secretRef. This printout is for out-of-band inspection/debugging only;\n` +
+    `never store it as a secretRef or place it in the sandbox filesystem, logs, or this repo.`,
 );

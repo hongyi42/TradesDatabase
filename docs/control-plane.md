@@ -55,7 +55,11 @@ JSON summary line; a failed step exits 1 so Render marks the run failed:
 ## Render setup (dashboard, one-time)
 
 1. **Web service** (existing): add `COMPOSIO_API_KEY` and `COMPOSIO_GMAIL_AUTH_CONFIG_ID`
-   to its environment (get_connect_link + verification verdicts run there).
+   to its environment (get_connect_link + verification verdicts run there). Optional
+   `COMPOSIO_RELAY_API_KEY` (a scoped project key) — the composio-doorman relay
+   (`src/composio/relayHandler.ts`, since 2026-07-06) uses it for the Render→Composio leg,
+   falling back to `COMPOSIO_API_KEY` when unset; with NEITHER set the relay answers a clean
+   503 "not configured" (it never forwards keyless).
 2. **New Cron Job service**, same repo/branch:
    - Build: `npm install && npm run build`
    - Command: `npm run job:lifecycle`

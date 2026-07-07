@@ -28,32 +28,40 @@ authority — the scripts cite its sections and fall back to it whenever an anch
 - **`<AGENT>`** \= the sandbox name you pick at onboard (e.g. `s1`, `d1`). Used by **`nemoclaw <AGENT> …`**.  
 - **`<AGENT>-telegram-bridge`** \= the OpenShell **provider** auto-created for that sandbox+channel. Used by **`openshell provider … <AGENT>-telegram-bridge`**.
 
-## 0b. Per-person Composio session (outbound connectors — since 2026-07-04)
+## 0b. Per-person Composio session via the doorman relay (SHIPPED 2026-07-06)
 
-Beside `trades-spine`, each sandbox registers its person's **Composio session `mcp.url`** — the
-outbound connector surface (Gmail/Sheets/…, tier-scoped). The session is created automatically by
-the Render lifecycle cron for every ACTIVE roster row; the **operator wires the url into the
-sandbox once** at setup:
+Beside `trades-spine`, each sandbox registers a second MCP server, `composio`, that reaches its
+person's **Composio session** — the outbound connector surface (Gmail/Sheets/…, tier-scoped). It
+is authenticated by the **SAME badge the sandbox already holds** — zero new sandbox secrets:
 
-**⚠ WIRING BLOCKED — DO NOT APPLY AS WRITTEN (live-verified 2026-07-05):** the session's
-`mcp.url` alone gets **HTTP 401** — since March 2026 Composio enforces `require_mcp_api_key`
-(project-level, default-on for new orgs), and the auth header the SDK returns with the session is
-**the MASTER control-plane `COMPOSIO_API_KEY`**, not a session-scoped token (none exists yet;
-"scoped API keys" are still rolling out per Composio's changelog). Putting that header in a
-sandbox would let the sandbox act as ANY user and bypass ALL tier enforcement — never do it.
-Until the wiring approach below is decided+built, sandboxes get NO direct Composio MCP entry.
-Options on the table: (a) host-side composio-doorman proxy (master key stays on the host,
-badge-gated per-sandbox routing — mirrors the trades-spine doorman; RECOMMENDED), (b) disable
-`require_mcp_api_key` project-wide so the tokenized url is the sole credential (vendor
-recommends against; weakens every MCP surface in the project), (c) wait for Composio scoped
-API keys. The steps below describe the INTENDED end state once (a) exists:
+```jsonc
+"composio": {
+  "transport": "streamable-http",
+  "url": "http://host.openshell.internal:3001/composio/",
+  "headers": { "Authorization": "Bearer openshell:resolve:env:TRADES_SPINE_BADGE" }
+}
+```
 
-1. On the control plane (repo checkout with `.env`): `npm run build && node -r dotenv/config
-   scripts/provision-session.mjs tenant=<uuid> ref=<ref>` → prints the `mcp.url` + the exact
-   gateway snippet.
-2. Store the url as a host-side secretRef (`composio-mcp-url-<ref>`, root-only) and add the
-   printed `composio` entry to the sandbox's `mcp.servers`, next to `trades-spine`. **Custody: the
-   url grants that person's whole session — never in the sandbox filesystem, logs, or this repo.**
+The doorman routes the `/composio` path to a **Render relay route** (`src/composio/relayHandler.ts`)
+that verifies the signed identity, looks up that person's `composio_session_id` in the roster, and
+forwards ONLY to that session with the Composio API key attached **server-side** (Render env
+`COMPOSIO_RELAY_API_KEY`, a scoped project key; master key is the fallback). The sandbox controls
+request content only — never the destination session or the credential. **Per-person pinning is
+the security boundary.**
+
+*Why this shape (the §0b wiring that was BLOCKED 2026-07-05, resolved 2026-07-06):* a session's
+`mcp.url` alone gets HTTP 401 (`require_mcp_api_key`, Composio default-on since March 2026), and
+the only auth header the SDK supplies is the MASTER `COMPOSIO_API_KEY` — which would let a sandbox
+act as ANY user. The relay keeps that key on Render. Live-probed 2026-07-06: Composio pins the
+connected account to the session (a forged `connectedAccountId` in tool args is ignored), the
+scoped key is accepted, and the session MCP responds SSE — so the doorman↔relay pipe carries it.
+
+**Wiring:** the `composio` server block is **baked into the image** by `apply-bakein.py` (guide §6
+edits 5+6, gated on the same `NEMOCLAW_TRADES_SPINE_ENABLED`) — a rebuild brings it up
+automatically beside `trades-spine`. On a box not yet rebuilt, add it manually the §5c way (writable
+layer) alongside `trades-spine`. No secretRef, no `provision-session.mjs` step — that script is now
+diagnostics-only. **Render must have `COMPOSIO_RELAY_API_KEY` set** or the relay answers a clean
+503 "not configured".
 
 **Tier shape (enforced by Composio at execution — error code 4310, verified 2026-07-04):**
 managers get the ENTIRE catalog + self-serve connector pairing (`manageConnections:true`);
@@ -78,8 +86,10 @@ permanent record (CLAUDE.md recorded exception 2026-07-04).
 **Session lifecycle gotchas (operator):**
 - **Deactivation deletes the person's session** (a live manager session could self-serve-pair NEW
   accounts during the grace period — so it goes down with the badge). On **reactivation** the
-  15-min sweep mints a FRESH session at the person's current tier → **the sandbox's
-  `composio-mcp-url-<ref>` secretRef must be re-provisioned** (`provision-session.mjs` again).
+  15-min sweep mints a FRESH session at the person's current tier. **No sandbox re-provisioning
+  is needed** — the relay reads `composio_session_id` from the roster per request, so it picks up
+  the new session automatically. In the ≤15-min window between reactivation and the sweep the
+  relay mints on demand (or answers 503 "session not ready" if the key is unset).
 - **Tier change (e.g. manager demotion)** is a DB tier update PLUS a session teardown (null
   `composio_session_id`; the sweep re-mints at the new tier). Skipping the teardown leaves the
   old tier's session live — a demoted manager would keep the full catalog.

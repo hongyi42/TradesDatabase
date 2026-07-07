@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { createHmac } from 'node:crypto';
 import { Client } from 'pg';
 import type { AddressInfo } from 'node:net';
 import type http from 'node:http';
@@ -36,7 +37,9 @@ beforeAll(async () => {
   hostToken = minted.badge;
   const host = await createHost(HOST_NAME, minted.hash);
   const tech = await insertTechnician({ tenantId, ref: 'pull-probe', displayName: 'Pull Probe' });
-  await updateTechnician(tech.id, { host_id: host.id, sandbox_ref: 's1' });
+  // state: the relay 503 test specifies an ACTIVE session-less row (invited→
+  // active doesn't change seat occupancy, so the cap trigger is indifferent).
+  await updateTechnician(tech.id, { host_id: host.id, sandbox_ref: 's1', state: 'active' });
 
   server = createHttpServer();
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -51,6 +54,71 @@ afterAll(async () => {
   await pg.query('delete from hosts where name = $1', [HOST_NAME]);
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
   await pg.end();
+});
+
+describe('/composio relay routing', () => {
+  const RELAY_SECRET = 'httpserver-relay-test-secret';
+  let prevSecret: string | undefined;
+  let prevKey: string | undefined;
+
+  beforeAll(() => {
+    // Not in .env.test.example — set per-process like identity.test.ts. The
+    // 503 path additionally depends on COMPOSIO_API_KEY being ABSENT.
+    prevSecret = process.env.GATEWAY_IDENTITY_SECRET;
+    prevKey = process.env.COMPOSIO_API_KEY;
+    process.env.GATEWAY_IDENTITY_SECRET = RELAY_SECRET;
+    delete process.env.COMPOSIO_API_KEY;
+  });
+  afterAll(() => {
+    if (prevSecret === undefined) delete process.env.GATEWAY_IDENTITY_SECRET;
+    else process.env.GATEWAY_IDENTITY_SECRET = prevSecret;
+    if (prevKey !== undefined) process.env.COMPOSIO_API_KEY = prevKey;
+  });
+
+  const signedHeaders = (): Record<string, string> => ({
+    'x-tenant-id': tenantId,
+    'x-technician-ref': 'pull-probe',
+    'x-identity-signature': createHmac('sha256', RELAY_SECRET)
+      .update(`${tenantId}.pull-probe`)
+      .digest('hex'),
+    'content-type': 'application/json',
+  });
+
+  test('no identity headers → bare 401', async () => {
+    const resp = await fetch(`${base}/composio/`, { method: 'POST', body: '{}' });
+    expect(resp.status).toBe(401);
+    expect(await resp.text()).toBe('');
+  });
+
+  test('signed identity, roster row without a session, no key → 503 session not ready', async () => {
+    const resp = await fetch(`${base}/composio/`, {
+      method: 'POST',
+      headers: signedHeaders(),
+      body: '{}',
+    });
+    expect(resp.status).toBe(503);
+    expect(((await resp.json()) as { error: string }).error).toBe('session not ready');
+  });
+
+  test('non-relay paths still reach the MCP handler (route ordering)', async () => {
+    // The spine MCP serves every unrouted path; a valid initialize on /nope
+    // must get an MCP response, not a relay error shape.
+    const resp = await fetch(`${base}/nope`, {
+      method: 'POST',
+      headers: { ...signedHeaders(), accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-03-26',
+          capabilities: {},
+          clientInfo: { name: 'route-probe', version: '0.0.0' },
+        },
+      }),
+    });
+    expect(resp.status).toBe(200);
+  });
 });
 
 describe('GET /control/badges', () => {

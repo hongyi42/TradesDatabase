@@ -2,7 +2,7 @@
 date: 2026-07-06
 task: "Composio doorman relay — badge-authenticated sandbox access to each person's Composio session, master key stays on Render"
 research: thoughts/shared/research/2026-07-06-composio-doorman-relay.md
-status: draft
+status: complete
 ---
 
 ## Overview

@@ -9,5 +9,8 @@ export * from './scheduleEntries.js';
 export * from './technicians.js';
 export * from './hosts.js';
 export * from './reviewItems.js';
+export * from './timeOff.js';
+export * from './jobTypeDurations.js';
+export * from './assignments.js';
 export * from './context.js';
 export type { Database, Json } from './database.types.js';

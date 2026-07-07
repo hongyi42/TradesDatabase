@@ -9,7 +9,7 @@ import {
   teardownPersonSession,
 } from './sessions.js';
 
-// Pure unit tests — client + db seams stubbed (pairing.test.ts pattern).
+// Pure unit tests â€” client + db seams stubbed (pairing.test.ts pattern).
 
 function tech(over: Partial<Technician> = {}): Technician {
   return {
@@ -28,6 +28,8 @@ function tech(over: Partial<Technician> = {}): Technician {
     offboarding_started_at: null,
     link_issued_at: null,
     composio_session_id: null,
+    availability: null,
+    service_cities: [],
     created_at: '2026-07-04T00:00:00.000Z',
     updated_at: '2026-07-04T00:00:00.000Z',
     ...over,
@@ -89,7 +91,7 @@ function updateStub() {
   return { patches, update };
 }
 
-describe('sessionConfigForTier — the hard rule', () => {
+describe('sessionConfigForTier â€” the hard rule', () => {
   test('BOTH tiers produce an explicit, non-empty config object (never bare)', () => {
     for (const tier of ['manager', 'technician'] as const) {
       const config = sessionConfigForTier(tier);
@@ -184,12 +186,12 @@ describe('getSessionMcpUrl', () => {
     expect(uses).toEqual([{ id: 'trs_x', opts: { mcp: true } }]);
   });
 
-  test('no session on the row → clean error naming the sweep', async () => {
+  test('no session on the row â†’ clean error naming the sweep', async () => {
     const { client } = sessionClientStub();
     await expect(getSessionMcpUrl(tech(), { client })).rejects.toThrow('has no session');
   });
 
-  test('no url in the response → clean error', async () => {
+  test('no url in the response â†’ clean error', async () => {
     const { client } = sessionClientStub({ useResult: { mcp: {} } });
     await expect(
       getSessionMcpUrl(tech({ composio_session_id: 'trs_x' }), { client }),
@@ -197,7 +199,7 @@ describe('getSessionMcpUrl', () => {
   });
 });
 
-describe('ensurePersonSession — orphan compensation', () => {
+describe('ensurePersonSession â€” orphan compensation', () => {
   test('a failed roster persist deletes the just-created session (no orphan)', async () => {
     const { client, creates, deletes } = sessionClientStub();
     const failingUpdate = async () => {
@@ -224,7 +226,7 @@ describe('teardownPersonSession', () => {
     expect(patches).toEqual([{ id: 'tech-1', patch: { composio_session_id: null } }]);
   });
 
-  test('no session on the row → none, no Composio call', async () => {
+  test('no session on the row â†’ none, no Composio call', async () => {
     const { client, deletes } = sessionClientStub();
     const { patches, update } = updateStub();
     const r = await teardownPersonSession(tech(), { client, update });
@@ -253,6 +255,6 @@ describe('teardownPersonSession', () => {
         update: e.update,
       }),
     ).rejects.toThrow('503');
-    expect(e.patches).toHaveLength(0); // column kept — expiry retry pass owns it
+    expect(e.patches).toHaveLength(0); // column kept â€” expiry retry pass owns it
   });
 });

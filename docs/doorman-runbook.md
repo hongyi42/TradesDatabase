@@ -89,9 +89,10 @@ accepted only by the doorman, never by Render. The doorman is a translator:
 ## Values you must obtain first (you cannot infer these)
 
 - [ ] **Render MCP base URL** — the `.onrender.com` URL of the service running this repo's HTTP
-      entrypoint (`node dist/mcp/httpServer.js`). The MCP endpoint is the service **root** `/` — there
-      is no `/mcp` subpath; the server ignores the request path entirely. Use e.g.
-      `https://<svc>.onrender.com/`.
+      entrypoint (`node dist/mcp/httpServer.js`). The MCP endpoint is the service **root** `/`; the
+      server ignores the request path for MCP **except** the reserved routes `/inbound/*`,
+      `/control/badges`, and `/composio*` (the Composio relay, since 2026-07-06) — any other path is
+      served as MCP. Use e.g. `https://<svc>.onrender.com/`.
 - [ ] **`GATEWAY_IDENTITY_SECRET`** — the exact value currently set on the Render service.
 - [ ] **Tenant UUID(s) and technician ref(s)** — one `{tenantId, technicianRef}` pair per sandbox.
 - [ ] **Someone who can set Render env vars** (`ALLOWED_CLIENT_IPS`) in the Render dashboard — you'll

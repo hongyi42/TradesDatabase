@@ -7,6 +7,7 @@ import { handleInboundWebhook } from '../inbound/webhook.js';
 import { sha256hex } from '../control/badges.js';
 import { buildBadgeResponse } from '../control/badgeFile.js';
 import { getHostByTokenHash } from '../db/index.js';
+import { handleComposioRelay, isRelayPath } from '../composio/relayHandler.js';
 
 // Central HTTP entrypoint (Architecture A). Every NemoClaw bot reaches this one
 // server through the gateway. It runs STATELESS (sessionIdGenerator: undefined):
@@ -151,6 +152,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (!allowed(req)) {
       res.writeHead(403);
       res.end();
+      return;
+    }
+    // Composio relay — same signed-identity trust as the MCP path (it shares
+    // this catch's bare 401 for identity failures). Must route BEFORE the MCP
+    // fallthrough below, which serves every unrouted path.
+    if (isRelayPath(req.url)) {
+      await handleComposioRelay(req, res, await readRawBody(req));
       return;
     }
     // Read+parse the body ourselves and pass it to handleRequest, so the transport

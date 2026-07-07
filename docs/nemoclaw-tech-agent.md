@@ -188,11 +188,12 @@ register side-by-side in the gateway's `mcp.servers`.
   undeletable) and `sensitivity='manager_only'` (filtered out of technician-tier spine reads).
   Reads are skipped; when unsure, capture. **Capture-all, no work/personal classifier** — recorded
   exception in CLAUDE.md.
-- **mcp.url delivery is operator-run in v1** (`scripts/provision-session.mjs` prints the url + the
-  gateway snippet registered beside `trades-spine`; custody: host-only secretRef). Automated
-  injection (e.g. via badge-pull) is future work. Note for feature A's rebase: a chat-only hire
-  gets a spine connection automatically but their session `mcp.url` still needs this operator
-  step.
+- **mcp.url delivery: via the composio-doorman RELAY, no operator step (since 2026-07-06).** The
+  session `mcp.url` is NOT distributed to sandboxes; the sandbox's `composio` MCP entry points at
+  the doorman `/composio/` path (same badge) and Render pins each request to the person's session
+  (see *Secret custody + gateway wiring* below). `scripts/provision-session.mjs` is diagnostics-only.
+  Consequence for Feature A: a chat-only hire's auto-claimed sandbox gets Composio access with NO
+  operator wiring — the relay reads `composio_session_id` per request.
 
 **Phase-5 live verification (2026-07-04, fresh-context probe against the live project):**
 - **Enforcement re-confirmed with the production configs**: technician session rejects
@@ -277,17 +278,28 @@ register side-by-side in the gateway's `mcp.servers`.
   [Connected Accounts](https://docs.composio.dev/docs/auth-configuration/connected-accounts).
 
 ### Secret custody + gateway wiring
-- The **Composio API key** (mints access for all tenants) and each tenant's Tool Router **`mcp.url`** live
-  **only on the central control plane / host** — never in a sandbox (same rule as `GATEWAY_IDENTITY_SECRET`,
-  §3b).
-- The control plane runs `composio.create(tenantId)` → `{ mcp }` and injects that tenant's `mcp.url` into
-  its sandbox, registered next to `trades-spine`:
+- **Outbound custody of record (relay, since 2026-07-06):** the Composio session **`mcp.url` is
+  NOT distributed to sandboxes at all** — neither the url nor any Composio key ever leaves the
+  control plane. A sandbox reaches Composio through a `composio` MCP entry pointing at the
+  doorman's `/composio/` path, authenticated by the **same badge** it already holds. The doorman
+  forwards to the Render relay (`src/composio/relayHandler.ts`), which verifies the signed
+  identity, looks up `composio_session_id`, and forwards ONLY to that session with the Composio
+  key (`COMPOSIO_RELAY_API_KEY`, scoped; master fallback) attached **server-side**. Per-person
+  pinning is the boundary; the caller controls request content, never the destination or credential.
   ```jsonc
   { "mcp": { "servers": {
       "trades-spine": { /* HTTP server + signed x-tenant-id headers (§3b) */ },
-      "composio":     { "url": { "secretRef": "composio-mcp-url-<tenantId>" } }
+      "composio":     { "transport": "streamable-http",
+                        "url": "http://host.openshell.internal:3001/composio/",
+                        "headers": { "Authorization": "Bearer openshell:resolve:env:TRADES_SPINE_BADGE" } }
   }}}
   ```
+  *Why not the direct session url (the retired secretRef wiring):* the url alone 401s
+  (`require_mcp_api_key`) and the SDK's session auth header IS the master key — putting it in a
+  sandbox would grant any-user access. **Live-probed 2026-07-06:** Composio pins the connected
+  account to the session (a forged `connectedAccountId` in tool args is ignored — the relay's
+  arg guard is defense-in-depth, not load-bearing), the scoped key is accepted, and the session
+  MCP responds SSE. `scripts/provision-session.mjs` is now diagnostics-only.
 - Allowlist only the actions each tier needs (e.g. `GMAIL_SEND_EMAIL`, `GOOGLESHEETS_BATCH_GET`) — mirror §4.
 - **Per-person capability control lives at the gateway, not in Composio (decided 2026-07-01):** the
   doorman badge already resolves `{tenantId, technicianRef}` per bot, and a future per-tier tool

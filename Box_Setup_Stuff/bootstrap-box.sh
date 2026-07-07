@@ -14,7 +14,8 @@
 #   sudo ./bootstrap-box.sh badgepull                 # §3c roster pull        (needs HOST_PULL_TOKEN)
 #        ./bootstrap-box.sh wire <AGENT>              # §5a egress policy + §5b instructions
 #   sudo ./bootstrap-box.sh boot <AGENT>              # §7: boot-revive oneshot
-#   sudo ./bootstrap-box.sh verify                    # §3f/§7: gates that don't need a real badge
+#        ./bootstrap-box.sh backup-identity <AGENT>   # snapshot device key BEFORE any rebuild
+#   sudo ./bootstrap-box.sh verify                    # §3f/§7 gates + device-identity integrity
 #
 # Idempotent: each phase skips what already exists and never overwrites an
 # existing secret file. Secrets come from env vars or an interactive prompt —
@@ -494,6 +495,35 @@ phase_verify() {
   [ "$n" -gt 0 ] && ok "badges.json has $n entrie(s)" || echo "    ! badges.json empty — no one assigned to this host yet, or first pull pending"
   docker ps --format '    {{.Names}}  {{.Status}}' | sed -n '1,10p'
 
+  # Device-identity integrity: `nemoclaw rebuild`'s state sanitizer can blank a
+  # sandbox's device private key (privateKeyPem → [STRIPPED_BY_MIGRATION]),
+  # which sends the gateway into an endless device-pairing loop with no MCP /
+  # Telegram polling. Diagnosed on s1 2026-07-04 (see the memory note
+  # nemoclaw-rebuild-strips-device-key). Catch it here every run.
+  log "sandbox device-identity integrity (rebuild-strips-key hazard)"
+  local c nm dj stripped=0 seen=0
+  for c in $(docker ps -q --filter "name=openshell-"); do
+    seen=$((seen+1))
+    nm=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null | sed 's#^/##')
+    dj=$(docker exec -u sandbox "$c" cat /sandbox/.openclaw/identity/device.json 2>/dev/null)
+    if printf '%s' "$dj" | grep -q STRIPPED_BY_MIGRATION; then
+      echo "    ✗ ${nm}: device private key STRIPPED_BY_MIGRATION — pairing will loop"; warn=$((warn+1)); stripped=1
+    elif printf '%s' "$dj" | grep -q 'PRIVATE KEY'; then
+      ok "${nm}: device identity intact"; pass=$((pass+1))
+    else
+      echo "    ! ${nm}: could not read device.json (sandbox down?)"
+    fi
+  done
+  [ "$seen" -eq 0 ] && echo "    ! no sandbox containers running to check"
+  [ "$stripped" = 1 ] && cat <<'EOF'
+    → FIX: restore the pre-rebuild backup if you have one —
+        docker cp <backup>/device.json <CID>:/sandbox/.openclaw/identity/device.json
+        docker exec -u sandbox <CID> chmod 600 /sandbox/.openclaw/identity/device.json
+        then restart the sandbox (approved identity returns, no re-approval).
+      No backup? regenerate: back up+delete the stripped device.json, restart, then
+      an OPERATOR approves the one new pairing request (openclaw devices approve).
+EOF
+
   cat <<'EOF'
 
 Remaining gates that NEED a real badge / human (guide §3f, §5d — cannot be scripted safely):
@@ -507,17 +537,42 @@ EOF
   [ "$warn" -eq 0 ]
 }
 
+# ────────────────────────────── backup-identity (rebuild-safety) ──
+# Snapshot a sandbox's device identity BEFORE `nemoclaw <AGENT> rebuild`, whose
+# state sanitizer can blank the private key (see phase_verify + the memory note
+# nemoclaw-rebuild-strips-device-key). Restoring the pre-rebuild copy afterward
+# brings back the SAME approved identity — no re-pairing needed.
+phase_backup_identity() {
+  need_not_root
+  local agent="${1:-}"; [ -n "$agent" ] || fail "usage: ./bootstrap-box.sh backup-identity <AGENT>"
+  local cid dest
+  cid=$(docker ps -q --filter "name=openshell-${agent}-" | head -1)
+  [ -n "$cid" ] || fail "no running container for ${agent}"
+  dest="$HOME/identity-backups/${agent}-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "$dest"
+  docker cp "$cid":/sandbox/.openclaw/identity/device.json "$dest/device.json" \
+    || fail "could not read ${agent} device.json"
+  if grep -q STRIPPED_BY_MIGRATION "$dest/device.json"; then
+    echo "    ! WARNING: ${agent}'s device.json is ALREADY stripped — this is NOT a good backup."
+  else
+    ok "backed up intact ${agent} device identity → $dest/device.json"
+  fi
+  echo "    After 'nemoclaw ${agent} rebuild', run:  sudo ./bootstrap-box.sh verify"
+  echo "    If it flags STRIPPED_BY_MIGRATION, restore from the path above (see the verify FIX block)."
+}
+
 # ──────────────────────────────────────────────────────────────────── main ──
 case "${1:-help}" in
-  prep)         phase_prep ;;
-  nemoclaw)     phase_nemoclaw ;;
-  bakein)       phase_bakein ;;
-  onboard-help) phase_onboard_help ;;
-  doorman)      phase_doorman ;;
-  badgepull)    phase_badgepull ;;
-  wire)         shift; phase_wire "$@" ;;
-  boot)         shift; phase_boot "$@" ;;
-  verify)       phase_verify ;;
+  prep)            phase_prep ;;
+  nemoclaw)        phase_nemoclaw ;;
+  bakein)          phase_bakein ;;
+  onboard-help)    phase_onboard_help ;;
+  doorman)         phase_doorman ;;
+  badgepull)       phase_badgepull ;;
+  wire)            shift; phase_wire "$@" ;;
+  boot)            shift; phase_boot "$@" ;;
+  backup-identity) shift; phase_backup_identity "$@" ;;
+  verify)          phase_verify ;;
   *)
     sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
     ;;

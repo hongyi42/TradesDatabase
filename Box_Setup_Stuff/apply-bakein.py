@@ -14,7 +14,7 @@ heredoc; the Brev-era guide describes the OLD layout):
   OLD: scripts/generate-openclaw-config.py + replacements-dict heredoc
   NEW: scripts/generate-openclaw-config.mts + replacement_patterns heredoc
 
-The five edits (see the guide for full rationale):
+The edits (see the guide for full rationale):
   (1)  toolSearch:false manifests (nemotron + z-ai/glm-5.2)
   (2)  config generator — bake the trades-spine MCP block
   (3)  nemoclaw-start.sh — runtime badge fallback (harmless no-op normally)
@@ -23,7 +23,15 @@ The five edits (see the guide for full rationale):
        to a stale v<NUM>_KEY form stays broken; this heals ANY on-disk form to
        the current generation's form on every boot)
   (4)  Dockerfile — ARG/ENV plumbing for NEMOCLAW_TRADES_SPINE_*
-No edit contains a secret; the badge stays in the provider store.
+  (5)  config generator — bake the composio relay MCP block (the doorman /composio
+       path → Render relay → this person's Composio session). SEPARATE edit with
+       its OWN sentinel (NEMOCLAW_COMPOSIO_RELAY_URL): a box that already has edit 2
+       carries the edit-2 sentinel, so folding this into edit 2 would silently
+       no-op on exactly the live box.
+  (6)  Dockerfile — ARG/ENV plumbing for NEMOCLAW_COMPOSIO_RELAY_URL (so an
+       operator override of the relay URL reaches the build-time generator).
+No edit contains a secret; the badge stays in the provider store (the composio
+server reuses the SAME TRADES_SPINE_BADGE placeholder — one badge, both entries).
 """
 
 import json
@@ -166,6 +174,82 @@ def edit2_generator():
         applied.append("2 (mts)")
     else:
         die("2", "no config generator found (neither generate-openclaw-config.py nor .mts)")
+
+
+# ── (5) generator: bake the composio relay MCP block ────────────────────────
+# Reuses the SAME enable flag + badge placeholder as trades-spine; only the URL
+# differs (the doorman routes /composio to the Render relay, which pins each
+# request to that person's Composio session server-side).
+GEN_COMPOSIO_PY = '''
+    # ── Composio relay MCP server (on-host doorman → Render relay) ────
+    # Same enable flag + badge placeholder as trades-spine; the doorman routes
+    # the /composio path to the Render relay, which pins to this person's session.
+    if _truthy_env_default(env, "NEMOCLAW_TRADES_SPINE_ENABLED", False):
+        composio_url = (
+            env.get("NEMOCLAW_COMPOSIO_RELAY_URL")
+            or "http://host.openshell.internal:3001/composio/"
+        )
+        config.setdefault("mcp", {}).setdefault("servers", {})["composio"] = {
+            "transport": "streamable-http",
+            "url": composio_url,
+            "headers": {
+                "Authorization": "Bearer openshell:resolve:env:TRADES_SPINE_BADGE",
+            },
+        }
+'''
+
+GEN_COMPOSIO_TS = '''
+  // ── Composio relay MCP server (on-host doorman → Render relay) ────
+  // Same enable flag + badge placeholder as trades-spine; the doorman routes
+  // the /composio path to the Render relay, which pins to this person's session.
+  if (env.NEMOCLAW_TRADES_SPINE_ENABLED === "1") {
+    const mcp = (config.mcp ??= {}) as JsonObject;
+    const mcpServers = (mcp.servers ??= {}) as JsonObject;
+    mcpServers["composio"] = {
+      transport: "streamable-http",
+      url: env.NEMOCLAW_COMPOSIO_RELAY_URL || "http://host.openshell.internal:3001/composio/",
+      headers: { Authorization: "Bearer openshell:resolve:env:TRADES_SPINE_BADGE" },
+    };
+  }
+'''
+
+
+def edit5_generator_composio():
+    py_path = os.path.join(SRC, "scripts", "generate-openclaw-config.py")
+    ts_path = os.path.join(SRC, "scripts", "generate-openclaw-config.mts")
+    # Anchor the return-search AFTER the trades-spine block (edit 2 ran first, so
+    # its NEMOCLAW_TRADES_SPINE_ENABLED sentinel is always present now) — never
+    # from position 0, or an earlier `return config` in another function would
+    # take the composio block. This lands it right after trades-spine at the
+    # FINAL return, matching edit 2's own after-the-anchor guard.
+    if os.path.exists(py_path):  # OLD layout
+        p, c = read("scripts/generate-openclaw-config.py", "5")
+        if "NEMOCLAW_COMPOSIO_RELAY_URL" in c:
+            skipped.append("5")
+            return
+        spine = c.find("NEMOCLAW_TRADES_SPINE_ENABLED")
+        if spine == -1:
+            die("5", "trades-spine block (edit 2) not found — run edit 2 first")
+        ret = c.find("\n    return config", spine)
+        if ret == -1:
+            die("5", "anchor `return config` after the trades-spine block not found")
+        write(p, c[:ret] + "\n" + GEN_COMPOSIO_PY.rstrip("\n") + c[ret:])
+        applied.append("5 (py)")
+    elif os.path.exists(ts_path):  # NEW layout
+        p, c = read("scripts/generate-openclaw-config.mts", "5")
+        if "NEMOCLAW_COMPOSIO_RELAY_URL" in c:
+            skipped.append("5")
+            return
+        spine = c.find("NEMOCLAW_TRADES_SPINE_ENABLED")
+        if spine == -1:
+            die("5", "trades-spine block (edit 2) not found — run edit 2 first")
+        ret = c.find("\n  return config;", spine)
+        if ret == -1:
+            die("5", "anchor `return config;` after the trades-spine block not found")
+        write(p, c[:ret] + "\n" + GEN_COMPOSIO_TS.rstrip("\n") + c[ret:])
+        applied.append("5 (mts)")
+    else:
+        die("5", "no config generator found (neither generate-openclaw-config.py nor .mts)")
 
 
 # ── nemoclaw-start.sh shared helpers ─────────────────────────────────────────
@@ -376,6 +460,38 @@ def edit4_dockerfile():
     applied.append("4")
 
 
+# ── (6) Dockerfile ARG/ENV plumbing for the composio relay URL ────────────────
+# Own sentinel (NEMOCLAW_COMPOSIO_RELAY_URL): the generator default works without
+# this, but wiring the ARG/ENV means an operator override actually reaches the
+# build-time generator instead of being silently ignored. Anchored on the same
+# web-search lines as edit 4 so it is independent of edit 4's ordering.
+def edit6_dockerfile_composio():
+    p, c = read("Dockerfile", "6")
+    if "NEMOCLAW_COMPOSIO_RELAY_URL" in c:
+        skipped.append("6")
+        return
+    lines = c.splitlines(keepends=True)
+    arg_i = env_i = None
+    for i, ln in enumerate(lines):
+        if ln.startswith("ARG NEMOCLAW_WEB_SEARCH_ENABLED") and arg_i is None:
+            arg_i = i
+        if "NEMOCLAW_WEB_SEARCH_ENABLED=${NEMOCLAW_WEB_SEARCH_ENABLED}" in ln and not ln.startswith("ARG") and env_i is None:
+            env_i = i
+    if arg_i is None:
+        die("6", "anchor `ARG NEMOCLAW_WEB_SEARCH_ENABLED` not found in Dockerfile")
+    if env_i is None:
+        die("6", "ENV promotion line for NEMOCLAW_WEB_SEARCH_ENABLED not found in Dockerfile")
+    indent = lines[env_i][: len(lines[env_i]) - len(lines[env_i].lstrip())]
+    lines[env_i:env_i] = [
+        f"{indent}NEMOCLAW_COMPOSIO_RELAY_URL=${{NEMOCLAW_COMPOSIO_RELAY_URL}} \\\n",
+    ]
+    lines[arg_i + 1 : arg_i + 1] = [
+        "ARG NEMOCLAW_COMPOSIO_RELAY_URL=\n",
+    ]
+    write(p, "".join(lines))
+    applied.append("6")
+
+
 # ── run all + sanity checks ──────────────────────────────────────────────────
 def main():
     if not os.path.isdir(SRC):
@@ -383,9 +499,11 @@ def main():
         sys.exit(1)
     edit1_manifests()
     edit2_generator()
+    edit5_generator_composio()  # after edit2 so composio sits beside trades-spine
     edit3_fallback()
     edit3b_selfheal()
     edit4_dockerfile()
+    edit6_dockerfile_composio()
 
     gen_py = os.path.join(SRC, "scripts", "generate-openclaw-config.py")
     if os.path.exists(gen_py):

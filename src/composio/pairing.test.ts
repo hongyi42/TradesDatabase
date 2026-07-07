@@ -3,7 +3,7 @@ import type { Technician, TechnicianPatch } from '../db/technicians.js';
 import type { ReviewItem, UpsertOpenReviewItemInput } from '../db/index.js';
 import { checkPairing, createConnectLink, unpair, type PairingClient } from './pairing.js';
 
-// Pure unit tests — the Composio client and both db writes are stubbed, so
+// Pure unit tests â€” the Composio client and both db writes are stubbed, so
 // nothing here needs COMPOSIO_API_KEY or the test project.
 
 let prevAuthConfig: string | undefined;
@@ -32,6 +32,8 @@ function tech(over: Partial<Technician> = {}): Technician {
     offboarding_started_at: null,
     link_issued_at: null,
     composio_session_id: null,
+    availability: null,
+    service_cities: [],
     created_at: '2026-07-02T00:00:00.000Z',
     updated_at: '2026-07-02T00:00:00.000Z',
     ...over,
@@ -39,7 +41,7 @@ function tech(over: Partial<Technician> = {}): Technician {
 }
 
 // Recording stubs for the db seams. casMiss simulates a concurrent writer
-// having won the state race (casTechnician → null).
+// having won the state race (casTechnician â†’ null).
 function dbStubs(opts: { casMiss?: boolean } = {}) {
   const patches: Array<{ id: string; patch: TechnicianPatch }> = [];
   const casCalls: Array<{ id: string; from: string; patch: TechnicianPatch }> = [];
@@ -135,7 +137,7 @@ function clientStub(opts: {
         return { data: opts.profileData ?? { emailAddress: 'jane.doe@gmail.com' } };
       },
     },
-    // Pairing never touches sessions — throwing stubs prove it (Phase 3 owns
+    // Pairing never touches sessions â€” throwing stubs prove it (Phase 3 owns
     // the behavior tests).
     sessions: {
       create: async () => {
@@ -208,7 +210,7 @@ describe('checkPairing', () => {
       },
     });
     // Trigger created (none existed), PINNED to the verified account, adoption
-    // list filtered to our trigger type — and only AFTER the claim, so the
+    // list filtered to our trigger type â€” and only AFTER the claim, so the
     // earliest deliveries can't dodge the webhook's pending stamp.
     const listIdx = calls.findIndex((c) => c.method === 'triggers.listActive');
     const createIdx = calls.findIndex((c) => c.method === 'triggers.create');
@@ -322,14 +324,14 @@ describe('unpair', () => {
 
   test('swallows only REAL API 404s; network errors and lying 500s rethrow', async () => {
     const db = dbStubs();
-    // Status-attached API 404 (the client's real already-deleted shape) — swallowed.
+    // Status-attached API 404 (the client's real already-deleted shape) â€” swallowed.
     const apiNotFound = clientStub({
       deleteThrows: () => Object.assign(new Error('boom'), { status: 404 }),
     });
     await unpair(paired(), pairingDeps(db, apiNotFound.client));
     expect(db.casCalls).toHaveLength(1); // teardown completed despite the 404s
 
-    // A DNS failure whose message happens to contain "NOTFOUND" must RETHROW —
+    // A DNS failure whose message happens to contain "NOTFOUND" must RETHROW â€”
     // swallowing it would let a network outage masquerade as already-deleted
     // (review finding: /not[ _-]?found/i matched ENOTFOUND).
     const dnsDown = clientStub({
@@ -344,6 +346,6 @@ describe('unpair', () => {
       deleteThrows: () => Object.assign(new Error('upstream said not found'), { status: 500 }),
     });
     await expect(unpair(paired(), pairingDeps(db, lying.client))).rejects.toThrow('not found');
-    expect(db.casCalls).toHaveLength(1); // no extra writes — inventory NOT cleared on failure
+    expect(db.casCalls).toHaveLength(1); // no extra writes â€” inventory NOT cleared on failure
   });
 });

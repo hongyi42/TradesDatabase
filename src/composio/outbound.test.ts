@@ -3,7 +3,7 @@ import type { Technician } from '../db/technicians.js';
 import type { PairingClient } from './pairing.js';
 import { requireOutboundCapable, sendGmailEmail } from './outbound.js';
 
-// Pure unit tests — the Composio client is stubbed (pairing.test.ts pattern);
+// Pure unit tests â€” the Composio client is stubbed (pairing.test.ts pattern);
 // nothing here needs COMPOSIO_API_KEY or a database.
 
 function tech(over: Partial<Technician> = {}): Technician {
@@ -23,6 +23,8 @@ function tech(over: Partial<Technician> = {}): Technician {
     offboarding_started_at: null,
     link_issued_at: null,
     composio_session_id: null,
+    availability: null,
+    service_cities: [],
     created_at: '2026-07-04T00:00:00.000Z',
     updated_at: '2026-07-04T00:00:00.000Z',
     ...over,
@@ -69,7 +71,7 @@ function clientStub(result: Record<string, unknown>) {
 const MSG = { to: 'customer@example.com', subject: 'Quote', body: 'Hi there' };
 
 describe('requireOutboundCapable', () => {
-  test('null row → clean no-roster error', () => {
+  test('null row â†’ clean no-roster error', () => {
     expect(() => requireOutboundCapable(null)).toThrow('no roster row for this badge');
   });
 
@@ -79,7 +81,7 @@ describe('requireOutboundCapable', () => {
     }
   });
 
-  test('active but unpaired → no-mailbox error (ids persisting after offboarding never reach here)', () => {
+  test('active but unpaired â†’ no-mailbox error (ids persisting after offboarding never reach here)', () => {
     expect(() => requireOutboundCapable(tech({ composio_connected_account_id: null }))).toThrow(
       'no paired mailbox',
     );
@@ -115,7 +117,7 @@ describe('sendGmailEmail', () => {
     expect(calls).toHaveLength(0);
   });
 
-  test('successful:false → throws with Composio error text', async () => {
+  test('successful:false â†’ throws with Composio error text', async () => {
     const { client } = clientStub({ successful: false, error: 'quota exceeded' });
     await expect(sendGmailEmail(tech(), MSG, { client })).rejects.toThrow(
       'Composio send failed: quota exceeded',
@@ -137,7 +139,7 @@ describe('sendGmailEmail', () => {
     expect(r).toEqual({ messageId: 'm-nested', threadId: 't-nested' });
   });
 
-  test('no parseable ids → nulls (caller falls back to the confirm-id external id)', async () => {
+  test('no parseable ids â†’ nulls (caller falls back to the confirm-id external id)', async () => {
     const { client } = clientStub({ successful: true, data: { ok: true } });
     const r = await sendGmailEmail(tech(), MSG, { client });
     expect(r).toEqual({ messageId: null, threadId: null });

@@ -46,6 +46,12 @@ import {
   setTechnicianState,
   setTenantSeats,
   getTenantByName,
+  getTechnician,
+  setTechnicianAvailability,
+  setTechnicianServiceCities,
+  addTimeOff,
+  upsertJobTypeDuration,
+  createAssignment,
 } from '../dist/db/index.js';
 import { formatEmailRawText } from '../dist/email/format.js';
 
@@ -100,12 +106,30 @@ const WITH_ROSTER = TARGET === 'local' || WITH_ROSTER_FLAG;
 // matches on the UTC calendar day).
 const TODAY = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
-async function truncateSpine() {
+// The scheduling-foundation migration (assignments/time-off/durations) is applied
+// to the LOCAL stack but not yet deployed hosted — probe instead of assuming, so
+// the same seed works on both targets until the hosted apply happens.
+async function schedulingSchemaPresent() {
+  const client = new pg.Client({ connectionString: dbUrl });
+  await client.connect();
+  try {
+    const { rows } = await client.query(
+      `select 1 from information_schema.tables
+        where table_schema = 'public' and table_name = 'assignments'`,
+    );
+    return rows.length > 0;
+  } finally {
+    await client.end();
+  }
+}
+
+async function truncateSpine(hasScheduling) {
   // tenants is intentionally left intact (keeps Default Tenant). dropped_audit is
   // standalone (no spine FK) but cleared too, so privacy receipts reset as well.
   // technicians/review_items only go when the roster reseed was explicitly asked for.
-  const spineTables = 'customers, jobs, visits, raw_captures, schedule_entries, dropped_audit';
-  const tables = WITH_ROSTER ? `${spineTables}, technicians, review_items` : spineTables;
+  let tables = 'customers, jobs, visits, raw_captures, schedule_entries, dropped_audit';
+  if (hasScheduling) tables += ', assignments, technician_time_off, job_type_durations';
+  if (WITH_ROSTER) tables += ', technicians, review_items';
   const client = new pg.Client({ connectionString: dbUrl });
   await client.connect();
   try {
@@ -128,14 +152,50 @@ async function seedRoster(tenantId) {
     { ref: 'tech-jane', displayName: 'Jane Alvarez', tier: 'technician' },
     { ref: 'office-dispatch', displayName: 'Office Dispatch', tier: 'technician' },
   ];
+  // Rows keyed by ref — the scheduling seeds (and the demo assignment) need the
+  // technician UUID, not just the ref.
+  const rowsByRef = {};
   for (const person of roster) {
     const row = await insertTechnician({ tenantId, ...person });
     await setTechnicianState(row.id, 'active');
+    rowsByRef[person.ref] = row;
   }
-  return roster.map((r) => r.ref);
+  return rowsByRef;
 }
 
-async function seed(tenantId) {
+// Scheduling foundation seeds: tech-jane's working pattern + cities, one
+// vacation range next week, and the hvac duration default. Deterministic:
+// fixed day offsets from TODAY. `jane` may be null (hosted target whose roster
+// has no tech-jane) — then only the tenant-level duration row is written.
+async function seedScheduling(tenantId, jane) {
+  await upsertJobTypeDuration(tenantId, 'hvac', 120);
+  if (!jane) return { availability: 'skipped (no tech-jane row)', timeOff: 'skipped' };
+  const dayOffset = (days) => {
+    const d = new Date(`${TODAY}T00:00:00.000Z`);
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  };
+  await setTechnicianAvailability(jane.id, {
+    mon: [['08:00', '17:00']],
+    tue: [['08:00', '17:00']],
+    wed: [['08:00', '17:00']],
+    thu: [['08:00', '17:00']],
+    fri: [['08:00', '17:00']],
+    sat: [],
+    sun: [],
+  });
+  await setTechnicianServiceCities(jane.id, ['Fresno', 'Clovis']); // stored lowercased
+  await addTimeOff({
+    tenantId,
+    technicianId: jane.id,
+    startsOn: dayOffset(7),
+    endsOn: dayOffset(9),
+    reason: 'vacation',
+  });
+  return { availability: 'tech-jane Mon–Fri 08–17', timeOff: `${dayOffset(7)}..${dayOffset(9)}` };
+}
+
+async function seed(tenantId, janeId) {
   // ── Customer A — Maria Gonzalez: full history, the briefing showcase ──────────
   // L1 intake call lands first (no L2 exists yet), then L2 is created from it.
   const aIntake = await appendRawCapture({
@@ -222,6 +282,32 @@ async function seed(tenantId) {
     attributes: { symptom: 'rattling noise on start' }, // L3
     sourceCaptureId: bWeb.id,
   });
+  // The scheduler-owned booking: tech-jane × Tom's furnace job, CONFIRMED on
+  // the NEXT WEEKDAY at 16:00–18:00Z (09:00–11:00 PDT; 08:00–10:00 in PST
+  // months) — so Acme's open job below is the ONE unassigned open job.
+  // Weekday, not blind "tomorrow": jane's seeded pattern has sat/sun empty, and
+  // a Friday seed run would otherwise book her on a day the same seed marks
+  // unschedulable — a self-contradicting playground. (Review finding.)
+  // 16:00Z is 08/09:00 LA, so the UTC date's weekday == the LA weekday here.
+  // janeId is null when the target lacks the scheduling schema or roster row.
+  let tomAssignment = null;
+  if (janeId) {
+    const tomorrow = new Date(`${TODAY}T00:00:00.000Z`);
+    do {
+      tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    } while (tomorrow.getUTCDay() === 0 || tomorrow.getUTCDay() === 6);
+    const tomorrowDate = tomorrow.toISOString().slice(0, 10);
+    tomAssignment = await createAssignment({
+      tenantId,
+      jobId: furnaceJob.id,
+      technicianId: janeId,
+      startsAt: `${tomorrowDate}T16:00:00.000Z`,
+      endsAt: `${tomorrowDate}T18:00:00.000Z`,
+      status: 'confirmed',
+      sourceCaptureId: bWeb.id,
+    });
+  }
+
   const tomSchedule = await upsertScheduleEntry({
     tenantId,
     technicianRef: 'tech-jane',
@@ -273,7 +359,13 @@ async function seed(tenantId) {
 
   return {
     maria: { id: maria.id, job: acJob.id, visit: aVisit.id, captures: [aIntake.id, aTechNote.id] },
-    tom: { id: tom.id, job: furnaceJob.id, schedule: tomSchedule.id, captures: [bWeb.id] },
+    tom: {
+      id: tom.id,
+      job: furnaceJob.id,
+      schedule: tomSchedule.id,
+      assignment: tomAssignment?.id ?? null,
+      captures: [bWeb.id],
+    },
     acme: { id: acme.id, job: acmeJob.id, captures: [cEmail.id] },
   };
 }
@@ -290,12 +382,15 @@ async function main() {
     );
   }
   const tenant = await getTenantByName('Default Tenant');
+  const hasScheduling = await schedulingSchemaPresent();
   console.log(`Seeding ${TARGET} spine (tenant ${tenant.id})…`);
-  await truncateSpine();
+  await truncateSpine(hasScheduling);
   console.log(`Truncated ${WITH_ROSTER ? 'spine + roster' : 'spine'} tables.`);
   let rosterNote = 'roster untouched';
+  let roster = null;
   if (WITH_ROSTER) {
-    const refs = await seedRoster(tenant.id);
+    roster = await seedRoster(tenant.id);
+    const refs = Object.keys(roster);
     rosterNote = `${refs.length} roster rows (${refs.join(', ')})`;
   } else {
     console.log(
@@ -303,12 +398,24 @@ async function main() {
         'badge fingerprints, so the box re-mints credentials on its next pull).',
     );
   }
-  const ids = await seed(tenant.id);
+  let jane = null;
+  let schedNote = 'scheduling schema absent — scheduling seeds skipped';
+  if (hasScheduling) {
+    jane = roster?.['tech-jane'] ?? (await getTechnician(tenant.id, 'tech-jane'));
+    const sched = await seedScheduling(tenant.id, jane);
+    schedNote = `scheduling: ${sched.availability}; time off ${sched.timeOff}; hvac=120min`;
+  }
+  console.log(schedNote);
+  const ids = await seed(tenant.id, hasScheduling ? (jane?.id ?? null) : null);
   console.log('Seed complete:');
   console.log(JSON.stringify(ids, null, 2));
   console.log(
     '\nSummary: 3 customers (Maria full history + invoiced job + visit; ' +
-      'Tom open furnace job scheduled today; Acme email-sourced open job); ' +
+      'Tom open furnace job scheduled today' +
+      (ids.tom.assignment ? ' + a confirmed assignment next weekday' : '') +
+      '; Acme email-sourced open job' +
+      (ids.tom.assignment ? ' = the one unassigned open job' : '') +
+      '); ' +
       rosterNote +
       '.',
   );

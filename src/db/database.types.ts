@@ -34,6 +34,77 @@ export type Database = {
   }
   public: {
     Tables: {
+      assignments: {
+        Row: {
+          created_at: string
+          ends_at: string
+          id: string
+          job_id: string
+          reason: string | null
+          source_capture_id: string | null
+          starts_at: string
+          status: Database["public"]["Enums"]["assignment_status"]
+          technician_id: string
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          ends_at: string
+          id?: string
+          job_id: string
+          reason?: string | null
+          source_capture_id?: string | null
+          starts_at: string
+          status?: Database["public"]["Enums"]["assignment_status"]
+          technician_id: string
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          ends_at?: string
+          id?: string
+          job_id?: string
+          reason?: string | null
+          source_capture_id?: string | null
+          starts_at?: string
+          status?: Database["public"]["Enums"]["assignment_status"]
+          technician_id?: string
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "assignments_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "assignments_source_capture_id_fkey"
+            columns: ["source_capture_id"]
+            isOneToOne: false
+            referencedRelation: "raw_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "assignments_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "assignments_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       customers: {
         Row: {
           address_line1: string | null
@@ -164,6 +235,41 @@ export type Database = {
           token_hash?: string
         }
         Relationships: []
+      }
+      job_type_durations: {
+        Row: {
+          created_at: string
+          id: string
+          job_type: string
+          minutes: number
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          job_type: string
+          minutes: number
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          job_type?: string
+          minutes?: number
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "job_type_durations_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       jobs: {
         Row: {
@@ -451,8 +557,54 @@ export type Database = {
           },
         ]
       }
+      technician_time_off: {
+        Row: {
+          created_at: string
+          ends_on: string
+          id: string
+          reason: string | null
+          starts_on: string
+          technician_id: string
+          tenant_id: string
+        }
+        Insert: {
+          created_at?: string
+          ends_on: string
+          id?: string
+          reason?: string | null
+          starts_on: string
+          technician_id: string
+          tenant_id: string
+        }
+        Update: {
+          created_at?: string
+          ends_on?: string
+          id?: string
+          reason?: string | null
+          starts_on?: string
+          technician_id?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "technician_time_off_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "technician_time_off_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       technicians: {
         Row: {
+          availability: Json | null
           badge_hash: string | null
           composio_connected_account_id: string | null
           composio_session_id: string | null
@@ -466,12 +618,14 @@ export type Database = {
           offboarding_started_at: string | null
           ref: string
           sandbox_ref: string | null
+          service_cities: string[]
           state: Database["public"]["Enums"]["technician_state"]
           tenant_id: string
           tier: Database["public"]["Enums"]["technician_tier"]
           updated_at: string
         }
         Insert: {
+          availability?: Json | null
           badge_hash?: string | null
           composio_connected_account_id?: string | null
           composio_session_id?: string | null
@@ -485,12 +639,14 @@ export type Database = {
           offboarding_started_at?: string | null
           ref: string
           sandbox_ref?: string | null
+          service_cities?: string[]
           state?: Database["public"]["Enums"]["technician_state"]
           tenant_id: string
           tier?: Database["public"]["Enums"]["technician_tier"]
           updated_at?: string
         }
         Update: {
+          availability?: Json | null
           badge_hash?: string | null
           composio_connected_account_id?: string | null
           composio_session_id?: string | null
@@ -504,6 +660,7 @@ export type Database = {
           offboarding_started_at?: string | null
           ref?: string
           sandbox_ref?: string | null
+          service_cities?: string[]
           state?: Database["public"]["Enums"]["technician_state"]
           tenant_id?: string
           tier?: Database["public"]["Enums"]["technician_tier"]
@@ -529,24 +686,30 @@ export type Database = {
       tenants: {
         Row: {
           created_at: string
+          default_job_minutes: number
           id: string
           manager_seats: number
           name: string
           technician_seats: number
+          timezone: string
         }
         Insert: {
           created_at?: string
+          default_job_minutes?: number
           id?: string
           manager_seats?: number
           name: string
           technician_seats?: number
+          timezone?: string
         }
         Update: {
           created_at?: string
+          default_job_minutes?: number
           id?: string
           manager_seats?: number
           name?: string
           technician_seats?: number
+          timezone?: string
         }
         Relationships: []
       }
@@ -622,6 +785,7 @@ export type Database = {
       [_ in never]: never
     }
     Enums: {
+      assignment_status: "proposed" | "confirmed" | "cancelled" | "completed"
       capture_channel:
         | "technician_voice"
         | "technician_photo"
@@ -787,6 +951,7 @@ export const Constants = {
   },
   public: {
     Enums: {
+      assignment_status: ["proposed", "confirmed", "cancelled", "completed"],
       capture_channel: [
         "technician_voice",
         "technician_photo",

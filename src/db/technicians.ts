@@ -191,6 +191,97 @@ export function isSeatCapError(err: unknown): boolean {
   return err instanceof Error && err.message.includes('seat_cap_exceeded');
 }
 
+// Weekly working pattern, firm-local times. All 7 keys required; each window is
+// ["HH:MM","HH:MM"] start<end. Kept as a type ALIAS (not an interface): aliases
+// carry the implicit index signature the generated Json column type needs, so
+// the update({ availability }) write below typechecks under strict mode.
+export type WeeklyPattern = {
+  mon: [string, string][];
+  tue: [string, string][];
+  wed: [string, string][];
+  thu: [string, string][];
+  fri: [string, string][];
+  sat: [string, string][];
+  sun: [string, string][];
+};
+
+export const WEEK_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
+export type DayKey = (typeof WEEK_DAYS)[number];
+
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+// A window END may additionally be '24:00' = end-of-day, so until-midnight
+// shifts are representable ('16:00'–'24:00'); string compare still orders it
+// after every valid start. An overnight shift is TWO windows across two days
+// ('20:00'–'24:00' + next day '00:00'–'02:00'). (Review finding, 2026-07-04.)
+const isValidEnd = (end: string) => HHMM.test(end) || end === '24:00';
+
+// Throw on any malformed pattern — junk must never reach the column (the
+// scheduler trusts stored patterns without re-validating). Zero-padded HH:MM
+// makes plain string comparison a correct start<end check.
+function assertValidPattern(pattern: WeeklyPattern): void {
+  const keys = Object.keys(pattern);
+  for (const day of WEEK_DAYS) {
+    if (!keys.includes(day)) throw new Error(`availability pattern missing day '${day}'`);
+  }
+  for (const key of keys) {
+    if (!(WEEK_DAYS as readonly string[]).includes(key)) {
+      throw new Error(`availability pattern has unknown key '${key}'`);
+    }
+    const windows = pattern[key as DayKey];
+    if (!Array.isArray(windows)) throw new Error(`availability '${key}' must be an array`);
+    for (const win of windows) {
+      if (!Array.isArray(win) || win.length !== 2) {
+        throw new Error(`availability '${key}' window must be ["HH:MM","HH:MM"]`);
+      }
+      const [start, end] = win;
+      if (!HHMM.test(start) || !isValidEnd(end)) {
+        throw new Error(
+          `availability '${key}' window has invalid time (want HH:MM; end may be 24:00): ${start}–${end}`,
+        );
+      }
+      if (start >= end) {
+        throw new Error(`availability '${key}' window start must be before end: ${start}–${end}`);
+      }
+    }
+  }
+}
+
+export async function setTechnicianAvailability(
+  id: string,
+  pattern: WeeklyPattern,
+): Promise<Technician> {
+  assertValidPattern(pattern);
+  const { data, error } = await getClient()
+    .from('technicians')
+    .update({ availability: pattern })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error || !data) {
+    throw new Error(`setTechnicianAvailability failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
+// Cities are stored trimmed + lowercased (empties dropped): the Plan-3 scoring
+// match is case-insensitive, so normalization happens once at write time.
+export async function setTechnicianServiceCities(
+  id: string,
+  cities: string[],
+): Promise<Technician> {
+  const normalized = cities.map((c) => c.trim().toLowerCase()).filter((c) => c.length > 0);
+  const { data, error } = await getClient()
+    .from('technicians')
+    .update({ service_cities: normalized })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error || !data) {
+    throw new Error(`setTechnicianServiceCities failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
 // The single definition of "this roster row no longer participates" — mirrors
 // the DB seat-cap trigger's occupancy set. Every surface (webhook drop, sheet
 // validation, deactivate guard) consults this, so adding a lifecycle state is

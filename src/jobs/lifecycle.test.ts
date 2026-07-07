@@ -2,11 +2,11 @@ import { afterAll, beforeEach, describe, expect, test } from 'vitest';
 import type { Technician } from '../db/technicians.js';
 import { runLifecycle } from './lifecycle.js';
 
-// Pure unit tests — every step injected. The exit-code contract is `ok`
-// (main() maps ok:false → exit 1 so Render marks the run failed).
+// Pure unit tests â€” every step injected. The exit-code contract is `ok`
+// (main() maps ok:false â†’ exit 1 so Render marks the run failed).
 
 // The test setup loads .env, which legitimately carries SCHEDULE_SHEET_ID /
-// DEFAULT_TENANT_ID / COMPOSIO_API_KEY — clear them BEFORE each test (not just
+// DEFAULT_TENANT_ID / COMPOSIO_API_KEY â€” clear them BEFORE each test (not just
 // after), or the un-injected sheet gate would route to the LIVE Google Sheets
 // reader and the sessions gate would sweep against LIVE Composio.
 const saved: Record<string, string | undefined> = {};
@@ -42,6 +42,8 @@ function row(over: Partial<Technician>): Technician {
     offboarding_started_at: null,
     link_issued_at: '2026-07-02T11:00:00.000Z',
     composio_session_id: null,
+    availability: null,
+    service_cities: [],
     created_at: '2026-07-01T00:00:00.000Z',
     updated_at: '2026-07-01T00:00:00.000Z',
     ...over,
@@ -72,7 +74,7 @@ describe('runLifecycle', () => {
         return { status: 'paired', connectedAccountId: 'ca_x', email: 'x@y.z' };
       },
       expire: async () => EXPIRE_OK,
-      // Injected even though the gate should skip it — a unit test must never
+      // Injected even though the gate should skip it â€” a unit test must never
       // be one env var away from a live Sheets call.
       syncSheet: async () => {
         throw new Error('unit test must not reach the sheet reader');
@@ -84,7 +86,7 @@ describe('runLifecycle', () => {
     expect(summary.ok).toBe(true); // skipping the sheet is not a failure
   });
 
-  test('a throwing step is reported and fails the run — but the other steps still ran', async () => {
+  test('a throwing step is reported and fails the run â€” but the other steps still ran', async () => {
     let expired = false;
     let synced = false;
     process.env.SCHEDULE_SHEET_ID = 'sheet-1';
@@ -106,7 +108,7 @@ describe('runLifecycle', () => {
     expect(expired).toBe(true); // isolation: later steps unaffected
     expect(synced).toBe(true);
     expect(summary.sheetSync).toEqual({ upserted: 3, flagged: 1 });
-    expect(summary.ok).toBe(false); // → exit 1 → Render marks the run failed
+    expect(summary.ok).toBe(false); // â†’ exit 1 â†’ Render marks the run failed
   });
 
   test('per-row pairing errors are counted, retried next tick, and do NOT fail the run', async () => {
@@ -125,7 +127,7 @@ describe('runLifecycle', () => {
     expect(summary.ok).toBe(true);
   });
 
-  test('EVERY row failing is a systemic failure, not a row blip — the run goes red', async () => {
+  test('EVERY row failing is a systemic failure, not a row blip â€” the run goes red', async () => {
     // e.g. a missing/revoked COMPOSIO_API_KEY throws for every row; exit 0
     // would leave Render green while pairing is dead indefinitely.
     const summary = await runLifecycle(NOW, {
@@ -142,7 +144,7 @@ describe('runLifecycle', () => {
     expect(summary.ok).toBe(false);
   });
 
-  test('sessions step: skipped cleanly when COMPOSIO_API_KEY is unset — never red', async () => {
+  test('sessions step: skipped cleanly when COMPOSIO_API_KEY is unset â€” never red', async () => {
     const summary = await runLifecycle(NOW, {
       listInStates: async () => [],
       expire: async () => EXPIRE_OK,
@@ -209,7 +211,7 @@ describe('runLifecycle', () => {
       ingestLogs: async () => INGEST_OK,
     });
     expect(summary.sessions).toEqual({ checked: 2, created: 0, rowErrors: 1 });
-    expect(summary.ok).toBe(false); // 1 attempt, 1 failure — systemic
+    expect(summary.ok).toBe(false); // 1 attempt, 1 failure â€” systemic
   });
 
   test('logIngest step: skipped when the key is unset; reported when set; stepError goes red', async () => {

@@ -83,6 +83,43 @@ describe('context spine schema', () => {
     expect(hasUnique, 'unique index on (tenant_id, external_row_key)').toBe(true);
   });
 
+  test('scheduling foundation tables exist', async () => {
+    const { rows } = await client.query<{ table_name: string }>(
+      `select table_name from information_schema.tables
+        where table_schema = 'public'
+          and table_name in ('technician_time_off','job_type_durations','assignments')`,
+    );
+    expect(rows.map((r) => r.table_name).sort()).toEqual([
+      'assignments',
+      'job_type_durations',
+      'technician_time_off',
+    ]);
+  });
+
+  test('scheduling columns exist: tenants.timezone + technicians.availability', async () => {
+    const tenantCols = await columns('tenants');
+    expect(tenantCols.get('timezone')?.data_type).toBe('text');
+    expect(tenantCols.get('timezone')?.is_nullable).toBe('NO');
+    expect(tenantCols.get('default_job_minutes')?.data_type).toBe('integer');
+
+    const techCols = await columns('technicians');
+    expect(techCols.get('availability')?.data_type).toBe('jsonb');
+    expect(techCols.get('availability')?.is_nullable, 'NULL = unschedulable (fail closed)').toBe(
+      'YES',
+    );
+    expect(techCols.get('service_cities')?.data_type).toBe('ARRAY');
+  });
+
+  test('assignments carries the no_confirmed_overlap exclusion constraint', async () => {
+    const { rows } = await client.query<{ conname: string; contype: string }>(
+      `select conname, contype from pg_constraint
+        where conname = 'no_confirmed_overlap'
+          and conrelid = 'public.assignments'::regclass`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].contype, 'x = exclusion constraint').toBe('x');
+  });
+
   // The L1 invariant: raw_captures is append-only. The whole probe runs inside a
   // transaction that is rolled back, so nothing persists (and DELETE is blocked
   // by the same trigger, so a committed probe row could not be cleaned up).

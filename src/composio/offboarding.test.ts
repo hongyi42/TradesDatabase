@@ -4,7 +4,7 @@ import type { ReviewItem } from '../db/index.js';
 import { disablePairing, enablePairing, expireOffboarding } from './offboarding.js';
 import { unpair, type PairingClient } from './pairing.js';
 
-// Pure unit tests — every seam injected (no DB, no COMPOSIO_API_KEY).
+// Pure unit tests â€” every seam injected (no DB, no COMPOSIO_API_KEY).
 
 afterEach(() => {
   delete process.env.GRACE_DAYS;
@@ -30,6 +30,8 @@ function row(over: Partial<Technician> = {}): Technician {
     offboarding_started_at: daysAgo(1),
     link_issued_at: null,
     composio_session_id: null,
+    availability: null,
+    service_cities: [],
     created_at: '2026-06-20T00:00:00.000Z',
     updated_at: '2026-06-20T00:00:00.000Z',
     ...over,
@@ -159,7 +161,7 @@ describe('expireOffboarding', () => {
     expect(soon.reminders[0]).toMatchObject({ subjectRef: 'gone-guy', startedAt: daysAgo(6) });
   });
 
-  test('expired: CLAIM first (CAS offboarding→offboarded), then teardown trigger-first; ids KEPT; reminder closed', async () => {
+  test('expired: CLAIM first (CAS offboardingâ†’offboarded), then teardown trigger-first; ids KEPT; reminder closed', async () => {
     const s = sweepStubs([row({ offboarding_started_at: daysAgo(8) })]);
     const { client, calls } = clientStub();
     const r = await expireOffboarding(NOW, { ...s.deps, client });
@@ -190,7 +192,7 @@ describe('expireOffboarding', () => {
     const { client } = clientStub({ deleteThrows: new Error('503 unavailable') });
     const r = await expireOffboarding(NOW, { ...s.deps, client });
     expect(r).toMatchObject({ expired: 0, failed: 1 });
-    expect(s.casCalls).toHaveLength(1); // claim happened — reactivate can no longer race in
+    expect(s.casCalls).toHaveLength(1); // claim happened â€” reactivate can no longer race in
     expect(s.closed).toHaveLength(0);
   });
 
@@ -234,7 +236,7 @@ describe('expireOffboarding', () => {
     expect(s.casCalls).toEqual([
       { id: 'row-1', from: 'offboarding', patch: { state: 'offboarded' } },
     ]);
-    // Null-out marks "nothing leaked" — a non-null id on an offboarded row is
+    // Null-out marks "nothing leaked" â€” a non-null id on an offboarded row is
     // the retry pass's work queue.
     expect(s.patches).toEqual([{ id: 'row-1', patch: { composio_session_id: null } }]);
   });
@@ -250,7 +252,7 @@ describe('expireOffboarding', () => {
     const s = sweepStubs([leakedRow]);
     const { client, calls } = clientStub();
     const r = await expireOffboarding(NOW, { ...s.deps, client });
-    // Not counted as scanned/expired — it's the retry pass, not the grace sweep.
+    // Not counted as scanned/expired â€” it's the retry pass, not the grace sweep.
     expect(r).toMatchObject({ scanned: 0, expired: 0, failed: 0, sessionsCleaned: 1 });
     expect(calls).toEqual([{ method: 'sessions.delete', id: 'trs_leaked' }]);
     expect(s.patches).toEqual([{ id: 'row-leak', patch: { composio_session_id: null } }]);
@@ -277,12 +279,12 @@ describe('expireOffboarding', () => {
     expect(quiet.calls).toHaveLength(0);
   });
 
-  test('an already-deleted session (404) is success; other session errors → failed', async () => {
+  test('an already-deleted session (404) is success; other session errors â†’ failed', async () => {
     const gone = Object.assign(new Error('not found'), { status: 404 });
     const s404 = sweepStubs([
       row({ offboarding_started_at: daysAgo(8), composio_session_id: 'trs_404' }),
     ]);
-    // deleteThrows applies to every *.delete call — pairing deletes must survive,
+    // deleteThrows applies to every *.delete call â€” pairing deletes must survive,
     // so use a client whose sessions.delete alone 404s.
     const base = clientStub();
     const client404: typeof base.client = {

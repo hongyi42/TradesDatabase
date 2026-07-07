@@ -3,7 +3,7 @@ import type { Technician } from '../db/technicians.js';
 import type { AppendRawCaptureInput, RawCapture } from '../db/rawCaptures.js';
 import { runLogIngestion, type ExecutionLogItem } from './logIngest.js';
 
-// Pure unit tests — fetchers, roster read, and the L1 append all injected.
+// Pure unit tests â€” fetchers, roster read, and the L1 append all injected.
 
 const TENANT = '11111111-1111-1111-1111-111111111111';
 const NOW = '2026-07-04T12:00:00.000Z';
@@ -25,6 +25,8 @@ function tech(over: Partial<Technician> = {}): Technician {
     offboarding_started_at: null,
     link_issued_at: null,
     composio_session_id: 'trs_x',
+    availability: null,
+    service_cities: [],
     created_at: '2026-07-04T00:00:00.000Z',
     updated_at: '2026-07-04T00:00:00.000Z',
     ...over,
@@ -69,8 +71,8 @@ function harness(opts: {
   return { appended, detailCalls, deps };
 }
 
-describe('runLogIngestion — classification', () => {
-  test('manager send → outbound_email with sent:<id>, body stored in the email form, unmarked', async () => {
+describe('runLogIngestion â€” classification', () => {
+  test('manager send â†’ outbound_email with sent:<id>, body stored in the email form, unmarked', async () => {
     const h = harness({
       items: [item({})],
       roster: { [`${TENANT}:sam`]: tech() },
@@ -94,7 +96,7 @@ describe('runLogIngestion — classification', () => {
     expect(h.appended[0].rawText).toBe('Subject: Invoice\nFrom: sam@biz.com\n\nAttached.');
   });
 
-  test('pre-existing sent:<id> → deduped, not an error', async () => {
+  test('pre-existing sent:<id> â†’ deduped, not an error', async () => {
     const dup = Object.assign(new Error('duplicate'), { code: '23505' });
     const h = harness({
       items: [item({})],
@@ -118,7 +120,7 @@ describe('runLogIngestion — classification', () => {
     expect(h.detailCalls).toHaveLength(0); // skipped before the detail fetch
   });
 
-  test('unknown slug → captured as agent_action with KEYS-ONLY redaction, manager marked', async () => {
+  test('unknown slug â†’ captured as agent_action with KEYS-ONLY redaction, manager marked', async () => {
     const h = harness({
       items: [item({ metadata: { tool: { slug: 'STRIPE_CREATE_PAYMENT' } } })],
       roster: { [`${TENANT}:sam`]: tech() },
@@ -137,7 +139,7 @@ describe('runLogIngestion — classification', () => {
       externalId: 'composio-exec:log-1',
       sensitivity: 'manager_only',
     });
-    // Key names yes, VALUES never — L1 is undeletable.
+    // Key names yes, VALUES never â€” L1 is undeletable.
     expect(row.rawText).toContain('amount_cents');
     expect(row.rawText).toContain('customer_ref');
     for (const leaked of ['45000', 'cus_SECRET', '4242', 'pay_SECRET']) {
@@ -191,7 +193,7 @@ describe('runLogIngestion — classification', () => {
     expect(summary).toMatchObject({ scanned: 7, captured: 3, skippedReads: 4 });
     const slugs = h.appended.map((a) => (a.metadata as Record<string, unknown>).toolSlug).sort();
     expect(slugs).toEqual(['EXCEL_ADD_TABLE', 'EXCEL_ADD_TABLE_ROW', 'EXCEL_UPDATE_RANGE']);
-    // Writes stay keys-only + manager_only — the redaction policy is unchanged.
+    // Writes stay keys-only + manager_only â€” the redaction policy is unchanged.
     expect(h.appended[0].sensitivity).toBe('manager_only');
     expect(h.appended[0].rawText).toContain('argument keys:');
   });
@@ -209,7 +211,7 @@ describe('runLogIngestion — classification', () => {
     expect(summary).toMatchObject({ scanned: 4, captured: 0, skippedNonComposite: 4 });
   });
 
-  test('unknown ref → captured AND marked manager_only (safe default)', async () => {
+  test('unknown ref â†’ captured AND marked manager_only (safe default)', async () => {
     const h = harness({
       items: [item({ metadata: { tool: { slug: 'STRIPE_CREATE_PAYMENT' }, user_id: `${TENANT}:ghost` } })],
       roster: {},
@@ -256,7 +258,7 @@ describe('runLogIngestion — classification', () => {
   });
 });
 
-describe('runLogIngestion — shape tolerance (flat fallbacks)', () => {
+describe('runLogIngestion â€” shape tolerance (flat fallbacks)', () => {
   test('flat tool_slug / arguments / response_data shapes still parse', async () => {
     const h = harness({
       items: [
@@ -280,7 +282,7 @@ describe('runLogIngestion — shape tolerance (flat fallbacks)', () => {
   });
 });
 
-describe('fetchExecutionLogs — default fetcher (stubbed fetch)', () => {
+describe('fetchExecutionLogs â€” default fetcher (stubbed fetch)', () => {
   test('reads the real `logs` envelope, follows next_cursor, sends epoch-ms time_range', async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const pages = [

@@ -3,7 +3,7 @@ import type { Technician } from '../db/technicians.js';
 import { sha256hex } from './badges.js';
 import { buildBadgeResponse } from './badgeFile.js';
 
-// Unit tests with stubbed rows — no DB. The live minting write is covered by
+// Unit tests with stubbed rows â€” no DB. The live minting write is covered by
 // the httpServer integration test.
 const HOST = 'host-1';
 
@@ -24,6 +24,8 @@ function row(over: Partial<Technician>): Technician {
     offboarding_started_at: null,
     link_issued_at: null,
     composio_session_id: null,
+    availability: null,
+    service_cities: [],
     created_at: '2026-07-02T00:00:00.000Z',
     updated_at: '2026-07-02T00:00:00.000Z',
     ...over,
@@ -94,8 +96,8 @@ describe('buildBadgeResponse', () => {
     };
     dbHash = winner; // winner already minted between the loser's list and claim
     const lost = await buildBadgeResponse(HOST, { list: async () => [snapshot], claim });
-    expect(lost.newBadges).toHaveLength(0); // loser hands out NO plaintext…
-    expect(Object.keys(lost.badgesFile)).toHaveLength(0); // …and no stale-guess entry
+    expect(lost.newBadges).toHaveLength(0); // loser hands out NO plaintextâ€¦
+    expect(Object.keys(lost.badgesFile)).toHaveLength(0); // â€¦and no stale-guess entry
 
     // The next pull lists the winner's hash from the DB and ships it normally.
     const healed = await buildBadgeResponse(HOST, {

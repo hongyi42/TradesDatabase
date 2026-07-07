@@ -41,6 +41,8 @@ function tech(over: Partial<Technician> = {}): Technician {
     offboarding_started_at: null,
     link_issued_at: null,
     composio_session_id: 'sess-1',
+    availability: null,
+    service_cities: [],
     created_at: '2026-07-04T00:00:00.000Z',
     updated_at: '2026-07-04T00:00:00.000Z',
     ...over,

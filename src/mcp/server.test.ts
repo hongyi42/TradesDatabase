@@ -11,6 +11,7 @@ import { insertTechnician, setTechnicianState, updateTechnician } from '../db/te
 import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { createServer, type ServerDeps } from './server.js';
+import { localDateISO } from '../schedule/availability.js';
 
 // Drive the MCP server over the SDK's in-memory transport (no network/stdio).
 // The extractor is stubbed so record_field_note never calls the live model.
@@ -112,7 +113,7 @@ async function clientFor(
 }
 
 describe('MCP server', () => {
-  test('lists the technician tool surface (exactly 9 tools)', async () => {
+  test('lists the technician tool surface (exactly 10 tools)', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
     expect(names).toEqual(
@@ -126,9 +127,10 @@ describe('MCP server', () => {
         'answer_customer_question',
         'send_email',
         'retract_capture',
+        'get_schedule',
       ]),
     );
-    expect(names).toHaveLength(9);
+    expect(names).toHaveLength(10);
   });
 
   test('record_field_note stages (NO L1), resolves identity, and records only on the final confirm', async () => {
@@ -1040,11 +1042,11 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       stubs,
     );
     try {
-      // The full manager surface is now 15 tools (8 spine + 7 seat/lifecycle) —
+      // The full manager surface is now 17 tools (10 spine + 7 seat/lifecycle) —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
-      expect(mgrTools).toHaveLength(16);
+      expect(mgrTools).toHaveLength(17);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -1192,10 +1194,10 @@ describe('send_email tool (outbound seam stubbed)', () => {
       stubs,
     );
     try {
-      // Technician surface count including send_email: exactly 8.
+      // Technician surface count including send_email: exactly 10.
       const tools = (await techClient.listTools()).tools.map((t) => t.name);
       expect(tools).toContain('send_email');
-      expect(tools).toHaveLength(9);
+      expect(tools).toHaveLength(10);
 
       // Staging requires the full payload.
       const missing = await callWith('send_email', { to: 'cust@example.com' });
@@ -1318,7 +1320,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(16);
+        expect(mgrTools).toHaveLength(17);
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -1434,6 +1436,164 @@ describe('sensitivity filtering (manager_only L1 rows)', () => {
       ).toBe(true);
     } finally {
       await mgrClient.close();
+    }
+  });
+});
+
+describe('get_schedule', () => {
+  // Deterministic fixtures, far from other suites' dates; identity tech-mcp.
+  const G1 = '2026-09-14'; // Monday
+  const G2 = '2026-09-15';
+  const stubOptimize: ServerDeps['optimizeStopOrder'] = async (stops) => ({
+    order: stops.map((_, i) => stops.length - 1 - i), // reverse, so reordering is observable
+    legMinutes: [7, 8],
+    totalMinutes: 15,
+  });
+
+  beforeAll(async () => {
+    const mk = (key: string, over: Record<string, unknown>) =>
+      upsertScheduleEntry({
+        tenantId,
+        technicianRef: 'tech-mcp',
+        externalRowKey: key,
+        customerName: `G ${key}`,
+        addressLine1: `${key} Rd`,
+        city: 'Fresno',
+        state: 'CA',
+        postalCode: '93701',
+        source: 'test',
+        ...over,
+      });
+    await mk('g1-a', { scheduledStart: `${G1}T15:00:00.000Z` });
+    await mk('g1-b', { scheduledStart: `${G1}T17:00:00.000Z` });
+    await mk('g2-a', { scheduledStart: `${G2}T16:00:00.000Z` });
+    await mk('g2-noaddr', { scheduledStart: `${G2}T18:00:00.000Z`, addressLine1: null });
+  });
+
+  async function scheduleClient(extra: Partial<ServerDeps> = {}) {
+    return clientFor(
+      { tenantId, technicianRef: 'tech-mcp' },
+      { optimizeStopOrder: stubOptimize, ...extra },
+    );
+  }
+
+  test('multi-day response: reordered stops, drive minutes, maps link per day', async () => {
+    const { client: c, callWith } = await scheduleClient();
+    try {
+      const r = await callWith('get_schedule', { from: G1, to: G2 });
+      expect(r.isError).toBe(false);
+      expect(r.data.status).toBe('ok');
+      expect(r.data.days.map((d: { date: string }) => d.date)).toEqual([G1, G2]);
+      const d1 = r.data.days[0];
+      // stub reverses: g1-b before g1-a
+      expect(d1.stops.map((s: { label: string }) => s.label)).toEqual(['G g1-b', 'G g1-a']);
+      expect(d1.driveMinutes).toBe(15);
+      expect(d1.mapsUrl).toContain('https://www.google.com/maps/dir/?api=1');
+      expect(d1.mapsUrl).toContain(encodeURIComponent('g1-b Rd, Fresno, CA, 93701'));
+      expect(d1.linkTruncated).toBe(false);
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('null-address stop is listed unroutable and kept out of the link', async () => {
+    const { client: c, callWith } = await scheduleClient();
+    try {
+      const r = await callWith('get_schedule', { from: G2, to: G2 });
+      const day = r.data.days[0];
+      // No-address stops live in their own time-ordered field — mixing them
+      // into the drive-ordered list would misstate one sequence or the other.
+      expect(day.stops.map((s: { label: string }) => s.label)).not.toContain('G g2-noaddr');
+      expect(day.unroutableStops).toEqual([
+        expect.objectContaining({ label: 'G g2-noaddr', address: null }),
+      ]);
+      expect(day.mapsUrl).not.toContain('g2-noaddr');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test("default dates are today in the tenant's timezone (empty args)", async () => {
+    const { client: c, callWith } = await scheduleClient();
+    try {
+      // Seed tenant timezone is the migration default America/Los_Angeles.
+      // Snapshot the expected day before AND after the call so a run that
+      // straddles midnight can't flake.
+      const tzToday = () => localDateISO(new Date().toISOString(), 'America/Los_Angeles');
+      const before = tzToday();
+      const r = await callWith('get_schedule', {});
+      const after = tzToday();
+      expect(r.data.status).toBe('ok');
+      expect([before, after]).toContain(r.data.from);
+      expect(r.data.to).toBe(r.data.from);
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('invalid and oversized ranges are rejected', async () => {
+    const { client: c, callWith } = await scheduleClient();
+    try {
+      for (const args of [
+        { from: 'not-a-date' },
+        { from: G2, to: G1 }, // from > to
+        { from: '2026-09-01', to: '2026-09-30' }, // > 14 days
+        { from: '2026-13-01' }, // regex-valid, impossible month
+        { from: 20260914 }, // non-string — must reject, not coerce to today
+        { to: { date: G1 } }, // non-string object
+      ]) {
+        const r = await callWith('get_schedule', args as Record<string, unknown>);
+        expect(r.data.status).toBe('invalid_range');
+      }
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('zero-stop range → explicit empty days', async () => {
+    const { client: c, callWith } = await scheduleClient();
+    try {
+      const r = await callWith('get_schedule', { from: '2027-01-04', to: '2027-01-05' });
+      expect(r.data).toMatchObject({ status: 'ok', days: [] });
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('assignments-mode roster-less badge → empty days, no crash', async () => {
+    // A valid badge with NO roster row keeps the plain-technician surface;
+    // in assignments mode its schedule is simply empty (daySource returns []).
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'badge-no-roster-row' },
+      { optimizeStopOrder: stubOptimize },
+    );
+    process.env.ROUTE_DAY_SOURCE = 'assignments';
+    try {
+      const r = await callWith('get_schedule', { from: G1, to: G2 });
+      expect(r.isError).toBe(false);
+      expect(r.data).toMatchObject({ status: 'ok', days: [] });
+    } finally {
+      delete process.env.ROUTE_DAY_SOURCE;
+      await c.close();
+    }
+  });
+
+  test('optimizer failure degrades the day, never eats the schedule', async () => {
+    const { client: c, callWith } = await scheduleClient({
+      optimizeStopOrder: async () => {
+        throw new Error('quota');
+      },
+    });
+    try {
+      const r = await callWith('get_schedule', { from: G1, to: G1 });
+      const day = r.data.days[0];
+      expect(day.optimizeFailed).toBe(true);
+      expect(day.driveMinutes).toBeNull();
+      // scheduled order preserved, link still built
+      expect(day.stops.map((s: { label: string }) => s.label)).toEqual(['G g1-a', 'G g1-b']);
+      expect(day.mapsUrl).toContain('maps/dir');
+    } finally {
+      await c.close();
     }
   });
 });

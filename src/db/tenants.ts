@@ -18,6 +18,19 @@ export async function tenantExists(tenantId: string): Promise<boolean> {
   return !!data;
 }
 
+// The tenant row by id, or null. First consumer: get_schedule's default-date
+// computation, which needs tenants.timezone to answer "today" in the firm's
+// local day rather than UTC.
+export async function getTenant(tenantId: string): Promise<Tenant | null> {
+  const { data, error } = await getClient()
+    .from('tenants')
+    .select()
+    .eq('id', tenantId)
+    .maybeSingle();
+  if (error) throw new Error(`getTenant failed: ${error.message}`);
+  return data;
+}
+
 // Look a tenant up by name. Exists for callers that must work on any
 // environment — e.g. scripts/seed.mjs: the migration-seeded 'Default Tenant'
 // has a different generated id on every fresh database (local stack vs hosted),

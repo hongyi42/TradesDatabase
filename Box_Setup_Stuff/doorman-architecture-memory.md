@@ -82,6 +82,21 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
   install) and the provider store. Everything else records only sha256 fingerprints. Cheap integrity
   check before installing a minted badge: `sha256sum` the pending value and confirm the digest is a
   key in the freshly pulled badges.json — catches file/roster mismatch without exposing plaintext.
+- **Telegram sender bindings are roster-driven too (Feature A, 2026-07-07)** — the manager's
+  `bind_telegram` tool records `telegram_user_id` on the roster row; the SAME `badge-pull.sh` ships
+  a `bindings[]` array and calls `apply-binding.sh` (copy alongside this file) to reconcile each into
+  the sandbox's allowlist with **NO rebuild and NO device-key strip** (so, unlike a badge/provider
+  write, it runs automatically). The allowlist lives in TWO host-editable places, both written per
+  bind: **(a) SOURCE** `~/.nemoclaw/sandboxes.json` →
+  `sandboxes.<ref>.messaging.plan.channels[telegram].inputs[allowedIds].value` (durable across
+  rebuilds); **(b) RENDERED** the sandbox's `openclaw.json` → `channels.telegram.accounts[].allowFrom`
+  (per-account — NOT the top-level key) + recompute `/sandbox/.openclaw/.config-hash` + chmod 660 +
+  `nemoclaw <ref> gateway restart`. Verify with `nemoclaw <ref> channels status --json` — a
+  no-messaging drift probe (`warn: expected X; rendered Y` means one layer was missed; `ok` means both
+  agree). Gotchas (proven on s2): an `upload` lands mode 640/644 → the restart refuses
+  `GATEWAY_UNSAFE_CONFIG_PATH` until chmod 660; `nemoclaw exec` reads stdin → `</dev/null`. Applied
+  state: `/etc/doorman/bindings-applied.json`. Full write-up: research doc
+  `thoughts/shared/research/2026-07-03-cold-sandbox-identity-injection.md` (Part B).
 - **Live state (trades-box-1 on AWS Lightsail since 2026-07-04; the Brev nemoclaw-box is RETIRED
   — see migration-runbook-lightsail.md):** fingerprint doorman + roster-driven badge-pull timer
   (with the empty-file guard) are DEPLOYED via `bootstrap-box.sh` and E2E-verified (Jane turn via

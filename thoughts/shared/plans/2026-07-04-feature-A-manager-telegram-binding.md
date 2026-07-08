@@ -2,7 +2,7 @@
 date: 2026-07-04
 task: "Feature A — manager binds a new technician NemoClaw to a Telegram user id from chat, no operator"
 research: thoughts/shared/research/2026-07-04-feature-A-automatic-technician-telegram-binding-via-manager-nemoclaw.md
-status: phases-1-3-implemented; Phase 4 unblocked (Part B done, recipe known) — not yet built
+status: phases-1-4 implemented + verified (scratch-sandbox live); pilot-deploy E2E + real-phone check deferred
 ---
 
 ## Overview
@@ -351,23 +351,29 @@ the live manager and s3 is Judy's beta sandbox — the script targets only roste
 never those two by hand.**
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm test` (script harness covers the new block), and
-      `npm run build` (pre-PR gate) all pass
+- [x] `npm run typecheck`, `npm run lint`, `npm test` (script harness covers the new block), and
+      `npm run build` (pre-PR gate) all pass — full suite 327 passed / 1 skipped; 4 new binding tests
 
 ### Live verification (agent-executable)
 - Prerequisites: `ssh tradesbox`; a **scratch/cold sandbox on the box (NOT s1/s3)**; `supabase-test`
   MCP for READ-ONLY pilot read-backs. Missing any → stop and name it (never silently degrade).
-- [ ] On a scratch sandbox: the deployed script applies a test binding end to end — `channels
+- [x] On a scratch sandbox: the deployed script applies a test binding end to end — `channels
       status --json` flips to the new id (severity ok, no drift warn), gateway healthy, no rebuild;
-      then restore. (The Part-B ladder, now driven by the script rather than by hand.)
-- [ ] `journalctl -u badge-pull` shows the bindings section running; state-file content matches the
-      pilot roster (read back via `supabase-test` SELECT only).
+      then restore. **DONE 2026-07-07 on s2**: `apply-binding.sh s2 1234567890` → exit 0, `ok /
+      1234567890` (both layers agree); `apply-binding.sh s2 5801703167` → `ok / 5801703167` restored.
+      The live run also caught + fixed a real bug (allowFrom nests at `.accounts[].allowFrom`, not
+      top-level) and confirmed the `.config-hash` format, `channels status` JSON shape, and file
+      ownership the reviewer flagged as assumptions.
+- [ ] **DEFERRED to pilot deployment** — `journalctl -u badge-pull` shows the bindings section
+      running against a REAL pull; state-file matches the pilot roster. Needs Phases 1–3 on Render +
+      pilot DB migrated (Render not yet serving `bindings[]`). Not fakeable now; named per the
+      missing-capability rule.
 
 ### Manual verification
-- [ ] End-to-end with a real phone: manager sends "connect <ref> to <id>" in their Telegram chat;
-      within ~5 min the technician's phone can talk to the new NemoClaw and an unlisted sender
-      cannot. (Human judgment + a second phone — the behavioral proof Part B could not do without a
-      2nd Telegram account; runs at pilot-deployment time.)
+- [ ] **DEFERRED to pilot deployment** — End-to-end with a real phone: manager sends "connect <ref>
+      to <id>" in their Telegram chat; within ~5 min the technician's phone can talk to the new
+      NemoClaw and an unlisted sender cannot. (Human judgment + a second phone — the behavioral proof
+      Part B/the s2 run could not do without a 2nd Telegram account.)
 
 ---
 *Pause after this phase — its Manual verification list is non-empty (the real-phone behavioral
@@ -387,7 +393,9 @@ Every repo file this plan creates (N) or modifies (M) — the parallel-vs-stacke
   `src/inbound/webhook.test.ts`, `src/jobs/lifecycle.test.ts`, `src/composio/outbound.test.ts`,
   `src/composio/sessions.test.ts`, `src/composio/logIngest.test.ts` (fixtures: `telegram_user_id`)
 - M `scripts/assign-host.mjs`
-- M `Box_Setup_Stuff/badge-pull.sh`, `Box_Setup_Stuff/doorman-architecture-memory.md`,
+- M `Box_Setup_Stuff/badge-pull.sh` (reconcile loop), N `Box_Setup_Stuff/apply-binding.sh` (the
+  two-write apply — factored out for independent live-testing; deviation from the original plan,
+  which folded it inline), M `Box_Setup_Stuff/doorman-architecture-memory.md`,
   `Box_Setup_Stuff/doorman-nemoclaw-setup-guide.md`
 - M `docs/nemoclaw-tech-agent.md`, `docs/control-plane.md`
 - M `thoughts/shared/research/2026-07-03-cold-sandbox-identity-injection.md` (Step-0 result)

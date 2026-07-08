@@ -26,7 +26,9 @@ add_technician_seat            get_connect_link              resolve_review
 ```
 
 Badges flow separately: each host polls `GET /control/badges` (see the doorman runbook —
-mint-on-first-pull, fingerprint-keyed file, revocation on deactivation).
+mint-on-first-pull, fingerprint-keyed file, revocation on deactivation). The same pull response
+also carries a `bindings[]` array (Feature A) — the desired Telegram sender allowlist per sandbox,
+which the host applies with no rebuild (see the rollout section below).
 
 ## The heartbeat: one Render Cron Job
 
@@ -93,6 +95,14 @@ Empty-roster guard (2026-07-03, post-incident): `badge-pull.sh` refuses to repla
 badges.json with a 0-entry response — the systemd unit fails loudly and the last good file stays.
 A deliberate full-roster wipe requires `ALLOW_EMPTY_BADGES=1` in `/etc/doorman/badge-pull.env`
 (remove it again afterwards). The guard is covered by `src/control/badgePullScript.test.ts`.
+
+Telegram bindings (Feature A): the manager's `bind_telegram` tool sets `telegram_user_id` on a
+roster row; `badge-pull.sh` ships those as `bindings[]` and reconciles each into the sandbox's
+allowlist via `Box_Setup_Stuff/apply-binding.sh` — a two-write recipe (host source-of-truth
+`sandboxes.json` + rendered `openclaw.json` + `gateway restart`) that needs **no rebuild and no
+device-key strip**, so it runs unattended. Applied state: `/etc/doorman/bindings-applied.json`;
+a failed apply is isolated and retried next tick. Mechanism verified on a scratch sandbox
+2026-07-07 (research doc `thoughts/shared/research/2026-07-03-cold-sandbox-identity-injection.md`).
 
 ## Operational notes
 

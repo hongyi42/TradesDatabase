@@ -123,10 +123,19 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
 - Note: OpenClaw's streamable-http MCP loader does NOT itself resolve placeholders (its `resolveEnvPlaceholder`
   with format `Bearer ${VAR}` only covers the codex/gemini path). The egress proxy is what resolves it.
 
-## The agent model: z-ai/glm-5.2 on NVIDIA NIM (GLM line per user 2026-07-02; Nemotron deprecated)
-The running model is **`z-ai/glm-5.2`** (applied + verified config-consistent 2026-07-02). The
-standing decision is the GLM line — Nemotron-3 Super 120B proved too weak; do NOT "restore" it
-when debugging model errors. GLM-5.1 was the first pick but NVIDIA retired it.
+## The agent model: GLM-5.2 — production route is DeepInfra (`deepinfra-prod / zai-org/GLM-5.2`)
+**Current production route (since 2026-07-06, re-asserted 2026-07-08): `deepinfra-prod /
+zai-org/GLM-5.2`** — DeepInfra is metered (200 concurrent/model) where NVIDIA's free tier
+rate-limits busy agents (`ResourceExhausted: Worker local total request limit reached (N/32)`).
+Flip: `openshell inference set -g nemoclaw --provider deepinfra-prod --model zai-org/GLM-5.2`
+(gateway-level → all sandboxes; the route forces the model per request). **`nvidia-prod` is
+rollback-only** and is ALSO the wizard default `onboard`/`rebuild` fall back to — that drift
+rate-limited Judy's s3 on 2026-07-08. Guard: `nemoclaw-inference-medic.timer` re-asserts the
+DeepInfra route on boot + every 15 min (units in this repo). Check with `openshell inference get`.
+
+The standing model decision is the GLM line — Nemotron-3 Super 120B proved too weak; do NOT
+"restore" it when debugging model errors. GLM-5.1 was the first pick but NVIDIA retired it. (Note
+the id SPELLING differs by provider: DeepInfra `zai-org/GLM-5.2`, NVIDIA `z-ai/glm-5.2`.)
 - **Verify model ids against the LIVE catalog, from the HOST:**
   `curl -s https://integrate.api.nvidia.com/v1/models` — it is **public, no key needed**. As of
   2026-07-02 it lists exactly ONE GLM: `z-ai/glm-5.2`. Observed: `z-ai/glm-5.1` → 410 Gone

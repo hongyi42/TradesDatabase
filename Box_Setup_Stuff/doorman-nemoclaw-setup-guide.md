@@ -446,6 +446,16 @@ nemoclaw onboard      \# if port 8080 is blocked: sudo kill \<PID\>; sudo lsof \
 > DeepInfra limit: 200 CONCURRENT requests per model (not per-minute); raiseable by contacting
 > them. The onboarding prompts below still describe the original NVIDIA setup — fine for a
 > fresh box; flip to DeepInfra afterwards with the two commands above.
+>
+> **⚠ REQUIRED after EVERY onboard/rebuild — and now enforced automatically.** `nemoclaw onboard`
+> and rebuilds reset the gateway route to the wizard's NVIDIA default (`nvidia-prod /
+> nvidia/nemotron-3-super`), which is the deprecated model on NVIDIA's FREE tier — its per-worker
+> cap (32) rate-limits any busy agent with `ResourceExhausted: Worker local total request limit
+> reached (N/32)`. This actually bit Judy's s3 on 2026-07-08 (re-onboard landed on the NVIDIA
+> default; the flip was skipped). Guard: `nemoclaw-inference-medic.{sh,service,timer}` (installed on
+> trades-box-1, copies in this repo) re-asserts `deepinfra-prod / zai-org/GLM-5.2` on boot + every
+> 15 min, so drift self-heals — but still run the flip by hand right after an onboard so you're not
+> waiting on the timer. Check the live route any time with `openshell inference get`.
 
 Answer the prompts: provider **1 (NVIDIA Endpoints)**; API key (reuses stored / paste `nvapi-…`); cloud model: **the target model is the GLM line — `z-ai/glm-5.2` as of 2026-07-02** (Nemotron-3 Super proved too weak; don't pick it. GLM-5.1 was retired by NVIDIA — 410s). If the GLM model isn't offered in the onboard menu, pick anything and set it afterward with `nemoclaw inference set --provider nvidia-prod --model z-ai/glm-5.2 --sandbox <AGENT>` (the supported path — updates the gateway route + all openclaw.json refs). **Confirm the exact id first** against the live catalog **from the HOST** — `curl -s https://integrate.api.nvidia.com/v1/models` is public, no key (nemoclaw's `--verify` can't reach NVIDIA from inside the gateway container; it fails on connection, not auth). Then: **Sandbox name \= `<AGENT>`**; Apply config **Y**; Brave search **N**; messaging channel (e.g. Telegram — paste bot token \+ your user ID); Resource profile **2 (gamer 25%)**; Policy tier **Enter**; Presets **Enter**. First build ≈ 8 min.
 

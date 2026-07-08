@@ -1,0 +1,14 @@
+# /etc/systemd/system/nemoclaw-inference-medic.timer
+# Runs the inference-medic shortly after boot and every 15 min thereafter, so a
+# reboot revert OR a post-onboard/rebuild drift is corrected within ~15 min
+# without anyone remembering the manual DeepInfra flip.
+[Unit]
+Description=Periodically assert the DeepInfra/GLM-5.2 inference route
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

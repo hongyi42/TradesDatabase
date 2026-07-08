@@ -3,6 +3,7 @@ import { Client } from 'pg';
 import { getClient } from './client.js';
 import { setTenantSeats } from './tenants.js';
 import {
+  findTechnicianByTelegramUserId,
   getTechnician,
   insertTechnician,
   isSeatCapError,
@@ -134,6 +135,35 @@ describe('control-plane fields (Plan 2)', () => {
     // items' but after the cap test consumed capacity).
     await updateTechnician(p.id, { state: 'offboarded' });
     await updateTechnician(q.id, { state: 'offboarded' });
+  });
+});
+
+describe('telegram binding (Feature A)', () => {
+  test('telegram_user_id patch round-trip; reverse lookup finds active, skips inactive + cross-tenant', async () => {
+    await setTenantSeats(tenantId, { managerSeats: 1, technicianSeats: 6 });
+    const jane = await insertTechnician({ tenantId, ref: 'tg-jane', displayName: 'TG Jane' });
+
+    // Round-trip: the column is nullable and defaults null, patches and reads back.
+    expect(jane.telegram_user_id).toBeNull();
+    const bound = await updateTechnician(jane.id, { telegram_user_id: '12345678' });
+    expect(bound.telegram_user_id).toBe('12345678');
+
+    // Reverse lookup finds the bound active row…
+    expect((await findTechnicianByTelegramUserId(tenantId, '12345678'))?.id).toBe(jane.id);
+    // …and returns null for an id nobody holds.
+    expect(await findTechnicianByTelegramUserId(tenantId, '99999999')).toBeNull();
+    // …and never matches a foreign tenant (the id is tenant-scoped).
+    expect(
+      await findTechnicianByTelegramUserId(
+        '00000000-0000-0000-0000-000000000000',
+        '12345678',
+      ),
+    ).toBeNull();
+
+    // An offboarded holder does not block the id — the guard only sees non-inactive
+    // rows, so the same id is re-bindable to a new hire after the old one leaves.
+    await setTechnicianState(jane.id, 'offboarded');
+    expect(await findTechnicianByTelegramUserId(tenantId, '12345678')).toBeNull();
   });
 });
 

@@ -472,6 +472,55 @@ export type Database = {
           },
         ]
       }
+      sandbox_pool: {
+        Row: {
+          created_at: string
+          host_id: string
+          id: string
+          sandbox_ref: string
+          technician_id: string | null
+          tenant_id: string
+        }
+        Insert: {
+          created_at?: string
+          host_id: string
+          id?: string
+          sandbox_ref: string
+          technician_id?: string | null
+          tenant_id: string
+        }
+        Update: {
+          created_at?: string
+          host_id?: string
+          id?: string
+          sandbox_ref?: string
+          technician_id?: string | null
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_pool_host_id_fkey"
+            columns: ["host_id"]
+            isOneToOne: false
+            referencedRelation: "hosts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sandbox_pool_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: true
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sandbox_pool_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       schedule_entries: {
         Row: {
           address_line1: string | null
@@ -620,6 +669,7 @@ export type Database = {
           sandbox_ref: string | null
           service_cities: string[]
           state: Database["public"]["Enums"]["technician_state"]
+          telegram_user_id: string | null
           tenant_id: string
           tier: Database["public"]["Enums"]["technician_tier"]
           updated_at: string
@@ -641,6 +691,7 @@ export type Database = {
           sandbox_ref?: string | null
           service_cities?: string[]
           state?: Database["public"]["Enums"]["technician_state"]
+          telegram_user_id?: string | null
           tenant_id: string
           tier?: Database["public"]["Enums"]["technician_tier"]
           updated_at?: string
@@ -662,6 +713,7 @@ export type Database = {
           sandbox_ref?: string | null
           service_cities?: string[]
           state?: Database["public"]["Enums"]["technician_state"]
+          telegram_user_id?: string | null
           tenant_id?: string
           tier?: Database["public"]["Enums"]["technician_tier"]
           updated_at?: string

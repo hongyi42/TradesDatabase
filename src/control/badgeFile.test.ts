@@ -26,6 +26,7 @@ function row(over: Partial<Technician>): Technician {
     composio_session_id: null,
     availability: null,
     service_cities: [],
+    telegram_user_id: null,
     created_at: '2026-07-02T00:00:00.000Z',
     updated_at: '2026-07-02T00:00:00.000Z',
     ...over,
@@ -133,5 +134,62 @@ describe('buildBadgeResponse', () => {
       technicianRef: 'new-hire',
       revoked: false,
     });
+  });
+});
+
+describe('buildBadgeResponse bindings (Feature A)', () => {
+  test('active row with a sandbox + telegram id ships a binding, alongside its minted badge', async () => {
+    const rows = [
+      row({ id: 'a', ref: 'jane-doe', sandbox_ref: 's3', telegram_user_id: '12345678' }),
+    ];
+    const result = await buildBadgeResponse(HOST, stubs(rows));
+    expect(result.bindings).toEqual([
+      { ref: 'jane-doe', sandboxRef: 's3', telegramUserId: '12345678' },
+    ]);
+    // The binding rides the SAME pull as a freshly minted badge (independent paths).
+    expect(result.newBadges).toHaveLength(1);
+  });
+
+  test('an already-badged active row still ships its binding (no mint this pull)', async () => {
+    // The "didn't mint because a badge already exists" path — proves the binding
+    // is independent of the mint flow, not just co-emitted with a fresh badge.
+    const result = await buildBadgeResponse(
+      HOST,
+      stubs([
+        row({
+          id: 'a',
+          ref: 'settled',
+          sandbox_ref: 's5',
+          telegram_user_id: '999',
+          badge_hash: 'd'.repeat(64),
+        }),
+      ]),
+    );
+    expect(result.newBadges).toHaveLength(0); // nothing minted…
+    expect(result.bindings).toEqual([
+      { ref: 'settled', sandboxRef: 's5', telegramUserId: '999' }, // …binding still ships
+    ]);
+  });
+
+  test('inactive rows and rows missing sandbox_ref or telegram_user_id ship no binding', async () => {
+    const result = await buildBadgeResponse(
+      HOST,
+      stubs([
+        // Inactive: never bound, even with both fields set + a badge.
+        row({
+          id: 'a',
+          ref: 'gone',
+          state: 'offboarding',
+          sandbox_ref: 's1',
+          telegram_user_id: '111',
+          badge_hash: 'a'.repeat(64),
+        }),
+        // Active but no sandbox yet (unassigned) → nothing to bind.
+        row({ id: 'b', ref: 'no-sandbox', sandbox_ref: null, telegram_user_id: '222' }),
+        // Active with a sandbox but no telegram id → not bound yet.
+        row({ id: 'c', ref: 'no-tg', sandbox_ref: 's2', telegram_user_id: null }),
+      ]),
+    );
+    expect(result.bindings).toEqual([]);
   });
 });

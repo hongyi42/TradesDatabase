@@ -32,6 +32,7 @@ function row(over: Partial<Technician> = {}): Technician {
     composio_session_id: null,
     availability: null,
     service_cities: [],
+    telegram_user_id: null,
     created_at: '2026-06-20T00:00:00.000Z',
     updated_at: '2026-06-20T00:00:00.000Z',
     ...over,

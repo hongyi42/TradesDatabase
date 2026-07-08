@@ -160,4 +160,23 @@ describe('GET /control/badges', () => {
     expect(body2.newBadges).toHaveLength(0);
     expect(body2.badgesFile[hash]).toBeDefined();
   });
+
+  test('a Telegram-bound active row ships its binding in the pull payload', async () => {
+    // pull-probe is active with sandbox_ref 's1' (beforeAll). Bind a Telegram id
+    // directly in the DB (independent of the bind_telegram tool) and confirm it
+    // rides the authenticated pull — HTTP → DB, a second channel.
+    await pg.query("update technicians set telegram_user_id = '55501234' where ref = 'pull-probe'");
+    const res = await fetch(`${base}/control/badges`, {
+      headers: { authorization: `Bearer ${hostToken}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      bindings: Array<{ ref: string; sandboxRef: string; telegramUserId: string }>;
+    };
+    expect(body.bindings).toContainEqual({
+      ref: 'pull-probe',
+      sandboxRef: 's1',
+      telegramUserId: '55501234',
+    });
+  });
 });

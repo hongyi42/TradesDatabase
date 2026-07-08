@@ -26,6 +26,24 @@ export async function getTechnician(tenantId: string, ref: string): Promise<Tech
   return data;
 }
 
+// Reverse lookup for bind_telegram's duplicate guard: the first NON-inactive
+// row in the tenant already bound to this Telegram id, or null. No DB uniqueness
+// on telegram_user_id (it is only ever compared), so we filter in JS via the
+// single isInactiveState definition and take the first match rather than
+// .maybeSingle() — which would throw if a legacy duplicate ever existed.
+export async function findTechnicianByTelegramUserId(
+  tenantId: string,
+  telegramUserId: string,
+): Promise<Technician | null> {
+  const { data, error } = await getClient()
+    .from('technicians')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('telegram_user_id', telegramUserId);
+  if (error) throw new Error(`findTechnicianByTelegramUserId failed: ${error.message}`);
+  return (data ?? []).find((t) => !isInactiveState(t.state)) ?? null;
+}
+
 export async function listTeam(tenantId: string): Promise<Technician[]> {
   const { data, error } = await getClient()
     .from('technicians')
@@ -99,6 +117,7 @@ export interface TechnicianPatch {
   composio_connected_account_id?: string | null;
   composio_trigger_id?: string | null;
   composio_session_id?: string | null;
+  telegram_user_id?: string | null;
   connected_email?: string | null;
   state?: TechnicianState;
 }

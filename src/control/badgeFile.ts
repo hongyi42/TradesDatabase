@@ -23,6 +23,11 @@ export interface BadgeResponse {
   // keeps only the hash. Lost before install → operator clears badge_hash
   // and the next pull re-mints.
   newBadges: Array<{ ref: string; tenantId: string; sandboxRef: string | null; badge: string }>;
+  // Desired Telegram sender bindings for this host's sandboxes — one per active
+  // row that has BOTH a sandbox and a bound Telegram id. The host reconciles
+  // these into each sandbox's allowlist (additive; unbind is out of scope).
+  // Independent of badge state: a binding ships even if this pull didn't mint.
+  bindings: Array<{ ref: string; sandboxRef: string; telegramUserId: string }>;
 }
 
 // Build the pull response for one host: mint-on-first-pull for assigned rows
@@ -42,8 +47,19 @@ export async function buildBadgeResponse(
   const rows = await list(hostId);
   const badgesFile: BadgeResponse['badgesFile'] = {};
   const newBadges: BadgeResponse['newBadges'] = [];
+  const bindings: BadgeResponse['bindings'] = [];
 
   for (const row of rows) {
+    // Bindings are independent of the badge flow below (which may `continue`
+    // past a mint race/failure): an assigned, active, Telegram-bound row always
+    // ships its desired binding. Inactive or unassigned rows ship nothing.
+    if (row.sandbox_ref && row.telegram_user_id && !isInactiveState(row.state)) {
+      bindings.push({
+        ref: row.ref,
+        sandboxRef: row.sandbox_ref,
+        telegramUserId: row.telegram_user_id,
+      });
+    }
     let current: Technician = row;
     if (!current.badge_hash && !isInactiveState(current.state)) {
       // Per-row isolation: one row's failed write must not abort the pull —
@@ -75,5 +91,5 @@ export async function buildBadgeResponse(
       revoked: isInactiveState(current.state),
     };
   }
-  return { badgesFile, newBadges };
+  return { badgesFile, newBadges, bindings };
 }

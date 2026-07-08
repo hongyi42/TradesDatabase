@@ -8,6 +8,8 @@ import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
 import { upsertScheduleEntry } from '../db/scheduleEntries.js';
 import { insertTechnician, setTechnicianState, updateTechnician } from '../db/technicians.js';
+import { createHost } from '../db/hosts.js';
+import { registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { createServer, type ServerDeps } from './server.js';
@@ -1015,6 +1017,122 @@ describe('pairing lifecycle tools (Composio seams stubbed)', () => {
   });
 });
 
+describe('bind_telegram (manager tool + cold-pool auto-allocation)', () => {
+  test('denies technicians; validates id; guards dup + inactive; auto-claims a sandbox; re-bind returns previous', { timeout: 30_000 }, async () => {
+    // Leave shared state exactly as found: capture seats to restore, and clear
+    // any stale 'tg-host' a crashed prior run may have left (the ordered
+    // downstream describes are seat-count sensitive).
+    const seatsBefore = (
+      await pg.query<{ manager_seats: number; technician_seats: number }>(
+        'select manager_seats, technician_seats from tenants where id=$1',
+        [tenantId],
+      )
+    ).rows[0];
+    await pg.query(
+      "delete from sandbox_pool where host_id in (select id from hosts where name='tg-host')",
+    );
+    await pg.query("delete from hosts where name = 'tg-host'");
+    await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 8 });
+
+    // Technician identity: denied before any write (main client is 'tech-mcp').
+    const denied = await call('bind_telegram', { ref: 'tech-mcp', telegramUserId: '111' });
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain('manager badge');
+
+    const { client: mgrClient, callWith } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      {},
+    );
+    try {
+      expect((await mgrClient.listTools()).tools.map((t) => t.name)).toContain('bind_telegram');
+
+      // Non-numeric id rejected before any lookup; missing ref errors.
+      expect(
+        (await callWith('bind_telegram', { ref: 'tech-mcp', telegramUserId: 'abc' })).isError,
+      ).toBe(true);
+      expect(
+        (await callWith('bind_telegram', { ref: 'nobody', telegramUserId: '123' })).isError,
+      ).toBe(true);
+
+      // Happy path on a person who ALREADY has a sandbox: writes the column, no
+      // pool claim needed. Cross-channel read-back confirms the write.
+      const jane = await insertTechnician({ tenantId, ref: 'tg-a', displayName: 'TG A' });
+      await updateTechnician(jane.id, { sandbox_ref: 's-existing' });
+      const bound = await callWith('bind_telegram', { ref: 'tg-a', telegramUserId: '5551234' });
+      expect(bound.data).toMatchObject({ status: 'bound', ref: 'tg-a', sandboxRef: 's-existing' });
+      const row1 = await pg.query<{ telegram_user_id: string }>(
+        "select telegram_user_id from technicians where tenant_id=$1 and ref='tg-a'",
+        [tenantId],
+      );
+      expect(row1.rows[0].telegram_user_id).toBe('5551234');
+
+      // The same id on ANOTHER ref is rejected (the duplicate guard).
+      const bob = await insertTechnician({ tenantId, ref: 'tg-b', displayName: 'TG B' });
+      await updateTechnician(bob.id, { sandbox_ref: 's-bob' });
+      const dup = await callWith('bind_telegram', { ref: 'tg-b', telegramUserId: '5551234' });
+      expect(dup.isError).toBe(true);
+      expect(dup.text).toContain("already bound to 'tg-a'");
+
+      // Re-bind the same person: status rebound, returns the previous id.
+      const rebound = await callWith('bind_telegram', { ref: 'tg-a', telegramUserId: '5559999' });
+      expect(rebound.data).toMatchObject({
+        status: 'rebound',
+        previousTelegramUserId: '5551234',
+        telegramUserId: '5559999',
+      });
+
+      // Inactive target rejected.
+      await setTechnicianState(bob.id, 'offboarding');
+      const inactive = await callWith('bind_telegram', { ref: 'tg-b', telegramUserId: '5550000' });
+      expect(inactive.isError).toBe(true);
+      expect(inactive.text).toContain('deactivated');
+
+      // Auto-allocation: a hire with NO sandbox claims a free pool row and gets
+      // host_id + sandbox_ref patched — no operator step.
+      const host = await createHost('tg-host', 'f'.repeat(64));
+      await registerSandbox({ tenantId, hostId: host.id, sandboxRef: 'pool-x' });
+      const cold = await insertTechnician({ tenantId, ref: 'tg-cold', displayName: 'TG Cold' });
+      const allocated = await callWith('bind_telegram', { ref: 'tg-cold', telegramUserId: '7770001' });
+      expect(allocated.data).toMatchObject({ status: 'bound', sandboxRef: 'pool-x' });
+      const row2 = await pg.query<{ sandbox_ref: string; host_id: string; telegram_user_id: string }>(
+        "select sandbox_ref, host_id, telegram_user_id from technicians where tenant_id=$1 and ref='tg-cold'",
+        [tenantId],
+      );
+      expect(row2.rows[0]).toMatchObject({
+        sandbox_ref: 'pool-x',
+        host_id: host.id,
+        telegram_user_id: '7770001',
+      });
+      const pool = await pg.query<{ technician_id: string }>(
+        "select technician_id from sandbox_pool where sandbox_ref='pool-x' and host_id=$1",
+        [host.id],
+      );
+      expect(pool.rows[0].technician_id).toBe(cold.id); // claimed, cross-channel
+
+      // Pool empty: the next cold hire with no free sandbox errors clearly.
+      await insertTechnician({ tenantId, ref: 'tg-cold2', displayName: 'TG Cold2' });
+      const empty = await callWith('bind_telegram', { ref: 'tg-cold2', telegramUserId: '7770002' });
+      expect(empty.isError).toBe(true);
+      expect(empty.text).toContain('no free sandbox');
+    } finally {
+      await mgrClient.close();
+      // Restore shared state so the seat-sensitive downstream describes are
+      // untouched. Delete order follows the FKs: sandbox_pool (→ technicians,
+      // hosts) first, then technicians (→ hosts via host_id), then the host.
+      await pg.query("delete from sandbox_pool where host_id in (select id from hosts where name='tg-host')");
+      await pg.query(
+        "delete from technicians where tenant_id=$1 and ref in ('tg-a','tg-b','tg-cold','tg-cold2')",
+        [tenantId],
+      );
+      await pg.query("delete from hosts where name = 'tg-host'");
+      await setTenantSeats(tenantId, {
+        managerSeats: seatsBefore.manager_seats,
+        technicianSeats: seatsBefore.technician_seats,
+      });
+    }
+  });
+});
+
 describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
   test('deactivate stamps clock + disables + closes pairing item; reactivate is the undo', { timeout: 30_000 }, async () => {
     const disableCalls: string[] = [];
@@ -1042,11 +1160,12 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       stubs,
     );
     try {
-      // The full manager surface is now 17 tools (10 spine + 7 seat/lifecycle) —
+      // The full manager surface is now 18 tools (10 spine + 8 seat/lifecycle) —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
-      expect(mgrTools).toHaveLength(17);
+      expect(mgrTools).toContain('bind_telegram');
+      expect(mgrTools).toHaveLength(18);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -1313,14 +1432,14 @@ describe('send_email tool (outbound seam stubbed)', () => {
       expect(sendCalls).toHaveLength(3); // staged2 + s3(threw) + s4 — nothing else sent
 
       // resolve_review: a staged send is a live token — "resolved" is refused,
-      // dismiss (= cancel) is allowed. Manager surface counts exactly 15.
+      // dismiss (= cancel) is allowed. Manager surface counts exactly 18.
       const { client: mgrClient, callWith: mgrCall } = await clientFor(
         { tenantId, technicianRef: 'mgr-test' },
         stubs,
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(17);
+        expect(mgrTools).toHaveLength(18);
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',

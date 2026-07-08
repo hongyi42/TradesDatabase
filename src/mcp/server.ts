@@ -17,6 +17,11 @@ import {
   searchCustomers,
   getCustomerContext,
   getTechnician,
+  findTechnicianByTelegramUserId,
+  getPoolRowByTechnician,
+  listFreeSandboxes,
+  claimSandbox,
+  updateTechnician,
   getTenant,
   insertTechnician,
   isInactiveState,
@@ -330,6 +335,26 @@ const ADMIN_TOOLS = [
       type: 'object',
       properties: { ref: { type: 'string', description: 'The roster ref to pair.' } },
       required: ['ref'],
+    },
+  },
+  {
+    name: 'bind_telegram',
+    description:
+      "Connect a team member to their Telegram account (manager only). Give the roster ref and " +
+      "the person's NUMERIC Telegram user id (they get it from @userinfobot). Their agent sandbox " +
+      "then answers only that Telegram account. If the person has no sandbox yet, one is claimed " +
+      "automatically from the cold pool. The binding reaches the box within ~5 minutes. Re-call " +
+      "to fix a wrong id — it returns the previous value.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: 'The roster ref to bind.' },
+        telegramUserId: {
+          type: 'string',
+          description: "The person's numeric Telegram user id (digits only, via @userinfobot).",
+        },
+      },
+      required: ['ref', 'telegramUserId'],
     },
   },
   {
@@ -1447,6 +1472,72 @@ async function dispatch(
         url,
         note: 'Forward this link ONLY to this person. They sign in to Google and approve; ' +
           'you will then get a verification item to confirm the mailbox.',
+      };
+    }
+    case 'bind_telegram': {
+      const ref = str('ref');
+      if (!ref) throw new Error('ref is required');
+      const telegramUserId = str('telegramUserId');
+      // Text, digit-only, ≤20 (Telegram ids are ints; stored as text for JS
+      // number-precision safety — see the migration). Only ever compared.
+      if (!telegramUserId || !/^[0-9]{1,20}$/.test(telegramUserId)) {
+        throw new Error(
+          'telegramUserId must be the numeric Telegram user id — digits only, from @userinfobot',
+        );
+      }
+      const target = await getTechnician(tenantId, ref);
+      if (!target) throw new Error(`technician '${ref}' not found`);
+      if (isInactiveState(target.state)) {
+        throw new Error(`'${ref}' is deactivated — reactivate the seat first`);
+      }
+      // Reject an id already answering SOMEONE ELSE's sandbox; a self-hit is a
+      // harmless re-bind of the same person. No DB uniqueness — this is the guard
+      // (residual concurrent race accepted, same as the seat-cap trigger).
+      const holder = await findTechnicianByTelegramUserId(tenantId, telegramUserId);
+      if (holder && holder.ref !== ref) {
+        throw new Error(
+          `Telegram id ${telegramUserId} is already bound to '${holder.ref}' — ` +
+            'check the id, or unbind them first',
+        );
+      }
+      // Auto-claim a cold sandbox when the hire has none, so a chat-only bind
+      // needs no operator. Recover a prior claim whose roster write failed
+      // mid-flight (idempotent) before taking a fresh one. The claim of the pool
+      // row still precedes the roster write (claim-first self-heals on retry via
+      // getPoolRowByTechnician), but the sandbox and the Telegram id land in ONE
+      // roster write — so a partial failure can never leave a claimed sandbox
+      // with no binding, and it saves a round-trip.
+      const patch: { telegram_user_id: string; host_id?: string; sandbox_ref?: string } = {
+        telegram_user_id: telegramUserId,
+      };
+      let sandboxRef = target.sandbox_ref;
+      if (!sandboxRef) {
+        let pool = await getPoolRowByTechnician(target.id);
+        if (!pool) {
+          for (const free of await listFreeSandboxes(tenantId)) {
+            const claimed = await claimSandbox(free.id, target.id);
+            if (claimed) {
+              pool = claimed;
+              break;
+            }
+          }
+        }
+        if (!pool) {
+          throw new Error('no free sandbox in the cold pool — contact support to add capacity');
+        }
+        patch.host_id = pool.host_id;
+        patch.sandbox_ref = pool.sandbox_ref;
+        sandboxRef = pool.sandbox_ref;
+      }
+      const previousTelegramUserId = target.telegram_user_id;
+      await updateTechnician(target.id, patch);
+      return {
+        status: previousTelegramUserId ? 'rebound' : 'bound',
+        ref,
+        telegramUserId,
+        sandboxRef,
+        previousTelegramUserId,
+        note: 'applies to the box within ~5 minutes',
       };
     }
     case 'list_team': {

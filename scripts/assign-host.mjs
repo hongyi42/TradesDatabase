@@ -10,6 +10,10 @@
 //         fingerprint is stored; losing the token means re-creating the host.
 //   scripts/assign-host.mjs assign ref=<ref> host=<host-name> sandbox=<sandbox_ref> [tenant=<uuid>]
 //       → points the person's roster row at that host + sandbox.
+//   scripts/assign-host.mjs add-sandbox host=<host-name> sandbox=<sandbox_ref> [tenant=<uuid>]
+//       → registers a pre-built COLD sandbox into the host's pool (the "rack of
+//         blanks"). bind_telegram claims the next free one automatically for a
+//         new hire — no per-hire operator step.
 //   scripts/assign-host.mjs set-badge ref=<ref> hash=<sha256-of-badge> [tenant=<uuid>]
 //       → registers a HAND-MINTED badge's fingerprint so the pull loop ships
 //         it instead of erasing it and minting a competitor (do this for any
@@ -25,6 +29,7 @@ import {
   createHost,
   getHostByName,
   getTechnician,
+  registerSandbox,
   updateTechnician,
 } from '../dist/db/index.js';
 import { sha256hex } from '../dist/control/badges.js';
@@ -44,13 +49,15 @@ const [command, ...rest] = process.argv.slice(2);
 const KNOWN_KEYS = {
   'create-host': ['name'],
   assign: ['ref', 'host', 'sandbox', 'tenant'],
+  'add-sandbox': ['host', 'sandbox', 'tenant'],
   'set-badge': ['ref', 'hash', 'tenant'],
   'rotate-badge': ['ref', 'tenant'],
 };
 if (!command || !(command in KNOWN_KEYS)) {
   console.error(
     `Usage: assign-host.mjs create-host name=<n> | assign ref=<r> host=<h> sandbox=<s> ` +
-      `| set-badge ref=<r> hash=<sha256> | rotate-badge ref=<r>   (each: [tenant=<uuid>])`,
+      `| add-sandbox host=<h> sandbox=<s> | set-badge ref=<r> hash=<sha256> ` +
+      `| rotate-badge ref=<r>   (each: [tenant=<uuid>])`,
   );
   process.exit(1);
 }
@@ -75,6 +82,24 @@ if (command === 'create-host') {
   console.log(`Host registered: ${host.name} (${host.id})`);
   console.log(`\nPull token (shown ONCE — store it in the host's root-only env file):`);
   console.log(token);
+} else if (command === 'add-sandbox') {
+  // No ref: a pool sandbox is cold (unassigned) until bind_telegram claims it,
+  // so this branch runs BEFORE the ref-requiring block below.
+  const tenantId = args.tenant || '82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18'; // Default Tenant (test)
+  if (!args.host || !args.sandbox) {
+    console.error('add-sandbox requires host=<host-name> sandbox=<sandbox_ref>.');
+    process.exit(1);
+  }
+  const host = await getHostByName(args.host);
+  if (!host) {
+    console.error(`Host '${args.host}' not found — create it first with create-host.`);
+    process.exit(1);
+  }
+  const row = await registerSandbox({ tenantId, hostId: host.id, sandboxRef: args.sandbox });
+  console.log(
+    `Registered cold sandbox '${row.sandbox_ref}' on host ${host.name} (tenant ${tenantId}). ` +
+      `bind_telegram claims it for the next hire who has no sandbox.`,
+  );
 } else {
   const tenantId = args.tenant || '82bbc6f8-abc6-4e89-bd99-fa82bc8d8d18'; // Default Tenant (test)
   if (!args.ref) {

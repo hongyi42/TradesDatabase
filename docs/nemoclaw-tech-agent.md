@@ -92,11 +92,13 @@ Outbound network policy should allow only the gateway + our server's host.
 
 **Manager profile (2026-07-02):** an ACTIVE `tier='manager'` roster row (the `technicians`
 table, not the badge, is the tier source of truth) additionally exposes the seat/lifecycle
-tools — 7 of them, for a 17-tool manager surface (the technician surface itself is 10 incl.
+tools — 8 of them, for an 18-tool manager surface (the technician surface itself is 10 incl.
 send_email since 2026-07-04, retract_capture and get_schedule since 2026-07-06): `add_technician_seat`,
 `deactivate_technician_seat` (two-step confirm; starts the disable-first grace period),
 `reactivate_technician_seat` (the grace-period undo), `get_connect_link` (mint a Gmail
-Connect Link; 5-min per-person cooldown), `list_team`, `list_pending_reviews`,
+Connect Link; 5-min per-person cooldown), `bind_telegram` (connect a person to their numeric
+Telegram user id — auto-claims a cold-pool sandbox if they have none; reaches the box in ~5 min),
+`list_team`, `list_pending_reviews`,
 `resolve_review` (also carries pairing-verification verdicts: resolved = mailbox confirmed →
 active; dismissed = wrong mailbox → pairing torn down). The server both filters `tools/list`
 by tier and re-gates every admin call at dispatch — a technician badge structurally has no

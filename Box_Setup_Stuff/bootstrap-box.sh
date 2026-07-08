@@ -135,6 +135,10 @@ nemoclaw onboard — answers (guide §4):
   cloud model           z-ai/glm-5.2  — if absent from the menu, pick anything and fix after:
                           nemoclaw inference set --provider nvidia-prod --model z-ai/glm-5.2 --sandbox <AGENT>
                         confirm the exact id first (from the HOST): curl -s https://integrate.api.nvidia.com/v1/models
+  AFTER onboard (REQUIRED): flip to the metered production route — NVIDIA's free tier rate-limits
+                        ("Worker local total request limit reached"):
+                          openshell inference set -g nemoclaw --provider deepinfra-prod --model zai-org/GLM-5.2
+                        (self-healed on boot + every 15 min by nemoclaw-inference-medic.timer; verify: openshell inference get)
   sandbox name          <AGENT>  (e.g. s1)
   apply config          Y
   Brave search          N

@@ -82,6 +82,21 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
   install) and the provider store. Everything else records only sha256 fingerprints. Cheap integrity
   check before installing a minted badge: `sha256sum` the pending value and confirm the digest is a
   key in the freshly pulled badges.json — catches file/roster mismatch without exposing plaintext.
+- **Telegram sender bindings are roster-driven too (Feature A, 2026-07-07)** — the manager's
+  `bind_telegram` tool records `telegram_user_id` on the roster row; the SAME `badge-pull.sh` ships
+  a `bindings[]` array and calls `apply-binding.sh` (copy alongside this file) to reconcile each into
+  the sandbox's allowlist with **NO rebuild and NO device-key strip** (so, unlike a badge/provider
+  write, it runs automatically). The allowlist lives in TWO host-editable places, both written per
+  bind: **(a) SOURCE** `~/.nemoclaw/sandboxes.json` →
+  `sandboxes.<ref>.messaging.plan.channels[telegram].inputs[allowedIds].value` (durable across
+  rebuilds); **(b) RENDERED** the sandbox's `openclaw.json` → `channels.telegram.accounts[].allowFrom`
+  (per-account — NOT the top-level key) + recompute `/sandbox/.openclaw/.config-hash` + chmod 660 +
+  `nemoclaw <ref> gateway restart`. Verify with `nemoclaw <ref> channels status --json` — a
+  no-messaging drift probe (`warn: expected X; rendered Y` means one layer was missed; `ok` means both
+  agree). Gotchas (proven on s2): an `upload` lands mode 640/644 → the restart refuses
+  `GATEWAY_UNSAFE_CONFIG_PATH` until chmod 660; `nemoclaw exec` reads stdin → `</dev/null`. Applied
+  state: `/etc/doorman/bindings-applied.json`. Full write-up: research doc
+  `thoughts/shared/research/2026-07-03-cold-sandbox-identity-injection.md` (Part B).
 - **Live state (trades-box-1 on AWS Lightsail since 2026-07-04; the Brev nemoclaw-box is RETIRED
   — see migration-runbook-lightsail.md):** fingerprint doorman + roster-driven badge-pull timer
   (with the empty-file guard) are DEPLOYED via `bootstrap-box.sh` and E2E-verified (Jane turn via
@@ -108,10 +123,19 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
 - Note: OpenClaw's streamable-http MCP loader does NOT itself resolve placeholders (its `resolveEnvPlaceholder`
   with format `Bearer ${VAR}` only covers the codex/gemini path). The egress proxy is what resolves it.
 
-## The agent model: z-ai/glm-5.2 on NVIDIA NIM (GLM line per user 2026-07-02; Nemotron deprecated)
-The running model is **`z-ai/glm-5.2`** (applied + verified config-consistent 2026-07-02). The
-standing decision is the GLM line — Nemotron-3 Super 120B proved too weak; do NOT "restore" it
-when debugging model errors. GLM-5.1 was the first pick but NVIDIA retired it.
+## The agent model: GLM-5.2 — production route is DeepInfra (`deepinfra-prod / zai-org/GLM-5.2`)
+**Current production route (since 2026-07-06, re-asserted 2026-07-08): `deepinfra-prod /
+zai-org/GLM-5.2`** — DeepInfra is metered (200 concurrent/model) where NVIDIA's free tier
+rate-limits busy agents (`ResourceExhausted: Worker local total request limit reached (N/32)`).
+Flip: `openshell inference set -g nemoclaw --provider deepinfra-prod --model zai-org/GLM-5.2`
+(gateway-level → all sandboxes; the route forces the model per request). **`nvidia-prod` is
+rollback-only** and is ALSO the wizard default `onboard`/`rebuild` fall back to — that drift
+rate-limited Judy's s3 on 2026-07-08. Guard: `nemoclaw-inference-medic.timer` re-asserts the
+DeepInfra route on boot + every 15 min (units in this repo). Check with `openshell inference get`.
+
+The standing model decision is the GLM line — Nemotron-3 Super 120B proved too weak; do NOT
+"restore" it when debugging model errors. GLM-5.1 was the first pick but NVIDIA retired it. (Note
+the id SPELLING differs by provider: DeepInfra `zai-org/GLM-5.2`, NVIDIA `z-ai/glm-5.2`.)
 - **Verify model ids against the LIVE catalog, from the HOST:**
   `curl -s https://integrate.api.nvidia.com/v1/models` — it is **public, no key needed**. As of
   2026-07-02 it lists exactly ONE GLM: `z-ai/glm-5.2`. Observed: `z-ai/glm-5.1` → 410 Gone

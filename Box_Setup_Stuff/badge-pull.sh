@@ -55,6 +55,17 @@ ENV_FILE="${ENV_FILE:-/etc/doorman/badge-pull.env}"
 BADGES_FILE="${BADGES_FILE:-/etc/doorman/badges.json}"
 PENDING_FILE="${PENDING_FILE:-/root/pending-badges.jsonl}"
 
+# Feature A — Telegram sender bindings applied to this host's sandboxes.
+#   BINDINGS_FILE:  applied-state map sandboxRef->telegramUserId (root-only).
+#   BIND_APPLY_CMD: per-binding apply; defaults to the bundled apply-binding.sh,
+#                   overridden with a stub by the repo test harness. Invoked as
+#                   `<cmd> <sandboxRef> <telegramUserId>`; exit 0 = applied+verified.
+#   NEMOCLAW_USER:  OS user owning ~/.nemoclaw + the nemoclaw CLI; root drops to it.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BINDINGS_FILE="${BINDINGS_FILE:-/etc/doorman/bindings-applied.json}"
+BIND_APPLY_CMD="${BIND_APPLY_CMD:-}"
+NEMOCLAW_USER="${NEMOCLAW_USER:-ubuntu}"
+
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 : "${PULL_URL:?PULL_URL missing from $ENV_FILE}"
@@ -121,4 +132,67 @@ count=$(jq '.newBadges | length' <<<"$resp")
 if [ "$count" -gt 0 ]; then
   ( umask 077; jq -c '.newBadges[]' <<<"$resp" >> "$PENDING_FILE" )
   echo "badge-pull: $count new badge(s) appended to $PENDING_FILE — install as provider credentials, then delete the lines"
+fi
+
+# ── Telegram sender bindings (Feature A) ────────────────────────────────────
+# Reconcile desired {sandboxRef, telegramUserId} into each sandbox's allowlist.
+# Additive only (unbind is out of scope); old servers omit the key → jq gives [].
+# Unlike the badge-provider write above, apply-binding.sh does NOT bump a
+# provider version or rebuild, so it is safe to run AUTOMATICALLY here: it edits
+# config + restarts the gateway (no placeholder trap, no device-key strip).
+# Each apply is idempotent + self-verifying; a failure is ISOLATED (that sandbox
+# retries next tick) and makes the unit exit nonzero so it is visible.
+
+# Drop to the state owner (root) or call directly (already the owner), unless the
+# test harness supplied a stub. Returns the apply command's exit code.
+run_apply() {
+  local sref="$1" tgid="$2"
+  if [ -n "$BIND_APPLY_CMD" ]; then
+    "$BIND_APPLY_CMD" "$sref" "$tgid"
+    return $?
+  fi
+  local apply="$SCRIPT_DIR/apply-binding.sh"
+  if [ "$(id -un)" = "$NEMOCLAW_USER" ]; then
+    NEMOCLAW_USER="$NEMOCLAW_USER" "$apply" "$sref" "$tgid"
+  else
+    sudo -u "$NEMOCLAW_USER" -H NEMOCLAW_USER="$NEMOCLAW_USER" "$apply" "$sref" "$tgid"
+  fi
+}
+
+bindings=$(jq -c '.bindings // []' <<<"$resp")
+bind_total=$(jq 'length' <<<"$bindings")
+if [ "$bind_total" -gt 0 ]; then
+  applied='{}'
+  if [ -f "$BINDINGS_FILE" ]; then
+    applied=$(jq -eS . "$BINDINGS_FILE" 2>/dev/null || echo '{}')
+  fi
+  bind_fail=0
+  bind_applied=0
+  while IFS=$'\t' read -r sref tgid; do
+    [ -n "$sref" ] || continue
+    prev=$(jq -r --arg s "$sref" '.[$s] // empty' <<<"$applied")
+    if [ "$prev" = "$tgid" ]; then
+      continue  # already applied — no-op (diff against last-applied state)
+    fi
+    if run_apply "$sref" "$tgid"; then
+      applied=$(jq --arg s "$sref" --arg t "$tgid" '.[$s]=$t' <<<"$applied")
+      # Persist after EACH success (per-row isolation like the badge loop): a
+      # later failure never rolls back an earlier applied binding.
+      ( umask 077
+        tmp=$(mktemp "$(dirname "$BINDINGS_FILE")/.bindings.XXXXXX")
+        printf '%s\n' "$applied" >"$tmp"
+        mv -f "$tmp" "$BINDINGS_FILE" )
+      bind_applied=$((bind_applied + 1))
+      echo "badge-pull: bound $sref -> $tgid"
+    else
+      echo "badge-pull: FAILED to bind $sref -> $tgid — will retry next tick" >&2
+      bind_fail=1
+    fi
+  done < <(jq -r '.[] | [.sandboxRef, .telegramUserId] | @tsv' <<<"$bindings")
+  if [ "$bind_applied" -gt 0 ]; then
+    echo "badge-pull: $bind_applied binding(s) applied"
+  fi
+  if [ "$bind_fail" -ne 0 ]; then
+    exit 1
+  fi
 fi

@@ -1,0 +1,19 @@
+# /etc/systemd/system/nemoclaw-inference-medic.service
+# Assert the production DeepInfra/GLM-5.2 gateway inference route, self-healing
+# the drift that onboard/rebuild introduces (resets to the rate-limited NVIDIA
+# default). Runs as the gateway owner. Triggered on boot + every 15 min by
+# nemoclaw-inference-medic.timer. See nemoclaw-inference-medic.sh for the why.
+[Unit]
+Description=Assert DeepInfra/GLM-5.2 gateway inference route (self-heal onboard/reboot drift)
+After=docker.service nemoclaw-boot.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+Environment=HOME=/home/ubuntu
+ExecStart=/usr/local/sbin/nemoclaw-inference-medic.sh
+
+[Install]
+WantedBy=multi-user.target

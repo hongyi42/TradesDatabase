@@ -20,6 +20,7 @@ import {
   findTechnicianByTelegramUserId,
   getPoolRowByTechnician,
   listFreeSandboxes,
+  listPoolRows,
   claimSandbox,
   updateTechnician,
   getTenant,
@@ -344,7 +345,11 @@ const ADMIN_TOOLS = [
       "the person's NUMERIC Telegram user id (they get it from @userinfobot). Their agent sandbox " +
       "then answers only that Telegram account. If the person has no sandbox yet, one is claimed " +
       "automatically from the cold pool. The binding reaches the box within ~5 minutes. Re-call " +
-      "to fix a wrong id — it returns the previous value.",
+      "to fix a wrong id — it returns the previous value. ALWAYS relay botUsername from the " +
+      "result to the manager: the person must open that bot in Telegram and send /start " +
+      "themselves (bots cannot message first). If botUsername is null, the operator has not " +
+      "recorded this sandbox's bot handle — tell the manager to ask their operator for it; " +
+      "never guess a handle.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -1511,6 +1516,11 @@ async function dispatch(
         telegram_user_id: telegramUserId,
       };
       let sandboxRef = target.sandbox_ref;
+      // The bot handle is the only way the person can OPEN the chat (bots can't
+      // message first) — resolve it from the pool row on both paths. Legacy
+      // assignments (no pool row) and pre-handle registrations yield null, which
+      // the tool description turns into "ask your operator", never a guess.
+      let botUsername: string | null = null;
       if (!sandboxRef) {
         let pool = await getPoolRowByTechnician(target.id);
         if (!pool) {
@@ -1528,6 +1538,9 @@ async function dispatch(
         patch.host_id = pool.host_id;
         patch.sandbox_ref = pool.sandbox_ref;
         sandboxRef = pool.sandbox_ref;
+        botUsername = pool.bot_username;
+      } else {
+        botUsername = (await getPoolRowByTechnician(target.id))?.bot_username ?? null;
       }
       const previousTelegramUserId = target.telegram_user_id;
       await updateTechnician(target.id, patch);
@@ -1536,18 +1549,31 @@ async function dispatch(
         ref,
         telegramUserId,
         sandboxRef,
+        botUsername,
         previousTelegramUserId,
-        note: 'applies to the box within ~5 minutes',
+        note:
+          'applies to the box within ~5 minutes' +
+          (botUsername
+            ? `; the person must open ${botUsername} in Telegram and send /start`
+            : '; no bot handle on record for this sandbox — ask your operator which bot to open'),
       };
     }
     case 'list_team': {
       // Roster facts only — Composio account/trigger ids stay server-side.
+      // botUsername rides along so a manager can re-ask "which bot does X use?"
+      // any time, not just in the bind-time reply (null = handle not on record).
+      const poolBotByTechnician = new Map(
+        (await listPoolRows(tenantId))
+          .filter((p) => p.technician_id)
+          .map((p) => [p.technician_id, p.bot_username]),
+      );
       return (await listTeam(tenantId)).map((t) => ({
         ref: t.ref,
         displayName: t.display_name,
         tier: t.tier,
         state: t.state,
         sandboxRef: t.sandbox_ref,
+        botUsername: poolBotByTechnician.get(t.id) ?? null,
       }));
     }
     case 'list_pending_reviews': {

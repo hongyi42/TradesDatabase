@@ -12,11 +12,14 @@ export type SandboxPoolRow = Database['public']['Tables']['sandbox_pool']['Row']
 
 // Register one cold sandbox into a host's pool. Surfaces the SQLSTATE so callers
 // can distinguish 23505 (this host already has that sandbox_ref) — same idiom as
-// insertTechnician.
+// insertTechnician. botUsername is the sandbox's Telegram bot handle (@...): the
+// only way a technician can open the chat (bots cannot message first), known at
+// provisioning time and nowhere later — so it is captured here or never.
 export async function registerSandbox(input: {
   tenantId: string;
   hostId: string;
   sandboxRef: string;
+  botUsername?: string;
 }): Promise<SandboxPoolRow> {
   const { data, error } = await getClient()
     .from('sandbox_pool')
@@ -24,6 +27,7 @@ export async function registerSandbox(input: {
       tenant_id: input.tenantId,
       host_id: input.hostId,
       sandbox_ref: input.sandboxRef,
+      bot_username: input.botUsername ?? null,
     })
     .select()
     .single();
@@ -62,6 +66,18 @@ export async function listFreeSandboxes(tenantId: string): Promise<SandboxPoolRo
     .is('technician_id', null)
     .order('created_at', { ascending: true });
   if (error) throw new Error(`listFreeSandboxes failed: ${error.message}`);
+  return data ?? [];
+}
+
+// All pool rows for a tenant (free and claimed) — list_team joins these to show
+// each person's bot handle, and a manager can re-ask "which bot does X use?"
+// long after the bind-time message scrolled away.
+export async function listPoolRows(tenantId: string): Promise<SandboxPoolRow[]> {
+  const { data, error } = await getClient()
+    .from('sandbox_pool')
+    .select()
+    .eq('tenant_id', tenantId);
+  if (error) throw new Error(`listPoolRows failed: ${error.message}`);
   return data ?? [];
 }
 

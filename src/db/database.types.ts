@@ -474,6 +474,7 @@ export type Database = {
       }
       sandbox_pool: {
         Row: {
+          bot_username: string | null
           created_at: string
           host_id: string
           id: string
@@ -482,6 +483,7 @@ export type Database = {
           tenant_id: string
         }
         Insert: {
+          bot_username?: string | null
           created_at?: string
           host_id: string
           id?: string
@@ -490,6 +492,7 @@ export type Database = {
           tenant_id: string
         }
         Update: {
+          bot_username?: string | null
           created_at?: string
           host_id?: string
           id?: string

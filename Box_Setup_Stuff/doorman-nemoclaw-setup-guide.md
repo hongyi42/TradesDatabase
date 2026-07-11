@@ -488,15 +488,36 @@ auto-shifts). Every future seat should use this instead of the interactive wizar
    heredoc quoting mangled it once (rejected by Telegram, cost a full debug cycle).
 2. Run: `export NVIDIA_INFERENCE_API_KEY=nvapi-…` (required unconditionally in non-interactive
    mode, no stored-key reuse) + `NEMOCLAW_MESSAGING_PLAN_B64=$(cat <planfile>)` +
-   `NEMOCLAW_MODEL=z-ai/glm-5.2`, then
+   `NEMOCLAW_MODEL=z-ai/glm-5.2` **+ `export TELEGRAM_BOT_TOKEN=<token>` — this last one is
+   LOAD-BEARING and was missing from this recipe until 2026-07-11**, then
    `nemoclaw onboard --non-interactive --yes --name <AGENT> --no-gpu --yes-i-accept-third-party-software`.
-3. **The non-interactive path does NOT create the host-side provider** (the interactive wizard
-   does). Create + attach it yourself, both credentials in one shot (values via files/env, never
-   inline): `openshell provider create --name <AGENT>-telegram-bridge --type generic
-   --credential TELEGRAM_BOT_TOKEN="$TOK" --credential TRADES_SPINE_BADGE="$BADGE"` then
-   `openshell sandbox provider attach <AGENT> <AGENT>-telegram-bridge`. Without it the channel
-   placeholder can't resolve and the bot is silently deaf.
-4. Then the usual: §5a wire (egress + §0c blocks), §0b block for managers, `boot <AGENT>`
+
+   **⚠ WHY the export (code-verified 2026-07-10/11 on the box's nemoclaw dist — this recipe
+   without it built s4 deaf on 2026-07-10 and silently bit s2 on 2026-07-05):** onboard reads
+   messaging credentials from **its own process env** (or nemoclaw's credential store) — **never
+   from the plan**; the plan's `botToken` input is only format-validated and rendered as the
+   config placeholder (`lib/onboard/messaging-token.js` → `getMessagingToken`). With the env var
+   set, onboard **itself creates `<AGENT>-telegram-bridge` AND attaches it at sandbox create**
+   (`lib/onboard/sandbox-create-plan.js` → `upsertMessagingProviders` + `--provider` create
+   args) — one build, done. Without it, the provider upsert lands in a "missing" bucket with
+   **no error**, the channel config still renders the placeholder, and the bot is silently deaf.
+   (The old step 3 here — "the non-interactive path does NOT create the host-side provider" —
+   was this failure observed from the outside and mis-attributed. Creating the provider *after*
+   onboard doesn't heal by itself either: credentials of attached providers are injected into
+   the openclaw process env **at process launch only**, so a late create+attach also needs a
+   container restart. See the credential-lifecycle box in §5b.)
+
+   **Prefer the scripted phase over running this by hand** — it does the export, the getMe
+   preflight, the onboard, and then HARD-ASSERTS provider-attached + token-in-process-env +
+   getUpdates-polling, so a regression fails the build loudly instead of shipping a deaf seat:
+   `sudo ./bootstrap-box.sh provision <AGENT> <SECRETS.env> <PLAN.b64>`
+3. **Verify (the provision phase does all of this for you):** `openshell provider get
+   <AGENT>-telegram-bridge` exists; `openshell sandbox provider list <AGENT>` shows it attached;
+   `TELEGRAM_BOT_TOKEN` appears in the openclaw **process** env inside the container; container
+   logs show `getUpdates` polling. Add `TRADES_SPINE_BADGE` to the same provider later via the
+   badge flow (§5b) — **onboard re-runs recreate the provider (`replaceExisting`), dropping the
+   badge credential, so re-run §5b after any re-onboard.**
+4. Then the usual: §5a wire (egress + §0c/§0d blocks), §0b block for managers, `boot <AGENT>`
    (revive unit), badge flow (§3c/§5b), one `nemoclaw <AGENT> gateway restart` to clear
    device-pairing residue, and confirm `getUpdates` polling in the container logs — for BOTH
    sandboxes (provider writes + the versioning trap; this box does not boot-heal placeholders).
@@ -565,7 +586,25 @@ nemoclaw \<AGENT\> policy-add \--from-file \~/trades-spine-doorman-egress-policy
 
 ### 5b. Register the badge as a provider credential (runtime secret, never in image/disk)
 
-Uses the **provider** name `<AGENT>-telegram-bridge`. OpenShell's egress proxy substitutes `openshell:resolve:env:TRADES_SPINE_BADGE` from this store at request time (same mechanism as the telegram bot token).
+Uses the **provider** name `<AGENT>-telegram-bridge`.
+
+**Credential lifecycle (corrected 2026-07-11, precision pass same day — the previous "egress
+proxy substitutes at request time" claim here was WRONG and hid a live outage):** at **process
+launch** the supervisor REGISTERS each attached-provider credential in the openclaw process env as
+`KEY=<version-scoped placeholder>` (`openshell:resolve:env:v<N>_KEY` — the env never holds the
+real value). The real value is then resolved **in-process at component init** (Telegram bridge
+start, MCP client connect) against the provider store, version prefix must match. Nothing
+substitutes placeholders per-request: the egress proxy passes them through verbatim (verified
+2026-07-11: both the canonical AND the exact registered version-scoped placeholder sent as a
+Bearer header get doorman's 403, same as garbage). Consequences: (a) if the provider wasn't
+attached at launch, the env KEY is absent and the component fails its precondition ("…missing
+from the runtime environment") — silently dead; (b) **every provider credential write — first
+badge install, badge rotation, token change — only takes effect after the sandbox container
+restarts** (re-registers + re-freezes the version; run `sandbox-token-medic.mjs` first if the
+sandbox is old, then `docker restart <CID>`). This is how s3's spine MCP sat dead 2026-07-07→11:
+badge in the provider store, registration absent from the running process. `bootstrap-box.sh
+verify` has a **credential freshness** check for exactly this drift (registration-level: store
+keys vs env keys) — run it after any badge/provider work; behavioral proof is §5d.
 
 openshell provider update \<AGENT\>-telegram-bridge \\
 
@@ -573,7 +612,7 @@ openshell provider update \<AGENT\>-telegram-bridge \\
 
 openshell provider get \<AGENT\>-telegram-bridge | grep \-i 'Credential keys'   \# \-\> TRADES\_SPINE\_BADGE, TELEGRAM\_BOT\_TOKEN
 
-Integrity check first: `sha256sum` the pending badge value and confirm the digest is a key in the freshly pulled `/etc/doorman/badges.json` — catches a file/roster mismatch without exposing plaintext. Then install, then delete the pending line. A credential **value swap** does not need an openclaw restart (the egress proxy resolves per-request); only the FIRST-ever registration needs one (lazy MCP connect). In a security-restricted Claude session this command is blocked as a secret-store write — run it yourself.
+Integrity check first: `sha256sum` the pending badge value and confirm the digest is a key in the freshly pulled `/etc/doorman/badges.json` — catches a file/roster mismatch without exposing plaintext. Then install, then delete the pending line. **Every install — first registration AND value swap — needs a container restart to take effect** (see the credential-lifecycle box above; the old claim that value swaps resolve per-request was wrong). Finish with `sudo ./bootstrap-box.sh verify` — its credential-freshness check confirms the badge actually reached the running process env. In a security-restricted Claude session the provider write is blocked as a secret-store write — run it yourself.
 
 **WARNING — on an UNPATCHED box, a provider credential write like this can silently kill OTHER
 channels.** At container boot, the stock start script rewrites canonical placeholders in
@@ -639,7 +678,7 @@ edit (1) is unchanged. Edit (4)'s Dockerfile anchors are unchanged.
 
 A container **recreate** wipes `/sandbox/.openclaw/openclaw.json`. The bake-in regenerates it at image-build time from 5 source edits in `/home/ubuntu/.nemoclaw/source/`. **A fresh box's source is upstream/clean — you must re-apply these 5 edits there before building.** None of them contain the secret (badge stays in the provider store). *(A 6th source edit — the gateway-JWT `ttl_secs` constant — lives in the same tree but affects gateway-config generation, not the image; see the token-expiry gotcha in §7.)*
 
-**⚠ Recreate/rebuild also wipes the workspace instruction files** (`/sandbox/.openclaw/workspace/AGENTS.md` etc.) back to stock templates — the trades **accuracy-rules block** (§0c) must be re-appended after any rebuild. It is not part of the image bake.
+**⚠ Recreate/rebuild also wipes the workspace instruction files** (`/sandbox/.openclaw/workspace/AGENTS.md`, plus any `MEMORY.md` / `memory/` notes and `task-progress/` cursors the agent wrote) back to stock templates — the trades **accuracy-rules block** (§0c) AND the **batching block** (§0d) must be re-appended after any rebuild. They are not part of the image bake. (`bootstrap-box.sh`'s `wire` phase appends both, idempotently.)
 
 **(1) New manifest** — `nemoclaw-blueprint/model-specific-setup/openclaw/nemotron-3-super-toolsearch-off.json` (declarative `toolSearch:false` for Nemotron, consumed by the generator). **⚠ Model note (2026-07-02): this manifest matches ONLY the Nemotron modelId. The running model is now `z-ai/glm-5.2`, so on a FRESH box it does NOT apply and toolSearch comes up on (s1 still carries `toolSearch:false` from the old bake). Whether GLM-5.2 can drive code mode is unverified — if the agent's tool calls fail with "run bridge code failed", clone this manifest with `z-ai/glm-5.2` in `match.modelIds` (or set `tools.toolSearch:false` directly) and update this note with the verified answer.**
 

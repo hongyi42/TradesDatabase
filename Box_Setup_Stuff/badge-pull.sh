@@ -22,6 +22,12 @@
 #      then delete the line. CAUTION: that provider write bumps the provider
 #      version — safe while openclaw.json placeholders are canonical, but see
 #      the "Placeholder VERSIONING trap" gotcha before doing it after a reboot.
+#      THEN RESTART THE SANDBOX CONTAINER (2026-07-11): credentials REGISTER
+#      into the openclaw process env at PROCESS LAUNCH ONLY (as version-scoped
+#      placeholders, resolved in-process at component init) — the egress proxy
+#      does NOT resolve per-request, so without a restart the running agent
+#      keeps its old badge (or none) and the spine 403s it. Confirm with
+#      `sudo ./bootstrap-box.sh verify` (credential-freshness check).
 #
 # Setup (once, as root):
 #   install -o root -g root -m 700 badge-pull.sh /usr/local/sbin/badge-pull.sh

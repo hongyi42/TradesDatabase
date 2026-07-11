@@ -178,6 +178,27 @@ register side-by-side in the gateway's `mcp.servers`.
   by the user at the confirm step, which is one step later than it should be. NOTE: the block
   lives in the sandbox's workspace `AGENTS.md`, which a container rebuild resets — re-append
   after any rebuild (bootstrap-box.sh `wire` phase does this).
+- **Every sandbox also carries the batching block** (setup guide §0d, since 2026-07-09): for any
+  large/long task the agent works in bounded, resumable batches — read a `task-progress/<task>.md`
+  cursor first, process ~300–500 items, commit the outcome to the cursor, stop cleanly before the
+  per-run timeout, resume in a fresh small-context turn, and on completion distill terse learnings
+  into `MEMORY.md` while routing lasting customer/job facts to `record_field_note`. Origin: a
+  ~38k-email cleanup ran the full 600s timeout and overflowed context by keeping every touched
+  email in-context (research: `thoughts/shared/research/2026-07-08-long-running-agent-tasks.md`).
+  Same workspace-`AGENTS.md` lifecycle as §0c — reset by rebuild, re-appended by the `wire` phase.
+  Caveat: prompting steers but does not ENFORCE — verify on a real large-inbox run.
+- **Credential lifecycle (verified 2026-07-11, recurring-outage class):** each sandbox's
+  secrets (Telegram bot token, spine badge) live in an attached OpenShell provider. At **process
+  launch** the env gets only a version-scoped placeholder REGISTRATION per credential; the real
+  value resolves **in-process at component init** (bridge start / MCP connect) against the
+  provider store — the egress proxy does NOT substitute per-request, and an unregistered
+  credential means the component dies silently. Two standing consequences: (a) seat provisioning must have
+  `TELEGRAM_BOT_TOKEN` in the onboard process env (`bootstrap-box.sh provision` handles it —
+  a bare non-interactive onboard silently builds a deaf bot; bit s2 2026-07-05 and s4
+  2026-07-10); (b) **any provider-credential write (badge install/rotation, token change)
+  needs a container restart to take effect** — bit s3/Judy 2026-07-07→11 (spine MCP dead 4
+  days: badge in store, absent from env). Drift probe: `bootstrap-box.sh verify` credential-
+  freshness check. Details: setup guide §4b + §5b credential-lifecycle box.
 - **Technician tier = pinned `direct_tools` list** (`TECHNICIAN_GMAIL_TOOLS`: fetch/draft/profile;
   product-configurable), `manageConnections: false`, **send structurally impossible** (4310).
   Technician send goes through the spine's `send_email` tool: persisted two-step confirm

@@ -1055,11 +1055,19 @@ describe('bind_telegram (manager tool + cold-pool auto-allocation)', () => {
       ).toBe(true);
 
       // Happy path on a person who ALREADY has a sandbox: writes the column, no
-      // pool claim needed. Cross-channel read-back confirms the write.
+      // pool claim needed. Cross-channel read-back confirms the write. No pool
+      // row (legacy assignment) → botUsername null and the note routes the
+      // manager to the operator rather than guessing a handle.
       const jane = await insertTechnician({ tenantId, ref: 'tg-a', displayName: 'TG A' });
       await updateTechnician(jane.id, { sandbox_ref: 's-existing' });
       const bound = await callWith('bind_telegram', { ref: 'tg-a', telegramUserId: '5551234' });
-      expect(bound.data).toMatchObject({ status: 'bound', ref: 'tg-a', sandboxRef: 's-existing' });
+      expect(bound.data).toMatchObject({
+        status: 'bound',
+        ref: 'tg-a',
+        sandboxRef: 's-existing',
+        botUsername: null,
+      });
+      expect(bound.data.note).toContain('ask your operator');
       const row1 = await pg.query<{ telegram_user_id: string }>(
         "select telegram_user_id from technicians where tenant_id=$1 and ref='tg-a'",
         [tenantId],
@@ -1088,12 +1096,31 @@ describe('bind_telegram (manager tool + cold-pool auto-allocation)', () => {
       expect(inactive.text).toContain('deactivated');
 
       // Auto-allocation: a hire with NO sandbox claims a free pool row and gets
-      // host_id + sandbox_ref patched — no operator step.
+      // host_id + sandbox_ref patched — no operator step. The pool row carries
+      // the bot handle, so the reply tells the manager which bot to open.
       const host = await createHost('tg-host', 'f'.repeat(64));
-      await registerSandbox({ tenantId, hostId: host.id, sandboxRef: 'pool-x' });
+      await registerSandbox({
+        tenantId,
+        hostId: host.id,
+        sandboxRef: 'pool-x',
+        botUsername: '@poolx_bot',
+      });
       const cold = await insertTechnician({ tenantId, ref: 'tg-cold', displayName: 'TG Cold' });
       const allocated = await callWith('bind_telegram', { ref: 'tg-cold', telegramUserId: '7770001' });
-      expect(allocated.data).toMatchObject({ status: 'bound', sandboxRef: 'pool-x' });
+      expect(allocated.data).toMatchObject({
+        status: 'bound',
+        sandboxRef: 'pool-x',
+        botUsername: '@poolx_bot',
+      });
+      expect(allocated.data.note).toContain('@poolx_bot');
+      expect(allocated.data.note).toContain('/start');
+
+      // list_team surfaces the handle too, so the manager can re-ask later.
+      const team = await callWith('list_team', {});
+      const coldRow = team.data.find((t: { ref: string }) => t.ref === 'tg-cold');
+      expect(coldRow).toMatchObject({ sandboxRef: 'pool-x', botUsername: '@poolx_bot' });
+      const aRow = team.data.find((t: { ref: string }) => t.ref === 'tg-a');
+      expect(aRow).toMatchObject({ sandboxRef: 's-existing', botUsername: null });
       const row2 = await pg.query<{ sandbox_ref: string; host_id: string; telegram_user_id: string }>(
         "select sandbox_ref, host_id, telegram_user_id from technicians where tenant_id=$1 and ref='tg-cold'",
         [tenantId],

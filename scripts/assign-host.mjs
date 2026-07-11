@@ -10,10 +10,13 @@
 //         fingerprint is stored; losing the token means re-creating the host.
 //   scripts/assign-host.mjs assign ref=<ref> host=<host-name> sandbox=<sandbox_ref> [tenant=<uuid>]
 //       → points the person's roster row at that host + sandbox.
-//   scripts/assign-host.mjs add-sandbox host=<host-name> sandbox=<sandbox_ref> [tenant=<uuid>]
+//   scripts/assign-host.mjs add-sandbox host=<host-name> sandbox=<sandbox_ref> bot=@<handle> [tenant=<uuid>]
 //       → registers a pre-built COLD sandbox into the host's pool (the "rack of
 //         blanks"). bind_telegram claims the next free one automatically for a
-//         new hire — no per-hire operator step.
+//         new hire — no per-hire operator step. bot= is the sandbox's Telegram
+//         bot handle (the provision phase's getMe prints it) — bind_telegram
+//         returns it so the manager can tell the hire which bot to open;
+//         without it the claim is unusable chat-side ("ask your operator").
 //   scripts/assign-host.mjs set-badge ref=<ref> hash=<sha256-of-badge> [tenant=<uuid>]
 //       → registers a HAND-MINTED badge's fingerprint so the pull loop ships
 //         it instead of erasing it and minting a competitor (do this for any
@@ -49,7 +52,7 @@ const [command, ...rest] = process.argv.slice(2);
 const KNOWN_KEYS = {
   'create-host': ['name'],
   assign: ['ref', 'host', 'sandbox', 'tenant'],
-  'add-sandbox': ['host', 'sandbox', 'tenant'],
+  'add-sandbox': ['host', 'sandbox', 'bot', 'tenant'],
   'set-badge': ['ref', 'hash', 'tenant'],
   'rotate-badge': ['ref', 'tenant'],
 };
@@ -95,9 +98,34 @@ if (command === 'create-host') {
     console.error(`Host '${args.host}' not found — create it first with create-host.`);
     process.exit(1);
   }
-  const row = await registerSandbox({ tenantId, hostId: host.id, sandboxRef: args.sandbox });
+  // Normalize + validate the bot handle: Telegram bot usernames are 5-32 chars
+  // of [A-Za-z0-9_] and end in "bot". Omission is a loud warning, not an error —
+  // the pool row then registers handle-less and the bind surfaces "ask your
+  // operator" chat-side.
+  let botUsername;
+  if (args.bot) {
+    botUsername = args.bot.startsWith('@') ? args.bot : `@${args.bot}`;
+    if (!/^@[A-Za-z0-9_]{5,32}$/.test(botUsername) || !/bot$/i.test(botUsername)) {
+      console.error(
+        `bot='${args.bot}' does not look like a Telegram bot handle (@name ending in "bot"). Aborting.`,
+      );
+      process.exit(1);
+    }
+  } else {
+    console.error(
+      `WARN: no bot=@<handle> given — bind_telegram will have no handle to relay ` +
+        `and the manager must ask the operator. Pass it (provision's getMe prints it).`,
+    );
+  }
+  const row = await registerSandbox({
+    tenantId,
+    hostId: host.id,
+    sandboxRef: args.sandbox,
+    botUsername,
+  });
   console.log(
-    `Registered cold sandbox '${row.sandbox_ref}' on host ${host.name} (tenant ${tenantId}). ` +
+    `Registered cold sandbox '${row.sandbox_ref}' on host ${host.name} (tenant ${tenantId}` +
+      `${row.bot_username ? `, bot ${row.bot_username}` : ', NO bot handle'}). ` +
       `bind_telegram claims it for the next hire who has no sandbox.`,
   );
 } else {

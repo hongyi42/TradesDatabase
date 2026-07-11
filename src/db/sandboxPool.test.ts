@@ -8,6 +8,7 @@ import {
   claimSandbox,
   getPoolRowByTechnician,
   listFreeSandboxes,
+  listPoolRows,
   registerSandbox,
 } from './sandboxPool.js';
 
@@ -46,9 +47,22 @@ afterAll(async () => {
 describe('sandbox_pool allocator', () => {
   test('listFreeSandboxes is FIFO, free-only, and tenant-scoped', async () => {
     // Two free sandboxes for our tenant (registered in order), one for another.
-    const s1 = await registerSandbox({ tenantId, hostId, sandboxRef: 'pool-s1' });
+    // s1 carries a bot handle (the normal case since 2026-07-11); s2 omits it
+    // (legacy row) — both round-trip.
+    const s1 = await registerSandbox({
+      tenantId,
+      hostId,
+      sandboxRef: 'pool-s1',
+      botUsername: '@pools1_bot',
+    });
     const s2 = await registerSandbox({ tenantId, hostId, sandboxRef: 'pool-s2' });
     await registerSandbox({ tenantId: otherTenantId, hostId, sandboxRef: 'pool-other' });
+    expect(s1.bot_username).toBe('@pools1_bot');
+    expect(s2.bot_username).toBeNull();
+
+    // listPoolRows: tenant-scoped, both free and (later) claimed rows.
+    const all = await listPoolRows(tenantId);
+    expect(all.map((r) => r.sandbox_ref).sort()).toEqual(['pool-s1', 'pool-s2']);
 
     const free = await listFreeSandboxes(tenantId);
     // Only this tenant's rows, oldest-built first.

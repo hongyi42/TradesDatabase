@@ -9,13 +9,17 @@
 #   sudo ./bootstrap-box.sh prep                      # §2: docker, ufw, deps
 #        ./bootstrap-box.sh nemoclaw                  # §2: install NemoClaw   (needs NVIDIA_API_KEY)
 #        ./bootstrap-box.sh bakein                    # §6: source edits BEFORE first onboard
-#        nemoclaw onboard                             # §4: MANUAL (cheat sheet: ./bootstrap-box.sh onboard-help)
+#        nemoclaw onboard                             # §4: MANUAL, first box only (cheat sheet: ./bootstrap-box.sh onboard-help)
+#   sudo ./bootstrap-box.sh provision <AGENT> <SECRETS.env> <PLAN.b64>
+#                                                     # §4b: every ADDITIONAL seat — scripted onboard
+#                                                     # with the token-injection ordering handled + hard
+#                                                     # post-build assertions (never "silently deaf")
 #   sudo ./bootstrap-box.sh doorman                   # §3: service+unit+ufw   (needs GATEWAY_IDENTITY_SECRET)
 #   sudo ./bootstrap-box.sh badgepull                 # §3c roster pull        (needs HOST_PULL_TOKEN)
 #        ./bootstrap-box.sh wire <AGENT>              # §5a egress policy + §5b instructions
 #   sudo ./bootstrap-box.sh boot <AGENT>              # §7: boot-revive oneshot
 #        ./bootstrap-box.sh backup-identity <AGENT>   # snapshot device key BEFORE any rebuild
-#   sudo ./bootstrap-box.sh verify                    # §3f/§7 gates + device-identity integrity
+#   sudo ./bootstrap-box.sh verify                    # §3f/§7 gates + device-identity + credential freshness
 #
 # Idempotent: each phase skips what already exists and never overwrites an
 # existing secret file. Secrets come from env vars or an interactive prompt —
@@ -149,6 +153,116 @@ nemoclaw onboard — answers (guide §4):
   policy tier           <Enter>
   presets               <Enter>
 First build ≈ 8 min. If port 8080 is blocked: sudo lsof -i :8080; sudo kill <PID>; re-run.
+EOF
+}
+
+# ────────────────────────────────────────────────── provision (§4b, seats) ──
+# Scripted non-interactive onboard for every seat after the first. Exists
+# because the naive §4b recipe SILENTLY produces a deaf bot (root cause,
+# code-verified 2026-07-10/11 on trades-box-1, nemoclaw dist):
+#   - onboard reads TELEGRAM_BOT_TOKEN from ITS OWN PROCESS ENV (or the
+#     nemoclaw credential store) — NEVER from the messaging plan; the plan's
+#     botToken input is only format-validated and rendered as a placeholder
+#     (lib/onboard/messaging-token.js getMessagingToken).
+#   - with the env var set, onboard itself creates the <AGENT>-telegram-bridge
+#     provider AND attaches it at sandbox create (lib/onboard/
+#     sandbox-create-plan.js → upsertMessagingProviders + --provider args);
+#     without it, the provider upsert lands in a "missing" bucket with NO error
+#     and the channel config still renders the placeholder → bridge never starts.
+#   - at PROCESS LAUNCH the openclaw process env gets a version-scoped
+#     placeholder REGISTRATION per attached-provider credential (never the real
+#     value); the value resolves in-process at component init (bridge start /
+#     MCP connect) against the provider store. The egress proxy does NOT
+#     substitute placeholders at request time (verified: canonical AND
+#     registered-version placeholder headers → doorman 403). So any later
+#     provider-credential write needs a container restart to take effect.
+# This bit s4 on 2026-07-10 and silently bit s2 on 2026-07-05 (masked by
+# hand-healing). It WILL recur on every seat build — hence this phase: the
+# ordering is handled and every build ends in hard assertions, so failure is
+# loud at build time instead of a deaf bot in production.
+#
+# Usage: sudo ./bootstrap-box.sh provision <AGENT> <SECRETS.env> <PLAN.b64>
+#   SECRETS.env  root-only (chmod 600) file defining TELEGRAM_BOT_TOKEN=...
+#                (optionally NVIDIA_INFERENCE_API_KEY=..., else env/prompt)
+#   PLAN.b64     hydrated messaging plan, base64 (guide §4b step 1)
+phase_provision() {
+  need_root
+  local agent="${1:-}" secrets="${2:-}" planfile="${3:-}"
+  [ -n "$agent" ] && [ -n "$secrets" ] && [ -n "$planfile" ] \
+    || fail "usage: sudo ./bootstrap-box.sh provision <AGENT> <SECRETS.env> <PLAN.b64>"
+  [ -f "$secrets" ]  || fail "secrets file not found: $secrets"
+  [ -f "$planfile" ] || fail "plan file not found: $planfile"
+
+  log "secrets (values never echoed, never in argv)"
+  set -a
+  # shellcheck source=/dev/null
+  source "$secrets"
+  set +a
+  [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || fail "TELEGRAM_BOT_TOKEN not set by $secrets"
+  need_secret NVIDIA_INFERENCE_API_KEY "NVIDIA inference API key (nvapi-…)"
+  export NVIDIA_INFERENCE_API_KEY
+  NEMOCLAW_MESSAGING_PLAN_B64="$(cat "$planfile")"
+  export NEMOCLAW_MESSAGING_PLAN_B64
+  export NEMOCLAW_MODEL="${NEMOCLAW_MODEL:-z-ai/glm-5.2}"
+
+  log "preflight: bot token is live (getMe — §4b: an invalid token surfaces only as a deep channel crash-loop AFTER the ~8 min build)"
+  local getme
+  getme=$(curl -s --max-time 10 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" || true)
+  printf '%s' "$getme" | grep -q '"ok":true' || fail "getMe rejected the bot token — fix $secrets before building"
+  ok "token valid ($(printf '%s' "$getme" | grep -oE '"username":"[^"]*"' || echo bot))"
+
+  log "non-interactive onboard as ${NEMOCLAW_USER} (~8 min, ONE build)"
+  sudo -u "$NEMOCLAW_USER" --preserve-env=TELEGRAM_BOT_TOKEN,NVIDIA_INFERENCE_API_KEY,NEMOCLAW_MESSAGING_PLAN_B64,NEMOCLAW_MODEL \
+    -H bash -lc "nemoclaw onboard --non-interactive --yes --name '$agent' --no-gpu --yes-i-accept-third-party-software" \
+    || fail "onboard failed — see output above"
+
+  local osh="${NEMOCLAW_HOME}/.local/bin/openshell"
+  run_osh() { sudo -u "$NEMOCLAW_USER" -H "$osh" "$@"; }
+
+  log "assert: ${agent}-telegram-bridge provider exists AND is attached"
+  run_osh provider get "${agent}-telegram-bridge" >/dev/null 2>&1 \
+    || fail "provider ${agent}-telegram-bridge does not exist — onboard did not see TELEGRAM_BOT_TOKEN in its env"
+  run_osh sandbox provider list "$agent" 2>/dev/null | grep -q "${agent}-telegram-bridge" \
+    || fail "provider exists but is NOT attached to ${agent} — this is the silent-skip bug; do not proceed"
+  ok "provider created + attached"
+
+  log "assert: TELEGRAM_BOT_TOKEN reached the openclaw process env (polling up to 120s)"
+  local cid deadline found=0
+  cid=$(docker ps -q --filter "name=openshell-${agent}-" | head -1)
+  [ -n "$cid" ] || fail "no running container for ${agent}"
+  deadline=$(( $(date +%s) + 120 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if docker exec "$cid" sh -c 'for p in $(pgrep -f openclaw); do tr "\0" "\n" < /proc/$p/environ 2>/dev/null | cut -d= -f1; done' 2>/dev/null | grep -qx TELEGRAM_BOT_TOKEN; then
+      found=1; break
+    fi
+    sleep 5
+  done
+  [ "$found" = 1 ] || fail "TELEGRAM_BOT_TOKEN never appeared in the openclaw process env — bridge will be deaf"
+  ok "token resolved into the runtime env"
+
+  log "assert: Telegram bridge is polling getUpdates (up to 180s)"
+  deadline=$(( $(date +%s) + 180 )); found=0
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if docker logs --since 3m "$cid" 2>&1 | grep -q getUpdates; then found=1; break; fi
+    sleep 10
+  done
+  [ "$found" = 1 ] || fail "no getUpdates polling within 180s — check docker logs $cid"
+  ok "bridge polling"
+
+  log "route flip: onboard resets the gateway to NVIDIA free tier — re-assert DeepInfra (§4 note; medic also heals within 15 min)"
+  run_osh inference set -g nemoclaw --provider deepinfra-prod --model zai-org/GLM-5.2 \
+    && ok "deepinfra-prod / zai-org/GLM-5.2" \
+    || echo "    ! route flip failed — nemoclaw-inference-medic will self-heal, or run it by hand"
+
+  cat <<EOF
+
+provision ${agent}: ALL ASSERTIONS PASSED.
+NEXT (per guide):
+       ./bootstrap-box.sh wire ${agent}     # egress policy + §0c/§0d workspace blocks
+  sudo ./bootstrap-box.sh boot ${agent}     # revive unit
+  badge flow (§3c/§5b) when this seat is claimed — REMEMBER: after ANY
+  provider-credential write (badge install/rotation), restart the container so
+  the new credential reaches the openclaw process env (verify phase checks this).
 EOF
 }
 
@@ -397,6 +511,69 @@ EOF
     echo "    WARN: no running container for ${agent} — append the §0c block manually once it's up"
   fi
 
+  log "batching block (§0d — bulk/long-task rules; wiped by rebuild, re-run after one)"
+  if [ -n "$cid" ]; then
+    if docker exec "$cid" grep -q "Long or bulk tasks — work in bounded" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+      ok "batching block already present"
+    else
+      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+
+## Long or bulk tasks — work in bounded, resumable batches (host-managed; added 2026-07-09)
+
+When a task covers more items than you can finish in one reply — cleaning an inbox, tagging
+or updating many records, working through a long list — do NOT try to do it all in one turn.
+No matter how large the context window is, a big job will not fit in it and will not finish
+before the run times out. Work in small batches and keep a progress file, so a run that gets
+cut off resumes exactly where it left off.
+
+1. **Keep a progress file, and read it first.** For any multi-item or long task, use a plain
+   file at `task-progress/<task>.md` in your workspace as your cursor. At the START of the
+   task — and at the start of every later turn that continues it — READ that file and resume
+   from where it says; never restart from the beginning. If it does not exist, create it
+   recording: what the task is, the total to do (or how to count it), the cursor (the last
+   item id/offset finished), and a running tally of results. Keep this file OUT of MEMORY.md
+   and the dated daily notes — it is verbose working scratch, not durable memory. Put a single
+   line in today's daily note pointing to it (e.g. "email-cleanup in progress →
+   task-progress/email-cleanup.md") so a fresh session finds it. Assume interruption: your run
+   can end at any moment, and anything not written to the progress file is lost.
+
+2. **Do one small batch per pass.** Pull only a small batch at a time — start around 300–500
+   items, fewer if each item is large — and NEVER load the whole list into the conversation.
+   Process that batch, immediately append the outcome to the progress file and advance the
+   cursor, then let those items go. Do NOT keep every processed item in context; that is what
+   overflows the window and slows you down.
+
+3. **Stop before the run does.** You have limited time per run. After each batch, if you are
+   getting close to that limit or the conversation is growing large, STOP cleanly: make sure
+   the progress file is current, then tell the user how far you got and how to continue — e.g.
+   "Cleaned 1,200 of ~38,000 so far; say 'continue' and I'll pick up from there." Finishing
+   everything in one turn is NOT the goal; leaving a clean, resumable checkpoint is.
+
+4. **Resume in a fresh, small context.** When asked to continue, start again at rule 1: read
+   the progress file, take the next batch, carry on. Each turn should begin nearly empty and
+   touch only its own batch — never re-read what earlier turns already handled.
+
+5. **Report honest numbers.** In every update give real figures from the progress file
+   (done / total / this batch), and flag anything you skipped or could not process so nothing
+   is silently lost.
+
+6. **When the task is done, distill and clean up.** Write a few short lines of what you
+   learned into MEMORY.md — keep it terse, it loads into every future session. Lasting facts
+   about a customer or job (a preference, an access note, a spotted opportunity) do NOT belong
+   in MEMORY.md — record them into the company record with record_field_note, so they are
+   permanent, evidence-linked, and visible to everyone. Then delete the progress file; it has
+   done its job. Do not let finished task-scratch pile up.
+
+This is the same loop for ANY large task, not just email — the batch size and what counts as
+an "item" change per job, but the pattern is always: read progress → small batch → save
+progress → stop cleanly → resume → distill on done.
+EOF
+      ok "batching block appended to ${agent}'s AGENTS.md"
+    fi
+  else
+    echo "    WARN: no running container for ${agent} — append the §0d block manually once it's up"
+  fi
+
   cat <<EOF
 
 MANUAL — badge install (§5b; plaintext stays between the pending file and the provider store):
@@ -405,8 +582,11 @@ MANUAL — badge install (§5b; plaintext stays between the pending file and the
      → that digest must be a key in /etc/doorman/badges.json (sudo jq 'keys' /etc/doorman/badges.json)
   3. openshell provider update ${agent}-telegram-bridge --credential TRADES_SPINE_BADGE=<badge>
   4. Delete the line: sudo sed -i '/<ref>/d' /root/pending-badges.jsonl
-  (Value swaps don't need a restart; only the FIRST-ever registration does — then:
-   sudo docker exec <CID> pkill -9 -x openclaw)
+  5. RESTART THE CONTAINER — every install, first registration AND value swap
+     (2026-07-11: provider credentials reach the openclaw process env at process
+     launch only; the egress proxy does NOT resolve per-request):
+       sudo docker restart <CID>
+     then confirm with: sudo ./bootstrap-box.sh verify   (credential-freshness check)
 
 NEXT: sudo ./bootstrap-box.sh boot ${agent}
 EOF
@@ -519,6 +699,38 @@ phase_verify() {
     fi
   done
   [ "$seen" -eq 0 ] && echo "    ! no sandbox containers running to check"
+
+  # Credential freshness: attached-provider credentials are injected into the
+  # openclaw process env at PROCESS LAUNCH only (verified 2026-07-11; the egress
+  # proxy does NOT substitute at request time). A provider write after launch —
+  # badge install/rotation, token change, or the §4b silent-skip — leaves the
+  # running agent on stale/absent credentials until the container restarts.
+  # Caught live: s3's spine MCP dead for 4 days (badge in store, not in env);
+  # s4 built deaf. Compare store key names vs process env names for every box.
+  log "credential freshness (provider store vs openclaw process env)"
+  local agent2 provider keys k envnames osh="${NEMOCLAW_HOME}/.local/bin/openshell"
+  for c in $(docker ps -q --filter "name=openshell-"); do
+    nm=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null | sed 's#^/##')
+    agent2=$(printf '%s' "$nm" | cut -d- -f2)
+    provider="${agent2}-telegram-bridge"
+    keys=$(sudo -u "$NEMOCLAW_USER" -H "$osh" provider get "$provider" 2>/dev/null \
+      | sed 's/\x1b\[[0-9;]*m//g' | grep -i 'Credential keys:' | cut -d: -f2 | tr -d ' ' | tr ',' '\n' | grep -v '^$' || true)
+    if [ -z "$keys" ]; then
+      echo "    ! ${nm}: no ${provider} provider (cold seat or non-telegram sandbox) — skipped"
+      continue
+    fi
+    envnames=$(docker exec "$c" sh -c 'for p in $(pgrep -f openclaw); do tr "\0" "\n" < /proc/$p/environ 2>/dev/null | cut -d= -f1; done | sort -u' 2>/dev/null || true)
+    local stale=""
+    for k in $keys; do
+      printf '%s\n' "$envnames" | grep -qx "$k" || stale="$stale $k"
+    done
+    if [ -n "$stale" ]; then
+      echo "    ✗ ${nm}: provider has [${stale# }] but the running process env does NOT — restart the container (medic first if JWT old)"; warn=$((warn+1))
+    else
+      ok "${nm}: all provider credentials live in the process env"; pass=$((pass+1))
+    fi
+  done
+
   [ "$stripped" = 1 ] && cat <<'EOF'
     → FIX: restore the pre-rebuild backup if you have one —
         docker cp <backup>/device.json <CID>:/sandbox/.openclaw/identity/device.json
@@ -571,6 +783,7 @@ case "${1:-help}" in
   nemoclaw)        phase_nemoclaw ;;
   bakein)          phase_bakein ;;
   onboard-help)    phase_onboard_help ;;
+  provision)       shift; phase_provision "$@" ;;
   doorman)         phase_doorman ;;
   badgepull)       phase_badgepull ;;
   wire)            shift; phase_wire "$@" ;;
@@ -578,6 +791,6 @@ case "${1:-help}" in
   backup-identity) shift; phase_backup_identity "$@" ;;
   verify)          phase_verify ;;
   *)
-    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
     ;;
 esac

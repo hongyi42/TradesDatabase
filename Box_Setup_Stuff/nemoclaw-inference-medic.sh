@@ -1,15 +1,29 @@
 #!/usr/bin/env bash
-# nemoclaw-inference-medic.sh — assert the gateway inference route is the
-# production DeepInfra/GLM-5.2 route, re-setting it if it has drifted.
+# nemoclaw-inference-medic.sh — keep the gateway inference route on the best
+# HEALTHY provider: DeepInfra/GLM-5.2 (production) with automatic failover to
+# NVIDIA/GLM-5.2 (free-tier rollback) and automatic failback.
 #
-# WHY: `nemoclaw onboard` and rebuilds reset the gateway to the wizard's NVIDIA
-# default (nvidia-prod / nvidia/nemotron-3-super) — the deprecated, "too weak"
-# model on NVIDIA's FREE tier, whose per-worker request cap (32) rate-limits any
-# busy agent: "ResourceExhausted: Worker local total request limit reached
-# (N/32)". DeepInfra (200 concurrent per model) is the production route. On
-# 2026-07-08 a re-onboard of Judy's s3 left it on the NVIDIA default and she hit
-# that limit mid-task. This medic self-heals the drift on boot AND on a 15-min
-# timer, so no one has to remember the post-onboard "flip to DeepInfra" step.
+# WHY (two failure classes, both hit live):
+#  1. DRIFT — `nemoclaw onboard` and rebuilds reset the gateway to the wizard's
+#     NVIDIA default (nvidia-prod / nvidia/nemotron-3-super), the deprecated
+#     "too weak" model whose free-tier per-worker cap (32) rate-limits any busy
+#     agent ("ResourceExhausted: Worker local total request limit reached").
+#     Bit Judy's s3 on 2026-07-08 after a re-onboard.
+#  2. PROVIDER OUTAGE — DeepInfra itself can stop serving (2026-07-11: balance
+#     ran out at ~17:45Z [HTTP 402], then a transient outage at ~18:45Z where
+#     completions hung >120s and every agent turn on every sandbox timed out).
+#     The v1 medic only asserted DeepInfra, so an outage left agents dead until
+#     a human flipped the route by hand. This v2 fails over automatically.
+#
+# HOW: `openshell inference set` live-verifies the endpoint+key BEFORE saving,
+# so it is both the health probe and the switch in one call:
+#   - try DeepInfra: success → route asserted/failed back; done.
+#   - DeepInfra fails → try NVIDIA: success → FAILOVER (loud). Next healthy
+#     DeepInfra run fails back automatically — no human step, no state file.
+#   - both fail → exit 1 (unit shows failed; check provider status/balance —
+#     a DeepInfra 402 means TOP UP THE BALANCE, see nemoclaw-agent-model memory).
+# Worst-case dead-agent window = one timer interval (5 min) + validation time.
+# Flap worst case = one flip per interval — visible in the journal, tolerable.
 #
 # Runs as the gateway owner (ubuntu). Installed at /usr/local/sbin/ and driven by
 # nemoclaw-inference-medic.{service,timer}. See doorman-nemoclaw-setup-guide.md
@@ -18,27 +32,32 @@ set -euo pipefail
 export PATH="/home/ubuntu/.local/bin:$PATH"
 
 WANT_PROVIDER="deepinfra-prod"
-WANT_MODEL="zai-org/GLM-5.2"   # NOTE: DeepInfra id spelling; NVIDIA's was z-ai/glm-5.2
+WANT_MODEL="zai-org/GLM-5.2"     # NOTE: DeepInfra id spelling
+FALLBACK_PROVIDER="nvidia-prod"
+FALLBACK_MODEL="z-ai/glm-5.2"    # NOTE: NVIDIA id spelling (dashed differently)
 
-route_ok() {
-  local cur="$1"
-  grep -aqF "$WANT_PROVIDER" <<<"$cur" && grep -aqF "$WANT_MODEL" <<<"$cur"
+route_is() {
+  local provider="$1" model="$2" cur="$3"
+  grep -aqF "$provider" <<<"$cur" && grep -aqF "$model" <<<"$cur"
 }
 
-cur="$(openshell inference get 2>/dev/null || true)"
-if route_ok "$cur"; then
-  echo "nemoclaw-inference-medic: route OK ($WANT_PROVIDER / $WANT_MODEL)"
+# Primary: validation doubles as the health probe; saves only on success.
+if openshell inference set -g nemoclaw --provider "$WANT_PROVIDER" --model "$WANT_MODEL" >/dev/null 2>&1; then
+  echo "nemoclaw-inference-medic: route OK on primary ($WANT_PROVIDER / $WANT_MODEL)"
   exit 0
 fi
 
-echo "nemoclaw-inference-medic: route DRIFTED — re-asserting $WANT_PROVIDER / $WANT_MODEL" >&2
-openshell inference set -g nemoclaw --provider "$WANT_PROVIDER" --model "$WANT_MODEL"
-
-# Re-verify; exit nonzero (unit shows failed) if the re-assert did not take.
 cur="$(openshell inference get 2>/dev/null || true)"
-if route_ok "$cur"; then
-  echo "nemoclaw-inference-medic: re-asserted OK"
-else
-  echo "nemoclaw-inference-medic: FAILED to re-assert the route" >&2
-  exit 1
+if route_is "$FALLBACK_PROVIDER" "$FALLBACK_MODEL" "$cur"; then
+  echo "nemoclaw-inference-medic: primary $WANT_PROVIDER UNHEALTHY — already failed over to $FALLBACK_PROVIDER, holding" >&2
+  exit 0
 fi
+
+echo "nemoclaw-inference-medic: primary $WANT_PROVIDER UNHEALTHY — failing over to $FALLBACK_PROVIDER / $FALLBACK_MODEL" >&2
+if openshell inference set -g nemoclaw --provider "$FALLBACK_PROVIDER" --model "$FALLBACK_MODEL"; then
+  echo "nemoclaw-inference-medic: FAILOVER active ($FALLBACK_PROVIDER); will fail back automatically when $WANT_PROVIDER recovers" >&2
+  exit 0
+fi
+
+echo "nemoclaw-inference-medic: BOTH providers failed validation — agents are down. Check DeepInfra balance/status and the NVIDIA key." >&2
+exit 1

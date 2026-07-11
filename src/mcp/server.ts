@@ -303,7 +303,10 @@ const ADMIN_TOOLS = [
   {
     name: 'list_team',
     description:
-      'List the team roster: ref, display name, tier, state, sandbox assignment (manager only).',
+      'List the team roster (manager only): ref, display name, tier, state, sandbox assignment, ' +
+      "and botUsername — the Telegram bot (@handle) each person's agent answers on. USE THIS to " +
+      'answer "which bot does X use / talk to?" — never inspect configs or guess. botUsername ' +
+      'null means the handle is not on record: tell the manager to ask their operator.',
     inputSchema: { type: 'object', properties: {} },
   },
   {

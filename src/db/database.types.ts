@@ -478,6 +478,9 @@ export type Database = {
           created_at: string
           host_id: string
           id: string
+          retire_requested_at: string | null
+          retired_at: string | null
+          retired_technician_id: string | null
           sandbox_ref: string
           technician_id: string | null
           tenant_id: string
@@ -487,6 +490,9 @@ export type Database = {
           created_at?: string
           host_id: string
           id?: string
+          retire_requested_at?: string | null
+          retired_at?: string | null
+          retired_technician_id?: string | null
           sandbox_ref: string
           technician_id?: string | null
           tenant_id: string
@@ -496,6 +502,9 @@ export type Database = {
           created_at?: string
           host_id?: string
           id?: string
+          retire_requested_at?: string | null
+          retired_at?: string | null
+          retired_technician_id?: string | null
           sandbox_ref?: string
           technician_id?: string | null
           tenant_id?: string
@@ -506,6 +515,13 @@ export type Database = {
             columns: ["host_id"]
             isOneToOne: false
             referencedRelation: "hosts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sandbox_pool_retired_technician_id_fkey"
+            columns: ["retired_technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
             referencedColumns: ["id"]
           },
           {

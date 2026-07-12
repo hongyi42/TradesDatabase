@@ -14,20 +14,25 @@
 #   3. Otherwise, if the returned badgesFile differs from what's on disk,
 #      atomically replace /etc/doorman/badges.json — installed doorman:doorman
 #      mode 600 (the doorman can't read it otherwise and silently 403s EVERY badge).
-#   4. Any newBadges in the response are appended to a root-only pending file.
-#      Each is the ONE AND ONLY copy of that badge's plaintext: install it as
-#      the sandbox's provider credential
-#        openshell provider update <AGENT>-telegram-bridge \
-#          --credential TRADES_SPINE_BADGE=<badge>
-#      then delete the line. CAUTION: that provider write bumps the provider
-#      version — safe while openclaw.json placeholders are canonical, but see
-#      the "Placeholder VERSIONING trap" gotcha before doing it after a reboot.
-#      THEN RESTART THE SANDBOX CONTAINER (2026-07-11): credentials REGISTER
-#      into the openclaw process env at PROCESS LAUNCH ONLY (as version-scoped
-#      placeholders, resolved in-process at component init) — the egress proxy
-#      does NOT resolve per-request, so without a restart the running agent
-#      keeps its old badge (or none) and the spine 403s it. Confirm with
-#      `sudo ./bootstrap-box.sh verify` (credential-freshness check).
+#   4. Any newBadges in the response are AUTO-INSTALLED (2026-07-12, recycler
+#      feature): for each entry with a sandboxRef, the badge goes straight into
+#      the sandbox's provider (`openshell provider update <AGENT>-telegram-bridge
+#      --credential TRADES_SPINE_BADGE=…`, run as $NEMOCLAW_USER via the
+#      absolute ~/.local/bin path — sudo's secure_path won't find it bare) and
+#      the container is RESTARTED (credentials REGISTER into the openclaw
+#      process env at PROCESS LAUNCH ONLY, as version-scoped placeholders
+#      resolved in-process at component init; the egress proxy does NOT resolve
+#      per-request — without the restart the agent keeps its old badge and the
+#      spine 403s it). On success this script persists NO plaintext: the badge
+#      crosses to openshell via --preserve-env (sudo's authpriv log records
+#      only the unexpanded variable name, never the value), leaving the vendor
+#      CLI's transient argv as the sole exposure — the same class as the
+#      manual procedure. FALLBACK: entries with no sandboxRef (legacy
+#      assignments) or a failed install are parked in the root-only pending
+#      file for the old manual procedure (install, delete the line, restart the
+#      container, `sudo ./bootstrap-box.sh verify`). CAUTION: the provider
+#      write bumps the provider version — safe while openclaw.json placeholders
+#      are canonical ("Placeholder VERSIONING trap" gotcha, esp. after reboot).
 #
 # Setup (once, as root):
 #   install -o root -g root -m 700 badge-pull.sh /usr/local/sbin/badge-pull.sh
@@ -71,6 +76,72 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BINDINGS_FILE="${BINDINGS_FILE:-/etc/doorman/bindings-applied.json}"
 BIND_APPLY_CMD="${BIND_APPLY_CMD:-}"
 NEMOCLAW_USER="${NEMOCLAW_USER:-ubuntu}"
+
+# Badge auto-install (recycler feature) — BADGE_INSTALL_CMD overrides the
+# built-in path for the repo test harness. Invoked as `<cmd> <sandboxRef>
+# <badge>`; exit 0 = credential installed AND container restarted.
+BADGE_INSTALL_CMD="${BADGE_INSTALL_CMD:-}"
+
+# Sandbox retirements (recycler feature) — the pull's retirements[] are queued
+# as one file per sandboxRef and the recycler service is kicked. Both paths are
+# env-overridable for the repo test harness only.
+#   RECYCLER_QUEUE_DIR:  queue consumed by recycle-sandbox.sh (root-only).
+#   RECYCLER_FAILED_DIR: parked entries (operator-only) — NEVER re-queued here,
+#                        or the recycler would re-park + re-alarm every tick.
+#   RECYCLE_KICK_CMD:    recycler starter; default systemctl --no-block.
+RECYCLER_QUEUE_DIR="${RECYCLER_QUEUE_DIR:-/var/lib/sandbox-recycler/queue}"
+RECYCLER_FAILED_DIR="${RECYCLER_FAILED_DIR:-/var/lib/sandbox-recycler/failed}"
+RECYCLE_KICK_CMD="${RECYCLE_KICK_CMD:-}"
+
+# Install one minted badge into its sandbox's provider and restart the
+# container (§5b — a provider write only takes effect at process launch).
+# Returns: 0 installed+restarted; 1 nothing stored (full manual §5b needed);
+# 2 credential STORED but the container was not restarted (only the restart
+# remains — a second provider update would pointlessly bump the version).
+install_badge() {
+  local sref="$1" badge="$2"
+  if [ -n "$BADGE_INSTALL_CMD" ]; then
+    "$BADGE_INSTALL_CMD" "$sref" "$badge"
+    return $?
+  fi
+  local home osh cid c nm
+  home=$(getent passwd "$NEMOCLAW_USER" | cut -d: -f6)
+  osh="$home/.local/bin/openshell"
+  # Absolute path is load-bearing: sudo's secure_path does not include the
+  # user's ~/.local/bin (bootstrap-box.sh uses the same idiom).
+  if [ ! -x "$osh" ]; then
+    echo "badge-pull: openshell not found at $osh" >&2
+    return 1
+  fi
+  # The badge rides the ENV, never sudo's argv: sudo logs every command line
+  # (arguments included) to authpriv, so a literal --credential value would
+  # persist the plaintext in the system log on every install. Here sudo logs
+  # the UNEXPANDED $BADGE_VALUE; the value crosses via --preserve-env (the
+  # bootstrap provision idiom) and expands only inside the sandbox owner's
+  # bash — the same transient-argv exposure class as the manual procedure.
+  # ${BADGE_VALUE:?} — if a sudo policy ever strips the env var, fail LOUD
+  # (parked for manual install) instead of installing an empty credential the
+  # freshness probe cannot see (it compares key names, not values).
+  BADGE_VALUE="$badge" sudo --preserve-env=BADGE_VALUE -u "$NEMOCLAW_USER" -H \
+    bash -c '"$0" provider update "$1-telegram-bridge" --credential "TRADES_SPINE_BADGE=${BADGE_VALUE:?}"' \
+    "$osh" "$sref" </dev/null || return 1
+  # Container names are openshell-<agent>-…; match on the agent field exactly
+  # (the same derivation bootstrap-box.sh's verify phase uses), never a loose
+  # name filter — "s1" must not match "s10"'s container.
+  cid=""
+  for c in $(docker ps -q --filter "name=openshell-"); do
+    nm=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null | sed 's#^/##')
+    if [ "$(printf '%s' "$nm" | cut -d- -f2)" = "$sref" ]; then
+      cid="$c"
+      break
+    fi
+  done
+  if [ -z "$cid" ]; then
+    echo "badge-pull: no running container for ${sref} — credential stored but NOT live until a restart" >&2
+    return 2
+  fi
+  docker restart "$cid" >/dev/null || return 2
+}
 
 # shellcheck disable=SC1090
 source "$ENV_FILE"
@@ -134,10 +205,47 @@ else
   echo "badge-pull: no change"
 fi
 
+# ── Badge auto-install ───────────────────────────────────────────────────────
+# Happy path: provider update + container restart, plaintext never touches
+# disk. Per-row isolation (one bad install must not lose the others): a failed
+# or uninstallable entry is parked in the pending file for the manual §5b
+# procedure, and the unit exits nonzero so the failure is visible.
+badge_fail=0
 count=$(jq '.newBadges | length' <<<"$resp")
 if [ "$count" -gt 0 ]; then
-  ( umask 077; jq -c '.newBadges[]' <<<"$resp" >> "$PENDING_FILE" )
-  echo "badge-pull: $count new badge(s) appended to $PENDING_FILE — install as provider credentials, then delete the lines"
+  badge_installed=0
+  badge_parked=0
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    sref=$(jq -r '.sandboxRef // empty' <<<"$entry")
+    if [ -z "$sref" ]; then
+      # Legacy assignment (no pool sandbox on record) — nothing to install
+      # into automatically; the operator routes it by ref.
+      ( umask 077; printf '%s\n' "$entry" >> "$PENDING_FILE" )
+      badge_parked=$((badge_parked + 1))
+      echo "badge-pull: badge for $(jq -r '.ref' <<<"$entry") has no sandboxRef — parked in $PENDING_FILE for manual install"
+      continue
+    fi
+    rc=0
+    install_badge "$sref" "$(jq -r '.badge' <<<"$entry")" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      badge_installed=$((badge_installed + 1))
+      echo "badge-pull: badge installed for ${sref} (provider updated + container restarted)"
+    else
+      ( umask 077; printf '%s\n' "$entry" >> "$PENDING_FILE" )
+      badge_parked=$((badge_parked + 1))
+      badge_fail=1
+      if [ "$rc" -eq 2 ]; then
+        # Credential is ALREADY in the provider store — do NOT re-run the
+        # provider update (needless version bump): restart the container,
+        # verify, then delete the parked line.
+        echo "badge-pull: badge for ${sref} STORED but container not restarted — parked in $PENDING_FILE; only the RESTART (+ verify) is needed, then delete the line" >&2
+      else
+        echo "badge-pull: FAILED to auto-install badge for ${sref} — parked in $PENDING_FILE (manual §5b: install, delete the line, RESTART the container)" >&2
+      fi
+    fi
+  done < <(jq -c '.newBadges[]' <<<"$resp")
+  echo "badge-pull: $badge_installed badge(s) auto-installed, $badge_parked parked"
 fi
 
 # ── Telegram sender bindings (Feature A) ────────────────────────────────────
@@ -198,7 +306,62 @@ if [ "$bind_total" -gt 0 ]; then
   if [ "$bind_applied" -gt 0 ]; then
     echo "badge-pull: $bind_applied binding(s) applied"
   fi
-  if [ "$bind_fail" -ne 0 ]; then
-    exit 1
+fi
+
+# ── Sandbox retirements (recycler) ───────────────────────────────────────────
+# Queue each retirement as a file named by its sandboxRef; the recycler service
+# does the destroy → re-provision → report. Queueing is idempotent (same
+# filename), and the server keeps serving a retirement until the box's report
+# lands — a lost tick self-heals.
+recycle_fail=0
+while IFS= read -r sref; do
+  [ -n "$sref" ] || continue
+  # The ref becomes a FILENAME — accept only sane sandbox names, never paths.
+  if ! printf '%s' "$sref" | grep -Eq '^[A-Za-z0-9_]+$'; then
+    echo "badge-pull: retirement ref '$sref' is not a valid sandbox name — SKIPPED" >&2
+    recycle_fail=1
+    continue
   fi
+  # SAFETY: never queue a sandbox this same pull actively binds — that state is
+  # a transient CAS window (reactivate landed, cancel not yet) or a server bug;
+  # both self-heal or surface next tick. Destruction must fail toward NOT.
+  if jq -e --arg s "$sref" '.bindings // [] | any(.sandboxRef == $s)' <<<"$resp" >/dev/null; then
+    echo "badge-pull: retirement for ${sref} SKIPPED — this pull also ships an active binding for it" >&2
+    continue
+  fi
+  # A PARKED ref needs an operator (dead bot, server 409) — re-queueing it
+  # would just re-park + re-alarm every 5 minutes forever.
+  if [ -e "$RECYCLER_FAILED_DIR/$sref" ]; then
+    echo "badge-pull: retirement for ${sref} is PARKED (needs operator) — not re-queued" >&2
+    continue
+  fi
+  if [ ! -e "$RECYCLER_QUEUE_DIR/$sref" ]; then
+    ( umask 077; mkdir -p "$RECYCLER_QUEUE_DIR"; : > "$RECYCLER_QUEUE_DIR/$sref" )
+    echo "badge-pull: queued ${sref} for recycling"
+  fi
+done < <(jq -r '.retirements // [] | .[].sandboxRef' <<<"$resp")
+
+# Kick whenever the queue has entries — NOT only when something new was queued:
+# a kept entry (rosterCleared:false retry, crash resume) no longer appears in
+# retirements[] once the server stamped the row retired, and only this kick
+# re-drives it. The recycler serializes itself (systemd oneshot).
+if [ -d "$RECYCLER_QUEUE_DIR" ] && [ -n "$(ls -A "$RECYCLER_QUEUE_DIR" 2>/dev/null)" ]; then
+  if [ -n "$RECYCLE_KICK_CMD" ]; then
+    "$RECYCLE_KICK_CMD" || { echo "badge-pull: recycler kick failed" >&2; recycle_fail=1; }
+  elif command -v systemctl >/dev/null 2>&1; then
+    systemctl start --no-block sandbox-recycler.service \
+      || { echo "badge-pull: recycler kick failed" >&2; recycle_fail=1; }
+  else
+    echo "badge-pull: retirement queue non-empty but no systemctl/RECYCLE_KICK_CMD — recycler NOT kicked" >&2
+    recycle_fail=1
+  fi
+fi
+
+# One combined exit AFTER every section has run: a failed badge install must
+# not skip the bindings reconcile (and vice versa). Recovery differs by kind:
+# bindings + queued retirements retry automatically next tick; a failed badge
+# install does NOT (its plaintext existed only in this pull — it is parked in
+# the pending file and needs the manual §5b procedure). Exit 1 = unit red.
+if [ "$badge_fail" -ne 0 ] || [ "${bind_fail:-0}" -ne 0 ] || [ "$recycle_fail" -ne 0 ]; then
+  exit 1
 fi

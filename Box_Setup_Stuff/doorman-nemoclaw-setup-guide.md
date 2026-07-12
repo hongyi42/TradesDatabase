@@ -972,3 +972,69 @@ sudo systemctl daemon-reload && sudo systemctl enable nemoclaw-boot.service
 7. Message the bot → confirm a trades-spine tool returns real data (§5d).  
 8. Install `nemoclaw-boot.service` (§7).
 
+
+---
+
+## 10. Sandbox recycling (automatic member replacement — 2026-07-12)
+
+A manager's confirmed `deactivate_technician_seat` marks the person's sandbox for retirement on
+the server. From there, no operator:
+
+```
+server pull (retirements[]) → badge-pull queues /var/lib/sandbox-recycler/queue/<ref>
+  → kicks sandbox-recycler.service (oneshot = one recycle at a time)
+    recycle-sandbox.sh:  re-check server (cancel race) → backup-identity
+      → recover bot token + @handle from sandboxes.json (getMe must be ok:true)
+      → choose next ref (s<max+1>) → WRITE JOURNAL (journal/<ref>.json — everything
+        destruction erases, BEFORE any destructive step; crash = resume next kick)
+      → teardown (vendor destroy verb if the CLI has one, else the manual recipe:
+        rm container + del sandboxes.json entry [backed up] + remove revive unit)
+      → bootstrap-box.sh provision <newRef> (same bot token — hard-asserted build)
+        + wire + boot
+      → POST ${PULL_URL%/badges}/sandboxes {retiredSandboxRef,newSandboxRef,botUsername}
+```
+
+Server response contract: **200 with `rosterCleared != false`** → done (journal + queue entry
+deleted); **200 with `rosterCleared:false`** → keep both and retry next kick (this POST retry is
+the ONLY re-drive of a failed roster-residue clear); **409** → the server refused (ref never
+marked / mismatched blank) → entry parked in `failed/` + alarm; anything else → retry next kick.
+
+Install: `sudo ./bootstrap-box.sh recycler` (installs `/usr/local/sbin/recycle-sandbox.sh`, the
+service unit, the queue/journal/failed dirs, and a `/usr/local/sbin/bootstrap-box.sh` self-copy
+the recycler drives). Prereq: `/root/nemoclaw-provision.env` (600) with a CURRENT
+`NVIDIA_INFERENCE_API_KEY=` — the provision phase needs it on every recycle.
+
+Operational notes:
+- **Bot identity is REUSED**: the rebuilt blank answers on the retired sandbox's @handle. The
+  departed member keeps a silent dead chat in their client (allowlist replaced wholesale at the
+  next claim); audit attribution is by ref, which is never reused.
+- **Cold blanks are provisioned deaf**: `allowedIds` is a placeholder id
+  (`RECYCLER_PLACEHOLDER_TG_ID`, default 000000001) until bind_telegram's apply replaces it.
+- **Reactivation**: during grace, a still-pending retirement is cancelled server-side and the
+  recycler's pre-destroy re-check drops the queue entry. After destruction, the person re-binds
+  to a fresh blank — the old agent's memory is gone.
+- **`failed/` never self-heals** — a parked entry means dead bot token (re-create at BotFather,
+  then re-provision by hand), a corrupt journal, a half-built blank (see next bullet), or a
+  server 409 (ref mismatch: investigate before touching anything). badge-pull will NOT re-queue
+  a parked ref; `bootstrap-box.sh verify` flags parked entries. Resolve, then delete the
+  `failed/<ref>` file (and its `<ref>.journal.json` sibling).
+- **Half-built resume**: a crash after onboard wrote the new ref's `sandboxes.json` entry but
+  before the provision assertions completed resumes WITHOUT re-running provision — the report is
+  gated on an independent liveness check (running container + getUpdates in recent logs); a
+  blank that can't prove liveness is parked, never reported.
+- **SPIKE RESULTS (pinned live on trades-box-1, 2026-07-12, nemoclaw v0.0.73):**
+  (1) `nemoclaw <name> destroy [--yes] [--cleanup-gateway|--no-cleanup-gateway]` EXISTS — the
+  recycler passes **`--no-cleanup-gateway`, load-bearing on a shared-gateway box** (a gateway
+  cleanup would take down every other sandbox); container-removal semantics still unobserved
+  until the first live destroy — the script independently rm -f's any leftover container and
+  asserts none remains. (2) dist for plan hydration = `~/.nemoclaw/source/dist` (probed first;
+  `RECYCLER_NEMOCLAW_DIST` overrides). (3) token jq path confirmed: channels use `channelId`;
+  inputIds present: allowedIds, botToken, groupPolicy, requireMention. (4) `networkPolicy.entries`
+  is a uniform manifest-derived array (`{channelId, presetName, policyKeys:["telegram_bot"],
+  source:"manifest"}`) — embedded verbatim in the recycler's plan; hydration executed live with
+  this shape → `HYDRATION_OK` (5836-byte b64). (5) placeholder `allowedIds` for a deaf cold
+  blank: `RECYCLER_PLACEHOLDER_TG_ID`, default 000000001 (no real account; bind replaces it
+  wholesale at claim).
+- **Badge auto-install** (same change): badge-pull now installs minted badges into the provider
+  and restarts the container itself; `/root/pending-badges.jsonl` is the FAILURE fallback only
+  (a parked line says whether the full §5b procedure or only the restart is still needed).

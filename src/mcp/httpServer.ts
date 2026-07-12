@@ -6,7 +6,11 @@ import { resolveIdentityFromHeaders } from './identity.js';
 import { handleInboundWebhook } from '../inbound/webhook.js';
 import { sha256hex } from '../control/badges.js';
 import { buildBadgeResponse } from '../control/badgeFile.js';
-import { getHostByTokenHash } from '../db/index.js';
+import {
+  clearSandboxAssignmentIfRef,
+  completeSandboxRecycle,
+  getHostByTokenHash,
+} from '../db/index.js';
 import { handleComposioRelay, isRelayPath } from '../composio/relayHandler.js';
 
 // Central HTTP entrypoint (Architecture A). Every NemoClaw bot reaches this one
@@ -137,6 +141,86 @@ async function handleBadgePull(req: http.IncomingMessage, res: http.ServerRespon
   }
 }
 
+// The box's recycle-completion report: "retired sandbox X is destroyed, blank Y
+// is racked with bot Z". Same host-token auth + bare-401 posture as the pull.
+// The response's rosterCleared:false tells the box to RETRY the whole (idempotent)
+// report next tick — the residue clear is the only non-idempotent-looking half,
+// and a person re-bound to a fresh blank is protected by the ref-guarded clear.
+async function handleSandboxReport(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
+    const host = m ? await getHostByTokenHash(sha256hex(m[1].trim())) : null;
+    if (!host) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    let body: unknown;
+    try {
+      body = await readBody(req);
+    } catch {
+      json(400, { error: 'malformed JSON body' });
+      return;
+    }
+    const b = (body ?? {}) as Record<string, unknown>;
+    const retiredSandboxRef = typeof b.retiredSandboxRef === 'string' ? b.retiredSandboxRef.trim() : '';
+    const newSandboxRef = typeof b.newSandboxRef === 'string' ? b.newSandboxRef.trim() : '';
+    const botUsername = b.botUsername == null ? null : b.botUsername;
+    if (!retiredSandboxRef || !newSandboxRef) {
+      json(400, { error: 'retiredSandboxRef and newSandboxRef are required' });
+      return;
+    }
+    // Same handle contract as assign-host.mjs: @, 5-32 word chars. null is
+    // allowed (registers handle-less; bind_telegram says "ask your operator").
+    if (botUsername !== null && (typeof botUsername !== 'string' || !/^@[A-Za-z0-9_]{5,32}$/.test(botUsername))) {
+      json(400, { error: 'botUsername must be @<5-32 word chars> or null' });
+      return;
+    }
+    let result;
+    try {
+      result = await completeSandboxRecycle({
+        hostId: host.id,
+        retiredSandboxRef,
+        newSandboxRef,
+        botUsername,
+      });
+    } catch (err) {
+      // Refusals (code 'recycle_refused') are the box being wrong, not the
+      // server failing: conflict, not 500 — the box parks the entry and alarms.
+      if ((err as { code?: string }).code === 'recycle_refused') {
+        json(409, { error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
+      throw err;
+    }
+    // Clear the roster's pointer at the destroyed sandbox. rosterCleared:false
+    // → the box retries the report (this is the ONLY half without its own
+    // retry, and the reactivate-path re-bind nudge depends on it landing).
+    let rosterCleared: boolean | null = null;
+    if (result.retiredTechnicianId) {
+      try {
+        await clearSandboxAssignmentIfRef(result.retiredTechnicianId, retiredSandboxRef, host.id);
+        rosterCleared = true;
+      } catch {
+        rosterCleared = false;
+      }
+    }
+    json(200, { retired: result.retired, registered: result.registered, rosterCleared });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     // Webhooks first — gated by HMAC, not by the gateway IP allowlist below.
@@ -147,6 +231,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // Host badge pull — gated by the host token, same pre-allowlist placement.
     if (req.url === '/control/badges' && req.method === 'GET') {
       await handleBadgePull(req, res);
+      return;
+    }
+    // Host recycle-completion report — same host-token gate + placement.
+    if (req.url === '/control/sandboxes' && req.method === 'POST') {
+      await handleSandboxReport(req, res);
       return;
     }
     if (!allowed(req)) {

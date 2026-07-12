@@ -8,6 +8,11 @@ import { mintBadge, sha256hex } from '../control/badges.js';
 import { createHost } from '../db/hosts.js';
 import { getClient } from '../db/client.js';
 import { insertTechnician, updateTechnician } from '../db/technicians.js';
+import {
+  claimSandbox,
+  registerSandbox,
+  requestSandboxRetirement,
+} from '../db/sandboxPool.js';
 import { setTenantSeats } from '../db/tenants.js';
 
 // Integration: the /control/badges pull route against the TEST project — real
@@ -180,3 +185,111 @@ describe('GET /control/badges', () => {
     });
   });
 });
+
+describe('POST /control/sandboxes (recycle-completion report)', () => {
+  const pull = () =>
+    fetch(`${base}/control/badges`, { headers: { authorization: `Bearer ${hostToken}` } }).then(
+      (r) => r.json() as Promise<{ retirements: Array<{ sandboxRef: string }> }>,
+    );
+  const report = (body: unknown, token = hostToken) =>
+    fetch(`${base}/control/sandboxes`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+
+  test('auth + validation: bad token 401; malformed body / bad handle 400; unmarked ref 409', async () => {
+    const noAuth = await fetch(`${base}/control/sandboxes`, { method: 'POST', body: '{}' });
+    expect(noAuth.status).toBe(401);
+    expect(await noAuth.text()).toBe('');
+    expect((await report({}, 'deadbeef')).status).toBe(401);
+
+    expect((await report('not json {{{')).status).toBe(400);
+    expect((await report({ retiredSandboxRef: 'x' })).status).toBe(400); // newSandboxRef missing
+    expect(
+      (await report({ retiredSandboxRef: 'x', newSandboxRef: 'y', botUsername: 'nope' })).status,
+    ).toBe(400); // handle must be @word — same contract as assign-host.mjs
+
+    // An existing pool row that was never marked for retirement → 409 conflict.
+    const host = await getHostId();
+    await registerSandbox({ tenantId, hostId: host, sandboxRef: 'rep-unmarked' });
+    const conflict = await report({
+      retiredSandboxRef: 'rep-unmarked',
+      newSandboxRef: 'rep-new',
+      botUsername: null,
+    });
+    expect(conflict.status).toBe(409);
+    expect(((await conflict.json()) as { error: string }).error).toContain(
+      'not marked for retirement',
+    );
+  });
+
+  test('full loop over real HTTP: retirement rides the GET, POST completes it, GET drops it, blank is free, roster cleared', async () => {
+    const host = await getHostId();
+    const tech = await insertTechnician({ tenantId, ref: 'rep-probe', displayName: 'Rep Probe' });
+    const old = await registerSandbox({
+      tenantId,
+      hostId: host,
+      sandboxRef: 'rep-s4',
+      botUsername: '@reps4_bot',
+    });
+    await claimSandbox(old.id, tech.id);
+    await updateTechnician(tech.id, { sandbox_ref: 'rep-s4', host_id: host });
+    await requestSandboxRetirement(tech.id);
+
+    // GET serves the retirement until the box reports completion.
+    expect((await pull()).retirements).toContainEqual({ sandboxRef: 'rep-s4' });
+
+    const done = await report({
+      retiredSandboxRef: 'rep-s4',
+      newSandboxRef: 'rep-s5',
+      botUsername: '@reps4_bot',
+    });
+    expect(done.status).toBe(200);
+    expect(await done.json()).toEqual({ retired: true, registered: true, rosterCleared: true });
+
+    // GET no longer serves it; the blank is a FREE pool row; the destroyed row
+    // released its claim; the roster no longer points at the dead sandbox.
+    expect((await pull()).retirements).not.toContainEqual({ sandboxRef: 'rep-s4' });
+    const rows = await pg.query(
+      "select sandbox_ref, technician_id, retired_at, retired_technician_id, bot_username from sandbox_pool where sandbox_ref in ('rep-s4','rep-s5') order by sandbox_ref",
+    );
+    expect(rows.rows[0]).toMatchObject({
+      sandbox_ref: 'rep-s4',
+      technician_id: null,
+      retired_technician_id: tech.id,
+    });
+    expect(rows.rows[0].retired_at).not.toBeNull();
+    expect(rows.rows[1]).toMatchObject({
+      sandbox_ref: 'rep-s5',
+      technician_id: null,
+      retired_at: null,
+      bot_username: '@reps4_bot',
+    });
+    const roster = await pg.query("select sandbox_ref, host_id from technicians where ref = 'rep-probe'");
+    expect(roster.rows[0]).toEqual({ sandbox_ref: null, host_id: null });
+
+    // Retry (box lost the 200): idempotent, still 200-shaped, no second blank.
+    const retry = await report({
+      retiredSandboxRef: 'rep-s4',
+      newSandboxRef: 'rep-s5',
+      botUsername: '@reps4_bot',
+    });
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toEqual({ retired: false, registered: false, rosterCleared: true });
+    const blanks = await pg.query("select count(*)::int as n from sandbox_pool where sandbox_ref = 'rep-s5'");
+    expect(blanks.rows[0].n).toBe(1);
+  });
+});
+
+// The suite's host row is created in beforeAll without keeping the id; the
+// recycle tests need it to seed pool rows.
+async function getHostId(): Promise<string> {
+  const { data, error } = await getClient()
+    .from('hosts')
+    .select('id')
+    .eq('name', HOST_NAME)
+    .single();
+  if (error || !data) throw new Error(`host lookup failed: ${error?.message ?? 'none'}`);
+  return data.id;
+}

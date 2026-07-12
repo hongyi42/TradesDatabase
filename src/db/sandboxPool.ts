@@ -58,12 +58,16 @@ export async function getPoolRowByTechnician(
 
 // Free (cold) sandboxes for the tenant, oldest-built first — bind_telegram
 // claims the head. FIFO by created_at keeps allocation deterministic.
+// retired_at null is load-bearing: a completed recycle nulls technician_id on
+// the DESTROYED row (releasing the unique claim slot), so without this filter
+// the dead sandbox would look free and get claimed.
 export async function listFreeSandboxes(tenantId: string): Promise<SandboxPoolRow[]> {
   const { data, error } = await getClient()
     .from('sandbox_pool')
     .select()
     .eq('tenant_id', tenantId)
     .is('technician_id', null)
+    .is('retired_at', null)
     .order('created_at', { ascending: true });
   if (error) throw new Error(`listFreeSandboxes failed: ${error.message}`);
   return data ?? [];
@@ -93,10 +97,176 @@ export async function claimSandbox(
     .update({ technician_id: technicianId })
     .eq('id', id)
     .is('technician_id', null)
+    // Never claim a destroyed sandbox: retired rows release technician_id but
+    // must stay unclaimable forever (same reasoning as listFreeSandboxes).
+    .is('retired_at', null)
     .select()
     .maybeSingle();
   if (error) {
     throw Object.assign(new Error(`claimSandbox failed: ${error.message}`), { code: error.code });
   }
   return data;
+}
+
+// ── Retirement / recycling (2026-07-12) ─────────────────────────────────────
+// A confirmed deactivation REQUESTS retirement of the person's sandbox; the
+// box's badge pull serves it (retirements[]) until the box destroys +
+// re-provisions and reports back, which COMPLETES it. A grace-period
+// reactivation in between CANCELS it. Retired rows are kept forever.
+
+// Mark the person's claimed sandbox for retirement. Write-if-not-yet-requested:
+// null = no pool row, or already requested (idempotent — deactivation retries
+// and repeat confirms must not error here).
+export async function requestSandboxRetirement(
+  technicianId: string,
+): Promise<SandboxPoolRow | null> {
+  const { data, error } = await getClient()
+    .from('sandbox_pool')
+    .update({ retire_requested_at: new Date().toISOString() })
+    .eq('technician_id', technicianId)
+    .is('retire_requested_at', null)
+    .select()
+    .maybeSingle();
+  if (error) {
+    throw Object.assign(new Error(`requestSandboxRetirement failed: ${error.message}`), {
+      code: error.code,
+    });
+  }
+  return data;
+}
+
+// Reactivation's undo: clear a PENDING request. Guarded on retired_at null —
+// once the box reported completion the sandbox is gone and there is nothing to
+// cancel (caller reads null and tells the manager to re-bind for a fresh one).
+export async function cancelSandboxRetirement(
+  technicianId: string,
+): Promise<SandboxPoolRow | null> {
+  const { data, error } = await getClient()
+    .from('sandbox_pool')
+    .update({ retire_requested_at: null })
+    .eq('technician_id', technicianId)
+    .not('retire_requested_at', 'is', null)
+    .is('retired_at', null)
+    .select()
+    .maybeSingle();
+  if (error) {
+    throw Object.assign(new Error(`cancelSandboxRetirement failed: ${error.message}`), {
+      code: error.code,
+    });
+  }
+  return data;
+}
+
+// The badge pull's retirement working set: requested but not yet completed,
+// for one host. Served every pull until the box's completion report lands.
+export async function listRetirementsForHost(hostId: string): Promise<SandboxPoolRow[]> {
+  const { data, error } = await getClient()
+    .from('sandbox_pool')
+    .select()
+    .eq('host_id', hostId)
+    .not('retire_requested_at', 'is', null)
+    .is('retired_at', null);
+  if (error) throw new Error(`listRetirementsForHost failed: ${error.message}`);
+  return data ?? [];
+}
+
+// The box's completion report: stamp the old row retired (moving its claim to
+// retired_technician_id — technician_id is UNIQUE, and releasing it lets a
+// reactivated person claim a fresh blank) and register the rebuilt blank as a
+// NEW row inheriting the retired row's tenant (the box cannot invent tenants).
+// Both halves are idempotent so the box can retry a lost response safely.
+export async function completeSandboxRecycle(input: {
+  hostId: string;
+  retiredSandboxRef: string;
+  newSandboxRef: string;
+  botUsername: string | null;
+}): Promise<{
+  retired: boolean;
+  registered: boolean;
+  tenantId: string;
+  retiredTechnicianId: string | null;
+}> {
+  const client = getClient();
+  const { data: row, error: readError } = await client
+    .from('sandbox_pool')
+    .select()
+    .eq('host_id', input.hostId)
+    .eq('sandbox_ref', input.retiredSandboxRef)
+    .maybeSingle();
+  if (readError) {
+    throw new Error(`completeSandboxRecycle read failed: ${readError.message}`);
+  }
+  // Only ever retire what the server itself marked: an unmarked (or unknown)
+  // ref means the box is confused — refuse rather than consume a live row.
+  // code 'recycle_refused' is the HTTP handler's 409-vs-500 contract: refusals
+  // are the box's fault (park + alarm), everything else is a server fault
+  // (retry) — keyed on the code, not the message text, so rewording is safe.
+  if (!row || (!row.retire_requested_at && !row.retired_at)) {
+    throw Object.assign(
+      new Error(`sandbox was not marked for retirement: ${input.retiredSandboxRef}`),
+      { code: 'recycle_refused' },
+    );
+  }
+  let retired = false;
+  let retiredTechnicianId = row.retired_technician_id;
+  if (!row.retired_at) {
+    // CAS on retired_at-null: a concurrent duplicate report loses cleanly
+    // (stamped=null) and returns retired:false with the PRE-stamp read's
+    // retiredTechnicianId (null) — acceptable: the recycler is serialized, and
+    // the winning call carries the id for the roster-residue clear.
+    const { data: stamped, error: stampError } = await client
+      .from('sandbox_pool')
+      .update({
+        retired_at: new Date().toISOString(),
+        retired_technician_id: row.technician_id,
+        technician_id: null,
+      })
+      .eq('id', row.id)
+      .is('retired_at', null)
+      .select()
+      .maybeSingle();
+    if (stampError) {
+      throw new Error(`completeSandboxRecycle stamp failed: ${stampError.message}`);
+    }
+    if (stamped) {
+      retired = true;
+      retiredTechnicianId = stamped.retired_technician_id;
+    }
+  }
+  let registered = false;
+  try {
+    await registerSandbox({
+      tenantId: row.tenant_id,
+      hostId: input.hostId,
+      sandboxRef: input.newSandboxRef,
+      botUsername: input.botUsername ?? undefined,
+    });
+    registered = true;
+  } catch (err) {
+    if ((err as { code?: string }).code !== '23505') throw err;
+    // Duplicate (host, sandbox_ref): only accept it as OUR earlier insert — a
+    // free row of the same tenant with the same bot handle. Anything else is a
+    // real collision, and swallowing it would silently under-refill the pool.
+    const { data: existing, error: existErr } = await client
+      .from('sandbox_pool')
+      .select()
+      .eq('host_id', input.hostId)
+      .eq('sandbox_ref', input.newSandboxRef)
+      .maybeSingle();
+    if (existErr) throw new Error(`completeSandboxRecycle re-read failed: ${existErr.message}`);
+    const matchesThisRecycle =
+      existing &&
+      existing.tenant_id === row.tenant_id &&
+      existing.technician_id === null &&
+      (existing.bot_username ?? null) === (input.botUsername ?? null);
+    if (!matchesThisRecycle) {
+      throw Object.assign(
+        new Error(
+          `new sandbox ref '${input.newSandboxRef}' already exists on this host and does not match this recycle`,
+        ),
+        { code: 'recycle_refused' },
+      );
+    }
+  }
+  return { retired, registered, tenantId: row.tenant_id, retiredTechnicianId };
 }

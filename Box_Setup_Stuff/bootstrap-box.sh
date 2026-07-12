@@ -45,6 +45,24 @@ fail() { printf '    ✗ %s\n' "$*" >&2; exit 1; }
 need_root()     { [ "$(id -u)" -eq 0 ] || fail "run this phase with sudo"; }
 need_not_root() { [ "$(id -u)" -ne 0 ] || fail "run this phase as ${NEMOCLAW_USER}, not root"; }
 
+# Companion-file install that tolerates running from the /usr/local/sbin
+# SELF-COPY of this script (how the recycler drives phases). Two cases the
+# plain install(1) dies on, both hit by the first live recycle (2026-07-12):
+#   src == dst          → "are the same file"     → keep it, skip
+#   src missing, dst ok → "cannot stat" (.service sources live only in the
+#                          checkout) → keep the installed copy, skip
+# Neither exists → real failure (fresh box missing its files): fail loud.
+install_unless_same() {
+  local mode="$1" src="$2" dst="$3"
+  if [ -e "$dst" ] && { [ ! -e "$src" ] || [ "$src" -ef "$dst" ]; }; then
+    skip "$(basename "$dst") (keeping installed copy)"
+  elif [ -e "$src" ]; then
+    install -o root -g root -m "$mode" "$src" "$dst"
+  else
+    fail "$(basename "$dst"): source missing ($src) and nothing installed at $dst"
+  fi
+}
+
 # Secret helper: take $1 from the environment, else prompt silently.
 need_secret() {
   local var="$1" prompt="$2"
@@ -371,7 +389,7 @@ phase_badgepull() {
   command -v jq >/dev/null || fail "jq missing — run the prep phase"
 
   log "installing badge-pull.sh + 5-min timer"
-  install -o root -g root -m 700 "$SCRIPT_DIR/badge-pull.sh" /usr/local/sbin/badge-pull.sh
+  install_unless_same 700 "$SCRIPT_DIR/badge-pull.sh" /usr/local/sbin/badge-pull.sh
   ok "/usr/local/sbin/badge-pull.sh"
 
   if [ -f /etc/doorman/badge-pull.env ]; then
@@ -436,11 +454,11 @@ phase_recycler() {
   command -v jq >/dev/null || fail "jq missing — run the prep phase"
 
   log "installing recycle-sandbox.sh + sandbox-recycler.service (+ bootstrap self-copy)"
-  install -o root -g root -m 700 "$SCRIPT_DIR/recycle-sandbox.sh" /usr/local/sbin/recycle-sandbox.sh
+  install_unless_same 700 "$SCRIPT_DIR/recycle-sandbox.sh" /usr/local/sbin/recycle-sandbox.sh
   # The recycler drives this script's provision/wire/boot/backup-identity
   # phases from systemd context — give it a stable path.
-  install -o root -g root -m 755 "$SCRIPT_DIR/bootstrap-box.sh" /usr/local/sbin/bootstrap-box.sh
-  install -o root -g root -m 644 "$SCRIPT_DIR/sandbox-recycler.service" /etc/systemd/system/sandbox-recycler.service
+  install_unless_same 755 "$SCRIPT_DIR/bootstrap-box.sh" /usr/local/sbin/bootstrap-box.sh
+  install_unless_same 644 "$SCRIPT_DIR/sandbox-recycler.service" /etc/systemd/system/sandbox-recycler.service
   mkdir -p /var/lib/sandbox-recycler/queue /var/lib/sandbox-recycler/journal /var/lib/sandbox-recycler/failed
   chmod 700 /var/lib/sandbox-recycler /var/lib/sandbox-recycler/queue \
     /var/lib/sandbox-recycler/journal /var/lib/sandbox-recycler/failed
@@ -656,14 +674,14 @@ EOF
   ok "enabled (runs at boot; harmless if already healthy)"
 
   log "sandbox-token-medic (§7 — 2026-07-05: sandbox JWT file expires across reboots)"
-  install -o root -g root -m 755 "$SCRIPT_DIR/sandbox-token-medic.mjs" /usr/local/sbin/sandbox-token-medic.mjs
-  install -o root -g root -m 644 "$SCRIPT_DIR/sandbox-token-medic.service" /etc/systemd/system/sandbox-token-medic.service
+  install_unless_same 755 "$SCRIPT_DIR/sandbox-token-medic.mjs" /usr/local/sbin/sandbox-token-medic.mjs
+  install_unless_same 644 "$SCRIPT_DIR/sandbox-token-medic.service" /etc/systemd/system/sandbox-token-medic.service
   systemctl daemon-reload
   systemctl enable sandbox-token-medic.service
   ok "sandbox-token-medic.service enabled (heals expired sandbox tokens before revive)"
 
   log "agent-revive service (2026-07-04: agent supervisor does NOT survive container restarts)"
-  install -o root -g root -m 755 "$SCRIPT_DIR/nemoclaw-agent-revive.sh" /usr/local/sbin/nemoclaw-agent-revive.sh
+  install_unless_same 755 "$SCRIPT_DIR/nemoclaw-agent-revive.sh" /usr/local/sbin/nemoclaw-agent-revive.sh
   cat > "/etc/systemd/system/nemoclaw-agent-${agent}.service" <<EOF
 [Unit]
 Description=NemoClaw agent supervisor for sandbox ${agent} (revive after restart)

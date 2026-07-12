@@ -9,7 +9,7 @@ import { createJob } from '../db/jobs.js';
 import { upsertScheduleEntry } from '../db/scheduleEntries.js';
 import { insertTechnician, setTechnicianState, updateTechnician } from '../db/technicians.js';
 import { createHost } from '../db/hosts.js';
-import { registerSandbox } from '../db/sandboxPool.js';
+import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { createServer, type ServerDeps } from './server.js';
@@ -1309,6 +1309,132 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(blocked.text).toContain('no free technician seats');
     } finally {
       await mgrClient.close();
+    }
+  });
+});
+
+describe('sandbox recycling lifecycle (deactivate → retire → reactivate / re-bind)', () => {
+  test('deactivate warns + marks retirement; reactivate cancels or routes to a fresh bind; pool-empty message reflects an in-flight recycle', { timeout: 30_000 }, async () => {
+    const seatsBefore = (
+      await pg.query<{ manager_seats: number; technician_seats: number }>(
+        'select manager_seats, technician_seats from tenants where id=$1',
+        [tenantId],
+      )
+    ).rows[0];
+    await pg.query(
+      "delete from sandbox_pool where host_id in (select id from hosts where name='rcy-host')",
+    );
+    await pg.query("delete from hosts where name = 'rcy-host'");
+    await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 12 });
+
+    // Composio seams stubbed (this suite drives deactivate/reactivate);
+    // retirement fns are the LIVE ones — read-backs prove the real stamps.
+    const stubs: Partial<ServerDeps> = {
+      disablePairing: async () => {},
+      enablePairing: async () => {},
+      teardownSession: async () => ({ status: 'none' as const }),
+    };
+    const { client: mgrClient, callWith } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      stubs,
+    );
+    // Second client with the retirement seam SPIED — proves the deactivate
+    // handler drives it (and with no sandbox, no destruction warning shows).
+    const retireCalls: string[] = [];
+    const { client: spyClient, callWith: spyCall } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      { ...stubs, requestRetirement: async (id: string) => (retireCalls.push(id), null) },
+    );
+    try {
+      const host = await createHost('rcy-host', 'c'.repeat(64));
+      await registerSandbox({
+        tenantId,
+        hostId: host.id,
+        sandboxRef: 'rcy-s1',
+        botUsername: '@rcys1_bot',
+      });
+      const b = await insertTechnician({ tenantId, ref: 'rcy-b', displayName: 'Rcy B' });
+      const boundB = await callWith('bind_telegram', { ref: 'rcy-b', telegramUserId: '8880001' });
+      expect(boundB.data).toMatchObject({ sandboxRef: 'rcy-s1' });
+
+      // Deactivate: the ONE confirmation carries the destruction warning, and
+      // the confirmed call stamps the pool row for retirement (live fn).
+      const ask = await callWith('deactivate_technician_seat', { ref: 'rcy-b' });
+      expect(ask.data.status).toBe('needs_confirmation');
+      expect(ask.data.note).toContain('permanently destroys');
+      await callWith('deactivate_technician_seat', { ref: 'rcy-b', confirmId: ask.data.confirmId });
+      const stamped = await pg.query<{ retire_requested_at: string | null }>(
+        "select retire_requested_at from sandbox_pool where sandbox_ref='rcy-s1' and host_id=$1",
+        [host.id],
+      );
+      expect(stamped.rows[0].retire_requested_at).not.toBeNull();
+
+      // Reactivate during grace: the pending retirement is CANCELLED and no
+      // re-bind nudge appears (their sandbox is intact).
+      const undo = await callWith('reactivate_technician_seat', { ref: 'rcy-b' });
+      expect(undo.data.status).toBe('reactivated');
+      expect(undo.data.note ?? '').not.toContain('bind_telegram');
+      const cancelled = await pg.query<{ retire_requested_at: string | null }>(
+        "select retire_requested_at from sandbox_pool where sandbox_ref='rcy-s1' and host_id=$1",
+        [host.id],
+      );
+      expect(cancelled.rows[0].retire_requested_at).toBeNull();
+
+      // Deactivate again, and this time the box completes the recycle: the old
+      // row is released, a fresh blank appears, roster residue cleared (as the
+      // Phase-2 report handler will do).
+      const ask2 = await callWith('deactivate_technician_seat', { ref: 'rcy-b' });
+      await callWith('deactivate_technician_seat', { ref: 'rcy-b', confirmId: ask2.data.confirmId });
+      const done = await completeSandboxRecycle({
+        hostId: host.id,
+        retiredSandboxRef: 'rcy-s1',
+        newSandboxRef: 'rcy-s2',
+        botUsername: '@rcys1_bot',
+      });
+      expect(done).toMatchObject({ retired: true, registered: true, retiredTechnicianId: b.id });
+      await updateTechnician(b.id, { sandbox_ref: null, host_id: null });
+
+      // Reactivate AFTER destruction: routed to a fresh bind — and the bind
+      // works (released UNIQUE slot, no stale-row recovery: it claims rcy-s2).
+      const back = await callWith('reactivate_technician_seat', { ref: 'rcy-b' });
+      expect(back.data.status).toBe('reactivated');
+      expect(back.data.note).toContain('bind_telegram');
+      const rebind = await callWith('bind_telegram', { ref: 'rcy-b', telegramUserId: '8880001' });
+      expect(rebind.isError).toBe(false);
+      expect(rebind.data).toMatchObject({ sandboxRef: 'rcy-s2', botUsername: '@rcys1_bot' });
+
+      // Pool-empty message: rcy-c's swap is in flight (requested, not yet
+      // completed) → the next sandbox-less hire hears "being recycled", not
+      // "contact support".
+      await registerSandbox({ tenantId, hostId: host.id, sandboxRef: 'rcy-s3' });
+      await insertTechnician({ tenantId, ref: 'rcy-c', displayName: 'Rcy C' });
+      await callWith('bind_telegram', { ref: 'rcy-c', telegramUserId: '8880003' });
+      const ask3 = await callWith('deactivate_technician_seat', { ref: 'rcy-c' });
+      await callWith('deactivate_technician_seat', { ref: 'rcy-c', confirmId: ask3.data.confirmId });
+      await insertTechnician({ tenantId, ref: 'rcy-d', displayName: 'Rcy D' });
+      const waiting = await callWith('bind_telegram', { ref: 'rcy-d', telegramUserId: '8880004' });
+      expect(waiting.isError).toBe(true);
+      expect(waiting.text).toContain('being recycled');
+
+      // Spy path: the handler calls the retirement seam with the target's id,
+      // and a sandbox-less person's confirmation carries NO destruction note.
+      const e = await insertTechnician({ tenantId, ref: 'rcy-e', displayName: 'Rcy E' });
+      const askE = await spyCall('deactivate_technician_seat', { ref: 'rcy-e' });
+      expect(askE.data.note).toBeUndefined();
+      await spyCall('deactivate_technician_seat', { ref: 'rcy-e', confirmId: askE.data.confirmId });
+      expect(retireCalls).toEqual([e.id]);
+    } finally {
+      await mgrClient.close();
+      await spyClient.close();
+      await pg.query(
+        "delete from sandbox_pool where host_id in (select id from hosts where name='rcy-host')",
+      );
+      await pg.query("delete from technicians where tenant_id=$1 and ref like 'rcy-%'", [tenantId]);
+      await pg.query("delete from hosts where name = 'rcy-host'");
+      await setTenantSeats(tenantId, {
+        managerSeats: seatsBefore.manager_seats,
+        technicianSeats: seatsBefore.technician_seats,
+      });
     }
   });
 });

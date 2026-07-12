@@ -1,6 +1,7 @@
 import {
   claimBadgeHash,
   isInactiveState,
+  listRetirementsForHost,
   listTechniciansForHost,
   type Technician,
 } from '../db/index.js';
@@ -28,6 +29,11 @@ export interface BadgeResponse {
   // these into each sandbox's allowlist (additive; unbind is out of scope).
   // Independent of badge state: a binding ships even if this pull didn't mint.
   bindings: Array<{ ref: string; sandboxRef: string; telegramUserId: string }>;
+  // Sandboxes the server wants destroyed + re-provisioned (a confirmed
+  // deactivation marked them). Served on EVERY pull until the box reports
+  // completion via POST /control/sandboxes — a lost tick self-heals. Old boxes
+  // ignore the key (`.retirements // []` on the host).
+  retirements: Array<{ sandboxRef: string }>;
 }
 
 // Build the pull response for one host: mint-on-first-pull for assigned rows
@@ -40,10 +46,20 @@ export async function buildBadgeResponse(
   deps: {
     list?: typeof listTechniciansForHost;
     claim?: typeof claimBadgeHash;
+    listRetirements?: typeof listRetirementsForHost;
   } = {},
 ): Promise<BadgeResponse> {
   const list = deps.list ?? listTechniciansForHost;
   const claim = deps.claim ?? claimBadgeHash;
+  const listRetirements = deps.listRetirements ?? listRetirementsForHost;
+  // Retirements are fetched BEFORE the mint loop: a throw here 500s the pull
+  // while nothing has been minted yet (retried next tick, nothing lost). After
+  // the loop it would kill the response carrying freshly minted plaintexts —
+  // their badge_hash is already claimed, so they would never re-mint (the
+  // delivered-once guarantee the per-row isolation below exists to protect).
+  const retirements = (await listRetirements(hostId)).map((r) => ({
+    sandboxRef: r.sandbox_ref,
+  }));
   const rows = await list(hostId);
   const badgesFile: BadgeResponse['badgesFile'] = {};
   const newBadges: BadgeResponse['newBadges'] = [];
@@ -91,5 +107,5 @@ export async function buildBadgeResponse(
       revoked: isInactiveState(current.state),
     };
   }
-  return { badgesFile, newBadges, bindings };
+  return { badgesFile, newBadges, bindings, retirements };
 }

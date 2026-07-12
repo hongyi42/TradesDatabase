@@ -188,6 +188,34 @@ export async function claimBadgeHash(id: string, hash: string): Promise<Technici
   return data;
 }
 
+// Recycle-completion residue clear: null the roster's sandbox pointers ONLY
+// while they still reference the destroyed sandbox — guarded on BOTH ref and
+// host, because refs are per-host sequences ("s4" can exist on two hosts). A
+// person reactivated and re-bound to a fresh blank between destroy and a
+// retried completion report must keep their new assignment — these guards are
+// what prevent that overwrite. 'cleared' = this call nulled them; 'no_op' =
+// they already point elsewhere (or nowhere) — the goal state holds either way.
+export async function clearSandboxAssignmentIfRef(
+  technicianId: string,
+  sandboxRef: string,
+  hostId: string,
+): Promise<'cleared' | 'no_op'> {
+  const { data, error } = await getClient()
+    .from('technicians')
+    .update({ sandbox_ref: null, host_id: null })
+    .eq('id', technicianId)
+    .eq('sandbox_ref', sandboxRef)
+    .eq('host_id', hostId)
+    .select()
+    .maybeSingle();
+  if (error) {
+    throw Object.assign(new Error(`clearSandboxAssignmentIfRef failed: ${error.message}`), {
+      code: error.code,
+    });
+  }
+  return data ? 'cleared' : 'no_op';
+}
+
 export async function setTechnicianState(
   id: string,
   state: TechnicianState,

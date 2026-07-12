@@ -1,6 +1,6 @@
 import { execFile, execSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -243,5 +243,214 @@ describe.skipIf(!haveTools)('badge-pull.sh empty-file guard', () => {
     expect(result.code).toBe(0);
     expect(existsSync(join(dir, 'apply.log'))).toBe(false); // apply never invoked
     expect(existsSync(join(dir, 'bindings-applied.json'))).toBe(false);
+  });
+
+  // Badge auto-install (recycler feature). The real install (openshell provider
+  // update + docker restart) is stubbed via BADGE_INSTALL_CMD and proven live in
+  // Phase 5; these lock in the loop's routing: install on success, pending-file
+  // parking on failure or missing sandboxRef, and per-row isolation.
+  async function writeInstallStub(): Promise<string> {
+    const stub = join(dir, 'install-stub.sh');
+    await writeFile(
+      stub,
+      '#!/usr/bin/env bash\necho "$1 $2" >> "$INSTALL_LOG"\n' +
+        'if [ "$1" = "${INSTALL_FAIL_REF:-}" ]; then exit 1; fi\n' +
+        'if [ "$1" = "${INSTALL_STORED_REF:-}" ]; then exit 2; fi\nexit 0\n',
+      { mode: 0o755 },
+    );
+    return stub;
+  }
+  const installEnv = (stub: string, extra: Record<string, string> = {}) => ({
+    BADGE_INSTALL_CMD: stub,
+    INSTALL_LOG: join(dir, 'install.log'),
+    ...extra,
+  });
+  const withBadges = (newBadges: unknown) =>
+    JSON.stringify({ badgesFile: {}, newBadges });
+
+  it('auto-installs a minted badge: install cmd called with ref+plaintext, NOTHING parked on disk', async () => {
+    await writeEnvFile();
+    const stub = await writeInstallStub();
+    responseBody = withBadges([
+      { ref: 'jane', tenantId: 't1', sandboxRef: 's-a', badge: 'badge-plain-1' },
+    ]);
+    const result = await runScript(installEnv(stub));
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('badge installed for s-a');
+    expect(await readFile(join(dir, 'install.log'), 'utf8')).toBe('s-a badge-plain-1\n');
+    expect(existsSync(pendingFile)).toBe(false); // plaintext died with the process
+  });
+
+  it('a failed install is parked in the pending file and isolated; the good one still installs; unit exits nonzero', async () => {
+    await writeEnvFile();
+    const stub = await writeInstallStub();
+    responseBody = withBadges([
+      { ref: 'ok', tenantId: 't1', sandboxRef: 's-ok', badge: 'b-ok' },
+      { ref: 'bad', tenantId: 't1', sandboxRef: 's-bad', badge: 'b-bad' },
+    ]);
+    const result = await runScript(installEnv(stub, { INSTALL_FAIL_REF: 's-bad' }));
+    expect(result.code).not.toBe(0); // failure visible on the unit
+    expect(result.stderr).toContain('FAILED to auto-install badge for s-bad');
+    expect(result.stdout).toContain('badge installed for s-ok');
+    // Only the failed entry is parked — the good one's plaintext never hit disk.
+    const pending = (await readFile(pendingFile, 'utf8')).trim().split('\n');
+    expect(pending).toHaveLength(1);
+    expect(JSON.parse(pending[0])).toMatchObject({ ref: 'bad', badge: 'b-bad' });
+  });
+
+  it('exit 2 (stored, not restarted) parks with restart-only guidance — never a second provider write', async () => {
+    await writeEnvFile();
+    const stub = await writeInstallStub();
+    responseBody = withBadges([
+      { ref: 'half', tenantId: 't1', sandboxRef: 's-half', badge: 'b-half' },
+    ]);
+    const result = await runScript(installEnv(stub, { INSTALL_STORED_REF: 's-half' }));
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('STORED but container not restarted');
+    expect(result.stderr).toContain('only the RESTART');
+    expect(JSON.parse((await readFile(pendingFile, 'utf8')).trim())).toMatchObject({
+      ref: 'half',
+    });
+  });
+
+  it('an entry with no sandboxRef is parked for manual install; the install cmd is never invoked', async () => {
+    await writeEnvFile();
+    const stub = await writeInstallStub();
+    responseBody = withBadges([{ ref: 'legacy', tenantId: 't1', sandboxRef: null, badge: 'b-l' }]);
+    const result = await runScript(installEnv(stub));
+    expect(result.code).toBe(0); // parking a legacy row is not a failure
+    expect(result.stdout).toContain('no sandboxRef — parked');
+    expect(existsSync(join(dir, 'install.log'))).toBe(false);
+    expect(JSON.parse((await readFile(pendingFile, 'utf8')).trim())).toMatchObject({
+      ref: 'legacy',
+    });
+  });
+
+  // Sandbox retirements (recycler). The recycler service itself runs only on a
+  // real box; these lock in badge-pull's queueing: file-per-ref, skip-if-bound
+  // safety, idempotent re-queue, kick-on-nonempty-queue, path safety.
+  async function writeKickStub(): Promise<string> {
+    const stub = join(dir, 'kick-stub.sh');
+    await writeFile(stub, '#!/usr/bin/env bash\necho kicked >> "$KICK_LOG"\nexit 0\n', {
+      mode: 0o755,
+    });
+    return stub;
+  }
+  const recycleEnv = (stub: string, extra: Record<string, string> = {}) => ({
+    RECYCLER_QUEUE_DIR: join(dir, 'queue'),
+    RECYCLE_KICK_CMD: stub,
+    KICK_LOG: join(dir, 'kick.log'),
+    ...extra,
+  });
+  const withRetirements = (retirements: unknown, bindings?: unknown) =>
+    JSON.stringify({ badgesFile: {}, newBadges: [], retirements, ...(bindings ? { bindings } : {}) });
+
+  it('queues a retirement as a file named by its ref and kicks the recycler; re-queue is idempotent but still kicks', async () => {
+    await writeEnvFile();
+    const kick = await writeKickStub();
+    responseBody = withRetirements([{ sandboxRef: 's4' }]);
+
+    const first = await runScript(recycleEnv(kick));
+    expect(first.code).toBe(0);
+    expect(first.stdout).toContain('queued s4 for recycling');
+    expect(existsSync(join(dir, 'queue', 's4'))).toBe(true);
+    expect(await readFile(join(dir, 'kick.log'), 'utf8')).toBe('kicked\n');
+
+    // Same retirement next tick: no duplicate queueing, but the kick still
+    // fires (a kept entry — crash resume / rosterCleared retry — needs it).
+    const second = await runScript(recycleEnv(kick));
+    expect(second.code).toBe(0);
+    expect(second.stdout).not.toContain('queued s4');
+    expect(await readFile(join(dir, 'kick.log'), 'utf8')).toBe('kicked\nkicked\n');
+  });
+
+  it('never queues a sandbox the same pull actively binds (destroy fails toward NOT)', async () => {
+    await writeEnvFile();
+    const kick = await writeKickStub();
+    responseBody = withRetirements(
+      [{ sandboxRef: 's4' }],
+      [{ ref: 'jane', sandboxRef: 's4', telegramUserId: '111' }],
+    );
+    const result = await runScript({
+      ...recycleEnv(kick),
+      BIND_APPLY_CMD: await writeApplyStub(),
+      APPLY_LOG: join(dir, 'apply.log'),
+      BINDINGS_FILE: join(dir, 'bindings-applied.json'),
+    });
+    expect(result.code).toBe(0); // transient CAS window — not a unit failure
+    expect(result.stderr).toContain('SKIPPED — this pull also ships an active binding');
+    expect(existsSync(join(dir, 'queue', 's4'))).toBe(false);
+    expect(existsSync(join(dir, 'kick.log'))).toBe(false); // empty queue → no kick
+  });
+
+  it('rejects a retirement ref that is not a plain sandbox name (it becomes a filename)', async () => {
+    await writeEnvFile();
+    const kick = await writeKickStub();
+    responseBody = withRetirements([{ sandboxRef: '../etc/cron.d/evil' }]);
+    const result = await runScript(recycleEnv(kick));
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('not a valid sandbox name');
+    expect(existsSync(join(dir, 'queue'))).toBe(false); // nothing was created
+  });
+
+  it('absent retirements key (old server) → no queue dir, no kick', async () => {
+    await writeEnvFile();
+    const kick = await writeKickStub();
+    responseBody = JSON.stringify(EMPTY);
+    const result = await runScript(recycleEnv(kick));
+    expect(result.code).toBe(0);
+    expect(existsSync(join(dir, 'queue'))).toBe(false);
+    expect(existsSync(join(dir, 'kick.log'))).toBe(false);
+  });
+
+  it('kicks on a NON-EMPTY queue even when retirements[] is empty (rosterCleared retry / crash resume)', async () => {
+    // Once the server stamps a row retired, retirements[] stops carrying it —
+    // a kept queue entry is re-driven ONLY by this kick.
+    await writeEnvFile();
+    const kick = await writeKickStub();
+    await mkdir(join(dir, 'queue'), { recursive: true });
+    await writeFile(join(dir, 'queue', 's4'), '');
+    responseBody = withRetirements([]);
+    const result = await runScript(recycleEnv(kick));
+    expect(result.code).toBe(0);
+    expect(await readFile(join(dir, 'kick.log'), 'utf8')).toBe('kicked\n');
+  });
+
+  it('a PARKED ref (failed/) is never re-queued; a failing kick turns the unit red', async () => {
+    await writeEnvFile();
+    const failingKick = join(dir, 'kick-fail.sh');
+    await writeFile(failingKick, '#!/usr/bin/env bash\nexit 1\n', { mode: 0o755 });
+    await mkdir(join(dir, 'failed'), { recursive: true });
+    await writeFile(join(dir, 'failed', 's4'), '');
+    responseBody = withRetirements([{ sandboxRef: 's4' }, { sandboxRef: 's6' }]);
+    const result = await runScript({
+      ...recycleEnv(failingKick),
+      RECYCLER_FAILED_DIR: join(dir, 'failed'),
+    });
+    expect(result.code).not.toBe(0); // kick failure is visible
+    expect(result.stderr).toContain('s4 is PARKED');
+    expect(result.stderr).toContain('recycler kick failed');
+    expect(existsSync(join(dir, 'queue', 's4'))).toBe(false); // parked → not queued
+    expect(existsSync(join(dir, 'queue', 's6'))).toBe(true); // the healthy one queued
+  });
+
+  it('a badge failure does not skip the bindings reconcile (combined exit)', async () => {
+    await writeEnvFile();
+    const installStub = await writeInstallStub();
+    const applyStub = await writeApplyStub();
+    responseBody = JSON.stringify({
+      badgesFile: {},
+      newBadges: [{ ref: 'bad', tenantId: 't1', sandboxRef: 's-bad', badge: 'b-bad' }],
+      bindings: [{ ref: 'jane', sandboxRef: 's-a', telegramUserId: '111' }],
+    });
+    const result = await runScript({
+      ...installEnv(installStub, { INSTALL_FAIL_REF: 's-bad' }),
+      ...bindEnv(applyStub),
+    });
+    expect(result.code).not.toBe(0); // the badge failure is still visible…
+    expect(result.stdout).toContain('bound s-a -> 111'); // …but the binding applied
+    expect(JSON.parse(await readFile(join(dir, 'bindings-applied.json'), 'utf8'))).toEqual({
+      's-a': '111',
+    });
   });
 });

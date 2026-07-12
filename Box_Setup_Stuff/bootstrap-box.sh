@@ -16,6 +16,9 @@
 #                                                     # post-build assertions (never "silently deaf")
 #   sudo ./bootstrap-box.sh doorman                   # §3: service+unit+ufw   (needs GATEWAY_IDENTITY_SECRET)
 #   sudo ./bootstrap-box.sh badgepull                 # §3c roster pull        (needs HOST_PULL_TOKEN)
+#   sudo ./bootstrap-box.sh recycler                  # sandbox recycler: destroy retired seat →
+#                                                     # re-provision cold blank → report to spine
+#                                                     # (needs /root/nemoclaw-provision.env w/ NVIDIA key)
 #        ./bootstrap-box.sh wire <AGENT>              # §5a egress policy + §5b instructions
 #   sudo ./bootstrap-box.sh boot <AGENT>              # §7: boot-revive oneshot
 #        ./bootstrap-box.sh backup-identity <AGENT>   # snapshot device key BEFORE any rebuild
@@ -421,6 +424,38 @@ EOF
   echo "NEXT: ./bootstrap-box.sh wire <AGENT>   (as ${NEMOCLAW_USER})"
 }
 
+# ──────────────────────────────────────────────────────────────── recycler ──
+# Installs the sandbox recycler: badge-pull queues the server's retirements[]
+# into /var/lib/sandbox-recycler/queue and kicks this service, which destroys
+# the retired sandbox, re-provisions a fresh cold blank REUSING its bot, and
+# reports the swap back (POST /control/sandboxes). Prereqs on this box:
+# badge-pull deployed (this build's version), /root/nemoclaw-provision.env
+# holding a CURRENT NVIDIA_INFERENCE_API_KEY (600), docker + nemoclaw stack.
+phase_recycler() {
+  need_root
+  command -v jq >/dev/null || fail "jq missing — run the prep phase"
+
+  log "installing recycle-sandbox.sh + sandbox-recycler.service (+ bootstrap self-copy)"
+  install -o root -g root -m 700 "$SCRIPT_DIR/recycle-sandbox.sh" /usr/local/sbin/recycle-sandbox.sh
+  # The recycler drives this script's provision/wire/boot/backup-identity
+  # phases from systemd context — give it a stable path.
+  install -o root -g root -m 755 "$SCRIPT_DIR/bootstrap-box.sh" /usr/local/sbin/bootstrap-box.sh
+  install -o root -g root -m 644 "$SCRIPT_DIR/sandbox-recycler.service" /etc/systemd/system/sandbox-recycler.service
+  mkdir -p /var/lib/sandbox-recycler/queue /var/lib/sandbox-recycler/journal /var/lib/sandbox-recycler/failed
+  chmod 700 /var/lib/sandbox-recycler /var/lib/sandbox-recycler/queue \
+    /var/lib/sandbox-recycler/journal /var/lib/sandbox-recycler/failed
+  systemctl daemon-reload
+  ok "recycler installed (no timer — badge-pull kicks it when the queue is non-empty)"
+
+  if [ -f /root/nemoclaw-provision.env ]; then
+    grep -q '^NVIDIA_INFERENCE_API_KEY=' /root/nemoclaw-provision.env \
+      && ok "/root/nemoclaw-provision.env has NVIDIA_INFERENCE_API_KEY" \
+      || echo "    ! /root/nemoclaw-provision.env exists but lacks NVIDIA_INFERENCE_API_KEY= — recycles will fail until set"
+  else
+    echo "    ! /root/nemoclaw-provision.env MISSING — write it (chmod 600) with a CURRENT NVIDIA_INFERENCE_API_KEY= before the first recycle"
+  fi
+}
+
 # ─────────────────────────────────────────────────────────── wire (§5a/5b) ──
 phase_wire() {
   need_not_root
@@ -665,6 +700,18 @@ phase_verify() {
   done
   systemctl is-enabled nemoclaw-boot.service >/dev/null 2>&1 && ok "nemoclaw-boot.service enabled" || { echo "    ✗ nemoclaw-boot.service not enabled"; warn=$((warn+1)); }
 
+  log "recycler (installed by the recycler phase; kicked by badge-pull, no timer)"
+  if [ -f /etc/systemd/system/sandbox-recycler.service ] && [ -x /usr/local/sbin/recycle-sandbox.sh ]; then
+    [ -d /var/lib/sandbox-recycler/queue ] \
+      && { ok "recycler installed (unit + script + queue dir)"; pass=$((pass+1)); } \
+      || { echo "    ✗ recycler queue dir missing — re-run: sudo ./bootstrap-box.sh recycler"; warn=$((warn+1)); }
+    if [ -n "$(ls -A /var/lib/sandbox-recycler/failed 2>/dev/null)" ]; then
+      echo "    ✗ recycler has PARKED entries needing an operator: $(ls -m /var/lib/sandbox-recycler/failed)"; warn=$((warn+1))
+    fi
+  else
+    echo "    - recycler not installed (optional until the recycler feature is deployed): sudo ./bootstrap-box.sh recycler"
+  fi
+
   log "doorman auth gates (no real badge needed — §3f)"
   rc=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST "http://${gw}:${DOORMAN_PORT}/mcp" \
         -H 'Content-Type: application/json' -d '{}' || echo 000)
@@ -786,6 +833,7 @@ case "${1:-help}" in
   provision)       shift; phase_provision "$@" ;;
   doorman)         phase_doorman ;;
   badgepull)       phase_badgepull ;;
+  recycler)        phase_recycler ;;
   wire)            shift; phase_wire "$@" ;;
   boot)            shift; phase_boot "$@" ;;
   backup-identity) shift; phase_backup_identity "$@" ;;

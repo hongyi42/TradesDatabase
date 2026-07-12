@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import type { Technician } from '../db/technicians.js';
+import type { SandboxPoolRow } from '../db/sandboxPool.js';
 import { sha256hex } from './badges.js';
 import { buildBadgeResponse } from './badgeFile.js';
 
@@ -33,10 +34,31 @@ function row(over: Partial<Technician>): Technician {
   };
 }
 
-// In-memory stand-ins for the two db calls buildBadgeResponse makes. claim
+// Pool-row stand-in for the retirements dep (only sandbox_ref is read).
+function poolRow(over: Partial<SandboxPoolRow>): SandboxPoolRow {
+  return {
+    id: 'pool-1',
+    tenant_id: 'tenant-1',
+    host_id: HOST,
+    sandbox_ref: 's1',
+    technician_id: null,
+    bot_username: null,
+    retire_requested_at: '2026-07-12T00:00:00.000Z',
+    retired_at: null,
+    retired_technician_id: null,
+    created_at: '2026-07-11T00:00:00.000Z',
+    ...over,
+  };
+}
+
+// In-memory stand-ins for the three db calls buildBadgeResponse makes. claim
 // mirrors claimBadgeHash's write-if-still-null contract; failIds simulates a
-// transient DB error for specific rows.
-function stubs(rows: Technician[], opts: { failIds?: string[] } = {}) {
+// transient DB error for specific rows. listRetirements defaults empty — the
+// live default would hit the DB with this file's fake host id.
+function stubs(
+  rows: Technician[],
+  opts: { failIds?: string[]; retirements?: SandboxPoolRow[] } = {},
+) {
   const claims: Array<{ id: string; hash: string }> = [];
   return {
     claims,
@@ -49,6 +71,7 @@ function stubs(rows: Technician[], opts: { failIds?: string[] } = {}) {
       target.badge_hash = hash;
       return target;
     },
+    listRetirements: async () => opts.retirements ?? [],
   };
 }
 
@@ -96,7 +119,11 @@ describe('buildBadgeResponse', () => {
       return row({ id: 'a', ref: 'contested', badge_hash: hash });
     };
     dbHash = winner; // winner already minted between the loser's list and claim
-    const lost = await buildBadgeResponse(HOST, { list: async () => [snapshot], claim });
+    const lost = await buildBadgeResponse(HOST, {
+      list: async () => [snapshot],
+      claim,
+      listRetirements: async () => [],
+    });
     expect(lost.newBadges).toHaveLength(0); // loser hands out NO plaintextâ€¦
     expect(Object.keys(lost.badgesFile)).toHaveLength(0); // â€¦and no stale-guess entry
 
@@ -104,6 +131,7 @@ describe('buildBadgeResponse', () => {
     const healed = await buildBadgeResponse(HOST, {
       list: async () => [row({ id: 'a', ref: 'contested', badge_hash: winner })],
       claim,
+      listRetirements: async () => [],
     });
     expect(healed.newBadges).toHaveLength(0);
     expect(healed.badgesFile[winner]).toMatchObject({ technicianRef: 'contested' });
@@ -191,5 +219,27 @@ describe('buildBadgeResponse bindings (Feature A)', () => {
       ]),
     );
     expect(result.bindings).toEqual([]);
+  });
+});
+
+describe('buildBadgeResponse retirements (recycler)', () => {
+  test('pending retirements ride the pull as {sandboxRef}, independent of the roster loop', async () => {
+    // No roster rows at all — a retired-then-released sandbox has no roster
+    // echo, so retirements must not depend on the badge/binding loop.
+    const result = await buildBadgeResponse(
+      HOST,
+      stubs([], {
+        retirements: [
+          poolRow({ id: 'p1', sandbox_ref: 's4' }),
+          poolRow({ id: 'p2', sandbox_ref: 's7' }),
+        ],
+      }),
+    );
+    expect(result.retirements).toEqual([{ sandboxRef: 's4' }, { sandboxRef: 's7' }]);
+  });
+
+  test('no pending retirements → empty array (key always present for the box)', async () => {
+    const result = await buildBadgeResponse(HOST, stubs([row({ id: 'a' })]));
+    expect(result.retirements).toEqual([]);
   });
 });

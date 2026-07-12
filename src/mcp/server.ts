@@ -22,6 +22,8 @@ import {
   listFreeSandboxes,
   listPoolRows,
   claimSandbox,
+  requestSandboxRetirement as liveRequestRetirement,
+  cancelSandboxRetirement as liveCancelRetirement,
   updateTechnician,
   getTenant,
   insertTechnician,
@@ -92,6 +94,9 @@ export interface ServerDeps {
   sendEmail?: typeof liveSendGmailEmail;
   teardownSession?: typeof liveTeardownSession;
   optimizeStopOrder?: typeof liveOptimizeStopOrder; // Google Routes seam — tests never need the key
+  // Sandbox recycling seams (same reason as the pairing seams above).
+  requestRetirement?: typeof liveRequestRetirement;
+  cancelRetirement?: typeof liveCancelRetirement;
 }
 
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
@@ -290,7 +295,9 @@ const ADMIN_TOOLS = [
     description:
       'Deactivate a team member (manager only). Two-step: first call returns ' +
       '{status:"needs_confirmation", confirmId} — confirm with the person, then call again ' +
-      'with the same ref plus confirmId. Frees the seat immediately; history stays attributed.',
+      'with the same ref plus confirmId. Frees the seat immediately; history stays attributed. ' +
+      "If they have an assistant sandbox, confirming also permanently destroys it (including " +
+      'its chat memory) and recycles the slot into the pool as a fresh blank.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1288,11 +1295,24 @@ async function dispatch(
           subjectRef: ref,
           detail: { requestedBy: identity.technicianRef },
         });
+        // Destruction is part of what the manager is confirming — say it in
+        // THE one confirmation (no second prompt), and only when confirming
+        // will actually destroy something: retirement stamps POOL rows, so a
+        // legacy assignment (roster sandbox_ref, no pool row) gets no warning
+        // — and no destruction. The pool row also catches the inverse edge
+        // (claim landed, roster patch lost): warn, because it WILL recycle.
+        const poolRow = await getPoolRowByTechnician(target.id);
         return {
           status: 'needs_confirmation',
           confirmId: item.id,
           ref,
           displayName: target.display_name,
+          ...(poolRow &&
+            !poolRow.retired_at && {
+              note:
+                `confirming permanently destroys ${target.display_name}'s assistant and its ` +
+                'chat memory; the sandbox is recycled into your pool as a fresh blank within ~15 minutes',
+            }),
         };
       }
       // Validate the token with a point read whose guards all live in the WHERE
@@ -1324,6 +1344,15 @@ async function dispatch(
       // the expiry teardown is the backstop if Composio is unreachable now.
       try {
         await (deps.disablePairing ?? liveDisablePairing)(target);
+      } catch {
+        /* advisory */
+      }
+      // Mark their sandbox for recycling — the box destroys + re-pools it on
+      // its next pull (reactivation during grace cancels a still-pending
+      // request). Advisory: nothing re-drives a missed stamp automatically;
+      // support can stamp the row by hand.
+      try {
+        await (deps.requestRetirement ?? liveRequestRetirement)(target.id);
       } catch {
         /* advisory */
       }
@@ -1415,6 +1444,22 @@ async function dispatch(
       } catch {
         /* advisory */
       }
+      // Cancel a still-pending sandbox retirement — the undo must land before
+      // the box's next pull destroys their assistant. Advisory; if nothing was
+      // pending AND no pool row points at them, there is no live sandbox (it
+      // was already recycled, or none was ever claimed) — say so and route the
+      // manager to bind_telegram rather than leaving them to discover it.
+      let hasSandbox = true;
+      try {
+        await (deps.cancelRetirement ?? liveCancelRetirement)(target.id);
+        // Pool row = live claim; roster sandbox_ref alone = legacy assignment
+        // (pre-pool rows have no pool row but a very alive sandbox). Only when
+        // BOTH are gone is there provably nothing to answer on.
+        hasSandbox =
+          target.sandbox_ref !== null || (await getPoolRowByTechnician(target.id)) !== null;
+      } catch {
+        /* advisory — err on silence over a wrong "gone" note */
+      }
       // Switch the pairing back on. Advisory, but SURFACED: if this fails the
       // person is active with dark mail — the manager retries via this tool.
       let pairingRestored: boolean | null = null;
@@ -1426,14 +1471,22 @@ async function dispatch(
           pairingRestored = false;
         }
       }
+      const notes: string[] = [];
+      if (restoredState === 'invited') {
+        notes.push('no mailbox was ever connected — use get_connect_link to pair them');
+      }
+      if (!hasSandbox) {
+        notes.push(
+          'no live assistant sandbox for this person (a previous one may have been recycled) — ' +
+            'use bind_telegram to claim a fresh one',
+        );
+      }
       return {
         status: 'reactivated',
         ref,
         state: restoredState,
         pairingRestored,
-        ...(restoredState === 'invited' && {
-          note: 'no mailbox was ever connected — use get_connect_link to pair them',
-        }),
+        ...(notes.length > 0 && { note: notes.join('; ') }),
       };
     }
     case 'get_connect_link': {
@@ -1536,7 +1589,17 @@ async function dispatch(
           }
         }
         if (!pool) {
-          throw new Error('no free sandbox in the cold pool — contact support to add capacity');
+          // Honest emptiness: a swap-in-progress means a blank is minutes away
+          // (the recycler is rebuilding the deactivated member's sandbox) —
+          // "contact support" is only true when nothing is in flight.
+          const recycling = (await listPoolRows(tenantId)).some(
+            (r) => r.retire_requested_at && !r.retired_at,
+          );
+          throw new Error(
+            recycling
+              ? 'no free sandbox yet — one is being recycled and should be ready in ~15 minutes; try again then'
+              : 'no free sandbox in the cold pool — contact support to add capacity',
+          );
         }
         patch.host_id = pool.host_id;
         patch.sandbox_ref = pool.sandbox_ref;

@@ -217,6 +217,20 @@ register side-by-side in the gateway's `mcp.servers`.
   (see *Secret custody + gateway wiring* below). `scripts/provision-session.mjs` is diagnostics-only.
   Consequence for Feature A: a chat-only hire's auto-claimed sandbox gets Composio access with NO
   operator wiring — the relay reads `composio_session_id` per request.
+- **Sandbox recycling (2026-07-12, zero-operator member replacement):** a manager's CONFIRMED
+  `deactivate_technician_seat` (the one confirmation now warns that the person's assistant and
+  its chat memory are destroyed) marks the sandbox for retirement; the box's 5-min badge pull
+  carries it (`retirements[]`), badge-pull queues it, and `sandbox-recycler.service` runs
+  destroy → re-provision a fresh cold blank under the NEXT ref **reusing the same Telegram bot**
+  → `POST /control/sandboxes` (host pull-token) so the server retires the old pool row, racks
+  the new blank, and clears the roster residue. Pool refills ~15 min after a swap; badge install
+  for the NEXT hire is also automatic now (badge-pull installs + restarts the container, pending
+  file = failure fallback only). **Reactivation during the grace period cancels a still-pending
+  retirement (assistant intact); after destruction the person reactivates to a note routing the
+  manager to `bind_telegram`, which claims a fresh blank — the agent's memory does not survive a
+  recycle.** Failure surfaces: `/var/lib/sandbox-recycler/failed/` = parked entries needing an
+  operator (dead bot token, server 409) — `bootstrap-box.sh verify` flags them. Details: setup
+  guide §10.
 
 **Phase-5 live verification (2026-07-04, fresh-context probe against the live project):**
 - **Enforcement re-confirmed with the production configs**: technician session rejects

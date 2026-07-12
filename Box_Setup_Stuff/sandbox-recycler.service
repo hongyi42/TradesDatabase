@@ -1,0 +1,20 @@
+# sandbox-recycler.service — drain the retirement queue: destroy retired
+# sandboxes, re-provision fresh cold blanks (reusing each bot), report to the
+# spine. Kicked by badge-pull.sh (`systemctl start --no-block`) whenever the
+# queue is non-empty — no timer of its own; a stuck entry is re-kicked every
+# 5-min pull tick. Type=oneshot serializes runs (a second start while one is
+# active is a no-op), which is load-bearing: one ~10-min provision at a time.
+# Installed by: sudo ./bootstrap-box.sh recycler
+[Unit]
+Description=Trades sandbox recycler (destroy retired sandbox, re-provision cold blank, report to spine)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/recycle-sandbox.sh
+# Root: teardown needs docker + systemd unit removal; provision needs the
+# bootstrap phase (itself need_root). Secrets touched: bot token (journal,
+# root-only 700 dirs) and the NVIDIA key file (/root/nemoclaw-provision.env).
+User=root
+TimeoutStartSec=30min

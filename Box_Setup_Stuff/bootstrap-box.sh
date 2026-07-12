@@ -45,16 +45,21 @@ fail() { printf '    ✗ %s\n' "$*" >&2; exit 1; }
 need_root()     { [ "$(id -u)" -eq 0 ] || fail "run this phase with sudo"; }
 need_not_root() { [ "$(id -u)" -ne 0 ] || fail "run this phase as ${NEMOCLAW_USER}, not root"; }
 
-# install(1) errors on src==dst ("are the same file"). Since the recycler runs
-# the /usr/local/sbin self-copy of this script, any companion-file install whose
-# SCRIPT_DIR is already /usr/local/sbin must no-op instead of dying (bit the
-# first live recycle, 2026-07-12: boot phase failed on sandbox-token-medic.mjs).
+# Companion-file install that tolerates running from the /usr/local/sbin
+# SELF-COPY of this script (how the recycler drives phases). Two cases the
+# plain install(1) dies on, both hit by the first live recycle (2026-07-12):
+#   src == dst          → "are the same file"     → keep it, skip
+#   src missing, dst ok → "cannot stat" (.service sources live only in the
+#                          checkout) → keep the installed copy, skip
+# Neither exists → real failure (fresh box missing its files): fail loud.
 install_unless_same() {
   local mode="$1" src="$2" dst="$3"
-  if [ -e "$dst" ] && [ "$src" -ef "$dst" ]; then
-    skip "$(basename "$dst") (installing onto itself)"
-  else
+  if [ -e "$dst" ] && { [ ! -e "$src" ] || [ "$src" -ef "$dst" ]; }; then
+    skip "$(basename "$dst") (keeping installed copy)"
+  elif [ -e "$src" ]; then
     install -o root -g root -m "$mode" "$src" "$dst"
+  else
+    fail "$(basename "$dst"): source missing ($src) and nothing installed at $dst"
   fi
 }
 
@@ -453,7 +458,7 @@ phase_recycler() {
   # The recycler drives this script's provision/wire/boot/backup-identity
   # phases from systemd context — give it a stable path.
   install_unless_same 755 "$SCRIPT_DIR/bootstrap-box.sh" /usr/local/sbin/bootstrap-box.sh
-  install -o root -g root -m 644 "$SCRIPT_DIR/sandbox-recycler.service" /etc/systemd/system/sandbox-recycler.service
+  install_unless_same 644 "$SCRIPT_DIR/sandbox-recycler.service" /etc/systemd/system/sandbox-recycler.service
   mkdir -p /var/lib/sandbox-recycler/queue /var/lib/sandbox-recycler/journal /var/lib/sandbox-recycler/failed
   chmod 700 /var/lib/sandbox-recycler /var/lib/sandbox-recycler/queue \
     /var/lib/sandbox-recycler/journal /var/lib/sandbox-recycler/failed
@@ -670,7 +675,7 @@ EOF
 
   log "sandbox-token-medic (§7 — 2026-07-05: sandbox JWT file expires across reboots)"
   install_unless_same 755 "$SCRIPT_DIR/sandbox-token-medic.mjs" /usr/local/sbin/sandbox-token-medic.mjs
-  install -o root -g root -m 644 "$SCRIPT_DIR/sandbox-token-medic.service" /etc/systemd/system/sandbox-token-medic.service
+  install_unless_same 644 "$SCRIPT_DIR/sandbox-token-medic.service" /etc/systemd/system/sandbox-token-medic.service
   systemctl daemon-reload
   systemctl enable sandbox-token-medic.service
   ok "sandbox-token-medic.service enabled (heals expired sandbox tokens before revive)"

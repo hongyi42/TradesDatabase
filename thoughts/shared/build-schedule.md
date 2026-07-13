@@ -9,7 +9,19 @@ the prior thinking lives. Newest decisions at the top of each entry.
 
 ---
 
-## Feature E — web search via Brave, ALL tiers (queued 2026-07-11; tier decision made same day)
+## Feature E — web search via Brave, ALL tiers (queued 2026-07-11; IMPLEMENTING 2026-07-13)
+
+**STATUS 2026-07-13:** plan approved + phases 1-3 implemented on branch
+`feature-e-web-search-fetch` — see `thoughts/shared/plans/2026-07-12-web-search-fetch-hardened.md`.
+Architecture pivoted during planning (user decisions 2026-07-12): the tools ship as **spine MCP
+tools on Render** (`web_search` + `read_webpage`), NOT the native OpenClaw toolset below — the
+Brave key never enters a sandbox, no new sandbox egress, badge revocation covers web access.
+Fetch is INCLUDED (user decision, no confirm gate) with server-side hardening: provenance-tiered
+URL caps, SSRF guard, per-person daily caps, attempt logging (`web_requests` table). PDFs
+supported (pdf-parse v2). Remaining at deploy (plan Phase 4): pilot migration, `BRAVE_API_KEY`
+on Render (Search plan key obtained), Brave usage alert, per-sandbox allowlist check + wire
+re-run, live Telegram E2E. The vendor-config research below is retained as the record of the
+road not taken.
 
 **What:** let the bots search the web, AND harden against prompt injection from web content —
 the two ship together (user direction 2026-07-11: the config switch is trivial; the hardening

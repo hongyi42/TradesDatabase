@@ -2,7 +2,7 @@
 date: 2026-07-12
 task: Feature E — web_search + read_webpage as hardened trades-spine tools (Brave on Render, fetch with our-side exfil/injection hardening)
 research: thoughts/shared/research/2026-07-12-brave-search-configuration.md
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -367,4 +367,12 @@ reject; (4) `web_search` logs query before Brave; (5) redirect off-by-one; (6) e
 double-decode; (7) undici socket leak. Surfaced but deferred: cap check-then-insert race
 (needs atomic counter), non-UTF-8 charset decode, stale `scripts/smoke-http.mjs` count.
 
-**This plan flips `status: draft → complete` only after PR #35 merges and Render redeploys.**
+**COMPLETE 2026-07-13.** PR #35 merged to `main` (`03d8bb6`) and Render redeployed. Live
+post-deploy probe against `tradesdatabase.onrender.com` (as `claude-probe`, pilot tenant)
+confirmed: 12-tool surface incl. both web tools; Brave search returns real results; a real
+result page fetched cleanly through the rewritten linear `htmlToText` (25KB extracted, tags
+stripped, `HVAC&R` bare-`&` preserved); and — the deploy-freshness tell — an over-length URL
+was rejected *and* logged a `web_requests` fetch row (fix #3's log-before-reject, which the
+pre-#35 code lacked), proving the merged commit is the one serving traffic. No gateway restart
+was needed (no tool-surface change). ReDoS/NaN/redirect/entity/socket fixes are covered by the
+396-test suite; #1's 0.8ms behavior was measured directly rather than probed against prod.

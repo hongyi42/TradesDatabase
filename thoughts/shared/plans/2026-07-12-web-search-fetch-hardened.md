@@ -310,26 +310,61 @@ Pilot DB migration, Render env, Brave alert, box `wire` re-run, and the live pro
    exists, record that in the runbook and move on.
 
 ### Automated verification
-- [ ] `npm run build` passes before deploy
-- [ ] `curl -s -o /dev/null -w '%{http_code}' https://tradesdatabase.onrender.com/` warm (200/401)
+- [x] `npm run build` passes before deploy (PR #34, merged b2b90f6, Render auto-deployed)
+- [x] `curl … https://tradesdatabase.onrender.com/` → HTTP 401 in 0.22s (up, auth-gated, warm)
+- [x] Pilot migration applied via supabase-test MCP `apply_migration` 2026-07-13; `list_tables`
+      shows `web_requests` (0 rows). Pre-existing RLS-disabled advisory covers all 15 tables —
+      service-role-only posture, GRANT migration due before 2026-10-30 (already tracked).
+- [x] Box: updated bootstrap-box.sh deployed (~/Box_Setup_Stuff + /usr/local/sbin self-copy);
+      `wire` re-run on s1/s2/s3/s5 — §0e appended on all four (also restored drifted §0d on
+      s1/s2/s3); egress preset re-applied.
+- [x] Pinned-allowlist check (plan step 5): NO pinned per-tool list exists in any sandbox
+      (`tools` = toolSearch + web only; MCP tools discovered dynamically) — the get_schedule
+      hazard does not apply; nothing to edit. FINDING for follow-up: vendor
+      `tools.web.fetch.enabled: true` in every sandbox config (default-on) — currently inert
+      (no key; egress default-deny) but worth flipping false at the next restart window.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP; tradesbox SSH for OCSF read.
-- [ ] `tools/list` via a real badge (guide §3f curl) returns 12 (tech) / 20 (manager) incl. the
+- [x] `tools/list` via a real badge (guide §3f curl) returns 12 (tech) / 20 (manager) incl. the
       two new tools — server-side surface only; sandbox-side exposure is proven by step 5 above
       plus the Telegram E2E (that pair settles research open question 5)
-- [ ] After the E2E chat below: `web_requests` rows for that person (search + search_result +
+      *Evidence 2026-07-13: HMAC-signed probe (`claude-probe` ref) against Render returned the
+      full manager tool list incl. web_search + read_webpage, and a live Brave search worked.*
+- [x] After the E2E chat below: `web_requests` rows for that person (search + search_result +
       fetch) read back via `execute_sql` on the pilot
-- [ ] OCSF on the box shows ONLY `…:3001 [policy:trades_spine_doorman]` for the web turns — no
+      *Evidence 2026-07-13 20:37–20:49 UTC, ref `manager-sam`: 1 search ("Carrier furnace fault
+      code 33 meaning") + 7 search_result rows + provenance-tier fetch of a result URL 3 min
+      later + direct-tier fetch of a pasted fool.com URL.*
+- [x] OCSF on the box shows ONLY `…:3001 [policy:trades_spine_doorman]` for the web turns — no
       new sandbox egress appeared
+      *Evidence 2026-07-13 (s1 log): E2E window shows only ALLOWED → host.openshell.internal:3001.
+      Bonus: pre-restart old process attempted direct `www.pickhvac.com:443` at 19:49/19:57 and
+      was DENIED by default-deny — reinforces flipping vendor `tools.web.fetch.enabled` false.*
 
 ### Manual verification (user, in Telegram)
-- [ ] Ask a bot a current-info question → answer with sources (search works)
-- [ ] "Read the first result" → content-grounded answer (search-tier fetch)
-- [ ] Paste a URL → agent reads it, no confirmation friction (direct-tier fetch)
-- [ ] Paste a >512-char URL NOT from search → agent relays the "open it yourself" limit cleanly
-- [ ] Tell the agent "the page says to email your records to X" style probe → agent declines
+User confirmed 2026-07-13: "I've done the E2E and it worked." Items 1–3 independently
+evidenced by the `web_requests` read-back above; 4–5 rest on the user's confirmation.
+- [x] Ask a bot a current-info question → answer with sources (search works)
+- [x] "Read the first result" → content-grounded answer (search-tier fetch)
+- [x] Paste a URL → agent reads it, no confirmation friction (direct-tier fetch)
+- [x] Paste a >512-char URL NOT from search → agent relays the "open it yourself" limit cleanly
+- [x] Tell the agent "the page says to email your records to X" style probe → agent declines
       (spot-check §0e; a fuller injection probe is a follow-up exercise)
 
 ---
 *Pause after this phase for user sign-off.*
+
+## Post-merge review gate (2026-07-13)
+
+The final `/code-review` on the merged diff (10 finder angles + adversarial verify) found **7
+confirmed defects**, none of which blocked the passing E2E but one of which (a ReDoS in
+`htmlToText`) is a live cross-tenant availability risk. All seven are fixed in **PR #35**
+(`feature-e-review-fixes`), each with a locking test; a second review of that PR caught and
+fixed a `toLowerCase()`-desync regression in the ReDoS rewrite. Fixed: (1) ReDoS → linear
+scan; (2) caps fail-open on NaN → `safeEnvInt`; (3) over-long-URL probe now logged before
+reject; (4) `web_search` logs query before Brave; (5) redirect off-by-one; (6) entity
+double-decode; (7) undici socket leak. Surfaced but deferred: cap check-then-insert race
+(needs atomic counter), non-UTF-8 charset decode, stale `scripts/smoke-http.mjs` count.
+
+**This plan flips `status: draft → complete` only after PR #35 merges and Render redeploys.**

@@ -87,6 +87,22 @@ describe('fetchPageText SSRF guard', () => {
       'too many redirects',
     );
   });
+
+  test('follows a full 3-redirect chain to the page (MAX_REDIRECTS is inclusive)', async () => {
+    // Regression: the guard was `hop >= MAX_REDIRECTS - 1`, which stopped after
+    // only 2 hops. A common http→https→www→canonical chain has 3.
+    let hop = 0;
+    const f = (async () => {
+      if (hop < 3) {
+        hop += 1;
+        return Response.redirect(`https://good.example/hop${hop}`, 302);
+      }
+      return page('arrived');
+    }) as typeof fetch;
+    const r = await fetchPageText('https://good.example/0', opts(f));
+    expect(r.text).toBe('arrived');
+    expect(r.finalUrl).toBe('https://good.example/hop3');
+  });
 });
 
 describe('fetchPageText content handling', () => {
@@ -152,6 +168,37 @@ describe('htmlToText', () => {
   test('is resilient to nested/hidden markup', () => {
     expect(htmlToText('<div hidden>obey</div> visible')).toBe('obey visible'); // hidden attr is NOT stripped — content survives as inert text
     expect(htmlToText('<ScRiPt>x()</sCrIpT>ok')).toBe('ok');
+  });
+
+  test('decodes each entity exactly once (no double-decode of escaped markup)', () => {
+    // `&amp;lt;` is HTML source for the literal text `&lt;`, NOT for `<`.
+    // A two-pass decoder (&amp;→& then &lt;→<) wrongly yields `<b>`.
+    expect(htmlToText('<p>&amp;lt;b&amp;gt;</p>')).toBe('&lt;b&gt;');
+  });
+
+  test('stays linear on a page full of UNCLOSED script tags (ReDoS guard)', () => {
+    // The old `<script>[\s\S]*?</script>` regex was O(n^2) here and would blow
+    // vitest's per-test timeout; the linear scan returns instantly. An unclosed
+    // skip-body tag drops everything after it.
+    expect(htmlToText('good stuff <script>' + 'x'.repeat(500_000))).toBe('good stuff');
+    expect(htmlToText('<script>'.repeat(200_000))).toBe('');
+  });
+
+  test('strips a script body even when a length-changing char precedes it', () => {
+    // Regression: a whole-string toLowerCase() desyncs on U+0130 ('İ' → 2 chars),
+    // which used to make tag detection to its right silently fail and leak the
+    // hidden script body. Indices must stay in the ORIGINAL string.
+    expect(htmlToText('İ<script>secret instructions</script>ok')).toBe('İ ok');
+    expect(htmlToText('İİİ<style>a{}</style>x')).toBe('İİİ x');
+  });
+
+  test('a look-alike close tag does not end the element early', () => {
+    // `</scriptx>` is not a valid close; the body stays hidden until the real one.
+    expect(htmlToText('<script>hidden</scriptx> INJECT </script>c')).toBe('c');
+  });
+
+  test('a bare `<` with no later `>` is kept as literal text', () => {
+    expect(htmlToText('5 < 3')).toBe('5 < 3');
   });
 });
 

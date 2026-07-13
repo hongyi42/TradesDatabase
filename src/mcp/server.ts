@@ -81,6 +81,20 @@ import {
   logWebRequests,
 } from '../db/webRequests.js';
 
+// Read a non-negative-integer env override, falling back to the safe default
+// for anything that isn't one. Bare `Number(process.env.X ?? d)` returns NaN on
+// a malformed value (e.g. "512px"), and every `count >= NaN` / `len > NaN`
+// comparison is then false — silently DISABLING the web caps that compensate
+// for shipping fetch without a confirm gate. A typo must fall back to the
+// documented limit, never turn the guard off.
+export function safeEnvInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  if (trimmed === '') return fallback; // Number('') is 0 — would block everything
+  const n = Number(trimmed);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+}
+
 // The single boundary the agent calls. The agent never holds the Supabase or
 // Anthropic keys — this server (launched by the gateway with those secrets in
 // env) is the only thing that touches the spine. The (tenant, technician)
@@ -1018,25 +1032,33 @@ async function dispatch(
       // Per-person rolling 24h cap — bounds Brave spend (no vendor cap) and,
       // with the fetch cap, the total web-facing surface a manipulated agent
       // can drive. The web_requests log IS the counter.
-      const searchLimit = Number(process.env.WEB_SEARCH_DAILY_LIMIT ?? 50);
+      const searchLimit = safeEnvInt(process.env.WEB_SEARCH_DAILY_LIMIT, 50);
       const used = await countRecentWebRequests(tenantId, identity.technicianRef, 'search');
       if (used >= searchLimit) {
         throw new Error(
           `daily web search limit reached (${searchLimit}/day) — try again tomorrow or ask the manager to raise it`,
         );
       }
-      const results = await (deps.webSearch ?? braveWebSearch)(query, maxResults);
-      // Log the query + every returned URL. The search_result rows are the
-      // provenance store read_webpage's no-length-cap tier checks against.
+      // Log the query BEFORE the Brave call (mirrors read_webpage's log-the-
+      // attempt-first rule): a failed/timed-out upstream call must still consume
+      // the cap that bounds Brave spend and stay in the audit trail, or a
+      // retry-looping agent could hammer the paid endpoint unbounded.
       await logWebRequests([
         { tenantId, technicianRef: identity.technicianRef, kind: 'search', value: query },
-        ...results.map((r) => ({
-          tenantId,
-          technicianRef: identity.technicianRef,
-          kind: 'search_result' as const,
-          value: r.url,
-        })),
       ]);
+      const results = await (deps.webSearch ?? braveWebSearch)(query, maxResults);
+      // Record every returned URL. These search_result rows are the provenance
+      // store read_webpage's no-length-cap tier checks against.
+      if (results.length > 0) {
+        await logWebRequests(
+          results.map((r) => ({
+            tenantId,
+            technicianRef: identity.technicianRef,
+            kind: 'search_result' as const,
+            value: r.url,
+          })),
+        );
+      }
       return {
         status: 'ok',
         query,
@@ -1048,7 +1070,7 @@ async function dispatch(
     case 'read_webpage': {
       const url = str('url')?.trim();
       if (!url) throw new Error('url is required');
-      const fetchLimit = Number(process.env.WEB_FETCH_DAILY_LIMIT ?? 30);
+      const fetchLimit = safeEnvInt(process.env.WEB_FETCH_DAILY_LIMIT, 30);
       const used = await countRecentWebRequests(tenantId, identity.technicianRef, 'fetch');
       if (used >= fetchLimit) {
         throw new Error(
@@ -1061,17 +1083,19 @@ async function dispatch(
       // human or composed by a manipulated model, the server cannot tell —
       // gets a length cap so a composed URL cannot smuggle much data out.
       const fromSearch = await isRecentSearchResultUrl(tenantId, identity.technicianRef, url);
-      const maxUrlChars = Number(process.env.WEB_FETCH_MAX_URL_CHARS ?? 512);
+      const maxUrlChars = safeEnvInt(process.env.WEB_FETCH_MAX_URL_CHARS, 512);
+      // Log the ATTEMPT before ANY rejection below: rejected probes — SSRF,
+      // timeout, oversize, AND an over-length composed URL — must consume the
+      // cap and stay visible in the audit trail (a length-reject that logged
+      // nothing would be an unlogged, uncapped provenance oracle).
+      await logWebRequests([
+        { tenantId, technicianRef: identity.technicianRef, kind: 'fetch', value: url },
+      ]);
       if (!fromSearch && url.length > maxUrlChars) {
         throw new Error(
           `that link is too long to open safely (over ${maxUrlChars} characters and not from a recent search) — ask the person to open it themselves`,
         );
       }
-      // Log the ATTEMPT before fetching: rejected probes (SSRF, timeout,
-      // oversize) must consume the cap and stay visible in the audit trail.
-      await logWebRequests([
-        { tenantId, technicianRef: identity.technicianRef, kind: 'fetch', value: url },
-      ]);
       const page = await (deps.fetchPage ?? fetchPageText)(url);
       return {
         status: 'ok',

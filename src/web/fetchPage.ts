@@ -153,22 +153,83 @@ async function readCapped(res: Response, maxBytes: number): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-// HTML → readable text: drop script/style/noscript bodies and comments (the
-// classic hidden-instruction carriers), then tags, then decode the common
-// entities and collapse whitespace.
+const ENTITIES: Record<string, string> = {
+  '&nbsp;': ' ',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&quot;': '"',
+  '&#39;': "'",
+  '&apos;': "'",
+  '&amp;': '&',
+};
+
+// Decode the handful of entities we care about in a SINGLE left-to-right pass,
+// so escaped markup like `&amp;lt;` decodes exactly once (to the literal text
+// `&lt;`) instead of being re-decoded into `<` by a later `&amp;`→`&` pass.
+function decodeEntities(s: string): string {
+  return s.replace(/&(?:nbsp|lt|gt|quot|apos|amp|#39);/gi, (m) => ENTITIES[m.toLowerCase()] ?? m);
+}
+
+// Open a script/style/noscript element: the name must be followed by a tag
+// terminator (whitespace, `/`, or `>`), which is the `\b` word boundary the old
+// regex used — so `<scripting>` is NOT matched. Sticky (`y`) anchors the test
+// at a given index without allocating a substring.
+const SKIP_OPEN = /<(script|style|noscript)(?=[\s/>])/iy;
+// Matching close tag per element — `\s*>` mirrors the old `</\1\s*>`, so a
+// look-alike like `</scriptx>` does NOT count as a close. Global so we can scan
+// from a set `lastIndex` on the ORIGINAL string (no substring allocation).
+const SKIP_CLOSE: Record<string, RegExp> = {
+  script: /<\/script\s*>/gi,
+  style: /<\/style\s*>/gi,
+  noscript: /<\/noscript\s*>/gi,
+};
+
+// HTML → readable text via a SINGLE linear scan: drop script/style/noscript
+// element bodies and comments (the classic hidden-instruction carriers), then
+// tags, then decode entities and collapse whitespace. This deliberately does
+// NOT use a `<tag>[\s\S]*?</tag>` regex: that lazy match is O(n^2) on a page
+// full of UNCLOSED tags (it rescans to end-of-input at every opening), so an
+// adversarial ~2MB page could stall the shared spine server's event loop for
+// tens of seconds. Every index is into the ORIGINAL `html` — we never build a
+// lowercased copy, because `String.toLowerCase()` is NOT length-preserving
+// (e.g. `İ` U+0130 → two chars) and mixing the two index spaces would desync
+// and silently leak element bodies. Case-insensitivity comes from `/i` regexes.
 export function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style|noscript)\b[\s\S]*?<\/\1\s*>/gi, ' ')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
+  const n = html.length;
+  const parts: string[] = [];
+  let i = 0;
+  while (i < n) {
+    const lt = html.indexOf('<', i);
+    if (lt === -1) {
+      parts.push(html.slice(i));
+      break;
+    }
+    if (lt > i) parts.push(html.slice(i, lt));
+
+    if (html.startsWith('<!--', lt)) {
+      const end = html.indexOf('-->', lt + 4);
+      i = end === -1 ? n : end + 3;
+      continue;
+    }
+
+    SKIP_OPEN.lastIndex = lt;
+    const open = SKIP_OPEN.exec(html);
+    if (open) {
+      const close = SKIP_CLOSE[open[1].toLowerCase()];
+      close.lastIndex = lt + 1;
+      const m = close.exec(html);
+      i = m ? m.index + m[0].length : n; // unclosed → drop the rest
+      continue;
+    }
+
+    const gt = html.indexOf('>', lt);
+    if (gt === -1) {
+      parts.push(html.slice(lt)); // a `<` with no later `>` is literal text
+      break;
+    }
+    i = gt + 1;
+  }
+  return decodeEntities(parts.join(' ')).replace(/\s+/g, ' ').trim();
 }
 
 export async function fetchPageText(url: string, opts: FetchPageOpts = {}): Promise<FetchedPage> {
@@ -195,14 +256,18 @@ export async function fetchPageText(url: string, opts: FetchPageOpts = {}): Prom
     });
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get('location');
+      await res.body?.cancel().catch(() => {}); // release the socket; we won't read this body
       if (!loc) throw new Error(`the page redirected without a destination (HTTP ${res.status})`);
-      if (hop >= MAX_REDIRECTS - 1) throw new Error('too many redirects — page not read');
+      if (hop >= MAX_REDIRECTS) throw new Error('too many redirects — page not read');
       current = new URL(loc, current); // relative locations resolve against the hop
       continue;
     }
     break;
   }
-  if (!res.ok) throw new Error(`the page could not be read (HTTP ${res.status})`);
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`the page could not be read (HTTP ${res.status})`);
+  }
 
   const rawType = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
   const contentType: FetchedPage['contentType'] | undefined =
@@ -214,6 +279,7 @@ export async function fetchPageText(url: string, opts: FetchPageOpts = {}): Prom
           ? 'text'
           : undefined;
   if (!contentType) {
+    await res.body?.cancel().catch(() => {});
     throw new Error(
       `unsupported content type (${rawType || 'unknown'}) — send the person the link instead`,
     );

@@ -13,7 +13,7 @@ import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { logWebRequests } from '../db/webRequests.js';
-import { createServer, type ServerDeps } from './server.js';
+import { createServer, safeEnvInt, type ServerDeps } from './server.js';
 import { localDateISO } from '../schedule/availability.js';
 
 // Drive the MCP server over the SDK's in-memory transport (no network/stdio).
@@ -1928,6 +1928,29 @@ describe('web_search', () => {
     }
   });
 
+  test('a failed upstream search still logs the query (consumes the cap, stays audited)', async () => {
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'web-fail' },
+      {
+        webSearch: async () => {
+          throw new Error('brave upstream 429');
+        },
+      },
+    );
+    try {
+      const r = await callWith('web_search', { query: 'carrier code 33' });
+      expect(r.isError).toBe(true);
+      const rows = await pg.query(
+        "select kind, value from web_requests where technician_ref = 'web-fail'",
+      );
+      // The query row is written BEFORE the Brave call, so a retry-looping agent
+      // cannot hammer the paid endpoint uncapped; no search_result rows exist.
+      expect(rows.rows).toEqual([{ kind: 'search', value: 'carrier code 33' }]);
+    } finally {
+      await c.close();
+    }
+  });
+
   test('daily cap blocks the 51st search — and only for the capped person/tenant', async () => {
     const seed = Array.from({ length: 50 }, (_, i) => ({
       tenantId,
@@ -1998,6 +2021,26 @@ describe('read_webpage', () => {
       const r = await callWith('read_webpage', { url: LONG_URL });
       expect(r.isError).toBe(true);
       expect(r.text).toContain('too long to open safely');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('an over-length URL is refused BUT the probe is logged and consumes the cap', async () => {
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'rw-longprobe' },
+      { fetchPage: pageStub('never fetched') },
+    );
+    try {
+      const r = await callWith('read_webpage', { url: LONG_URL });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('too long to open safely');
+      const rows = await pg.query(
+        "select count(*)::int as n from web_requests where technician_ref = 'rw-longprobe' and kind = 'fetch'",
+      );
+      // The attempt-log runs BEFORE the length reject, so exfil-shaped URL
+      // probing is capped and visible, per the migration's stated invariant.
+      expect(rows.rows[0].n).toBe(1);
     } finally {
       await c.close();
     }
@@ -2095,5 +2138,20 @@ describe('read_webpage', () => {
     } finally {
       await c.close();
     }
+  });
+});
+
+describe('safeEnvInt (web-cap env parsing)', () => {
+  test('falls back to the default rather than failing OPEN on garbage', () => {
+    // A malformed override must NOT become NaN — every `count >= NaN` would be
+    // false, silently disabling the cap that compensates for no confirm gate.
+    expect(safeEnvInt(undefined, 30)).toBe(30);
+    expect(safeEnvInt('512px', 30)).toBe(30);
+    expect(safeEnvInt('unlimited', 30)).toBe(30);
+    expect(safeEnvInt('', 30)).toBe(30); // NOT 0 (which would block everything)
+    expect(safeEnvInt('12.5', 30)).toBe(30);
+    expect(safeEnvInt('-5', 30)).toBe(30);
+    expect(safeEnvInt('10', 30)).toBe(10); // a valid override still wins
+    expect(safeEnvInt('0', 30)).toBe(0); // an explicit 0 is a real (if strict) choice
   });
 });

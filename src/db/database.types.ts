@@ -848,6 +848,41 @@ export type Database = {
           },
         ]
       }
+      web_requests: {
+        Row: {
+          created_at: string
+          id: string
+          kind: string
+          technician_ref: string
+          tenant_id: string
+          value: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          kind: string
+          technician_ref: string
+          tenant_id: string
+          value: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          kind?: string
+          technician_ref?: string
+          tenant_id?: string
+          value?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "web_requests_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never

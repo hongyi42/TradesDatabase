@@ -14,4 +14,5 @@ export * from './timeOff.js';
 export * from './jobTypeDurations.js';
 export * from './assignments.js';
 export * from './context.js';
+export * from './webRequests.js';
 export type { Database, Json } from './database.types.js';

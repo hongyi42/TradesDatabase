@@ -12,6 +12,7 @@ import { createHost } from '../db/hosts.js';
 import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
+import { logWebRequests } from '../db/webRequests.js';
 import { createServer, type ServerDeps } from './server.js';
 import { localDateISO } from '../schedule/availability.js';
 
@@ -72,7 +73,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await client.close();
   await pg.query(
-    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items cascade',
+    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests cascade',
   );
   // Restore the seed capacity (2/5) so post-suite live checks see known values.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
@@ -115,7 +116,7 @@ async function clientFor(
 }
 
 describe('MCP server', () => {
-  test('lists the technician tool surface (exactly 10 tools)', async () => {
+  test('lists the technician tool surface (exactly 12 tools)', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
     expect(names).toEqual(
@@ -127,12 +128,14 @@ describe('MCP server', () => {
         'list_recent_captures',
         'brief_customer',
         'answer_customer_question',
+        'web_search',
+        'read_webpage',
         'send_email',
         'retract_capture',
         'get_schedule',
       ]),
     );
-    expect(names).toHaveLength(10);
+    expect(names).toHaveLength(12);
   });
 
   test('record_field_note stages (NO L1), resolves identity, and records only on the final confirm', async () => {
@@ -1187,12 +1190,14 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       stubs,
     );
     try {
-      // The full manager surface is now 18 tools (10 spine + 8 seat/lifecycle) —
-      // the count the runbook/Box_Setup_Stuff verification steps cite.
+      // The full manager surface: every base spine tool + the 8 seat/lifecycle
+      // tools — the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
       expect(mgrTools).toContain('bind_telegram');
-      expect(mgrTools).toHaveLength(18);
+      expect(mgrTools).toContain('web_search');
+      expect(mgrTools).toContain('read_webpage');
+      expect(mgrTools).toHaveLength(20);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -1466,10 +1471,10 @@ describe('send_email tool (outbound seam stubbed)', () => {
       stubs,
     );
     try {
-      // Technician surface count including send_email: exactly 10.
+      // Technician surface count including send_email: exactly 12.
       const tools = (await techClient.listTools()).tools.map((t) => t.name);
       expect(tools).toContain('send_email');
-      expect(tools).toHaveLength(10);
+      expect(tools).toHaveLength(12);
 
       // Staging requires the full payload.
       const missing = await callWith('send_email', { to: 'cust@example.com' });
@@ -1585,14 +1590,14 @@ describe('send_email tool (outbound seam stubbed)', () => {
       expect(sendCalls).toHaveLength(3); // staged2 + s3(threw) + s4 — nothing else sent
 
       // resolve_review: a staged send is a live token — "resolved" is refused,
-      // dismiss (= cancel) is allowed. Manager surface counts exactly 18.
+      // dismiss (= cancel) is allowed. Manager surface counts exactly 20.
       const { client: mgrClient, callWith: mgrCall } = await clientFor(
         { tenantId, technicianRef: 'mgr-test' },
         stubs,
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(18);
+        expect(mgrTools).toHaveLength(20);
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -1864,6 +1869,229 @@ describe('get_schedule', () => {
       // scheduled order preserved, link still built
       expect(day.stops.map((s: { label: string }) => s.label)).toEqual(['G g1-a', 'G g1-b']);
       expect(day.mapsUrl).toContain('maps/dir');
+    } finally {
+      await c.close();
+    }
+  });
+});
+
+describe('web_search', () => {
+  const webStub =
+    (results: Array<{ title: string; url: string; snippet: string }>, seen?: number[]) =>
+    async (_query: string, count: number) => {
+      seen?.push(count);
+      return results;
+    };
+  const RESULTS = [
+    { title: 'Codes', url: 'https://hvac-help.example/codes', snippet: 'code 33 = limit fault' },
+    { title: 'Manual', url: 'https://carrier.example/manual', snippet: 'install manual' },
+  ];
+
+  test('returns results with the untrusted note and logs query + result URLs', async () => {
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'web-tech' },
+      { webSearch: webStub(RESULTS) },
+    );
+    try {
+      const r = await callWith('web_search', { query: 'carrier code 33' });
+      expect(r.isError).toBe(false);
+      expect(r.data.results).toEqual(RESULTS);
+      expect(r.data.note).toContain('untrusted');
+      const rows = await pg.query<{ kind: string; value: string }>(
+        "select kind, value from web_requests where technician_ref = 'web-tech' order by kind, value",
+      );
+      expect(rows.rows).toEqual([
+        { kind: 'search', value: 'carrier code 33' },
+        { kind: 'search_result', value: 'https://carrier.example/manual' },
+        { kind: 'search_result', value: 'https://hvac-help.example/codes' },
+      ]);
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('clamps maxResults to 1-10 and requires a query', async () => {
+    const seen: number[] = [];
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'web-clamp' },
+      { webSearch: webStub([], seen) },
+    );
+    try {
+      await callWith('web_search', { query: 'x', maxResults: 99 });
+      await callWith('web_search', { query: 'x', maxResults: -3 });
+      expect(seen).toEqual([10, 1]);
+      const missing = await callWith('web_search', { maxResults: 2 });
+      expect(missing.isError).toBe(true);
+      expect(missing.text).toContain('query is required');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('daily cap blocks the 51st search — and only for the capped person/tenant', async () => {
+    const seed = Array.from({ length: 50 }, (_, i) => ({
+      tenantId,
+      technicianRef: 'web-capped',
+      kind: 'search' as const,
+      value: `q${i}`,
+    }));
+    await logWebRequests(seed);
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'web-capped' },
+      { webSearch: webStub(RESULTS) },
+    );
+    try {
+      const blocked = await callWith('web_search', { query: 'one too many' });
+      expect(blocked.isError).toBe(true);
+      expect(blocked.text).toContain('daily web search limit reached (50/day)');
+    } finally {
+      await c.close();
+    }
+    // Same ref under ANOTHER tenant is not capped: the count is tenant-scoped.
+    const other = await createTenant(`Web Iso ${Date.now()}`);
+    const { client: c2, callWith: call2 } = await clientFor(
+      { tenantId: other.id, technicianRef: 'web-capped' },
+      { webSearch: webStub(RESULTS) },
+    );
+    try {
+      const ok = await call2('web_search', { query: 'fresh tenant' });
+      expect(ok.isError).toBe(false);
+    } finally {
+      await c2.close();
+    }
+  });
+});
+
+describe('read_webpage', () => {
+  const pageStub = (text: string) => async (url: string) => ({
+    finalUrl: url,
+    contentType: 'html' as const,
+    text,
+    truncated: false,
+  });
+  const LONG_URL = `https://supplier.example/quote/${'x'.repeat(600)}?t=tok`;
+
+  test('a recent search-result URL fetches with no length cap; the warning rides along', async () => {
+    await logWebRequests([
+      { tenantId, technicianRef: 'rw-prov', kind: 'search_result', value: LONG_URL },
+    ]);
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'rw-prov' },
+      { fetchPage: pageStub('quote total $4,830.50') },
+    );
+    try {
+      const r = await callWith('read_webpage', { url: LONG_URL });
+      expect(r.isError).toBe(false);
+      expect(r.data.content).toContain('4,830.50');
+      expect(r.data.warning).toContain('untrusted');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test("another person's search result does not vouch: same long URL is refused", async () => {
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'rw-other' },
+      { fetchPage: pageStub('never fetched') },
+    );
+    try {
+      const r = await callWith('read_webpage', { url: LONG_URL });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('too long to open safely');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('a stale (>2h) search result ages out of the no-cap tier', async () => {
+    await pg.query(
+      `insert into web_requests (tenant_id, technician_ref, kind, value, created_at)
+       values ($1, 'rw-stale', 'search_result', $2, now() - interval '3 hours')`,
+      [tenantId, LONG_URL],
+    );
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'rw-stale' },
+      { fetchPage: pageStub('never fetched') },
+    );
+    try {
+      const r = await callWith('read_webpage', { url: LONG_URL });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('too long to open safely');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('a short pasted URL fetches with no confirmation and logs the attempt', async () => {
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'rw-paste' },
+      { fetchPage: pageStub('supplier hours 7-5') },
+    );
+    try {
+      const r = await callWith('read_webpage', { url: 'https://supplier.example/hours' });
+      expect(r.isError).toBe(false);
+      expect(r.data.content).toContain('hours 7-5');
+      const rows = await pg.query(
+        "select value from web_requests where technician_ref = 'rw-paste' and kind = 'fetch'",
+      );
+      expect(rows.rows).toEqual([{ value: 'https://supplier.example/hours' }]);
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('the attempt is logged even when the fetch itself fails', async () => {
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'rw-fail' },
+      {
+        fetchPage: async () => {
+          throw new Error('this address is not reachable from the assistant');
+        },
+      },
+    );
+    try {
+      const r = await callWith('read_webpage', { url: 'https://blocked.example/x' });
+      expect(r.isError).toBe(true);
+      const rows = await pg.query(
+        "select count(*)::int as n from web_requests where technician_ref = 'rw-fail' and kind = 'fetch'",
+      );
+      expect(rows.rows[0].n).toBe(1); // rejected probes consume the cap
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('daily fetch cap blocks the 31st attempt', async () => {
+    await logWebRequests(
+      Array.from({ length: 30 }, (_, i) => ({
+        tenantId,
+        technicianRef: 'rw-capped',
+        kind: 'fetch' as const,
+        value: `https://x.example/${i}`,
+      })),
+    );
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'rw-capped' },
+      { fetchPage: pageStub('never fetched') },
+    );
+    try {
+      const r = await callWith('read_webpage', { url: 'https://x.example/31' });
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('daily page-read limit reached (30/day)');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('url is required', async () => {
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'rw-req' },
+      { fetchPage: pageStub('x') },
+    );
+    try {
+      const r = await callWith('read_webpage', {});
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('url is required');
     } finally {
       await c.close();
     }

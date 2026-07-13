@@ -85,15 +85,16 @@ The future **Option B** (per-bot JWT / OAuth Resource Server) swaps only the hea
 
 ## 4. Restrict the tool surface
 Allowlist only the spine tools for the technician profile (`tools.profile` / allowlist) — the
-10-tool technician surface: `record_field_note`, `find_customer`, `get_customer_context`,
-`get_job`, `list_recent_captures`, `brief_customer`, `answer_customer_question`, `send_email`,
-`retract_capture`, `get_schedule`.
+12-tool technician surface: `record_field_note`, `find_customer`, `get_customer_context`,
+`get_job`, `list_recent_captures`, `brief_customer`, `answer_customer_question`, `web_search`,
+`read_webpage`, `send_email`, `retract_capture`, `get_schedule`.
 Outbound network policy should allow only the gateway + our server's host.
 
 **Manager profile (2026-07-02):** an ACTIVE `tier='manager'` roster row (the `technicians`
 table, not the badge, is the tier source of truth) additionally exposes the seat/lifecycle
-tools — 8 of them, for an 18-tool manager surface (the technician surface itself is 10 incl.
-send_email since 2026-07-04, retract_capture and get_schedule since 2026-07-06): `add_technician_seat`,
+tools — 8 of them, for a 20-tool manager surface (the technician surface itself is 12 incl.
+send_email since 2026-07-04, retract_capture and get_schedule since 2026-07-06, web_search and
+read_webpage since 2026-07-13): `add_technician_seat`,
 `deactivate_technician_seat` (two-step confirm; starts the disable-first grace period),
 `reactivate_technician_seat` (the grace-period undo), `get_connect_link` (mint a Gmail
 Connect Link; 5-min per-person cooldown), `bind_telegram` (connect a person to their numeric
@@ -126,6 +127,11 @@ agent cannot talk past them.
   job/customer record (e.g. a status change) are not auto-reverted by a retraction.
 - For questions ("what did the last tech do here?"), the agent uses `find_customer` →
   `get_customer_context` / `list_recent_captures`.
+- **Web tools (2026-07-13, all tiers):** `web_search` (Brave snippets via Render — the key never
+  reaches a sandbox) and `read_webpage` (hardened reader: URLs from the person or from search
+  results only per the §0e rules; server enforces SSRF guard, a length cap on non-search URLs,
+  per-person daily caps, and logs every request to `web_requests`). Content comes back labeled
+  untrusted; the §0e AGENTS.md block (Box_Setup_Stuff setup guide) carries the behavior rules.
 
 ## 6. Email ingestion (Phase 4 — separate from the chat channel)
 A second input channel pulls the technician's email and feeds **only work-related** mail through the

@@ -111,8 +111,8 @@ guide §6 and re-run — already-applied edits skip.
 2. 📦 Within 5 min (or `sudo systemctl start badge-pull.service` after pre-warming Render)
    the badge lands in `/root/pending-badges.jsonl`. Install it per the `wire` phase's printed
    §5b steps (integrity-check the fingerprint, `openshell provider update`, delete the line).
-3. 📦 Gate A — `curl` the doorman with the badge (guide §3f): **HTTP 200 + 10 tools**.
-   (10 assumes Render runs the get_schedule release, 2026-07-06+. A count of 9 with HTTP 200 =
+3. 📦 Gate A — `curl` the doorman with the badge (guide §3f): **HTTP 200 + 12 tools**.
+   (12 assumes Render runs the web-tools release, 2026-07-13+. A lower count with HTTP 200 =
    upstream one release behind — redeploy the spine, the doorman/badge path is healthy.)
 4. 📱 Gate B — message the **scratch** bot "list recent captures" → real trades-spine data;
    OCSF log on the box shows `ALLOWED … → host.openshell.internal:3001`.

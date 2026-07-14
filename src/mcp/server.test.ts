@@ -2497,6 +2497,219 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(confirmCancelled.text).toContain('confirmation not found');
   });
 
+  test('batch: several facts stage as ONE token with ONE preview, commit under ONE capture, and fold together on retraction', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Fact Batch Cust', phone: '555-9020' });
+    // Seed one key so the batch preview shows an overwrite.
+    const pre = await call('record_standing_fact', { customerId: customer.id, key: 'gate_code', value: '1111' });
+    await call('record_standing_fact', { confirmId: pre.data.confirmId });
+
+    const staged = await call('record_standing_fact', {
+      customerId: customer.id,
+      facts: [
+        { key: 'Dog On Property', value: true }, // normalizes to dog_on_property
+        { key: 'gate_code', value: '2234' },
+      ],
+      sourceText: 'dog on the property; gated community, code 2234',
+    });
+    expect(staged.isError).toBe(false);
+    expect(staged.data.status).toBe('needs_confirmation');
+    expect(staged.data.preview.facts).toEqual([
+      { key: 'dog_on_property', value: true },
+      { key: 'gate_code', value: '2234', previousValue: '1111' }, // overwrite is explicit
+    ]);
+    // Multi-fact preview has no flat single-fact fields.
+    expect(staged.data.preview.key).toBeUndefined();
+
+    const done = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    expect(done.isError).toBe(false);
+    expect(done.data.status).toBe('recorded');
+    expect([...done.data.keys].sort()).toEqual(['dog_on_property', 'gate_code']);
+
+    // ONE evidence capture; BOTH bundles cite it.
+    const caps = await pg.query<{ n: number }>(
+      'select count(*)::int as n from raw_captures where external_id = $1',
+      [`fact:${staged.data.confirmId}`],
+    );
+    expect(Number(caps.rows[0].n)).toBe(1);
+    const row = await pg.query<{
+      attributes: {
+        dog_on_property?: { value: boolean; sourceCaptureId: string };
+        gate_code?: { value: string; sourceCaptureId: string };
+      };
+    }>('select attributes from customers where id = $1', [customer.id]);
+    expect(row.rows[0].attributes.dog_on_property?.value).toBe(true);
+    expect(row.rows[0].attributes.gate_code?.value).toBe('2234');
+    expect(row.rows[0].attributes.dog_on_property?.sourceCaptureId).toBe(done.data.captureId);
+    expect(row.rows[0].attributes.gate_code?.sourceCaptureId).toBe(done.data.captureId);
+
+    // Crash-heal replay converges without rewriting (both keys 'already').
+    await pg.query(
+      "update review_items set status = 'open', resolution = null, resolved_at = null where id = $1",
+      [staged.data.confirmId],
+    );
+    const replay = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    expect(replay.isError).toBe(false);
+    expect(replay.data.status).toBe('recorded');
+    expect(replay.data.captureId).toBe(done.data.captureId);
+
+    // Retract the ONE evidence capture → the whole batch folds away.
+    const rs = await call('retract_capture', {
+      captureId: done.data.captureId,
+      reason: 'recorded in error',
+    });
+    await call('retract_capture', { confirmId: rs.data.confirmId });
+    const ctx = await call('get_customer_context', { customerId: customer.id });
+    expect(ctx.data.customer.attributes.dog_on_property).toBeUndefined();
+    expect(ctx.data.customer.attributes.gate_code).toBeUndefined();
+  });
+
+  test('batch guards: duplicate keys, mixed forms, oversize, and whole-batch drift refusal', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Fact Batch Guard', phone: '555-9021' });
+
+    const dup = await call('record_standing_fact', {
+      customerId: customer.id,
+      facts: [
+        { key: 'Gate Code', value: '1' },
+        { key: 'gate_code', value: '2' },
+      ],
+    });
+    expect(dup.isError).toBe(true);
+    expect(dup.text).toContain('duplicate fact key');
+
+    const mixed = await call('record_standing_fact', {
+      customerId: customer.id,
+      facts: [{ key: 'k', value: 'v' }],
+      key: 'other',
+      value: 'x',
+    });
+    expect(mixed.isError).toBe(true);
+    expect(mixed.text).toContain('not both');
+
+    const oversize = await call('record_standing_fact', {
+      customerId: customer.id,
+      facts: Array.from({ length: 11 }, (_, i) => ({ key: `k_${i}`, value: i })),
+    });
+    expect(oversize.isError).toBe(true);
+    expect(oversize.text).toContain('at most 10');
+
+    const empty = await call('record_standing_fact', { customerId: customer.id, facts: [] });
+    expect(empty.isError).toBe(true);
+
+    // Drift on ANY key refuses the WHOLE batch before the evidence lands.
+    const staged = await call('record_standing_fact', {
+      customerId: customer.id,
+      facts: [
+        { key: 'prefers_contact', value: 'email' },
+        { key: 'gate_code', value: '9999' },
+      ],
+    });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const mgrStage = await callWith('record_standing_fact', {
+        customerId: customer.id,
+        key: 'gate_code',
+        value: '5555',
+      });
+      await callWith('record_standing_fact', { confirmId: mgrStage.data.confirmId });
+    } finally {
+      await mgrClient.close();
+    }
+    const refused = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("'gate_code' changed on this customer");
+    // No orphan evidence for the refused batch; the untouched key stayed absent.
+    const caps = await pg.query<{ n: number }>(
+      'select count(*)::int as n from raw_captures where external_id = $1',
+      [`fact:${staged.data.confirmId}`],
+    );
+    expect(Number(caps.rows[0].n)).toBe(0);
+    const row = await pg.query<{ attributes: Record<string, unknown> }>(
+      'select attributes from customers where id = $1',
+      [customer.id],
+    );
+    expect(row.rows[0].attributes.prefers_contact).toBeUndefined();
+    expect((row.rows[0].attributes.gate_code as { value?: string })?.value).toBe('5555'); // manager's fact intact
+  });
+
+  test('legacy pre-deploy token (top-level key/value detail) still confirms correctly', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Fact Legacy Cust', phone: '555-9022' });
+    // Stage a legacy-SHAPED token directly (as the pre-batch deploy wrote them):
+    // detail carries top-level key/value, no facts[] array.
+    const item = await upsertOpenReviewItem({
+      tenantId,
+      kind: 'pending_standing_fact',
+      subjectRef: 'tech-mcp',
+      detail: {
+        target: 'customer',
+        targetId: customer.id,
+        customerId: customer.id,
+        targetName: 'Fact Legacy Cust',
+        key: 'legacy_key',
+        value: false, // falsy value must survive the normalization
+        sourceText: null,
+        stagedAt: new Date().toISOString(),
+      },
+    });
+    const done = await call('record_standing_fact', { confirmId: item.id });
+    expect(done.isError).toBe(false);
+    expect(done.data.status).toBe('recorded');
+    expect(done.data.key).toBe('legacy_key');
+    const row = await pg.query<{ attributes: { legacy_key?: { value: boolean } } }>(
+      'select attributes from customers where id = $1',
+      [customer.id],
+    );
+    expect(row.rows[0].attributes.legacy_key?.value).toBe(false);
+  });
+
+  test('partial-conflict replay: a re-opened batch token skips the overwritten key, applies the rest, and reports honestly', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Fact Partial Cust', phone: '555-9023' });
+    const staged = await call('record_standing_fact', {
+      customerId: customer.id,
+      facts: [
+        { key: 'alpha', value: 'a1' },
+        { key: 'beta', value: 'b1' },
+      ],
+    });
+    const done = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('recorded');
+
+    // Crash window + a NEWER overwrite of one key by someone else.
+    await pg.query(
+      "update review_items set status = 'open', resolution = null, resolved_at = null where id = $1",
+      [staged.data.confirmId],
+    );
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const mgrStage = await callWith('record_standing_fact', {
+        customerId: customer.id,
+        key: 'alpha',
+        value: 'NEWER',
+      });
+      await callWith('record_standing_fact', { confirmId: mgrStage.data.confirmId });
+    } finally {
+      await mgrClient.close();
+    }
+
+    const replay = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    expect(replay.isError).toBe(false);
+    expect(replay.data.status).toBe('recorded');
+    expect(replay.data.keys).toEqual(['beta']); // 'already' counts as recorded
+    expect(replay.data.conflictKeys).toEqual(['alpha']); // skipped, named
+    expect(replay.data.note).toContain('NOT overwritten');
+    // The newer value survived; the token's resolution names the skip.
+    const row = await pg.query<{ attributes: { alpha?: { value: string } } }>(
+      'select attributes from customers where id = $1',
+      [customer.id],
+    );
+    expect(row.rows[0].attributes.alpha?.value).toBe('NEWER');
+    const token = await pg.query<{ status: string; resolution: string }>(
+      'select status, resolution from review_items where id = $1',
+      [staged.data.confirmId],
+    );
+    expect(token.rows[0].status).toBe('resolved');
+    expect(token.rows[0].resolution).toContain('skipped changed keys: alpha');
+  });
+
   test('retraction fold: retracting the evidence hides the fact from context, get_job, and find_customer; the audit view keeps it labeled', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Fold Cust', phone: '555-9007' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'Fold Job' });

@@ -150,6 +150,23 @@ describe('setCustomerAttribute / setJobAttribute (CAS merge)', () => {
     expect(Object.keys(after.attributes as object).sort()).toEqual(['concurrent_key', 'late_key']);
   });
 
+  test('a non-object attributes value is refused, never silently replaced', async () => {
+    const customer = await createCustomer({ tenantId, name: 'NonObj Cust' });
+    // Legal jsonb an external writer/import could leave behind.
+    await pg.query(`update customers set attributes = '["vip","net-30"]'::jsonb where id = $1`, [
+      customer.id,
+    ]);
+    await expect(setCustomerAttribute(customer.id, 'k', bundle())).rejects.toThrow(
+      'not a JSON object',
+    );
+    // The original value survives untouched.
+    const rows = await pg.query<{ attributes: unknown }>(
+      'select attributes from customers where id = $1',
+      [customer.id],
+    );
+    expect(rows.rows[0].attributes).toEqual(['vip', 'net-30']);
+  });
+
   test('the job twin merges too and unknown ids throw not-found', async () => {
     const customer = await createCustomer({ tenantId, name: 'Job Fact Cust' });
     const job = await createJob({ tenantId, customerId: customer.id, title: 'Furnace swap' });

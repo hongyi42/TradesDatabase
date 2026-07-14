@@ -53,7 +53,15 @@ export async function trySetCustomerAttribute(
   const base =
     row.attributes && typeof row.attributes === 'object' && !Array.isArray(row.attributes)
       ? (row.attributes as Record<string, Json>)
-      : {};
+      : null;
+  // Refuse, never coerce: silently replacing a non-object attributes value
+  // (an array/scalar from an import or external writer) with { [key]: bundle }
+  // would destroy it with no error and no L1 trail (review finding).
+  if (!base) {
+    throw new Error(
+      `trySetCustomerAttribute: attributes on customer ${row.id} is not a JSON object — refusing to replace it`,
+    );
+  }
   const { data, error } = await getClient()
     .from('customers')
     .update({ attributes: { ...base, [key]: bundle } })

@@ -1,4 +1,4 @@
-import { isFactBundle, type CustomerContext, type Json } from '../db/index.js';
+import { factSourceIds, isFactBundle, type CustomerContext, type Json } from '../db/index.js';
 
 // A single grounded claim: a statement the synthesizer made, paired with the L1
 // capture id it is sourced from. captureId must reference a real capture in the
@@ -97,6 +97,13 @@ export function validateCitations(
   context: CustomerContext,
 ): Citation[] {
   const realIds = new Set(context.recentCaptures.map((c) => c.id));
+  // Standing-fact evidence ids are offered as citeable in the serialized
+  // prompt ("(capture <id>)"), so accept them here too. Today they are also
+  // in recentCaptures (facts stamp customer_id), but that is incidental — a
+  // future writer citing a capture outside that list must not have its
+  // citations silently dropped as hallucinated (review finding).
+  for (const id of factSourceIds(context.customer?.attributes ?? null)) realIds.add(id);
+  for (const j of context.jobs) for (const id of factSourceIds(j.attributes)) realIds.add(id);
   const seen = new Set<string>();
   const valid: Citation[] = [];
   // Guard a non-array too, not just absent — the model could emit citations as a

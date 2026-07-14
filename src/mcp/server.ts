@@ -36,13 +36,16 @@ import {
   listRawCapturesForJob,
   listRawCapturesForCustomer,
   listTeam,
+  findOpenReviewItem,
+  isFactBundle,
   resolveOpenReviewItemFor,
   resolveReviewItem,
-  setCustomerAttribute,
-  setJobAttribute,
-  unwrapAttributes,
+  trySetCustomerAttribute,
+  trySetJobAttribute,
   updateOpenReviewItemDetail,
   upsertOpenReviewItem,
+  type Customer,
+  type Job,
   type CaptureChannel,
   type Json,
   type TechnicianTier,
@@ -596,6 +599,31 @@ async function stagedNotePreview(detail: StagedNoteDetail): Promise<{
 // guidance depending on which tool hit the cap).
 function seatCapMessage(tier: TechnicianTier): string {
   return `no free ${tier} seats — deactivate someone or purchase a seat`;
+}
+
+// The current unwrapped value of ONE standing-fact key on a customer/job row,
+// with a retracted fact reading as absent (the fold rule). Shared by the
+// record_standing_fact stage preview and its commit drift guard — preview ==
+// commit means the value shown as "replaces X" must still be X when the write
+// lands. Object.hasOwn (not `in`): a key like 'constructor' must not read an
+// inherited prototype member as a previous value.
+async function currentFactValue(attributes: Json, key: string): Promise<Json | undefined> {
+  const obj =
+    attributes && typeof attributes === 'object' && !Array.isArray(attributes)
+      ? (attributes as Record<string, Json>)
+      : {};
+  if (!Object.hasOwn(obj, key)) return undefined;
+  const raw = obj[key] ?? null;
+  if (!isFactBundle(raw)) return raw; // plain (seed/legacy) value
+  const retractions = await findRetractionsFor([raw.sourceCaptureId]);
+  return retractions.length > 0 ? undefined : raw.value;
+}
+
+// Stable comparison encoding for a fact-value slot: undefined (absent) is
+// distinct from every JSON value; object values compare by their
+// jsonb-normalized shape (both sides round-tripped through Postgres jsonb).
+function encodeFactValue(v: Json | undefined): string {
+  return v === undefined ? '\u0000absent' : JSON.stringify(v ?? null);
 }
 
 // Admin tools require an ACTIVE manager-tier roster row for the caller's badge
@@ -1497,29 +1525,28 @@ async function dispatch(
           targetName = `${customer?.name ?? 'unknown customer'}: ${job.title ?? '(untitled job)'}`;
           currentAttributes = job.attributes;
         }
-        // The previous value (unwrapped) rides into the preview so an overwrite
-        // is confirmed as an overwrite, never silently. Fold retracted facts
-        // FIRST: a retracted key is absent from every read surface, so the
-        // preview must treat the write as new — echoing the retracted value as
-        // "replaces X" would resurface what the retraction hid (review finding).
-        const priorFactIds = factSourceIds(currentAttributes);
-        const retractedEvidence = new Set(
-          priorFactIds.length === 0
-            ? []
-            : (await findRetractionsFor(priorFactIds))
-                .map((r) => r.retracts_capture_id)
-                .filter((id): id is string => !!id),
-        );
-        const unwrapped = unwrapAttributes(foldRetractedFacts(currentAttributes, retractedEvidence));
-        const previousValue = key in unwrapped ? unwrapped[key] : undefined;
-        // One staged fact per person: a re-stage supersedes any open one.
-        await resolveOpenReviewItemFor(
-          tenantId,
-          'pending_standing_fact',
-          subjectRef,
-          'dismissed',
-          'superseded by a new fact',
-        );
+        // The previous value (unwrapped, retraction-folded — a retracted key
+        // reads as absent on every surface, so the preview treats the write as
+        // new) rides into the preview so an overwrite is confirmed as an
+        // overwrite, never silently. The commit re-checks this exact value
+        // (preview == commit): a fact someone ELSE records between stage and
+        // confirm must never be clobbered unpreviewed (review finding).
+        const previousValue = await currentFactValue(currentAttributes, key);
+        // One staged fact per person: a re-stage supersedes any open one —
+        // UNLESS that token's evidence capture already LANDED (a confirm
+        // crashed between commit and consume). Dismissing it would strand a
+        // permanent evidence row with no path left to finish or honestly
+        // report its merge (review finding); it converges via its own
+        // confirmId first.
+        const openFact = await findOpenReviewItem(tenantId, 'pending_standing_fact', subjectRef);
+        if (openFact) {
+          if (await getRawCaptureByExternalId(tenantId, `fact:${openFact.id}`)) {
+            throw new Error(
+              `your previous fact confirmation is still unfinished — call record_standing_fact with confirmId ${openFact.id} first (it completes or reports honestly), then stage this fact`,
+            );
+          }
+          await resolveReviewItem(openFact.id, tenantId, 'dismissed', 'superseded by a new fact');
+        }
         const item = await upsertOpenReviewItem({
           tenantId,
           kind: 'pending_standing_fact',
@@ -1531,7 +1558,10 @@ async function dispatch(
             targetName,
             key,
             value,
-            sourceText: str('sourceText') ?? null,
+            // `|| null`, not `?? null`: an empty/whitespace sourceText must
+            // fall back to the canonical rendering at commit — '' would
+            // otherwise become the permanent (undeletable) L1 evidence text.
+            sourceText: str('sourceText')?.trim() || null,
             ...(previousValue !== undefined ? { previousValue } : {}),
             stagedAt: new Date().toISOString(),
           },
@@ -1576,6 +1606,7 @@ async function dispatch(
         key?: string;
         value?: string | number | boolean;
         sourceText?: string | null;
+        previousValue?: Json;
         stagedAt?: string;
       };
       // Malformed check FIRST (before expiry): a malformed detail can never
@@ -1584,67 +1615,130 @@ async function dispatch(
       if (!detail.target || !detail.targetId || !detail.customerId || !detail.key || detail.value === undefined) {
         throw new Error('staged fact is malformed — restage with the fact');
       }
-      // The deterministic merge: recordedAt comes from the capture (not now()),
-      // so a crash-retry re-applies an IDENTICAL bundle and converges.
-      const applyMerge = async (captureId: string, capturedAt: string) => {
+      // Narrowed locals — closures below must see the narrowed types.
+      const target = detail.target;
+      const targetId = detail.targetId;
+      const factKey = detail.key;
+      const factValue = detail.value;
+      const stagedPrevEnc = encodeFactValue(detail.previousValue);
+
+      // Guarded, idempotent merge: read the row, then commit ONLY if the key
+      // still reads exactly as previewed (preview == commit for overwrites).
+      //  'already'  — the key's bundle cites this token's capture: an earlier
+      //               commit landed; success without rewriting (a stale replay
+      //               must never revert a NEWER fact — review finding).
+      //  'conflict' — the key changed since staging (another writer, or our
+      //               write was itself overwritten): never clobber it.
+      //  'applied'  — the CAS write landed against the checked snapshot.
+      const guardedMerge = async (capture: {
+        id: string;
+        captured_at: string;
+      }): Promise<'applied' | 'already' | 'conflict'> => {
         const bundle: Json = {
-          value: detail.value as string | number | boolean,
-          sourceCaptureId: captureId,
-          recordedAt: capturedAt,
+          value: factValue,
+          sourceCaptureId: capture.id,
+          recordedAt: capture.captured_at, // deterministic: retries converge
         };
-        if (detail.target === 'customer') await setCustomerAttribute(detail.targetId as string, detail.key as string, bundle);
-        else await setJobAttribute(detail.targetId as string, detail.key as string, bundle);
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const row = target === 'customer' ? await getCustomer(targetId) : await getJob(targetId);
+          if (!row || row.tenant_id !== tenantId) throw new Error(`${target} not found`);
+          const attrs =
+            row.attributes && typeof row.attributes === 'object' && !Array.isArray(row.attributes)
+              ? (row.attributes as Record<string, Json>)
+              : null;
+          if (!attrs) throw new Error(`attributes on this ${target} is not a JSON object — refusing to overwrite it`);
+          const current = Object.hasOwn(attrs, factKey) ? (attrs[factKey] ?? null) : undefined;
+          if (current !== undefined && isFactBundle(current) && current.sourceCaptureId === capture.id) {
+            return 'already';
+          }
+          if (encodeFactValue(await currentFactValue(row.attributes, factKey)) !== stagedPrevEnc) {
+            return 'conflict';
+          }
+          const updated =
+            target === 'customer'
+              ? await trySetCustomerAttribute(row as Customer, factKey, bundle)
+              : await trySetJobAttribute(row as Job, factKey, bundle);
+          if (updated) return 'applied';
+          // CAS miss: the row changed under us — re-read and re-check.
+        }
+        throw new Error(`this ${target} is being updated concurrently`);
       };
+      const succeed = async (captureId: string) => {
+        try {
+          await resolveReviewItem(item.id, tenantId, 'resolved', `fact recorded by ${subjectRef}`);
+        } catch {
+          /* advisory — a replay treats the landed state as success */
+        }
+        return { status: 'recorded', captureId, target, targetId, key: factKey };
+      };
+      const conflictOut = async (): Promise<never> => {
+        // The token dies: retrying it could only re-hit the conflict, and the
+        // technician must see the CURRENT value before overwriting it.
+        try {
+          await resolveReviewItem(item.id, tenantId, 'dismissed', 'fact changed while confirmation was pending');
+        } catch {
+          /* advisory */
+        }
+        throw new Error(
+          `fact NOT recorded: '${factKey}' changed on this ${target} while the confirmation was pending — nothing was overwritten; restage to see the current value`,
+        );
+      };
+
       if (detail.stagedAt && Date.now() - Date.parse(detail.stagedAt) > 15 * 60_000) {
         // Late retry after a commit-then-crash: if this token's capture already
-        // landed, finish the (idempotent) merge and report success instead of
+        // landed, finish the guarded merge and report honestly instead of
         // expiring into a confusing restage.
         const landed = await getRawCaptureByExternalId(tenantId, `fact:${item.id}`);
         if (landed) {
-          await applyMerge(landed.id, landed.captured_at);
-          try {
-            await resolveReviewItem(item.id, tenantId, 'resolved', `fact recorded by ${subjectRef}`);
-          } catch {
-            /* advisory */
-          }
-          return { status: 'recorded', captureId: landed.id, target: detail.target, targetId: detail.targetId, key: detail.key };
+          const outcome = await guardedMerge(landed);
+          if (outcome === 'conflict') return await conflictOut();
+          return await succeed(landed.id);
         }
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'staging expired');
         throw new Error('staged fact expired — restage and confirm again');
       }
-      // Re-verify the target row + tenant (defensive — the staged id was
-      // guarded at stage time, but the commit must never trust a stale claim).
-      if (detail.target === 'customer') {
-        const customer = await getCustomer(detail.targetId);
-        if (!customer || customer.tenant_id !== tenantId) throw new Error('customer not found');
-      } else {
-        const job = await getJob(detail.targetId);
-        if (!job || job.tenant_id !== tenantId) throw new Error('job not found');
-      }
+
       // COMMIT FIRST, consume second: (1) the L1 evidence capture, idempotent
-      // via the externalId stamp; (2) the deterministic L2 merge. A crash
-      // between them leaves the token open and a retried confirm converges.
-      let capture;
-      try {
+      // via the externalId stamp; (2) the guarded merge. A crash between them
+      // leaves the token open and a retried confirm converges.
+      let capture = await getRawCaptureByExternalId(tenantId, `fact:${item.id}`);
+      if (!capture) {
+        // Drift pre-check BEFORE the L1 append: a conflict discovered after
+        // the evidence landed would strand a permanent orphan capture; caught
+        // here, the failure leaves no row at all. (guardedMerge re-checks
+        // under the CAS for the residual append→merge window.)
+        const row = target === 'customer' ? await getCustomer(targetId) : await getJob(targetId);
+        if (!row || row.tenant_id !== tenantId) throw new Error(`${target} not found`);
+        if (encodeFactValue(await currentFactValue(row.attributes, factKey)) !== stagedPrevEnc) {
+          return await conflictOut();
+        }
         try {
           capture = await appendRawCapture({
             tenantId,
             channel: 'technician_note',
             technicianRef: subjectRef,
-            rawText: detail.sourceText ?? `Standing fact: ${detail.key} = ${String(detail.value)}`,
+            rawText: detail.sourceText ?? `Standing fact: ${factKey} = ${String(factValue)}`,
             externalId: `fact:${item.id}`,
             customerId: detail.customerId,
-            ...(detail.target === 'job' ? { jobId: detail.targetId } : {}),
-            metadata: { standingFactKey: detail.key, target: detail.target, stagedConfirmId: item.id },
+            ...(target === 'job' ? { jobId: targetId } : {}),
+            metadata: { standingFactKey: factKey, target, stagedConfirmId: item.id },
           });
         } catch (err) {
-          // TOCTOU/retry backstop: this token's capture already landed — reuse it.
-          if (!isUniqueViolation(err)) throw err;
-          const existing = await getRawCaptureByExternalId(tenantId, `fact:${item.id}`);
-          if (!existing) throw err;
-          capture = existing;
+          // TOCTOU backstop: this token's capture landed concurrently — reuse it.
+          if (isUniqueViolation(err)) {
+            capture = await getRawCaptureByExternalId(tenantId, `fact:${item.id}`);
+          }
+          if (!capture) {
+            const msg = err instanceof Error ? err.message : String(err);
+            throw new Error(
+              `fact NOT recorded: ${msg} — the staged fact is still held; retry with the SAME confirmId (do not restage)`,
+            );
+          }
         }
-        await applyMerge(capture.id, capture.captured_at);
+      }
+      let outcome: 'applied' | 'already' | 'conflict';
+      try {
+        outcome = await guardedMerge(capture);
       } catch (err) {
         // The token is still open (consume hasn't run): a retry with the SAME
         // confirmId re-runs this commit under the SAME externalId and heals.
@@ -1653,12 +1747,8 @@ async function dispatch(
           `fact NOT recorded: ${msg} — the staged fact is still held; retry with the SAME confirmId (do not restage)`,
         );
       }
-      try {
-        await resolveReviewItem(item.id, tenantId, 'resolved', `fact recorded by ${subjectRef}`);
-      } catch {
-        /* advisory — the landed-capture path above treats a retry as success */
-      }
-      return { status: 'recorded', captureId: capture.id, target: detail.target, targetId: detail.targetId, key: detail.key };
+      if (outcome === 'conflict') return await conflictOut();
+      return await succeed(capture.id);
     }
     case 'add_technician_seat': {
       const displayName = str('displayName')?.trim();

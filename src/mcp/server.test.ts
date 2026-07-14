@@ -2307,6 +2307,128 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(forged.text).toContain('confirmation not found');
   });
 
+  test('drift guard: a fact recorded by someone ELSE between stage and confirm is never clobbered unpreviewed', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Fact Drift', phone: '555-9010' });
+    // Tech stages (preview shows NO previousValue — a new fact).
+    const techStage = await call('record_standing_fact', {
+      customerId: customer.id,
+      key: 'gate_code',
+      value: 1111,
+    });
+    expect(techStage.data.preview.previousValue).toBeUndefined();
+
+    // A manager records the same key fully, inside the tech's confirm window.
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const mgrStage = await callWith('record_standing_fact', {
+        customerId: customer.id,
+        key: 'gate_code',
+        value: 2222,
+      });
+      const mgrDone = await callWith('record_standing_fact', { confirmId: mgrStage.data.confirmId });
+      expect(mgrDone.data.status).toBe('recorded');
+    } finally {
+      await mgrClient.close();
+    }
+
+    // The tech's confirm must refuse — not silently overwrite 2222 with 1111.
+    const clobber = await call('record_standing_fact', { confirmId: techStage.data.confirmId });
+    expect(clobber.isError).toBe(true);
+    expect(clobber.text).toContain('changed on this customer');
+    // No orphan evidence capture was written for the refused confirm.
+    const caps = await pg.query<{ n: number }>(
+      'select count(*)::int as n from raw_captures where external_id = $1',
+      [`fact:${techStage.data.confirmId}`],
+    );
+    expect(Number(caps.rows[0].n)).toBe(0);
+    // The manager's fact is intact, and the tech token is dead (dismissed).
+    const row = await pg.query<{ attributes: { gate_code?: { value: number } } }>(
+      'select attributes from customers where id = $1',
+      [customer.id],
+    );
+    expect(row.rows[0].attributes.gate_code?.value).toBe(2222);
+    const retry = await call('record_standing_fact', { confirmId: techStage.data.confirmId });
+    expect(retry.isError).toBe(true);
+    expect(retry.text).toContain('confirmation not found');
+  });
+
+  test('stale replay guard: a re-opened token never reverts a NEWER fact; a landed-unconsumed token blocks restaging', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Fact Replay', phone: '555-9011' });
+    const staged = await call('record_standing_fact', {
+      customerId: customer.id,
+      key: 'gate_code',
+      value: 1111,
+    });
+    const done = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('recorded');
+
+    // Simulate the crash window: commit landed, consume never ran.
+    await pg.query(
+      "update review_items set status = 'open', resolution = null, resolved_at = null where id = $1",
+      [staged.data.confirmId],
+    );
+
+    // While the token dangles open, RESTAGING is refused — the landed evidence
+    // must converge through its own confirmId, not be stranded by a supersede.
+    const restage = await call('record_standing_fact', {
+      customerId: customer.id,
+      key: 'other_key',
+      value: 'x',
+    });
+    expect(restage.isError).toBe(true);
+    expect(restage.text).toContain('still unfinished');
+    expect(restage.text).toContain(staged.data.confirmId);
+
+    // A manager then overwrites the key with a NEWER fact.
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const mgrStage = await callWith('record_standing_fact', {
+        customerId: customer.id,
+        key: 'gate_code',
+        value: 2222,
+      });
+      await callWith('record_standing_fact', { confirmId: mgrStage.data.confirmId });
+    } finally {
+      await mgrClient.close();
+    }
+
+    // The tech's replay of the dangling token must NOT revert 2222 to 1111.
+    const replay = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    expect(replay.isError).toBe(true);
+    expect(replay.text).toContain('changed on this customer');
+    const row = await pg.query<{ attributes: { gate_code?: { value: number } } }>(
+      'select attributes from customers where id = $1',
+      [customer.id],
+    );
+    expect(row.rows[0].attributes.gate_code?.value).toBe(2222);
+    // The conflicted token is dismissed, so a fresh restage now proceeds.
+    const restage2 = await call('record_standing_fact', {
+      customerId: customer.id,
+      key: 'other_key',
+      value: 'x',
+    });
+    expect(restage2.isError).toBe(false);
+    expect(restage2.data.status).toBe('needs_confirmation');
+  });
+
+  test("empty sourceText falls back to the canonical evidence text; a 'constructor' key never reads a prototype member as previousValue", async () => {
+    const customer = await createCustomer({ tenantId, name: 'Fact Edge', phone: '555-9012' });
+    const staged = await call('record_standing_fact', {
+      customerId: customer.id,
+      key: 'Constructor', // normalizes to 'constructor' — must not hit Object.prototype
+      value: 'edge',
+      sourceText: '   ', // whitespace-only must not become the permanent evidence
+    });
+    expect(staged.data.preview.previousValue).toBeUndefined();
+    const done = await call('record_standing_fact', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('recorded');
+    const cap = await pg.query<{ raw_text: string }>(
+      'select raw_text from raw_captures where id = $1',
+      [done.data.captureId],
+    );
+    expect(cap.rows[0].raw_text).toBe('Standing fact: constructor = edge');
+  });
+
   test('crash-heal: token re-opened after a landed commit — a retry converges on ONE capture, same bundle', async () => {
     const customer = await createCustomer({ tenantId, name: 'Fact Heal', phone: '555-9005' });
     const staged = await call('record_standing_fact', {

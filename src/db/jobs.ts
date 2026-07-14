@@ -62,7 +62,14 @@ export async function trySetJobAttribute(row: Job, key: string, bundle: Json): P
   const base =
     row.attributes && typeof row.attributes === 'object' && !Array.isArray(row.attributes)
       ? (row.attributes as Record<string, Json>)
-      : {};
+      : null;
+  // Refuse, never coerce (same rule as trySetCustomerAttribute): replacing a
+  // non-object attributes value would silently destroy it.
+  if (!base) {
+    throw new Error(
+      `trySetJobAttribute: attributes on job ${row.id} is not a JSON object — refusing to replace it`,
+    );
+  }
   const { data, error } = await getClient()
     .from('jobs')
     .update({ attributes: { ...base, [key]: bundle } })

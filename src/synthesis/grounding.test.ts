@@ -85,6 +85,26 @@ describe('validateCitations', () => {
     expect(validateCitations('nope' as unknown as undefined, context)).toEqual([]);
   });
 
+  test('accepts a standing-fact evidence id even when its capture row is not in recentCaptures', () => {
+    const ctx = fixture();
+    ctx.customer = customer({
+      attributes: {
+        prefers_contact: {
+          value: 'email',
+          sourceCaptureId: 'cap-fact-outside',
+          recordedAt: '2026-07-14T00:00:00.000Z',
+        },
+      },
+    });
+    // The serialized prompt offers '(capture cap-fact-outside)' as citeable,
+    // so the validator must not drop a citation of it as hallucinated.
+    const out = validateCitations(
+      [{ claim: 'customer prefers email', captureId: 'cap-fact-outside' }],
+      ctx,
+    );
+    expect(out).toHaveLength(1);
+  });
+
   test('de-dupes identical (claim, captureId) pairs', () => {
     const out = validateCitations(
       [

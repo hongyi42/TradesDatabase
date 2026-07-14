@@ -2,7 +2,7 @@
 date: 2026-07-14
 task: Feature C+D Phase 1 — confirm-gated, provenance-linked standing facts on customer/job rows (new spine tool)
 research: thoughts/shared/research/2026-07-13-feature-cd-l3-write-surface-and-agent-memory.md
-status: draft
+status: implemented — post-deploy live verification pending (Phase 4 live + manual items)
 ---
 
 ## Overview
@@ -283,8 +283,11 @@ with a pointer to this plan; Phase 2 stays parked with its triggers.
 standing attributes are written via `record_standing_fact`, wrapped with their evidence capture id.
 
 ### Automated verification
-- [ ] `npm run typecheck && npm run lint && npm test && npm run build` all pass (pre-PR gate)
-- [ ] PR opened (standing rule: no direct push to main)
+- [x] `npm run typecheck && npm run lint && npm test && npm run build` all pass (pre-PR gate —
+      42 files, 418 passed / 1 skipped after the final-review fixes: guarded drift/replay-safe
+      commit, orphan-capture prevention, sourceText/hasOwn/non-object-attributes hardening,
+      validateCitations widening)
+- [x] PR opened (standing rule: no direct push to main)
 
 ### Live verification (agent-executable)
 - Prerequisites: PR merged + **real Render deploy** (not "Redeploy", which reuses the old commit —

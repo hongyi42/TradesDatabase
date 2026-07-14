@@ -25,6 +25,41 @@ describe('serializeContextForPrompt', () => {
     expect(text).toContain('source_capture=cap-a'); // visit links to its capture
     expect(text).not.toContain(': null'); // null raw_text never prints literally
   });
+
+  test('wrapped standing facts render as plain value + citeable capture id; plain values pass through', () => {
+    const ctx = fixture();
+    ctx.customer = customer({
+      attributes: {
+        gateCode: '1234', // plain value — untouched
+        prefers_contact: {
+          value: 'email',
+          sourceCaptureId: 'cap-fact',
+          recordedAt: '2026-07-14T00:00:00.000Z',
+        },
+      },
+    });
+    ctx.jobs = [
+      job({
+        attributes: {
+          crane_needed: {
+            value: true,
+            sourceCaptureId: 'cap-jobfact',
+            recordedAt: '2026-07-14T00:00:00.000Z',
+          },
+        },
+      }),
+    ];
+    const text = serializeContextForPrompt(ctx);
+    // The model sees the plain value, with the evidence id alongside to cite.
+    expect(text).toContain('prefers_contact="email" (capture cap-fact)');
+    expect(text).toContain('crane_needed=true (capture cap-jobfact)');
+    // The raw wrapper never leaks into the prompt.
+    expect(text).not.toContain('sourceCaptureId');
+    // Plain values print as before.
+    expect(text).toContain('gateCode="1234"');
+    // Visit attributes (plain by construction) stay on the JSON form.
+    expect(text).toContain('attributes={"workPerformed":"inspected unit"}');
+  });
 });
 
 describe('validateCitations', () => {

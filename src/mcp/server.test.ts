@@ -2374,6 +2374,115 @@ describe('record_standing_fact (staged two-step)', () => {
     expect(confirmCancelled.isError).toBe(true);
     expect(confirmCancelled.text).toContain('confirmation not found');
   });
+
+  test('retraction fold: retracting the evidence hides the fact from context, get_job, and find_customer; the audit view keeps it labeled', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Fact Fold Cust', phone: '555-9007' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Fold Job' });
+
+    const cs = await call('record_standing_fact', {
+      customerId: customer.id,
+      key: 'prefers_contact',
+      value: 'email',
+    });
+    const cDone = await call('record_standing_fact', { confirmId: cs.data.confirmId });
+    const js = await call('record_standing_fact', { jobId: job.id, key: 'crane_needed', value: true });
+    const jDone = await call('record_standing_fact', { confirmId: js.data.confirmId });
+
+    // Visible before any retraction.
+    const before = await call('get_customer_context', { customerId: customer.id });
+    expect(before.data.customer.attributes.prefers_contact.value).toBe('email');
+    expect(
+      before.data.jobs.find((j: { id: string }) => j.id === job.id).attributes.crane_needed.value,
+    ).toBe(true);
+
+    // Retract the CUSTOMER fact's evidence (author retracts their own capture).
+    const rs = await call('retract_capture', {
+      captureId: cDone.data.captureId,
+      reason: 'wrong customer preference',
+    });
+    const rDone = await call('retract_capture', { confirmId: rs.data.confirmId });
+    expect(rDone.data.status).toBe('retracted');
+
+    // The customer fact is gone; the (unretracted) job fact stays.
+    const after = await call('get_customer_context', { customerId: customer.id });
+    expect(after.data.customer.attributes.prefers_contact).toBeUndefined();
+    expect(
+      after.data.jobs.find((j: { id: string }) => j.id === job.id).attributes.crane_needed.value,
+    ).toBe(true);
+
+    // find_customer folds the same way.
+    const found = await call('find_customer', { query: 'Fact Fold Cust' });
+    const row = found.data.find((c: { id: string }) => c.id === customer.id);
+    expect(row.attributes.prefers_contact).toBeUndefined();
+
+    // Retract the JOB fact's evidence → get_job folds too.
+    const rjs = await call('retract_capture', {
+      captureId: jDone.data.captureId,
+      reason: 'no crane after all',
+    });
+    await call('retract_capture', { confirmId: rjs.data.confirmId });
+    const jobAfter = await call('get_job', { jobId: job.id });
+    expect(jobAfter.data.attributes.crane_needed).toBeUndefined();
+
+    // Manager audit view: the evidence capture is still there, labeled.
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const audit = await callWith('list_recent_captures', {
+        customerId: customer.id,
+        includeRetracted: true,
+      });
+      const evidence = audit.data.find((c: { id: string }) => c.id === cDone.data.captureId);
+      expect(evidence.retracted).toBe(true);
+      expect(evidence.retraction.reason).toBe('wrong customer preference');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test("overwrite + retraction: only the CURRENT bundle's evidence controls the fold", async () => {
+    const customer = await createCustomer({ tenantId, name: 'Fact Overfold', phone: '555-9008' });
+    const first = await call('record_standing_fact', {
+      customerId: customer.id,
+      key: 'gate_code',
+      value: 1111,
+    });
+    const firstDone = await call('record_standing_fact', { confirmId: first.data.confirmId });
+    const second = await call('record_standing_fact', {
+      customerId: customer.id,
+      key: 'gate_code',
+      value: 2222,
+    });
+    const secondDone = await call('record_standing_fact', { confirmId: second.data.confirmId });
+
+    // Retracting the OLD evidence must not hide the fact — the current bundle
+    // cites the new capture.
+    const r1 = await call('retract_capture', {
+      captureId: firstDone.data.captureId,
+      reason: 'superseded evidence',
+    });
+    await call('retract_capture', { confirmId: r1.data.confirmId });
+    const mid = await call('get_customer_context', { customerId: customer.id });
+    expect(mid.data.customer.attributes.gate_code.value).toBe(2222);
+
+    // Retracting the CURRENT evidence hides it.
+    const r2 = await call('retract_capture', {
+      captureId: secondDone.data.captureId,
+      reason: 'wrong code',
+    });
+    await call('retract_capture', { confirmId: r2.data.confirmId });
+    const end = await call('get_customer_context', { customerId: customer.id });
+    expect(end.data.customer.attributes.gate_code).toBeUndefined();
+
+    // Staging the key again after the retraction must NOT resurface the
+    // retracted value as previousValue — the visible record has no such fact.
+    const restaged = await call('record_standing_fact', {
+      customerId: customer.id,
+      key: 'gate_code',
+      value: 3333,
+    });
+    expect(restaged.data.status).toBe('needs_confirmation');
+    expect(restaged.data.preview.previousValue).toBeUndefined();
+  });
 });
 
 describe('safeEnvInt (web-cap env parsing)', () => {

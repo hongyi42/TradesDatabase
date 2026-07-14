@@ -8,6 +8,7 @@ import {
   listRawCapturesForCustomer,
   type RawCapture,
 } from './rawCaptures.js';
+import { factSourceIds, foldRetractedFacts } from './standingFacts.js';
 
 export interface CustomerContext {
   customer: Customer | null;
@@ -53,8 +54,20 @@ export async function getCustomerContext(
   );
 
   let visits = recentVisits;
+  let customerOut = customer;
+  let jobsOut = jobs;
   if (!opts.includeRetracted) {
-    const retractions = await findRetractionsFor(recentCaptures.map((c) => c.id));
+    // Standing-fact evidence captures are normally IN recentCaptures already
+    // (record_standing_fact stamps customer_id), but the union above doesn't
+    // guarantee it — add their ids explicitly so a fact can never dodge the
+    // fold by its evidence missing from the fetched lists.
+    const factIds = [
+      ...factSourceIds(customer?.attributes ?? null),
+      ...jobs.flatMap((j) => factSourceIds(j.attributes)),
+    ];
+    const retractions = await findRetractionsFor([
+      ...new Set([...recentCaptures.map((c) => c.id), ...factIds]),
+    ]);
     recentCaptures = foldRetractions(recentCaptures, retractions);
     const retractedIds = new Set(
       retractions.map((r) => r.retracts_capture_id).filter((id): id is string => !!id),
@@ -64,7 +77,19 @@ export async function getCustomerContext(
     visits = recentVisits.filter(
       (v) => !v.source_capture_id || !retractedIds.has(v.source_capture_id),
     );
+    // Standing facts follow the same rule: evidence retracted ⇒ the fact
+    // disappears from the default view (it is the only removal path).
+    if (customerOut) {
+      customerOut = {
+        ...customerOut,
+        attributes: foldRetractedFacts(customerOut.attributes, retractedIds),
+      };
+    }
+    jobsOut = jobs.map((j) => ({
+      ...j,
+      attributes: foldRetractedFacts(j.attributes, retractedIds),
+    }));
   }
 
-  return { customer, jobs, recentVisits: visits, recentCaptures };
+  return { customer: customerOut, jobs: jobsOut, recentVisits: visits, recentCaptures };
 }

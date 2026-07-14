@@ -15,6 +15,8 @@ import {
   getRawCapture,
   getRawCaptureByExternalId,
   searchCustomers,
+  factSourceIds,
+  foldRetractedFacts,
   getCustomerContext,
   getTechnician,
   findTechnicianByTelegramUserId,
@@ -892,7 +894,19 @@ async function dispatch(
     case 'find_customer': {
       const query = str('query');
       if (!query) throw new Error('query is required');
-      return searchCustomers(tenantId, query);
+      const rows = await searchCustomers(tenantId, query);
+      // Fold standing facts whose evidence was retracted (one lookup across
+      // all rows) — a retracted fact must not stay visible in name lookups
+      // when context/briefings already hide it (fold is the removal path).
+      const ids = [...new Set(rows.flatMap((c) => factSourceIds(c.attributes)))];
+      if (ids.length === 0) return rows;
+      const retracted = new Set(
+        (await findRetractionsFor(ids))
+          .map((r) => r.retracts_capture_id)
+          .filter((id): id is string => !!id),
+      );
+      if (retracted.size === 0) return rows;
+      return rows.map((c) => ({ ...c, attributes: foldRetractedFacts(c.attributes, retracted) }));
     }
     case 'get_customer_context': {
       const customerId = str('customerId');
@@ -909,7 +923,18 @@ async function dispatch(
       if (!jobId) throw new Error('jobId is required');
       const job = await getJob(jobId);
       // Tenant guard: a cross-tenant (or unknown) id reads as not found.
-      return job && job.tenant_id === tenantId ? job : null;
+      if (!job || job.tenant_id !== tenantId) return null;
+      // Fold standing facts whose evidence was retracted — the raw-row tool
+      // must agree with the folded context view.
+      const ids = factSourceIds(job.attributes);
+      if (ids.length === 0) return job;
+      const retracted = new Set(
+        (await findRetractionsFor(ids))
+          .map((r) => r.retracts_capture_id)
+          .filter((id): id is string => !!id),
+      );
+      if (retracted.size === 0) return job;
+      return { ...job, attributes: foldRetractedFacts(job.attributes, retracted) };
     }
     case 'list_recent_captures': {
       const jobId = str('jobId');
@@ -1473,8 +1498,19 @@ async function dispatch(
           currentAttributes = job.attributes;
         }
         // The previous value (unwrapped) rides into the preview so an overwrite
-        // is confirmed as an overwrite, never silently.
-        const unwrapped = unwrapAttributes(currentAttributes);
+        // is confirmed as an overwrite, never silently. Fold retracted facts
+        // FIRST: a retracted key is absent from every read surface, so the
+        // preview must treat the write as new — echoing the retracted value as
+        // "replaces X" would resurface what the retraction hid (review finding).
+        const priorFactIds = factSourceIds(currentAttributes);
+        const retractedEvidence = new Set(
+          priorFactIds.length === 0
+            ? []
+            : (await findRetractionsFor(priorFactIds))
+                .map((r) => r.retracts_capture_id)
+                .filter((id): id is string => !!id),
+        );
+        const unwrapped = unwrapAttributes(foldRetractedFacts(currentAttributes, retractedEvidence));
         const previousValue = key in unwrapped ? unwrapped[key] : undefined;
         // One staged fact per person: a re-stage supersedes any open one.
         await resolveOpenReviewItemFor(

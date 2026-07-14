@@ -240,7 +240,7 @@ json.dump({hashlib.sha256(k.encode()).hexdigest(): v for k, v in d.items()}, ope
 EOF
 sudo chown doorman:doorman /etc/doorman/badges.json && sudo chmod 600 /etc/doorman/badges.json
 sudo systemctl restart doorman                    # immediately — old code + hashed file 403s
-# verify: Step 6(a) curl with the PLAINTEXT badge still lists the 12 tools
+# verify: Step 6(a) curl with the PLAINTEXT badge still lists the 13 tools
 ```
 
 ## Step 3 — Run it as a hardened service
@@ -306,7 +306,7 @@ Run on the host. Responses may be SSE, so use `-N`.
 ```bash
 BADGE=<the issued badge>
 
-# (a) positive: valid badge → tools/list returns the 12 tools
+# (a) positive: valid badge → tools/list returns the 13 tools
 curl -sN -X POST http://172.17.0.1:3001/ \
   -H "Authorization: Bearer $BADGE" \
   -H "Accept: application/json, text/event-stream" \
@@ -319,13 +319,13 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'   # expect 403
 ```
 
-- (a) should list the 12 tools for a technician-tier badge: `record_field_note`, `find_customer`,
+- (a) should list the 13 tools for a technician-tier badge: `record_field_note`, `find_customer`,
   `get_customer_context`, `get_job`, `list_recent_captures`, `brief_customer`,
   `answer_customer_question`, `web_search`, `read_webpage`, `send_email`, `retract_capture`,
-  `get_schedule`. (A badge whose roster row is an ACTIVE `tier='manager'` lists **20**
-  — the 8 seat/lifecycle-management tools are added: add/deactivate/reactivate technician seat,
-  bind_telegram, list_team, list_pending_reviews, resolve_review, get_connect_link; see
-  nemoclaw-tech-agent.md §4, updated 2026-07-13.)
+  `record_standing_fact`, `get_schedule`. (A badge whose roster row is an ACTIVE `tier='manager'`
+  lists **21** — the 8 seat/lifecycle-management tools are added: add/deactivate/reactivate
+  technician seat, bind_telegram, list_team, list_pending_reviews, resolve_review,
+  get_connect_link; see nemoclaw-tech-agent.md §4, updated 2026-07-14.)
   - `401 / bad identity signature` from upstream → `GATEWAY_IDENTITY_SECRET` differs between host and
     Render (Invariant 2).
   - connection error to upstream → the host isn't on Render's `ALLOWED_CLIENT_IPS` (Step 4).
@@ -366,7 +366,7 @@ HASH=$(printf %s "$NEW" | sha256sum | cut -d' ' -f1)
 ## Definition of done
 
 - `systemctl status doorman` is active; logs show the bind line.
-- Step 6(a) lists all 12 tools; 6(b) returns 403.
+- Step 6(a) lists all 13 tools; 6(b) returns 403.
 - An agent in a wired sandbox successfully calls a tool.
 - No secret or signed header exists inside any sandbox — only a badge.
 

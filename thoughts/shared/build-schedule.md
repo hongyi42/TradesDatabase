@@ -16,6 +16,15 @@ the structured substrate; Phase 2 (formerly **Feature C**) is the memory layer o
 is **independently shippable** — if only its trigger fires, run the RPI on this entry but scope
 the plan to Phase 1.
 
+**STATUS 2026-07-14: Phase 1 is implemented** (RPI cycle run 2026-07-13/14; user decisions:
+new `record_standing_fact` spine tool, wrapped-value provenance in the existing `attributes`
+JSONB, retraction-fold as the removal path). Research:
+`thoughts/shared/research/2026-07-13-feature-cd-l3-write-surface-and-agent-memory.md`; plan:
+`thoughts/shared/plans/2026-07-14-feature-cd-phase1-standing-facts.md`. **Phase 2 stays parked**
+with the triggers below; its RPI should start from that research doc plus the shipped Phase-1
+shape (facts are `{value, sourceCaptureId, recordedAt}` bundles — memory rows cite L1 the same
+way).
+
 **The division-of-information rule (why these are one feature):** a remembered fact about a
 *customer or job* belongs in L3 via Phase 1 (structured key/value — queryable, aggregatable);
 everything else — soft narrative knowledge that doesn't fit the customer record — belongs in

@@ -85,16 +85,16 @@ The future **Option B** (per-bot JWT / OAuth Resource Server) swaps only the hea
 
 ## 4. Restrict the tool surface
 Allowlist only the spine tools for the technician profile (`tools.profile` / allowlist) — the
-12-tool technician surface: `record_field_note`, `find_customer`, `get_customer_context`,
+13-tool technician surface: `record_field_note`, `find_customer`, `get_customer_context`,
 `get_job`, `list_recent_captures`, `brief_customer`, `answer_customer_question`, `web_search`,
-`read_webpage`, `send_email`, `retract_capture`, `get_schedule`.
+`read_webpage`, `send_email`, `retract_capture`, `record_standing_fact`, `get_schedule`.
 Outbound network policy should allow only the gateway + our server's host.
 
 **Manager profile (2026-07-02):** an ACTIVE `tier='manager'` roster row (the `technicians`
 table, not the badge, is the tier source of truth) additionally exposes the seat/lifecycle
-tools — 8 of them, for a 20-tool manager surface (the technician surface itself is 12 incl.
+tools — 8 of them, for a 21-tool manager surface (the technician surface itself is 13 incl.
 send_email since 2026-07-04, retract_capture and get_schedule since 2026-07-06, web_search and
-read_webpage since 2026-07-13): `add_technician_seat`,
+read_webpage since 2026-07-13, record_standing_fact since 2026-07-14): `add_technician_seat`,
 `deactivate_technician_seat` (two-step confirm; starts the disable-first grace period),
 `reactivate_technician_seat` (the grace-period undo), `get_connect_link` (mint a Gmail
 Connect Link; 5-min per-person cooldown), `bind_telegram` (connect a person to their numeric

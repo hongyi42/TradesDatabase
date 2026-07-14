@@ -109,7 +109,7 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
   minting a badge is now a TWO-PART action: (1) the server side must already have an ACTIVE row for that
   ref — `tier='manager'` for a manager, `tier='technician'` otherwise; (2) mint the badge here with the
   byte-identical `technicianRef`. If no active row matches, the badge still authenticates but silently
-  acts as a plain technician (12 tools; the 8 seat/lifecycle admin tools are denied). The reference
+  acts as a plain technician (13 tools; the 8 seat/lifecycle admin tools are denied). The reference
   `tech-jane` badge above maps to an active technician row. You (host side) cannot see or change the
   roster — it lives in the server's DB; coordinate with whoever manages it when minting a manager badge.
 - The badge is registered as a **provider credential**:
@@ -254,9 +254,9 @@ Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config
 
 ## Verify (end-to-end)
 - Host→doorman→Render: `curl -X POST http://172.18.0.1:3001/mcp -H "Authorization: Bearer <badge>" …
-  '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + **12 tools** for a technician-tier
-  badge, or **20** for a badge whose ref maps to an active manager roster row (the extra 8 are the
-  seat-management tools; see the badge↔roster note above). A manager badge returning only 12 means the
+  '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + **13 tools** for a technician-tier
+  badge, or **21** for a badge whose ref maps to an active manager roster row (the extra 8 are the
+  seat-management tools; see the badge↔roster note above). A manager badge returning only 13 means the
   server has no active `tier='manager'` row for that ref (or is running older code).
 - Agent: message the bot ("list recent captures") → OCSF on host shows
   `ALLOWED /usr/local/bin/node(<pid>) -> host.openshell.internal:3001 [policy:trades_spine_doorman]` and the bot

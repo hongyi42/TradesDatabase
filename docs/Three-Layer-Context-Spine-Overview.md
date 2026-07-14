@@ -50,6 +50,11 @@ It is split into three layers by *how certain and how structured the data is*:
 > (L1). Capture the in-between in flexible attributes (L3). And **link every structured field back to
 > the raw evidence it came from.**
 
+*(Since 2026-07-14: customer/job-level L3 standing attributes are written via the
+`record_standing_fact` spine tool — each fact is stored wrapped with the L1 capture that
+evidences it, `{value, sourceCaptureId, recordedAt}`, and disappears from default reads if that
+capture is retracted. Visit attributes stay plain values, written by the note path.)*
+
 Why this split is powerful:
 
 - **L1 is a safety net.** Because the original is preserved, an imperfect AI extraction can be

@@ -15,6 +15,7 @@ export type ReviewKind =
   | 'pending_outbound_send'
   | 'pending_field_note'
   | 'pending_retraction'
+  | 'pending_standing_fact'
   | 'offboarding_reminder';
 
 export interface UpsertOpenReviewItemInput {

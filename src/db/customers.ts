@@ -39,6 +39,53 @@ export async function createCustomer(input: CreateCustomerInput): Promise<Custom
   return data;
 }
 
+// One CAS attempt at merging a standing-fact bundle under `key`: write back the
+// merged attributes only if the row still carries the updated_at we read (a
+// concurrent writer bumps it via the DB trigger, so the guarded update matches
+// no row and we return null instead of clobbering their key — supabase-js
+// update REPLACES the whole JSONB object). Exported single-attempt so tests can
+// force the CAS miss with a deliberately stale row.
+export async function trySetCustomerAttribute(
+  row: Customer,
+  key: string,
+  bundle: Json,
+): Promise<Customer | null> {
+  const base =
+    row.attributes && typeof row.attributes === 'object' && !Array.isArray(row.attributes)
+      ? (row.attributes as Record<string, Json>)
+      : null;
+  // Refuse, never coerce: silently replacing a non-object attributes value
+  // (an array/scalar from an import or external writer) with { [key]: bundle }
+  // would destroy it with no error and no L1 trail (review finding).
+  if (!base) {
+    throw new Error(
+      `trySetCustomerAttribute: attributes on customer ${row.id} is not a JSON object — refusing to replace it`,
+    );
+  }
+  const { data, error } = await getClient()
+    .from('customers')
+    .update({ attributes: { ...base, [key]: bundle } })
+    .eq('id', row.id)
+    .eq('updated_at', row.updated_at)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`trySetCustomerAttribute failed: ${error.message}`);
+  return data;
+}
+
+// Upsert one standing-fact key onto a customer's L3 attributes: read → guarded
+// merge, retried on a CAS miss. Tenant guarding stays the caller's job (module
+// convention — the MCP dispatch verifies the parent row's tenant).
+export async function setCustomerAttribute(id: string, key: string, bundle: Json): Promise<Customer> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const row = await getCustomer(id);
+    if (!row) throw new Error(`setCustomerAttribute: customer ${id} not found`);
+    const updated = await trySetCustomerAttribute(row, key, bundle);
+    if (updated) return updated;
+  }
+  throw new Error(`setCustomerAttribute: customer ${id} changed concurrently; write not applied`);
+}
+
 export async function getCustomer(id: string): Promise<Customer | null> {
   const { data, error } = await getClient().from('customers').select().eq('id', id).maybeSingle();
   if (error) throw new Error(`getCustomer failed: ${error.message}`);

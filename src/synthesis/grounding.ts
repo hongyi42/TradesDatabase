@@ -1,4 +1,4 @@
-import type { CustomerContext } from '../db/index.js';
+import { factSourceIds, isFactBundle, type CustomerContext, type Json } from '../db/index.js';
 
 // A single grounded claim: a statement the synthesizer made, paired with the L1
 // capture id it is sourced from. captureId must reference a real capture in the
@@ -19,12 +19,29 @@ export function serializeContextForPrompt(context: CustomerContext): string {
 
   const attrs = (value: unknown): string => JSON.stringify(value ?? {});
 
+  // Customer/job attributes can be wrapped standing facts ({value,
+  // sourceCaptureId, recordedAt}): render the plain value WITH its capture id
+  // so the model reads clean facts and can cite the evidence. Plain values
+  // print as-is (visit attributes never come through here).
+  const attrsWithEvidence = (value: Json): string => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return attrs(value);
+    }
+    const parts = Object.entries(value).map(([key, raw]) => {
+      const v = raw ?? null;
+      return isFactBundle(v)
+        ? `${key}=${JSON.stringify(v.value)} (capture ${v.sourceCaptureId})`
+        : `${key}=${JSON.stringify(v)}`;
+    });
+    return `{${parts.join(', ')}}`;
+  };
+
   const customerLine = customer
     ? `CUSTOMER: ${customer.name} | phone=${customer.phone ?? '—'} | ` +
       `address=${customer.address_line1 ?? '—'}` +
       `${customer.city ? `, ${customer.city}` : ''}` +
       `${customer.state ? `, ${customer.state}` : ''}` +
-      ` | attributes=${attrs(customer.attributes)}`
+      ` | attributes=${attrsWithEvidence(customer.attributes)}`
     : 'CUSTOMER: (not found)';
 
   const jobLines = jobs.length
@@ -32,7 +49,7 @@ export function serializeContextForPrompt(context: CustomerContext): string {
         .map(
           (j) =>
             `- [job ${j.id}] ${j.title ?? '(untitled)'} (${j.job_type ?? '—'}) ` +
-            `status=${j.status} attributes=${attrs(j.attributes)}`,
+            `status=${j.status} attributes=${attrsWithEvidence(j.attributes)}`,
         )
         .join('\n')
     : '- (none)';
@@ -80,6 +97,13 @@ export function validateCitations(
   context: CustomerContext,
 ): Citation[] {
   const realIds = new Set(context.recentCaptures.map((c) => c.id));
+  // Standing-fact evidence ids are offered as citeable in the serialized
+  // prompt ("(capture <id>)"), so accept them here too. Today they are also
+  // in recentCaptures (facts stamp customer_id), but that is incidental — a
+  // future writer citing a capture outside that list must not have its
+  // citations silently dropped as hallucinated (review finding).
+  for (const id of factSourceIds(context.customer?.attributes ?? null)) realIds.add(id);
+  for (const j of context.jobs) for (const id of factSourceIds(j.attributes)) realIds.add(id);
   const seen = new Set<string>();
   const valid: Citation[] = [];
   // Guard a non-array too, not just absent — the model could emit citations as a

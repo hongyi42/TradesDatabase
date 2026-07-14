@@ -55,6 +55,37 @@ export async function createJob(input: CreateJobInput): Promise<Job> {
   return data;
 }
 
+// One CAS attempt at merging a standing-fact bundle under `key` — the job twin
+// of trySetCustomerAttribute (see customers.ts for the why of the updated_at
+// guard). Exported single-attempt so tests can force the CAS miss.
+export async function trySetJobAttribute(row: Job, key: string, bundle: Json): Promise<Job | null> {
+  const base =
+    row.attributes && typeof row.attributes === 'object' && !Array.isArray(row.attributes)
+      ? (row.attributes as Record<string, Json>)
+      : {};
+  const { data, error } = await getClient()
+    .from('jobs')
+    .update({ attributes: { ...base, [key]: bundle } })
+    .eq('id', row.id)
+    .eq('updated_at', row.updated_at)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`trySetJobAttribute failed: ${error.message}`);
+  return data;
+}
+
+// Upsert one standing-fact key onto a job's L3 attributes (read → guarded
+// merge, retried on a CAS miss). Tenant guarding is the caller's job.
+export async function setJobAttribute(id: string, key: string, bundle: Json): Promise<Job> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const row = await getJob(id);
+    if (!row) throw new Error(`setJobAttribute: job ${id} not found`);
+    const updated = await trySetJobAttribute(row, key, bundle);
+    if (updated) return updated;
+  }
+  throw new Error(`setJobAttribute: job ${id} changed concurrently; write not applied`);
+}
+
 export async function getJob(id: string): Promise<Job | null> {
   const { data, error } = await getClient().from('jobs').select().eq('id', id).maybeSingle();
   if (error) throw new Error(`getJob failed: ${error.message}`);

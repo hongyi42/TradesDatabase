@@ -36,6 +36,9 @@ import {
   listTeam,
   resolveOpenReviewItemFor,
   resolveReviewItem,
+  setCustomerAttribute,
+  setJobAttribute,
+  unwrapAttributes,
   updateOpenReviewItemDetail,
   upsertOpenReviewItem,
   type CaptureChannel,
@@ -319,6 +322,45 @@ const TOOLS = [
           description: 'Why it is being retracted (first call only; stored permanently).',
         },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'record_standing_fact',
+    description:
+      'Record a durable standing fact about a customer or job ("prefers email", "gate code ' +
+      '4321") onto their permanent record — two-step. Unlike record_field_note (one trip\'s ' +
+      'note), this sets a fact every future briefing sees. First call with customerId OR jobId ' +
+      "+ key + value (+ sourceText, the person's exact words): NOTHING is recorded; you get " +
+      'needs_confirmation with a preview (including the previous value when overwriting). Show ' +
+      'the person EXACTLY the preview; only on their explicit yes call again with ONLY ' +
+      'confirmId — the STAGED copy is what gets recorded. To fix a wrong fact: re-record the ' +
+      "key with the right value, or retract the fact's evidence capture.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        customerId: {
+          type: 'string',
+          description: 'Target customer (exactly one of customerId/jobId). First call only.',
+        },
+        jobId: {
+          type: 'string',
+          description: 'Target job (exactly one of customerId/jobId). First call only.',
+        },
+        key: {
+          type: 'string',
+          description: 'Fact name, e.g. prefers_contact, gate_code (normalized to snake_case). First call only.',
+        },
+        value: {
+          type: ['string', 'number', 'boolean'],
+          description: 'The fact value (strings up to 500 chars). First call only.',
+        },
+        sourceText: {
+          type: 'string',
+          description: "The person's verbatim words — stored permanently as the fact's evidence. First call only.",
+        },
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call; ALONE it records the staged fact.' },
       },
       required: [],
     },
@@ -1373,6 +1415,215 @@ async function dispatch(
       }
       return { status: 'retracted', captureId: target.id, retractionId };
     }
+    case 'record_standing_fact': {
+      const subjectRef = identity.technicianRef;
+      const confirmId = str('confirmId');
+
+      if (!confirmId) {
+        // STAGE. Nothing is written — the fact is held as a review item until
+        // the person's explicit yes (same recipe as record_field_note).
+        const customerIdArg = str('customerId');
+        const jobIdArg = str('jobId');
+        if ((customerIdArg ? 1 : 0) + (jobIdArg ? 1 : 0) !== 1) {
+          throw new Error('provide exactly one of customerId or jobId');
+        }
+        const rawKey = str('key');
+        if (!rawKey) throw new Error('key is required');
+        const key = rawKey
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '_')
+          .replace(/^_+|_+$/g, '');
+        if (!key || key.length > 64) {
+          throw new Error('key must contain letters/digits and be at most 64 characters when normalized');
+        }
+        const value = args.value;
+        if (
+          typeof value !== 'string' &&
+          typeof value !== 'boolean' &&
+          !(typeof value === 'number' && Number.isFinite(value))
+        ) {
+          throw new Error('value must be a string, number, or boolean');
+        }
+        if (typeof value === 'string' && value.length > 500) {
+          throw new Error('value is too long (max 500 characters) — long context belongs in record_field_note');
+        }
+        // Tenant-guard the target BEFORE it can enter a staged commit: a forged
+        // id would otherwise write a fact onto another firm's record.
+        let target: 'customer' | 'job';
+        let targetId: string;
+        let customerId: string;
+        let targetName: string | null;
+        let currentAttributes: Json;
+        if (customerIdArg) {
+          const customer = await getCustomer(customerIdArg);
+          if (!customer || customer.tenant_id !== tenantId) throw new Error('customer not found');
+          target = 'customer';
+          targetId = customer.id;
+          customerId = customer.id;
+          targetName = customer.name;
+          currentAttributes = customer.attributes;
+        } else {
+          const job = await getJob(jobIdArg as string);
+          if (!job || job.tenant_id !== tenantId) throw new Error('job not found');
+          const customer = await getCustomer(job.customer_id);
+          target = 'job';
+          targetId = job.id;
+          customerId = job.customer_id;
+          targetName = `${customer?.name ?? 'unknown customer'}: ${job.title ?? '(untitled job)'}`;
+          currentAttributes = job.attributes;
+        }
+        // The previous value (unwrapped) rides into the preview so an overwrite
+        // is confirmed as an overwrite, never silently.
+        const unwrapped = unwrapAttributes(currentAttributes);
+        const previousValue = key in unwrapped ? unwrapped[key] : undefined;
+        // One staged fact per person: a re-stage supersedes any open one.
+        await resolveOpenReviewItemFor(
+          tenantId,
+          'pending_standing_fact',
+          subjectRef,
+          'dismissed',
+          'superseded by a new fact',
+        );
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_standing_fact',
+          subjectRef,
+          detail: {
+            target,
+            targetId,
+            customerId,
+            targetName,
+            key,
+            value,
+            sourceText: str('sourceText') ?? null,
+            ...(previousValue !== undefined ? { previousValue } : {}),
+            stagedAt: new Date().toISOString(),
+          },
+        });
+        // Echo the ITEM's detail, not local state: two racing stage calls can
+        // make the upsert return the other call's open row, and the staged
+        // copy is what commits (same rule as send_email / record_field_note).
+        const staged = (item.detail ?? {}) as {
+          target?: string;
+          targetName?: string | null;
+          key?: string;
+          value?: Json;
+          previousValue?: Json;
+        };
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          preview: {
+            target: staged.target,
+            targetName: staged.targetName,
+            key: staged.key,
+            value: staged.value,
+            ...(staged.previousValue !== undefined ? { previousValue: staged.previousValue } : {}),
+          },
+          note: 'Nothing was recorded. Show the person exactly this fact; on their explicit yes call again with ONLY confirmId.',
+        };
+      }
+
+      // CONFIRM. Guarded token lookup: forged / another person's / consumed
+      // confirmId matches nothing (every predicate in the WHERE clause).
+      const item = await getOpenReviewItem(confirmId, tenantId, {
+        kind: 'pending_standing_fact',
+        subjectRef,
+      });
+      if (!item) {
+        throw new Error('confirmation not found — call record_standing_fact again with the fact to restage');
+      }
+      const detail = (item.detail ?? {}) as {
+        target?: 'customer' | 'job';
+        targetId?: string;
+        customerId?: string;
+        key?: string;
+        value?: string | number | boolean;
+        sourceText?: string | null;
+        stagedAt?: string;
+      };
+      // Malformed check FIRST (before expiry): a malformed detail can never
+      // have committed — the commit below validates these same fields — so no
+      // landed capture can exist for it and the order is safe.
+      if (!detail.target || !detail.targetId || !detail.customerId || !detail.key || detail.value === undefined) {
+        throw new Error('staged fact is malformed — restage with the fact');
+      }
+      // The deterministic merge: recordedAt comes from the capture (not now()),
+      // so a crash-retry re-applies an IDENTICAL bundle and converges.
+      const applyMerge = async (captureId: string, capturedAt: string) => {
+        const bundle: Json = {
+          value: detail.value as string | number | boolean,
+          sourceCaptureId: captureId,
+          recordedAt: capturedAt,
+        };
+        if (detail.target === 'customer') await setCustomerAttribute(detail.targetId as string, detail.key as string, bundle);
+        else await setJobAttribute(detail.targetId as string, detail.key as string, bundle);
+      };
+      if (detail.stagedAt && Date.now() - Date.parse(detail.stagedAt) > 15 * 60_000) {
+        // Late retry after a commit-then-crash: if this token's capture already
+        // landed, finish the (idempotent) merge and report success instead of
+        // expiring into a confusing restage.
+        const landed = await getRawCaptureByExternalId(tenantId, `fact:${item.id}`);
+        if (landed) {
+          await applyMerge(landed.id, landed.captured_at);
+          try {
+            await resolveReviewItem(item.id, tenantId, 'resolved', `fact recorded by ${subjectRef}`);
+          } catch {
+            /* advisory */
+          }
+          return { status: 'recorded', captureId: landed.id, target: detail.target, targetId: detail.targetId, key: detail.key };
+        }
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'staging expired');
+        throw new Error('staged fact expired — restage and confirm again');
+      }
+      // Re-verify the target row + tenant (defensive — the staged id was
+      // guarded at stage time, but the commit must never trust a stale claim).
+      if (detail.target === 'customer') {
+        const customer = await getCustomer(detail.targetId);
+        if (!customer || customer.tenant_id !== tenantId) throw new Error('customer not found');
+      } else {
+        const job = await getJob(detail.targetId);
+        if (!job || job.tenant_id !== tenantId) throw new Error('job not found');
+      }
+      // COMMIT FIRST, consume second: (1) the L1 evidence capture, idempotent
+      // via the externalId stamp; (2) the deterministic L2 merge. A crash
+      // between them leaves the token open and a retried confirm converges.
+      let capture;
+      try {
+        try {
+          capture = await appendRawCapture({
+            tenantId,
+            channel: 'technician_note',
+            technicianRef: subjectRef,
+            rawText: detail.sourceText ?? `Standing fact: ${detail.key} = ${String(detail.value)}`,
+            externalId: `fact:${item.id}`,
+            customerId: detail.customerId,
+            ...(detail.target === 'job' ? { jobId: detail.targetId } : {}),
+            metadata: { standingFactKey: detail.key, target: detail.target, stagedConfirmId: item.id },
+          });
+        } catch (err) {
+          // TOCTOU/retry backstop: this token's capture already landed — reuse it.
+          if (!isUniqueViolation(err)) throw err;
+          const existing = await getRawCaptureByExternalId(tenantId, `fact:${item.id}`);
+          if (!existing) throw err;
+          capture = existing;
+        }
+        await applyMerge(capture.id, capture.captured_at);
+      } catch (err) {
+        // The token is still open (consume hasn't run): a retry with the SAME
+        // confirmId re-runs this commit under the SAME externalId and heals.
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `fact NOT recorded: ${msg} — the staged fact is still held; retry with the SAME confirmId (do not restage)`,
+        );
+      }
+      try {
+        await resolveReviewItem(item.id, tenantId, 'resolved', `fact recorded by ${subjectRef}`);
+      } catch {
+        /* advisory — the landed-capture path above treats a retry as success */
+      }
+      return { status: 'recorded', captureId: capture.id, target: detail.target, targetId: detail.targetId, key: detail.key };
+    }
     case 'add_technician_seat': {
       const displayName = str('displayName')?.trim();
       if (!displayName) throw new Error('displayName is required');
@@ -1827,6 +2078,13 @@ async function dispatch(
         throw new Error(
           `this is a staged retraction for '${open.subject_ref}' — confirm it via ` +
             `retract_capture, or dismiss it to cancel`,
+        );
+      }
+      // And for a staged standing fact: it commits only via record_standing_fact.
+      if (open.kind === 'pending_standing_fact' && resolution === 'resolved') {
+        throw new Error(
+          `this is a staged standing fact for '${open.subject_ref}' — confirm it via ` +
+            `record_standing_fact, or dismiss it to cancel`,
         );
       }
       // A pairing_verification verdict acts BEFORE the item closes (state-first,

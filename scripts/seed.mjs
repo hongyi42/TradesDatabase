@@ -195,6 +195,17 @@ async function seedScheduling(tenantId, jane) {
   return { availability: 'tech-jane Mon–Fri 08–17', timeOff: `${dayOffset(7)}..${dayOffset(9)}` };
 }
 
+// Customer/job L3 attributes are STANDING FACTS: wrapped with the L1 capture
+// that evidences them (Feature C+D Phase 1), so demo facts are retractable and
+// fold exactly like tool-written ones. Plain values are only legal on VISITS —
+// a plain customer/job value has no provenance and no removal path (live E2E
+// finding 2026-07-14: the seed's plain `pets` kept a retracted dog alive).
+const fact = (value, capture) => ({
+  value,
+  sourceCaptureId: capture.id,
+  recordedAt: capture.captured_at,
+});
+
 async function seed(tenantId, janeId) {
   // ── Customer A — Maria Gonzalez: full history, the briefing showcase ──────────
   // L1 intake call lands first (no L2 exists yet), then L2 is created from it.
@@ -214,7 +225,14 @@ async function seed(tenantId, janeId) {
     city: 'Fresno',
     state: 'CA',
     postalCode: '93701',
-    attributes: { gateCode: '1234', pets: 'dog in backyard', prefers: 'afternoons' }, // L3
+    // L3 standing facts, evidence = the intake call (snake_case keys: the
+    // record_standing_fact tool normalizes to snake_case, so seed keys must
+    // collide with — not shadow — tool-written ones, e.g. gate_code).
+    attributes: {
+      gate_code: fact('1234', aIntake),
+      pets: fact('dog in backyard', aIntake),
+      prefers: fact('afternoons', aIntake),
+    },
     sourceCaptureId: aIntake.id,
   });
   const acJob = await createJob({
@@ -223,7 +241,7 @@ async function seed(tenantId, janeId) {
     title: 'AC repair',
     jobType: 'hvac',
     priceCents: 40000,
-    attributes: { symptom: 'not cooling' }, // L3
+    attributes: { symptom: fact('not cooling', aIntake) }, // L3
     sourceCaptureId: aIntake.id,
   });
   // Walk the legal status machine: open → in_progress → completed → invoiced.
@@ -270,7 +288,7 @@ async function seed(tenantId, janeId) {
     city: 'Clovis',
     state: 'CA',
     postalCode: '93611',
-    attributes: { prefers: 'mornings' }, // L3
+    attributes: { prefers: fact('mornings', bWeb) }, // L3 standing fact
     sourceCaptureId: bWeb.id,
   });
   const furnaceJob = await createJob({
@@ -279,7 +297,7 @@ async function seed(tenantId, janeId) {
     title: 'Furnace inspection',
     jobType: 'hvac',
     status: 'open',
-    attributes: { symptom: 'rattling noise on start' }, // L3
+    attributes: { symptom: fact('rattling noise on start', bWeb) }, // L3 standing fact
     sourceCaptureId: bWeb.id,
   });
   // The scheduler-owned booking: tech-jane × Tom's furnace job, CONFIRMED on

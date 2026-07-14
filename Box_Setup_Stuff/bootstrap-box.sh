@@ -548,11 +548,17 @@ no delete. For EVERY such write:
    (record_field_note, send_email, retract_capture, record_standing_fact) record/send
    NOTHING on the first call; they return the exact staged copy + a confirmId. Show THAT
    staged copy, wait for the person's explicit yes, then confirm with ONLY the confirmId.
-   Do NOT ask your own extra "shall I?" before calling the tool — that double-asks the
-   person (user feedback 2026-07-06: one confirmation is enough).
+   Do NOT ask your own "shall I?" / "want me to go ahead?" BEFORE calling the tool — stage
+   FIRST, always: the server's preview IS the question, for retractions exactly as for
+   notes, sends, and facts. The ONLY yes the person gives is the one answering the staged
+   preview (one confirmation is enough — user feedback 2026-07-06; live finding 2026-07-14:
+   pre-asking "want me to go ahead with the retraction?" forced a wasted extra yes).
+   Several facts about the same customer/job = ONE record_standing_fact call
+   (facts:[{key,value},…]) = one preview = one confirmation; never stage them one at a time.
 3. If a wrong note does get recorded: first record the corrected note, then retract the wrong
    capture with retract_capture (captureId + reason — also confirm-gated). The original row is
-   never removed, but retracted notes disappear from briefings and lists; managers can still
+   never removed, but retracted notes — and any standing fact citing the retracted capture as
+   evidence — disappear from briefings and lists automatically; managers can still
    see the full labeled trail.
 4. Keep it conversational — don't lecture. Never volunteer reminders that the record is
    permanent or that there is no delete; follow these rules silently and mention permanence
@@ -613,8 +619,9 @@ cut off resumes exactly where it left off.
 6. **When the task is done, distill and clean up.** Write a few short lines of what you
    learned into MEMORY.md — keep it terse, it loads into every future session. Lasting facts
    about a customer or job do NOT belong in MEMORY.md — record them into the company record:
-   a durable key/value fact (a preference, a gate code, an access note) with
-   record_standing_fact; a narrative observation (a spotted opportunity, what happened) with
+   durable key/value facts (a preference, a gate code, an access note) with ONE
+   record_standing_fact call (facts:[{key,value},…] — batch them, one confirmation covers
+   all); a narrative observation (a spotted opportunity, what happened) with
    record_field_note. Both are permanent, evidence-linked, and visible to everyone. Then
    delete the progress file; it has done its job. Do not let finished task-scratch pile up.
 

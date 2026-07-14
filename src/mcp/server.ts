@@ -311,8 +311,10 @@ const TOOLS = [
     description:
       'Retract a wrongly recorded capture — two-step. The record is append-only, so this never ' +
       'deletes: it permanently marks the capture as recorded-in-error (with your reason); the ' +
-      'note and its visit stop appearing in briefings/context/lists (facts the note already ' +
-      'wrote onto the job/customer record — e.g. a status change — are NOT auto-reverted). ' +
+      'note, its visit, AND any standing fact citing it as evidence all stop appearing in ' +
+      'briefings/context/lists automatically — retracting a fact\'s evidence capture IS how a ' +
+      'wrong standing fact is removed (no follow-up write needed). Only other side effects the ' +
+      'note caused — e.g. a job status change — are NOT auto-reverted. ' +
       'First call with captureId + reason: nothing happens yet; you get ' +
       '{status:"needs_confirmation", confirmId}. Show the person the capture and the reason; ' +
       "only on their explicit yes call again with ONLY confirmId. Only the capture's author or " +
@@ -334,14 +336,16 @@ const TOOLS = [
   {
     name: 'record_standing_fact',
     description:
-      'Record a durable standing fact about a customer or job ("prefers email", "gate code ' +
+      'Record durable standing facts about ONE customer or job ("prefers email", "gate code ' +
       '4321") onto their permanent record — two-step. Unlike record_field_note (one trip\'s ' +
-      'note), this sets a fact every future briefing sees. First call with customerId OR jobId ' +
-      "+ key + value (+ sourceText, the person's exact words): NOTHING is recorded; you get " +
-      'needs_confirmation with a preview (including the previous value when overwriting). Show ' +
-      'the person EXACTLY the preview; only on their explicit yes call again with ONLY ' +
-      'confirmId — the STAGED copy is what gets recorded. To fix a wrong fact: re-record the ' +
-      "key with the right value, or retract the fact's evidence capture.",
+      'note), this sets facts every future briefing sees. EVERY fact from the same ' +
+      'conversation about the same customer/job goes in ONE call: first call with customerId ' +
+      "OR jobId + facts:[{key,value},…] (+ sourceText, the person's exact words): NOTHING is " +
+      'recorded; you get needs_confirmation with ONE preview listing every fact (and the ' +
+      'previous value when overwriting). Show the person EXACTLY the preview; only on their ' +
+      'explicit yes call again with ONLY confirmId — the STAGED copy is what gets recorded, ' +
+      'all facts under a single confirmation. To fix a wrong fact: re-record the key with the ' +
+      "right value, or retract the fact's evidence capture (which removes it automatically).",
     inputSchema: {
       type: 'object',
       properties: {
@@ -353,19 +357,35 @@ const TOOLS = [
           type: 'string',
           description: 'Target job (exactly one of customerId/jobId). First call only.',
         },
-        key: {
-          type: 'string',
-          description: 'Fact name, e.g. prefers_contact, gate_code (normalized to snake_case). First call only.',
+        facts: {
+          type: 'array',
+          description:
+            'The facts to record — put ALL facts from this conversation here (max 10), one call, one confirmation. First call only.',
+          items: {
+            type: 'object',
+            properties: {
+              key: {
+                type: 'string',
+                description: 'Fact name, e.g. prefers_contact, gate_code (normalized to snake_case).',
+              },
+              value: {
+                type: ['string', 'number', 'boolean'],
+                description: 'The fact value (strings up to 500 chars).',
+              },
+            },
+            required: ['key', 'value'],
+          },
         },
+        key: { type: 'string', description: 'Single-fact alternative to facts[]. First call only.' },
         value: {
           type: ['string', 'number', 'boolean'],
-          description: 'The fact value (strings up to 500 chars). First call only.',
+          description: 'Single-fact alternative to facts[]. First call only.',
         },
         sourceText: {
           type: 'string',
-          description: "The person's verbatim words — stored permanently as the fact's evidence. First call only.",
+          description: "The person's verbatim words — stored permanently as the facts' evidence. First call only.",
         },
-        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call; ALONE it records the staged fact.' },
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call; ALONE it records the staged facts.' },
       },
       required: [],
     },
@@ -1473,33 +1493,61 @@ async function dispatch(
       const confirmId = str('confirmId');
 
       if (!confirmId) {
-        // STAGE. Nothing is written — the fact is held as a review item until
-        // the person's explicit yes (same recipe as record_field_note).
+        // STAGE. Nothing is written — the facts are held as ONE review item
+        // (one preview, one confirmation for the whole batch) until the
+        // person's explicit yes. Batching exists because facts arrive in
+        // conversation clumps: staging them one-per-call superseded the
+        // earlier token and forced a confusing extra confirmation (live E2E
+        // finding 2026-07-14).
         const customerIdArg = str('customerId');
         const jobIdArg = str('jobId');
         if ((customerIdArg ? 1 : 0) + (jobIdArg ? 1 : 0) !== 1) {
           throw new Error('provide exactly one of customerId or jobId');
         }
-        const rawKey = str('key');
-        if (!rawKey) throw new Error('key is required');
-        const key = rawKey
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '_')
-          .replace(/^_+|_+$/g, '');
-        if (!key || key.length > 64) {
-          throw new Error('key must contain letters/digits and be at most 64 characters when normalized');
+        // Facts arrive as facts:[{key,value},…] or the single key+value form.
+        const factsArg = args.facts;
+        if (factsArg !== undefined && (args.key !== undefined || args.value !== undefined)) {
+          throw new Error('provide either facts[] or a single key+value, not both');
         }
-        const value = args.value;
-        if (
-          typeof value !== 'string' &&
-          typeof value !== 'boolean' &&
-          !(typeof value === 'number' && Number.isFinite(value))
-        ) {
-          throw new Error('value must be a string, number, or boolean');
+        let rawFacts: Array<{ key?: unknown; value?: unknown }>;
+        if (factsArg !== undefined) {
+          if (!Array.isArray(factsArg) || factsArg.length === 0) {
+            throw new Error('facts must be a non-empty array of {key, value}');
+          }
+          if (factsArg.length > 10) throw new Error('at most 10 facts per call');
+          rawFacts = factsArg as Array<{ key?: unknown; value?: unknown }>;
+        } else {
+          rawFacts = [{ key: args.key, value: args.value }];
         }
-        if (typeof value === 'string' && value.length > 500) {
-          throw new Error('value is too long (max 500 characters) — long context belongs in record_field_note');
-        }
+        const seenKeys = new Set<string>();
+        const facts: Array<{ key: string; value: string | number | boolean; previousValue?: Json }> =
+          rawFacts.map((f) => {
+            const rawKey = f && typeof f === 'object' && typeof f.key === 'string' ? f.key : undefined;
+            if (!rawKey) throw new Error('key is required for every fact');
+            const key = rawKey
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '_')
+              .replace(/^_+|_+$/g, '');
+            if (!key || key.length > 64) {
+              throw new Error('key must contain letters/digits and be at most 64 characters when normalized');
+            }
+            // Post-normalization dedupe: "Gate Code" and "gate_code" are the
+            // same fact — a batch writing one key twice is ambiguous.
+            if (seenKeys.has(key)) throw new Error(`duplicate fact key after normalization: ${key}`);
+            seenKeys.add(key);
+            const value = f.value;
+            if (
+              typeof value !== 'string' &&
+              typeof value !== 'boolean' &&
+              !(typeof value === 'number' && Number.isFinite(value))
+            ) {
+              throw new Error('value must be a string, number, or boolean');
+            }
+            if (typeof value === 'string' && value.length > 500) {
+              throw new Error('value is too long (max 500 characters) — long context belongs in record_field_note');
+            }
+            return { key, value };
+          });
         // Tenant-guard the target BEFORE it can enter a staged commit: a forged
         // id would otherwise write a fact onto another firm's record.
         let target: 'customer' | 'job';
@@ -1525,14 +1573,17 @@ async function dispatch(
           targetName = `${customer?.name ?? 'unknown customer'}: ${job.title ?? '(untitled job)'}`;
           currentAttributes = job.attributes;
         }
-        // The previous value (unwrapped, retraction-folded — a retracted key
-        // reads as absent on every surface, so the preview treats the write as
-        // new) rides into the preview so an overwrite is confirmed as an
-        // overwrite, never silently. The commit re-checks this exact value
-        // (preview == commit): a fact someone ELSE records between stage and
-        // confirm must never be clobbered unpreviewed (review finding).
-        const previousValue = await currentFactValue(currentAttributes, key);
-        // One staged fact per person: a re-stage supersedes any open one —
+        // Each fact's previous value (unwrapped, retraction-folded — a
+        // retracted key reads as absent on every surface, so the preview
+        // treats the write as new) rides into the preview so an overwrite is
+        // confirmed as an overwrite, never silently. The commit re-checks the
+        // exact values (preview == commit): a fact someone ELSE records
+        // between stage and confirm must never be clobbered unpreviewed.
+        for (const f of facts) {
+          const previousValue = await currentFactValue(currentAttributes, f.key);
+          if (previousValue !== undefined) f.previousValue = previousValue;
+        }
+        // One staged BATCH per person: a re-stage supersedes any open one —
         // UNLESS that token's evidence capture already LANDED (a confirm
         // crashed between commit and consume). Dismissing it would strand a
         // permanent evidence row with no path left to finish or honestly
@@ -1556,13 +1607,11 @@ async function dispatch(
             targetId,
             customerId,
             targetName,
-            key,
-            value,
+            facts: facts as unknown as Json,
             // `|| null`, not `?? null`: an empty/whitespace sourceText must
             // fall back to the canonical rendering at commit — '' would
             // otherwise become the permanent (undeletable) L1 evidence text.
             sourceText: str('sourceText')?.trim() || null,
-            ...(previousValue !== undefined ? { previousValue } : {}),
             stagedAt: new Date().toISOString(),
           },
         });
@@ -1572,21 +1621,28 @@ async function dispatch(
         const staged = (item.detail ?? {}) as {
           target?: string;
           targetName?: string | null;
-          key?: string;
-          value?: Json;
-          previousValue?: Json;
+          facts?: Array<{ key: string; value: Json; previousValue?: Json }>;
         };
+        const stagedFacts = staged.facts ?? [];
         return {
           status: 'needs_confirmation',
           confirmId: item.id,
           preview: {
             target: staged.target,
             targetName: staged.targetName,
-            key: staged.key,
-            value: staged.value,
-            ...(staged.previousValue !== undefined ? { previousValue: staged.previousValue } : {}),
+            facts: stagedFacts,
+            // Single-fact calls keep the flat preview fields (agent/back-compat).
+            ...(stagedFacts.length === 1
+              ? {
+                  key: stagedFacts[0].key,
+                  value: stagedFacts[0].value,
+                  ...(Object.hasOwn(stagedFacts[0], 'previousValue')
+                    ? { previousValue: stagedFacts[0].previousValue }
+                    : {}),
+                }
+              : {}),
           },
-          note: 'Nothing was recorded. Show the person exactly this fact; on their explicit yes call again with ONLY confirmId.',
+          note: 'Nothing was recorded. Show the person exactly these facts — ONE confirmation covers all of them; on their explicit yes call again with ONLY confirmId.',
         };
       }
 
@@ -1603,84 +1659,152 @@ async function dispatch(
         target?: 'customer' | 'job';
         targetId?: string;
         customerId?: string;
+        facts?: Array<{ key?: string; value?: string | number | boolean; previousValue?: Json }>;
+        // Legacy single-fact shape (a token staged before the batch deploy):
         key?: string;
         value?: string | number | boolean;
-        sourceText?: string | null;
         previousValue?: Json;
+        sourceText?: string | null;
         stagedAt?: string;
       };
+      // Normalize the legacy single-fact detail into the batch shape so a
+      // pre-deploy token still confirms correctly.
+      const stagedFacts =
+        detail.facts ??
+        (detail.key !== undefined && detail.value !== undefined
+          ? [
+              {
+                key: detail.key,
+                value: detail.value,
+                ...(Object.hasOwn(detail, 'previousValue') ? { previousValue: detail.previousValue } : {}),
+              },
+            ]
+          : undefined);
       // Malformed check FIRST (before expiry): a malformed detail can never
       // have committed — the commit below validates these same fields — so no
       // landed capture can exist for it and the order is safe.
-      if (!detail.target || !detail.targetId || !detail.customerId || !detail.key || detail.value === undefined) {
+      if (
+        !detail.target ||
+        !detail.targetId ||
+        !detail.customerId ||
+        !stagedFacts ||
+        stagedFacts.length === 0 ||
+        stagedFacts.some((f) => !f.key || f.value === undefined)
+      ) {
         throw new Error('staged fact is malformed — restage with the fact');
       }
       // Narrowed locals — closures below must see the narrowed types.
       const target = detail.target;
       const targetId = detail.targetId;
-      const factKey = detail.key;
-      const factValue = detail.value;
-      const stagedPrevEnc = encodeFactValue(detail.previousValue);
+      const facts = stagedFacts as Array<{ key: string; value: string | number | boolean; previousValue?: Json }>;
+      const prevEncOf = (f: { previousValue?: Json }) =>
+        encodeFactValue(Object.hasOwn(f, 'previousValue') ? f.previousValue : undefined);
 
-      // Guarded, idempotent merge: read the row, then commit ONLY if the key
-      // still reads exactly as previewed (preview == commit for overwrites).
+      // Read + guard the target row (tenant + attributes shape).
+      const readTarget = async () => {
+        const row = target === 'customer' ? await getCustomer(targetId) : await getJob(targetId);
+        if (!row || row.tenant_id !== tenantId) throw new Error(`${target} not found`);
+        return row;
+      };
+      // Guarded, idempotent merge of ONE fact: commit ONLY if the key still
+      // reads exactly as previewed (preview == commit for overwrites).
       //  'already'  — the key's bundle cites this token's capture: an earlier
       //               commit landed; success without rewriting (a stale replay
       //               must never revert a NEWER fact — review finding).
       //  'conflict' — the key changed since staging (another writer, or our
       //               write was itself overwritten): never clobber it.
       //  'applied'  — the CAS write landed against the checked snapshot.
-      const guardedMerge = async (capture: {
-        id: string;
-        captured_at: string;
-      }): Promise<'applied' | 'already' | 'conflict'> => {
+      const guardedMerge = async (
+        capture: { id: string; captured_at: string },
+        f: { key: string; value: string | number | boolean; previousValue?: Json },
+      ): Promise<'applied' | 'already' | 'conflict'> => {
         const bundle: Json = {
-          value: factValue,
+          value: f.value,
           sourceCaptureId: capture.id,
           recordedAt: capture.captured_at, // deterministic: retries converge
         };
         for (let attempt = 0; attempt < 3; attempt++) {
-          const row = target === 'customer' ? await getCustomer(targetId) : await getJob(targetId);
-          if (!row || row.tenant_id !== tenantId) throw new Error(`${target} not found`);
+          const row = await readTarget();
           const attrs =
             row.attributes && typeof row.attributes === 'object' && !Array.isArray(row.attributes)
               ? (row.attributes as Record<string, Json>)
               : null;
           if (!attrs) throw new Error(`attributes on this ${target} is not a JSON object — refusing to overwrite it`);
-          const current = Object.hasOwn(attrs, factKey) ? (attrs[factKey] ?? null) : undefined;
+          const current = Object.hasOwn(attrs, f.key) ? (attrs[f.key] ?? null) : undefined;
           if (current !== undefined && isFactBundle(current) && current.sourceCaptureId === capture.id) {
             return 'already';
           }
-          if (encodeFactValue(await currentFactValue(row.attributes, factKey)) !== stagedPrevEnc) {
+          if (encodeFactValue(await currentFactValue(row.attributes, f.key)) !== prevEncOf(f)) {
             return 'conflict';
           }
           const updated =
             target === 'customer'
-              ? await trySetCustomerAttribute(row as Customer, factKey, bundle)
-              : await trySetJobAttribute(row as Job, factKey, bundle);
+              ? await trySetCustomerAttribute(row as Customer, f.key, bundle)
+              : await trySetJobAttribute(row as Job, f.key, bundle);
           if (updated) return 'applied';
           // CAS miss: the row changed under us — re-read and re-check.
         }
         throw new Error(`this ${target} is being updated concurrently`);
       };
-      const succeed = async (captureId: string) => {
+      // Merge the whole batch against a landed capture and report honestly:
+      // applied/already keys succeed; a (rare, post-capture) per-key conflict
+      // is skipped — NEVER clobbered — and named in the result.
+      const mergeBatch = async (capture: { id: string; captured_at: string }) => {
+        const recordedKeys: string[] = [];
+        const conflictKeys: string[] = [];
+        for (const f of facts) {
+          const outcome = await guardedMerge(capture, f);
+          if (outcome === 'conflict') conflictKeys.push(f.key);
+          else recordedKeys.push(f.key);
+        }
+        if (recordedKeys.length === 0) {
+          // Everything conflicted — nothing of this token can ever land.
+          try {
+            await resolveReviewItem(item.id, tenantId, 'dismissed', 'facts changed while confirmation was pending');
+          } catch {
+            /* advisory */
+          }
+          throw new Error(
+            `facts NOT recorded: ${conflictKeys.map((k) => `'${k}'`).join(', ')} changed on this ${target} while the confirmation was pending — nothing was overwritten; restage to see the current values`,
+          );
+        }
         try {
-          await resolveReviewItem(item.id, tenantId, 'resolved', `fact recorded by ${subjectRef}`);
+          await resolveReviewItem(
+            item.id,
+            tenantId,
+            'resolved',
+            `facts recorded by ${subjectRef}` +
+              (conflictKeys.length > 0 ? ` (skipped changed keys: ${conflictKeys.join(', ')})` : ''),
+          );
         } catch {
           /* advisory — a replay treats the landed state as success */
         }
-        return { status: 'recorded', captureId, target, targetId, key: factKey };
+        return {
+          status: 'recorded',
+          captureId: capture.id,
+          target,
+          targetId,
+          keys: recordedKeys,
+          // Single-fact calls keep the flat key field (back-compat).
+          ...(facts.length === 1 ? { key: facts[0].key } : {}),
+          ...(conflictKeys.length > 0
+            ? {
+                conflictKeys,
+                note: 'these keys changed while confirming and were NOT overwritten — restage them to see the current values',
+              }
+            : {}),
+        };
       };
-      const conflictOut = async (): Promise<never> => {
+      const conflictOut = async (changedKeys: string[]): Promise<never> => {
         // The token dies: retrying it could only re-hit the conflict, and the
-        // technician must see the CURRENT value before overwriting it.
+        // technician must see the CURRENT values before overwriting them.
         try {
-          await resolveReviewItem(item.id, tenantId, 'dismissed', 'fact changed while confirmation was pending');
+          await resolveReviewItem(item.id, tenantId, 'dismissed', 'facts changed while confirmation was pending');
         } catch {
           /* advisory */
         }
         throw new Error(
-          `fact NOT recorded: '${factKey}' changed on this ${target} while the confirmation was pending — nothing was overwritten; restage to see the current value`,
+          `facts NOT recorded: ${changedKeys.map((k) => `'${k}'`).join(', ')} changed on this ${target} while the confirmation was pending — nothing was overwritten; restage to see the current values`,
         );
       };
 
@@ -1689,39 +1813,45 @@ async function dispatch(
         // landed, finish the guarded merge and report honestly instead of
         // expiring into a confusing restage.
         const landed = await getRawCaptureByExternalId(tenantId, `fact:${item.id}`);
-        if (landed) {
-          const outcome = await guardedMerge(landed);
-          if (outcome === 'conflict') return await conflictOut();
-          return await succeed(landed.id);
-        }
+        if (landed) return await mergeBatch(landed);
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'staging expired');
         throw new Error('staged fact expired — restage and confirm again');
       }
 
-      // COMMIT FIRST, consume second: (1) the L1 evidence capture, idempotent
-      // via the externalId stamp; (2) the guarded merge. A crash between them
-      // leaves the token open and a retried confirm converges.
+      // COMMIT FIRST, consume second: (1) the ONE L1 evidence capture for the
+      // whole batch, idempotent via the externalId stamp; (2) the guarded
+      // per-fact merges. A crash between them leaves the token open and a
+      // retried confirm converges. One capture per batch also means one
+      // retraction removes the whole batch — the evidence and its facts share
+      // a lifecycle.
       let capture = await getRawCaptureByExternalId(tenantId, `fact:${item.id}`);
       if (!capture) {
-        // Drift pre-check BEFORE the L1 append: a conflict discovered after
-        // the evidence landed would strand a permanent orphan capture; caught
-        // here, the failure leaves no row at all. (guardedMerge re-checks
-        // under the CAS for the residual append→merge window.)
-        const row = target === 'customer' ? await getCustomer(targetId) : await getJob(targetId);
-        if (!row || row.tenant_id !== tenantId) throw new Error(`${target} not found`);
-        if (encodeFactValue(await currentFactValue(row.attributes, factKey)) !== stagedPrevEnc) {
-          return await conflictOut();
+        // Drift pre-check on EVERY key BEFORE the L1 append: a conflict
+        // discovered after the evidence landed would strand a permanent
+        // orphan capture; caught here, the failure leaves no row at all.
+        // (mergeBatch re-checks under the CAS for the residual window.)
+        const row = await readTarget();
+        const changed: string[] = [];
+        for (const f of facts) {
+          if (encodeFactValue(await currentFactValue(row.attributes, f.key)) !== prevEncOf(f)) {
+            changed.push(f.key);
+          }
         }
+        if (changed.length > 0) return await conflictOut(changed);
+        const canonical =
+          facts.length === 1
+            ? `Standing fact: ${facts[0].key} = ${String(facts[0].value)}`
+            : `Standing facts: ${facts.map((f) => `${f.key} = ${String(f.value)}`).join('; ')}`;
         try {
           capture = await appendRawCapture({
             tenantId,
             channel: 'technician_note',
             technicianRef: subjectRef,
-            rawText: detail.sourceText ?? `Standing fact: ${factKey} = ${String(factValue)}`,
+            rawText: detail.sourceText ?? canonical,
             externalId: `fact:${item.id}`,
             customerId: detail.customerId,
             ...(target === 'job' ? { jobId: targetId } : {}),
-            metadata: { standingFactKey: factKey, target, stagedConfirmId: item.id },
+            metadata: { standingFactKeys: facts.map((f) => f.key), target, stagedConfirmId: item.id },
           });
         } catch (err) {
           // TOCTOU backstop: this token's capture landed concurrently — reuse it.
@@ -1731,24 +1861,27 @@ async function dispatch(
           if (!capture) {
             const msg = err instanceof Error ? err.message : String(err);
             throw new Error(
-              `fact NOT recorded: ${msg} — the staged fact is still held; retry with the SAME confirmId (do not restage)`,
+              `facts NOT recorded: ${msg} — the staged facts are still held; retry with the SAME confirmId (do not restage)`,
             );
           }
         }
       }
-      let outcome: 'applied' | 'already' | 'conflict';
       try {
-        outcome = await guardedMerge(capture);
+        return await mergeBatch(capture);
       } catch (err) {
-        // The token is still open (consume hasn't run): a retry with the SAME
-        // confirmId re-runs this commit under the SAME externalId and heals.
+        // A conflict dismissal from mergeBatch passes through untouched; an
+        // infrastructure error keeps the token open — a retry with the SAME
+        // confirmId re-runs this commit under the SAME externalId and
+        // converges (already-applied keys are recognized, not rewritten).
+        // "may be partially recorded", not "NOT recorded": earlier facts in
+        // the batch can already have applied before the failure (review
+        // finding — the wording must never claim less landed than did).
         const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('NOT recorded')) throw err;
         throw new Error(
-          `fact NOT recorded: ${msg} — the staged fact is still held; retry with the SAME confirmId (do not restage)`,
+          `facts may be only PARTIALLY recorded: ${msg} — the staged facts are still held; retry with the SAME confirmId to converge (do not restage)`,
         );
       }
-      if (outcome === 'conflict') return await conflictOut();
-      return await succeed(capture.id);
     }
     case 'add_technician_seat': {
       const displayName = str('displayName')?.trim();

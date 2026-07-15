@@ -16,6 +16,7 @@ import {
   getRawCaptureByExternalId,
   searchCustomers,
   factSourceIds,
+  findFoldImpact,
   foldRetractedFacts,
   getCustomerContext,
   getTechnician,
@@ -45,6 +46,7 @@ import {
   updateOpenReviewItemDetail,
   upsertOpenReviewItem,
   type Customer,
+  type FoldImpact,
   type Job,
   type CaptureChannel,
   type Json,
@@ -313,7 +315,9 @@ const TOOLS = [
       'deletes: it permanently marks the capture as recorded-in-error (with your reason); the ' +
       'note, its visit, AND any standing fact citing it as evidence all stop appearing in ' +
       'briefings/context/lists automatically — retracting a fact\'s evidence capture IS how a ' +
-      'wrong standing fact is removed (no follow-up write needed). Only other side effects the ' +
+      'wrong standing fact is removed (no follow-up write needed). The staged preview\'s ' +
+      'willAlsoRemove lists exactly which standing facts and visits will disappear — show it ' +
+      'to the person as part of the confirmation. Only other side effects the ' +
       'note caused — e.g. a job status change — are NOT auto-reverted. ' +
       'First call with captureId + reason: nothing happens yet; you get ' +
       '{status:"needs_confirmation", confirmId}. Show the person the capture and the reason; ' +
@@ -637,6 +641,34 @@ async function currentFactValue(attributes: Json, key: string): Promise<Json | u
   if (!isFactBundle(raw)) return raw; // plain (seed/legacy) value
   const retractions = await findRetractionsFor([raw.sourceCaptureId]);
   return retractions.length > 0 ? undefined : raw.value;
+}
+
+// Best-effort fold-impact scan for retract_capture's CONFIRM responses: the
+// retraction has already committed, so this advisory read must never turn a
+// landed retraction into an error (the token is consumed — a retry would
+// dead-end in "confirmation not found" → restage → "already retracted"). The
+// stage-side scan stays strict: nothing has committed yet, and a preview
+// without the fold list would silently regress to agent guesswork.
+async function tryFindFoldImpact(
+  tenantId: string,
+  captureId: string,
+): Promise<FoldImpact | undefined> {
+  try {
+    return await findFoldImpact(tenantId, captureId);
+  } catch {
+    return undefined;
+  }
+}
+
+const RESTORE_HINT =
+  'These standing facts disappeared with the retracted evidence. Ask the person which are ' +
+  'still true, then restore them by STAGING record_standing_fact — no "want me to?" first; ' +
+  'the staged preview is the question. One call per affected customer/job, SEQUENTIALLY: ' +
+  'stage one, get its yes, confirm it, then stage the next (staging a second batch before ' +
+  'the first is confirmed cancels the first).';
+
+function restoreHintFor(impact: FoldImpact | undefined): string | undefined {
+  return impact && impact.facts.length > 0 ? RESTORE_HINT : undefined;
 }
 
 // Stable comparison encoding for a fact-value slot: undefined (absent) is
@@ -1383,6 +1415,11 @@ async function dispatch(
         if (target.technician_ref !== subjectRef && !activeManager) {
           throw new Error('only the author or a manager can retract a capture');
         }
+        // Server-guaranteed blast radius: everything that folds with this
+        // retraction, shown in the preview so the warning never depends on the
+        // agent noticing. Strict here (stage commits nothing; a failed scan
+        // fails the stage, not the record) — advisory on confirm.
+        const impact = await findFoldImpact(tenantId, target.id);
         await resolveOpenReviewItemFor(
           tenantId,
           'pending_retraction',
@@ -1413,7 +1450,8 @@ async function dispatch(
           captureId: staged.captureId ?? target.id,
           reason: staged.reason ?? reason,
           targetPreview: staged.targetPreview,
-          note: 'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows).',
+          willAlsoRemove: impact,
+          note: 'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows). If willAlsoRemove is non-empty, the shown preview MUST include it.',
         };
       }
       // CONFIRM. Guarded token lookup, then commit-first (the unique index +
@@ -1441,7 +1479,19 @@ async function dispatch(
           } catch {
             /* advisory */
           }
-          return { status: 'retracted', captureId: landed.retracts_capture_id, retractionId: landed.id };
+          // retracts_capture_id is non-null for any row found via retract:*
+          // externalId, but the column type is nullable — guard, never `?? ''`
+          // (an empty id would scan nothing and report an empty impact).
+          const lateImpact = landed.retracts_capture_id
+            ? await tryFindFoldImpact(tenantId, landed.retracts_capture_id)
+            : undefined;
+          return {
+            status: 'retracted',
+            captureId: landed.retracts_capture_id,
+            retractionId: landed.id,
+            alsoRemoved: lateImpact,
+            restoreHint: restoreHintFor(lateImpact),
+          };
         }
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the retraction and confirm again');
@@ -1486,7 +1536,17 @@ async function dispatch(
       } catch {
         /* advisory — the retry path above treats the landed row as success */
       }
-      return { status: 'retracted', captureId: target.id, retractionId };
+      // Advisory recompute (facts can change inside the 15-min stage window;
+      // the scan reads stored bundles, which the read-time fold never
+      // rewrites, so post-commit results equal pre-commit ones).
+      const impact = await tryFindFoldImpact(tenantId, target.id);
+      return {
+        status: 'retracted',
+        captureId: target.id,
+        retractionId,
+        alsoRemoved: impact,
+        restoreHint: restoreHintFor(impact),
+      };
     }
     case 'record_standing_fact': {
       const subjectRef = identity.technicianRef;

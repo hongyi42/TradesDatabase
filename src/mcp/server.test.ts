@@ -6,6 +6,7 @@ import { getClient } from '../db/client.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
+import { createVisit } from '../db/visits.js';
 import { upsertScheduleEntry } from '../db/scheduleEntries.js';
 import { insertTechnician, setTechnicianState, updateTechnician } from '../db/technicians.js';
 import { createHost } from '../db/hosts.js';
@@ -794,6 +795,130 @@ describe('retract_capture + retraction folding', () => {
     });
     expect(denied.isError).toBe(true);
     expect(denied.text).toContain('cannot retract a retraction');
+  });
+
+  // record_standing_fact always mints its OWN evidence capture, so a capture
+  // cited by facts on several rows can only be built by direct writes — which
+  // is exactly how the live case arose (a seeded intake transcript evidencing
+  // a customer fact AND a job fact).
+  const bundle = (captureId: string, value: string | number | boolean) => ({
+    value,
+    sourceCaptureId: captureId,
+    recordedAt: new Date().toISOString(),
+  });
+
+  test('fold impact: preview and commit list every fact and visit the retraction removes', async () => {
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'shared evidence: prefers afternoons, AC not cooling',
+    });
+    const customer = await createCustomer({
+      tenantId,
+      name: 'Fold Cust',
+      phone: '555-7001',
+      attributes: { prefers: bundle(cap.id, 'afternoons') },
+    });
+    const job = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'AC repair',
+      attributes: { symptom: bundle(cap.id, 'not cooling') },
+    });
+    const visit = await createVisit({
+      tenantId,
+      jobId: job.id,
+      technicianName: 'Jane',
+      sourceCaptureId: cap.id,
+    });
+
+    const staged = await call('retract_capture', { captureId: cap.id, reason: 'wrong info' });
+    expect(staged.isError).toBe(false);
+    const will = staged.data.willAlsoRemove;
+    expect(will.facts).toHaveLength(2);
+    expect(will.facts).toEqual(
+      expect.arrayContaining([
+        {
+          rowType: 'customer',
+          rowId: customer.id,
+          rowLabel: 'Fold Cust',
+          key: 'prefers',
+          value: 'afternoons',
+        },
+        {
+          rowType: 'job',
+          rowId: job.id,
+          rowLabel: 'AC repair',
+          key: 'symptom',
+          value: 'not cooling',
+        },
+      ]),
+    );
+    expect(will.visits).toEqual([
+      {
+        visitId: visit.id,
+        jobId: job.id,
+        scheduledAt: null,
+        technicianName: 'Jane',
+      },
+    ]);
+    expect(staged.data.note).toContain('willAlsoRemove');
+
+    const done = await call('retract_capture', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('retracted');
+    expect(done.data.alsoRemoved).toEqual(will);
+    expect(typeof done.data.restoreHint).toBe('string');
+    expect(done.data.restoreHint).toContain('SEQUENTIALLY');
+  });
+
+  test('fold impact: a capture nothing cites previews and commits empty, with no restoreHint', async () => {
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'uncited note',
+    });
+    const staged = await call('retract_capture', { captureId: cap.id, reason: 'noise' });
+    expect(staged.data.willAlsoRemove).toEqual({ facts: [], visits: [] });
+    const done = await call('retract_capture', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('retracted');
+    expect(done.data.alsoRemoved).toEqual({ facts: [], visits: [] });
+    expect(done.data.restoreHint).toBeUndefined();
+  });
+
+  test('fold impact: a fact written between stage and confirm appears in the commit list', async () => {
+    const cap = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      technicianRef: 'tech-mcp',
+      rawText: 'evidence gaining a late citation',
+    });
+    const early = await createCustomer({
+      tenantId,
+      name: 'Early Citer',
+      phone: '555-7002',
+      attributes: { gate_code: bundle(cap.id, '1234') },
+    });
+
+    const staged = await call('retract_capture', { captureId: cap.id, reason: 'stale' });
+    expect(staged.data.willAlsoRemove.facts).toHaveLength(1);
+
+    // Direct write inside the stage window: a second row starts citing the
+    // same evidence AFTER the preview was shown.
+    const late = await createCustomer({
+      tenantId,
+      name: 'Late Citer',
+      phone: '555-7003',
+      attributes: { pets: bundle(cap.id, 'dog in backyard') },
+    });
+
+    const done = await call('retract_capture', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('retracted');
+    expect(done.data.alsoRemoved.facts).toHaveLength(2);
+    expect(done.data.alsoRemoved.facts.map((f: { rowId: string }) => f.rowId).sort()).toEqual(
+      [early.id, late.id].sort(),
+    );
   });
 
   test('list_recent_captures folds by default; manager toggle returns the labeled trail; technicians may not toggle', async () => {

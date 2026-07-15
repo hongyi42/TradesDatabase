@@ -317,8 +317,10 @@ const TOOLS = [
       'briefings/context/lists automatically — retracting a fact\'s evidence capture IS how a ' +
       'wrong standing fact is removed (no follow-up write needed). The staged preview\'s ' +
       'willAlsoRemove lists exactly which standing facts and visits will disappear — show it ' +
-      'to the person as part of the confirmation. Only other side effects the ' +
-      'note caused — e.g. a job status change — are NOT auto-reverted. ' +
+      'to the person as part of the confirmation. The confirm response echoes the final list ' +
+      'as alsoRemoved with a restoreHint when facts folded; if alsoRemoved is absent, the ' +
+      'post-commit scan failed — fall back to the staged willAlsoRemove. Only other side ' +
+      'effects the note caused — e.g. a job status change — are NOT auto-reverted. ' +
       'First call with captureId + reason: nothing happens yet; you get ' +
       '{status:"needs_confirmation", confirmId}. Show the person the capture and the reason; ' +
       "only on their explicit yes call again with ONLY confirmId. Only the capture's author or " +
@@ -660,15 +662,45 @@ async function tryFindFoldImpact(
   }
 }
 
+// Must stay true to record_standing_fact's stage branch (one open staged
+// batch per person; a new stage supersedes an unconfirmed one) — if that
+// supersede behavior changes, change this hint in the same commit.
 const RESTORE_HINT =
   'These standing facts disappeared with the retracted evidence. Ask the person which are ' +
   'still true, then restore them by STAGING record_standing_fact — no "want me to?" first; ' +
   'the staged preview is the question. One call per affected customer/job, SEQUENTIALLY: ' +
-  'stage one, get its yes, confirm it, then stage the next (staging a second batch before ' +
-  'the first is confirmed cancels the first).';
+  'stage one, get its yes, confirm it, then stage the next (a new stage supersedes an ' +
+  'unconfirmed one).';
 
 function restoreHintFor(impact: FoldImpact | undefined): string | undefined {
   return impact && impact.facts.length > 0 ? RESTORE_HINT : undefined;
+}
+
+// The one shape both confirm-path successes return (main commit + late-retry
+// crash-heal): keeping them structurally identical is load-bearing — a retried
+// confirm must not look different from a first-try confirm. The scan is
+// advisory here (see tryFindFoldImpact), and an absent list must not read as
+// "nothing folded": say the scan failed and point back at the staged preview.
+async function retractedResult(
+  tenantId: string,
+  captureId: string | null,
+  retractionId: string,
+): Promise<Record<string, unknown>> {
+  const impact = captureId ? await tryFindFoldImpact(tenantId, captureId) : undefined;
+  return {
+    status: 'retracted',
+    captureId,
+    retractionId,
+    alsoRemoved: impact,
+    ...(impact === undefined
+      ? {
+          alsoRemovedNote:
+            'fold-impact scan failed after the retraction committed — treat the staged ' +
+            "preview's willAlsoRemove as the fold list and offer restores from it",
+        }
+      : {}),
+    restoreHint: restoreHintFor(impact),
+  };
 }
 
 // Stable comparison encoding for a fact-value slot: undefined (absent) is
@@ -1415,11 +1447,6 @@ async function dispatch(
         if (target.technician_ref !== subjectRef && !activeManager) {
           throw new Error('only the author or a manager can retract a capture');
         }
-        // Server-guaranteed blast radius: everything that folds with this
-        // retraction, shown in the preview so the warning never depends on the
-        // agent noticing. Strict here (stage commits nothing; a failed scan
-        // fails the stage, not the record) — advisory on confirm.
-        const impact = await findFoldImpact(tenantId, target.id);
         await resolveOpenReviewItemFor(
           tenantId,
           'pending_retraction',
@@ -1444,6 +1471,14 @@ async function dispatch(
           reason?: string;
           targetPreview?: string;
         };
+        // Server-guaranteed blast radius: everything that folds with this
+        // retraction, shown in the preview so the warning never depends on
+        // the agent noticing. Strict (stage commits nothing; a failed scan
+        // fails the stage, not the record) — advisory on confirm. Computed
+        // for the ECHOED capture, after the upsert: on a racing stage the
+        // item can be the other call's row, and the fold list must describe
+        // the capture the confirmId will actually retract (review finding).
+        const impact = await findFoldImpact(tenantId, staged.captureId ?? target.id);
         return {
           status: 'needs_confirmation',
           confirmId: item.id,
@@ -1451,7 +1486,7 @@ async function dispatch(
           reason: staged.reason ?? reason,
           targetPreview: staged.targetPreview,
           willAlsoRemove: impact,
-          note: 'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows). If willAlsoRemove is non-empty, the shown preview MUST include it.',
+          note: 'Nothing was retracted. Show the person the capture and this reason; on their explicit yes call again with ONLY confirmId. A retraction is permanent (the audit trail keeps both rows). If willAlsoRemove.facts or willAlsoRemove.visits has entries, the shown preview MUST include them.',
         };
       }
       // CONFIRM. Guarded token lookup, then commit-first (the unique index +
@@ -1480,18 +1515,10 @@ async function dispatch(
             /* advisory */
           }
           // retracts_capture_id is non-null for any row found via retract:*
-          // externalId, but the column type is nullable — guard, never `?? ''`
-          // (an empty id would scan nothing and report an empty impact).
-          const lateImpact = landed.retracts_capture_id
-            ? await tryFindFoldImpact(tenantId, landed.retracts_capture_id)
-            : undefined;
-          return {
-            status: 'retracted',
-            captureId: landed.retracts_capture_id,
-            retractionId: landed.id,
-            alsoRemoved: lateImpact,
-            restoreHint: restoreHintFor(lateImpact),
-          };
+          // externalId, but the column type is nullable — retractedResult
+          // guards it (never `?? ''`: an empty id would scan nothing and
+          // report an empty impact).
+          return await retractedResult(tenantId, landed.retracts_capture_id, landed.id);
         }
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the retraction and confirm again');
@@ -1539,14 +1566,7 @@ async function dispatch(
       // Advisory recompute (facts can change inside the 15-min stage window;
       // the scan reads stored bundles, which the read-time fold never
       // rewrites, so post-commit results equal pre-commit ones).
-      const impact = await tryFindFoldImpact(tenantId, target.id);
-      return {
-        status: 'retracted',
-        captureId: target.id,
-        retractionId,
-        alsoRemoved: impact,
-        restoreHint: restoreHintFor(impact),
-      };
+      return await retractedResult(tenantId, target.id, retractionId);
     }
     case 'record_standing_fact': {
       const subjectRef = identity.technicianRef;

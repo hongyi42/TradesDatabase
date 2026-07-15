@@ -870,6 +870,16 @@ describe('retract_capture + retraction folding', () => {
     expect(done.data.alsoRemoved).toEqual(will);
     expect(typeof done.data.restoreHint).toBe('string');
     expect(done.data.restoreHint).toContain('SEQUENTIALLY');
+
+    // Parity: the preview must equal what the fold ACTUALLY removes — the
+    // predicted facts/visit are gone from the default context view, nothing
+    // else. Ties "what will disappear" to "what does disappear" so predicate
+    // drift between the scan and the fold fails here instead of lying live.
+    const ctx = await call('get_customer_context', { customerId: customer.id });
+    expect(ctx.data.customer.attributes.prefers).toBeUndefined();
+    const foldedJob = ctx.data.jobs.find((j: { id: string }) => j.id === job.id);
+    expect(foldedJob.attributes.symptom).toBeUndefined();
+    expect(ctx.data.recentVisits.map((v: { id: string }) => v.id)).not.toContain(visit.id);
   });
 
   test('fold impact: a capture nothing cites previews and commits empty, with no restoreHint', async () => {

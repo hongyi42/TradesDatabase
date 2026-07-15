@@ -33,10 +33,15 @@ AGENTS.md rule for the case the current rule doesn't cover (agent-*proposed* fol
 - **Warning is server-computed at stage AND recomputed at confirm** — my call: facts can be
   recorded between stage and confirm (15-min window); the commit response must reflect commit
   time. The scan is cheap and retraction is a rare manager action.
-- **Scan = tenant-scoped fetch + in-memory match** — my call: PostgREST filters can't express
-  "any JSONB key whose value cites capture X", and CLAUDE.md bans hand-written SQL outside
-  `src/db/`. Customers+jobs of one tenant fit trivially at pilot scale; the bound is noted in a
-  code comment. Visits filter directly on the indexed-ish `source_capture_id` column.
+- **Scan = tenant-scoped PAGINATED fetch + in-memory match** — my call: PostgREST JSON filters
+  require explicitly named key paths, so "any JSONB key whose value cites capture X" is not
+  expressible as a filter (verified 2026-07-14:
+  https://docs.postgrest.org/en/v12/references/api/tables_views.html, JSON columns), and
+  CLAUDE.md bans hand-written SQL outside `src/db/`. Final-review finding: PostgREST also caps
+  every response at db-max-rows (1000 locally and hosted; a silent fetch limit —
+  https://docs.postgrest.org/en/v12/references/configuration.html#db-max-rows), so the scan
+  pages via `.range()` until a short page; an unpaginated fetch would silently under-report
+  the fold list past 1000 rows. Visits filter directly on `source_capture_id`.
 - **`retract_capture` description gains one sentence** (the preview lists what folds) — improves
   agent planning; costs a gateway-restart on rollout (tool descriptions are cached per gateway
   process), which Phase 3 already does for AGENTS.md anyway.

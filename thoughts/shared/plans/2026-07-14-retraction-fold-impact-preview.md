@@ -269,6 +269,10 @@ docker-exec edit recipe as the 2026-07-13 tightening: append/insert, `chown sand
   "Propose by staging" rule into each sandbox's `/sandbox/.openclaw/workspace/AGENTS.md`
   (docker exec into `openshell-sN-*`), renumber as in Phase 2, verify with a grep read-back.
 - `for s in s2 s3 s5; do nemoclaw $s gateway restart; done` — health output as evidence.
+- Refresh the box's installed script copy: `scp` the merged `bootstrap-box.sh` over
+  `/usr/local/sbin/bootstrap-box.sh` on trades-box-1 (Phase-2-review finding: the sandbox
+  recycler wires future cold blanks from that installed copy — without the refresh, a recycled
+  sandbox would get the OLD rules block).
 
 ### Automated verification
 - [ ] PR opened with all gates green; merged commit hash recorded here

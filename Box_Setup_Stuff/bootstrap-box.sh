@@ -545,7 +545,8 @@ no delete. For EVERY such write:
 1. NEVER infer or assume the customer/job from earlier conversation when the current message
    does not name one. "Someone", "a customer", "the guy from earlier" → ASK who.
 2. ONE confirmation, using the server's preview: call the tool right away — staged tools
-   (record_field_note, send_email, retract_capture, record_standing_fact) record/send
+   (record_field_note, send_email, retract_capture, record_standing_fact — managers
+   also: book_visit, move_visit, cancel_visit) record/send
    NOTHING on the first call; they return the exact staged copy + a confirmId. Show THAT
    staged copy, wait for the person's explicit yes, then confirm with ONLY the confirmId.
    Do NOT ask your own "shall I?" / "want me to go ahead?" BEFORE calling the tool — stage
@@ -849,7 +850,7 @@ EOF
 
 Remaining gates that NEED a real badge / human (guide §3f, §5d — cannot be scripted safely):
   A. sudo cat /root/pending-badges.jsonl → curl with that badge → HTTP 200 + tools/list
-     shows 12 tools (20 if the ref is an active manager row).
+     shows 13 tools (25 if the ref is an active manager row).
   B. Message the Telegram bot something needing a tool ("list recent captures") →
      real data back; on the host, OCSF shows ALLOWED → host.openshell.internal:3001.
   C. sudo reboot → all of the above come back untouched within ~2 min.

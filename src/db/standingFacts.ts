@@ -58,3 +58,21 @@ export function factSourceIds(attrs: Json): string[] {
     .filter((v): v is StandingFactBundle & { [k: string]: Json } => isFactBundle(v ?? null))
     .map((v) => v.sourceCaptureId);
 }
+
+// The facts that WOULD fold if `captureId` were retracted — foldRetractedFacts'
+// predicate, selecting instead of dropping. Lives here beside the fold so
+// "what will disappear" (retraction preview) and "what does disappear" (the
+// fold) can never drift apart (review finding: a private copy of this
+// predicate is how the preview starts lying).
+export function factEntriesCiting(
+  attrs: Json,
+  captureId: string,
+): Array<{ key: string; value: StandingFactBundle['value'] }> {
+  if (typeof attrs !== 'object' || attrs === null || Array.isArray(attrs)) return [];
+  const out: Array<{ key: string; value: StandingFactBundle['value'] }> = [];
+  for (const [key, value] of Object.entries(attrs)) {
+    const v = value ?? null;
+    if (isFactBundle(v) && v.sourceCaptureId === captureId) out.push({ key, value: v.value });
+  }
+  return out;
+}

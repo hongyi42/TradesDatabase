@@ -120,12 +120,21 @@ agent cannot talk past them.
 - Staged notes expire after 15 minutes; one staged note per person (a re-stage supersedes).
 - **Fixing a mistake:** the record is append-only — nothing is ever deleted. The agent records
   the corrected note first, then calls `retract_capture({ captureId, reason })` on the wrong
-  capture (also two-step: stage → show → confirm with only `confirmId`). Retracted captures and
-  their visits disappear from briefings/context/lists; managers can pass
+  capture (also two-step: stage → show → confirm with only `confirmId`). Retracted captures,
+  their visits, AND any standing fact citing the capture as evidence disappear from
+  briefings/context/lists; managers can pass
   `includeRetracted: true` to `list_recent_captures` for the full labeled trail. Only the
   capture's author or a manager may retract; agent-action audit rows (`outbound_email`,
   `agent_action`) are manager-only, even for their author. Facts a note already wrote onto the
   job/customer record (e.g. a status change) are not auto-reverted by a retraction.
+- **Retraction blast radius (2026-07-14):** the retraction stage response carries
+  `willAlsoRemove` — the server-computed list of standing facts and visits that fold with the
+  capture. The agent must show that list as part of the confirmation. The confirm response
+  echoes the final list as `alsoRemoved` plus a `restoreHint` when facts folded; the agent then
+  offers to restore still-true facts by **staging** `record_standing_fact` (the preview is the
+  offer — no "want me to?" pre-ask; AGENTS.md rule 3 "propose by staging"), one target at a
+  time. If `alsoRemoved` is absent, the post-commit scan failed — fall back to the staged
+  `willAlsoRemove`.
 - For questions ("what did the last tech do here?"), the agent uses `find_customer` →
   `get_customer_context` / `list_recent_captures`.
 - **Web tools (2026-07-13, all tiers):** `web_search` (Brave snippets via Render — the key never

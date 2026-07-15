@@ -86,6 +86,7 @@ import { localDateISO } from '../schedule/availability.js';
 import {
   bookVisit,
   cancelVisit,
+  humanDay,
   isPromiseLevel,
   moveVisit,
   previewBookVisit,
@@ -520,9 +521,10 @@ const ADMIN_TOOLS = [
     description:
       "The whole team's schedule (manager only): for each day in [from,to] (YYYY-MM-DD; both " +
       "optional — default today in the firm's timezone; capped at 14 days), every technician's " +
-      'confirmed visits with customer, address, times, promiseLevel (what the customer was ' +
-      "told: none/day/time), promisedDay, and locked (manager-pinned). Also returns " +
-      'scheduleVersion — quote it when discussing changes so staleness is detectable.',
+      'confirmed visits with customer, address, times, `promise` (what the customer was told, ' +
+      'in plain words — relay it as written), and locked (manager-pinned). Use each day\'s ' +
+      'dayLabel (weekday spelled out) when talking about dates. Also returns scheduleVersion — ' +
+      'quote it when discussing changes so staleness is detectable.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -537,11 +539,12 @@ const ADMIN_TOOLS = [
     description:
       'Book a visit onto the schedule (manager only) — two-step. First call with technicianRef ' +
       '+ date (+ customerId OR jobId, times optional): NOTHING is booked; you get ' +
-      '{status:"needs_confirmation", confirmId} with a preview (customer, technician, day, ' +
-      'times, what the customer will be told). Show the manager EXACTLY the preview (including ' +
-      'any availability warning); only on their explicit yes call again with ONLY confirmId. ' +
-      'Default promiseLevel is "day" — when talking to customers, offer DAYS, not times; times ' +
-      'stay internal until the customer was explicitly told one (then pass promiseLevel:"time").',
+      '{status:"needs_confirmation", confirmId, preview}. The preview is ready-made wording ' +
+      '(weekday spelled out, plus what will be recorded as promised to the customer) — show it ' +
+      'to the manager VERBATIM, never rephrase or summarize it; only on their explicit yes call ' +
+      'again with ONLY confirmId. Default promiseLevel is "day" — when talking to customers, ' +
+      'offer DAYS, not times; times stay internal until the customer was explicitly told one ' +
+      '(then pass promiseLevel:"time").',
     inputSchema: {
       type: 'object',
       properties: {
@@ -562,10 +565,11 @@ const ADMIN_TOOLS = [
     name: 'move_visit',
     description:
       'Move a booked visit (manager only) — two-step. First call with assignmentId + date + ' +
-      'startTime (+ optional endTime/technicianRef) + reason: NOTHING moves; you get a preview ' +
-      'with promiseBroken — TRUE means the customer was promised a different day and someone ' +
-      'must tell them. Show the manager the preview; only on their explicit yes call again ' +
-      'with ONLY confirmId.',
+      'startTime (+ optional endTime/technicianRef) + reason: NOTHING moves; you get a preview. ' +
+      'The preview is ready-made wording — it warns in plain words when the move changes a day ' +
+      'or time the customer was told. Show it to the manager VERBATIM, never rephrase it; only ' +
+      'on their explicit yes call again with ONLY confirmId. The result may include a ' +
+      'customerNotice sentence — relay it as written.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -584,8 +588,9 @@ const ADMIN_TOOLS = [
     name: 'cancel_visit',
     description:
       'Cancel a booked visit (manager only) — two-step. First call with assignmentId + reason: ' +
-      'NOTHING is cancelled; you get a preview. Show the manager the preview; only on their ' +
-      'explicit yes call again with ONLY confirmId. The job stays open for rebooking.',
+      'NOTHING is cancelled; you get a preview (ready-made wording — show it to the manager ' +
+      'VERBATIM, never rephrase it); only on their explicit yes call again with ONLY confirmId. ' +
+      'The job stays open for rebooking.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1288,6 +1293,7 @@ async function dispatch(
           const link = buildMapsDeepLink(ordered);
           return {
             date: day.date,
+            dayLabel: humanDay(day.date),
             stops: ordered,
             ...(unroutableStops.length > 0 ? { unroutableStops } : {}),
             driveMinutes,
@@ -2112,6 +2118,16 @@ async function dispatch(
         const customer = jobById.get(row.job_id)?.customers ?? null;
         const technician = techById.get(row.technician_id);
         const bucket = byDay.get(day) ?? [];
+        // `promise` is plain words, not the enum: the agent narrates this
+        // board to the manager, so the server pre-words what the customer was
+        // told (raw promise_level/promised_day are internal vocabulary).
+        const promisedDay = row.promised_day ?? day;
+        const promise =
+          row.promise_level === 'time'
+            ? `customer told ${humanDay(promisedDay)} at ${row.starts_at.slice(11, 16)}`
+            : row.promise_level === 'day'
+              ? `customer told ${humanDay(promisedDay)}`
+              : 'nothing promised to the customer';
         bucket.push({
           assignmentId: row.id,
           technicianRef: technician?.ref ?? null,
@@ -2128,8 +2144,7 @@ async function dispatch(
             : null,
           start: row.starts_at,
           end: row.ends_at,
-          promiseLevel: row.promise_level,
-          promisedDay: row.promised_day,
+          promise,
           locked: row.locked,
           status: row.status,
           jobId: row.job_id,
@@ -2138,7 +2153,7 @@ async function dispatch(
       }
       const days = [...byDay.entries()]
         .sort(([a], [b]) => (a < b ? -1 : 1))
-        .map(([date, stops]) => ({ date, stops }));
+        .map(([date, stops]) => ({ date, dayLabel: humanDay(date), stops }));
       return { status: 'ok', from, to, scheduleVersion, days };
     }
     case 'book_visit': {
@@ -2198,13 +2213,15 @@ async function dispatch(
           } as unknown as Json,
         });
         // Echo the ITEM's staged preview, not local state (racing stages —
-        // same rule as send_email).
-        const staged = (item.detail ?? {}) as { preview?: unknown };
+        // same rule as send_email). The preview is the SERVER'S wording:
+        // handing the agent raw fields to narrate is how internal jargon
+        // leaks into chat.
+        const staged = (item.detail ?? {}) as { preview?: { previewText?: string } };
         return {
           status: 'needs_confirmation',
           confirmId: item.id,
-          preview: staged.preview ?? preview,
-          note: 'Nothing was booked. Show the manager exactly this preview; on their explicit yes call again with ONLY confirmId.',
+          preview: staged.preview?.previewText ?? preview.previewText,
+          note: 'Nothing was booked. Show the manager the preview text VERBATIM — do not rephrase it; on their explicit yes call again with ONLY confirmId.',
         };
       }
       // CONFIRM. Guarded token lookup → expiry → CONSUME FIRST (at-most-once,
@@ -2274,12 +2291,7 @@ async function dispatch(
         status: 'booked',
         assignmentId: booked.assignment.id,
         jobId: booked.job.id,
-        customer: booked.customer.name,
-        technicianRef: d.technicianRef,
-        date: d.date,
-        startTime: d.startTime,
-        endTime: d.endTime,
-        promiseLevel: booked.assignment.promise_level,
+        message: booked.message,
         ...(booked.warning ? { warning: booked.warning } : {}),
       };
     }
@@ -2287,8 +2299,9 @@ async function dispatch(
       const subjectRef = identity.technicianRef;
       const confirmId = str('confirmId');
       if (!confirmId) {
-        // STAGE — previewMoveVisit throws on impossible moves; promiseBroken
-        // rides in the preview so the manager confirms the break knowingly.
+        // STAGE — previewMoveVisit throws on impossible moves; a plain-words
+        // break warning rides in the preview text so the manager confirms the
+        // break knowingly.
         const assignmentId = str('assignmentId');
         const date = str('date');
         const startTime = str('startTime');
@@ -2328,17 +2341,14 @@ async function dispatch(
             stagedAt: new Date().toISOString(),
           } as unknown as Json,
         });
-        const staged = (item.detail ?? {}) as { preview?: unknown };
+        // The promise-break warning is INSIDE the server-authored preview
+        // text, in plain words — no raw field for the agent to narrate.
+        const staged = (item.detail ?? {}) as { preview?: { previewText?: string } };
         return {
           status: 'needs_confirmation',
           confirmId: item.id,
-          preview: staged.preview ?? preview,
-          note:
-            'Nothing was moved. Show the manager exactly this preview' +
-            (preview.promiseBroken
-              ? ' — promiseBroken is TRUE: the customer was promised a different day and someone must tell them'
-              : '') +
-            '; on their explicit yes call again with ONLY confirmId.',
+          preview: staged.preview?.previewText ?? preview.previewText,
+          note: 'Nothing was moved. Show the manager the preview text VERBATIM — do not rephrase it; on their explicit yes call again with ONLY confirmId.',
         };
       }
       // CONFIRM — consume-first (at-most-once).
@@ -2405,13 +2415,8 @@ async function dispatch(
         status: 'moved',
         assignmentId: moved.created.id,
         previousAssignmentId: moved.cancelled.id,
-        date: d.date,
-        startTime: d.startTime,
-        endTime: d.endTime,
-        promiseBroken: moved.promiseBroken,
-        ...(moved.promiseBroken
-          ? { note: 'the customer was promised a different day — make sure someone tells them' }
-          : {}),
+        message: moved.message,
+        ...(moved.customerNotice ? { customerNotice: moved.customerNotice } : {}),
         ...(moved.warning ? { warning: moved.warning } : {}),
       };
     }
@@ -2443,12 +2448,12 @@ async function dispatch(
             stagedAt: new Date().toISOString(),
           } as unknown as Json,
         });
-        const staged = (item.detail ?? {}) as { preview?: unknown };
+        const staged = (item.detail ?? {}) as { preview?: { previewText?: string } };
         return {
           status: 'needs_confirmation',
           confirmId: item.id,
-          preview: staged.preview ?? preview,
-          note: 'Nothing was cancelled. Show the manager exactly this preview; on their explicit yes call again with ONLY confirmId.',
+          preview: staged.preview?.previewText ?? preview.previewText,
+          note: 'Nothing was cancelled. Show the manager the preview text VERBATIM — do not rephrase it; on their explicit yes call again with ONLY confirmId.',
         };
       }
       // CONFIRM — consume-first.
@@ -2500,8 +2505,7 @@ async function dispatch(
       return {
         status: 'cancelled',
         assignmentId: cancelledRow.id,
-        day: cancelledRow.starts_at.slice(0, 10),
-        note: 'the job stays open for rebooking',
+        message: `Cancelled: the ${humanDay(cancelledRow.starts_at.slice(0, 10))} visit is off. The job stays open for rebooking.`,
       };
     }
     case 'add_technician_seat': {

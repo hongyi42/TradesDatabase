@@ -48,6 +48,64 @@ export function isPromiseLevel(v: unknown): v is PromiseLevel {
   return typeof v === 'string' && (PROMISE_LEVELS as string[]).includes(v);
 }
 
+const WEEKDAY_NAMES = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+] as const;
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+] as const;
+
+// Human form of a schedule date, weekday first — "Friday, July 17, 2026".
+// Weekday-from-date is pure arithmetic; every date the server shows a person
+// carries it, so a wrong-day computation ("this Friday" → a Saturday date) is
+// visible to both the person and the agent at the confirmation gate instead
+// of hiding behind a bare YYYY-MM-DD (live finding 2026-07-15).
+export function humanDay(dateISO: string): string {
+  const d = new Date(`${dateISO}T00:00:00.000Z`);
+  return `${WEEKDAY_NAMES[d.getUTCDay()]}, ${MONTH_NAMES[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
+}
+
+// The recorded-promise disclosure for a booking preview. book_visit defaults
+// to a day-level promise, so the preview must SAY what will be recorded — the
+// record must never "know" something the manager was never shown.
+function promiseSentence(level: PromiseLevel, date: string, startTime: string): string {
+  if (level === 'time') {
+    return `Records: the customer has been told the exact time — ${humanDay(date)} at ${startTime}.`;
+  }
+  if (level === 'day') {
+    return (
+      `Records: the customer has been told the day — ${humanDay(date)}. ` +
+      'If no day was promised to the customer, say so and re-stage with promiseLevel "none".'
+    );
+  }
+  return 'Records: nothing has been promised to the customer.';
+}
+
+// What the customer was told, in plain words — the only wording the agent
+// should relay about a promise (the raw fields stay in the ledger for
+// machines; surfacing "promiseBroken: true" in chat is jargon).
+function toldPhrase(old: Assignment): string {
+  const day = humanDay(old.promised_day ?? old.starts_at.slice(0, 10));
+  return old.promise_level === 'time' ? `${day} at ${old.starts_at.slice(11, 16)}` : day;
+}
+
 // Minutes → 'HH:MM' on the same day, clamped to 23:59 (a duration default that
 // spills past midnight books to end-of-day rather than crossing the UTC-day
 // boundary the readers bucket by; the manager can pass endTime explicitly).
@@ -84,10 +142,10 @@ async function availabilityWarning(
   );
   if (available) return undefined;
   if (timeOff.length > 0) {
-    return `${technician.display_name} has time off booked on ${date}${timeOff[0].reason ? ` (${timeOff[0].reason})` : ''}`;
+    return `${technician.display_name} has time off booked on ${humanDay(date)}${timeOff[0].reason ? ` (${timeOff[0].reason})` : ''}`;
   }
   return technician.availability
-    ? `${date} is outside ${technician.display_name}'s working days`
+    ? `${humanDay(date)} is outside ${technician.display_name}'s working days`
     : `${technician.display_name} has no working pattern configured yet`;
 }
 
@@ -177,7 +235,7 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
   const clashes = await overlappingConfirmed(technician.id, startISO, endISO);
   if (clashes.length > 0) {
     throw new Error(
-      `${technician.display_name} already has a confirmed visit overlapping ${input.date} ${startTime}–${endTime}`,
+      `${technician.display_name} already has a confirmed visit overlapping ${humanDay(input.date)} ${startTime}–${endTime}`,
     );
   }
   const warning = await availabilityWarning(technician, input.date, startISO);
@@ -205,13 +263,27 @@ export interface BookVisitPreview {
   startTime: string; // resolved (defaults applied) — store these on the stage
   endTime: string;
   promiseLevel: PromiseLevel;
+  previewText: string; // the manager-ready staged copy — relay VERBATIM
   warning?: string;
 }
 
 // Stage-time preview: everything the person must be shown, with defaults
 // resolved so the staged copy can carry EXACTLY what commit will write.
+// previewText is the SERVER-AUTHORED wording of that staged copy: the agent
+// relays it verbatim instead of composing its own sentence around raw fields
+// (where jargon and embellishment leak in — live finding 2026-07-15).
 export async function previewBookVisit(input: BookVisitInput): Promise<BookVisitPreview> {
   const r = await resolveBooking(input);
+  const jobPhrase = r.existingJob
+    ? `existing job "${r.existingJob.title ?? 'untitled'}"`
+    : input.title
+      ? `new job "${input.title}"`
+      : 'new job';
+  const previewText =
+    `Book ${r.technician.display_name} for ${r.customer.name} (${jobPhrase}) — ` +
+    `${humanDay(input.date)}, ${r.startTime}–${r.endTime}. ` +
+    promiseSentence(r.promiseLevel, input.date, r.startTime) +
+    (r.warning ? ` ⚠ ${r.warning}.` : '');
   return {
     technicianRef: r.technician.ref,
     technicianName: r.technician.display_name,
@@ -223,6 +295,7 @@ export async function previewBookVisit(input: BookVisitInput): Promise<BookVisit
     startTime: r.startTime,
     endTime: r.endTime,
     promiseLevel: r.promiseLevel,
+    previewText,
     ...(r.warning ? { warning: r.warning } : {}),
   };
 }
@@ -231,6 +304,7 @@ export interface BookVisitResult {
   assignment: Assignment;
   job: Job;
   customer: Customer;
+  message: string; // server-authored outcome sentence — relay VERBATIM
   warning?: string;
 }
 
@@ -299,7 +373,16 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
     },
   });
 
-  return { assignment, job, customer: r.customer, ...(r.warning ? { warning: r.warning } : {}) };
+  const message =
+    `Booked: ${r.technician.display_name} for ${r.customer.name} — ` +
+    `${humanDay(input.date)}, ${r.startTime}–${r.endTime}.`;
+  return {
+    assignment,
+    job,
+    customer: r.customer,
+    message,
+    ...(r.warning ? { warning: r.warning } : {}),
+  };
 }
 
 export interface MoveVisitInput {
@@ -364,7 +447,7 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
   const clashes = await overlappingConfirmed(targetTechnicianId, startISO, endISO, old.id);
   if (clashes.length > 0) {
     throw new Error(
-      `that slot overlaps a confirmed visit on ${input.date} — the booking was NOT moved`,
+      `that slot overlaps a confirmed visit on ${humanDay(input.date)} — the booking was NOT moved`,
     );
   }
   const warning = technician
@@ -382,6 +465,7 @@ export interface MoveVisitPreview {
   startTime: string;
   endTime: string; // resolved — store on the stage
   promiseBroken: boolean;
+  previewText: string; // the manager-ready staged copy — relay VERBATIM
   warning?: string;
 }
 
@@ -389,6 +473,17 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
   const r = await resolveMove(input);
   const job = await getJob(r.old.job_id);
   const customer = job ? await getCustomer(job.customer_id) : null;
+  // The promise-break warning belongs at STAGE time, in plain words: the
+  // manager must confirm the break knowingly, not learn of it afterwards.
+  const previewText =
+    `Move ${customer?.name ?? 'this customer'}'s visit to ` +
+    `${humanDay(input.date)}, ${input.startTime}–${r.endTime}` +
+    (input.technicianRef && r.technician ? `, reassigned to ${r.technician.display_name}` : '') +
+    '.' +
+    (r.promiseBroken
+      ? ` ⚠ The customer was told ${toldPhrase(r.old)} — confirming means someone must tell them the new ${r.old.promise_level === 'time' ? 'time' : 'day'}.`
+      : '') +
+    (r.warning ? ` ⚠ ${r.warning}.` : '');
   return {
     assignmentId: r.old.id,
     customerName: customer?.name ?? null,
@@ -398,6 +493,7 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
     startTime: input.startTime,
     endTime: r.endTime,
     promiseBroken: r.promiseBroken,
+    previewText,
     ...(r.warning ? { warning: r.warning } : {}),
   };
 }
@@ -405,7 +501,9 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
 export interface MoveVisitResult {
   cancelled: Assignment;
   created: Assignment;
-  promiseBroken: boolean;
+  promiseBroken: boolean; // machine consumers (Mini App, auto-scheduler)
+  message: string; // server-authored outcome sentence — relay VERBATIM
+  customerNotice?: string; // plain-words follow-up when a promise broke
   warning?: string;
 }
 
@@ -468,6 +566,14 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
   return {
     ...result,
     promiseBroken: r.promiseBroken,
+    message: `Moved: now ${humanDay(input.date)}, ${input.startTime}–${r.endTime}.`,
+    ...(r.promiseBroken
+      ? {
+          customerNotice:
+            `The customer was told ${toldPhrase(r.old)} — make sure someone tells them ` +
+            `the visit is now ${humanDay(input.date)}${r.old.promise_level === 'time' ? ` at ${input.startTime}` : ''}.`,
+        }
+      : {}),
     ...(r.warning ? { warning: r.warning } : {}),
   };
 }
@@ -484,6 +590,7 @@ export interface CancelVisitPreview {
   customerName: string | null;
   day: string;
   promiseLevel: PromiseLevel;
+  previewText: string; // the manager-ready staged copy — relay VERBATIM
 }
 
 export async function previewCancelVisit(
@@ -497,11 +604,19 @@ export async function previewCancelVisit(
   }
   const job = await getJob(target.job_id);
   const customer = job ? await getCustomer(job.customer_id) : null;
+  const day = target.promised_day ?? target.starts_at.slice(0, 10);
+  const previewText =
+    `Cancel ${customer?.name ?? 'this customer'}'s visit on ${humanDay(day)}.` +
+    (target.promise_level !== 'none'
+      ? ` ⚠ The customer was told ${toldPhrase(target)} — someone should let them know it's off.`
+      : '') +
+    ' The job stays open for rebooking.';
   return {
     assignmentId: target.id,
     customerName: customer?.name ?? null,
-    day: target.promised_day ?? target.starts_at.slice(0, 10),
+    day,
     promiseLevel: target.promise_level,
+    previewText,
   };
 }
 

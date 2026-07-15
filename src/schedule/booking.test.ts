@@ -8,7 +8,16 @@ import { createCustomer } from '../db/customers.js';
 import { createJob, getJob } from '../db/jobs.js';
 import { listAssignmentsForTechnician, listUnassignedOpenJobs } from '../db/assignments.js';
 import { latestScheduleVersion, listScheduleEventsSince } from '../db/scheduleEvents.js';
-import { bookVisit, cancelVisit, moveVisit, naiveLocalISO } from './booking.js';
+import {
+  bookVisit,
+  cancelVisit,
+  humanDay,
+  moveVisit,
+  naiveLocalISO,
+  previewBookVisit,
+  previewCancelVisit,
+  previewMoveVisit,
+} from './booking.js';
 
 // Integration against the local stack, scheduling.test.ts truncate discipline.
 const TRUNCATE =
@@ -352,6 +361,86 @@ describe('moveVisit', () => {
         actorRef: 'intruder',
       }),
     ).rejects.toThrow(/assignment not found/);
+  });
+});
+
+describe('server-authored wording (humanDay + preview/result text)', () => {
+  test('humanDay spells the weekday out', () => {
+    // The live wrong-day case (2026-07-15): "this Friday" got booked as the
+    // 18th — a Saturday — and the bare date sailed through confirmation.
+    expect(humanDay('2026-07-17')).toBe('Friday, July 17, 2026');
+    expect(humanDay('2026-07-18')).toBe('Saturday, July 18, 2026');
+    expect(humanDay('2026-11-02')).toBe('Monday, November 2, 2026');
+  });
+
+  test('book preview text carries weekday, times, and the recorded-promise disclosure', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Wordy Willa' });
+    const p = await previewBookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      date: '2026-11-23', // Monday
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    expect(p.previewText).toContain('Booker Bob');
+    expect(p.previewText).toContain('Wordy Willa');
+    expect(p.previewText).toContain('Monday, November 23, 2026');
+    expect(p.previewText).toContain('09:00–10:00');
+    // The default day-promise is an ASSUMPTION — the preview must say it is
+    // being recorded, or the record "knows" something the manager never said.
+    expect(p.previewText).toContain('told the day');
+    const none = await previewBookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      date: '2026-11-23',
+      startTime: '11:00',
+      endTime: '12:00',
+      promiseLevel: 'none',
+      actorRef: 'manager-test',
+    });
+    expect(none.previewText).toContain('nothing has been promised');
+  });
+
+  test('move preview, result, and cancel preview speak promise breaks in plain words', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Plain Pete' });
+    const { assignment } = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      date: '2026-11-24', // Tuesday
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    const p = await previewMoveVisit({
+      tenantId,
+      assignmentId: assignment.id,
+      date: '2026-11-25', // Wednesday — breaks the told day
+      startTime: '09:00',
+      reason: 'customer asked',
+      actorRef: 'manager-test',
+    });
+    expect(p.previewText).toContain("Plain Pete's visit");
+    expect(p.previewText).toContain('Wednesday, November 25, 2026');
+    expect(p.previewText).toContain('The customer was told Tuesday, November 24, 2026');
+    const moved = await moveVisit({
+      tenantId,
+      assignmentId: assignment.id,
+      date: '2026-11-25',
+      startTime: '09:00',
+      reason: 'customer asked',
+      actorRef: 'manager-test',
+    });
+    expect(moved.message).toContain('Wednesday, November 25, 2026');
+    expect(moved.customerNotice).toContain('was told Tuesday, November 24, 2026');
+    expect(moved.customerNotice).toContain('now Wednesday, November 25, 2026');
+    // Cancelling a promised visit gets the plain-words heads-up too.
+    const c = await previewCancelVisit(tenantId, moved.created.id);
+    expect(c.previewText).toContain('Wednesday, November 25, 2026');
+    expect(c.previewText).toContain("let them know it's off");
   });
 });
 

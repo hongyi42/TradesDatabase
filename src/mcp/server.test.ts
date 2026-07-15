@@ -3003,16 +3003,15 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
         endTime: '12:00',
       });
       expect(staged.data.status).toBe('needs_confirmation');
-      expect(staged.data.preview).toMatchObject({
-        customerName: 'Sched Henderson',
-        technicianName: 'Tech MCP',
-        newJob: true,
-        date: '2026-12-01',
-        startTime: '09:00',
-        endTime: '12:00',
-        promiseLevel: 'day', // the default — quote days, not times
-      });
-      expect(staged.data.preview.warning).toContain('no working pattern');
+      // The preview is ONE server-authored string the agent relays verbatim —
+      // raw fields handed to the agent are how jargon leaks into chat.
+      const bookPreview = staged.data.preview as string;
+      expect(bookPreview).toContain('Tech MCP');
+      expect(bookPreview).toContain('Sched Henderson');
+      expect(bookPreview).toContain('Tuesday, December 1, 2026'); // weekday spelled out
+      expect(bookPreview).toContain('09:00–12:00');
+      expect(bookPreview).toContain('told the day'); // the recorded-promise disclosure
+      expect(bookPreview).toContain('no working pattern'); // warning rides in the text
 
       // Forged confirmId → not found.
       const forged = await callWith('book_visit', { confirmId: customer.id });
@@ -3031,7 +3030,8 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       // CONFIRM books it.
       const booked = await callWith('book_visit', { confirmId: staged.data.confirmId });
       expect(booked.data.status).toBe('booked');
-      expect(booked.data.promiseLevel).toBe('day');
+      expect(booked.data.message).toContain('Booked: Tech MCP for Sched Henderson');
+      expect(booked.data.message).toContain('Tuesday, December 1, 2026');
       const assignmentId = booked.data.assignmentId as string;
 
       // Second confirm on the consumed token → nothing double-booked.
@@ -3040,18 +3040,19 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       expect(replay.text).toContain('confirmation not found');
 
       // Team view: the manager sees ANOTHER technician's stop, with the
-      // promise/lock markers and a scheduleVersion.
+      // promise in plain words, the day labelled with its weekday, and a
+      // scheduleVersion.
       const team = await callWith('get_team_schedule', { from: '2026-12-01', to: '2026-12-01' });
       expect(team.data.status).toBe('ok');
       const v1 = team.data.scheduleVersion as number;
       expect(v1).toBeGreaterThan(0);
+      expect(team.data.days[0].dayLabel).toBe('Tuesday, December 1, 2026');
       const stops = team.data.days[0].stops as Array<Record<string, unknown>>;
       const stop = stops.find((s) => s.assignmentId === assignmentId);
       expect(stop).toMatchObject({
         technicianRef: 'tech-mcp',
         customer: 'Sched Henderson',
-        promiseLevel: 'day',
-        promisedDay: '2026-12-01',
+        promise: 'customer told Tuesday, December 1, 2026',
         locked: true,
       });
       expect(stop?.address).toContain('40 Elm Ave');
@@ -3064,8 +3065,11 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
         reason: 'customer asked for Wednesday',
       });
       expect(moveStage.data.status).toBe('needs_confirmation');
-      expect(moveStage.data.preview.promiseBroken).toBe(true);
-      expect(moveStage.data.note).toContain('promiseBroken is TRUE');
+      // The break warning is plain words INSIDE the preview text — no raw
+      // promiseBroken field for the agent to parrot at the manager.
+      const movePreview = moveStage.data.preview as string;
+      expect(movePreview).toContain('Wednesday, December 2, 2026');
+      expect(movePreview).toContain('The customer was told Tuesday, December 1, 2026');
       // Refusal covers the move kind too.
       const refusedMove = await callWith('resolve_review', {
         reviewItemId: moveStage.data.confirmId,
@@ -3075,7 +3079,9 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       expect(refusedMove.text).toContain('move_visit');
       const moved = await callWith('move_visit', { confirmId: moveStage.data.confirmId });
       expect(moved.data.status).toBe('moved');
-      expect(moved.data.promiseBroken).toBe(true);
+      expect(moved.data.message).toContain('Wednesday, December 2, 2026');
+      expect(moved.data.customerNotice).toContain('was told Tuesday, December 1, 2026');
+      expect(moved.data.promiseBroken).toBeUndefined(); // internal vocabulary stays out of chat
       const movedId = moved.data.assignmentId as string;
       expect(movedId).not.toBe(assignmentId);
 
@@ -3110,9 +3116,11 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
         assignmentId: movedId,
         reason: 'customer cancelled',
       });
-      expect(cancelStage2.data.preview).toMatchObject({ customerName: 'Sched Henderson' });
+      expect(cancelStage2.data.preview).toContain('Sched Henderson');
+      expect(cancelStage2.data.preview).toContain('was told'); // promised visit → plain-words heads-up
       const cancelled = await callWith('cancel_visit', { confirmId: cancelStage2.data.confirmId });
       expect(cancelled.data.status).toBe('cancelled');
+      expect(cancelled.data.message).toContain('Wednesday, December 2, 2026');
       // The cancelled visit no longer appears on the board.
       const gone = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02' });
       expect(gone.data.days).toHaveLength(0);

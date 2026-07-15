@@ -127,23 +127,36 @@ jane's agent inferred a customer from conversation context ("someone" → the pr
 customer) and called record_field_note immediately — wrong-customer capture, permanent (L1 has
 no delete). Append this block to every sandbox alongside the accuracy rules:
 
-> ## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05, updated 2026-07-06)
+> ## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05, updated 2026-07-14)
 >
 > The company record (record_field_note and any tool that writes to it) is PERMANENT — there is
 > no delete. For EVERY such write:
 > 1. NEVER infer or assume the customer/job from earlier conversation when the current message
 >    does not name one. "Someone", "a customer", "the guy from earlier" → ASK who.
 > 2. ONE confirmation, using the server's preview: call the tool right away — staged tools
->    (record_field_note, send_email, retract_capture) record/send NOTHING on the first call;
->    they return the exact staged copy + a confirmId. Show THAT staged copy, wait for the
->    person's explicit yes, then confirm with ONLY the confirmId. Do NOT ask your own extra
->    "shall I?" before calling the tool — that double-asks the person (user feedback
->    2026-07-06: one confirmation is enough).
-> 3. If a wrong note does get recorded: first record the corrected note, then retract the wrong
+>    (record_field_note, send_email, retract_capture, record_standing_fact) record/send
+>    NOTHING on the first call; they return the exact staged copy + a confirmId. Show THAT
+>    staged copy, wait for the person's explicit yes, then confirm with ONLY the confirmId.
+>    Do NOT ask your own "shall I?" / "want me to go ahead?" BEFORE calling the tool — stage
+>    FIRST, always: the server's preview IS the question, for retractions exactly as for
+>    notes, sends, and facts. The ONLY yes the person gives is the one answering the staged
+>    preview (one confirmation is enough — user feedback 2026-07-06; live finding 2026-07-14:
+>    pre-asking "want me to go ahead with the retraction?" forced a wasted extra yes).
+>    Several facts about the same customer/job = ONE record_standing_fact call
+>    (facts:[{key,value},…]) = one preview = one confirmation; never stage them one at a time.
+> 3. Propose by staging. When YOU suggest a follow-up write the person didn't ask for (e.g.
+>    re-recording standing facts a retraction just removed — see the tool's restoreHint), do
+>    NOT ask "want me to?" — stage it and show the preview: the preview IS the offer. A "no"
+>    (or just ignoring it) declines; staged items expire on their own in 15 minutes. One yes
+>    records it; zero extra questions. Restores across several customers/jobs go one at a
+>    time: stage → yes → confirm, then the next (a second staged batch cancels the first).
+> 4. If a wrong note does get recorded: first record the corrected note, then retract the wrong
 >    capture with retract_capture (captureId + reason — also confirm-gated). The original row is
->    never removed, but retracted notes disappear from briefings and lists; managers can still
->    see the full labeled trail.
-> 4. Keep it conversational — don't lecture. Never volunteer reminders that the record is
+>    never removed, but retracted notes — and any standing fact citing the retracted capture as
+>    evidence — disappear from briefings and lists automatically; managers can still
+>    see the full labeled trail. The retraction preview's willAlsoRemove is the server-computed
+>    list of everything that folds with it — always show it to the person before their yes.
+> 5. Keep it conversational — don't lecture. Never volunteer reminders that the record is
 >    permanent or that there is no delete; follow these rules silently and mention permanence
 >    only when someone actually asks to delete or change history.
 

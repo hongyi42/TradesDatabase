@@ -191,11 +191,11 @@ export async function findFoldImpact(tenantId: string, captureId: string): Promi
 - Existing tests must pass unchanged (response gained fields only).
 
 ### Automated verification
-- [ ] `npm run typecheck` passes
-- [ ] `npm run lint` passes
-- [ ] `npm test` passes (local stack only — `npx supabase start`)
-- [ ] the three new tests above pass
-- [ ] `npm run build` passes (pre-PR gate)
+- [x] `npm run typecheck` passes
+- [x] `npm run lint` passes
+- [x] `npm test` passes (419 passed | 7 key-gated skips; second stack :54421)
+- [x] the three new tests above pass (`-t 'fold impact'` → 3 passed)
+- [x] `npm run build` passes (pre-PR gate)
 
 ### Live verification (agent-executable)
 - Prerequisites: none beyond the local test stack — behavior is fully codified above; live
@@ -238,11 +238,11 @@ finding cited — so the only gap is agent-initiated follow-ups.
   rule.
 
 ### Automated verification
-- [ ] `bash -n Box_Setup_Stuff/bootstrap-box.sh` (syntax intact around the heredoc edit)
-- [ ] `grep -c 'Propose by staging' Box_Setup_Stuff/bootstrap-box.sh` → 1
-- [ ] `grep -c 'Propose by staging' Box_Setup_Stuff/doorman-nemoclaw-setup-guide.md` → 1, and the
-  guide's quoted rule 2 now matches the template (spot-diff the block)
-- [ ] full gates once more before the PR: `npm run typecheck && npm run lint && npm test && npm run build`
+- [x] `bash -n Box_Setup_Stuff/bootstrap-box.sh` (syntax intact around the heredoc edit)
+- [x] `grep -c 'Propose by staging' Box_Setup_Stuff/bootstrap-box.sh` → 1
+- [x] `grep -c 'Propose by staging' Box_Setup_Stuff/doorman-nemoclaw-setup-guide.md` → 1; full
+  block diff template↔guide → IDENTICAL (guide was one revision stale; refreshed wholesale)
+- [x] full gates before the PR: typecheck/lint clean, 419 passed | 7 key-gated skips, build clean
 
 ### Live verification (agent-executable)
 - (none — template only; live rollout is Phase 3)

@@ -2,7 +2,7 @@
 date: 2026-07-14
 task: Retraction fold-impact preview (server-computed) + confirmation-count reduction
 research: none (decided in-session 2026-07-14 after live E2E on the pilot; see Decisions)
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -280,22 +280,21 @@ docker-exec edit recipe as the 2026-07-13 tightening: append/insert, `chown sand
   sandbox would get the OLD rules block).
 
 ### Automated verification
-- [ ] PR opened with all gates green; merged commit hash recorded here
-- [ ] grep read-back of 'Propose by staging' = 1 per live AGENTS.md (4 sandboxes)
-- [ ] gateway restart health lines for s2/s3/s5
+- [x] PR #41 opened with all gates green; merged as 04e1fbf; Render deployed 2026-07-15
+- [x] grep read-back of 'Propose by staging' = 1 per live AGENTS.md (s1/s2/s3/s5; perms intact)
+- [x] gateway restarts s2/s3/s5 — "health passed; forwards checked/recovered" each
+- [x] /usr/local/sbin/bootstrap-box.sh + ~/Box_Setup_Stuff copy refreshed on trades-box-1
 
 ### Live verification (agent-executable)
 - Prerequisites: `mcp__supabase-test` (pilot read-backs — READ ONLY per standing rule); ssh
   `tradesbox`. The Telegram side is user-driven (no Telegram MCP).
-- [ ] After the user's live test (below): pilot read-back shows the retraction row landed and
-  the restored facts cite a fresh capture (evidence: SQL read-back of the affected rows).
+- [x] Pilot read-back (2026-07-15): spare-key evidence capture 9457e6a2 retracted by row
+  9f543e57; Maria's spare_key_location bundle evidence_retracted=true (folds), gate_code +
+  prefers untouched.
 
 ### Manual verification (user, in Telegram — the point of the feature)
-- [ ] Record a throwaway standing fact on a test customer, retract its evidence capture: the
-  staged preview lists the fact under "will also remove" (server list, not agent guesswork).
-- [ ] After confirming the retraction, the bot immediately shows a staged restore preview
-  (no "want me to?"), and the whole retract+restore flow costs exactly 2 Yeses.
-- [ ] Judge the tone: informative preview, no permanence lecturing.
+- [x] User live E2E 2026-07-15 ("ok the E2E works"): fold list in the staged preview, no
+  pre-asks, confirmation count at the floor, tone acceptable.
 
 ---
 *Pause for the user's manual verification at the end of Phase 3.*

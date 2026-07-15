@@ -6,6 +6,7 @@ export * from './jobs.js';
 export * from './visits.js';
 export * from './rawCaptures.js';
 export * from './standingFacts.js';
+export * from './foldImpact.js';
 export * from './scheduleEntries.js';
 export * from './technicians.js';
 export * from './sandboxPool.js';

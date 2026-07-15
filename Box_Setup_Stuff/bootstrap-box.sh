@@ -667,6 +667,37 @@ EOF
     echo "    WARN: no running container for ${agent} — append the §0e block manually once it's up"
   fi
 
+  log "dates block (§0f — never compute dates; use resolve_date; wiped by rebuild, re-run after one)"
+  if [ -n "$cid" ]; then
+    if docker exec "$cid" grep -q "Dates and times — never guess" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+      ok "dates block already present"
+    else
+      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+
+## Dates and times — never guess, always resolve (host-managed; added 2026-07-15)
+
+You are UNRELIABLE at calendar arithmetic — working out what date "this Friday" or "next
+Tuesday" falls on. Treat every date like a value you must copy, not compute.
+
+1. You do NOT inherently know today's date. Whenever a day matters, call `resolve_date` — it
+   returns {date, weekday, today, timezone} from the firm's own clock. Use its `date` verbatim.
+2. Any time someone names a day relative to now — "today", "tomorrow", "this Friday", "next
+   week", "the Friday after next", "in 3 days" — call `resolve_date` BEFORE you book, move, or
+   quote it. Pass the parts you understood (weekday + weeksAhead, or dayShift, or explicitDate);
+   let the tool do the math. Never hand a YYYY-MM-DD you calculated in your head to book_visit
+   or move_visit.
+3. "next <weekday>" is genuinely ambiguous — it can mean this coming one or the following week's.
+   Resolve BOTH (weeksAhead 0 and 1), then ask the person which date they mean. Never pick one
+   silently. Same for anything resolve_date returns as unresolvable.
+4. When you tell a person a date, include its weekday from resolve_date ("Friday, July 17") so a
+   wrong day is obvious at a glance.
+EOF
+      ok "dates block appended to ${agent}'s AGENTS.md"
+    fi
+  else
+    echo "    WARN: no running container for ${agent} — append the §0f block manually once it's up"
+  fi
+
   cat <<EOF
 
 MANUAL — badge install (§5b; plaintext stays between the pending file and the provider store):

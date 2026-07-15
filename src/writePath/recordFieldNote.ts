@@ -57,7 +57,7 @@ export interface RecordFieldNoteResult {
   customerId?: string;
   jobId?: string;
   visitId?: string;
-  suggestion?: { address: string; scheduleEntryId: string };
+  suggestion?: { address: string; assignmentId: string };
 }
 
 // Terminal job states (no outgoing transitions) — never reused for a new note.

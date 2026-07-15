@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from '../db/client.js';
 import { setTenantSeats } from '../db/tenants.js';
@@ -6,13 +6,13 @@ import { insertTechnician, type Technician } from '../db/technicians.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
 import { createAssignment, updateAssignmentStatus } from '../db/assignments.js';
-import { upsertScheduleEntry } from '../db/scheduleEntries.js';
 import { listDayStops } from './daySource.js';
 
 // Integration against the LOCAL stack, self-cleaning (pattern:
 // scheduling.test.ts — truncate both ways, restore seed seats; `cascade`
-// sweeps assignments and schedule_entries FK'd rows).
-const TRUNCATE = 'truncate table customers, jobs, technicians, schedule_entries cascade';
+// sweeps assignments FK'd rows). Single source since the mirror retired:
+// listDayStops reads confirmed assignments only.
+const TRUNCATE = 'truncate table customers, jobs, technicians, schedule_events cascade';
 
 const pg = new Client({ connectionString: process.env.DATABASE_URL });
 let tenantId: string;
@@ -37,29 +37,9 @@ beforeAll(async () => {
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
   tech = await insertTechnician({ tenantId, ref: REF, displayName: 'Route Tech' });
 
-  // ── schedule_entries fixtures: 2 stops on D1 (inserted out of order), 1 on D2,
-  //    1 with NULL scheduled_start (must be skipped), 1 outside the range.
-  const mk = (key: string, over: Record<string, unknown>) =>
-    upsertScheduleEntry({
-      tenantId,
-      technicianRef: REF,
-      externalRowKey: key,
-      customerName: `SE ${key}`,
-      addressLine1: `${key} St`,
-      city: 'Fresno',
-      state: 'CA',
-      postalCode: '93701',
-      source: 'test',
-      ...over,
-    });
-  await mk('d1-late', { scheduledStart: `${D1}T18:00:00.000Z` });
-  await mk('d1-early', { scheduledStart: `${D1}T15:00:00.000Z` });
-  await mk('d2-only', { scheduledStart: `${D2}T16:00:00.000Z` });
-  await mk('null-start', { scheduledStart: null });
-  await mk('outside', { scheduledStart: '2026-09-01T16:00:00.000Z' });
-
-  // ── assignments fixtures: confirmed on D1 and D3, cancelled on D2 (excluded),
-  //    plus a job whose customer has no address_line1 (unroutable stop).
+  // Fixtures: two confirmed stops on D1 (inserted out of order), a cancelled
+  // one on D2 (excluded), one on D3 whose customer has no address_line1
+  // (unroutable stop), and an overnight booking straddling into D1.
   const cust = await createCustomer({
     tenantId,
     name: 'Asg Customer',
@@ -68,21 +48,31 @@ beforeAll(async () => {
     state: 'CA',
     postalCode: '93611',
   });
+  const early = await createCustomer({
+    tenantId,
+    name: 'Early Bird',
+    addressLine1: '11 Early Way',
+    city: 'Fresno',
+    state: 'CA',
+    postalCode: '93701',
+  });
   const noAddr = await createCustomer({ tenantId, name: 'No Address Co' });
   const jobA = await createJob({ tenantId, customerId: cust.id, title: 'A' });
+  const jobEarly = await createJob({ tenantId, customerId: early.id, title: 'E' });
   const jobB = await createJob({ tenantId, customerId: cust.id, title: 'B' });
   const jobC = await createJob({ tenantId, customerId: noAddr.id, title: 'C' });
-  const confirmed = (jobId: string, day: string, hour: string) =>
+  const confirmed = (jobId: string, startISO: string, endISO: string) =>
     createAssignment({
       tenantId,
       jobId,
       technicianId: tech.id,
-      startsAt: `${day}T${hour}:00:00.000Z`,
-      endsAt: `${day}T${hour === '22' ? '23' : String(Number(hour) + 2).padStart(2, '0')}:00:00.000Z`,
+      startsAt: startISO,
+      endsAt: endISO,
       status: 'confirmed',
     });
-  await confirmed(jobA.id, D1, '16');
-  await confirmed(jobC.id, D3, '15');
+  await confirmed(jobA.id, `${D1}T18:00:00.000Z`, `${D1}T20:00:00.000Z`); // late, inserted first
+  await confirmed(jobEarly.id, `${D1}T15:00:00.000Z`, `${D1}T17:00:00.000Z`);
+  await confirmed(jobC.id, `${D3}T15:00:00.000Z`, `${D3}T17:00:00.000Z`);
   const toCancel = await createAssignment({
     tenantId,
     jobId: jobB.id,
@@ -109,54 +99,21 @@ afterAll(async () => {
   await pg.end();
 });
 
-afterEach(() => {
-  vi.unstubAllEnvs();
-});
-
-describe('listDayStops — schedule_entries mode (flag default)', () => {
-  test('flag unset defaults to schedule_entries', async () => {
-    vi.stubEnv('ROUTE_DAY_SOURCE', '');
-    const days = await listDayStops(tenantId, REF, D1, D3);
-    expect(days.map((d) => d.date)).toEqual([D1, D2]); // D3 has no mirror rows
-  });
-
-  test('groups by UTC day, stops time-sorted within a day', async () => {
-    const days = await listDayStops(tenantId, REF, D1, D3);
-    const d1 = days.find((d) => d.date === D1)!;
-    expect(d1.stops.map((s) => s.label)).toEqual(['SE d1-early', 'SE d1-late']);
-    expect(d1.stops[0].address).toBe('d1-early St, Fresno, CA, 93701');
-  });
-
-  test('range edges inclusive; outside-range and null-start rows excluded', async () => {
-    const days = await listDayStops(tenantId, REF, D2, D2);
-    expect(days).toHaveLength(1);
-    expect(days[0].stops.map((s) => s.label)).toEqual(['SE d2-only']);
-    const all = await listDayStops(tenantId, REF, '2026-08-01', '2026-09-30');
-    const labels = all.flatMap((d) => d.stops.map((s) => s.label));
-    expect(labels).not.toContain('SE null-start');
-    expect(labels).toContain('SE outside');
-  });
-
-  test('unknown technician ref → empty', async () => {
-    expect(await listDayStops(tenantId, 'nobody', D1, D3)).toEqual([]);
-  });
-});
-
-describe('listDayStops — assignments mode', () => {
-  test('confirmed assignments grouped by day; cancelled excluded', async () => {
-    vi.stubEnv('ROUTE_DAY_SOURCE', 'assignments');
+describe('listDayStops (assignments — the only source)', () => {
+  test('confirmed assignments grouped by UTC day, time-sorted; cancelled excluded', async () => {
     const days = await listDayStops(tenantId, REF, D1, D3);
     expect(days.map((d) => d.date)).toEqual([D1, D3]); // D2's booking was cancelled
-    expect(days[0].stops[0]).toMatchObject({
+    const d1 = days[0];
+    expect(d1.stops.map((s) => s.label)).toEqual(['Early Bird', 'Asg Customer']);
+    expect(d1.stops[1]).toMatchObject({
       label: 'Asg Customer',
       address: '77 Assignment Ave, Clovis, CA, 93611',
       // timestamptz reads back as +00:00, not the Z form it was written with
-      scheduledStart: expect.stringMatching(new RegExp(`^${D1}T16:00:00`)) as unknown as string,
+      scheduledStart: expect.stringMatching(new RegExp(`^${D1}T18:00:00`)) as unknown as string,
     });
   });
 
   test('customer without address_line1 → stop present but unroutable (null address)', async () => {
-    vi.stubEnv('ROUTE_DAY_SOURCE', 'assignments');
     const days = await listDayStops(tenantId, REF, D3, D3);
     expect(days[0].stops).toEqual([
       expect.objectContaining({ label: 'No Address Co', address: null }),
@@ -164,12 +121,10 @@ describe('listDayStops — assignments mode', () => {
   });
 
   test('roster-less ref → empty schedule, no crash', async () => {
-    vi.stubEnv('ROUTE_DAY_SOURCE', 'assignments');
     expect(await listDayStops(tenantId, 'badge-without-roster', D1, D3)).toEqual([]);
   });
 
   test('overnight booking starting before the range is clamped out', async () => {
-    vi.stubEnv('ROUTE_DAY_SOURCE', 'assignments');
     const days = await listDayStops(tenantId, REF, D1, D3);
     // the 2026-08-09T23:00Z booking overlaps D1 but belongs to 08-09
     expect(days.map((d) => d.date)).toEqual([D1, D3]);

@@ -1,8 +1,12 @@
 import {
   findCustomersByPhone,
   findCustomersByAddress,
-  listScheduleForTechnicianOnDate,
+  getTechnician,
+  getTenant,
+  listAssignmentsForTechnician,
+  listJobsWithCustomerByIds,
 } from '../db/index.js';
+import { localDateISO } from '../schedule/availability.js';
 import type { ExtractedFields } from './extract.js';
 
 // Identity matching is the hardcoded, deterministic core (overview §5): the model
@@ -18,8 +22,11 @@ export interface MatchInput {
   confirmed?: { customerId?: string; address?: string };
 }
 
-// Denormalized customer fields from a scheduled entry, used to prefill a new
-// customer when create-new is the right move (dedup already ran and found none).
+// Denormalized customer fields used to prefill a new customer when create-new
+// is the right move (dedup already ran and found none). No longer populated by
+// the schedule consultation — assignments always link a real customer — but
+// still the shape the staged-confirm resume path (server.ts resolutionFrom /
+// recordFieldNote's create-new) carries.
 export interface ScheduledCustomerDraft {
   customerName?: string | null;
   phone?: string | null;
@@ -33,7 +40,7 @@ export interface MatchResult {
   status: 'matched' | 'needs_confirmation' | 'needs_disambiguation';
   customerId?: string;
   jobId?: string;
-  suggestion?: { address: string; scheduleEntryId: string };
+  suggestion?: { address: string; assignmentId: string };
   createFrom?: ScheduledCustomerDraft;
   reason?: string;
 }
@@ -63,41 +70,64 @@ export async function matchIdentity(input: MatchInput): Promise<MatchResult> {
     if (byAddress.length === 1) return { status: 'matched', customerId: byAddress[0].id };
   }
 
-  // 2. Consult the firm schedule for this technician on the capture's day.
-  const scheduled = await listScheduleForTechnicianOnDate(tenantId, technicianRef, capturedAt);
-
-  // 2a. Resume: a confirmed address pointing at a scheduled entry.
-  if (confirmed?.address) {
-    const entry = scheduled.find((e) => sameAddress(e.address_line1, confirmed.address));
-    if (entry?.customer_id) {
-      // Entry already linked to the spine → resolve to its customer/job.
-      return { status: 'matched', customerId: entry.customer_id, jobId: entry.job_id ?? undefined };
-    }
-    if (entry) {
-      // Unlinked entry → create new from its denormalized fields (dedup in step 1
-      // already failed to find an existing customer at this address).
-      return {
-        status: 'needs_disambiguation',
-        reason: 'scheduled entry not yet linked to a customer',
-        createFrom: {
-          customerName: entry.customer_name,
-          phone: entry.phone,
-          addressLine1: entry.address_line1,
-          city: entry.city,
-          state: entry.state,
-          postalCode: entry.postal_code,
+  // 2. Consult the DB-owned schedule (confirmed assignments) for this
+  // technician on the capture's FIRM-LOCAL day. Assignments are naive-local
+  // (wall-clock stored as if UTC), but capturedAt is REAL UTC — slicing it
+  // directly would consult tomorrow's schedule for any evening capture (a
+  // 6pm PDT note is already the next UTC day). localDateISO with the firm's
+  // timezone recovers the wall-clock day the technician is living in, which
+  // is exactly the day key the naive-local rows are stored under.
+  // A badge with no roster row has no schedule to consult (assignments key on
+  // the technician UUID); every assignment links job → customer, so a hit
+  // resolves BOTH ids directly.
+  const tech = await getTechnician(tenantId, technicianRef);
+  const timezone = tech ? ((await getTenant(tenantId))?.timezone ?? 'UTC') : 'UTC';
+  const day = localDateISO(capturedAt, timezone);
+  let scheduled: { assignmentId: string; customerId: string; jobId: string; address: string | null }[] =
+    [];
+  if (tech) {
+    const assignments = (
+      await listAssignmentsForTechnician(
+        tech.id,
+        `${day}T00:00:00.000Z`,
+        new Date(Date.parse(`${day}T00:00:00.000Z`) + 86_400_000).toISOString(),
+        ['confirmed'],
+      )
+    ).filter((a) => a.starts_at.slice(0, 10) === day); // overlap-edge clamp (daySource precedent)
+    const jobs = await listJobsWithCustomerByIds(tenantId, [
+      ...new Set(assignments.map((a) => a.job_id)),
+    ]);
+    const jobById = new Map(jobs.map((j) => [j.id, j]));
+    scheduled = assignments.flatMap((a) => {
+      const job = jobById.get(a.job_id);
+      if (!job) return [];
+      return [
+        {
+          assignmentId: a.id,
+          customerId: job.customer_id,
+          jobId: a.job_id,
+          address: job.customers?.address_line1 ?? null,
         },
-      };
+      ];
+    });
+  }
+
+  // 2a. Resume: a confirmed address pointing at a scheduled visit → resolve to
+  // its customer AND job.
+  if (confirmed?.address) {
+    const entry = scheduled.find((e) => sameAddress(e.address, confirmed.address));
+    if (entry) {
+      return { status: 'matched', customerId: entry.customerId, jobId: entry.jobId };
     }
     // Confirmed address with no scheduled match → caller creates from confirmed.
     return { status: 'needs_disambiguation', reason: 'confirmed address not found on the schedule' };
   }
 
-  // 2b. First pass: exactly one scheduled entry with an address → propose it.
-  if (scheduled.length === 1 && scheduled[0].address_line1) {
+  // 2b. First pass: exactly one scheduled visit with an address → propose it.
+  if (scheduled.length === 1 && scheduled[0].address) {
     return {
       status: 'needs_confirmation',
-      suggestion: { address: scheduled[0].address_line1, scheduleEntryId: scheduled[0].id },
+      suggestion: { address: scheduled[0].address, assignmentId: scheduled[0].assignmentId },
     };
   }
 

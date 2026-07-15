@@ -4,7 +4,10 @@ import { getClient } from '../db/client.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob, listJobsForCustomer } from '../db/jobs.js';
-import { upsertScheduleEntry } from '../db/scheduleEntries.js';
+import { createAssignment } from '../db/assignments.js';
+import { insertTechnician } from '../db/technicians.js';
+import { setTenantSeats } from '../db/tenants.js';
+import { localDateISO } from '../schedule/availability.js';
 import { recordFieldNote } from './recordFieldNote.js';
 import type { Extractor, ExtractedFields } from './extract.js';
 
@@ -21,7 +24,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await pg.query('truncate table schedule_entries, customers, jobs, visits, raw_captures cascade');
+  await pg.query(
+    'truncate table customers, jobs, visits, raw_captures, technicians, schedule_events cascade',
+  );
   await pg.end();
 });
 
@@ -80,15 +85,29 @@ describe('recordFieldNote', () => {
 
   test('inbound contract: an unmatched note proposes the scheduled address (L1 kept, no L2)', async () => {
     const tech = 'tech-sched-rfn';
-    const day = new Date().toISOString().slice(0, 10); // align with the capture's UTC day
-    await upsertScheduleEntry({
+    // FIRM-local today (seed tenant tz): the matcher consults the capture's
+    // firm-local day, so the fixture books there, not on the UTC date.
+    const day = localDateISO(new Date().toISOString(), 'America/Los_Angeles');
+    // The schedule matchIdentity consults = confirmed assignments; a roster
+    // row + a customer whose address the suggestion must surface. The customer
+    // gets a UNIQUE phone but the extraction below carries none, so step-1
+    // dedup cannot short-circuit the schedule branch.
+    await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
+    const roster = await insertTechnician({ tenantId, ref: tech, displayName: 'RFN Sched' });
+    const sheetCust = await createCustomer({
       tenantId,
-      technicianRef: tech,
-      externalRowKey: 'rfn-1',
-      customerName: 'Sheet Cust',
+      name: 'Sheet Cust',
       phone: '555-7700',
       addressLine1: '88 Sheet St',
-      scheduledStart: `${day}T12:00:00.000Z`,
+    });
+    const schedJob = await createJob({ tenantId, customerId: sheetCust.id, title: 'rfn visit' });
+    await createAssignment({
+      tenantId,
+      jobId: schedJob.id,
+      technicianId: roster.id,
+      startsAt: `${day}T12:00:00.000Z`,
+      endsAt: `${day}T14:00:00.000Z`,
+      status: 'confirmed',
     });
 
     const first = await recordFieldNote(

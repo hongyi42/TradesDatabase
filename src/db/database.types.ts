@@ -40,6 +40,9 @@ export type Database = {
           ends_at: string
           id: string
           job_id: string
+          locked: boolean
+          promise_level: Database["public"]["Enums"]["promise_level"]
+          promised_day: string | null
           reason: string | null
           source_capture_id: string | null
           starts_at: string
@@ -53,6 +56,9 @@ export type Database = {
           ends_at: string
           id?: string
           job_id: string
+          locked?: boolean
+          promise_level?: Database["public"]["Enums"]["promise_level"]
+          promised_day?: string | null
           reason?: string | null
           source_capture_id?: string | null
           starts_at: string
@@ -66,6 +72,9 @@ export type Database = {
           ends_at?: string
           id?: string
           job_id?: string
+          locked?: boolean
+          promise_level?: Database["public"]["Enums"]["promise_level"]
+          promised_day?: string | null
           reason?: string | null
           source_capture_id?: string | null
           starts_at?: string
@@ -625,6 +634,51 @@ export type Database = {
           },
         ]
       }
+      schedule_events: {
+        Row: {
+          actor_ref: string | null
+          assignment_id: string | null
+          created_at: string
+          detail: Json
+          id: number
+          kind: string
+          tenant_id: string
+        }
+        Insert: {
+          actor_ref?: string | null
+          assignment_id?: string | null
+          created_at?: string
+          detail?: Json
+          id?: never
+          kind: string
+          tenant_id: string
+        }
+        Update: {
+          actor_ref?: string | null
+          assignment_id?: string | null
+          created_at?: string
+          detail?: Json
+          id?: never
+          kind?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "schedule_events_assignment_id_fkey"
+            columns: ["assignment_id"]
+            isOneToOne: false
+            referencedRelation: "assignments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "schedule_events_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       technician_time_off: {
         Row: {
           created_at: string
@@ -919,6 +973,7 @@ export type Database = {
         | "paid"
         | "cancelled"
         | "declined"
+      promise_level: "none" | "day" | "time"
       review_status: "open" | "resolved" | "dismissed"
       technician_state:
         | "invited"
@@ -1087,6 +1142,7 @@ export const Constants = {
         "cancelled",
         "declined",
       ],
+      promise_level: ["none", "day", "time"],
       review_status: ["open", "resolved", "dismissed"],
       technician_state: [
         "invited",

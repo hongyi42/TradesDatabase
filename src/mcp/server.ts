@@ -81,8 +81,23 @@ import {
 import { identityFromEnv, type RequestIdentity } from './identity.js';
 import { listDayStops } from '../routes/daySource.js';
 import { optimizeStopOrder as liveOptimizeStopOrder } from '../routes/googleRoutes.js';
-import { buildMapsDeepLink, type RouteStop } from '../routes/deepLink.js';
+import { buildMapsDeepLink, formatAddress, type RouteStop } from '../routes/deepLink.js';
 import { localDateISO } from '../schedule/availability.js';
+import {
+  bookVisit,
+  cancelVisit,
+  isPromiseLevel,
+  moveVisit,
+  previewBookVisit,
+  previewCancelVisit,
+  previewMoveVisit,
+} from '../schedule/booking.js';
+import {
+  latestScheduleVersion,
+  listAssignmentsForTenant,
+  listJobsWithCustomerByIds,
+  type PromiseLevel,
+} from '../db/index.js';
 import { braveWebSearch } from '../web/braveSearch.js';
 import { fetchPageText } from '../web/fetchPage.js';
 import {
@@ -447,8 +462,8 @@ const ADMIN_TOOLS = [
   {
     name: 'list_pending_reviews',
     description:
-      'List open review items needing a decision (manager only): schedule-sheet name typos ' +
-      '(with a did-you-mean suggestion), email from unrecognized team refs, pending confirmations.',
+      'List open review items needing a decision (manager only): email from unrecognized team ' +
+      'refs, pairing verifications, pending confirmations.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -498,6 +513,87 @@ const ADMIN_TOOLS = [
         },
       },
       required: ['ref', 'telegramUserId'],
+    },
+  },
+  {
+    name: 'get_team_schedule',
+    description:
+      "The whole team's schedule (manager only): for each day in [from,to] (YYYY-MM-DD; both " +
+      "optional — default today in the firm's timezone; capped at 14 days), every technician's " +
+      'confirmed visits with customer, address, times, promiseLevel (what the customer was ' +
+      "told: none/day/time), promisedDay, and locked (manager-pinned). Also returns " +
+      'scheduleVersion — quote it when discussing changes so staleness is detectable.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Start date YYYY-MM-DD (default: today).' },
+        to: { type: 'string', description: 'End date YYYY-MM-DD inclusive (default: from).' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'book_visit',
+    description:
+      'Book a visit onto the schedule (manager only) — two-step. First call with technicianRef ' +
+      '+ date (+ customerId OR jobId, times optional): NOTHING is booked; you get ' +
+      '{status:"needs_confirmation", confirmId} with a preview (customer, technician, day, ' +
+      'times, what the customer will be told). Show the manager EXACTLY the preview (including ' +
+      'any availability warning); only on their explicit yes call again with ONLY confirmId. ' +
+      'Default promiseLevel is "day" — when talking to customers, offer DAYS, not times; times ' +
+      'stay internal until the customer was explicitly told one (then pass promiseLevel:"time").',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        customerId: { type: 'string', description: 'Exactly one of customerId/jobId. First call only.' },
+        jobId: { type: 'string', description: 'Exactly one of customerId/jobId. First call only.' },
+        technicianRef: { type: 'string', description: 'Roster ref of the technician. First call only.' },
+        title: { type: 'string', description: 'Job title when booking by customerId (a new job is created). First call only.' },
+        date: { type: 'string', description: 'YYYY-MM-DD, firm-local. First call only.' },
+        startTime: { type: 'string', description: 'HH:MM 24h (default 08:00). First call only.' },
+        endTime: { type: 'string', description: 'HH:MM 24h (default start + job-type duration). First call only.' },
+        promiseLevel: { type: 'string', enum: ['none', 'day', 'time'], description: 'What the customer was told (default "day"). First call only.' },
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'move_visit',
+    description:
+      'Move a booked visit (manager only) — two-step. First call with assignmentId + date + ' +
+      'startTime (+ optional endTime/technicianRef) + reason: NOTHING moves; you get a preview ' +
+      'with promiseBroken — TRUE means the customer was promised a different day and someone ' +
+      'must tell them. Show the manager the preview; only on their explicit yes call again ' +
+      'with ONLY confirmId.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assignmentId: { type: 'string', description: 'The visit to move (from get_team_schedule). First call only.' },
+        date: { type: 'string', description: 'New YYYY-MM-DD. First call only.' },
+        startTime: { type: 'string', description: 'New HH:MM. First call only.' },
+        endTime: { type: 'string', description: 'New HH:MM (default: keep the old duration). First call only.' },
+        technicianRef: { type: 'string', description: 'Reassign to this roster ref (default: same technician). First call only.' },
+        reason: { type: 'string', description: 'Why it is moving (kept on the record). First call only.' },
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'cancel_visit',
+    description:
+      'Cancel a booked visit (manager only) — two-step. First call with assignmentId + reason: ' +
+      'NOTHING is cancelled; you get a preview. Show the manager the preview; only on their ' +
+      'explicit yes call again with ONLY confirmId. The job stays open for rebooking.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assignmentId: { type: 'string', description: 'The visit to cancel. First call only.' },
+        reason: { type: 'string', description: 'Why (kept on the record). First call only.' },
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
+      },
+      required: [],
     },
   },
   {
@@ -553,7 +649,7 @@ interface StagedNoteDetail {
   // The identity question, stored so the needs_identity response can echo the
   // ITEM's question — racing stages may return the other call's row, and the
   // question must describe the note that will actually commit (review finding).
-  suggestion?: { address: string; scheduleEntryId: string };
+  suggestion?: { address: string; assignmentId: string };
   identityReason?: string;
 }
 
@@ -1963,6 +2059,451 @@ async function dispatch(
         );
       }
     }
+    case 'get_team_schedule': {
+      // Same validation contract as get_schedule (non-string rejection, firm-
+      // local default day, 14-day cap) — manager-wide instead of self-only.
+      if (
+        (args.from !== undefined && typeof args.from !== 'string') ||
+        (args.to !== undefined && typeof args.to !== 'string')
+      ) {
+        return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD strings' };
+      }
+      let from = str('from');
+      let to = str('to');
+      if (!from) {
+        const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+        from = localDateISO(new Date().toISOString(), tz);
+      }
+      to ??= from;
+      const DATE = /^\d{4}-\d{2}-\d{2}$/;
+      if (!DATE.test(from) || !DATE.test(to) || from > to) {
+        return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD with from <= to' };
+      }
+      const spanDays =
+        (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+      if (!Number.isFinite(spanDays)) {
+        return { status: 'invalid_range', note: 'from/to is not a real calendar date' };
+      }
+      if (spanDays > 14) {
+        return { status: 'invalid_range', note: 'range is capped at 14 days' };
+      }
+      // Version BEFORE the snapshot: a booking that lands between the two
+      // reads then makes a later "changed since version N?" check fire
+      // (false positive, fail-safe) instead of silently vouching for a
+      // snapshot that is missing it.
+      const scheduleVersion = await latestScheduleVersion(tenantId);
+      const rows = await listAssignmentsForTenant(
+        tenantId,
+        `${from}T00:00:00.000Z`,
+        new Date(Date.parse(`${to}T00:00:00.000Z`) + 86_400_000).toISOString(),
+        ['confirmed'],
+      );
+      const jobs = await listJobsWithCustomerByIds(tenantId, [
+        ...new Set(rows.map((r) => r.job_id)),
+      ]);
+      const jobById = new Map(jobs.map((j) => [j.id, j]));
+      const techById = new Map((await listTeam(tenantId)).map((t) => [t.id, t]));
+      const byDay = new Map<string, unknown[]>();
+      for (const row of rows) {
+        // Overlap semantics can pull in a row starting before `from` — clamp
+        // to the requested days by start-day, the daySource precedent.
+        const day = row.starts_at.slice(0, 10);
+        if (day < from || day > to) continue;
+        const customer = jobById.get(row.job_id)?.customers ?? null;
+        const technician = techById.get(row.technician_id);
+        const bucket = byDay.get(day) ?? [];
+        bucket.push({
+          assignmentId: row.id,
+          technicianRef: technician?.ref ?? null,
+          technicianName: technician?.display_name ?? null,
+          customer: customer?.name ?? null,
+          address: customer
+            ? formatAddress({
+                address_line1: customer.address_line1,
+                address_line2: customer.address_line2,
+                city: customer.city,
+                state: customer.state,
+                postal_code: customer.postal_code,
+              })
+            : null,
+          start: row.starts_at,
+          end: row.ends_at,
+          promiseLevel: row.promise_level,
+          promisedDay: row.promised_day,
+          locked: row.locked,
+          status: row.status,
+          jobId: row.job_id,
+        });
+        byDay.set(day, bucket);
+      }
+      const days = [...byDay.entries()]
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([date, stops]) => ({ date, stops }));
+      return { status: 'ok', from, to, scheduleVersion, days };
+    }
+    case 'book_visit': {
+      const subjectRef = identity.technicianRef;
+      const confirmId = str('confirmId');
+      if (!confirmId) {
+        // STAGE. previewBookVisit runs every dry check (tenant guards,
+        // technician resolution, time defaults, overlap pre-check) and throws
+        // on anything that would make the booking impossible — nothing is
+        // staged that cannot commit. Nothing is written here.
+        const technicianRef = str('technicianRef');
+        const date = str('date');
+        if (!technicianRef) throw new Error('technicianRef is required');
+        if (!date) throw new Error('date is required');
+        const promiseLevelArg = str('promiseLevel');
+        if (promiseLevelArg && !isPromiseLevel(promiseLevelArg)) {
+          throw new Error(`invalid promiseLevel: ${promiseLevelArg}`);
+        }
+        const customerId = str('customerId');
+        const jobId = str('jobId');
+        const preview = await previewBookVisit({
+          tenantId,
+          technicianRef,
+          ...(customerId ? { customerId } : {}),
+          ...(jobId ? { jobId } : {}),
+          title: str('title') ?? null,
+          date,
+          ...(str('startTime') ? { startTime: str('startTime') } : {}),
+          ...(str('endTime') ? { endTime: str('endTime') } : {}),
+          ...(promiseLevelArg ? { promiseLevel: promiseLevelArg as PromiseLevel } : {}),
+          actorRef: subjectRef,
+        });
+        await resolveOpenReviewItemFor(
+          tenantId,
+          'pending_booking',
+          subjectRef,
+          'dismissed',
+          'superseded by a new booking request',
+        );
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_booking',
+          subjectRef,
+          detail: {
+            customerId: customerId ?? null,
+            jobId: jobId ?? null,
+            title: str('title') ?? null,
+            technicianRef,
+            date,
+            // RESOLVED times/promise — the staged copy is the booking of
+            // record; commit passes exactly these so preview == commit.
+            startTime: preview.startTime,
+            endTime: preview.endTime,
+            promiseLevel: preview.promiseLevel,
+            preview: preview as unknown as Json,
+            stagedAt: new Date().toISOString(),
+          } as unknown as Json,
+        });
+        // Echo the ITEM's staged preview, not local state (racing stages —
+        // same rule as send_email).
+        const staged = (item.detail ?? {}) as { preview?: unknown };
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          preview: staged.preview ?? preview,
+          note: 'Nothing was booked. Show the manager exactly this preview; on their explicit yes call again with ONLY confirmId.',
+        };
+      }
+      // CONFIRM. Guarded token lookup → expiry → CONSUME FIRST (at-most-once,
+      // the send_email idiom) → book. The DB overlap guard is the backstop.
+      const item = await getOpenReviewItem(confirmId, tenantId, {
+        kind: 'pending_booking',
+        subjectRef,
+      });
+      if (!item) {
+        throw new Error('confirmation not found — call book_visit again with the booking details to restage');
+      }
+      const d = (item.detail ?? {}) as {
+        customerId?: string | null;
+        jobId?: string | null;
+        title?: string | null;
+        technicianRef?: string;
+        date?: string;
+        startTime?: string;
+        endTime?: string;
+        promiseLevel?: PromiseLevel;
+        stagedAt?: string;
+      };
+      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
+        throw new Error('confirmation expired — restage the booking and confirm again');
+      }
+      if (!d.technicianRef || !d.date || !d.startTime || !d.endTime || (!d.customerId && !d.jobId)) {
+        throw new Error('staged booking is malformed — restage with the booking details');
+      }
+      const consumed = await resolveReviewItem(
+        item.id,
+        tenantId,
+        'resolved',
+        `booking confirmed by ${subjectRef}`,
+      );
+      if (!consumed) {
+        throw new Error('already confirmed or cancelled — nothing was booked by this call');
+      }
+      let booked;
+      try {
+        booked = await bookVisit({
+          tenantId,
+          technicianRef: d.technicianRef,
+          ...(d.customerId ? { customerId: d.customerId } : {}),
+          ...(d.jobId ? { jobId: d.jobId } : {}),
+          title: d.title ?? null,
+          date: d.date,
+          startTime: d.startTime,
+          endTime: d.endTime,
+          promiseLevel: d.promiseLevel,
+          actorRef: subjectRef,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        try {
+          await annotateResolvedReviewItem(
+            confirmId,
+            tenantId,
+            `confirmed but booking FAILED (${msg}) — nothing was booked`,
+          );
+        } catch {
+          /* advisory */
+        }
+        throw new Error(`visit NOT booked: ${msg} — restage to try again`);
+      }
+      return {
+        status: 'booked',
+        assignmentId: booked.assignment.id,
+        jobId: booked.job.id,
+        customer: booked.customer.name,
+        technicianRef: d.technicianRef,
+        date: d.date,
+        startTime: d.startTime,
+        endTime: d.endTime,
+        promiseLevel: booked.assignment.promise_level,
+        ...(booked.warning ? { warning: booked.warning } : {}),
+      };
+    }
+    case 'move_visit': {
+      const subjectRef = identity.technicianRef;
+      const confirmId = str('confirmId');
+      if (!confirmId) {
+        // STAGE — previewMoveVisit throws on impossible moves; promiseBroken
+        // rides in the preview so the manager confirms the break knowingly.
+        const assignmentId = str('assignmentId');
+        const date = str('date');
+        const startTime = str('startTime');
+        const reason = str('reason')?.trim();
+        if (!assignmentId) throw new Error('assignmentId is required');
+        if (!date || !startTime) throw new Error('date and startTime are required');
+        if (!reason) throw new Error('reason is required — say why the visit is moving');
+        const preview = await previewMoveVisit({
+          tenantId,
+          assignmentId,
+          date,
+          startTime,
+          ...(str('endTime') ? { endTime: str('endTime') } : {}),
+          ...(str('technicianRef') ? { technicianRef: str('technicianRef') } : {}),
+          reason,
+          actorRef: subjectRef,
+        });
+        await resolveOpenReviewItemFor(
+          tenantId,
+          'pending_visit_move',
+          subjectRef,
+          'dismissed',
+          'superseded by a new move request',
+        );
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_visit_move',
+          subjectRef,
+          detail: {
+            assignmentId,
+            date,
+            startTime,
+            endTime: preview.endTime, // resolved — preview == commit
+            technicianRef: str('technicianRef') ?? null,
+            reason,
+            preview: preview as unknown as Json,
+            stagedAt: new Date().toISOString(),
+          } as unknown as Json,
+        });
+        const staged = (item.detail ?? {}) as { preview?: unknown };
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          preview: staged.preview ?? preview,
+          note:
+            'Nothing was moved. Show the manager exactly this preview' +
+            (preview.promiseBroken
+              ? ' — promiseBroken is TRUE: the customer was promised a different day and someone must tell them'
+              : '') +
+            '; on their explicit yes call again with ONLY confirmId.',
+        };
+      }
+      // CONFIRM — consume-first (at-most-once).
+      const item = await getOpenReviewItem(confirmId, tenantId, {
+        kind: 'pending_visit_move',
+        subjectRef,
+      });
+      if (!item) {
+        throw new Error('confirmation not found — call move_visit again with the move details to restage');
+      }
+      const d = (item.detail ?? {}) as {
+        assignmentId?: string;
+        date?: string;
+        startTime?: string;
+        endTime?: string;
+        technicianRef?: string | null;
+        reason?: string;
+        stagedAt?: string;
+      };
+      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
+        throw new Error('confirmation expired — restage the move and confirm again');
+      }
+      if (!d.assignmentId || !d.date || !d.startTime || !d.endTime || !d.reason) {
+        throw new Error('staged move is malformed — restage with the move details');
+      }
+      const consumed = await resolveReviewItem(
+        item.id,
+        tenantId,
+        'resolved',
+        `move confirmed by ${subjectRef}`,
+      );
+      if (!consumed) {
+        throw new Error('already confirmed or cancelled — nothing was moved by this call');
+      }
+      let moved;
+      try {
+        moved = await moveVisit({
+          tenantId,
+          assignmentId: d.assignmentId,
+          date: d.date,
+          startTime: d.startTime,
+          endTime: d.endTime,
+          ...(d.technicianRef ? { technicianRef: d.technicianRef } : {}),
+          reason: d.reason,
+          actorRef: subjectRef,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        try {
+          await annotateResolvedReviewItem(
+            confirmId,
+            tenantId,
+            `confirmed but move FAILED (${msg})`,
+          );
+        } catch {
+          /* advisory */
+        }
+        // No "NOT moved" prefix: on the stranded path the verb's own message
+        // says the old booking IS cancelled — prefixing would contradict it.
+        throw new Error(`move failed: ${msg}`);
+      }
+      return {
+        status: 'moved',
+        assignmentId: moved.created.id,
+        previousAssignmentId: moved.cancelled.id,
+        date: d.date,
+        startTime: d.startTime,
+        endTime: d.endTime,
+        promiseBroken: moved.promiseBroken,
+        ...(moved.promiseBroken
+          ? { note: 'the customer was promised a different day — make sure someone tells them' }
+          : {}),
+        ...(moved.warning ? { warning: moved.warning } : {}),
+      };
+    }
+    case 'cancel_visit': {
+      const subjectRef = identity.technicianRef;
+      const confirmId = str('confirmId');
+      if (!confirmId) {
+        // STAGE.
+        const assignmentId = str('assignmentId');
+        const reason = str('reason')?.trim();
+        if (!assignmentId) throw new Error('assignmentId is required');
+        if (!reason) throw new Error('reason is required — say why the visit is being cancelled');
+        const preview = await previewCancelVisit(tenantId, assignmentId);
+        await resolveOpenReviewItemFor(
+          tenantId,
+          'pending_visit_cancel',
+          subjectRef,
+          'dismissed',
+          'superseded by a new cancel request',
+        );
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_visit_cancel',
+          subjectRef,
+          detail: {
+            assignmentId,
+            reason,
+            preview: preview as unknown as Json,
+            stagedAt: new Date().toISOString(),
+          } as unknown as Json,
+        });
+        const staged = (item.detail ?? {}) as { preview?: unknown };
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          preview: staged.preview ?? preview,
+          note: 'Nothing was cancelled. Show the manager exactly this preview; on their explicit yes call again with ONLY confirmId.',
+        };
+      }
+      // CONFIRM — consume-first.
+      const item = await getOpenReviewItem(confirmId, tenantId, {
+        kind: 'pending_visit_cancel',
+        subjectRef,
+      });
+      if (!item) {
+        throw new Error('confirmation not found — call cancel_visit again with assignmentId + reason to restage');
+      }
+      const d = (item.detail ?? {}) as { assignmentId?: string; reason?: string; stagedAt?: string };
+      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
+        throw new Error('confirmation expired — restage the cancellation and confirm again');
+      }
+      if (!d.assignmentId || !d.reason) {
+        throw new Error('staged cancellation is malformed — restage with assignmentId + reason');
+      }
+      const consumed = await resolveReviewItem(
+        item.id,
+        tenantId,
+        'resolved',
+        `cancellation confirmed by ${subjectRef}`,
+      );
+      if (!consumed) {
+        throw new Error('already confirmed or cancelled — nothing was changed by this call');
+      }
+      let cancelledRow;
+      try {
+        cancelledRow = await cancelVisit({
+          tenantId,
+          assignmentId: d.assignmentId,
+          reason: d.reason,
+          actorRef: subjectRef,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        try {
+          await annotateResolvedReviewItem(
+            confirmId,
+            tenantId,
+            `confirmed but cancellation FAILED (${msg}) — the visit is unchanged`,
+          );
+        } catch {
+          /* advisory */
+        }
+        throw new Error(`visit NOT cancelled: ${msg}`);
+      }
+      return {
+        status: 'cancelled',
+        assignmentId: cancelledRow.id,
+        day: cancelledRow.starts_at.slice(0, 10),
+        note: 'the job stays open for rebooking',
+      };
+    }
     case 'add_technician_seat': {
       const displayName = str('displayName')?.trim();
       if (!displayName) throw new Error('displayName is required');
@@ -2424,6 +2965,19 @@ async function dispatch(
         throw new Error(
           `this is a staged standing fact for '${open.subject_ref}' — confirm it via ` +
             `record_standing_fact, or dismiss it to cancel`,
+        );
+      }
+      // Same live-token rule for the staged scheduling actions: each commits
+      // only via its own tool's confirm call; dismissing (= cancel) is fine.
+      const STAGED_SCHEDULE_KINDS: Record<string, string> = {
+        pending_booking: 'book_visit',
+        pending_visit_move: 'move_visit',
+        pending_visit_cancel: 'cancel_visit',
+      };
+      if (STAGED_SCHEDULE_KINDS[open.kind] && resolution === 'resolved') {
+        throw new Error(
+          `this is a staged scheduling action for '${open.subject_ref}' — confirm it via ` +
+            `${STAGED_SCHEDULE_KINDS[open.kind]}, or dismiss it to cancel`,
         );
       }
       // A pairing_verification verdict acts BEFORE the item closes (state-first,

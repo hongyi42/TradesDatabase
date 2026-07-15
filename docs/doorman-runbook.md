@@ -323,9 +323,10 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
   `get_customer_context`, `get_job`, `list_recent_captures`, `brief_customer`,
   `answer_customer_question`, `web_search`, `read_webpage`, `send_email`, `retract_capture`,
   `record_standing_fact`, `get_schedule`. (A badge whose roster row is an ACTIVE `tier='manager'`
-  lists **21** — the 8 seat/lifecycle-management tools are added: add/deactivate/reactivate
+  lists **25** — the 8 seat/lifecycle-management tools are added: add/deactivate/reactivate
   technician seat, bind_telegram, list_team, list_pending_reviews, resolve_review,
-  get_connect_link; see nemoclaw-tech-agent.md §4, updated 2026-07-14.)
+  get_connect_link; plus the 4 scheduling tools since 2026-07-14: get_team_schedule,
+  book_visit, move_visit, cancel_visit; see nemoclaw-tech-agent.md §4.)
   - `401 / bad identity signature` from upstream → `GATEWAY_IDENTITY_SECRET` differs between host and
     Render (Invariant 2).
   - connection error to upstream → the host isn't on Render's `ALLOWED_CLIENT_IPS` (Step 4).

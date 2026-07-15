@@ -5,13 +5,12 @@ import { runLifecycle } from './lifecycle.js';
 // Pure unit tests â€” every step injected. The exit-code contract is `ok`
 // (main() maps ok:false â†’ exit 1 so Render marks the run failed).
 
-// The test setup loads .env, which legitimately carries SCHEDULE_SHEET_ID /
+// The test setup loads .env, which legitimately carries
 // DEFAULT_TENANT_ID / COMPOSIO_API_KEY â€” clear them BEFORE each test (not just
-// after), or the un-injected sheet gate would route to the LIVE Google Sheets
-// reader and the sessions gate would sweep against LIVE Composio.
+// after), or the sessions gate would sweep against LIVE Composio.
 const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
-  for (const k of ['SCHEDULE_SHEET_ID', 'DEFAULT_TENANT_ID', 'COMPOSIO_API_KEY'] as const) {
+  for (const k of ['DEFAULT_TENANT_ID', 'COMPOSIO_API_KEY'] as const) {
     if (!(k in saved)) saved[k] = process.env[k];
     delete process.env[k];
   }
@@ -63,7 +62,7 @@ const INGEST_OK = {
 };
 
 describe('runLifecycle', () => {
-  test('sweeps only rows with a link issued; counts paired; sheet skipped when unconfigured', async () => {
+  test('sweeps only rows with a link issued; counts paired', async () => {
     const checked: string[] = [];
     const summary = await runLifecycle(NOW, {
       listInStates: async () => [
@@ -75,23 +74,14 @@ describe('runLifecycle', () => {
         return { status: 'paired', connectedAccountId: 'ca_x', email: 'x@y.z' };
       },
       expire: async () => EXPIRE_OK,
-      // Injected even though the gate should skip it â€” a unit test must never
-      // be one env var away from a live Sheets call.
-      syncSheet: async () => {
-        throw new Error('unit test must not reach the sheet reader');
-      },
     });
     expect(checked).toEqual(['linked']); // never-linked rows are not swept
     expect(summary.pairing).toEqual({ checked: 1, paired: 1, rowErrors: 0 });
-    expect(summary.sheetSync).toMatchObject({ skipped: expect.stringContaining('unset') });
-    expect(summary.ok).toBe(true); // skipping the sheet is not a failure
+    expect(summary.ok).toBe(true);
   });
 
   test('a throwing step is reported and fails the run â€” but the other steps still ran', async () => {
     let expired = false;
-    let synced = false;
-    process.env.SCHEDULE_SHEET_ID = 'sheet-1';
-    process.env.DEFAULT_TENANT_ID = 't1';
     const summary = await runLifecycle(NOW, {
       listInStates: async () => {
         throw new Error('db unreachable');
@@ -100,15 +90,9 @@ describe('runLifecycle', () => {
         expired = true;
         return EXPIRE_OK;
       },
-      syncSheet: async () => {
-        synced = true;
-        return { upserted: 3, flagged: 1 };
-      },
     });
     expect(summary.pairing).toEqual({ stepError: 'db unreachable' });
     expect(expired).toBe(true); // isolation: later steps unaffected
-    expect(synced).toBe(true);
-    expect(summary.sheetSync).toEqual({ upserted: 3, flagged: 1 });
     expect(summary.ok).toBe(false); // â†’ exit 1 â†’ Render marks the run failed
   });
 
@@ -120,9 +104,6 @@ describe('runLifecycle', () => {
         return { status: 'not_connected' };
       },
       expire: async () => EXPIRE_OK,
-      syncSheet: async () => {
-        throw new Error('unit test must not reach the sheet reader');
-      },
     });
     expect(summary.pairing).toEqual({ checked: 2, paired: 0, rowErrors: 1 });
     expect(summary.ok).toBe(true);
@@ -137,9 +118,6 @@ describe('runLifecycle', () => {
         throw new Error('401 invalid api key');
       },
       expire: async () => EXPIRE_OK,
-      syncSheet: async () => {
-        throw new Error('unit test must not reach the sheet reader');
-      },
     });
     expect(summary.pairing).toEqual({ checked: 2, paired: 0, rowErrors: 2 });
     expect(summary.ok).toBe(false);
@@ -149,9 +127,6 @@ describe('runLifecycle', () => {
     const summary = await runLifecycle(NOW, {
       listInStates: async () => [],
       expire: async () => EXPIRE_OK,
-      syncSheet: async () => {
-        throw new Error('unit test must not reach the sheet reader');
-      },
       ensureSession: async () => {
         throw new Error('unit test must not reach the session sweep when the key is unset');
       },
@@ -174,9 +149,6 @@ describe('runLifecycle', () => {
           : [],
       checkPairing: async () => ({ status: 'not_connected' }),
       expire: async () => EXPIRE_OK,
-      syncSheet: async () => {
-        throw new Error('unit test must not reach the sheet reader');
-      },
       ensureSession: async (t) => {
         ensured.push(t.ref);
         if (t.ref === 'flaky') throw new Error('composio blip');
@@ -202,9 +174,6 @@ describe('runLifecycle', () => {
           : [],
       checkPairing: async () => ({ status: 'not_connected' }),
       expire: async () => EXPIRE_OK,
-      syncSheet: async () => {
-        throw new Error('unit test must not reach the sheet reader');
-      },
       ensureSession: async (t) => {
         if (t.composio_session_id) return { status: 'exists', sessionId: t.composio_session_id };
         throw new Error('401 invalid api key');
@@ -220,9 +189,6 @@ describe('runLifecycle', () => {
     const skipped = await runLifecycle(NOW, {
       listInStates: async () => [],
       expire: async () => EXPIRE_OK,
-      syncSheet: async () => {
-        throw new Error('unit test must not reach the sheet reader');
-      },
       ingestLogs: async () => {
         throw new Error('unit test must not reach log ingestion when the key is unset');
       },
@@ -235,9 +201,6 @@ describe('runLifecycle', () => {
     const ran = await runLifecycle(NOW, {
       listInStates: async () => [],
       expire: async () => EXPIRE_OK,
-      syncSheet: async () => {
-        throw new Error('unit test must not reach the sheet reader');
-      },
       ensureSession: async () => ({ status: 'skipped', reason: 'state is invited' }),
       ingestLogs: async (nowIso) => {
         expect(nowIso).toBe(NOW);
@@ -251,9 +214,6 @@ describe('runLifecycle', () => {
     const red = await runLifecycle(NOW, {
       listInStates: async () => [],
       expire: async () => EXPIRE_OK,
-      syncSheet: async () => {
-        throw new Error('unit test must not reach the sheet reader');
-      },
       ensureSession: async () => ({ status: 'skipped', reason: 'state is invited' }),
       ingestLogs: async () => {
         throw new Error('logs API 500');

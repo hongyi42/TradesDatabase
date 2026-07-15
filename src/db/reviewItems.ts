@@ -16,7 +16,10 @@ export type ReviewKind =
   | 'pending_field_note'
   | 'pending_retraction'
   | 'pending_standing_fact'
-  | 'offboarding_reminder';
+  | 'offboarding_reminder'
+  | 'pending_booking'
+  | 'pending_visit_move'
+  | 'pending_visit_cancel';
 
 export interface UpsertOpenReviewItemInput {
   tenantId: string;

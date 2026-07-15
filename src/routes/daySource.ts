@@ -1,19 +1,15 @@
 // Day-stops reader — "which stops does this technician have, per day, in this
-// date range?" behind the ROUTE_DAY_SOURCE flag.
-//
-// Two sources, one shape:
-//   schedule_entries (DEFAULT) — the Google-Sheet mirror; the pilot's real
-//     schedule today. Retires with Plan 5.
-//   assignments — the DB-owned booking table (Plan 1); flip the flag when
-//     Plan 3 / booking tools start filling it. Confirmed bookings only.
+// date range?" — reading the DB-owned booking table (`assignments`, confirmed
+// rows only). The schedule_entries sheet-mirror source (and its ROUTE_DAY_SOURCE
+// flag) retired with the Telegram-schedule series Plan 1: the sheet is no
+// longer an input.
 //
 // This module only composes typed src/db/ queries (CLAUDE.md: no hand-written
 // Supabase access outside the db layer). Grouping is by UTC calendar day —
-// the mirror's documented v1 simplification, kept identical in both modes so
-// a flag flip never re-buckets anyone's day.
+// correct under the naive-local time convention (wall-clock stored as if UTC;
+// see the promise-ladder migration).
 
 import { formatAddress, type RouteStop } from './deepLink.js';
-import { listScheduleForTechnicianInRange } from '../db/scheduleEntries.js';
 import { getTechnician } from '../db/technicians.js';
 import { listAssignmentsForTechnician } from '../db/assignments.js';
 import { listJobsWithCustomerByIds } from '../db/jobs.js';
@@ -21,12 +17,6 @@ import { listJobsWithCustomerByIds } from '../db/jobs.js';
 export interface DayStops {
   date: string; // YYYY-MM-DD (UTC day)
   stops: RouteStop[]; // in scheduled order (not yet drive-optimized)
-}
-
-type Source = 'schedule_entries' | 'assignments';
-
-function activeSource(): Source {
-  return process.env.ROUTE_DAY_SOURCE === 'assignments' ? 'assignments' : 'schedule_entries';
 }
 
 // Group (startISO, stop) pairs into sorted DayStops, stops sorted by time.
@@ -54,34 +44,8 @@ export async function listDayStops(
   fromDate: string,
   toDate: string,
 ): Promise<DayStops[]> {
-  if (activeSource() === 'schedule_entries') {
-    const entries = await listScheduleForTechnicianInRange(
-      tenantId,
-      technicianRef,
-      fromDate,
-      toDate,
-    );
-    return groupByUtcDay(
-      entries
-        .filter((e): e is typeof e & { scheduled_start: string } => e.scheduled_start !== null)
-        .map((e) => ({
-          startISO: e.scheduled_start,
-          stop: {
-            label: e.customer_name ?? 'Customer',
-            address: formatAddress({
-              address_line1: e.address_line1,
-              city: e.city,
-              state: e.state,
-              postal_code: e.postal_code,
-            }),
-            scheduledStart: e.scheduled_start,
-          },
-        })),
-    );
-  }
-
-  // assignments mode. A valid badge may have no roster row (plain-technician
-  // surface, server.ts semantics) — that's an empty schedule, never a crash.
+  // A valid badge may have no roster row (plain-technician surface, server.ts
+  // semantics) — that's an empty schedule, never a crash.
   const tech = await getTechnician(tenantId, technicianRef);
   if (!tech) return [];
   const assignments = await listAssignmentsForTechnician(
@@ -96,7 +60,7 @@ export async function listDayStops(
   const jobById = new Map(jobs.map((j) => [j.id, j]));
   // listAssignmentsForTechnician uses OVERLAP semantics, so an overnight
   // booking that merely ends inside the range would bucket onto a day before
-  // fromDate — clamp to the requested days so both modes agree at the edges.
+  // fromDate — clamp to the requested days.
   const from = fromDate.slice(0, 10);
   const to = toDate.slice(0, 10);
   return groupByUtcDay(

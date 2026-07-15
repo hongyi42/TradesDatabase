@@ -15,13 +15,20 @@ import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
 import {
   createAssignment,
+  getAssignmentForTenant,
   isOverlapViolation,
   listAssignmentsForJob,
   listAssignmentsForTechnician,
+  listAssignmentsForTenant,
   listUnassignedOpenJobs,
   rescheduleAssignment,
   updateAssignmentStatus,
 } from './assignments.js';
+import {
+  appendScheduleEvent,
+  latestScheduleVersion,
+  listScheduleEventsSince,
+} from './scheduleEvents.js';
 
 // Integration against the TEST project, self-cleaning (pattern:
 // technicians.test.ts, incl. the roster truncate/seat-restore discipline).
@@ -32,7 +39,7 @@ import {
 // assertions without the beforeAll claim; the customers/jobs this file creates
 // for FK chains must self-clean, and `cascade` sweeps `assignments`.
 const TRUNCATE =
-  'truncate table customers, jobs, technicians, technician_time_off, job_type_durations, review_items cascade';
+  'truncate table customers, jobs, technicians, technician_time_off, job_type_durations, review_items, schedule_events cascade';
 
 const pg = new Client({ connectionString: process.env.DATABASE_URL });
 let tenantId: string;
@@ -372,6 +379,182 @@ describe('assignments', () => {
     // so it re-enters the queue (job.status is still 'open'; closing the JOB
     // is the job state machine's business, not the assignment's).
     expect(byTitle.has('walk')).toBe(true);
+  });
+});
+
+describe('promise ladder + schedule events (Plan 1, schedule core)', () => {
+  async function makeJob(title: string) {
+    const customer = await createCustomer({ tenantId, name: `Cust for ${title}` });
+    return createJob({ tenantId, customerId: customer.id, title, status: 'open' });
+  }
+
+  test('promise columns round-trip; defaults are none/null/false', async () => {
+    const job = await makeJob('promise-roundtrip');
+    const bare = await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: tech.id,
+      startsAt: '2026-10-01T09:00:00.000Z',
+      endsAt: '2026-10-01T11:00:00.000Z',
+    });
+    expect(bare.promise_level).toBe('none');
+    expect(bare.promised_day).toBeNull();
+    expect(bare.locked).toBe(false);
+
+    const promised = await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: tech.id,
+      startsAt: '2026-10-02T09:00:00.000Z',
+      endsAt: '2026-10-02T11:00:00.000Z',
+      promiseLevel: 'day',
+      promisedDay: '2026-10-02',
+      locked: true,
+    });
+    expect(promised.promise_level).toBe('day');
+    expect(promised.promised_day).toBe('2026-10-02');
+    expect(promised.locked).toBe(true);
+  });
+
+  test('DB check rejects a promise without a promised day', async () => {
+    const job = await makeJob('promise-check');
+    await expect(
+      createAssignment({
+        tenantId,
+        jobId: job.id,
+        technicianId: tech.id,
+        startsAt: '2026-10-03T09:00:00.000Z',
+        endsAt: '2026-10-03T11:00:00.000Z',
+        promiseLevel: 'day', // promisedDay deliberately omitted
+      }),
+    ).rejects.toMatchObject({ code: '23514' });
+  });
+
+  test('reschedule carries promise fields by default and honors status/overrides', async () => {
+    const job = await makeJob('promise-carry');
+    const original = await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: tech.id,
+      startsAt: '2026-10-06T09:00:00.000Z',
+      endsAt: '2026-10-06T11:00:00.000Z',
+      status: 'confirmed',
+      promiseLevel: 'day',
+      promisedDay: '2026-10-06',
+      locked: true,
+    });
+    // Default: promise fields carry, status falls back to 'proposed'.
+    const first = await rescheduleAssignment(original.id, {
+      startsAt: '2026-10-06T13:00:00.000Z',
+      endsAt: '2026-10-06T15:00:00.000Z',
+      reason: 'carry check',
+    });
+    expect(first.created.status).toBe('proposed');
+    expect(first.created.promise_level).toBe('day');
+    expect(first.created.promised_day).toBe('2026-10-06');
+    expect(first.created.locked).toBe(true);
+    // Overrides: status 'confirmed' + a new promised day (the manual-move shape).
+    const second = await rescheduleAssignment(first.created.id, {
+      startsAt: '2026-10-07T09:00:00.000Z',
+      endsAt: '2026-10-07T11:00:00.000Z',
+      reason: 'move to the 7th',
+      status: 'confirmed',
+      promisedDay: '2026-10-07',
+    });
+    expect(second.created.status).toBe('confirmed');
+    expect(second.created.promised_day).toBe('2026-10-07');
+    expect(second.created.promise_level).toBe('day'); // still carried
+  });
+
+  test('getAssignmentForTenant tenant-guards; listAssignmentsForTenant spans technicians, confirmed-only default, overlap edges', async () => {
+    const job = await makeJob('tenant-list');
+    const otherTech = await insertTechnician({
+      tenantId,
+      ref: 'sched-tech-2',
+      displayName: 'Sched Tech Two',
+    });
+    const a = await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: tech.id,
+      startsAt: '2026-10-10T09:00:00.000Z',
+      endsAt: '2026-10-10T11:00:00.000Z',
+      status: 'confirmed',
+    });
+    const b = await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: otherTech.id,
+      // Straddles the window start — overlap semantics must include it.
+      startsAt: '2026-10-09T23:00:00.000Z',
+      endsAt: '2026-10-10T01:00:00.000Z',
+      status: 'confirmed',
+    });
+    await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: otherTech.id,
+      startsAt: '2026-10-10T13:00:00.000Z', // proposed → excluded by default
+      endsAt: '2026-10-10T14:00:00.000Z',
+    });
+    // Half-open [from, to) boundary pins (Phase-3 day windows lean on these):
+    // ends exactly AT the window start / starts exactly AT the window end.
+    await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: tech.id,
+      startsAt: '2026-10-09T22:00:00.000Z',
+      endsAt: '2026-10-10T00:00:00.000Z', // == fromISO → excluded
+      status: 'confirmed',
+    });
+    await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: tech.id,
+      startsAt: '2026-10-11T00:00:00.000Z', // == toISO → excluded
+      endsAt: '2026-10-11T02:00:00.000Z',
+      status: 'confirmed',
+    });
+
+    expect(await getAssignmentForTenant(a.id, tenantId)).toMatchObject({ id: a.id });
+    expect(await getAssignmentForTenant(a.id, '00000000-0000-0000-0000-000000000000')).toBeNull();
+
+    const day = await listAssignmentsForTenant(
+      tenantId,
+      '2026-10-10T00:00:00.000Z',
+      '2026-10-11T00:00:00.000Z',
+    );
+    expect(day.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+  });
+
+  test('events append; latestScheduleVersion is monotonic; since-feed returns newer only', async () => {
+    expect(await latestScheduleVersion(tenantId)).toBe(0); // truncate discipline
+    const e1 = await appendScheduleEvent({
+      tenantId,
+      kind: 'booked',
+      actorRef: 'sched-tech',
+      detail: { date: '2026-10-10' },
+    });
+    const v1 = await latestScheduleVersion(tenantId);
+    expect(v1).toBe(Number(e1.id));
+    const e2 = await appendScheduleEvent({ tenantId, kind: 'moved' });
+    const v2 = await latestScheduleVersion(tenantId);
+    expect(v2).toBe(Number(e2.id));
+    expect(v2).toBeGreaterThan(v1);
+
+    const since = await listScheduleEventsSince(tenantId, v1, 10);
+    expect(since.map((e) => Number(e.id))).toEqual([Number(e2.id)]);
+    expect(since[0].kind).toBe('moved');
+  });
+
+  test('schedule_events is append-only at the DB level (raw_captures precedent)', async () => {
+    const e = await appendScheduleEvent({ tenantId, kind: 'booked' });
+    await expect(
+      pg.query(`update schedule_events set kind = 'rewritten' where id = $1`, [e.id]),
+    ).rejects.toThrow(/append-only/);
+    await expect(
+      pg.query(`delete from schedule_events where id = $1`, [e.id]),
+    ).rejects.toThrow(/append-only/);
   });
 });
 

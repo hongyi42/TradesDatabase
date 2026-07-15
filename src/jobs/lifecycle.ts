@@ -4,21 +4,19 @@ import { checkPairing } from '../composio/pairing.js';
 import { expireOffboarding, type ExpireResult } from '../composio/offboarding.js';
 import { ensurePersonSession } from '../composio/sessions.js';
 import { runLogIngestion, type LogIngestSummary } from '../composio/logIngest.js';
-import { syncScheduleFromSheet } from '../schedule/sheetSync.js';
 
 // The lifecycle heartbeat — the ONE scheduled entrypoint (Render Cron Job,
 // */15 * * * *; Render guarantees at most one concurrent run). Everything
 // here is a sweep over durable state, so a missed or doubled tick is safe:
 // (1) notice completed OAuth consents and advance those rows;
 // (2) run the grace-period expiry (reminders + permanent teardown);
-// (3) mirror the manager's schedule sheet (single-tenant interim: the
-//     DEFAULT_TENANT_ID sheet — recorded limitation, multi-tenant sheet
-//     config is future work);
-// (4) ensure every ACTIVE person has their tier-scoped Composio session
+// (3) ensure every ACTIVE person has their tier-scoped Composio session
 //     (self-healing, ≤15-min latency; skipped cleanly when COMPOSIO_API_KEY
 //     is unset so a cron deployed without the key never goes permanently red);
-// (5) ingest Composio execution logs into L1 (the manager-action audit; same
+// (4) ingest Composio execution logs into L1 (the manager-action audit; same
 //     key gate, overlapping 60-min window so a missed tick loses nothing).
+// (The schedule-sheet mirror step retired with the Telegram-schedule series
+// Plan 1 — the DB owns the schedule; the sheet is no longer an input.)
 // Each step is isolated: one failing step is REPORTED (ok:false → exit 1 →
 // Render marks the run failed) but never blocks the others.
 
@@ -26,7 +24,6 @@ export interface LifecycleDeps {
   listInStates?: typeof listTechniciansInStates;
   checkPairing?: typeof checkPairing;
   expire?: typeof expireOffboarding;
-  syncSheet?: typeof syncScheduleFromSheet;
   ensureSession?: typeof ensurePersonSession;
   ingestLogs?: typeof runLogIngestion;
 }
@@ -34,10 +31,6 @@ export interface LifecycleDeps {
 export interface LifecycleSummary {
   pairing: { checked: number; paired: number; rowErrors: number } | { stepError: string };
   offboarding: ExpireResult | { stepError: string };
-  sheetSync:
-    | { upserted: number; flagged: number }
-    | { skipped: string }
-    | { stepError: string };
   sessions:
     | { checked: number; created: number; rowErrors: number }
     | { skipped: string }
@@ -55,7 +48,6 @@ export async function runLifecycle(
   const listInStates = deps.listInStates ?? listTechniciansInStates;
   const check = deps.checkPairing ?? checkPairing;
   const expire = deps.expire ?? expireOffboarding;
-  const syncSheet = deps.syncSheet ?? syncScheduleFromSheet;
   const ensureSession = deps.ensureSession ?? ensurePersonSession;
   const ingestLogs = deps.ingestLogs ?? runLogIngestion;
   let ok = true;
@@ -102,22 +94,7 @@ export async function runLifecycle(
     ok = false;
   }
 
-  // 3. Schedule-sheet sync — optional by config; skipping is not a failure.
-  let sheetSync: LifecycleSummary['sheetSync'];
-  const sheetId = process.env.SCHEDULE_SHEET_ID;
-  const tenantId = process.env.DEFAULT_TENANT_ID;
-  if (!sheetId || !tenantId) {
-    sheetSync = { skipped: 'SCHEDULE_SHEET_ID / DEFAULT_TENANT_ID unset' };
-  } else {
-    try {
-      sheetSync = await syncSheet(tenantId, sheetId);
-    } catch (err) {
-      sheetSync = { stepError: msg(err) };
-      ok = false;
-    }
-  }
-
-  // 4. Session provisioning sweep — every ACTIVE row gets its tier-scoped
+  // 3. Session provisioning sweep — every ACTIVE row gets its tier-scoped
   // Composio session. GATED on the key: a cron deployed without
   // COMPOSIO_API_KEY skips cleanly (the sheet-sync pattern) instead of
   // failing every row and turning the heartbeat permanently red.
@@ -152,8 +129,8 @@ export async function runLifecycle(
     }
   }
 
-  // 5. Execution-log ingestion — the manager-action audit into L1. Same key
-  // gate as step 4; per-row failures are inside the summary (the overlapping
+  // 4. Execution-log ingestion — the manager-action audit into L1. Same key
+  // gate as step 3; per-row failures are inside the summary (the overlapping
   // window retries them next tick), a step-level throw goes red.
   let logIngest: LifecycleSummary['logIngest'];
   if (!process.env.COMPOSIO_API_KEY) {
@@ -167,7 +144,7 @@ export async function runLifecycle(
     }
   }
 
-  return { pairing, offboarding, sheetSync, sessions, logIngest, ok };
+  return { pairing, offboarding, sessions, logIngest, ok };
 }
 
 async function main(): Promise<void> {

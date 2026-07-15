@@ -6,7 +6,7 @@ import { getClient } from '../db/client.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
-import { upsertScheduleEntry } from '../db/scheduleEntries.js';
+import { createAssignment } from '../db/assignments.js';
 import { insertTechnician, setTechnicianState, updateTechnician } from '../db/technicians.js';
 import { createHost } from '../db/hosts.js';
 import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
@@ -20,6 +20,7 @@ import { localDateISO } from '../schedule/availability.js';
 // The extractor is stubbed so record_field_note never calls the live model.
 const pg = new PgClient({ connectionString: process.env.DATABASE_URL });
 let tenantId: string;
+let techMcpId: string; // tech-mcp's roster UUID — assignment fixtures need it
 let client: Client;
 
 beforeAll(async () => {
@@ -52,6 +53,7 @@ beforeAll(async () => {
   await setTechnicianState(mgr.id, 'active');
   const tech = await insertTechnician({ tenantId, ref: 'tech-mcp', displayName: 'Tech MCP' });
   await setTechnicianState(tech.id, 'active');
+  techMcpId = tech.id;
 
   const server = createServer({
     // Identity is injected here (the gateway/env source in prod); the agent never
@@ -73,7 +75,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await client.close();
   await pg.query(
-    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests cascade',
+    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events cascade',
   );
   // Restore the seed capacity (2/5) so post-suite live checks see known values.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
@@ -140,15 +142,20 @@ describe('MCP server', () => {
   });
 
   test('record_field_note stages (NO L1), resolves identity, and records only on the final confirm', async () => {
-    const tech = 'tech-mcp';
-    const day = new Date().toISOString().slice(0, 10);
-    await upsertScheduleEntry({
+    // FIRM-local today (seed tenant tz = America/Los_Angeles): the matcher
+    // consults the capture's firm-local day, so the fixture must book there.
+    const day = localDateISO(new Date().toISOString(), 'America/Los_Angeles');
+    // The schedule consultation reads confirmed assignments now: a real
+    // customer at '12 MCP St' with a job booked for tech-mcp TODAY.
+    const mcpCust = await createCustomer({ tenantId, name: 'MCP Cust', addressLine1: '12 MCP St' });
+    const mcpJob = await createJob({ tenantId, customerId: mcpCust.id, title: 'mcp visit' });
+    await createAssignment({
       tenantId,
-      technicianRef: tech,
-      externalRowKey: 'mcp-1',
-      customerName: 'MCP Cust',
-      addressLine1: '12 MCP St',
-      scheduledStart: `${day}T12:00:00.000Z`,
+      jobId: mcpJob.id,
+      technicianId: techMcpId,
+      startsAt: `${day}T12:00:00.000Z`,
+      endsAt: `${day}T13:00:00.000Z`,
+      status: 'confirmed',
     });
 
     const noteRows = async () =>
@@ -170,14 +177,15 @@ describe('MCP server', () => {
     expect(first.data.suggestion.address).toBe('12 MCP St');
     expect(await noteRows()).toBe(0);
 
-    // Identity resume: sheet prefill becomes the previewed create-new customer.
+    // Identity resume: the address resolves to the scheduled visit's REAL
+    // customer (assignments always link one — no create-new prefill anymore).
     const resumed = await call('record_field_note', {
       confirmId: first.data.confirmId,
       confirmed: { address: '12 MCP St' },
     });
     expect(resumed.data.status).toBe('needs_confirmation');
     expect(resumed.data.preview.customerName).toBe('MCP Cust');
-    expect(resumed.data.preview.newCustomer).toBe(true);
+    expect(resumed.data.preview.newCustomer).toBe(false);
     expect(resumed.data.preview.text).toBe('all wrapped up');
     expect(await noteRows()).toBe(0); // still nothing recorded
 
@@ -1198,7 +1206,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('bind_telegram');
       expect(mgrTools).toContain('web_search');
       expect(mgrTools).toContain('read_webpage');
-      expect(mgrTools).toHaveLength(21);
+      expect(mgrTools).toHaveLength(25);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -1598,7 +1606,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(21);
+        expect(mgrTools).toHaveLength(25);
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -1729,23 +1737,31 @@ describe('get_schedule', () => {
   });
 
   beforeAll(async () => {
-    const mk = (key: string, over: Record<string, unknown>) =>
-      upsertScheduleEntry({
+    // Confirmed assignments for tech-mcp (the DB-owned schedule — the mirror
+    // retired). `withAddress: false` = a customer with no address_line1, the
+    // unroutable-stop case.
+    const mk = async (key: string, startISO: string, withAddress = true) => {
+      const customer = await createCustomer({
         tenantId,
-        technicianRef: 'tech-mcp',
-        externalRowKey: key,
-        customerName: `G ${key}`,
-        addressLine1: `${key} Rd`,
-        city: 'Fresno',
-        state: 'CA',
-        postalCode: '93701',
-        source: 'test',
-        ...over,
+        name: `G ${key}`,
+        ...(withAddress
+          ? { addressLine1: `${key} Rd`, city: 'Fresno', state: 'CA', postalCode: '93701' }
+          : {}),
       });
-    await mk('g1-a', { scheduledStart: `${G1}T15:00:00.000Z` });
-    await mk('g1-b', { scheduledStart: `${G1}T17:00:00.000Z` });
-    await mk('g2-a', { scheduledStart: `${G2}T16:00:00.000Z` });
-    await mk('g2-noaddr', { scheduledStart: `${G2}T18:00:00.000Z`, addressLine1: null });
+      const job = await createJob({ tenantId, customerId: customer.id, title: key });
+      await createAssignment({
+        tenantId,
+        jobId: job.id,
+        technicianId: techMcpId,
+        startsAt: startISO,
+        endsAt: new Date(Date.parse(startISO) + 60 * 60_000).toISOString(),
+        status: 'confirmed',
+      });
+    };
+    await mk('g1-a', `${G1}T15:00:00.000Z`);
+    await mk('g1-b', `${G1}T17:00:00.000Z`);
+    await mk('g2-a', `${G2}T16:00:00.000Z`);
+    await mk('g2-noaddr', `${G2}T18:00:00.000Z`, false);
   });
 
   async function scheduleClient(extra: Partial<ServerDeps> = {}) {
@@ -1838,20 +1854,18 @@ describe('get_schedule', () => {
     }
   });
 
-  test('assignments-mode roster-less badge → empty days, no crash', async () => {
+  test('roster-less badge → empty days, no crash', async () => {
     // A valid badge with NO roster row keeps the plain-technician surface;
-    // in assignments mode its schedule is simply empty (daySource returns []).
+    // its schedule is simply empty (daySource returns []).
     const { client: c, callWith } = await clientFor(
       { tenantId, technicianRef: 'badge-no-roster-row' },
       { optimizeStopOrder: stubOptimize },
     );
-    process.env.ROUTE_DAY_SOURCE = 'assignments';
     try {
       const r = await callWith('get_schedule', { from: G1, to: G2 });
       expect(r.isError).toBe(false);
       expect(r.data).toMatchObject({ status: 'ok', days: [] });
     } finally {
-      delete process.env.ROUTE_DAY_SOURCE;
       await c.close();
     }
   });
@@ -2817,6 +2831,223 @@ describe('record_standing_fact (staged two-step)', () => {
     });
     expect(restaged.data.status).toBe('needs_confirmation');
     expect(restaged.data.preview.previousValue).toBeUndefined();
+  });
+});
+
+describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => {
+  test('technician badge is denied all four tools', async () => {
+    for (const name of ['get_team_schedule', 'book_visit', 'move_visit', 'cancel_visit']) {
+      const denied = await call(name, {});
+      expect(denied.isError).toBe(true);
+      expect(denied.text).toContain('manager badge');
+    }
+  });
+
+  test('book → team view → move (promise break) → cancel, with version bumps and token guards', async () => {
+    const customer = await createCustomer({
+      tenantId,
+      name: 'Sched Henderson',
+      addressLine1: '40 Elm Ave',
+      city: 'Clovis',
+      state: 'CA',
+      postalCode: '93611',
+    });
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      // STAGE: full preview, resolved defaults, availability warning (tech-mcp
+      // has no working pattern configured), nothing booked yet.
+      const staged = await callWith('book_visit', {
+        customerId: customer.id,
+        technicianRef: 'tech-mcp',
+        title: 'water heater swap',
+        date: '2026-12-01',
+        startTime: '09:00',
+        endTime: '12:00',
+      });
+      expect(staged.data.status).toBe('needs_confirmation');
+      expect(staged.data.preview).toMatchObject({
+        customerName: 'Sched Henderson',
+        technicianName: 'Tech MCP',
+        newJob: true,
+        date: '2026-12-01',
+        startTime: '09:00',
+        endTime: '12:00',
+        promiseLevel: 'day', // the default — quote days, not times
+      });
+      expect(staged.data.preview.warning).toContain('no working pattern');
+
+      // Forged confirmId → not found.
+      const forged = await callWith('book_visit', { confirmId: customer.id });
+      expect(forged.isError).toBe(true);
+      expect(forged.text).toContain('confirmation not found');
+
+      // resolve_review refuses to "resolve" the live booking token (the token
+      // survives — the confirm below still works).
+      const refusedBooking = await callWith('resolve_review', {
+        reviewItemId: staged.data.confirmId,
+        resolution: 'resolved',
+      });
+      expect(refusedBooking.isError).toBe(true);
+      expect(refusedBooking.text).toContain('book_visit');
+
+      // CONFIRM books it.
+      const booked = await callWith('book_visit', { confirmId: staged.data.confirmId });
+      expect(booked.data.status).toBe('booked');
+      expect(booked.data.promiseLevel).toBe('day');
+      const assignmentId = booked.data.assignmentId as string;
+
+      // Second confirm on the consumed token → nothing double-booked.
+      const replay = await callWith('book_visit', { confirmId: staged.data.confirmId });
+      expect(replay.isError).toBe(true);
+      expect(replay.text).toContain('confirmation not found');
+
+      // Team view: the manager sees ANOTHER technician's stop, with the
+      // promise/lock markers and a scheduleVersion.
+      const team = await callWith('get_team_schedule', { from: '2026-12-01', to: '2026-12-01' });
+      expect(team.data.status).toBe('ok');
+      const v1 = team.data.scheduleVersion as number;
+      expect(v1).toBeGreaterThan(0);
+      const stops = team.data.days[0].stops as Array<Record<string, unknown>>;
+      const stop = stops.find((s) => s.assignmentId === assignmentId);
+      expect(stop).toMatchObject({
+        technicianRef: 'tech-mcp',
+        customer: 'Sched Henderson',
+        promiseLevel: 'day',
+        promisedDay: '2026-12-01',
+        locked: true,
+      });
+      expect(stop?.address).toContain('40 Elm Ave');
+
+      // MOVE to another day: preview must flag the promise break; confirm moves.
+      const moveStage = await callWith('move_visit', {
+        assignmentId,
+        date: '2026-12-02',
+        startTime: '13:00',
+        reason: 'customer asked for Wednesday',
+      });
+      expect(moveStage.data.status).toBe('needs_confirmation');
+      expect(moveStage.data.preview.promiseBroken).toBe(true);
+      expect(moveStage.data.note).toContain('promiseBroken is TRUE');
+      // Refusal covers the move kind too.
+      const refusedMove = await callWith('resolve_review', {
+        reviewItemId: moveStage.data.confirmId,
+        resolution: 'resolved',
+      });
+      expect(refusedMove.isError).toBe(true);
+      expect(refusedMove.text).toContain('move_visit');
+      const moved = await callWith('move_visit', { confirmId: moveStage.data.confirmId });
+      expect(moved.data.status).toBe('moved');
+      expect(moved.data.promiseBroken).toBe(true);
+      const movedId = moved.data.assignmentId as string;
+      expect(movedId).not.toBe(assignmentId);
+
+      // Version advanced (booked + moved events).
+      const after = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02' });
+      expect(after.data.scheduleVersion).toBeGreaterThan(v1);
+
+      // resolve_review refuses to "resolve" a live scheduling token; dismissing
+      // cancels it (then its confirm finds nothing).
+      const cancelStage = await callWith('cancel_visit', {
+        assignmentId: movedId,
+        reason: 'testing the refusal',
+      });
+      expect(cancelStage.data.status).toBe('needs_confirmation');
+      const refused = await callWith('resolve_review', {
+        reviewItemId: cancelStage.data.confirmId,
+        resolution: 'resolved',
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('cancel_visit');
+      const dismissed = await callWith('resolve_review', {
+        reviewItemId: cancelStage.data.confirmId,
+        resolution: 'dismissed',
+      });
+      expect(dismissed.isError).toBe(false);
+      const deadConfirm = await callWith('cancel_visit', { confirmId: cancelStage.data.confirmId });
+      expect(deadConfirm.isError).toBe(true);
+      expect(deadConfirm.text).toContain('confirmation not found');
+
+      // CANCEL for real: restage (fresh preview) then confirm.
+      const cancelStage2 = await callWith('cancel_visit', {
+        assignmentId: movedId,
+        reason: 'customer cancelled',
+      });
+      expect(cancelStage2.data.preview).toMatchObject({ customerName: 'Sched Henderson' });
+      const cancelled = await callWith('cancel_visit', { confirmId: cancelStage2.data.confirmId });
+      expect(cancelled.data.status).toBe('cancelled');
+      // The cancelled visit no longer appears on the board.
+      const gone = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02' });
+      expect(gone.data.days).toHaveLength(0);
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('expired staged booking is dismissed with a clean restage error', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Expiry Ed' });
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const staged = await callWith('book_visit', {
+        customerId: customer.id,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-08',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      // Age the token past the 15-minute window.
+      await pg.query(
+        `update review_items set detail = detail || jsonb_build_object('stagedAt', $1::text) where id = $2`,
+        [new Date(Date.now() - 20 * 60_000).toISOString(), staged.data.confirmId],
+      );
+      const expired = await callWith('book_visit', { confirmId: staged.data.confirmId });
+      expect(expired.isError).toBe(true);
+      expect(expired.text).toContain('confirmation expired');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('staging an impossible booking fails at stage time (unknown tech, overlap)', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Impossible Iva' });
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      const unknown = await callWith('book_visit', {
+        customerId: customer.id,
+        technicianRef: 'ghost-tech',
+        date: '2026-12-09',
+      });
+      expect(unknown.isError).toBe(true);
+      expect(unknown.text).toContain("'ghost-tech' not found");
+
+      const first = await callWith('book_visit', {
+        customerId: customer.id,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-09',
+        startTime: '09:00',
+        endTime: '11:00',
+      });
+      await callWith('book_visit', { confirmId: first.data.confirmId });
+      const clash = await callWith('book_visit', {
+        customerId: customer.id,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-09',
+        startTime: '10:00',
+        endTime: '12:00',
+      });
+      expect(clash.isError).toBe(true);
+      expect(clash.text).toContain('already has a confirmed visit overlapping');
+    } finally {
+      await mgrClient.close();
+    }
   });
 });
 

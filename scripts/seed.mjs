@@ -41,7 +41,6 @@ import {
   createVisit,
   updateJobStatus,
   appendRawCapture,
-  upsertScheduleEntry,
   insertTechnician,
   setTechnicianState,
   setTenantSeats,
@@ -101,10 +100,17 @@ if (TARGET === 'hosted-test' && !HOSTED_FLAG) {
 // schedule/captures reference these refs), opt-in via --with-roster on hosted.
 const WITH_ROSTER = TARGET === 'local' || WITH_ROSTER_FLAG;
 
-// Today's UTC date, so customer B's schedule entry lands on "today" for the
-// schedule-confirm / next-visit briefing path (listScheduleForTechnicianOnDate
-// matches on the UTC calendar day).
-const TODAY = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+// FIRM-local "today" (seed tenant timezone = the migration default,
+// America/Los_Angeles): matchIdentity consults the capture's firm-local day
+// against naive-local assignments, so the demo booking must land on the day
+// the matcher will actually look at — the UTC date is already tomorrow every
+// evening in LA.
+const TODAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Los_Angeles',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+}).format(new Date()); // YYYY-MM-DD
 
 // The scheduling-foundation migration (assignments/time-off/durations) is applied
 // to the LOCAL stack but not yet deployed hosted — probe instead of assuming, so
@@ -113,9 +119,13 @@ async function schedulingSchemaPresent() {
   const client = new pg.Client({ connectionString: dbUrl });
   await client.connect();
   try {
+    // Probe the NEWEST scheduling table (schedule_events, promise-ladder
+    // migration 20260714120000) — probing `assignments` alone would pass on a
+    // target that has the 07-04 foundation but not the ladder, and the seed's
+    // schedule_events truncate + promise-field writes would then crash mid-run.
     const { rows } = await client.query(
       `select 1 from information_schema.tables
-        where table_schema = 'public' and table_name = 'assignments'`,
+        where table_schema = 'public' and table_name = 'schedule_events'`,
     );
     return rows.length > 0;
   } finally {
@@ -128,7 +138,7 @@ async function truncateSpine(hasScheduling) {
   // standalone (no spine FK) but cleared too, so privacy receipts reset as well.
   // technicians/review_items only go when the roster reseed was explicitly asked for.
   let tables = 'customers, jobs, visits, raw_captures, schedule_entries, dropped_audit';
-  if (hasScheduling) tables += ', assignments, technician_time_off, job_type_durations';
+  if (hasScheduling) tables += ', assignments, technician_time_off, job_type_durations, schedule_events';
   if (WITH_ROSTER) tables += ', technicians, review_items';
   const client = new pg.Client({ connectionString: dbUrl });
   await client.connect();
@@ -324,24 +334,22 @@ async function seed(tenantId, janeId) {
       status: 'confirmed',
       sourceCaptureId: bWeb.id,
     });
+    // A TODAY-dated confirmed visit on the same job: the schedule-confirm demo
+    // ("is this the address: 99 Ranch Rd?") consults the capture day's
+    // ASSIGNMENTS since the mirror retired — matchIdentity keys on "today".
+    await createAssignment({
+      tenantId,
+      jobId: furnaceJob.id,
+      technicianId: janeId,
+      startsAt: `${TODAY}T17:00:00.000Z`,
+      endsAt: `${TODAY}T18:00:00.000Z`,
+      status: 'confirmed',
+      promiseLevel: 'day',
+      promisedDay: TODAY,
+      locked: true,
+      sourceCaptureId: bWeb.id,
+    });
   }
-
-  const tomSchedule = await upsertScheduleEntry({
-    tenantId,
-    technicianRef: 'tech-jane',
-    externalRowKey: 'seed-sched-tom', // stable → re-run updates in place
-    customerId: tom.id,
-    jobId: furnaceJob.id,
-    customerName: 'Tom Becker',
-    addressLine1: '99 Ranch Rd',
-    city: 'Clovis',
-    state: 'CA',
-    postalCode: '93611',
-    phone: '555-0199',
-    scheduledStart: `${TODAY}T17:00:00.000Z`,
-    scheduledEnd: `${TODAY}T18:00:00.000Z`,
-    source: 'seed',
-  });
 
   // ── Customer C — Acme Offices: email-sourced, shows external_id dedup ─────────
   const cEmail = await appendRawCapture({
@@ -380,7 +388,6 @@ async function seed(tenantId, janeId) {
     tom: {
       id: tom.id,
       job: furnaceJob.id,
-      schedule: tomSchedule.id,
       assignment: tomAssignment?.id ?? null,
       captures: [bWeb.id],
     },

@@ -4,6 +4,7 @@ import type { Job } from './jobs.js';
 
 export type Assignment = Database['public']['Tables']['assignments']['Row'];
 export type AssignmentStatus = Database['public']['Enums']['assignment_status'];
+export type PromiseLevel = Database['public']['Enums']['promise_level'];
 
 // Hardcoded, auditable state machine (jobs.ts pattern). Times on a row are
 // immutable — a reschedule is cancel + insert, never an edit — so status is the
@@ -19,10 +20,15 @@ export interface CreateAssignmentInput {
   tenantId: string;
   jobId: string;
   technicianId: string;
-  startsAt: string; // ISO timestamptz
+  startsAt: string; // ISO timestamptz (naive-local convention — see the promise-ladder migration)
   endsAt: string; // ISO timestamptz, exclusive
   status?: AssignmentStatus;
   sourceCaptureId?: string | null;
+  // Commitment ladder: what the customer was told. The DB check requires
+  // promisedDay whenever promiseLevel is not 'none'.
+  promiseLevel?: PromiseLevel;
+  promisedDay?: string | null; // YYYY-MM-DD
+  locked?: boolean; // manual manager placement — Plan-3 optimizer routes around it
 }
 
 // Insert one assignment row. Inserting as 'confirmed' can raise the DB's
@@ -39,6 +45,9 @@ export async function createAssignment(input: CreateAssignmentInput): Promise<As
       ends_at: input.endsAt,
       status: input.status ?? 'proposed',
       source_capture_id: input.sourceCaptureId ?? null,
+      promise_level: input.promiseLevel ?? 'none',
+      promised_day: input.promisedDay ?? null,
+      locked: input.locked ?? false,
     })
     .select()
     .single();
@@ -115,6 +124,14 @@ export interface RescheduleInput {
   endsAt: string;
   technicianId?: string; // omit = same technician
   reason: string; // why the old booking was undone (kept on the cancelled row)
+  // Omitted → the new row keeps the old row's promise fields (a move carries
+  // the promise). status keeps its 'proposed' default for existing callers;
+  // manual moves pass 'confirmed' — a default-'proposed' replacement would
+  // vanish from every ['confirmed']-filtered reader and escape the DB guard.
+  status?: AssignmentStatus;
+  promiseLevel?: PromiseLevel;
+  promisedDay?: string | null;
+  locked?: boolean;
 }
 
 // The reschedule primitive: cancel the old row (reason kept) + insert a fresh
@@ -145,8 +162,49 @@ export async function rescheduleAssignment(
     technicianId: input.technicianId ?? old.technician_id,
     startsAt: input.startsAt,
     endsAt: input.endsAt,
+    status: input.status,
+    promiseLevel: input.promiseLevel ?? old.promise_level,
+    promisedDay: input.promisedDay !== undefined ? input.promisedDay : old.promised_day,
+    locked: input.locked ?? old.locked,
   });
   return { cancelled, created };
+}
+
+// Tenant-guarded point read for tool/module surfaces: a cross-tenant or
+// unknown id reads as null (the caller decides how to surface it).
+export async function getAssignmentForTenant(
+  id: string,
+  tenantId: string,
+): Promise<Assignment | null> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select()
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (error) throw new Error(`getAssignmentForTenant failed: ${error.message}`);
+  return data;
+}
+
+// Rows overlapping the [fromISO, toISO) window for the WHOLE tenant — the
+// team-schedule / dispatch-board read. Confirmed only by default: the board
+// shows the real schedule, not alternative proposals.
+export async function listAssignmentsForTenant(
+  tenantId: string,
+  fromISO: string,
+  toISO: string,
+  statuses: AssignmentStatus[] = ['confirmed'],
+): Promise<Assignment[]> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select()
+    .eq('tenant_id', tenantId)
+    .lt('starts_at', toISO)
+    .gt('ends_at', fromISO)
+    .in('status', statuses)
+    .order('starts_at', { ascending: true });
+  if (error) throw new Error(`listAssignmentsForTenant failed: ${error.message}`);
+  return data ?? [];
 }
 
 // Rows overlapping the [fromISO, toISO) window for one technician, live

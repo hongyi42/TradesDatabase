@@ -92,9 +92,10 @@ Outbound network policy should allow only the gateway + our server's host.
 
 **Manager profile (2026-07-02):** an ACTIVE `tier='manager'` roster row (the `technicians`
 table, not the badge, is the tier source of truth) additionally exposes the seat/lifecycle
-tools — 8 of them, for a 21-tool manager surface (the technician surface itself is 13 incl.
+tools — 12 of them, for a 25-tool manager surface (the technician surface itself is 13 incl.
 send_email since 2026-07-04, retract_capture and get_schedule since 2026-07-06, web_search and
-read_webpage since 2026-07-13, record_standing_fact since 2026-07-14): `add_technician_seat`,
+read_webpage since 2026-07-13, record_standing_fact since 2026-07-14; the 4 scheduling tools
+`get_team_schedule`/`book_visit`/`move_visit`/`cancel_visit` since 2026-07-14): `add_technician_seat`,
 `deactivate_technician_seat` (two-step confirm; starts the disable-first grace period),
 `reactivate_technician_seat` (the grace-period undo), `get_connect_link` (mint a Gmail
 Connect Link; 5-min per-person cooldown), `bind_telegram` (connect a person to their numeric
@@ -288,10 +289,11 @@ register side-by-side in the gateway's `mcp.servers`.
   the customer/job. (3) **Vocabulary contract:** the `technicianRef` minted into the `user_id` must
   byte-equal the doorman badge ref and the schedule sheet's technician column
   (`schedule_entries.technician_ref`, exact case-sensitive match) — otherwise schedule-assisted
-  matching is dead for that person and L1↔badge joins fail. No longer *silent* since 2026-07-02:
-  the sheet sync flags refs that match no roster row to the manager (`review_items`, with a
-  did-you-mean suggestion); the row still imports (loose enforcement — a typo never breaks the
-  sync). The `connector:` prefix is reserved (webhook rejects composite refs that use it). (4) **Refs are unique per tenant — mint
+  matching is dead for that person and L1↔badge joins fail. *(The schedule sheet retired
+  2026-07-15 with the Telegram-schedule series Plan 1 — the DB owns the schedule
+  (`assignments`, keyed to the roster row by UUID), so the vocabulary contract is now just
+  badge ref ⇔ roster ref ⇔ Composio user_id; there is no sheet column to keep in sync.)*
+  The `connector:` prefix is reserved (webhook rejects composite refs that use it). (4) **Refs are unique per tenant — mint
   from full-name slugs or employee ids, never bare first names** (two Janes as `…:jane` would merge
   both inboxes into one identity, permanently — L1 is append-only). **DB-enforced since 2026-07-02:**
   the `technicians` roster's `unique (tenant_id, ref)` spans ALL rows (offboarded included), so a

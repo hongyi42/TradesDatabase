@@ -44,6 +44,22 @@ export async function findTechnicianByTelegramUserId(
   return (data ?? []).find((t) => !isInactiveState(t.state)) ?? null;
 }
 
+// Point read by row id (FK joins from assignments etc.). Tenant-guarded: a
+// cross-tenant or unknown id reads as null.
+export async function getTechnicianById(
+  id: string,
+  tenantId: string,
+): Promise<Technician | null> {
+  const { data, error } = await getClient()
+    .from('technicians')
+    .select()
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (error) throw new Error(`getTechnicianById failed: ${error.message}`);
+  return data;
+}
+
 export async function listTeam(tenantId: string): Promise<Technician[]> {
   const { data, error } = await getClient()
     .from('technicians')

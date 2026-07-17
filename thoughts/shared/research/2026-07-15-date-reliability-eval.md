@@ -28,47 +28,51 @@ weekdays), run under three conditions:
 Ground truth is computed independently of `src/schedule/dateResolve.ts` (plain JS Date in the
 harness), so condition C is a real cross-check, not a tautology.
 
-**Reference model: `claude-haiku-4-5` (Haiku 4.5)** — a harness validation + directional
-reference, NOT the production bot. The bot runs **GLM-5.2**; that run is pending an inference
-key (see Open Questions).
+Two models under the identical (fixed) harness: **`zai-org/GLM-5.2` via DeepInfra — the
+production bot's actual model** — and `claude-haiku-4-5` (Haiku 4.5) as a cross-model reference.
 
-## Results (Haiku 4.5, 2026-07-15)
+## Results (2026-07-17)
 
-| Condition | Correct | Accuracy |
+| Condition | GLM-5.2 (the bot) | Haiku 4.5 (ref) |
 |---|---|---|
-| A — bare date | 75/98 | 76.5% |
-| B — rich grounding | 78/98 | 79.6% |
-| C — grounding + resolve_date | 88/98 | **89.8%** |
+| A — bare date only | **69.4%** (68/98) | 75.5% |
+| B — rich grounding (Option 1) | 79.6% | 81.6% |
+| C — grounding + resolve_date (Options 1+2) | **98.0%** (96/98) | 89.8% |
 
-Condition C called `resolve_date` on 97/98 cases.
+Both models called `resolve_date` on nearly every C case (GLM 98/98, Haiku 96/98).
 
-**The load-bearing finding:** *every one of condition C's 10 misses was the phrase
-"next \<weekday\>".* On all **84 unambiguous** cases, condition C scored **84/84 = 100%**.
-Per-template, condition C was perfect (7/7) on today, tomorrow, the-day-after, in-3-days,
-a-week-from-today, this-\<wd\>, this-coming-\<wd\>, two-weeks-from-\<wd\>, and explicit dates —
-and only failed on `next-friday` (3/7) and `next-monday` (1/7).
+**Headline:** on the actual bot, the tool takes date accuracy from **69% → 98%**. Of GLM's 84
+unambiguous cases it got **83/84**; of the 14 ambiguous "next \<weekday\>" cases, **13/14**.
+Baseline errors clustered exactly where the live bug was — "this Friday", "two weeks from…",
+year-boundary cases — and the tool drove them to ~perfect.
+
+### A correction worth recording
+The *first* GLM run showed condition C at **63% — worse than baseline** — which turned out to be
+a bug in the **harness**, not the tool. GLM emits zero-valued integer args as quoted strings
+(`"weeksAhead": "0"`) while emitting nonzero as numbers (`1`, `2`). The live `resolve_date`
+server coerces stringified integers (the `intArg` guard in `src/mcp/server.ts`); the harness's
+inline resolver didn't, so it wrongly rejected every "this \<weekday\>"/"today" case. Mirroring
+the coercion fixed the harness → 98%. **Lesson: an eval that reimplements server logic must
+match it exactly, or it measures the harness, not the model.** (This is also a real
+robustness point: the server's stringified-int coercion is load-bearing for GLM specifically.)
 
 ## Interpretation
 
-1. **The tool eliminates arithmetic error.** Baseline errors clustered exactly where the live
-   bug was — "this Friday", "two weeks from…", and every year-boundary case. All of them go to
-   100% under condition C, because the model only has to *name the parts* (weekday + weeksAhead)
-   and the code counts the days.
-2. **"Next \<weekday\>" is not a computation bug — it's genuine ambiguity.** English speakers
-   disagree whether "next Friday" means the coming Friday or the following week's. No tool can
-   resolve an ambiguous input; the model's disagreement with our convention is the ambiguity
-   surfacing, not a math error. The correct product behavior is to **confirm the exact date**,
-   not to compute one. Acted on: the `resolve_date` description and the AGENTS.md §0f block now
-   tell the agent to resolve BOTH candidates for "next \<weekday\>" and ask which.
-3. **Grounding alone (B) barely helps** (+3 pts): handing the model the weekday removes one
-   hidden step, but it still does the final arithmetic unreliably. The tool is what matters.
+1. **The tool makes accuracy independent of the model's arithmetic.** GLM is *weaker* than Haiku
+   at raw date math (baseline 69% < 76%) yet ends up *higher* with the tool (98% > 90%) — because
+   the tool does the counting and GLM only has to name the parts, which it does cleanly.
+2. **"Next \<weekday\>" is genuine ambiguity — the two models prove it by disagreeing.** GLM
+   consistently reads "next Friday" as the following week (weeksAhead 1, matching our convention
+   → 13/14); Haiku often reads it as the coming Friday (→ its main failures). No convention is
+   "right" when speakers *and* models split. Hence the guidance already added: for "next
+   \<weekday\>", resolve both candidates and confirm — never assume.
+3. **Grounding alone (B) is ~+10 pts; the tool gives the rest.** Handing the model the weekday
+   helps, but it still does the final arithmetic unreliably. The deterministic tool closes the gap.
 
-## Open Questions
+## Remaining
 
-- **The real number is GLM-5.2's, not Haiku's.** Haiku is a stronger model than GLM-5.2 and
-  its 76.5% baseline is likely *better* than the bot's. The value of condition C is that its
-  accuracy is bounded by *tool-calling reliability + argument choice*, not raw arithmetic — so
-  it should hold up even on a weaker model, but that must be measured. Re-run with
-  `EVAL_PROVIDER=openai EVAL_MODEL=z-ai/glm-5.2 EVAL_INFERENCE_BASE_URL=<nvidia/deepinfra> EVAL_INFERENCE_API_KEY=<key>`.
-- Does GLM reliably *call* `resolve_date` at all? Haiku did (97/98). If GLM skips it, the
-  AGENTS.md §0f instruction strength (and possibly a per-turn nudge) is what to tune.
+- GLM's residual ~2% is a couple of stray arg choices plus the inherent "next" ambiguity, which
+  the confirmation preview (manager sees the resolved date + weekday) catches. Good enough for the
+  money-at-risk path *with* that confirmation.
+- DeepInfra returned 402 (no balance) on the first attempt — re-runs need a funded account or the
+  NVIDIA key (`EVAL_INFERENCE_BASE_URL=https://integrate.api.nvidia.com/v1 EVAL_MODEL=z-ai/glm-5.2`).

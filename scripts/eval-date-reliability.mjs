@@ -82,7 +82,15 @@ const RESOLVE_PARAMS = {
   },
   required: [],
 };
-function runResolve(refDate, a) {
+function runResolve(refDate, a0) {
+  // Mirror the real server's intArg coercion (src/mcp/server.ts): models —
+  // GLM in particular — often emit zero-valued integer args as quoted strings
+  // ("0"). The live tool coerces them; the harness must too, or it under-counts
+  // the tool's real accuracy.
+  const toInt = (v) => (typeof v === 'string' && /^-?\d+$/.test(v.trim()) ? Number(v) : v);
+  const a = { ...a0 };
+  if (a.weeksAhead !== undefined) a.weeksAhead = toInt(a.weeksAhead);
+  if (a.dayShift !== undefined) a.dayShift = toInt(a.dayShift);
   const modes = [a.explicitDate !== undefined, a.weekday !== undefined, a.dayShift !== undefined].filter(Boolean).length;
   if (a.weeksAhead !== undefined && a.weekday === undefined) return null;
   if (modes !== 1) return null;

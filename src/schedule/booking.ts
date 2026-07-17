@@ -114,7 +114,7 @@ function validateDayAndTimes(date: string, startTime: string, endTime: string): 
 
 export interface BookVisitInput {
   tenantId: string;
-  technicianRef: string;
+  technicianRef?: string; // omit = book UNASSIGNED ("on the calendar, assign later")
   customerId?: string;
   jobId?: string;
   title?: string | null; // job-shell title on the customerId path
@@ -126,7 +126,7 @@ export interface BookVisitInput {
 }
 
 interface ResolvedBooking {
-  technician: Technician;
+  technician: Technician | null; // null = unassigned booking
   customer: Customer;
   existingJob: Job | null;
   startTime: string;
@@ -145,7 +145,12 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
   if ((input.customerId ? 1 : 0) + (input.jobId ? 1 : 0) !== 1) {
     throw new Error('provide exactly one of customerId or jobId');
   }
-  const technician = await resolveTechnician(tenantId, input.technicianRef);
+  // No ref = an UNASSIGNED booking: the visit goes on the calendar with nobody
+  // attached (attach later via moveVisit). No technician → no overlap pre-check
+  // and no availability advisory; the DB guard likewise ignores NULL rows.
+  const technician = input.technicianRef
+    ? await resolveTechnician(tenantId, input.technicianRef)
+    : null;
 
   // Tenant-guard the target and resolve the customer BEFORE any write.
   let customer: Customer;
@@ -174,13 +179,17 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
   const startISO = naiveLocalISO(input.date, startTime);
   const endISO = naiveLocalISO(input.date, endTime);
 
-  const clashes = await overlappingConfirmed(technician.id, startISO, endISO);
-  if (clashes.length > 0) {
-    throw new Error(
-      `${technician.display_name} already has a confirmed visit overlapping ${input.date} ${startTime}–${endTime}`,
-    );
+  if (technician) {
+    const clashes = await overlappingConfirmed(technician.id, startISO, endISO);
+    if (clashes.length > 0) {
+      throw new Error(
+        `${technician.display_name} already has a confirmed visit overlapping ${input.date} ${startTime}–${endTime}`,
+      );
+    }
   }
-  const warning = await availabilityWarning(technician, input.date, startISO);
+  const warning = technician
+    ? await availabilityWarning(technician, input.date, startISO)
+    : undefined;
   return {
     technician,
     customer,
@@ -200,8 +209,8 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
 }
 
 export interface BookVisitPreview {
-  technicianRef: string;
-  technicianName: string;
+  technicianRef: string | null; // null = unassigned booking
+  technicianName: string | null;
   customerId: string;
   customerName: string;
   newJob: boolean; // true = confirming will mint a job shell
@@ -218,8 +227,8 @@ export interface BookVisitPreview {
 export async function previewBookVisit(input: BookVisitInput): Promise<BookVisitPreview> {
   const r = await resolveBooking(input);
   return {
-    technicianRef: r.technician.ref,
-    technicianName: r.technician.display_name,
+    technicianRef: r.technician?.ref ?? null,
+    technicianName: r.technician?.display_name ?? null,
     customerId: r.customer.id,
     customerName: r.customer.name,
     newJob: r.existingJob === null,
@@ -260,7 +269,7 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
     assignment = await createAssignment({
       tenantId,
       jobId: job.id,
-      technicianId: r.technician.id,
+      technicianId: r.technician?.id ?? null,
       startsAt: r.startISO,
       endsAt: r.endISO,
       status: 'confirmed',
@@ -283,8 +292,10 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       }
     }
     if (isOverlapViolation(err)) {
+      // Only reachable with a technician attached — the DB guard never fires
+      // on NULL rows; the fallback text is TS-narrowing, not a real case.
       throw new Error(
-        `${r.technician.display_name} already has a confirmed visit overlapping ${input.date} ${r.startTime}–${r.endTime}`,
+        `${r.technician?.display_name ?? 'the technician'} already has a confirmed visit overlapping ${input.date} ${r.startTime}–${r.endTime}`,
       );
     }
     throw err;
@@ -300,7 +311,7 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       startTime: r.startTime,
       endTime: r.endTime,
       promiseLevel: assignment.promise_level,
-      technicianRef: r.technician.ref,
+      technicianRef: r.technician?.ref ?? null,
       customerId: r.customer.id,
       jobId: job.id,
     },
@@ -343,9 +354,13 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
 
   // Resolve the TARGET technician either way — the availability warning must
   // fire for a same-technician move onto an off-day too (review finding).
+  // An unassigned row moved without a ref stays unassigned (technician null);
+  // passing a ref is how a person gets ATTACHED to an unassigned visit.
   const technician = input.technicianRef
     ? await resolveTechnician(tenantId, input.technicianRef)
-    : await getTechnicianById(old.technician_id, tenantId);
+    : old.technician_id
+      ? await getTechnicianById(old.technician_id, tenantId)
+      : null;
   const targetTechnicianId = technician?.id ?? old.technician_id;
 
   const oldDurationMin = Math.round(
@@ -368,11 +383,15 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
         ? dayChanged || timeChanged
         : false;
 
-  const clashes = await overlappingConfirmed(targetTechnicianId, startISO, endISO, old.id);
-  if (clashes.length > 0) {
-    throw new Error(
-      `that slot overlaps a confirmed visit on ${input.date} — the booking was NOT moved`,
-    );
+  // No target technician (unassigned staying unassigned) → nothing to clash
+  // with; the DB guard likewise ignores NULL rows.
+  if (targetTechnicianId) {
+    const clashes = await overlappingConfirmed(targetTechnicianId, startISO, endISO, old.id);
+    if (clashes.length > 0) {
+      throw new Error(
+        `that slot overlaps a confirmed visit on ${input.date} — the booking was NOT moved`,
+      );
+    }
   }
   const warning = technician
     ? await availabilityWarning(technician, input.date, startISO)

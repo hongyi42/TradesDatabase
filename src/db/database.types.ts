@@ -47,7 +47,7 @@ export type Database = {
           source_capture_id: string | null
           starts_at: string
           status: Database["public"]["Enums"]["assignment_status"]
-          technician_id: string
+          technician_id: string | null
           tenant_id: string
           updated_at: string
         }
@@ -63,7 +63,7 @@ export type Database = {
           source_capture_id?: string | null
           starts_at: string
           status?: Database["public"]["Enums"]["assignment_status"]
-          technician_id: string
+          technician_id?: string | null
           tenant_id: string
           updated_at?: string
         }
@@ -79,7 +79,7 @@ export type Database = {
           source_capture_id?: string | null
           starts_at?: string
           status?: Database["public"]["Enums"]["assignment_status"]
-          technician_id?: string
+          technician_id?: string | null
           tenant_id?: string
           updated_at?: string
         }

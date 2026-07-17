@@ -2177,7 +2177,9 @@ async function dispatch(
         const day = row.starts_at.slice(0, 10);
         if (day < from || day > to) continue;
         const customer = jobById.get(row.job_id)?.customers ?? null;
-        const technician = techById.get(row.technician_id);
+        // technician_id may be NULL (unassigned booking) — the ?? null echoes
+        // below already render that as a person-less stop.
+        const technician = row.technician_id ? techById.get(row.technician_id) : undefined;
         const bucket = byDay.get(day) ?? [];
         bucket.push({
           assignmentId: row.id,

@@ -6,9 +6,13 @@ import { insertTechnician, setTechnicianAvailability, type Technician, type Week
 import { addTimeOff } from '../db/timeOff.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob, getJob } from '../db/jobs.js';
-import { listAssignmentsForTechnician, listUnassignedOpenJobs } from '../db/assignments.js';
+import {
+  listAssignmentsForTechnician,
+  listUnassignedAssignments,
+  listUnassignedOpenJobs,
+} from '../db/assignments.js';
 import { latestScheduleVersion, listScheduleEventsSince } from '../db/scheduleEvents.js';
-import { bookVisit, cancelVisit, moveVisit, naiveLocalISO } from './booking.js';
+import { bookVisit, cancelVisit, moveVisit, naiveLocalISO, previewBookVisit } from './booking.js';
 
 // Integration against the local stack, scheduling.test.ts truncate discipline.
 const TRUNCATE =
@@ -372,6 +376,166 @@ describe('moveVisit', () => {
         actorRef: 'intruder',
       }),
     ).rejects.toThrow(/assignment not found/);
+  });
+});
+
+describe('unassigned bookings (technician-optional)', () => {
+  test('bookVisit with no technicianRef books unassigned; preview echoes null', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Later Lara' });
+    const preview = await previewBookVisit({
+      tenantId,
+      customerId: customer.id,
+      date: '2026-11-23',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    expect(preview.technicianRef).toBeNull();
+    expect(preview.technicianName).toBeNull();
+    expect(preview.warning).toBeUndefined(); // no technician → no availability advisory
+
+    const { assignment, warning } = await bookVisit({
+      tenantId,
+      customerId: customer.id,
+      date: '2026-11-23',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    expect(warning).toBeUndefined();
+    expect(assignment.technician_id).toBeNull();
+    expect(assignment.status).toBe('confirmed');
+    expect(assignment.locked).toBe(true);
+  });
+
+  test('two unassigned visits at the same time both land (no false collision)', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Parallel Pia' });
+    const a = await bookVisit({
+      tenantId,
+      customerId: customer.id,
+      date: '2026-11-24',
+      startTime: '09:00',
+      endTime: '11:00',
+      actorRef: 'manager-test',
+    });
+    // Identical window, also unassigned — the exclusion guard keys on
+    // technician_id and NULL never matches, so both must succeed (there is
+    // no technician to double-book). The semantic point of Decision 1.
+    const b = await bookVisit({
+      tenantId,
+      customerId: customer.id,
+      date: '2026-11-24',
+      startTime: '09:00',
+      endTime: '11:00',
+      actorRef: 'manager-test',
+    });
+    expect(a.assignment.technician_id).toBeNull();
+    expect(b.assignment.technician_id).toBeNull();
+    expect(a.assignment.id).not.toBe(b.assignment.id);
+  });
+
+  test('moveVisit attaches a technician to an unassigned row; overlap then enforced', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Attach Abe' });
+    const { assignment } = await bookVisit({
+      tenantId,
+      customerId: customer.id,
+      date: '2026-11-25',
+      startTime: '09:00',
+      endTime: '11:00',
+      actorRef: 'manager-test',
+    });
+    expect(assignment.technician_id).toBeNull();
+    const moved = await moveVisit({
+      tenantId,
+      assignmentId: assignment.id,
+      date: '2026-11-25',
+      startTime: '09:00',
+      technicianRef: 'book-tech',
+      reason: 'assigning Bob',
+      actorRef: 'manager-test',
+    });
+    expect(moved.created.technician_id).toBe(tech.id);
+    expect(moved.created.status).toBe('confirmed');
+    // The attached technician's slot is now guarded: booking Bob into the
+    // same window must clash.
+    await expect(
+      bookVisit({
+        tenantId,
+        technicianRef: 'book-tech',
+        customerId: customer.id,
+        date: '2026-11-25',
+        startTime: '10:00',
+        endTime: '11:00',
+        actorRef: 'manager-test',
+      }),
+    ).rejects.toThrow(/already has a confirmed visit overlapping/);
+    // An unassigned move WITHOUT a ref stays unassigned.
+    const parked = await bookVisit({
+      tenantId,
+      customerId: customer.id,
+      date: '2026-11-26',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    const reparked = await moveVisit({
+      tenantId,
+      assignmentId: parked.assignment.id,
+      date: '2026-11-27',
+      startTime: '09:00',
+      reason: 'shift a day',
+      actorRef: 'manager-test',
+    });
+    expect(reparked.created.technician_id).toBeNull();
+  });
+
+  test('listUnassignedAssignments: confirmed null-tech rows from fromISO on, no upper bound', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Recall Rae' });
+    // Far-future unassigned visit — months out, beyond any board window.
+    const far = await bookVisit({
+      tenantId,
+      customerId: customer.id,
+      date: '2027-03-15',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    // Assigned visit — must NOT appear.
+    const assigned = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      date: '2027-03-16',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    // Cancelled unassigned visit — must NOT appear.
+    const cancelled = await bookVisit({
+      tenantId,
+      customerId: customer.id,
+      date: '2027-03-17',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    await cancelVisit({
+      tenantId,
+      assignmentId: cancelled.assignment.id,
+      reason: 'never mind',
+      actorRef: 'manager-test',
+    });
+    const listed = await listUnassignedAssignments(tenantId, '2027-03-01T00:00:00.000Z');
+    const ids = listed.map((r) => r.id);
+    expect(ids).toContain(far.assignment.id);
+    expect(ids).not.toContain(assigned.assignment.id);
+    expect(ids).not.toContain(cancelled.assignment.id);
+    // Past rows excluded: a from AFTER the visit hides it.
+    const after = await listUnassignedAssignments(tenantId, '2027-04-01T00:00:00.000Z');
+    expect(after.map((r) => r.id)).not.toContain(far.assignment.id);
+    // Ordered by starts_at.
+    const starts = listed.map((r) => r.starts_at);
+    expect([...starts].sort()).toEqual(starts);
   });
 });
 

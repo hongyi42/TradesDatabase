@@ -58,7 +58,7 @@ describe('naiveLocalISO', () => {
 });
 
 describe('bookVisit', () => {
-  test('customerId path mints a job shell, books confirmed+locked+day-promised', async () => {
+  test('customerId path mints a job shell, books confirmed+locked; promises NOTHING by default', async () => {
     const customer = await createCustomer({ tenantId, name: 'Henderson' });
     const { assignment, job, warning } = await bookVisit({
       tenantId,
@@ -75,14 +75,32 @@ describe('bookVisit', () => {
     expect(job.status).toBe('open');
     expect(job.title).toBe('water heater replacement');
     expect(assignment.status).toBe('confirmed');
-    expect(assignment.promise_level).toBe('day');
-    expect(assignment.promised_day).toBe('2026-11-02');
+    // Safe default: no promise was stated, so the record claims none — and
+    // stamps NO promised day (never invent a promise the manager didn't make).
+    expect(assignment.promise_level).toBe('none');
+    expect(assignment.promised_day).toBeNull();
     expect(assignment.locked).toBe(true);
     expect(assignment.starts_at).toContain('2026-11-02T09:00');
     // Event trail: a 'booked' event exists for this assignment.
     const events = await listScheduleEventsSince(tenantId, 0, 50);
     const booked = events.find((e) => e.assignment_id === assignment.id && e.kind === 'booked');
     expect(booked?.actor_ref).toBe('manager-test');
+  });
+
+  test('an explicit day promise records the promised day', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Promised Pat' });
+    const { assignment } = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      date: '2026-11-06',
+      startTime: '09:00',
+      endTime: '10:00',
+      promiseLevel: 'day', // the manager told the customer this day
+      actorRef: 'manager-test',
+    });
+    expect(assignment.promise_level).toBe('day');
+    expect(assignment.promised_day).toBe('2026-11-06');
   });
 
   test('endTime defaults to start + job-type duration (tenant default 120)', async () => {
@@ -197,6 +215,7 @@ describe('moveVisit', () => {
       date: '2026-11-09',
       startTime: '09:00',
       endTime: '11:00',
+      promiseLevel: 'day', // customer was told this day → moving it breaks the promise
       actorRef: 'manager-test',
     });
     const moved = await moveVisit({
@@ -237,6 +256,7 @@ describe('moveVisit', () => {
       date: '2026-11-11',
       startTime: '09:00',
       endTime: '11:00',
+      promiseLevel: 'day', // day promised → a same-day TIME shift must NOT break it
       actorRef: 'manager-test',
     });
     const moved = await moveVisit({

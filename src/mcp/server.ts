@@ -537,11 +537,12 @@ const ADMIN_TOOLS = [
     description:
       'Book a visit onto the schedule (manager only) — two-step. First call with technicianRef ' +
       '+ date (+ customerId OR jobId, times optional): NOTHING is booked; you get ' +
-      '{status:"needs_confirmation", confirmId} with a preview (customer, technician, day, ' +
-      'times, what the customer will be told). Show the manager EXACTLY the preview (including ' +
-      'any availability warning); only on their explicit yes call again with ONLY confirmId. ' +
-      'Default promiseLevel is "day" — when talking to customers, offer DAYS, not times; times ' +
-      'stay internal until the customer was explicitly told one (then pass promiseLevel:"time").',
+      '{status:"needs_confirmation", confirmId} with a preview. Show the manager EXACTLY the ' +
+      'preview (including any availability warning); only on their explicit yes call again with ' +
+      'ONLY confirmId. promiseLevel records what the customer was ACTUALLY told and defaults to ' +
+      '"none" (nothing promised — the booking is internal). Pass "day" ONLY when the manager ' +
+      'says the customer was told the day, or "time" when told an exact time. NEVER assume a ' +
+      'promise was made. When talking to customers, offer DAYS, not times.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -552,7 +553,7 @@ const ADMIN_TOOLS = [
         date: { type: 'string', description: 'YYYY-MM-DD, firm-local. First call only.' },
         startTime: { type: 'string', description: 'HH:MM 24h (default 08:00). First call only.' },
         endTime: { type: 'string', description: 'HH:MM 24h (default start + job-type duration). First call only.' },
-        promiseLevel: { type: 'string', enum: ['none', 'day', 'time'], description: 'What the customer was told (default "day"). First call only.' },
+        promiseLevel: { type: 'string', enum: ['none', 'day', 'time'], description: 'What the customer was ACTUALLY told (default "none" = nothing promised). Set "day"/"time" only when the manager indicates a promise was made. First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
       required: [],

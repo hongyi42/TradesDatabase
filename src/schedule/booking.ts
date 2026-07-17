@@ -189,7 +189,12 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     endTime,
     startISO,
     endISO,
-    promiseLevel: input.promiseLevel ?? 'day',
+    // Default 'none': a fresh booking promises the customer NOTHING unless the
+    // manager says otherwise. Recording 'day' by default let the schedule
+    // "know" the customer was told a day nobody actually told them — an
+    // assumption the manager could not distinguish from fact. The agent passes
+    // 'day'/'time' only when the manager's words show a promise was made.
+    promiseLevel: input.promiseLevel ?? 'none',
     ...(warning ? { warning } : {}),
   };
 }
@@ -260,7 +265,9 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       endsAt: r.endISO,
       status: 'confirmed',
       promiseLevel: r.promiseLevel,
-      promisedDay: input.date,
+      // Stamp a promised day ONLY when a promise was actually made — a 'none'
+      // booking has no promised day (the CHECK constraint requires this pairing).
+      promisedDay: r.promiseLevel === 'none' ? null : input.date,
       locked: true,
     });
   } catch (err) {
@@ -421,7 +428,9 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
       ...(input.technicianRef && r.technician ? { technicianId: r.technician.id } : {}),
       reason: input.reason,
       status: 'confirmed', // default-'proposed' would vanish from every reader
-      promisedDay: input.date, // manager is the promise-keeper; level carries
+      // Promise level carries from the old row; the promised day tracks the new
+      // date only when a promise exists. A 'none' visit stays promise-free.
+      promisedDay: r.old.promise_level === 'none' ? null : input.date,
       locked: true,
     });
   } catch (err) {

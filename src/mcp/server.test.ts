@@ -3046,6 +3046,7 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
         date: '2026-12-01',
         startTime: '09:00',
         endTime: '12:00',
+        promiseLevel: 'day', // manager told the customer this day (exercises the promise-break path)
       });
       expect(staged.data.status).toBe('needs_confirmation');
       expect(staged.data.preview).toMatchObject({
@@ -3055,7 +3056,7 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
         date: '2026-12-01',
         startTime: '09:00',
         endTime: '12:00',
-        promiseLevel: 'day', // the default — quote days, not times
+        promiseLevel: 'day',
       });
       expect(staged.data.preview.warning).toContain('no working pattern');
 
@@ -3161,6 +3162,44 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       // The cancelled visit no longer appears on the board.
       const gone = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02' });
       expect(gone.data.days).toHaveLength(0);
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('a booking with NO stated promise records none/null and a later move claims no broken promise', async () => {
+    // The pilot bug: booking silently recorded "customer told this day", so a
+    // later move nagged about a promise nobody made. Default is now 'none'.
+    const customer = await createCustomer({ tenantId, name: 'Unpromised Uma' });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const staged = await callWith('book_visit', {
+        customerId: customer.id,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-15',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(staged.data.preview.promiseLevel).toBe('none'); // nothing was stated → nothing promised
+      const booked = await callWith('book_visit', { confirmId: staged.data.confirmId });
+      expect(booked.data.promiseLevel).toBe('none');
+      const id = booked.data.assignmentId as string;
+
+      const team = await callWith('get_team_schedule', { from: '2026-12-15', to: '2026-12-15' });
+      const stop = (team.data.days[0].stops as Array<Record<string, unknown>>).find(
+        (s) => s.assignmentId === id,
+      );
+      expect(stop).toMatchObject({ promiseLevel: 'none', promisedDay: null });
+
+      // Moving it to another day must NOT claim a broken promise.
+      const moveStage = await callWith('move_visit', {
+        assignmentId: id,
+        date: '2026-12-16',
+        startTime: '09:00',
+        reason: 'internal reshuffle',
+      });
+      expect(moveStage.data.preview.promiseBroken).toBe(false);
+      expect(moveStage.data.note ?? '').not.toContain('promiseBroken is TRUE');
     } finally {
       await mgrClient.close();
     }

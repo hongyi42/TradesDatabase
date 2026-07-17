@@ -92,6 +92,7 @@ import {
   previewCancelVisit,
   previewMoveVisit,
 } from '../schedule/booking.js';
+import { isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
   latestScheduleVersion,
   listAssignmentsForTenant,
@@ -204,6 +205,43 @@ const TOOLS = [
       type: 'object',
       properties: { jobId: { type: 'string' } },
       required: ['jobId'],
+    },
+  },
+  {
+    name: 'resolve_date',
+    description:
+      'Turn a spoken day into a real calendar date. Call this WHENEVER someone names a day ' +
+      'relative to now — "today", "tomorrow", "this Friday", "next Tuesday", "the Friday after ' +
+      'next week", "in 3 days" — BEFORE you book, move, or otherwise use the date. Do NOT work ' +
+      'out the date yourself; you are unreliable at calendar math. Pass the parts you understood: ' +
+      'a weekday with weeksAhead (0 = this coming one, 1 = next week\'s, 2 = the week after that), ' +
+      'OR dayShift (0 = today, 1 = tomorrow, 3 = in three days), OR explicitDate if they gave an ' +
+      'actual date. You get back {date, weekday, today, timezone}; USE the returned date. If it ' +
+      'comes back unresolvable, ask the person which exact date they mean — never guess. NOTE: ' +
+      '"next <weekday>" is genuinely ambiguous (this coming one vs the following week\'s) — ' +
+      'resolve BOTH weeksAhead 0 and 1 and ask the person which date they mean; do not assume.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        weekday: {
+          type: 'string',
+          enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+          description: 'The named day, lowercase. Pair with weeksAhead.',
+        },
+        weeksAhead: {
+          type: 'integer',
+          description: 'With weekday: 0 = this coming <day>, 1 = next week\'s, 2 = the week after. Default 0.',
+        },
+        dayShift: {
+          type: 'integer',
+          description: 'Days from today when no weekday is named: 0 = today, 1 = tomorrow, 7 = a week out.',
+        },
+        explicitDate: {
+          type: 'string',
+          description: 'YYYY-MM-DD, only when the person stated an exact calendar date.',
+        },
+      },
+      required: [],
     },
   },
   {
@@ -1143,6 +1181,34 @@ async function dispatch(
       );
       if (retracted.size === 0) return job;
       return { ...job, attributes: foldRetractedFacts(job.attributes, retracted) };
+    }
+    case 'resolve_date': {
+      // "Now" is the SERVER's clock in the FIRM's timezone — never a model
+      // input, so the caller cannot assert a wrong today. The agent supplies
+      // only the parsed parts of the phrase; the arithmetic is deterministic
+      // (src/schedule/dateResolve.ts). Returning today+timezone also grounds
+      // the agent for whatever it does next.
+      const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+      const todayLocal = localDateISO(new Date().toISOString(), tz);
+      const weekdayArg = str('weekday');
+      if (weekdayArg !== undefined && !isWeekday(weekdayArg)) {
+        throw new Error(`invalid weekday: ${weekdayArg} (use a lowercase day name)`);
+      }
+      // Accept a stringified integer too — models sometimes quote numbers.
+      const intArg = (k: string): number | undefined => {
+        const v = args[k];
+        if (typeof v === 'number') return v;
+        if (typeof v === 'string' && /^-?\d+$/.test(v.trim())) return Number(v);
+        return undefined;
+      };
+      const result = resolveDate({
+        todayLocal,
+        ...(weekdayArg ? { weekday: weekdayArg } : {}),
+        ...(intArg('weeksAhead') !== undefined ? { weeksAhead: intArg('weeksAhead') } : {}),
+        ...(intArg('dayShift') !== undefined ? { dayShift: intArg('dayShift') } : {}),
+        ...(str('explicitDate') ? { explicitDate: str('explicitDate') } : {}),
+      });
+      return { ...result, today: todayLocal, timezone: tz };
     }
     case 'list_recent_captures': {
       const jobId = str('jobId');

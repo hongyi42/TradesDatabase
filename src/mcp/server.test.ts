@@ -119,7 +119,7 @@ async function clientFor(
 }
 
 describe('MCP server', () => {
-  test('lists the technician tool surface (exactly 13 tools)', async () => {
+  test('lists the technician tool surface (exactly 14 tools)', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
     expect(names).toEqual(
@@ -128,6 +128,7 @@ describe('MCP server', () => {
         'find_customer',
         'get_customer_context',
         'get_job',
+        'resolve_date',
         'list_recent_captures',
         'brief_customer',
         'answer_customer_question',
@@ -139,7 +140,50 @@ describe('MCP server', () => {
         'get_schedule',
       ]),
     );
-    expect(names).toHaveLength(13);
+    expect(names).toHaveLength(14);
+  });
+
+  test('resolve_date computes the date server-side from the firm clock (agent never passes today)', async () => {
+    // The firm-local today the server will use (seed tenant tz = Pacific).
+    const today = localDateISO(new Date().toISOString(), 'America/Los_Angeles');
+    const dow = new Date(`${today}T00:00:00.000Z`).getUTCDay(); // 0=Sun..6=Sat
+
+    // dayShift is timezone-independent arithmetic on that today.
+    const tomorrow = await call('resolve_date', { dayShift: 1 });
+    expect(tomorrow.data.status).toBe('resolved');
+    expect(tomorrow.data.today).toBe(today);
+    expect(tomorrow.data.timezone).toBe('America/Los_Angeles');
+    const expectTomorrow = new Date(Date.parse(`${today}T00:00:00.000Z`) + 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    expect(tomorrow.data.date).toBe(expectTomorrow);
+
+    // A weekday request lands on that weekday, on or after today.
+    const friday = await call('resolve_date', { weekday: 'friday' });
+    expect(friday.data.status).toBe('resolved');
+    expect(friday.data.weekday).toBe('friday');
+    expect(new Date(`${friday.data.date}T00:00:00.000Z`).getUTCDay()).toBe(5);
+    expect(friday.data.date >= today).toBe(true);
+    const daysUntilFri = (5 - dow + 7) % 7;
+    const expectFri = new Date(Date.parse(`${today}T00:00:00.000Z`) + daysUntilFri * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    expect(friday.data.date).toBe(expectFri);
+
+    // "next friday" is exactly 7 days beyond "this friday".
+    const nextFriday = await call('resolve_date', { weekday: 'friday', weeksAhead: 1 });
+    expect(nextFriday.data.date).toBe(
+      new Date(Date.parse(`${expectFri}T00:00:00.000Z`) + 7 * 86_400_000).toISOString().slice(0, 10),
+    );
+
+    // A nonsense phrase refuses (the clarify path) instead of guessing.
+    const bad = await call('resolve_date', { weeksAhead: 2 }); // weeksAhead without weekday
+    expect(bad.data.status).toBe('unresolvable');
+    expect(bad.data.today).toBe(today); // still grounds the agent
+
+    // An explicit real date passes through with its weekday labelled.
+    const explicit = await call('resolve_date', { explicitDate: '2026-07-17' });
+    expect(explicit.data).toMatchObject({ status: 'resolved', date: '2026-07-17', weekday: 'friday' });
   });
 
   test('record_field_note stages (NO L1), resolves identity, and records only on the final confirm', async () => {
@@ -1341,7 +1385,8 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('bind_telegram');
       expect(mgrTools).toContain('web_search');
       expect(mgrTools).toContain('read_webpage');
-      expect(mgrTools).toHaveLength(25);
+      expect(mgrTools).toContain('resolve_date');
+      expect(mgrTools).toHaveLength(26);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -1615,10 +1660,10 @@ describe('send_email tool (outbound seam stubbed)', () => {
       stubs,
     );
     try {
-      // Technician surface count including send_email: exactly 13.
+      // Technician surface count including send_email: exactly 14.
       const tools = (await techClient.listTools()).tools.map((t) => t.name);
       expect(tools).toContain('send_email');
-      expect(tools).toHaveLength(13);
+      expect(tools).toHaveLength(14);
 
       // Staging requires the full payload.
       const missing = await callWith('send_email', { to: 'cust@example.com' });
@@ -1741,7 +1786,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(25);
+        expect(mgrTools).toHaveLength(26);
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',

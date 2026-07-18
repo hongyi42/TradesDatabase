@@ -19,7 +19,7 @@ export const ASSIGNMENT_TRANSITIONS: Record<AssignmentStatus, AssignmentStatus[]
 export interface CreateAssignmentInput {
   tenantId: string;
   jobId: string;
-  technicianId: string;
+  technicianId: string | null; // null = unassigned ("book now, assign later")
   startsAt: string; // ISO timestamptz (naive-local convention — see the promise-ladder migration)
   endsAt: string; // ISO timestamptz, exclusive
   status?: AssignmentStatus;
@@ -236,6 +236,27 @@ export async function listAssignmentsForJob(jobId: string): Promise<Assignment[]
     .eq('job_id', jobId)
     .order('created_at', { ascending: false });
   if (error) throw new Error(`listAssignmentsForJob failed: ${error.message}`);
+  return data ?? [];
+}
+
+// The "assign later" recall surface (and Plan 3's future work queue): every
+// upcoming confirmed visit with NOBODY attached. No upper date bound — the
+// point is catching visits parked beyond any board window. These rows do NOT
+// appear in listUnassignedOpenJobs (their job HAS a live assignment) and are
+// invisible to every per-technician reader, so this is their only lister.
+export async function listUnassignedAssignments(
+  tenantId: string,
+  fromISO: string,
+): Promise<Assignment[]> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select()
+    .eq('tenant_id', tenantId)
+    .is('technician_id', null)
+    .eq('status', 'confirmed')
+    .gte('starts_at', fromISO)
+    .order('starts_at', { ascending: true });
+  if (error) throw new Error(`listUnassignedAssignments failed: ${error.message}`);
   return data ?? [];
 }
 

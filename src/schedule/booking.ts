@@ -23,6 +23,7 @@ import {
   isOverlapViolation,
   listAssignmentsForTechnician,
   listTimeOffForTechnician,
+  listUnassignedAssignments,
   rescheduleAssignment,
   updateAssignmentStatus,
   updateJobStatus,
@@ -114,23 +115,35 @@ function validateDayAndTimes(date: string, startTime: string, endTime: string): 
 
 export interface BookVisitInput {
   tenantId: string;
-  technicianRef: string;
+  technicianRef?: string; // omit = book UNASSIGNED ("on the calendar, assign later")
   customerId?: string;
   jobId?: string;
   title?: string | null; // job-shell title on the customerId path
   date: string; // YYYY-MM-DD, firm-local
   startTime?: string; // HH:MM, default 08:00
   endTime?: string; // HH:MM, default start + job-type duration
-  promiseLevel?: PromiseLevel; // default 'day' — quote days, not times
+  promiseLevel?: PromiseLevel; // default 'none' — record only promises actually made
   actorRef: string;
 }
 
+// The confirmation doctrine (user decision 2026-07-17), single-sourced so every
+// surface (MCP tools, the Mini App, the auto-scheduler) inherits it instead of
+// re-deriving: confirm only what is irreversible or externally visible — for
+// the schedule that means a CUSTOMER PROMISE at stake. Book/cancel gate on the
+// promise level; a move gates on whether the move would BREAK the promise
+// (same-day time shuffles of a day-promise stay one-shot). Each preview also
+// carries the decision as `requiresConfirmation`.
+export function bookingRequiresConfirmation(promiseLevel: PromiseLevel): boolean {
+  return promiseLevel !== 'none';
+}
+
 interface ResolvedBooking {
-  technician: Technician;
+  technician: Technician | null; // null = unassigned booking
   customer: Customer;
   existingJob: Job | null;
   startTime: string;
   endTime: string;
+  endTimeDefaulted: boolean; // true = the server chose the length, not the manager
   startISO: string;
   endISO: string;
   promiseLevel: PromiseLevel;
@@ -145,7 +158,12 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
   if ((input.customerId ? 1 : 0) + (input.jobId ? 1 : 0) !== 1) {
     throw new Error('provide exactly one of customerId or jobId');
   }
-  const technician = await resolveTechnician(tenantId, input.technicianRef);
+  // No ref = an UNASSIGNED booking: the visit goes on the calendar with nobody
+  // attached (attach later via moveVisit). No technician → no overlap pre-check
+  // and no availability advisory; the DB guard likewise ignores NULL rows.
+  const technician = input.technicianRef
+    ? await resolveTechnician(tenantId, input.technicianRef)
+    : null;
 
   // Tenant-guard the target and resolve the customer BEFORE any write.
   let customer: Customer;
@@ -174,19 +192,49 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
   const startISO = naiveLocalISO(input.date, startTime);
   const endISO = naiveLocalISO(input.date, endTime);
 
-  const clashes = await overlappingConfirmed(technician.id, startISO, endISO);
-  if (clashes.length > 0) {
-    throw new Error(
-      `${technician.display_name} already has a confirmed visit overlapping ${input.date} ${startTime}–${endTime}`,
-    );
+  if (technician) {
+    const clashes = await overlappingConfirmed(technician.id, startISO, endISO);
+    if (clashes.length > 0) {
+      throw new Error(
+        `${technician.display_name} already has a confirmed visit overlapping ${input.date} ${startTime}–${endTime}`,
+      );
+    }
+  } else {
+    // Unassigned rows are exempt from the DB overlap guard (NULL never
+    // matches), so a transport retry of a one-shot unassigned booking would
+    // otherwise duplicate SILENTLY — no token to consume, no guard to fire.
+    // Refuse an IDENTICAL person-less duplicate: same customer, same exact
+    // window. Different customers at the same window stay legal (there is no
+    // technician to double-book); if two same-window visits for one customer
+    // are truly intended, stagger the time or attach technicians.
+    const startMs = Date.parse(startISO);
+    const endMs = Date.parse(endISO);
+    for (const row of await listUnassignedAssignments(tenantId, startISO)) {
+      if (Date.parse(row.starts_at) > startMs) break; // ordered — past the window
+      if (Date.parse(row.starts_at) !== startMs || Date.parse(row.ends_at) !== endMs) continue;
+      const rowJob = await getJob(row.job_id);
+      if (rowJob?.customer_id === customer.id) {
+        throw new Error(
+          `an identical unassigned visit for ${customer.name} already exists at ` +
+            `${input.date} ${startTime}–${endTime} — likely a duplicate; attach a technician ` +
+            `to it, move it, or change the time`,
+        );
+      }
+    }
   }
-  const warning = await availabilityWarning(technician, input.date, startISO);
+  const warning = technician
+    ? await availabilityWarning(technician, input.date, startISO)
+    : undefined;
   return {
     technician,
     customer,
     existingJob,
     startTime,
     endTime,
+    // Disclosure flag, never a gate: when the manager stated no length the
+    // duration default fills in — the agent must SAY the length was assumed
+    // (and always pass endTime when the manager stated one).
+    endTimeDefaulted: input.endTime === undefined,
     startISO,
     endISO,
     // Default 'none': a fresh booking promises the customer NOTHING unless the
@@ -200,8 +248,8 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
 }
 
 export interface BookVisitPreview {
-  technicianRef: string;
-  technicianName: string;
+  technicianRef: string | null; // null = unassigned booking
+  technicianName: string | null;
   customerId: string;
   customerName: string;
   newJob: boolean; // true = confirming will mint a job shell
@@ -209,7 +257,9 @@ export interface BookVisitPreview {
   date: string;
   startTime: string; // resolved (defaults applied) — store these on the stage
   endTime: string;
+  endTimeDefaulted: boolean; // server-chosen length — disclose, never confirm-the-guess
   promiseLevel: PromiseLevel;
+  requiresConfirmation: boolean; // the doctrine's verdict — surfaces branch on THIS
   warning?: string;
 }
 
@@ -218,8 +268,8 @@ export interface BookVisitPreview {
 export async function previewBookVisit(input: BookVisitInput): Promise<BookVisitPreview> {
   const r = await resolveBooking(input);
   return {
-    technicianRef: r.technician.ref,
-    technicianName: r.technician.display_name,
+    technicianRef: r.technician?.ref ?? null,
+    technicianName: r.technician?.display_name ?? null,
     customerId: r.customer.id,
     customerName: r.customer.name,
     newJob: r.existingJob === null,
@@ -227,7 +277,9 @@ export async function previewBookVisit(input: BookVisitInput): Promise<BookVisit
     date: input.date,
     startTime: r.startTime,
     endTime: r.endTime,
+    endTimeDefaulted: r.endTimeDefaulted,
     promiseLevel: r.promiseLevel,
+    requiresConfirmation: bookingRequiresConfirmation(r.promiseLevel),
     ...(r.warning ? { warning: r.warning } : {}),
   };
 }
@@ -236,6 +288,11 @@ export interface BookVisitResult {
   assignment: Assignment;
   job: Job;
   customer: Customer;
+  // True iff THIS call's input omitted endTime. Correct when you pass the
+  // manager's original args (the one-shot path). If you pass an already-
+  // RESOLVED endTime (the staged-confirm path does — preview == commit), this
+  // reads false: carry the stage-time truth from the preview/staged copy.
+  endTimeDefaulted: boolean;
   warning?: string;
 }
 
@@ -260,7 +317,7 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
     assignment = await createAssignment({
       tenantId,
       jobId: job.id,
-      technicianId: r.technician.id,
+      technicianId: r.technician?.id ?? null,
       startsAt: r.startISO,
       endsAt: r.endISO,
       status: 'confirmed',
@@ -283,8 +340,10 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       }
     }
     if (isOverlapViolation(err)) {
+      // Only reachable with a technician attached — the DB guard never fires
+      // on NULL rows; the fallback text is TS-narrowing, not a real case.
       throw new Error(
-        `${r.technician.display_name} already has a confirmed visit overlapping ${input.date} ${r.startTime}–${r.endTime}`,
+        `${r.technician?.display_name ?? 'the technician'} already has a confirmed visit overlapping ${input.date} ${r.startTime}–${r.endTime}`,
       );
     }
     throw err;
@@ -300,13 +359,19 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       startTime: r.startTime,
       endTime: r.endTime,
       promiseLevel: assignment.promise_level,
-      technicianRef: r.technician.ref,
+      technicianRef: r.technician?.ref ?? null,
       customerId: r.customer.id,
       jobId: job.id,
     },
   });
 
-  return { assignment, job, customer: r.customer, ...(r.warning ? { warning: r.warning } : {}) };
+  return {
+    assignment,
+    job,
+    customer: r.customer,
+    endTimeDefaulted: r.endTimeDefaulted,
+    ...(r.warning ? { warning: r.warning } : {}),
+  };
 }
 
 export interface MoveVisitInput {
@@ -322,7 +387,11 @@ export interface MoveVisitInput {
 
 interface ResolvedMove {
   old: Assignment;
-  technician: Technician | null; // the TARGET technician (null = roster row gone)
+  // The TARGET technician. null has two readings — an UNASSIGNED visit staying
+  // unassigned (the common case: old.technician_id is null and no ref given),
+  // or a roster row that vanished (near-unreachable: techs deactivate, never
+  // delete). Discriminate with old.technician_id when it matters.
+  technician: Technician | null;
   endTime: string;
   startISO: string;
   endISO: string;
@@ -343,9 +412,13 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
 
   // Resolve the TARGET technician either way — the availability warning must
   // fire for a same-technician move onto an off-day too (review finding).
+  // An unassigned row moved without a ref stays unassigned (technician null);
+  // passing a ref is how a person gets ATTACHED to an unassigned visit.
   const technician = input.technicianRef
     ? await resolveTechnician(tenantId, input.technicianRef)
-    : await getTechnicianById(old.technician_id, tenantId);
+    : old.technician_id
+      ? await getTechnicianById(old.technician_id, tenantId)
+      : null;
   const targetTechnicianId = technician?.id ?? old.technician_id;
 
   const oldDurationMin = Math.round(
@@ -368,11 +441,15 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
         ? dayChanged || timeChanged
         : false;
 
-  const clashes = await overlappingConfirmed(targetTechnicianId, startISO, endISO, old.id);
-  if (clashes.length > 0) {
-    throw new Error(
-      `that slot overlaps a confirmed visit on ${input.date} — the booking was NOT moved`,
-    );
+  // No target technician (unassigned staying unassigned) → nothing to clash
+  // with; the DB guard likewise ignores NULL rows.
+  if (targetTechnicianId) {
+    const clashes = await overlappingConfirmed(targetTechnicianId, startISO, endISO, old.id);
+    if (clashes.length > 0) {
+      throw new Error(
+        `that slot overlaps a confirmed visit on ${input.date} — the booking was NOT moved`,
+      );
+    }
   }
   const warning = technician
     ? await availabilityWarning(technician, input.date, startISO)
@@ -389,6 +466,7 @@ export interface MoveVisitPreview {
   startTime: string;
   endTime: string; // resolved — store on the stage
   promiseBroken: boolean;
+  requiresConfirmation: boolean; // = promiseBroken (the doctrine's verdict for moves)
   warning?: string;
 }
 
@@ -405,6 +483,7 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
     startTime: input.startTime,
     endTime: r.endTime,
     promiseBroken: r.promiseBroken,
+    requiresConfirmation: r.promiseBroken,
     ...(r.warning ? { warning: r.warning } : {}),
   };
 }
@@ -493,6 +572,7 @@ export interface CancelVisitPreview {
   customerName: string | null;
   day: string;
   promiseLevel: PromiseLevel;
+  requiresConfirmation: boolean; // the doctrine's verdict for this cancel
 }
 
 export async function previewCancelVisit(
@@ -511,6 +591,7 @@ export async function previewCancelVisit(
     customerName: customer?.name ?? null,
     day: target.promised_day ?? target.starts_at.slice(0, 10),
     promiseLevel: target.promise_level,
+    requiresConfirmation: bookingRequiresConfirmation(target.promise_level),
   };
 }
 

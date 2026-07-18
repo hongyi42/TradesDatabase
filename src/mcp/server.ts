@@ -85,6 +85,7 @@ import { buildMapsDeepLink, formatAddress, type RouteStop } from '../routes/deep
 import { localDateISO } from '../schedule/availability.js';
 import {
   bookVisit,
+  bookingRequiresConfirmation,
   cancelVisit,
   isPromiseLevel,
   moveVisit,
@@ -96,6 +97,7 @@ import { isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
   latestScheduleVersion,
   listAssignmentsForTenant,
+  listUnassignedAssignments,
   listJobsWithCustomerByIds,
   type PromiseLevel,
 } from '../db/index.js';
@@ -458,17 +460,21 @@ const ADMIN_TOOLS = [
   {
     name: 'add_technician_seat',
     description:
-      'Add a person to the team roster (manager only). Mints their permanent ref from the ' +
-      'display name (e.g. "Jane Doe" → jane-doe) and occupies one purchased seat of the tier. ' +
-      'Fails if no seat is free or the ref is already taken (disambiguate with a middle name ' +
-      'or employee id). Returns the roster row incl. the minted ref.',
+      'Add a person to the team roster (manager only) — TWO-STEP, because it is not ' +
+      'reversible: it mints a permanent never-reused ref from the display name (e.g. ' +
+      '"Jane Doe" → jane-doe) and occupies one purchased seat of the tier. First call with ' +
+      'displayName (+ optional tier): NOTHING is added; you get {status:"needs_confirmation", ' +
+      'confirmId} with the minted ref. Show the manager; only on their explicit yes call ' +
+      'again with ONLY confirmId — that returns the roster row. Fails if no seat is free or ' +
+      'the ref is already taken (disambiguate with a middle name or employee id).',
     inputSchema: {
       type: 'object',
       properties: {
-        displayName: { type: 'string', description: "The person's full name." },
-        tier: { type: 'string', enum: TIERS, description: 'Defaults to technician.' },
+        displayName: { type: 'string', description: "The person's full name. First call only." },
+        tier: { type: 'string', enum: TIERS, description: 'Defaults to technician. First call only.' },
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
-      required: ['displayName'],
+      required: [],
     },
   },
   {
@@ -559,13 +565,21 @@ const ADMIN_TOOLS = [
       "The whole team's schedule (manager only): for each day in [from,to] (YYYY-MM-DD; both " +
       "optional — default today in the firm's timezone; capped at 14 days), every technician's " +
       'confirmed visits with customer, address, times, promiseLevel (what the customer was ' +
-      "told: none/day/time), promisedDay, and locked (manager-pinned). Also returns " +
-      'scheduleVersion — quote it when discussing changes so staleness is detectable.',
+      "told: none/day/time), promisedDay, and locked (manager-pinned). Stops with " +
+      'unassigned:true have NOBODY attached yet and need a person (attach with move_visit). ' +
+      'Pass unassignedOnly:true to list ALL upcoming visits with nobody attached, however far ' +
+      'out (no 14-day cap) — use it when the manager asks what still needs assigning. Also ' +
+      'returns scheduleVersion — quote it when discussing changes so staleness is detectable.',
     inputSchema: {
       type: 'object',
       properties: {
         from: { type: 'string', description: 'Start date YYYY-MM-DD (default: today).' },
         to: { type: 'string', description: 'End date YYYY-MM-DD inclusive (default: from).' },
+        unassignedOnly: {
+          type: 'boolean',
+          description:
+            'true = only visits with no technician attached, from `from` onward with NO upper bound (`to` and the 14-day cap ignored).',
+        },
       },
       required: [],
     },
@@ -573,20 +587,26 @@ const ADMIN_TOOLS = [
   {
     name: 'book_visit',
     description:
-      'Book a visit onto the schedule (manager only) — two-step. First call with technicianRef ' +
-      '+ date (+ customerId OR jobId, times optional): NOTHING is booked; you get ' +
-      '{status:"needs_confirmation", confirmId} with a preview. Show the manager EXACTLY the ' +
-      'preview (including any availability warning); only on their explicit yes call again with ' +
-      'ONLY confirmId. promiseLevel records what the customer was ACTUALLY told and defaults to ' +
-      '"none" (nothing promised — the booking is internal). Pass "day" ONLY when the manager ' +
-      'says the customer was told the day, or "time" when told an exact time. NEVER assume a ' +
-      'promise was made. When talking to customers, offer DAYS, not times.',
+      'Book a visit onto the schedule (manager only). Reversible and internal (nothing ' +
+      'promised to the customer) → done in ONE call ({status:"booked"}) — ALWAYS tell the ' +
+      'manager what was done (day, time, who, and any warning); never act silently. If the ' +
+      'customer was promised a day/time (promiseLevel "day"/"time") you instead get ' +
+      '{status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
+      'yes, call again with ONLY confirmId. Call with date (+ customerId OR jobId, ' +
+      'technicianRef + times optional). Pass endTime explicitly whenever the manager states ' +
+      'an end time — never let the duration default stand in for a stated time; when the ' +
+      'result has endTimeDefaulted:true, say the length was assumed. Omit technicianRef to ' +
+      'book WITHOUT a technician (put it on the calendar, assign later — attach someone with ' +
+      'move_visit; find these via get_team_schedule unassignedOnly:true). promiseLevel ' +
+      'records what the customer was ACTUALLY told and defaults to "none". Pass "day" ONLY ' +
+      'when the manager says the customer was told the day, or "time" when told an exact ' +
+      'time. NEVER assume a promise was made. When talking to customers, offer DAYS, not times.',
     inputSchema: {
       type: 'object',
       properties: {
         customerId: { type: 'string', description: 'Exactly one of customerId/jobId. First call only.' },
         jobId: { type: 'string', description: 'Exactly one of customerId/jobId. First call only.' },
-        technicianRef: { type: 'string', description: 'Roster ref of the technician. First call only.' },
+        technicianRef: { type: 'string', description: 'Roster ref of the technician. OPTIONAL — omit to book unassigned ("assign later"). First call only.' },
         title: { type: 'string', description: 'Job title when booking by customerId (a new job is created). First call only.' },
         date: { type: 'string', description: 'YYYY-MM-DD, firm-local. First call only.' },
         startTime: { type: 'string', description: 'HH:MM 24h (default 08:00). First call only.' },
@@ -600,11 +620,14 @@ const ADMIN_TOOLS = [
   {
     name: 'move_visit',
     description:
-      'Move a booked visit (manager only) — two-step. First call with assignmentId + date + ' +
-      'startTime (+ optional endTime/technicianRef) + reason: NOTHING moves; you get a preview ' +
-      'with promiseBroken — TRUE means the customer was promised a different day and someone ' +
-      'must tell them. Show the manager the preview; only on their explicit yes call again ' +
-      'with ONLY confirmId.',
+      'Move a booked visit (manager only) — also how a technician gets ATTACHED to an ' +
+      'unassigned visit (pass technicianRef with the same day/time). Reversible and internal ' +
+      '(no customer promise affected) → done in ONE call ({status:"moved"}) — ALWAYS tell the ' +
+      'manager what moved; never act silently. If the move would break what the customer was ' +
+      'promised (promiseBroken TRUE — they heard a different day/time and someone must tell ' +
+      'them) you instead get {status:"needs_confirmation", confirmId} with a preview — show ' +
+      'it, get an explicit yes, call again with ONLY confirmId. Call with assignmentId + ' +
+      'date + startTime (+ optional endTime/technicianRef) + reason.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -622,9 +645,12 @@ const ADMIN_TOOLS = [
   {
     name: 'cancel_visit',
     description:
-      'Cancel a booked visit (manager only) — two-step. First call with assignmentId + reason: ' +
-      'NOTHING is cancelled; you get a preview. Show the manager the preview; only on their ' +
-      'explicit yes call again with ONLY confirmId. The job stays open for rebooking.',
+      'Cancel a booked visit (manager only). Reversible and internal (nothing promised to ' +
+      'the customer) → done in ONE call ({status:"cancelled"}) — ALWAYS tell the manager what ' +
+      'was cancelled; never act silently. If the customer was promised a day/time you instead ' +
+      'get {status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
+      'yes, call again with ONLY confirmId. Call with assignmentId + reason. The job stays ' +
+      'open for rebooking either way.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2135,36 +2161,57 @@ async function dispatch(
       ) {
         return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD strings' };
       }
+      if (args.unassignedOnly !== undefined && typeof args.unassignedOnly !== 'boolean') {
+        return { status: 'invalid_range', note: 'unassignedOnly must be a boolean' };
+      }
+      const unassignedOnly = args.unassignedOnly === true;
       let from = str('from');
-      let to = str('to');
+      const to = str('to');
       if (!from) {
         const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
         from = localDateISO(new Date().toISOString(), tz);
       }
-      to ??= from;
       const DATE = /^\d{4}-\d{2}-\d{2}$/;
-      if (!DATE.test(from) || !DATE.test(to) || from > to) {
-        return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD with from <= to' };
+      if (!DATE.test(from)) {
+        return { status: 'invalid_range', note: 'from must be YYYY-MM-DD' };
       }
-      const spanDays =
-        (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
-      if (!Number.isFinite(spanDays)) {
-        return { status: 'invalid_range', note: 'from/to is not a real calendar date' };
-      }
-      if (spanDays > 14) {
-        return { status: 'invalid_range', note: 'range is capped at 14 days' };
+      // Windowed mode validates the window; the unassignedOnly recall view has
+      // NO upper bound by design (`to` and the 14-day cap are documented as
+      // ignored, so a stray `to` must not error the recall read).
+      let toDay: string | null = null;
+      if (!unassignedOnly) {
+        toDay = to ?? from;
+        if (!DATE.test(toDay) || from > toDay) {
+          return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD with from <= to' };
+        }
+        const spanDays =
+          (Date.parse(`${toDay}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+        if (!Number.isFinite(spanDays)) {
+          return { status: 'invalid_range', note: 'from/to is not a real calendar date' };
+        }
+        if (spanDays > 14) {
+          return { status: 'invalid_range', note: 'range is capped at 14 days' };
+        }
       }
       // Version BEFORE the snapshot: a booking that lands between the two
       // reads then makes a later "changed since version N?" check fire
       // (false positive, fail-safe) instead of silently vouching for a
       // snapshot that is missing it.
       const scheduleVersion = await latestScheduleVersion(tenantId);
-      const rows = await listAssignmentsForTenant(
-        tenantId,
-        `${from}T00:00:00.000Z`,
-        new Date(Date.parse(`${to}T00:00:00.000Z`) + 86_400_000).toISOString(),
-        ['confirmed'],
-      );
+      // unassignedOnly = the "assign later" recall view: EVERY upcoming visit
+      // with nobody attached, from `from` onward — the point is catching
+      // visits parked beyond any 14-day board window (their job has a live
+      // assignment, so listUnassignedOpenJobs skips it, and per-technician
+      // readers never see a null technician). Same stop shape either way —
+      // ONE builder below, so the two views can never drift.
+      const rows = unassignedOnly
+        ? await listUnassignedAssignments(tenantId, `${from}T00:00:00.000Z`)
+        : await listAssignmentsForTenant(
+            tenantId,
+            `${from}T00:00:00.000Z`,
+            new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
+            ['confirmed'],
+          );
       const jobs = await listJobsWithCustomerByIds(tenantId, [
         ...new Set(rows.map((r) => r.job_id)),
       ]);
@@ -2173,16 +2220,20 @@ async function dispatch(
       const byDay = new Map<string, unknown[]>();
       for (const row of rows) {
         // Overlap semantics can pull in a row starting before `from` — clamp
-        // to the requested days by start-day, the daySource precedent.
+        // to the requested days by start-day, the daySource precedent (the
+        // upper arm applies only in windowed mode).
         const day = row.starts_at.slice(0, 10);
-        if (day < from || day > to) continue;
+        if (day < from || (toDay !== null && day > toDay)) continue;
         const customer = jobById.get(row.job_id)?.customers ?? null;
-        const technician = techById.get(row.technician_id);
+        // technician_id may be NULL (unassigned booking) — the ?? null echoes
+        // below render that as a person-less stop in both modes.
+        const technician = row.technician_id ? techById.get(row.technician_id) : undefined;
         const bucket = byDay.get(day) ?? [];
         bucket.push({
           assignmentId: row.id,
           technicianRef: technician?.ref ?? null,
           technicianName: technician?.display_name ?? null,
+          unassigned: row.technician_id === null,
           customer: customer?.name ?? null,
           address: customer
             ? formatAddress({
@@ -2206,7 +2257,9 @@ async function dispatch(
       const days = [...byDay.entries()]
         .sort(([a], [b]) => (a < b ? -1 : 1))
         .map(([date, stops]) => ({ date, stops }));
-      return { status: 'ok', from, to, scheduleVersion, days };
+      return unassignedOnly
+        ? { status: 'ok', from, unassignedOnly: true, scheduleVersion, days }
+        : { status: 'ok', from, to: toDay, scheduleVersion, days };
     }
     case 'book_visit': {
       const subjectRef = identity.technicianRef;
@@ -2216,9 +2269,18 @@ async function dispatch(
         // technician resolution, time defaults, overlap pre-check) and throws
         // on anything that would make the booking impossible — nothing is
         // staged that cannot commit. Nothing is written here.
+        // technicianRef is OPTIONAL: omitted = an unassigned booking ("on the
+        // calendar, assign later" — attach someone later with move_visit).
         const technicianRef = str('technicianRef');
+        // A PRESENT-but-empty ref is an error, not an unassigned booking: the
+        // agent named nobody by accident ("book Jane" with the value dropped).
+        // Only a genuinely absent key means "assign later" on purpose.
+        if (args.technicianRef !== undefined && !technicianRef) {
+          throw new Error(
+            'technicianRef was empty — pass the roster ref, or omit the field entirely to book unassigned',
+          );
+        }
         const date = str('date');
-        if (!technicianRef) throw new Error('technicianRef is required');
         if (!date) throw new Error('date is required');
         const promiseLevelArg = str('promiseLevel');
         if (promiseLevelArg && !isPromiseLevel(promiseLevelArg)) {
@@ -2226,9 +2288,11 @@ async function dispatch(
         }
         const customerId = str('customerId');
         const jobId = str('jobId');
-        const preview = await previewBookVisit({
+        // ONE input literal for both paths — a field added here reaches the
+        // one-shot commit and the staged preview identically.
+        const bookInput = {
           tenantId,
-          technicianRef,
+          ...(technicianRef ? { technicianRef } : {}),
           ...(customerId ? { customerId } : {}),
           ...(jobId ? { jobId } : {}),
           title: str('title') ?? null,
@@ -2237,7 +2301,42 @@ async function dispatch(
           ...(str('endTime') ? { endTime: str('endTime') } : {}),
           ...(promiseLevelArg ? { promiseLevel: promiseLevelArg as PromiseLevel } : {}),
           actorRef: subjectRef,
-        });
+        };
+        // Doctrine (user decision 2026-07-17, single-sourced in booking.ts):
+        // nothing promised = internal + reversible → ONE step. For a book the
+        // verdict is input-derived, so no preview round is needed — bookVisit
+        // runs every guard itself (one resolution instead of two).
+        if (!bookingRequiresConfirmation((promiseLevelArg as PromiseLevel | undefined) ?? 'none')) {
+          const booked = await bookVisit(bookInput);
+          return {
+            status: 'booked',
+            assignmentId: booked.assignment.id,
+            jobId: booked.job.id,
+            customer: booked.customer.name,
+            technicianRef: technicianRef ?? null,
+            unassigned: booked.assignment.technician_id === null,
+            date,
+            // Resolved times from the row itself (naive-local, exact slices).
+            startTime: booked.assignment.starts_at.slice(11, 16),
+            endTime: booked.assignment.ends_at.slice(11, 16),
+            endTimeDefaulted: booked.endTimeDefaulted,
+            promiseLevel: booked.assignment.promise_level,
+            ...(booked.warning ? { warning: booked.warning } : {}),
+            note:
+              'Booked in one step — nothing was promised to the customer, so no confirmation ' +
+              'was needed (undo = move_visit / cancel_visit). Tell the manager exactly what ' +
+              'was booked' +
+              (booked.endTimeDefaulted
+                ? ', including that the end time was assumed from the standard job length'
+                : '') +
+              '.',
+          };
+        }
+        const preview = await previewBookVisit(bookInput);
+        // Staging replaces any prior staged booking (re-stage supersedes) and
+        // the NEW confirmId below is the visible replacement. One-shot calls
+        // above deliberately leave pending tokens alone — booking Bob must not
+        // silently kill a promised Alice booking still awaiting its yes.
         await resolveOpenReviewItemFor(
           tenantId,
           'pending_booking',
@@ -2253,12 +2352,13 @@ async function dispatch(
             customerId: customerId ?? null,
             jobId: jobId ?? null,
             title: str('title') ?? null,
-            technicianRef,
+            technicianRef: technicianRef ?? null,
             date,
             // RESOLVED times/promise — the staged copy is the booking of
             // record; commit passes exactly these so preview == commit.
             startTime: preview.startTime,
             endTime: preview.endTime,
+            endTimeDefaulted: preview.endTimeDefaulted,
             promiseLevel: preview.promiseLevel,
             preview: preview as unknown as Json,
             stagedAt: new Date().toISOString(),
@@ -2287,10 +2387,11 @@ async function dispatch(
         customerId?: string | null;
         jobId?: string | null;
         title?: string | null;
-        technicianRef?: string;
+        technicianRef?: string | null; // null = staged unassigned booking
         date?: string;
         startTime?: string;
         endTime?: string;
+        endTimeDefaulted?: boolean;
         promiseLevel?: PromiseLevel;
         stagedAt?: string;
       };
@@ -2298,7 +2399,16 @@ async function dispatch(
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the booking and confirm again');
       }
-      if (!d.technicianRef || !d.date || !d.startTime || !d.endTime || (!d.customerId && !d.jobId)) {
+      // An explicit null technicianRef is a VALID staged unassigned booking;
+      // an ABSENT key is corruption (every stage writes the field) — refuse it
+      // rather than silently committing a nobody-attached visit.
+      if (
+        d.technicianRef === undefined ||
+        !d.date ||
+        !d.startTime ||
+        !d.endTime ||
+        (!d.customerId && !d.jobId)
+      ) {
         throw new Error('staged booking is malformed — restage with the booking details');
       }
       const consumed = await resolveReviewItem(
@@ -2314,7 +2424,7 @@ async function dispatch(
       try {
         booked = await bookVisit({
           tenantId,
-          technicianRef: d.technicianRef,
+          ...(d.technicianRef ? { technicianRef: d.technicianRef } : {}),
           ...(d.customerId ? { customerId: d.customerId } : {}),
           ...(d.jobId ? { jobId: d.jobId } : {}),
           title: d.title ?? null,
@@ -2342,10 +2452,12 @@ async function dispatch(
         assignmentId: booked.assignment.id,
         jobId: booked.job.id,
         customer: booked.customer.name,
-        technicianRef: d.technicianRef,
+        technicianRef: d.technicianRef ?? null,
+        unassigned: booked.assignment.technician_id === null,
         date: d.date,
         startTime: d.startTime,
         endTime: d.endTime,
+        endTimeDefaulted: d.endTimeDefaulted ?? false,
         promiseLevel: booked.assignment.promise_level,
         ...(booked.warning ? { warning: booked.warning } : {}),
       };
@@ -2363,16 +2475,48 @@ async function dispatch(
         if (!assignmentId) throw new Error('assignmentId is required');
         if (!date || !startTime) throw new Error('date and startTime are required');
         if (!reason) throw new Error('reason is required — say why the visit is moving');
+        const technicianRefArg = str('technicianRef');
         const preview = await previewMoveVisit({
           tenantId,
           assignmentId,
           date,
           startTime,
           ...(str('endTime') ? { endTime: str('endTime') } : {}),
-          ...(str('technicianRef') ? { technicianRef: str('technicianRef') } : {}),
+          ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
           reason,
           actorRef: subjectRef,
         });
+        // Doctrine (2026-07-17, verdict computed in booking.ts): no promise
+        // breaking = internal + reversible → move in ONE step and report. A
+        // promise-breaking move stages below (the customer heard a different
+        // day/time — someone must own telling them before it changes).
+        if (!preview.requiresConfirmation) {
+          const moved = await moveVisit({
+            tenantId,
+            assignmentId,
+            date,
+            startTime,
+            endTime: preview.endTime, // resolved — preview == commit
+            ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
+            reason,
+            actorRef: subjectRef,
+          });
+          return {
+            status: 'moved',
+            assignmentId: moved.created.id,
+            previousAssignmentId: moved.cancelled.id,
+            date,
+            startTime,
+            endTime: preview.endTime,
+            promiseBroken: false,
+            ...(moved.warning ? { warning: moved.warning } : {}),
+            note:
+              'Moved in one step — no customer promise was affected, so no confirmation was ' +
+              'needed. Tell the manager exactly what moved.',
+          };
+        }
+        // Staging replaces any prior staged move (the new confirmId is the
+        // visible replacement); one-shot moves above leave pending tokens alone.
         await resolveOpenReviewItemFor(
           tenantId,
           'pending_visit_move',
@@ -2389,7 +2533,7 @@ async function dispatch(
             date,
             startTime,
             endTime: preview.endTime, // resolved — preview == commit
-            technicianRef: str('technicianRef') ?? null,
+            technicianRef: technicianRefArg ?? null,
             reason,
             preview: preview as unknown as Json,
             stagedAt: new Date().toISOString(),
@@ -2400,12 +2544,12 @@ async function dispatch(
           status: 'needs_confirmation',
           confirmId: item.id,
           preview: staged.preview ?? preview,
+          // Staging is only reachable when the promise breaks (one-shot
+          // handles the rest), so say it unconditionally.
           note:
-            'Nothing was moved. Show the manager exactly this preview' +
-            (preview.promiseBroken
-              ? ' — promiseBroken is TRUE: the customer was promised a different day and someone must tell them'
-              : '') +
-            '; on their explicit yes call again with ONLY confirmId.',
+            'Nothing was moved. Show the manager exactly this preview — promiseBroken is ' +
+            'TRUE: the customer was promised a different day/time and someone must tell ' +
+            'them; on their explicit yes call again with ONLY confirmId.',
         };
       }
       // CONFIRM — consume-first (at-most-once).
@@ -2492,6 +2636,28 @@ async function dispatch(
         if (!assignmentId) throw new Error('assignmentId is required');
         if (!reason) throw new Error('reason is required — say why the visit is being cancelled');
         const preview = await previewCancelVisit(tenantId, assignmentId);
+        // Doctrine (2026-07-17, verdict computed in booking.ts): cancelling an
+        // UNPROMISED visit is internal + reversible (the job stays open;
+        // rebook any time) → one step. Cancelling a promised visit stages —
+        // the customer expects someone, and the manager must own telling them.
+        if (!preview.requiresConfirmation) {
+          const cancelledRow = await cancelVisit({
+            tenantId,
+            assignmentId,
+            reason,
+            actorRef: subjectRef,
+          });
+          return {
+            status: 'cancelled',
+            assignmentId: cancelledRow.id,
+            day: cancelledRow.starts_at.slice(0, 10),
+            note:
+              'Cancelled in one step — nothing was promised to the customer, so no ' +
+              'confirmation was needed. The job stays open for rebooking; tell the manager.',
+          };
+        }
+        // Staging replaces any prior staged cancel; one-shot cancels above
+        // leave pending tokens alone.
         await resolveOpenReviewItemFor(
           tenantId,
           'pending_visit_cancel',
@@ -2572,35 +2738,128 @@ async function dispatch(
       };
     }
     case 'add_technician_seat': {
-      const displayName = str('displayName')?.trim();
-      if (!displayName) throw new Error('displayName is required');
-      const tierArg = str('tier');
-      if (tierArg && !TIERS.includes(tierArg as TechnicianTier)) {
-        throw new Error(`invalid tier: ${tierArg}`);
-      }
-      const tier: TechnicianTier = (tierArg as TechnicianTier | undefined) ?? 'technician';
-      const ref = slugify(displayName);
-      // Slug alphabet is ASCII: a fully non-Latin name slugs to '' — ask for a
-      // romanized form rather than failing with a false "no letters" claim.
-      if (!ref) {
-        throw new Error(
-          'displayName must contain ASCII letters or digits — use a romanized spelling to mint the ref',
-        );
-      }
-      try {
-        return await insertTechnician({ tenantId, ref, displayName, tier });
-      } catch (err) {
-        // Cap first: at capacity the BEFORE-trigger fires before the unique
-        // constraint, so a duplicate-at-cap reports the cap (observed live).
-        if (isSeatCapError(err)) {
-          throw new Error(`no free ${tier} seats — deactivate someone or purchase a seat`);
+      // Two-step (doctrine 2026-07-17): the mint is IRREVERSIBLE — a permanent
+      // never-reused ref plus a burned seat — so it confirms, exactly the class
+      // the one-shot schedule ops are not. Same token machinery as book_visit.
+      const subjectRef = identity.technicianRef;
+      const confirmId = str('confirmId');
+      if (!confirmId) {
+        // STAGE — nothing is inserted here.
+        const displayName = str('displayName')?.trim();
+        if (!displayName) throw new Error('displayName is required');
+        const tierArg = str('tier');
+        if (tierArg && !TIERS.includes(tierArg as TechnicianTier)) {
+          throw new Error(`invalid tier: ${tierArg}`);
         }
-        if (isUniqueViolation(err)) {
+        const tier: TechnicianTier = (tierArg as TechnicianTier | undefined) ?? 'technician';
+        const ref = slugify(displayName);
+        // Slug alphabet is ASCII: a fully non-Latin name slugs to '' — ask for a
+        // romanized form rather than failing with a false "no letters" claim.
+        if (!ref) {
+          throw new Error(
+            'displayName must contain ASCII letters or digits — use a romanized spelling to mint the ref',
+          );
+        }
+        // Stage-time dup pre-check so the common mistake fails BEFORE a yes;
+        // the cap (a moving target) surfaces at confirm via the insert itself.
+        if (await getTechnician(tenantId, ref)) {
           throw new Error(
             `ref '${ref}' is taken — disambiguate (add a middle name or employee id)`,
           );
         }
-        throw err;
+        await resolveOpenReviewItemFor(
+          tenantId,
+          'pending_seat_add',
+          subjectRef,
+          'dismissed',
+          'superseded by a new seat request',
+        );
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_seat_add',
+          subjectRef,
+          detail: { ref, displayName, tier, stagedAt: new Date().toISOString() },
+        });
+        // Echo the ITEM's staged detail, not local state (racing stages — same
+        // rule as send_email/book_visit): what is SHOWN must be what a confirm
+        // of this confirmId would mint. No local fallback — a partial detail
+        // shown as local values would display one ref while the token mints
+        // another, so refuse it loudly instead (mirrors the confirm guard).
+        const staged = (item.detail ?? {}) as {
+          ref?: string;
+          displayName?: string;
+          tier?: string;
+        };
+        if (!staged.ref || !staged.displayName || !staged.tier) {
+          throw new Error('staged seat is malformed — call add_technician_seat again to restage');
+        }
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          preview: { ref: staged.ref, displayName: staged.displayName, tier: staged.tier },
+          note:
+            `Nothing was added. This will occupy one ${staged.tier} seat and mint the ` +
+            `permanent ref '${staged.ref}'. Show the manager; on their explicit yes ` +
+            `call again with ONLY confirmId.`,
+        };
+      }
+      // CONFIRM — guarded token lookup → expiry → CONSUME FIRST → insert.
+      const item = await getOpenReviewItem(confirmId, tenantId, {
+        kind: 'pending_seat_add',
+        subjectRef,
+      });
+      if (!item) {
+        throw new Error('confirmation not found — call add_technician_seat again with displayName to restage');
+      }
+      const d = (item.detail ?? {}) as {
+        ref?: string;
+        displayName?: string;
+        tier?: TechnicianTier;
+        stagedAt?: string;
+      };
+      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
+        throw new Error('confirmation expired — restage the seat and confirm again');
+      }
+      if (!d.ref || !d.displayName || !d.tier) {
+        throw new Error('staged seat is malformed — restage with displayName');
+      }
+      const consumed = await resolveReviewItem(
+        item.id,
+        tenantId,
+        'resolved',
+        `seat confirmed by ${subjectRef}`,
+      );
+      if (!consumed) {
+        throw new Error('already confirmed or cancelled — no seat was added by this call');
+      }
+      try {
+        return await insertTechnician({
+          tenantId,
+          ref: d.ref,
+          displayName: d.displayName,
+          tier: d.tier,
+        });
+      } catch (err) {
+        // Cap first: at capacity the BEFORE-trigger fires before the unique
+        // constraint, so a duplicate-at-cap reports the cap (observed live).
+        const msg = isSeatCapError(err)
+          ? `no free ${d.tier} seats — deactivate someone or purchase a seat`
+          : isUniqueViolation(err)
+            ? `ref '${d.ref}' is taken — disambiguate (add a middle name or employee id)`
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        try {
+          await annotateResolvedReviewItem(
+            confirmId,
+            tenantId,
+            `confirmed but seat add FAILED (${msg}) — no seat was added`,
+          );
+        } catch {
+          /* advisory */
+        }
+        throw new Error(`seat NOT added: ${msg} — restage to try again`);
       }
     }
     case 'deactivate_technician_seat': {
@@ -3034,17 +3293,19 @@ async function dispatch(
             `record_standing_fact, or dismiss it to cancel`,
         );
       }
-      // Same live-token rule for the staged scheduling actions: each commits
+      // Same live-token rule for every OTHER staged action kind: each commits
       // only via its own tool's confirm call; dismissing (= cancel) is fine.
-      const STAGED_SCHEDULE_KINDS: Record<string, string> = {
+      // New staged kinds get an entry here, not a fresh if-block.
+      const STAGED_ACTION_KINDS: Record<string, string> = {
         pending_booking: 'book_visit',
         pending_visit_move: 'move_visit',
         pending_visit_cancel: 'cancel_visit',
+        pending_seat_add: 'add_technician_seat',
       };
-      if (STAGED_SCHEDULE_KINDS[open.kind] && resolution === 'resolved') {
+      if (STAGED_ACTION_KINDS[open.kind] && resolution === 'resolved') {
         throw new Error(
-          `this is a staged scheduling action for '${open.subject_ref}' — confirm it via ` +
-            `${STAGED_SCHEDULE_KINDS[open.kind]}, or dismiss it to cancel`,
+          `this is a staged action for '${open.subject_ref}' — confirm it via ` +
+            `${STAGED_ACTION_KINDS[open.kind]}, or dismiss it to cancel`,
         );
       }
       // A pairing_verification verdict acts BEFORE the item closes (state-first,

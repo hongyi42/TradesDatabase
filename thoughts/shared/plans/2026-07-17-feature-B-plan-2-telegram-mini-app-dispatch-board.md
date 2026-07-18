@@ -339,17 +339,26 @@ A worker that turns `schedule_events` into canned Telegram pushes so a person le
   the `lastSeen` map in memory. `run_in_background`-style long process; errors logged, never fatal.
 
 ### Automated verification
-- [ ] `npx tsc --noEmit` / `npm run lint` / `npm test` pass
-- [ ] **new** `src/telegram/boardNotify.test.ts` (local DB, `sendBoardMessage` stubbed): after a
+- [x] `npx tsc --noEmit` / `npm run lint` / `npm test` pass — 516 passed / 1 skipped (46 files)
+- [x] **new** `src/telegram/boardNotify.test.ts` (local DB, `sendBoardMessage` stubbed): after a
   `bookVisit` for a Telegram-bound technician, one `pollOnce` sends exactly one message to that
   technician's id with the booked-copy; a second `pollOnce` with no new events sends nothing (last-seen
   advanced); an event for an unbound technician sends nothing; an UNASSIGNED booking (null technician)
   sends nothing and does not throw; a move reassigning bound tech A's visit to bound tech B sends one
-  message to EACH (A: taken off the visit; B: it's now theirs).
+  message to EACH (A: taken off the visit; B: it's now theirs). *(Plus: first-sight cursor seeding
+  with a fresh map; same-person move = ONE message; two-event best-effort — first send rejected, second
+  still delivered, cursor advances, no resend; deactivated-but-still-bound recipient stays silent.)*
+- Adversarial review round 1 (4 findings): pushes reached DEACTIVATED technicians (getTechnicianById
+  doesn't filter isInactiveState; deactivation keeps telegram_user_id — reassigning an ex-employee's
+  visits would message them) → liveness filter at the technicianOf choke point + test; test order
+  dependency (empirically failed under -t isolation) → beforeEach cursor drain + self-contained
+  first-sight test; BOARD_POLL_MS=''/garbage → setTimeout(0) hot loop → isFinite/>0 guard; best-effort
+  only half-tested → two-event failure case. Round 2: all four CONFIRMED, nothing newly broken.
 
 ### Manual verification
 - [ ] With the worker running against the pilot, move a real visit and confirm the affected technician
   receives one Telegram message (real-device, cross-channel).
+  *(DEFERRED to the live-check batch: needs the board bot + deployed worker.)*
 
 ---
 

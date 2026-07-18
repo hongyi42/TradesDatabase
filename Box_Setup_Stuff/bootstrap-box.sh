@@ -571,6 +571,25 @@ no delete. For EVERY such write:
 5. Keep it conversational — don't lecture. Never volunteer reminders that the record is
    permanent or that there is no delete; follow these rules silently and mention permanence
    only when someone actually asks to delete or change history.
+
+## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17)
+
+The rule, in general: confirm only what is irreversible or externally visible (a customer
+promise at stake). Everything reversible — just do it, then SAY WHAT YOU DID (day, time,
+who, any warning); never act silently and never ask permission for a reversible internal
+change.
+
+1. Scheduling verbs (book_visit / move_visit / cancel_visit) are REVERSIBLE: when the change
+   is internal (nothing promised to the customer) the server acts in one call — report the
+   result. When the server returns needs_confirmation, a customer was promised a day/time
+   (or a promise is breaking): show the preview, get an explicit yes, confirm with only
+   confirmId.
+2. add_technician_seat is two-step (it mints a permanent ref and burns a purchased seat):
+   stage, show the minted ref, get a yes, confirm with only confirmId.
+3. Always pass an explicit endTime to book_visit when the manager states an end time — never
+   let the server's duration default stand in for a stated time. When no length was stated
+   and the default applied, the result says endTimeDefaulted: true — tell the manager the
+   length was assumed.
 EOF
       ok "accuracy-rules block appended to ${agent}'s AGENTS.md"
     fi

@@ -515,21 +515,41 @@ describe('MCP server', () => {
         ]),
       );
 
-      // Add: mints the slug ref, lands as invited technician.
-      const added = await callWith('add_technician_seat', { displayName: 'Bob Marley' });
+      // Add is TWO-STEP (irreversible: permanent ref + a seat). Stage first —
+      // nothing is inserted until the confirming call.
+      const addStage = await callWith('add_technician_seat', { displayName: 'Bob Marley' });
+      expect(addStage.data.status).toBe('needs_confirmation');
+      expect(addStage.data.preview).toMatchObject({ ref: 'bob-marley', tier: 'technician' });
+      const preConfirm = await pg.query(
+        "select count(*)::int as n from technicians where tenant_id = $1 and ref = 'bob-marley'",
+        [tenantId],
+      );
+      expect(preConfirm.rows[0].n).toBe(0); // staged ≠ inserted
+
+      // A forged confirmId mints nothing.
+      const forgedSeat = await callWith('add_technician_seat', {
+        confirmId: '00000000-0000-0000-0000-000000000000',
+      });
+      expect(forgedSeat.isError).toBe(true);
+
+      const added = await callWith('add_technician_seat', { confirmId: addStage.data.confirmId });
       expect(added.isError).toBe(false);
       expect(added.data).toMatchObject({ ref: 'bob-marley', tier: 'technician', state: 'invited' });
 
-      // Duplicate display name WITH a seat still free → the 23505 disambiguation
-      // error (at cap the trigger would report the cap instead — Phase 1 probe).
+      // Duplicate display name now fails at STAGE time (dup pre-check) —
+      // before any yes is spent on it.
       const dup = await callWith('add_technician_seat', { displayName: 'Bob Marley' });
       expect(dup.isError).toBe(true);
       expect(dup.text).toContain("ref 'bob-marley' is taken");
 
-      // Fill the last seat, then exceed: the purchase error, verbatim tier name.
-      const carlEarly = await callWith('add_technician_seat', { displayName: 'Carl Sagan' });
+      // Fill the last seat, then exceed: the cap is a moving target, so it
+      // surfaces at CONFIRM (the insert), with the purchase error verbatim.
+      const carlStage = await callWith('add_technician_seat', { displayName: 'Carl Sagan' });
+      const carlEarly = await callWith('add_technician_seat', { confirmId: carlStage.data.confirmId });
       expect(carlEarly.isError).toBe(false); // seat 3/3
-      const capped = await callWith('add_technician_seat', { displayName: 'Dan Dare' });
+      const danStage = await callWith('add_technician_seat', { displayName: 'Dan Dare' });
+      expect(danStage.data.status).toBe('needs_confirmation'); // cap not pre-checked
+      const capped = await callWith('add_technician_seat', { confirmId: danStage.data.confirmId });
       expect(capped.isError).toBe(true);
       expect(capped.text).toContain('no free technician seats');
 
@@ -562,8 +582,10 @@ describe('MCP server', () => {
       const repeat = await callWith('deactivate_technician_seat', { ref: 'bob-marley' });
       expect(repeat.data).toEqual({ status: 'already_deactivated', ref: 'bob-marley' });
 
-      // The freed seat is immediately usable — the earlier capped add now works.
-      const dan = await callWith('add_technician_seat', { displayName: 'Dan Dare' });
+      // The freed seat is immediately usable — the earlier capped add now works
+      // (fresh stage: the failed confirm consumed its token).
+      const danRetry = await callWith('add_technician_seat', { displayName: 'Dan Dare' });
+      const dan = await callWith('add_technician_seat', { confirmId: danRetry.data.confirmId });
       expect(dan.isError).toBe(false);
       expect(dan.data.ref).toBe('dan-dare');
 
@@ -1496,8 +1518,11 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       });
       expect(done2.data.status).toBe('deactivated');
       // Occupied now: tech-mcp, carl-sagan, dan-dare, pair-early (4 of 6).
-      await callWith('add_technician_seat', { displayName: 'Cap Filler Five' });
-      await callWith('add_technician_seat', { displayName: 'Cap Filler Six' });
+      // Seat add is two-step since 2026-07-17: stage → confirm per filler.
+      for (const displayName of ['Cap Filler Five', 'Cap Filler Six']) {
+        const fillerStage = await callWith('add_technician_seat', { displayName });
+        await callWith('add_technician_seat', { confirmId: fillerStage.data.confirmId });
+      }
       const blocked = await callWith('reactivate_technician_seat', { ref: 'pair-probe' });
       expect(blocked.isError).toBe(true);
       expect(blocked.text).toContain('no free technician seats');

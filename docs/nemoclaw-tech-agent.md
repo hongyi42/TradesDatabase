@@ -95,7 +95,8 @@ table, not the badge, is the tier source of truth) additionally exposes the seat
 tools — 12 of them, for a 25-tool manager surface (the technician surface itself is 13 incl.
 send_email since 2026-07-04, retract_capture and get_schedule since 2026-07-06, web_search and
 read_webpage since 2026-07-13, record_standing_fact since 2026-07-14; the 4 scheduling tools
-`get_team_schedule`/`book_visit`/`move_visit`/`cancel_visit` since 2026-07-14): `add_technician_seat`,
+`get_team_schedule`/`book_visit`/`move_visit`/`cancel_visit` since 2026-07-14): `add_technician_seat`
+(two-step confirm since 2026-07-17 — mints a permanent ref + burns a seat, not reversible),
 `deactivate_technician_seat` (two-step confirm; starts the disable-first grace period),
 `reactivate_technician_seat` (the grace-period undo), `get_connect_link` (mint a Gmail
 Connect Link; 5-min per-person cooldown), `bind_telegram` (connect a person to their numeric
@@ -108,6 +109,15 @@ admin surface. Seat caps (`tenants.manager_seats`/`technician_seats`) are DB-enf
 agent cannot talk past them.
 
 ## 5. Conversation contract (stage→confirm since 2026-07-06)
+
+**Confirmation doctrine (2026-07-17, user decision):** confirm only what is **irreversible or
+externally visible** (a customer promise at stake); everything reversible happens in ONE call
+and the agent reports what it did. Concretely: `book_visit`/`move_visit`/`cancel_visit` act
+one-shot when no customer promise is affected (book with `promiseLevel:'none'`, move with
+`promiseBroken:false`, cancel of an unpromised visit) and still stage→confirm when one is;
+`add_technician_seat` is now two-step (permanent ref + a seat); the booking duration default
+is applied-and-disclosed (`endTimeDefaulted:true` in the result), never confirmed — and the
+agent must pass an explicit `endTime` whenever the manager states one.
 - The agent calls `record_field_note({ text, channel })`. **Nothing is recorded by this call** —
   the note is staged server-side (a review-item token) and the response carries a `confirmId`.
 - If the result `status` is `needs_identity`, the agent asks the technician which customer

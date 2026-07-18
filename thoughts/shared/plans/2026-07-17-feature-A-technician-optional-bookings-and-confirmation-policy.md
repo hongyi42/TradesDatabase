@@ -304,9 +304,20 @@ here-doc). Add behavioral bullets (free-form voice, no scripted server sentences
   confirm). Keep the seat-cap and duplicate-ref cases (cap can surface at confirm; dup at stage).
 
 ### Automated verification
-- [ ] `npx tsc --noEmit` / `npm run lint` / `npm test` / `npm run build` all pass
-- [ ] seat two-step test: nothing is inserted until the confirming call; forged `confirmId` mints
-      nothing; cap/dup still reported
+- [x] `npx tsc --noEmit` / `npm run lint` / `npm test` / `npm run build` all pass (483 passed / 1
+      skipped; `bash -n` on bootstrap-box.sh clean)
+- [x] seat two-step test: nothing is inserted until the confirming call (SQL row-count pin);
+      forged `confirmId` mints nothing; dup at STAGE; cap at CONFIRM (stage returns
+      needs_confirmation — cap not pre-checked); freed seat usable via fresh stage→confirm;
+      offboarding suite's cap-filler seats converted to two-step (missed call site caught by
+      the suite itself)
+- Adversarial review (fresh subagent): ONE finding, fixed + re-verified — the stage return
+  echoed local state instead of the ITEM's staged detail (racing stages could show carl-sagan
+  while the token mints bob-marley, on the irreversible tool); now echoes `item.detail` per the
+  send_email/book_visit idiom. Also added (small plan gap): `pending_seat_add` joins
+  `resolve_review`'s live-token refusal list. Verified clean: offboarded refs DO block at the
+  stage dup pre-check (getTechnician is state-blind, matching the all-rows unique constraint);
+  tier forgery impossible (validated at stage, guarded lookup, DB enum backstop).
 
 ### Manual verification
 - [ ] none this phase — the live Telegram E2E runs in **Phase 5** (it needs the deployed pilot +

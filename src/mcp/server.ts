@@ -459,17 +459,21 @@ const ADMIN_TOOLS = [
   {
     name: 'add_technician_seat',
     description:
-      'Add a person to the team roster (manager only). Mints their permanent ref from the ' +
-      'display name (e.g. "Jane Doe" → jane-doe) and occupies one purchased seat of the tier. ' +
-      'Fails if no seat is free or the ref is already taken (disambiguate with a middle name ' +
-      'or employee id). Returns the roster row incl. the minted ref.',
+      'Add a person to the team roster (manager only) — TWO-STEP, because it is not ' +
+      'reversible: it mints a permanent never-reused ref from the display name (e.g. ' +
+      '"Jane Doe" → jane-doe) and occupies one purchased seat of the tier. First call with ' +
+      'displayName (+ optional tier): NOTHING is added; you get {status:"needs_confirmation", ' +
+      'confirmId} with the minted ref. Show the manager; only on their explicit yes call ' +
+      'again with ONLY confirmId — that returns the roster row. Fails if no seat is free or ' +
+      'the ref is already taken (disambiguate with a middle name or employee id).',
     inputSchema: {
       type: 'object',
       properties: {
-        displayName: { type: 'string', description: "The person's full name." },
-        tier: { type: 'string', enum: TIERS, description: 'Defaults to technician.' },
+        displayName: { type: 'string', description: "The person's full name. First call only." },
+        tier: { type: 'string', enum: TIERS, description: 'Defaults to technician. First call only.' },
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
-      required: ['displayName'],
+      required: [],
     },
   },
   {
@@ -2748,35 +2752,127 @@ async function dispatch(
       };
     }
     case 'add_technician_seat': {
-      const displayName = str('displayName')?.trim();
-      if (!displayName) throw new Error('displayName is required');
-      const tierArg = str('tier');
-      if (tierArg && !TIERS.includes(tierArg as TechnicianTier)) {
-        throw new Error(`invalid tier: ${tierArg}`);
-      }
-      const tier: TechnicianTier = (tierArg as TechnicianTier | undefined) ?? 'technician';
-      const ref = slugify(displayName);
-      // Slug alphabet is ASCII: a fully non-Latin name slugs to '' — ask for a
-      // romanized form rather than failing with a false "no letters" claim.
-      if (!ref) {
-        throw new Error(
-          'displayName must contain ASCII letters or digits — use a romanized spelling to mint the ref',
-        );
-      }
-      try {
-        return await insertTechnician({ tenantId, ref, displayName, tier });
-      } catch (err) {
-        // Cap first: at capacity the BEFORE-trigger fires before the unique
-        // constraint, so a duplicate-at-cap reports the cap (observed live).
-        if (isSeatCapError(err)) {
-          throw new Error(`no free ${tier} seats — deactivate someone or purchase a seat`);
+      // Two-step (doctrine 2026-07-17): the mint is IRREVERSIBLE — a permanent
+      // never-reused ref plus a burned seat — so it confirms, exactly the class
+      // the one-shot schedule ops are not. Same token machinery as book_visit.
+      const subjectRef = identity.technicianRef;
+      const confirmId = str('confirmId');
+      if (!confirmId) {
+        // STAGE — nothing is inserted here.
+        const displayName = str('displayName')?.trim();
+        if (!displayName) throw new Error('displayName is required');
+        const tierArg = str('tier');
+        if (tierArg && !TIERS.includes(tierArg as TechnicianTier)) {
+          throw new Error(`invalid tier: ${tierArg}`);
         }
-        if (isUniqueViolation(err)) {
+        const tier: TechnicianTier = (tierArg as TechnicianTier | undefined) ?? 'technician';
+        const ref = slugify(displayName);
+        // Slug alphabet is ASCII: a fully non-Latin name slugs to '' — ask for a
+        // romanized form rather than failing with a false "no letters" claim.
+        if (!ref) {
+          throw new Error(
+            'displayName must contain ASCII letters or digits — use a romanized spelling to mint the ref',
+          );
+        }
+        // Stage-time dup pre-check so the common mistake fails BEFORE a yes;
+        // the cap (a moving target) surfaces at confirm via the insert itself.
+        if (await getTechnician(tenantId, ref)) {
           throw new Error(
             `ref '${ref}' is taken — disambiguate (add a middle name or employee id)`,
           );
         }
-        throw err;
+        await resolveOpenReviewItemFor(
+          tenantId,
+          'pending_seat_add',
+          subjectRef,
+          'dismissed',
+          'superseded by a new seat request',
+        );
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_seat_add',
+          subjectRef,
+          detail: { ref, displayName, tier, stagedAt: new Date().toISOString() },
+        });
+        // Echo the ITEM's staged detail, not local state (racing stages — same
+        // rule as send_email/book_visit): what is SHOWN must be what a confirm
+        // of this confirmId would mint.
+        const staged = (item.detail ?? {}) as {
+          ref?: string;
+          displayName?: string;
+          tier?: string;
+        };
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          preview: {
+            ref: staged.ref ?? ref,
+            displayName: staged.displayName ?? displayName,
+            tier: staged.tier ?? tier,
+          },
+          note:
+            `Nothing was added. This will occupy one ${staged.tier ?? tier} seat and mint the ` +
+            `permanent ref '${staged.ref ?? ref}'. Show the manager; on their explicit yes ` +
+            `call again with ONLY confirmId.`,
+        };
+      }
+      // CONFIRM — guarded token lookup → expiry → CONSUME FIRST → insert.
+      const item = await getOpenReviewItem(confirmId, tenantId, {
+        kind: 'pending_seat_add',
+        subjectRef,
+      });
+      if (!item) {
+        throw new Error('confirmation not found — call add_technician_seat again with displayName to restage');
+      }
+      const d = (item.detail ?? {}) as {
+        ref?: string;
+        displayName?: string;
+        tier?: TechnicianTier;
+        stagedAt?: string;
+      };
+      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
+        throw new Error('confirmation expired — restage the seat and confirm again');
+      }
+      if (!d.ref || !d.displayName || !d.tier) {
+        throw new Error('staged seat is malformed — restage with displayName');
+      }
+      const consumed = await resolveReviewItem(
+        item.id,
+        tenantId,
+        'resolved',
+        `seat confirmed by ${subjectRef}`,
+      );
+      if (!consumed) {
+        throw new Error('already confirmed or cancelled — no seat was added by this call');
+      }
+      try {
+        return await insertTechnician({
+          tenantId,
+          ref: d.ref,
+          displayName: d.displayName,
+          tier: d.tier,
+        });
+      } catch (err) {
+        // Cap first: at capacity the BEFORE-trigger fires before the unique
+        // constraint, so a duplicate-at-cap reports the cap (observed live).
+        const msg = isSeatCapError(err)
+          ? `no free ${d.tier} seats — deactivate someone or purchase a seat`
+          : isUniqueViolation(err)
+            ? `ref '${d.ref}' is taken — disambiguate (add a middle name or employee id)`
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        try {
+          await annotateResolvedReviewItem(
+            confirmId,
+            tenantId,
+            `confirmed but seat add FAILED (${msg}) — no seat was added`,
+          );
+        } catch {
+          /* advisory */
+        }
+        throw new Error(`seat NOT added: ${msg} — restage to try again`);
       }
     }
     case 'deactivate_technician_seat': {
@@ -3221,6 +3317,13 @@ async function dispatch(
         throw new Error(
           `this is a staged scheduling action for '${open.subject_ref}' — confirm it via ` +
             `${STAGED_SCHEDULE_KINDS[open.kind]}, or dismiss it to cancel`,
+        );
+      }
+      // And for a staged seat add: it commits only via add_technician_seat.
+      if (open.kind === 'pending_seat_add' && resolution === 'resolved') {
+        throw new Error(
+          `this is a staged seat add for '${open.subject_ref}' — confirm it via ` +
+            `add_technician_seat, or dismiss it to cancel`,
         );
       }
       // A pairing_verification verdict acts BEFORE the item closes (state-first,

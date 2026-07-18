@@ -3268,6 +3268,106 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       await mgrClient.close();
     }
   });
+
+  test('unassigned booking: no technicianRef → booked person-less, board flags it, move attaches', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Assign Later Al' });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // Stage WITHOUT a technician — preview echoes a person-less booking.
+      const staged = await callWith('book_visit', {
+        customerId: customer.id,
+        date: '2027-01-05',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(staged.data.status).toBe('needs_confirmation');
+      expect(staged.data.preview.technicianRef).toBeNull();
+      expect(staged.data.preview.technicianName).toBeNull();
+      const booked = await callWith('book_visit', { confirmId: staged.data.confirmId });
+      expect(booked.data.status).toBe('booked');
+      expect(booked.data.unassigned).toBe(true);
+      expect(booked.data.technicianRef).toBeNull();
+      const id = booked.data.assignmentId as string;
+
+      // The board window covering the day flags it person-less.
+      const team = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05' });
+      const stop = (team.data.days[0].stops as Array<Record<string, unknown>>).find(
+        (s) => s.assignmentId === id,
+      );
+      expect(stop).toMatchObject({ unassigned: true, technicianRef: null, technicianName: null });
+
+      // Attaching a person via move_visit clears the flag.
+      const moveStage = await callWith('move_visit', {
+        assignmentId: id,
+        date: '2027-01-05',
+        startTime: '09:00',
+        technicianRef: 'tech-mcp',
+        reason: 'assigning tech',
+      });
+      const moved = await callWith('move_visit', { confirmId: moveStage.data.confirmId });
+      expect(moved.data.status).toBe('moved');
+      const after = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05' });
+      const attached = (after.data.days[0].stops as Array<Record<string, unknown>>).find(
+        (s) => s.assignmentId === moved.data.assignmentId,
+      );
+      expect(attached).toMatchObject({ unassigned: false, technicianRef: 'tech-mcp' });
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('unassignedOnly recall view: far-out person-less visits found; normal cap unchanged', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Recall Roy' });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // Park an unassigned visit far beyond any board window (the finding the
+      // lister fixes: nothing else can surface this row).
+      const staged = await callWith('book_visit', {
+        customerId: customer.id,
+        date: '2027-02-10',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      const booked = await callWith('book_visit', { confirmId: staged.data.confirmId });
+      const farId = booked.data.assignmentId as string;
+      // An ASSIGNED far-out visit — must never appear in the recall view.
+      const aStaged = await callWith('book_visit', {
+        customerId: customer.id,
+        technicianRef: 'tech-mcp',
+        date: '2027-02-11',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      const aBooked = await callWith('book_visit', { confirmId: aStaged.data.confirmId });
+
+      // Default board read (today) does NOT show the far-out visit…
+      const today = await callWith('get_team_schedule', {});
+      const todaysIds = (today.data.days as Array<{ stops: Array<{ assignmentId: string }> }>)
+        .flatMap((d) => d.stops)
+        .map((s) => s.assignmentId);
+      expect(todaysIds).not.toContain(farId);
+      // …and a >14-day range without the flag still errors (cap unchanged).
+      const capped = await callWith('get_team_schedule', { from: '2027-01-01', to: '2027-03-01' });
+      expect(capped.data.status).toBe('invalid_range');
+
+      // The recall view finds it, however far out, with the full stop shape.
+      const recall = await callWith('get_team_schedule', { unassignedOnly: true });
+      expect(recall.data.status).toBe('ok');
+      expect(recall.data.unassignedOnly).toBe(true);
+      expect(recall.data.scheduleVersion).toBeGreaterThan(0);
+      const recallStops = (recall.data.days as Array<{ stops: Array<Record<string, unknown>> }>)
+        .flatMap((d) => d.stops);
+      const farStop = recallStops.find((s) => s.assignmentId === farId);
+      expect(farStop).toMatchObject({ unassigned: true, customer: 'Recall Roy' });
+      // Assigned visits never appear here.
+      expect(recallStops.map((s) => s.assignmentId)).not.toContain(aBooked.data.assignmentId);
+      // Garbage flag type is rejected.
+      const bad = await callWith('get_team_schedule', { unassignedOnly: 'yes' });
+      expect(bad.data.status).toBe('invalid_range');
+    } finally {
+      await mgrClient.close();
+    }
+  });
 });
 
 describe('safeEnvInt (web-cap env parsing)', () => {

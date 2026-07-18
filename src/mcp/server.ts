@@ -96,6 +96,7 @@ import { isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
   latestScheduleVersion,
   listAssignmentsForTenant,
+  listUnassignedAssignments,
   listJobsWithCustomerByIds,
   type PromiseLevel,
 } from '../db/index.js';
@@ -559,13 +560,21 @@ const ADMIN_TOOLS = [
       "The whole team's schedule (manager only): for each day in [from,to] (YYYY-MM-DD; both " +
       "optional — default today in the firm's timezone; capped at 14 days), every technician's " +
       'confirmed visits with customer, address, times, promiseLevel (what the customer was ' +
-      "told: none/day/time), promisedDay, and locked (manager-pinned). Also returns " +
-      'scheduleVersion — quote it when discussing changes so staleness is detectable.',
+      "told: none/day/time), promisedDay, and locked (manager-pinned). Stops with " +
+      'unassigned:true have NOBODY attached yet and need a person (attach with move_visit). ' +
+      'Pass unassignedOnly:true to list ALL upcoming visits with nobody attached, however far ' +
+      'out (no 14-day cap) — use it when the manager asks what still needs assigning. Also ' +
+      'returns scheduleVersion — quote it when discussing changes so staleness is detectable.',
     inputSchema: {
       type: 'object',
       properties: {
         from: { type: 'string', description: 'Start date YYYY-MM-DD (default: today).' },
         to: { type: 'string', description: 'End date YYYY-MM-DD inclusive (default: from).' },
+        unassignedOnly: {
+          type: 'boolean',
+          description:
+            'true = only visits with no technician attached, from `from` onward with NO upper bound (`to` and the 14-day cap ignored).',
+        },
       },
       required: [],
     },
@@ -573,20 +582,22 @@ const ADMIN_TOOLS = [
   {
     name: 'book_visit',
     description:
-      'Book a visit onto the schedule (manager only) — two-step. First call with technicianRef ' +
-      '+ date (+ customerId OR jobId, times optional): NOTHING is booked; you get ' +
+      'Book a visit onto the schedule (manager only) — two-step. First call with date ' +
+      '(+ customerId OR jobId, technicianRef + times optional): NOTHING is booked; you get ' +
       '{status:"needs_confirmation", confirmId} with a preview. Show the manager EXACTLY the ' +
       'preview (including any availability warning); only on their explicit yes call again with ' +
-      'ONLY confirmId. promiseLevel records what the customer was ACTUALLY told and defaults to ' +
-      '"none" (nothing promised — the booking is internal). Pass "day" ONLY when the manager ' +
-      'says the customer was told the day, or "time" when told an exact time. NEVER assume a ' +
-      'promise was made. When talking to customers, offer DAYS, not times.',
+      'ONLY confirmId. Omit technicianRef to book WITHOUT a technician (put it on the calendar, ' +
+      'assign later — attach someone with move_visit; find these via get_team_schedule ' +
+      'unassignedOnly:true). promiseLevel records what the customer was ACTUALLY told and ' +
+      'defaults to "none" (nothing promised — the booking is internal). Pass "day" ONLY when ' +
+      'the manager says the customer was told the day, or "time" when told an exact time. ' +
+      'NEVER assume a promise was made. When talking to customers, offer DAYS, not times.',
     inputSchema: {
       type: 'object',
       properties: {
         customerId: { type: 'string', description: 'Exactly one of customerId/jobId. First call only.' },
         jobId: { type: 'string', description: 'Exactly one of customerId/jobId. First call only.' },
-        technicianRef: { type: 'string', description: 'Roster ref of the technician. First call only.' },
+        technicianRef: { type: 'string', description: 'Roster ref of the technician. OPTIONAL — omit to book unassigned ("assign later"). First call only.' },
         title: { type: 'string', description: 'Job title when booking by customerId (a new job is created). First call only.' },
         date: { type: 'string', description: 'YYYY-MM-DD, firm-local. First call only.' },
         startTime: { type: 'string', description: 'HH:MM 24h (default 08:00). First call only.' },
@@ -2135,6 +2146,10 @@ async function dispatch(
       ) {
         return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD strings' };
       }
+      if (args.unassignedOnly !== undefined && typeof args.unassignedOnly !== 'boolean') {
+        return { status: 'invalid_range', note: 'unassignedOnly must be a boolean' };
+      }
+      const unassignedOnly = args.unassignedOnly === true;
       let from = str('from');
       let to = str('to');
       if (!from) {
@@ -2145,6 +2160,54 @@ async function dispatch(
       const DATE = /^\d{4}-\d{2}-\d{2}$/;
       if (!DATE.test(from) || !DATE.test(to) || from > to) {
         return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD with from <= to' };
+      }
+      if (unassignedOnly) {
+        // The "assign later" recall view: EVERY upcoming visit with nobody
+        // attached, from `from` onward with NO upper bound — the point is
+        // catching visits parked beyond any 14-day board window (they are
+        // invisible everywhere else: their job has a live assignment, so
+        // listUnassignedOpenJobs skips it, and per-technician readers never
+        // see a null technician). `to` and the day cap deliberately don't apply.
+        const scheduleVersion = await latestScheduleVersion(tenantId);
+        const rows = await listUnassignedAssignments(tenantId, `${from}T00:00:00.000Z`);
+        const jobs = await listJobsWithCustomerByIds(tenantId, [
+          ...new Set(rows.map((r) => r.job_id)),
+        ]);
+        const jobById = new Map(jobs.map((j) => [j.id, j]));
+        const byDay = new Map<string, unknown[]>();
+        for (const row of rows) {
+          const day = row.starts_at.slice(0, 10);
+          const customer = jobById.get(row.job_id)?.customers ?? null;
+          const bucket = byDay.get(day) ?? [];
+          bucket.push({
+            assignmentId: row.id,
+            technicianRef: null,
+            technicianName: null,
+            unassigned: true,
+            customer: customer?.name ?? null,
+            address: customer
+              ? formatAddress({
+                  address_line1: customer.address_line1,
+                  address_line2: customer.address_line2,
+                  city: customer.city,
+                  state: customer.state,
+                  postal_code: customer.postal_code,
+                })
+              : null,
+            start: row.starts_at,
+            end: row.ends_at,
+            promiseLevel: row.promise_level,
+            promisedDay: row.promised_day,
+            locked: row.locked,
+            status: row.status,
+            jobId: row.job_id,
+          });
+          byDay.set(day, bucket);
+        }
+        const days = [...byDay.entries()]
+          .sort(([a], [b]) => (a < b ? -1 : 1))
+          .map(([date, stops]) => ({ date, stops }));
+        return { status: 'ok', from, unassignedOnly: true, scheduleVersion, days };
       }
       const spanDays =
         (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
@@ -2185,6 +2248,7 @@ async function dispatch(
           assignmentId: row.id,
           technicianRef: technician?.ref ?? null,
           technicianName: technician?.display_name ?? null,
+          unassigned: row.technician_id === null,
           customer: customer?.name ?? null,
           address: customer
             ? formatAddress({
@@ -2218,9 +2282,10 @@ async function dispatch(
         // technician resolution, time defaults, overlap pre-check) and throws
         // on anything that would make the booking impossible — nothing is
         // staged that cannot commit. Nothing is written here.
+        // technicianRef is OPTIONAL: omitted = an unassigned booking ("on the
+        // calendar, assign later" — attach someone later with move_visit).
         const technicianRef = str('technicianRef');
         const date = str('date');
-        if (!technicianRef) throw new Error('technicianRef is required');
         if (!date) throw new Error('date is required');
         const promiseLevelArg = str('promiseLevel');
         if (promiseLevelArg && !isPromiseLevel(promiseLevelArg)) {
@@ -2230,7 +2295,7 @@ async function dispatch(
         const jobId = str('jobId');
         const preview = await previewBookVisit({
           tenantId,
-          technicianRef,
+          ...(technicianRef ? { technicianRef } : {}),
           ...(customerId ? { customerId } : {}),
           ...(jobId ? { jobId } : {}),
           title: str('title') ?? null,
@@ -2255,7 +2320,7 @@ async function dispatch(
             customerId: customerId ?? null,
             jobId: jobId ?? null,
             title: str('title') ?? null,
-            technicianRef,
+            technicianRef: technicianRef ?? null,
             date,
             // RESOLVED times/promise — the staged copy is the booking of
             // record; commit passes exactly these so preview == commit.
@@ -2289,7 +2354,7 @@ async function dispatch(
         customerId?: string | null;
         jobId?: string | null;
         title?: string | null;
-        technicianRef?: string;
+        technicianRef?: string | null; // null = staged unassigned booking
         date?: string;
         startTime?: string;
         endTime?: string;
@@ -2300,7 +2365,8 @@ async function dispatch(
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the booking and confirm again');
       }
-      if (!d.technicianRef || !d.date || !d.startTime || !d.endTime || (!d.customerId && !d.jobId)) {
+      // A null technicianRef is a VALID staged unassigned booking — not malformed.
+      if (!d.date || !d.startTime || !d.endTime || (!d.customerId && !d.jobId)) {
         throw new Error('staged booking is malformed — restage with the booking details');
       }
       const consumed = await resolveReviewItem(
@@ -2316,7 +2382,7 @@ async function dispatch(
       try {
         booked = await bookVisit({
           tenantId,
-          technicianRef: d.technicianRef,
+          ...(d.technicianRef ? { technicianRef: d.technicianRef } : {}),
           ...(d.customerId ? { customerId: d.customerId } : {}),
           ...(d.jobId ? { jobId: d.jobId } : {}),
           title: d.title ?? null,
@@ -2344,7 +2410,8 @@ async function dispatch(
         assignmentId: booked.assignment.id,
         jobId: booked.job.id,
         customer: booked.customer.name,
-        technicianRef: d.technicianRef,
+        technicianRef: d.technicianRef ?? null,
+        unassigned: booked.assignment.technician_id === null,
         date: d.date,
         startTime: d.startTime,
         endTime: d.endTime,

@@ -85,6 +85,7 @@ import { buildMapsDeepLink, formatAddress, type RouteStop } from '../routes/deep
 import { localDateISO } from '../schedule/availability.js';
 import {
   bookVisit,
+  bookingRequiresConfirmation,
   cancelVisit,
   isPromiseLevel,
   moveVisit,
@@ -2165,83 +2166,52 @@ async function dispatch(
       }
       const unassignedOnly = args.unassignedOnly === true;
       let from = str('from');
-      let to = str('to');
+      const to = str('to');
       if (!from) {
         const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
         from = localDateISO(new Date().toISOString(), tz);
       }
-      to ??= from;
       const DATE = /^\d{4}-\d{2}-\d{2}$/;
-      if (!DATE.test(from) || !DATE.test(to) || from > to) {
-        return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD with from <= to' };
+      if (!DATE.test(from)) {
+        return { status: 'invalid_range', note: 'from must be YYYY-MM-DD' };
       }
-      if (unassignedOnly) {
-        // The "assign later" recall view: EVERY upcoming visit with nobody
-        // attached, from `from` onward with NO upper bound — the point is
-        // catching visits parked beyond any 14-day board window (they are
-        // invisible everywhere else: their job has a live assignment, so
-        // listUnassignedOpenJobs skips it, and per-technician readers never
-        // see a null technician). `to` and the day cap deliberately don't apply.
-        const scheduleVersion = await latestScheduleVersion(tenantId);
-        const rows = await listUnassignedAssignments(tenantId, `${from}T00:00:00.000Z`);
-        const jobs = await listJobsWithCustomerByIds(tenantId, [
-          ...new Set(rows.map((r) => r.job_id)),
-        ]);
-        const jobById = new Map(jobs.map((j) => [j.id, j]));
-        const byDay = new Map<string, unknown[]>();
-        for (const row of rows) {
-          const day = row.starts_at.slice(0, 10);
-          const customer = jobById.get(row.job_id)?.customers ?? null;
-          const bucket = byDay.get(day) ?? [];
-          bucket.push({
-            assignmentId: row.id,
-            technicianRef: null,
-            technicianName: null,
-            unassigned: true,
-            customer: customer?.name ?? null,
-            address: customer
-              ? formatAddress({
-                  address_line1: customer.address_line1,
-                  address_line2: customer.address_line2,
-                  city: customer.city,
-                  state: customer.state,
-                  postal_code: customer.postal_code,
-                })
-              : null,
-            start: row.starts_at,
-            end: row.ends_at,
-            promiseLevel: row.promise_level,
-            promisedDay: row.promised_day,
-            locked: row.locked,
-            status: row.status,
-            jobId: row.job_id,
-          });
-          byDay.set(day, bucket);
+      // Windowed mode validates the window; the unassignedOnly recall view has
+      // NO upper bound by design (`to` and the 14-day cap are documented as
+      // ignored, so a stray `to` must not error the recall read).
+      let toDay: string | null = null;
+      if (!unassignedOnly) {
+        toDay = to ?? from;
+        if (!DATE.test(toDay) || from > toDay) {
+          return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD with from <= to' };
         }
-        const days = [...byDay.entries()]
-          .sort(([a], [b]) => (a < b ? -1 : 1))
-          .map(([date, stops]) => ({ date, stops }));
-        return { status: 'ok', from, unassignedOnly: true, scheduleVersion, days };
-      }
-      const spanDays =
-        (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
-      if (!Number.isFinite(spanDays)) {
-        return { status: 'invalid_range', note: 'from/to is not a real calendar date' };
-      }
-      if (spanDays > 14) {
-        return { status: 'invalid_range', note: 'range is capped at 14 days' };
+        const spanDays =
+          (Date.parse(`${toDay}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+        if (!Number.isFinite(spanDays)) {
+          return { status: 'invalid_range', note: 'from/to is not a real calendar date' };
+        }
+        if (spanDays > 14) {
+          return { status: 'invalid_range', note: 'range is capped at 14 days' };
+        }
       }
       // Version BEFORE the snapshot: a booking that lands between the two
       // reads then makes a later "changed since version N?" check fire
       // (false positive, fail-safe) instead of silently vouching for a
       // snapshot that is missing it.
       const scheduleVersion = await latestScheduleVersion(tenantId);
-      const rows = await listAssignmentsForTenant(
-        tenantId,
-        `${from}T00:00:00.000Z`,
-        new Date(Date.parse(`${to}T00:00:00.000Z`) + 86_400_000).toISOString(),
-        ['confirmed'],
-      );
+      // unassignedOnly = the "assign later" recall view: EVERY upcoming visit
+      // with nobody attached, from `from` onward — the point is catching
+      // visits parked beyond any 14-day board window (their job has a live
+      // assignment, so listUnassignedOpenJobs skips it, and per-technician
+      // readers never see a null technician). Same stop shape either way —
+      // ONE builder below, so the two views can never drift.
+      const rows = unassignedOnly
+        ? await listUnassignedAssignments(tenantId, `${from}T00:00:00.000Z`)
+        : await listAssignmentsForTenant(
+            tenantId,
+            `${from}T00:00:00.000Z`,
+            new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
+            ['confirmed'],
+          );
       const jobs = await listJobsWithCustomerByIds(tenantId, [
         ...new Set(rows.map((r) => r.job_id)),
       ]);
@@ -2250,12 +2220,13 @@ async function dispatch(
       const byDay = new Map<string, unknown[]>();
       for (const row of rows) {
         // Overlap semantics can pull in a row starting before `from` — clamp
-        // to the requested days by start-day, the daySource precedent.
+        // to the requested days by start-day, the daySource precedent (the
+        // upper arm applies only in windowed mode).
         const day = row.starts_at.slice(0, 10);
-        if (day < from || day > to) continue;
+        if (day < from || (toDay !== null && day > toDay)) continue;
         const customer = jobById.get(row.job_id)?.customers ?? null;
         // technician_id may be NULL (unassigned booking) — the ?? null echoes
-        // below already render that as a person-less stop.
+        // below render that as a person-less stop in both modes.
         const technician = row.technician_id ? techById.get(row.technician_id) : undefined;
         const bucket = byDay.get(day) ?? [];
         bucket.push({
@@ -2286,7 +2257,9 @@ async function dispatch(
       const days = [...byDay.entries()]
         .sort(([a], [b]) => (a < b ? -1 : 1))
         .map(([date, stops]) => ({ date, stops }));
-      return { status: 'ok', from, to, scheduleVersion, days };
+      return unassignedOnly
+        ? { status: 'ok', from, unassignedOnly: true, scheduleVersion, days }
+        : { status: 'ok', from, to: toDay, scheduleVersion, days };
     }
     case 'book_visit': {
       const subjectRef = identity.technicianRef;
@@ -2299,6 +2272,14 @@ async function dispatch(
         // technicianRef is OPTIONAL: omitted = an unassigned booking ("on the
         // calendar, assign later" — attach someone later with move_visit).
         const technicianRef = str('technicianRef');
+        // A PRESENT-but-empty ref is an error, not an unassigned booking: the
+        // agent named nobody by accident ("book Jane" with the value dropped).
+        // Only a genuinely absent key means "assign later" on purpose.
+        if (args.technicianRef !== undefined && !technicianRef) {
+          throw new Error(
+            'technicianRef was empty — pass the roster ref, or omit the field entirely to book unassigned',
+          );
+        }
         const date = str('date');
         if (!date) throw new Error('date is required');
         const promiseLevelArg = str('promiseLevel');
@@ -2307,7 +2288,9 @@ async function dispatch(
         }
         const customerId = str('customerId');
         const jobId = str('jobId');
-        const preview = await previewBookVisit({
+        // ONE input literal for both paths — a field added here reaches the
+        // one-shot commit and the staged preview identically.
+        const bookInput = {
           tenantId,
           ...(technicianRef ? { technicianRef } : {}),
           ...(customerId ? { customerId } : {}),
@@ -2318,9 +2301,42 @@ async function dispatch(
           ...(str('endTime') ? { endTime: str('endTime') } : {}),
           ...(promiseLevelArg ? { promiseLevel: promiseLevelArg as PromiseLevel } : {}),
           actorRef: subjectRef,
-        });
-        // Either path supersedes a stale staged booking first — a forgotten
-        // token must never stay confirmable after the manager's intent moved on.
+        };
+        // Doctrine (user decision 2026-07-17, single-sourced in booking.ts):
+        // nothing promised = internal + reversible → ONE step. For a book the
+        // verdict is input-derived, so no preview round is needed — bookVisit
+        // runs every guard itself (one resolution instead of two).
+        if (!bookingRequiresConfirmation((promiseLevelArg as PromiseLevel | undefined) ?? 'none')) {
+          const booked = await bookVisit(bookInput);
+          return {
+            status: 'booked',
+            assignmentId: booked.assignment.id,
+            jobId: booked.job.id,
+            customer: booked.customer.name,
+            technicianRef: technicianRef ?? null,
+            unassigned: booked.assignment.technician_id === null,
+            date,
+            // Resolved times from the row itself (naive-local, exact slices).
+            startTime: booked.assignment.starts_at.slice(11, 16),
+            endTime: booked.assignment.ends_at.slice(11, 16),
+            endTimeDefaulted: booked.endTimeDefaulted,
+            promiseLevel: booked.assignment.promise_level,
+            ...(booked.warning ? { warning: booked.warning } : {}),
+            note:
+              'Booked in one step — nothing was promised to the customer, so no confirmation ' +
+              'was needed (undo = move_visit / cancel_visit). Tell the manager exactly what ' +
+              'was booked' +
+              (booked.endTimeDefaulted
+                ? ', including that the end time was assumed from the standard job length'
+                : '') +
+              '.',
+          };
+        }
+        const preview = await previewBookVisit(bookInput);
+        // Staging replaces any prior staged booking (re-stage supersedes) and
+        // the NEW confirmId below is the visible replacement. One-shot calls
+        // above deliberately leave pending tokens alone — booking Bob must not
+        // silently kill a promised Alice booking still awaiting its yes.
         await resolveOpenReviewItemFor(
           tenantId,
           'pending_booking',
@@ -2328,49 +2344,6 @@ async function dispatch(
           'dismissed',
           'superseded by a new booking request',
         );
-        // Doctrine (user decision 2026-07-17): confirm only what is
-        // irreversible or externally visible. Nothing promised to the
-        // customer = internal + reversible (undo = move/cancel) → act in ONE
-        // step and report. A promised booking still stages below.
-        if (preview.promiseLevel === 'none') {
-          const booked = await bookVisit({
-            tenantId,
-            ...(technicianRef ? { technicianRef } : {}),
-            ...(customerId ? { customerId } : {}),
-            ...(jobId ? { jobId } : {}),
-            title: str('title') ?? null,
-            date,
-            startTime: preview.startTime, // resolved — preview == commit
-            endTime: preview.endTime,
-            promiseLevel: 'none',
-            actorRef: subjectRef,
-          });
-          return {
-            status: 'booked',
-            assignmentId: booked.assignment.id,
-            jobId: booked.job.id,
-            customer: booked.customer.name,
-            technicianRef: preview.technicianRef,
-            unassigned: booked.assignment.technician_id === null,
-            date,
-            startTime: preview.startTime,
-            endTime: preview.endTime,
-            // Stage-time truth: the commit call passes the RESOLVED endTime
-            // (preview == commit), so the verb's recomputed flag is always
-            // false here — the preview knows whether the manager stated one.
-            endTimeDefaulted: preview.endTimeDefaulted,
-            promiseLevel: booked.assignment.promise_level,
-            ...(booked.warning ? { warning: booked.warning } : {}),
-            note:
-              'Booked in one step — nothing was promised to the customer, so no confirmation ' +
-              'was needed (undo = move_visit / cancel_visit). Tell the manager exactly what ' +
-              'was booked' +
-              (preview.endTimeDefaulted
-                ? ', including that the end time was assumed from the standard job length'
-                : '') +
-              '.',
-          };
-        }
         const item = await upsertOpenReviewItem({
           tenantId,
           kind: 'pending_booking',
@@ -2426,8 +2399,16 @@ async function dispatch(
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the booking and confirm again');
       }
-      // A null technicianRef is a VALID staged unassigned booking — not malformed.
-      if (!d.date || !d.startTime || !d.endTime || (!d.customerId && !d.jobId)) {
+      // An explicit null technicianRef is a VALID staged unassigned booking;
+      // an ABSENT key is corruption (every stage writes the field) — refuse it
+      // rather than silently committing a nobody-attached visit.
+      if (
+        d.technicianRef === undefined ||
+        !d.date ||
+        !d.startTime ||
+        !d.endTime ||
+        (!d.customerId && !d.jobId)
+      ) {
         throw new Error('staged booking is malformed — restage with the booking details');
       }
       const consumed = await resolveReviewItem(
@@ -2494,35 +2475,29 @@ async function dispatch(
         if (!assignmentId) throw new Error('assignmentId is required');
         if (!date || !startTime) throw new Error('date and startTime are required');
         if (!reason) throw new Error('reason is required — say why the visit is moving');
+        const technicianRefArg = str('technicianRef');
         const preview = await previewMoveVisit({
           tenantId,
           assignmentId,
           date,
           startTime,
           ...(str('endTime') ? { endTime: str('endTime') } : {}),
-          ...(str('technicianRef') ? { technicianRef: str('technicianRef') } : {}),
+          ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
           reason,
           actorRef: subjectRef,
         });
-        await resolveOpenReviewItemFor(
-          tenantId,
-          'pending_visit_move',
-          subjectRef,
-          'dismissed',
-          'superseded by a new move request',
-        );
-        // Doctrine (2026-07-17): no promise breaking = internal + reversible
-        // → move in ONE step and report. A promise-breaking move still stages
-        // below (the customer heard a different day/time — someone must own
-        // telling them before it changes).
-        if (!preview.promiseBroken) {
+        // Doctrine (2026-07-17, verdict computed in booking.ts): no promise
+        // breaking = internal + reversible → move in ONE step and report. A
+        // promise-breaking move stages below (the customer heard a different
+        // day/time — someone must own telling them before it changes).
+        if (!preview.requiresConfirmation) {
           const moved = await moveVisit({
             tenantId,
             assignmentId,
             date,
             startTime,
             endTime: preview.endTime, // resolved — preview == commit
-            ...(str('technicianRef') ? { technicianRef: str('technicianRef') } : {}),
+            ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
             reason,
             actorRef: subjectRef,
           });
@@ -2540,6 +2515,15 @@ async function dispatch(
               'needed. Tell the manager exactly what moved.',
           };
         }
+        // Staging replaces any prior staged move (the new confirmId is the
+        // visible replacement); one-shot moves above leave pending tokens alone.
+        await resolveOpenReviewItemFor(
+          tenantId,
+          'pending_visit_move',
+          subjectRef,
+          'dismissed',
+          'superseded by a new move request',
+        );
         const item = await upsertOpenReviewItem({
           tenantId,
           kind: 'pending_visit_move',
@@ -2549,7 +2533,7 @@ async function dispatch(
             date,
             startTime,
             endTime: preview.endTime, // resolved — preview == commit
-            technicianRef: str('technicianRef') ?? null,
+            technicianRef: technicianRefArg ?? null,
             reason,
             preview: preview as unknown as Json,
             stagedAt: new Date().toISOString(),
@@ -2560,12 +2544,12 @@ async function dispatch(
           status: 'needs_confirmation',
           confirmId: item.id,
           preview: staged.preview ?? preview,
+          // Staging is only reachable when the promise breaks (one-shot
+          // handles the rest), so say it unconditionally.
           note:
-            'Nothing was moved. Show the manager exactly this preview' +
-            (preview.promiseBroken
-              ? ' — promiseBroken is TRUE: the customer was promised a different day and someone must tell them'
-              : '') +
-            '; on their explicit yes call again with ONLY confirmId.',
+            'Nothing was moved. Show the manager exactly this preview — promiseBroken is ' +
+            'TRUE: the customer was promised a different day/time and someone must tell ' +
+            'them; on their explicit yes call again with ONLY confirmId.',
         };
       }
       // CONFIRM — consume-first (at-most-once).
@@ -2652,18 +2636,11 @@ async function dispatch(
         if (!assignmentId) throw new Error('assignmentId is required');
         if (!reason) throw new Error('reason is required — say why the visit is being cancelled');
         const preview = await previewCancelVisit(tenantId, assignmentId);
-        await resolveOpenReviewItemFor(
-          tenantId,
-          'pending_visit_cancel',
-          subjectRef,
-          'dismissed',
-          'superseded by a new cancel request',
-        );
-        // Doctrine (2026-07-17): cancelling an UNPROMISED visit is internal +
-        // reversible (the job stays open; rebook any time) → one step.
-        // Cancelling a promised visit still stages — the customer expects
-        // someone, and the manager must own telling them.
-        if (preview.promiseLevel === 'none') {
+        // Doctrine (2026-07-17, verdict computed in booking.ts): cancelling an
+        // UNPROMISED visit is internal + reversible (the job stays open;
+        // rebook any time) → one step. Cancelling a promised visit stages —
+        // the customer expects someone, and the manager must own telling them.
+        if (!preview.requiresConfirmation) {
           const cancelledRow = await cancelVisit({
             tenantId,
             assignmentId,
@@ -2679,6 +2656,15 @@ async function dispatch(
               'confirmation was needed. The job stays open for rebooking; tell the manager.',
           };
         }
+        // Staging replaces any prior staged cancel; one-shot cancels above
+        // leave pending tokens alone.
+        await resolveOpenReviewItemFor(
+          tenantId,
+          'pending_visit_cancel',
+          subjectRef,
+          'dismissed',
+          'superseded by a new cancel request',
+        );
         const item = await upsertOpenReviewItem({
           tenantId,
           kind: 'pending_visit_cancel',
@@ -2796,23 +2782,24 @@ async function dispatch(
         });
         // Echo the ITEM's staged detail, not local state (racing stages — same
         // rule as send_email/book_visit): what is SHOWN must be what a confirm
-        // of this confirmId would mint.
+        // of this confirmId would mint. No local fallback — a partial detail
+        // shown as local values would display one ref while the token mints
+        // another, so refuse it loudly instead (mirrors the confirm guard).
         const staged = (item.detail ?? {}) as {
           ref?: string;
           displayName?: string;
           tier?: string;
         };
+        if (!staged.ref || !staged.displayName || !staged.tier) {
+          throw new Error('staged seat is malformed — call add_technician_seat again to restage');
+        }
         return {
           status: 'needs_confirmation',
           confirmId: item.id,
-          preview: {
-            ref: staged.ref ?? ref,
-            displayName: staged.displayName ?? displayName,
-            tier: staged.tier ?? tier,
-          },
+          preview: { ref: staged.ref, displayName: staged.displayName, tier: staged.tier },
           note:
-            `Nothing was added. This will occupy one ${staged.tier ?? tier} seat and mint the ` +
-            `permanent ref '${staged.ref ?? ref}'. Show the manager; on their explicit yes ` +
+            `Nothing was added. This will occupy one ${staged.tier} seat and mint the ` +
+            `permanent ref '${staged.ref}'. Show the manager; on their explicit yes ` +
             `call again with ONLY confirmId.`,
         };
       }
@@ -3306,24 +3293,19 @@ async function dispatch(
             `record_standing_fact, or dismiss it to cancel`,
         );
       }
-      // Same live-token rule for the staged scheduling actions: each commits
+      // Same live-token rule for every OTHER staged action kind: each commits
       // only via its own tool's confirm call; dismissing (= cancel) is fine.
-      const STAGED_SCHEDULE_KINDS: Record<string, string> = {
+      // New staged kinds get an entry here, not a fresh if-block.
+      const STAGED_ACTION_KINDS: Record<string, string> = {
         pending_booking: 'book_visit',
         pending_visit_move: 'move_visit',
         pending_visit_cancel: 'cancel_visit',
+        pending_seat_add: 'add_technician_seat',
       };
-      if (STAGED_SCHEDULE_KINDS[open.kind] && resolution === 'resolved') {
+      if (STAGED_ACTION_KINDS[open.kind] && resolution === 'resolved') {
         throw new Error(
-          `this is a staged scheduling action for '${open.subject_ref}' — confirm it via ` +
-            `${STAGED_SCHEDULE_KINDS[open.kind]}, or dismiss it to cancel`,
-        );
-      }
-      // And for a staged seat add: it commits only via add_technician_seat.
-      if (open.kind === 'pending_seat_add' && resolution === 'resolved') {
-        throw new Error(
-          `this is a staged seat add for '${open.subject_ref}' — confirm it via ` +
-            `add_technician_seat, or dismiss it to cancel`,
+          `this is a staged action for '${open.subject_ref}' — confirm it via ` +
+            `${STAGED_ACTION_KINDS[open.kind]}, or dismiss it to cancel`,
         );
       }
       // A pairing_verification verdict acts BEFORE the item closes (state-first,

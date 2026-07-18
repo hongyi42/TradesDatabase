@@ -571,6 +571,16 @@ no delete. For EVERY such write:
 5. Keep it conversational — don't lecture. Never volunteer reminders that the record is
    permanent or that there is no delete; follow these rules silently and mention permanence
    only when someone actually asks to delete or change history.
+EOF
+      ok "accuracy-rules block appended to ${agent}'s AGENTS.md"
+    fi
+    # Confirmation doctrine (2026-07-17) is guarded SEPARATELY so a re-run
+    # delivers it to boxes that already carry the older §0c blocks — the
+    # accuracy-block grep above would otherwise skip it forever.
+    if docker exec "$cid" grep -q "Confirmations — what needs a yes" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+      ok "confirmation-doctrine block already present"
+    else
+      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
 ## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17)
 
@@ -591,7 +601,7 @@ change.
    and the default applied, the result says endTimeDefaulted: true — tell the manager the
    length was assumed.
 EOF
-      ok "accuracy-rules block appended to ${agent}'s AGENTS.md"
+      ok "confirmation-doctrine block appended to ${agent}'s AGENTS.md"
     fi
   else
     echo "    WARN: no running container for ${agent} — append the §0c block manually once it's up"

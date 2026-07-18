@@ -408,22 +408,23 @@ describe('unassigned bookings (technician-optional)', () => {
     expect(assignment.locked).toBe(true);
   });
 
-  test('two unassigned visits at the same time both land (no false collision)', async () => {
-    const customer = await createCustomer({ tenantId, name: 'Parallel Pia' });
+  test('unassigned same-window: different customers land; an identical duplicate is refused', async () => {
+    const pia = await createCustomer({ tenantId, name: 'Parallel Pia' });
+    const paul = await createCustomer({ tenantId, name: 'Parallel Paul' });
     const a = await bookVisit({
       tenantId,
-      customerId: customer.id,
+      customerId: pia.id,
       date: '2026-11-24',
       startTime: '09:00',
       endTime: '11:00',
       actorRef: 'manager-test',
     });
-    // Identical window, also unassigned — the exclusion guard keys on
-    // technician_id and NULL never matches, so both must succeed (there is
-    // no technician to double-book). The semantic point of Decision 1.
+    // A DIFFERENT customer at the identical window lands — the exclusion
+    // guard keys on technician_id and NULL never matches; there is no
+    // technician to double-book. The semantic point of Decision 1.
     const b = await bookVisit({
       tenantId,
-      customerId: customer.id,
+      customerId: paul.id,
       date: '2026-11-24',
       startTime: '09:00',
       endTime: '11:00',
@@ -432,6 +433,19 @@ describe('unassigned bookings (technician-optional)', () => {
     expect(a.assignment.technician_id).toBeNull();
     expect(b.assignment.technician_id).toBeNull();
     expect(a.assignment.id).not.toBe(b.assignment.id);
+    // The SAME customer at the identical window is refused: unassigned rows
+    // escape the DB guard, so a transport retry of a one-shot booking would
+    // otherwise duplicate silently (review finding).
+    await expect(
+      bookVisit({
+        tenantId,
+        customerId: pia.id,
+        date: '2026-11-24',
+        startTime: '09:00',
+        endTime: '11:00',
+        actorRef: 'manager-test',
+      }),
+    ).rejects.toThrow(/identical unassigned visit .* likely a duplicate/);
   });
 
   test('moveVisit attaches a technician to an unassigned row; overlap then enforced', async () => {

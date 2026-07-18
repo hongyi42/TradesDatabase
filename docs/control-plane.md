@@ -8,8 +8,10 @@ and grace-period offboarding. Companion docs: [nemoclaw-tech-agent.md](nemoclaw-
 
 ```
 add_technician_seat            get_connect_link              resolve_review
-(manager chat)                 (manager forwards URL,        (manager confirms the
-      │                         person approves OAuth)        mailbox address)
+(manager chat; two-step        (manager forwards URL,        (manager confirms the
+ confirm since 2026-07-17 —     person approves OAuth)        mailbox address)
+ NOTHING exists until the            │                             │
+ confirming call)                    │                             │
       ▼                              │                             │
    INVITED ────────────────────▶ PENDING_VERIFICATION ────────▶ ACTIVE
       ▲                          (cron's checkPairing sweep      │ deactivate_technician_seat

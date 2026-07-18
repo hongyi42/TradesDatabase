@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "mcp:serve": "node dist/mcp/server.js",
     "mcp:serve:http": "node dist/mcp/httpServer.js",
+    "board:worker": "node dist/telegram/boardWorker.js",
     "seed": "npm run build && node -r dotenv/config scripts/seed.mjs",
     "seed:local": "npm run seed -- --local",
     "db:push": "npx supabase db push",

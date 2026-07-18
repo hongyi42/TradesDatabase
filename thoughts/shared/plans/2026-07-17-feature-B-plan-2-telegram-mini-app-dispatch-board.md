@@ -280,15 +280,25 @@ doctrine); everything else commits one-shot and reports what happened.
 - Add `"board:worker": "node dist/telegram/boardWorker.js"` (Render Background Worker start command).
 
 ### Automated verification
-- [ ] `npx tsc --noEmit` / `npm run lint` / `npm test` pass
-- [ ] **new** `src/telegram/boardBot.test.ts`: `setBoardMenuButton`/`sendBoardMessage` build the correct
+- [x] `npx tsc --noEmit` / `npm run lint` / `npm test` pass — 509 passed / 1 skipped (45 files)
+- [x] **new** `src/telegram/boardBot.test.ts`: `setBoardMenuButton`/`sendBoardMessage` build the correct
   URL + JSON body and handle `{ok:false}` — with global `fetch` stubbed (`vi.fn`), no network.
-- [ ] `boardApi.test.ts` additions: technician slip → `POST /board/api/move` 403; manager `preview=1` →
+  *(Plus: trailing-slash trim, missing-env refusal before any network call, non-JSON body → HTTP-code
+  throw.)*
+- [x] `boardApi.test.ts` additions: technician slip → `POST /board/api/move` 403; manager `preview=1` →
   preview shape **with `requiresConfirmation`** (`false` for an unpromised visit, `true` when the move
   breaks a promised day), no DB write (assert row unchanged); manager commit → row moved + a `moved`
   `schedule_events` row (cross-channel read-back via `pg`, like `httpServer.test.ts`); **assign:**
   commit with `technicianRef` on an unassigned row → row gains that `technician_id`; the same drop
   onto a lane holding a clashing confirmed visit → the overlap-guard failure surfaces (no write).
+  *(Plus: malformed body → 400; empty technicianRef → 400 MCP-parity; promised cancel two-mode incl.
+  reason-required 400 + cancelled event read-back.)*
+- Adversarial review round 1 (3 findings, all in board.js): touch drag would die to native scrolling
+  (no touch-action rule; preventDefault can't stop scroll per spec) → `.stop { touch-action: none }`
+  + disable/enableVerticalSwipes around drags; commit toast dropped the server's `promiseBroken` (race
+  window preview→commit would break a promise undisclosed) → toast now discloses; Unassigned-lane drop
+  fell through to a day-move the gesture never meant → now inert. Round 2: all CONFIRMED + residuals
+  closed same-phase (cancel-race promiseLevel disclosure, preview-chain network catches, copy fix).
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack + `createHttpServer` on an ephemeral port (codified above covers
@@ -299,6 +309,8 @@ doctrine); everything else commits one-shot and reports what happened.
   day — it commits in one gesture and the toast says what happened (no confirm); drag a promised
   visit — the promise-break confirm appears first. Drop an Unassigned-lane visit onto a technician —
   the stop gains the name and the day re-renders (real-device UX).
+  *(DEFERRED to the live-check batch: needs the board bot created (BotFather), `BOARD_BOT_TOKEN` +
+  `BOARD_PUBLIC_URL` set, and the deployed Render instance.)*
 
 ---
 

@@ -243,7 +243,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // traffic is users' public browsers, not the gateway), so like /inbound/
     // and /control/ it must route BEFORE the IP allowlist.
     if (isBoardPath(req.url)) {
-      await handleBoardRequest(req, res);
+      await handleBoardRequest(req, res, await readRawBody(req));
       return;
     }
     if (!allowed(req)) {

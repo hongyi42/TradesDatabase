@@ -4,6 +4,12 @@ import path from 'node:path';
 import { verifyInitData } from './initData.js';
 import { findRosterByTelegramUserIdGlobal, type Technician } from '../db/index.js';
 import { InvalidRangeError, readBoardDays } from '../schedule/boardRead.js';
+import {
+  cancelVisit,
+  moveVisit,
+  previewCancelVisit,
+  previewMoveVisit,
+} from '../schedule/booking.js';
 
 // The dispatch board's HTTP surface, mounted by httpServer.ts BEFORE the IP
 // allowlist: board traffic comes from users' public browsers (the Telegram
@@ -95,9 +101,29 @@ async function serveStatic(res: http.ServerResponse, name: string): Promise<void
   }
 }
 
+// A malformed JSON body is the CALLER's fault → 400; verb-level refusals
+// (unknown assignment, overlap clash, the UNSCHEDULED stranding) → 409 with
+// the verb's message VERBATIM — the UI must show the stranding, never mask it.
+function parseBody(rawBody: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = rawBody.length ? JSON.parse(rawBody) : {};
+    return typeof parsed === 'object' && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const str = (body: Record<string, unknown>, key: string): string | undefined =>
+  typeof body[key] === 'string' && (body[key] as string).trim() !== ''
+    ? (body[key] as string)
+    : undefined;
+
 export async function handleBoardRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
+  rawBody: string,
 ): Promise<void> {
   try {
     const url = new URL(req.url ?? '/board', 'http://board.local');
@@ -137,6 +163,107 @@ export async function handleBoardRequest(
         throw err;
       }
       return;
+    }
+
+    // Manager-only write path (Phase 3). Both verbs are the SAME shared
+    // booking.ts verbs the chat agent drives — every guard (tenant, overlap,
+    // promise ladder) fires identically. The confirm model is Feature A's
+    // doctrine, inherited via the previews' requiresConfirmation: the page
+    // previews first, one-shots when false, confirms in-UI when true.
+    if (
+      (pathname === '/board/api/move' || pathname === '/board/api/cancel') &&
+      req.method === 'POST'
+    ) {
+      const auth = await authBoard(req);
+      if (!auth.ok) {
+        deny(res, auth);
+        return;
+      }
+      if (auth.technician.tier !== 'manager') {
+        json(res, 403, { error: 'managers only' });
+        return;
+      }
+      const body = parseBody(rawBody);
+      if (!body) {
+        json(res, 400, { error: 'malformed JSON body' });
+        return;
+      }
+      const preview = url.searchParams.get('preview') === '1' || body.preview === true;
+      const assignmentId = str(body, 'assignmentId');
+      const reason = str(body, 'reason');
+      if (!assignmentId) {
+        json(res, 400, { error: 'assignmentId is required' });
+        return;
+      }
+      try {
+        if (pathname === '/board/api/cancel') {
+          if (preview) {
+            json(res, 200, await previewCancelVisit(auth.tenantId, assignmentId));
+            return;
+          }
+          if (!reason) {
+            json(res, 400, { error: 'reason is required' });
+            return;
+          }
+          const cancelled = await cancelVisit({
+            tenantId: auth.tenantId,
+            assignmentId,
+            reason,
+            actorRef: auth.technician.ref,
+          });
+          // promiseLevel rides along so the page can disclose a promise that
+          // appeared between preview and commit (same race class as move's
+          // promiseBroken — the cancel one-shots, so the toast must tell).
+          json(res, 200, {
+            status: 'cancelled',
+            day: cancelled.starts_at.slice(0, 10),
+            promiseLevel: cancelled.promise_level,
+          });
+          return;
+        }
+        const date = str(body, 'date');
+        const startTime = str(body, 'startTime');
+        if (!date || !startTime || !reason) {
+          json(res, 400, { error: 'date, startTime and reason are required' });
+          return;
+        }
+        // Present-but-empty technicianRef: same contract as the MCP layer — an
+        // error, never silently "keep the current person" when the caller
+        // plainly meant to name someone.
+        if ('technicianRef' in body && str(body, 'technicianRef') === undefined) {
+          json(res, 400, {
+            error: 'technicianRef was empty — pass a roster ref, or omit it to keep the assignment',
+          });
+          return;
+        }
+        const input = {
+          tenantId: auth.tenantId,
+          assignmentId,
+          date,
+          startTime,
+          endTime: str(body, 'endTime'),
+          technicianRef: str(body, 'technicianRef'), // set = assign/reassign (Feature A attach)
+          reason,
+          actorRef: auth.technician.ref,
+        };
+        if (preview) {
+          json(res, 200, await previewMoveVisit(input));
+          return;
+        }
+        const moved = await moveVisit(input);
+        json(res, 200, {
+          status: 'moved',
+          promiseBroken: moved.promiseBroken,
+          start: moved.created.starts_at,
+          end: moved.created.ends_at,
+          ...(moved.warning ? { warning: moved.warning } : {}),
+        });
+        return;
+      } catch (err) {
+        // Verb refusals travel verbatim (incl. the UNSCHEDULED stranding).
+        json(res, 409, { error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
     }
 
     res.writeHead(404);

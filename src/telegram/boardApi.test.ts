@@ -217,6 +217,176 @@ describe('GET /board/api/day', () => {
   });
 });
 
+describe('board write path (Phase 3)', () => {
+  const post = (path: string, body: unknown, userId: number, preview = false) =>
+    fetch(`${base}${path}${preview ? '?preview=1' : ''}`, {
+      method: 'POST',
+      headers: { ...tma(userId), 'content-type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+  const assignmentRows = (whereSql: string, params: unknown[] = []) =>
+    pg
+      .query(
+        `select a.id, a.status, a.technician_id, a.starts_at::text as starts_at, t.ref
+           from assignments a left join technicians t on t.id = a.technician_id
+          where ${whereSql} order by a.created_at`,
+        params,
+      )
+      .then((r) => r.rows as Array<{ id: string; status: string; technician_id: string | null; starts_at: string; ref: string | null }>);
+
+  test('technician slip → 403 managers only; malformed body → 400; empty technicianRef → 400', async () => {
+    const resp = await post('/board/api/move', {}, 900000002);
+    expect(resp.status).toBe(403);
+    expect(((await resp.json()) as { error: string }).error).toBe('managers only');
+    expect((await post('/board/api/move', 'not json {{{', 900000001)).status).toBe(400);
+    // Present-but-empty ref = MCP-layer parity: an error, never "keep current".
+    const emptyRef = await post(
+      '/board/api/move',
+      { assignmentId: 'x', date: '2026-09-03', startTime: '09:00', technicianRef: '', reason: 'r' },
+      900000001,
+    );
+    expect(emptyRef.status).toBe(400);
+    expect(((await emptyRef.json()) as { error: string }).error).toContain('technicianRef was empty');
+  });
+
+  test('preview → requiresConfirmation false (unpromised), NO write; commit → moved row + moved event', async () => {
+    const [t1Row] = await assignmentRows("t.ref = 'board-t1' and a.status = 'confirmed'");
+    const body = {
+      assignmentId: t1Row.id,
+      date: '2026-09-03',
+      startTime: '09:00',
+      endTime: '11:00',
+      reason: 'shuffle for parts pickup',
+    };
+    const preview = await post('/board/api/move', body, 900000001, true);
+    expect(preview.status).toBe(200);
+    const p = (await preview.json()) as { requiresConfirmation: boolean; promiseBroken: boolean; toDay: string };
+    expect(p).toMatchObject({ requiresConfirmation: false, promiseBroken: false, toDay: '2026-09-03' });
+    // Preview wrote NOTHING: the row is untouched, still on 2026-09-01.
+    const [after] = await assignmentRows('a.id = $1', [t1Row.id]);
+    expect(after.status).toBe('confirmed');
+    expect(after.starts_at.slice(0, 10)).toBe('2026-09-01');
+
+    const commit = await post('/board/api/move', body, 900000001);
+    expect(commit.status).toBe(200);
+    expect(((await commit.json()) as { status: string }).status).toBe('moved');
+    // Cross-channel read-back: old row cancelled, new confirmed row on the new
+    // day, and a 'moved' schedule_events row hangs off the NEW assignment.
+    const [old] = await assignmentRows('a.id = $1', [t1Row.id]);
+    expect(old.status).toBe('cancelled');
+    const moved = await assignmentRows("t.ref = 'board-t1' and a.status = 'confirmed'");
+    expect(moved).toHaveLength(1);
+    expect(moved[0].starts_at.slice(0, 10)).toBe('2026-09-03');
+    const events = await pg.query(
+      "select kind from schedule_events where assignment_id = $1 and kind = 'moved'",
+      [moved[0].id],
+    );
+    expect(events.rows).toHaveLength(1);
+  });
+
+  test('a promise-breaking move previews requiresConfirmation:true', async () => {
+    const { assignment } = await bookVisit({
+      tenantId,
+      technicianRef: 'board-t2',
+      customerId: (await pg.query("select id from customers where name = 'Board Casa'")).rows[0].id,
+      title: 'Promised furnace check',
+      date: '2026-09-05',
+      startTime: '09:00',
+      endTime: '10:00',
+      promiseLevel: 'day',
+      actorRef: 'board-mgr',
+    });
+    const preview = await post(
+      '/board/api/move',
+      { assignmentId: assignment.id, date: '2026-09-06', startTime: '09:00', endTime: '10:00', reason: 'r' },
+      900000001,
+      true,
+    );
+    expect(preview.status).toBe(200);
+    const p = (await preview.json()) as { requiresConfirmation: boolean; promiseBroken: boolean };
+    expect(p.requiresConfirmation).toBe(true);
+    expect(p.promiseBroken).toBe(true);
+    // Cancel two-mode on the same promised row: preview says confirm needed…
+    const cp = await post('/board/api/cancel', { assignmentId: assignment.id }, 900000001, true);
+    expect(((await cp.json()) as { requiresConfirmation: boolean }).requiresConfirmation).toBe(true);
+    // …no reason → 400; with reason → cancelled + event.
+    expect((await post('/board/api/cancel', { assignmentId: assignment.id }, 900000001)).status).toBe(400);
+    const done = await post(
+      '/board/api/cancel',
+      { assignmentId: assignment.id, reason: 'customer away' },
+      900000001,
+    );
+    expect(done.status).toBe(200);
+    const [row] = await assignmentRows('a.id = $1', [assignment.id]);
+    expect(row.status).toBe('cancelled');
+    const ev = await pg.query(
+      "select 1 from schedule_events where assignment_id = $1 and kind = 'cancelled'",
+      [assignment.id],
+    );
+    expect(ev.rows).toHaveLength(1);
+  });
+
+  test('drag-to-assign: commit with technicianRef attaches the person to an unassigned visit', async () => {
+    const [unassigned] = await assignmentRows(
+      "a.technician_id is null and a.status = 'confirmed' and a.starts_at = '2026-09-01T13:00:00Z'",
+    );
+    const resp = await post(
+      '/board/api/move',
+      {
+        assignmentId: unassigned.id,
+        date: '2026-09-01',
+        startTime: '13:00',
+        endTime: '15:00',
+        technicianRef: 'board-t1',
+        reason: 'assigning from the board',
+      },
+      900000001,
+    );
+    expect(resp.status).toBe(200);
+    const rows = await assignmentRows(
+      "a.status = 'confirmed' and a.starts_at = '2026-09-01T13:00:00Z'",
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].ref).toBe('board-t1'); // person attached
+    const [old] = await assignmentRows('a.id = $1', [unassigned.id]);
+    expect(old.status).toBe('cancelled');
+  });
+
+  test('assigning into a clashing window surfaces the overlap failure and writes nothing', async () => {
+    // Fresh unassigned visit overlapping board-t2's confirmed 10:00–12:00.
+    const { assignment } = await bookVisit({
+      tenantId,
+      customerId: (await pg.query("select id from customers where name = 'Board Casa'")).rows[0].id,
+      title: 'Clash probe',
+      date: '2026-09-01',
+      startTime: '10:30',
+      endTime: '11:30',
+      actorRef: 'board-mgr',
+    });
+    const resp = await post(
+      '/board/api/move',
+      {
+        assignmentId: assignment.id,
+        date: '2026-09-01',
+        startTime: '10:30',
+        endTime: '11:30',
+        technicianRef: 'board-t2',
+        reason: 'assigning into a clash',
+      },
+      900000001,
+    );
+    expect(resp.status).toBe(409);
+    expect(((await resp.json()) as { error: string }).error).toBeTruthy();
+    // Nothing changed: the visit is still confirmed AND still unassigned, and
+    // board-t2 still has exactly one confirmed stop in the window.
+    const [row] = await assignmentRows('a.id = $1', [assignment.id]);
+    expect(row.status).toBe('confirmed');
+    expect(row.technician_id).toBeNull();
+    const t2 = await assignmentRows("t.ref = 'board-t2' and a.status = 'confirmed'");
+    expect(t2).toHaveLength(1);
+  });
+});
+
 describe('route ordering', () => {
   test('board paths bypass the IP allowlist; non-board paths do not; unknown board API → 404 not MCP', async () => {
     const prev = process.env.ALLOWED_CLIENT_IPS;

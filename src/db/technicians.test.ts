@@ -3,15 +3,18 @@ import { Client } from 'pg';
 import { getClient } from './client.js';
 import { setTenantSeats } from './tenants.js';
 import {
+  findRosterByTelegramUserIdGlobal,
   findTechnicianByTelegramUserId,
   getTechnician,
   insertTechnician,
   isSeatCapError,
   listTeam,
   listTechniciansInStates,
+  listTenantIdsWithTelegramBindings,
   setTechnicianState,
   updateTechnician,
 } from './technicians.js';
+import { createTenant } from './tenants.js';
 import {
   flagUnknownRefCapture,
   listOpenReviewItems,
@@ -45,6 +48,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pg.query('truncate table technicians, review_items cascade');
+  // The global-lookup suite creates a second tenant; drop it so the DB returns
+  // to the single seeded tenant (getTenantByName treats duplicates as a bug).
+  await pg.query("delete from tenants where name = 'Board Probe Tenant'");
   // Restore the seed capacity (2/5) so live-verification runbooks that run after
   // the suite aren't left with whatever this file set.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
@@ -164,6 +170,61 @@ describe('telegram binding (Feature A)', () => {
     // rows, so the same id is re-bindable to a new hire after the old one leaves.
     await setTechnicianState(jane.id, 'offboarded');
     expect(await findTechnicianByTelegramUserId(tenantId, '12345678')).toBeNull();
+  });
+});
+
+describe('global telegram lookup (Plan 2 board)', () => {
+  test('unknown → null; one live match → that row; two firms → ambiguous; inactive-only → null', async () => {
+    await setTenantSeats(tenantId, { managerSeats: 1, technicianSeats: 8 });
+    const other = await createTenant('Board Probe Tenant', { managerSeats: 1, technicianSeats: 2 });
+
+    expect(await findRosterByTelegramUserIdGlobal('777000999')).toBeNull();
+
+    // One live binding in one tenant resolves — and carries its tenant, the
+    // board's entire tenant-isolation anchor.
+    const al = await insertTechnician({ tenantId, ref: 'board-al', displayName: 'Board Al' });
+    await updateTechnician(al.id, { telegram_user_id: '777000111' });
+    const hit = await findRosterByTelegramUserIdGlobal('777000111');
+    expect(hit && 'technician' in hit && hit.technician.id).toBe(al.id);
+    expect(hit && 'technician' in hit && hit.technician.tenant_id).toBe(tenantId);
+
+    // The same id live in a SECOND firm → ambiguous, both tenants named (v1
+    // one-firm-per-account rule: refuse, don't guess).
+    const bo = await insertTechnician({
+      tenantId: other.id,
+      ref: 'board-bo',
+      displayName: 'Board Bo',
+    });
+    await updateTechnician(bo.id, { telegram_user_id: '777000111' });
+    const amb = await findRosterByTelegramUserIdGlobal('777000111');
+    expect(amb && 'ambiguous' in amb && [...amb.tenantIds].sort()).toEqual(
+      [tenantId, other.id].sort(),
+    );
+
+    // Offboarding the second firm's row disambiguates back to the first…
+    await setTechnicianState(bo.id, 'offboarded');
+    const again = await findRosterByTelegramUserIdGlobal('777000111');
+    expect(again && 'technician' in again && again.technician.id).toBe(al.id);
+
+    // …and an inactive-only holder resolves to null, same as the tenant-scoped
+    // lookup's contract.
+    await setTechnicianState(al.id, 'offboarded');
+    expect(await findRosterByTelegramUserIdGlobal('777000111')).toBeNull();
+  });
+
+  test('listTenantIdsWithTelegramBindings: live bindings only, distinct per tenant', async () => {
+    // State from the previous test: every '777000111' holder is now inactive,
+    // and tg-jane (12345678) was offboarded earlier — no live binding remains
+    // in the default tenant.
+    expect(await listTenantIdsWithTelegramBindings()).not.toContain(tenantId);
+
+    // Two live bindings in the same tenant → the tenant appears exactly once.
+    const cy = await insertTechnician({ tenantId, ref: 'board-cy', displayName: 'Board Cy' });
+    await updateTechnician(cy.id, { telegram_user_id: '777000222' });
+    const dee = await insertTechnician({ tenantId, ref: 'board-dee', displayName: 'Board Dee' });
+    await updateTechnician(dee.id, { telegram_user_id: '777000333' });
+    const ids = await listTenantIdsWithTelegramBindings();
+    expect(ids.filter((id) => id === tenantId)).toHaveLength(1);
   });
 });
 

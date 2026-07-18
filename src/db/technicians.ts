@@ -44,6 +44,47 @@ export async function findTechnicianByTelegramUserId(
   return (data ?? []).find((t) => !isInactiveState(t.state)) ?? null;
 }
 
+// Tenant-AGNOSTIC Telegram-id lookup for the global board bot (Plan 2): a Mini
+// App's verified initData proves which Telegram ACCOUNT launched the page but
+// carries no tenant — the roster is what says which firm that account belongs
+// to. v1 rule: one firm per Telegram account; an id live (non-inactive) in more
+// than one tenant is ambiguous and the caller must refuse rather than guess
+// (a firm picker is a later layer). Same JS-side isInactiveState filter as the
+// tenant-scoped lookup above — no DB uniqueness exists on telegram_user_id.
+export type GlobalRosterMatch =
+  | { technician: Technician }
+  | { ambiguous: true; tenantIds: string[] }
+  | null;
+
+export async function findRosterByTelegramUserIdGlobal(
+  telegramUserId: string,
+): Promise<GlobalRosterMatch> {
+  const { data, error } = await getClient()
+    .from('technicians')
+    .select()
+    .eq('telegram_user_id', telegramUserId);
+  if (error) throw new Error(`findRosterByTelegramUserIdGlobal failed: ${error.message}`);
+  const live = (data ?? []).filter((t) => !isInactiveState(t.state));
+  if (live.length === 0) return null;
+  const tenantIds = [...new Set(live.map((t) => t.tenant_id))];
+  if (tenantIds.length > 1) return { ambiguous: true, tenantIds };
+  return { technician: live[0] };
+}
+
+// The board notification worker's tenant set: every tenant with at least one
+// live Telegram-bound roster row — the only tenants whose schedule_events can
+// reach anyone. Kept here so both Telegram-roster helpers live together.
+export async function listTenantIdsWithTelegramBindings(): Promise<string[]> {
+  const { data, error } = await getClient()
+    .from('technicians')
+    .select('tenant_id, state')
+    .not('telegram_user_id', 'is', null);
+  if (error) throw new Error(`listTenantIdsWithTelegramBindings failed: ${error.message}`);
+  return [
+    ...new Set((data ?? []).filter((t) => !isInactiveState(t.state)).map((t) => t.tenant_id)),
+  ];
+}
+
 // Point read by row id (FK joins from assignments etc.). Tenant-guarded: a
 // cross-tenant or unknown id reads as null.
 export async function getTechnicianById(

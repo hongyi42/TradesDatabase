@@ -325,6 +325,23 @@ here-doc). Add behavioral bullets (free-form voice, no scripted server sentences
 
 ---
 
+## Final review (post-Phase-4, pre-deploy) — DONE 2026-07-17
+
+8-angle review (3 correctness + reuse/simplification/efficiency/altitude/conventions), 10
+verified findings, 8 fixed in `d4b6683`: one-shot no longer dismisses pending promised tokens;
+identical-duplicate guard for unassigned bookings (transport-retry double-book closed — the
+"two unassigned same-window" semantics refined to different-customers-only); empty-string
+technicianRef errors again; staged detail with an ABSENT ref key is malformed (null valid);
+`unassignedOnly` truly ignores `to`; doctrine single-sourced as `bookingRequiresConfirmation` +
+`requiresConfirmation` on all three previews (Plan 2/3 inherit it); one shared stop
+builder for both `get_team_schedule` modes; book one-shot decides on input (double-resolve
+eliminated); `pending_seat_add` folded into the refusal map; bootstrap confirmation-doctrine
+block guarded separately (re-runs now deliver it to existing boxes); doorman-nemoclaw-setup-guide
++ control-plane.md synced. 2 surfaced as follow-ups, NOT done here: extract the 5-copy
+confirm-token machinery (+ shared TTL const), and the move/cancel one-shot double-resolve
+(needs a resolved-passing verb refactor — fold into Plan 3's booking.ts pass). Conventions:
+clean; the config.toml restore is deliberate (own commit `dde677d`) — say so in the PR body.
+
 ## Phase 5: Deploy gate — pilot rollout + live-agent cache refresh
 
 ### What this phase does

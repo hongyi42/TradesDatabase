@@ -233,6 +233,12 @@ with the verified Telegram algorithm:**
   `KeyboardButton`/`InlineKeyboardButton` `web_app` field notes; there is a *"private chats"*-style
   restriction on some `web_app` launches. Technicians sit in private 1:1 bot chats, so this is
   expected to be fine, but confirm the exact wording at `/bots/api` if it becomes load-bearing.
+- **Chat→board deep link (added 2026-07-18, board-link feature):** `t.me/<bot>?startapp` opens the
+  bot's **Main Mini App from ANY chat** with the same signed `initData` — but ONLY after the Main
+  Mini App is configured in BotFather ("go to @BotFather and set up your bot's Main Mini App",
+  https://core.telegram.org/bots/webapps). The menu button never needed a BotFather step; the deep
+  link DOES — this is the one-time operator prerequisite for `BOARD_BOT_HANDLE`/`boardLink` to
+  produce a working link (an unconfigured bot's `?startapp` link opens a plain chat, silently).
 - **Send-to-user addressing (added 2026-07-18, final-review citation):** the notifier passes
   `technicians.telegram_user_id` verbatim as `sendMessage` `chat_id`. "Private-chat id equals user
   id" is a **de-facto convention, not a stated guarantee** — `sendMessage` documents `chat_id` only

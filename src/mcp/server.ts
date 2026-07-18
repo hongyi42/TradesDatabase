@@ -302,7 +302,8 @@ const TOOLS = [
       'VERBATIM as a tappable link. days:[] means no stops in the range. driveMinutes null = ' +
       'not measured; optimizeFailed true = stops are in scheduled (not drive-optimized) order; ' +
       'a day may also carry unroutableStops (time-ordered, no usable address, not in the ' +
-      'link) — mention them to the person alongside the driving list.',
+      'link) — mention them to the person alongside the driving list. When the result carries ' +
+      'boardLink, offer it — one tap opens the visual dispatch board (relay it exactly).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -569,7 +570,8 @@ const ADMIN_TOOLS = [
       'unassigned:true have NOBODY attached yet and need a person (attach with move_visit). ' +
       'Pass unassignedOnly:true to list ALL upcoming visits with nobody attached, however far ' +
       'out (no 14-day cap) — use it when the manager asks what still needs assigning. Also ' +
-      'returns scheduleVersion — quote it when discussing changes so staleness is detectable.',
+      'returns scheduleVersion — quote it when discussing changes so staleness is detectable. ' +
+      'When the result carries boardLink, offer it — one tap opens the visual dispatch board.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -600,7 +602,8 @@ const ADMIN_TOOLS = [
       'move_visit; find these via get_team_schedule unassignedOnly:true). promiseLevel ' +
       'records what the customer was ACTUALLY told and defaults to "none". Pass "day" ONLY ' +
       'when the manager says the customer was told the day, or "time" when told an exact ' +
-      'time. NEVER assume a promise was made. When talking to customers, offer DAYS, not times.',
+      'time. NEVER assume a promise was made. When talking to customers, offer DAYS, not times. ' +
+      'When the result carries boardLink, END your report with it — one tap opens the visual board.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -627,7 +630,8 @@ const ADMIN_TOOLS = [
       'promised (promiseBroken TRUE — they heard a different day/time and someone must tell ' +
       'them) you instead get {status:"needs_confirmation", confirmId} with a preview — show ' +
       'it, get an explicit yes, call again with ONLY confirmId. Call with assignmentId + ' +
-      'date + startTime (+ optional endTime/technicianRef) + reason.',
+      'date + startTime (+ optional endTime/technicianRef) + reason. When the result carries ' +
+      'boardLink, END your report with it — one tap opens the visual board.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -650,7 +654,8 @@ const ADMIN_TOOLS = [
       'was cancelled; never act silently. If the customer was promised a day/time you instead ' +
       'get {status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
       'yes, call again with ONLY confirmId. Call with assignmentId + reason. The job stays ' +
-      'open for rebooking either way.',
+      'open for rebooking either way. When the result carries boardLink, END your report with ' +
+      'it — one tap opens the visual board.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -692,6 +697,37 @@ function slugify(displayName: string): string {
 // The names the dispatch gate keys on: EVERY tool in ADMIN_TOOLS is gated
 // before the switch, so adding an admin tool cannot forget its guard.
 const ADMIN_TOOL_NAMES = new Set(ADMIN_TOOLS.map((t) => t.name));
+
+// Chat → board bridge: scheduling results carry the Telegram Mini App link so
+// the agent can end a schedule report with "see it on the board" — one tap
+// instead of a bot round-trip. The handle comes from BOARD_BOT_HANDLE, set by
+// the operator once the board bot's Main Mini App is configured in BotFather
+// (t.me/<bot>?startapp launches from ANY chat with the same signed initData —
+// https://core.telegram.org/bots/webapps). Unset = links simply absent
+// (dev/local); the agent is told to relay boardLink, never to invent a URL.
+const BOARD_LINK_TOOL_NAMES = new Set([
+  'get_schedule',
+  'get_team_schedule',
+  'book_visit',
+  'move_visit',
+  'cancel_visit',
+]);
+
+function boardMiniAppLink(): string | null {
+  const handle = (process.env.BOARD_BOT_HANDLE ?? '').trim().replace(/^@/, '');
+  if (!handle) return null;
+  // Telegram username rules — anything else is treated as UNSET, never
+  // relayed: an unvalidated value would ride every schedule report tenant-wide
+  // (a pasted "t.me/Bot" makes a dead link; worse, t.me has sensitive deep-link
+  // namespaces like /proxy that a mangled value could reach).
+  if (!/^[A-Za-z0-9_]{5,32}$/.test(handle)) {
+    console.error(
+      `BOARD_BOT_HANDLE is not a valid bot username (${JSON.stringify(handle)}) — boardLink omitted`,
+    );
+    return null;
+  }
+  return `https://t.me/${handle}?startapp`;
+}
 
 // Audit channels: L1 rows that exist to hold the ACTOR accountable for an
 // agent-performed action. Self-retraction would defeat their purpose (recorded
@@ -3360,7 +3396,23 @@ export function createServer(deps: ServerDeps = {}): Server {
     const { name, arguments: args } = request.params;
     try {
       const result = await dispatch(name, (args ?? {}) as Record<string, unknown>, deps);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      // boardLink decoration happens HERE — one seam covering every return
+      // path of the scheduling cases (dispatch has ~8 result literals across
+      // book/move/cancel one-shot + staged + the two schedule reads).
+      const link = BOARD_LINK_TOOL_NAMES.has(name) ? boardMiniAppLink() : null;
+      // Staged needs_confirmation results are NOT decorated: staging writes
+      // nothing, so the board cannot show the pending change — offering "see
+      // it on the board" mid-confirmation would show the OLD schedule at the
+      // exact moment precision matters. The link rides committed results only.
+      const decorated =
+        link &&
+        result &&
+        typeof result === 'object' &&
+        !Array.isArray(result) &&
+        (result as { status?: unknown }).status !== 'needs_confirmation'
+          ? { ...(result as Record<string, unknown>), boardLink: link }
+          : result;
+      return { content: [{ type: 'text' as const, text: JSON.stringify(decorated) }] };
     } catch (err) {
       return {
         content: [{ type: 'text' as const, text: err instanceof Error ? err.message : String(err) }],

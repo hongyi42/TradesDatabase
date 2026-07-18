@@ -3437,6 +3437,42 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
   });
 });
 
+describe('boardLink decoration (chat → board bridge)', () => {
+  test('scheduling results carry boardLink iff BOARD_BOT_HANDLE is set; other tools never do', async () => {
+    const prev = process.env.BOARD_BOT_HANDLE;
+    try {
+      process.env.BOARD_BOT_HANDLE = '@DashboardMan_bot'; // leading @ is normalized off
+      // get_schedule: technician-callable (the suite's main identity) AND in
+      // the decorated set — the read-only board is for technicians too.
+      const sched = await call('get_schedule', {});
+      expect(sched.isError).toBe(false);
+      expect(sched.data.boardLink).toBe('https://t.me/DashboardMan_bot?startapp');
+      // Non-scheduling tools are never decorated — the link belongs to
+      // schedule reports, not to every reply.
+      const team = await call('list_team', {});
+      expect(team.data?.boardLink).toBeUndefined();
+
+      // A malformed handle is treated as UNSET (never relayed): t.me has
+      // sensitive deep-link namespaces a mangled value could reach.
+      process.env.BOARD_BOT_HANDLE = 't.me/Not A Handle';
+      const bad = await call('get_schedule', {});
+      expect(bad.data.boardLink).toBeUndefined();
+
+      // Unset handle: the field is simply absent — the agent contract says
+      // "no boardLink → say nothing about the board". Deleted EXPLICITLY:
+      // .env may legitimately carry BOARD_BOT_HANDLE on an operator machine,
+      // and this case must not inherit it.
+      delete process.env.BOARD_BOT_HANDLE;
+      const bare = await call('get_schedule', {});
+      expect(bare.isError).toBe(false);
+      expect(bare.data.boardLink).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.BOARD_BOT_HANDLE;
+      else process.env.BOARD_BOT_HANDLE = prev;
+    }
+  });
+});
+
 describe('safeEnvInt (web-cap env parsing)', () => {
   test('falls back to the default rather than failing OPEN on garbage', () => {
     // A malformed override must NOT become NaN — every `count >= NaN` would be

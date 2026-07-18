@@ -215,18 +215,26 @@ own stops for technicians — gated by verified `initData`.
   stops only. Apply `WebApp.themeParams`.
 
 ### Automated verification
-- [ ] `npx tsc --noEmit` / `npm run lint` / `npm test` pass
-- [ ] **new** `src/telegram/boardApi.test.ts` (real `createHttpServer` on an ephemeral port, local DB —
+- [x] `npx tsc --noEmit` / `npm run lint` / `npm test` pass — 500 passed / 1 skipped (44 files)
+- [x] **new** `src/telegram/boardApi.test.ts` (real `createHttpServer` on an ephemeral port, local DB —
   same harness as `httpServer.test.ts`, `BOARD_BOT_TOKEN` set per-process): `GET /board` → 200 HTML;
   `GET /board/api/day` with no header → 401; with a valid manager slip → all seeded stops; with a
   technician slip → only that technician's stops; a seeded unassigned visit (null `technician_id`) →
   present for the manager with `unassigned: true` + null name/ref, absent from every technician slip;
   a `../` static path → 403/404; a board path does NOT reach the MCP handler; a non-board path still
-  does (guard the route-ordering).
+  does (guard the route-ordering). *(Plus: two-firms → 409; invalid/inverted/>14-day ranges → 400;
+  allowlist-bypass proof via per-process ALLOWED_CLIENT_IPS.)*
+- Adversarial review round 1: two findings — manager lanes keyed by display NAME (same-named
+  technicians would merge; also breaks Phase-3 drop targets) → re-keyed by unique `technicianRef`;
+  `BOARD_STATIC_DIR` with a trailing slash/relative path would fail the containment check and 404 the
+  whole board → root now `path.resolve`d. Round 2: both CONFIRMED fixed, no new issues. (Also removed
+  a stray NUL byte the initial board.js authoring left inside a string literal.)
 
 ### Manual verification
 - [ ] Open `BOARD_PUBLIC_URL/board` in a desktop browser (no Telegram) — the page loads and shows a
   clear "open inside Telegram" empty state when `initData` is absent (visual/UX judgment).
+  *(DEFERRED to the live-check batch: needs the deployed `BOARD_PUBLIC_URL` (or a locally served
+  build) — not performable mid-implementation; grouped with Phase 3/4's device checks.)*
 
 ---
 

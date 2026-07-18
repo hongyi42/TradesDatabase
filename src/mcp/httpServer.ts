@@ -12,6 +12,7 @@ import {
   getHostByTokenHash,
 } from '../db/index.js';
 import { handleComposioRelay, isRelayPath } from '../composio/relayHandler.js';
+import { handleBoardRequest, isBoardPath } from '../telegram/boardApi.js';
 
 // Central HTTP entrypoint (Architecture A). Every NemoClaw bot reaches this one
 // server through the gateway. It runs STATELESS (sessionIdGenerator: undefined):
@@ -236,6 +237,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // Host recycle-completion report — same host-token gate + placement.
     if (req.url === '/control/sandboxes' && req.method === 'POST') {
       await handleSandboxReport(req, res);
+      return;
+    }
+    // Dispatch-board Mini App — self-authenticated by Telegram initData (board
+    // traffic is users' public browsers, not the gateway), so like /inbound/
+    // and /control/ it must route BEFORE the IP allowlist.
+    if (isBoardPath(req.url)) {
+      await handleBoardRequest(req, res);
       return;
     }
     if (!allowed(req)) {

@@ -10,7 +10,9 @@ interface TelegramApiResponse {
 }
 
 function apiUrl(method: string): string {
-  const token = process.env.BOARD_BOT_TOKEN;
+  // trim() both here and in boardApi's verify path: the SAME pasted-whitespace
+  // env value must not make the two halves disagree about the token.
+  const token = (process.env.BOARD_BOT_TOKEN ?? '').trim();
   if (!token) throw new Error('BOARD_BOT_TOKEN is not set');
   return `https://api.telegram.org/bot${token}/${method}`;
 }
@@ -31,7 +33,7 @@ async function callTelegram(method: string, payload: unknown): Promise<void> {
 // "Open board" web_app button pointing at the hosted page. Idempotent — safe
 // to call on every worker start.
 export async function setBoardMenuButton(): Promise<void> {
-  const base = process.env.BOARD_PUBLIC_URL;
+  const base = (process.env.BOARD_PUBLIC_URL ?? '').trim();
   if (!base) throw new Error('BOARD_PUBLIC_URL is not set');
   await callTelegram('setChatMenuButton', {
     menu_button: {

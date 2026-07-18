@@ -49,16 +49,31 @@ type BoardAuth =
 // to the outer handler's logged 500 instead of masquerading as "bad slip"
 // (telling a manager to "reopen the board" during a DB outage helps nobody).
 async function authBoard(req: http.IncomingMessage): Promise<BoardAuth> {
+  const m = /^tma\s+(.+)$/i.exec(req.headers.authorization ?? '');
+  if (!m) return { ok: false, code: 401 };
+  // trim(): a token pasted into a Render env var with a trailing newline/space
+  // is invisible to eyeball comparison yet fails every HMAC — live-debugging
+  // finding 2026-07-18.
+  const token = (process.env.BOARD_BOT_TOKEN ?? '').trim();
   let userId: string;
   try {
-    const m = /^tma\s+(.+)$/i.exec(req.headers.authorization ?? '');
-    if (!m) return { ok: false, code: 401 };
-    userId = verifyInitData(m[1], process.env.BOARD_BOT_TOKEN ?? '').userId;
+    userId = verifyInitData(m[1], token).userId;
   } catch {
+    // One operator breadcrumb per refusal, NO slip contents (it is a bearer
+    // credential) — lengths are enough to tell "server token missing/mangled"
+    // from "genuinely bad slip".
+    console.error(
+      `board auth: slip verification failed (slip len ${m[1].length}, token len ${token.length})`,
+    );
     return { ok: false, code: 401 };
   }
   const match = await findRosterByTelegramUserIdGlobal(userId);
-  if (!match) return { ok: false, code: 401 };
+  if (!match) {
+    // The id is not a secret; naming it turns "mystery 401" into "bind this
+    // person" (or "they tapped from the wrong account") in one log line.
+    console.error(`board auth: no live roster row for telegram id ${userId}`);
+    return { ok: false, code: 401 };
+  }
   if ('ambiguous' in match) {
     return {
       ok: false,

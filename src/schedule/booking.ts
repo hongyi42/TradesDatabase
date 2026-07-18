@@ -131,6 +131,7 @@ interface ResolvedBooking {
   existingJob: Job | null;
   startTime: string;
   endTime: string;
+  endTimeDefaulted: boolean; // true = the server chose the length, not the manager
   startISO: string;
   endISO: string;
   promiseLevel: PromiseLevel;
@@ -196,6 +197,10 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     existingJob,
     startTime,
     endTime,
+    // Disclosure flag, never a gate: when the manager stated no length the
+    // duration default fills in — the agent must SAY the length was assumed
+    // (and always pass endTime when the manager stated one).
+    endTimeDefaulted: input.endTime === undefined,
     startISO,
     endISO,
     // Default 'none': a fresh booking promises the customer NOTHING unless the
@@ -218,6 +223,7 @@ export interface BookVisitPreview {
   date: string;
   startTime: string; // resolved (defaults applied) — store these on the stage
   endTime: string;
+  endTimeDefaulted: boolean; // server-chosen length — disclose, never confirm-the-guess
   promiseLevel: PromiseLevel;
   warning?: string;
 }
@@ -236,6 +242,7 @@ export async function previewBookVisit(input: BookVisitInput): Promise<BookVisit
     date: input.date,
     startTime: r.startTime,
     endTime: r.endTime,
+    endTimeDefaulted: r.endTimeDefaulted,
     promiseLevel: r.promiseLevel,
     ...(r.warning ? { warning: r.warning } : {}),
   };
@@ -245,6 +252,7 @@ export interface BookVisitResult {
   assignment: Assignment;
   job: Job;
   customer: Customer;
+  endTimeDefaulted: boolean;
   warning?: string;
 }
 
@@ -317,7 +325,13 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
     },
   });
 
-  return { assignment, job, customer: r.customer, ...(r.warning ? { warning: r.warning } : {}) };
+  return {
+    assignment,
+    job,
+    customer: r.customer,
+    endTimeDefaulted: r.endTimeDefaulted,
+    ...(r.warning ? { warning: r.warning } : {}),
+  };
 }
 
 export interface MoveVisitInput {

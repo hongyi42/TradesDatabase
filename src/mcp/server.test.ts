@@ -3167,22 +3167,25 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
     }
   });
 
-  test('a booking with NO stated promise records none/null and a later move claims no broken promise', async () => {
-    // The pilot bug: booking silently recorded "customer told this day", so a
-    // later move nagged about a promise nobody made. Default is now 'none'.
+  test('unpromised book/move/cancel are ONE-SHOT (doctrine: reversible + internal = act and report)', async () => {
+    // The pilot bugs, both directions: booking silently recorded "customer
+    // told this day" (default is now 'none'), and reversible internal changes
+    // dragged the manager through a confirmation they didn't need.
     const customer = await createCustomer({ tenantId, name: 'Unpromised Uma' });
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
-      const staged = await callWith('book_visit', {
+      // ONE call books it — no needs_confirmation for an unpromised visit.
+      const booked = await callWith('book_visit', {
         customerId: customer.id,
         technicianRef: 'tech-mcp',
         date: '2026-12-15',
         startTime: '09:00',
         endTime: '10:00',
       });
-      expect(staged.data.preview.promiseLevel).toBe('none'); // nothing was stated → nothing promised
-      const booked = await callWith('book_visit', { confirmId: staged.data.confirmId });
+      expect(booked.data.status).toBe('booked');
       expect(booked.data.promiseLevel).toBe('none');
+      expect(booked.data.endTimeDefaulted).toBe(false); // manager stated 10:00
+      expect(booked.data.note).toContain('one step');
       const id = booked.data.assignmentId as string;
 
       const team = await callWith('get_team_schedule', { from: '2026-12-15', to: '2026-12-15' });
@@ -3191,15 +3194,50 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       );
       expect(stop).toMatchObject({ promiseLevel: 'none', promisedDay: null });
 
-      // Moving it to another day must NOT claim a broken promise.
-      const moveStage = await callWith('move_visit', {
+      // An omitted endTime books with the duration default AND discloses it.
+      const defaulted = await callWith('book_visit', {
+        customerId: customer.id,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-17',
+        startTime: '09:00',
+      });
+      expect(defaulted.data.status).toBe('booked');
+      expect(defaulted.data.endTimeDefaulted).toBe(true);
+      expect(defaulted.data.note).toContain('assumed');
+
+      // Moving the unpromised visit is one-shot too — and claims no break.
+      const moved = await callWith('move_visit', {
         assignmentId: id,
         date: '2026-12-16',
         startTime: '09:00',
         reason: 'internal reshuffle',
       });
-      expect(moveStage.data.preview.promiseBroken).toBe(false);
-      expect(moveStage.data.note ?? '').not.toContain('promiseBroken is TRUE');
+      expect(moved.data.status).toBe('moved');
+      expect(moved.data.promiseBroken).toBe(false);
+      expect(moved.data.note).toContain('one step');
+
+      // Cancelling it: one-shot as well.
+      const cancelled = await callWith('cancel_visit', {
+        assignmentId: moved.data.assignmentId,
+        reason: 'not needed',
+      });
+      expect(cancelled.data.status).toBe('cancelled');
+      expect(cancelled.data.note).toContain('one step');
+
+      // CONFIRM path carries stage-time truth too: a PROMISED booking staged
+      // without endTime must still report the default after confirming.
+      const staged = await callWith('book_visit', {
+        customerId: customer.id,
+        technicianRef: 'tech-mcp',
+        date: '2026-12-18',
+        startTime: '09:00',
+        promiseLevel: 'day',
+      });
+      expect(staged.data.status).toBe('needs_confirmation');
+      expect(staged.data.preview.endTimeDefaulted).toBe(true);
+      const confirmed = await callWith('book_visit', { confirmId: staged.data.confirmId });
+      expect(confirmed.data.status).toBe('booked');
+      expect(confirmed.data.endTimeDefaulted).toBe(true);
     } finally {
       await mgrClient.close();
     }
@@ -3218,6 +3256,7 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
         date: '2026-12-08',
         startTime: '09:00',
         endTime: '10:00',
+        promiseLevel: 'day', // promised → still stages (one-shot would skip the token)
       });
       // Age the token past the 15-minute window.
       await pg.query(
@@ -3247,6 +3286,7 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       expect(unknown.isError).toBe(true);
       expect(unknown.text).toContain("'ghost-tech' not found");
 
+      // Unpromised → lands in one call under the one-shot doctrine.
       const first = await callWith('book_visit', {
         customerId: customer.id,
         technicianRef: 'tech-mcp',
@@ -3254,7 +3294,7 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
         startTime: '09:00',
         endTime: '11:00',
       });
-      await callWith('book_visit', { confirmId: first.data.confirmId });
+      expect(first.data.status).toBe('booked');
       const clash = await callWith('book_visit', {
         customerId: customer.id,
         technicianRef: 'tech-mcp',
@@ -3269,16 +3309,18 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
     }
   });
 
-  test('unassigned booking: no technicianRef → booked person-less, board flags it, move attaches', async () => {
+  test('unassigned booking: no technicianRef → person-less, board flags it, one-shot move attaches', async () => {
     const customer = await createCustomer({ tenantId, name: 'Assign Later Al' });
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
-      // Stage WITHOUT a technician — preview echoes a person-less booking.
+      // PROMISED + unassigned: the promise forces the stage, whose preview
+      // must echo a person-less booking (null technician fields).
       const staged = await callWith('book_visit', {
         customerId: customer.id,
         date: '2027-01-05',
         startTime: '09:00',
         endTime: '10:00',
+        promiseLevel: 'day',
       });
       expect(staged.data.status).toBe('needs_confirmation');
       expect(staged.data.preview.technicianRef).toBeNull();
@@ -3296,16 +3338,16 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       );
       expect(stop).toMatchObject({ unassigned: true, technicianRef: null, technicianName: null });
 
-      // Attaching a person via move_visit clears the flag.
-      const moveStage = await callWith('move_visit', {
+      // Attaching a person same day/time keeps the promise → ONE-SHOT move.
+      const moved = await callWith('move_visit', {
         assignmentId: id,
         date: '2027-01-05',
         startTime: '09:00',
         technicianRef: 'tech-mcp',
         reason: 'assigning tech',
       });
-      const moved = await callWith('move_visit', { confirmId: moveStage.data.confirmId });
       expect(moved.data.status).toBe('moved');
+      expect(moved.data.promiseBroken).toBe(false);
       const after = await callWith('get_team_schedule', { from: '2027-01-05', to: '2027-01-05' });
       const attached = (after.data.days[0].stops as Array<Record<string, unknown>>).find(
         (s) => s.assignmentId === moved.data.assignmentId,
@@ -3321,24 +3363,24 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
       // Park an unassigned visit far beyond any board window (the finding the
-      // lister fixes: nothing else can surface this row).
-      const staged = await callWith('book_visit', {
+      // lister fixes: nothing else can surface this row). Unpromised → one-shot.
+      const booked = await callWith('book_visit', {
         customerId: customer.id,
         date: '2027-02-10',
         startTime: '09:00',
         endTime: '10:00',
       });
-      const booked = await callWith('book_visit', { confirmId: staged.data.confirmId });
+      expect(booked.data.status).toBe('booked');
       const farId = booked.data.assignmentId as string;
       // An ASSIGNED far-out visit — must never appear in the recall view.
-      const aStaged = await callWith('book_visit', {
+      const aBooked = await callWith('book_visit', {
         customerId: customer.id,
         technicianRef: 'tech-mcp',
         date: '2027-02-11',
         startTime: '09:00',
         endTime: '10:00',
       });
-      const aBooked = await callWith('book_visit', { confirmId: aStaged.data.confirmId });
+      expect(aBooked.data.status).toBe('booked');
 
       // Default board read (today) does NOT show the far-out visit…
       const today = await callWith('get_team_schedule', {});

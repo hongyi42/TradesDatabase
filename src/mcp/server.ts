@@ -582,16 +582,20 @@ const ADMIN_TOOLS = [
   {
     name: 'book_visit',
     description:
-      'Book a visit onto the schedule (manager only) — two-step. First call with date ' +
-      '(+ customerId OR jobId, technicianRef + times optional): NOTHING is booked; you get ' +
-      '{status:"needs_confirmation", confirmId} with a preview. Show the manager EXACTLY the ' +
-      'preview (including any availability warning); only on their explicit yes call again with ' +
-      'ONLY confirmId. Omit technicianRef to book WITHOUT a technician (put it on the calendar, ' +
-      'assign later — attach someone with move_visit; find these via get_team_schedule ' +
-      'unassignedOnly:true). promiseLevel records what the customer was ACTUALLY told and ' +
-      'defaults to "none" (nothing promised — the booking is internal). Pass "day" ONLY when ' +
-      'the manager says the customer was told the day, or "time" when told an exact time. ' +
-      'NEVER assume a promise was made. When talking to customers, offer DAYS, not times.',
+      'Book a visit onto the schedule (manager only). Reversible and internal (nothing ' +
+      'promised to the customer) → done in ONE call ({status:"booked"}) — ALWAYS tell the ' +
+      'manager what was done (day, time, who, and any warning); never act silently. If the ' +
+      'customer was promised a day/time (promiseLevel "day"/"time") you instead get ' +
+      '{status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
+      'yes, call again with ONLY confirmId. Call with date (+ customerId OR jobId, ' +
+      'technicianRef + times optional). Pass endTime explicitly whenever the manager states ' +
+      'an end time — never let the duration default stand in for a stated time; when the ' +
+      'result has endTimeDefaulted:true, say the length was assumed. Omit technicianRef to ' +
+      'book WITHOUT a technician (put it on the calendar, assign later — attach someone with ' +
+      'move_visit; find these via get_team_schedule unassignedOnly:true). promiseLevel ' +
+      'records what the customer was ACTUALLY told and defaults to "none". Pass "day" ONLY ' +
+      'when the manager says the customer was told the day, or "time" when told an exact ' +
+      'time. NEVER assume a promise was made. When talking to customers, offer DAYS, not times.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -611,11 +615,14 @@ const ADMIN_TOOLS = [
   {
     name: 'move_visit',
     description:
-      'Move a booked visit (manager only) — two-step. First call with assignmentId + date + ' +
-      'startTime (+ optional endTime/technicianRef) + reason: NOTHING moves; you get a preview ' +
-      'with promiseBroken — TRUE means the customer was promised a different day and someone ' +
-      'must tell them. Show the manager the preview; only on their explicit yes call again ' +
-      'with ONLY confirmId.',
+      'Move a booked visit (manager only) — also how a technician gets ATTACHED to an ' +
+      'unassigned visit (pass technicianRef with the same day/time). Reversible and internal ' +
+      '(no customer promise affected) → done in ONE call ({status:"moved"}) — ALWAYS tell the ' +
+      'manager what moved; never act silently. If the move would break what the customer was ' +
+      'promised (promiseBroken TRUE — they heard a different day/time and someone must tell ' +
+      'them) you instead get {status:"needs_confirmation", confirmId} with a preview — show ' +
+      'it, get an explicit yes, call again with ONLY confirmId. Call with assignmentId + ' +
+      'date + startTime (+ optional endTime/technicianRef) + reason.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -633,9 +640,12 @@ const ADMIN_TOOLS = [
   {
     name: 'cancel_visit',
     description:
-      'Cancel a booked visit (manager only) — two-step. First call with assignmentId + reason: ' +
-      'NOTHING is cancelled; you get a preview. Show the manager the preview; only on their ' +
-      'explicit yes call again with ONLY confirmId. The job stays open for rebooking.',
+      'Cancel a booked visit (manager only). Reversible and internal (nothing promised to ' +
+      'the customer) → done in ONE call ({status:"cancelled"}) — ALWAYS tell the manager what ' +
+      'was cancelled; never act silently. If the customer was promised a day/time you instead ' +
+      'get {status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
+      'yes, call again with ONLY confirmId. Call with assignmentId + reason. The job stays ' +
+      'open for rebooking either way.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2305,6 +2315,8 @@ async function dispatch(
           ...(promiseLevelArg ? { promiseLevel: promiseLevelArg as PromiseLevel } : {}),
           actorRef: subjectRef,
         });
+        // Either path supersedes a stale staged booking first — a forgotten
+        // token must never stay confirmable after the manager's intent moved on.
         await resolveOpenReviewItemFor(
           tenantId,
           'pending_booking',
@@ -2312,6 +2324,49 @@ async function dispatch(
           'dismissed',
           'superseded by a new booking request',
         );
+        // Doctrine (user decision 2026-07-17): confirm only what is
+        // irreversible or externally visible. Nothing promised to the
+        // customer = internal + reversible (undo = move/cancel) → act in ONE
+        // step and report. A promised booking still stages below.
+        if (preview.promiseLevel === 'none') {
+          const booked = await bookVisit({
+            tenantId,
+            ...(technicianRef ? { technicianRef } : {}),
+            ...(customerId ? { customerId } : {}),
+            ...(jobId ? { jobId } : {}),
+            title: str('title') ?? null,
+            date,
+            startTime: preview.startTime, // resolved — preview == commit
+            endTime: preview.endTime,
+            promiseLevel: 'none',
+            actorRef: subjectRef,
+          });
+          return {
+            status: 'booked',
+            assignmentId: booked.assignment.id,
+            jobId: booked.job.id,
+            customer: booked.customer.name,
+            technicianRef: preview.technicianRef,
+            unassigned: booked.assignment.technician_id === null,
+            date,
+            startTime: preview.startTime,
+            endTime: preview.endTime,
+            // Stage-time truth: the commit call passes the RESOLVED endTime
+            // (preview == commit), so the verb's recomputed flag is always
+            // false here — the preview knows whether the manager stated one.
+            endTimeDefaulted: preview.endTimeDefaulted,
+            promiseLevel: booked.assignment.promise_level,
+            ...(booked.warning ? { warning: booked.warning } : {}),
+            note:
+              'Booked in one step — nothing was promised to the customer, so no confirmation ' +
+              'was needed (undo = move_visit / cancel_visit). Tell the manager exactly what ' +
+              'was booked' +
+              (preview.endTimeDefaulted
+                ? ', including that the end time was assumed from the standard job length'
+                : '') +
+              '.',
+          };
+        }
         const item = await upsertOpenReviewItem({
           tenantId,
           kind: 'pending_booking',
@@ -2326,6 +2381,7 @@ async function dispatch(
             // record; commit passes exactly these so preview == commit.
             startTime: preview.startTime,
             endTime: preview.endTime,
+            endTimeDefaulted: preview.endTimeDefaulted,
             promiseLevel: preview.promiseLevel,
             preview: preview as unknown as Json,
             stagedAt: new Date().toISOString(),
@@ -2358,6 +2414,7 @@ async function dispatch(
         date?: string;
         startTime?: string;
         endTime?: string;
+        endTimeDefaulted?: boolean;
         promiseLevel?: PromiseLevel;
         stagedAt?: string;
       };
@@ -2415,6 +2472,7 @@ async function dispatch(
         date: d.date,
         startTime: d.startTime,
         endTime: d.endTime,
+        endTimeDefaulted: d.endTimeDefaulted ?? false,
         promiseLevel: booked.assignment.promise_level,
         ...(booked.warning ? { warning: booked.warning } : {}),
       };
@@ -2449,6 +2507,35 @@ async function dispatch(
           'dismissed',
           'superseded by a new move request',
         );
+        // Doctrine (2026-07-17): no promise breaking = internal + reversible
+        // → move in ONE step and report. A promise-breaking move still stages
+        // below (the customer heard a different day/time — someone must own
+        // telling them before it changes).
+        if (!preview.promiseBroken) {
+          const moved = await moveVisit({
+            tenantId,
+            assignmentId,
+            date,
+            startTime,
+            endTime: preview.endTime, // resolved — preview == commit
+            ...(str('technicianRef') ? { technicianRef: str('technicianRef') } : {}),
+            reason,
+            actorRef: subjectRef,
+          });
+          return {
+            status: 'moved',
+            assignmentId: moved.created.id,
+            previousAssignmentId: moved.cancelled.id,
+            date,
+            startTime,
+            endTime: preview.endTime,
+            promiseBroken: false,
+            ...(moved.warning ? { warning: moved.warning } : {}),
+            note:
+              'Moved in one step — no customer promise was affected, so no confirmation was ' +
+              'needed. Tell the manager exactly what moved.',
+          };
+        }
         const item = await upsertOpenReviewItem({
           tenantId,
           kind: 'pending_visit_move',
@@ -2568,6 +2655,26 @@ async function dispatch(
           'dismissed',
           'superseded by a new cancel request',
         );
+        // Doctrine (2026-07-17): cancelling an UNPROMISED visit is internal +
+        // reversible (the job stays open; rebook any time) → one step.
+        // Cancelling a promised visit still stages — the customer expects
+        // someone, and the manager must own telling them.
+        if (preview.promiseLevel === 'none') {
+          const cancelledRow = await cancelVisit({
+            tenantId,
+            assignmentId,
+            reason,
+            actorRef: subjectRef,
+          });
+          return {
+            status: 'cancelled',
+            assignmentId: cancelledRow.id,
+            day: cancelledRow.starts_at.slice(0, 10),
+            note:
+              'Cancelled in one step — nothing was promised to the customer, so no ' +
+              'confirmation was needed. The job stays open for rebooking; tell the manager.',
+          };
+        }
         const item = await upsertOpenReviewItem({
           tenantId,
           kind: 'pending_visit_cancel',

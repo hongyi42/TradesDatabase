@@ -191,10 +191,13 @@ Let the agent book with no technician and label person-less rows on the board.
   `unassignedOnly` still errors (cap unchanged on the normal path).
 
 ### Automated verification
-- [ ] `npx tsc --noEmit` passes
-- [ ] `npm run lint` passes
-- [ ] `npm test` passes incl. the new server cases
-- [ ] `npm run build` passes
+- [x] `npx tsc --noEmit` passes
+- [x] `npm run lint` passes
+- [x] `npm test` passes incl. the new server cases (483 passed / 1 skipped; unassigned book→board→
+      attach + unassignedOnly recall/cap/type-guard cases)
+- [x] `npm run build` passes
+- Adversarial review (fresh subagent): no code findings; one scope catch — the preflight
+  `supabase/config.toml` restore was unstaged, committed separately as `dde677d`.
 
 ---
 
@@ -234,9 +237,15 @@ token when one is. Add the `endTimeDefaulted` disclosure flag.
 - Assert `endTimeDefaulted:true` when `endTime` omitted, `false` when passed.
 
 ### Automated verification
-- [ ] `npx tsc --noEmit` / `npm run lint` / `npm test` / `npm run build` all pass
-- [ ] new + updated scheduling tests cover: one-shot unpromised path, retained-confirm promised path,
-      `endTimeDefaulted` both ways
+- [x] `npx tsc --noEmit` / `npm run lint` / `npm test` / `npm run build` all pass (483 passed / 1
+      skipped)
+- [x] new + updated scheduling tests cover: one-shot unpromised path (book/move/cancel + "one step"
+      notes), retained-confirm promised path (walkthrough), `endTimeDefaulted` both ways on the
+      one-shot path AND the confirm path (stage-time-truth pin added post-review)
+- Adversarial review (fresh subagent): NO FINDINGS. One real bug caught by the new tests
+  pre-review: the one-shot return read the verb's recomputed `endTimeDefaulted` (always false,
+  since commit passes the resolved endTime) — fixed to stage-time truth (`preview.endTimeDefaulted`,
+  mirroring the confirm branch's staged copy).
 
 ---
 

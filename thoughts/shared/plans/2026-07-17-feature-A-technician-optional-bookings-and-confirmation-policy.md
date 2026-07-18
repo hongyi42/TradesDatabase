@@ -2,7 +2,7 @@
 date: 2026-07-17
 task: "Feature A (FOUNDATION) — technician-optional bookings + reversibility-driven confirmation policy"
 research: thoughts/shared/research/2026-07-17-feature-A-technician-optional-bookings-and-confirmation-policy.md
-status: draft
+status: complete # all 5 phases done 2026-07-18; PR #48 merged (c64d875); pilot migration applied (ledger 20260718034402); box caches refreshed (4 sandboxes); live E2E evidence in Phase 5. Residual watch item: agent omitted first-call endTime live (self-healed via endTimeDefaulted). Judy heads-up pending. Follow-ups recorded in Final review: confirm-token helper extraction; move/cancel one-shot double-resolve.
 ---
 
 ## Overview
@@ -320,8 +320,8 @@ here-doc). Add behavioral bullets (free-form voice, no scripted server sentences
   tier forgery impossible (validated at stage, guarded lookup, DB enum backstop).
 
 ### Manual verification
-- [ ] none this phase — the live Telegram E2E runs in **Phase 5** (it needs the deployed pilot +
-      refreshed agent caches; running it before deploy would test the OLD tool surface).
+- [x] none this phase — the live Telegram E2E ran in **Phase 5** (2026-07-18, after deploy +
+      cache refresh — running it earlier would have tested the OLD tool surface).
 
 ---
 
@@ -376,29 +376,47 @@ errors to the manager):
    the old confirmation instructions.
 
 ### Automated verification
-- [ ] full gates pass on the merge commit (`npm run typecheck` / `lint` / `test` / `build`)
+- [x] full gates pass on the merge commit — re-run on pulled main at `c64d875` post-merge:
+      typecheck clean, 483 passed / 1 skipped, build clean (2026-07-18)
 
 ### Live verification (agent-executable)
 - Prerequisites: `mcp__supabase-test__*` MCP (read-backs + the migration apply), Render dashboard
   access, box SSH. Follow the `verifying-behavior` skill for the cross-channel checks.
-- [ ] pilot ledger shows the new version (`list_migrations` read-back)
-- [ ] `select is_nullable from information_schema.columns where table_name='assignments' and
-      column_name='technician_id'` on the pilot → `YES` (`execute_sql` read-back)
-- [ ] post-restart `tools/list` read-back from a sandbox gateway shows the new `book_visit`
-      description (technicianRef optional) — per the sandbox-tool-allowlist recipe
-- [ ] E2E via the manager agent, with SQL read-back as cross-channel evidence:
-      "just book it, no tech" → one-shot `booked`, pilot row has `technician_id IS NULL`,
-      `get_team_schedule` shows `unassigned:true`; then `move_visit` attaching a person →
-      row re-created with that technician
+- [x] pilot ledger shows the new version (`20260718034402` — MCP-stamped, Plan-1 re-apply
+      precedent; applied 2026-07-18 after PR #48 merged as `c64d875`)
+- [x] `select is_nullable …` on the pilot → `YES` (`execute_sql` read-back, 2026-07-18)
+- [x] post-restart contract refresh proven BEHAVIORALLY (stronger than a tools/list read-back):
+      the live s2 agent offered "or should I book it unassigned for now?" unprompted and
+      one-shot-booked — impossible under the old cached descriptions. Gateways restarted on all
+      four sandboxes (s1/s2/s3/s5) 2026-07-18, health passed; §0c Confirmations block verified
+      present ×1 in each AGENTS.md via docker-exec grep; installed bootstrap refreshed
+      (.prev-20260718 backup kept).
+- [x] E2E via the live manager agent (2026-07-18, screenshots + SQL read-back): "book Maria
+      Aug 5, don't assign anyone" → one-shot `booked`; pilot row `3fe80636` = confirmed /
+      `technician_id IS NULL` / 12:00–13:00 naive-local / promise none / locked. Events #4
+      `booked` (technicianRef null) + #5 `moved` (promiseBroken false, one-shot). The move
+      exercised was the agent's own end-time self-correction on the unassigned row
+      (attach-a-person variant covered by codified tests).
+      **Live finding, working as designed but note the residual:** the manager stated
+      "12pm–1pm" and the agent STILL omitted endTime on the first call (the exact input-path
+      slip, despite the new §0c bullet + tool description) — but `endTimeDefaulted:true` did
+      its job: the agent caught the assumed 14:00, disclosed it, and self-healed with a
+      one-shot move. Old failure mode (manager confirming the wrong guess) is gone; cost is
+      one cancelled row + a move event. If GLM keeps missing first-call endTime, consider a
+      server-side accept-the-window input (resolve_date precedent) — recorded, not built.
 
 ### Manual verification
-- [ ] Telegram E2E on the real device (absorbs Phase 4's deferred check): "add a seat for X" →
-      exactly one confirmation then the ref; "book 9–10" → agent passes the explicit endTime, no
-      confirm-the-guess; a *promised* move still asks for a yes. Capture the chat.
-- [ ] **Pilot manager told about the behavior flip** (they are live-using `book_visit` as of
-      2026-07-17): internal/unpromised bookings no longer ask for a yes — the agent just does it
-      and reports (undo = move/cancel); changes touching a customer promise still confirm.
-      Confirm the wording reads naturally to a non-engineer.
+- [x] Telegram E2E on the real device (2026-07-18, screenshots captured): unpromised unassigned
+      book = one call, zero confirmation questions, natural plain-language report ("Technician:
+      Unassigned (no one attached yet)… attach someone later whenever you're ready").
+      NOT exercised live (codified tests cover them): seat-add single-confirmation flow;
+      a promised move asking for its yes. The "agent passes explicit endTime" behavior FAILED
+      live on the first call but self-healed via the disclosure flag (see live-verification
+      note above) — watch on the next real bookings.
+- [x] Manager comms: the pilot tenant's manager seat (manager-sam) is operated by the owner,
+      who drove the E2E and experienced the new behavior directly. ⚠ REMAINING: give Judy
+      (external beta, s3 — same new contract after the gateway restart) a short heads-up that
+      internal bookings no longer ask for a yes.
 
 ---
 *Pause after Phase 5 for the manual checks and the pilot-facing communication; Phases 1–4 are fully

@@ -136,10 +136,19 @@ export async function pollOnce(lastSeen: Map<string, number>): Promise<number> {
       lastSeen.set(tenantId, after);
     }
     for (const ev of await listScheduleEventsSince(tenantId, after)) {
-      const pushes = await pushesFor(tenantId, ev).catch((err) => {
-        console.error(`board notify: resolving event ${ev.id} failed:`, err);
-        return [] as Push[];
-      });
+      let pushes: Push[];
+      try {
+        pushes = await pushesFor(tenantId, ev);
+      } catch (err) {
+        // RESOLUTION failure ≠ poison event: a transient DB fault while
+        // resolving rows must NOT advance the cursor (that would drop the
+        // notification forever — in-memory cursor, no replay). Stop this
+        // tenant's tick here and retry the SAME cursor next tick; reads are
+        // idempotent and ordered delivery is preserved. Only SEND failures
+        // (below) advance past — that's the real poison-message risk.
+        console.error(`board notify: resolving event ${ev.id} failed (will retry):`, err);
+        break;
+      }
       for (const push of pushes) {
         try {
           await sendBoardMessage(push.userId, push.text);

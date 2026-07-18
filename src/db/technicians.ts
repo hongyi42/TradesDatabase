@@ -66,23 +66,43 @@ export async function findRosterByTelegramUserIdGlobal(
   if (error) throw new Error(`findRosterByTelegramUserIdGlobal failed: ${error.message}`);
   const live = (data ?? []).filter((t) => !isInactiveState(t.state));
   if (live.length === 0) return null;
+  // ANY multiplicity refuses — same-tenant duplicates included, not just the
+  // multi-firm case. Two live rows can share an id inside one tenant via the
+  // deactivate → re-bind → reactivate sequence (deactivation keeps
+  // telegram_user_id; bind_telegram's guard sees only live rows; reactivation
+  // re-checks nothing), and this select is unordered, so picking live[0]
+  // would make board identity/tier flap per request. Refuse, don't guess.
   const tenantIds = [...new Set(live.map((t) => t.tenant_id))];
-  if (tenantIds.length > 1) return { ambiguous: true, tenantIds };
+  if (live.length > 1) return { ambiguous: true, tenantIds };
   return { technician: live[0] };
 }
 
 // The board notification worker's tenant set: every tenant with at least one
 // live Telegram-bound roster row — the only tenants whose schedule_events can
 // reach anyone. Kept here so both Telegram-roster helpers live together.
+//
+// Paged: PostgREST caps every response at db-max-rows (1000 locally and on
+// hosted projects) and the cap is a SILENT fetch limit, not an error —
+// https://docs.postgrest.org/en/v12/references/configuration.html#db-max-rows
+// — and this is the repo's only cross-tenant scan of a growth table (the
+// foldImpact.ts precedent). An unpaged read would silently drop whole tenants
+// from the notification worker once total bound rows pass the cap.
 export async function listTenantIdsWithTelegramBindings(): Promise<string[]> {
-  const { data, error } = await getClient()
-    .from('technicians')
-    .select('tenant_id, state')
-    .not('telegram_user_id', 'is', null);
-  if (error) throw new Error(`listTenantIdsWithTelegramBindings failed: ${error.message}`);
-  return [
-    ...new Set((data ?? []).filter((t) => !isInactiveState(t.state)).map((t) => t.tenant_id)),
-  ];
+  const PAGE = 1000;
+  const tenantIds = new Set<string>();
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await getClient()
+      .from('technicians')
+      .select('tenant_id, state')
+      .not('telegram_user_id', 'is', null)
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`listTenantIdsWithTelegramBindings failed: ${error.message}`);
+    for (const t of data ?? []) {
+      if (!isInactiveState(t.state)) tenantIds.add(t.tenant_id);
+    }
+    if (!data || data.length < PAGE) return [...tenantIds];
+  }
 }
 
 // Point read by row id (FK joins from assignments etc.). Tenant-guarded: a

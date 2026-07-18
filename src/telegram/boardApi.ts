@@ -41,24 +41,37 @@ type BoardAuth =
   | { ok: true; tenantId: string; technician: Technician }
   | { ok: false; code: 401 | 409; error?: string };
 
-// Auth posture per the plan: any failure (missing/garbled header, bad
-// signature, stale slip, unknown id, unconfigured token) → bare 401, no
-// detail. The ONE distinguished failure is a Telegram account live on more
-// than one firm — 409, so the UI can say why instead of looking broken.
+// Auth posture per the plan: AUTH-shaped failures (missing/garbled header,
+// bad signature, stale slip, unknown id, unconfigured token) → bare 401, no
+// detail. The ONE distinguished auth failure is an ambiguous account — 409,
+// so the UI can say why instead of looking broken. A DB fault is NOT an auth
+// failure: the roster lookup sits OUTSIDE the catch so an outage propagates
+// to the outer handler's logged 500 instead of masquerading as "bad slip"
+// (telling a manager to "reopen the board" during a DB outage helps nobody).
 async function authBoard(req: http.IncomingMessage): Promise<BoardAuth> {
+  let userId: string;
   try {
     const m = /^tma\s+(.+)$/i.exec(req.headers.authorization ?? '');
     if (!m) return { ok: false, code: 401 };
-    const verified = verifyInitData(m[1], process.env.BOARD_BOT_TOKEN ?? '');
-    const match = await findRosterByTelegramUserIdGlobal(verified.userId);
-    if (!match) return { ok: false, code: 401 };
-    if ('ambiguous' in match) {
-      return { ok: false, code: 409, error: 'account on multiple firms' };
-    }
-    return { ok: true, tenantId: match.technician.tenant_id, technician: match.technician };
+    userId = verifyInitData(m[1], process.env.BOARD_BOT_TOKEN ?? '').userId;
   } catch {
     return { ok: false, code: 401 };
   }
+  const match = await findRosterByTelegramUserIdGlobal(userId);
+  if (!match) return { ok: false, code: 401 };
+  if ('ambiguous' in match) {
+    return {
+      ok: false,
+      code: 409,
+      // Multi-firm vs a same-tenant duplicate binding — both refuse, each
+      // with copy the operator can act on.
+      error:
+        match.tenantIds.length > 1
+          ? 'account on multiple firms'
+          : 'account matches multiple roster entries',
+    };
+  }
+  return { ok: true, tenantId: match.technician.tenant_id, technician: match.technician };
 }
 
 function json(res: http.ServerResponse, code: number, body: unknown): void {
@@ -260,15 +273,31 @@ export async function handleBoardRequest(
         });
         return;
       } catch (err) {
-        // Verb refusals travel verbatim (incl. the UNSCHEDULED stranding).
-        json(res, 409, { error: err instanceof Error ? err.message : String(err) });
+        const message = err instanceof Error ? err.message : String(err);
+        // The shared verbs throw untyped Errors for refusals AND infra faults
+        // (booking.ts is deliberately outside this feature's footprint, so no
+        // typed refusal exists to discriminate on). Triage order matters:
+        // the UNSCHEDULED stranding travels verbatim FIRST — it reports a real
+        // state change and can embed a db "failed:" fragment — then the db
+        // layer's uniform "<fn> failed:" prefix marks a server fault (logged
+        // 500, no internal strings to the webview); everything else is a verb
+        // refusal the UI must show as-is.
+        if (!message.includes('UNSCHEDULED') && / failed: /.test(message)) {
+          console.error('board write failed:', err);
+          json(res, 500, { error: 'server error — try again shortly' });
+          return;
+        }
+        json(res, 409, { error: message });
         return;
       }
     }
 
     res.writeHead(404);
     res.end();
-  } catch {
+  } catch (err) {
+    // Genuine server faults (incl. DB outages surfacing through authBoard's
+    // roster lookup) — log them; a silent bare 500 leaves the operator blind.
+    console.error('board request failed:', err);
     if (!res.headersSent) {
       res.writeHead(500);
       res.end();

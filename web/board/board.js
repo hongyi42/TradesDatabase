@@ -14,7 +14,7 @@
 
   var tg = window.Telegram && Telegram.WebApp;
   var app = document.getElementById('app');
-  var state = { isManager: false, from: null };
+  var state = { isManager: false, rendered: false };
 
   function esc(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
@@ -85,8 +85,10 @@
   }
 
   function stopCard(stop) {
+    // .draggable (manager only) is what carries touch-action:none — the
+    // read-only technician view must keep native card-origin scrolling.
     return (
-      '<div class="stop" data-id="' + esc(stop.assignmentId) + '"' +
+      '<div class="stop' + (state.isManager ? ' draggable' : '') + '" data-id="' + esc(stop.assignmentId) + '"' +
       ' data-start="' + esc(hhmm(stop.start)) + '" data-end="' + esc(hhmm(stop.end)) + '"' +
       ' data-ref="' + esc(stop.technicianRef || '') + '">' +
       '<div class="stop-time">' + esc(hhmm(stop.start)) + '–' + esc(hhmm(stop.end)) + '</div>' +
@@ -172,6 +174,7 @@
       date = addDays(date, 1);
     }
     app.innerHTML = html;
+    state.rendered = true;
   }
 
   // ---- API ----
@@ -183,11 +186,15 @@
   function apiGet(query) {
     return fetch('/board/api/day' + query, { headers: authHeaders() }).then(function (resp) {
       if (resp.status === 409) {
-        showEmpty('This Telegram account is on more than one firm — ask your operator.');
+        showEmpty('This Telegram account matches more than one roster entry — ask your operator.');
         return null;
       }
       if (!resp.ok) {
-        showEmpty("Couldn't verify you (" + resp.status + '). Reopen the board from Telegram.');
+        showEmpty(
+          resp.status >= 500
+            ? 'Server problem — try again shortly.'
+            : "Couldn't verify you (" + resp.status + '). Reopen the board from Telegram.',
+        );
         return null;
       }
       return resp.json();
@@ -219,10 +226,20 @@
       return apiGet('?from=' + first.from + '&to=' + addDays(first.from, 6)).then(function (data) {
         if (!data) return null;
         state.isManager = data.tier === 'manager';
-        state.from = data.from;
         render(data);
         return data;
       });
+    });
+  }
+
+  // Every load goes through this: a fetch-level REJECTION (network error, no
+  // HTTP status) must never strand the page on "Loading…" or silently keep a
+  // stale board after a committed write — the exact regression the Phase-2
+  // .catch prevented before the Phase-3 rewrite dropped it.
+  function refresh() {
+    return load().catch(function () {
+      if (state.rendered) toast('Network error — the board may be stale; try again.', true);
+      else showEmpty('Network error — reopen the board to retry.');
     });
   }
 
@@ -254,7 +271,7 @@
             if (!r.ok) {
               // Incl. the UNSCHEDULED stranding — show the raw failure, refetch.
               toast(r.body.error || 'Move failed (' + r.status + ')', true);
-              load();
+              refresh();
               return;
             }
             // "Say what you did" includes a promise broken in the preview→commit
@@ -266,11 +283,11 @@
               (r.body.promiseBroken ? '. This BROKE a customer promise — tell them' : '') +
               (r.body.warning ? '. ' + r.body.warning : '');
             toast(msg, !!r.body.promiseBroken);
-            load();
+            refresh();
           })
           .catch(function () {
             toast('Network error — the move may or may not have landed; refreshing.', true);
-            load();
+            refresh();
           });
       };
       if (p.body.requiresConfirmation) {
@@ -305,7 +322,7 @@
           .then(function (r) {
             if (!r.ok) {
               toast(r.body.error || 'Cancel failed (' + r.status + ')', true);
-              load();
+              refresh();
               return;
             }
             // Disclose a promise that appeared between preview and commit —
@@ -316,11 +333,11 @@
                 (hadPromise ? '. This visit was PROMISED to the customer — tell them' : ''),
               !!hadPromise,
             );
-            load();
+            refresh();
           })
           .catch(function () {
             toast('Network error — the cancel may or may not have landed; refreshing.', true);
-            load();
+            refresh();
           });
       };
       if (p.body.requiresConfirmation) {
@@ -375,7 +392,7 @@
     if (prev) prev.classList.remove('drop-hover');
   }
 
-  function beginDrag(card, x, y) {
+  function beginDrag(card, x, y, pointerId) {
     // Telegram's own vertical-swipe-to-collapse gesture fights vertical drags
     // (Bot API 7.7+) — suspend it for the duration of the drag only.
     if (tg && typeof tg.disableVerticalSwipes === 'function') tg.disableVerticalSwipes();
@@ -385,7 +402,10 @@
     chip.textContent =
       card.getAttribute('data-start') + ' ' + (who ? who.textContent : 'visit');
     document.body.appendChild(chip);
-    drag = { card: card, chip: chip };
+    // pointerId = the ONE finger that owns this drag; every other pointer's
+    // moves/lifts are ignored, or a stray second touch would steer the chip
+    // and commit the drop at coordinates the manager never chose.
+    drag = { card: card, chip: chip, pointerId: pointerId };
     card.classList.add('dragging');
     positionChip(x, y);
   }
@@ -415,10 +435,10 @@
       if (e.target.closest && e.target.closest('.stop-cancel')) return;
       var card = e.target.closest && e.target.closest('.stop');
       if (!card) return;
-      pending = { card: card, x: e.clientX, y: e.clientY, holdTimer: null };
+      pending = { card: card, x: e.clientX, y: e.clientY, holdTimer: null, pointerId: e.pointerId };
       if (e.pointerType === 'touch') {
         pending.holdTimer = setTimeout(function () {
-          if (pending) beginDrag(pending.card, pending.x, pending.y);
+          if (pending) beginDrag(pending.card, pending.x, pending.y, pending.pointerId);
         }, 300);
       }
     });
@@ -427,6 +447,8 @@
       'pointermove',
       function (e) {
         if (!pending && !drag) return;
+        // Only the initiating finger drives the gesture.
+        if (e.pointerId !== (drag ? drag.pointerId : pending.pointerId)) return;
         if (!drag) {
           var dx = e.clientX - pending.x;
           var dy = e.clientY - pending.y;
@@ -439,7 +461,7 @@
             }
             return;
           }
-          if (dist > 8) beginDrag(pending.card, e.clientX, e.clientY);
+          if (dist > 8) beginDrag(pending.card, e.clientX, e.clientY, e.pointerId);
           else return;
         }
         e.preventDefault();
@@ -452,6 +474,11 @@
     );
 
     var finish = function (e) {
+      // A second finger lifting must not end (let alone commit) a drag it
+      // never owned — only the initiating pointer finishes the gesture.
+      if (e.pointerId !== (drag ? drag.pointerId : pending ? pending.pointerId : e.pointerId)) {
+        return;
+      }
       if (pending) clearTimeout(pending.holdTimer);
       if (drag) {
         var card = drag.card;
@@ -475,5 +502,5 @@
   tg.expand();
   applyTheme();
   wireWrites();
-  load();
+  refresh();
 })();

@@ -8,4 +8,28 @@ export default tseslint.config(
     files: ['src/**/*.ts'],
     extends: [...tseslint.configs.recommended],
   },
+  {
+    // The board Mini App is plain browser JS served as a static file (no build
+    // step, so it can't be TypeScript without introducing one) — without this
+    // block it would pass `eslint .` vacuously (zero rules matched) and sit
+    // outside EVERY gate. Identifier-level breakage (typo'd names, dead vars)
+    // now fails lint; property-typo coverage would need checkJs + JSDoc types.
+    files: ['web/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'script',
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        Telegram: 'readonly',
+      },
+    },
+    rules: {
+      'no-undef': 'error',
+      'no-unused-vars': 'error',
+    },
+  },
 );

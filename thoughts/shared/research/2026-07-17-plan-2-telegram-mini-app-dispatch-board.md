@@ -233,6 +233,14 @@ with the verified Telegram algorithm:**
   `KeyboardButton`/`InlineKeyboardButton` `web_app` field notes; there is a *"private chats"*-style
   restriction on some `web_app` launches. Technicians sit in private 1:1 bot chats, so this is
   expected to be fine, but confirm the exact wording at `/bots/api` if it becomes load-bearing.
+- **Send-to-user addressing (added 2026-07-18, final-review citation):** the notifier passes
+  `technicians.telegram_user_id` verbatim as `sendMessage` `chat_id`. "Private-chat id equals user
+  id" is a **de-facto convention, not a stated guarantee** — `sendMessage` documents `chat_id` only
+  as "unique identifier for the target chat" (https://core.telegram.org/bots/api#sendmessage); the
+  closest official acknowledgement is `ChatJoinRequest.user_chat_id`, a private-chat id distributed
+  precisely for send-to-user use (https://core.telegram.org/bots/api#chatjoinrequest). Works only
+  for users who have `/start`-ed the bot (which board users have, by construction — the menu button
+  requires it). Fallback if it ever breaks: capture `chat.id` from the person's `/start` update.
 
 **Unchanged deps** (from the gap analysis): Google Routes API (`get_schedule`), Supabase via
 `src/db/`, MCP SDK. **`googleapis` stays in `package.json`** (`src/email/ingest.ts` imports it) even

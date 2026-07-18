@@ -206,6 +206,17 @@ describe('global telegram lookup (Plan 2 board)', () => {
     const again = await findRosterByTelegramUserIdGlobal('777000111');
     expect(again && 'technician' in again && again.technician.id).toBe(al.id);
 
+    // A SAME-tenant duplicate live binding refuses too (deactivate → re-bind
+    // → reactivate can mint this state; an unordered live[0] would make board
+    // identity/tier flap per request — refuse, don't guess).
+    const em = await insertTechnician({ tenantId, ref: 'board-em', displayName: 'Board Em' });
+    await updateTechnician(em.id, { telegram_user_id: '777000111' });
+    const sameTenantDup = await findRosterByTelegramUserIdGlobal('777000111');
+    expect(sameTenantDup && 'ambiguous' in sameTenantDup && sameTenantDup.tenantIds).toEqual([
+      tenantId,
+    ]);
+    await setTechnicianState(em.id, 'offboarded');
+
     // …and an inactive-only holder resolves to null, same as the tenant-scoped
     // lookup's contract.
     await setTechnicianState(al.id, 'offboarded');

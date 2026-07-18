@@ -52,11 +52,14 @@ header h1 { font-size: 18px; margin: 4px 0 2px; }
   border-radius: 10px;
   padding: 8px 10px;
   margin: 6px 0;
-  /* Touch drag needs the browser to NOT claim pans that start on a card —
-     preventDefault on pointermove cannot stop native scroll (spec). Scrolling
-     still works from day/lane headers, gaps, and empty areas. */
-  touch-action: none;
 }
+
+/* Touch drag needs the browser to NOT claim pans that start on a card —
+   preventDefault on pointermove cannot stop native scroll (spec). Scoped to
+   .draggable (manager view only): technicians can never drag, and their
+   card-dense read-only view must keep native scrolling. Managers scroll from
+   day/lane headers, gaps, and empty areas. */
+.stop.draggable { touch-action: none; }
 
 .stop-time { font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 600; }
 .stop-body { flex: 1; min-width: 0; }

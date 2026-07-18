@@ -36,9 +36,21 @@ function allowed(req: http.IncomingMessage): boolean {
 
 // The request stream is consumable once, so the webhook path reads the RAW string
 // (HMAC is over the exact bytes) while the MCP path parses JSON — never both.
-async function readRawBody(req: http.IncomingMessage): Promise<string> {
+// maxBytes (optional) aborts oversized bodies instead of buffering them: the
+// board path reads pre-auth on a publicly-distributed URL, so an uncapped read
+// there is a memory-DoS invitation. Existing callers pass no cap (unchanged).
+async function readRawBody(req: http.IncomingMessage, maxBytes?: number): Promise<string> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let total = 0;
+  for await (const chunk of req) {
+    const buf = chunk as Buffer;
+    total += buf.length;
+    if (maxBytes !== undefined && total > maxBytes) {
+      req.destroy();
+      throw Object.assign(new Error('request body exceeds cap'), { code: 'BODY_TOO_LARGE' });
+    }
+    chunks.push(buf);
+  }
   return Buffer.concat(chunks).toString('utf8');
 }
 
@@ -241,9 +253,38 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     // Dispatch-board Mini App — self-authenticated by Telegram initData (board
     // traffic is users' public browsers, not the gateway), so like /inbound/
-    // and /control/ it must route BEFORE the IP allowlist.
+    // and /control/ it must route BEFORE the IP allowlist. Only POSTs carry a
+    // body, and it is CAPPED: this path is pre-auth AND its URL is handed to
+    // every roster user via the Telegram menu button, so an unbounded read
+    // would let any client balloon the shared process before auth runs.
     if (isBoardPath(req.url)) {
-      await handleBoardRequest(req, res, await readRawBody(req));
+      let boardBody = '';
+      if (req.method === 'POST') {
+        // Honest oversized clients get a clean 413 via Content-Length before
+        // any read; a length-less (chunked) flood is cut off mid-stream by
+        // the read cap — no clean response owed to that caller.
+        const BOARD_BODY_CAP = 64 * 1024;
+        const declared = Number(req.headers['content-length']);
+        if (Number.isFinite(declared) && declared > BOARD_BODY_CAP) {
+          res.writeHead(413);
+          res.end();
+          req.destroy();
+          return;
+        }
+        try {
+          boardBody = await readRawBody(req, BOARD_BODY_CAP);
+        } catch (err) {
+          if ((err as { code?: string }).code === 'BODY_TOO_LARGE') {
+            if (!res.headersSent) {
+              res.writeHead(413);
+              res.end();
+            }
+            return;
+          }
+          throw err;
+        }
+      }
+      await handleBoardRequest(req, res, boardBody);
       return;
     }
     if (!allowed(req)) {

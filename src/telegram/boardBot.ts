@@ -42,8 +42,16 @@ export async function setBoardMenuButton(): Promise<void> {
   });
 }
 
-// chatId = the person's Telegram user id (1:1 chat ids equal user ids), i.e.
-// technicians.telegram_user_id verbatim.
+// chatId = the person's Telegram user id (technicians.telegram_user_id
+// verbatim). "Private-chat id equals user id" is a DE-FACTO Bot API
+// convention, not a stated guarantee: sendMessage documents chat_id only as
+// "unique identifier for the target chat"
+// (https://core.telegram.org/bots/api#sendmessage), and the closest official
+// acknowledgement is ChatJoinRequest.user_chat_id — a private-chat id handed
+// out precisely for send-to-user use
+// (https://core.telegram.org/bots/api#chatjoinrequest). Verified live
+// 2026-07-18; if it ever breaks, capture chat.id from the person's /start
+// update instead of assuming the equivalence.
 export async function sendBoardMessage(chatId: string, text: string): Promise<void> {
   await callTelegram('sendMessage', { chat_id: chatId, text });
 }

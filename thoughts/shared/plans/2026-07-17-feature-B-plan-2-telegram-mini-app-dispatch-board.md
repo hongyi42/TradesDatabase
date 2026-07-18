@@ -4,7 +4,7 @@ task: Feature B / Plan 2 — Telegram Mini App dispatch board (global non-AI boa
 research: thoughts/shared/research/2026-07-17-feature-B-plan-2-mini-app-footprint-overlap.md
 also: thoughts/shared/research/2026-07-17-plan-2-telegram-mini-app-dispatch-board.md
 rebased: 2026-07-18 onto merged main c64d875 (Feature A live) — shape/confirm/notify updated, drag-to-assign added to v1
-status: draft
+status: implemented # all 4 phases + 8-angle final review (11/11 confirmed findings fixed) 2026-07-18; gates 517/1/46 + build clean; LIVE/DEVICE checks pending: BotFather bot + BOARD_BOT_TOKEN/BOARD_PUBLIC_URL + Render worker + deploy
 ---
 
 ## Overview
@@ -361,6 +361,61 @@ A worker that turns `schedule_events` into canned Telegram pushes so a person le
   *(DEFERRED to the live-check batch: needs the board bot + deployed worker.)*
 
 ---
+
+## Final review (8-angle /code-review, 2026-07-18)
+
+Eight parallel finder angles over `git diff main...HEAD` (line-scan, removed-behavior, cross-file,
+reuse, simplification, efficiency, altitude, conventions) → 26 deduped candidates → the 11
+correctness/security/conventions candidates went to three fresh-context verifiers — **all 11
+CONFIRMED, all 11 fixed** in the final-review commit:
+
+1. Same-tenant duplicate live Telegram binding resolved to an UNORDERED `live[0]` → identity/tier
+   could flap per request (reachable: deactivate → re-bind → reactivate). Now ANY multiplicity
+   refuses as ambiguous; 409 copy distinguishes multi-firm vs duplicate-entry. + test.
+2. Drag `finish`/`pointermove` ignored `pointerId` → a second finger could steer or commit a drop at
+   coordinates the manager never chose. Now only the initiating pointer drives the gesture.
+3. `touch-action:none` was tier-blind → a technician's card-dense read-only view was effectively
+   unscrollable on touch. Now scoped to manager-only `.stop.draggable`.
+4. `load()` lost Phase 2's rejection handler in the Phase-3 rewrite → stuck "Loading…" on flaky
+   networks and silently-stale boards after committed writes. New `refresh()` wrapper at every call
+   site (toast when a board is already rendered, empty-state otherwise).
+5. `authBoard` swallowed DB outages as bare 401 ("reopen the board" advice) with zero logging. The
+   roster lookup now sits outside the auth catch → logged 500; board shows "Server problem".
+6. Uncapped pre-auth `readRawBody` on the publicly-distributed board URL = memory-DoS invitation.
+   Now: GETs never read the body; POSTs capped at 64KB (Content-Length → clean 413; chunked floods
+   cut mid-stream). + test. (`/inbound/` has the same pre-existing class on main — follow-up, not
+   this PR.)
+7. Write-path catch mapped infra faults to 409 + raw internal strings. Triage now: UNSCHEDULED
+   stranding verbatim FIRST (it can embed a db fragment and MUST surface), then db-layer
+   `" failed: "` → logged 500, else verb refusal verbatim 409. (booking.ts exports no typed errors
+   and is out of footprint — recorded as the deeper fix for Plan 3.)
+8. `listTenantIdsWithTelegramBindings` was an unbounded cross-tenant scan → PostgREST max-rows
+   (1000) silently drops whole tenants from the notifier at growth. Now paged (foldImpact.ts
+   precedent, doc cited).
+9. A RESOLUTION failure in `pollOnce` advanced the cursor → transient DB blip permanently dropped
+   notifications. Now: resolution failure stops the tenant's tick and retries the same cursor next
+   tick; only SEND failures advance (the real poison risk).
+10. `boardBot` "1:1 chat ids equal user ids" was uncited — and the live Bot API never states it.
+    Cited as de-facto convention (#sendmessage + #chatjoinrequest `user_chat_id`) in code + the
+    research doc's verified-facts list, with the capture-chat.id fallback recorded.
+11. `web/board/board.js` (the entire write-path client) was invisible to BOTH gates (tsc include
+    `src`, eslint `src/**/*.ts` — vacuous pass). eslint now lints `web/**/*.js` (no-undef,
+    no-unused-vars, browser globals). Property-typo coverage would need checkJs+JSDoc — follow-up.
+
+**Surfaced, deliberately NOT acted on (nit/efficiency tier — recorded follow-ups):** board double-
+fetch per load (add a `days` param server-side); `listTeam` fetched per read (self-view could reuse
+the auth row; manager view could batch with `Promise.all`); self-view could use
+`listAssignmentsForTechnician`; notifier N+1 per event burst (batch `.in()` reads); static assets
+lack Cache-Control; `signSlip` test-mint duplicated in two suites; `isRealDateISO` reuse in
+boardRead; a shared `constantTimeEqual` (3rd copy of the idiom); `cancelFlow`/`moveFlow`
+near-duplication (extract `previewThenCommit`); `pushTo` helper in pushesFor; move/cancel route
+split; preview wire-shape passed through verbatim (board.js binds booking.ts's preview field names —
+typed wire contract is the deeper fix); liveness filtering still hand-rolled at 4 sites (a
+`getLiveTechnicianById` would own it); `schedule_events` detail contract exists only as matching
+string literals (shared type wanted).
+
+Gates after fixes: `node --check` OK, typecheck clean, lint clean (now incl. board.js),
+**517 passed / 1 skipped (46 files)**, build clean.
 
 ## File footprint
 **New:**

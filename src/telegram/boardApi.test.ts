@@ -249,6 +249,12 @@ describe('board write path (Phase 3)', () => {
     expect(((await emptyRef.json()) as { error: string }).error).toContain('technicianRef was empty');
   });
 
+  test('oversized body → 413 BEFORE auth (pre-auth cap on the public board path)', async () => {
+    const big = '{"pad":"' + 'x'.repeat(70 * 1024) + '"}';
+    const resp = await fetch(`${base}/board/api/move`, { method: 'POST', body: big });
+    expect(resp.status).toBe(413);
+  });
+
   test('preview → requiresConfirmation false (unpromised), NO write; commit → moved row + moved event', async () => {
     const [t1Row] = await assignmentRows("t.ref = 'board-t1' and a.status = 'confirmed'");
     const body = {

@@ -17,11 +17,20 @@
   // view: 'team' | 'mine' — managers get a tab bar; technicians are always
   // effectively 'mine' (server-filtered) and never see tabs. Writes (drag/✕)
   // exist ONLY on the Team tab: Mine is a read-only "my week" glance.
-  // weekOffset: whole weeks from the firm-local current week (0 = this week,
-  // 1 = next, -1 = last …) — the ‹ › pager. Committed only when a load
-  // SUCCEEDS (same rule as view: a failed page-flip must leave the controls
-  // agreeing with the week actually on screen).
-  var state = { isManager: false, rendered: false, view: 'team', weekOffset: 0 };
+  // weekOffset: whole CALENDAR weeks (Mon–Sun) from the firm-local current
+  // week (0 = the week containing today, 1 = next, -1 = last …) — the ‹ ›
+  // pager. Committed only when a load SUCCEEDS (same rule as view: a failed
+  // page-flip must leave the controls agreeing with the week on screen).
+  // today: the firm-local date from the server anchor — week 0 CONTAINS past
+  // days now (Mon–Sun, not today+6), and those must be as read-only as past
+  // weeks: a live drop target on yesterday is a one-mis-drag history rewrite.
+  var state = {
+    isManager: false,
+    rendered: false,
+    view: 'team',
+    weekOffset: 0,
+    today: null,
+  };
 
   function actionable() {
     // Writes need all three: a manager, the Team tab, and a NON-PAST week.
@@ -87,6 +96,12 @@
     return new Date(Date.parse(ymd + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
   }
 
+  // Monday of the calendar week containing ymd (getUTCDay: 0=Sun…6=Sat).
+  function mondayOf(ymd) {
+    var dow = new Date(Date.parse(ymd + 'T00:00:00Z')).getUTCDay();
+    return addDays(ymd, -((dow + 6) % 7));
+  }
+
   function stopBadges(stop) {
     var badges = '';
     if (stop.promiseLevel && stop.promiseLevel !== 'none') {
@@ -99,12 +114,13 @@
     return badges;
   }
 
-  function stopCard(stop) {
-    // .draggable (Team tab only) is what carries touch-action:none — the
-    // read-only views (technician, manager's Mine tab) must keep native
-    // card-origin scrolling.
+  function stopCard(stop, canAct) {
+    // .draggable is what carries touch-action:none — the read-only surfaces
+    // (technician view, manager's Mine tab, past weeks AND past days inside
+    // the current calendar week) must keep native card-origin scrolling.
+    // canAct comes from renderDay: actionable() AND the day not being past.
     return (
-      '<div class="stop' + (actionable() ? ' draggable' : '') + '" data-id="' + esc(stop.assignmentId) + '"' +
+      '<div class="stop' + (canAct ? ' draggable' : '') + '" data-id="' + esc(stop.assignmentId) + '"' +
       ' data-start="' + esc(hhmm(stop.start)) + '" data-end="' + esc(hhmm(stop.end)) + '"' +
       ' data-ref="' + esc(stop.technicianRef || '') + '">' +
       '<div class="stop-time">' + esc(hhmm(stop.start)) + '–' + esc(hhmm(stop.end)) + '</div>' +
@@ -113,17 +129,21 @@
       '</div>' +
       (stop.address ? '<div class="stop-address">' + esc(stop.address) + '</div>' : '') +
       '</div><div class="stop-badges">' + stopBadges(stop) + '</div>' +
-      (actionable()
+      (canAct
         ? '<button type="button" class="stop-cancel" aria-label="Cancel visit">✕</button>'
         : '') +
       '</div>'
     );
   }
 
-  function lane(cls, laneRef, label, stops) {
+  function lane(cls, laneRef, label, stops, canAct) {
     return (
       '<div class="' + cls + '" data-lane="' + esc(laneRef) + '"><h3>' + esc(label) + '</h3>' +
-      stops.map(stopCard).join('') +
+      stops
+        .map(function (s) {
+          return stopCard(s, canAct);
+        })
+        .join('') +
       '</div>'
     );
   }
@@ -137,11 +157,21 @@
   // and its data-lane is ''. Flat layout (technician view, manager's Mine
   // tab): a plain time-ordered list, no lanes.
   function renderDay(date, stops, teamLayout) {
+    // Per-DAY write gate: the calendar week 0 contains already-past days, and
+    // those are as read-only as past weeks (a live drop target on yesterday
+    // is a one-mis-drag history rewrite). state.today is the firm-local
+    // anchor; null (never loaded) fails safe to read-only via actionable()
+    // being unreachable pre-render.
+    var canAct = actionable() && state.today !== null && date >= state.today;
     var html = '<section class="day" data-date="' + esc(date) + '"><h2>' + esc(date) + '</h2>';
     if (!stops.length) {
       html += '<div class="day-empty">No visits</div>';
     } else if (!teamLayout) {
-      html += stops.map(stopCard).join('');
+      html += stops
+        .map(function (s) {
+          return stopCard(s, canAct);
+        })
+        .join('');
     } else {
       var lanes = {};
       var labels = {};
@@ -162,11 +192,11 @@
       });
       order.sort();
       order.forEach(function (key) {
-        html += lane('lane', key, labels[key], lanes[key]);
+        html += lane('lane', key, labels[key], lanes[key], canAct);
       });
       // Unassigned lane renders last so it reads as the "to place" tray.
       if (unassigned.length) {
-        html += lane('lane lane-unassigned', '', 'Unassigned', unassigned);
+        html += lane('lane lane-unassigned', '', 'Unassigned', unassigned, canAct);
       }
     }
     return html + '</section>';
@@ -181,20 +211,16 @@
     );
   }
 
-  // Week pager (all tiers, both tabs): ‹ › page one week per tap — the window
-  // stays 7 days, so every request remains inside the server's 14-day cap.
-  // Label reflects the COMMITTED week; "Today" appears only when away from it.
-  function pagerBar() {
-    var label =
-      state.weekOffset === 0
-        ? 'This week'
-        : state.weekOffset > 0
-          ? state.weekOffset + (state.weekOffset === 1 ? ' week ahead' : ' weeks ahead')
-          : -state.weekOffset + (state.weekOffset === -1 ? ' week back' : ' weeks back');
+  // Week pager (all tiers, both tabs): ‹ › page one Mon–Sun calendar week per
+  // tap — the window stays 7 days, so every request remains inside the
+  // server's 14-day cap. The label is the rendered week's DATE RANGE (from
+  // the server echo — user decision 2026-07-19, replacing "N weeks ahead");
+  // "Today" appears only when away from the current week.
+  function pagerBar(from, to) {
     return (
       '<nav class="pager">' +
       '<button type="button" class="pager-btn" data-page="-1" aria-label="Previous week">‹</button>' +
-      '<div class="pager-label">' + esc(label) + '</div>' +
+      '<div class="pager-label">' + esc(from) + ' → ' + esc(to) + '</div>' +
       (state.weekOffset !== 0
         ? '<button type="button" class="pager-btn pager-today" data-page="0">Today</button>'
         : '') +
@@ -215,16 +241,20 @@
     data.days.forEach(function (d) {
       byDate[d.date] = d.stops;
     });
+    // The dates live in the pager label now; this line carries only context
+    // (whose stops / read-only) and disappears when there is none.
+    var note = !isManager
+      ? 'Your stops'
+      : data.view === 'mine'
+        ? 'Your visits'
+        : state.weekOffset < 0
+          ? 'Past week — read-only'
+          : '';
     var head =
-      '<header><h1>Dispatch board</h1><div class="range">' +
-      esc(data.from) + ' → ' + esc(data.to) +
-      (isManager ? (data.view === 'mine' ? ' · your visits' : '') : ' · your stops') +
-      (isManager && data.view !== 'mine' && state.weekOffset < 0
-        ? ' · past week — read-only'
-        : '') +
-      '</div>' +
+      '<header><h1>Dispatch board</h1>' +
       (isManager ? tabsBar() : '') +
-      pagerBar() +
+      pagerBar(data.from, data.to) +
+      (note ? '<div class="range">' + esc(note) + '</div>' : '') +
       '</header>';
     // Render EVERY day in the window, empty ones included — empty days are the
     // drop targets that make "move to Thursday" possible at all.
@@ -304,17 +334,22 @@
     var v = (requestedView || state.view) === 'mine' ? 'view=mine' : '';
     return apiGet(v ? '?' + v : '').then(function (first) {
       if (!first) return null;
-      var from = addDays(first.from, offset * 7);
+      // Weeks are CALENDAR weeks: Monday of the firm-local current week is
+      // the anchor, offset in whole weeks from there (week 0 = Mon–Sun
+      // containing today, so it can include already-past days).
+      var from = addDays(mondayOf(first.from), offset * 7);
       return apiGet(
         '?from=' + from + '&to=' + addDays(from, 6) + (v ? '&' + v : ''),
       ).then(function (data) {
         if (!data) return null;
         state.isManager = data.tier === 'manager';
         // Commit BEFORE render on purpose: render's pager label and the
-        // actionable() calls inside stopCard read the committed offset. A
-        // throw inside render can't strand a wrong commit — the server
-        // always returns renderable days on a 200 (readBoardDays shape).
+        // actionable()/past-day checks inside renderDay read the committed
+        // values. A throw inside render can't strand a wrong commit — the
+        // server always returns renderable days on a 200 (readBoardDays
+        // shape).
         state.weekOffset = offset;
+        state.today = first.from;
         render(data);
         return data;
       });
@@ -456,24 +491,29 @@
     var el = document.elementFromPoint(x, y);
     if (!el) return null;
     var laneEl = el.closest && el.closest('.lane');
+    var t = null;
     if (laneEl) {
       // The Unassigned lane is a drag SOURCE only — moveVisit cannot detach a
       // person, so a drop here must be INERT, not silently degrade into a
       // day-move the gesture never meant.
       if (laneEl.classList.contains('lane-unassigned')) return null;
       var h3 = laneEl.querySelector('h3');
-      return {
+      t = {
         date: laneEl.closest('.day').getAttribute('data-date'),
         laneRef: laneEl.getAttribute('data-lane'),
         label: h3 ? h3.textContent : null,
         el: laneEl,
       };
+    } else {
+      var dayEl = el.closest && el.closest('.day');
+      if (dayEl) {
+        t = { date: dayEl.getAttribute('data-date'), laneRef: null, label: null, el: dayEl };
+      }
     }
-    var dayEl = el.closest && el.closest('.day');
-    if (dayEl) {
-      return { date: dayEl.getAttribute('data-date'), laneRef: null, label: null, el: dayEl };
-    }
-    return null;
+    // Past days are INERT drop targets — the calendar week 0 contains them,
+    // and a drop must not move a visit into history.
+    if (t && state.today !== null && t.date < state.today) return null;
+    return t;
   }
 
   function clearHover() {
@@ -541,6 +581,10 @@
       if (e.target.closest && e.target.closest('.stop-cancel')) return;
       var card = e.target.closest && e.target.closest('.stop');
       if (!card) return;
+      // Only cards RENDERED draggable may start a drag — the class is the
+      // single write-affordance truth (past days inside the current week
+      // render without it even while actionable() is true).
+      if (!card.classList.contains('draggable')) return;
       pending = { card: card, x: e.clientX, y: e.clientY, holdTimer: null, pointerId: e.pointerId };
       if (e.pointerType === 'touch') {
         pending.holdTimer = setTimeout(function () {
@@ -608,5 +652,12 @@
   tg.expand();
   applyTheme();
   wireWrites();
+  // An idle-open board can cross firm-local midnight with a stale `today`
+  // anchor — one day of already-past cards would keep their write
+  // affordances until the next load (review finding). Re-anchor whenever the
+  // webview returns to the foreground; refresh() keeps the current tab/week.
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && state.rendered) refresh();
+  });
   refresh();
 })();

@@ -22,6 +22,25 @@ body {
 header h1 { font-size: 18px; margin: 4px 0 2px; }
 .range { color: var(--hint); font-size: 13px; margin-bottom: 10px; }
 
+/* Manager tab bar: Team (act) / My schedule (look). */
+.tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.tab {
+  flex: 1;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 14px;
+  border: 1px solid var(--card);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+}
+.tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
 .empty {
   color: var(--hint);
   text-align: center;

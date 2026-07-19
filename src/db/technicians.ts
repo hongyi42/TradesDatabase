@@ -10,6 +10,13 @@ export interface InsertTechnicianInput {
   ref: string; // the vocabulary-contract string (badge = Composio user_id ref = sheet column)
   displayName: string;
   tier?: TechnicianTier;
+  // Seat-exempt = a schedulable NAME only (no seat occupied, and the identity
+  // verbs — bind_telegram / get_connect_link — refuse the row).
+  seatExempt?: boolean;
+  // State override exists for the seat-exempt add: those rows skip the pairing
+  // lifecycle entirely, so they insert straight to 'active' instead of the
+  // 'invited' default.
+  state?: TechnicianState;
 }
 
 // The roster row for one (tenant, ref), or null. Refs are unique per tenant
@@ -142,6 +149,8 @@ export async function insertTechnician(input: InsertTechnicianInput): Promise<Te
       ref: input.ref,
       display_name: input.displayName,
       tier: input.tier ?? 'technician',
+      seat_exempt: input.seatExempt ?? false,
+      ...(input.state ? { state: input.state } : {}),
     })
     .select()
     .single();

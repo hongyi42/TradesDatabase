@@ -106,12 +106,55 @@ describe('technicians roster', () => {
     });
     expect(isSeatCapError(reErr)).toBe(true);
   });
+
+  test('seat-exempt rows: insert past a full cap, never count toward it, graduation re-checks', async () => {
+    // Both technician seats are occupied (tech-b, tech-c from the cap test
+    // above). A seat-exempt insert fits anyway — it occupies nothing — and
+    // lands straight in 'active' via the state override.
+    const helper = await insertTechnician({
+      tenantId,
+      ref: 'helper-hman',
+      displayName: 'Helper Hman',
+      seatExempt: true,
+      state: 'active',
+    });
+    expect(helper.seat_exempt).toBe(true);
+    expect(helper.state).toBe('active');
+
+    // The exempt row is invisible to the cap in BOTH directions: a seated
+    // insert at the full cap still fails exactly as before…
+    let capErr: unknown;
+    await insertTechnician({ tenantId, ref: 'tech-d', displayName: 'Tech D' }).catch((e) => {
+      capErr = e;
+    });
+    expect(isSeatCapError(capErr)).toBe(true);
+
+    // Graduation guard: flipping seat_exempt OFF at a full cap re-fires the
+    // trigger (the flag is in its update-of column list) — no silent re-seating.
+    await expect(
+      pg.query('update technicians set seat_exempt = false where id = $1', [helper.id]),
+    ).rejects.toThrow(/seat_cap_exceeded/);
+
+    // …and freeing ONE seat admits exactly one seated row alongside the exempt
+    // one (if the exempt row counted, occupancy would already be full again).
+    const b = await getTechnician(tenantId, 'tech-b');
+    await setTechnicianState(b!.id, 'offboarded');
+    const d = await insertTechnician({ tenantId, ref: 'tech-d', displayName: 'Tech D' });
+    expect(d.seat_exempt).toBe(false); // omitted seatExempt = seat-occupying default
+    expect(d.state).toBe('invited'); // omitted state = pre-feature default
+    let refillErr: unknown;
+    await insertTechnician({ tenantId, ref: 'tech-e', displayName: 'Tech E' }).catch((e) => {
+      refillErr = e;
+    });
+    expect(isSeatCapError(refillErr)).toBe(true); // cap is full again: c + d, helper uncounted
+  });
 });
 
 describe('control-plane fields (Plan 2)', () => {
   test('updateTechnician round-trip; badge_hash is unique across rows', async () => {
-    // The cap test above leaves both technician seats occupied (tech-b, tech-c)
-    // — raise capacity for the two probe rows; afterAll restores seed values.
+    // The tests above leave both technician seats occupied (tech-c, tech-d;
+    // helper-hman is seat-exempt and uncounted) — raise capacity for the two
+    // probe rows; afterAll restores seed values.
     await setTenantSeats(tenantId, { managerSeats: 1, technicianSeats: 4 });
     const p = await insertTechnician({ tenantId, ref: 'patch-probe', displayName: 'Patch Probe' });
     const patched = await updateTechnician(p.id, {

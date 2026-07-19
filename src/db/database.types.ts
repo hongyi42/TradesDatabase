@@ -740,6 +740,7 @@ export type Database = {
           offboarding_started_at: string | null
           ref: string
           sandbox_ref: string | null
+          seat_exempt: boolean
           service_cities: string[]
           state: Database["public"]["Enums"]["technician_state"]
           telegram_user_id: string | null
@@ -762,6 +763,7 @@ export type Database = {
           offboarding_started_at?: string | null
           ref: string
           sandbox_ref?: string | null
+          seat_exempt?: boolean
           service_cities?: string[]
           state?: Database["public"]["Enums"]["technician_state"]
           telegram_user_id?: string | null
@@ -784,6 +786,7 @@ export type Database = {
           offboarding_started_at?: string | null
           ref?: string
           sandbox_ref?: string | null
+          seat_exempt?: boolean
           service_cities?: string[]
           state?: Database["public"]["Enums"]["technician_state"]
           telegram_user_id?: string | null

@@ -115,9 +115,10 @@ externally visible** (a customer promise at stake); everything reversible happen
 and the agent reports what it did. Concretely: `book_visit`/`move_visit`/`cancel_visit` act
 one-shot when no customer promise is affected (book with `promiseLevel:'none'`, move with
 `promiseBroken:false`, cancel of an unpromised visit) and still stage→confirm when one is;
-`add_technician_seat` is now two-step (permanent ref + a seat); the booking duration default
-is applied-and-disclosed (`endTimeDefaulted:true` in the result), never confirmed — and the
-agent must pass an explicit `endTime` whenever the manager states one.
+`add_technician_seat` is now two-step (permanent ref + a seat); `book_visit` has NO default
+times (2026-07-18, user decision — the 2h job-length default was removed after it overrode a
+stated "12–1pm" in the pilot): `startTime` and `endTime` are required, the agent passes
+exactly what the manager stated and asks when a time is missing.
 
 **Board link (2026-07-18):** scheduling results carry `boardLink` — the Telegram Mini App
 dispatch board (`t.me/<board-bot>?startapp`, decorated server-side from `BOARD_BOT_HANDLE`,

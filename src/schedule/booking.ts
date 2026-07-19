@@ -16,7 +16,6 @@ import {
   getAssignmentForTenant,
   getCustomer,
   getJob,
-  getJobDurationMinutes,
   getTechnician,
   getTechnicianById,
   isInactiveState,
@@ -49,9 +48,10 @@ export function isPromiseLevel(v: unknown): v is PromiseLevel {
   return typeof v === 'string' && (PROMISE_LEVELS as string[]).includes(v);
 }
 
-// Minutes → 'HH:MM' on the same day, clamped to 23:59 (a duration default that
-// spills past midnight books to end-of-day rather than crossing the UTC-day
-// boundary the readers bucket by; the manager can pass endTime explicitly).
+// Minutes → 'HH:MM' on the same day, clamped to 23:59 (a move that preserves
+// the old duration onto a late start books to end-of-day rather than crossing
+// the UTC-day boundary the readers bucket by; pass endTime explicitly to
+// control it).
 function addMinutesClamped(hhmm: string, minutes: number): string {
   const [h, m] = hhmm.split(':').map(Number);
   const total = Math.min(h * 60 + m + minutes, 23 * 60 + 59);
@@ -120,8 +120,13 @@ export interface BookVisitInput {
   jobId?: string;
   title?: string | null; // job-shell title on the customerId path
   date: string; // YYYY-MM-DD, firm-local
-  startTime?: string; // HH:MM, default 08:00
-  endTime?: string; // HH:MM, default start + job-type duration
+  // Both times are REQUIRED — the server assumes NO default length (user
+  // decision 2026-07-18: a booking carries exactly the times the manager
+  // stated; when a time wasn't stated, the agent asks instead of the server
+  // inventing one). Moves differ: preserving the OLD duration there carries a
+  // real value forward, not an invented one.
+  startTime: string; // HH:MM
+  endTime: string; // HH:MM
   promiseLevel?: PromiseLevel; // default 'none' — record only promises actually made
   actorRef: string;
 }
@@ -143,7 +148,6 @@ interface ResolvedBooking {
   existingJob: Job | null;
   startTime: string;
   endTime: string;
-  endTimeDefaulted: boolean; // true = the server chose the length, not the manager
   startISO: string;
   endISO: string;
   promiseLevel: PromiseLevel;
@@ -181,13 +185,7 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     customer = byId;
   }
 
-  const startTime = input.startTime ?? '08:00';
-  const endTime =
-    input.endTime ??
-    addMinutesClamped(
-      startTime,
-      await getJobDurationMinutes(tenantId, existingJob?.job_type ?? null),
-    );
+  const { startTime, endTime } = input;
   validateDayAndTimes(input.date, startTime, endTime);
   const startISO = naiveLocalISO(input.date, startTime);
   const endISO = naiveLocalISO(input.date, endTime);
@@ -231,10 +229,6 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     existingJob,
     startTime,
     endTime,
-    // Disclosure flag, never a gate: when the manager stated no length the
-    // duration default fills in — the agent must SAY the length was assumed
-    // (and always pass endTime when the manager stated one).
-    endTimeDefaulted: input.endTime === undefined,
     startISO,
     endISO,
     // Default 'none': a fresh booking promises the customer NOTHING unless the
@@ -255,9 +249,8 @@ export interface BookVisitPreview {
   newJob: boolean; // true = confirming will mint a job shell
   jobTitle: string | null;
   date: string;
-  startTime: string; // resolved (defaults applied) — store these on the stage
+  startTime: string; // as the manager stated — store these on the stage
   endTime: string;
-  endTimeDefaulted: boolean; // server-chosen length — disclose, never confirm-the-guess
   promiseLevel: PromiseLevel;
   requiresConfirmation: boolean; // the doctrine's verdict — surfaces branch on THIS
   warning?: string;
@@ -277,7 +270,6 @@ export async function previewBookVisit(input: BookVisitInput): Promise<BookVisit
     date: input.date,
     startTime: r.startTime,
     endTime: r.endTime,
-    endTimeDefaulted: r.endTimeDefaulted,
     promiseLevel: r.promiseLevel,
     requiresConfirmation: bookingRequiresConfirmation(r.promiseLevel),
     ...(r.warning ? { warning: r.warning } : {}),
@@ -288,11 +280,6 @@ export interface BookVisitResult {
   assignment: Assignment;
   job: Job;
   customer: Customer;
-  // True iff THIS call's input omitted endTime. Correct when you pass the
-  // manager's original args (the one-shot path). If you pass an already-
-  // RESOLVED endTime (the staged-confirm path does — preview == commit), this
-  // reads false: carry the stage-time truth from the preview/staged copy.
-  endTimeDefaulted: boolean;
   warning?: string;
 }
 
@@ -369,7 +356,6 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
     assignment,
     job,
     customer: r.customer,
-    endTimeDefaulted: r.endTimeDefaulted,
     ...(r.warning ? { warning: r.warning } : {}),
   };
 }

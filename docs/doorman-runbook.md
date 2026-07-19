@@ -319,14 +319,17 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'   # expect 403
 ```
 
-- (a) should list the 13 tools for a technician-tier badge: `record_field_note`, `find_customer`,
-  `get_customer_context`, `get_job`, `list_recent_captures`, `brief_customer`,
+- (a) should list the 14 tools for a technician-tier badge: `record_field_note`, `find_customer`,
+  `get_customer_context`, `get_job`, `resolve_date`, `list_recent_captures`, `brief_customer`,
   `answer_customer_question`, `web_search`, `read_webpage`, `send_email`, `retract_capture`,
   `record_standing_fact`, `get_schedule`. (A badge whose roster row is an ACTIVE `tier='manager'`
-  lists **25** — the 8 seat/lifecycle-management tools are added: add/deactivate/reactivate
-  technician seat, bind_telegram, list_team, list_pending_reviews, resolve_review,
-  get_connect_link; plus the 4 scheduling tools since 2026-07-14: get_team_schedule,
-  book_visit, move_visit, cancel_visit; see nemoclaw-tech-agent.md §4.)
+  lists **25** — `get_schedule` is REMOVED (2026-07-19: it is the technician route view; a
+  manager's only schedule read is get_team_schedule, which includes visits they hold, and
+  schedule viewing lives on the dispatch board) while the 8 seat/lifecycle-management tools are
+  added: add/deactivate/reactivate technician seat, bind_telegram, list_team,
+  list_pending_reviews, resolve_review, get_connect_link; plus the 4 scheduling tools since
+  2026-07-14: get_team_schedule, book_visit, move_visit, cancel_visit; see
+  nemoclaw-tech-agent.md §4.)
   - `401 / bad identity signature` from upstream → `GATEWAY_IDENTITY_SECRET` differs between host and
     Render (Invariant 2).
   - connection error to upstream → the host isn't on Render's `ALLOWED_CLIENT_IPS` (Step 4).

@@ -514,6 +514,15 @@ describe('MCP server', () => {
           'resolve_review',
         ]),
       );
+      // get_schedule is NOT on the manager surface (user decision 2026-07-19):
+      // managers get exactly ONE schedule read (get_team_schedule, which
+      // includes their own visits), so the self-view misroute cannot recur.
+      // The dispatch gate backstops stale cached tool lists.
+      expect(mgrTools).not.toContain('get_schedule');
+      const selfView = await callWith('get_schedule', {});
+      expect(selfView.isError).toBe(true);
+      expect(selfView.text).toContain('technician route view');
+      expect(selfView.text).toContain('get_team_schedule');
 
       // Add is TWO-STEP (irreversible: permanent ref + a seat). Stage first —
       // nothing is inserted until the confirming call.
@@ -1400,15 +1409,16 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       stubs,
     );
     try {
-      // The full manager surface: every base spine tool + the 8 seat/lifecycle
-      // tools — the count the runbook/Box_Setup_Stuff verification steps cite.
+      // The full manager surface: every base spine tool EXCEPT get_schedule
+      // (technician route view, removed 2026-07-19) + the 12 admin tools —
+      // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
       expect(mgrTools).toContain('bind_telegram');
       expect(mgrTools).toContain('web_search');
       expect(mgrTools).toContain('read_webpage');
       expect(mgrTools).toContain('resolve_date');
-      expect(mgrTools).toHaveLength(26);
+      expect(mgrTools).toHaveLength(25);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -1811,7 +1821,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(26);
+        expect(mgrTools).toHaveLength(25); // base minus get_schedule + 12 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',

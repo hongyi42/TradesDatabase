@@ -84,13 +84,14 @@ async function main() {
 
   const c1 = new Client({ name: 'smoke', version: '0.0.0' });
   try {
-    // 1. Valid signature → tools/list returns the 7 tools.
+    // 1. Valid signature → tools/list returns the technician surface
+    // (14 since 2026-07-17; an active-manager ref would list 25).
     console.log('1) valid signature → tools/list');
     await c1.connect(transportFor(url, goodHeaders));
     const { tools } = await c1.listTools();
-    tools.length === 7
+    tools.length === 14
       ? ok(`tools/list returned ${tools.length} tools`)
-      : bad(`expected 7 tools, got ${tools.length}: ${tools.map((x) => x.name).join(',')}`);
+      : bad(`expected 14 tools, got ${tools.length}: ${tools.map((x) => x.name).join(',')}`);
 
     // 2. Tampered signature → rejected (401), connection never established.
     console.log('2) tampered signature → rejected');

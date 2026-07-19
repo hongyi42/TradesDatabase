@@ -85,16 +85,19 @@ The future **Option B** (per-bot JWT / OAuth Resource Server) swaps only the hea
 
 ## 4. Restrict the tool surface
 Allowlist only the spine tools for the technician profile (`tools.profile` / allowlist) — the
-13-tool technician surface: `record_field_note`, `find_customer`, `get_customer_context`,
-`get_job`, `list_recent_captures`, `brief_customer`, `answer_customer_question`, `web_search`,
-`read_webpage`, `send_email`, `retract_capture`, `record_standing_fact`, `get_schedule`.
-Outbound network policy should allow only the gateway + our server's host.
+14-tool technician surface: `record_field_note`, `find_customer`, `get_customer_context`,
+`get_job`, `resolve_date`, `list_recent_captures`, `brief_customer`, `answer_customer_question`,
+`web_search`, `read_webpage`, `send_email`, `retract_capture`, `record_standing_fact`,
+`get_schedule`. Outbound network policy should allow only the gateway + our server's host.
 
 **Manager profile (2026-07-02):** an ACTIVE `tier='manager'` roster row (the `technicians`
-table, not the badge, is the tier source of truth) additionally exposes the seat/lifecycle
-tools — 12 of them, for a 25-tool manager surface (the technician surface itself is 13 incl.
-send_email since 2026-07-04, retract_capture and get_schedule since 2026-07-06, web_search and
-read_webpage since 2026-07-13, record_standing_fact since 2026-07-14; the 4 scheduling tools
+table, not the badge, is the tier source of truth) gets the technician surface MINUS
+`get_schedule` (removed for managers 2026-07-19 — it is the technician route view; a manager's
+only schedule read is `get_team_schedule`, which includes visits the manager holds; do NOT pin
+get_schedule in the MANAGER profile) plus the 12 seat/lifecycle+scheduling tools, for a 25-tool
+manager surface (send_email since 2026-07-04, retract_capture since 2026-07-06, web_search and
+read_webpage since 2026-07-13, record_standing_fact since 2026-07-14, resolve_date since
+2026-07-17; the 4 scheduling tools
 `get_team_schedule`/`book_visit`/`move_visit`/`cancel_visit` since 2026-07-14): `add_technician_seat`
 (two-step confirm since 2026-07-17 — mints a permanent ref + burns a seat, not reversible),
 `deactivate_technician_seat` (two-step confirm; starts the disable-first grace period),

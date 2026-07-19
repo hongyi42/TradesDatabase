@@ -603,8 +603,26 @@ change.
 EOF
       ok "confirmation-doctrine block appended to ${agent}'s AGENTS.md"
     fi
+    # Board-link relay (2026-07-18) — its OWN guard so a re-run delivers it to
+    # boxes that already carry the older §0c blocks (the recurring trap: a new
+    # block hidden behind an existing block's grep never self-heals).
+    if docker exec "$cid" grep -q "dispatch board link" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+      ok "board-link block already present"
+    else
+      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+
+## The dispatch board link (host-managed; added 2026-07-18)
+
+Scheduling results (book_visit / move_visit / cancel_visit, schedule reads) may include
+boardLink — the Telegram Mini App dispatch board. After reporting any schedule change, END
+with the link so the person can eyeball the week in one tap (e.g. "See it on the board:
+<boardLink>"). Relay the link EXACTLY as given. If a result has no boardLink, say nothing
+about the board — never invent or remember the URL.
+EOF
+      ok "board-link block appended to ${agent}'s AGENTS.md"
+    fi
   else
-    echo "    WARN: no running container for ${agent} — append the §0c block manually once it's up"
+    echo "    WARN: no running container for ${agent} — append the §0c blocks (accuracy, confirmation, board-link) manually once it's up"
   fi
 
   log "batching block (§0d — bulk/long-task rules; wiped by rebuild, re-run after one)"

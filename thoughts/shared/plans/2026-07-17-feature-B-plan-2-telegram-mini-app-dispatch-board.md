@@ -111,6 +111,14 @@ that signature and looks the person up on the roster to learn their firm and whe
 - **Phase 3:** `BOARD_BOT_TOKEN`; `BOARD_PUBLIC_URL` — the public HTTPS base URL of the Render web
   service (e.g. `https://trades-spine.onrender.com`), used for the launch button's `web_app.url`. *New.*
 - **Phase 4:** `BOARD_BOT_TOKEN`, `BOARD_PUBLIC_URL` (same as Phase 3).
+- **Board-link bridge (added 2026-07-18, post-implementation feature):** `BOARD_BOT_HANDLE` on the
+  Render WEB service (the board bot's username, `@` optional — validated `[A-Za-z0-9_]{5,32}`,
+  invalid/unset = links absent) makes scheduling tool results carry
+  `boardLink: https://t.me/<handle>?startapp`. **One-time BotFather prerequisite:** configure the
+  board bot's **Main Mini App** to the same `/board` URL — without it the deep link opens a plain
+  bot chat, silently (menu button never needed this; the deep link does —
+  https://core.telegram.org/bots/webapps). Agents are contracted (tool descriptions + AGENTS.md
+  board-link block) to end schedule-change reports with the link, relayed exactly.
 - **Preflight (downgraded at the 2026-07-18 rebase):** Feature A's rollout closed most of the old
   Plan-1 Phase-5 blocker — Render web runs merged main (`c64d875`) and the pilot DB is migrated and
   live-E2E-verified (real bookings/moves writing `schedule_events`). What remains is only the sheet-era

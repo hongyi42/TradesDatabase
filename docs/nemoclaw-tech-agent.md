@@ -118,6 +118,11 @@ one-shot when no customer promise is affected (book with `promiseLevel:'none'`, 
 `add_technician_seat` is now two-step (permanent ref + a seat); the booking duration default
 is applied-and-disclosed (`endTimeDefaulted:true` in the result), never confirmed — and the
 agent must pass an explicit `endTime` whenever the manager states one.
+
+**Board link (2026-07-18):** scheduling results carry `boardLink` — the Telegram Mini App
+dispatch board (`t.me/<board-bot>?startapp`, decorated server-side from `BOARD_BOT_HANDLE`,
+absent when unset). The agent ends every schedule-change report with it ("See it on the
+board: …"), relayed exactly — never an invented or remembered URL.
 - The agent calls `record_field_note({ text, channel })`. **Nothing is recorded by this call** —
   the note is staged server-side (a review-item token) and the response carries a `confirmId`.
 - If the result `status` is `needs_identity`, the agent asks the technician which customer

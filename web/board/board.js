@@ -17,10 +17,18 @@
   // view: 'team' | 'mine' — managers get a tab bar; technicians are always
   // effectively 'mine' (server-filtered) and never see tabs. Writes (drag/✕)
   // exist ONLY on the Team tab: Mine is a read-only "my week" glance.
-  var state = { isManager: false, rendered: false, view: 'team' };
+  // weekOffset: whole weeks from the firm-local current week (0 = this week,
+  // 1 = next, -1 = last …) — the ‹ › pager. Committed only when a load
+  // SUCCEEDS (same rule as view: a failed page-flip must leave the controls
+  // agreeing with the week actually on screen).
+  var state = { isManager: false, rendered: false, view: 'team', weekOffset: 0 };
 
   function actionable() {
-    return state.isManager && state.view === 'team';
+    // Writes need all three: a manager, the Team tab, and a NON-PAST week.
+    // Past weeks are read-only history — every day there is a drop target
+    // otherwise, and a mis-drag would rewrite the record one-shot (review
+    // finding). Deliberate history corrections stay a chat job.
+    return state.isManager && state.view === 'team' && state.weekOffset >= 0;
   }
 
   function esc(s) {
@@ -173,6 +181,28 @@
     );
   }
 
+  // Week pager (all tiers, both tabs): ‹ › page one week per tap — the window
+  // stays 7 days, so every request remains inside the server's 14-day cap.
+  // Label reflects the COMMITTED week; "Today" appears only when away from it.
+  function pagerBar() {
+    var label =
+      state.weekOffset === 0
+        ? 'This week'
+        : state.weekOffset > 0
+          ? state.weekOffset + (state.weekOffset === 1 ? ' week ahead' : ' weeks ahead')
+          : -state.weekOffset + (state.weekOffset === -1 ? ' week back' : ' weeks back');
+    return (
+      '<nav class="pager">' +
+      '<button type="button" class="pager-btn" data-page="-1" aria-label="Previous week">‹</button>' +
+      '<div class="pager-label">' + esc(label) + '</div>' +
+      (state.weekOffset !== 0
+        ? '<button type="button" class="pager-btn pager-today" data-page="0">Today</button>'
+        : '') +
+      '<button type="button" class="pager-btn" data-page="1" aria-label="Next week">›</button>' +
+      '</nav>'
+    );
+  }
+
   function render(data) {
     var isManager = data.tier === 'manager';
     // Trust the server's resolved view, not what we asked for — a stale or
@@ -189,8 +219,12 @@
       '<header><h1>Dispatch board</h1><div class="range">' +
       esc(data.from) + ' → ' + esc(data.to) +
       (isManager ? (data.view === 'mine' ? ' · your visits' : '') : ' · your stops') +
+      (isManager && data.view !== 'mine' && state.weekOffset < 0
+        ? ' · past week — read-only'
+        : '') +
       '</div>' +
       (isManager ? tabsBar() : '') +
+      pagerBar() +
       '</header>';
     // Render EVERY day in the window, empty ones included — empty days are the
     // drop targets that make "move to Thursday" possible at all.
@@ -254,24 +288,33 @@
     });
   }
 
-  // `requestedView` is the tab the user ASKED for; state.view stays the
-  // COMMITTED (rendered) view and only render() moves it, from the server's
-  // echo. A failed fetch therefore leaves state and DOM agreeing — the
-  // review-caught alternative (flip state at click time) let a failed switch
-  // arm drag-writes on a list still rendered read-only.
-  function load(requestedView) {
+  // `requestedView`/`requestedOffset` are what the user ASKED for; the state
+  // stays the COMMITTED (rendered) values and moves only when a load lands.
+  // A failed fetch therefore leaves state and DOM agreeing — the review-caught
+  // alternative (flip state at click time) let a failed tab switch arm
+  // drag-writes on a list still rendered read-only, and would make a failed
+  // page-flip skip weeks on the retry tap.
+  function load(requestedView, requestedOffset) {
+    var offset = requestedOffset === undefined ? state.weekOffset : requestedOffset;
     // First call learns the FIRM-local `from` (server computes it — the client
-    // clock never decides what "today" is), second widens to a 7-day window.
-    // The selected tab rides as view=mine on both calls (harmless on the
-    // first; the server ignores it for non-managers).
+    // clock never decides what "today" is); the second fetches the selected
+    // 7-day week, offset in whole weeks from that anchor. The selected tab
+    // rides as view=mine on both calls (harmless on the first; the server
+    // ignores it for non-managers).
     var v = (requestedView || state.view) === 'mine' ? 'view=mine' : '';
     return apiGet(v ? '?' + v : '').then(function (first) {
       if (!first) return null;
+      var from = addDays(first.from, offset * 7);
       return apiGet(
-        '?from=' + first.from + '&to=' + addDays(first.from, 6) + (v ? '&' + v : ''),
+        '?from=' + from + '&to=' + addDays(from, 6) + (v ? '&' + v : ''),
       ).then(function (data) {
         if (!data) return null;
         state.isManager = data.tier === 'manager';
+        // Commit BEFORE render on purpose: render's pager label and the
+        // actionable() calls inside stopCard read the committed offset. A
+        // throw inside render can't strand a wrong commit — the server
+        // always returns renderable days on a 200 (readBoardDays shape).
+        state.weekOffset = offset;
         render(data);
         return data;
       });
@@ -282,8 +325,8 @@
   // HTTP status) must never strand the page on "Loading…" or silently keep a
   // stale board after a committed write — the exact regression the Phase-2
   // .catch prevented before the Phase-3 rewrite dropped it.
-  function refresh(requestedView) {
-    return load(requestedView).catch(function () {
+  function refresh(requestedView, requestedOffset) {
+    return load(requestedView, requestedOffset).catch(function () {
       if (state.rendered) toast('Network error — the board may be stale; try again.', true);
       else showEmpty('Network error — reopen the board to retry.');
     });
@@ -479,6 +522,14 @@
         // render() commits the server's echo — a failed switch leaves the old
         // tab live (and re-clickable), never a half-switched page.
         if (view !== state.view) refresh(view);
+        return;
+      }
+      var pageBtn = e.target.closest && e.target.closest('.pager-btn');
+      if (pageBtn) {
+        var step = pageBtn.getAttribute('data-page');
+        // Same commit rule as tabs: the target week rides as a REQUEST;
+        // state.weekOffset moves only when that week's data renders.
+        refresh(undefined, step === '0' ? 0 : state.weekOffset + Number(step));
         return;
       }
       var btn = e.target.closest && e.target.closest('.stop-cancel');

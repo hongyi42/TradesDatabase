@@ -22,6 +22,22 @@ body {
 header h1 { font-size: 18px; margin: 4px 0 2px; }
 .range { color: var(--hint); font-size: 13px; margin-bottom: 10px; }
 
+/* Week pager: ‹ [label (Today)] › — all tiers, both tabs. */
+.pager { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+.pager-btn {
+  min-width: 40px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 16px;
+  border: 1px solid var(--card);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+}
+.pager-today { font-size: 13px; }
+.pager-label { flex: 1; text-align: center; font-size: 13px; color: var(--hint); }
+
 /* Manager tab bar: Team (act) / My schedule (look). */
 .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
 .tab {

@@ -73,6 +73,19 @@ header h1 { font-size: 18px; margin: 4px 0 2px; }
   padding-bottom: 4px;
 }
 
+/* The firm-local current day — unmissable now that weeks run Mon–Sun. */
+.day.today h2 { color: var(--fg); border-bottom: 2px solid var(--accent); }
+.today-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  font-size: 11px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  vertical-align: 1px;
+}
+
 .lane { margin: 8px 0; }
 .lane h3 { font-size: 13px; margin: 6px 0 4px; }
 .lane-unassigned h3 { color: var(--accent); }

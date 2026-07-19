@@ -163,7 +163,12 @@
     // anchor; null (never loaded) fails safe to read-only via actionable()
     // being unreachable pre-render.
     var canAct = actionable() && state.today !== null && date >= state.today;
-    var html = '<section class="day" data-date="' + esc(date) + '"><h2>' + esc(date) + '</h2>';
+    // Mark the firm-local current day — with Mon–Sun weeks, "which day is
+    // today" is no longer implicit in the window's first row.
+    var isToday = state.today !== null && date === state.today;
+    var html =
+      '<section class="day' + (isToday ? ' today' : '') + '" data-date="' + esc(date) + '">' +
+      '<h2>' + esc(date) + (isToday ? ' <span class="today-tag">Today</span>' : '') + '</h2>';
     if (!stops.length) {
       html += '<div class="day-empty">No visits</div>';
     } else if (!teamLayout) {

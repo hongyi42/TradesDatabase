@@ -3209,7 +3209,6 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       });
       expect(booked.data.status).toBe('booked');
       expect(booked.data.promiseLevel).toBe('none');
-      expect(booked.data.endTimeDefaulted).toBe(false); // manager stated 10:00
       expect(booked.data.note).toContain('one step');
       const id = booked.data.assignmentId as string;
 
@@ -3219,16 +3218,17 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       );
       expect(stop).toMatchObject({ promiseLevel: 'none', promisedDay: null });
 
-      // An omitted endTime books with the duration default AND discloses it.
-      const defaulted = await callWith('book_visit', {
+      // No default times (user decision 2026-07-18): an omitted endTime is
+      // REFUSED with an ask-the-manager error — the server invents nothing.
+      const missingEnd = await callWith('book_visit', {
         customerId: customer.id,
         technicianRef: 'tech-mcp',
         date: '2026-12-17',
         startTime: '09:00',
       });
-      expect(defaulted.data.status).toBe('booked');
-      expect(defaulted.data.endTimeDefaulted).toBe(true);
-      expect(defaulted.data.note).toContain('assumed');
+      expect(missingEnd.isError).toBe(true);
+      expect(missingEnd.text).toContain('startTime and endTime are required');
+      expect(missingEnd.text).toContain('ask them');
 
       // Moving the unpromised visit is one-shot too — and claims no break.
       const moved = await callWith('move_visit', {
@@ -3249,20 +3249,21 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       expect(cancelled.data.status).toBe('cancelled');
       expect(cancelled.data.note).toContain('one step');
 
-      // CONFIRM path carries stage-time truth too: a PROMISED booking staged
-      // without endTime must still report the default after confirming.
+      // The PROMISED path also requires both times — staged and confirmed with
+      // exactly the stated window (preview == commit).
       const staged = await callWith('book_visit', {
         customerId: customer.id,
         technicianRef: 'tech-mcp',
         date: '2026-12-18',
         startTime: '09:00',
+        endTime: '10:30',
         promiseLevel: 'day',
       });
       expect(staged.data.status).toBe('needs_confirmation');
-      expect(staged.data.preview.endTimeDefaulted).toBe(true);
+      expect(staged.data.preview.endTime).toBe('10:30');
       const confirmed = await callWith('book_visit', { confirmId: staged.data.confirmId });
       expect(confirmed.data.status).toBe('booked');
-      expect(confirmed.data.endTimeDefaulted).toBe(true);
+      expect(confirmed.data.endTime).toBe('10:30');
     } finally {
       await mgrClient.close();
     }
@@ -3307,6 +3308,8 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
         customerId: customer.id,
         technicianRef: 'ghost-tech',
         date: '2026-12-09',
+        startTime: '09:00',
+        endTime: '10:00',
       });
       expect(unknown.isError).toBe(true);
       expect(unknown.text).toContain("'ghost-tech' not found");

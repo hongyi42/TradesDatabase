@@ -107,17 +107,22 @@ describe('bookVisit', () => {
     expect(assignment.promised_day).toBe('2026-11-06');
   });
 
-  test('endTime defaults to start + job-type duration (tenant default 120)', async () => {
+  test('no default times: omitting endTime is refused, nothing is invented or written', async () => {
     const customer = await createCustomer({ tenantId, name: 'Duration Dana' });
-    const { assignment } = await bookVisit({
-      tenantId,
-      technicianRef: 'book-tech',
-      customerId: customer.id,
-      date: '2026-11-03',
-      startTime: '10:00',
-      actorRef: 'manager-test',
-    });
-    expect(assignment.ends_at).toContain('2026-11-03T12:00'); // 120-min default
+    const before = (await listUnassignedOpenJobs(tenantId)).length;
+    await expect(
+      bookVisit({
+        tenantId,
+        technicianRef: 'book-tech',
+        customerId: customer.id,
+        date: '2026-11-03',
+        startTime: '10:00',
+        actorRef: 'manager-test',
+        // endTime deliberately omitted (cast: the untyped MCP boundary —
+        // e.g. a malformed staged detail — can still produce this shape).
+      } as Parameters<typeof bookVisit>[0]),
+    ).rejects.toThrow(/must be HH:MM/);
+    expect((await listUnassignedOpenJobs(tenantId)).length).toBe(before);
   });
 
   test('overlap pre-check rejects cleanly and leaves NO job shell behind', async () => {
@@ -193,6 +198,7 @@ describe('bookVisit', () => {
         customerId: customer.id,
         date: '2026-11-05',
         startTime: '13:00',
+        endTime: '14:00',
         actorRef: 'manager-test',
       }),
     ).rejects.toThrow(/'nobody-here' not found/);
@@ -203,6 +209,7 @@ describe('bookVisit', () => {
         customerId: job.id, // a job id is not a customer id
         date: '2026-11-05',
         startTime: '13:00',
+        endTime: '14:00',
         actorRef: 'manager-test',
       }),
     ).rejects.toThrow(/customer not found/);

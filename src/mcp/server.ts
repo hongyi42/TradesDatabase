@@ -594,10 +594,11 @@ const ADMIN_TOOLS = [
       'manager what was done (day, time, who, and any warning); never act silently. If the ' +
       'customer was promised a day/time (promiseLevel "day"/"time") you instead get ' +
       '{status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
-      'yes, call again with ONLY confirmId. Call with date (+ customerId OR jobId, ' +
-      'technicianRef + times optional). Pass endTime explicitly whenever the manager states ' +
-      'an end time — never let the duration default stand in for a stated time; when the ' +
-      'result has endTimeDefaulted:true, say the length was assumed. Omit technicianRef to ' +
+      'yes, call again with ONLY confirmId. Call with date + startTime + endTime ' +
+      '(+ customerId OR jobId; technicianRef optional). startTime and endTime are REQUIRED ' +
+      '— the server assumes NO default length. Pass exactly the times the manager stated ' +
+      '(a range like "12-1pm" means startTime 12:00 AND endTime 13:00); if the manager did ' +
+      'not say when the visit starts or ends, ASK them — never guess. Omit technicianRef to ' +
       'book WITHOUT a technician (put it on the calendar, assign later — attach someone with ' +
       'move_visit; find these via get_team_schedule unassignedOnly:true). promiseLevel ' +
       'records what the customer was ACTUALLY told and defaults to "none". Pass "day" ONLY ' +
@@ -612,8 +613,8 @@ const ADMIN_TOOLS = [
         technicianRef: { type: 'string', description: 'Roster ref of the technician. OPTIONAL — omit to book unassigned ("assign later"). First call only.' },
         title: { type: 'string', description: 'Job title when booking by customerId (a new job is created). First call only.' },
         date: { type: 'string', description: 'YYYY-MM-DD, firm-local. First call only.' },
-        startTime: { type: 'string', description: 'HH:MM 24h (default 08:00). First call only.' },
-        endTime: { type: 'string', description: 'HH:MM 24h (default start + job-type duration). First call only.' },
+        startTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default; ask the manager if unstated.' },
+        endTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default length; ask the manager if unstated.' },
         promiseLevel: { type: 'string', enum: ['none', 'day', 'time'], description: 'What the customer was ACTUALLY told (default "none" = nothing promised). Set "day"/"time" only when the manager indicates a promise was made. First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
@@ -2302,9 +2303,9 @@ async function dispatch(
       const confirmId = str('confirmId');
       if (!confirmId) {
         // STAGE. previewBookVisit runs every dry check (tenant guards,
-        // technician resolution, time defaults, overlap pre-check) and throws
-        // on anything that would make the booking impossible — nothing is
-        // staged that cannot commit. Nothing is written here.
+        // technician resolution, time validation, overlap pre-check) and
+        // throws on anything that would make the booking impossible — nothing
+        // is staged that cannot commit. Nothing is written here.
         // technicianRef is OPTIONAL: omitted = an unassigned booking ("on the
         // calendar, assign later" — attach someone later with move_visit).
         const technicianRef = str('technicianRef');
@@ -2318,6 +2319,16 @@ async function dispatch(
         }
         const date = str('date');
         if (!date) throw new Error('date is required');
+        // No default times exist (user decision 2026-07-18): a booking carries
+        // exactly the times the manager stated, or it doesn't happen yet.
+        const startTime = str('startTime');
+        const endTime = str('endTime');
+        if (!startTime || !endTime) {
+          throw new Error(
+            'startTime and endTime are required — the server assumes no default length. ' +
+              'If the manager did not say when the visit starts or ends, ask them, then book.',
+          );
+        }
         const promiseLevelArg = str('promiseLevel');
         if (promiseLevelArg && !isPromiseLevel(promiseLevelArg)) {
           throw new Error(`invalid promiseLevel: ${promiseLevelArg}`);
@@ -2333,8 +2344,8 @@ async function dispatch(
           ...(jobId ? { jobId } : {}),
           title: str('title') ?? null,
           date,
-          ...(str('startTime') ? { startTime: str('startTime') } : {}),
-          ...(str('endTime') ? { endTime: str('endTime') } : {}),
+          startTime,
+          endTime,
           ...(promiseLevelArg ? { promiseLevel: promiseLevelArg as PromiseLevel } : {}),
           actorRef: subjectRef,
         };
@@ -2355,17 +2366,12 @@ async function dispatch(
             // Resolved times from the row itself (naive-local, exact slices).
             startTime: booked.assignment.starts_at.slice(11, 16),
             endTime: booked.assignment.ends_at.slice(11, 16),
-            endTimeDefaulted: booked.endTimeDefaulted,
             promiseLevel: booked.assignment.promise_level,
             ...(booked.warning ? { warning: booked.warning } : {}),
             note:
               'Booked in one step — nothing was promised to the customer, so no confirmation ' +
               'was needed (undo = move_visit / cancel_visit). Tell the manager exactly what ' +
-              'was booked' +
-              (booked.endTimeDefaulted
-                ? ', including that the end time was assumed from the standard job length'
-                : '') +
-              '.',
+              'was booked.',
           };
         }
         const preview = await previewBookVisit(bookInput);
@@ -2394,7 +2400,6 @@ async function dispatch(
             // record; commit passes exactly these so preview == commit.
             startTime: preview.startTime,
             endTime: preview.endTime,
-            endTimeDefaulted: preview.endTimeDefaulted,
             promiseLevel: preview.promiseLevel,
             preview: preview as unknown as Json,
             stagedAt: new Date().toISOString(),
@@ -2427,7 +2432,6 @@ async function dispatch(
         date?: string;
         startTime?: string;
         endTime?: string;
-        endTimeDefaulted?: boolean;
         promiseLevel?: PromiseLevel;
         stagedAt?: string;
       };
@@ -2493,7 +2497,6 @@ async function dispatch(
         date: d.date,
         startTime: d.startTime,
         endTime: d.endTime,
-        endTimeDefaulted: d.endTimeDefaulted ?? false,
         promiseLevel: booked.assignment.promise_level,
         ...(booked.warning ? { warning: booked.warning } : {}),
       };

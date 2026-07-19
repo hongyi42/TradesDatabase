@@ -574,15 +574,17 @@ no delete. For EVERY such write:
 EOF
       ok "accuracy-rules block appended to ${agent}'s AGENTS.md"
     fi
-    # Confirmation doctrine (2026-07-17) is guarded SEPARATELY so a re-run
-    # delivers it to boxes that already carry the older §0c blocks — the
-    # accuracy-block grep above would otherwise skip it forever.
+    # Confirmation doctrine — REFRESHED on every run (delete-then-append): its
+    # TEXT evolves with the doctrine (2026-07-18: booking time defaults removed),
+    # and a presence-grep pins existing boxes to whichever version they first
+    # received (the template-drift trap, second occurrence). Note: each refresh
+    # leaves one extra blank line at the old seam — cosmetic, accepted.
     if docker exec "$cid" grep -q "Confirmations — what needs a yes" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
-      ok "confirmation-doctrine block already present"
-    else
-      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+      docker exec -u sandbox "$cid" sh -c 'awk '\''/^## Confirmations — what needs a yes/{skip=1; next} skip && /^## /{skip=0} !skip'\'' /sandbox/.openclaw/workspace/AGENTS.md > /tmp/agents-md.tmp && cat /tmp/agents-md.tmp > /sandbox/.openclaw/workspace/AGENTS.md && rm -f /tmp/agents-md.tmp'
+    fi
+    docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17)
+## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-07-18)
 
 The rule, in general: confirm only what is irreversible or externally visible (a customer
 promise at stake). Everything reversible — just do it, then SAY WHAT YOU DID (day, time,
@@ -596,13 +598,12 @@ change.
    confirmId.
 2. add_technician_seat is two-step (it mints a permanent ref and burns a purchased seat):
    stage, show the minted ref, get a yes, confirm with only confirmId.
-3. Always pass an explicit endTime to book_visit when the manager states an end time — never
-   let the server's duration default stand in for a stated time. When no length was stated
-   and the default applied, the result says endTimeDefaulted: true — tell the manager the
-   length was assumed.
+3. book_visit requires BOTH startTime and endTime — the server assumes NO default length.
+   Pass exactly the times the manager stated (a range like "12-1pm" means startTime 12:00
+   AND endTime 13:00). If the manager did not say when the visit starts or ends, ask them
+   BEFORE booking — never guess or invent a length.
 EOF
-      ok "confirmation-doctrine block appended to ${agent}'s AGENTS.md"
-    fi
+    ok "confirmation-doctrine block refreshed in ${agent}'s AGENTS.md"
     # Board-link relay (2026-07-18) — its OWN guard so a re-run delivers it to
     # boxes that already carry the older §0c blocks (the recurring trap: a new
     # block hidden behind an existing block's grep never self-heals).

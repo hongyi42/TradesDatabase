@@ -160,14 +160,25 @@ export async function handleBoardRequest(
         return;
       }
       const isManager = auth.technician.tier === 'manager';
+      // The manager's "My schedule" tab: view=mine narrows a manager to their
+      // own stops by reusing the technician self-filter. For a technician the
+      // param is a no-op (they are always self-filtered); any other value =
+      // the tier default. The response echoes the resolved view so the page
+      // renders what the server actually filtered, not what it asked for.
+      const mine = url.searchParams.get('view') === 'mine';
       try {
         const days = await readBoardDays({
           tenantId: auth.tenantId,
           from: url.searchParams.get('from') ?? undefined,
           to: url.searchParams.get('to') ?? undefined,
-          viewerTechnicianId: isManager ? null : auth.technician.id,
+          viewerTechnicianId: isManager && !mine ? null : auth.technician.id,
         });
-        json(res, 200, { tier: auth.technician.tier, self: auth.technician.ref, ...days });
+        json(res, 200, {
+          tier: auth.technician.tier,
+          self: auth.technician.ref,
+          view: isManager && !mine ? 'team' : 'mine',
+          ...days,
+        });
       } catch (err) {
         if (err instanceof InvalidRangeError) {
           json(res, 400, { error: err.message });

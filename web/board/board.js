@@ -14,7 +14,14 @@
 
   var tg = window.Telegram && Telegram.WebApp;
   var app = document.getElementById('app');
-  var state = { isManager: false, rendered: false };
+  // view: 'team' | 'mine' — managers get a tab bar; technicians are always
+  // effectively 'mine' (server-filtered) and never see tabs. Writes (drag/✕)
+  // exist ONLY on the Team tab: Mine is a read-only "my week" glance.
+  var state = { isManager: false, rendered: false, view: 'team' };
+
+  function actionable() {
+    return state.isManager && state.view === 'team';
+  }
 
   function esc(s) {
     return String(s).replace(/[&<>"']/g, function (c) {
@@ -85,10 +92,11 @@
   }
 
   function stopCard(stop) {
-    // .draggable (manager only) is what carries touch-action:none — the
-    // read-only technician view must keep native card-origin scrolling.
+    // .draggable (Team tab only) is what carries touch-action:none — the
+    // read-only views (technician, manager's Mine tab) must keep native
+    // card-origin scrolling.
     return (
-      '<div class="stop' + (state.isManager ? ' draggable' : '') + '" data-id="' + esc(stop.assignmentId) + '"' +
+      '<div class="stop' + (actionable() ? ' draggable' : '') + '" data-id="' + esc(stop.assignmentId) + '"' +
       ' data-start="' + esc(hhmm(stop.start)) + '" data-end="' + esc(hhmm(stop.end)) + '"' +
       ' data-ref="' + esc(stop.technicianRef || '') + '">' +
       '<div class="stop-time">' + esc(hhmm(stop.start)) + '–' + esc(hhmm(stop.end)) + '</div>' +
@@ -97,7 +105,7 @@
       '</div>' +
       (stop.address ? '<div class="stop-address">' + esc(stop.address) + '</div>' : '') +
       '</div><div class="stop-badges">' + stopBadges(stop) + '</div>' +
-      (state.isManager
+      (actionable()
         ? '<button type="button" class="stop-cancel" aria-label="Cancel visit">✕</button>'
         : '') +
       '</div>'
@@ -112,17 +120,19 @@
     );
   }
 
-  // Manager view: per-technician lanes plus an "Unassigned" lane for stops with
-  // unassigned:true (their technicianName is null — never print "null"). Lanes
-  // are keyed by technicianRef — the UNIQUE roster handle — never by display
-  // name (two "Mike Chen"s must not merge, and drag-to-assign needs a single
-  // ref per drop target). The unassigned lane is a drag SOURCE, not a target
-  // (moveVisit cannot detach a person), and its data-lane is ''.
-  function renderDay(date, stops, isManager) {
+  // Team layout (manager's Team tab): per-technician lanes plus an
+  // "Unassigned" lane for stops with unassigned:true (their technicianName is
+  // null — never print "null"). Lanes are keyed by technicianRef — the UNIQUE
+  // roster handle — never by display name (two "Mike Chen"s must not merge,
+  // and drag-to-assign needs a single ref per drop target). The unassigned
+  // lane is a drag SOURCE, not a target (moveVisit cannot detach a person),
+  // and its data-lane is ''. Flat layout (technician view, manager's Mine
+  // tab): a plain time-ordered list, no lanes.
+  function renderDay(date, stops, teamLayout) {
     var html = '<section class="day" data-date="' + esc(date) + '"><h2>' + esc(date) + '</h2>';
     if (!stops.length) {
       html += '<div class="day-empty">No visits</div>';
-    } else if (!isManager) {
+    } else if (!teamLayout) {
       html += stops.map(stopCard).join('');
     } else {
       var lanes = {};
@@ -154,8 +164,23 @@
     return html + '</section>';
   }
 
+  function tabsBar() {
+    return (
+      '<nav class="tabs">' +
+      '<button type="button" class="tab' + (state.view === 'team' ? ' active' : '') + '" data-view="team">Team</button>' +
+      '<button type="button" class="tab' + (state.view === 'mine' ? ' active' : '') + '" data-view="mine">My schedule</button>' +
+      '</nav>'
+    );
+  }
+
   function render(data) {
     var isManager = data.tier === 'manager';
+    // Trust the server's resolved view, not what we asked for — a stale or
+    // rejected param must never leave the page believing it shows "mine"
+    // while rendering team data (or vice versa). Technicians have no tabs;
+    // their state.view stays at its default.
+    if (isManager && data.view) state.view = data.view;
+    var teamLayout = isManager && data.view !== 'mine';
     var byDate = {};
     data.days.forEach(function (d) {
       byDate[d.date] = d.stops;
@@ -163,14 +188,16 @@
     var head =
       '<header><h1>Dispatch board</h1><div class="range">' +
       esc(data.from) + ' → ' + esc(data.to) +
-      (isManager ? '' : ' · your stops') +
-      '</div></header>';
+      (isManager ? (data.view === 'mine' ? ' · your visits' : '') : ' · your stops') +
+      '</div>' +
+      (isManager ? tabsBar() : '') +
+      '</header>';
     // Render EVERY day in the window, empty ones included — empty days are the
     // drop targets that make "move to Thursday" possible at all.
     var html = head;
     var date = data.from;
     while (date <= data.to) {
-      html += renderDay(date, byDate[date] || [], isManager);
+      html += renderDay(date, byDate[date] || [], teamLayout);
       date = addDays(date, 1);
     }
     app.innerHTML = html;
@@ -183,14 +210,23 @@
     return { Authorization: 'tma ' + tg.initData, 'content-type': 'application/json' };
   }
 
+  // HTTP-level load failures: blank the page ONLY when there is nothing on it
+  // yet. Once a board is rendered, a failed reload (now routine — tab clicks
+  // refetch) keeps the last good view and toasts instead: replacing a healthy
+  // board plus its tab bar with a dead-end error screen left no way back in.
+  function loadFailed(msg) {
+    if (state.rendered) toast(msg, true);
+    else showEmpty(msg);
+  }
+
   function apiGet(query) {
     return fetch('/board/api/day' + query, { headers: authHeaders() }).then(function (resp) {
       if (resp.status === 409) {
-        showEmpty('This Telegram account matches more than one roster entry — ask your operator.');
+        loadFailed('This Telegram account matches more than one roster entry — ask your operator.');
         return null;
       }
       if (!resp.ok) {
-        showEmpty(
+        loadFailed(
           resp.status >= 500
             ? 'Server problem — try again shortly.'
             : "Couldn't verify you (" + resp.status + '). Reopen the board from Telegram.',
@@ -218,12 +254,22 @@
     });
   }
 
-  function load() {
+  // `requestedView` is the tab the user ASKED for; state.view stays the
+  // COMMITTED (rendered) view and only render() moves it, from the server's
+  // echo. A failed fetch therefore leaves state and DOM agreeing — the
+  // review-caught alternative (flip state at click time) let a failed switch
+  // arm drag-writes on a list still rendered read-only.
+  function load(requestedView) {
     // First call learns the FIRM-local `from` (server computes it — the client
     // clock never decides what "today" is), second widens to a 7-day window.
-    return apiGet('').then(function (first) {
+    // The selected tab rides as view=mine on both calls (harmless on the
+    // first; the server ignores it for non-managers).
+    var v = (requestedView || state.view) === 'mine' ? 'view=mine' : '';
+    return apiGet(v ? '?' + v : '').then(function (first) {
       if (!first) return null;
-      return apiGet('?from=' + first.from + '&to=' + addDays(first.from, 6)).then(function (data) {
+      return apiGet(
+        '?from=' + first.from + '&to=' + addDays(first.from, 6) + (v ? '&' + v : ''),
+      ).then(function (data) {
         if (!data) return null;
         state.isManager = data.tier === 'manager';
         render(data);
@@ -236,8 +282,8 @@
   // HTTP status) must never strand the page on "Loading…" or silently keep a
   // stale board after a committed write — the exact regression the Phase-2
   // .catch prevented before the Phase-3 rewrite dropped it.
-  function refresh() {
-    return load().catch(function () {
+  function refresh(requestedView) {
+    return load(requestedView).catch(function () {
       if (state.rendered) toast('Network error — the board may be stale; try again.', true);
       else showEmpty('Network error — reopen the board to retry.');
     });
@@ -426,12 +472,21 @@
 
   function wireWrites() {
     app.addEventListener('click', function (e) {
+      var tab = e.target.closest && e.target.closest('.tab');
+      if (tab) {
+        var view = tab.getAttribute('data-view');
+        // The requested view rides to refresh(); state.view moves only when
+        // render() commits the server's echo — a failed switch leaves the old
+        // tab live (and re-clickable), never a half-switched page.
+        if (view !== state.view) refresh(view);
+        return;
+      }
       var btn = e.target.closest && e.target.closest('.stop-cancel');
       if (btn) cancelFlow(btn.closest('.stop'));
     });
 
     app.addEventListener('pointerdown', function (e) {
-      if (!state.isManager || drag) return;
+      if (!actionable() || drag) return;
       if (e.target.closest && e.target.closest('.stop-cancel')) return;
       var card = e.target.closest && e.target.closest('.stop');
       if (!card) return;

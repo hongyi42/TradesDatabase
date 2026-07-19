@@ -87,6 +87,17 @@ beforeAll(async () => {
   await bookVisit({ ...bookArgs, technicianRef: 'board-t1', title: 'AC tune-up', startTime: '09:00', endTime: '11:00' });
   await bookVisit({ ...bookArgs, technicianRef: 'board-t2', title: 'Filter swap', startTime: '10:00', endTime: '12:00' });
   await bookVisit({ ...bookArgs, title: 'Duct inspection', startTime: '13:00', endTime: '15:00' });
+  // A visit the MANAGER holds personally (managers are bookable roster rows) —
+  // on a different day so the exact-count team-view assertions above stay put.
+  // This is the "My schedule" tab's subject.
+  await bookVisit({
+    ...bookArgs,
+    date: '2026-09-02',
+    technicianRef: 'board-mgr',
+    title: 'Site walkthrough',
+    startTime: '08:00',
+    endTime: '09:00',
+  });
 
   server = createHttpServer();
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -106,6 +117,7 @@ afterAll(async () => {
 interface DayResponse {
   tier: string;
   self: string;
+  view: string;
   from: string;
   to: string;
   scheduleVersion: number;
@@ -160,6 +172,7 @@ describe('GET /board/api/day', () => {
     const body = (await resp.json()) as DayResponse;
     expect(body.tier).toBe('manager');
     expect(body.self).toBe('board-mgr');
+    expect(body.view).toBe('team');
     expect(body.days).toHaveLength(1);
     const stops = body.days[0].stops;
     expect(stops).toHaveLength(3);
@@ -185,9 +198,45 @@ describe('GET /board/api/day', () => {
     const body = (await resp.json()) as DayResponse;
     expect(body.tier).toBe('technician');
     expect(body.self).toBe('board-t1');
+    expect(body.view).toBe('mine');
     const stops = body.days.flatMap((d) => d.stops);
     expect(stops).toHaveLength(1);
     expect(stops[0].technicianRef).toBe('board-t1');
+  });
+
+  test("manager view=mine → only the manager's own visits; team default unchanged", async () => {
+    const mine = await day('?from=2026-09-01&to=2026-09-02&view=mine', tma(900000001));
+    expect(mine.status).toBe(200);
+    const mineBody = (await mine.json()) as DayResponse;
+    expect(mineBody.view).toBe('mine');
+    const mineStops = mineBody.days.flatMap((d) => d.stops);
+    expect(mineStops).toHaveLength(1);
+    expect(mineStops[0]).toMatchObject({
+      technicianRef: 'board-mgr',
+      unassigned: false,
+      customer: 'Board Casa',
+    });
+    expect(mineStops[0].start.slice(0, 16)).toBe('2026-09-02T08:00');
+
+    // Same window WITHOUT the param: the full team view — t1, t2, the
+    // unassigned stop AND the manager's own visit, all present.
+    const team = await day('?from=2026-09-01&to=2026-09-02', tma(900000001));
+    expect(team.status).toBe(200);
+    const teamBody = (await team.json()) as DayResponse;
+    expect(teamBody.view).toBe('team');
+    expect(teamBody.days.flatMap((d) => d.stops)).toHaveLength(4);
+  });
+
+  test('technician view param is inert: mine is a no-op, team/garbage never widen the read', async () => {
+    for (const probe of ['view=mine', 'view=team', 'view=%00junk']) {
+      const resp = await day(`?from=2026-09-01&to=2026-09-02&${probe}`, tma(900000002));
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as DayResponse;
+      expect(body.view).toBe('mine');
+      const stops = body.days.flatMap((d) => d.stops);
+      expect(stops).toHaveLength(1);
+      expect(stops[0].technicianRef).toBe('board-t1');
+    }
   });
 
   test('same validation contract as get_team_schedule: bad date / inverted / >14 days → 400', async () => {

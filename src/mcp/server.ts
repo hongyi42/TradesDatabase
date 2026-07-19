@@ -563,9 +563,11 @@ const ADMIN_TOOLS = [
   {
     name: 'get_team_schedule',
     description:
-      "The whole team's schedule (manager only): for each day in [from,to] (YYYY-MM-DD; both " +
-      "optional — default today in the firm's timezone; capped at 14 days), every technician's " +
-      'confirmed visits with customer, address, times, promiseLevel (what the customer was ' +
+      "The whole team's schedule, and a manager's ONLY schedule read (it includes visits you " +
+      'hold yourself — there is no separate personal view): for each day in [from,to] ' +
+      "(YYYY-MM-DD; both optional — default today in the firm's timezone; capped at 14 days), " +
+      "every technician's confirmed visits with customer, address, times, promiseLevel (what " +
+      'the customer was ' +
       "told: none/day/time), promisedDay, and locked (manager-pinned). Stops with " +
       'unassigned:true have NOBODY attached yet and need a person (attach with move_visit). ' +
       'Pass unassignedOnly:true to list ALL upcoming visits with nobody attached, however far ' +
@@ -698,6 +700,15 @@ function slugify(displayName: string): string {
 // The names the dispatch gate keys on: EVERY tool in ADMIN_TOOLS is gated
 // before the switch, so adding an admin tool cannot forget its guard.
 const ADMIN_TOOL_NAMES = new Set(ADMIN_TOOLS.map((t) => t.name));
+
+// The manager surface = base tools MINUS get_schedule, PLUS the admin tools
+// (user decision 2026-07-19). get_schedule is the technician driving-route
+// view; hiding it gives managers exactly ONE schedule read —
+// get_team_schedule, which includes visits they hold themselves — so the
+// wrong-tool misroute ("your week is completely clear" from the self-only
+// view while an unassigned visit existed, live 2026-07-18) is structurally
+// impossible. Schedule VIEWING for managers lives on the dispatch board.
+const MANAGER_TOOLS = [...TOOLS.filter((t) => t.name !== 'get_schedule'), ...ADMIN_TOOLS];
 
 // Chat → board bridge: scheduling results carry the Telegram Mini App link so
 // the agent can end a schedule report with "see it on the board" — one tap
@@ -952,6 +963,16 @@ async function dispatch(
   // NAME so no admin case can be added without it.
   if (ADMIN_TOOL_NAMES.has(name) && !activeManager) {
     throw new Error('admin tools require a manager badge');
+  }
+  // The inverse gate: the listing hides get_schedule from managers, but a
+  // stale gateway cache (tools/list is cached per process) or cached model
+  // context can still call it — refuse with a pointer instead of answering
+  // with the misleading self-only view.
+  if (name === 'get_schedule' && activeManager) {
+    throw new Error(
+      'get_schedule is the technician route view — managers use get_team_schedule ' +
+        '(it includes visits you hold yourself) or the dispatch board',
+    );
   }
   // Sensitivity filter: manager-only L1 rows (e.g. payment agent_actions from
   // the log-ingestion audit) are dropped from every capture-bearing read for
@@ -3385,14 +3406,14 @@ export function createServer(deps: ServerDeps = {}): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     // Tier-filtered surface: technician badges see exactly the base spine
-    // tools (the doorman runbook's verification count); active managers
-    // additionally see the seat-management tools. Discovery is cosmetic —
-    // dispatch re-gates every admin call — so a roster hiccup degrades to the
-    // technician surface rather than erroring the list.
+    // tools (the doorman runbook's verification count); active managers see
+    // MANAGER_TOOLS (base minus get_schedule, plus seat management). Discovery
+    // is cosmetic — dispatch re-gates both directions — so a roster hiccup
+    // degrades to the technician surface rather than erroring the list.
     const admin = deps.identity
       ? await isActiveManager(deps.identity).catch(() => false)
       : false;
-    return { tools: admin ? [...TOOLS, ...ADMIN_TOOLS] : TOOLS };
+    return { tools: admin ? MANAGER_TOOLS : TOOLS };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {

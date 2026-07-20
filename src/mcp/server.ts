@@ -45,12 +45,21 @@ import {
   trySetJobAttribute,
   updateOpenReviewItemDetail,
   upsertOpenReviewItem,
+  addTimeOff,
+  deleteTimeOff,
+  listTimeOffForTechnician,
+  setTechnicianAvailability,
+  setTechnicianSkills,
+  upsertJobTypeDuration,
+  WEEK_DAYS,
   type Customer,
   type FoldImpact,
   type Job,
+  type JobPriority,
   type CaptureChannel,
   type Json,
   type TechnicianTier,
+  type WeeklyPattern,
 } from '../db/index.js';
 import { recordFieldNote, type ResolvedIdentity } from '../writePath/recordFieldNote.js';
 import { matchIdentity, type MatchResult } from '../writePath/identityMatch.js';
@@ -93,7 +102,7 @@ import {
   previewCancelVisit,
   previewMoveVisit,
 } from '../schedule/booking.js';
-import { isWeekday, resolveDate } from '../schedule/dateResolve.js';
+import { isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
   latestScheduleVersion,
   listAssignmentsForTenant,
@@ -153,6 +162,7 @@ export interface ServerDeps {
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
 const BRIEF_FOCUSES: BriefFocus[] = ['next_visit', 'full_history'];
 const TIERS: TechnicianTier[] = ['manager', 'technician'];
+const JOB_PRIORITIES: JobPriority[] = ['emergency', 'urgent', 'routine', 'maintenance'];
 
 // The technician tool surface — what every badge sees (the doorman runbook's
 // tool-count verification counts exactly these).
@@ -511,7 +521,10 @@ const ADMIN_TOOLS = [
     name: 'list_team',
     description:
       'List the team roster (manager only): ref, display name, tier, state, seatExempt (true = ' +
-      'schedule-only person, no seat/assistant), sandbox assignment, ' +
+      'schedule-only person, no seat/assistant), skills (their CURRENT skill list — read this ' +
+      'BEFORE filtering by skill or calling set_technician_skills; [] = skills unknown, never ' +
+      'excluded), availabilityConfigured (false = no working pattern yet — the scheduler cannot ' +
+      'book them until set_availability), sandbox assignment, ' +
       "and botUsername — the Telegram bot (@handle) each person's agent answers on. USE THIS to " +
       'answer "which bot does X use / talk to?" — never inspect configs or guess. botUsername ' +
       'null means the handle is not on record: tell the manager to ask their operator — EXCEPT ' +
@@ -638,6 +651,7 @@ const ADMIN_TOOLS = [
         startTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default; ask the manager if unstated.' },
         endTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default length; ask the manager if unstated.' },
         promiseLevel: { type: 'string', enum: ['none', 'day', 'time'], description: 'What the customer was ACTUALLY told (default "none" = nothing promised). Set "day"/"time" only when the manager indicates a promise was made. First call only.' },
+        priority: { type: 'string', enum: ['emergency', 'urgent', 'routine', 'maintenance'], description: 'Triage tier for the NEW job when booking by customerId (default "routine"). Rejected with jobId — an existing job keeps its recorded priority. First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
       required: [],
@@ -706,7 +720,117 @@ const ADMIN_TOOLS = [
       required: ['reviewItemId', 'resolution'],
     },
   },
+  {
+    name: 'set_availability',
+    description:
+      "Set a team member's weekly working pattern (manager only). Done immediately in ONE " +
+      'call — tell the manager exactly what was stored. THIS IS THE STEP THAT MAKES A PERSON ' +
+      'SCHEDULABLE: no pattern = the scheduler will never book them (manual booking still ' +
+      'works, with a warning). pattern is a JSON object with ALL SEVEN lowercase day keys ' +
+      'mon..sun, each an array of ["HH:MM","HH:MM"] windows (24h; end may be "24:00"; empty ' +
+      'array = not working that day). Example — Mon–Fri 8 to 5: {"mon":[["08:00","17:00"]],' +
+      '"tue":[["08:00","17:00"]],"wed":[["08:00","17:00"]],"thu":[["08:00","17:00"]],' +
+      '"fri":[["08:00","17:00"]],"sat":[],"sun":[]}. Works for schedule-only (seatExempt) ' +
+      'people too — it is exactly how they become schedulable.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: 'The roster ref.' },
+        pattern: {
+          type: 'object',
+          description: 'The weekly pattern object — all 7 day keys, see the example above.',
+        },
+      },
+      required: ['ref', 'pattern'],
+    },
+  },
+  {
+    name: 'add_time_off',
+    description:
+      'Record whole-day time off for a team member (manager only): vacation, sick days, ' +
+      'appointments. Done immediately in ONE call — tell the manager exactly what was ' +
+      'recorded. Dates are inclusive; a single day = same startsOn and endsOn. The scheduler ' +
+      'will not book the person on these days; manual booking warns.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: 'The roster ref.' },
+        startsOn: { type: 'string', description: 'First day off, YYYY-MM-DD (inclusive).' },
+        endsOn: { type: 'string', description: 'Last day off, YYYY-MM-DD (inclusive).' },
+        reason: { type: 'string', description: 'Optional short reason (kept on the record).' },
+      },
+      required: ['ref', 'startsOn', 'endsOn'],
+    },
+  },
+  {
+    name: 'remove_time_off',
+    description:
+      'Remove recorded time off (manager only): deletes EVERY time-off range that overlaps ' +
+      'the given date for that person. Done immediately in ONE call — report exactly which ' +
+      'ranges were removed. Zero matches is a clean answer, not an error.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: 'The roster ref.' },
+        date: { type: 'string', description: 'Any date (YYYY-MM-DD) inside the range(s) to remove.' },
+      },
+      required: ['ref', 'date'],
+    },
+  },
+  {
+    name: 'set_job_duration',
+    description:
+      'Set how long a job type takes by default (manager only), e.g. "maintenance takes 60 ' +
+      'minutes", "installs take 8 hours" (pass minutes: 480). Done immediately in ONE call — ' +
+      'echo what was stored. Job types are free text, matched case-insensitively; setting an ' +
+      'existing type replaces its minutes. The scheduler NEVER assumes a duration: untyped or ' +
+      'unconfigured jobs require the manager to state one per booking.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobType: { type: 'string', description: 'The job type, e.g. "install", "maintenance".' },
+        minutes: { type: 'integer', description: 'Whole minutes the type takes (> 0).' },
+      },
+      required: ['jobType', 'minutes'],
+    },
+  },
+  {
+    name: 'set_technician_skills',
+    description:
+      "REPLACE a team member's skill list (manager only), e.g. [\"boilers\",\"gas-line\"]. " +
+      'Done immediately in ONE call — echo the stored list. Free vocabulary, stored ' +
+      'lowercase. Skills are OPTIONAL: an empty/unset list means "unknown" and NEVER excludes ' +
+      'the person from scheduling — only a non-empty list that lacks a required skill does. ' +
+      'This call replaces the whole list, so include existing skills when adding one (see ' +
+      'list_team for the current list).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: 'The roster ref.' },
+        skills: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'The FULL skill list (replaces the old one). [] = clear to "unknown".',
+        },
+      },
+      required: ['ref', 'skills'],
+    },
+  },
 ];
+
+// Shared target resolution for the schedule-input verbs (set_availability,
+// time off, skills): known roster ref, not inactive. Deliberately NO
+// seat-exempt fence — schedule-only people are exactly who these inputs make
+// schedulable (the identity verbs fence exempt rows; these are not identity
+// verbs). Mirrors booking.ts's resolveTechnician contract.
+async function resolveScheduleInputTarget(tenantId: string, ref: string) {
+  const target = await getTechnician(tenantId, ref);
+  if (!target) throw new Error(`technician '${ref}' not found on the roster`);
+  if (isInactiveState(target.state)) {
+    throw new Error(`technician '${ref}' is deactivated — reactivate the seat first`);
+  }
+  return target;
+}
 
 // Mint a ref from a display name: lowercase, non-alphanumeric runs → '-'. The
 // output alphabet is [a-z0-9-], so a minted ref can never collide with the
@@ -2390,6 +2514,17 @@ async function dispatch(
         }
         const customerId = str('customerId');
         const jobId = str('jobId');
+        const priorityArg = str('priority');
+        if (priorityArg && !JOB_PRIORITIES.includes(priorityArg as JobPriority)) {
+          throw new Error(`invalid priority: ${priorityArg}`);
+        }
+        // Silently dropping it would let the agent report an urgency that was
+        // never stored — refuse instead (an existing job keeps its priority).
+        if (priorityArg && jobId) {
+          throw new Error(
+            'priority applies when a new job is created (customerId path) — this booking uses an existing job, which keeps its recorded priority',
+          );
+        }
         // ONE input literal for both paths — a field added here reaches the
         // one-shot commit and the staged preview identically.
         const bookInput = {
@@ -2402,6 +2537,7 @@ async function dispatch(
           startTime,
           endTime,
           ...(promiseLevelArg ? { promiseLevel: promiseLevelArg as PromiseLevel } : {}),
+          ...(priorityArg ? { priority: priorityArg as JobPriority } : {}),
           actorRef: subjectRef,
         };
         // Doctrine (user decision 2026-07-17, single-sourced in booking.ts):
@@ -2422,6 +2558,7 @@ async function dispatch(
             startTime: booked.assignment.starts_at.slice(11, 16),
             endTime: booked.assignment.ends_at.slice(11, 16),
             promiseLevel: booked.assignment.promise_level,
+            jobPriority: booked.job.priority,
             ...(booked.warning ? { warning: booked.warning } : {}),
             note:
               'Booked in one step — nothing was promised to the customer, so no confirmation ' +
@@ -2456,6 +2593,10 @@ async function dispatch(
             startTime: preview.startTime,
             endTime: preview.endTime,
             promiseLevel: preview.promiseLevel,
+            // The INPUT priority (null on the jobId path, where the arg is
+            // rejected) — commit passes this, while preview.priority above
+            // shows the resulting tier either way.
+            priority: priorityArg ? (priorityArg as JobPriority) : null,
             preview: preview as unknown as Json,
             stagedAt: new Date().toISOString(),
           } as unknown as Json,
@@ -2488,6 +2629,10 @@ async function dispatch(
         startTime?: string;
         endTime?: string;
         promiseLevel?: PromiseLevel;
+        // Absent on tokens staged before the priority feature deployed — the
+        // malformed guard below deliberately does NOT require it; commit then
+        // writes the pre-feature default ('routine' via createJob).
+        priority?: JobPriority | null;
         stagedAt?: string;
       };
       if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
@@ -2527,6 +2672,7 @@ async function dispatch(
           startTime: d.startTime,
           endTime: d.endTime,
           promiseLevel: d.promiseLevel,
+          ...(d.priority ? { priority: d.priority } : {}),
           actorRef: subjectRef,
         });
       } catch (err) {
@@ -2553,6 +2699,7 @@ async function dispatch(
         startTime: d.startTime,
         endTime: d.endTime,
         promiseLevel: booked.assignment.promise_level,
+        jobPriority: booked.job.priority,
         ...(booked.warning ? { warning: booked.warning } : {}),
       };
     }
@@ -2947,13 +3094,36 @@ async function dispatch(
       // as the seat-occupying add it was staged as; never guess exemption.
       // (seatExempt implies state 'active' — derived inside insertTechnician.)
       try {
-        return await insertTechnician({
+        const created = await insertTechnician({
           tenantId,
           ref: d.ref,
           displayName: d.displayName,
           tier: d.tier,
           seatExempt: d.seatExempt === true,
         });
+        // Availability is a REQUIRED onboarding step (user decision
+        // 2026-07-20): open the standing obligation, pairing_verification
+        // style. Advisory — the seat IS added; a failed reminder must not
+        // report the add as failed.
+        try {
+          await upsertOpenReviewItem({
+            tenantId,
+            kind: 'availability_setup',
+            subjectRef: created.ref,
+            detail: { ref: created.ref, displayName: created.display_name },
+          });
+        } catch {
+          /* advisory */
+        }
+        return {
+          ...created,
+          note:
+            `REQUIRED next step: ask the manager for ${created.display_name}'s working days ` +
+            `and call set_availability now — or, if their hours are genuinely not known yet, ` +
+            `dismiss the availability_setup review item with that note. Until a pattern is ` +
+            `set, the scheduler will never book ${created.display_name} (manual booking ` +
+            `still works, with a warning).`,
+        };
       } catch (err) {
         // Cap first: at capacity the BEFORE-trigger fires before the unique
         // constraint, so a duplicate-at-cap reports the cap (observed live).
@@ -3373,9 +3543,148 @@ async function dispatch(
         tier: t.tier,
         state: t.state,
         seatExempt: t.seat_exempt,
+        skills: t.skills,
+        availabilityConfigured: t.availability !== null,
         sandboxRef: t.sandbox_ref,
         botUsername: poolBotByTechnician.get(t.id) ?? null,
       }));
+    }
+    case 'set_availability': {
+      const ref = str('ref');
+      if (!ref) throw new Error('ref is required');
+      const target = await resolveScheduleInputTarget(tenantId, ref);
+      if (
+        typeof args.pattern !== 'object' ||
+        args.pattern === null ||
+        Array.isArray(args.pattern)
+      ) {
+        throw new Error(
+          'pattern must be a JSON object with all 7 day keys mon..sun — see the tool description example',
+        );
+      }
+      // assertValidPattern (inside the setter) owns the deep validation and
+      // throws actionable per-field errors the agent can relay verbatim.
+      const updated = await setTechnicianAvailability(
+        target.id,
+        args.pattern as WeeklyPattern,
+      );
+      // The onboarding obligation is met — close the availability_setup item
+      // if one is open (rows predating the hook simply have none).
+      await resolveOpenReviewItemFor(
+        tenantId,
+        'availability_setup',
+        ref,
+        'resolved',
+        `pattern configured by ${identity.technicianRef}`,
+      );
+      const stored = updated.availability as WeeklyPattern;
+      const dayWords = WEEK_DAYS.map((d) => {
+        const wins = stored[d];
+        return `${d}: ${wins.length === 0 ? 'off' : wins.map(([s, e]) => `${s}–${e}`).join(', ')}`;
+      }).join('; ');
+      return {
+        status: 'ok',
+        ref,
+        pattern: stored,
+        note:
+          `${target.display_name}'s working pattern is set (${dayWords}). ` +
+          'They are now visible to the scheduler on their working days. Tell the manager exactly this.',
+      };
+    }
+    case 'add_time_off': {
+      const ref = str('ref');
+      if (!ref) throw new Error('ref is required');
+      const startsOn = str('startsOn');
+      const endsOn = str('endsOn');
+      if (!startsOn || !isRealDateISO(startsOn) || !endsOn || !isRealDateISO(endsOn)) {
+        throw new Error('startsOn and endsOn must be real YYYY-MM-DD dates');
+      }
+      if (startsOn > endsOn) throw new Error('startsOn must be on or before endsOn');
+      const target = await resolveScheduleInputTarget(tenantId, ref);
+      const row = await addTimeOff({
+        tenantId,
+        technicianId: target.id,
+        startsOn,
+        endsOn,
+        reason: str('reason') ?? null,
+      });
+      return {
+        status: 'ok',
+        ref,
+        startsOn: row.starts_on,
+        endsOn: row.ends_on,
+        reason: row.reason,
+        note:
+          `Time off recorded for ${target.display_name}: ${row.starts_on}` +
+          (row.ends_on === row.starts_on ? '' : ` through ${row.ends_on}`) +
+          `${row.reason ? ` (${row.reason})` : ''}. The scheduler will skip these days; ` +
+          'manual bookings will warn. Tell the manager exactly this.',
+      };
+    }
+    case 'remove_time_off': {
+      const ref = str('ref');
+      if (!ref) throw new Error('ref is required');
+      const date = str('date');
+      if (!date || !isRealDateISO(date)) throw new Error('date must be a real YYYY-MM-DD date');
+      const target = await resolveScheduleInputTarget(tenantId, ref);
+      const overlapping = await listTimeOffForTechnician(target.id, date, date);
+      // Report ONLY what this call actually deleted — a range vanishing
+      // between list and delete (concurrent removal) is tolerated silently.
+      const removed = [];
+      for (const row of overlapping) {
+        if (await deleteTimeOff(row.id, tenantId)) {
+          removed.push({ startsOn: row.starts_on, endsOn: row.ends_on, reason: row.reason });
+        }
+      }
+      return {
+        status: 'ok',
+        ref,
+        removed,
+        note:
+          removed.length === 0
+            ? `${target.display_name} has no time off overlapping ${date} — nothing to remove.`
+            : `Removed ${removed.length} time-off range(s) for ${target.display_name}: ` +
+              removed.map((r) => `${r.startsOn}–${r.endsOn}`).join(', ') +
+              '. Tell the manager exactly this.',
+      };
+    }
+    case 'set_job_duration': {
+      const jobType = str('jobType')?.trim();
+      // An empty type would mint an unmatchable '' row (untyped jobs carry
+      // null, never '') — refuse it.
+      if (!jobType) throw new Error('jobType is required and must not be empty');
+      if (typeof args.minutes !== 'number' || !Number.isInteger(args.minutes) || args.minutes <= 0) {
+        throw new Error('minutes must be a whole number greater than 0');
+      }
+      const row = await upsertJobTypeDuration(tenantId, jobType, args.minutes);
+      return {
+        status: 'ok',
+        jobType: row.job_type,
+        minutes: row.minutes,
+        note:
+          `'${row.job_type}' jobs now default to ${row.minutes} minutes for scheduling. ` +
+          'Tell the manager exactly this.',
+      };
+    }
+    case 'set_technician_skills': {
+      const ref = str('ref');
+      if (!ref) throw new Error('ref is required');
+      if (!Array.isArray(args.skills) || args.skills.some((s) => typeof s !== 'string')) {
+        throw new Error('skills must be an array of strings (may be empty to clear)');
+      }
+      const target = await resolveScheduleInputTarget(tenantId, ref);
+      const updated = await setTechnicianSkills(target.id, args.skills as string[]);
+      return {
+        status: 'ok',
+        ref,
+        skills: updated.skills,
+        note:
+          updated.skills.length === 0
+            ? `${target.display_name}'s skill list is now empty — they count as "skills ` +
+              'unknown" and are never excluded from scheduling on that basis. Tell the manager.'
+            : `${target.display_name}'s skills are now: ${updated.skills.join(', ')} (full ` +
+              'replacement). Tell the manager exactly this.',
+      };
     }
     case 'list_pending_reviews': {
       return listOpenReviewItems(tenantId);

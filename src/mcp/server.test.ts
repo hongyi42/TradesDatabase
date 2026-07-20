@@ -1564,7 +1564,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
     );
     try {
       // The full manager surface: every base spine tool EXCEPT get_schedule
-      // (technician route view, removed 2026-07-19) + the 12 admin tools —
+      // (technician route view, removed 2026-07-19) + the 17 admin tools —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
@@ -1572,7 +1572,9 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('web_search');
       expect(mgrTools).toContain('read_webpage');
       expect(mgrTools).toContain('resolve_date');
-      expect(mgrTools).toHaveLength(25);
+      expect(mgrTools).toContain('set_availability');
+      expect(mgrTools).toContain('set_technician_skills');
+      expect(mgrTools).toHaveLength(30);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -1975,7 +1977,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(25); // base minus get_schedule + 12 admin
+        expect(mgrTools).toHaveLength(30); // base minus get_schedule + 17 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -3598,6 +3600,310 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       // Garbage flag type is rejected.
       const bad = await callWith('get_team_schedule', { unassignedOnly: 'yes' });
       expect(bad.data.status).toBe('invalid_range');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+});
+
+describe('schedule-input verbs (Plan 3a)', () => {
+  const PATTERN_MON_FRI = {
+    mon: [['08:00', '17:00']],
+    tue: [['08:00', '17:00']],
+    wed: [['08:00', '17:00']],
+    thu: [['08:00', '17:00']],
+    fri: [['08:00', '17:00']],
+    sat: [],
+    sun: [],
+  };
+
+  test('technician badge is denied all five tools', async () => {
+    for (const name of [
+      'set_availability',
+      'add_time_off',
+      'remove_time_off',
+      'set_job_duration',
+      'set_technician_skills',
+    ]) {
+      const denied = await call(name, {});
+      expect(denied.isError).toBe(true);
+      expect(denied.text).toContain('manager badge');
+    }
+  });
+
+  test('set_availability + skills: validate, store, surface in list_team; inactive refused, seat-exempt accepted', { timeout: 30_000 }, async () => {
+    // Seat-exempt probe rows: zero seat pressure regardless of what earlier
+    // suites left of the cap, and exactly the population these verbs must
+    // serve (schedule-only people become schedulable HERE).
+    await insertTechnician({
+      tenantId,
+      ref: 'input-probe',
+      displayName: 'Input Probe',
+      seatExempt: true,
+    });
+    const gone = await insertTechnician({
+      tenantId,
+      ref: 'input-gone',
+      displayName: 'Input Gone',
+      seatExempt: true,
+    });
+    await setTechnicianState(gone.id, 'offboarding');
+
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // Malformed pattern shapes → actionable errors, nothing stored.
+      const notObj = await callWith('set_availability', { ref: 'input-probe', pattern: 'mon-fri' });
+      expect(notObj.isError).toBe(true);
+      expect(notObj.text).toContain('pattern must be a JSON object');
+      const missingDay = await callWith('set_availability', {
+        ref: 'input-probe',
+        pattern: { mon: [['08:00', '17:00']] },
+      });
+      expect(missingDay.isError).toBe(true);
+      expect(missingDay.text).toContain("missing day");
+      const badWindow = await callWith('set_availability', {
+        ref: 'input-probe',
+        pattern: { ...PATTERN_MON_FRI, mon: [['17:00', '08:00']] },
+      });
+      expect(badWindow.isError).toBe(true);
+      expect(badWindow.text).toContain('start must be before end');
+
+      // Valid pattern stores and reads back via SQL (cross-channel).
+      const ok = await callWith('set_availability', { ref: 'input-probe', pattern: PATTERN_MON_FRI });
+      expect(ok.isError).toBe(false);
+      expect(ok.data.note).toContain('mon: 08:00–17:00');
+      const stored = await pg.query(
+        "select availability from technicians where tenant_id = $1 and ref = 'input-probe'",
+        [tenantId],
+      );
+      expect(stored.rows[0].availability).toEqual(PATTERN_MON_FRI);
+
+      // Inactive target: refused with the reactivate hint.
+      const inactive = await callWith('set_availability', { ref: 'input-gone', pattern: PATTERN_MON_FRI });
+      expect(inactive.isError).toBe(true);
+      expect(inactive.text).toContain('deactivated');
+
+      // Skills: normalized echo; junk input rejected.
+      const badSkills = await callWith('set_technician_skills', { ref: 'input-probe', skills: 'boilers' });
+      expect(badSkills.isError).toBe(true);
+      const setSkills = await callWith('set_technician_skills', {
+        ref: 'input-probe',
+        skills: ['  Boilers ', 'GAS-Line', 'boilers'],
+      });
+      expect(setSkills.isError).toBe(false);
+      expect(setSkills.data.skills).toEqual(['boilers', 'gas-line']);
+
+      // list_team surfaces both new fields.
+      const team = await callWith('list_team', {});
+      const row = (team.data as Array<Record<string, unknown>>).find((t) => t.ref === 'input-probe');
+      expect(row).toMatchObject({ skills: ['boilers', 'gas-line'], availabilityConfigured: true });
+      const goneRow = (team.data as Array<Record<string, unknown>>).find((t) => t.ref === 'input-gone');
+      expect(goneRow).toMatchObject({ skills: [], availabilityConfigured: false });
+
+      // Clearing skills is a valid "back to unknown".
+      const cleared = await callWith('set_technician_skills', { ref: 'input-probe', skills: [] });
+      expect(cleared.data.skills).toEqual([]);
+      expect(cleared.data.note).toContain('never excluded');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('time off: add validates + records; remove deletes overlapping ranges and is honest on zero matches', { timeout: 30_000 }, async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const badDate = await callWith('add_time_off', {
+        ref: 'input-probe',
+        startsOn: '2027-02-30',
+        endsOn: '2027-03-01',
+      });
+      expect(badDate.isError).toBe(true);
+      const swapped = await callWith('add_time_off', {
+        ref: 'input-probe',
+        startsOn: '2027-03-05',
+        endsOn: '2027-03-01',
+      });
+      expect(swapped.isError).toBe(true);
+      expect(swapped.text).toContain('on or before');
+
+      const added = await callWith('add_time_off', {
+        ref: 'input-probe',
+        startsOn: '2027-03-01',
+        endsOn: '2027-03-03',
+        reason: 'vacation',
+      });
+      expect(added.isError).toBe(false);
+      expect(added.data).toMatchObject({ startsOn: '2027-03-01', endsOn: '2027-03-03', reason: 'vacation' });
+
+      // Zero-match remove: clean answer, not an error.
+      const none = await callWith('remove_time_off', { ref: 'input-probe', date: '2027-06-01' });
+      expect(none.isError).toBe(false);
+      expect(none.data.removed).toEqual([]);
+      expect(none.data.note).toContain('no time off');
+
+      // A date inside the range removes it; SQL read-back proves deletion.
+      const removed = await callWith('remove_time_off', { ref: 'input-probe', date: '2027-03-02' });
+      expect(removed.data.removed).toHaveLength(1);
+      const left = await pg.query(
+        "select count(*)::int as n from technician_time_off where technician_id = (select id from technicians where tenant_id = $1 and ref = 'input-probe')",
+        [tenantId],
+      );
+      expect(left.rows[0].n).toBe(0);
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('set_job_duration: upsert replaces in place; empty jobType and junk minutes refused', { timeout: 30_000 }, async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const empty = await callWith('set_job_duration', { jobType: '   ', minutes: 60 });
+      expect(empty.isError).toBe(true);
+      const frac = await callWith('set_job_duration', { jobType: 'install', minutes: 90.5 });
+      expect(frac.isError).toBe(true);
+      const zero = await callWith('set_job_duration', { jobType: 'install', minutes: 0 });
+      expect(zero.isError).toBe(true);
+
+      const first = await callWith('set_job_duration', { jobType: '  Install ', minutes: 480 });
+      expect(first.data).toMatchObject({ jobType: 'install', minutes: 480 });
+      const second = await callWith('set_job_duration', { jobType: 'INSTALL', minutes: 360 });
+      expect(second.data).toMatchObject({ jobType: 'install', minutes: 360 });
+      const rows = await pg.query(
+        "select minutes from job_type_durations where tenant_id = $1 and job_type = 'install'",
+        [tenantId],
+      );
+      expect(rows.rows).toHaveLength(1); // upsert, not a second row
+      expect(rows.rows[0].minutes).toBe(360);
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('onboarding hook: seat confirm opens availability_setup; set_availability auto-resolves; dismiss = "not known yet"', { timeout: 30_000 }, async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // Seat-exempt adds exercise the hook without seat-cap pressure — and the
+      // hook MUST fire for them (a pattern is their only route to the scheduler).
+      const stage = await callWith('add_technician_seat', {
+        displayName: 'Onboard One',
+        seatExempt: true,
+      });
+      const added = await callWith('add_technician_seat', { confirmId: stage.data.confirmId });
+      expect(added.isError).toBe(false);
+      expect(added.data.note).toContain('REQUIRED next step');
+      expect(added.data.note).toContain('set_availability');
+
+      const pending = await callWith('list_pending_reviews', {});
+      const item = (pending.data as Array<Record<string, unknown>>).find(
+        (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-one',
+      );
+      expect(item).toBeDefined();
+
+      // Setting the pattern closes the obligation.
+      const set = await callWith('set_availability', { ref: 'onboard-one', pattern: PATTERN_MON_FRI });
+      expect(set.isError).toBe(false);
+      const after = await callWith('list_pending_reviews', {});
+      expect(
+        (after.data as Array<Record<string, unknown>>).find(
+          (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-one',
+        ),
+      ).toBeUndefined();
+
+      // Second person: the explicit "no availability yet" path via dismiss.
+      const stage2 = await callWith('add_technician_seat', {
+        displayName: 'Onboard Two',
+        seatExempt: true,
+      });
+      await callWith('add_technician_seat', { confirmId: stage2.data.confirmId });
+      const pending2 = await callWith('list_pending_reviews', {});
+      const item2 = (pending2.data as Array<Record<string, unknown>>).find(
+        (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-two',
+      );
+      expect(item2).toBeDefined();
+      const dismissed = await callWith('resolve_review', {
+        reviewItemId: item2!.id,
+        resolution: 'dismissed',
+        note: 'no availability yet — hours not known',
+      });
+      expect(dismissed.isError).toBe(false);
+
+      // set_availability with NO open item (pre-hook rows) succeeds quietly.
+      const again = await callWith('set_availability', { ref: 'onboard-one', pattern: PATTERN_MON_FRI });
+      expect(again.isError).toBe(false);
+
+      // A normal SEAT-OCCUPYING confirm takes the same hook path — pin it too
+      // (capacity raised for the probe; the file's later suites don't insert).
+      await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 12 });
+      const stage3 = await callWith('add_technician_seat', { displayName: 'Onboard Three' });
+      const added3 = await callWith('add_technician_seat', { confirmId: stage3.data.confirmId });
+      expect(added3.isError).toBe(false);
+      expect(added3.data.note).toContain('REQUIRED next step');
+      const pending3 = await callWith('list_pending_reviews', {});
+      expect(
+        (pending3.data as Array<Record<string, unknown>>).find(
+          (r) => r.kind === 'availability_setup' && r.subject_ref === 'onboard-three',
+        ),
+      ).toBeDefined();
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('book_visit priority: one-shot stores it, staged preview == commit, invalid and jobId-combo refused', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Priority Henderson' });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const invalid = await callWith('book_visit', {
+        customerId: customer.id,
+        date: '2027-04-01',
+        startTime: '09:00',
+        endTime: '10:00',
+        priority: 'super-urgent',
+      });
+      expect(invalid.isError).toBe(true);
+      expect(invalid.text).toContain('invalid priority');
+
+      // One-shot (no promise), unassigned (no seat pressure, no overlaps):
+      // the shell job carries the stated tier.
+      const oneShot = await callWith('book_visit', {
+        customerId: customer.id,
+        date: '2027-04-01',
+        startTime: '09:00',
+        endTime: '10:00',
+        priority: 'urgent',
+      });
+      expect(oneShot.isError).toBe(false);
+      expect(oneShot.data.jobPriority).toBe('urgent');
+      const jobRow = await pg.query('select priority from jobs where id = $1', [oneShot.data.jobId]);
+      expect(jobRow.rows[0].priority).toBe('urgent');
+
+      // priority alongside an existing job: refused, never silently dropped.
+      const combo = await callWith('book_visit', {
+        jobId: oneShot.data.jobId,
+        date: '2027-04-02',
+        startTime: '09:00',
+        endTime: '10:00',
+        priority: 'emergency',
+      });
+      expect(combo.isError).toBe(true);
+      expect(combo.text).toContain('existing job');
+
+      // Staged path: preview shows the tier; commit writes exactly it.
+      const staged = await callWith('book_visit', {
+        customerId: customer.id,
+        date: '2027-04-03',
+        startTime: '09:00',
+        endTime: '10:00',
+        promiseLevel: 'day',
+        priority: 'emergency',
+      });
+      expect(staged.data.status).toBe('needs_confirmation');
+      expect(staged.data.preview.priority).toBe('emergency');
+      const confirmed = await callWith('book_visit', { confirmId: staged.data.confirmId });
+      expect(confirmed.isError).toBe(false);
+      expect(confirmed.data.jobPriority).toBe('emergency');
+      const jobRow2 = await pg.query('select priority from jobs where id = $1', [confirmed.data.jobId]);
+      expect(jobRow2.rows[0].priority).toBe('emergency');
     } finally {
       await mgrClient.close();
     }

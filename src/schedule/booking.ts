@@ -29,6 +29,7 @@ import {
   type Assignment,
   type Customer,
   type Job,
+  type JobPriority,
   type PromiseLevel,
   type Technician,
   type WeeklyPattern,
@@ -128,6 +129,10 @@ export interface BookVisitInput {
   startTime: string; // HH:MM
   endTime: string; // HH:MM
   promiseLevel?: PromiseLevel; // default 'none' — record only promises actually made
+  // Triage tier for the job SHELL minted on the customerId path (default
+  // 'routine'). Ignored on the jobId path — the MCP layer rejects the
+  // combination outright so an unstored urgency is never reported as stored.
+  priority?: JobPriority;
   actorRef: string;
 }
 
@@ -252,6 +257,10 @@ export interface BookVisitPreview {
   startTime: string; // as the manager stated — store these on the stage
   endTime: string;
   promiseLevel: PromiseLevel;
+  // What the job's priority will be after commit: the existing job's recorded
+  // tier, or the stated/default tier of the shell about to be minted — shown
+  // so the manager confirms exactly what commit writes (preview == commit).
+  priority: JobPriority;
   requiresConfirmation: boolean; // the doctrine's verdict — surfaces branch on THIS
   warning?: string;
 }
@@ -271,6 +280,7 @@ export async function previewBookVisit(input: BookVisitInput): Promise<BookVisit
     startTime: r.startTime,
     endTime: r.endTime,
     promiseLevel: r.promiseLevel,
+    priority: r.existingJob ? r.existingJob.priority : (input.priority ?? 'routine'),
     requiresConfirmation: bookingRequiresConfirmation(r.promiseLevel),
     ...(r.warning ? { warning: r.warning } : {}),
   };
@@ -297,6 +307,7 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       customerId: r.customer.id,
       title: input.title ?? null,
       status: 'open',
+      ...(input.priority ? { priority: input.priority } : {}),
     }));
 
   let assignment: Assignment;

@@ -3,6 +3,7 @@ import { getClient } from './client.js';
 
 export type Job = Database['public']['Tables']['jobs']['Row'];
 export type JobStatus = Database['public']['Enums']['job_status'];
+export type JobPriority = Database['public']['Enums']['job_priority'];
 
 // The customer fields a route/day view needs alongside a job — one embedded
 // select instead of a per-row customer lookup.
@@ -31,6 +32,9 @@ export interface CreateJobInput {
   title?: string | null;
   jobType?: string | null;
   status?: JobStatus;
+  // Dispatcher triage tier — scheduler code branches on it (find_slots scoring;
+  // the future bump-the-bumpable). Default 'routine'.
+  priority?: JobPriority;
   priceCents?: number | null;
   attributes?: Json; // L3
   sourceCaptureId?: string | null;
@@ -45,6 +49,7 @@ export async function createJob(input: CreateJobInput): Promise<Job> {
       title: input.title ?? null,
       job_type: input.jobType ?? null,
       status: input.status ?? 'open',
+      priority: input.priority ?? 'routine',
       price_cents: input.priceCents ?? null,
       attributes: input.attributes ?? {},
       source_capture_id: input.sourceCaptureId ?? null,

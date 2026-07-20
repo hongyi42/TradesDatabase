@@ -397,6 +397,28 @@ export async function setTechnicianAvailability(
   return data;
 }
 
+// Skills are stored trimmed + lowercased + deduped (empties dropped) — the
+// service_cities idiom: find_slots matching is exact-string, so normalization
+// happens once at write time. SEMANTICS (user decision 2026-07-20): an empty
+// list means "unknown", NOT "unqualified" — matching may only exclude a person
+// on a NON-empty list that lacks the skill; unconfigured people stay candidates
+// flagged confirm-first. Full-replace, like service_cities.
+export async function setTechnicianSkills(id: string, skills: string[]): Promise<Technician> {
+  const normalized = [
+    ...new Set(skills.map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0)),
+  ];
+  const { data, error } = await getClient()
+    .from('technicians')
+    .update({ skills: normalized })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error || !data) {
+    throw new Error(`setTechnicianSkills failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
 // Cities are stored trimmed + lowercased (empties dropped): the Plan-3 scoring
 // match is case-insensitive, so normalization happens once at write time.
 export async function setTechnicianServiceCities(

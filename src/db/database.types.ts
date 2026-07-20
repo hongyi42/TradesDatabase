@@ -288,6 +288,7 @@ export type Database = {
           id: string
           job_type: string | null
           price_cents: number | null
+          priority: Database["public"]["Enums"]["job_priority"]
           source_capture_id: string | null
           status: Database["public"]["Enums"]["job_status"]
           tenant_id: string
@@ -301,6 +302,7 @@ export type Database = {
           id?: string
           job_type?: string | null
           price_cents?: number | null
+          priority?: Database["public"]["Enums"]["job_priority"]
           source_capture_id?: string | null
           status?: Database["public"]["Enums"]["job_status"]
           tenant_id: string
@@ -314,6 +316,7 @@ export type Database = {
           id?: string
           job_type?: string | null
           price_cents?: number | null
+          priority?: Database["public"]["Enums"]["job_priority"]
           source_capture_id?: string | null
           status?: Database["public"]["Enums"]["job_status"]
           tenant_id?: string
@@ -742,6 +745,7 @@ export type Database = {
           sandbox_ref: string | null
           seat_exempt: boolean
           service_cities: string[]
+          skills: string[]
           state: Database["public"]["Enums"]["technician_state"]
           telegram_user_id: string | null
           tenant_id: string
@@ -765,6 +769,7 @@ export type Database = {
           sandbox_ref?: string | null
           seat_exempt?: boolean
           service_cities?: string[]
+          skills?: string[]
           state?: Database["public"]["Enums"]["technician_state"]
           telegram_user_id?: string | null
           tenant_id: string
@@ -788,6 +793,7 @@ export type Database = {
           sandbox_ref?: string | null
           seat_exempt?: boolean
           service_cities?: string[]
+          skills?: string[]
           state?: Database["public"]["Enums"]["technician_state"]
           telegram_user_id?: string | null
           tenant_id?: string
@@ -968,6 +974,7 @@ export type Database = {
         | "outbound_email"
         | "agent_action"
         | "retraction"
+      job_priority: "emergency" | "urgent" | "routine" | "maintenance"
       job_status:
         | "open"
         | "in_progress"
@@ -1136,6 +1143,7 @@ export const Constants = {
         "agent_action",
         "retraction",
       ],
+      job_priority: ["emergency", "urgent", "routine", "maintenance"],
       job_status: [
         "open",
         "in_progress",

@@ -543,7 +543,12 @@ describe('MCP server', () => {
 
       const added = await callWith('add_technician_seat', { confirmId: addStage.data.confirmId });
       expect(added.isError).toBe(false);
-      expect(added.data).toMatchObject({ ref: 'bob-marley', tier: 'technician', state: 'invited' });
+      expect(added.data).toMatchObject({
+        ref: 'bob-marley',
+        tier: 'technician',
+        state: 'invited',
+        seat_exempt: false, // no seatExempt arg = a normal seat-occupying add
+      });
 
       // Duplicate display name now fails at STAGE time (dup pre-check) —
       // before any yes is spent on it.
@@ -687,6 +692,143 @@ describe('MCP server', () => {
         await pg.query('delete from technicians where tenant_id = $1', [otherTenantId]);
         await pg.query('delete from tenants where id = $1', [otherTenantId]);
       }
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  // Long timeout: full seat-exempt lifecycle against the live DB (add → fences
+  // → deactivate → reactivate), entered with the technician cap provably FULL
+  // (tech-mcp, carl-sagan, dan-dare — the state the admin test above leaves).
+  test('seat-exempt add: schedule-only person past a full cap; identity verbs fence', { timeout: 30_000 }, async () => {
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      // Arg validation: non-boolean rejected (SDK never checks inputSchema);
+      // a seat-exempt MANAGER is refused (would dodge the manager cap).
+      const junk = await callWith('add_technician_seat', {
+        displayName: 'Helper Hman',
+        seatExempt: 'yes',
+      });
+      expect(junk.isError).toBe(true);
+      expect(junk.text).toContain('seatExempt must be a boolean');
+      const mgrExempt = await callWith('add_technician_seat', {
+        displayName: 'Boss Man',
+        tier: 'manager',
+        seatExempt: true,
+      });
+      expect(mgrExempt.isError).toBe(true);
+      expect(mgrExempt.text).toContain('technician-tier rows only');
+
+      // Stage: the preview carries the flag and the note says NO seat.
+      const stage = await callWith('add_technician_seat', {
+        displayName: 'Helper Hman',
+        seatExempt: true,
+      });
+      expect(stage.data.status).toBe('needs_confirmation');
+      expect(stage.data.preview).toMatchObject({
+        ref: 'helper-hman',
+        tier: 'technician',
+        seatExempt: true,
+      });
+      expect(stage.data.note).toContain('NOT occupy a seat');
+
+      // Confirm past the FULL cap: the row lands exempt AND straight to active.
+      const added = await callWith('add_technician_seat', { confirmId: stage.data.confirmId });
+      expect(added.isError).toBe(false);
+      expect(added.data).toMatchObject({
+        ref: 'helper-hman',
+        seat_exempt: true,
+        state: 'active',
+      });
+      const row = await pg.query<{ seat_exempt: boolean; state: string }>(
+        "select seat_exempt, state from technicians where tenant_id = $1 and ref = 'helper-hman'",
+        [tenantId],
+      );
+      expect(row.rows[0]).toEqual({ seat_exempt: true, state: 'active' }); // read-back
+
+      // Pre-deploy token compatibility: a staged detail WITHOUT the seatExempt
+      // key (the pre-feature shape, crafted via the db layer — the tool always
+      // writes the key now) must commit as a SEAT-OCCUPYING add. At the full
+      // cap that means the honest cap error — an exempt insert would succeed.
+      const legacyAtCap = await upsertOpenReviewItem({
+        tenantId,
+        kind: 'pending_seat_add',
+        subjectRef: 'mgr-test',
+        detail: {
+          ref: 'legacy-guy',
+          displayName: 'Legacy Guy',
+          tier: 'technician',
+          stagedAt: new Date().toISOString(),
+        },
+      });
+      const legacyBlocked = await callWith('add_technician_seat', { confirmId: legacyAtCap.id });
+      expect(legacyBlocked.isError).toBe(true);
+      expect(legacyBlocked.text).toContain('no free technician seats');
+      // …and with a seat free, the same pre-feature shape commits seat_exempt
+      // FALSE in the pre-feature default state ('invited').
+      await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 4 });
+      const legacyFree = await upsertOpenReviewItem({
+        tenantId,
+        kind: 'pending_seat_add',
+        subjectRef: 'mgr-test',
+        detail: {
+          ref: 'legacy-gal',
+          displayName: 'Legacy Gal',
+          tier: 'technician',
+          stagedAt: new Date().toISOString(),
+        },
+      });
+      const legacyAdded = await callWith('add_technician_seat', { confirmId: legacyFree.id });
+      expect(legacyAdded.isError).toBe(false);
+      expect(legacyAdded.data).toMatchObject({
+        ref: 'legacy-gal',
+        seat_exempt: false,
+        state: 'invited',
+      });
+      // Restore the entry state: legacy-gal offboarded, capacity back to 3.
+      await updateTechnician(legacyAdded.data.id, { state: 'offboarded' });
+      await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 3 });
+
+      // The identity fences: no Telegram/assistant, no email pairing — ever.
+      const bindDenied = await callWith('bind_telegram', {
+        ref: 'helper-hman',
+        telegramUserId: '4440001',
+      });
+      expect(bindDenied.isError).toBe(true);
+      expect(bindDenied.text).toContain('schedule-only');
+      const linkDenied = await callWith('get_connect_link', { ref: 'helper-hman' });
+      expect(linkDenied.isError).toBe(true);
+      expect(linkDenied.text).toContain('schedule-only');
+
+      // list_team surfaces the flag on every row.
+      const team = await callWith('list_team', {});
+      expect(team.data.find((t: { ref: string }) => t.ref === 'helper-hman')).toMatchObject({
+        seatExempt: true,
+        state: 'active',
+        sandboxRef: null,
+        botUsername: null,
+      });
+      expect(
+        team.data.find((t: { ref: string }) => t.ref === 'mgr-test'),
+      ).toMatchObject({ seatExempt: false });
+
+      // Deactivate ↔ reactivate round-trip AT THE FULL CAP: comes back ACTIVE
+      // (never 'invited' — they can never pair; the trigger skips exempt rows
+      // so the cap cannot block them) and with NO bind_telegram dead-end note.
+      const ask = await callWith('deactivate_technician_seat', { ref: 'helper-hman' });
+      expect(ask.data.status).toBe('needs_confirmation');
+      const done = await callWith('deactivate_technician_seat', {
+        ref: 'helper-hman',
+        confirmId: ask.data.confirmId,
+      });
+      expect(done.data.status).toBe('deactivated');
+      const back = await callWith('reactivate_technician_seat', { ref: 'helper-hman' });
+      expect(back.isError).toBe(false);
+      expect(back.data).toMatchObject({ status: 'reactivated', state: 'active' });
+      expect(back.data.note ?? '').not.toContain('bind_telegram');
     } finally {
       await mgrClient.close();
     }

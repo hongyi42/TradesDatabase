@@ -99,7 +99,10 @@ manager surface (send_email since 2026-07-04, retract_capture since 2026-07-06, 
 read_webpage since 2026-07-13, record_standing_fact since 2026-07-14, resolve_date since
 2026-07-17; the 4 scheduling tools
 `get_team_schedule`/`book_visit`/`move_visit`/`cancel_visit` since 2026-07-14): `add_technician_seat`
-(two-step confirm since 2026-07-17 — mints a permanent ref + burns a seat, not reversible),
+(two-step confirm since 2026-07-17 — mints a permanent ref + burns a seat, not reversible;
+`seatExempt:true` since 2026-07-19 adds a SCHEDULE-ONLY person instead — no seat occupied,
+bookable on visits and visible on the board, but `bind_telegram`/`get_connect_link` refuse them:
+no assistant, no Telegram, no email, ever),
 `deactivate_technician_seat` (two-step confirm; starts the disable-first grace period),
 `reactivate_technician_seat` (the grace-period undo), `get_connect_link` (mint a Gmail
 Connect Link; 5-min per-person cooldown), `bind_telegram` (connect a person to their numeric
@@ -118,7 +121,8 @@ externally visible** (a customer promise at stake); everything reversible happen
 and the agent reports what it did. Concretely: `book_visit`/`move_visit`/`cancel_visit` act
 one-shot when no customer promise is affected (book with `promiseLevel:'none'`, move with
 `promiseBroken:false`, cancel of an unpromised visit) and still stage→confirm when one is;
-`add_technician_seat` is now two-step (permanent ref + a seat); `book_visit` has NO default
+`add_technician_seat` is now two-step (permanent ref + a seat — still two-step with
+`seatExempt:true`, where no seat burns but the ref mint stays permanent); `book_visit` has NO default
 times (2026-07-18, user decision — the 2h job-length default was removed after it overrode a
 stated "12–1pm" in the pilot): `startTime` and `endTime` are required, the agent passes
 exactly what the manager stated and asks when a time is missing.

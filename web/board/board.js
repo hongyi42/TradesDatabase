@@ -437,9 +437,19 @@
     );
   }
 
+  // Animated dismiss: drop .open (sheet slides down, backdrop fades — CSS
+  // owns the motion) and remove the element once the transition is over. The
+  // data-closing guard makes a second close during the slide a no-op, and the
+  // timeout tracks the longest transition (0.28s) rather than transitionend —
+  // which never fires under prefers-reduced-motion's transition:none.
   function closeDetail() {
     var ov = document.getElementById('detail-overlay');
-    if (ov) ov.remove();
+    if (!ov || ov.getAttribute('data-closing')) return;
+    ov.setAttribute('data-closing', '1');
+    ov.classList.remove('open');
+    setTimeout(function () {
+      ov.remove();
+    }, 300);
   }
 
   function openDetail(assignmentId) {
@@ -463,7 +473,11 @@
       })
       .then(function (d) {
         if (!d) return;
-        closeDetail();
+        // Replacing an already-open sheet swaps INSTANTLY (no animated close —
+        // it would leave two elements sharing the id for the slide's 300ms,
+        // and getElementById would then close the wrong one).
+        var prev = document.getElementById('detail-overlay');
+        if (prev) prev.remove();
         var ov = document.createElement('div');
         ov.id = 'detail-overlay';
         ov.innerHTML = renderDetail(d);
@@ -481,6 +495,12 @@
           }
         });
         document.body.appendChild(ov);
+        // Mounted CLOSED (sheet below the viewport). Force one reflow so that
+        // state is the painted baseline, THEN add .open — the class flip now
+        // transitions instead of appearing pre-applied. (rAF alone is not
+        // enough on WebKit: the frame can coalesce, skipping the slide.)
+        void ov.offsetHeight;
+        ov.classList.add('open');
       })
       .catch(function () {
         toast('Network error — could not load the visit.', true);

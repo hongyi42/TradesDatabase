@@ -169,16 +169,25 @@ header h1 { font-size: 18px; margin: 4px 0 2px; }
 #toast.error { background: #b3261e; color: #ffffff; }
 
 /* Visit detail sheet: bottom sheet over a dimmed backdrop (tap either the
-   backdrop or ✕ to close). Read-only for both tiers. */
+   backdrop or ✕ to close). Read-only for both tiers.
+   Enter/exit motion: the element mounts CLOSED (sheet parked below the
+   viewport, backdrop clear); board.js forces a reflow, then adds .open so the
+   first painted frame transitions — sheet slides up, backdrop fades in.
+   Closing reverses it (drop .open, remove after the transition). While not
+   .open the overlay is pointer-inert, so the closing animation can't eat taps
+   meant for the board behind it. */
 #detail-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0);
   z-index: 50;
   display: flex;
   align-items: flex-end;
   justify-content: center;
+  transition: background 0.25s ease;
 }
+#detail-overlay.open { background: rgba(0, 0, 0, 0.45); }
+#detail-overlay:not(.open) { pointer-events: none; }
 .detail-sheet {
   position: relative;
   width: 100%;
@@ -190,6 +199,13 @@ header h1 { font-size: 18px; margin: 4px 0 2px; }
   border-radius: 16px 16px 0 0;
   padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
   box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.3);
+  transform: translateY(100%);
+  transition: transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+#detail-overlay.open .detail-sheet { transform: translateY(0); }
+@media (prefers-reduced-motion: reduce) {
+  #detail-overlay,
+  .detail-sheet { transition: none; }
 }
 .detail-sheet h2 { font-size: 18px; margin: 2px 32px 10px 0; }
 .detail-close {

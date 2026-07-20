@@ -44,6 +44,7 @@ function row(over: Partial<Technician>): Technician {
     availability: null,
     service_cities: [],
     telegram_user_id: null,
+    seat_exempt: false,
     created_at: '2026-07-01T00:00:00.000Z',
     updated_at: '2026-07-01T00:00:00.000Z',
     ...over,
@@ -160,6 +161,30 @@ describe('runLifecycle', () => {
     expect(ensured).toEqual(['needs-session', 'has-session', 'flaky']);
     expect(summary.sessions).toEqual({ checked: 3, created: 1, rowErrors: 1 });
     expect(summary.ok).toBe(true); // one blip is not systemic
+  });
+
+  test('sessions step: seat-exempt active rows are never swept (schedule-only, no agent)', async () => {
+    process.env.COMPOSIO_API_KEY = 'test-key';
+    const ensured: string[] = [];
+    const summary = await runLifecycle(NOW, {
+      listInStates: async (states) =>
+        states.includes('active')
+          ? [
+              row({ ref: 'seated', state: 'active' }),
+              row({ id: 'r2', ref: 'helper', state: 'active', seat_exempt: true }),
+            ]
+          : [],
+      checkPairing: async () => ({ status: 'not_connected' }),
+      expire: async () => EXPIRE_OK,
+      ensureSession: async (t) => {
+        ensured.push(t.ref);
+        return { status: 'created', sessionId: 'trs_new' };
+      },
+      ingestLogs: async () => INGEST_OK,
+    });
+    expect(ensured).toEqual(['seated']); // the exempt row never reaches Composio
+    expect(summary.sessions).toEqual({ checked: 1, created: 1, rowErrors: 0 });
+    expect(summary.ok).toBe(true);
   });
 
   test('sessions step: EVERY attempted row failing goes red (exists-rows never dilute it)', async () => {

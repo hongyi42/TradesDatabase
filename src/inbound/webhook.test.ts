@@ -99,6 +99,7 @@ function techRow(over: Partial<Technician> = {}): Technician {
     availability: null,
     service_cities: [],
     telegram_user_id: null,
+    seat_exempt: false,
     created_at: '2026-07-02T00:00:00.000Z',
     updated_at: '2026-07-02T00:00:00.000Z',
     ...over,

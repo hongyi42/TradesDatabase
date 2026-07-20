@@ -107,6 +107,32 @@ describe('bookVisit', () => {
     expect(assignment.promised_day).toBe('2026-11-06');
   });
 
+  test('a seat-exempt person is bookable like any technician (assignability lock)', async () => {
+    const helper = await insertTechnician({
+      tenantId,
+      ref: 'helper-hank',
+      displayName: 'Helper Hank',
+      seatExempt: true,
+    });
+    expect(helper.seat_exempt).toBe(true);
+    expect(helper.state).toBe('active'); // derived by insertTechnician
+    const customer = await createCustomer({ tenantId, name: 'Exempt Eddie' });
+    const { assignment, warning } = await bookVisit({
+      tenantId,
+      technicianRef: 'helper-hank',
+      customerId: customer.id,
+      date: '2026-11-04',
+      startTime: '13:00',
+      endTime: '14:00',
+      actorRef: 'manager-test',
+    });
+    expect(assignment.technician_id).toBe(helper.id);
+    expect(assignment.status).toBe('confirmed');
+    // No working pattern configured → the standard ADVISORY warning; the
+    // booking itself must never block on it.
+    expect(warning).toContain('no working pattern configured');
+  });
+
   test('no default times: omitting endTime is refused, nothing is invented or written', async () => {
     const customer = await createCustomer({ tenantId, name: 'Duration Dana' });
     const before = (await listUnassignedOpenJobs(tenantId)).length;

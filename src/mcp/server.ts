@@ -467,12 +467,22 @@ const ADMIN_TOOLS = [
       'displayName (+ optional tier): NOTHING is added; you get {status:"needs_confirmation", ' +
       'confirmId} with the minted ref. Show the manager; only on their explicit yes call ' +
       'again with ONLY confirmId — that returns the roster row. Fails if no seat is free or ' +
-      'the ref is already taken (disambiguate with a middle name or employee id).',
+      'the ref is already taken (disambiguate with a middle name or employee id). ' +
+      'Pass seatExempt:true to add a SCHEDULE-ONLY person (e.g. a part-timer/helper) who ' +
+      'occupies NO seat: they can be booked on visits and appear on the board, but can NEVER ' +
+      'have an assistant, Telegram access, or an email pairing (technician tier only).',
     inputSchema: {
       type: 'object',
       properties: {
         displayName: { type: 'string', description: "The person's full name. First call only." },
         tier: { type: 'string', enum: TIERS, description: 'Defaults to technician. First call only.' },
+        seatExempt: {
+          type: 'boolean',
+          description:
+            'true = add a schedule-only person who occupies NO seat: bookable on visits and ' +
+            'visible on the board, but can NEVER have an assistant, Telegram, or email ' +
+            'pairing. First call only.',
+        },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
       required: [],
@@ -483,7 +493,8 @@ const ADMIN_TOOLS = [
     description:
       'Deactivate a team member (manager only). Two-step: first call returns ' +
       '{status:"needs_confirmation", confirmId} — confirm with the person, then call again ' +
-      'with the same ref plus confirmId. Frees the seat immediately; history stays attributed. ' +
+      'with the same ref plus confirmId. Frees the seat immediately (a schedule-only person ' +
+      'occupies NO seat, so deactivating them frees nothing); history stays attributed. ' +
       "If they have an assistant sandbox, confirming also permanently destroys it (including " +
       'its chat memory) and recycles the slot into the pool as a fresh blank.',
     inputSchema: {
@@ -498,10 +509,13 @@ const ADMIN_TOOLS = [
   {
     name: 'list_team',
     description:
-      'List the team roster (manager only): ref, display name, tier, state, sandbox assignment, ' +
+      'List the team roster (manager only): ref, display name, tier, state, seatExempt (true = ' +
+      'schedule-only person, no seat/assistant), sandbox assignment, ' +
       "and botUsername — the Telegram bot (@handle) each person's agent answers on. USE THIS to " +
       'answer "which bot does X use / talk to?" — never inspect configs or guess. botUsername ' +
-      'null means the handle is not on record: tell the manager to ask their operator.',
+      'null means the handle is not on record: tell the manager to ask their operator — EXCEPT ' +
+      'for seatExempt rows, where null is structural (a schedule-only person can never have a ' +
+      'bot; never send the manager to an operator for one).',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -529,7 +543,8 @@ const ADMIN_TOOLS = [
       "Get a Gmail connect link for a team member (manager only). Forward it to that person — " +
       "they sign in to Google and approve; the link is SENSITIVE, share it only with them. " +
       "Once they approve, a verification item appears in list_pending_reviews asking you to " +
-      "confirm the connected mailbox address.",
+      "confirm the connected mailbox address. Schedule-only people (added with seatExempt) are " +
+      "refused — they have no email pairing.",
     inputSchema: {
       type: 'object',
       properties: { ref: { type: 'string', description: 'The roster ref to pair.' } },
@@ -547,7 +562,8 @@ const ADMIN_TOOLS = [
       "result to the manager: the person must open that bot in Telegram and send /start " +
       "themselves (bots cannot message first). If botUsername is null, the operator has not " +
       "recorded this sandbox's bot handle — tell the manager to ask their operator for it; " +
-      "never guess a handle.",
+      "never guess a handle. Schedule-only people (added with seatExempt) are refused — they " +
+      "cannot have an assistant.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -748,6 +764,19 @@ function boardMiniAppLink(): string | null {
 // author — logIngest and the send_email capture stamp the acting person's own
 // roster ref, so an author-only rule would allow self-cleanup (review finding).
 const AUDIT_CHANNELS = new Set<CaptureChannel>(['outbound_email', 'agent_action']);
+
+// The staged copy of a seat add (review_items.detail, kind pending_seat_add).
+// ONE shape for the stage echo and the confirm read, so the two can never
+// drift (the StagedNoteDetail precedent). All fields optional: detail is
+// persisted JSON — pre-feature rows may lack newer keys (seatExempt missing
+// reads as false at BOTH sites, so preview == commit for any shape).
+interface StagedSeatDetail {
+  ref?: string;
+  displayName?: string;
+  tier?: TechnicianTier;
+  seatExempt?: boolean;
+  stagedAt?: string;
+}
 
 // The staged copy of a field note (review_items.detail, kind pending_field_note).
 // The staged copy is the note of record: commit reads ONLY this — never fresh
@@ -2812,6 +2841,19 @@ async function dispatch(
           throw new Error(`invalid tier: ${tierArg}`);
         }
         const tier: TechnicianTier = (tierArg as TechnicianTier | undefined) ?? 'technician';
+        // Non-boolean must be rejected, not coerced — the SDK does not validate
+        // args against inputSchema (the get_schedule precedent).
+        if (args.seatExempt !== undefined && typeof args.seatExempt !== 'boolean') {
+          throw new Error('seatExempt must be a boolean');
+        }
+        const seatExempt = args.seatExempt === true;
+        // A seat-exempt manager is meaningless (managers exist to run agents)
+        // and would silently dodge the manager cap.
+        if (seatExempt && tier === 'manager') {
+          throw new Error(
+            'seatExempt applies to technician-tier rows only — a manager needs a real seat',
+          );
+        }
         const ref = slugify(displayName);
         // Slug alphabet is ASCII: a fully non-Latin name slugs to '' — ask for a
         // romanized form rather than failing with a false "no letters" claim.
@@ -2838,29 +2880,37 @@ async function dispatch(
           tenantId,
           kind: 'pending_seat_add',
           subjectRef,
-          detail: { ref, displayName, tier, stagedAt: new Date().toISOString() },
+          detail: { ref, displayName, tier, seatExempt, stagedAt: new Date().toISOString() },
         });
         // Echo the ITEM's staged detail, not local state (racing stages — same
         // rule as send_email/book_visit): what is SHOWN must be what a confirm
         // of this confirmId would mint. No local fallback — a partial detail
         // shown as local values would display one ref while the token mints
         // another, so refuse it loudly instead (mirrors the confirm guard).
-        const staged = (item.detail ?? {}) as {
-          ref?: string;
-          displayName?: string;
-          tier?: string;
-        };
+        const staged = (item.detail ?? {}) as StagedSeatDetail;
         if (!staged.ref || !staged.displayName || !staged.tier) {
           throw new Error('staged seat is malformed — call add_technician_seat again to restage');
         }
+        // Missing seatExempt reads as FALSE here AND at confirm — a stale
+        // pre-feature detail shape previews exactly what it will commit.
+        const stagedExempt = staged.seatExempt === true;
         return {
           status: 'needs_confirmation',
           confirmId: item.id,
-          preview: { ref: staged.ref, displayName: staged.displayName, tier: staged.tier },
-          note:
-            `Nothing was added. This will occupy one ${staged.tier} seat and mint the ` +
-            `permanent ref '${staged.ref}'. Show the manager; on their explicit yes ` +
-            `call again with ONLY confirmId.`,
+          preview: {
+            ref: staged.ref,
+            displayName: staged.displayName,
+            tier: staged.tier,
+            seatExempt: stagedExempt,
+          },
+          note: stagedExempt
+            ? `Nothing was added. This will NOT occupy a seat — schedule-only person (no ` +
+              `assistant, no Telegram, no email). It still mints the permanent ref ` +
+              `'${staged.ref}'. Show the manager; on their explicit yes call again with ` +
+              `ONLY confirmId.`
+            : `Nothing was added. This will occupy one ${staged.tier} seat and mint the ` +
+              `permanent ref '${staged.ref}'. Show the manager; on their explicit yes ` +
+              `call again with ONLY confirmId.`,
         };
       }
       // CONFIRM — guarded token lookup → expiry → CONSUME FIRST → insert.
@@ -2871,12 +2921,7 @@ async function dispatch(
       if (!item) {
         throw new Error('confirmation not found — call add_technician_seat again with displayName to restage');
       }
-      const d = (item.detail ?? {}) as {
-        ref?: string;
-        displayName?: string;
-        tier?: TechnicianTier;
-        stagedAt?: string;
-      };
+      const d = (item.detail ?? {}) as StagedSeatDetail;
       if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the seat and confirm again');
@@ -2893,12 +2938,16 @@ async function dispatch(
       if (!consumed) {
         throw new Error('already confirmed or cancelled — no seat was added by this call');
       }
+      // Missing key = a token staged before this feature deployed — commit it
+      // as the seat-occupying add it was staged as; never guess exemption.
+      // (seatExempt implies state 'active' — derived inside insertTechnician.)
       try {
         return await insertTechnician({
           tenantId,
           ref: d.ref,
           displayName: d.displayName,
           tier: d.tier,
+          seatExempt: d.seatExempt === true,
         });
       } catch (err) {
         // Cap first: at capacity the BEFORE-trigger fires before the unique
@@ -3073,8 +3122,11 @@ async function dispatch(
       // NO pairing (deactivated while still invited) → back to 'invited':
       // 'active' would be a dead-end — get_connect_link refuses active rows
       // and checkPairing only acts on invited, so their mailbox could never
-      // be paired (review finding).
-      const restoredState = target.composio_connected_account_id ? 'active' : 'invited';
+      // be paired (review finding). Seat-exempt rows are the exception: they
+      // NEVER pair (get_connect_link refuses them), so 'invited' would be a
+      // permanent stuck-looking state — they live in 'active'.
+      const restoredState =
+        target.seat_exempt || target.composio_connected_account_id ? 'active' : 'invited';
       // ONE CAS write restores state + clears the clock atomically: no window
       // where a crash leaves an active row still carrying a grace clock, and
       // a concurrent expiry claim (offboarding→offboarded) wins cleanly — we
@@ -3131,7 +3183,9 @@ async function dispatch(
       if (restoredState === 'invited') {
         notes.push('no mailbox was ever connected — use get_connect_link to pair them');
       }
-      if (!hasSandbox) {
+      // Seat-exempt rows NEVER have a sandbox and bind_telegram refuses them —
+      // pushing this note would instruct the manager into a dead end.
+      if (!hasSandbox && !target.seat_exempt) {
         notes.push(
           'no live assistant sandbox for this person (a previous one may have been recycled) — ' +
             'use bind_telegram to claim a fresh one',
@@ -3150,6 +3204,14 @@ async function dispatch(
       if (!ref) throw new Error('ref is required');
       const target = await getTechnician(tenantId, ref);
       if (!target) throw new Error(`technician '${ref}' not found`);
+      // Schedule-only fence BEFORE every state check: a seat-exempt row is
+      // 'active', so "already connected" below would be a lie — and a
+      // deactivated one must not be told "reactivate first" when reactivating
+      // only leads back to this same permanent refusal (no input path, user
+      // decision 2026-07-19).
+      if (target.seat_exempt) {
+        throw new Error(`'${ref}' is schedule-only (no seat) — they have no email pairing`);
+      }
       if (isInactiveState(target.state)) {
         throw new Error(`'${ref}' is deactivated — reactivate the seat first`);
       }
@@ -3204,6 +3266,17 @@ async function dispatch(
       }
       const target = await getTechnician(tenantId, ref);
       if (!target) throw new Error(`technician '${ref}' not found`);
+      // Schedule-only fence FIRST (user decision 2026-07-19): a seat-exempt
+      // person is a name on the schedule and nothing more — binding would
+      // auto-claim an agent sandbox they must not have. Before the state
+      // check: exemption is permanent, so "reactivate the seat first" would
+      // steer the manager into a pointless (and board-visible) reactivation
+      // that ends at this same refusal.
+      if (target.seat_exempt) {
+        throw new Error(
+          `'${ref}' is schedule-only (no seat) — they cannot have an assistant or Telegram access`,
+        );
+      }
       if (isInactiveState(target.state)) {
         throw new Error(`'${ref}' is deactivated — reactivate the seat first`);
       }
@@ -3294,6 +3367,7 @@ async function dispatch(
         displayName: t.display_name,
         tier: t.tier,
         state: t.state,
+        seatExempt: t.seat_exempt,
         sandboxRef: t.sandbox_ref,
         botUsername: poolBotByTechnician.get(t.id) ?? null,
       }));

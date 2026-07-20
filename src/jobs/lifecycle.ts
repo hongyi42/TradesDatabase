@@ -103,7 +103,9 @@ export async function runLifecycle(
     sessions = { skipped: 'COMPOSIO_API_KEY unset' };
   } else {
     try {
-      const rows = await listInStates(['active']);
+      // Seat-exempt rows are 'active' but have no agent — never mint them a
+      // Composio session (they are schedule-only names, user decision 2026-07-19).
+      const rows = (await listInStates(['active'])).filter((r) => !r.seat_exempt);
       let created = 0;
       let rowErrors = 0;
       let attempts = 0;

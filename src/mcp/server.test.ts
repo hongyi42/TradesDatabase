@@ -3614,16 +3614,26 @@ describe('boardLink decoration (chat → board bridge)', () => {
       const sched = await call('get_schedule', {});
       expect(sched.isError).toBe(false);
       expect(sched.data.boardLink).toBe('https://t.me/DashboardMan_bot?startapp');
+      // boardNote fuses the relay instruction with a paste-ready Telegram
+      // markdown line — the mechanism replacing description-only wording (the
+      // live model skipped the link on plain reads, 2026-07-19). Exact match:
+      // the agent contract is "relay verbatim", so the test pins the payload.
+      expect(sched.data.boardNote).toBe(
+        'ALWAYS end this reply with the exact line: ' +
+          '[See it on the board](https://t.me/DashboardMan_bot?startapp)',
+      );
       // Non-scheduling tools are never decorated — the link belongs to
       // schedule reports, not to every reply.
       const team = await call('list_team', {});
       expect(team.data?.boardLink).toBeUndefined();
+      expect(team.data?.boardNote).toBeUndefined();
 
       // A malformed handle is treated as UNSET (never relayed): t.me has
       // sensitive deep-link namespaces a mangled value could reach.
       process.env.BOARD_BOT_HANDLE = 't.me/Not A Handle';
       const bad = await call('get_schedule', {});
       expect(bad.data.boardLink).toBeUndefined();
+      expect(bad.data.boardNote).toBeUndefined();
 
       // Unset handle: the field is simply absent — the agent contract says
       // "no boardLink → say nothing about the board". Deleted EXPLICITLY:
@@ -3633,6 +3643,7 @@ describe('boardLink decoration (chat → board bridge)', () => {
       const bare = await call('get_schedule', {});
       expect(bare.isError).toBe(false);
       expect(bare.data.boardLink).toBeUndefined();
+      expect(bare.data.boardNote).toBeUndefined();
     } finally {
       if (prev === undefined) delete process.env.BOARD_BOT_HANDLE;
       else process.env.BOARD_BOT_HANDLE = prev;

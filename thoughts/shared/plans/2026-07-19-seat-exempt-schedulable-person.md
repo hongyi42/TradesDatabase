@@ -2,7 +2,7 @@
 date: 2026-07-19
 task: Seat-exempt schedulable person — add a name to the schedule without occupying a technician seat
 research: thoughts/shared/research/2026-07-19-seat-exempt-part-timer.md
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -279,20 +279,23 @@ DB (explicit user authorization required), and proves the original "Hman" scenar
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP (connected); user drives the s2 manager chat + board on
   their phone; pilot-DB write authorization for the migration (step 2 above).
-- [ ] After the user's chat add of Hman: read back
-  `select ref, tier, state, seat_exempt from technicians where tenant_id=<pilot> and ref='hman'`
-  → `seat_exempt=true, state='active'` (evidence: query output).
-- [ ] Seat math unchanged: occupied non-exempt technician count ≤ `tenants.technician_seats`,
-  and Hman's row absent from that count (evidence: one aggregate query).
-- [ ] After the user assigns Hman to the parked unassigned visit: assignment row's
-  `technician_id` = Hman's id, status `confirmed` (evidence: query output).
-- [ ] `bind_telegram` refusal live: user asks the agent to "connect Hman to Telegram" → agent
-  reports the schedule-only refusal (evidence: user relay or s2 trajectory grep).
+- [x] Hman read-back 2026-07-19: `seat_exempt=true, state='active'`, telegram_user_id /
+  sandbox_ref / badge_hash ALL null (evidence: execute_sql row in session).
+- [x] Seat math: 2 seated technicians vs 5 purchased; Hman absent from the count.
+- [x] Assignment read-back: Hman's visit `confirmed`, 2026-07-29 14:00–16:00, promise 'none'
+  (one-shot assignment, no confirm dialog — doctrine held).
+- [x] `bind_telegram` refusal live (user screenshot): "structurally blocked from having
+  Telegram access… hard limit" — agent relayed the fence, claimed no sandbox.
+- NOTE (rollout ordering, live-learned): the user deployed BEFORE the pilot migration — the
+  first confirm failed cleanly ("Could not find the 'seat_exempt' column… no seat was added",
+  token consumed, zero rows written; the two-step protected the pilot). Migration applied
+  with explicit authorization 2026-07-19 + PostgREST schema-cache reload; retry succeeded.
 
 ### Manual verification
-- [ ] Board (user's phone): Hman appears as a lane with the assigned visit; the visit is
-  draggable/cancellable like any other.
-- [ ] The add-flow preview copy reads correctly in chat ("will NOT occupy a seat…").
+- [ ] Board (user's phone): Hman appears as a lane with the assigned visit — pending the
+  user's next board glance (scheduling itself user-confirmed working).
+- [x] The add-flow preview copy reads correctly in chat (screenshot: "Seat: None — no
+  assistant, no Telegram bot, no email pairing").
 
 ---
 *Pause after Phase 3 for the manual checks (user's phone).*

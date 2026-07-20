@@ -7,6 +7,11 @@ This repo builds the **three-layer context spine**: a single customer/job record
 each L2 row). Every structured field links back to the raw evidence it came from. See
 [Three-Layer-Context-Spine-Overview.md](docs/Three-Layer-Context-Spine-Overview.md) for the full design.
 
+Institutional knowledge (process rules, product principles, environment/state maps, and the
+catalog of operational traps) lives in [docs/engineering-memory.md](docs/engineering-memory.md) —
+read it before touching the agent stack, the pilot DB, or deploys, and keep it updated when those
+facts change.
+
 ## Conventions
 - TypeScript, ESM (`"type":"module"`, `NodeNext`) — use explicit `.js` extensions on relative imports.
 - All database access goes through the typed layer in `src/db/`; don't hand-write Supabase queries elsewhere.

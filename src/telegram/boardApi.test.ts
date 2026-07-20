@@ -78,6 +78,8 @@ beforeAll(async () => {
   const casa = await createCustomer({
     tenantId,
     name: 'Board Casa',
+    phone: '555-014-2000',
+    email: 'casa@example.com',
     addressLine1: '12 Board St',
     city: 'Springfield',
     state: 'OR',
@@ -263,6 +265,81 @@ describe('GET /board/api/day', () => {
     expect(((await resp.json()) as { error: string }).error).toBe('account on multiple firms');
     // Restore: offboard the twin so later tests see one firm again.
     await updateTechnician(dupe.id, { state: 'offboarded' });
+  });
+});
+
+describe('GET /board/api/visit (tap-into-a-visit detail)', () => {
+  const visit = (query: string, headers: Record<string, string> = {}) =>
+    fetch(`${base}/board/api/visit${query}`, { headers });
+  const idByTitle = async (title: string): Promise<string> =>
+    (
+      await pg.query<{ id: string }>(
+        `select a.id from assignments a join jobs j on j.id = a.job_id
+         where j.title = $1 and a.status = 'confirmed'`,
+        [title],
+      )
+    ).rows[0].id;
+
+  test('auth + arg contract: no slip → 401; missing assignmentId → 400; non-UUID → 404', async () => {
+    expect((await visit('?assignmentId=x')).status).toBe(401);
+    const missing = await visit('', tma(900000001));
+    expect(missing.status).toBe(400);
+    expect(((await missing.json()) as { error: string }).error).toContain('assignmentId');
+    // Non-UUID garbage reads exactly like an unknown id — 404, never a 500
+    // (PostgREST's invalid-uuid error must not become a loggable server fault
+    // any roster member can trigger at will).
+    const junk = await visit('?assignmentId=not-a-uuid', tma(900000001));
+    expect(junk.status).toBe(404);
+    expect(((await junk.json()) as { error: string }).error).toBe('visit not found');
+  });
+
+  test('manager: full contact + logistics for any visit, unassigned included', async () => {
+    const resp = await visit(`?assignmentId=${await idByTitle('AC tune-up')}`, tma(900000001));
+    expect(resp.status).toBe(200);
+    expect(await resp.json()).toMatchObject({
+      status: 'confirmed',
+      unassigned: false,
+      technicianRef: 'board-t1',
+      technicianName: 'Tess One',
+      jobTitle: 'AC tune-up',
+      promiseLevel: 'none',
+      promisedDay: null,
+      locked: true,
+      customer: {
+        name: 'Board Casa',
+        phone: '555-014-2000',
+        email: 'casa@example.com',
+        address: '12 Board St, Springfield, OR, 97477',
+      },
+    });
+
+    const bare = await visit(`?assignmentId=${await idByTitle('Duct inspection')}`, tma(900000001));
+    expect(bare.status).toBe(200);
+    expect(await bare.json()).toMatchObject({
+      unassigned: true,
+      technicianRef: null,
+      technicianName: null,
+      jobTitle: 'Duct inspection',
+    });
+  });
+
+  test("technician: own visit resolves; anyone else's (and unassigned, and garbage) reads as 404", async () => {
+    const own = await visit(`?assignmentId=${await idByTitle('AC tune-up')}`, tma(900000002));
+    expect(own.status).toBe(200);
+    expect(await own.json()).toMatchObject({ technicianRef: 'board-t1', jobTitle: 'AC tune-up' });
+
+    // Not-found semantics for everything out of scope — indistinguishable from
+    // a nonexistent id, so the endpoint leaks nothing the self-filtered day
+    // view wouldn't show.
+    for (const q of [
+      `?assignmentId=${await idByTitle('Filter swap')}`, // someone else's
+      `?assignmentId=${await idByTitle('Duct inspection')}`, // unassigned
+      '?assignmentId=00000000-0000-0000-0000-000000000000', // nonexistent
+    ]) {
+      const resp = await visit(q, tma(900000002));
+      expect(resp.status).toBe(404);
+      expect(((await resp.json()) as { error: string }).error).toBe('visit not found');
+    }
   });
 });
 

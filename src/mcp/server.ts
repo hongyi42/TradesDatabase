@@ -303,7 +303,8 @@ const TOOLS = [
       'not measured; optimizeFailed true = stops are in scheduled (not drive-optimized) order; ' +
       'a day may also carry unroutableStops (time-ordered, no usable address, not in the ' +
       'link) — mention them to the person alongside the driving list. When the result carries ' +
-      'boardLink, offer it — one tap opens the visual dispatch board (relay it exactly).',
+      "boardNote, ALWAYS end your reply with its exact [See it on the board](…) line — it " +
+      'renders as a tappable link; no boardNote → say nothing about the board.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -589,7 +590,9 @@ const ADMIN_TOOLS = [
       'Pass unassignedOnly:true to list ALL upcoming visits with nobody attached, however far ' +
       'out (no 14-day cap) — use it when the manager asks what still needs assigning. Also ' +
       'returns scheduleVersion — quote it when discussing changes so staleness is detectable. ' +
-      'When the result carries boardLink, offer it — one tap opens the visual dispatch board.',
+      'When the result carries boardNote, ALWAYS end your reply with its exact ' +
+      '[See it on the board](…) line — EVERY schedule answer ends with it, plain reads included; ' +
+      'no boardNote → say nothing about the board.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -622,7 +625,8 @@ const ADMIN_TOOLS = [
       'records what the customer was ACTUALLY told and defaults to "none". Pass "day" ONLY ' +
       'when the manager says the customer was told the day, or "time" when told an exact ' +
       'time. NEVER assume a promise was made. When talking to customers, offer DAYS, not times. ' +
-      'When the result carries boardLink, END your report with it — one tap opens the visual board.',
+      'When the result carries boardNote, ALWAYS end your report with its exact ' +
+      '[See it on the board](…) line — it renders as a tappable link.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -650,7 +654,8 @@ const ADMIN_TOOLS = [
       'them) you instead get {status:"needs_confirmation", confirmId} with a preview — show ' +
       'it, get an explicit yes, call again with ONLY confirmId. Call with assignmentId + ' +
       'date + startTime (+ optional endTime/technicianRef) + reason. When the result carries ' +
-      'boardLink, END your report with it — one tap opens the visual board.',
+      'boardNote, ALWAYS end your report with its exact [See it on the board](…) line — it ' +
+      'renders as a tappable link.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -673,8 +678,8 @@ const ADMIN_TOOLS = [
       'was cancelled; never act silently. If the customer was promised a day/time you instead ' +
       'get {status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
       'yes, call again with ONLY confirmId. Call with assignmentId + reason. The job stays ' +
-      'open for rebooking either way. When the result carries boardLink, END your report with ' +
-      'it — one tap opens the visual board.',
+      'open for rebooking either way. When the result carries boardNote, ALWAYS end your ' +
+      'report with its exact [See it on the board](…) line — it renders as a tappable link.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -3508,7 +3513,16 @@ export function createServer(deps: ServerDeps = {}): Server {
         typeof result === 'object' &&
         !Array.isArray(result) &&
         (result as { status?: unknown }).status !== 'needs_confirmation'
-          ? { ...(result as Record<string, unknown>), boardLink: link }
+          ? {
+              ...(result as Record<string, unknown>),
+              boardLink: link,
+              // Instruction + payload FUSED into the result (the resolve_date
+              // lesson: description-only wording is too weak for the live
+              // model — it skipped the link on plain schedule reads,
+              // 2026-07-19). The bracketed line is Telegram markdown; the
+              // bridge renders it as a tappable "See it on the board".
+              boardNote: `ALWAYS end this reply with the exact line: [See it on the board](${link})`,
+            }
           : result;
       return { content: [{ type: 'text' as const, text: JSON.stringify(decorated) }] };
     } catch (err) {

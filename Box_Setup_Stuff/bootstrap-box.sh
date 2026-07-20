@@ -604,24 +604,26 @@ change.
    BEFORE booking — never guess or invent a length.
 EOF
     ok "confirmation-doctrine block refreshed in ${agent}'s AGENTS.md"
-    # Board-link relay (2026-07-18) — its OWN guard so a re-run delivers it to
-    # boxes that already carry the older §0c blocks (the recurring trap: a new
-    # block hidden behind an existing block's grep never self-heals).
-    if docker exec "$cid" grep -q "dispatch board link" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
-      ok "board-link block already present"
-    else
-      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
-
-## The dispatch board link (host-managed; added 2026-07-18)
-
-Scheduling results (book_visit / move_visit / cancel_visit, schedule reads) may include
-boardLink — the Telegram Mini App dispatch board. After reporting any schedule change, END
-with the link so the person can eyeball the week in one tap (e.g. "See it on the board:
-<boardLink>"). Relay the link EXACTLY as given. If a result has no boardLink, say nothing
-about the board — never invent or remember the URL.
-EOF
-      ok "board-link block appended to ${agent}'s AGENTS.md"
+    # Board-link relay — REFRESHED on every run since 2026-07-19 (delete-then-
+    # append, the doctrine block's idiom): the 2026-07-18 copy scoped the link
+    # to schedule CHANGES, so plain reads ("what's the schedule") went out
+    # link-less on the live model, and the append-once grep pinned that text
+    # forever (template-drift trap, third occurrence).
+    if docker exec "$cid" grep -q "The dispatch board link" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+      docker exec -u sandbox "$cid" sh -c 'awk '\''/^## The dispatch board link/{skip=1; next} skip && /^## /{skip=0} !skip'\'' /sandbox/.openclaw/workspace/AGENTS.md > /tmp/agents-md.tmp && cat /tmp/agents-md.tmp > /sandbox/.openclaw/workspace/AGENTS.md && rm -f /tmp/agents-md.tmp'
     fi
+    docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+
+## The dispatch board link (host-managed; refreshed 2026-07-19)
+
+Scheduling results (book_visit / move_visit / cancel_visit AND both schedule reads) carry
+boardLink + boardNote when the board is configured. EVERY reply that used one of these
+tools — plain reads included, "what's the schedule" included — must END with the exact
+bracketed line from boardNote: [See it on the board](<boardLink>). That line is Telegram
+markdown and renders as a tappable link; relay it EXACTLY, never rewrite, shorten, or
+remember the URL. If a result has no boardLink, say nothing about the board.
+EOF
+    ok "board-link block refreshed in ${agent}'s AGENTS.md"
   else
     echo "    WARN: no running container for ${agent} — append the §0c blocks (accuracy, confirmation, board-link) manually once it's up"
   fi

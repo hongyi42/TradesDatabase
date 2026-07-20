@@ -52,6 +52,17 @@ on the two identity verbs + copy/tests/docs.
   board lane to drop onto (pre-existing, recorded limitation; chat covers it via move_visit).
 - **Two-step confirm stays** for seat-exempt adds — the ref mint is still permanent
   (doctrine: irreversible ⇒ confirm), even though no seat burns.
+- **Final-review deviations from the literal spec (all strengthen the plan's intent):**
+  (1) `insertTechnician` DERIVES state internally (`seatExempt ⇒ 'active'`) instead of exposing a
+  general `state?` override — two reviewers converged: call-site pairing lets a future caller mint
+  a permanently-stuck `invited` exempt row; (2) the migration adds a `no_seat_exempt_managers`
+  CHECK — the no-exempt-managers rule was app-layer-only while the cap is deliberately DB-owned
+  (direct SQL could otherwise mint an uncapped manager); (3) the schedule-only fences moved ABOVE
+  the `isInactiveState` checks in `bind_telegram`/`get_connect_link` — a deactivated exempt row
+  otherwise answered "reactivate the seat first", steering the manager into a pointless
+  board-visible reactivation; (4) copy/comment accuracy: `deactivate` notes exempt rows free no
+  seat, `list_team` notes a structural-null botUsername for exempt rows, `isInactiveState`'s
+  trigger-mirror comment updated, staged seat detail typed once (`StagedSeatDetail`).
 
 ## Plain-language walkthrough
 

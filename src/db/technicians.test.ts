@@ -116,10 +116,20 @@ describe('technicians roster', () => {
       ref: 'helper-hman',
       displayName: 'Helper Hman',
       seatExempt: true,
-      state: 'active',
     });
     expect(helper.seat_exempt).toBe(true);
-    expect(helper.state).toBe('active');
+    expect(helper.state).toBe('active'); // derived: exempt rows skip the pairing lifecycle
+
+    // Managers can never be seat-exempt — DB CHECK, not just the chat verb.
+    await expect(
+      insertTechnician({
+        tenantId,
+        ref: 'exempt-boss',
+        displayName: 'Exempt Boss',
+        tier: 'manager',
+        seatExempt: true,
+      }),
+    ).rejects.toThrow(/no_seat_exempt_managers/);
 
     // The exempt row is invisible to the cap in BOTH directions: a seated
     // insert at the full cap still fails exactly as before…

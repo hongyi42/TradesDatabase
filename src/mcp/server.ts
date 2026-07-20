@@ -493,7 +493,8 @@ const ADMIN_TOOLS = [
     description:
       'Deactivate a team member (manager only). Two-step: first call returns ' +
       '{status:"needs_confirmation", confirmId} — confirm with the person, then call again ' +
-      'with the same ref plus confirmId. Frees the seat immediately; history stays attributed. ' +
+      'with the same ref plus confirmId. Frees the seat immediately (a schedule-only person ' +
+      'occupies NO seat, so deactivating them frees nothing); history stays attributed. ' +
       "If they have an assistant sandbox, confirming also permanently destroys it (including " +
       'its chat memory) and recycles the slot into the pool as a fresh blank.',
     inputSchema: {
@@ -512,7 +513,9 @@ const ADMIN_TOOLS = [
       'schedule-only person, no seat/assistant), sandbox assignment, ' +
       "and botUsername — the Telegram bot (@handle) each person's agent answers on. USE THIS to " +
       'answer "which bot does X use / talk to?" — never inspect configs or guess. botUsername ' +
-      'null means the handle is not on record: tell the manager to ask their operator.',
+      'null means the handle is not on record: tell the manager to ask their operator — EXCEPT ' +
+      'for seatExempt rows, where null is structural (a schedule-only person can never have a ' +
+      'bot; never send the manager to an operator for one).',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -761,6 +764,19 @@ function boardMiniAppLink(): string | null {
 // author — logIngest and the send_email capture stamp the acting person's own
 // roster ref, so an author-only rule would allow self-cleanup (review finding).
 const AUDIT_CHANNELS = new Set<CaptureChannel>(['outbound_email', 'agent_action']);
+
+// The staged copy of a seat add (review_items.detail, kind pending_seat_add).
+// ONE shape for the stage echo and the confirm read, so the two can never
+// drift (the StagedNoteDetail precedent). All fields optional: detail is
+// persisted JSON — pre-feature rows may lack newer keys (seatExempt missing
+// reads as false at BOTH sites, so preview == commit for any shape).
+interface StagedSeatDetail {
+  ref?: string;
+  displayName?: string;
+  tier?: TechnicianTier;
+  seatExempt?: boolean;
+  stagedAt?: string;
+}
 
 // The staged copy of a field note (review_items.detail, kind pending_field_note).
 // The staged copy is the note of record: commit reads ONLY this — never fresh
@@ -2871,12 +2887,7 @@ async function dispatch(
         // of this confirmId would mint. No local fallback — a partial detail
         // shown as local values would display one ref while the token mints
         // another, so refuse it loudly instead (mirrors the confirm guard).
-        const staged = (item.detail ?? {}) as {
-          ref?: string;
-          displayName?: string;
-          tier?: string;
-          seatExempt?: boolean;
-        };
+        const staged = (item.detail ?? {}) as StagedSeatDetail;
         if (!staged.ref || !staged.displayName || !staged.tier) {
           throw new Error('staged seat is malformed — call add_technician_seat again to restage');
         }
@@ -2910,13 +2921,7 @@ async function dispatch(
       if (!item) {
         throw new Error('confirmation not found — call add_technician_seat again with displayName to restage');
       }
-      const d = (item.detail ?? {}) as {
-        ref?: string;
-        displayName?: string;
-        tier?: TechnicianTier;
-        seatExempt?: boolean;
-        stagedAt?: string;
-      };
+      const d = (item.detail ?? {}) as StagedSeatDetail;
       if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
         throw new Error('confirmation expired — restage the seat and confirm again');
@@ -2935,17 +2940,14 @@ async function dispatch(
       }
       // Missing key = a token staged before this feature deployed — commit it
       // as the seat-occupying add it was staged as; never guess exemption.
-      const confirmExempt = d.seatExempt === true;
+      // (seatExempt implies state 'active' — derived inside insertTechnician.)
       try {
         return await insertTechnician({
           tenantId,
           ref: d.ref,
           displayName: d.displayName,
           tier: d.tier,
-          seatExempt: confirmExempt,
-          // Seat-exempt rows skip the pairing lifecycle — straight to 'active'
-          // (an 'invited' they can never leave would read as stuck in list_team).
-          ...(confirmExempt ? { state: 'active' as const } : {}),
+          seatExempt: d.seatExempt === true,
         });
       } catch (err) {
         // Cap first: at capacity the BEFORE-trigger fires before the unique
@@ -3202,15 +3204,16 @@ async function dispatch(
       if (!ref) throw new Error('ref is required');
       const target = await getTechnician(tenantId, ref);
       if (!target) throw new Error(`technician '${ref}' not found`);
-      if (isInactiveState(target.state)) {
-        throw new Error(`'${ref}' is deactivated — reactivate the seat first`);
-      }
-      // Schedule-only fence BEFORE the state checks: a seat-exempt row is
-      // 'active', and the message below ("already connected") would be a lie —
-      // they were never connected and never can be (no input path, user
+      // Schedule-only fence BEFORE every state check: a seat-exempt row is
+      // 'active', so "already connected" below would be a lie — and a
+      // deactivated one must not be told "reactivate first" when reactivating
+      // only leads back to this same permanent refusal (no input path, user
       // decision 2026-07-19).
       if (target.seat_exempt) {
         throw new Error(`'${ref}' is schedule-only (no seat) — they have no email pairing`);
+      }
+      if (isInactiveState(target.state)) {
+        throw new Error(`'${ref}' is deactivated — reactivate the seat first`);
       }
       if (target.state === 'active') {
         throw new Error(`'${ref}' is already connected and active`);
@@ -3263,16 +3266,19 @@ async function dispatch(
       }
       const target = await getTechnician(tenantId, ref);
       if (!target) throw new Error(`technician '${ref}' not found`);
-      if (isInactiveState(target.state)) {
-        throw new Error(`'${ref}' is deactivated — reactivate the seat first`);
-      }
-      // Schedule-only fence (user decision 2026-07-19): a seat-exempt person is
-      // a name on the schedule and nothing more — binding would auto-claim an
-      // agent sandbox they must not have.
+      // Schedule-only fence FIRST (user decision 2026-07-19): a seat-exempt
+      // person is a name on the schedule and nothing more — binding would
+      // auto-claim an agent sandbox they must not have. Before the state
+      // check: exemption is permanent, so "reactivate the seat first" would
+      // steer the manager into a pointless (and board-visible) reactivation
+      // that ends at this same refusal.
       if (target.seat_exempt) {
         throw new Error(
           `'${ref}' is schedule-only (no seat) — they cannot have an assistant or Telegram access`,
         );
+      }
+      if (isInactiveState(target.state)) {
+        throw new Error(`'${ref}' is deactivated — reactivate the seat first`);
       }
       // Reject an id already answering SOMEONE ELSE's sandbox; a self-hit is a
       // harmless re-bind of the same person. No DB uniqueness — this is the guard

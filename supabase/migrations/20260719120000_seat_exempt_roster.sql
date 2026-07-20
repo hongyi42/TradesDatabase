@@ -5,10 +5,18 @@
 --
 -- Seat-exempt rows neither occupy a seat nor trigger the cap check; flipping
 -- seat_exempt OFF re-fires the check (it is in the trigger's update-of column
--- list) so graduation to a real seat is DB-correct even though no chat verb
--- exposes the flip yet.
+-- list) so graduation to a real seat is CAP-correct even though no chat verb
+-- exposes the flip yet. (An operator graduating someone who should then get a
+-- mailbox must ALSO set state='invited' — the pairing flow only enters there.)
 
 alter table technicians add column seat_exempt boolean not null default false;
+
+-- Managers may never be seat-exempt (they exist to run agents, and an exempt
+-- manager would dodge the manager cap entirely — the WHEN clause below skips
+-- exempt rows). DB-owned like the cap itself: the chat verb's rejection is a
+-- friendlier message, this is the structural guarantee.
+alter table technicians add constraint no_seat_exempt_managers
+  check (not (seat_exempt and tier = 'manager'));
 
 create or replace function enforce_seat_cap() returns trigger language plpgsql as $$
 declare cap integer; used integer;

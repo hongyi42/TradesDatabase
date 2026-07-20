@@ -11,12 +11,11 @@ export interface InsertTechnicianInput {
   displayName: string;
   tier?: TechnicianTier;
   // Seat-exempt = a schedulable NAME only (no seat occupied, and the identity
-  // verbs — bind_telegram / get_connect_link — refuse the row).
+  // verbs — bind_telegram / get_connect_link — refuse the row). Implies state
+  // 'active': the row skips the pairing lifecycle entirely, and an 'invited'
+  // it could never leave would read as stuck. Derived HERE so no caller can
+  // mint the stuck combination.
   seatExempt?: boolean;
-  // State override exists for the seat-exempt add: those rows skip the pairing
-  // lifecycle entirely, so they insert straight to 'active' instead of the
-  // 'invited' default.
-  state?: TechnicianState;
 }
 
 // The roster row for one (tenant, ref), or null. Refs are unique per tenant
@@ -138,9 +137,11 @@ export async function listTeam(tenantId: string): Promise<Technician[]> {
   return data ?? [];
 }
 
-// Insert a roster row (state starts 'invited'). The DB enforces both guards:
-// unique (tenant_id, ref) → 23505, and the seat-cap trigger → 'seat_cap_exceeded'.
-// Callers translate those into actionable errors; this layer just surfaces them.
+// Insert a roster row (state starts 'invited'; a seat-exempt row starts
+// 'active' — see InsertTechnicianInput). The DB enforces the guards:
+// unique (tenant_id, ref) → 23505, the seat-cap trigger → 'seat_cap_exceeded',
+// and the no_seat_exempt_managers CHECK. Callers translate those into
+// actionable errors; this layer just surfaces them.
 export async function insertTechnician(input: InsertTechnicianInput): Promise<Technician> {
   const { data, error } = await getClient()
     .from('technicians')
@@ -150,7 +151,7 @@ export async function insertTechnician(input: InsertTechnicianInput): Promise<Te
       display_name: input.displayName,
       tier: input.tier ?? 'technician',
       seat_exempt: input.seatExempt ?? false,
-      ...(input.state ? { state: input.state } : {}),
+      ...(input.seatExempt ? { state: 'active' as const } : {}),
     })
     .select()
     .single();
@@ -415,10 +416,12 @@ export async function setTechnicianServiceCities(
   return data;
 }
 
-// The single definition of "this roster row no longer participates" — mirrors
-// the DB seat-cap trigger's occupancy set. Every surface (webhook drop, sheet
-// validation, deactivate guard) consults this, so adding a lifecycle state is
-// a one-place decision.
+// The single definition of "this roster row no longer participates" — the
+// complement of the DB seat-cap trigger's state set (NOTE: since 2026-07-19
+// the trigger's occupancy count ALSO excludes seat_exempt rows, so this alone
+// is not a seats-in-use predicate — pair it with !seat_exempt for that).
+// Every surface (webhook drop, sheet validation, deactivate guard) consults
+// this, so adding a lifecycle state is a one-place decision.
 export function isInactiveState(state: TechnicianState): boolean {
   return state === 'offboarding' || state === 'offboarded';
 }

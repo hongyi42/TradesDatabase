@@ -113,9 +113,9 @@ describe('bookVisit', () => {
       ref: 'helper-hank',
       displayName: 'Helper Hank',
       seatExempt: true,
-      state: 'active',
     });
     expect(helper.seat_exempt).toBe(true);
+    expect(helper.state).toBe('active'); // derived by insertTechnician
     const customer = await createCustomer({ tenantId, name: 'Exempt Eddie' });
     const { assignment, warning } = await bookVisit({
       tenantId,

@@ -825,6 +825,18 @@ describe('MCP server', () => {
         confirmId: ask.data.confirmId,
       });
       expect(done.data.status).toBe('deactivated');
+      // Fence order: even DEACTIVATED, the identity verbs answer with the
+      // permanent truth ('schedule-only'), never 'reactivate the seat first'
+      // — which would steer the manager into a pointless reactivation.
+      const bindWhileOff = await callWith('bind_telegram', {
+        ref: 'helper-hman',
+        telegramUserId: '4440002',
+      });
+      expect(bindWhileOff.isError).toBe(true);
+      expect(bindWhileOff.text).toContain('schedule-only');
+      const linkWhileOff = await callWith('get_connect_link', { ref: 'helper-hman' });
+      expect(linkWhileOff.isError).toBe(true);
+      expect(linkWhileOff.text).toContain('schedule-only');
       const back = await callWith('reactivate_technician_seat', { ref: 'helper-hman' });
       expect(back.isError).toBe(false);
       expect(back.data).toMatchObject({ status: 'reactivated', state: 'active' });

@@ -1,4 +1,8 @@
 import {
+  getAssignmentForTenant,
+  getCustomer,
+  getJob,
+  getTechnicianById,
   getTenant,
   latestScheduleVersion,
   listAssignmentsForTenant,
@@ -130,4 +134,78 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
     .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(([date, stops]) => ({ date, stops }));
   return { scheduleVersion, from, to: toDay, days };
+}
+
+// The tap-into-a-visit detail view (contact + logistics only — user decision
+// 2026-07-19: notes/briefings stay OFF the board, so nothing here needs the
+// capture sensitivity filter and both tiers may see every field).
+export interface VisitDetail {
+  assignmentId: string;
+  status: Assignment['status'];
+  start: string;
+  end: string;
+  promiseLevel: Assignment['promise_level'];
+  promisedDay: string | null;
+  locked: boolean;
+  unassigned: boolean;
+  technicianRef: string | null;
+  technicianName: string | null;
+  jobTitle: string | null;
+  customer: {
+    name: string | null;
+    phone: string | null;
+    email: string | null;
+    address: string | null;
+  } | null;
+}
+
+// One visit's detail, or null. viewerTechnicianId carries the SAME semantics
+// as readBoardDays: set (technician) = only their own visits resolve — a
+// crafted assignmentId for someone else's (or an unassigned) visit reads as
+// null, indistinguishable from not-found, so the endpoint leaks nothing the
+// day view wouldn't show. null/omitted = manager (any tenant visit).
+export async function readVisitDetail(
+  tenantId: string,
+  assignmentId: string,
+  viewerTechnicianId?: string | null,
+): Promise<VisitDetail | null> {
+  const row = await getAssignmentForTenant(assignmentId, tenantId);
+  if (!row) return null;
+  if (viewerTechnicianId != null && row.technician_id !== viewerTechnicianId) return null;
+  // Same tenant guards as booking.ts's preview path: getJob/getCustomer are
+  // id-only reads, so cross-tenant rows must be re-checked before use.
+  const job = await getJob(row.job_id);
+  const customer =
+    job && job.tenant_id === tenantId ? await getCustomer(job.customer_id) : null;
+  const technician = row.technician_id
+    ? await getTechnicianById(row.technician_id, tenantId)
+    : null;
+  return {
+    assignmentId: row.id,
+    status: row.status,
+    start: row.starts_at,
+    end: row.ends_at,
+    promiseLevel: row.promise_level,
+    promisedDay: row.promised_day,
+    locked: row.locked,
+    unassigned: row.technician_id === null,
+    technicianRef: technician?.ref ?? null,
+    technicianName: technician?.display_name ?? null,
+    jobTitle: job && job.tenant_id === tenantId ? job.title : null,
+    customer:
+      customer && customer.tenant_id === tenantId
+        ? {
+            name: customer.name,
+            phone: customer.phone,
+            email: customer.email,
+            address: formatAddress({
+              address_line1: customer.address_line1,
+              address_line2: customer.address_line2,
+              city: customer.city,
+              state: customer.state,
+              postal_code: customer.postal_code,
+            }),
+          }
+        : null,
+  };
 }

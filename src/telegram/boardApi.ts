@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { verifyInitData } from './initData.js';
 import { findRosterByTelegramUserIdGlobal, type Technician } from '../db/index.js';
-import { InvalidRangeError, readBoardDays } from '../schedule/boardRead.js';
+import { InvalidRangeError, readBoardDays, readVisitDetail } from '../schedule/boardRead.js';
 import {
   cancelVisit,
   moveVisit,
@@ -186,6 +186,42 @@ export async function handleBoardRequest(
         }
         throw err;
       }
+      return;
+    }
+
+    // Tap-into-a-visit detail (both tiers). Technicians resolve ONLY their own
+    // visits — a crafted assignmentId for anyone else's (or an unassigned)
+    // visit 404s exactly like a nonexistent id, so this endpoint reveals
+    // nothing their self-filtered day view wouldn't.
+    if (pathname === '/board/api/visit' && req.method === 'GET') {
+      const auth = await authBoard(req);
+      if (!auth.ok) {
+        deny(res, auth);
+        return;
+      }
+      const assignmentId = url.searchParams.get('assignmentId');
+      if (!assignmentId) {
+        json(res, 400, { error: 'assignmentId is required' });
+        return;
+      }
+      // Non-UUID garbage must read exactly like an unknown id — without this,
+      // PostgREST's 22P02 (invalid uuid syntax) throws through to a bare 500,
+      // letting any authenticated caller spam the server-fault log on demand
+      // and denting the 404 uniformity (review finding).
+      if (!/^[0-9a-fA-F-]{36}$/.test(assignmentId)) {
+        json(res, 404, { error: 'visit not found' });
+        return;
+      }
+      const detail = await readVisitDetail(
+        auth.tenantId,
+        assignmentId,
+        auth.technician.tier === 'manager' ? null : auth.technician.id,
+      );
+      if (!detail) {
+        json(res, 404, { error: 'visit not found' });
+        return;
+      }
+      json(res, 200, detail);
       return;
     }
 

@@ -102,6 +102,14 @@
     return addDays(ymd, -((dow + 6) % 7));
   }
 
+  // Weekday label for a stored YYYY-MM-DD — same UTC string math as addDays
+  // (naive-local rule: the date names itself; the phone's timezone must not
+  // shift which weekday a stored day claims to be).
+  var DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  function dayName(ymd) {
+    return DOW[new Date(Date.parse(ymd + 'T00:00:00Z')).getUTCDay()];
+  }
+
   function stopBadges(stop) {
     var badges = '';
     if (stop.promiseLevel && stop.promiseLevel !== 'none') {
@@ -168,7 +176,8 @@
     var isToday = state.today !== null && date === state.today;
     var html =
       '<section class="day' + (isToday ? ' today' : '') + '" data-date="' + esc(date) + '">' +
-      '<h2>' + esc(date) + (isToday ? ' <span class="today-tag">Today</span>' : '') + '</h2>';
+      '<h2>' + esc(dayName(date)) + ' · ' + esc(date) +
+      (isToday ? ' <span class="today-tag">Today</span>' : '') + '</h2>';
     if (!stops.length) {
       html += '<div class="day-empty">No visits</div>';
     } else if (!teamLayout) {
@@ -372,6 +381,112 @@
     });
   }
 
+  // ---- Visit detail sheet (both tiers, read-only) ----
+
+  function detailRow(label, valueHtml) {
+    return (
+      '<div class="detail-row"><div class="detail-label">' + esc(label) +
+      '</div><div class="detail-value">' + valueHtml + '</div></div>'
+    );
+  }
+
+  function promiseText(d) {
+    if (d.promiseLevel === 'time') return 'Customer was told the day AND time (' + esc(d.promisedDay || '') + ')';
+    if (d.promiseLevel === 'day') return 'Customer was told the day (' + esc(d.promisedDay || '') + ')';
+    return 'Nothing promised to the customer';
+  }
+
+  function renderDetail(d) {
+    var c = d.customer || {};
+    var rows = '';
+    if (d.jobTitle) rows += detailRow('Purpose', esc(d.jobTitle));
+    rows += detailRow(
+      'When',
+      esc(dayName(d.start.slice(0, 10)) + ' · ' + d.start.slice(0, 10)) +
+        ', ' + esc(hhmm(d.start) + '–' + hhmm(d.end)),
+    );
+    rows += detailRow('Technician', esc(d.technicianName || 'Unassigned'));
+    if (c.phone) {
+      // tel: href keeps only digits and + — the display keeps the stored form.
+      rows += detailRow(
+        'Phone',
+        '<a href="tel:' + esc(String(c.phone).replace(/[^+\d]/g, '')) + '">' + esc(c.phone) + '</a>',
+      );
+    }
+    if (c.email) {
+      rows += detailRow('Email', '<a href="mailto:' + esc(c.email) + '">' + esc(c.email) + '</a>');
+    }
+    if (c.address) {
+      rows += detailRow(
+        'Address',
+        '<a href="https://maps.google.com/?q=' + esc(encodeURIComponent(c.address)) +
+          '" data-ext="1">' + esc(c.address) + '</a>',
+      );
+    }
+    rows += detailRow('Promise', promiseText(d));
+    var flags = [];
+    if (d.locked) flags.push('locked (manager-pinned)');
+    if (d.status !== 'confirmed') flags.push(d.status);
+    if (flags.length) rows += detailRow('Flags', esc(flags.join(', ')));
+    return (
+      '<div class="detail-sheet" role="dialog" aria-modal="true">' +
+      '<button type="button" class="detail-close" aria-label="Close">✕</button>' +
+      '<h2>' + esc(c.name || 'Unknown customer') + '</h2>' +
+      rows +
+      '</div>'
+    );
+  }
+
+  function closeDetail() {
+    var ov = document.getElementById('detail-overlay');
+    if (ov) ov.remove();
+  }
+
+  function openDetail(assignmentId) {
+    fetch('/board/api/visit?assignmentId=' + encodeURIComponent(assignmentId), {
+      headers: authHeaders(),
+    })
+      .then(function (resp) {
+        if (!resp.ok) {
+          // A failed detail fetch never touches the board behind it — toast
+          // and stay (the 404 case is real: the visit may have been moved or
+          // cancelled since this card rendered).
+          toast(
+            resp.status === 404
+              ? 'Visit not found — the board may be out of date; pull to refresh.'
+              : 'Could not load the visit (' + resp.status + ') — try again.',
+            true,
+          );
+          return null;
+        }
+        return resp.json();
+      })
+      .then(function (d) {
+        if (!d) return;
+        closeDetail();
+        var ov = document.createElement('div');
+        ov.id = 'detail-overlay';
+        ov.innerHTML = renderDetail(d);
+        // Backdrop tap or ✕ closes; external links route through Telegram's
+        // opener so they leave the webview instead of navigating the board.
+        ov.addEventListener('click', function (e) {
+          if (e.target === ov || (e.target.closest && e.target.closest('.detail-close'))) {
+            closeDetail();
+            return;
+          }
+          var ext = e.target.closest && e.target.closest('a[data-ext]');
+          if (ext && tg && typeof tg.openLink === 'function') {
+            e.preventDefault();
+            tg.openLink(ext.href);
+          }
+        });
+        document.body.appendChild(ov);
+      })
+      .catch(function () {
+        toast('Network error — could not load the visit.', true);
+      });
+  }
+
   // ---- Manager write path ----
 
   function moveFlow(card, targetDate, laneRef, laneLabel) {
@@ -549,12 +664,19 @@
     drag.chip.style.top = y + 'px';
   }
 
+  // A completed drag can still fire a synthetic click on the source card
+  // (mouse drags especially) — that click must NOT pop the detail sheet the
+  // gesture never asked for. endDrag stamps the moment; the click handler
+  // ignores card taps in its shadow.
+  var lastDragEnd = 0;
+
   function endDrag() {
     if (!drag) return;
     if (tg && typeof tg.enableVerticalSwipes === 'function') tg.enableVerticalSwipes();
     drag.card.classList.remove('dragging');
     drag.chip.remove();
     drag = null;
+    lastDragEnd = Date.now();
     clearHover();
   }
 
@@ -578,7 +700,16 @@
         return;
       }
       var btn = e.target.closest && e.target.closest('.stop-cancel');
-      if (btn) cancelFlow(btn.closest('.stop'));
+      if (btn) {
+        cancelFlow(btn.closest('.stop'));
+        return;
+      }
+      // Tap a card → detail sheet (both tiers, every tab, past weeks too —
+      // it's a read). Guarded against the click a just-finished drag emits.
+      var card = e.target.closest && e.target.closest('.stop');
+      if (card && !drag && Date.now() - lastDragEnd > 400) {
+        openDetail(card.getAttribute('data-id'));
+      }
     });
 
     app.addEventListener('pointerdown', function (e) {

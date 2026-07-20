@@ -83,6 +83,14 @@ describe('context spine data-access layer', () => {
     });
   });
 
+  test('job priority: stored when passed, defaults to routine (Plan 3a)', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Priority Test' });
+    const urgent = await createJob({ tenantId, customerId: customer.id, priority: 'urgent' });
+    expect(urgent.priority).toBe('urgent');
+    const plain = await createJob({ tenantId, customerId: customer.id });
+    expect(plain.priority).toBe('routine');
+  });
+
   test('updateJobStatus enforces the transition state machine', async () => {
     const customer = await createCustomer({ tenantId, name: 'Status Test' });
     const job = await createJob({ tenantId, customerId: customer.id });

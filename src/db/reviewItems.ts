@@ -20,7 +20,11 @@ export type ReviewKind =
   | 'pending_booking'
   | 'pending_visit_move'
   | 'pending_visit_cancel'
-  | 'pending_seat_add';
+  | 'pending_seat_add'
+  // Onboarding task-reminder (NOT a staged token): opened when a seat is
+  // confirmed, auto-resolved by set_availability, dismissable as the explicit
+  // "no availability yet" acknowledgment (user decision 2026-07-20).
+  | 'availability_setup';
 
 export interface UpsertOpenReviewItemInput {
   tenantId: string;

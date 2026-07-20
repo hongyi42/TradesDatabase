@@ -45,6 +45,7 @@ function row(over: Partial<Technician>): Technician {
     service_cities: [],
     telegram_user_id: null,
     seat_exempt: false,
+    skills: [],
     created_at: '2026-07-01T00:00:00.000Z',
     updated_at: '2026-07-01T00:00:00.000Z',
     ...over,

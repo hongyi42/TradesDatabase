@@ -29,6 +29,7 @@ export const job = (over: Partial<Job> = {}): Job => ({
   title: 'AC repair',
   job_type: 'hvac',
   status: 'open',
+  priority: 'routine',
   price_cents: null,
   attributes: {},
   source_capture_id: null,

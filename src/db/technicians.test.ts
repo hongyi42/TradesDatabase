@@ -9,6 +9,7 @@ import {
   insertTechnician,
   isSeatCapError,
   listTeam,
+  setTechnicianSkills,
   listTechniciansInStates,
   listTenantIdsWithTelegramBindings,
   setTechnicianState,
@@ -373,5 +374,30 @@ describe('review items', () => {
     });
     expect(fresh?.status).toBe('open');
     expect(fresh?.id).not.toBe(first?.id);
+  });
+});
+
+describe('technician skills (Plan 3a)', () => {
+  test('round-trip is normalized, deduped, and empty-dropped; default is []', async () => {
+    const tech = await insertTechnician({
+      tenantId,
+      ref: 'skilled-sue',
+      displayName: 'Skilled Sue',
+    });
+    // Default: unconfigured = empty list ("unknown", never an exclusion basis).
+    expect(tech.skills).toEqual([]);
+
+    const updated = await setTechnicianSkills(tech.id, [
+      '  Boilers ',
+      'boilers',
+      'GAS-Line',
+      '',
+      '   ',
+    ]);
+    expect(updated.skills).toEqual(['boilers', 'gas-line']);
+
+    // Full-replace semantics: a second set does not merge.
+    const replaced = await setTechnicianSkills(tech.id, ['NATE-Certified']);
+    expect(replaced.skills).toEqual(['nate-certified']);
   });
 });

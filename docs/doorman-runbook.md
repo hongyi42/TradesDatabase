@@ -331,7 +331,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
   2026-07-14: get_team_schedule, book_visit, move_visit, cancel_visit; plus the 5
   schedule-input tools since 2026-07-20: set_availability, add_time_off, remove_time_off,
   set_job_duration, set_technician_skills (one-shot, no confirm); plus `find_slots` since
-  2026-07-20 — the read-only ranked slot finder (books nothing, never carries the board link); see
+  2026-07-20 — the read-only ranked slot finder (books nothing; carries the board link like every schedule answer — originally excluded, which made the agent FABRICATE one, live 2026-07-21); see
   nemoclaw-tech-agent.md §4. Since 2026-07-19 `add_technician_seat` also takes `seatExempt:true`
   — a schedule-only person occupying NO seat, whom bind_telegram/get_connect_link refuse.)
   - `401 / bad identity signature` from upstream → `GATEWAY_IDENTITY_SECRET` differs between host and

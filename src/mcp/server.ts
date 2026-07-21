@@ -946,6 +946,13 @@ const BOARD_LINK_TOOL_NAMES = new Set([
   'book_visit',
   'move_visit',
   'cancel_visit',
+  // find_slots was originally EXCLUDED ("commits nothing") — wrong call: the
+  // AGENTS.md doctrine says EVERY schedule answer ends with the board line
+  // (reads included — get_team_schedule is a read), so the agent, told to
+  // produce a link its payload lacked, FABRICATED one (live E2E 2026-07-21:
+  // "board.example.com/v=23", the 23 being the payload's scheduleVersion).
+  // Give it the real link; the fused boardNote leaves nothing to invent.
+  'find_slots',
 ]);
 
 function boardMiniAppLink(): string | null {

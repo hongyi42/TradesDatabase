@@ -304,8 +304,11 @@ Manager-only MCP tool wiring the engine; decision-ready results.
   path), `skippedNoPattern`, `skippedSkills`, `searched: {technicians, days}`,
   `scheduleVersion`, and on empty candidates: `noFit: {bindingConstraint, nearestAlternatives
   (best beyond latestDate, or shorter-duration hint), displacement: [...top 5...]}`.
-- `BOARD_LINK_TOOL_NAMES` (server.ts:741): NOT added — find_slots commits nothing (board
-  link rides committed results only; staging precedent).
+- `BOARD_LINK_TOOL_NAMES`: **ADDED — decision REVERSED 2026-07-21** (was: NOT added,
+  "commits nothing / committed results only"). The AGENTS.md doctrine puts the board line on
+  EVERY schedule answer (reads included — get_team_schedule is a read), and the live E2E
+  showed the agent FABRICATING a URL (board.example.com/v=[scheduleVersion]) to satisfy the
+  doctrine when the payload lacked one. The fused boardNote leaves it nothing to invent.
 
 **Docs** — tool counts 30 → 31 (nemoclaw-tech-agent.md, doorman-runbook.md, setup guide).
 
@@ -388,6 +391,16 @@ Deploy, tool-cache refresh, live evidence. No migration in this plan.
   field + "Thu 2026-07-23 …" reason prefixes everywhere a date is emitted + description ban
   on agent calendar math. Because the description changed, gateway restarts ARE required
   after the PR #65 deploy (unlike the sentinel fix alone).
+- **Probe 1 rerun (post weekday-fix deploy): weekday labels all CORRECT.** Two new findings:
+  (a) "See it on the board" led to a FABRICATED URL (board.example.com/v=23 — the payload's
+  scheduleVersion): find_slots was excluded from BOARD_LINK_TOOL_NAMES while the AGENTS.md
+  doctrine demands the line on every schedule answer → the agent invented a link. FIXED:
+  find_slots added to the set (decision reversed above); deploy-only, no gateway restart
+  (no description change). (b) ~2–3 min answer latency observed on a FRESH session —
+  attributed to agent-side inference (cold prompt, no cache, 31 tool descriptions,
+  multi-tool loop), not the tool: the identical handler answered in ~2s in the seeded local
+  run. Watch whether warm-session asks are faster (s2 carries the prompt-cache trial);
+  revisit only if warm asks stay slow.
 
 ---
 *Pause after Phase 4 for the manual check.*

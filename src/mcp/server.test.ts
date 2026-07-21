@@ -4230,10 +4230,12 @@ describe('find_slots (Plan 3b)', () => {
       // full tool (field + reason prefix), never left to agent calendar math.
       expect(empty.data.candidates[0].weekday).toBe('Tue');
       expect(empty.data.candidates[0].reasons[0]).toContain('Tue 2027-03-02');
-      // find_slots commits nothing → NEVER carries the board link (the handle
-      // is set for this probe, so absence is the exclusion, not env).
-      expect(empty.data.boardNote).toBeUndefined();
-      expect(empty.data.boardLink).toBeUndefined();
+      // EVERY schedule answer carries the real board link (AGENTS.md doctrine)
+      // — find_slots was originally excluded and the agent FABRICATED a URL to
+      // satisfy the doctrine (live E2E 2026-07-21). The fused boardNote is the
+      // mechanism that leaves it nothing to invent.
+      expect(empty.data.boardLink).toBe('https://t.me/SlotsProbeBot?startapp');
+      expect(empty.data.boardNote).toContain('[See it on the board](https://t.me/SlotsProbeBot?startapp)');
 
       const dense = await callWith('find_slots', {
         customerId: henderson.id,

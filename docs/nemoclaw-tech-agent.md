@@ -103,7 +103,7 @@ schedule-input tools `set_availability`/`add_time_off`/`remove_time_off`/`set_jo
 `set_technician_skills` since 2026-07-20 — all one-shot, no confirm; `set_availability` is the
 step that makes a person schedulable, tracked by an `availability_setup` review item opened at
 seat confirm; `find_slots` since 2026-07-20 — the read-only ranked slot finder: feasibility is
-its verdict, it books nothing and never carries the board link): `add_technician_seat`
+its verdict, it books nothing; like every schedule answer it carries the board link (originally excluded — the agent FABRICATED a URL to satisfy the every-answer doctrine, live 2026-07-21)): `add_technician_seat`
 (two-step confirm since 2026-07-17 — mints a permanent ref + burns a seat, not reversible;
 `seatExempt:true` since 2026-07-19 adds a SCHEDULE-ONLY person instead — no seat occupied,
 bookable on visits and visible on the board, but `bind_telegram`/`get_connect_link` refuse them:

@@ -748,6 +748,64 @@ EOF
     echo "    WARN: no running container for ${agent} — append the §0f block manually once it's up"
   fi
 
+  log "cron/scheduling block (§0g — scheduled work uses cron: on-demand/targeted/finite; wiped by rebuild, re-run after one)"
+  if [ -n "$cid" ]; then
+    if docker exec "$cid" grep -q "Scheduled / recurring work — use cron" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+      ok "cron/scheduling block already present"
+    else
+      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+
+## Scheduled / recurring work — use cron, not a background loop (host-managed; on-demand · targeted · finite)
+
+The blind background heartbeat is OFF by design. When someone asks for something to happen later or
+on a repeat, create a **cron job** — never assume a loop is watching in the background. Three rules,
+every time:
+
+1. **On-demand only.** Schedule ONLY when a person explicitly asks for future or recurring work
+   ("remind me…", "every Friday…", "check X at 3pm"). Never stand up an open-ended "keep watching
+   everything" job on your own.
+2. **Prefer one-shot.** For a single future action, use a self-deleting one-shot
+   (`--at <time> --delete-after-run`). Most "remind me" requests are one-shots, not recurring.
+3. **Finite · targeted · sane cadence** for anything recurring: name ONE specific task, use the
+   LONGEST acceptable interval (hourly or slower — never sub-hourly), and give it an end when the
+   need is bounded ("every Friday until <date>"). Sub-hourly or open-ended recurring jobs need
+   explicit human approval. Delete a job once its purpose is done.
+
+Why: every scheduled run wakes the full agent (a real model turn that pays the whole system prompt +
+tools). A frequent or never-ending job silently becomes an always-on poll — the exact cost the
+heartbeat-off change removed. Keep scheduled work on-demand, targeted, and finite.
+EOF
+      ok "cron/scheduling block appended to ${agent}'s AGENTS.md"
+    fi
+  else
+    echo "    WARN: no running container for ${agent} — append the §0g block manually once it's up"
+  fi
+
+  log "heartbeat OFF (blind 30-min poll → 0m; scheduled work uses cron instead — added 2026-07-20)"
+  if [ -n "$cid" ]; then
+    hb_cur=$(docker exec -u sandbox -e HOME=/sandbox "$cid" openclaw config get agents.defaults.heartbeat.every 2>/dev/null | tr -d '\n')
+    if [ "$hb_cur" = "0m" ]; then
+      ok "heartbeat already 0m"
+    else
+      # Set agents.defaults.heartbeat.every=0m via the GATEWAY-MEDIATED path (download +
+      # upload), NOT \`openclaw config patch\`: an out-of-band write trips the gateway's
+      # GATEWAY_UNSAFE_CONFIG_PATH check and it refuses to restart. Same recipe as
+      # apply-binding.sh (upload -> write .config-hash -> chmod 660 -> gateway restart).
+      hb_tmp=$(mktemp -d)
+      nemoclaw "$agent" download /sandbox/.openclaw/openclaw.json "$hb_tmp/oc.json" </dev/null
+      jq '(.agents.defaults.heartbeat.every) = "0m"' "$hb_tmp/oc.json" > "$hb_tmp/oc.new"
+      hb_h=$(sha256sum "$hb_tmp/oc.new" | awk '{print $1}')
+      nemoclaw "$agent" upload "$hb_tmp/oc.new" /sandbox/.openclaw/openclaw.json </dev/null
+      nemoclaw "$agent" exec --no-tty -- sh -c "printf '%s  openclaw.json\n' '$hb_h' > /sandbox/.openclaw/.config-hash" </dev/null
+      nemoclaw "$agent" exec --no-tty -- chmod 660 /sandbox/.openclaw/openclaw.json /sandbox/.openclaw/.config-hash </dev/null
+      nemoclaw "$agent" gateway restart </dev/null >/dev/null 2>&1 || true
+      rm -rf "$hb_tmp"
+      ok "heartbeat set to 0m (blind poll disabled; scheduled work -> cron)"
+    fi
+  else
+    echo "    WARN: no running container for ${agent} — set agents.defaults.heartbeat.every=0m manually"
+  fi
+
   cat <<EOF
 
 MANUAL — badge install (§5b; plaintext stays between the pending file and the provider store):

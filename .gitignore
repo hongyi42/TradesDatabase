@@ -9,6 +9,12 @@ dist/
 .env.test
 supabase/.env
 
+# SSH / private keys — never commit (belt-and-suspenders; keys belong in ~/.ssh)
+*.pem
+*.key
+id_rsa
+id_ed25519
+
 # Supabase CLI local state
 supabase/.temp/
 

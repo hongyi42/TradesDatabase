@@ -74,12 +74,20 @@ export async function optimizeStopOrder(
 
   const compute = deps.computeRoutes ?? liveComputeRoutes;
   const middles = stops.slice(1, -1);
+  // A SINGLE intermediate has exactly one possible order — asking Google to
+  // "optimize" it is an incoherent question, and the live API answers it with
+  // an undocumented sentinel `optimizedIntermediateWaypointIndex: [-1]` (the
+  // docs imply [0]; observed 2026-07-20 with a real key), which the
+  // permutation guard below rightly rejects — every 3-stop day silently
+  // degraded to unmeasured. Only request optimization when there are ≥2
+  // intermediates to reorder; otherwise the input order IS the order.
+  const wantOptimize = middles.length > 1;
   const response = (await compute({
     origin: { address: stops[0].address },
     destination: { address: stops[stops.length - 1].address },
     intermediates: middles.map((s) => ({ address: s.address })),
     travelMode: 'DRIVE',
-    optimizeWaypointOrder: true,
+    ...(wantOptimize ? { optimizeWaypointOrder: true } : {}),
   })) as {
     routes?: {
       optimizedIntermediateWaypointIndex?: number[];
@@ -89,28 +97,30 @@ export async function optimizeStopOrder(
   };
 
   const route = response?.routes?.[0];
-  if (!route || !Array.isArray(route.optimizedIntermediateWaypointIndex)) {
-    throw new Error('computeRoutes returned no route/optimized order');
-  }
+  if (!route) throw new Error('computeRoutes returned no route/optimized order');
 
-  // Google's index array orders the INTERMEDIATES only; origin stays first,
-  // destination stays last. Map back to full-list indexes (+1 skips origin).
-  const order = [
-    0,
-    ...route.optimizedIntermediateWaypointIndex.map((i) => i + 1),
-    stops.length - 1,
-  ];
-  // The response is cast, not trusted: a short/duplicated/out-of-range index
-  // array would silently drop a stop or blow up later with routable[i] ===
-  // undefined OUTSIDE the caller's degrade path. Require a true permutation.
-  const isPermutation =
-    order.length === stops.length && [...order].sort((a, b) => a - b).every((v, i) => v === i);
-  if (!isPermutation) {
-    throw new Error(
-      `computeRoutes returned an invalid optimized order (${JSON.stringify(
-        route.optimizedIntermediateWaypointIndex,
-      )} for ${stops.length - 2} intermediates)`,
-    );
+  let order: number[];
+  if (wantOptimize) {
+    if (!Array.isArray(route.optimizedIntermediateWaypointIndex)) {
+      throw new Error('computeRoutes returned no route/optimized order');
+    }
+    // Google's index array orders the INTERMEDIATES only; origin stays first,
+    // destination stays last. Map back to full-list indexes (+1 skips origin).
+    order = [0, ...route.optimizedIntermediateWaypointIndex.map((i) => i + 1), stops.length - 1];
+    // The response is cast, not trusted: a short/duplicated/out-of-range index
+    // array would silently drop a stop or blow up later with routable[i] ===
+    // undefined OUTSIDE the caller's degrade path. Require a true permutation.
+    const isPermutation =
+      order.length === stops.length && [...order].sort((a, b) => a - b).every((v, i) => v === i);
+    if (!isPermutation) {
+      throw new Error(
+        `computeRoutes returned an invalid optimized order (${JSON.stringify(
+          route.optimizedIntermediateWaypointIndex,
+        )} for ${stops.length - 2} intermediates)`,
+      );
+    }
+  } else {
+    order = stops.map((_, i) => i); // one middle stop: nothing to reorder
   }
   const legMinutes = (route.legs ?? []).map((l) => durationToMinutes(l.duration));
   const totalMinutes =

@@ -253,9 +253,23 @@ The bounded computeRoutes integration: measure top-K near candidates.
       cf498e5; review round 1 clean, its cap-boundary observation implemented — over-cap
       sibling gaps absorb the cached day delta, round 2 verified the fix + no cap leak
       under rejection interleavings)
-- [ ] key-gated live test (skips without `GOOGLE_MAPS_API_KEY`): one real 3-stop measurement
-      returns a finite delta — TEST WRITTEN, currently SKIPS (no key in local `.env`);
-      runs automatically once a key is added; Phase 4's Render-key check covers the pilot
+- [x] key-gated live test: one real 3-stop measurement returns a finite delta — RAN LIVE
+      2026-07-20 after the user added `GOOGLE_MAPS_API_KEY` to `.env`. First run FAILED and
+      exposed a REAL undocumented API behavior: `optimizeWaypointOrder` over exactly ONE
+      intermediate returns sentinel `optimizedIntermediateWaypointIndex: [-1]` (docs imply
+      [0]) — the permutation guard rightly rejected it, so every 3-stop route (incl.
+      get_schedule 3-stop days in prod) silently degraded to unmeasured. Fixed in
+      `optimizeStopOrder`: single-intermediate routes skip the optimize flag (nothing to
+      reorder; identity order, legs/duration parsed normally) + fake test pinning the
+      request shape and index-less response. After the fix: full suite 580 passed,
+      0 skipped (both key-gated live tests included — first zero-skip run).
+      **Full-conviction seeded run (evidence in-session):** dense Thursday for tech-jane
+      (3 real-address Fresno visits 08:30–09:30/10:30–11:30/13:00–14:00), find_slots for a
+      real-address subject → exactly ONE concrete candidate 14:00–16:00 (the only 2h gap),
+      driveMeasured true, driveDeltaMinutes 7, reason "adds ~7 min of driving" — verified
+      against 3 channels: SQL schedule state, and a direct two-call Google re-derivation
+      (without 27 min / with 34 min → delta 7, exact match). Trap recorded in
+      docs/engineering-memory.md §5.
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack; optional real key.

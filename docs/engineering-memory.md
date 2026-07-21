@@ -241,6 +241,13 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   (`thoughts/shared/research/2026-06-29-async-webhook-ingestion.md`).
 - A badge's tier comes from an ACTIVE roster row matching its ref — a manager badge without
   an active manager roster row silently acts as a plain technician.
+- **Google Routes `optimizeWaypointOrder` over ONE intermediate returns the undocumented
+  sentinel `optimizedIntermediateWaypointIndex: [-1]`** (docs imply `[0]`; observed live
+  2026-07-20). Our permutation guard rightly rejects it, so every 3-stop day silently
+  degraded to unmeasured until `optimizeStopOrder` learned to skip the flag when there is
+  nothing to reorder (fix + pinning test in `src/routes/googleRoutes.ts`). Moral: the
+  fake-Google tests can't catch what only the live API does — run the key-gated live tests
+  whenever `GOOGLE_MAPS_API_KEY` is available.
 
 **Designing agent behavior (the meta-lesson):** GLM-5.2 does not reliably obey standing
 instructions — proven repeatedly (skipped `endTime` despite rules → PR #53 made it required;

@@ -47,6 +47,26 @@ describe('optimizeStopOrder (mocked transport)', () => {
     expect(r.totalMinutes).toBe(3);
   });
 
+  test('a single intermediate is measured WITHOUT the optimize flag (live [-1] sentinel trap)', async () => {
+    // The live API answers optimizeWaypointOrder over ONE intermediate with an
+    // undocumented [-1] (observed 2026-07-20), so a 3-stop route must not ask —
+    // and must parse a response that carries NO index field at all.
+    const computeRoutes = vi.fn().mockResolvedValue({
+      routes: [{ legs: [{ duration: '600s' }, { duration: '1032s' }], duration: '1632s' }],
+    });
+    const r = await optimizeStopOrder(fourStops.slice(0, 3), { computeRoutes });
+    expect(computeRoutes).toHaveBeenCalledWith({
+      origin: { address: '1 A St' },
+      destination: { address: '3 C St' },
+      intermediates: [{ address: '2 B St' }],
+      travelMode: 'DRIVE',
+      // no optimizeWaypointOrder key — nothing to reorder
+    });
+    expect(r.order).toEqual([0, 1, 2]); // input order IS the order
+    expect(r.legMinutes).toEqual([10, 17]);
+    expect(r.totalMinutes).toBe(27);
+  });
+
   test.each([0, 1, 2])('%i stops short-circuits: identity order, null total, NO api call', async (n) => {
     const computeRoutes = vi.fn();
     const r = await optimizeStopOrder(fourStops.slice(0, n), { computeRoutes });

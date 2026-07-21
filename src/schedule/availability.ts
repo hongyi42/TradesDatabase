@@ -28,6 +28,18 @@ export function localDateISO(isoTimestamp: string, timezone: string): string {
   }).format(new Date(isoTimestamp));
 }
 
+// The local wall-clock HH:MM in the zone — the fit engine's day-0 "now" clamp
+// input. hourCycle 'h23' pins midnight to '00:00' (h24 renders '24:00', which
+// the schedule's HH:MM validation rejects).
+export function localTimeHHMM(isoTimestamp: string, timezone: string): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(isoTimestamp));
+}
+
 export interface TimeOffRange {
   starts_on: string; // YYYY-MM-DD, inclusive
   ends_on: string; // YYYY-MM-DD, inclusive

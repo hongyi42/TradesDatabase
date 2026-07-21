@@ -159,7 +159,7 @@ const MORNING_BONUS = 10;
 const LIGHT_DAY_PER_STOP = 5;
 const SAME_CITY_BONUS = 15;
 
-const addDaysISO = (dateISO: string, days: number): string =>
+export const addDaysISO = (dateISO: string, days: number): string =>
   new Date(Date.parse(`${dateISO}T00:00:00.000Z`) + days * 86_400_000).toISOString().slice(0, 10);
 
 const daysBetween = (fromISO: string, toISO: string): number =>

@@ -94,7 +94,7 @@ Allowlist only the spine tools for the technician profile (`tools.profile` / all
 table, not the badge, is the tier source of truth) gets the technician surface MINUS
 `get_schedule` (removed for managers 2026-07-19 — it is the technician route view; a manager's
 only schedule read is `get_team_schedule`, which includes visits the manager holds; do NOT pin
-get_schedule in the MANAGER profile) plus the 17 seat/lifecycle+scheduling tools, for a 30-tool
+get_schedule in the MANAGER profile) plus the 18 seat/lifecycle+scheduling tools, for a 31-tool
 manager surface (send_email since 2026-07-04, retract_capture since 2026-07-06, web_search and
 read_webpage since 2026-07-13, record_standing_fact since 2026-07-14, resolve_date since
 2026-07-17; the 4 scheduling tools
@@ -102,7 +102,8 @@ read_webpage since 2026-07-13, record_standing_fact since 2026-07-14, resolve_da
 schedule-input tools `set_availability`/`add_time_off`/`remove_time_off`/`set_job_duration`/
 `set_technician_skills` since 2026-07-20 — all one-shot, no confirm; `set_availability` is the
 step that makes a person schedulable, tracked by an `availability_setup` review item opened at
-seat confirm): `add_technician_seat`
+seat confirm; `find_slots` since 2026-07-20 — the read-only ranked slot finder: feasibility is
+its verdict, it books nothing and never carries the board link): `add_technician_seat`
 (two-step confirm since 2026-07-17 — mints a permanent ref + burns a seat, not reversible;
 `seatExempt:true` since 2026-07-19 adds a SCHEDULE-ONLY person instead — no seat occupied,
 bookable on visits and visible on the board, but `bind_telegram`/`get_connect_link` refuse them:

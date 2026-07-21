@@ -26,6 +26,8 @@ import {
   type WeeklyPattern,
 } from '../db/index.js';
 import { localDayOfWeek } from './availability.js';
+import { optimizeStopOrder, type ComputeRoutes } from '../routes/googleRoutes.js';
+import type { RouteStop } from '../routes/deepLink.js';
 
 // ---------------------------------------------------------------------------
 // Pure minute math
@@ -433,4 +435,107 @@ export async function findDisplacementCandidates(
     });
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Marginal drive measurement (Phase 2) — the bounded computeRoutes integration
+
+// Only the top-ranked candidates get API calls (2 per candidate worst case:
+// day-with vs day-without) — billing stays pennies and the cap is visible in
+// the result via driveMeasured per candidate.
+export const DRIVE_MEASURE_TOP = 5;
+
+// A measured detour subtracts from the score minute-for-minute: a 22-minute
+// detour outweighs SAME_CITY_BONUS (15) and MORNING_BONUS (10) — real driving
+// beats heuristics once we've actually measured it. (A negative delta — the
+// route IMPROVES — boosts by the same rule.)
+const DRIVE_DELTA_PENALTY_PER_MIN = 1;
+
+export const techDateKey = (technicianRef: string, date: string): string =>
+  `${technicianRef}|${date}`;
+
+export interface MeasureDriveDeltasInput {
+  candidates: SlotCandidate[]; // pre-scored, sorted (generateCandidates output)
+  // EXISTING confirmed stops per techDateKey(ref, date) — listDayStops shapes.
+  stopsByTechDate: Map<string, RouteStop[]>;
+  newStop: RouteStop; // the customer being placed (address may be null)
+}
+
+// Measure what adding `newStop` does to each top candidate's day of driving,
+// fold the delta into the score, and re-sort. THE NEW STOP IS ALWAYS AN
+// INTERMEDIATE (never origin/destination): optimizeStopOrder pins first/last,
+// so inserting at an endpoint would solve a differently-pinned problem and
+// skew the with-vs-without comparison (plan review finding #4). Branches by
+// the day's ROUTABLE existing-stop count (finding #5):
+//   ≥3  both routes measurable → true delta, scored;
+//   =2  only the with-route (3 stops) is measurable → "route becomes ~X min",
+//       delta stays null (nothing to subtract from);
+//   0–1 neither route measurable (optimizeStopOrder short-circuits <3 stops)
+//       → driveMeasured false, NO API call, no route reason.
+// Any Google failure degrades that candidate to driveMeasured:false — a
+// routing outage must never eat the scheduling answer (get_schedule precedent).
+export async function measureDriveDeltas(
+  input: MeasureDriveDeltasInput,
+  deps: { computeRoutes?: ComputeRoutes } = {},
+): Promise<SlotCandidate[]> {
+  const out = input.candidates.map((c) => ({
+    ...c,
+    reasons: [...c.reasons],
+    warnings: [...c.warnings],
+  }));
+  // Candidates on the same (tech, day) share identical with/without routes —
+  // the measurement is day-level, not gap-level — so cache per day and pay
+  // Google once (two gaps on a dense day = still 2 calls, not 4).
+  const totalCache = new Map<string, Promise<number | null>>();
+  const measureTotal = (cacheKey: string, stops: RouteStop[]): Promise<number | null> => {
+    let p = totalCache.get(cacheKey);
+    if (!p) {
+      p = optimizeStopOrder(stops, deps).then((r) => r.totalMinutes);
+      totalCache.set(cacheKey, p);
+    }
+    return p;
+  };
+
+  for (const cand of out.slice(0, DRIVE_MEASURE_TOP)) {
+    if (input.newStop.address === null) {
+      cand.warnings.push('customer address incomplete — drive not measured');
+      continue;
+    }
+    const key = techDateKey(cand.technicianRef, cand.date);
+    const existing = (input.stopsByTechDate.get(key) ?? []).filter((s) => s.address !== null);
+    if (existing.length <= 1) continue; // nothing routable to compare against
+    try {
+      // Endpoints stay pinned to the SAME existing first/last in both routes.
+      const withStops = [
+        existing[0],
+        ...existing.slice(1, -1),
+        input.newStop,
+        existing[existing.length - 1],
+      ];
+      if (existing.length === 2) {
+        const withTotal = await measureTotal(`${key}|with`, withStops);
+        if (withTotal === null) continue;
+        cand.driveMeasured = true;
+        cand.reasons.push(`route becomes ~${withTotal} min of driving that day`);
+      } else {
+        const [withTotal, withoutTotal] = await Promise.all([
+          measureTotal(`${key}|with`, withStops),
+          measureTotal(`${key}|without`, existing),
+        ]);
+        if (withTotal === null || withoutTotal === null) continue; // both or nothing
+        const delta = withTotal - withoutTotal;
+        cand.driveMeasured = true;
+        cand.driveDeltaMinutes = delta;
+        cand.score -= delta * DRIVE_DELTA_PENALTY_PER_MIN;
+        cand.reasons.push(
+          delta >= 0
+            ? `adds ~${delta} min of driving to that day's route`
+            : `saves ~${-delta} min of driving on that day's route`,
+        );
+      }
+    } catch {
+      cand.warnings.push('drive not measured (routing service error)');
+    }
+  }
+  return sortCandidates(out);
 }

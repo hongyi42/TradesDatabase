@@ -1,15 +1,20 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import type { WeeklyPattern } from '../db/technicians.js';
 import type { Assignment } from '../db/index.js';
+import type { RouteStop } from '../routes/deepLink.js';
 import {
   clampRowToDay,
   dayWindows,
   DENSE_DAY_STOPS,
+  DRIVE_MEASURE_TOP,
   freeGaps,
   generateCandidates,
+  measureDriveDeltas,
   sortCandidates,
+  techDateKey,
   type FitTechnician,
   type GenerateCandidatesInput,
+  type SlotCandidate,
 } from './fit.js';
 
 // Pure engine tests — no DB, no clock: today/now are inputs (fake-clock rule).
@@ -300,4 +305,206 @@ describe('generateCandidates — scoring ORDER', () => {
     const resorted = sortCandidates(cands);
     expect(resorted[0].technicianRef).toBe(cands[1].technicianRef);
   });
+});
+
+// ---------------------------------------------------------------------------
+// measureDriveDeltas (Phase 2) — fake ComputeRoutes, no key, no network
+
+const rstop = (label: string, address: string | null = `${label} St, Fresno, CA`): RouteStop => ({
+  label,
+  address,
+});
+const NEW_STOP = rstop('New Customer', '900 New Rd, Fresno, CA');
+
+const slot = (over: Partial<SlotCandidate> = {}): SlotCandidate => ({
+  technicianRef: 'bob',
+  technicianName: 'Bob',
+  date: '2026-07-30',
+  startTime: '08:00',
+  endTime: '10:00',
+  dayLevel: false,
+  score: 0,
+  reasons: ['fits'],
+  driveDeltaMinutes: null,
+  driveMeasured: false,
+  warnings: [],
+  ...over,
+});
+
+// Fake Google: WITH-routes (an intermediate carries the new stop's address)
+// total 62 min, WITHOUT-routes 40 min → delta 22. Permutation-valid response.
+type RoutesBody = { origin: { address: string }; destination: { address: string }; intermediates: { address: string }[] };
+const fakeRoutes = () =>
+  vi.fn(async (body: unknown) => {
+    const b = body as RoutesBody;
+    const isWith = b.intermediates.some((i) => i.address === NEW_STOP.address);
+    return {
+      routes: [
+        {
+          optimizedIntermediateWaypointIndex: b.intermediates.map((_, i) => i),
+          legs: [],
+          duration: `${(isWith ? 62 : 40) * 60}s`,
+        },
+      ],
+    };
+  });
+
+describe('measureDriveDeltas', () => {
+  const key = techDateKey('bob', '2026-07-30');
+  const threeStops = [rstop('A'), rstop('B'), rstop('C')];
+
+  test('≥3-stop day: true delta, new stop rides as an INTERMEDIATE only, demotion re-sorts', async () => {
+    const computeRoutes = fakeRoutes();
+    const dense = slot({ score: 5 }); // pre-scored above the rival...
+    const rival = slot({ technicianRef: 'ann', technicianName: 'Ann', date: '2026-07-31' });
+    const out = await measureDriveDeltas(
+      {
+        candidates: [dense, rival],
+        stopsByTechDate: new Map([[key, threeStops]]),
+        newStop: NEW_STOP,
+      },
+      { computeRoutes },
+    );
+    const measured = out.find((c) => c.technicianRef === 'bob')!;
+    expect(measured.driveMeasured).toBe(true);
+    expect(measured.driveDeltaMinutes).toBe(22);
+    expect(measured.score).toBe(5 - 22);
+    expect(measured.reasons.some((r) => r.includes('adds ~22 min'))).toBe(true);
+    // ...but the 22-minute detour demotes it below the unmeasured rival.
+    expect(out[0].technicianRef).toBe('ann');
+
+    // Request shape: the new stop appears ONLY as an intermediate; the
+    // endpoints stay pinned to the SAME existing first/last in both calls.
+    const bodies = computeRoutes.mock.calls.map(([b]) => b as RoutesBody);
+    expect(bodies).toHaveLength(2);
+    for (const b of bodies) {
+      expect(b.origin.address).toBe(threeStops[0].address);
+      expect(b.destination.address).toBe(threeStops[2].address);
+    }
+    const withBody = bodies.find((b) => b.intermediates.some((i) => i.address === NEW_STOP.address))!;
+    const withoutBody = bodies.find((b) => b !== withBody)!;
+    expect(withBody.intermediates.map((i) => i.address)).toContain(NEW_STOP.address);
+    expect(withBody.intermediates).toHaveLength(2);
+    expect(withoutBody.intermediates).toHaveLength(1);
+  });
+
+  test('exactly-2-stop day: with-only measurement, "route becomes", delta stays null', async () => {
+    const computeRoutes = fakeRoutes();
+    const out = await measureDriveDeltas(
+      {
+        candidates: [slot()],
+        stopsByTechDate: new Map([[key, [rstop('A'), rstop('B')]]]),
+        newStop: NEW_STOP,
+      },
+      { computeRoutes },
+    );
+    expect(computeRoutes).toHaveBeenCalledTimes(1); // no unmeasurable without-call
+    expect(out[0].driveMeasured).toBe(true);
+    expect(out[0].driveDeltaMinutes).toBeNull();
+    expect(out[0].score).toBe(0); // nothing to subtract — no phantom scoring
+    expect(out[0].reasons.some((r) => r.includes('route becomes ~62 min'))).toBe(true);
+  });
+
+  test('0–1 routable stops: NO api call, driveMeasured false, and no "null min" strings', async () => {
+    const computeRoutes = fakeRoutes();
+    // One routable + one address-less stop → routable count 1.
+    const out = await measureDriveDeltas(
+      {
+        candidates: [slot()],
+        stopsByTechDate: new Map([[key, [rstop('A'), rstop('NoAddr', null)]]]),
+        newStop: NEW_STOP,
+      },
+      { computeRoutes },
+    );
+    expect(computeRoutes).not.toHaveBeenCalled();
+    expect(out[0].driveMeasured).toBe(false);
+    expect(out[0].driveDeltaMinutes).toBeNull();
+    for (const s of [...out[0].reasons, ...out[0].warnings]) {
+      expect(s).not.toMatch(/null/);
+    }
+  });
+
+  test('cap: only the top DRIVE_MEASURE_TOP candidates get calls', async () => {
+    const computeRoutes = fakeRoutes();
+    // 7 measurable candidates on 7 distinct days, strictly descending scores.
+    const candidates = Array.from({ length: 7 }, (_, i) =>
+      slot({ date: `2026-08-1${i}`, score: 70 - i * 10 }),
+    );
+    const stopsByTechDate = new Map(
+      candidates.map((c) => [techDateKey('bob', c.date), threeStops]),
+    );
+    const out = await measureDriveDeltas(
+      { candidates, stopsByTechDate, newStop: NEW_STOP },
+      { computeRoutes },
+    );
+    expect(computeRoutes).toHaveBeenCalledTimes(DRIVE_MEASURE_TOP * 2);
+    expect(out.filter((c) => c.driveMeasured)).toHaveLength(DRIVE_MEASURE_TOP);
+    expect(out.filter((c) => !c.driveMeasured)).toHaveLength(2);
+  });
+
+  test('same-day candidates share one measurement (day-level cache)', async () => {
+    const computeRoutes = fakeRoutes();
+    const out = await measureDriveDeltas(
+      {
+        candidates: [slot({ startTime: '08:00' }), slot({ startTime: '14:00' })],
+        stopsByTechDate: new Map([[key, threeStops]]),
+        newStop: NEW_STOP,
+      },
+      { computeRoutes },
+    );
+    expect(computeRoutes).toHaveBeenCalledTimes(2); // with + without, ONCE
+    expect(out.every((c) => c.driveMeasured && c.driveDeltaMinutes === 22)).toBe(true);
+  });
+
+  test('Google failure degrades that candidate, never eats the answer', async () => {
+    const computeRoutes = vi.fn().mockRejectedValue(new Error('computeRoutes failed: HTTP 500'));
+    const out = await measureDriveDeltas(
+      {
+        candidates: [slot({ reasons: ['fits'] })],
+        stopsByTechDate: new Map([[key, threeStops]]),
+        newStop: NEW_STOP,
+      },
+      { computeRoutes },
+    );
+    expect(out).toHaveLength(1); // candidate survives
+    expect(out[0].driveMeasured).toBe(false);
+    expect(out[0].warnings).toContain('drive not measured (routing service error)');
+  });
+
+  test('unroutable new customer: no calls, an address-incomplete warning', async () => {
+    const computeRoutes = fakeRoutes();
+    const out = await measureDriveDeltas(
+      {
+        candidates: [slot()],
+        stopsByTechDate: new Map([[key, threeStops]]),
+        newStop: rstop('No Address', null),
+      },
+      { computeRoutes },
+    );
+    expect(computeRoutes).not.toHaveBeenCalled();
+    expect(out[0].driveMeasured).toBe(false);
+    expect(out[0].warnings).toContain('customer address incomplete — drive not measured');
+  });
+});
+
+// One real measurement, gated on the key — googleRoutes.test.ts live idiom.
+describe.skipIf(!process.env.GOOGLE_MAPS_API_KEY)('measureDriveDeltas (live)', () => {
+  test(
+    'a real 3-stop Fresno day yields a finite delta',
+    async () => {
+      const existing = [
+        rstop('A', '2331 Fresno St, Fresno, CA 93721'),
+        rstop('B', '567 W Shaw Ave, Fresno, CA 93704'),
+        rstop('C', '99 E Herndon Ave, Fresno, CA 93720'),
+      ];
+      const out = await measureDriveDeltas({
+        candidates: [slot()],
+        stopsByTechDate: new Map([[techDateKey('bob', '2026-07-30'), existing]]),
+        newStop: rstop('New', '4780 N Marks Ave, Fresno, CA 93722'),
+      });
+      expect(out[0].driveMeasured).toBe(true);
+      expect(Number.isFinite(out[0].driveDeltaMinutes)).toBe(true);
+    },
+    30_000,
+  );
 });

@@ -2,8 +2,16 @@
 date: 2026-07-20
 task: Plan 3a — schedule-input verbs (availability, time off, durations, skills, priority home) so the fit-check has data; Telegram-reachable, fail-closed, no defaults
 research: thoughts/shared/research/2026-07-20-plan-3-auto-scheduler-surfaces.md + thoughts/shared/research/2026-07-20-flexible-scheduling-agent-toolset.md
-status: draft
+status: complete
 ---
+
+> **E2E VERIFIED 2026-07-20** (PR #62 merged; pilot migration `20260720220633`; deploy dd163ca;
+> s2/s3/s5 wired + gateways restarted). Live evidence: Hman (seat-exempt) pattern Mon–Fri
+> 08:00–17:00 stored + shown "Set" in list_team; drainage replacement=300 stored from natural
+> phrasing; time-off add/remove exercised via a real correction flow (Jul 24 removed, Jul 31
+> kept — intentional). Findings: agent silently resolved "next Friday" → Jul 24 without the
+> ask-both step (backlog, date-discipline class); list_team's markdown table wraps badly on
+> phone (nit); "default to" wording → reword in 3b.
 
 ## Overview
 
@@ -214,9 +222,9 @@ names += the five), `docs/doorman-runbook.md` (:328-331 enumeration += five),
       valid → stored (SQL read-back in test); add/remove time-off round-trip incl. zero-match
       remove; set_job_duration upsert twice → single row updated; skills echo in list_team;
       seat-exempt row accepts set_availability; deactivated row refused
-- [ ] book_visit with priority: one-shot path job carries 'urgent'; staged path preview==commit
+- [x] book_visit with priority: one-shot path job carries 'urgent'; staged path preview==commit
       carries it; invalid priority rejected at stage
-- [ ] onboarding hook: seat confirm opens `availability_setup` (seat-exempt confirm too);
+- [x] onboarding hook: seat confirm opens `availability_setup` (seat-exempt confirm too);
       set_availability auto-resolves it; resolve_review can dismiss it with a "no
       availability yet" note; set_availability with no open item succeeds quietly;
       pattern-less booking still one-shots with the warning (Hman regression pin)
@@ -246,18 +254,18 @@ Migration to the pilot, deploy, tool-cache refresh, live E2E with evidence.
   refreshes.
 
 ### Automated verification
-- [ ] `npm run build` passes before deploy
+- [x] `npm run build` passes before deploy
 
 ### Live verification (agent-executable)
 - Prerequisites: pilot MCP (`mcp__supabase-test__execute_sql`), a manager-bound sandbox.
-- [ ] migration in pilot ledger; `technicians.skills` + `jobs.priority` columns present (SQL)
-- [ ] E2E via manager chat: set a real technician's pattern + one job-type duration; evidence
+- [x] migration in pilot ledger; `technicians.skills` + `jobs.priority` columns present (SQL)
+- [x] E2E via manager chat: set a real technician's pattern + one job-type duration; evidence
       = SQL read-back of `availability` JSON and `job_type_durations` row
-- [ ] `list_team` through chat shows skills + availabilityConfigured
-- [ ] seat-exempt row (Hman): set_availability succeeds; SQL read-back
+- [x] `list_team` through chat shows skills + availabilityConfigured
+- [x] seat-exempt row (Hman): set_availability succeeds; SQL read-back
 
 ### Manual verification
-- [ ] Manager-facing wording of the five tool results reads naturally (user judgment, one
+- [x] Manager-facing wording of the five tool results reads naturally (user judgment, one
       screenshot each is enough)
 
 ---

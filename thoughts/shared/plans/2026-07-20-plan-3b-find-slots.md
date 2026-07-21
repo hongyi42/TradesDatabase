@@ -35,6 +35,34 @@ research). Depends on Plan 3a's data (patterns, durations, skills, priority) —
   forbidden path; a null from the new helper → error instructing the agent to ask the
   manager). Never 120. Untyped job / customerId path gets its own error variant ("this job
   has no type — ask the manager how long it takes and pass durationMinutes").
+- **Duration errors CARRY the tenant's configured vocabulary** (user concern 2026-07-20:
+  free-text job types arrive in many phrasings, and new types appear mid-scheduling). The
+  server never fuzzy-matches (a wrong match silently books a wrong-length job); instead the
+  no-duration error lists every configured type + minutes ("Configured types: install
+  (480m), maintenance (60m)… if this is one of those, use that type; otherwise ask the
+  manager"), so the AGENT does the language-level mapping with the choices in hand — no
+  dead end, no memorization. A stated general rule gets stored via set_job_duration (one
+  question per new type, ever); one-off durations ride the durationMinutes override.
+- **Misclassification defenses** (user concern 2026-07-20: agent maps an install to a
+  repair): (a) type + duration are fused into each candidate's SERVER-composed reason
+  string ("Tue with Bob, 8:00–16:00 — 8h install") so disclosure survives a lazy relay and
+  the slot WIDTH itself exposes a wrong duration pre-commit (find_slots cannot book —
+  manager always sees options first); (b) a job row that already carries job_type is
+  AUTHORITATIVE — agent classification applies only to untyped jobs, and overriding a
+  typed job's duration requires the explicit durationMinutes arg (echoed as "using your
+  stated Nh, not the stored table value"); (c) agent classifications return labeled as a
+  guess (`assumedType` + "my reading of '<title>' — say otherwise"); (d) recorded
+  limitation: the confirmed mapping is NOT persisted onto the job in v1 (find_slots is
+  read-only; no job-type editor exists) — an untyped job re-asked later is re-mapped;
+  revisit if the pilot shows repeats.
+- **Stored durations are DISCLOSED, never silent** (user concern 2026-07-20 — the endTime
+  lesson generalized: manager-stated-once data is fine, silent use of it is not): every
+  find_slots result that resolved duration from the table carries
+  `durationAssumption: "assuming <N> min for '<type>' (from your set_job_duration setting)
+  — pass durationMinutes if this job differs"` in the payload (mechanism over instruction);
+  an explicit `durationMinutes` arg always beats the table. Also in 3b's server.ts pass:
+  reword set_job_duration's result note "default to" → "assumed to take … unless a
+  different duration is stated".
 - **Drive measurement is bounded**: only the top `DRIVE_MEASURE_TOP` (5) near candidates
   after pre-scoring get computeRoutes calls (2 calls each: day-with vs day-without; a
   <3-stop day measures with-only and reports the delta as "route becomes X min"). Billing

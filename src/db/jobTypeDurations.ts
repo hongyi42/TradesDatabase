@@ -31,9 +31,41 @@ export async function upsertJobTypeDuration(
   return data;
 }
 
+// The MANAGER-CONFIGURED duration for a job type, or null when unconfigured.
+// find_slots' fail-closed duration resolution uses THIS (never the tenant
+// default below): null → the tool errors with the configured vocabulary and
+// the agent asks the manager (user decision 2026-07-20 — no invented values).
+export async function findJobTypeDurationMinutes(
+  tenantId: string,
+  jobType: string,
+): Promise<number | null> {
+  const { data, error } = await getClient()
+    .from('job_type_durations')
+    .select('minutes')
+    .eq('tenant_id', tenantId)
+    .eq('job_type', normalizeJobType(jobType))
+    .maybeSingle();
+  if (error) throw new Error(`findJobTypeDurationMinutes failed: ${error.message}`);
+  return data?.minutes ?? null;
+}
+
+// The full configured vocabulary — the no-duration error carries this so the
+// agent can map messy phrasings onto existing types (or ask) without guessing.
+export async function listJobTypeDurations(tenantId: string): Promise<JobTypeDuration[]> {
+  const { data, error } = await getClient()
+    .from('job_type_durations')
+    .select()
+    .eq('tenant_id', tenantId)
+    .order('job_type', { ascending: true });
+  if (error) throw new Error(`listJobTypeDurations failed: ${error.message}`);
+  return data ?? [];
+}
+
 // The duration the scheduler should assume for a job type: the tenant's
 // specific row if one exists, else the tenant-wide default_job_minutes
 // (migration default 120 — user decision). jobType null = untyped job.
+// DEPRECATED for scheduling use — the tenant-default branch is the exact path
+// the no-invented-durations rule forbids; find_slots uses the finder above.
 export async function getJobDurationMinutes(
   tenantId: string,
   jobType: string | null,

@@ -204,6 +204,21 @@ describe('assembleFitContext — assignment rows become day context', () => {
     expect(excluded.technicians[0].visitsByDate.get('2026-08-03')).toBeUndefined();
     expect(excluded.technicians[0].stopsByDate.get('2026-08-03')).toBeUndefined();
   });
+
+  test('a row ending exactly at midnight (real wire format) blocks its evening, never the next day', async () => {
+    // Round-trips through PostgREST, so the row arrives in the actual
+    // '+00:00' serialization — the format the string-comparison bug
+    // misclassified (Phase-1 review finding).
+    await makeVisit({
+      technicianId: blank.id,
+      startsAt: '2026-08-05T22:00:00.000Z',
+      endsAt: '2026-08-06T00:00:00.000Z',
+    });
+    const c = await ctx({ technicianRef: blank.ref });
+    const b = c.technicians[0];
+    expect(b.visitsByDate.get('2026-08-05')).toEqual([{ start: '22:00', end: '24:00' }]);
+    expect(b.visitsByDate.get('2026-08-06')).toBeUndefined();
+  });
 });
 
 describe('findDisplacementCandidates', () => {

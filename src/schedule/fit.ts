@@ -203,11 +203,17 @@ export function generateCandidates(input: GenerateCandidatesInput): SlotCandidat
       }
     }
   }
-  return out.sort(
+  return sortCandidates(out);
+}
+
+// The one comparator: score desc, then earlier date, then earlier start.
+// Exported so Phase 2's drive-delta application re-sorts with the SAME rule
+// (and so tests pin the real comparator, not a re-implementation).
+export const sortCandidates = (cands: SlotCandidate[]): SlotCandidate[] =>
+  [...cands].sort(
     (a, b) =>
       b.score - a.score || a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime),
   );
-}
 
 function buildCandidate(
   input: GenerateCandidatesInput,
@@ -271,11 +277,19 @@ const expandDates = (startsOn: string, endsOn: string): string[] => {
 // a row spilling past midnight (backfill-sourced) still blocks the morning of
 // the day it runs into (review finding #7 — overlap, not start-day, semantics).
 export function clampRowToDay(row: Assignment, dateISO: string): VisitSpan | null {
-  const dayStart = `${dateISO}T00:00:00.000Z`;
-  const dayEnd = addDaysISO(dateISO, 1) + 'T00:00:00.000Z';
-  if (row.starts_at >= dayEnd || row.ends_at <= dayStart) return null;
-  const start = row.starts_at < dayStart ? '00:00' : row.starts_at.slice(11, 16);
-  const end = row.ends_at >= dayEnd ? '24:00' : row.ends_at.slice(11, 16);
+  // Compare INSTANTS, never strings: PostgREST renders timestamptz as
+  // '…T00:00:00+00:00' (offset suffix, no ms) while locally built literals end
+  // '.000Z', and ASCII '+' < '.' misclassifies midnight-aligned rows — a
+  // next-day 00:00 start would block the entire previous day, and a row ending
+  // at exactly midnight produced an inverted '22:00–00:00' span that freeGaps
+  // silently dropped (Phase-1 review finding, reproduced).
+  const dayStart = Date.parse(`${dateISO}T00:00:00Z`);
+  const dayEnd = dayStart + 86_400_000;
+  const rowStart = Date.parse(row.starts_at);
+  const rowEnd = Date.parse(row.ends_at);
+  if (rowStart >= dayEnd || rowEnd <= dayStart) return null;
+  const start = rowStart < dayStart ? '00:00' : row.starts_at.slice(11, 16);
+  const end = rowEnd >= dayEnd ? '24:00' : row.ends_at.slice(11, 16);
   return { start, end };
 }
 

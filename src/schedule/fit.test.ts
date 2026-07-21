@@ -7,6 +7,7 @@ import {
   DENSE_DAY_STOPS,
   freeGaps,
   generateCandidates,
+  sortCandidates,
   type FitTechnician,
   type GenerateCandidatesInput,
 } from './fit.js';
@@ -125,6 +126,20 @@ describe('clampRowToDay', () => {
     expect(clampRowToDay(r, '2026-07-21')).toEqual({ start: '22:00', end: '24:00' });
     expect(clampRowToDay(r, '2026-07-22')).toEqual({ start: '00:00', end: '02:00' });
   });
+
+  test("DB wire format ('+00:00', no ms) at midnight boundaries clamps correctly", () => {
+    // PostgREST renders timestamptz with an offset suffix, not '.000Z' — the
+    // formats must compare as instants (review finding: string comparison made
+    // a next-day-midnight start block the whole previous day).
+    const nextMidnight = row('2026-08-04T00:00:00+00:00', '2026-08-04T02:00:00+00:00');
+    expect(clampRowToDay(nextMidnight, '2026-08-03')).toBeNull();
+    expect(clampRowToDay(nextMidnight, '2026-08-04')).toEqual({ start: '00:00', end: '02:00' });
+    // Ending exactly AT midnight blocks its own evening with a non-inverted
+    // span ('24:00', never '00:00' — freeGaps would silently drop the latter).
+    const toMidnight = row('2026-08-03T22:00:00+00:00', '2026-08-04T00:00:00+00:00');
+    expect(clampRowToDay(toMidnight, '2026-08-03')).toEqual({ start: '22:00', end: '24:00' });
+    expect(clampRowToDay(toMidnight, '2026-08-04')).toBeNull();
+  });
 });
 
 describe('generateCandidates — DENSITY decides the mode, never the date', () => {
@@ -187,37 +202,58 @@ describe('generateCandidates — DENSITY decides the mode, never the date', () =
 });
 
 describe('generateCandidates — scoring ORDER', () => {
-  test('emergency prefers the earliest day even against a morning-bonus later slot', () => {
-    // Two techs: one free only Wednesday morning, one free today afternoon.
-    const wedOnly: WeeklyPattern = { ...MON_FRI, mon: [], tue: [] };
-    const todayAfternoon: WeeklyPattern = { ...MON_FRI, mon: [['13:00', '17:00']] };
-    const cands = generateCandidates(
-      baseInput({
-        priority: 'emergency',
-        latest: '2026-07-22',
-        technicians: [
-          tech({ ref: 'wed', name: 'Wed', pattern: wedOnly }),
-          tech({ ref: 'today', name: 'Today', pattern: todayAfternoon }),
-        ],
-      }),
-    );
-    expect(cands[0].technicianRef).toBe('today'); // earliest day wins for emergencies
+  // Honesty rule for this block (review finding): the sort tiebreak is
+  // date-then-startTime ASC, so every expected winner below must LOSE the
+  // tiebreak — otherwise deleting a weight entirely still passes the test.
+
+  test('earliness is priority-scaled: emergency takes the earlier day, routine trades it away', () => {
+    // Same fixture, opposite winners by priority — neither outcome can come
+    // from the tiebreak. 'near' is free TODAY only (wrong city); 'far' is free
+    // Wednesday only, in the customer's city.
+    const monOnly: WeeklyPattern = { ...MON_FRI, tue: [], wed: [], thu: [], fri: [] };
+    const wedOnly: WeeklyPattern = { ...MON_FRI, mon: [], tue: [], thu: [], fri: [] };
+    const fixture = {
+      customerCity: 'springfield',
+      technicians: [
+        tech({ ref: 'near', name: 'Near', pattern: monOnly }),
+        tech({ ref: 'far', name: 'Far', pattern: wedOnly, serviceCities: ['springfield'] }),
+      ],
+    };
+    // Steep emergency earliness (2 days) outweighs the same-city bonus…
+    expect(generateCandidates(baseInput({ ...fixture, priority: 'emergency' }))[0].technicianRef)
+      .toBe('near');
+    // …while shallow routine earliness loses the same trade (LATER day wins).
+    expect(generateCandidates(baseInput({ ...fixture, priority: 'routine' }))[0].technicianRef)
+      .toBe('far');
   });
 
-  test('routine prefers a morning gap over an afternoon gap on the same (dense) day', () => {
-    // Two visits make the day DENSE, so both gaps emit as concrete candidates.
+  test('morning preference: routine scores the morning gap higher; emergencies are indifferent', () => {
+    // Two visits make the day DENSE, so both gaps emit as concrete candidates
+    // on the SAME day with the SAME stop count — only MORNING_BONUS differs.
     const busy = tech({
       visitsByDate: new Map([
         [TODAY, [{ start: '10:00', end: '11:00' }, { start: '11:30', end: '14:00' }]],
       ]),
       stopsByDate: new Map([[TODAY, 2]]),
     });
-    const cands = generateCandidates(baseInput({ latest: TODAY, technicians: [busy] }));
-    expect(cands.length).toBeGreaterThan(1);
-    expect(cands[0].startTime).toBe('08:00');
+    const routine = generateCandidates(baseInput({ latest: TODAY, technicians: [busy] }));
+    const morning = routine.find((c) => c.startTime === '08:00');
+    const afternoon = routine.find((c) => c.startTime === '14:00');
+    expect(morning && afternoon).toBeTruthy();
+    expect(morning!.score).toBeGreaterThan(afternoon!.score);
+    // The front-load doctrine is routine/maintenance-only: an emergency sees
+    // both gaps as equals (afternoons stay loose to absorb it, not for it).
+    const emergency = generateCandidates(
+      baseInput({ latest: TODAY, technicians: [busy], priority: 'emergency' }),
+    );
+    expect(new Set(emergency.map((c) => c.score)).size).toBe(1);
   });
 
-  test('a lighter day outranks a heavier day, all else equal', () => {
+  test('a lighter day outranks a heavier day even when the heavier day sorts first on the tiebreak', () => {
+    // busy's first gap starts 09:00; free's window starts 09:30 — the
+    // startTime tiebreak would pick busy, so only LIGHT_DAY_PER_STOP can
+    // put free first.
+    const lateStart: WeeklyPattern = { ...MON_FRI, mon: [['09:30', '17:00']] };
     const busy = tech({
       ref: 'busy',
       name: 'Busy',
@@ -225,7 +261,10 @@ describe('generateCandidates — scoring ORDER', () => {
       stopsByDate: new Map([[TODAY, 1]]),
     });
     const cands = generateCandidates(
-      baseInput({ latest: TODAY, technicians: [tech({ ref: 'free', name: 'Free' }), busy] }),
+      baseInput({
+        latest: TODAY,
+        technicians: [tech({ ref: 'free', name: 'Free', pattern: lateStart }), busy],
+      }),
     );
     expect(cands[0].technicianRef).toBe('free');
   });
@@ -250,13 +289,15 @@ describe('generateCandidates — scoring ORDER', () => {
     expect(third).toBe('far');
   });
 
-  test('drive delta demotes a candidate once applied (Phase-2 contract)', () => {
+  test('drive delta demotes through the ENGINE comparator (Phase-2 contract)', () => {
     const cands = generateCandidates(
       baseInput({ latest: TODAY, technicians: [tech({ ref: 'a', name: 'A' }), tech({ ref: 'b', name: 'B' })] }),
     );
-    // Same score initially; simulate Phase 2 subtracting a measured delta.
+    // Equal scores initially (stable order a, b). Phase 2 subtracts a measured
+    // delta and re-sorts with the SAME exported comparator the engine uses —
+    // this pins that a score drop outranks the date/startTime tiebreaks.
     cands[0].score -= 22;
-    const resorted = [...cands].sort((x, y) => y.score - x.score);
+    const resorted = sortCandidates(cands);
     expect(resorted[0].technicianRef).toBe(cands[1].technicianRef);
   });
 });

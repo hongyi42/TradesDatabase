@@ -3877,6 +3877,7 @@ describe('schedule-input verbs (Plan 3a)', () => {
       // the shell job carries the stated tier.
       const oneShot = await callWith('book_visit', {
         customerId: customer.id,
+        title: 'water main repair',
         date: '2027-04-01',
         startTime: '09:00',
         endTime: '10:00',
@@ -3884,6 +3885,11 @@ describe('schedule-input verbs (Plan 3a)', () => {
       });
       expect(oneShot.isError).toBe(false);
       expect(oneShot.data.jobPriority).toBe('urgent');
+      // The job's identity is echoed in the result (live E2E finding: an
+      // agent-assumed title reached the record without ever being said) and
+      // the note tells the agent to SAY it.
+      expect(oneShot.data.jobTitle).toBe('water main repair');
+      expect(oneShot.data.note).toContain('the JOB');
       const jobRow = await pg.query('select priority from jobs where id = $1', [oneShot.data.jobId]);
       expect(jobRow.rows[0].priority).toBe('urgent');
 
@@ -3898,9 +3904,11 @@ describe('schedule-input verbs (Plan 3a)', () => {
       expect(combo.isError).toBe(true);
       expect(combo.text).toContain('existing job');
 
-      // Staged path: preview shows the tier; commit writes exactly it.
+      // Staged path: preview shows the tier + job title; commit writes and
+      // echoes exactly them.
       const staged = await callWith('book_visit', {
         customerId: customer.id,
+        title: 'panel upgrade',
         date: '2027-04-03',
         startTime: '09:00',
         endTime: '10:00',
@@ -3909,9 +3917,11 @@ describe('schedule-input verbs (Plan 3a)', () => {
       });
       expect(staged.data.status).toBe('needs_confirmation');
       expect(staged.data.preview.priority).toBe('emergency');
+      expect(staged.data.preview.jobTitle).toBe('panel upgrade');
       const confirmed = await callWith('book_visit', { confirmId: staged.data.confirmId });
       expect(confirmed.isError).toBe(false);
       expect(confirmed.data.jobPriority).toBe('emergency');
+      expect(confirmed.data.jobTitle).toBe('panel upgrade');
       const jobRow2 = await pg.query('select priority from jobs where id = $1', [confirmed.data.jobId]);
       expect(jobRow2.rows[0].priority).toBe('emergency');
     } finally {

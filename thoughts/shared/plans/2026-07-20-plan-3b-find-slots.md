@@ -401,6 +401,18 @@ Deploy, tool-cache refresh, live evidence. No migration in this plan.
   multi-tool loop), not the tool: the identical handler answered in ~2s in the seeded local
   run. Watch whether warm-session asks are faster (s2 carries the prompt-cache trial);
   revisit only if warm asks stay slow.
+- **P4 + split-booking follow-through (user finding): the JOB'S IDENTITY never surfaced.**
+  The manager said only "a 12-hour job"; the agent assumed "drainage replacement" from
+  earlier context, minted it into two job titles, and the word never appeared in chat —
+  find_slots itself was honest ("12h visit"; it refuses to invent types), but book_visit's
+  booked results didn't echo the agent-supplied title, so the assumption had nowhere to
+  become visible. ALSO: the split created 2 separate jobs (+P3's = 3 Henderson jobs)
+  instead of one job with two visits. FIXED: jobTitle echoed in both booked results
+  (preview already carried it) + result note requires saying the JOB + book_visit
+  description now instructs jobId reuse for multi-visit work ("one job, many visits,
+  never a duplicate job per day"). Description changed → gateway restarts after deploy.
+  P4 itself PASSED (displacement list exact vs SQL, promised visit correctly absent,
+  beyond-range hint relayed, 9h-window arithmetic correct).
 
 ---
 *Pause after Phase 4 for the manual check.*

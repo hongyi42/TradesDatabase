@@ -648,7 +648,10 @@ const ADMIN_TOOLS = [
       'customer was promised a day/time (promiseLevel "day"/"time") you instead get ' +
       '{status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
       'yes, call again with ONLY confirmId. Call with date + startTime + endTime ' +
-      '(+ customerId OR jobId; technicianRef optional). startTime and endTime are REQUIRED ' +
+      '(+ customerId OR jobId; technicianRef optional). customerId MINTS A NEW JOB — when ' +
+      'booking another visit for work already on file (a multi-day split, a return visit), ' +
+      'pass that job\'s jobId instead: one job, many visits, never a duplicate job per day. ' +
+      'startTime and endTime are REQUIRED ' +
       '— the server assumes NO default length. Pass exactly the times the manager stated ' +
       '(a range like "12-1pm" means startTime 12:00 AND endTime 13:00); if the manager did ' +
       'not say when the visit starts or ends, ASK them — never guess. Omit technicianRef to ' +
@@ -2635,6 +2638,13 @@ async function dispatch(
             status: 'booked',
             assignmentId: booked.assignment.id,
             jobId: booked.job.id,
+            // The job's identity rides EVERY booked result: the title is
+            // agent-supplied free text on the customerId path, and without
+            // this echo an assumed title ("drainage replacement") reached the
+            // permanent record without ever being said to the manager (live
+            // E2E finding 2026-07-21). Echo → the manager hears the
+            // assumption in the same breath it is made.
+            jobTitle: booked.job.title,
             customer: booked.customer.name,
             technicianRef: technicianRef ?? null,
             unassigned: booked.assignment.technician_id === null,
@@ -2648,7 +2658,8 @@ async function dispatch(
             note:
               'Booked in one step — nothing was promised to the customer, so no confirmation ' +
               'was needed (undo = move_visit / cancel_visit). Tell the manager exactly what ' +
-              'was booked.',
+              'was booked: the JOB (jobTitle above — their words to object to if you assumed ' +
+              'it), customer, day, time, and who.',
           };
         }
         const preview = await previewBookVisit(bookInput);
@@ -2777,6 +2788,7 @@ async function dispatch(
         status: 'booked',
         assignmentId: booked.assignment.id,
         jobId: booked.job.id,
+        jobTitle: booked.job.title, // same job-identity echo as the one-shot path
         customer: booked.customer.name,
         technicianRef: d.technicianRef ?? null,
         unassigned: booked.assignment.technician_id === null,

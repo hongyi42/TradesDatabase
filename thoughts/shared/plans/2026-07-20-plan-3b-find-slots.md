@@ -189,17 +189,28 @@ functions; a thin DB-composing wrapper.
   first, each {assignmentId, customer, day, span, promiseLevel, locked, technicianRef}.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] `src/schedule/fit.test.ts` (pure, no DB): gap math incl. edge-touching visits,
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass (48 files, 559 passed / 1
+      pre-existing skip, 2026-07-20)
+- [x] `src/schedule/fit.test.ts` (pure, no DB): gap math incl. edge-touching visits,
       '24:00' window end, gap-too-small, empty pattern day; DENSE vs OPEN candidate shapes
       at the 2-stop boundary (2 visits → concrete gaps regardless of date; 0–1 → day-level
       even tomorrow); scoring ORDER pinned for: emergency beats routine on earliness;
       routine prefers morning gap; lighter day beats heavier; same-city bonus applies;
-      drive delta demotes
-- [ ] DB-composing wrapper tests (local stack): time off excludes the day; pattern-less tech
+      drive delta demotes (17 tests, commits 4a8357f + b809938)
+- [x] DB-composing wrapper tests (local stack): time off excludes the day; pattern-less tech
       lands in skippedNoPattern; skills three-state pinned — requiredSkills absent → no
       filtering; empty-list tech INCLUDED with the confirm-first flag; configured-mismatch
-      tech excluded AND named in skippedSkills
+      tech excluded AND named in skippedSkills (`src/schedule/fit.db.test.ts`, 7 tests, also
+      covers offboarding-absent, technicianRef pin, confirmed-only/unassigned-null day
+      context, excludeAssignmentId, displacement ordering — commit aae7556)
+- [x] Phase review (2 rounds): round 1 found (a) clampRowToDay string-compared PostgREST's
+      '+00:00' wire format against '.000Z' literals — midnight-aligned rows blocked the
+      wrong day / produced inverted spans freeGaps dropped; (b) 3 of 5 scoring-ORDER tests
+      passed vacuously via the date/startTime tiebreak. Fixed in 9442203 (instant
+      comparison + wire-format tests incl. a real PostgREST round-trip; scoring tests
+      rebuilt so every expected winner LOSES the tiebreak; sortCandidates exported so the
+      drive-delta test exercises the real comparator). Round 2 verified by mutation
+      testing: each weight zeroed → at least one test fails; Phase 1 declared clean.
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack.
@@ -234,13 +245,17 @@ The bounded computeRoutes integration: measure top-K near candidates.
   driveMeasured:false (Google failure must not eat the answer — get_schedule precedent).
 
 ### Automated verification
-- [ ] gates pass; fake-ComputeRoutes tests: delta computed with the new stop as an
+- [x] gates pass; fake-ComputeRoutes tests: delta computed with the new stop as an
       intermediate (assert request shape); cap respected (only top K measured); the three
       existing-stop-count branches (≥3 / exactly 2 / 0–1) produce delta / with-only reason /
       driveMeasured:false respectively with NO "null min" strings; failure degrades to
-      driveMeasured:false; unroutable customer warning
+      driveMeasured:false; unroutable customer warning (8 fake tests, commits dc98f8f +
+      cf498e5; review round 1 clean, its cap-boundary observation implemented — over-cap
+      sibling gaps absorb the cached day delta, round 2 verified the fix + no cap leak
+      under rejection interleavings)
 - [ ] key-gated live test (skips without `GOOGLE_MAPS_API_KEY`): one real 3-stop measurement
-      returns a finite delta
+      returns a finite delta — TEST WRITTEN, currently SKIPS (no key in local `.env`);
+      runs automatically once a key is added; Phase 4's Render-key check covers the pilot
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack; optional real key.
@@ -281,20 +296,42 @@ Manager-only MCP tool wiring the engine; decision-ready results.
 **Docs** — tool counts 30 → 31 (nemoclaw-tech-agent.md, doorman-runbook.md, setup guide).
 
 ### Automated verification
-- [ ] gates pass; `src/mcp/server.test.ts`: technician badge → error; exactly-one-subject
+- [x] gates pass; `src/mcp/server.test.ts`: technician badge → error; exactly-one-subject
       enforced; duration fail-closed error text; untyped job + no arg → same error; typed
       job resolves table duration; pattern-less-only roster → zero candidates +
       skippedNoPattern + noFit block present; candidates ranked with reasons strings;
       assignmentId path works for an unassigned visit AND excludes an assigned subject's own
-      row; cancelled subject refused; BOTH count assertions 30 → 31 (server.test.ts:1575 and
-      :1978 after Plan 3a's update — 3b review finding #10)
-- [ ] fake-clock/date-controlled test pinning the DENSITY boundary through the full tool
-      (packed day → concrete gap slots even far out; empty tomorrow → day-level)
+      row; cancelled subject refused; BOTH count assertions 30 → 31 (server.test.ts:1584 and
+      :1988 — 3b review finding #10). Also: assumedType guess labeling + typed-job refusal,
+      vocabulary-carrying errors, skills three-state through the tool, drive wiring via the
+      injected computeRoutes seam, find_slots NOT carrying the board link with
+      BOARD_BOT_HANDLE set (7 tool tests, commit f7e4ba4)
+- [x] date-controlled test pinning the DENSITY boundary through the full tool: packed
+      far-out Monday → 3 concrete gap slots; empty same-distance day → day-level (the
+      "empty TOMORROW" variant is pinned at engine level in fit.test.ts — the tool runs on
+      the live clock)
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack.
-- [ ] seeded local run: find_slots for a seeded customer returns candidates consistent with a
-      hand-computed gap (evidence: the SQL rows + the result JSON)
+- [x] seeded local run (2026-07-20): find_slots for seeded Maria as manager-sam, assumedType
+      hvac pinned to tech-jane → 5 day-level candidates, all hand-verified against SQL
+      (pattern windows, time-off 07-27..29 skipped, booked 16:00–18:00 visit truncating the
+      07-21 gap to 08:00–16:00, today absent via the ~18:36 now-clamp, durationAssumption +
+      assumedType guess label + customerFacts riding). Script output recorded in-session;
+      exit 0 = every candidate consistent.
+- [x] Phase review (3 rounds): round 1 found 6 gaps — (1) drive own-row exclusion filtered
+      OTHER techs' same-instant stops (→ scoped to the subject's technician via
+      getTechnicianById); (2) that exclusion untested (→ pinned both directions with
+      call-count + request-body assertions); (3) nearestAlternative untested (→
+      fully-booked-day test); (4) displacement could propose the subject itself (→
+      excludeAssignmentId threaded, filtered before the limit slice); (5)
+      assumedType+durationMinutes escaped the guess label (→ label set for every
+      untyped-subject use); (6) non-string args coerced-to-absent (→ rejected/invalid_range,
+      pinned). Fixed in e56b096. Round 2 verified all six + found one residual: a PROPOSED
+      subject could filter out a real same-instant CONFIRMED stop (listDayStops is
+      confirmed-only; the overlap guard doesn't cover proposed rows) — fixed in 7fdb0e4
+      with a status gate, empirically pinned (2-calls-vs-1 assertion fails unguarded).
+      Round 3 confirmed clean.
 
 ### Manual verification
 - [ ] none

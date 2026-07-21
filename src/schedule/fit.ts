@@ -61,6 +61,16 @@ export function dayWindows(pattern: WeeklyPattern, dateISO: string): [string, st
   return Array.isArray(windows) ? windows : [];
 }
 
+// 'Thu' for '2026-07-23'. Every date the engine emits is prefixed with this,
+// because the agent otherwise computes weekday names itself and gets them
+// wrong (live E2E 2026-07-21: all five candidates relabeled one weekday
+// early, incl. a "Sunday" for a Monday slot — resolve_date's lesson again;
+// mechanism over instruction, so the server leaves no calendar math to do).
+export const weekdayLabel = (dateISO: string): string => {
+  const d = localDayOfWeek(`${dateISO}T00:00:00.000Z`, 'UTC');
+  return d.charAt(0).toUpperCase() + d.slice(1);
+};
+
 // Free gaps of at least `durationMin` inside `windows` after subtracting
 // `visits`. `notBefore` (HH:MM) trims gap starts — the day-0 "now" clamp.
 export function freeGaps(
@@ -96,6 +106,7 @@ export interface SlotCandidate {
   technicianRef: string;
   technicianName: string;
   date: string; // YYYY-MM-DD
+  weekday: string; // 'Thu' — SERVER-computed; the agent must never do calendar math
   startTime: string; // HH:MM — bookable verbatim
   endTime: string; // HH:MM — bookable verbatim (24:00 already clamped)
   dayLevel: boolean; // true = FAR candidate: quote the DAY, times are a suggested window
@@ -238,10 +249,11 @@ function buildCandidate(
   score -= stops * LIGHT_DAY_PER_STOP;
   if (sameCity) score += SAME_CITY_BONUS;
 
+  const weekday = weekdayLabel(date);
   const reasons = [
     dayLevel
-      ? `${date} with ${tech.name} — day-level fit for the ${input.durationLabel} (free ${gap.start}–${gap.end}); quote the DAY, not a time`
-      : `${date} with ${tech.name}, ${startTime}–${endTime} — fits the ${input.durationLabel} (free ${gap.start}–${gap.end})`,
+      ? `${weekday} ${date} with ${tech.name} — day-level fit for the ${input.durationLabel} (free ${gap.start}–${gap.end}); quote the DAY, not a time`
+      : `${weekday} ${date} with ${tech.name}, ${startTime}–${endTime} — fits the ${input.durationLabel} (free ${gap.start}–${gap.end})`,
     ...(sameCity ? ['same city as another visit/coverage that day'] : []),
     ...(stops === 0 ? ['their day is empty'] : [`${stops} other visit(s) that day`]),
   ];
@@ -249,6 +261,7 @@ function buildCandidate(
     technicianRef: tech.ref,
     technicianName: tech.name,
     date,
+    weekday,
     startTime,
     endTime,
     dayLevel,
@@ -389,6 +402,7 @@ export interface DisplacementCandidate {
   customer: string | null;
   technicianRef: string | null;
   day: string;
+  weekday: string; // server-computed — same no-agent-calendar-math rule
   span: string;
   promiseLevel: Assignment['promise_level'];
   locked: boolean;
@@ -434,6 +448,7 @@ export async function findDisplacementCandidates(
       customer: nameByJob.get(row.job_id) ?? null,
       technicianRef: ref,
       day: row.starts_at.slice(0, 10),
+      weekday: weekdayLabel(row.starts_at.slice(0, 10)),
       span: `${row.starts_at.slice(11, 16)}–${row.ends_at.slice(11, 16)}`,
       promiseLevel: row.promise_level,
       locked: row.locked,

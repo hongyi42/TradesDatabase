@@ -844,8 +844,10 @@ const ADMIN_TOOLS = [
       'work), jobId (work on a recorded job), or assignmentId (re-placing or assigning an ' +
       "existing visit — its booked length is used). Returns up to 5 ranked candidates, each " +
       'with technician, date, times, and a human-ready reasons line — RELAY those reasons, ' +
-      'do not invent your own. dayLevel:true = a LOOSE day: quote the DAY to the manager, ' +
-      'not the exact time. Concrete slots are bookable verbatim with book_visit. Duration is ' +
+      'do not invent your own. Every date comes WITH its weekday (the weekday field, also in ' +
+      'the reason text) — USE that name verbatim and NEVER work out weekday names yourself; ' +
+      'you are unreliable at calendar math. dayLevel:true = a LOOSE day: quote the DAY to ' +
+      'the manager, not the exact time. Concrete slots are bookable verbatim with book_visit. Duration is ' +
       'NEVER assumed: pass durationMinutes when the manager stated a length; otherwise the ' +
       "job's stored type duration applies and the result DISCLOSES it (durationAssumption — " +
       'relay it). If no duration is known you get an error listing the configured types: map ' +
@@ -4110,6 +4112,7 @@ async function dispatch(
               technicianRef: b.technicianRef,
               technicianName: b.technicianName,
               date: b.date,
+              weekday: b.weekday,
               startTime: b.startTime,
               endTime: b.endTime,
               dayLevel: b.dayLevel,

@@ -240,6 +240,12 @@ describe('findDisplacementCandidates', () => {
     const out = await findDisplacementCandidates(tenantId, WEEK_START, WEEK_END);
     const ids = out.map((d) => d.assignmentId);
     expect(ids.indexOf(free.id)).toBeLessThan(ids.indexOf(promised.id));
+
+    // An assignmentId ask's own subject never appears — a visit cannot be
+    // proposed as displacement to make room for itself.
+    const excluded = await findDisplacementCandidates(tenantId, WEEK_START, WEEK_END, 5, free.id);
+    expect(excluded.map((d) => d.assignmentId)).not.toContain(free.id);
+    expect(excluded.map((d) => d.assignmentId)).toContain(promised.id);
     const p = out.find((d) => d.assignmentId === promised.id);
     expect(p).toMatchObject({
       technicianRef: sparky.ref,

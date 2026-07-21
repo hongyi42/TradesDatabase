@@ -4067,6 +4067,22 @@ describe('find_slots (Plan 3b)', () => {
       });
       expect(badSkills.isError).toBe(true);
       expect(badSkills.text).toContain('array of strings');
+      // Non-string optional args are REJECTED, never coerced-to-absent — a
+      // numeric technicianRef must not silently UN-PIN the search.
+      const numRef = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        technicianRef: 12345,
+      });
+      expect(numRef.isError).toBe(true);
+      expect(numRef.text).toContain('technicianRef must be a string');
+      const numDate = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        latestDate: 20270310,
+      });
+      expect(numDate.isError).toBe(false);
+      expect(numDate.data.status).toBe('invalid_range'); // not the default window
       const badRange = await callWith('find_slots', {
         customerId: henderson.id,
         durationMinutes: 60,
@@ -4159,6 +4175,21 @@ describe('find_slots (Plan 3b)', () => {
       expect(guessed.data.assumedType).toBe('drainage');
       expect(guessed.data.assumedTypeNote).toContain('guess');
       expect(guessed.data.durationAssumption).toContain("assuming 300 min for 'drainage'");
+
+      // assumedType + durationMinutes: the minutes are the manager's, but the
+      // TYPE still rides every reason string — the guess label must survive.
+      const guessedStated = await callWith('find_slots', {
+        customerId: henderson.id,
+        assumedType: 'drainage',
+        durationMinutes: 60,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-01',
+        latestDate: '2027-03-01',
+      });
+      expect(guessedStated.isError).toBe(false);
+      expect(guessedStated.data.assumedType).toBe('drainage');
+      expect(guessedStated.data.assumedTypeNote).toContain('guess');
+      expect(guessedStated.data.candidates[0].reasons[0]).toContain('1h drainage');
     } finally {
       await mgrClient.close();
     }
@@ -4320,6 +4351,29 @@ describe('find_slots (Plan 3b)', () => {
       expect(nopatRes.data.noFit.bindingConstraint).toContain('set_availability');
       expect(nopatRes.data.noFit.hint).toBeUndefined(); // no beyond-range search ran
 
+      // A fully-booked requested day → nearestAlternative BEYOND the range,
+      // searched with its own visit context (the next free working day).
+      await bookedVisit({
+        technicianId: bob.id,
+        startsAt: '2027-04-19T08:00:00.000Z',
+        endsAt: '2027-04-19T17:00:00.000Z',
+      });
+      const fullDay = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-04-19',
+        latestDate: '2027-04-19',
+      });
+      expect(fullDay.isError).toBe(false);
+      expect(fullDay.data.status).toBe('no_fit');
+      expect(fullDay.data.noFit.nearestAlternative).toMatchObject({
+        technicianRef: 'slots-bob',
+        date: '2027-04-20',
+      });
+      expect(fullDay.data.noFit.nearestAlternative.note).toContain('BEYOND');
+      expect(fullDay.data.noFit.hint).toBeUndefined(); // an alternative was found
+
       // 12h can never fit a 9h window — constraint named, displacement listed.
       const impossible = await callWith('find_slots', {
         customerId: henderson.id,
@@ -4394,6 +4448,119 @@ describe('find_slots (Plan 3b)', () => {
       }
     } finally {
       await mgrClient.close();
+    }
+  });
+
+  test('drive route exclusion is scoped to the subject\'s OWN technician', { timeout: 30_000 }, async () => {
+    // 2027-04-12 (Monday): bob holds the SUBJECT visit 09:00–10:00 plus two
+    // other addressed visits; alice holds two addressed visits, one at the
+    // SAME 09:00 instant as the subject. Re-placing bob's visit must (a) drop
+    // bob's own stop from HIS day's route, and (b) leave alice's same-instant
+    // stop alone — a timestamp-only filter fails (b); no filter fails (a).
+    await insertTechnician({ tenantId, ref: 'slots-alice', displayName: 'Slots Alice', seatExempt: true })
+      .then((t) => setTechnicianAvailability(t.id, PATTERN_MON_FRI));
+    const subjCust = await createCustomer({
+      tenantId,
+      name: 'Exclusion Subject',
+      addressLine1: '99 E Herndon Ave',
+      city: 'Fresno',
+      state: 'CA',
+      postalCode: '93720',
+    });
+    const subjJob = await createJob({ tenantId, customerId: subjCust.id, title: 'move me', status: 'open' });
+    const alice = (await getClient()
+      .from('technicians')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('ref', 'slots-alice')
+      .single()).data!;
+    const subject = await createAssignment({
+      tenantId,
+      jobId: subjJob.id,
+      technicianId: bob.id,
+      startsAt: '2027-04-12T09:00:00.000Z',
+      endsAt: '2027-04-12T10:00:00.000Z',
+      status: 'confirmed',
+    });
+    for (const [tech, s, e] of [
+      [bob.id, '12:00', '13:00'],
+      [bob.id, '14:00', '15:00'],
+      [alice.id, '09:00', '10:00'], // same instant as the subject, DIFFERENT tech
+      [alice.id, '11:00', '12:00'],
+    ] as const) {
+      await bookedVisit({
+        technicianId: tech,
+        startsAt: `2027-04-12T${s}:00.000Z`,
+        endsAt: `2027-04-12T${e}:00.000Z`,
+        addressed: true,
+      });
+    }
+    const mkFake = () =>
+      vi.fn(async (body: unknown) => {
+        const b = body as { intermediates: { address: string }[] };
+        return {
+          routes: [
+            {
+              optimizedIntermediateWaypointIndex: b.intermediates.map((_, i) => i),
+              legs: [],
+              duration: '3720s',
+            },
+          ],
+        };
+      });
+
+    // (b) pinned to ALICE: her same-instant stop must SURVIVE → 2 existing
+    // stops → exactly ONE with-only call whose endpoints are her two visits.
+    const aliceFake = mkFake();
+    const { client: c1, callWith: aliceCall } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      { computeRoutes: aliceFake },
+    );
+    try {
+      const res = await aliceCall('find_slots', {
+        assignmentId: subject.id,
+        technicianRef: 'slots-alice',
+        earliestDate: '2027-04-12',
+        latestDate: '2027-04-12',
+      });
+      expect(res.isError).toBe(false);
+      expect(aliceFake).toHaveBeenCalledTimes(1); // 2 stops survived → with-only
+      const body = aliceFake.mock.calls[0][0] as {
+        origin: { address: string };
+        destination: { address: string };
+        intermediates: { address: string }[];
+      };
+      expect(body.origin.address).toContain('567 W Shaw Ave'); // her 09:00 stop lives
+      expect(body.destination.address).toContain('567 W Shaw Ave');
+      expect(body.intermediates.map((i) => i.address).join(' ')).toContain('99 E Herndon Ave');
+    } finally {
+      await c1.close();
+    }
+
+    // (a) pinned to BOB: his own subject stop is excluded → 2 remaining stops
+    // → with-only (ONE call); an unfiltered day would have 3 stops → 2 calls.
+    const bobFake = mkFake();
+    const { client: c2, callWith: bobCall } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      { computeRoutes: bobFake },
+    );
+    try {
+      const res = await bobCall('find_slots', {
+        assignmentId: subject.id,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-04-12',
+        latestDate: '2027-04-12',
+      });
+      expect(res.isError).toBe(false);
+      expect(bobFake).toHaveBeenCalledTimes(1); // own row gone → with-only branch
+      const body = bobFake.mock.calls[0][0] as {
+        origin: { address: string };
+        destination: { address: string };
+      };
+      expect(body.origin.address).toContain('567 W Shaw Ave'); // his 12:00 stop
+      expect(body.destination.address).toContain('567 W Shaw Ave'); // his 14:00 stop
+    } finally {
+      await c2.close();
     }
   });
 });

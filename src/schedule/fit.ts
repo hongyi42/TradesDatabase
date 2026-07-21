@@ -399,13 +399,18 @@ export async function findDisplacementCandidates(
   earliest: string,
   latest: string,
   limit = 5,
+  excludeAssignmentId?: string,
 ): Promise<DisplacementCandidate[]> {
-  const rows = await listAssignmentsForTenant(
-    tenantId,
-    `${earliest}T00:00:00.000Z`,
-    addDaysISO(latest, 1) + 'T00:00:00.000Z',
-    ['confirmed'],
-  );
+  // excludeAssignmentId: an assignmentId ask's own subject — "what could move
+  // to make room" must never propose moving the visit to make room for itself.
+  const rows = (
+    await listAssignmentsForTenant(
+      tenantId,
+      `${earliest}T00:00:00.000Z`,
+      addDaysISO(latest, 1) + 'T00:00:00.000Z',
+      ['confirmed'],
+    )
+  ).filter((r) => r.id !== excludeAssignmentId);
   const jobs = await listJobsWithCustomerByIds(tenantId, [...new Set(rows.map((r) => r.job_id))]);
   const nameByJob = new Map(jobs.map((j) => [j.id, j.customers?.name ?? null]));
   const refCache = new Map<string, string | null>();

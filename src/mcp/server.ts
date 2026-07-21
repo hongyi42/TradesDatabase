@@ -54,6 +54,7 @@ import {
   findJobTypeDurationMinutes,
   listJobTypeDurations,
   getAssignmentForTenant,
+  getTechnicianById,
   unwrapAttributes,
   WEEK_DAYS,
   type Customer,
@@ -3763,6 +3764,14 @@ async function dispatch(
       };
     }
     case 'find_slots': {
+      // Non-string args are REJECTED, never coerced-to-absent: str() maps
+      // {technicianRef: 123} to undefined, which would silently UN-PIN the
+      // search (the get_schedule precedent — the SDK doesn't validate args).
+      for (const k of ['customerId', 'jobId', 'assignmentId', 'technicianRef', 'assumedType']) {
+        if (args[k] !== undefined && typeof args[k] !== 'string') {
+          throw new Error(`${k} must be a string`);
+        }
+      }
       // ------- subject: exactly one of customerId | jobId | assignmentId
       const customerIdArg = str('customerId');
       const jobIdArg = str('jobId');
@@ -3878,13 +3887,17 @@ async function dispatch(
         durationAssumption =
           `assuming ${stored} min for '${lookupType}' (from your set_job_duration setting) ` +
           '— pass durationMinutes if this job differs';
-        if (!job?.job_type && assumedType) {
-          assumedTypeNote =
-            `'${assumedType}' is YOUR reading of ` +
-            (job ? `'${job.title}'` : 'this request') +
-            ' — present it to the manager as a guess ("treating this as ' +
-            `${assumedType} — say otherwise")`;
-        }
+      }
+      // The guess label rides on EVERY untyped-subject use of assumedType —
+      // durationLabel fuses the type into each reason string regardless of
+      // where the minutes came from (review finding #5: an assumedType +
+      // durationMinutes combination must not escape disclosure).
+      if (assumedType && !job?.job_type) {
+        assumedTypeNote =
+          `'${assumedType}' is YOUR reading of ` +
+          (job ? `'${job.title}'` : 'this request') +
+          ' — present it to the manager as a guess ("treating this as ' +
+          `${assumedType} — say otherwise")`;
       }
       const durationLabel = `${fmtMin(durationMin)} ${job?.job_type ?? assumedType ?? 'visit'}`;
 
@@ -3894,6 +3907,17 @@ async function dispatch(
       const todayISO = localDateISO(nowISO, tz);
       const earliest = str('earliestDate') ?? todayISO;
       const latest = str('latestDate') ?? addDaysISO(todayISO, 13);
+      // Non-string range args → invalid_range, not a silent default window
+      // (mirrors get_team_schedule's guard).
+      if (
+        (args.earliestDate !== undefined && typeof args.earliestDate !== 'string') ||
+        (args.latestDate !== undefined && typeof args.latestDate !== 'string')
+      ) {
+        return {
+          status: 'invalid_range',
+          note: 'earliestDate/latestDate must be YYYY-MM-DD strings',
+        };
+      }
       const DATE = /^\d{4}-\d{2}-\d{2}$/;
       if (!DATE.test(earliest) || !DATE.test(latest) || earliest > latest) {
         return {
@@ -3960,6 +3984,14 @@ async function dispatch(
       let ranked: SlotCandidate[] = generated;
       if (generated.length > 0 && canMeasure) {
         const newStop: RouteStop = { label: customer.name, address: formatAddress(customer) };
+        // The subject's CURRENT technician (assignment asks only): only THEIR
+        // day may contain the subject's own stop — filtering other techs' days
+        // by timestamp would silently drop a different person's same-instant
+        // visit (review finding #1).
+        const subjectTechRef =
+          subjectRow?.technician_id != null
+            ? ((await getTechnicianById(subjectRow.technician_id, tenantId))?.ref ?? null)
+            : null;
         const pairs = [
           ...new Map(
             generated
@@ -3973,9 +4005,9 @@ async function dispatch(
             const days = await listDayStops(tenantId, c.technicianRef, c.date, c.date);
             let stops = days[0]?.stops ?? [];
             // The assignment subject's own row must not count in its day's
-            // route — it is exactly the stop being re-placed. Same-tech +
+            // route — it is exactly the stop being re-placed. Same tech +
             // identical start identifies it (confirmed rows cannot overlap).
-            if (subjectRow) {
+            if (subjectRow && c.technicianRef === subjectTechRef) {
               stops = stops.filter((s) => s.scheduledStart !== subjectRow.starts_at);
             }
             stopsByTechDate.set(techDateKey(c.technicianRef, c.date), stops);
@@ -4092,7 +4124,13 @@ async function dispatch(
                       'fit, or one of the displacement candidates below could move (move_visit)',
                   }
               : {}),
-            displacementCandidates: await findDisplacementCandidates(tenantId, earliest, latest, 5),
+            displacementCandidates: await findDisplacementCandidates(
+              tenantId,
+              earliest,
+              latest,
+              5,
+              subjectRow?.id,
+            ),
           },
           note:
             'Nothing fits as asked — do NOT stop at "impossible": present the binding ' +

@@ -378,5 +378,16 @@ Deploy, tool-cache refresh, live evidence. No migration in this plan.
 - [ ] The agent's presentation of options reads naturally (user judgment on their phone) —
       including that it relays the ranked reasons rather than inventing its own
 
+### Live E2E findings log (2026-07-21)
+- **Probe 1 (drainage, day-level):** tool output verified perfect — packed Wednesday
+  correctly absent, 5h durationAssumption relayed, days quoted not times, promise question
+  asked before booking, ranking 07-23→24→30→27→28 matches hand-computed scores exactly.
+  FINDING: the agent relabeled every candidate's weekday ONE DAY EARLY ("Sunday" for the
+  Monday 07-27 slot) — it computed weekday names itself from the bare ISO dates in the
+  reason strings. FIXED mechanism-level (commit a07ebcc, PR #65): server-computed `weekday`
+  field + "Thu 2026-07-23 …" reason prefixes everywhere a date is emitted + description ban
+  on agent calendar math. Because the description changed, gateway restarts ARE required
+  after the PR #65 deploy (unlike the sentinel fix alone).
+
 ---
 *Pause after Phase 4 for the manual check.*

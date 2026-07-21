@@ -204,6 +204,25 @@ describe('generateCandidates — DENSITY decides the mode, never the date', () =
       expect(c.reasons[0]).toContain('5h drainage replacement');
     }
   });
+
+  test('every emitted date carries its SERVER-computed weekday (field + fused reason prefix)', () => {
+    // Live finding 2026-07-21: the agent relabeled every candidate one weekday
+    // early ("Sunday" for a Monday slot). The server now leaves it no calendar
+    // math to do — the weekday rides in the payload AND leads the reason text.
+    const cands = generateCandidates(baseInput({ latest: '2026-07-24' }));
+    expect(cands.length).toBeGreaterThan(0);
+    const expected = new Map([
+      ['2026-07-20', 'Mon'],
+      ['2026-07-21', 'Tue'],
+      ['2026-07-22', 'Wed'],
+      ['2026-07-23', 'Thu'],
+      ['2026-07-24', 'Fri'],
+    ]);
+    for (const c of cands) {
+      expect(c.weekday).toBe(expected.get(c.date));
+      expect(c.reasons[0].startsWith(`${c.weekday} ${c.date} `)).toBe(true);
+    }
+  });
 });
 
 describe('generateCandidates — scoring ORDER', () => {
@@ -320,6 +339,7 @@ const slot = (over: Partial<SlotCandidate> = {}): SlotCandidate => ({
   technicianRef: 'bob',
   technicianName: 'Bob',
   date: '2026-07-30',
+  weekday: 'Thu', // 2026-07-30 is a Thursday
   startTime: '08:00',
   endTime: '10:00',
   dayLevel: false,

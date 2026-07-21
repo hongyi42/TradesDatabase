@@ -4226,6 +4226,10 @@ describe('find_slots (Plan 3b)', () => {
       expect(empty.data.candidates).toHaveLength(1);
       expect(empty.data.candidates[0].dayLevel).toBe(true);
       expect(empty.data.candidates[0].reasons[0]).toContain('quote the DAY');
+      // 2027-03-02 is a Tuesday — the weekday is server-supplied through the
+      // full tool (field + reason prefix), never left to agent calendar math.
+      expect(empty.data.candidates[0].weekday).toBe('Tue');
+      expect(empty.data.candidates[0].reasons[0]).toContain('Tue 2027-03-02');
       // find_slots commits nothing → NEVER carries the board link (the handle
       // is set for this probe, so absence is the exclusion, not env).
       expect(empty.data.boardNote).toBeUndefined();

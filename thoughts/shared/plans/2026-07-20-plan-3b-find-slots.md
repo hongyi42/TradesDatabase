@@ -22,13 +22,20 @@ research). Depends on Plan 3a's data (patterns, durations, skills, priority) —
   find → present → manager picks → `book_visit`. Rationale: one write path keeps the
   confirmation doctrine single-sourced; product precedent is suggestion-then-approve; tool
   budget stays small. Revisit if pilot latency (two agent turns) annoys the manager.
-- **Horizon-aware scoring** (user design, 2026-07-20): NEAR days (≤7 from today, firm-local)
-  → concrete gap slots with a marginal drive-time check; FAR days (8–13) → day-level fit
-  only (drive is meaningless on a mostly-empty day), suggested window = first free gap,
-  quoted as a DAY. Default range today..today+13 = 14 inclusive days, matching the house
-  span idiom (`spanDays = diff/86_400_000 + 1 ≤ 14`, server.ts:2279-2286) so the default
-  never trips its own cap (review finding #3). The Routes client is the near-term measuring
-  tape; whole-plan optimization (ROI API) is Plan 4's freeze — recorded split (user).
+- **DENSITY-aware mode, not calendar-aware** (user correction 2026-07-20: "closeness was
+  only ever a proxy — days near today TEND to be packed; the real driver is how packed the
+  day is"). Per (technician, day): ≥ `DENSE_DAY_STOPS` (2) existing visits → GAP-FILL mode
+  (one concrete candidate per fitting gap; drive delta measurable — the ≥2-stop
+  measurability boundary and the mode boundary are the same line); fewer → OPEN-DAY mode
+  (ONE day-level candidate, suggested window = first fitting gap, quoted as a DAY — times
+  on a loose day are false precision; the route will reshape). Calendar distance keeps
+  exactly two roles: the EARLINESS score (urgency wants the soonest day — that's priority,
+  not packedness) and the day-0 now-clamp. Refinement trigger recorded: if stop-count
+  proves too coarse (one 8-hour visit = "1 stop" but a tight day), switch the threshold to
+  booked-fraction of the working window. Default range today..today+13 = 14 inclusive days
+  (house span idiom, `spanDays ≤ 14`, server.ts:2279-2286 — review finding #3). The Routes
+  client is the gap-fill measuring tape; whole-plan optimization (ROI API) is Plan 4's
+  freeze — recorded split (user).
 - **Duration is fail-closed** (user): explicit `durationMinutes` arg, else the job-type
   table via a NEW `findJobTypeDurationMinutes(tenantId, jobType): Promise<number|null>`
   helper (review finding #2 — `getJobDurationMinutes`'s tenant-default branch is the exact
@@ -172,9 +179,10 @@ functions; a thin DB-composing wrapper.
 - `generateCandidates(input)` — per active, pattern-configured, skills-matching tech ×
   day in [earliest, latest] (default today..today+13; inclusive span capped at 14): time-off
   days skipped; rows with `technician_id` null dropped from per-tech grouping (finding #8);
-  NEAR (≤ NEAR_DAYS=7): one candidate per fitting gap (start = gap start, day-0 clamped to
-  `now`); FAR (8–13): one day-level candidate when a contiguous fit exists. `today` and
-  `now` are inputs (pure engine; fake-clock tests).
+  DENSE day (≥ DENSE_DAY_STOPS=2 existing visits): one concrete candidate per fitting gap
+  (start = gap start, day-0 clamped to `now`); OPEN day (0–1 visits): one day-level
+  candidate when a fit exists (density decides the mode, never the date — user correction).
+  `today` and `now` are inputs (pure engine; fake-clock tests).
 - `scoreCandidates(cands, {priority, customerCity, dayStopsByTechDate})` — the Decisions
   table; returns sorted.
 - `findDisplacementCandidates(tenantId, range)` — confirmed visits ordered promise-'none'
@@ -183,10 +191,11 @@ functions; a thin DB-composing wrapper.
 ### Automated verification
 - [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
 - [ ] `src/schedule/fit.test.ts` (pure, no DB): gap math incl. edge-touching visits,
-      '24:00' window end, gap-too-small, empty pattern day; near vs far candidate shapes at
-      the 7-day boundary (day 7 near, day 8 far); scoring ORDER pinned for: emergency beats
-      routine on earliness; routine prefers morning gap; lighter day beats heavier;
-      same-city bonus applies; drive delta demotes
+      '24:00' window end, gap-too-small, empty pattern day; DENSE vs OPEN candidate shapes
+      at the 2-stop boundary (2 visits → concrete gaps regardless of date; 0–1 → day-level
+      even tomorrow); scoring ORDER pinned for: emergency beats routine on earliness;
+      routine prefers morning gap; lighter day beats heavier; same-city bonus applies;
+      drive delta demotes
 - [ ] DB-composing wrapper tests (local stack): time off excludes the day; pattern-less tech
       lands in skippedNoPattern; skills three-state pinned — requiredSkills absent → no
       filtering; empty-list tech INCLUDED with the confirm-first flag; configured-mismatch
@@ -279,7 +288,8 @@ Manager-only MCP tool wiring the engine; decision-ready results.
       assignmentId path works for an unassigned visit AND excludes an assigned subject's own
       row; cancelled subject refused; BOTH count assertions 30 → 31 (server.test.ts:1575 and
       :1978 after Plan 3a's update — 3b review finding #10)
-- [ ] fake-clock/date-controlled test pinning the near/far boundary through the full tool
+- [ ] fake-clock/date-controlled test pinning the DENSITY boundary through the full tool
+      (packed day → concrete gap slots even far out; empty tomorrow → day-level)
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack.

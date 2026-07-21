@@ -4,9 +4,9 @@ import type { Assignment } from '../db/index.js';
 import {
   clampRowToDay,
   dayWindows,
+  DENSE_DAY_STOPS,
   freeGaps,
   generateCandidates,
-  NEAR_DAYS,
   type FitTechnician,
   type GenerateCandidatesInput,
 } from './fit.js';
@@ -127,18 +127,32 @@ describe('clampRowToDay', () => {
   });
 });
 
-describe('generateCandidates — near/far boundary and shapes', () => {
-  test('day 7 is NEAR (concrete gaps), day 8 is FAR (one day-level candidate)', () => {
-    const day7 = `2026-07-${20 + NEAR_DAYS}`; // Monday + 7 = 2026-07-27 (a Monday)
-    const day8 = '2026-07-28';
-    const near = generateCandidates(baseInput({ earliest: day7, latest: day7 }));
-    expect(near).toHaveLength(1);
-    expect(near[0]).toMatchObject({ dayLevel: false, date: day7, startTime: '08:00', endTime: '10:00' });
+describe('generateCandidates — DENSITY decides the mode, never the date', () => {
+  test('an empty day TOMORROW is day-level; a packed day 10 days out gets concrete gap slots', () => {
+    // Tomorrow, zero visits → OPEN day: one day-level candidate despite being
+    // nearly today (closeness was only ever a proxy — user correction).
+    const tomorrow = '2026-07-21';
+    const open = generateCandidates(baseInput({ earliest: tomorrow, latest: tomorrow }));
+    expect(open).toHaveLength(1);
+    expect(open[0].dayLevel).toBe(true);
+    expect(open[0].reasons[0]).toContain('quote the DAY');
 
-    const far = generateCandidates(baseInput({ earliest: day8, latest: day8 }));
-    expect(far).toHaveLength(1);
-    expect(far[0].dayLevel).toBe(true);
-    expect(far[0].reasons[0]).toContain('quote the DAY');
+    // 2026-07-30 (Thursday, 10 days out) with DENSE_DAY_STOPS visits → the day
+    // has shape: one CONCRETE candidate per fitting gap, no day-level vagueness.
+    const packedDay = '2026-07-30';
+    const packed = tech({
+      visitsByDate: new Map([
+        [packedDay, [{ start: '10:00', end: '11:00' }, { start: '11:30', end: '14:00' }]],
+      ]),
+      stopsByDate: new Map([[packedDay, DENSE_DAY_STOPS]]),
+    });
+    const dense = generateCandidates(
+      baseInput({ earliest: packedDay, latest: packedDay, technicians: [packed] }),
+    );
+    // Gaps: 08:00–10:00 (fits 2h) and 14:00–17:00; 11:00–11:30 too small.
+    expect(dense).toHaveLength(2);
+    expect(dense.every((c) => !c.dayLevel)).toBe(true);
+    expect(dense.map((c) => c.startTime).sort()).toEqual(['08:00', '14:00']);
   });
 
   test('every emitted slot is bookable verbatim: 24:00-edge emits 23:59', () => {
@@ -190,11 +204,16 @@ describe('generateCandidates — scoring ORDER', () => {
     expect(cands[0].technicianRef).toBe('today'); // earliest day wins for emergencies
   });
 
-  test('routine prefers a morning gap over an afternoon gap on the same day', () => {
-    const split: WeeklyPattern = { ...MON_FRI, mon: [['08:00', '10:00'], ['14:00', '17:00']] };
-    const cands = generateCandidates(
-      baseInput({ latest: TODAY, technicians: [tech({ pattern: split })] }),
-    );
+  test('routine prefers a morning gap over an afternoon gap on the same (dense) day', () => {
+    // Two visits make the day DENSE, so both gaps emit as concrete candidates.
+    const busy = tech({
+      visitsByDate: new Map([
+        [TODAY, [{ start: '10:00', end: '11:00' }, { start: '11:30', end: '14:00' }]],
+      ]),
+      stopsByDate: new Map([[TODAY, 2]]),
+    });
+    const cands = generateCandidates(baseInput({ latest: TODAY, technicians: [busy] }));
+    expect(cands.length).toBeGreaterThan(1);
     expect(cands[0].startTime).toBe('08:00');
   });
 

@@ -127,7 +127,15 @@ export interface GenerateCandidatesInput {
   technicians: FitTechnician[];
 }
 
-export const NEAR_DAYS = 7; // ≤7 days out = concrete gap slots; 8+ = day-level
+// DENSITY decides the candidate mode, never the date (user correction
+// 2026-07-20: closeness-to-today was only ever a proxy for packedness). A day
+// with ≥ this many existing visits is a GAP-FILL day: the route has shape, so
+// concrete per-gap slots (and drive deltas — measurable exactly when ≥2 stops
+// exist) are honest. Below it, the day is OPEN: one day-level candidate, quote
+// the DAY (a precise time on a loose day is false precision — it will move).
+// Refinement trigger (recorded in the plan): if stop-count proves too coarse
+// (one 8h visit = "1 stop" but a tight day), switch to booked-fraction.
+export const DENSE_DAY_STOPS = 2;
 
 // Scoring weights — plain constants, pinned by ORDER-based tests (not raw
 // numbers). Rationale per component:
@@ -162,7 +170,6 @@ export function generateCandidates(input: GenerateCandidatesInput): SlotCandidat
     const date = addDaysISO(input.earliest, i);
     const fromToday = daysBetween(input.todayISO, date);
     if (fromToday < 0) continue; // past dates can never be booked
-    const near = fromToday <= NEAR_DAYS;
     for (const tech of input.technicians) {
       if (tech.timeOffDates.has(date)) continue;
       const windows = dayWindows(tech.pattern, date);
@@ -180,15 +187,18 @@ export function generateCandidates(input: GenerateCandidatesInput): SlotCandidat
         input.customerCity !== null &&
         ((tech.citiesByDate.get(date)?.has(input.customerCity) ?? false) ||
           tech.serviceCities.includes(input.customerCity));
-      if (near) {
+      if (stops >= DENSE_DAY_STOPS) {
+        // GAP-FILL: the day has shape — every fitting gap is a real, distinct
+        // threading choice; emit each concretely (drive deltas attach here).
         for (const gap of gaps) {
           out.push(
             buildCandidate(input, tech, date, gap, false, fromToday, stops, sameCity),
           );
         }
       } else {
-        // FAR: one day-level candidate; the first fitting gap is the suggested
-        // internal window — the DAY is what gets quoted (quote days, not times).
+        // OPEN day: one day-level candidate; the first fitting gap is the
+        // suggested internal window — the DAY is what gets quoted (quote
+        // days, not times; the loose day will reshape before it arrives).
         out.push(buildCandidate(input, tech, date, gaps[0], true, fromToday, stops, sameCity));
       }
     }

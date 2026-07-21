@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { Client as PgClient } from 'pg';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -6,9 +6,18 @@ import { getClient } from '../db/client.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
-import { createAssignment } from '../db/assignments.js';
+import { createAssignment, updateAssignmentStatus } from '../db/assignments.js';
 import { createVisit } from '../db/visits.js';
-import { insertTechnician, setTechnicianState, updateTechnician } from '../db/technicians.js';
+import { upsertJobTypeDuration } from '../db/jobTypeDurations.js';
+import {
+  insertTechnician,
+  setTechnicianAvailability,
+  setTechnicianSkills,
+  setTechnicianState,
+  updateTechnician,
+  type Technician,
+  type WeeklyPattern,
+} from '../db/technicians.js';
 import { createHost } from '../db/hosts.js';
 import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
@@ -1564,7 +1573,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
     );
     try {
       // The full manager surface: every base spine tool EXCEPT get_schedule
-      // (technician route view, removed 2026-07-19) + the 17 admin tools —
+      // (technician route view, removed 2026-07-19) + the 18 admin tools —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
@@ -1574,7 +1583,8 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('resolve_date');
       expect(mgrTools).toContain('set_availability');
       expect(mgrTools).toContain('set_technician_skills');
-      expect(mgrTools).toHaveLength(30);
+      expect(mgrTools).toContain('find_slots');
+      expect(mgrTools).toHaveLength(31);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -1977,7 +1987,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(30); // base minus get_schedule + 17 admin
+        expect(mgrTools).toHaveLength(31); // base minus get_schedule + 18 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -3969,5 +3979,618 @@ describe('safeEnvInt (web-cap env parsing)', () => {
     expect(safeEnvInt('-5', 30)).toBe(30);
     expect(safeEnvInt('10', 30)).toBe(10); // a valid override still wins
     expect(safeEnvInt('0', 30)).toBe(0); // an explicit 0 is a real (if strict) choice
+  });
+});
+
+describe('find_slots (Plan 3b)', () => {
+  // All fixture dates are Mondays in 2027 (2027-03-01 is exactly 32 weeks
+  // after 2026-07-20), far past every other suite's fixtures; every schedule
+  // read here pins technicianRef to a probe, so foreign rosters can't leak in.
+  const PATTERN_MON_FRI: WeeklyPattern = {
+    mon: [['08:00', '17:00']],
+    tue: [['08:00', '17:00']],
+    wed: [['08:00', '17:00']],
+    thu: [['08:00', '17:00']],
+    fri: [['08:00', '17:00']],
+    sat: [],
+    sun: [],
+  };
+  let bob: Technician; // pattern + skills ['plumbing']
+  let henderson: { id: string }; // subject customer, fully addressed
+
+  beforeAll(async () => {
+    const mk = async (ref: string, name: string, pattern: boolean, skills: string[]) => {
+      const t = await insertTechnician({ tenantId, ref, displayName: name, seatExempt: true });
+      if (pattern) await setTechnicianAvailability(t.id, PATTERN_MON_FRI);
+      if (skills.length > 0) await setTechnicianSkills(t.id, skills);
+      return t;
+    };
+    bob = await mk('slots-bob', 'Slots Bob', true, ['plumbing']);
+    // Referenced by ref string only: mismatch, unknown-skills, and no-pattern probes.
+    await mk('slots-nellie', 'Slots Nellie', true, ['electrical']);
+    await mk('slots-blank', 'Slots Blank', true, []);
+    await mk('slots-nopat', 'Slots Nopat', false, []);
+    henderson = await createCustomer({
+      tenantId,
+      name: 'Slot Henderson',
+      addressLine1: '2331 Fresno St',
+      city: 'Fresno',
+      state: 'CA',
+      postalCode: '93721',
+    });
+  });
+
+  async function bookedVisit(opts: {
+    technicianId: string | null;
+    startsAt: string;
+    endsAt: string;
+    addressed?: boolean;
+  }) {
+    const cust = await createCustomer({
+      tenantId,
+      name: `Slots cust ${opts.startsAt}`,
+      ...(opts.addressed
+        ? { addressLine1: '567 W Shaw Ave', city: 'Fresno', state: 'CA', postalCode: '93704' }
+        : {}),
+    });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'slots ctx', status: 'open' });
+    return createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: opts.technicianId,
+      startsAt: opts.startsAt,
+      endsAt: opts.endsAt,
+      status: 'confirmed',
+    });
+  }
+
+  test('technician badge denied; subject and argument validation', { timeout: 30_000 }, async () => {
+    const denied = await call('find_slots', { customerId: henderson.id });
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain('manager badge');
+
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const none = await callWith('find_slots', {});
+      expect(none.isError).toBe(true);
+      expect(none.text).toContain('exactly one');
+      const two = await callWith('find_slots', { customerId: henderson.id, jobId: 'x' });
+      expect(two.isError).toBe(true);
+      expect(two.text).toContain('exactly one');
+      const badMin = await callWith('find_slots', { customerId: henderson.id, durationMinutes: 0 });
+      expect(badMin.isError).toBe(true);
+      expect(badMin.text).toContain('greater than 0');
+      const badSkills = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        requiredSkills: 'plumbing',
+      });
+      expect(badSkills.isError).toBe(true);
+      expect(badSkills.text).toContain('array of strings');
+      // Non-string optional args are REJECTED, never coerced-to-absent — a
+      // numeric technicianRef must not silently UN-PIN the search.
+      const numRef = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        technicianRef: 12345,
+      });
+      expect(numRef.isError).toBe(true);
+      expect(numRef.text).toContain('technicianRef must be a string');
+      const numDate = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        latestDate: 20270310,
+      });
+      expect(numDate.isError).toBe(false);
+      expect(numDate.data.status).toBe('invalid_range'); // not the default window
+      const badRange = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        earliestDate: '2027-03-01',
+        latestDate: '2027-03-20',
+      });
+      expect(badRange.isError).toBe(false);
+      expect(badRange.data.status).toBe('invalid_range'); // 20 days > 14-day cap
+      const past = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        earliestDate: '2020-01-01',
+        latestDate: '2020-01-05',
+      });
+      expect(past.data.status).toBe('invalid_range');
+      expect(past.data.note).toContain('in the past');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('duration is fail-closed: vocabulary-carrying errors, table disclosure, typed-job authority', { timeout: 30_000 }, async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      await upsertJobTypeDuration(tenantId, 'drainage', 300);
+
+      // Untyped subject, no duration → error CARRIES the configured vocabulary.
+      const untyped = await callWith('find_slots', { customerId: henderson.id });
+      expect(untyped.isError).toBe(true);
+      expect(untyped.text).toContain('no recorded type');
+      expect(untyped.text).toContain('drainage (300m)');
+      expect(untyped.text).toContain('assumedType');
+
+      // Typed job with an UNCONFIGURED type → same vocabulary, named type.
+      const roofJob = await createJob({
+        tenantId,
+        customerId: henderson.id,
+        title: 'roof patch',
+        status: 'open',
+        jobType: 'roofing',
+      });
+      const roof = await callWith('find_slots', { jobId: roofJob.id });
+      expect(roof.isError).toBe(true);
+      expect(roof.text).toContain("no duration is configured for 'roofing'");
+      expect(roof.text).toContain('drainage (300m)');
+
+      // Typed job with a configured type → table duration, DISCLOSED.
+      const drainJob = await createJob({
+        tenantId,
+        customerId: henderson.id,
+        title: 'clear the main line',
+        status: 'open',
+        jobType: 'drainage',
+      });
+      const typed = await callWith('find_slots', {
+        jobId: drainJob.id,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-01',
+        latestDate: '2027-03-02',
+      });
+      expect(typed.isError).toBe(false);
+      expect(typed.data.durationAssumption).toContain("assuming 300 min for 'drainage'");
+      expect(typed.data.durationAssumption).toContain('set_job_duration');
+
+      // assumedType on a TYPED job → refused (the row is authoritative).
+      const overrideType = await callWith('find_slots', { jobId: drainJob.id, assumedType: 'roofing' });
+      expect(overrideType.isError).toBe(true);
+      expect(overrideType.text).toContain("already has type 'drainage'");
+
+      // Explicit durationMinutes on a typed job → allowed, echoed as an override.
+      const stated = await callWith('find_slots', {
+        jobId: drainJob.id,
+        durationMinutes: 90,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-01',
+        latestDate: '2027-03-01',
+      });
+      expect(stated.isError).toBe(false);
+      expect(stated.data.durationAssumption).toContain('using your stated 1h 30m');
+
+      // assumedType on an UNTYPED subject → resolves the table, labeled a guess.
+      const guessed = await callWith('find_slots', {
+        customerId: henderson.id,
+        assumedType: 'drainage',
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-01',
+        latestDate: '2027-03-01',
+      });
+      expect(guessed.isError).toBe(false);
+      expect(guessed.data.assumedType).toBe('drainage');
+      expect(guessed.data.assumedTypeNote).toContain('guess');
+      expect(guessed.data.durationAssumption).toContain("assuming 300 min for 'drainage'");
+
+      // assumedType + durationMinutes: the minutes are the manager's, but the
+      // TYPE still rides every reason string — the guess label must survive.
+      const guessedStated = await callWith('find_slots', {
+        customerId: henderson.id,
+        assumedType: 'drainage',
+        durationMinutes: 60,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-01',
+        latestDate: '2027-03-01',
+      });
+      expect(guessedStated.isError).toBe(false);
+      expect(guessedStated.data.assumedType).toBe('drainage');
+      expect(guessedStated.data.assumedTypeNote).toContain('guess');
+      expect(guessedStated.data.candidates[0].reasons[0]).toContain('1h drainage');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('DENSITY decides the candidate mode through the full tool; slots are decision-ready', { timeout: 30_000 }, async () => {
+    // Two far-out Mondays, same distance class from today: an EMPTY one and a
+    // PACKED one. Density, not date, must pick the mode. (The engine-level
+    // fake-clock suite additionally pins "empty TOMORROW is day-level" —
+    // the tool runs on the live clock, so the near-day variant lives there.)
+    await bookedVisit({
+      technicianId: bob.id,
+      startsAt: '2027-03-08T09:00:00.000Z',
+      endsAt: '2027-03-08T10:00:00.000Z',
+    });
+    await bookedVisit({
+      technicianId: bob.id,
+      startsAt: '2027-03-08T11:00:00.000Z',
+      endsAt: '2027-03-08T13:00:00.000Z',
+    });
+
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    const prevHandle = process.env.BOARD_BOT_HANDLE;
+    process.env.BOARD_BOT_HANDLE = 'SlotsProbeBot';
+    try {
+      const empty = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-02',
+        latestDate: '2027-03-02',
+      });
+      expect(empty.isError).toBe(false);
+      expect(empty.data.candidates).toHaveLength(1);
+      expect(empty.data.candidates[0].dayLevel).toBe(true);
+      expect(empty.data.candidates[0].reasons[0]).toContain('quote the DAY');
+      // find_slots commits nothing → NEVER carries the board link (the handle
+      // is set for this probe, so absence is the exclusion, not env).
+      expect(empty.data.boardNote).toBeUndefined();
+      expect(empty.data.boardLink).toBeUndefined();
+
+      const dense = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-08',
+        latestDate: '2027-03-08',
+      });
+      expect(dense.isError).toBe(false);
+      const cands = dense.data.candidates as Array<Record<string, unknown>>;
+      expect(cands).toHaveLength(3); // gaps 08–09, 10–11, 13–17
+      expect(cands.every((c) => c.dayLevel === false)).toBe(true);
+      expect(cands.map((c) => c.startTime).sort()).toEqual(['08:00', '10:00', '13:00']);
+      expect(cands.every((c) => typeof c.reasons === 'object')).toBe(true);
+      expect(dense.data.searched).toEqual({ technicians: 1, days: 1 });
+      expect(typeof dense.data.scheduleVersion).toBe('number');
+      expect(dense.data.durationAssumption).toBeUndefined(); // stated, untyped — no assumption
+    } finally {
+      if (prevHandle === undefined) delete process.env.BOARD_BOT_HANDLE;
+      else process.env.BOARD_BOT_HANDLE = prevHandle;
+      await mgrClient.close();
+    }
+  });
+
+  test('skills three-state through the tool: match, unknown-flagged, configured-mismatch named', { timeout: 30_000 }, async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const res = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        requiredSkills: ['Plumbing'],
+        earliestDate: '2027-03-02',
+        latestDate: '2027-03-02',
+      });
+      expect(res.isError).toBe(false);
+      const byRef = new Map(
+        (res.data.candidates as Array<{ technicianRef: string; warnings: string[] }>).map((c) => [
+          c.technicianRef,
+          c,
+        ]),
+      );
+      expect(byRef.has('slots-bob')).toBe(true); // configured match
+      expect(byRef.has('slots-blank')).toBe(true); // unknown ≠ unqualified
+      expect(byRef.get('slots-blank')!.warnings.join(' ')).toContain('confirm they can do plumbing');
+      expect(byRef.has('slots-nellie')).toBe(false); // explicit mismatch
+      expect(res.data.skippedSkills).toContain('slots-nellie');
+      expect(res.data.unknownSkills).toContain('slots-blank');
+      expect(res.data.skippedNoPattern).toContain('slots-nopat');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('assignmentId subject: row duration, own-slot exclusion, terminal refusal', { timeout: 30_000 }, async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // An UNASSIGNED parked visit is a valid subject; its booked length rides.
+      const parked = await bookedVisit({
+        technicianId: null,
+        startsAt: '2027-03-15T09:00:00.000Z',
+        endsAt: '2027-03-15T11:00:00.000Z',
+      });
+      const who = await callWith('find_slots', {
+        assignmentId: parked.id,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-15',
+        latestDate: '2027-03-15',
+      });
+      expect(who.isError).toBe(false);
+      expect(who.data.durationAssumption).toContain("this visit's booked length (2h)");
+      expect(who.data.candidates.length).toBeGreaterThan(0);
+
+      // An ASSIGNED subject must not be blocked by its own row: bob's visit
+      // fills his whole Monday, yet re-placing THAT visit finds the day free.
+      const whole = await bookedVisit({
+        technicianId: bob.id,
+        startsAt: '2027-03-22T08:00:00.000Z',
+        endsAt: '2027-03-22T17:00:00.000Z',
+      });
+      const rehome = await callWith('find_slots', {
+        assignmentId: whole.id,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-22',
+        latestDate: '2027-03-22',
+      });
+      expect(rehome.isError).toBe(false);
+      expect(rehome.data.candidates).toHaveLength(1); // 9h fits ONLY because own row is excluded
+      expect(rehome.data.candidates[0].startTime).toBe('08:00');
+
+      // Terminal subjects are history, not schedulable.
+      const dead = await bookedVisit({
+        technicianId: bob.id,
+        startsAt: '2027-03-29T09:00:00.000Z',
+        endsAt: '2027-03-29T10:00:00.000Z',
+      });
+      await updateAssignmentStatus(dead.id, 'cancelled');
+      const refused = await callWith('find_slots', { assignmentId: dead.id });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('cancelled');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('no dead ends: pattern-less pin and impossible duration both return decision-ready noFit', { timeout: 30_000 }, async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const nopatRes = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        technicianRef: 'slots-nopat',
+        earliestDate: '2027-03-02',
+        latestDate: '2027-03-02',
+      });
+      expect(nopatRes.isError).toBe(false);
+      expect(nopatRes.data.status).toBe('no_fit');
+      expect(nopatRes.data.skippedNoPattern).toEqual(['slots-nopat']);
+      expect(nopatRes.data.noFit.bindingConstraint).toContain('no working pattern');
+      expect(nopatRes.data.noFit.bindingConstraint).toContain('set_availability');
+      expect(nopatRes.data.noFit.hint).toBeUndefined(); // no beyond-range search ran
+
+      // A fully-booked requested day → nearestAlternative BEYOND the range,
+      // searched with its own visit context (the next free working day).
+      await bookedVisit({
+        technicianId: bob.id,
+        startsAt: '2027-04-19T08:00:00.000Z',
+        endsAt: '2027-04-19T17:00:00.000Z',
+      });
+      const fullDay = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-04-19',
+        latestDate: '2027-04-19',
+      });
+      expect(fullDay.isError).toBe(false);
+      expect(fullDay.data.status).toBe('no_fit');
+      expect(fullDay.data.noFit.nearestAlternative).toMatchObject({
+        technicianRef: 'slots-bob',
+        date: '2027-04-20',
+      });
+      expect(fullDay.data.noFit.nearestAlternative.note).toContain('BEYOND');
+      expect(fullDay.data.noFit.hint).toBeUndefined(); // an alternative was found
+
+      // 12h can never fit a 9h window — constraint named, displacement listed.
+      const impossible = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 720,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-08',
+        latestDate: '2027-03-14',
+      });
+      expect(impossible.isError).toBe(false);
+      expect(impossible.data.status).toBe('no_fit');
+      expect(impossible.data.noFit.bindingConstraint).toContain('no free 12h');
+      expect(impossible.data.noFit.hint).toContain('shorter visit');
+      const displaced = impossible.data.noFit.displacementCandidates as Array<Record<string, unknown>>;
+      expect(displaced.length).toBeGreaterThanOrEqual(2); // the two 03-08 visits
+      expect(displaced[0]).toHaveProperty('promiseLevel');
+      expect(displaced[0]).toHaveProperty('locked');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('drive wiring: a 2-stop day measures the with-route through the injected seam', { timeout: 30_000 }, async () => {
+    await bookedVisit({
+      technicianId: bob.id,
+      startsAt: '2027-04-05T09:00:00.000Z',
+      endsAt: '2027-04-05T10:00:00.000Z',
+      addressed: true,
+    });
+    await bookedVisit({
+      technicianId: bob.id,
+      startsAt: '2027-04-05T11:00:00.000Z',
+      endsAt: '2027-04-05T12:00:00.000Z',
+      addressed: true,
+    });
+    const computeRoutes = vi.fn(async (body: unknown) => {
+      const b = body as { intermediates: { address: string }[] };
+      return {
+        routes: [
+          {
+            optimizedIntermediateWaypointIndex: b.intermediates.map((_, i) => i),
+            legs: [],
+            duration: `${62 * 60}s`,
+          },
+        ],
+      };
+    });
+    const { client: mgrClient, callWith } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      { computeRoutes },
+    );
+    try {
+      const res = await callWith('find_slots', {
+        customerId: henderson.id,
+        durationMinutes: 60,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-04-05',
+        latestDate: '2027-04-05',
+      });
+      expect(res.isError).toBe(false);
+      const cands = res.data.candidates as Array<{
+        driveMeasured: boolean;
+        driveDeltaMinutes: number | null;
+        reasons: string[];
+      }>;
+      expect(cands.length).toBeGreaterThan(0);
+      // 2 existing routable stops → with-only branch, one cached call for the day.
+      expect(computeRoutes).toHaveBeenCalledTimes(1);
+      for (const c of cands) {
+        expect(c.driveMeasured).toBe(true);
+        expect(c.driveDeltaMinutes).toBeNull();
+        expect(c.reasons.join(' ')).toContain('route becomes ~62 min');
+      }
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('drive route exclusion is scoped to the subject\'s OWN technician', { timeout: 30_000 }, async () => {
+    // 2027-04-12 (Monday): bob holds the SUBJECT visit 09:00–10:00 plus two
+    // other addressed visits; alice holds two addressed visits, one at the
+    // SAME 09:00 instant as the subject. Re-placing bob's visit must (a) drop
+    // bob's own stop from HIS day's route, and (b) leave alice's same-instant
+    // stop alone — a timestamp-only filter fails (b); no filter fails (a).
+    await insertTechnician({ tenantId, ref: 'slots-alice', displayName: 'Slots Alice', seatExempt: true })
+      .then((t) => setTechnicianAvailability(t.id, PATTERN_MON_FRI));
+    const subjCust = await createCustomer({
+      tenantId,
+      name: 'Exclusion Subject',
+      addressLine1: '99 E Herndon Ave',
+      city: 'Fresno',
+      state: 'CA',
+      postalCode: '93720',
+    });
+    const subjJob = await createJob({ tenantId, customerId: subjCust.id, title: 'move me', status: 'open' });
+    const alice = (await getClient()
+      .from('technicians')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('ref', 'slots-alice')
+      .single()).data!;
+    const subject = await createAssignment({
+      tenantId,
+      jobId: subjJob.id,
+      technicianId: bob.id,
+      startsAt: '2027-04-12T09:00:00.000Z',
+      endsAt: '2027-04-12T10:00:00.000Z',
+      status: 'confirmed',
+    });
+    for (const [tech, s, e] of [
+      [bob.id, '12:00', '13:00'],
+      [bob.id, '14:00', '15:00'],
+      [alice.id, '09:00', '10:00'], // same instant as the subject, DIFFERENT tech
+      [alice.id, '11:00', '12:00'],
+    ] as const) {
+      await bookedVisit({
+        technicianId: tech,
+        startsAt: `2027-04-12T${s}:00.000Z`,
+        endsAt: `2027-04-12T${e}:00.000Z`,
+        addressed: true,
+      });
+    }
+    const mkFake = () =>
+      vi.fn(async (body: unknown) => {
+        const b = body as { intermediates: { address: string }[] };
+        return {
+          routes: [
+            {
+              optimizedIntermediateWaypointIndex: b.intermediates.map((_, i) => i),
+              legs: [],
+              duration: '3720s',
+            },
+          ],
+        };
+      });
+
+    // (b) pinned to ALICE: her same-instant stop must SURVIVE → 2 existing
+    // stops → exactly ONE with-only call whose endpoints are her two visits.
+    const aliceFake = mkFake();
+    const { client: c1, callWith: aliceCall } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      { computeRoutes: aliceFake },
+    );
+    try {
+      const res = await aliceCall('find_slots', {
+        assignmentId: subject.id,
+        technicianRef: 'slots-alice',
+        earliestDate: '2027-04-12',
+        latestDate: '2027-04-12',
+      });
+      expect(res.isError).toBe(false);
+      expect(aliceFake).toHaveBeenCalledTimes(1); // 2 stops survived → with-only
+      const body = aliceFake.mock.calls[0][0] as {
+        origin: { address: string };
+        destination: { address: string };
+        intermediates: { address: string }[];
+      };
+      expect(body.origin.address).toContain('567 W Shaw Ave'); // her 09:00 stop lives
+      expect(body.destination.address).toContain('567 W Shaw Ave');
+      expect(body.intermediates.map((i) => i.address).join(' ')).toContain('99 E Herndon Ave');
+    } finally {
+      await c1.close();
+    }
+
+    // (a) pinned to BOB: his own subject stop is excluded → 2 remaining stops
+    // → with-only (ONE call); an unfiltered day would have 3 stops → 2 calls.
+    const bobFake = mkFake();
+    const { client: c2, callWith: bobCall } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      { computeRoutes: bobFake },
+    );
+    try {
+      const res = await bobCall('find_slots', {
+        assignmentId: subject.id,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-04-12',
+        latestDate: '2027-04-12',
+      });
+      expect(res.isError).toBe(false);
+      expect(bobFake).toHaveBeenCalledTimes(1); // own row gone → with-only branch
+      const body = bobFake.mock.calls[0][0] as {
+        origin: { address: string };
+        destination: { address: string };
+      };
+      expect(body.origin.address).toContain('567 W Shaw Ave'); // his 12:00 stop
+      expect(body.destination.address).toContain('567 W Shaw Ave'); // his 14:00 stop
+    } finally {
+      await c2.close();
+    }
+
+    // A PROPOSED subject is absent from the confirmed-only stop list, and the
+    // DB legally allows a different CONFIRMED visit at the same instant — the
+    // exclusion must not fire and eat that real stop (round-2 residual).
+    const proposed = await createAssignment({
+      tenantId,
+      jobId: subjJob.id,
+      technicianId: bob.id,
+      startsAt: '2027-04-12T09:00:00.000Z', // same instant as bob's CONFIRMED visit
+      endsAt: '2027-04-12T10:00:00.000Z',
+    });
+    const propFake = mkFake();
+    const { client: c3, callWith: propCall } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      { computeRoutes: propFake },
+    );
+    try {
+      const res = await propCall('find_slots', {
+        assignmentId: proposed.id,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-04-12',
+        latestDate: '2027-04-12',
+      });
+      expect(res.isError).toBe(false);
+      // All 3 confirmed stops (incl. the same-instant 09:00 one) must survive
+      // → the ≥3-stop delta branch: with + without = TWO calls, not one.
+      expect(propFake).toHaveBeenCalledTimes(2);
+    } finally {
+      await c3.close();
+    }
   });
 });

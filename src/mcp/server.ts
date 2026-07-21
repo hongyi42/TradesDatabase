@@ -51,6 +51,11 @@ import {
   setTechnicianAvailability,
   setTechnicianSkills,
   upsertJobTypeDuration,
+  findJobTypeDurationMinutes,
+  listJobTypeDurations,
+  getAssignmentForTenant,
+  getTechnicianById,
+  unwrapAttributes,
   WEEK_DAYS,
   type Customer,
   type FoldImpact,
@@ -89,9 +94,22 @@ import {
 } from '../synthesis/index.js';
 import { identityFromEnv, type RequestIdentity } from './identity.js';
 import { listDayStops } from '../routes/daySource.js';
-import { optimizeStopOrder as liveOptimizeStopOrder } from '../routes/googleRoutes.js';
+import {
+  optimizeStopOrder as liveOptimizeStopOrder,
+  type ComputeRoutes,
+} from '../routes/googleRoutes.js';
 import { buildMapsDeepLink, formatAddress, type RouteStop } from '../routes/deepLink.js';
-import { localDateISO } from '../schedule/availability.js';
+import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
+import {
+  addDaysISO,
+  assembleFitContext,
+  findDisplacementCandidates,
+  generateCandidates,
+  measureDriveDeltas,
+  techDateKey,
+  DRIVE_MEASURE_TOP,
+  type SlotCandidate,
+} from '../schedule/fit.js';
 import {
   bookVisit,
   bookingRequiresConfirmation,
@@ -152,6 +170,7 @@ export interface ServerDeps {
   sendEmail?: typeof liveSendGmailEmail;
   teardownSession?: typeof liveTeardownSession;
   optimizeStopOrder?: typeof liveOptimizeStopOrder; // Google Routes seam — tests never need the key
+  computeRoutes?: ComputeRoutes; // find_slots drive-delta seam (same reason)
   // Sandbox recycling seams (same reason as the pairing seams above).
   requestRetirement?: typeof liveRequestRetirement;
   cancelRetirement?: typeof liveCancelRetirement;
@@ -814,6 +833,63 @@ const ADMIN_TOOLS = [
         },
       },
       required: ['ref', 'skills'],
+    },
+  },
+  {
+    name: 'find_slots',
+    description:
+      'Find bookable schedule slots (manager only) — READ-ONLY, it books NOTHING. This tool ' +
+      'is the ONLY source of scheduling truth: NEVER judge fit, availability, or drive time ' +
+      'yourself — call it and relay its verdict. Give exactly ONE subject: customerId (new ' +
+      'work), jobId (work on a recorded job), or assignmentId (re-placing or assigning an ' +
+      "existing visit — its booked length is used). Returns up to 5 ranked candidates, each " +
+      'with technician, date, times, and a human-ready reasons line — RELAY those reasons, ' +
+      'do not invent your own. dayLevel:true = a LOOSE day: quote the DAY to the manager, ' +
+      'not the exact time. Concrete slots are bookable verbatim with book_visit. Duration is ' +
+      'NEVER assumed: pass durationMinutes when the manager stated a length; otherwise the ' +
+      "job's stored type duration applies and the result DISCLOSES it (durationAssumption — " +
+      'relay it). If no duration is known you get an error listing the configured types: map ' +
+      'the job onto one (pass assumedType) or ask the manager — never guess minutes. ' +
+      'requiredSkills excludes ONLY people whose configured skill list lacks the skill; ' +
+      'people with NO skills recorded are included with a confirm-first warning. When ' +
+      'nothing fits, the result names the binding constraint plus displacement candidates ' +
+      '(what could move) — present those options; never a bare "impossible".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        customerId: { type: 'string', description: 'Exactly one of customerId/jobId/assignmentId.' },
+        jobId: { type: 'string', description: 'Exactly one of customerId/jobId/assignmentId.' },
+        assignmentId: {
+          type: 'string',
+          description:
+            'Exactly one of customerId/jobId/assignmentId — find who/when could take this ' +
+            'existing visit (its own current slot is ignored while searching).',
+        },
+        durationMinutes: {
+          type: 'integer',
+          description:
+            'Visit length in minutes WHEN THE MANAGER STATED ONE — beats any stored duration.',
+        },
+        assumedType: {
+          type: 'string',
+          description:
+            'Your mapping of an UNTYPED job onto a configured job type (use after the ' +
+            'no-duration error lists the choices). The result labels it as your guess — ' +
+            'refused for jobs that already carry a type.',
+        },
+        technicianRef: { type: 'string', description: 'Pin the search to one roster ref.' },
+        requiredSkills: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Skills the job needs. Omit unless the manager asked for a skill.',
+        },
+        earliestDate: { type: 'string', description: 'YYYY-MM-DD (default today).' },
+        latestDate: {
+          type: 'string',
+          description: 'YYYY-MM-DD inclusive (default 13 days after today; span capped at 14 days).',
+        },
+      },
+      required: [],
     },
   },
 ];
@@ -3662,7 +3738,8 @@ async function dispatch(
         jobType: row.job_type,
         minutes: row.minutes,
         note:
-          `'${row.job_type}' jobs now default to ${row.minutes} minutes for scheduling. ` +
+          `'${row.job_type}' jobs are now assumed to take ${row.minutes} minutes when ` +
+          'scheduling, unless a different duration is stated for a specific visit. ' +
           'Tell the manager exactly this.',
       };
     }
@@ -3684,6 +3761,401 @@ async function dispatch(
               'unknown" and are never excluded from scheduling on that basis. Tell the manager.'
             : `${target.display_name}'s skills are now: ${updated.skills.join(', ')} (full ` +
               'replacement). Tell the manager exactly this.',
+      };
+    }
+    case 'find_slots': {
+      // Non-string args are REJECTED, never coerced-to-absent: str() maps
+      // {technicianRef: 123} to undefined, which would silently UN-PIN the
+      // search (the get_schedule precedent — the SDK doesn't validate args).
+      for (const k of ['customerId', 'jobId', 'assignmentId', 'technicianRef', 'assumedType']) {
+        if (args[k] !== undefined && typeof args[k] !== 'string') {
+          throw new Error(`${k} must be a string`);
+        }
+      }
+      // ------- subject: exactly one of customerId | jobId | assignmentId
+      const customerIdArg = str('customerId');
+      const jobIdArg = str('jobId');
+      const assignmentIdArg = str('assignmentId');
+      if ([customerIdArg, jobIdArg, assignmentIdArg].filter(Boolean).length !== 1) {
+        throw new Error('pass exactly one of customerId, jobId, or assignmentId');
+      }
+      const pinnedRef = str('technicianRef');
+      const assumedType = str('assumedType')?.trim().toLowerCase();
+      if (args.durationMinutes !== undefined) {
+        if (
+          typeof args.durationMinutes !== 'number' ||
+          !Number.isInteger(args.durationMinutes) ||
+          args.durationMinutes <= 0
+        ) {
+          throw new Error('durationMinutes must be a whole number of minutes greater than 0');
+        }
+      }
+      const statedMinutes = args.durationMinutes as number | undefined;
+      if (
+        args.requiredSkills !== undefined &&
+        (!Array.isArray(args.requiredSkills) ||
+          args.requiredSkills.some((s) => typeof s !== 'string'))
+      ) {
+        throw new Error('requiredSkills must be an array of strings');
+      }
+      const requiredSkills = (args.requiredSkills as string[] | undefined)
+        ?.map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+
+      // ------- resolve the subject rows (tenant-guarded)
+      let job: Job | null = null;
+      let subjectRow: {
+        id: string;
+        starts_at: string;
+        ends_at: string;
+        technician_id: string | null;
+        status: string;
+      } | null = null;
+      let customerIdResolved: string;
+      if (assignmentIdArg) {
+        const row = await getAssignmentForTenant(assignmentIdArg, tenantId);
+        if (!row) throw new Error('visit not found');
+        // Mirror move/cancel's subject rule: terminal rows are history, not
+        // schedulable subjects.
+        if (row.status !== 'confirmed' && row.status !== 'proposed') {
+          throw new Error(`this visit is ${row.status} — only confirmed or proposed visits can be re-placed`);
+        }
+        subjectRow = row;
+        const j = await getJob(row.job_id);
+        if (!j || j.tenant_id !== tenantId) throw new Error('visit job not found');
+        job = j;
+        customerIdResolved = j.customer_id;
+      } else if (jobIdArg) {
+        const j = await getJob(jobIdArg);
+        if (!j || j.tenant_id !== tenantId) throw new Error('job not found');
+        job = j;
+        customerIdResolved = j.customer_id;
+      } else {
+        customerIdResolved = customerIdArg as string;
+      }
+      const customer = await getCustomer(customerIdResolved);
+      if (!customer || customer.tenant_id !== tenantId) throw new Error('customer not found');
+
+      // ------- duration: fail-closed, disclosed, never invented
+      const fmtMin = (m: number): string =>
+        m % 60 === 0 ? `${m / 60}h` : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+      // The configured vocabulary rides in every no-duration error so the
+      // AGENT does the language-level mapping with the choices in hand — the
+      // server never fuzzy-matches (a wrong match silently books a wrong-
+      // length job).
+      const vocabularyGuidance = async (): Promise<string> => {
+        const rows = await listJobTypeDurations(tenantId);
+        return rows.length > 0
+          ? `Configured types: ${rows.map((r) => `${r.job_type} (${r.minutes}m)`).join(', ')}. ` +
+              'If this job is one of those, call again with assumedType set to that type; ' +
+              'otherwise ask the manager how long it takes, then pass durationMinutes ' +
+              '(one-off) or set_job_duration (general rule).'
+          : 'No job-type durations are configured yet — ask the manager how long this job ' +
+              'takes, then pass durationMinutes (and consider set_job_duration to store the rule).';
+      };
+      // A job row that already carries a type is AUTHORITATIVE — agent
+      // classification applies only to untyped jobs; overriding a typed job's
+      // duration takes the explicit durationMinutes arg, nothing softer.
+      if (assumedType && job?.job_type) {
+        throw new Error(
+          `this job already has type '${job.job_type}' — its stored duration applies; ` +
+            'to use a different length, pass durationMinutes',
+        );
+      }
+      let durationMin: number;
+      let durationAssumption: string | undefined;
+      let assumedTypeNote: string | undefined;
+      if (statedMinutes !== undefined) {
+        durationMin = statedMinutes;
+        if (job?.job_type) {
+          durationAssumption =
+            `using your stated ${fmtMin(durationMin)} for this visit — not the stored ` +
+            `'${job.job_type}' duration`;
+        }
+      } else if (subjectRow) {
+        // An existing visit's booked length is a real value — no assumption.
+        durationMin = Math.round(
+          (Date.parse(subjectRow.ends_at) - Date.parse(subjectRow.starts_at)) / 60_000,
+        );
+        durationAssumption = `using this visit's booked length (${fmtMin(durationMin)})`;
+      } else {
+        const lookupType = job?.job_type?.trim().toLowerCase() || assumedType;
+        if (!lookupType) {
+          throw new Error(`this job has no recorded type. ${await vocabularyGuidance()}`);
+        }
+        const stored = await findJobTypeDurationMinutes(tenantId, lookupType);
+        if (stored === null) {
+          throw new Error(
+            `no duration is configured for '${lookupType}'. ${await vocabularyGuidance()}`,
+          );
+        }
+        durationMin = stored;
+        durationAssumption =
+          `assuming ${stored} min for '${lookupType}' (from your set_job_duration setting) ` +
+          '— pass durationMinutes if this job differs';
+      }
+      // The guess label rides on EVERY untyped-subject use of assumedType —
+      // durationLabel fuses the type into each reason string regardless of
+      // where the minutes came from (review finding #5: an assumedType +
+      // durationMinutes combination must not escape disclosure).
+      if (assumedType && !job?.job_type) {
+        assumedTypeNote =
+          `'${assumedType}' is YOUR reading of ` +
+          (job ? `'${job.title}'` : 'this request') +
+          ' — present it to the manager as a guess ("treating this as ' +
+          `${assumedType} — say otherwise")`;
+      }
+      const durationLabel = `${fmtMin(durationMin)} ${job?.job_type ?? assumedType ?? 'visit'}`;
+
+      // ------- date range (get_team_schedule idiom: informative, not thrown)
+      const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+      const nowISO = new Date().toISOString();
+      const todayISO = localDateISO(nowISO, tz);
+      const earliest = str('earliestDate') ?? todayISO;
+      const latest = str('latestDate') ?? addDaysISO(todayISO, 13);
+      // Non-string range args → invalid_range, not a silent default window
+      // (mirrors get_team_schedule's guard).
+      if (
+        (args.earliestDate !== undefined && typeof args.earliestDate !== 'string') ||
+        (args.latestDate !== undefined && typeof args.latestDate !== 'string')
+      ) {
+        return {
+          status: 'invalid_range',
+          note: 'earliestDate/latestDate must be YYYY-MM-DD strings',
+        };
+      }
+      const DATE = /^\d{4}-\d{2}-\d{2}$/;
+      if (!DATE.test(earliest) || !DATE.test(latest) || earliest > latest) {
+        return {
+          status: 'invalid_range',
+          note: 'earliestDate/latestDate must be YYYY-MM-DD with earliest <= latest',
+        };
+      }
+      const spanDays =
+        (Date.parse(`${latest}T00:00:00Z`) - Date.parse(`${earliest}T00:00:00Z`)) / 86_400_000 + 1;
+      if (!Number.isFinite(spanDays)) {
+        return { status: 'invalid_range', note: 'earliestDate/latestDate is not a real calendar date' };
+      }
+      if (spanDays > 14) {
+        return { status: 'invalid_range', note: 'range is capped at 14 days' };
+      }
+      if (latest < todayISO) {
+        return {
+          status: 'invalid_range',
+          note: `the whole range is in the past (today is ${todayISO}) — slots can only be found from today onward`,
+        };
+      }
+      // Unknown/deactivated pin → a clear error, not an empty search.
+      if (pinnedRef) await resolveScheduleInputTarget(tenantId, pinnedRef);
+
+      // ------- snapshot: version FIRST, then the schedule state it describes
+      const scheduleVersion = await latestScheduleVersion(tenantId);
+      const ctx = await assembleFitContext({
+        tenantId,
+        earliest,
+        latest,
+        ...(pinnedRef ? { technicianRef: pinnedRef } : {}),
+        ...(requiredSkills ? { requiredSkills } : {}),
+        ...(subjectRow ? { excludeAssignmentId: subjectRow.id } : {}),
+      });
+      const customerCity = customer.city?.trim().toLowerCase() || null;
+      const generated = generateCandidates({
+        todayISO,
+        nowHHMM: localTimeHHMM(nowISO, tz),
+        earliest,
+        latest,
+        durationMin,
+        durationLabel,
+        customerCity,
+        priority: job?.priority ?? 'routine',
+        technicians: ctx.technicians,
+      });
+      // Unknown-skills techs are candidates WITH a confirm-first flag (unknown
+      // ≠ unqualified) — stamp the warning on their candidates, not just the
+      // top-level list, so it survives into whatever the agent relays.
+      if (requiredSkills && requiredSkills.length > 0 && ctx.unknownSkills.length > 0) {
+        const unknown = new Set(ctx.unknownSkills);
+        for (const c of generated) {
+          if (unknown.has(c.technicianRef)) {
+            c.warnings.push(
+              `${c.technicianName}'s skills are not configured — confirm they can do ` +
+                `${requiredSkills.join(', ')} before booking`,
+            );
+          }
+        }
+      }
+
+      // ------- drive deltas: bounded, cached, degrade-only (no key = skip)
+      const canMeasure = Boolean(deps.computeRoutes) || Boolean(process.env.GOOGLE_MAPS_API_KEY?.trim());
+      let ranked: SlotCandidate[] = generated;
+      if (generated.length > 0 && canMeasure) {
+        const newStop: RouteStop = { label: customer.name, address: formatAddress(customer) };
+        // The subject's CURRENT technician (assignment asks only): only THEIR
+        // day may contain the subject's own stop — filtering other techs' days
+        // by timestamp would silently drop a different person's same-instant
+        // visit (review finding #1).
+        const subjectTechRef =
+          subjectRow?.technician_id != null
+            ? ((await getTechnicianById(subjectRow.technician_id, tenantId))?.ref ?? null)
+            : null;
+        const pairs = [
+          ...new Map(
+            generated
+              .slice(0, DRIVE_MEASURE_TOP)
+              .map((c) => [techDateKey(c.technicianRef, c.date), c] as const),
+          ).values(),
+        ];
+        const stopsByTechDate = new Map<string, RouteStop[]>();
+        await Promise.all(
+          pairs.map(async (c) => {
+            const days = await listDayStops(tenantId, c.technicianRef, c.date, c.date);
+            let stops = days[0]?.stops ?? [];
+            // The assignment subject's own row must not count in its day's
+            // route — it is exactly the stop being re-placed. Same tech +
+            // identical start identifies it ONLY for a confirmed subject
+            // (confirmed rows cannot overlap); a PROPOSED subject is not in
+            // listDayStops at all, and the DB legally allows a different
+            // confirmed visit at the same instant — filtering would silently
+            // drop that real stop (review round-2 residual).
+            if (subjectRow?.status === 'confirmed' && c.technicianRef === subjectTechRef) {
+              stops = stops.filter((s) => s.scheduledStart !== subjectRow.starts_at);
+            }
+            stopsByTechDate.set(techDateKey(c.technicianRef, c.date), stops);
+          }),
+        );
+        ranked = await measureDriveDeltas(
+          { candidates: generated, stopsByTechDate, newStop },
+          deps.computeRoutes ? { computeRoutes: deps.computeRoutes } : {},
+        );
+      }
+      const candidates = ranked.slice(0, 5);
+
+      // ------- customer facts: unwrapped, retraction-filtered (context rules)
+      const factIds = factSourceIds(customer.attributes);
+      let foldedAttributes = customer.attributes;
+      if (factIds.length > 0) {
+        const retracted = new Set(
+          (await findRetractionsFor(factIds))
+            .map((r) => r.retracts_capture_id)
+            .filter((id): id is string => !!id),
+        );
+        if (retracted.size > 0) foldedAttributes = foldRetractedFacts(customer.attributes, retracted);
+      }
+      const shared = {
+        searched: { technicians: ctx.technicians.length, days: spanDays },
+        skippedNoPattern: ctx.skippedNoPattern,
+        skippedSkills: ctx.skippedSkills,
+        unknownSkills: ctx.unknownSkills,
+        ...(durationAssumption ? { durationAssumption } : {}),
+        ...(assumedTypeNote ? { assumedType, assumedTypeNote } : {}),
+        customerFacts: unwrapAttributes(foldedAttributes),
+        scheduleVersion,
+      };
+
+      if (candidates.length === 0) {
+        // NO DEAD ENDS: name the binding constraint and what could move.
+        const constraints: string[] = [];
+        if (ctx.technicians.length === 0) {
+          if (ctx.skippedNoPattern.length > 0) {
+            constraints.push(
+              `no working pattern set for: ${ctx.skippedNoPattern.join(', ')} ` +
+                '(set_availability makes them schedulable)',
+            );
+          }
+          if (ctx.skippedSkills.length > 0) {
+            constraints.push(
+              `configured skills lack ${(requiredSkills ?? []).join(', ')}: ${ctx.skippedSkills.join(', ')}`,
+            );
+          }
+          if (constraints.length === 0) {
+            constraints.push(
+              pinnedRef
+                ? `technician '${pinnedRef}' is not schedulable in this range`
+                : 'no active technicians are schedulable',
+            );
+          }
+        } else {
+          constraints.push(
+            `no free ${durationLabel} gap between ${earliest} and ${latest} across ` +
+              `${ctx.technicians.length} schedulable technician(s) — working windows, time ` +
+              'off, and existing visits leave no room',
+          );
+        }
+        // Nearest alternative beyond the range — with its OWN visit context
+        // (reusing this range's context would score unseen days as empty).
+        let nearestAlternative: Record<string, unknown> | undefined;
+        if (ctx.technicians.length > 0) {
+          const extCtx = await assembleFitContext({
+            tenantId,
+            earliest: addDaysISO(latest, 1),
+            latest: addDaysISO(latest, 14),
+            ...(pinnedRef ? { technicianRef: pinnedRef } : {}),
+            ...(requiredSkills ? { requiredSkills } : {}),
+            ...(subjectRow ? { excludeAssignmentId: subjectRow.id } : {}),
+          });
+          const beyond = generateCandidates({
+            todayISO,
+            nowHHMM: localTimeHHMM(nowISO, tz),
+            earliest: addDaysISO(latest, 1),
+            latest: addDaysISO(latest, 14),
+            durationMin,
+            durationLabel,
+            customerCity,
+            priority: job?.priority ?? 'routine',
+            technicians: extCtx.technicians,
+          });
+          if (beyond.length > 0) {
+            const b = beyond[0];
+            nearestAlternative = {
+              technicianRef: b.technicianRef,
+              technicianName: b.technicianName,
+              date: b.date,
+              startTime: b.startTime,
+              endTime: b.endTime,
+              dayLevel: b.dayLevel,
+              note: 'first fit BEYOND the requested range',
+            };
+          }
+        }
+        return {
+          status: 'no_fit',
+          ...shared,
+          noFit: {
+            bindingConstraint: constraints.join('; '),
+            // The beyond-range hint is only honest when a beyond-range search
+            // actually ran (a structural constraint — nobody schedulable —
+            // was not searched further; fixing the named input comes first).
+            ...(ctx.technicians.length > 0
+              ? nearestAlternative
+                ? { nearestAlternative }
+                : {
+                    hint:
+                      'nothing fits even two weeks past the range — a shorter visit may ' +
+                      'fit, or one of the displacement candidates below could move (move_visit)',
+                  }
+              : {}),
+            displacementCandidates: await findDisplacementCandidates(
+              tenantId,
+              earliest,
+              latest,
+              5,
+              subjectRow?.id,
+            ),
+          },
+          note:
+            'Nothing fits as asked — do NOT stop at "impossible": present the binding ' +
+            'constraint and the concrete options (nearest alternative / what could move) ' +
+            'so the manager can decide.',
+        };
+      }
+      return {
+        status: 'ok',
+        candidates,
+        ...shared,
+        note:
+          'Read-only — nothing was booked. Present the options with their reasons (relay, ' +
+          'do not re-derive); dayLevel:true means quote the DAY, not a time. Book the ' +
+          "manager's choice with book_visit using the candidate's exact values.",
       };
     }
     case 'list_pending_reviews': {

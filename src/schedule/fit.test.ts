@@ -442,6 +442,30 @@ describe('measureDriveDeltas', () => {
     expect(out.filter((c) => !c.driveMeasured)).toHaveLength(2);
   });
 
+  test('cap boundary: an over-cap sibling gap on an already-measured day absorbs the cached delta', async () => {
+    const computeRoutes = fakeRoutes();
+    // Ranks 1–4 on distinct days; ranks 5 AND 6 are two gaps on the same day.
+    // The cap admits rank 5 only, but rank 6 needs no new calls — the day's
+    // numbers are cached, and skipping it would rank the unmeasured twin
+    // above its measured sibling despite identical real driving.
+    const sharedDay = '2026-08-20';
+    const candidates = [
+      ...Array.from({ length: 4 }, (_, i) => slot({ date: `2026-08-1${i}`, score: 90 - i * 10 })),
+      slot({ date: sharedDay, startTime: '08:00', score: 50 }),
+      slot({ date: sharedDay, startTime: '14:00', score: 40 }),
+    ];
+    const stopsByTechDate = new Map(
+      candidates.map((c) => [techDateKey('bob', c.date), threeStops]),
+    );
+    const out = await measureDriveDeltas(
+      { candidates, stopsByTechDate, newStop: NEW_STOP },
+      { computeRoutes },
+    );
+    expect(computeRoutes).toHaveBeenCalledTimes(DRIVE_MEASURE_TOP * 2); // cap holds
+    expect(out.filter((c) => c.driveMeasured)).toHaveLength(6); // all coherent
+    expect(out.every((c) => c.driveDeltaMinutes === 22)).toBe(true);
+  });
+
   test('same-day candidates share one measurement (day-level cache)', async () => {
     const computeRoutes = fakeRoutes();
     const out = await measureDriveDeltas(

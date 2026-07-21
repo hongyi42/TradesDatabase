@@ -496,14 +496,22 @@ export async function measureDriveDeltas(
     return p;
   };
 
-  for (const cand of out.slice(0, DRIVE_MEASURE_TOP)) {
+  for (const [idx, cand] of out.entries()) {
+    const withinCap = idx < DRIVE_MEASURE_TOP;
     if (input.newStop.address === null) {
-      cand.warnings.push('customer address incomplete — drive not measured');
+      if (withinCap) cand.warnings.push('customer address incomplete — drive not measured');
       continue;
     }
     const key = techDateKey(cand.technicianRef, cand.date);
     const existing = (input.stopsByTechDate.get(key) ?? []).filter((s) => s.address !== null);
     if (existing.length <= 1) continue; // nothing routable to compare against
+    // Over-cap candidates issue NO new calls, but a sibling gap on an
+    // already-measured day absorbs the cached day result — otherwise the
+    // unmeasured twin would rank above its measured sibling with no drive
+    // reason despite identical real driving (review observation).
+    const needed =
+      existing.length === 2 ? [`${key}|with`] : [`${key}|with`, `${key}|without`];
+    if (!withinCap && !needed.every((k) => totalCache.has(k))) continue;
     try {
       // Endpoints stay pinned to the SAME existing first/last in both routes.
       const withStops = [

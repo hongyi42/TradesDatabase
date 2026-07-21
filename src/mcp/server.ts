@@ -3804,7 +3804,13 @@ async function dispatch(
 
       // ------- resolve the subject rows (tenant-guarded)
       let job: Job | null = null;
-      let subjectRow: { id: string; starts_at: string; ends_at: string; technician_id: string | null } | null = null;
+      let subjectRow: {
+        id: string;
+        starts_at: string;
+        ends_at: string;
+        technician_id: string | null;
+        status: string;
+      } | null = null;
       let customerIdResolved: string;
       if (assignmentIdArg) {
         const row = await getAssignmentForTenant(assignmentIdArg, tenantId);
@@ -4006,8 +4012,12 @@ async function dispatch(
             let stops = days[0]?.stops ?? [];
             // The assignment subject's own row must not count in its day's
             // route — it is exactly the stop being re-placed. Same tech +
-            // identical start identifies it (confirmed rows cannot overlap).
-            if (subjectRow && c.technicianRef === subjectTechRef) {
+            // identical start identifies it ONLY for a confirmed subject
+            // (confirmed rows cannot overlap); a PROPOSED subject is not in
+            // listDayStops at all, and the DB legally allows a different
+            // confirmed visit at the same instant — filtering would silently
+            // drop that real stop (review round-2 residual).
+            if (subjectRow?.status === 'confirmed' && c.technicianRef === subjectTechRef) {
               stops = stops.filter((s) => s.scheduledStart !== subjectRow.starts_at);
             }
             stopsByTechDate.set(techDateKey(c.technicianRef, c.date), stops);

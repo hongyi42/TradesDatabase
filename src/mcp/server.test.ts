@@ -4562,5 +4562,35 @@ describe('find_slots (Plan 3b)', () => {
     } finally {
       await c2.close();
     }
+
+    // A PROPOSED subject is absent from the confirmed-only stop list, and the
+    // DB legally allows a different CONFIRMED visit at the same instant — the
+    // exclusion must not fire and eat that real stop (round-2 residual).
+    const proposed = await createAssignment({
+      tenantId,
+      jobId: subjJob.id,
+      technicianId: bob.id,
+      startsAt: '2027-04-12T09:00:00.000Z', // same instant as bob's CONFIRMED visit
+      endsAt: '2027-04-12T10:00:00.000Z',
+    });
+    const propFake = mkFake();
+    const { client: c3, callWith: propCall } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      { computeRoutes: propFake },
+    );
+    try {
+      const res = await propCall('find_slots', {
+        assignmentId: proposed.id,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-04-12',
+        latestDate: '2027-04-12',
+      });
+      expect(res.isError).toBe(false);
+      // All 3 confirmed stops (incl. the same-instant 09:00 one) must survive
+      // → the ≥3-stop delta branch: with + without = TWO calls, not one.
+      expect(propFake).toHaveBeenCalledTimes(2);
+    } finally {
+      await c3.close();
+    }
   });
 });

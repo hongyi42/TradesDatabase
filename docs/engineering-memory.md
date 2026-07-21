@@ -171,6 +171,17 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   closed unmerged — debug future 401s with the "mint-a-slip" probe: sign a fake initData slip
   with the real bot token from `.env` against the live API to discriminate server-token vs
   Telegram-side).
+- **In trial (2026-07-20, s2 ONLY):** inference cost — `compat.supportsPromptCacheKey: true`
+  set in s2's rendered `openclaw.json` (backup `openclaw.json.bak-cachekey-20260720` beside it;
+  `.config-hash` regenerated; gateway restarted, health passed). Makes OpenClaw forward a
+  session-scoped `prompt_cache_key` to DeepInfra to raise the prompt-cache hit rate (~25%
+  baseline: 9.9M cached tokens on $30 usage, input:output ≈230:1). Outcome measure = DeepInfra
+  dashboard cached-token share over the following days. GLM-5.2 stays (owner decision — Nemotron
+  quality experience rules out smaller/"flash"-tier models). **Trap:** any s2 rebuild/re-onboard
+  re-renders the config and silently drops the flag (same drift class the inference medic guards);
+  if the trial wins, mirror the flag into the render source + all sandboxes. Full mechanics,
+  revert recipe, and citations:
+  [thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md](../thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md).
 - **Dated debts:** GRANT/default-privileges migration to replace
   `auto_expose_new_tables = true` — **due before 2026-10-30** (Supabase removes the flag;
   fresh local stacks then break with `permission denied`). Old revoked NVIDIA key may still

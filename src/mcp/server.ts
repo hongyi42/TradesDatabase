@@ -123,6 +123,7 @@ import {
 } from '../schedule/booking.js';
 import { isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
+  appendScheduleEvent,
   latestScheduleVersion,
   listAssignmentsForTenant,
   listUnassignedAssignments,
@@ -847,8 +848,10 @@ const ADMIN_TOOLS = [
       'tell the manager exactly what changed (old → new). THIS is how a wrong or assumed job ' +
       'title gets fixed — the title displays on the board and every schedule read, so correct ' +
       'it here, never by only recording a fact. Setting jobType links the job to the stored ' +
-      "set_job_duration vocabulary (scheduling then treats the type as authoritative). It " +
-      'never touches visits, dates, times, or job status (move_visit / cancel_visit own those).',
+      "set_job_duration vocabulary (scheduling then treats the type as authoritative; if no " +
+      'duration is stored for it yet, the result says so — store one with set_job_duration). ' +
+      'Pass jobType: null to CLEAR a mistaken type back to untyped. It never touches visits, ' +
+      'dates, times, or job status (move_visit / cancel_visit own those).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -3819,26 +3822,65 @@ async function dispatch(
       };
     }
     case 'update_job': {
-      const jobId = str('jobId');
-      if (!jobId) throw new Error('jobId is required');
       // Non-string args rejected, never coerced-to-absent (find_slots rule).
-      for (const k of ['title', 'jobType', 'priority']) {
+      // jobType additionally accepts NULL = clear back to untyped (the undo
+      // for a mistakenly typed job — a set type is scheduling-authoritative).
+      for (const k of ['jobId', 'title', 'priority']) {
         if (args[k] !== undefined && typeof args[k] !== 'string') {
           throw new Error(`${k} must be a string`);
         }
       }
-      const priorityArg = str('priority');
-      if (priorityArg && !JOB_PRIORITIES.includes(priorityArg as JobPriority)) {
-        throw new Error(`invalid priority: ${priorityArg}`);
+      if (args.jobType !== undefined && args.jobType !== null && typeof args.jobType !== 'string') {
+        throw new Error('jobType must be a string (or null to clear the type)');
       }
+      const jobId = str('jobId');
+      if (!jobId) throw new Error('jobId is required');
+      // '' must not silently skip validation-and-vanish (coerced-absent trap).
+      if (args.priority !== undefined && !JOB_PRIORITIES.includes(args.priority as JobPriority)) {
+        throw new Error(`invalid priority: ${String(args.priority)}`);
+      }
+      const priorityArg = args.priority as JobPriority | undefined;
       const job = await getJob(jobId);
       // Tenant guard: a cross-tenant (or unknown) id reads as not found.
       if (!job || job.tenant_id !== tenantId) throw new Error('job not found');
-      const updated = await updateJobDetails(tenantId, jobId, {
-        ...(str('title') !== undefined ? { title: str('title')! } : {}),
-        ...(str('jobType') !== undefined ? { jobType: str('jobType')! } : {}),
-        ...(priorityArg ? { priority: priorityArg as JobPriority } : {}),
+      const jobTypeArg = args.jobType as string | null | undefined;
+      const updated = await updateJobDetails(
+        tenantId,
+        jobId,
+        {
+          ...(str('title') !== undefined ? { title: str('title')! } : {}),
+          ...(jobTypeArg !== undefined ? { jobType: jobTypeArg } : {}),
+          ...(priorityArg !== undefined ? { priority: priorityArg } : {}),
+        },
+        job.updated_at, // CAS — the old→new echo must describe THIS read
+      );
+      // The identity edit is schedule-visible (board lanes, schedule reads) —
+      // it joins the append-only event ledger like every other schedule
+      // mutation: who changed what, when, old → new, forever.
+      await appendScheduleEvent({
+        tenantId,
+        kind: 'job_updated',
+        actorRef: identity.technicianRef,
+        detail: {
+          jobId,
+          ...(str('title') !== undefined ? { title: { from: job.title, to: updated.title } } : {}),
+          ...(jobTypeArg !== undefined
+            ? { jobType: { from: job.job_type, to: updated.job_type } }
+            : {}),
+          ...(priorityArg !== undefined
+            ? { priority: { from: job.priority, to: updated.priority } }
+            : {}),
+        } as unknown as Json,
       });
+      // A newly set type only drives scheduling if a duration is stored for
+      // it — say so NOW, not as a surprise error at the next find_slots.
+      const typeWarning =
+        updated.job_type && jobTypeArg !== undefined
+          ? (await findJobTypeDurationMinutes(tenantId, updated.job_type)) === null
+            ? `no stored duration for '${updated.job_type}' yet — set_job_duration makes it ` +
+              'schedulable by type (until then, scheduling asks for durationMinutes)'
+            : undefined
+          : undefined;
       // Old → new per changed field: the echo IS the disclosure — the manager
       // hears exactly what the record now says (job-identity lesson).
       const change = (from: unknown, to: unknown) => ({ from: from ?? null, to: to ?? null });
@@ -3848,12 +3890,15 @@ async function dispatch(
         customerId: job.customer_id,
         changes: {
           ...(str('title') !== undefined ? { title: change(job.title, updated.title) } : {}),
-          ...(str('jobType') !== undefined ? { jobType: change(job.job_type, updated.job_type) } : {}),
-          ...(priorityArg ? { priority: change(job.priority, updated.priority) } : {}),
+          ...(jobTypeArg !== undefined ? { jobType: change(job.job_type, updated.job_type) } : {}),
+          ...(priorityArg !== undefined
+            ? { priority: change(job.priority, updated.priority) }
+            : {}),
         },
+        ...(typeWarning ? { warning: typeWarning } : {}),
         note:
-          'Done in one step — reversible (call update_job again to change it back). Tell the ' +
-          'manager exactly what changed, old → new.',
+          'Done in one step — correctable the same way (set a new value; jobType: null clears ' +
+          'the type). Tell the manager exactly what changed, old → new.',
       };
     }
     case 'find_slots': {
@@ -3936,15 +3981,26 @@ async function dispatch(
       // AGENT does the language-level mapping with the choices in hand — the
       // server never fuzzy-matches (a wrong match silently books a wrong-
       // length job).
-      const vocabularyGuidance = async (): Promise<string> => {
+      // typedJob variant matters: assumedType is REFUSED for jobs that already
+      // carry a type, so advising it there would send the agent into a
+      // two-error loop (review finding) — a typed job's remedies are storing
+      // the duration, a one-off durationMinutes, or correcting the type.
+      const vocabularyGuidance = async (typedJob: boolean): Promise<string> => {
         const rows = await listJobTypeDurations(tenantId);
+        const remedy = typedJob
+          ? "store this type's duration with set_job_duration, pass durationMinutes " +
+            '(one-off), or correct a wrong type with update_job'
+          : 'if this job is one of those, call again with assumedType set to that type; ' +
+            'otherwise ask the manager how long it takes, then pass durationMinutes ' +
+            '(one-off) or set_job_duration (general rule)';
         return rows.length > 0
           ? `Configured types: ${rows.map((r) => `${r.job_type} (${r.minutes}m)`).join(', ')}. ` +
-              'If this job is one of those, call again with assumedType set to that type; ' +
-              'otherwise ask the manager how long it takes, then pass durationMinutes ' +
-              '(one-off) or set_job_duration (general rule).'
-          : 'No job-type durations are configured yet — ask the manager how long this job ' +
-              'takes, then pass durationMinutes (and consider set_job_duration to store the rule).';
+              remedy.charAt(0).toUpperCase() +
+              remedy.slice(1) +
+              '.'
+          : `No job-type durations are configured yet — ask the manager how long this job takes, then ${
+              typedJob ? 'pass durationMinutes or set_job_duration' : 'pass durationMinutes (and consider set_job_duration to store the rule)'
+            }.`;
       };
       // A job row that already carries a type is AUTHORITATIVE — agent
       // classification applies only to untyped jobs; overriding a typed job's
@@ -3974,12 +4030,12 @@ async function dispatch(
       } else {
         const lookupType = job?.job_type?.trim().toLowerCase() || assumedType;
         if (!lookupType) {
-          throw new Error(`this job has no recorded type. ${await vocabularyGuidance()}`);
+          throw new Error(`this job has no recorded type. ${await vocabularyGuidance(false)}`);
         }
         const stored = await findJobTypeDurationMinutes(tenantId, lookupType);
         if (stored === null) {
           throw new Error(
-            `no duration is configured for '${lookupType}'. ${await vocabularyGuidance()}`,
+            `no duration is configured for '${lookupType}'. ${await vocabularyGuidance(Boolean(job?.job_type))}`,
           );
         }
         durationMin = stored;

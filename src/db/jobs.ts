@@ -170,7 +170,12 @@ export async function updateJobStatus(id: string, next: JobStatus): Promise<Job>
 // has its own state machine above, and visits belong to move/cancel.
 export interface UpdateJobDetailsInput {
   title?: string;
-  jobType?: string; // normalized lowercase — must match set_job_duration's vocabulary
+  // string = set (normalized lowercase — must match set_job_duration's
+  // vocabulary); null = CLEAR back to untyped. Without the null arm, typing a
+  // job would be a one-way door: find_slots treats a set type as
+  // authoritative, so a mistaken type on the wrong job needs a real undo
+  // (review finding — the tool's "reversible" claim must hold every way).
+  jobType?: string | null;
   priority?: JobPriority;
 }
 
@@ -178,6 +183,10 @@ export async function updateJobDetails(
   tenantId: string,
   jobId: string,
   input: UpdateJobDetailsInput,
+  // CAS: the caller's snapshot of jobs.updated_at. The old→new echo the tool
+  // returns is only honest if nothing moved between read and write
+  // (updateJobStatus / trySetJobAttribute precedent).
+  expectedUpdatedAt: string,
 ): Promise<Job> {
   const patch: Database['public']['Tables']['jobs']['Update'] = {};
   if (input.title !== undefined) {
@@ -186,11 +195,15 @@ export async function updateJobDetails(
     patch.title = title;
   }
   if (input.jobType !== undefined) {
-    // Same normalization as job_type_durations: scheduling matches the type
-    // against the stored duration vocabulary, so casing must never miss.
-    const jobType = input.jobType.trim().toLowerCase();
-    if (!jobType) throw new Error('jobType must not be empty');
-    patch.job_type = jobType;
+    if (input.jobType === null) {
+      patch.job_type = null; // explicit clear — '' stays an error (accident guard)
+    } else {
+      // Same normalization as job_type_durations: scheduling matches the type
+      // against the stored duration vocabulary, so casing must never miss.
+      const jobType = input.jobType.trim().toLowerCase();
+      if (!jobType) throw new Error('jobType must not be empty (pass null to clear the type)');
+      patch.job_type = jobType;
+    }
   }
   if (input.priority !== undefined) patch.priority = input.priority;
   if (Object.keys(patch).length === 0) {
@@ -201,9 +214,14 @@ export async function updateJobDetails(
     .update(patch)
     .eq('id', jobId)
     .eq('tenant_id', tenantId) // tenant guard: a cross-tenant id matches no row
+    .eq('updated_at', expectedUpdatedAt)
     .select()
     .maybeSingle();
   if (error) throw new Error(`updateJobDetails failed: ${error.message}`);
-  if (!data) throw new Error('job not found');
+  if (!data) {
+    throw new Error(
+      'job changed while updating (or not found) — re-read it and try again so the old→new report stays honest',
+    );
+  }
   return data;
 }

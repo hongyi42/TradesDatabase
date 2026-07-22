@@ -255,8 +255,8 @@ Generator runs at image BUILD time (Dockerfile `RUN … generate-openclaw-config
 ## Verify (end-to-end)
 - Host→doorman→Render: `curl -X POST http://172.18.0.1:3001/mcp -H "Authorization: Bearer <badge>" …
   '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → HTTP 200 + **14 tools** for a technician-tier
-  badge, or **30** for a badge whose ref maps to an active manager roster row (base minus
-  get_schedule plus the 18 admin/scheduling tools; see the badge↔roster note above). A manager
+  badge, or **32** for a badge whose ref maps to an active manager roster row (base minus
+  get_schedule plus the 19 admin/scheduling tools; see the badge↔roster note above). A manager
   badge returning only 14 means the server has no active `tier='manager'` row for that ref (or is
   running older code).
 - Agent: message the bot ("list recent captures") → OCSF on host shows

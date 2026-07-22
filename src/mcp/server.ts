@@ -858,10 +858,10 @@ const ADMIN_TOOLS = [
         jobId: { type: 'string', description: 'The job to correct.' },
         title: { type: 'string', description: 'New title, as the manager states the work.' },
         jobType: {
-          type: 'string',
+          type: ['string', 'null'],
           description:
             "New job type (free text, stored lowercase — match set_job_duration's types so " +
-            'the stored duration applies).',
+            'the stored duration applies). Pass null to CLEAR a mistaken type back to untyped.',
         },
         priority: {
           type: 'string',
@@ -3999,7 +3999,9 @@ async function dispatch(
               remedy.slice(1) +
               '.'
           : `No job-type durations are configured yet — ask the manager how long this job takes, then ${
-              typedJob ? 'pass durationMinutes or set_job_duration' : 'pass durationMinutes (and consider set_job_duration to store the rule)'
+              typedJob
+                ? 'pass durationMinutes, set_job_duration, or correct the type with update_job'
+                : 'pass durationMinutes (and consider set_job_duration to store the rule)'
             }.`;
       };
       // A job row that already carries a type is AUTHORITATIVE — agent

@@ -85,7 +85,11 @@ beforeAll(async () => {
 afterAll(async () => {
   await client.close();
   await pg.query(
-    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events cascade',
+    // job_type_durations included (review round-2): the update_job test plants
+    // 'sump-pump' on the persistent seed tenant; leaking it made that test's
+    // no-stored-duration assertion order-dependent across suite runs — the
+    // one-off 582-run flake, reproduced and root-caused.
+    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations cascade',
   );
   // Restore the seed capacity (2/5) so post-suite live checks see known values.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
@@ -4625,6 +4629,23 @@ describe('update_job (the job identity editor)', () => {
       title: 'Cust - drainage replacement (assumed)',
       status: 'open',
     });
+    // Own probe tech — this test must run standalone (review round-2: reusing
+    // the find_slots describe's slots-bob broke `vitest -t update_job`).
+    const uj = await insertTechnician({
+      tenantId,
+      ref: 'update-job-tech',
+      displayName: 'Update Job Tech',
+      seatExempt: true,
+    });
+    await setTechnicianAvailability(uj.id, {
+      mon: [['08:00', '17:00']],
+      tue: [['08:00', '17:00']],
+      wed: [['08:00', '17:00']],
+      thu: [['08:00', '17:00']],
+      fri: [['08:00', '17:00']],
+      sat: [],
+      sun: [],
+    });
 
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
@@ -4708,7 +4729,7 @@ describe('update_job (the job identity editor)', () => {
       await upsertJobTypeDuration(tenantId, 'sump-pump', 90);
       const slots = await callWith('find_slots', {
         jobId: job.id,
-        technicianRef: 'slots-bob',
+        technicianRef: 'update-job-tech',
         earliestDate: '2027-05-03', // a Monday well past other fixtures
         latestDate: '2027-05-03',
       });
@@ -4722,7 +4743,7 @@ describe('update_job (the job identity editor)', () => {
       expect(orphanType.isError).toBe(false);
       const typedNoDuration = await callWith('find_slots', {
         jobId: job.id,
-        technicianRef: 'slots-bob',
+        technicianRef: 'update-job-tech',
         earliestDate: '2027-05-03',
         latestDate: '2027-05-03',
       });

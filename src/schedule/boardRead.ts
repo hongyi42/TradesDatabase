@@ -1,24 +1,25 @@
 import {
-  getAssignmentForTenant,
-  getCustomer,
-  getJob,
-  getTechnicianById,
+  getAssignmentWithRefsForTenant,
   getTenant,
-  latestScheduleVersion,
-  listAssignmentsForTenant,
-  listJobsWithCustomerByIds,
-  listTeam,
+  listAssignmentsWithRefsForTenant,
   type Assignment,
 } from '../db/index.js';
 import { formatAddress } from '../routes/deepLink.js';
 import { localDateISO } from './availability.js';
 
-// The dispatch board's day view — a deliberate mirror of get_team_schedule's
-// body (src/mcp/server.ts, post-Feature-A shape) for the browser surface. This
-// module is the ONE place the board binds to the per-stop shape: if the MCP
-// read changes shape, this is the file to re-check. Kept separate from
-// server.ts on purpose (fork (b) in the plan): the board must not drag the
-// whole MCP tool surface into its footprint.
+// The dispatch board's day view — originally a deliberate mirror of
+// get_team_schedule's body (src/mcp/server.ts, post-Feature-A shape) for the
+// browser surface. This module is the ONE place the board binds to the per-stop
+// shape: if the MCP read changes shape, this is the file to re-check. Kept
+// separate from server.ts on purpose (fork (b) in the plan): the board must not
+// drag the whole MCP tool surface into its footprint.
+//
+// DELIBERATE DIVERGENCE from get_team_schedule (2026-07-22, latency work): the
+// board does NOT return a scheduleVersion. The agent version-pins its reads to
+// detect staleness; the board never did — it re-fetches after every write — so
+// the extra latestScheduleVersion round-trip was pure cost on the button path.
+// get_team_schedule keeps its own version stamp (it calls latestScheduleVersion
+// directly, not through here), as does boardNotify.
 //
 // Feature A semantics carried over: technician_id is nullable — person-less
 // rows render technicianRef/technicianName null and unassigned:true, and a
@@ -39,11 +40,12 @@ export interface BoardStop {
   promisedDay: string | null;
   locked: boolean;
   status: Assignment['status'];
-  jobId: string;
+  // Null when the assignment references another tenant's job — the id is
+  // withheld like every other nested field (see the tenant re-check below).
+  jobId: string | null;
 }
 
 export interface BoardDays {
-  scheduleVersion: number;
   from: string;
   to: string;
   days: { date: string; stops: BoardStop[] }[];
@@ -77,11 +79,9 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
   if (!Number.isFinite(spanDays)) throw new InvalidRangeError('from/to is not a real calendar date');
   if (spanDays > 14) throw new InvalidRangeError('range is capped at 14 days');
 
-  // Version BEFORE the snapshot — same fail-safe ordering as get_team_schedule:
-  // a booking landing between the two reads makes a later "changed since N?"
-  // check fire (false positive) instead of vouching for a stale snapshot.
-  const scheduleVersion = await latestScheduleVersion(tenantId);
-  const rows = await listAssignmentsForTenant(
+  // ONE embedded read for the whole window (was: assignments + jobs-with-
+  // customer + the full roster = three serial round-trips per board button).
+  const rows = await listAssignmentsWithRefsForTenant(
     tenantId,
     `${from}T00:00:00.000Z`,
     new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
@@ -91,19 +91,27 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
     input.viewerTechnicianId != null
       ? rows.filter((r) => r.technician_id === input.viewerTechnicianId)
       : rows;
-  const jobs = await listJobsWithCustomerByIds(tenantId, [
-    ...new Set(visible.map((r) => r.job_id)),
-  ]);
-  const jobById = new Map(jobs.map((j) => [j.id, j]));
-  const techById = new Map((await listTeam(tenantId)).map((t) => [t.id, t]));
   const byDay = new Map<string, BoardStop[]>();
   for (const row of visible) {
     // Overlap semantics can pull in a row starting before `from` — clamp to
     // the requested days by start-day (the get_team_schedule precedent).
     const day = row.starts_at.slice(0, 10);
     if (day < from || day > toDay) continue;
-    const customer = jobById.get(row.job_id)?.customers ?? null;
-    const technician = row.technician_id ? techById.get(row.technician_id) : undefined;
+    // SECURITY: the embed's foreign keys are ID-ONLY, so each nested row is
+    // re-checked against the tenant before it is surfaced. This reproduces
+    // exactly what the per-table reads gave for free: listJobsWithCustomerByIds
+    // filtered jobs BY TENANT (a cross-tenant job was simply absent from the map
+    // → customer null), and techById was built from listTeam(tenantId) (a
+    // cross-tenant technician missed the map → ref/name null).
+    const job = row.jobs && row.jobs.tenant_id === tenantId ? row.jobs : null;
+    // The customer is re-checked on its OWN tenant, not merely inherited from
+    // the job: it is a separate row with its own owner, and it holds the name
+    // and address that reach the screen. (Hardening beyond the pre-embed
+    // behavior — security review 2026-07-22.)
+    const customer =
+      job && job.customers && job.customers.tenant_id === tenantId ? job.customers : null;
+    const technician =
+      row.technicians && row.technicians.tenant_id === tenantId ? row.technicians : null;
     const bucket = byDay.get(day) ?? [];
     bucket.push({
       assignmentId: row.id,
@@ -126,14 +134,18 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
       promisedDay: row.promised_day,
       locked: row.locked,
       status: row.status,
-      jobId: row.job_id,
+      // Gated on the tenant-checked job, NOT the raw row.job_id: a stranded
+      // cross-tenant assignment would otherwise disclose the other firm's job
+      // UUID even while its customer/technician were correctly withheld.
+      // (Pre-existing leak, closed here — security review 2026-07-22.)
+      jobId: job ? row.job_id : null,
     });
     byDay.set(day, bucket);
   }
   const days = [...byDay.entries()]
     .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(([date, stops]) => ({ date, stops }));
-  return { scheduleVersion, from, to: toDay, days };
+  return { from, to: toDay, days };
 }
 
 // The tap-into-a-visit detail view (contact + logistics only — user decision
@@ -169,17 +181,20 @@ export async function readVisitDetail(
   assignmentId: string,
   viewerTechnicianId?: string | null,
 ): Promise<VisitDetail | null> {
-  const row = await getAssignmentForTenant(assignmentId, tenantId);
+  // ONE embedded read (was: assignment → job → customer → technician, four
+  // serial round-trips, each waiting on the id from the one before).
+  const row = await getAssignmentWithRefsForTenant(assignmentId, tenantId);
   if (!row) return null;
   if (viewerTechnicianId != null && row.technician_id !== viewerTechnicianId) return null;
-  // Same tenant guards as booking.ts's preview path: getJob/getCustomer are
-  // id-only reads, so cross-tenant rows must be re-checked before use.
-  const job = await getJob(row.job_id);
+  // SECURITY: the embed's foreign keys are ID-ONLY, so every nested row is
+  // re-checked against the tenant before use — the same guards the id-only
+  // getJob/getCustomer reads required, plus the tenant scoping that
+  // getTechnicianById used to apply in the query.
+  const job = row.jobs && row.jobs.tenant_id === tenantId ? row.jobs : null;
   const customer =
-    job && job.tenant_id === tenantId ? await getCustomer(job.customer_id) : null;
-  const technician = row.technician_id
-    ? await getTechnicianById(row.technician_id, tenantId)
-    : null;
+    job && job.customers && job.customers.tenant_id === tenantId ? job.customers : null;
+  const technician =
+    row.technicians && row.technicians.tenant_id === tenantId ? row.technicians : null;
   return {
     assignmentId: row.id,
     status: row.status,
@@ -191,9 +206,10 @@ export async function readVisitDetail(
     unassigned: row.technician_id === null,
     technicianRef: technician?.ref ?? null,
     technicianName: technician?.display_name ?? null,
-    jobTitle: job && job.tenant_id === tenantId ? job.title : null,
+    // job/customer/technician are already tenant-gated above — no re-test here.
+    jobTitle: job ? job.title : null,
     customer:
-      customer && customer.tenant_id === tenantId
+      customer
         ? {
             name: customer.name,
             phone: customer.phone,

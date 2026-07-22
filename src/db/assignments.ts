@@ -1,6 +1,8 @@
 import type { Database } from './database.types.js';
 import { getClient } from './client.js';
-import type { Job } from './jobs.js';
+import type { Job, JobCustomerAddress } from './jobs.js';
+import type { Customer } from './customers.js';
+import type { Technician } from './technicians.js';
 
 export type Assignment = Database['public']['Tables']['assignments']['Row'];
 export type AssignmentStatus = Database['public']['Enums']['assignment_status'];
@@ -242,6 +244,109 @@ export async function listAssignmentsForTenant(
     .order('starts_at', { ascending: true });
   if (error) throw new Error(`listAssignmentsForTenant failed: ${error.message}`);
   return data ?? [];
+}
+
+// ---- Dispatch-board reads: the whole visit graph in ONE round-trip ----
+//
+// The board needs each visit WITH its customer (name/address/contact) and its
+// technician (ref + display name). Fetching those as separate point reads costs
+// one network round-trip PER TABLE PER BUTTON — the N+1 that made every board
+// tap ~1s (DB execution is sub-millisecond; the cost is transit). PostgREST
+// resolves the whole graph in a single request via the declared foreign keys
+// (assignments→jobs, jobs→customers, assignments→technicians), each of which is
+// unambiguous, so no !hint disambiguation is needed.
+//
+// SECURITY — the foreign keys are ID-ONLY: not one of them carries tenant_id, so
+// an embed rooted at a tenant-filtered assignment does NOT guarantee the nested
+// job/customer/technician belong to that same tenant. Every nested projection
+// therefore ships its own tenant_id and the CALLER must re-check it before
+// surfacing the row (see boardRead.ts). Do not drop tenant_id from these
+// projections — it is the only thing standing between an embed and a
+// cross-tenant leak.
+
+export type AssignmentDetailRow = Assignment & {
+  jobs:
+    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'customer_id'> & {
+        customers: Pick<
+          Customer,
+          | 'name'
+          | 'phone'
+          | 'email'
+          | 'address_line1'
+          | 'address_line2'
+          | 'city'
+          | 'state'
+          | 'postal_code'
+          | 'tenant_id'
+        > | null;
+      })
+    | null;
+  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
+};
+
+// NOTE: these select strings must stay SINGLE STRING LITERALS — supabase-js
+// parses them at the TYPE level to infer the embedded shape, and a concatenated
+// ('a' + 'b') string widens to `string`, which makes the inference collapse to
+// GenericStringError and breaks the build.
+const DETAIL_SELECT =
+  '*, jobs(id,tenant_id,title,customer_id,customers(name,phone,email,address_line1,address_line2,city,state,postal_code,tenant_id)), technicians(id,ref,display_name,tenant_id)';
+
+// One visit + its job/customer/technician, tenant-scoped at the ROOT only.
+// A cross-tenant or unknown id reads as null (same contract as
+// getAssignmentForTenant); nested tenant checks are the caller's job.
+export async function getAssignmentWithRefsForTenant(
+  id: string,
+  tenantId: string,
+): Promise<AssignmentDetailRow | null> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select(DETAIL_SELECT)
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (error) throw new Error(`getAssignmentWithRefsForTenant failed: ${error.message}`);
+  return (data ?? null) as AssignmentDetailRow | null;
+}
+
+// Day-view projection: customer NAME + ADDRESS only (mirrors what
+// listJobsWithCustomerByIds surfaced), no contact details — the grid never
+// shows them. The customer DOES carry tenant_id: the pre-embed code gated the
+// customer on its JOB's tenant alone, which trusted the unenforced invariant
+// "a job's customer shares the job's tenant" (jobs.customer_id → customers(id)
+// is an id-only FK, and createJob takes tenantId/customerId as independent
+// arguments). Rows written outside the app — migrations, seeds, restores,
+// manual fixes — can violate it, and no app-level validation can catch those.
+// So the day view now re-checks the customer directly, matching readVisitDetail.
+export type AssignmentDayRow = Assignment & {
+  jobs:
+    | (Pick<Job, 'id' | 'tenant_id' | 'customer_id'> & {
+        customers: (JobCustomerAddress & { tenant_id: string }) | null;
+      })
+    | null;
+  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
+};
+
+// Single string literal — see the DETAIL_SELECT note above.
+const DAY_SELECT =
+  '*, jobs(id,tenant_id,customer_id,customers(name,address_line1,address_line2,city,state,postal_code,tenant_id)), technicians(id,ref,display_name,tenant_id)';
+
+// Same filters as listAssignmentsForTenant, plus the embedded graph.
+export async function listAssignmentsWithRefsForTenant(
+  tenantId: string,
+  fromISO: string,
+  toISO: string,
+  statuses: AssignmentStatus[] = ['confirmed'],
+): Promise<AssignmentDayRow[]> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select(DAY_SELECT)
+    .eq('tenant_id', tenantId)
+    .lt('starts_at', toISO)
+    .gt('ends_at', fromISO)
+    .in('status', statuses)
+    .order('starts_at', { ascending: true });
+  if (error) throw new Error(`listAssignmentsWithRefsForTenant failed: ${error.message}`);
+  return (data ?? []) as AssignmentDayRow[];
 }
 
 // Rows overlapping the [fromISO, toISO) window for one technician, live

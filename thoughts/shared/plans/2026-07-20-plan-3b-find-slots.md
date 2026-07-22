@@ -413,6 +413,27 @@ Deploy, tool-cache refresh, live evidence. No migration in this plan.
   never a duplicate job per day"). Description changed → gateway restarts after deploy.
   P4 itself PASSED (displacement list exact vs SQL, promised visit correctly absent,
   beyond-range hint relayed, 9h-window arithmetic correct).
+- **P5 step 1 (2026-07-22, user report "bypassed the confirmation gate but realized it"):
+  the PROMISE CAPTURE failed, not the gate.** Script: "I told Marcus we're coming Thursday
+  — book the garage sink leak Thu 4–5pm." The agent never encoded the promise into
+  promiseLevel, so the input-derived verdict correctly one-shot the booking; DB read-back:
+  promise_level 'none', promised_day null. The agent then SELF-CAUGHT via the booked
+  result's promiseLevel echo (the disclosure mechanism working as designed) but offered a
+  correction that did not exist — no tool edited a visit's promise (same gap class as the
+  pre-update_job title gap). Left uncorrected, a genuinely promised visit moves SILENTLY —
+  the exact harm the ladder prevents. FIXED (this PR): new tool `set_promise`
+  (surface 33) — one-shot promise-record editor mirroring update_job (old→new echo,
+  `promise_updated` schedule event, CAS, board link); promisedDay is SERVER-derived from
+  the visit's own date (bookVisit precedent — agent date math never touches the record);
+  book_visit's one-shot booked note now closes the loop: "promiseLevel none — if the
+  manager's words said otherwise, correct it NOW with set_promise" (fused into the result,
+  where instructions work). Plan: the user corrects Marcus's visit via the agent as the
+  live test, then P5 step 2 (promise-broken move dialog) runs on a legitimately promised
+  row. SECOND finding: the agent minted a DUPLICATE "garage sink leak" job despite the
+  deployed jobId-reuse description line — more evidence descriptions alone don't steer;
+  candidate mechanism (logged, not built): booked results could list the customer's other
+  open jobs (visibility, not blocking). New tool + description change → gateway restarts
+  after deploy.
 
 ---
 *Pause after Phase 4 for the manual check.*

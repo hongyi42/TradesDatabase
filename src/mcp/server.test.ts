@@ -1577,7 +1577,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
     );
     try {
       // The full manager surface: every base spine tool EXCEPT get_schedule
-      // (technician route view, removed 2026-07-19) + the 19 admin tools —
+      // (technician route view, removed 2026-07-19) + the 20 admin tools —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
@@ -1589,7 +1589,8 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('set_technician_skills');
       expect(mgrTools).toContain('find_slots');
       expect(mgrTools).toContain('update_job');
-      expect(mgrTools).toHaveLength(32);
+      expect(mgrTools).toContain('set_promise');
+      expect(mgrTools).toHaveLength(33);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -1992,7 +1993,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(32); // base minus get_schedule + 19 admin
+        expect(mgrTools).toHaveLength(33); // base minus get_schedule + 20 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -4765,6 +4766,159 @@ describe('update_job (the job identity editor)', () => {
       const { updateJobDetails } = await import('../db/jobs.js');
       await expect(
         updateJobDetails(tenantId, job.id, { title: 'stale writer' }, '2020-01-01T00:00:00.000Z'),
+      ).rejects.toThrow(/changed while updating/);
+    } finally {
+      await mgrClient.close();
+    }
+  });
+});
+
+describe('set_promise (the promise-record editor)', () => {
+  test('gate + validation + old→new echo + the promise then gates moves', { timeout: 30_000 }, async () => {
+    const denied = await call('set_promise', { assignmentId: 'x', promiseLevel: 'day' });
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain('manager badge');
+
+    const customer = await createCustomer({ tenantId, name: 'Set Promise Cust' });
+    const job = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'garage sink leak',
+      status: 'open',
+    });
+    // Own probe tech — standalone-runnable (the update_job round-2 lesson).
+    const spt = await insertTechnician({
+      tenantId,
+      ref: 'set-promise-tech',
+      displayName: 'Set Promise Tech',
+      seatExempt: true,
+    });
+    await setTechnicianAvailability(spt.id, {
+      mon: [['08:00', '17:00']],
+      tue: [['08:00', '17:00']],
+      wed: [['08:00', '17:00']],
+      thu: [['08:00', '17:00']],
+      fri: [['08:00', '17:00']],
+      sat: [],
+      sun: [],
+    });
+    // The live P5 incident shape: booked one-shot, confirmed, promise-free —
+    // the manager's "I told them we're coming Thursday" never became an arg.
+    const visit = await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: spt.id,
+      startsAt: '2027-06-07T13:00:00.000Z', // a Monday well past other fixtures
+      endsAt: '2027-06-07T14:00:00.000Z',
+      status: 'confirmed',
+    });
+
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // Validation: missing/invalid/non-string args, unknown id.
+      const noId = await callWith('set_promise', { promiseLevel: 'day' });
+      expect(noId.isError).toBe(true);
+      expect(noId.text).toContain('assignmentId is required');
+      const noLevel = await callWith('set_promise', { assignmentId: visit.id });
+      expect(noLevel.isError).toBe(true);
+      expect(noLevel.text).toContain('invalid promiseLevel');
+      const badLevel = await callWith('set_promise', {
+        assignmentId: visit.id,
+        promiseLevel: 'promised',
+      });
+      expect(badLevel.isError).toBe(true);
+      expect(badLevel.text).toContain('invalid promiseLevel');
+      // A number must be REJECTED, not coerced-to-absent (partial-update trap).
+      const numLevel = await callWith('set_promise', { assignmentId: visit.id, promiseLevel: 42 });
+      expect(numLevel.isError).toBe(true);
+      expect(numLevel.text).toContain('promiseLevel must be a string');
+      const unknown = await callWith('set_promise', {
+        assignmentId: '00000000-0000-0000-0000-000000000002',
+        promiseLevel: 'day',
+      });
+      expect(unknown.isError).toBe(true);
+      expect(unknown.text).toContain('visit not found');
+
+      // The correction: promise-free → 'day', echoed old → new. BOARD_BOT_HANDLE
+      // set: a promise correction is a schedule answer — it must carry the REAL
+      // board link (the find_slots fabrication lesson).
+      const prevHandle = process.env.BOARD_BOT_HANDLE;
+      process.env.BOARD_BOT_HANDLE = 'SlotsProbeBot';
+      let fixed;
+      try {
+        fixed = await callWith('set_promise', { assignmentId: visit.id, promiseLevel: 'day' });
+      } finally {
+        if (prevHandle === undefined) delete process.env.BOARD_BOT_HANDLE;
+        else process.env.BOARD_BOT_HANDLE = prevHandle;
+      }
+      expect(fixed.isError).toBe(false);
+      expect(fixed.data.changes.promiseLevel).toEqual({ from: 'none', to: 'day' });
+      // promisedDay is SERVER-derived from the visit's own row (bookVisit
+      // precedent) — agent date math never touches the promise record.
+      expect(fixed.data.changes.promisedDay).toEqual({ from: null, to: '2027-06-07' });
+      // Short form — the same weekday vocabulary find_slots already ships.
+      expect(fixed.data.weekday).toBe('Mon');
+      expect(fixed.data.note).toContain('old → new');
+      expect(fixed.data.boardLink).toBe('https://t.me/SlotsProbeBot?startapp');
+      const row = await pg.query(
+        'select promise_level, promised_day::text as promised_day from assignments where id = $1',
+        [visit.id],
+      );
+      expect(row.rows[0]).toEqual({ promise_level: 'day', promised_day: '2027-06-07' });
+      // The edit joined the append-only ledger: who, what, old → new.
+      const ev = await pg.query(
+        "select actor_ref, assignment_id, detail from schedule_events where tenant_id = $1 and kind = 'promise_updated' order by id desc limit 1",
+        [tenantId],
+      );
+      expect(ev.rows[0].actor_ref).toBe('mgr-test');
+      expect(ev.rows[0].assignment_id).toBe(visit.id);
+      expect(ev.rows[0].detail.promiseLevel).toEqual({ from: 'none', to: 'day' });
+
+      // THE point of the tool: the recorded promise now GATES — a day-breaking
+      // move stages a confirmation instead of one-shotting (the silent-move
+      // harm the correction exists to prevent).
+      const move = await callWith('move_visit', {
+        assignmentId: visit.id,
+        date: '2027-06-08',
+        startTime: '13:00',
+        reason: 'probe: the promise must gate this move',
+      });
+      expect(move.isError).toBe(false);
+      expect(move.data.status).toBe('needs_confirmation');
+      expect(move.data.preview.promiseBroken).toBe(true);
+
+      // 'none' is the undo: promise cleared, promisedDay follows.
+      const cleared = await callWith('set_promise', { assignmentId: visit.id, promiseLevel: 'none' });
+      expect(cleared.isError).toBe(false);
+      expect(cleared.data.changes.promiseLevel).toEqual({ from: 'day', to: 'none' });
+      expect(cleared.data.changes.promisedDay).toEqual({ from: '2027-06-07', to: null });
+      expect(cleared.data.note).toContain('can now move');
+
+      // Dead rows refuse: a cancelled visit's promise is not correctable.
+      const dead = await createAssignment({
+        tenantId,
+        jobId: job.id,
+        technicianId: spt.id,
+        startsAt: '2027-06-09T13:00:00.000Z',
+        endsAt: '2027-06-09T14:00:00.000Z',
+        status: 'confirmed',
+      });
+      await updateAssignmentStatus(dead.id, 'cancelled');
+      const onDead = await callWith('set_promise', { assignmentId: dead.id, promiseLevel: 'day' });
+      expect(onDead.isError).toBe(true);
+      expect(onDead.text).toContain('cancelled — promises are corrected on live visits only');
+
+      // CAS honesty at the db layer: a stale snapshot refuses, never
+      // overwrite-and-misreport (the echo IS the disclosure).
+      const { updateAssignmentPromise } = await import('../db/assignments.js');
+      await expect(
+        updateAssignmentPromise(
+          tenantId,
+          visit.id,
+          'day',
+          '2027-06-07',
+          '2020-01-01T00:00:00.000Z',
+        ),
       ).rejects.toThrow(/changed while updating/);
     } finally {
       await mgrClient.close();

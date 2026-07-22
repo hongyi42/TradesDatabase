@@ -122,7 +122,7 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - `rescheduleAssignment` creates the new row as `'proposed'` by default while every reader
   filters `['confirmed']` — moves MUST pass `status:'confirmed'`.
 
-## 4. Live-state snapshot (as of 2026-07-20 — verify before relying)
+## 4. Live-state snapshot (as of 2026-07-22 — verify before relying)
 
 **Tenants on the pilot DB:**
 - "Default Tenant" `82bbc6f8…` — demo/seed data; the user tests as `manager-sam`.
@@ -137,9 +137,10 @@ identify by which chat answers):
 | Sandbox | Person | Notes |
 |---|---|---|
 | s2 | manager-sam (the owner, TG 5801703167) | main manager test bot |
-| s3 | judy-testing (TG 8991633730) | real beta — hands off |
+| s3 | judy-testing | real beta — hands off. Roster TG is NULL (no phone bound yet); the sandbox allowlist currently holds 8991633730 (ben-shelton's id — drift): correct it when Judy binds or she's locked out |
 | s5 | ben-shelton, invited technician (@ragisan03_bot, TG 8991633730) | |
 | s6 | COLD BLANK (@ragisan2_bot) | the pool's one free blank (from s1's recycle) |
+| s7 | Yutao (manager, active, Default Tenant, TG 8639645984) | the box's DEFAULT sandbox; NOT in `sandbox_pool` (provisioned outside the pool, like pre-pool s2/s3) |
 | s1, s4 | retired/recycled | historical only |
 
 **Board:** one global non-AI bot `@DashboardMan_bot` (plain code on Render; tenant isolation
@@ -259,6 +260,15 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   nothing to reorder (fix + pinning test in `src/routes/googleRoutes.ts`). Moral: the
   fake-Google tests can't catch what only the live API does — run the key-gated live tests
   whenever `GOOGLE_MAPS_API_KEY` is available.
+
+- **Fleet rollouts must enumerate live sandboxes from the box, never from a remembered or
+  written-down map** (observed 2026-07-22: the set_promise wire+restart pass covered s2/s3/s5
+  from the recorded map and missed s7 — a live, bound manager sandbox added since — leaving it
+  on the stale cached tool list until asked). Ground truth: `nemoclaw list` for the container
+  set, then `nemoclaw <s> channels status` per sandbox for bindings. Do NOT trust
+  `~/.nemoclaw/sandboxes.json` top-level fields for this — botToken/allowedIds read as
+  null/absent there even for live, bound sandboxes; `channels status` is the only honest
+  binding probe (it reads the rendered runtime config).
 
 **Designing agent behavior (the meta-lesson):** GLM-5.2 does not reliably obey standing
 instructions — proven repeatedly (skipped `endTime` despite rules → PR #53 made it required;

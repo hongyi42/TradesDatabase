@@ -2,7 +2,7 @@
 date: 2026-07-20
 task: Plan 3b — find_slots: the deterministic, horizon-aware, drive-aware feasible-slot finder (read-only, ranked, no dead ends). Stacked on Plan 3a.
 research: thoughts/shared/research/2026-07-20-plan-3-auto-scheduler-surfaces.md + thoughts/shared/research/2026-07-20-flexible-scheduling-agent-toolset.md
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -378,8 +378,10 @@ Deploy, tool-cache refresh, live evidence. No migration in this plan.
       with displacement candidates — screenshot + JSON
 
 ### Manual verification
-- [ ] The agent's presentation of options reads naturally (user judgment on their phone) —
+- [x] The agent's presentation of options reads naturally (user judgment on their phone) —
       including that it relays the ranked reasons rather than inventing its own
+      (user, 2026-07-22 after the P1–P5 iteration cycle: "I think it works now"; residual
+      polish item = the UTC-conversion finding logged below)
 
 ### Live E2E findings log (2026-07-21)
 - **Probe 1 (drainage, day-level):** tool output verified perfect — packed Wednesday
@@ -434,6 +436,21 @@ Deploy, tool-cache refresh, live evidence. No migration in this plan.
   candidate mechanism (logged, not built): booked results could list the customer's other
   open jobs (visibility, not blocking). New tool + description change → gateway restarts
   after deploy.
+- **P5 COMPLETE — PASSED 2026-07-22 (PR #69 deployed; wire + gateway restarts on s2/s3/s5
+  AND s7 — s7=Yutao was missed by the first pass, see engineering-memory §5 fleet-rollout
+  trap).** Ledger evidence (pilot DB read-back): 21:22 `promise_updated` none→day on Marcus's
+  visit — **set_promise's first live call, in-chat correction worked**; 21:26 `moved` with
+  `promiseBroken: true` — the gate FIRED on the now-promised visit, manager got the preview,
+  explicit yes required; old row cancelled with reason kept, new row confirmed Fri 07-24
+  with the promise carried (promised_day re-anchored — by design, the reminder tells the
+  manager to inform the customer). Bonus: Yutao ran two clean one-shot unpromised moves
+  minutes after the s7 restart. NEW FINDING (open): the agent relayed "4:00–5:00 PM UTC
+  (9–10 AM Pacific)" — a FABRICATED timezone conversion (the visit is 4–5 PM wall-clock;
+  naive-local convention). Root cause: `get_team_schedule` is the ONE schedule payload that
+  passes raw `starts_at`/`ends_at` through (PostgREST `+00:00` marker — a lie under the
+  naive-local convention); every other payload ships HH:MM slices. Fix candidate (next PR):
+  emit date + startTime/endTime + weekday, never the raw timestamptz; deploy-only (result
+  shape, no description change → no gateway restarts).
 
 ---
 *Pause after Phase 4 for the manual check.*

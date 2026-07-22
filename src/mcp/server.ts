@@ -28,6 +28,7 @@ import {
   requestSandboxRetirement as liveRequestRetirement,
   cancelSandboxRetirement as liveCancelRetirement,
   updateTechnician,
+  updateAssignmentPromise,
   updateJobDetails,
   getTenant,
   insertTechnician,
@@ -108,6 +109,7 @@ import {
   generateCandidates,
   measureDriveDeltas,
   techDateKey,
+  weekdayLabel,
   DRIVE_MEASURE_TOP,
   type SlotCandidate,
 } from '../schedule/fit.js';
@@ -873,6 +875,34 @@ const ADMIN_TOOLS = [
     },
   },
   {
+    name: 'set_promise',
+    description:
+      "Correct a visit's PROMISE record (manager only) — what the customer was ACTUALLY told: " +
+      "'none' (nothing promised), 'day' (told which day), 'time' (told the exact time). Pass " +
+      'assignmentId + promiseLevel; done in ONE call — this corrects the record of what was ' +
+      'said, nothing moves. The promised day is derived from the visit itself — you never ' +
+      "compute a date. Use it the MOMENT you notice a promise went unrecorded (e.g. the " +
+      'manager said the customer was told a day, but the booked result shows promiseLevel ' +
+      '"none"): an unrecorded promise lets the visit be moved later with NO confirmation — ' +
+      'exactly what the promise ladder exists to prevent. To promise a DIFFERENT day than ' +
+      'the visit is booked, move the visit instead (the schedule should match the promise). ' +
+      'ALWAYS tell the manager exactly what changed (old → new).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assignmentId: { type: 'string', description: 'The visit whose promise record is wrong.' },
+        promiseLevel: {
+          type: 'string',
+          enum: ['none', 'day', 'time'],
+          description:
+            "What the customer was ACTUALLY told. 'day'/'time' anchor to the visit's own " +
+            "date (server-derived); 'none' clears the promise.",
+        },
+      },
+      required: ['assignmentId', 'promiseLevel'],
+    },
+  },
+  {
     name: 'find_slots',
     description:
       'Find bookable schedule slots (manager only) — READ-ONLY, it books NOTHING. This tool ' +
@@ -993,6 +1023,9 @@ const BOARD_LINK_TOOL_NAMES = new Set([
   // A job rename changes what the board displays → its confirmation is a
   // schedule answer under the same doctrine; same fabrication risk applies.
   'update_job',
+  // A promise correction changes what move/cancel will ask (and the board
+  // pins promised visits) — its confirmation is a schedule answer too.
+  'set_promise',
 ]);
 
 function boardMiniAppLink(): string | null {
@@ -2696,7 +2729,10 @@ async function dispatch(
               'Booked in one step — nothing was promised to the customer, so no confirmation ' +
               'was needed (undo = move_visit / cancel_visit). Tell the manager exactly what ' +
               'was booked: the JOB (jobTitle above — their words to object to if you assumed ' +
-              'it), customer, day, time, and who.',
+              'it), customer, day, time, and who. This visit is recorded as promise-free ' +
+              '(promiseLevel "none"): if the manager\'s words actually said the customer was ' +
+              'told a day or time, correct that NOW with set_promise — an unrecorded promise ' +
+              'lets the visit move later with no confirmation.',
           };
         }
         const preview = await previewBookVisit(bookInput);
@@ -3899,6 +3935,83 @@ async function dispatch(
         note:
           'Done in one step — correctable the same way (set a new value; jobType: null clears ' +
           'the type). Tell the manager exactly what changed, old → new.',
+      };
+    }
+    case 'set_promise': {
+      // Non-string args rejected, never coerced-to-absent (find_slots rule).
+      for (const k of ['assignmentId', 'promiseLevel']) {
+        if (args[k] !== undefined && typeof args[k] !== 'string') {
+          throw new Error(`${k} must be a string`);
+        }
+      }
+      const assignmentId = str('assignmentId');
+      if (!assignmentId) throw new Error('assignmentId is required');
+      const promiseLevelArg = str('promiseLevel');
+      if (!promiseLevelArg || !isPromiseLevel(promiseLevelArg)) {
+        throw new Error(
+          `invalid promiseLevel: ${String(args.promiseLevel ?? '')} (use none, day, or time)`,
+        );
+      }
+      // Tenant guard: a cross-tenant (or unknown) id reads as not found.
+      const row = await getAssignmentForTenant(assignmentId, tenantId);
+      if (!row) throw new Error('visit not found');
+      if (row.status !== 'confirmed' && row.status !== 'proposed') {
+        throw new Error(
+          `this visit is ${row.status} — promises are corrected on live visits only`,
+        );
+      }
+      // The promise is about THIS visit, so its day comes from the row itself
+      // (bookVisit derives promised_day from the booked date the same way) —
+      // agent date math never touches the promise record. Promising a
+      // DIFFERENT day than the visit is booked is move_visit's job: the
+      // schedule should match the promise, not diverge from it.
+      const promisedDay = promiseLevelArg === 'none' ? null : row.starts_at.slice(0, 10);
+      const updated = await updateAssignmentPromise(
+        tenantId,
+        assignmentId,
+        promiseLevelArg as PromiseLevel,
+        promisedDay,
+        row.updated_at, // CAS — the old→new echo must describe THIS read
+      );
+      // The promise level gates every future move/cancel confirmation on this
+      // visit — the change joins the append-only ledger like every schedule
+      // mutation (update_job precedent): who changed what, when, old → new.
+      await appendScheduleEvent({
+        tenantId,
+        assignmentId,
+        kind: 'promise_updated',
+        actorRef: identity.technicianRef,
+        detail: {
+          promiseLevel: { from: row.promise_level, to: updated.promise_level },
+          promisedDay: { from: row.promised_day, to: updated.promised_day },
+        } as unknown as Json,
+      });
+      const visitDate = updated.starts_at.slice(0, 10);
+      return {
+        status: 'ok',
+        assignmentId,
+        jobId: row.job_id,
+        date: visitDate,
+        weekday: weekdayLabel(visitDate),
+        changes: {
+          promiseLevel: { from: row.promise_level, to: updated.promise_level },
+          promisedDay: { from: row.promised_day, to: updated.promised_day },
+        },
+        // The gating claim must match the actual gate (review finding): a
+        // 'day' promise breaks only when the DAY changes — a same-day time
+        // shift stays one-shot — while 'time' gates every move.
+        note:
+          updated.promise_level === 'none'
+            ? 'Promise cleared — this visit can now move without a confirmation round. Tell ' +
+              'the manager exactly what changed, old → new.'
+            : updated.promise_level === 'day'
+              ? 'Promise recorded — moving this visit to ANOTHER day, or cancelling it, now ' +
+                'requires the manager to confirm first (the customer was told the day; a ' +
+                'same-day time shift stays one-shot). Tell the manager exactly what ' +
+                'changed, old → new.'
+              : 'Promise recorded — moving or cancelling this visit now requires the ' +
+                'manager to confirm first (the customer was told the exact time). Tell ' +
+                'the manager exactly what changed, old → new.',
       };
     }
     case 'find_slots': {

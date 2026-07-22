@@ -186,6 +186,43 @@ export async function getAssignmentForTenant(
   return data;
 }
 
+// Correct a visit's PROMISE record — what the customer was actually told —
+// after booking. Born from a live E2E finding (2026-07-22): a manager's "I
+// told Marcus we're coming Thursday" never became promiseLevel on the call,
+// the visit landed unprotected ('none'), and no tool could fix it — so a
+// genuinely promised visit would move SILENTLY, the exact harm the promise
+// ladder exists to prevent. Promise fields only: times are immutable here
+// (reschedule = cancel + insert) and status has its own machine above.
+// promisedDay is the CALLER's derivation from the row (bookVisit precedent:
+// the promise is about THIS visit, so its day comes from the row, never from
+// agent date math); the DB check constraint backstops the pairing.
+export async function updateAssignmentPromise(
+  tenantId: string,
+  assignmentId: string,
+  promiseLevel: PromiseLevel,
+  promisedDay: string | null,
+  // CAS: the caller's snapshot of updated_at — the old→new echo the tool
+  // returns is only honest if nothing moved between read and write
+  // (updateJobDetails precedent).
+  expectedUpdatedAt: string,
+): Promise<Assignment> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .update({ promise_level: promiseLevel, promised_day: promisedDay })
+    .eq('id', assignmentId)
+    .eq('tenant_id', tenantId) // tenant guard: a cross-tenant id matches no row
+    .eq('updated_at', expectedUpdatedAt)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`updateAssignmentPromise failed: ${error.message}`);
+  if (!data) {
+    throw new Error(
+      'visit changed while updating (or not found) — re-read it and try again so the old→new report stays honest',
+    );
+  }
+  return data;
+}
+
 // Rows overlapping the [fromISO, toISO) window for the WHOLE tenant — the
 // team-schedule / dispatch-board read. Confirmed only by default: the board
 // shows the real schedule, not alternative proposals.

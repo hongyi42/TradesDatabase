@@ -28,6 +28,7 @@ import {
   requestSandboxRetirement as liveRequestRetirement,
   cancelSandboxRetirement as liveCancelRetirement,
   updateTechnician,
+  updateJobDetails,
   getTenant,
   insertTechnician,
   isInactiveState,
@@ -839,6 +840,36 @@ const ADMIN_TOOLS = [
     },
   },
   {
+    name: 'update_job',
+    description:
+      "Correct an existing job's IDENTITY (manager only): title, jobType, and/or priority — " +
+      'pass jobId plus any of the three. Reversible and internal → done in ONE call; ALWAYS ' +
+      'tell the manager exactly what changed (old → new). THIS is how a wrong or assumed job ' +
+      'title gets fixed — the title displays on the board and every schedule read, so correct ' +
+      'it here, never by only recording a fact. Setting jobType links the job to the stored ' +
+      "set_job_duration vocabulary (scheduling then treats the type as authoritative). It " +
+      'never touches visits, dates, times, or job status (move_visit / cancel_visit own those).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: 'The job to correct.' },
+        title: { type: 'string', description: 'New title, as the manager states the work.' },
+        jobType: {
+          type: 'string',
+          description:
+            "New job type (free text, stored lowercase — match set_job_duration's types so " +
+            'the stored duration applies).',
+        },
+        priority: {
+          type: 'string',
+          enum: ['emergency', 'urgent', 'routine', 'maintenance'],
+          description: 'New triage tier.',
+        },
+      },
+      required: ['jobId'],
+    },
+  },
+  {
     name: 'find_slots',
     description:
       'Find bookable schedule slots (manager only) — READ-ONLY, it books NOTHING. This tool ' +
@@ -956,6 +987,9 @@ const BOARD_LINK_TOOL_NAMES = new Set([
   // "board.example.com/v=23", the 23 being the payload's scheduleVersion).
   // Give it the real link; the fused boardNote leaves nothing to invent.
   'find_slots',
+  // A job rename changes what the board displays → its confirmation is a
+  // schedule answer under the same doctrine; same fabrication risk applies.
+  'update_job',
 ]);
 
 function boardMiniAppLink(): string | null {
@@ -3782,6 +3816,44 @@ async function dispatch(
               'unknown" and are never excluded from scheduling on that basis. Tell the manager.'
             : `${target.display_name}'s skills are now: ${updated.skills.join(', ')} (full ` +
               'replacement). Tell the manager exactly this.',
+      };
+    }
+    case 'update_job': {
+      const jobId = str('jobId');
+      if (!jobId) throw new Error('jobId is required');
+      // Non-string args rejected, never coerced-to-absent (find_slots rule).
+      for (const k of ['title', 'jobType', 'priority']) {
+        if (args[k] !== undefined && typeof args[k] !== 'string') {
+          throw new Error(`${k} must be a string`);
+        }
+      }
+      const priorityArg = str('priority');
+      if (priorityArg && !JOB_PRIORITIES.includes(priorityArg as JobPriority)) {
+        throw new Error(`invalid priority: ${priorityArg}`);
+      }
+      const job = await getJob(jobId);
+      // Tenant guard: a cross-tenant (or unknown) id reads as not found.
+      if (!job || job.tenant_id !== tenantId) throw new Error('job not found');
+      const updated = await updateJobDetails(tenantId, jobId, {
+        ...(str('title') !== undefined ? { title: str('title')! } : {}),
+        ...(str('jobType') !== undefined ? { jobType: str('jobType')! } : {}),
+        ...(priorityArg ? { priority: priorityArg as JobPriority } : {}),
+      });
+      // Old → new per changed field: the echo IS the disclosure — the manager
+      // hears exactly what the record now says (job-identity lesson).
+      const change = (from: unknown, to: unknown) => ({ from: from ?? null, to: to ?? null });
+      return {
+        status: 'ok',
+        jobId,
+        customerId: job.customer_id,
+        changes: {
+          ...(str('title') !== undefined ? { title: change(job.title, updated.title) } : {}),
+          ...(str('jobType') !== undefined ? { jobType: change(job.job_type, updated.job_type) } : {}),
+          ...(priorityArg ? { priority: change(job.priority, updated.priority) } : {}),
+        },
+        note:
+          'Done in one step — reversible (call update_job again to change it back). Tell the ' +
+          'manager exactly what changed, old → new.',
       };
     }
     case 'find_slots': {

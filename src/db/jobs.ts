@@ -162,3 +162,48 @@ export async function updateJobStatus(id: string, next: JobStatus): Promise<Job>
   }
   return data;
 }
+
+// Correct a job's IDENTITY fields — title, type, priority — after creation.
+// Born from a live E2E finding (2026-07-21): an agent-assumed title reached
+// the record with no way to fix it from chat; record_standing_fact could only
+// annotate, while the title kept displaying everywhere. Identity only: status
+// has its own state machine above, and visits belong to move/cancel.
+export interface UpdateJobDetailsInput {
+  title?: string;
+  jobType?: string; // normalized lowercase — must match set_job_duration's vocabulary
+  priority?: JobPriority;
+}
+
+export async function updateJobDetails(
+  tenantId: string,
+  jobId: string,
+  input: UpdateJobDetailsInput,
+): Promise<Job> {
+  const patch: Database['public']['Tables']['jobs']['Update'] = {};
+  if (input.title !== undefined) {
+    const title = input.title.trim();
+    if (!title) throw new Error('title must not be empty');
+    patch.title = title;
+  }
+  if (input.jobType !== undefined) {
+    // Same normalization as job_type_durations: scheduling matches the type
+    // against the stored duration vocabulary, so casing must never miss.
+    const jobType = input.jobType.trim().toLowerCase();
+    if (!jobType) throw new Error('jobType must not be empty');
+    patch.job_type = jobType;
+  }
+  if (input.priority !== undefined) patch.priority = input.priority;
+  if (Object.keys(patch).length === 0) {
+    throw new Error('nothing to update — pass title, jobType, or priority');
+  }
+  const { data, error } = await getClient()
+    .from('jobs')
+    .update(patch)
+    .eq('id', jobId)
+    .eq('tenant_id', tenantId) // tenant guard: a cross-tenant id matches no row
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`updateJobDetails failed: ${error.message}`);
+  if (!data) throw new Error('job not found');
+  return data;
+}

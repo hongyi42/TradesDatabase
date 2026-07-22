@@ -1573,7 +1573,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
     );
     try {
       // The full manager surface: every base spine tool EXCEPT get_schedule
-      // (technician route view, removed 2026-07-19) + the 18 admin tools —
+      // (technician route view, removed 2026-07-19) + the 19 admin tools —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
@@ -1584,7 +1584,8 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('set_availability');
       expect(mgrTools).toContain('set_technician_skills');
       expect(mgrTools).toContain('find_slots');
-      expect(mgrTools).toHaveLength(31);
+      expect(mgrTools).toContain('update_job');
+      expect(mgrTools).toHaveLength(32);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -1987,7 +1988,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(31); // base minus get_schedule + 18 admin
+        expect(mgrTools).toHaveLength(32); // base minus get_schedule + 19 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -4607,6 +4608,82 @@ describe('find_slots (Plan 3b)', () => {
       expect(propFake).toHaveBeenCalledTimes(2);
     } finally {
       await c3.close();
+    }
+  });
+});
+
+describe('update_job (the job identity editor)', () => {
+  test('gate + validation + old→new echo + scheduling authority', { timeout: 30_000 }, async () => {
+    const denied = await call('update_job', { jobId: 'x', title: 'nope' });
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain('manager badge');
+
+    const customer = await createCustomer({ tenantId, name: 'Update Job Cust' });
+    const job = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'Cust - drainage replacement (assumed)',
+      status: 'open',
+    });
+
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // Validation: no fields, empty title, junk priority, non-string title,
+      // unknown/cross-tenant id.
+      const none = await callWith('update_job', { jobId: job.id });
+      expect(none.isError).toBe(true);
+      expect(none.text).toContain('nothing to update');
+      const empty = await callWith('update_job', { jobId: job.id, title: '   ' });
+      expect(empty.isError).toBe(true);
+      expect(empty.text).toContain('must not be empty');
+      const badPriority = await callWith('update_job', { jobId: job.id, priority: 'asap' });
+      expect(badPriority.isError).toBe(true);
+      expect(badPriority.text).toContain('invalid priority');
+      const numTitle = await callWith('update_job', { jobId: job.id, title: 42 });
+      expect(numTitle.isError).toBe(true);
+      expect(numTitle.text).toContain('title must be a string');
+      const unknown = await callWith('update_job', {
+        jobId: '00000000-0000-0000-0000-000000000001',
+        title: 'ghost',
+      });
+      expect(unknown.isError).toBe(true);
+      expect(unknown.text).toContain('job not found');
+
+      // The correction: title + normalized type + priority, echoed old → new.
+      const fixed = await callWith('update_job', {
+        jobId: job.id,
+        title: 'Cust - installation',
+        jobType: '  Sump-Pump  ',
+        priority: 'urgent',
+      });
+      expect(fixed.isError).toBe(false);
+      expect(fixed.data.changes.title).toEqual({
+        from: 'Cust - drainage replacement (assumed)',
+        to: 'Cust - installation',
+      });
+      expect(fixed.data.changes.jobType).toEqual({ from: null, to: 'sump-pump' });
+      expect(fixed.data.changes.priority).toEqual({ from: 'routine', to: 'urgent' });
+      expect(fixed.data.note).toContain('old → new');
+      const row = await pg.query('select title, job_type, priority from jobs where id = $1', [job.id]);
+      expect(row.rows[0]).toEqual({
+        title: 'Cust - installation',
+        job_type: 'sump-pump',
+        priority: 'urgent',
+      });
+
+      // The corrected type immediately drives scheduling: find_slots resolves
+      // the stored duration for the NEW type with the standard disclosure.
+      await upsertJobTypeDuration(tenantId, 'sump-pump', 90);
+      const slots = await callWith('find_slots', {
+        jobId: job.id,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-05-03', // a Monday well past other fixtures
+        latestDate: '2027-05-03',
+      });
+      expect(slots.isError).toBe(false);
+      expect(slots.data.durationAssumption).toContain("assuming 90 min for 'sump-pump'");
+    } finally {
+      await mgrClient.close();
     }
   });
 });

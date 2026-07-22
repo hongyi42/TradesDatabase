@@ -684,6 +684,9 @@
     // and commit the drop at coordinates the manager never chose.
     drag = { card: card, chip: chip, pointerId: pointerId };
     card.classList.add('dragging');
+    // Desktop cursor only: the pointer leaves the source card almost at once,
+    // so the closed-hand cursor has to live on the document for the gesture.
+    document.body.classList.add('dragging');
     positionChip(x, y);
   }
 
@@ -702,6 +705,7 @@
     if (!drag) return;
     if (tg && typeof tg.enableVerticalSwipes === 'function') tg.enableVerticalSwipes();
     drag.card.classList.remove('dragging');
+    document.body.classList.remove('dragging');
     drag.chip.remove();
     drag = null;
     lastDragEnd = Date.now();

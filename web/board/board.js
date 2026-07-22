@@ -340,18 +340,16 @@
   // page-flip skip weeks on the retry tap.
   function load(requestedView, requestedOffset) {
     var offset = requestedOffset === undefined ? state.weekOffset : requestedOffset;
-    // First call learns the FIRM-local `from` (server computes it — the client
-    // clock never decides what "today" is); the second fetches the selected
-    // 7-day week, offset in whole weeks from that anchor. The selected tab
-    // rides as view=mine on both calls (harmless on the first; the server
-    // ignores it for non-managers).
+    // The selected tab rides as view=mine (harmless on the anchor call; the
+    // server ignores it for non-managers).
     var v = (requestedView || state.view) === 'mine' ? 'view=mine' : '';
-    return apiGet(v ? '?' + v : '').then(function (first) {
-      if (!first) return null;
-      // Weeks are CALENDAR weeks: Monday of the firm-local current week is
-      // the anchor, offset in whole weeks from there (week 0 = Mon–Sun
-      // containing today, so it can include already-past days).
-      var from = addDays(mondayOf(first.from), offset * 7);
+
+    // Fetch + render the selected 7-day CALENDAR week from a known firm-local
+    // anchor. Weeks are Mon–Sun: Monday of the anchor's week, offset in whole
+    // weeks from there (week 0 contains today, so it can include already-past
+    // days).
+    function fetchWeek(anchor) {
+      var from = addDays(mondayOf(anchor), offset * 7);
       return apiGet(
         '?from=' + from + '&to=' + addDays(from, 6) + (v ? '&' + v : ''),
       ).then(function (data) {
@@ -360,13 +358,23 @@
         // Commit BEFORE render on purpose: render's pager label and the
         // actionable()/past-day checks inside renderDay read the committed
         // values. A throw inside render can't strand a wrong commit — the
-        // server always returns renderable days on a 200 (readBoardDays
-        // shape).
+        // server always returns renderable days on a 200 (readBoardDays shape).
         state.weekOffset = offset;
-        state.today = first.from;
+        state.today = anchor;
         render(data);
         return data;
       });
+    }
+
+    // The firm-local `from` (server computes it — the client clock never
+    // decides what "today" is) only needs to be learned ONCE. After the first
+    // load state.today holds it, so every tab/pager/refresh reuses the cached
+    // anchor instead of paying a whole extra round-trip (a full day read) just
+    // to re-learn one date. visibilitychange clears state.today so a day
+    // crossed while the webview was hidden still re-anchors on return.
+    if (state.today) return fetchWeek(state.today);
+    return apiGet(v ? '?' + v : '').then(function (first) {
+      return first ? fetchWeek(first.from) : null;
     });
   }
 
@@ -810,10 +818,14 @@
   wireWrites();
   // An idle-open board can cross firm-local midnight with a stale `today`
   // anchor — one day of already-past cards would keep their write
-  // affordances until the next load (review finding). Re-anchor whenever the
-  // webview returns to the foreground; refresh() keeps the current tab/week.
+  // affordances until the next load (review finding). Since load() now reuses
+  // the cached anchor, clear it here so the foreground return RE-LEARNS today
+  // from the server; refresh() then keeps the current tab/week.
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden && state.rendered) refresh();
+    if (!document.hidden && state.rendered) {
+      state.today = null;
+      refresh();
+    }
   });
   refresh();
 })();

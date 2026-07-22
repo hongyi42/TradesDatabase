@@ -1,0 +1,22 @@
+-- Index the board's auth lookup column.
+--
+-- Every /board/api/* request resolves a Telegram account to a roster row via
+--   select * from technicians where telegram_user_id = $1
+-- (findRosterByTelegramUserIdGlobal, src/db/technicians.ts). Migration
+-- 20260707000000 added the column but no index, so that lookup is a sequential
+-- scan of the whole roster on every board button press.
+--
+-- The pilot roster is tiny (8 rows), so this buys ~nothing today — it is
+-- future-proofing: seq-scan cost grows linearly with the roster across all
+-- tenants, while an index keeps the lookup flat. Cheap insurance, and the right
+-- shape for a column that is filtered on every request.
+--
+-- Not partial (`where telegram_user_id is not null`): listTenantIdsWithTelegramBindings
+-- also filters `not null` on this column, and a plain index serves both that
+-- scan and the point lookup.
+--
+-- `if not exists` so re-application is a no-op. Plain CREATE INDEX rather than
+-- CONCURRENTLY: the table is small (sub-millisecond lock) and CONCURRENTLY
+-- cannot run inside a transaction block, which the migration runner uses.
+create index if not exists idx_technicians_telegram_user_id
+  on technicians (telegram_user_id);

@@ -2,6 +2,7 @@ import type http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { verifyInitData } from './initData.js';
+import * as rosterCache from './rosterCache.js';
 import { findRosterByTelegramUserIdGlobal, type Technician } from '../db/index.js';
 import { InvalidRangeError, readBoardDays, readVisitDetail } from '../schedule/boardRead.js';
 import {
@@ -57,6 +58,11 @@ async function authBoard(req: http.IncomingMessage): Promise<BoardAuth> {
   } catch {
     return { ok: false, code: 401 };
   }
+  // The signature was verified above, on THIS request. Only the roster lookup —
+  // the one DB round-trip in this function — is memoized, and only on success;
+  // see rosterCache for the reasoning and the 60s staleness window.
+  const cached = rosterCache.get(userId, Date.now());
+  if (cached) return { ok: true, tenantId: cached.tenantId, technician: cached.technician };
   const match = await findRosterByTelegramUserIdGlobal(userId);
   if (!match) return { ok: false, code: 401 };
   if ('ambiguous' in match) {
@@ -64,14 +70,17 @@ async function authBoard(req: http.IncomingMessage): Promise<BoardAuth> {
       ok: false,
       code: 409,
       // Multi-firm vs a same-tenant duplicate binding — both refuse, each
-      // with copy the operator can act on.
+      // with copy the operator can act on. NOT cached: an ambiguity is resolved
+      // by an operator edit, and that fix must take effect immediately.
       error:
         match.tenantIds.length > 1
           ? 'account on multiple firms'
           : 'account matches multiple roster entries',
     };
   }
-  return { ok: true, tenantId: match.technician.tenant_id, technician: match.technician };
+  const resolved = { tenantId: match.technician.tenant_id, technician: match.technician };
+  rosterCache.set(userId, resolved, Date.now());
+  return { ok: true, ...resolved };
 }
 
 function json(res: http.ServerResponse, code: number, body: unknown): void {

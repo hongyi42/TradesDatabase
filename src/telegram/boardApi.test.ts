@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { Client } from 'pg';
 import type { AddressInfo } from 'node:net';
@@ -8,7 +8,9 @@ import { getClient } from '../db/client.js';
 import { setTenantSeats, createTenant } from '../db/tenants.js';
 import { insertTechnician, updateTechnician } from '../db/technicians.js';
 import { createCustomer } from '../db/customers.js';
+import { createJob } from '../db/jobs.js';
 import { bookVisit } from '../schedule/booking.js';
+import * as rosterCache from './rosterCache.js';
 
 // Integration: the /board routes over a real HTTP server on an ephemeral port
 // against the local stack (httpServer.test.ts harness). BOARD_BOT_TOKEN is set
@@ -116,16 +118,26 @@ afterAll(async () => {
   await pg.end();
 });
 
+// The roster cache is module-level, so it outlives an individual test: a
+// success cached by one test would leak into the next. Concretely, without this
+// the "account live on two firms → 409" test below would see the ALLOW cached
+// for 900000001 by an earlier test and wrongly return 200. Clear per test.
+beforeEach(() => {
+  rosterCache.clear();
+});
+
 interface DayResponse {
   tier: string;
   self: string;
   view: string;
   from: string;
   to: string;
-  scheduleVersion: number;
   days: Array<{
     date: string;
+    // Mirrors BoardStop in full — the shape test below pins this key set, so a
+    // dropped field in the embed projection fails loudly instead of silently.
     stops: Array<{
+      assignmentId: string;
       technicianRef: string | null;
       technicianName: string | null;
       unassigned: boolean;
@@ -133,6 +145,11 @@ interface DayResponse {
       address: string | null;
       start: string;
       end: string;
+      promiseLevel: string;
+      promisedDay: string | null;
+      locked: boolean;
+      status: string;
+      jobId: string | null;
     }>;
   }>;
 }
@@ -192,6 +209,45 @@ describe('GET /board/api/day', () => {
       technicianName: null,
       unassigned: true,
     });
+  });
+
+  test('BoardStop shape is complete and stable (guards embed field drift)', async () => {
+    // The day read is one PostgREST embed; a projection typo would silently
+    // drop a field. Pin the whole key set AND every value for one known stop.
+    const resp = await day('?from=2026-09-01', tma(900000001));
+    const body = (await resp.json()) as DayResponse;
+    const stop = body.days[0].stops.find((s) => s.start.slice(11, 16) === '09:00');
+    if (!stop) throw new Error('expected a 09:00 stop');
+    expect(Object.keys(stop).sort()).toEqual(
+      [
+        'address',
+        'assignmentId',
+        'customer',
+        'end',
+        'jobId',
+        'locked',
+        'promiseLevel',
+        'promisedDay',
+        'start',
+        'status',
+        'technicianName',
+        'technicianRef',
+        'unassigned',
+      ].sort(),
+    );
+    expect(stop).toMatchObject({
+      technicianRef: 'board-t1',
+      technicianName: 'Tess One',
+      unassigned: false,
+      customer: 'Board Casa',
+      address: '12 Board St, Springfield, OR, 97477',
+      promiseLevel: 'none',
+      promisedDay: null,
+      locked: true,
+      status: 'confirmed',
+    });
+    expect(typeof stop.jobId).toBe('string');
+    expect(stop.end.slice(0, 16)).toBe('2026-09-01T11:00');
   });
 
   test('technician slip → own stops only; the unassigned stop is absent by construction', async () => {
@@ -340,6 +396,206 @@ describe('GET /board/api/visit (tap-into-a-visit detail)', () => {
       expect(resp.status).toBe(404);
       expect(((await resp.json()) as { error: string }).error).toBe('visit not found');
     }
+  });
+});
+
+describe('cross-tenant nested rows never leak through the embedded read', () => {
+  // Both board reads now fetch assignment + job + customer + technician in ONE
+  // PostgREST embed. The foreign keys are ID-ONLY — not one of them carries
+  // tenant_id — so an assignment CAN reference another firm's job, and the
+  // embed will happily hand that row back. boardRead re-checks every nested
+  // row's tenant before surfacing it; these tests are what prove that guard is
+  // still there. Delete them and a future embed refactor leaks silently.
+  let strandedId: string;
+  let strandedTechId: string;
+  let strandedCustomerId: string;
+  let otherTenantId: string;
+  let ourJobId: string;
+  let ourCustomerId: string;
+  let mismatchedJobId: string;
+
+  beforeAll(async () => {
+    const other = await createTenant('Board Cross-Tenant Probe', {
+      managerSeats: 1,
+      technicianSeats: 1,
+    });
+    otherTenantId = other.id;
+    const theirCustomer = await createCustomer({
+      tenantId: otherTenantId,
+      name: 'SECRET Rival Customer',
+      phone: '555-999-0000',
+      email: 'secret@rival.example',
+      addressLine1: '99 Secret Ave',
+      city: 'Nowhere',
+      state: 'OR',
+      postalCode: '97000',
+    });
+    const theirJob = await createJob({
+      tenantId: otherTenantId,
+      customerId: theirCustomer.id,
+      title: 'SECRET Rival Job',
+    });
+    // The hostile row: lives in OUR tenant, points at THEIR job. Raw SQL because
+    // the real booking verbs are tenant-scoped and would never create it.
+    // Unassigned + its own day so no_confirmed_overlap cannot fire.
+    const inserted = await pg.query<{ id: string }>(
+      `insert into assignments
+         (tenant_id, job_id, technician_id, starts_at, ends_at, status)
+       values ($1, $2, null, '2026-09-15T09:00:00Z', '2026-09-15T10:00:00Z', 'confirmed')
+       returning id`,
+      [tenantId, theirJob.id],
+    );
+    strandedId = inserted.rows[0].id;
+
+    // Second hostile shape, isolating the TECHNICIAN guard: our own job and
+    // customer (so those resolve normally) but technician_id pointing at the
+    // other firm's roster row. Without the technician tenant check this
+    // discloses their ref + display name.
+    const ourCustomer = await createCustomer({
+      tenantId,
+      name: 'Tenant-Safe Casa',
+      addressLine1: '1 Safe St',
+      city: 'Springfield',
+      state: 'OR',
+      postalCode: '97477',
+    });
+    ourCustomerId = ourCustomer.id;
+    const ourJob = await createJob({
+      tenantId,
+      customerId: ourCustomer.id,
+      title: 'Tenant-Safe Job',
+    });
+    ourJobId = ourJob.id;
+    const theirTech = await insertTechnician({
+      tenantId: otherTenantId,
+      ref: 'rival-tech',
+      displayName: 'SECRET Rival Tech',
+    });
+    const insertedTech = await pg.query<{ id: string }>(
+      `insert into assignments
+         (tenant_id, job_id, technician_id, starts_at, ends_at, status)
+       values ($1, $2, $3, '2026-09-16T09:00:00Z', '2026-09-16T10:00:00Z', 'confirmed')
+       returning id`,
+      [tenantId, ourJob.id, theirTech.id],
+    );
+    strandedTechId = insertedTech.rows[0].id;
+
+    // Third hostile shape, isolating the CUSTOMER guard: a job in OUR tenant
+    // whose customer_id points at THEIR customer. createJob takes tenantId and
+    // customerId as independent arguments and validates no relationship between
+    // them, so this needs no raw SQL — which is exactly why the day view cannot
+    // simply inherit the customer's tenant from its job.
+    const mismatchedJob = await createJob({
+      tenantId,
+      customerId: theirCustomer.id,
+      title: 'Our Job Foreign Customer',
+    });
+    mismatchedJobId = mismatchedJob.id;
+    const insertedCust = await pg.query<{ id: string }>(
+      `insert into assignments
+         (tenant_id, job_id, technician_id, starts_at, ends_at, status)
+       values ($1, $2, null, '2026-09-17T09:00:00Z', '2026-09-17T10:00:00Z', 'confirmed')
+       returning id`,
+      [tenantId, mismatchedJob.id],
+    );
+    strandedCustomerId = insertedCust.rows[0].id;
+  });
+
+  afterAll(async () => {
+    await pg.query('delete from assignments where id = any($1)', [
+      [strandedId, strandedTechId, strandedCustomerId],
+    ]);
+    await pg.query('delete from jobs where id = any($1)', [[ourJobId, mismatchedJobId]]);
+    await pg.query('delete from customers where id = $1', [ourCustomerId]);
+    await pg.query('delete from technicians where tenant_id = $1', [otherTenantId]);
+    await pg.query('delete from jobs where tenant_id = $1', [otherTenantId]);
+    await pg.query('delete from customers where tenant_id = $1', [otherTenantId]);
+    await pg.query('delete from tenants where id = $1', [otherTenantId]);
+  });
+
+  test("a foreign-tenant technician's ref and name are withheld in both reads", async () => {
+    const detail = await fetch(`${base}/board/api/visit?assignmentId=${strandedTechId}`, {
+      headers: tma(900000001),
+    });
+    expect(detail.status).toBe(200);
+    const detailRaw = await detail.text();
+    expect(detailRaw).not.toContain('SECRET');
+    expect(detailRaw).not.toContain('rival-tech');
+    expect(JSON.parse(detailRaw)).toMatchObject({
+      // Our own job/customer still resolve — only the technician is foreign.
+      jobTitle: 'Tenant-Safe Job',
+      technicianRef: null,
+      technicianName: null,
+      // technician_id is SET (just to another firm), so this is not "unassigned".
+      unassigned: false,
+    });
+
+    const grid = await day('?from=2026-09-16', tma(900000001));
+    expect(grid.status).toBe(200);
+    const gridRaw = await grid.text();
+    expect(gridRaw).not.toContain('SECRET');
+    expect(gridRaw).not.toContain('rival-tech');
+    const stops = (JSON.parse(gridRaw) as DayResponse).days.flatMap((d) => d.stops);
+    expect(stops).toHaveLength(1);
+    expect(stops[0]).toMatchObject({
+      customer: 'Tenant-Safe Casa',
+      technicianRef: null,
+      technicianName: null,
+      unassigned: false,
+    });
+  });
+
+  test("our own job pointing at another firm's customer withholds that customer", async () => {
+    // The job passes the tenant check (it IS ours) — only a check on the
+    // CUSTOMER's own tenant can catch this one.
+    const grid = await day('?from=2026-09-17', tma(900000001));
+    expect(grid.status).toBe(200);
+    const raw = await grid.text();
+    expect(raw).not.toContain('SECRET');
+    expect(raw).not.toContain('99 Secret Ave');
+    const stops = (JSON.parse(raw) as DayResponse).days.flatMap((d) => d.stops);
+    expect(stops).toHaveLength(1);
+    expect(stops[0]).toMatchObject({ customer: null, address: null });
+    // The job is ours, so its id is NOT withheld — only the foreign customer is.
+    expect(stops[0].jobId).toBe(mismatchedJobId);
+  });
+
+  test('visit detail withholds the other firm\'s job title and customer', async () => {
+    const resp = await fetch(`${base}/board/api/visit?assignmentId=${strandedId}`, {
+      headers: tma(900000001),
+    });
+    expect(resp.status).toBe(200);
+    const raw = await resp.text();
+    // Nothing from the other tenant may appear ANYWHERE in the payload.
+    expect(raw).not.toContain('SECRET');
+    expect(raw).not.toContain('secret@rival.example');
+    expect(raw).not.toContain('99 Secret Ave');
+    expect(JSON.parse(raw)).toMatchObject({
+      status: 'confirmed',
+      unassigned: true,
+      jobTitle: null,
+      customer: null,
+    });
+  });
+
+  test('day view shows the stop but withholds the other firm\'s customer', async () => {
+    const resp = await day('?from=2026-09-15', tma(900000001));
+    expect(resp.status).toBe(200);
+    const raw = await resp.text();
+    expect(raw).not.toContain('SECRET');
+    expect(raw).not.toContain('99 Secret Ave');
+    const body = JSON.parse(raw) as DayResponse;
+    const stops = body.days.flatMap((d) => d.stops);
+    expect(stops).toHaveLength(1);
+    expect(stops[0]).toMatchObject({
+      unassigned: true,
+      technicianRef: null,
+      customer: null,
+      address: null,
+      // The foreign job's UUID is withheld too — nulling the customer while
+      // still emitting the other firm's job id would leak an identifier.
+      jobId: null,
+    });
   });
 });
 

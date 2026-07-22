@@ -4859,6 +4859,9 @@ describe('set_promise (the promise-record editor)', () => {
       // Short form — the same weekday vocabulary find_slots already ships.
       expect(fixed.data.weekday).toBe('Mon');
       expect(fixed.data.note).toContain('old → new');
+      // The gating claim matches the actual gate (review finding): a 'day'
+      // promise gates day-changing moves only — same-day shifts stay one-shot.
+      expect(fixed.data.note).toContain('ANOTHER day');
       expect(fixed.data.boardLink).toBe('https://t.me/SlotsProbeBot?startapp');
       const row = await pg.query(
         'select promise_level, promised_day::text as promised_day from assignments where id = $1',

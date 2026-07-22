@@ -3997,13 +3997,21 @@ async function dispatch(
           promiseLevel: { from: row.promise_level, to: updated.promise_level },
           promisedDay: { from: row.promised_day, to: updated.promised_day },
         },
+        // The gating claim must match the actual gate (review finding): a
+        // 'day' promise breaks only when the DAY changes — a same-day time
+        // shift stays one-shot — while 'time' gates every move.
         note:
           updated.promise_level === 'none'
             ? 'Promise cleared — this visit can now move without a confirmation round. Tell ' +
               'the manager exactly what changed, old → new.'
-            : 'Promise recorded — moving or cancelling this visit now requires the manager ' +
-              'to confirm first (the customer was told). Tell the manager exactly what ' +
-              'changed, old → new.',
+            : updated.promise_level === 'day'
+              ? 'Promise recorded — moving this visit to ANOTHER day, or cancelling it, now ' +
+                'requires the manager to confirm first (the customer was told the day; a ' +
+                'same-day time shift stays one-shot). Tell the manager exactly what ' +
+                'changed, old → new.'
+              : 'Promise recorded — moving or cancelling this visit now requires the ' +
+                'manager to confirm first (the customer was told the exact time). Tell ' +
+                'the manager exactly what changed, old → new.',
       };
     }
     case 'find_slots': {

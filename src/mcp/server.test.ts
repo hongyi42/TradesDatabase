@@ -85,7 +85,11 @@ beforeAll(async () => {
 afterAll(async () => {
   await client.close();
   await pg.query(
-    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events cascade',
+    // job_type_durations included (review round-2): the update_job test plants
+    // 'sump-pump' on the persistent seed tenant; leaking it made that test's
+    // no-stored-duration assertion order-dependent across suite runs — the
+    // one-off 582-run flake, reproduced and root-caused.
+    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations cascade',
   );
   // Restore the seed capacity (2/5) so post-suite live checks see known values.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
@@ -1573,7 +1577,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
     );
     try {
       // The full manager surface: every base spine tool EXCEPT get_schedule
-      // (technician route view, removed 2026-07-19) + the 18 admin tools —
+      // (technician route view, removed 2026-07-19) + the 19 admin tools —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
@@ -1584,7 +1588,8 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('set_availability');
       expect(mgrTools).toContain('set_technician_skills');
       expect(mgrTools).toContain('find_slots');
-      expect(mgrTools).toHaveLength(31);
+      expect(mgrTools).toContain('update_job');
+      expect(mgrTools).toHaveLength(32);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -1987,7 +1992,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(31); // base minus get_schedule + 18 admin
+        expect(mgrTools).toHaveLength(32); // base minus get_schedule + 19 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -4607,6 +4612,162 @@ describe('find_slots (Plan 3b)', () => {
       expect(propFake).toHaveBeenCalledTimes(2);
     } finally {
       await c3.close();
+    }
+  });
+});
+
+describe('update_job (the job identity editor)', () => {
+  test('gate + validation + old→new echo + scheduling authority', { timeout: 30_000 }, async () => {
+    const denied = await call('update_job', { jobId: 'x', title: 'nope' });
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain('manager badge');
+
+    const customer = await createCustomer({ tenantId, name: 'Update Job Cust' });
+    const job = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'Cust - drainage replacement (assumed)',
+      status: 'open',
+    });
+    // Own probe tech — this test must run standalone (review round-2: reusing
+    // the find_slots describe's slots-bob broke `vitest -t update_job`).
+    const uj = await insertTechnician({
+      tenantId,
+      ref: 'update-job-tech',
+      displayName: 'Update Job Tech',
+      seatExempt: true,
+    });
+    await setTechnicianAvailability(uj.id, {
+      mon: [['08:00', '17:00']],
+      tue: [['08:00', '17:00']],
+      wed: [['08:00', '17:00']],
+      thu: [['08:00', '17:00']],
+      fri: [['08:00', '17:00']],
+      sat: [],
+      sun: [],
+    });
+
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // Validation: no fields, empty title, junk priority, non-string title,
+      // unknown/cross-tenant id.
+      const none = await callWith('update_job', { jobId: job.id });
+      expect(none.isError).toBe(true);
+      expect(none.text).toContain('nothing to update');
+      const empty = await callWith('update_job', { jobId: job.id, title: '   ' });
+      expect(empty.isError).toBe(true);
+      expect(empty.text).toContain('must not be empty');
+      const badPriority = await callWith('update_job', { jobId: job.id, priority: 'asap' });
+      expect(badPriority.isError).toBe(true);
+      expect(badPriority.text).toContain('invalid priority');
+      // '' must be REJECTED, not coerced-to-absent-and-ignored.
+      const emptyPriority = await callWith('update_job', { jobId: job.id, title: 'x', priority: '' });
+      expect(emptyPriority.isError).toBe(true);
+      expect(emptyPriority.text).toContain('invalid priority');
+      const numTitle = await callWith('update_job', { jobId: job.id, title: 42 });
+      expect(numTitle.isError).toBe(true);
+      expect(numTitle.text).toContain('title must be a string');
+      // jobType: a number must not coerce to absent (partial-update trap) —
+      // only a string sets, only NULL clears.
+      const numType = await callWith('update_job', { jobId: job.id, jobType: 42 });
+      expect(numType.isError).toBe(true);
+      expect(numType.text).toContain('jobType must be a string');
+      const unknown = await callWith('update_job', {
+        jobId: '00000000-0000-0000-0000-000000000001',
+        title: 'ghost',
+      });
+      expect(unknown.isError).toBe(true);
+      expect(unknown.text).toContain('job not found');
+
+      // The correction: title + normalized type + priority, echoed old → new.
+      // BOARD_BOT_HANDLE set: an identity edit is a schedule answer — it must
+      // carry the REAL board link (the find_slots fabrication lesson).
+      const prevHandle = process.env.BOARD_BOT_HANDLE;
+      process.env.BOARD_BOT_HANDLE = 'SlotsProbeBot';
+      let fixed;
+      try {
+        fixed = await callWith('update_job', {
+          jobId: job.id,
+          title: 'Cust - installation',
+          jobType: '  Sump-Pump  ',
+          priority: 'urgent',
+        });
+      } finally {
+        if (prevHandle === undefined) delete process.env.BOARD_BOT_HANDLE;
+        else process.env.BOARD_BOT_HANDLE = prevHandle;
+      }
+      expect(fixed.isError).toBe(false);
+      expect(fixed.data.changes.title).toEqual({
+        from: 'Cust - drainage replacement (assumed)',
+        to: 'Cust - installation',
+      });
+      expect(fixed.data.changes.jobType).toEqual({ from: null, to: 'sump-pump' });
+      expect(fixed.data.changes.priority).toEqual({ from: 'routine', to: 'urgent' });
+      expect(fixed.data.note).toContain('old → new');
+      expect(fixed.data.boardLink).toBe('https://t.me/SlotsProbeBot?startapp');
+      // No stored duration for the new type yet → the result SAYS so.
+      expect(fixed.data.warning).toContain("no stored duration for 'sump-pump'");
+      const row = await pg.query('select title, job_type, priority from jobs where id = $1', [job.id]);
+      expect(row.rows[0]).toEqual({
+        title: 'Cust - installation',
+        job_type: 'sump-pump',
+        priority: 'urgent',
+      });
+      // The edit joined the append-only ledger: who, what, old → new.
+      const ev = await pg.query(
+        "select actor_ref, detail from schedule_events where tenant_id = $1 and kind = 'job_updated' order by id desc limit 1",
+        [tenantId],
+      );
+      expect(ev.rows[0].actor_ref).toBe('mgr-test');
+      expect(ev.rows[0].detail.title).toEqual({
+        from: 'Cust - drainage replacement (assumed)',
+        to: 'Cust - installation',
+      });
+
+      // The corrected type immediately drives scheduling: find_slots resolves
+      // the stored duration for the NEW type with the standard disclosure.
+      await upsertJobTypeDuration(tenantId, 'sump-pump', 90);
+      const slots = await callWith('find_slots', {
+        jobId: job.id,
+        technicianRef: 'update-job-tech',
+        earliestDate: '2027-05-03', // a Monday well past other fixtures
+        latestDate: '2027-05-03',
+      });
+      expect(slots.isError).toBe(false);
+      expect(slots.data.durationAssumption).toContain("assuming 90 min for 'sump-pump'");
+
+      // A TYPED job's no-duration error must never advise assumedType (which
+      // is refused for typed jobs — the two-error loop); it names the real
+      // remedies including update_job.
+      const orphanType = await callWith('update_job', { jobId: job.id, jobType: 'gutter-guard' });
+      expect(orphanType.isError).toBe(false);
+      const typedNoDuration = await callWith('find_slots', {
+        jobId: job.id,
+        technicianRef: 'update-job-tech',
+        earliestDate: '2027-05-03',
+        latestDate: '2027-05-03',
+      });
+      expect(typedNoDuration.isError).toBe(true);
+      expect(typedNoDuration.text).toContain("no duration is configured for 'gutter-guard'");
+      expect(typedNoDuration.text).toContain('update_job');
+      expect(typedNoDuration.text).not.toContain('assumedType');
+
+      // jobType: null is the UNDO — the job returns to untyped (and the
+      // untyped error path, with its assumedType guidance, applies again).
+      const cleared = await callWith('update_job', { jobId: job.id, jobType: null });
+      expect(cleared.isError).toBe(false);
+      expect(cleared.data.changes.jobType).toEqual({ from: 'gutter-guard', to: null });
+      const untypedRow = await pg.query('select job_type from jobs where id = $1', [job.id]);
+      expect(untypedRow.rows[0].job_type).toBeNull();
+
+      // CAS honesty at the db layer: a stale updated_at snapshot must refuse,
+      // never overwrite-and-misreport (the echo IS the disclosure).
+      const { updateJobDetails } = await import('../db/jobs.js');
+      await expect(
+        updateJobDetails(tenantId, job.id, { title: 'stale writer' }, '2020-01-01T00:00:00.000Z'),
+      ).rejects.toThrow(/changed while updating/);
+    } finally {
+      await mgrClient.close();
     }
   });
 });

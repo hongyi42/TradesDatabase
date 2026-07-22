@@ -2618,8 +2618,13 @@ async function dispatch(
                 postal_code: customer.postal_code,
               })
             : null,
-          start: row.starts_at,
-          end: row.ends_at,
+          // Wall-clock HH:MM slices, never the raw timestamptz: times are
+          // stored naive-local, so the wire's '+00:00' marker is a LIE the
+          // agent will act on (live 2026-07-22: it relabeled a 4 PM visit
+          // "4:00 PM UTC" and fabricated a "9 AM Pacific" conversion for the
+          // manager). The date rides on the day group.
+          startTime: row.starts_at.slice(11, 16),
+          endTime: row.ends_at.slice(11, 16),
           promiseLevel: row.promise_level,
           promisedDay: row.promised_day,
           locked: row.locked,
@@ -2630,7 +2635,9 @@ async function dispatch(
       }
       const days = [...byDay.entries()]
         .sort(([a], [b]) => (a < b ? -1 : 1))
-        .map(([date, stops]) => ({ date, stops }));
+        // weekday is server-computed everywhere a date is emitted (the
+        // find_slots lesson: the agent is unreliable at calendar math).
+        .map(([date, stops]) => ({ date, weekday: weekdayLabel(date), stops }));
       return unassignedOnly
         ? { status: 'ok', from, unassignedOnly: true, scheduleVersion, days }
         : { status: 'ok', from, to: toDay, scheduleVersion, days };

@@ -3306,7 +3306,17 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
         promiseLevel: 'day',
         promisedDay: '2026-12-01',
         locked: true,
+        // Wall-clock HH:MM slices only. The raw timestamptz must never reach
+        // the agent: its '+00:00' marker lies under the naive-local convention
+        // (live 2026-07-22: the agent fabricated a UTC→Pacific conversion for
+        // a 4 PM visit from exactly these fields).
+        startTime: '09:00',
+        endTime: '12:00',
       });
+      expect(stop).not.toHaveProperty('start');
+      expect(stop).not.toHaveProperty('end');
+      // Server-computed weekday on every emitted date (the find_slots lesson).
+      expect(team.data.days[0].weekday).toBe('Tue');
       expect(stop?.address).toContain('40 Elm Ave');
 
       // MOVE to another day: preview must flag the promise break; confirm moves.

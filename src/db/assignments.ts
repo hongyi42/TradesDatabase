@@ -124,7 +124,7 @@ export function isOverlapViolation(err: unknown): boolean {
 export interface RescheduleInput {
   startsAt: string;
   endsAt: string;
-  technicianId?: string; // omit = same technician
+  technicianId?: string | null; // omit = same technician; null = DETACH (park unassigned)
   reason: string; // why the old booking was undone (kept on the cancelled row)
   // Omitted → the new row keeps the old row's promise fields (a move carries
   // the promise). status keeps its 'proposed' default for existing callers;
@@ -161,7 +161,9 @@ export async function rescheduleAssignment(
   const created = await createAssignment({
     tenantId: old.tenant_id,
     jobId: old.job_id,
-    technicianId: input.technicianId ?? old.technician_id,
+    // The promisedDay idiom below, not `??`: an explicit null means DETACH,
+    // and `??` would silently resurrect the old technician (plan 4a.5).
+    technicianId: input.technicianId !== undefined ? input.technicianId : old.technician_id,
     startsAt: input.startsAt,
     endsAt: input.endsAt,
     status: input.status,
@@ -266,7 +268,7 @@ export async function listAssignmentsForTenant(
 
 export type AssignmentDetailRow = Assignment & {
   jobs:
-    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'customer_id'> & {
+    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'priority' | 'customer_id'> & {
         customers: Pick<
           Customer,
           | 'name'
@@ -277,6 +279,10 @@ export type AssignmentDetailRow = Assignment & {
           | 'city'
           | 'state'
           | 'postal_code'
+          // L3 standing facts — the detail sheet's customer-notes section
+          // (plan 4a.5). Detail is a tap path, not the board-load path, so
+          // the JSONB rides only here, never on the day/bucket selects.
+          | 'attributes'
           | 'tenant_id'
         > | null;
       })
@@ -289,7 +295,7 @@ export type AssignmentDetailRow = Assignment & {
 // ('a' + 'b') string widens to `string`, which makes the inference collapse to
 // GenericStringError and breaks the build.
 const DETAIL_SELECT =
-  '*, jobs(id,tenant_id,title,customer_id,customers(name,phone,email,address_line1,address_line2,city,state,postal_code,tenant_id)), technicians(id,ref,display_name,tenant_id)';
+  '*, jobs(id,tenant_id,title,priority,customer_id,customers(name,phone,email,address_line1,address_line2,city,state,postal_code,attributes,tenant_id)), technicians(id,ref,display_name,tenant_id)';
 
 // One visit + its job/customer/technician, tenant-scoped at the ROOT only.
 // A cross-tenant or unknown id reads as null (same contract as
@@ -400,6 +406,41 @@ export async function listUnassignedAssignments(
     .order('starts_at', { ascending: true });
   if (error) throw new Error(`listUnassignedAssignments failed: ${error.message}`);
   return data ?? [];
+}
+
+// Exact-window parked twins for the person-less duplicate guard (plan 4a.5
+// final review): ONE embedded query replaces the scan-plus-getJob-per-row
+// loops that previously lived as separate copies in resolveBooking and
+// resolveMove. jobs is an ID-ONLY foreign key — customer_id is surfaced only
+// when the job's tenant re-checks (the boardRead pattern).
+// Single string literal — see the DETAIL_SELECT note above.
+const IDENTICAL_UNASSIGNED_SELECT = 'id, jobs(customer_id, tenant_id)';
+
+export interface IdenticalUnassignedRow {
+  id: string;
+  customerId: string | null;
+}
+
+export async function listIdenticalUnassignedVisits(
+  tenantId: string,
+  startISO: string,
+  endISO: string,
+): Promise<IdenticalUnassignedRow[]> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select(IDENTICAL_UNASSIGNED_SELECT)
+    .eq('tenant_id', tenantId)
+    .is('technician_id', null)
+    .eq('status', 'confirmed')
+    .eq('starts_at', startISO)
+    .eq('ends_at', endISO);
+  if (error) throw new Error(`listIdenticalUnassignedVisits failed: ${error.message}`);
+  return (
+    (data ?? []) as Array<{ id: string; jobs: { customer_id: string; tenant_id: string } | null }>
+  ).map((row) => ({
+    id: row.id,
+    customerId: row.jobs && row.jobs.tenant_id === tenantId ? row.jobs.customer_id : null,
+  }));
 }
 
 // ---- Loose-bucket reads (Plan 4a): the tray + agent-parity surfaces ----

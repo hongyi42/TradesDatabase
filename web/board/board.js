@@ -34,6 +34,13 @@
     // pill between loads. Only the number is kept: the tray re-fetches on
     // open, and a cached payload would invite rendering stale rows from it.
     bucketCount: null,
+    // Session-cached roster for the assign picker (plan 4a.5) — fetched on
+    // first picker open, never on the load path. Names change rarely; a
+    // reopen of the webview clears it naturally.
+    roster: null,
+    // Last-rendered stops per date — the picker's client-side busy hints
+    // ("2 visits Thu") come from data the board already painted.
+    stopsByDate: null,
   };
 
   function actionable() {
@@ -117,10 +124,15 @@
   function stopBadges(stop) {
     var badges = '';
     if (stop.promiseLevel && stop.promiseLevel !== 'none') {
-      badges +=
-        '<span class="badge promise">promised ' +
-        esc(stop.promiseLevel === 'time' ? 'time' : 'day') +
-        '</span>';
+      // Four-level ladder (plan 4a.5): 'time' stores day+time; 'time_only'
+      // stores a time with no day. Labels say exactly what was promised.
+      var lbl =
+        stop.promiseLevel === 'time'
+          ? 'promised day+time'
+          : stop.promiseLevel === 'time_only'
+            ? 'promised time'
+            : 'promised day';
+      badges += '<span class="badge promise">' + lbl + '</span>';
     }
     // `locked` is NOT badged: it marks a manual placement for the FUTURE
     // auto-scheduler to route around — today every visit is manual, so the
@@ -169,10 +181,11 @@
   // "Unassigned" lane for stops with unassigned:true (their technicianName is
   // null — never print "null"). Lanes are keyed by technicianRef — the UNIQUE
   // roster handle — never by display name (two "Mike Chen"s must not merge,
-  // and drag-to-assign needs a single ref per drop target). The unassigned
-  // lane is a drag SOURCE, not a target (moveVisit cannot detach a person),
-  // and its data-lane is ''. Flat layout (technician view, manager's Mine
-  // tab): a plain time-ordered list, no lanes.
+  // and drag-to-assign needs a single ref per drop target). Since plan 4a.5
+  // the unassigned lane is BOTH drag source and drop target (dropping parks
+  // the visit — moveVisit's unassign detach); its data-lane is ''. Flat
+  // layout (technician view, manager's Mine tab): a plain time-ordered list,
+  // no lanes.
   function renderDay(date, stops, teamLayout) {
     // Per-DAY write gate: the calendar week 0 contains already-past days, and
     // those are as read-only as past weeks (a live drop target on yesterday
@@ -218,7 +231,11 @@
         html += lane('lane', key, labels[key], lanes[key], canAct);
       });
       // Unassigned lane renders last so it reads as the "to place" tray.
-      if (unassigned.length) {
+      // On actionable days it renders even EMPTY: it is drag-to-park's drop
+      // target, and a lane that only exists when a parked visit already does
+      // would leave the gesture targetless on every clean day (plan review
+      // finding #4).
+      if (unassigned.length || canAct) {
         html += lane('lane lane-unassigned', '', 'Unassigned', unassigned, canAct);
       }
     }
@@ -264,6 +281,11 @@
     data.days.forEach(function (d) {
       byDate[d.date] = d.stops;
     });
+    // The picker's busy hints read from what the board just painted — but
+    // ONLY the team layout shows the whole team; a Mine-tab payload holds one
+    // person's stops, and hints computed from it would claim busy technicians
+    // are "free" (final-review finding). null = busyHint makes no claim.
+    state.stopsByDate = teamLayout ? byDate : null;
     // The dates live in the pager label now; this line carries only context
     // (whose stops / read-only) and disappears when there is none.
     var note = !isManager
@@ -453,10 +475,12 @@
 
   function bucketVisitRow(v) {
     // Server-composed strings verbatim (weekday/date/times) — no client date
-    // math. Tappable: opens the visit's normal detail sheet.
+    // math. Tappable: opens the visit's normal detail sheet; the Assign
+    // button opens the picker (plan 4a.5 — the tray is manager-only, so the
+    // affordance needs no tier gate here).
     return (
       '<div class="bucket-row bucket-visit" data-id="' + esc(v.assignmentId) + '">' +
-      '<div class="bucket-row-main">' +
+      '<div class="bucket-row-txt"><div class="bucket-row-main">' +
       esc(v.weekday + ' ' + v.date + ' · ' + v.startTime + '–' + v.endTime) +
       '</div><div class="bucket-row-sub">' +
       esc(
@@ -464,17 +488,30 @@
           (v.customer || 'Unknown customer') +
           (v.jobTitle ? ' — ' + v.jobTitle : ''),
       ) +
-      '</div></div>'
+      '</div></div>' +
+      // No Assign on OVERDUE rows: attaching keeps the visit's own (past)
+      // date, and board writes never target the past (review finding #2 —
+      // same rule as every other gate). Recovering an overdue visit means
+      // rescheduling it, which stays a chat job for now.
+      (v.overdue
+        ? ''
+        : '<button type="button" class="bucket-assign" data-id="' + esc(v.assignmentId) + '"' +
+          ' data-date="' + esc(v.date) + '" data-start="' + esc(v.startTime) + '"' +
+          ' data-end="' + esc(v.endTime) + '">Assign</button>') +
+      '</div>'
     );
   }
 
   function bucketJobRow(j) {
+    // Tappable (plan 4a.5): opens the booking sheet — the tray finally drains
+    // from the same screen that shows it.
     return (
-      '<div class="bucket-row">' +
-      '<div class="bucket-row-main">' + esc(j.title || 'Untitled job') + '</div>' +
+      '<div class="bucket-row bucket-job" data-job="' + esc(j.jobId) + '"' +
+      ' data-title="' + esc(j.title || '') + '">' +
+      '<div class="bucket-row-txt"><div class="bucket-row-main">' + esc(j.title || 'Untitled job') + '</div>' +
       '<div class="bucket-row-sub">' +
-      esc((j.customer || 'Unknown customer') + ' · ' + j.priority) +
-      '</div></div>'
+      esc((j.customer || 'Unknown customer') + ' · ' + j.priority + ' · tap to book') +
+      '</div></div></div>'
     );
   }
 
@@ -522,6 +559,40 @@
           closeDetail();
           return;
         }
+        // Assign a parked visit straight from the tray (plan 4a.5): picker →
+        // move with the visit's OWN date/times (attach semantics).
+        var assign = e.target.closest && e.target.closest('.bucket-assign');
+        if (assign) {
+          openPicker({
+            title: 'Assign parked visit',
+            allowNone: false,
+            date: assign.getAttribute('data-date'),
+            onPick: function (ref) {
+              if (!ref) return;
+              postMove(
+                {
+                  assignmentId: assign.getAttribute('data-id'),
+                  date: assign.getAttribute('data-date'),
+                  startTime: assign.getAttribute('data-start'),
+                  endTime: assign.getAttribute('data-end'),
+                  technicianRef: ref,
+                  reason: 'Assigned from the loose bucket',
+                },
+                function () {
+                  return 'Assigned to ' + rosterName(ref);
+                },
+                assign.getAttribute('data-start'),
+              );
+            },
+          });
+          return;
+        }
+        // Book an unscheduled job (plan 4a.5): the booking sheet.
+        var jobRow = e.target.closest && e.target.closest('.bucket-job');
+        if (jobRow) {
+          openBookingForm(jobRow.getAttribute('data-job'), jobRow.getAttribute('data-title'));
+          return;
+        }
         // Tap a parked visit → its normal detail sheet (replace-open swaps
         // the overlay instantly; openDetail already supports it).
         var row = e.target.closest && e.target.closest('.bucket-visit');
@@ -543,21 +614,51 @@
   }
 
   function promiseText(d) {
-    if (d.promiseLevel === 'time') return 'Customer was told the day AND time (' + esc(d.promisedDay || '') + ')';
-    if (d.promiseLevel === 'day') return 'Customer was told the day (' + esc(d.promisedDay || '') + ')';
+    // Disambiguated copy (user question 2026-07-23): the date is the day the
+    // VISIT was promised FOR — never the day the telling happened.
+    var day = d.promisedDay || d.start.slice(0, 10);
+    var when = dayName(day) + ' ' + day;
+    if (d.promiseLevel === 'time') {
+      return "Customer was told we're coming " + esc(when) + ' at ' + esc(hhmm(d.start));
+    }
+    if (d.promiseLevel === 'day') return "Customer was told we're coming " + esc(when);
+    if (d.promiseLevel === 'time_only') {
+      return 'Customer was told ' + esc(hhmm(d.start)) + ', day not promised';
+    }
     return 'Nothing promised to the customer';
   }
 
   function renderDetail(d) {
     var c = d.customer || {};
+    // Edit affordances (plan 4a.5): manager + Team tab + a live, TODAY-OR-
+    // FUTURE visit — the same triple gate every other board write carries
+    // (review finding #2: without the tab/date checks, a manager paging to
+    // last week could rewrite history from the sheet). Past visits render a
+    // read-only sheet; deliberate history corrections stay a chat job. The
+    // server re-gates tier regardless; technician sheets gain ONLY the notes
+    // section below.
+    var canEdit =
+      state.isManager &&
+      state.view === 'team' &&
+      d.status === 'confirmed' &&
+      state.today !== null &&
+      d.start.slice(0, 10) >= state.today;
+    var pencil = function (kind) {
+      return canEdit
+        ? ' <button type="button" class="edit-btn" data-edit="' + kind + '" aria-label="Edit">✎</button>'
+        : '';
+    };
     var rows = '';
-    if (d.jobTitle) rows += detailRow('Purpose', esc(d.jobTitle));
+    if (d.jobTitle || (canEdit && d.jobId)) {
+      // The Purpose editor needs the tenant-checked jobId; withheld → no ✎.
+      rows += detailRow('Purpose', esc(d.jobTitle || 'Untitled job') + (d.jobId ? pencil('job') : ''));
+    }
     rows += detailRow(
       'When',
       esc(dayName(d.start.slice(0, 10)) + ' · ' + d.start.slice(0, 10)) +
-        ', ' + esc(hhmm(d.start) + '–' + hhmm(d.end)),
+        ', ' + esc(hhmm(d.start) + '–' + hhmm(d.end)) + pencil('when'),
     );
-    rows += detailRow('Technician', esc(d.technicianName || 'Unassigned'));
+    rows += detailRow('Technician', esc(d.technicianName || 'Unassigned') + pencil('tech'));
     if (c.phone) {
       // tel: href keeps only digits and + — the display keeps the stored form.
       rows += detailRow(
@@ -575,10 +676,23 @@
           '" data-ext="1">' + esc(c.address) + '</a>',
       );
     }
-    rows += detailRow('Promise', promiseText(d));
+    // "Scheduling promise", not "Promise" — the word stops doing two jobs:
+    // this row is the day/time commitment that gates moves/cancels; anything
+    // else promised to the customer (a discount…) lives in the notes below.
+    rows += detailRow('Scheduling promise', promiseText(d) + pencil('promise'));
     var flags = [];
     if (d.status !== 'confirmed') flags.push(d.status);
     if (flags.length) rows += detailRow('Flags', esc(flags.join(', ')));
+    // Compressed customer notes (both tiers — recorded decision 2026-07-23):
+    // server-composed strings verbatim, already folded/capped/truncated.
+    if (d.customerNotes && d.customerNotes.length) {
+      rows += '<div class="notes-head">Customer notes</div>';
+      d.customerNotes.forEach(function (n) {
+        rows +=
+          '<div class="note-row"><span class="note-key">' + esc(n.key) + '</span> ' +
+          esc(n.value) + '</div>';
+      });
+    }
     return (
       '<div class="detail-sheet" role="dialog" aria-modal="true">' +
       '<button type="button" class="detail-close" aria-label="Close">✕</button>' +
@@ -639,6 +753,12 @@
             closeDetail();
             return;
           }
+          // ✎ → the row's editor (plan 4a.5).
+          var edit = e.target.closest && e.target.closest('[data-edit]');
+          if (edit) {
+            openEditor(edit.getAttribute('data-edit'), d);
+            return;
+          }
           var ext = e.target.closest && e.target.closest('a[data-ext]');
           if (ext && tg && typeof tg.openLink === 'function') {
             e.preventDefault();
@@ -658,9 +778,496 @@
       });
   }
 
+  // ---- Quick-edit machinery (plan 4a.5) ----
+
+  function fetchRoster(cb) {
+    if (state.roster) {
+      cb(state.roster);
+      return;
+    }
+    fetch('/board/api/roster', { headers: authHeaders() })
+      .then(function (r) {
+        return r.ok ? r.json() : null;
+      })
+      .then(function (b) {
+        if (b && b.technicians) {
+          state.roster = b.technicians;
+          cb(state.roster);
+        } else {
+          toast('Could not load the team list — try again.', true);
+          cb(null);
+        }
+      })
+      .catch(function () {
+        toast('Network error — could not load the team list.', true);
+        cb(null);
+      });
+  }
+
+  function rosterName(ref) {
+    var name = ref;
+    (state.roster || []).forEach(function (t) {
+      if (t.ref === ref) name = t.name;
+    });
+    return name;
+  }
+
+  // "2 visits" / "free" for a date the board has already painted; '' outside
+  // the rendered window (no data, no claim).
+  function busyHint(ref, date) {
+    var stops = state.stopsByDate && state.stopsByDate[date];
+    if (!stops) return '';
+    var n = 0;
+    stops.forEach(function (s) {
+      if (s.technicianRef === ref) n++;
+    });
+    return n === 0 ? 'free' : n + (n === 1 ? ' visit' : ' visits');
+  }
+
+  // Overlay helper for the new sheets (picker / mini-forms): the
+  // detail-overlay pattern with a caller-supplied click handler.
+  function openSheet(html, onClick) {
+    var prev = document.getElementById('detail-overlay');
+    if (prev) prev.remove();
+    var ov = document.createElement('div');
+    ov.id = 'detail-overlay';
+    ov.innerHTML = html;
+    ov.addEventListener('click', function (e) {
+      if (e.target === ov || (e.target.closest && e.target.closest('.detail-close'))) {
+        closeDetail();
+        return;
+      }
+      onClick(e, ov);
+    });
+    document.body.appendChild(ov);
+    void ov.offsetHeight;
+    ov.classList.add('open');
+  }
+
+  function sheetShell(title, inner) {
+    return (
+      '<div class="detail-sheet" role="dialog" aria-modal="true">' +
+      '<button type="button" class="detail-close" aria-label="Close">✕</button>' +
+      '<h2>' + esc(title) + '</h2>' + inner + '</div>'
+    );
+  }
+
+  function openPicker(opts) {
+    fetchRoster(function (roster) {
+      if (!roster) return;
+      var rows = '';
+      if (opts.allowNone) {
+        rows +=
+          '<div class="picker-row" data-pick="">' +
+          '<span class="picker-name">None — park it</span>' +
+          '<span class="picker-hint">nobody assigned</span></div>';
+      }
+      roster.forEach(function (t) {
+        rows +=
+          '<div class="picker-row" data-pick="' + esc(t.ref) + '">' +
+          '<span class="picker-name">' + esc(t.name) +
+          (opts.currentRef && t.ref === opts.currentRef ? ' · current' : '') +
+          '</span><span class="picker-hint">' +
+          esc(opts.date ? busyHint(t.ref, opts.date) : '') +
+          '</span></div>';
+      });
+      openSheet(sheetShell(opts.title, rows), function (e) {
+        var row = e.target.closest && e.target.closest('.picker-row');
+        if (row) opts.onPick(row.getAttribute('data-pick') || null);
+      });
+    });
+  }
+
+  // The one confirm dialog's copy, from the move preview: name what actually
+  // breaks (a day promise vs a time_only promise), and say when the drop also
+  // parks the visit. oldStart is the PROMISED time — the preview's startTime
+  // is the requested NEW one, which by definition differs whenever a
+  // time_only dialog fires (review finding: the dialog named the wrong time).
+  function breakMsg(p, oldStart) {
+    // A day+time promise broken by a SAME-DAY time change is a time break too
+    // (final-review finding: the day branch would print "promised day (X → X)").
+    var timeBreak =
+      p.promiseLevel === 'time_only' || (p.promiseLevel === 'time' && p.fromDay === p.toDay);
+    var what = timeBreak
+      ? 'a promised time (' + (oldStart || p.startTime) + ' → ' + p.startTime + ')'
+      : 'a promised day (' + p.fromDay + ' → ' + p.toDay + ')';
+    return (
+      'This breaks ' + what + ' — the customer must be told.' +
+      (p.unassign ? ' The visit will be left with NOBODY assigned.' : '') +
+      ' Move anyway?'
+    );
+  }
+
+  // Preview → (one confirm when a promise breaks) → commit, shared by every
+  // move-shaped write: drag, tray Assign, the Technician picker, the When
+  // editor. doneMsg(body) composes the success toast; promise-break and
+  // warning disclosures ride on top, never dropped.
+  function postMove(body, doneMsg, oldStart) {
+    apiPost('/board/api/move', body, true)
+      .then(function (p) {
+        if (!p.ok) {
+          toast(p.body.error || 'Move failed (' + p.status + ')', true);
+          return;
+        }
+        var commit = function () {
+          apiPost('/board/api/move', body, false)
+            .then(function (r) {
+              if (!r.ok) {
+                // Incl. the UNSCHEDULED stranding — show the raw failure, refetch.
+                toast(r.body.error || 'Move failed (' + r.status + ')', true);
+                refresh();
+                return;
+              }
+              closeDetail();
+              // "Say what you did" includes a promise broken in the preview→
+              // commit race window — the server reports it; never swallow it.
+              toast(
+                doneMsg(r.body) +
+                  (r.body.promiseBroken ? '. This BROKE a customer promise — tell them' : '') +
+                  (r.body.warning ? '. ' + r.body.warning : ''),
+                !!r.body.promiseBroken,
+              );
+              refresh();
+            })
+            .catch(function () {
+              toast('Network error — the move may or may not have landed; refreshing.', true);
+              refresh();
+            });
+        };
+        if (p.body.requiresConfirmation) {
+          confirmAsk(breakMsg(p.body, oldStart), function (yes) {
+            if (yes) commit();
+          });
+        } else {
+          commit();
+        }
+      })
+      .catch(function () {
+        toast('Network error — nothing was changed.', true);
+      });
+  }
+
+  var PRIORITY_OPTIONS = [
+    ['emergency', 'emergency'],
+    ['urgent', 'urgent'],
+    ['routine', 'routine'],
+    ['maintenance', 'maintenance'],
+  ];
+  var PROMISE_OPTIONS = [
+    ['none', 'No promise'],
+    ['day', 'Day only'],
+    ['time_only', 'Time only'],
+    ['time', 'Day + time'],
+  ];
+
+  function promiseLabel(level) {
+    var label = level;
+    PROMISE_OPTIONS.forEach(function (o) {
+      if (o[0] === level) label = o[1];
+    });
+    return label;
+  }
+
+  function fieldRow(label, inputHtml) {
+    return '<label class="field-row"><span>' + esc(label) + '</span>' + inputHtml + '</label>';
+  }
+
+  function selectHtml(id, options, selected) {
+    var html = '<select id="' + id + '">';
+    options.forEach(function (o) {
+      html +=
+        '<option value="' + esc(o[0]) + '"' + (o[0] === selected ? ' selected' : '') + '>' +
+        esc(o[1]) + '</option>';
+    });
+    return html + '</select>';
+  }
+
+  function formButtons(saveLabel) {
+    return (
+      '<div class="sheet-btnrow">' +
+      '<button type="button" class="sheet-btn" data-form="cancel">Cancel</button>' +
+      '<button type="button" class="sheet-btn primary" data-form="save">' + esc(saveLabel) + '</button>' +
+      '</div>'
+    );
+  }
+
+  function val(ov, id) {
+    var el = ov.querySelector('#' + id);
+    return el ? el.value : '';
+  }
+
+  // The sheet-row editors. Every write goes through the Phase-2 endpoints —
+  // the same shared verbs chat drives. NOTE: /promise and /job are ONE-SHOT
+  // endpoints; never send them ?preview=1 (it is ignored and would commit).
+  function openEditor(kind, d) {
+    var vDate = d.start.slice(0, 10);
+    if (kind === 'tech') {
+      openPicker({
+        title: 'Assign technician',
+        allowNone: !d.unassigned,
+        currentRef: d.technicianRef,
+        date: vDate,
+        onPick: function (ref) {
+          if ((ref || null) === (d.technicianRef || null)) {
+            closeDetail();
+            return;
+          }
+          var body = {
+            assignmentId: d.assignmentId,
+            date: vDate,
+            startTime: hhmm(d.start),
+            endTime: hhmm(d.end),
+            reason: ref ? 'Assigned on the visit sheet' : 'Parked on the visit sheet',
+          };
+          if (ref) body.technicianRef = ref;
+          else body.unassign = true;
+          postMove(
+            body,
+            function () {
+              return ref ? 'Assigned to ' + rosterName(ref) : 'Parked — nobody assigned';
+            },
+            hhmm(d.start),
+          );
+        },
+      });
+      return;
+    }
+    if (kind === 'when') {
+      openSheet(
+        sheetShell(
+          'Edit day & time',
+          fieldRow(
+            'Day',
+            '<input type="date" id="qe-date" value="' + esc(vDate) + '"' +
+              (state.today ? ' min="' + esc(state.today) + '"' : '') + '>',
+          ) +
+            fieldRow('Start', '<input type="time" id="qe-start" value="' + esc(hhmm(d.start)) + '">') +
+            fieldRow('End', '<input type="time" id="qe-end" value="' + esc(hhmm(d.end)) + '">') +
+            formButtons('Save'),
+        ),
+        function (e, ov) {
+          var btn = e.target.closest && e.target.closest('[data-form]');
+          if (!btn) return;
+          if (btn.getAttribute('data-form') === 'cancel') {
+            openDetail(d.assignmentId);
+            return;
+          }
+          var body = {
+            assignmentId: d.assignmentId,
+            date: val(ov, 'qe-date'),
+            startTime: val(ov, 'qe-start'),
+            endTime: val(ov, 'qe-end'),
+            reason: 'Edited on the visit sheet',
+          };
+          if (!body.date || !body.startTime || !body.endTime) {
+            toast('Day, start and end are all required.', true);
+            return;
+          }
+          // min= only constrains the native picker — desktop text entry can
+          // still type a past date; this check is the belt to that brace.
+          if (state.today && body.date < state.today) {
+            toast('Board writes never target the past — pick today or later.', true);
+            return;
+          }
+          // A move mints a NEW visit id, so the sheet cannot re-open itself —
+          // close + refresh instead.
+          postMove(
+            body,
+            function () {
+              return 'Moved to ' + body.date + ' ' + body.startTime + '–' + body.endTime;
+            },
+            hhmm(d.start),
+          );
+        },
+      );
+      return;
+    }
+    if (kind === 'promise') {
+      openSheet(
+        sheetShell(
+          'Scheduling promise',
+          '<div class="field-note">What was the customer ACTUALLY told about this visit?</div>' +
+            fieldRow('Promise', selectHtml('qe-promise', PROMISE_OPTIONS, d.promiseLevel)) +
+            formButtons('Save'),
+        ),
+        function (e, ov) {
+          var btn = e.target.closest && e.target.closest('[data-form]');
+          if (!btn) return;
+          if (btn.getAttribute('data-form') === 'cancel') {
+            openDetail(d.assignmentId);
+            return;
+          }
+          var level = val(ov, 'qe-promise');
+          if (level === d.promiseLevel) {
+            openDetail(d.assignmentId);
+            return;
+          }
+          apiPost('/board/api/promise', { assignmentId: d.assignmentId, promiseLevel: level })
+            .then(function (r) {
+              if (!r.ok) {
+                toast(r.body.error || 'Promise update failed (' + r.status + ')', true);
+                return;
+              }
+              toast('Promise: ' + promiseLabel(d.promiseLevel) + ' → ' + promiseLabel(level));
+              openDetail(d.assignmentId); // same id — the record edit never remints
+              refresh();
+            })
+            .catch(function () {
+              toast('Network error — nothing was changed.', true);
+            });
+        },
+      );
+      return;
+    }
+    if (kind === 'job') {
+      openSheet(
+        sheetShell(
+          'Edit job',
+          fieldRow('Title', '<input type="text" id="qe-title" value="' + esc(d.jobTitle || '') + '">') +
+            fieldRow('Priority', selectHtml('qe-priority', PRIORITY_OPTIONS, d.jobPriority || 'routine')) +
+            formButtons('Save'),
+        ),
+        function (e, ov) {
+          var btn = e.target.closest && e.target.closest('[data-form]');
+          if (!btn) return;
+          if (btn.getAttribute('data-form') === 'cancel') {
+            openDetail(d.assignmentId);
+            return;
+          }
+          var body = { jobId: d.jobId };
+          var title = val(ov, 'qe-title').trim();
+          if (title && title !== (d.jobTitle || '')) body.title = title;
+          var priority = val(ov, 'qe-priority');
+          if (priority !== d.jobPriority) body.priority = priority;
+          if (!body.title && !body.priority) {
+            openDetail(d.assignmentId);
+            return;
+          }
+          apiPost('/board/api/job', body)
+            .then(function (r) {
+              if (!r.ok) {
+                toast(r.body.error || 'Job update failed (' + r.status + ')', true);
+                return;
+              }
+              toast(
+                'Job updated' +
+                  (body.title ? ' — title: ' + body.title : '') +
+                  (body.priority ? ' — priority: ' + body.priority : ''),
+              );
+              openDetail(d.assignmentId);
+              refresh(); // the title shows on cards behind the sheet
+            })
+            .catch(function () {
+              toast('Network error — nothing was changed.', true);
+            });
+        },
+      );
+    }
+  }
+
+  // The tray's booking sheet (plan 4a.5): day + start + end are REQUIRED —
+  // the server never invents a visit length (standing user decision) — plus
+  // technician-or-park and the promise selector.
+  function openBookingForm(jobId, title) {
+    fetchRoster(function (roster) {
+      if (!roster) return;
+      var techOptions = [['', 'Leave unassigned — park it']];
+      roster.forEach(function (t) {
+        techOptions.push([t.ref, t.name]);
+      });
+      openSheet(
+        sheetShell(
+          'Book: ' + (title || 'Untitled job'),
+          fieldRow(
+            'Day',
+            '<input type="date" id="qe-date"' +
+              (state.today ? ' min="' + esc(state.today) + '"' : '') + '>',
+          ) +
+            fieldRow('Start', '<input type="time" id="qe-start">') +
+            fieldRow('End', '<input type="time" id="qe-end">') +
+            fieldRow('Technician', selectHtml('qe-tech', techOptions, '')) +
+            fieldRow('Promise', selectHtml('qe-promise', PROMISE_OPTIONS, 'none')) +
+            formButtons('Book visit'),
+        ),
+        function (e, ov) {
+          var btn = e.target.closest && e.target.closest('[data-form]');
+          if (!btn) return;
+          if (btn.getAttribute('data-form') === 'cancel') {
+            closeDetail();
+            return;
+          }
+          var body = {
+            jobId: jobId,
+            date: val(ov, 'qe-date'),
+            startTime: val(ov, 'qe-start'),
+            endTime: val(ov, 'qe-end'),
+          };
+          if (!body.date || !body.startTime || !body.endTime) {
+            toast('Day, start and end are all required.', true);
+            return;
+          }
+          // Same belt as the When editor: min= doesn't stop a typed past date.
+          if (state.today && body.date < state.today) {
+            toast('Board writes never target the past — pick today or later.', true);
+            return;
+          }
+          var ref = val(ov, 'qe-tech');
+          if (ref) body.technicianRef = ref;
+          var level = val(ov, 'qe-promise');
+          if (level !== 'none') body.promiseLevel = level;
+          apiPost('/board/api/book', body, true)
+            .then(function (p) {
+              if (!p.ok) {
+                toast(p.body.error || 'Booking failed (' + p.status + ')', true);
+                return;
+              }
+              var commit = function () {
+                apiPost('/board/api/book', body, false)
+                  .then(function (r) {
+                    if (!r.ok) {
+                      // A raced refusal (overlap landed between preview and
+                      // commit) means the board behind the sheet is stale —
+                      // refetch, same as the move flow (final-review parity).
+                      toast(r.body.error || 'Booking failed (' + r.status + ')', true);
+                      refresh();
+                      return;
+                    }
+                    closeDetail();
+                    toast(
+                      'Booked — ' + body.date + ' ' + body.startTime + '–' + body.endTime +
+                        (ref ? ' with ' + rosterName(ref) : ', unassigned') +
+                        (r.body.warning ? '. ' + r.body.warning : ''),
+                    );
+                    refresh(); // repaints the board; the pill refetches with it
+                  })
+                  .catch(function () {
+                    toast('Network error — the booking may or may not have landed; refreshing.', true);
+                    refresh();
+                  });
+              };
+              if (p.body.requiresConfirmation) {
+                confirmAsk(
+                  'This records a promise to the customer (' + promiseLabel(level) + ') for ' +
+                    body.date + ' ' + body.startTime + '. Book it?',
+                  function (yes) {
+                    if (yes) commit();
+                  },
+                );
+              } else {
+                commit();
+              }
+            })
+            .catch(function () {
+              toast('Network error — nothing was booked.', true);
+            });
+        },
+      );
+    });
+  }
+
   // ---- Manager write path ----
 
-  function moveFlow(card, targetDate, laneRef, laneLabel) {
+  function moveFlow(card, targetDate, laneRef, laneLabel, unassign) {
     var currentRef = card.getAttribute('data-ref');
     var sameDay = card.closest('.day').getAttribute('data-date') === targetDate;
     var body = {
@@ -668,57 +1275,37 @@
       date: targetDate,
       startTime: card.getAttribute('data-start'),
       endTime: card.getAttribute('data-end'),
-      reason: 'Moved on the dispatch board',
     };
     // A lane drop assigns/reassigns; a plain day drop keeps the person (or
-    // keeps it unassigned — moveVisit's omitted-ref semantics).
-    if (laneRef && laneRef !== currentRef) body.technicianRef = laneRef;
-    if (sameDay && !body.technicianRef) return; // dropped where it already was
-
-    apiPost('/board/api/move', body, true).then(function (p) {
-      if (!p.ok) {
-        toast(p.body.error || 'Move failed (' + p.status + ')', true);
-        return;
-      }
-      var commit = function () {
-        apiPost('/board/api/move', body, false)
-          .then(function (r) {
-            if (!r.ok) {
-              // Incl. the UNSCHEDULED stranding — show the raw failure, refetch.
-              toast(r.body.error || 'Move failed (' + r.status + ')', true);
-              refresh();
-              return;
-            }
-            // "Say what you did" includes a promise broken in the preview→commit
-            // race window (someone promoted the promise between the two calls) —
-            // the server reports it; never swallow it.
-            var msg =
-              'Moved to ' + targetDate + ' ' + body.startTime +
-              (body.technicianRef ? ' — now with ' + (laneLabel || body.technicianRef) : '') +
-              (r.body.promiseBroken ? '. This BROKE a customer promise — tell them' : '') +
-              (r.body.warning ? '. ' + r.body.warning : '');
-            toast(msg, !!r.body.promiseBroken);
-            refresh();
-          })
-          .catch(function () {
-            toast('Network error — the move may or may not have landed; refreshing.', true);
-            refresh();
-          });
-      };
-      if (p.body.requiresConfirmation) {
-        confirmAsk(
-          'This breaks a promised day (' + p.body.fromDay + ' → ' + p.body.toDay + '). ' +
-            'The customer was told ' + p.body.fromDay + '. Move anyway?',
-          function (yes) {
-            if (yes) commit();
-          },
+    // keeps it unassigned — moveVisit's omitted-ref semantics); an
+    // Unassigned-lane drop PARKS (plan 4a.5 — the detach verb). An already-
+    // parked card dropped on another day's Unassigned lane is a plain day
+    // move (nothing to detach) — the shared same-spot guard below covers the
+    // dropped-where-it-was case for parked cards too.
+    if (unassign && currentRef) {
+      body.unassign = true;
+    } else if (!unassign && laneRef && laneRef !== currentRef) {
+      body.technicianRef = laneRef;
+    }
+    if (sameDay && !body.technicianRef && !body.unassign) return; // dropped where it already was
+    // The audit reason tracks what the move ACTUALLY does, not the drop
+    // target (final-review finding: a parked card day-moved via the
+    // Unassigned lane was stamped "Parked").
+    body.reason = body.unassign ? 'Parked on the dispatch board' : 'Moved on the dispatch board';
+    postMove(
+      body,
+      function () {
+        return (
+          'Moved to ' + targetDate + ' ' + body.startTime +
+          (body.technicianRef
+            ? ' — now with ' + (laneLabel || body.technicianRef)
+            : body.unassign
+              ? ' — parked, nobody assigned'
+              : '')
         );
-      } else {
-        commit();
-      }
-    }).catch(function () {
-      toast('Network error — nothing was changed.', true);
-    });
+      },
+      card.getAttribute('data-start'),
+    );
   }
 
   function cancelFlow(card) {
@@ -756,10 +1343,17 @@
           });
       };
       if (p.body.requiresConfirmation) {
+        // Name what was ACTUALLY promised per level (final-review finding:
+        // the old two-level ternary described a time_only cancel as "promised
+        // a day" — a false statement of the stake on a destructive dialog).
+        var stake =
+          p.body.promiseLevel === 'time_only'
+            ? 'was promised a time (' + card.getAttribute('data-start') + ')'
+            : p.body.promiseLevel === 'time'
+              ? 'was promised the day AND time on ' + p.body.day
+              : 'was promised a day on ' + p.body.day;
         confirmAsk(
-          (p.body.customerName || 'The customer') + ' was promised a ' +
-            (p.body.promiseLevel === 'time' ? 'time' : 'day') + ' on ' + p.body.day +
-            '. Cancel anyway?',
+          (p.body.customerName || 'The customer') + ' ' + stake + '. Cancel anyway?',
           function (yes) {
             if (yes) commit();
           },
@@ -784,10 +1378,20 @@
     var laneEl = el.closest && el.closest('.lane');
     var t = null;
     if (laneEl) {
-      // The Unassigned lane is a drag SOURCE only — moveVisit cannot detach a
-      // person, so a drop here must be INERT, not silently degrade into a
-      // day-move the gesture never meant.
-      if (laneEl.classList.contains('lane-unassigned')) return null;
+      // The Unassigned lane is a LIVE drop target since plan 4a.5: the detach
+      // verb exists, so dropping here parks the visit (person pulled off,
+      // day/time kept). It renders on every actionable day exactly for this.
+      if (laneEl.classList.contains('lane-unassigned')) {
+        t = {
+          date: laneEl.closest('.day').getAttribute('data-date'),
+          laneRef: null,
+          label: 'Unassigned',
+          unassign: true,
+          el: laneEl,
+        };
+        if (state.today !== null && t.date < state.today) return null;
+        return t;
+      }
       var h3 = laneEl.querySelector('h3');
       t = {
         date: laneEl.closest('.day').getAttribute('data-date'),
@@ -950,7 +1554,7 @@
         var card = drag.card;
         var t = e.type === 'pointerup' ? targetAt(e.clientX, e.clientY) : null;
         endDrag();
-        if (t) moveFlow(card, t.date, t.laneRef, t.label);
+        if (t) moveFlow(card, t.date, t.laneRef, t.label, t.unassign);
       }
       pending = null;
     };

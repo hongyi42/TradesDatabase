@@ -157,6 +157,30 @@ describe('pollOnce', () => {
     });
   });
 
+  test('a DETACH (unassign) notifies exactly the displaced person — nobody on the person-less new row', async () => {
+    const { assignment } = await book({
+      technicianRef: 'notify-n1',
+      date: '2026-10-12',
+      startTime: '09:00',
+      endTime: '10:00',
+    });
+    await pollOnce(lastSeen); // drain the booked event
+    sends.mockClear();
+    await moveVisit({
+      tenantId,
+      assignmentId: assignment.id,
+      date: '2026-10-12',
+      startTime: '09:00',
+      unassign: true,
+      reason: 'pulled to an emergency',
+      actorRef: 'notify-mgr',
+    });
+    expect(await pollOnce(lastSeen)).toBe(1);
+    expect(sentTo()).toEqual([
+      { userId: '910000001', text: 'Your 2026-10-12 visit was moved off your schedule.' },
+    ]);
+  });
+
   test('a send failure never blocks LATER sends in the same poll, and the cursor still advances', async () => {
     const a = await book({
       technicianRef: 'notify-n1',

@@ -295,6 +295,46 @@ describe('assignments', () => {
     expect(history.map((r) => r.id)).toEqual([created.id, cancelled.id]); // newest first
   });
 
+  test('reschedule technicianId:null DETACHES; undefined keeps; time_only rows accept a NULL promised_day', async () => {
+    const job = await makeJob('reschedule-detach');
+    const original = await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: tech.id,
+      startsAt: '2026-09-25T09:00:00.000Z',
+      endsAt: '2026-09-25T11:00:00.000Z',
+      status: 'confirmed',
+    });
+    // Explicit null = detach (the !== undefined idiom — `??` would resurrect
+    // the old technician; plan 4a.5).
+    const detached = await rescheduleAssignment(original.id, {
+      startsAt: '2026-09-25T09:00:00.000Z',
+      endsAt: '2026-09-25T11:00:00.000Z',
+      technicianId: null,
+      reason: 'parked',
+    });
+    expect(detached.created.technician_id).toBeNull();
+    // Omitted still means "same technician" — the pre-4a.5 contract holds.
+    const kept = await rescheduleAssignment(detached.created.id, {
+      startsAt: '2026-09-25T13:00:00.000Z',
+      endsAt: '2026-09-25T15:00:00.000Z',
+      reason: 'shifted',
+    });
+    expect(kept.created.technician_id).toBeNull(); // old row's (null) carried
+    // time_only + promised_day NULL passes the swapped CHECK constraint.
+    const timeOnly = await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: null,
+      startsAt: '2026-09-26T09:00:00.000Z',
+      endsAt: '2026-09-26T10:00:00.000Z',
+      promiseLevel: 'time_only',
+      promisedDay: null,
+    });
+    expect(timeOnly.promise_level).toBe('time_only');
+    expect(timeOnly.promised_day).toBeNull();
+  });
+
   test('reschedule with an invalid new range throws BEFORE cancelling anything', async () => {
     const job = await makeJob('reschedule-guard');
     const original = await createAssignment({

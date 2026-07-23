@@ -168,6 +168,10 @@ export async function updateJobStatus(id: string, next: JobStatus): Promise<Job>
 // the record with no way to fix it from chat; record_standing_fact could only
 // annotate, while the title kept displaying everywhere. Identity only: status
 // has its own state machine above, and visits belong to move/cancel.
+// The triage vocabulary, exported beside the type so every surface validates
+// against ONE list (MCP handlers + the board job endpoint — plan 4a.5).
+export const JOB_PRIORITIES: JobPriority[] = ['emergency', 'urgent', 'routine', 'maintenance'];
+
 export interface UpdateJobDetailsInput {
   title?: string;
   // string = set (normalized lowercase — must match set_job_duration's

@@ -28,8 +28,6 @@ import {
   requestSandboxRetirement as liveRequestRetirement,
   cancelSandboxRetirement as liveCancelRetirement,
   updateTechnician,
-  updateAssignmentPromise,
-  updateJobDetails,
   getTenant,
   setTechnicianHorizonDays,
   insertTechnician,
@@ -63,6 +61,7 @@ import {
   type Customer,
   type FoldImpact,
   type Job,
+  JOB_PRIORITIES,
   type JobPriority,
   type CaptureChannel,
   type Json,
@@ -125,10 +124,11 @@ import {
   previewBookVisit,
   previewCancelVisit,
   previewMoveVisit,
+  setVisitPromise,
+  updateJobIdentity,
 } from '../schedule/booking.js';
 import { isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
-  appendScheduleEvent,
   latestScheduleVersion,
   listAssignmentsForTenant,
   listUnassignedAssignments,
@@ -188,7 +188,6 @@ export interface ServerDeps {
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
 const BRIEF_FOCUSES: BriefFocus[] = ['next_visit', 'full_history'];
 const TIERS: TechnicianTier[] = ['manager', 'technician'];
-const JOB_PRIORITIES: JobPriority[] = ['emergency', 'urgent', 'routine', 'maintenance'];
 
 // The technician tool surface — what every badge sees (the doorman runbook's
 // tool-count verification counts exactly these).
@@ -626,7 +625,7 @@ const ADMIN_TOOLS = [
       "(YYYY-MM-DD; both optional — default today in the firm's timezone; capped at 14 days), " +
       "every technician's confirmed visits with customer, address, times, promiseLevel (what " +
       'the customer was ' +
-      "told: none/day/time), promisedDay, and locked (manager-pinned). Stops with " +
+      "told: none/day/time/time_only), promisedDay, and locked (manager-pinned). Stops with " +
       'unassigned:true have NOBODY attached yet and need a person (attach with move_visit). ' +
       'Pass unassignedOnly:true to list ALL upcoming visits with nobody attached, however far ' +
       'out (no 14-day cap) — use it when the manager asks what still needs assigning. Also ' +
@@ -654,7 +653,7 @@ const ADMIN_TOOLS = [
       'Book a visit onto the schedule (manager only). Reversible and internal (nothing ' +
       'promised to the customer) → done in ONE call ({status:"booked"}) — ALWAYS tell the ' +
       'manager what was done (day, time, who, and any warning); never act silently. If the ' +
-      'customer was promised a day/time (promiseLevel "day"/"time") you instead get ' +
+      'customer was promised ANYTHING (any promiseLevel other than "none") you instead get ' +
       '{status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
       'yes, call again with ONLY confirmId. Call with date + startTime + endTime ' +
       '(+ customerId OR jobId; technicianRef optional). customerId MINTS A NEW JOB — when ' +
@@ -681,7 +680,7 @@ const ADMIN_TOOLS = [
         date: { type: 'string', description: 'YYYY-MM-DD, firm-local. First call only.' },
         startTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default; ask the manager if unstated.' },
         endTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default length; ask the manager if unstated.' },
-        promiseLevel: { type: 'string', enum: ['none', 'day', 'time'], description: 'What the customer was ACTUALLY told (default "none" = nothing promised). Set "day"/"time" only when the manager indicates a promise was made. First call only.' },
+        promiseLevel: { type: 'string', enum: ['none', 'day', 'time', 'time_only'], description: 'What the customer was ACTUALLY told (default "none" = nothing promised). "day" = told the day; "time" = told the day AND time; "time_only" = told a time but NOT the day (the day may still move). Set a level only when the manager indicates a promise was made. First call only.' },
         priority: { type: 'string', enum: ['emergency', 'urgent', 'routine', 'maintenance'], description: 'Triage tier for the NEW job when booking by customerId (default "routine"). Rejected with jobId — an existing job keeps its recorded priority. First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
@@ -692,13 +691,17 @@ const ADMIN_TOOLS = [
     name: 'move_visit',
     description:
       'Move a booked visit (manager only) — also how a technician gets ATTACHED to an ' +
-      'unassigned visit (pass technicianRef with the same day/time). Reversible and internal ' +
+      'unassigned visit (pass technicianRef with the same day/time), and how one gets TAKEN ' +
+      'OFF: unassign:true parks the visit — pulls the person off, keeps day/time; find it ' +
+      'under get_team_schedule unassignedOnly:true or the board\'s loose bucket. Reversible ' +
+      'and internal ' +
       '(no customer promise affected) → done in ONE call ({status:"moved"}) — ALWAYS tell the ' +
       'manager what moved; never act silently. If the move would break what the customer was ' +
       'promised (promiseBroken TRUE — they heard a different day/time and someone must tell ' +
       'them) you instead get {status:"needs_confirmation", confirmId} with a preview — show ' +
       'it, get an explicit yes, call again with ONLY confirmId. Call with assignmentId + ' +
-      'date + startTime (+ optional endTime/technicianRef) + reason. When the result carries ' +
+      'date + startTime (+ optional endTime/technicianRef OR unassign) + reason. When the ' +
+      'result carries ' +
       'boardNote, ALWAYS end your report with its exact [See it on the board](…) line — it ' +
       'renders as a tappable link.',
     inputSchema: {
@@ -708,7 +711,8 @@ const ADMIN_TOOLS = [
         date: { type: 'string', description: 'New YYYY-MM-DD. First call only.' },
         startTime: { type: 'string', description: 'New HH:MM. First call only.' },
         endTime: { type: 'string', description: 'New HH:MM (default: keep the old duration). First call only.' },
-        technicianRef: { type: 'string', description: 'Reassign to this roster ref (default: same technician). First call only.' },
+        technicianRef: { type: 'string', description: 'Reassign to this roster ref (default: same technician). First call only. Mutually exclusive with unassign.' },
+        unassign: { type: 'boolean', description: 'true = park the visit: pull the person off, keep day/time (the reverse of attaching). Mutually exclusive with technicianRef. First call only.' },
         reason: { type: 'string', description: 'Why it is moving (kept on the record). First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
@@ -720,7 +724,8 @@ const ADMIN_TOOLS = [
     description:
       'Cancel a booked visit (manager only). Reversible and internal (nothing promised to ' +
       'the customer) → done in ONE call ({status:"cancelled"}) — ALWAYS tell the manager what ' +
-      'was cancelled; never act silently. If the customer was promised a day/time you instead ' +
+      'was cancelled; never act silently. If the customer was promised anything (any ' +
+      'promiseLevel other than "none") you instead ' +
       'get {status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
       'yes, call again with ONLY confirmId. Call with assignmentId + reason. The job stays ' +
       'open for rebooking either way. When the result carries boardNote, ALWAYS end your ' +
@@ -902,7 +907,9 @@ const ADMIN_TOOLS = [
     name: 'set_promise',
     description:
       "Correct a visit's PROMISE record (manager only) — what the customer was ACTUALLY told: " +
-      "'none' (nothing promised), 'day' (told which day), 'time' (told the exact time). Pass " +
+      "'none' (nothing promised), 'day' (told which day), 'time' (told day AND time), " +
+      "'time_only' (told a time but NOT the day — the time gates changes, the day moves " +
+      'freely). Pass ' +
       'assignmentId + promiseLevel; done in ONE call — this corrects the record of what was ' +
       'said, nothing moves. The promised day is derived from the visit itself — you never ' +
       "compute a date. Use it the MOMENT you notice a promise went unrecorded (e.g. the " +
@@ -917,10 +924,11 @@ const ADMIN_TOOLS = [
         assignmentId: { type: 'string', description: 'The visit whose promise record is wrong.' },
         promiseLevel: {
           type: 'string',
-          enum: ['none', 'day', 'time'],
+          enum: ['none', 'day', 'time', 'time_only'],
           description:
             "What the customer was ACTUALLY told. 'day'/'time' anchor to the visit's own " +
-            "date (server-derived); 'none' clears the promise.",
+            "date (server-derived); 'time_only' anchors to the visit's start time with NO " +
+            "promised day; 'none' clears the promise.",
         },
       },
       required: ['assignmentId', 'promiseLevel'],
@@ -2980,6 +2988,10 @@ async function dispatch(
         if (!date || !startTime) throw new Error('date and startTime are required');
         if (!reason) throw new Error('reason is required — say why the visit is moving');
         const technicianRefArg = str('technicianRef');
+        if (args.unassign !== undefined && typeof args.unassign !== 'boolean') {
+          throw new Error('unassign must be a boolean');
+        }
+        const unassignArg = args.unassign === true;
         const preview = await previewMoveVisit({
           tenantId,
           assignmentId,
@@ -2987,6 +2999,7 @@ async function dispatch(
           startTime,
           ...(str('endTime') ? { endTime: str('endTime') } : {}),
           ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
+          unassign: unassignArg,
           reason,
           actorRef: subjectRef,
         });
@@ -3002,6 +3015,7 @@ async function dispatch(
             startTime,
             endTime: preview.endTime, // resolved — preview == commit
             ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
+            unassign: unassignArg,
             reason,
             actorRef: subjectRef,
           });
@@ -3012,11 +3026,15 @@ async function dispatch(
             date,
             startTime,
             endTime: preview.endTime,
+            ...(unassignArg ? { unassigned: true } : {}),
             promiseBroken: false,
             ...(moved.warning ? { warning: moved.warning } : {}),
-            note:
-              'Moved in one step — no customer promise was affected, so no confirmation was ' +
-              'needed. Tell the manager exactly what moved.',
+            note: unassignArg
+              ? 'Parked in one step — the person was taken off; the visit keeps its slot and ' +
+                'now shows under Unassigned (board) / unassignedOnly (get_team_schedule). ' +
+                'Tell the manager exactly what happened.'
+              : 'Moved in one step — no customer promise was affected, so no confirmation was ' +
+                'needed. Tell the manager exactly what moved.',
           };
         }
         // Staging replaces any prior staged move (the new confirmId is the
@@ -3038,6 +3056,10 @@ async function dispatch(
             startTime,
             endTime: preview.endTime, // resolved — preview == commit
             technicianRef: technicianRefArg ?? null,
+            // Persisted so the confirm-time replay commits the SAME move that
+            // was previewed — dropping it here would confirm a park as a
+            // technician-keeping move (plan review finding #1).
+            unassign: unassignArg,
             reason,
             preview: preview as unknown as Json,
             stagedAt: new Date().toISOString(),
@@ -3070,6 +3092,7 @@ async function dispatch(
         startTime?: string;
         endTime?: string;
         technicianRef?: string | null;
+        unassign?: boolean;
         reason?: string;
         stagedAt?: string;
       };
@@ -3098,6 +3121,9 @@ async function dispatch(
           startTime: d.startTime,
           endTime: d.endTime,
           ...(d.technicianRef ? { technicianRef: d.technicianRef } : {}),
+          // Plain form at every site (final-review finding: three different
+          // spellings of the same flag invite the drop-the-flag bug class).
+          unassign: d.unassign === true,
           reason: d.reason,
           actorRef: subjectRef,
         });
@@ -3123,9 +3149,15 @@ async function dispatch(
         date: d.date,
         startTime: d.startTime,
         endTime: d.endTime,
+        ...(d.unassign === true ? { unassigned: true } : {}),
         promiseBroken: moved.promiseBroken,
         ...(moved.promiseBroken
-          ? { note: 'the customer was promised a different day — make sure someone tells them' }
+          ? {
+              // Level-agnostic (final-review finding: the old copy claimed "a
+              // different day" even when a time_only/time promise broke on a
+              // same-day time change).
+              note: 'this move breaks what the customer was told — make sure someone tells them',
+            }
           : {}),
         ...(moved.warning ? { warning: moved.warning } : {}),
       };
@@ -3995,11 +4027,10 @@ async function dispatch(
         throw new Error(`invalid priority: ${String(args.priority)}`);
       }
       const priorityArg = args.priority as JobPriority | undefined;
-      const job = await getJob(jobId);
-      // Tenant guard: a cross-tenant (or unknown) id reads as not found.
-      if (!job || job.tenant_id !== tenantId) throw new Error('job not found');
       const jobTypeArg = args.jobType as string | null | undefined;
-      const updated = await updateJobDetails(
+      // Shared core (plan 4a.5): tenant guard + CAS write + the job_updated
+      // ledger event live in ONE body the board endpoint calls too.
+      const { previous: job, updated } = await updateJobIdentity(
         tenantId,
         jobId,
         {
@@ -4007,26 +4038,8 @@ async function dispatch(
           ...(jobTypeArg !== undefined ? { jobType: jobTypeArg } : {}),
           ...(priorityArg !== undefined ? { priority: priorityArg } : {}),
         },
-        job.updated_at, // CAS — the old→new echo must describe THIS read
+        identity.technicianRef,
       );
-      // The identity edit is schedule-visible (board lanes, schedule reads) —
-      // it joins the append-only event ledger like every other schedule
-      // mutation: who changed what, when, old → new, forever.
-      await appendScheduleEvent({
-        tenantId,
-        kind: 'job_updated',
-        actorRef: identity.technicianRef,
-        detail: {
-          jobId,
-          ...(str('title') !== undefined ? { title: { from: job.title, to: updated.title } } : {}),
-          ...(jobTypeArg !== undefined
-            ? { jobType: { from: job.job_type, to: updated.job_type } }
-            : {}),
-          ...(priorityArg !== undefined
-            ? { priority: { from: job.priority, to: updated.priority } }
-            : {}),
-        } as unknown as Json,
-      });
       // A newly set type only drives scheduling if a duration is stored for
       // it — say so NOW, not as a surprise error at the next find_slots.
       const typeWarning =
@@ -4068,43 +4081,20 @@ async function dispatch(
       const promiseLevelArg = str('promiseLevel');
       if (!promiseLevelArg || !isPromiseLevel(promiseLevelArg)) {
         throw new Error(
-          `invalid promiseLevel: ${String(args.promiseLevel ?? '')} (use none, day, or time)`,
+          `invalid promiseLevel: ${String(args.promiseLevel ?? '')} (use none, day, time, or time_only)`,
         );
       }
-      // Tenant guard: a cross-tenant (or unknown) id reads as not found.
-      const row = await getAssignmentForTenant(assignmentId, tenantId);
-      if (!row) throw new Error('visit not found');
-      if (row.status !== 'confirmed' && row.status !== 'proposed') {
-        throw new Error(
-          `this visit is ${row.status} — promises are corrected on live visits only`,
-        );
-      }
-      // The promise is about THIS visit, so its day comes from the row itself
-      // (bookVisit derives promised_day from the booked date the same way) —
-      // agent date math never touches the promise record. Promising a
-      // DIFFERENT day than the visit is booked is move_visit's job: the
-      // schedule should match the promise, not diverge from it.
-      const promisedDay = promiseLevelArg === 'none' ? null : row.starts_at.slice(0, 10);
-      const updated = await updateAssignmentPromise(
+      // Shared core (plan 4a.5): tenant guard + live-status check + SERVER-
+      // derived promised day (the promise is about THIS visit — its day comes
+      // from the row itself; promising a DIFFERENT day than the visit is
+      // booked is move_visit's job) + CAS write + the promise_updated ledger
+      // event, in ONE body the board endpoint calls too.
+      const { previous: row, updated } = await setVisitPromise(
         tenantId,
         assignmentId,
-        promiseLevelArg as PromiseLevel,
-        promisedDay,
-        row.updated_at, // CAS — the old→new echo must describe THIS read
+        promiseLevelArg,
+        identity.technicianRef,
       );
-      // The promise level gates every future move/cancel confirmation on this
-      // visit — the change joins the append-only ledger like every schedule
-      // mutation (update_job precedent): who changed what, when, old → new.
-      await appendScheduleEvent({
-        tenantId,
-        assignmentId,
-        kind: 'promise_updated',
-        actorRef: identity.technicianRef,
-        detail: {
-          promiseLevel: { from: row.promise_level, to: updated.promise_level },
-          promisedDay: { from: row.promised_day, to: updated.promised_day },
-        } as unknown as Json,
-      });
       const visitDate = updated.starts_at.slice(0, 10);
       return {
         status: 'ok',
@@ -4128,9 +4118,14 @@ async function dispatch(
                 'requires the manager to confirm first (the customer was told the day; a ' +
                 'same-day time shift stays one-shot). Tell the manager exactly what ' +
                 'changed, old → new.'
-              : 'Promise recorded — moving or cancelling this visit now requires the ' +
-                'manager to confirm first (the customer was told the exact time). Tell ' +
-                'the manager exactly what changed, old → new.',
+              : updated.promise_level === 'time_only'
+                ? 'Promise recorded — changing this visit\'s START TIME, or cancelling it, ' +
+                  'now requires the manager to confirm first (the customer was told the ' +
+                  'time but not the day — the day may still move freely). Tell the manager ' +
+                  'exactly what changed, old → new.'
+                : 'Promise recorded — moving or cancelling this visit now requires the ' +
+                  'manager to confirm first (the customer was told the day AND time). Tell ' +
+                  'the manager exactly what changed, old → new.',
       };
     }
     case 'find_slots': {

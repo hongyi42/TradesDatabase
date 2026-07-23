@@ -12,7 +12,14 @@ import {
   listUnassignedOpenJobs,
 } from '../db/assignments.js';
 import { latestScheduleVersion, listScheduleEventsSince } from '../db/scheduleEvents.js';
-import { bookVisit, cancelVisit, moveVisit, naiveLocalISO, previewBookVisit } from './booking.js';
+import {
+  bookVisit,
+  cancelVisit,
+  moveVisit,
+  naiveLocalISO,
+  previewBookVisit,
+  previewMoveVisit,
+} from './booking.js';
 
 // Integration against the local stack, scheduling.test.ts truncate discipline.
 const TRUNCATE =
@@ -583,6 +590,191 @@ describe('unassigned bookings (technician-optional)', () => {
     // Ordered by starts_at.
     const starts = listed.map((r) => r.starts_at);
     expect([...starts].sort()).toEqual(starts);
+  });
+});
+
+describe('detach (unassign) + time_only promise — plan 4a.5', () => {
+  test('moveVisit unassign parks the visit: technician_id NULL, moved event, promise intact', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Detach Dana' });
+    const { assignment } = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      date: '2026-12-01',
+      startTime: '09:00',
+      endTime: '10:00',
+      promiseLevel: 'day',
+      actorRef: 'manager-test',
+    });
+    expect(assignment.technician_id).toBe(tech.id);
+    // Preview first: a same-day/same-time park breaks NO promise (day-level
+    // promises gate the DAY; the person is not part of the promise).
+    const preview = await previewMoveVisit({
+      tenantId,
+      assignmentId: assignment.id,
+      date: '2026-12-01',
+      startTime: '09:00',
+      unassign: true,
+      reason: 'tech pulled to an emergency',
+      actorRef: 'manager-test',
+    });
+    expect(preview.unassign).toBe(true);
+    expect(preview.promiseLevel).toBe('day');
+    expect(preview.promiseBroken).toBe(false);
+    expect(preview.requiresConfirmation).toBe(false);
+    expect(preview.technicianName).toBeNull(); // the TARGET is nobody
+
+    const before = await latestScheduleVersion(tenantId);
+    const moved = await moveVisit({
+      tenantId,
+      assignmentId: assignment.id,
+      date: '2026-12-01',
+      startTime: '09:00',
+      unassign: true,
+      reason: 'tech pulled to an emergency',
+      actorRef: 'manager-test',
+    });
+    expect(moved.created.technician_id).toBeNull();
+    expect(moved.created.status).toBe('confirmed');
+    expect(moved.created.promise_level).toBe('day'); // promise carries
+    expect(moved.created.promised_day).toBe('2026-12-01');
+    expect(moved.cancelled.id).toBe(assignment.id);
+    expect(moved.promiseBroken).toBe(false);
+    // The ledger records a plain 'moved' with the old row linked — exactly
+    // what boardNotify resolves for the "moved off your schedule" push.
+    const events = await listScheduleEventsSince(tenantId, before);
+    const ev = events.find((e) => e.assignment_id === moved.created.id && e.kind === 'moved');
+    expect(ev).toBeDefined();
+    expect((ev?.detail as { previousAssignmentId?: string }).previousAssignmentId).toBe(
+      assignment.id,
+    );
+    // And the parked row is now in the recall lister.
+    const parked = await listUnassignedAssignments(tenantId, '2026-12-01T00:00:00.000Z');
+    expect(parked.map((r) => r.id)).toContain(moved.created.id);
+  });
+
+  test('unassign + technicianRef is refused; nothing changes', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Both Bo' });
+    const { assignment } = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      date: '2026-12-02',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    await expect(
+      moveVisit({
+        tenantId,
+        assignmentId: assignment.id,
+        date: '2026-12-02',
+        startTime: '09:00',
+        technicianRef: 'book-tech',
+        unassign: true,
+        reason: 'contradiction',
+        actorRef: 'manager-test',
+      }),
+    ).rejects.toThrow(/pass ONE of technicianRef .* or unassign/);
+    expect((await listAssignmentsForTechnician(tech.id, '2026-12-02T00:00:00.000Z', '2026-12-03T00:00:00.000Z')).map((r) => r.id)).toContain(assignment.id);
+  });
+
+  test('a park onto an identical existing parked window for the same customer is refused', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Dup Dora' });
+    // An existing PARKED visit at the target window.
+    await bookVisit({
+      tenantId,
+      customerId: customer.id,
+      date: '2026-12-03',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    // An assigned visit elsewhere, about to be parked onto that exact window.
+    const { assignment } = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      date: '2026-12-03',
+      startTime: '11:00',
+      endTime: '12:00',
+      actorRef: 'manager-test',
+    });
+    await expect(
+      moveVisit({
+        tenantId,
+        assignmentId: assignment.id,
+        date: '2026-12-03',
+        startTime: '09:00',
+        endTime: '10:00',
+        unassign: true,
+        reason: 'park it',
+        actorRef: 'manager-test',
+      }),
+    ).rejects.toThrow(/identical unassigned visit .* likely a duplicate/);
+    // A park onto a CLEAN window still lands.
+    const moved = await moveVisit({
+      tenantId,
+      assignmentId: assignment.id,
+      date: '2026-12-03',
+      startTime: '13:00',
+      endTime: '14:00',
+      unassign: true,
+      reason: 'park it',
+      actorRef: 'manager-test',
+    });
+    expect(moved.created.technician_id).toBeNull();
+  });
+
+  test('time_only: promised_day NULL; day moves freely; a time change breaks', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Nine AM Nia' });
+    const { assignment } = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      date: '2026-12-04',
+      startTime: '09:00',
+      endTime: '10:00',
+      promiseLevel: 'time_only',
+      actorRef: 'manager-test',
+    });
+    expect(assignment.promise_level).toBe('time_only');
+    expect(assignment.promised_day).toBeNull(); // the constraint accepts the pair
+    // Different DAY, same start time → one-shot (the day was never promised).
+    const dayMove = await previewMoveVisit({
+      tenantId,
+      assignmentId: assignment.id,
+      date: '2026-12-07',
+      startTime: '09:00',
+      reason: 'shift the day',
+      actorRef: 'manager-test',
+    });
+    expect(dayMove.promiseBroken).toBe(false);
+    expect(dayMove.requiresConfirmation).toBe(false);
+    // Same day, different START TIME → the promise breaks.
+    const timeMove = await previewMoveVisit({
+      tenantId,
+      assignmentId: assignment.id,
+      date: '2026-12-04',
+      startTime: '13:00',
+      reason: 'shift the time',
+      actorRef: 'manager-test',
+    });
+    expect(timeMove.promiseLevel).toBe('time_only');
+    expect(timeMove.promiseBroken).toBe(true);
+    expect(timeMove.requiresConfirmation).toBe(true);
+    // Committing the day move keeps promised_day NULL (carriesPromisedDay).
+    const moved = await moveVisit({
+      tenantId,
+      assignmentId: assignment.id,
+      date: '2026-12-07',
+      startTime: '09:00',
+      reason: 'shift the day',
+      actorRef: 'manager-test',
+    });
+    expect(moved.created.promise_level).toBe('time_only');
+    expect(moved.created.promised_day).toBeNull();
+    expect(moved.promiseBroken).toBe(false);
   });
 });
 

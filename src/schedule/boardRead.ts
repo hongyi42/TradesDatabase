@@ -1,10 +1,17 @@
 import {
+  factSourceIds,
+  findRetractionsFor,
+  foldRetractedFacts,
   getAssignmentWithRefsForTenant,
   getTenant,
+  isInactiveState,
   listAssignmentsWithRefsForTenant,
+  listTeam,
   listUnassignedAssignmentsWithRefs,
   listUnscheduledOpenJobsWithCustomer,
+  unwrapAttributes,
   type Assignment,
+  type Json,
 } from '../db/index.js';
 import { formatAddress } from '../routes/deepLink.js';
 import { localDateISO } from './availability.js';
@@ -281,9 +288,27 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
   };
 }
 
-// The tap-into-a-visit detail view (contact + logistics only — user decision
-// 2026-07-19: notes/briefings stay OFF the board, so nothing here needs the
-// capture sensitivity filter and both tiers may see every field).
+// The board picker's roster read (plan 4a.5): every name chat booking would
+// accept — the filter mirrors resolveTechnician (!isInactiveState), so
+// seat-exempt and invited rows appear; offboarded never. Manager-gated at the
+// endpoint; fetched on picker open, never on the board-load path.
+export interface BoardRosterEntry {
+  ref: string;
+  name: string;
+}
+
+export async function readRosterForBoard(tenantId: string): Promise<BoardRosterEntry[]> {
+  return (await listTeam(tenantId))
+    .filter((t) => !isInactiveState(t.state))
+    .map((t) => ({ ref: t.ref, name: t.display_name }));
+}
+
+// The tap-into-a-visit detail view (contact + logistics; SINCE plan 4a.5 also
+// the compressed customer notes — the recorded 2026-07-23 decision that
+// consciously revisits "notes stay off the board": standing facts already
+// reach technicians through the agent's customer reads, so the sheet shows
+// the same folded facts to both tiers; CAPTURES remain off the board, so the
+// capture sensitivity filter still has nothing to do here).
 export interface VisitDetail {
   assignmentId: string;
   status: Assignment['status'];
@@ -295,13 +320,49 @@ export interface VisitDetail {
   unassigned: boolean;
   technicianRef: string | null;
   technicianName: string | null;
+  // Null when the assignment references another tenant's job — withheld like
+  // every other nested field (the day-view jobId precedent). The sheet's
+  // Purpose editor posts against this id (plan 4a.5).
+  jobId: string | null;
   jobTitle: string | null;
+  jobPriority: string | null;
+  // Compressed standing facts (plan 4a.5): retraction-folded, capped, values
+  // truncated — BOTH tiers see them (facts already reach technicians through
+  // the agent's customer reads; recorded decision 2026-07-23).
+  customerNotes: { key: string; value: string }[];
   customer: {
     name: string | null;
     phone: string | null;
     email: string | null;
     address: string | null;
   } | null;
+}
+
+// The notes cap/truncation — server-composed so clients render verbatim.
+const NOTES_CAP = 8;
+const NOTE_VALUE_MAX = 80;
+
+// Attributes → compressed notes: fold facts whose evidence was retracted
+// (factSourceIds → findRetractionsFor → foldRetractedFacts — the capture-read
+// pattern in src/mcp/server.ts), unwrap bundles to plain values, then cap and
+// truncate. Non-bundle (seed/legacy) values pass through the same compression.
+async function composeCustomerNotes(attrs: Json): Promise<{ key: string; value: string }[]> {
+  const ids = factSourceIds(attrs);
+  let folded = attrs;
+  if (ids.length > 0) {
+    const retracted = new Set(
+      (await findRetractionsFor(ids))
+        .map((r) => r.retracts_capture_id)
+        .filter((id): id is string => !!id),
+    );
+    if (retracted.size > 0) folded = foldRetractedFacts(attrs, retracted);
+  }
+  return Object.entries(unwrapAttributes(folded))
+    .slice(0, NOTES_CAP)
+    .map(([key, value]) => {
+      const s = typeof value === 'string' ? value : JSON.stringify(value ?? null);
+      return { key, value: s.length > NOTE_VALUE_MAX ? `${s.slice(0, NOTE_VALUE_MAX - 1)}…` : s };
+    });
 }
 
 // One visit's detail, or null. viewerTechnicianId carries the SAME semantics
@@ -340,7 +401,12 @@ export async function readVisitDetail(
     technicianRef: technician?.ref ?? null,
     technicianName: technician?.display_name ?? null,
     // job/customer/technician are already tenant-gated above — no re-test here.
+    // jobId gated on the tenant-checked job, NOT raw row.job_id (the day-view
+    // precedent: never disclose another firm's job UUID).
+    jobId: job ? row.job_id : null,
     jobTitle: job ? job.title : null,
+    jobPriority: job ? job.priority : null,
+    customerNotes: customer ? await composeCustomerNotes(customer.attributes) : [],
     customer:
       customer
         ? {

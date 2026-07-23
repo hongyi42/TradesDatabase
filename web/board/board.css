@@ -285,3 +285,85 @@ body.dragging .stop.draggable { cursor: grabbing; }
   color: var(--accent-fg);
   white-space: nowrap;
 }
+
+/* ---- Quick-edit (plan 4a.5) ---- */
+.edit-btn {
+  background: none;
+  border: 1px solid var(--card);
+  color: var(--accent);
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 1px 7px;
+  margin-left: 6px;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.picker-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 2px;
+  border-top: 1px solid var(--card);
+  cursor: pointer;
+}
+.picker-name { font-weight: 600; }
+.picker-hint { color: var(--hint); font-size: 12px; white-space: nowrap; }
+.field-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
+.field-row > span { flex: 0 0 76px; color: var(--hint); font-size: 13px; }
+.field-row input,
+.field-row select {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--card);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+.field-note { color: var(--hint); font-size: 12px; margin: 4px 0 8px; }
+.sheet-btnrow { display: flex; gap: 10px; margin-top: 14px; }
+.sheet-btn {
+  flex: 1;
+  border: 1px solid var(--card);
+  background: var(--card);
+  color: var(--fg);
+  border-radius: 9px;
+  padding: 10px 0;
+  font-size: 14px;
+  cursor: pointer;
+}
+.sheet-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+/* Tray rows grow an action column (Assign) without disturbing the text stack. */
+.bucket-row { display: flex; align-items: center; gap: 8px; }
+.bucket-row-txt { flex: 1; min-width: 0; }
+.bucket-row.bucket-job { cursor: pointer; }
+.bucket-assign {
+  flex: none;
+  background: var(--accent);
+  color: var(--accent-fg);
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+/* Empty Unassigned lanes are drag-to-park's drop target — keep a hit area. */
+.lane-unassigned { min-height: 36px; }
+.notes-head {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--hint);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin: 12px 0 2px;
+}
+.note-row { border-top: 1px solid var(--card); padding: 6px 0; font-size: 13px; }
+.note-key { color: var(--hint); }

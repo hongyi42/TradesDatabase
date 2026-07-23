@@ -8,14 +8,22 @@ import {
   InvalidRangeError,
   readBoardDays,
   readLooseBucket,
+  readRosterForBoard,
   readVisitDetail,
 } from '../schedule/boardRead.js';
 import {
+  bookVisit,
   cancelVisit,
+  isPromiseLevel,
   moveVisit,
+  previewBookVisit,
   previewCancelVisit,
   previewMoveVisit,
+  setVisitPromise,
+  updateJobIdentity,
 } from '../schedule/booking.js';
+import { getTenant, JOB_PRIORITIES, type JobPriority } from '../db/index.js';
+import { localDateISO } from '../schedule/availability.js';
 
 // The dispatch board's HTTP surface, mounted by httpServer.ts BEFORE the IP
 // allowlist: board traffic comes from users' public browsers (the Telegram
@@ -147,6 +155,16 @@ const str = (body: Record<string, unknown>, key: string): string | undefined =>
     ? (body[key] as string)
     : undefined;
 
+// Board writes never target the past — the SERVER floor under the client
+// gates (final review: stale-tab midnight crossings and hand-crafted calls
+// bypass client checks; the chat surface deliberately keeps its
+// history-correction ability, so this floor is board-only).
+const PAST_DATE_ERROR = 'board writes never target the past — date must be today or later';
+async function boardDateAllowed(tenantId: string, date: string): Promise<boolean> {
+  const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+  return date >= localDateISO(new Date().toISOString(), tz);
+}
+
 export async function handleBoardRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -259,13 +277,33 @@ export async function handleBoardRequest(
       return;
     }
 
+    // The assign-picker's roster (plan 4a.5). Manager-only like every write
+    // surface; fetched on picker open — never on the board-load path.
+    if (pathname === '/board/api/roster' && req.method === 'GET') {
+      const auth = await authBoard(req);
+      if (!auth.ok) {
+        deny(res, auth);
+        return;
+      }
+      if (auth.technician.tier !== 'manager') {
+        json(res, 403, { error: 'managers only' });
+        return;
+      }
+      json(res, 200, { technicians: await readRosterForBoard(auth.tenantId) });
+      return;
+    }
+
     // Manager-only write path (Phase 3). Both verbs are the SAME shared
     // booking.ts verbs the chat agent drives — every guard (tenant, overlap,
     // promise ladder) fires identically. The confirm model is Feature A's
     // doctrine, inherited via the previews' requiresConfirmation: the page
     // previews first, one-shots when false, confirms in-UI when true.
     if (
-      (pathname === '/board/api/move' || pathname === '/board/api/cancel') &&
+      (pathname === '/board/api/move' ||
+        pathname === '/board/api/cancel' ||
+        pathname === '/board/api/book' ||
+        pathname === '/board/api/promise' ||
+        pathname === '/board/api/job') &&
       req.method === 'POST'
     ) {
       const auth = await authBoard(req);
@@ -283,13 +321,181 @@ export async function handleBoardRequest(
         return;
       }
       const preview = url.searchParams.get('preview') === '1' || body.preview === true;
-      const assignmentId = str(body, 'assignmentId');
       const reason = str(body, 'reason');
-      if (!assignmentId) {
-        json(res, 400, { error: 'assignmentId is required' });
-        return;
-      }
       try {
+        // Book an EXISTING job from the tray (plan 4a.5) — the customerId
+        // mint-a-job path stays chat-only; preview→confirm-in-UI→commit like
+        // move (bookingRequiresConfirmation rides on the preview).
+        if (pathname === '/board/api/book') {
+          if ('customerId' in body) {
+            json(res, 400, { error: 'the board books existing jobs only — pass jobId' });
+            return;
+          }
+          // MCP-layer parity (final-review finding): priority only applies to
+          // the mint-a-job path the board blocks — silently ignoring it would
+          // report an unstored urgency as stored.
+          if ('priority' in body) {
+            json(res, 400, {
+              error: 'priority is not set at booking — edit it on the job (the /job verb)',
+            });
+            return;
+          }
+          const jobId = str(body, 'jobId');
+          if (!jobId) {
+            json(res, 400, { error: 'jobId is required' });
+            return;
+          }
+          const date = str(body, 'date');
+          const startTime = str(body, 'startTime');
+          const endTime = str(body, 'endTime');
+          if (!date || !startTime || !endTime) {
+            json(res, 400, { error: 'date, startTime and endTime are required' });
+            return;
+          }
+          if (!(await boardDateAllowed(auth.tenantId, date))) {
+            json(res, 400, { error: PAST_DATE_ERROR });
+            return;
+          }
+          if ('technicianRef' in body && str(body, 'technicianRef') === undefined) {
+            json(res, 400, {
+              error: 'technicianRef was empty — pass a roster ref, or omit it to book unassigned',
+            });
+            return;
+          }
+          let promiseLevel;
+          if ('promiseLevel' in body) {
+            if (!isPromiseLevel(body.promiseLevel)) {
+              json(res, 400, {
+                error: 'invalid promiseLevel (use none, day, time, or time_only)',
+              });
+              return;
+            }
+            promiseLevel = body.promiseLevel;
+          }
+          const input = {
+            tenantId: auth.tenantId,
+            jobId,
+            date,
+            startTime,
+            endTime,
+            technicianRef: str(body, 'technicianRef'),
+            ...(promiseLevel ? { promiseLevel } : {}),
+            actorRef: auth.technician.ref,
+          };
+          if (preview) {
+            json(res, 200, await previewBookVisit(input));
+            return;
+          }
+          const booked = await bookVisit(input);
+          json(res, 200, {
+            status: 'booked',
+            assignmentId: booked.assignment.id,
+            jobId: booked.job.id,
+            date,
+            startTime,
+            endTime,
+            promiseLevel: booked.assignment.promise_level,
+            ...(booked.warning ? { warning: booked.warning } : {}),
+          });
+          return;
+        }
+        // One-shot job identity edit (plan 4a.5): board scope is title +
+        // priority — jobType is duration-vocabulary work and stays in chat.
+        if (pathname === '/board/api/job') {
+          if (preview) {
+            json(res, 400, { error: 'job edits are one-shot — this verb has no preview' });
+            return;
+          }
+          const jobId = str(body, 'jobId');
+          if (!jobId) {
+            json(res, 400, { error: 'jobId is required' });
+            return;
+          }
+          if ('jobType' in body) {
+            json(res, 400, { error: 'jobType is edited in chat — the board edits title and priority' });
+            return;
+          }
+          if ('title' in body && str(body, 'title') === undefined) {
+            json(res, 400, { error: 'title must not be empty' });
+            return;
+          }
+          const title = str(body, 'title');
+          let priority: JobPriority | undefined;
+          if ('priority' in body) {
+            if (
+              typeof body.priority !== 'string' ||
+              !JOB_PRIORITIES.includes(body.priority as JobPriority)
+            ) {
+              json(res, 400, { error: `invalid priority (use ${JOB_PRIORITIES.join(', ')})` });
+              return;
+            }
+            priority = body.priority as JobPriority;
+          }
+          if (title === undefined && priority === undefined) {
+            json(res, 400, { error: 'nothing to update — pass title and/or priority' });
+            return;
+          }
+          const { previous, updated } = await updateJobIdentity(
+            auth.tenantId,
+            jobId,
+            {
+              ...(title !== undefined ? { title } : {}),
+              ...(priority !== undefined ? { priority } : {}),
+            },
+            auth.technician.ref,
+          );
+          json(res, 200, {
+            status: 'ok',
+            changes: {
+              ...(title !== undefined
+                ? { title: { from: previous.title, to: updated.title } }
+                : {}),
+              ...(priority !== undefined
+                ? { priority: { from: previous.priority, to: updated.priority } }
+                : {}),
+            },
+          });
+          return;
+        }
+        // Every remaining verb (promise / cancel / move) keys on the visit —
+        // the jobId-keyed verbs returned above, so the guard narrows cleanly
+        // for the rest (final-review finding: the earlier negative-list guard
+        // killed TS narrowing and needed four casts).
+        const assignmentId = str(body, 'assignmentId');
+        if (!assignmentId) {
+          json(res, 400, { error: 'assignmentId is required' });
+          return;
+        }
+        // One-shot promise correction (plan 4a.5): correcting the RECORD is
+        // reversible + internal — the doctrine gates the moves/cancels the
+        // record then arms, never the correction itself.
+        if (pathname === '/board/api/promise') {
+          // One-shot verbs REFUSE a preview request instead of silently
+          // committing on it (final-review finding — every sibling verb on
+          // this route honors ?preview=1, so ignoring it here was a trap).
+          if (preview) {
+            json(res, 400, { error: 'promise edits are one-shot — this verb has no preview' });
+            return;
+          }
+          if (!isPromiseLevel(body.promiseLevel)) {
+            json(res, 400, { error: 'invalid promiseLevel (use none, day, time, or time_only)' });
+            return;
+          }
+          const { previous, updated } = await setVisitPromise(
+            auth.tenantId,
+            assignmentId,
+            body.promiseLevel,
+            auth.technician.ref,
+          );
+          json(res, 200, {
+            status: 'ok',
+            changes: {
+              promiseLevel: { from: previous.promise_level, to: updated.promise_level },
+              promisedDay: { from: previous.promised_day, to: updated.promised_day },
+            },
+          });
+          return;
+        }
         if (pathname === '/board/api/cancel') {
           if (preview) {
             json(res, 200, await previewCancelVisit(auth.tenantId, assignmentId));
@@ -330,6 +536,23 @@ export async function handleBoardRequest(
           });
           return;
         }
+        // Detach (plan 4a.5): unassign:true parks the visit. Exactly-true
+        // check — anything else present is a caller bug, not a park request.
+        if ('unassign' in body && typeof body.unassign !== 'boolean') {
+          json(res, 400, { error: 'unassign must be a boolean' });
+          return;
+        }
+        const unassign = body.unassign === true;
+        if (unassign && str(body, 'technicianRef')) {
+          json(res, 400, {
+            error: 'pass technicianRef to attach/reassign OR unassign:true to park — not both',
+          });
+          return;
+        }
+        if (!(await boardDateAllowed(auth.tenantId, date))) {
+          json(res, 400, { error: PAST_DATE_ERROR });
+          return;
+        }
         const input = {
           tenantId: auth.tenantId,
           assignmentId,
@@ -337,6 +560,7 @@ export async function handleBoardRequest(
           startTime,
           endTime: str(body, 'endTime'),
           technicianRef: str(body, 'technicianRef'), // set = assign/reassign (Feature A attach)
+          ...(unassign ? { unassign: true } : {}),
           reason,
           actorRef: auth.technician.ref,
         };

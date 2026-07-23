@@ -22,15 +22,18 @@ import {
   isOverlapViolation,
   listAssignmentsForTechnician,
   listTimeOffForTechnician,
-  listUnassignedAssignments,
+  listIdenticalUnassignedVisits,
   rescheduleAssignment,
+  updateAssignmentPromise,
   updateAssignmentStatus,
+  updateJobDetails,
   updateJobStatus,
   type Assignment,
   type Customer,
   type Job,
   type JobPriority,
   type PromiseLevel,
+  type UpdateJobDetailsInput,
   type Technician,
   type WeeklyPattern,
 } from '../db/index.js';
@@ -38,7 +41,7 @@ import { isTechnicianAvailableOn } from './availability.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
-const PROMISE_LEVELS: PromiseLevel[] = ['none', 'day', 'time'];
+const PROMISE_LEVELS: PromiseLevel[] = ['none', 'day', 'time', 'time_only'];
 
 // The naive-local storage form: local wall-clock written as if UTC.
 export function naiveLocalISO(date: string, hhmm: string): string {
@@ -47,6 +50,23 @@ export function naiveLocalISO(date: string, hhmm: string): string {
 
 export function isPromiseLevel(v: unknown): v is PromiseLevel {
   return typeof v === 'string' && (PROMISE_LEVELS as string[]).includes(v);
+}
+
+// Which levels carry a promised DAY: 'day' and 'time' (= day+time). 'none'
+// promises nothing; 'time_only' promises a TIME with no day — the day moves
+// freely, so promised_day stays NULL (the DB check allows exactly this pair).
+// ONE predicate for every promisedDay stamping site (bookVisit / moveVisit /
+// set_promise) so they can never drift (plan 4a.5).
+export function carriesPromisedDay(level: PromiseLevel): boolean {
+  return level === 'day' || level === 'time';
+}
+
+// The ladder's second axis: which levels promise a TIME. Together the two
+// predicates ARE the per-level semantics table — promiseBroken derives from
+// them (final-review finding: a hand-enumerated ternary chain would silently
+// classify any future fifth level as promise-safe).
+export function carriesPromisedTime(level: PromiseLevel): boolean {
+  return level === 'time' || level === 'time_only';
 }
 
 // Minutes → 'HH:MM' on the same day, clamped to 23:59 (a move that preserves
@@ -209,20 +229,15 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     // Refuse an IDENTICAL person-less duplicate: same customer, same exact
     // window. Different customers at the same window stay legal (there is no
     // technician to double-book); if two same-window visits for one customer
-    // are truly intended, stagger the time or attach technicians.
-    const startMs = Date.parse(startISO);
-    const endMs = Date.parse(endISO);
-    for (const row of await listUnassignedAssignments(tenantId, startISO)) {
-      if (Date.parse(row.starts_at) > startMs) break; // ordered — past the window
-      if (Date.parse(row.starts_at) !== startMs || Date.parse(row.ends_at) !== endMs) continue;
-      const rowJob = await getJob(row.job_id);
-      if (rowJob?.customer_id === customer.id) {
-        throw new Error(
-          `an identical unassigned visit for ${customer.name} already exists at ` +
-            `${input.date} ${startTime}–${endTime} — likely a duplicate; attach a technician ` +
-            `to it, move it, or change the time`,
-        );
-      }
+    // are truly intended, stagger the time or attach technicians. ONE query
+    // (shared with resolveMove's park path — final-review consolidation).
+    const twins = await listIdenticalUnassignedVisits(tenantId, startISO, endISO);
+    if (twins.some((t) => t.customerId === customer.id)) {
+      throw new Error(
+        `an identical unassigned visit for ${customer.name} already exists at ` +
+          `${input.date} ${startTime}–${endTime} — likely a duplicate; attach a technician ` +
+          `to it, move it, or change the time`,
+      );
     }
   }
   const warning = technician
@@ -320,9 +335,9 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       endsAt: r.endISO,
       status: 'confirmed',
       promiseLevel: r.promiseLevel,
-      // Stamp a promised day ONLY when a promise was actually made — a 'none'
-      // booking has no promised day (the CHECK constraint requires this pairing).
-      promisedDay: r.promiseLevel === 'none' ? null : input.date,
+      // Stamp a promised day ONLY for day-carrying levels — 'none' promises
+      // nothing and 'time_only' promises no DAY (the CHECK backstops the pair).
+      promisedDay: carriesPromisedDay(r.promiseLevel) ? input.date : null,
       locked: true,
     });
   } catch (err) {
@@ -378,6 +393,7 @@ export interface MoveVisitInput {
   startTime: string; // HH:MM
   endTime?: string; // HH:MM, default = preserve the old duration
   technicianRef?: string; // omit = same technician
+  unassign?: boolean; // true = DETACH: park the visit person-less (plan 4a.5)
   reason: string;
   actorRef: string;
 }
@@ -407,16 +423,25 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
     throw new Error(`cannot move a ${old.status} assignment`);
   }
 
+  if (input.unassign && input.technicianRef) {
+    throw new Error(
+      'pass ONE of technicianRef (attach/reassign) or unassign:true (park the visit) — not both',
+    );
+  }
   // Resolve the TARGET technician either way — the availability warning must
   // fire for a same-technician move onto an off-day too (review finding).
   // An unassigned row moved without a ref stays unassigned (technician null);
-  // passing a ref is how a person gets ATTACHED to an unassigned visit.
-  const technician = input.technicianRef
-    ? await resolveTechnician(tenantId, input.technicianRef)
-    : old.technician_id
-      ? await getTechnicianById(old.technician_id, tenantId)
-      : null;
-  const targetTechnicianId = technician?.id ?? old.technician_id;
+  // passing a ref is how a person gets ATTACHED to an unassigned visit;
+  // unassign:true DETACHES — the target is nobody, so there is no availability
+  // advisory and no overlap pre-check (NULL rows are exempt from the DB guard).
+  const technician = input.unassign
+    ? null
+    : input.technicianRef
+      ? await resolveTechnician(tenantId, input.technicianRef)
+      : old.technician_id
+        ? await getTechnicianById(old.technician_id, tenantId)
+        : null;
+  const targetTechnicianId = input.unassign ? null : (technician?.id ?? old.technician_id);
 
   const oldDurationMin = Math.round(
     (Date.parse(old.ends_at) - Date.parse(old.starts_at)) / 60_000,
@@ -426,25 +451,44 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
   const startISO = naiveLocalISO(input.date, input.startTime);
   const endISO = naiveLocalISO(input.date, endTime);
 
-  // Does this move break what the customer was told? A day-level promise
-  // breaks only when the DAY changes; a time-level promise (customer heard
-  // "Tuesday 9:00") also breaks when the start TIME moves on the same day.
+  // Does this move break what the customer was told? Derived from the two
+  // ladder predicates — a day-carrying promise breaks when the DAY changes, a
+  // time-carrying one when the start TIME changes ('time' = both axes;
+  // 'time_only' has promised_day NULL, so dayChanged is never consulted).
   const dayChanged = old.promised_day !== input.date;
   const timeChanged = old.starts_at.slice(11, 16) !== input.startTime;
   const promiseBroken =
-    old.promise_level === 'day'
-      ? dayChanged
-      : old.promise_level === 'time'
-        ? dayChanged || timeChanged
-        : false;
+    (carriesPromisedDay(old.promise_level) && dayChanged) ||
+    (carriesPromisedTime(old.promise_level) && timeChanged);
 
-  // No target technician (unassigned staying unassigned) → nothing to clash
-  // with; the DB guard likewise ignores NULL rows.
+  // No target technician (a detach, or unassigned staying unassigned) →
+  // nothing to clash with; the DB guard likewise ignores NULL rows. That
+  // exemption is exactly why the person-less RESULT needs resolveBooking's
+  // identical-duplicate refusal instead (same customer + exact window,
+  // excluding the moved row itself): a park must not silently land on top of
+  // an existing identical parked visit.
   if (targetTechnicianId) {
     const clashes = await overlappingConfirmed(targetTechnicianId, startISO, endISO, old.id);
     if (clashes.length > 0) {
       throw new Error(
         `that slot overlaps a confirmed visit on ${input.date} — the booking was NOT moved`,
+      );
+    }
+  } else {
+    // Same guard as resolveBooking's, excluding the moved row itself; the two
+    // reads are independent, so they run in parallel (final-review finding).
+    const [movedJob, twins] = await Promise.all([
+      getJob(old.job_id),
+      listIdenticalUnassignedVisits(tenantId, startISO, endISO),
+    ]);
+    if (
+      movedJob &&
+      twins.some((t) => t.id !== old.id && t.customerId === movedJob.customer_id)
+    ) {
+      throw new Error(
+        `an identical unassigned visit for this customer already exists at ` +
+          `${input.date} ${input.startTime}–${endTime} — likely a duplicate; attach a ` +
+          `technician to it or change the time`,
       );
     }
   }
@@ -462,6 +506,10 @@ export interface MoveVisitPreview {
   toDay: string;
   startTime: string;
   endTime: string; // resolved — store on the stage
+  // The OLD row's level — what is at stake. Surfaces phrase the confirm on it
+  // ("was told 09:00" for time_only vs "was told Thursday" for day levels).
+  promiseLevel: PromiseLevel;
+  unassign: boolean; // true = this move PARKS the visit (detach)
   promiseBroken: boolean;
   requiresConfirmation: boolean; // = promiseBroken (the doctrine's verdict for moves)
   warning?: string;
@@ -479,6 +527,8 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
     toDay: input.date,
     startTime: input.startTime,
     endTime: r.endTime,
+    promiseLevel: r.old.promise_level,
+    unassign: !!input.unassign,
     promiseBroken: r.promiseBroken,
     requiresConfirmation: r.promiseBroken,
     ...(r.warning ? { warning: r.warning } : {}),
@@ -501,12 +551,16 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
     result = await rescheduleAssignment(r.old.id, {
       startsAt: r.startISO,
       endsAt: r.endISO,
-      ...(input.technicianRef && r.technician ? { technicianId: r.technician.id } : {}),
+      ...(input.unassign
+        ? { technicianId: null } // explicit null = DETACH (rescheduleAssignment's !== undefined idiom)
+        : input.technicianRef && r.technician
+          ? { technicianId: r.technician.id }
+          : {}),
       reason: input.reason,
       status: 'confirmed', // default-'proposed' would vanish from every reader
       // Promise level carries from the old row; the promised day tracks the new
-      // date only when a promise exists. A 'none' visit stays promise-free.
-      promisedDay: r.old.promise_level === 'none' ? null : input.date,
+      // date only for day-carrying levels ('none'/'time_only' stay day-free).
+      promisedDay: carriesPromisedDay(r.old.promise_level) ? input.date : null,
       locked: true,
     });
   } catch (err) {
@@ -617,4 +671,95 @@ export async function cancelVisit(input: CancelVisitInput): Promise<Assignment> 
     detail: { day: cancelled.starts_at.slice(0, 10), reason: input.reason },
   });
   return cancelled;
+}
+
+// ---- Shared edit cores (plan 4a.5): ONE body per verb, every surface calls it ----
+//
+// The set_promise / update_job MCP handlers used to hold this logic inline;
+// the board endpoints need the same writes, and hand-copying the CAS + ledger
+// event is exactly how two surfaces start disagreeing. Handlers keep their
+// validation and echo composition; these cores own the guarded write + event.
+
+export interface SetVisitPromiseResult {
+  previous: Assignment;
+  updated: Assignment;
+}
+
+// Correct a visit's promise record. The promised day is SERVER-derived from
+// the visit's own row (bookVisit precedent — caller date math never touches
+// the promise record); 'none'/'time_only' carry no day. CAS on the row read
+// here, so the old→new echo callers compose is honest.
+export async function setVisitPromise(
+  tenantId: string,
+  assignmentId: string,
+  promiseLevel: PromiseLevel,
+  actorRef: string,
+): Promise<SetVisitPromiseResult> {
+  const row = await getAssignmentForTenant(assignmentId, tenantId);
+  if (!row) throw new Error('visit not found');
+  if (row.status !== 'confirmed' && row.status !== 'proposed') {
+    throw new Error(`this visit is ${row.status} — promises are corrected on live visits only`);
+  }
+  const promisedDay = carriesPromisedDay(promiseLevel) ? row.starts_at.slice(0, 10) : null;
+  const updated = await updateAssignmentPromise(
+    tenantId,
+    assignmentId,
+    promiseLevel,
+    promisedDay,
+    row.updated_at, // CAS — the echo must describe THIS read
+  );
+  // The promise level gates every future move/cancel confirmation on this
+  // visit — the change joins the append-only ledger like every schedule
+  // mutation: who changed what, when, old → new, forever.
+  await appendScheduleEvent({
+    tenantId,
+    assignmentId,
+    kind: 'promise_updated',
+    actorRef,
+    detail: {
+      promiseLevel: { from: row.promise_level, to: updated.promise_level },
+      promisedDay: { from: row.promised_day, to: updated.promised_day },
+    },
+  });
+  return { previous: row, updated };
+}
+
+export interface UpdateJobIdentityResult {
+  previous: Job;
+  updated: Job;
+}
+
+// Correct a job's identity (title / jobType / priority). jobType — including
+// null-to-clear — is part of the core: the MCP handler writes it and tests pin
+// it (plan review finding #2); surfaces that expose less (the board: title +
+// priority) restrict at their own layer. The type-duration warning stays
+// MCP-side (it is conversational steering, not a write concern).
+export async function updateJobIdentity(
+  tenantId: string,
+  jobId: string,
+  patch: UpdateJobDetailsInput,
+  actorRef: string,
+): Promise<UpdateJobIdentityResult> {
+  const job = await getJob(jobId);
+  // Tenant guard: a cross-tenant (or unknown) id reads as not found.
+  if (!job || job.tenant_id !== tenantId) throw new Error('job not found');
+  const updated = await updateJobDetails(tenantId, jobId, patch, job.updated_at);
+  // The identity edit is schedule-visible (board lanes, schedule reads) — it
+  // joins the append-only event ledger like every other schedule mutation.
+  await appendScheduleEvent({
+    tenantId,
+    kind: 'job_updated',
+    actorRef,
+    detail: {
+      jobId,
+      ...(patch.title !== undefined ? { title: { from: job.title, to: updated.title } } : {}),
+      ...(patch.jobType !== undefined
+        ? { jobType: { from: job.job_type, to: updated.job_type } }
+        : {}),
+      ...(patch.priority !== undefined
+        ? { priority: { from: job.priority, to: updated.priority } }
+        : {}),
+    },
+  });
+  return { previous: job, updated };
 }

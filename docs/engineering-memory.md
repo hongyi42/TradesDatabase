@@ -70,7 +70,7 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   elastic layer; a fact graduates to a real table only when someone needs to query across it.
 - **Confirmation doctrine** (ratified 2026-07-17, live since PR #48): *"confirm only what's
   irreversible or externally visible; everything reversible, just do — and say what you did."*
-  The promise ladder (`promise_level none/day/time`) is the marker for "externally visible".
+  The promise ladder (`promise_level none/day/time/time_only` — fourth level 2026-07-23: told a TIME but not the day; the time gates, the day moves freely) is the marker for "externally visible".
   Over-confirming is a **safety** problem (trains rubber-stamping). Single-sourced as
   `requiresConfirmation` on tool previews in `src/schedule/booking.ts` — new surfaces inherit
   it, never re-derive. Corollaries: never confirm a default the bot itself chose (apply, state

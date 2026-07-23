@@ -268,7 +268,15 @@ gain ONLY the notes section.
 **`web/board/board.css`** — picker rows, mini-form fields, ✎ affordance, notes section.
 
 ### Automated verification
-- [ ] gates pass (board.js is lint-covered); boardApi tests from Phase 2 unchanged
+- [x] gates pass (board.js is lint-covered); boardApi tests from Phase 2 unchanged
+      (618/618 + build, 2026-07-23)
+- Phase-3 review round 1 (2 findings, both fixed): (a) the time_only break dialog named the
+  NEW time, not the promised one — postMove now threads the old start into breakMsg from all
+  four call sites; (b) the sheet editors bypassed the board's past/read-only write gates —
+  canEdit now carries the full triple gate (manager + Team tab + today-or-future), date inputs
+  carry min=today, and OVERDUE tray rows lose the Assign button (board writes never target the
+  past; overdue recovery stays a chat job — recorded rule, loosen deliberately if pilot use
+  demands it). Round-2 verification below.
 
 ### Manual verification (device — can fold into the owed 4a phone pass)
 - [ ] picker: assign a parked visit; reassign a lane card; "None" parks an assigned visit

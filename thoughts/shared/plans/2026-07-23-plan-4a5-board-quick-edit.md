@@ -315,3 +315,36 @@ gain ONLY the notes section.
 ## Final review gate
 Bundled `/code-review` on the full diff; Important findings fixed + gates re-run before the
 plan flips to `complete`.
+
+**RUN 2026-07-23 — 8 angles (line-scan / removed-behavior / cross-file / reuse /
+simplification / efficiency / altitude / conventions), ~35 candidates → deduped. FIXED
+(619/619 after):**
+- The `'time'`-as-only-non-day ternary class, three more sites: cancelFlow's confirm dialog
+  described a time_only cancel as "promised a day" (named the actual stake per level);
+  breakMsg printed "promised day (X → X)" for a same-day time change of a day+time promise
+  (time-break branch added); the MCP confirm-note claimed "a different day" for any break
+  (level-agnostic copy).
+- Tool-description drift: book_visit/cancel_visit confirm triggers under-listed the levels
+  ("any promiseLevel other than none" now); get_team_schedule's promiseLevel enumeration +
+  the doorman-runbook/engineering-memory ladder lines gained time_only.
+- busyHint claimed "free" from Mine-tab (self-filtered) data — stopsByDate now stored only
+  from team-layout renders.
+- One-shot verbs (/promise, /job) silently COMMITTED on ?preview=1 — now 400 "has no preview".
+- Server-side past-date floor on board move/book (firm-local today; board-only — chat keeps
+  its deliberate-correction path); board writes' audit reason now tracks the actual action
+  (a parked card day-moved via the Unassigned lane was stamped "Parked").
+- book endpoint refuses stray `priority` (MCP parity — never report an unstored urgency as
+  stored); failed book commit now refreshes (raced-overlap staleness, move-flow parity).
+- Consolidations: ONE `listIdenticalUnassignedVisits` embedded query replaces both
+  hand-copied person-less duplicate scans (kills the N+1 getJob loop + a dead condition;
+  move-path reads parallelized); promiseBroken derived from carriesPromisedDay/
+  carriesPromisedTime predicates (a future fifth level can no longer silently classify as
+  promise-safe); unassign flag spelled one way at all three server sites; stale "lane is a
+  drag SOURCE only" comment corrected; migration comment cites the Postgres ALTER TYPE doc.
+**Surfaced, deliberately NOT done (nit tier / follow-ups):** retrofitting openDetail/
+openBucket onto the new openSheet helper; consolidating the 5 retraction-fold copies
+(boardRead + 3×server.ts + db/context.ts) into one shared helper — follow-up item;
+generalizing postMove/book/cancel into one postWrite flow; the unassign boolean vs nullable
+technicianRef tri-state (boolean kept deliberately — LLM-caller ergonomics); a narrow-select
+findRetractionsFor variant; sheet re-fetch after promise/job edits (could patch from the
+response).

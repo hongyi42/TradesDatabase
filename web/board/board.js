@@ -181,10 +181,11 @@
   // "Unassigned" lane for stops with unassigned:true (their technicianName is
   // null — never print "null"). Lanes are keyed by technicianRef — the UNIQUE
   // roster handle — never by display name (two "Mike Chen"s must not merge,
-  // and drag-to-assign needs a single ref per drop target). The unassigned
-  // lane is a drag SOURCE, not a target (moveVisit cannot detach a person),
-  // and its data-lane is ''. Flat layout (technician view, manager's Mine
-  // tab): a plain time-ordered list, no lanes.
+  // and drag-to-assign needs a single ref per drop target). Since plan 4a.5
+  // the unassigned lane is BOTH drag source and drop target (dropping parks
+  // the visit — moveVisit's unassign detach); its data-lane is ''. Flat
+  // layout (technician view, manager's Mine tab): a plain time-ordered list,
+  // no lanes.
   function renderDay(date, stops, teamLayout) {
     // Per-DAY write gate: the calendar week 0 contains already-past days, and
     // those are as read-only as past weeks (a live drop target on yesterday
@@ -280,8 +281,11 @@
     data.days.forEach(function (d) {
       byDate[d.date] = d.stops;
     });
-    // The picker's busy hints read from what the board just painted.
-    state.stopsByDate = byDate;
+    // The picker's busy hints read from what the board just painted — but
+    // ONLY the team layout shows the whole team; a Mine-tab payload holds one
+    // person's stops, and hints computed from it would claim busy technicians
+    // are "free" (final-review finding). null = busyHint makes no claim.
+    state.stopsByDate = teamLayout ? byDate : null;
     // The dates live in the pager label now; this line carries only context
     // (whose stops / read-only) and disappears when there is none.
     var note = !isManager
@@ -880,10 +884,13 @@
   // is the requested NEW one, which by definition differs whenever a
   // time_only dialog fires (review finding: the dialog named the wrong time).
   function breakMsg(p, oldStart) {
-    var what =
-      p.promiseLevel === 'time_only'
-        ? 'a promised time (' + (oldStart || p.startTime) + ')'
-        : 'a promised day (' + p.fromDay + ' → ' + p.toDay + ')';
+    // A day+time promise broken by a SAME-DAY time change is a time break too
+    // (final-review finding: the day branch would print "promised day (X → X)").
+    var timeBreak =
+      p.promiseLevel === 'time_only' || (p.promiseLevel === 'time' && p.fromDay === p.toDay);
+    var what = timeBreak
+      ? 'a promised time (' + (oldStart || p.startTime) + ' → ' + p.startTime + ')'
+      : 'a promised day (' + p.fromDay + ' → ' + p.toDay + ')';
     return (
       'This breaks ' + what + ' — the customer must be told.' +
       (p.unassign ? ' The visit will be left with NOBODY assigned.' : '') +
@@ -1218,7 +1225,11 @@
                 apiPost('/board/api/book', body, false)
                   .then(function (r) {
                     if (!r.ok) {
+                      // A raced refusal (overlap landed between preview and
+                      // commit) means the board behind the sheet is stale —
+                      // refetch, same as the move flow (final-review parity).
                       toast(r.body.error || 'Booking failed (' + r.status + ')', true);
+                      refresh();
                       return;
                     }
                     closeDetail();
@@ -1264,18 +1275,23 @@
       date: targetDate,
       startTime: card.getAttribute('data-start'),
       endTime: card.getAttribute('data-end'),
-      reason: unassign ? 'Parked on the dispatch board' : 'Moved on the dispatch board',
     };
     // A lane drop assigns/reassigns; a plain day drop keeps the person (or
     // keeps it unassigned — moveVisit's omitted-ref semantics); an
-    // Unassigned-lane drop PARKS (plan 4a.5 — the detach verb).
-    if (unassign) {
-      if (!currentRef && sameDay) return; // already parked, dropped where it was
-      if (currentRef) body.unassign = true; // parked card to another day = plain day move
-    } else if (laneRef && laneRef !== currentRef) {
+    // Unassigned-lane drop PARKS (plan 4a.5 — the detach verb). An already-
+    // parked card dropped on another day's Unassigned lane is a plain day
+    // move (nothing to detach) — the shared same-spot guard below covers the
+    // dropped-where-it-was case for parked cards too.
+    if (unassign && currentRef) {
+      body.unassign = true;
+    } else if (!unassign && laneRef && laneRef !== currentRef) {
       body.technicianRef = laneRef;
     }
     if (sameDay && !body.technicianRef && !body.unassign) return; // dropped where it already was
+    // The audit reason tracks what the move ACTUALLY does, not the drop
+    // target (final-review finding: a parked card day-moved via the
+    // Unassigned lane was stamped "Parked").
+    body.reason = body.unassign ? 'Parked on the dispatch board' : 'Moved on the dispatch board';
     postMove(
       body,
       function () {
@@ -1327,10 +1343,17 @@
           });
       };
       if (p.body.requiresConfirmation) {
+        // Name what was ACTUALLY promised per level (final-review finding:
+        // the old two-level ternary described a time_only cancel as "promised
+        // a day" — a false statement of the stake on a destructive dialog).
+        var stake =
+          p.body.promiseLevel === 'time_only'
+            ? 'was promised a time (' + card.getAttribute('data-start') + ')'
+            : p.body.promiseLevel === 'time'
+              ? 'was promised the day AND time on ' + p.body.day
+              : 'was promised a day on ' + p.body.day;
         confirmAsk(
-          (p.body.customerName || 'The customer') + ' was promised a ' +
-            (p.body.promiseLevel === 'time' ? 'time' : 'day') + ' on ' + p.body.day +
-            '. Cancel anyway?',
+          (p.body.customerName || 'The customer') + ' ' + stake + '. Cancel anyway?',
           function (yes) {
             if (yes) commit();
           },

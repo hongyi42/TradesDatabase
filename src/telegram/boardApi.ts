@@ -22,7 +22,8 @@ import {
   setVisitPromise,
   updateJobIdentity,
 } from '../schedule/booking.js';
-import { JOB_PRIORITIES, type JobPriority } from '../db/index.js';
+import { getTenant, JOB_PRIORITIES, type JobPriority } from '../db/index.js';
+import { localDateISO } from '../schedule/availability.js';
 
 // The dispatch board's HTTP surface, mounted by httpServer.ts BEFORE the IP
 // allowlist: board traffic comes from users' public browsers (the Telegram
@@ -153,6 +154,16 @@ const str = (body: Record<string, unknown>, key: string): string | undefined =>
   typeof body[key] === 'string' && (body[key] as string).trim() !== ''
     ? (body[key] as string)
     : undefined;
+
+// Board writes never target the past — the SERVER floor under the client
+// gates (final review: stale-tab midnight crossings and hand-crafted calls
+// bypass client checks; the chat surface deliberately keeps its
+// history-correction ability, so this floor is board-only).
+const PAST_DATE_ERROR = 'board writes never target the past — date must be today or later';
+async function boardDateAllowed(tenantId: string, date: string): Promise<boolean> {
+  const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+  return date >= localDateISO(new Date().toISOString(), tz);
+}
 
 export async function handleBoardRequest(
   req: http.IncomingMessage,
@@ -310,17 +321,7 @@ export async function handleBoardRequest(
         return;
       }
       const preview = url.searchParams.get('preview') === '1' || body.preview === true;
-      const assignmentId = str(body, 'assignmentId');
       const reason = str(body, 'reason');
-      // book/job key on jobId; the other three verbs need the visit id.
-      if (
-        pathname !== '/board/api/book' &&
-        pathname !== '/board/api/job' &&
-        !assignmentId
-      ) {
-        json(res, 400, { error: 'assignmentId is required' });
-        return;
-      }
       try {
         // Book an EXISTING job from the tray (plan 4a.5) — the customerId
         // mint-a-job path stays chat-only; preview→confirm-in-UI→commit like
@@ -328,6 +329,15 @@ export async function handleBoardRequest(
         if (pathname === '/board/api/book') {
           if ('customerId' in body) {
             json(res, 400, { error: 'the board books existing jobs only — pass jobId' });
+            return;
+          }
+          // MCP-layer parity (final-review finding): priority only applies to
+          // the mint-a-job path the board blocks — silently ignoring it would
+          // report an unstored urgency as stored.
+          if ('priority' in body) {
+            json(res, 400, {
+              error: 'priority is not set at booking — edit it on the job (the /job verb)',
+            });
             return;
           }
           const jobId = str(body, 'jobId');
@@ -340,6 +350,10 @@ export async function handleBoardRequest(
           const endTime = str(body, 'endTime');
           if (!date || !startTime || !endTime) {
             json(res, 400, { error: 'date, startTime and endTime are required' });
+            return;
+          }
+          if (!(await boardDateAllowed(auth.tenantId, date))) {
+            json(res, 400, { error: PAST_DATE_ERROR });
             return;
           }
           if ('technicianRef' in body && str(body, 'technicianRef') === undefined) {
@@ -385,32 +399,13 @@ export async function handleBoardRequest(
           });
           return;
         }
-        // One-shot promise correction (plan 4a.5): correcting the RECORD is
-        // reversible + internal — the doctrine gates the moves/cancels the
-        // record then arms, never the correction itself.
-        if (pathname === '/board/api/promise') {
-          if (!isPromiseLevel(body.promiseLevel)) {
-            json(res, 400, { error: 'invalid promiseLevel (use none, day, time, or time_only)' });
-            return;
-          }
-          const { previous, updated } = await setVisitPromise(
-            auth.tenantId,
-            assignmentId as string,
-            body.promiseLevel,
-            auth.technician.ref,
-          );
-          json(res, 200, {
-            status: 'ok',
-            changes: {
-              promiseLevel: { from: previous.promise_level, to: updated.promise_level },
-              promisedDay: { from: previous.promised_day, to: updated.promised_day },
-            },
-          });
-          return;
-        }
         // One-shot job identity edit (plan 4a.5): board scope is title +
         // priority — jobType is duration-vocabulary work and stays in chat.
         if (pathname === '/board/api/job') {
+          if (preview) {
+            json(res, 400, { error: 'job edits are one-shot — this verb has no preview' });
+            return;
+          }
           const jobId = str(body, 'jobId');
           if (!jobId) {
             json(res, 400, { error: 'jobId is required' });
@@ -462,11 +457,48 @@ export async function handleBoardRequest(
           });
           return;
         }
+        // Every remaining verb (promise / cancel / move) keys on the visit —
+        // the jobId-keyed verbs returned above, so the guard narrows cleanly
+        // for the rest (final-review finding: the earlier negative-list guard
+        // killed TS narrowing and needed four casts).
+        const assignmentId = str(body, 'assignmentId');
+        if (!assignmentId) {
+          json(res, 400, { error: 'assignmentId is required' });
+          return;
+        }
+        // One-shot promise correction (plan 4a.5): correcting the RECORD is
+        // reversible + internal — the doctrine gates the moves/cancels the
+        // record then arms, never the correction itself.
+        if (pathname === '/board/api/promise') {
+          // One-shot verbs REFUSE a preview request instead of silently
+          // committing on it (final-review finding — every sibling verb on
+          // this route honors ?preview=1, so ignoring it here was a trap).
+          if (preview) {
+            json(res, 400, { error: 'promise edits are one-shot — this verb has no preview' });
+            return;
+          }
+          if (!isPromiseLevel(body.promiseLevel)) {
+            json(res, 400, { error: 'invalid promiseLevel (use none, day, time, or time_only)' });
+            return;
+          }
+          const { previous, updated } = await setVisitPromise(
+            auth.tenantId,
+            assignmentId,
+            body.promiseLevel,
+            auth.technician.ref,
+          );
+          json(res, 200, {
+            status: 'ok',
+            changes: {
+              promiseLevel: { from: previous.promise_level, to: updated.promise_level },
+              promisedDay: { from: previous.promised_day, to: updated.promised_day },
+            },
+          });
+          return;
+        }
         if (pathname === '/board/api/cancel') {
           if (preview) {
-            // The conditional 400 above guarantees the id for this verb; the
-            // assertion only restores the narrowing TS lost to it.
-            json(res, 200, await previewCancelVisit(auth.tenantId, assignmentId as string));
+            json(res, 200, await previewCancelVisit(auth.tenantId, assignmentId));
             return;
           }
           if (!reason) {
@@ -475,7 +507,7 @@ export async function handleBoardRequest(
           }
           const cancelled = await cancelVisit({
             tenantId: auth.tenantId,
-            assignmentId: assignmentId as string,
+            assignmentId,
             reason,
             actorRef: auth.technician.ref,
           });
@@ -517,9 +549,13 @@ export async function handleBoardRequest(
           });
           return;
         }
+        if (!(await boardDateAllowed(auth.tenantId, date))) {
+          json(res, 400, { error: PAST_DATE_ERROR });
+          return;
+        }
         const input = {
           tenantId: auth.tenantId,
-          assignmentId: assignmentId as string,
+          assignmentId,
           date,
           startTime,
           endTime: str(body, 'endTime'),

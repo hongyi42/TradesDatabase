@@ -1261,6 +1261,49 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
     expect(row.rows[0]).toEqual({ promise_level: 'day', promised_day: BOOK_DAY });
   });
 
+  test('final-review guards: one-shot verbs refuse ?preview=1; board writes refuse past dates; book refuses stray priority', async () => {
+    // One-shot verbs 400 a preview request instead of silently committing.
+    const pv = await fetch(`${base}/board/api/promise?preview=1`, {
+      method: 'POST',
+      headers: { ...tma(900000001), 'content-type': 'application/json' },
+      body: JSON.stringify({ assignmentId: notesVisitId, promiseLevel: 'day' }),
+    });
+    expect(pv.status).toBe(400);
+    expect(((await pv.json()) as { error: string }).error).toContain('has no preview');
+    const jv = await fetch(`${base}/board/api/job?preview=1`, {
+      method: 'POST',
+      headers: { ...tma(900000001), 'content-type': 'application/json' },
+      body: JSON.stringify({ jobId: probeJobId, title: 'x' }),
+    });
+    expect(jv.status).toBe(400);
+    expect(((await jv.json()) as { error: string }).error).toContain('has no preview');
+    // The server floor under the client's past-date gates (board-only; chat
+    // keeps its deliberate-correction path).
+    const pastBook = await post(
+      '/board/api/book',
+      { jobId: probeJobId, date: relDate(-3), startTime: '09:00', endTime: '10:00' },
+      900000001,
+    );
+    expect(pastBook.status).toBe(400);
+    expect(((await pastBook.json()) as { error: string }).error).toContain('never target the past');
+    const pastMove = await post(
+      '/board/api/move',
+      { assignmentId: notesVisitId, date: relDate(-3), startTime: '09:00', reason: 'r' },
+      900000001,
+    );
+    expect(pastMove.status).toBe(400);
+    expect(((await pastMove.json()) as { error: string }).error).toContain('never target the past');
+    // Stray priority on book → 400 (MCP-layer parity: never report an
+    // unstored urgency as stored).
+    const stray = await post(
+      '/board/api/book',
+      { jobId: probeJobId, date: BOOK_DAY, startTime: '17:00', endTime: '18:00', priority: 'emergency' },
+      900000001,
+    );
+    expect(stray.status).toBe(400);
+    expect(((await stray.json()) as { error: string }).error).toContain('priority is not set at booking');
+  });
+
   test('promise: one-shot old→new + ledger event; unknown id → 409', async () => {
     const resp = await post(
       '/board/api/promise',

@@ -625,7 +625,7 @@ const ADMIN_TOOLS = [
       "(YYYY-MM-DD; both optional — default today in the firm's timezone; capped at 14 days), " +
       "every technician's confirmed visits with customer, address, times, promiseLevel (what " +
       'the customer was ' +
-      "told: none/day/time), promisedDay, and locked (manager-pinned). Stops with " +
+      "told: none/day/time/time_only), promisedDay, and locked (manager-pinned). Stops with " +
       'unassigned:true have NOBODY attached yet and need a person (attach with move_visit). ' +
       'Pass unassignedOnly:true to list ALL upcoming visits with nobody attached, however far ' +
       'out (no 14-day cap) — use it when the manager asks what still needs assigning. Also ' +
@@ -653,7 +653,7 @@ const ADMIN_TOOLS = [
       'Book a visit onto the schedule (manager only). Reversible and internal (nothing ' +
       'promised to the customer) → done in ONE call ({status:"booked"}) — ALWAYS tell the ' +
       'manager what was done (day, time, who, and any warning); never act silently. If the ' +
-      'customer was promised a day/time (promiseLevel "day"/"time") you instead get ' +
+      'customer was promised ANYTHING (any promiseLevel other than "none") you instead get ' +
       '{status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
       'yes, call again with ONLY confirmId. Call with date + startTime + endTime ' +
       '(+ customerId OR jobId; technicianRef optional). customerId MINTS A NEW JOB — when ' +
@@ -724,7 +724,8 @@ const ADMIN_TOOLS = [
     description:
       'Cancel a booked visit (manager only). Reversible and internal (nothing promised to ' +
       'the customer) → done in ONE call ({status:"cancelled"}) — ALWAYS tell the manager what ' +
-      'was cancelled; never act silently. If the customer was promised a day/time you instead ' +
+      'was cancelled; never act silently. If the customer was promised anything (any ' +
+      'promiseLevel other than "none") you instead ' +
       'get {status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
       'yes, call again with ONLY confirmId. Call with assignmentId + reason. The job stays ' +
       'open for rebooking either way. When the result carries boardNote, ALWAYS end your ' +
@@ -2998,7 +2999,7 @@ async function dispatch(
           startTime,
           ...(str('endTime') ? { endTime: str('endTime') } : {}),
           ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
-          ...(unassignArg ? { unassign: true } : {}),
+          unassign: unassignArg,
           reason,
           actorRef: subjectRef,
         });
@@ -3014,7 +3015,7 @@ async function dispatch(
             startTime,
             endTime: preview.endTime, // resolved — preview == commit
             ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
-            ...(unassignArg ? { unassign: true } : {}),
+            unassign: unassignArg,
             reason,
             actorRef: subjectRef,
           });
@@ -3120,7 +3121,9 @@ async function dispatch(
           startTime: d.startTime,
           endTime: d.endTime,
           ...(d.technicianRef ? { technicianRef: d.technicianRef } : {}),
-          ...(d.unassign === true ? { unassign: true } : {}),
+          // Plain form at every site (final-review finding: three different
+          // spellings of the same flag invite the drop-the-flag bug class).
+          unassign: d.unassign === true,
           reason: d.reason,
           actorRef: subjectRef,
         });
@@ -3149,7 +3152,12 @@ async function dispatch(
         ...(d.unassign === true ? { unassigned: true } : {}),
         promiseBroken: moved.promiseBroken,
         ...(moved.promiseBroken
-          ? { note: 'the customer was promised a different day — make sure someone tells them' }
+          ? {
+              // Level-agnostic (final-review finding: the old copy claimed "a
+              // different day" even when a time_only/time promise broke on a
+              // same-day time change).
+              note: 'this move breaks what the customer was told — make sure someone tells them',
+            }
           : {}),
         ...(moved.warning ? { warning: moved.warning } : {}),
       };

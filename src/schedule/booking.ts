@@ -22,7 +22,7 @@ import {
   isOverlapViolation,
   listAssignmentsForTechnician,
   listTimeOffForTechnician,
-  listUnassignedAssignments,
+  listIdenticalUnassignedVisits,
   rescheduleAssignment,
   updateAssignmentPromise,
   updateAssignmentStatus,
@@ -59,6 +59,14 @@ export function isPromiseLevel(v: unknown): v is PromiseLevel {
 // set_promise) so they can never drift (plan 4a.5).
 export function carriesPromisedDay(level: PromiseLevel): boolean {
   return level === 'day' || level === 'time';
+}
+
+// The ladder's second axis: which levels promise a TIME. Together the two
+// predicates ARE the per-level semantics table — promiseBroken derives from
+// them (final-review finding: a hand-enumerated ternary chain would silently
+// classify any future fifth level as promise-safe).
+export function carriesPromisedTime(level: PromiseLevel): boolean {
+  return level === 'time' || level === 'time_only';
 }
 
 // Minutes → 'HH:MM' on the same day, clamped to 23:59 (a move that preserves
@@ -221,20 +229,15 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     // Refuse an IDENTICAL person-less duplicate: same customer, same exact
     // window. Different customers at the same window stay legal (there is no
     // technician to double-book); if two same-window visits for one customer
-    // are truly intended, stagger the time or attach technicians.
-    const startMs = Date.parse(startISO);
-    const endMs = Date.parse(endISO);
-    for (const row of await listUnassignedAssignments(tenantId, startISO)) {
-      if (Date.parse(row.starts_at) > startMs) break; // ordered — past the window
-      if (Date.parse(row.starts_at) !== startMs || Date.parse(row.ends_at) !== endMs) continue;
-      const rowJob = await getJob(row.job_id);
-      if (rowJob?.customer_id === customer.id) {
-        throw new Error(
-          `an identical unassigned visit for ${customer.name} already exists at ` +
-            `${input.date} ${startTime}–${endTime} — likely a duplicate; attach a technician ` +
-            `to it, move it, or change the time`,
-        );
-      }
+    // are truly intended, stagger the time or attach technicians. ONE query
+    // (shared with resolveMove's park path — final-review consolidation).
+    const twins = await listIdenticalUnassignedVisits(tenantId, startISO, endISO);
+    if (twins.some((t) => t.customerId === customer.id)) {
+      throw new Error(
+        `an identical unassigned visit for ${customer.name} already exists at ` +
+          `${input.date} ${startTime}–${endTime} — likely a duplicate; attach a technician ` +
+          `to it, move it, or change the time`,
+      );
     }
   }
   const warning = technician
@@ -448,22 +451,15 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
   const startISO = naiveLocalISO(input.date, input.startTime);
   const endISO = naiveLocalISO(input.date, endTime);
 
-  // Does this move break what the customer was told? A day-level promise
-  // breaks only when the DAY changes; a time-level promise (customer heard
-  // "Tuesday 9:00") also breaks when the start TIME moves on the same day;
-  // a time_only promise ("we'll come at 9, day TBD") breaks ONLY when the
-  // start time changes — the day moves freely (its promised_day is NULL, so
-  // dayChanged is never consulted for it).
+  // Does this move break what the customer was told? Derived from the two
+  // ladder predicates — a day-carrying promise breaks when the DAY changes, a
+  // time-carrying one when the start TIME changes ('time' = both axes;
+  // 'time_only' has promised_day NULL, so dayChanged is never consulted).
   const dayChanged = old.promised_day !== input.date;
   const timeChanged = old.starts_at.slice(11, 16) !== input.startTime;
   const promiseBroken =
-    old.promise_level === 'day'
-      ? dayChanged
-      : old.promise_level === 'time'
-        ? dayChanged || timeChanged
-        : old.promise_level === 'time_only'
-          ? timeChanged
-          : false;
+    (carriesPromisedDay(old.promise_level) && dayChanged) ||
+    (carriesPromisedTime(old.promise_level) && timeChanged);
 
   // No target technician (a detach, or unassigned staying unassigned) →
   // nothing to clash with; the DB guard likewise ignores NULL rows. That
@@ -479,21 +475,21 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
       );
     }
   } else {
-    const movedJob = await getJob(old.job_id);
-    const startMs = Date.parse(startISO);
-    const endMs = Date.parse(endISO);
-    for (const row of await listUnassignedAssignments(tenantId, startISO)) {
-      if (row.id === old.id) continue;
-      if (Date.parse(row.starts_at) > startMs) break; // ordered — past the window
-      if (Date.parse(row.starts_at) !== startMs || Date.parse(row.ends_at) !== endMs) continue;
-      const rowJob = await getJob(row.job_id);
-      if (movedJob && rowJob?.customer_id === movedJob.customer_id) {
-        throw new Error(
-          `an identical unassigned visit for this customer already exists at ` +
-            `${input.date} ${input.startTime}–${endTime} — likely a duplicate; attach a ` +
-            `technician to it or change the time`,
-        );
-      }
+    // Same guard as resolveBooking's, excluding the moved row itself; the two
+    // reads are independent, so they run in parallel (final-review finding).
+    const [movedJob, twins] = await Promise.all([
+      getJob(old.job_id),
+      listIdenticalUnassignedVisits(tenantId, startISO, endISO),
+    ]);
+    if (
+      movedJob &&
+      twins.some((t) => t.id !== old.id && t.customerId === movedJob.customer_id)
+    ) {
+      throw new Error(
+        `an identical unassigned visit for this customer already exists at ` +
+          `${input.date} ${input.startTime}–${endTime} — likely a duplicate; attach a ` +
+          `technician to it or change the time`,
+      );
     }
   }
   const warning = technician

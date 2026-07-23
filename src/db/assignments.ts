@@ -408,6 +408,41 @@ export async function listUnassignedAssignments(
   return data ?? [];
 }
 
+// Exact-window parked twins for the person-less duplicate guard (plan 4a.5
+// final review): ONE embedded query replaces the scan-plus-getJob-per-row
+// loops that previously lived as separate copies in resolveBooking and
+// resolveMove. jobs is an ID-ONLY foreign key — customer_id is surfaced only
+// when the job's tenant re-checks (the boardRead pattern).
+// Single string literal — see the DETAIL_SELECT note above.
+const IDENTICAL_UNASSIGNED_SELECT = 'id, jobs(customer_id, tenant_id)';
+
+export interface IdenticalUnassignedRow {
+  id: string;
+  customerId: string | null;
+}
+
+export async function listIdenticalUnassignedVisits(
+  tenantId: string,
+  startISO: string,
+  endISO: string,
+): Promise<IdenticalUnassignedRow[]> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select(IDENTICAL_UNASSIGNED_SELECT)
+    .eq('tenant_id', tenantId)
+    .is('technician_id', null)
+    .eq('status', 'confirmed')
+    .eq('starts_at', startISO)
+    .eq('ends_at', endISO);
+  if (error) throw new Error(`listIdenticalUnassignedVisits failed: ${error.message}`);
+  return (
+    (data ?? []) as Array<{ id: string; jobs: { customer_id: string; tenant_id: string } | null }>
+  ).map((row) => ({
+    id: row.id,
+    customerId: row.jobs && row.jobs.tenant_id === tenantId ? row.jobs.customer_id : null,
+  }));
+}
+
 // ---- Loose-bucket reads (Plan 4a): the tray + agent-parity surfaces ----
 //
 // Same ID-ONLY-foreign-key caveat as the board reads above: callers must

@@ -416,15 +416,17 @@ read-backs.
   `wire` run needed — no AGENTS.md contract lines change.
 
 ### Automated verification
-- [ ] `npm run build` passes before deploy
+- [x] `npm run build` passes before deploy (via CI gates; deploy done by user 2026-07-23)
 
 ### Live verification (agent-executable)
 - Prerequisites: pilot MCP (`mcp__supabase-test__execute_sql` + `apply_migration`);
   box SSH; a manager-bound sandbox.
-- [ ] migration in the pilot ledger; `tenants.technician_horizon_days` present, default 28
-      (SQL)
-- [ ] SQL: count of future unassigned confirmed visits + unscheduled open jobs — matches
-      the pill/tray counts on the user's screenshot
+- [x] migration in the pilot ledger (`20260723070451 technician_horizon`); column present,
+      BOTH tenants read 28 (SQL, 2026-07-23). NOTE: the user deployed BEFORE the migration
+      — inverted order survived by design (reads fall back to the 28-day default; only a
+      set_technician_horizon call in the short window would have errored; none occurred)
+- [ ] SQL: parked=1 + unscheduled=5 (overdue=0) → expected pill "Loose: 6" — awaiting the
+      user's screenshot as the second channel
 - [ ] Agent chat: `get_team_schedule unassignedOnly` answer now names the unscheduled jobs
       (user relays or screenshots; SQL read-back as the second channel)
 - [ ] Agent chat: "let technicians see 6 weeks ahead" → set_technician_horizon old→new

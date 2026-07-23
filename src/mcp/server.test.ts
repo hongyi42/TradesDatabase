@@ -29,6 +29,12 @@ import { localDateISO } from '../schedule/availability.js';
 // Drive the MCP server over the SDK's in-memory transport (no network/stdio).
 // The extractor is stubbed so record_field_note never calls the live model.
 const pg = new PgClient({ connectionString: process.env.DATABASE_URL });
+
+// Relative test date (UTC-derived; firm-local today can lag it by one day —
+// assertions near a boundary pin bounds, not exact dates). ONE copy at module
+// scope: the get_schedule fixtures and the horizon suite both anchor on it.
+const relDay = (n: number): string =>
+  new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
 let tenantId: string;
 let techMcpId: string; // tech-mcp's roster UUID — assignment fixtures need it
 let client: Client;
@@ -2119,8 +2125,6 @@ describe('get_schedule', () => {
   // today + tenants.technician_horizon_days (default 28), so fixed dates rot
   // the day they cross the horizon. today+7/+8 stay comfortably inside it;
   // identity tech-mcp.
-  const relDay = (n: number): string =>
-    new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
   const G1 = relDay(7);
   const G2 = relDay(8);
   const stubOptimize: ServerDeps['optimizeStopOrder'] = async (stops) => ({
@@ -2128,6 +2132,7 @@ describe('get_schedule', () => {
     legMinutes: [7, 8],
     totalMinutes: 15,
   });
+  const gAssignmentIds: string[] = [];
 
   beforeAll(async () => {
     // Confirmed assignments for tech-mcp (the DB-owned schedule — the mirror
@@ -2142,7 +2147,7 @@ describe('get_schedule', () => {
           : {}),
       });
       const job = await createJob({ tenantId, customerId: customer.id, title: key });
-      await createAssignment({
+      const row = await createAssignment({
         tenantId,
         jobId: job.id,
         technicianId: techMcpId,
@@ -2150,11 +2155,21 @@ describe('get_schedule', () => {
         endsAt: new Date(Date.parse(startISO) + 60 * 60_000).toISOString(),
         status: 'confirmed',
       });
+      gAssignmentIds.push(row.id);
     };
     await mk('g1-a', `${G1}T15:00:00.000Z`);
     await mk('g1-b', `${G1}T17:00:00.000Z`);
     await mk('g2-a', `${G2}T16:00:00.000Z`);
     await mk('g2-noaddr', `${G2}T18:00:00.000Z`, false);
+  });
+
+  afterAll(async () => {
+    // Relative fixtures MUST NOT outlive the suite: later suites in this file
+    // use fixed future dates (2026-12-*, 2027-*), and today+7/+8 sweeps across
+    // them as the calendar advances — leaked rows would break their exact
+    // reads deterministically weeks from now (final-review finding; the same
+    // hazard boardApi.test.ts solves with all-relative distinct offsets).
+    await pg.query('delete from assignments where id = any($1::uuid[])', [gAssignmentIds]);
   });
 
   async function scheduleClient(extra: Partial<ServerDeps> = {}) {
@@ -2213,6 +2228,12 @@ describe('get_schedule', () => {
       expect(r.data.status).toBe('ok');
       expect([before, after]).toContain(r.data.from);
       expect(r.data.to).toBe(r.data.from);
+      // Empty-string from/to ALSO mean "today" (agents routinely emit "" for
+      // optional params; main + the board API both default it — pinned after
+      // a final-review near-regression turned "" into invalid_range).
+      const empty = await callWith('get_schedule', { from: '', to: '' });
+      expect(empty.data.status).toBe('ok');
+      expect([before, after]).toContain(empty.data.from);
     } finally {
       await c.close();
     }
@@ -4995,9 +5016,6 @@ describe('set_promise (the promise-record editor)', () => {
 });
 
 describe('set_technician_horizon (the visibility-horizon dial)', () => {
-  const relDay = (n: number): string =>
-    new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
-
   test('validates, echoes old→new, SQL read-back; the clamp consumes the SETTING', { timeout: 30_000 }, async () => {
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     const { client: techClient, callWith: techCall } = await clientFor({

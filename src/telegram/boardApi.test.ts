@@ -353,18 +353,30 @@ describe('GET /board/api/day', () => {
     // Fully beyond today+28 (default horizon): 200, no days, self-explaining.
     const beyond = await day(`?from=${relDate(40)}&to=${relDate(41)}`, tma(900000002));
     expect(beyond.status).toBe(200);
-    const beyondBody = (await beyond.json()) as DayResponse & { horizonNote?: string };
+    const beyondBody = (await beyond.json()) as DayResponse & {
+      horizonNote?: string;
+      horizonEnd?: string;
+    };
     expect(beyondBody.days).toEqual([]);
     expect(beyondBody.horizonNote).toContain("isn't published yet");
+    // Structured companion: the client branches on from > horizonEnd, never
+    // by parsing the sentence.
+    expect(beyondBody.horizonEnd && beyondBody.from > beyondBody.horizonEnd).toBe(true);
 
     // Straddling: trimmed `to` + note. Firm-local today can lag the
     // UTC-derived relDate by a day — pin bounds, not the exact trim date.
     const straddle = await day(`?from=${relDate(25)}&to=${relDate(31)}`, tma(900000002));
     expect(straddle.status).toBe(200);
-    const straddleBody = (await straddle.json()) as DayResponse & { horizonNote?: string };
+    const straddleBody = (await straddle.json()) as DayResponse & {
+      horizonNote?: string;
+      horizonEnd?: string;
+    };
     expect(straddleBody.horizonNote).toContain("isn't published yet");
     expect(straddleBody.to < relDate(31)).toBe(true);
     expect(straddleBody.to >= relDate(27)).toBe(true);
+    // A trimmed window's `to` IS the horizon end — deterministic even with
+    // the firm-local-vs-UTC one-day skew.
+    expect(straddleBody.to).toBe(straddleBody.horizonEnd);
 
     // Managers never clamp — team view AND the Mine tab (the clamp keys on
     // TIER, never the self-filter; a mine-view regression would silently
@@ -509,6 +521,18 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
     });
     // An unscheduled open job — no visit at all.
     await createJob({ tenantId, customerId: casaId, title: 'Bucket bare job', priority: 'urgent' });
+    // A parked visit whose day already PASSED — missed work must surface
+    // flagged overdue, never vanish (final-review finding: it used to drop
+    // out of the tray while its job stayed hidden by the live-row anti-join).
+    await bookVisit({
+      tenantId,
+      customerId: casaId,
+      title: 'Bucket overdue visit',
+      date: relDate(-8),
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'board-mgr',
+    });
 
     // Hostile shapes for the withholding assertions (the cross-tenant suite's
     // fixtures are its own — this suite cleans up after itself).
@@ -573,6 +597,10 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
     });
     expect(parked?.weekday).toMatch(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/);
     expect(typeof parked?.assignmentId).toBe('string');
+    expect(parked?.overdue).toBe(false);
+    // The past parked visit surfaces, flagged — it never silently vanishes.
+    const overdue = body.parkedVisits.find((v) => v.jobTitle === 'Bucket overdue visit');
+    expect(overdue).toMatchObject({ date: relDate(-8), overdue: true });
     const bare = body.unscheduledJobs.find((j) => j.title === 'Bucket bare job');
     expect(bare).toMatchObject({ customer: 'Board Casa', priority: 'urgent' });
     // Jobs WITH a live visit never appear in the jobs half.

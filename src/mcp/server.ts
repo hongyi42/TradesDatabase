@@ -103,7 +103,8 @@ import {
 } from '../routes/googleRoutes.js';
 import { buildMapsDeepLink, formatAddress, type RouteStop } from '../routes/deepLink.js';
 import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
-import { DEFAULT_TECHNICIAN_HORIZON_DAYS } from '../schedule/policy.js';
+import { clampToTechnicianHorizon, horizonDaysFor } from '../schedule/policy.js';
+import { readUnscheduledJobs } from '../schedule/boardRead.js';
 import {
   addDaysISO,
   assembleFitContext,
@@ -131,7 +132,6 @@ import {
   latestScheduleVersion,
   listAssignmentsForTenant,
   listUnassignedAssignments,
-  listUnscheduledOpenJobsWithCustomer,
   listJobsWithCustomerByIds,
   type PromiseLevel,
 } from '../db/index.js';
@@ -335,7 +335,9 @@ const TOOLS = [
       "optional — default is today in the firm's timezone; range is capped at 14 days) returns " +
       'your stops in best driving order, total drive minutes, and a Google Maps link (mapsUrl) ' +
       "that opens the whole day's route for navigation. Relay each day's mapsUrl to the person " +
-      'VERBATIM as a tappable link. days:[] means no stops in the range. driveMinutes null = ' +
+      'VERBATIM as a tappable link. days:[] means no stops in the range — UNLESS the result ' +
+      'carries horizonNote: then days beyond the horizonEnd date are not published yet; relay ' +
+      'the note, and NEVER tell the person they are free on unpublished days. driveMinutes null = ' +
       'not measured; optimizeFailed true = stops are in scheduled (not drive-optimized) order; ' +
       'a day may also carry unroutableStops (time-ordered, no usable address, not in the ' +
       'link) — mention them to the person alongside the driving list. When the result carries ' +
@@ -1736,8 +1738,12 @@ async function dispatch(
       );
       let from = str('from');
       let to = str('to');
-      from ??= today;
-      to ??= from;
+      // Truthiness, not ??=: agents routinely emit "" for optional params —
+      // an empty from meant "today" on main and still does on the board API,
+      // so it must keep meaning that here (final-review finding: the hoist
+      // briefly turned "" into invalid_range and diverged the two surfaces).
+      if (!from) from = today;
+      if (!to) to = from;
       const DATE = /^\d{4}-\d{2}-\d{2}$/;
       if (!DATE.test(from) || !DATE.test(to) || from > to) {
         return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD with from <= to' };
@@ -1756,17 +1762,20 @@ async function dispatch(
       // (managers are blocked at dispatch), so no tier test. Clamp AFTER
       // validation: garbage stays invalid_range, never a quiet clamp. Trim +
       // note, not an error — the payload explains the missing days itself.
-      const horizonEnd = addDaysISO(
-        today,
-        scheduleTenant?.technician_horizon_days ?? DEFAULT_TECHNICIAN_HORIZON_DAYS,
-      );
-      const horizonNote =
-        `the schedule past ${horizonEnd} isn't published yet — check back closer to the date`;
-      if (from > horizonEnd) {
-        return { status: 'ok', from, to, days: [], horizonNote };
+      // The policy lives in ONE place (schedule/policy.ts) shared with the
+      // board; horizonEnd rides structured so clients branch on data.
+      const clamp = clampToTechnicianHorizon(today, from, to, horizonDaysFor(scheduleTenant));
+      if (clamp.beyond) {
+        return {
+          status: 'ok',
+          from,
+          to,
+          days: [],
+          horizonNote: clamp.horizonNote,
+          horizonEnd: clamp.horizonEnd,
+        };
       }
-      const horizonTrimmed = to > horizonEnd;
-      if (horizonTrimmed) to = horizonEnd;
+      to = clamp.to;
       const optimize = deps.optimizeStopOrder ?? liveOptimizeStopOrder;
       const dayStops = await listDayStops(tenantId, identity.technicianRef, from, to);
       // Days are independent — optimize them concurrently (a 14-day ask is one
@@ -1806,7 +1815,15 @@ async function dispatch(
           };
         }),
       );
-      return { status: 'ok', from, to, days, ...(horizonTrimmed ? { horizonNote } : {}) };
+      return {
+        status: 'ok',
+        from,
+        to,
+        days,
+        ...(clamp.horizonNote
+          ? { horizonNote: clamp.horizonNote, horizonEnd: clamp.horizonEnd }
+          : {}),
+      };
     }
     case 'web_search': {
       const query = str('query')?.trim();
@@ -2581,15 +2598,20 @@ async function dispatch(
         return { status: 'invalid_range', note: 'unassignedOnly must be a boolean' };
       }
       const unassignedOnly = args.unassignedOnly === true;
+      // Recall view's jobs half kicks off FIRST — independent of every read
+      // below it (final-review efficiency finding: it was awaited serially
+      // last). Shared projection: the board tray calls the same function.
+      const unscheduledJobsPromise = unassignedOnly ? readUnscheduledJobs(tenantId) : null;
       // Tenant fetched regardless of `from` now: the response carries the
       // technician-horizon setting for discovery ("what is it now?" — Plan 4a;
       // manager tool, not the board button path, so one read is fine).
       const teamTenant = await getTenant(tenantId);
-      const technicianHorizonDays =
-        teamTenant?.technician_horizon_days ?? DEFAULT_TECHNICIAN_HORIZON_DAYS;
+      const technicianHorizonDays = horizonDaysFor(teamTenant);
       let from = str('from');
       const to = str('to');
-      from ??= localDateISO(new Date().toISOString(), teamTenant?.timezone ?? 'UTC');
+      // Truthiness, not ??=: an empty-string from means "today" (main/board
+      // parity — same rule as get_schedule above).
+      if (!from) from = localDateISO(new Date().toISOString(), teamTenant?.timezone ?? 'UTC');
       const DATE = /^\d{4}-\d{2}-\d{2}$/;
       if (!DATE.test(from)) {
         return { status: 'invalid_range', note: 'from must be YYYY-MM-DD' };
@@ -2686,18 +2708,11 @@ async function dispatch(
       if (unassignedOnly) {
         // Agent parity with the board's loose-bucket tray (Plan 4a): the
         // recall view also names open jobs with NO visit at all — until now
-        // surfaced nowhere. Embedded customer rows re-check their own tenant
-        // (ID-only foreign keys, the assignments.ts security note).
-        const unscheduledJobs = (await listUnscheduledOpenJobsWithCustomer(tenantId)).map(
-          (job) => ({
-            jobId: job.id,
-            title: job.title,
-            customer:
-              job.customers && job.customers.tenant_id === tenantId ? job.customers.name : null,
-            priority: job.priority,
-            createdAt: job.created_at,
-          }),
-        );
+        // surfaced nowhere. ONE projection serves both surfaces (parity by
+        // construction, tenant re-check included — see readUnscheduledJobs).
+        // Non-null by construction (started iff unassignedOnly); ?? [] keeps
+        // the type honest without a cast.
+        const unscheduledJobs = (await unscheduledJobsPromise) ?? [];
         return {
           status: 'ok',
           from,
@@ -3947,8 +3962,7 @@ async function dispatch(
       // Old value read before the write so the echo is old → new (update_job
       // idiom). Plain update, no CAS — settings row, effectively single-writer
       // (setTenantSeats precedent); the DB CHECK (7-84) backstops range.
-      const beforeDays =
-        (await getTenant(tenantId))?.technician_horizon_days ?? DEFAULT_TECHNICIAN_HORIZON_DAYS;
+      const beforeDays = horizonDaysFor(await getTenant(tenantId));
       const updatedTenant = await setTechnicianHorizonDays(tenantId, args.weeks * 7);
       return {
         status: 'ok',

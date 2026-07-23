@@ -8,8 +8,8 @@ import {
 } from '../db/index.js';
 import { formatAddress } from '../routes/deepLink.js';
 import { localDateISO } from './availability.js';
-import { addDaysISO, weekdayLabel } from './fit.js';
-import { DEFAULT_TECHNICIAN_HORIZON_DAYS } from './policy.js';
+import { weekdayLabel } from './fit.js';
+import { clampToTechnicianHorizon, horizonDaysFor } from './policy.js';
 
 // The dispatch board's day view — originally a deliberate mirror of
 // get_team_schedule's body (src/mcp/server.ts, post-Feature-A shape) for the
@@ -54,8 +54,12 @@ export interface BoardDays {
   to: string;
   days: { date: string; stops: BoardStop[] }[];
   // Present when a technician-tier read was clamped at the visibility horizon
-  // (Plan 4a): the payload explains the missing days itself.
+  // (Plan 4a): the payload explains the missing days itself. horizonEnd is
+  // the STRUCTURED companion (the last visible day) — clients branch on data,
+  // never by parsing the sentence (final-review finding: the client's
+  // days-empty proxy conflated "fully beyond" with "trimmed but empty").
   horizonNote?: string;
+  horizonEnd?: string;
 }
 
 export interface ReadBoardDaysInput {
@@ -97,21 +101,19 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
 
   // Horizon clamp AFTER validation (a garbage range is still a 400, never a
   // quiet clamp). Trim + note, not an error: the payload explains itself.
+  // The policy itself lives in ONE place (schedule/policy.ts).
   let horizonNote: string | undefined;
+  let horizonEnd: string | undefined;
   if (input.clampToHorizon) {
     const tz = tenant?.timezone ?? 'UTC';
     const today = localDateISO(new Date().toISOString(), tz);
-    const horizonDays = tenant?.technician_horizon_days ?? DEFAULT_TECHNICIAN_HORIZON_DAYS;
-    const horizonEnd = addDaysISO(today, horizonDays);
-    const note =
-      `the schedule past ${horizonEnd} isn't published yet — check back closer to the date`;
-    if (from > horizonEnd) {
-      return { from, to: toDay, days: [], horizonNote: note };
+    const clamp = clampToTechnicianHorizon(today, from, toDay, horizonDaysFor(tenant));
+    horizonEnd = clamp.horizonEnd;
+    if (clamp.beyond) {
+      return { from, to: toDay, days: [], horizonNote: clamp.horizonNote, horizonEnd };
     }
-    if (toDay > horizonEnd) {
-      toDay = horizonEnd;
-      horizonNote = note;
-    }
+    toDay = clamp.to;
+    horizonNote = clamp.horizonNote;
   }
 
   // ONE embedded read for the whole window (was: assignments + jobs-with-
@@ -180,7 +182,13 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
   const days = [...byDay.entries()]
     .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(([date, stops]) => ({ date, stops }));
-  return { from, to: toDay, days, ...(horizonNote ? { horizonNote } : {}) };
+  return {
+    from,
+    to: toDay,
+    days,
+    ...(horizonNote ? { horizonNote } : {}),
+    ...(horizonEnd ? { horizonEnd } : {}),
+  };
 }
 
 // ---- The loose bucket (Plan 4a): what the freeze will consume, made visible ----
@@ -193,6 +201,14 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
 // timestamptz (the naive-local convention makes the wire's '+00:00' a lie —
 // PR #72's lesson).
 
+export interface UnscheduledJob {
+  jobId: string;
+  title: string | null;
+  customer: string | null;
+  priority: string;
+  createdAt: string;
+}
+
 export interface LooseBucket {
   parkedVisits: {
     assignmentId: string;
@@ -202,22 +218,44 @@ export interface LooseBucket {
     endTime: string;
     customer: string | null;
     jobTitle: string | null;
+    // The visit's day already slipped past with nobody attached — the most
+    // forgettable row of all (final-review finding: it used to vanish from
+    // the tray entirely, while its job stayed hidden by the live-assignment
+    // anti-join — invisible on every surface at once).
+    overdue: boolean;
   }[];
-  unscheduledJobs: {
-    jobId: string;
-    title: string | null;
-    customer: string | null;
-    priority: string;
-    createdAt: string;
-  }[];
+  unscheduledJobs: UnscheduledJob[];
+}
+
+// THE unscheduled-jobs projection — the board tray AND get_team_schedule's
+// recall view both call this, so the two surfaces agree by construction
+// (final-review finding: parity was previously by duplication, tenant
+// re-check included). The job row is already tenant-filtered by the query;
+// only the embedded customer needs the re-check (ID-only foreign keys).
+export async function readUnscheduledJobs(tenantId: string): Promise<UnscheduledJob[]> {
+  return (await listUnscheduledOpenJobsWithCustomer(tenantId)).map((job) => ({
+    jobId: job.id,
+    title: job.title,
+    customer: job.customers && job.customers.tenant_id === tenantId ? job.customers.name : null,
+    priority: job.priority,
+    createdAt: job.created_at,
+  }));
 }
 
 export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
+  // The jobs read is independent of the tenant read — start it first so the
+  // three queries run at depth 2, not 3 (final-review efficiency finding).
+  const jobsPromise = readUnscheduledJobs(tenantId);
   const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
   const today = localDateISO(new Date().toISOString(), tz);
-  const [parked, jobs] = await Promise.all([
-    listUnassignedAssignmentsWithRefs(tenantId, `${today}T00:00:00.000Z`),
-    listUnscheduledOpenJobsWithCustomer(tenantId),
+  // Parked visits are read UNBOUNDED into the past: a parked visit whose day
+  // slipped by is missed work, not history — it surfaces flagged `overdue`
+  // instead of disappearing. (Terminal rows still drop via status; note the
+  // recorded limitation that `proposed` unassigned rows are invisible to
+  // BOTH halves — no production writer mints them today; Plan 3c/4b decides.)
+  const [parked, unscheduledJobs] = await Promise.all([
+    listUnassignedAssignmentsWithRefs(tenantId, '1970-01-01T00:00:00.000Z'),
+    jobsPromise,
   ]);
   return {
     parkedVisits: parked.map((row) => {
@@ -227,26 +265,19 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
       const job = row.jobs && row.jobs.tenant_id === tenantId ? row.jobs : null;
       const customer =
         job && job.customers && job.customers.tenant_id === tenantId ? job.customers : null;
+      const date = row.starts_at.slice(0, 10);
       return {
         assignmentId: row.id,
-        date: row.starts_at.slice(0, 10),
-        weekday: weekdayLabel(row.starts_at.slice(0, 10)),
+        date,
+        weekday: weekdayLabel(date),
         startTime: row.starts_at.slice(11, 16),
         endTime: row.ends_at.slice(11, 16),
         customer: customer?.name ?? null,
         jobTitle: job ? job.title : null,
+        overdue: date < today,
       };
     }),
-    unscheduledJobs: jobs.map((job) => ({
-      jobId: job.id,
-      title: job.title,
-      // The job row is already tenant-filtered by the query; only the embedded
-      // customer needs the re-check.
-      customer:
-        job.customers && job.customers.tenant_id === tenantId ? job.customers.name : null,
-      priority: job.priority,
-      createdAt: job.created_at,
-    })),
+    unscheduledJobs,
   };
 }
 

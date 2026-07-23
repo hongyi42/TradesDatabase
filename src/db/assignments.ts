@@ -437,19 +437,35 @@ export async function listUnassignedAssignmentsWithRefs(
   return (data ?? []) as AssignmentBucketRow[];
 }
 
-export type UnscheduledJobRow = Job & {
+// Named columns, no '*': jobs carry the elastic L3 `attributes` JSONB, which
+// the bucket never uses — and this query feeds an HTTP endpoint hit on every
+// board load (final-review efficiency finding). Single string literal — see
+// the DETAIL_SELECT note above.
+const UNSCHEDULED_JOBS_SELECT =
+  'id,tenant_id,customer_id,title,status,priority,created_at, assignments(id,status), customers(name,tenant_id)';
+
+export type UnscheduledJobRow = Pick<
+  Job,
+  'id' | 'tenant_id' | 'customer_id' | 'title' | 'status' | 'priority' | 'created_at'
+> & {
   customers: Pick<Customer, 'name' | 'tenant_id'> | null;
 };
 
-// listUnassignedOpenJobs with the customer name embedded — the bucket's
-// unscheduled-jobs half. Same JS anti-join; the existing name-less function
-// stays for its current callers.
+// The scheduler's work queue with the customer name embedded — the bucket's
+// unscheduled-jobs half: open jobs with NO live (proposed/confirmed)
+// assignment. Anti-join filtered in JS — PostgREST anti-joins are awkward and
+// tenant job counts are small. THE one body for the "live assignment"
+// predicate (final-review finding: a second copy would let the board tray and
+// the scheduler queue disagree about which jobs are scheduled). Recorded
+// limitation: a `proposed` unassigned row counts as live here while being
+// invisible to the parked-visits lister (confirmed-only) — no production
+// writer mints proposed rows today; the Plan-3c/4b scheduler decides.
 export async function listUnscheduledOpenJobsWithCustomer(
   tenantId: string,
 ): Promise<UnscheduledJobRow[]> {
   const { data, error } = await getClient()
     .from('jobs')
-    .select('*, assignments(id,status), customers(name,tenant_id)')
+    .select(UNSCHEDULED_JOBS_SELECT)
     .eq('tenant_id', tenantId)
     .eq('status', 'open')
     .order('created_at', { ascending: true });
@@ -465,24 +481,14 @@ export async function listUnscheduledOpenJobsWithCustomer(
     });
 }
 
-// The scheduler's work queue: open jobs with NO live (proposed/confirmed)
-// assignment. One embedded select, anti-join filtered in JS — PostgREST
-// anti-joins are awkward and tenant job counts are small.
-export async function listUnassignedOpenJobs(tenantId: string): Promise<Job[]> {
-  const { data, error } = await getClient()
-    .from('jobs')
-    .select('*, assignments(id,status)')
-    .eq('tenant_id', tenantId)
-    .eq('status', 'open')
-    .order('created_at', { ascending: true });
-  if (error) throw new Error(`listUnassignedOpenJobs failed: ${error.message}`);
-  return (data ?? [])
-    .filter(
-      (row) => !row.assignments.some((a) => a.status === 'proposed' || a.status === 'confirmed'),
-    )
-    .map((row) => {
-      const job: Job & { assignments?: unknown } = { ...row };
-      delete job.assignments;
-      return job as Job;
-    });
+// Name-less projection of the same queue (kept for existing callers/tests) —
+// never a second query body. Strip idiom matches the embed-key strip above.
+export async function listUnassignedOpenJobs(
+  tenantId: string,
+): Promise<Omit<UnscheduledJobRow, 'customers'>[]> {
+  return (await listUnscheduledOpenJobsWithCustomer(tenantId)).map((row) => {
+    const job: Omit<UnscheduledJobRow, 'customers'> & { customers?: unknown } = { ...row };
+    delete job.customers;
+    return job;
+  });
 }

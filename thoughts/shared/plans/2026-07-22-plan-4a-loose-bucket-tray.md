@@ -437,3 +437,36 @@ read-backs.
 
 ---
 *Pause after Phase 4 for the device checks.*
+
+## Final review gate (2026-07-22, 8-angle /code-review on the full diff)
+
+26 candidates across 8 finder angles → deduped and fixed in one round (all gates green
+after, 602/602):
+- **Fixed (correctness):** get_schedule-suite relative fixtures leaked into later
+  fixed-December suites — deterministic collision from late November (afterAll cleanup +
+  relDay hoisted to one module-scope copy); empty-string `from` regressed to invalid_range
+  vs main/board parity (truthiness default restored + pinned by test); board.js conflated
+  "fully beyond horizon" with "trimmed-but-empty" (payloads now carry structured
+  `horizonEnd`; the client branches on data, never the sentence); past-dated parked visits
+  vanished from the tray entirely while their jobs stayed anti-joined away (bucket now
+  unbounded into the past + `overdue` flag, rendered on the tray row); get_schedule's
+  description claimed days:[] = free, contradicting the clamp (sentence added — restarts
+  already required this rollout, so the description change is free).
+- **Fixed (consolidation/efficiency):** horizon policy single-homed in
+  `schedule/policy.ts` (`horizonDaysFor` + `clampToTechnicianHorizon` — chat and board can
+  no longer drift on boundary or wording); unscheduled-jobs projection single-homed
+  (`readUnscheduledJobs` serves board tray AND agent recall — parity by construction);
+  `listUnassignedOpenJobs` became a projection of the with-customer lister (ONE anti-join
+  body); jobs query trimmed to named columns (no more L3 `attributes` JSONB on the wire);
+  bucket + recall reads parallelized (depth 2, not 3); board.js stores only the pill count
+  (a cached payload invited stale-tray rendering).
+- **Judged not-a-bug:** the inclusive horizon boundary (today+N is the last visible day —
+  "N weeks ahead" counts correctly; convention documented in policy.ts); deploy-order
+  hazard (already sequenced migration-first in this phase, PR #58 lesson); `proposed`
+  unassigned rows invisible to both bucket halves (latent — no production writer; recorded
+  limitation in the lister comment for Plan-3c/4b).
+- **Surfaced, not acted on (nits):** fetchBucket refires on every pager/tab navigation
+  (endpoint is now cheap; revisit if tenants grow); no LIMIT on bucket rows (tenant job
+  counts small; revisit with a count+page if a firm backlogs hundreds); relDate helpers
+  still duplicated across the three test FILES (house style keeps test files
+  self-contained; the intra-file duplicate was removed).

@@ -30,10 +30,10 @@
     view: 'team',
     weekOffset: 0,
     today: null,
-    // Last-fetched loose bucket (managers only) — feeds the header pill's
-    // count between loads; the tray itself re-fetches on open so it is never
-    // stale. null = not yet fetched this session.
-    bucket: null,
+    // Last-fetched loose-bucket COUNT (managers only) — feeds the header
+    // pill between loads. Only the number is kept: the tray re-fetches on
+    // open, and a cached payload would invite rendering stale rows from it.
+    bucketCount: null,
   };
 
   function actionable() {
@@ -274,7 +274,7 @@
     // loads the last known count renders immediately.
     var pill = isManager
       ? '<button type="button" class="bucket-pill" id="bucket-pill">' +
-        esc(state.bucket ? 'Loose: ' + bucketCount(state.bucket) : 'Loose: …') +
+        esc(state.bucketCount === null ? 'Loose: …' : 'Loose: ' + state.bucketCount) +
         '</button>'
       : '';
     var head =
@@ -286,11 +286,12 @@
     // Render EVERY day in the window, empty ones included — empty days are the
     // drop targets that make "move to Thursday" possible at all.
     var html = head;
-    // Technician horizon (Plan 4a): a window fully beyond the horizon comes
-    // back with days:[] + horizonNote — show the note, not seven empty day
-    // sections claiming "No visits". A TRIMMED window (note + days) renders
-    // its days (data.to is already trimmed server-side) with the note after.
-    if (data.horizonNote && !data.days.length) {
+    // Technician horizon (Plan 4a): a window FULLY beyond the horizon
+    // (from > horizonEnd — structured field, never parse the sentence) shows
+    // the note alone, not empty day sections claiming "No visits". A TRIMMED
+    // window renders its (already-trimmed) days — empty ones included; those
+    // days ARE published — with the note after.
+    if (data.horizonNote && data.horizonEnd && data.from > data.horizonEnd) {
       html += '<div class="empty">' + esc(data.horizonNote) + '</div>';
     } else {
       var date = data.from;
@@ -436,8 +437,8 @@
       })
       .then(function (b) {
         if (!b) return null;
-        state.bucket = b;
-        setPillText('Loose: ' + bucketCount(b));
+        state.bucketCount = bucketCount(b);
+        setPillText('Loose: ' + state.bucketCount);
         return b;
       })
       .catch(function () {
@@ -453,7 +454,11 @@
       '<div class="bucket-row-main">' +
       esc(v.weekday + ' ' + v.date + ' · ' + v.startTime + '–' + v.endTime) +
       '</div><div class="bucket-row-sub">' +
-      esc((v.customer || 'Unknown customer') + (v.jobTitle ? ' — ' + v.jobTitle : '')) +
+      esc(
+        (v.overdue ? 'OVERDUE — the day passed with nobody assigned · ' : '') +
+          (v.customer || 'Unknown customer') +
+          (v.jobTitle ? ' — ' + v.jobTitle : ''),
+      ) +
       '</div></div>'
     );
   }

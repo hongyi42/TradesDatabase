@@ -9,6 +9,7 @@ import { setTenantSeats, createTenant } from '../db/tenants.js';
 import { insertTechnician, updateTechnician } from '../db/technicians.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
+import { appendRawCapture } from '../db/rawCaptures.js';
 import { bookVisit } from '../schedule/booking.js';
 import * as rosterCache from './rosterCache.js';
 
@@ -1049,6 +1050,326 @@ describe('board write path (Phase 3)', () => {
       `t.ref = 'board-t2' and a.status = 'confirmed' and a.starts_at::date = '${DAY_A}'`,
     );
     expect(t2).toHaveLength(1);
+  });
+});
+
+describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail additions', () => {
+  const post = (path: string, body: unknown, userId: number, preview = false) =>
+    fetch(`${base}${path}${preview ? '?preview=1' : ''}`, {
+      method: 'POST',
+      headers: { ...tma(userId), 'content-type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+  const BOOK_DAY = relDate(15);
+  const HOSTILE_DAY = relDate(16);
+  const NOTES_DAY = relDate(17);
+  let probeJobId: string;
+  let notesVisitId: string;
+  let hostileVisitId: string;
+  let hostileTenantId: string;
+
+  beforeAll(async () => {
+    // Roster-filter fixtures: a seat-exempt name (bookable → must appear) and
+    // an offboarded row (must never).
+    await insertTechnician({
+      tenantId,
+      ref: 'board-exempt',
+      displayName: 'Extra Elle',
+      seatExempt: true,
+    });
+    const off = await insertTechnician({ tenantId, ref: 'board-off', displayName: 'Off Olly' });
+    await updateTechnician(off.id, { state: 'offboarded' });
+
+    // The tray-booking subject: an open job with NO visit.
+    const casa = await createCustomer({ tenantId, name: 'Quick Edit Casa' });
+    probeJobId = (
+      await createJob({ tenantId, customerId: casa.id, title: 'Quick edit probe job' })
+    ).id;
+
+    // Customer-notes fixture: a retracted fact FIRST (fold must precede the
+    // cap), then 9 plain facts (→ 8 after cap), one of them >80 chars.
+    const orig = await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      rawText: 'promised 10% off',
+      technicianRef: 'board-mgr',
+      customerId: casa.id,
+    });
+    await appendRawCapture({
+      tenantId,
+      channel: 'technician_note',
+      rawText: 'retract that',
+      technicianRef: 'board-mgr',
+      customerId: casa.id,
+      retractsCaptureId: orig.id,
+    });
+    // jsonb key order is deterministic (length, then bytes) — 'aa' sorts
+    // first, 'retracted_fact' last; the fold removes the latter, the cap then
+    // trims fact_8. Assertions below pin exactly that.
+    const attributes: Record<string, unknown> = {
+      retracted_fact: {
+        value: 'SHOULD VANISH',
+        sourceCaptureId: orig.id,
+        recordedAt: '2026-07-01T00:00:00.000Z',
+      },
+      aa: 'L'.repeat(100),
+    };
+    for (let i = 1; i <= 8; i++) attributes[`fact_${i}`] = `value ${i}`;
+    const notesCustomer = await createCustomer({
+      tenantId,
+      name: 'Notes Casa',
+      attributes: attributes as never,
+    });
+    notesVisitId = (
+      await bookVisit({
+        tenantId,
+        customerId: notesCustomer.id,
+        technicianRef: 'board-t1',
+        title: 'Notes probe visit',
+        date: NOTES_DAY,
+        startTime: '09:00',
+        endTime: '10:00',
+        actorRef: 'board-mgr',
+      })
+    ).assignment.id;
+
+    // Own hostile row (the cross-tenant describe's fixtures are torn down in
+    // its afterAll): our assignment → their job, so jobId/jobPriority/notes
+    // must all be withheld.
+    const hostile = await createTenant('Board 4a5 Hostile Tenant', {
+      managerSeats: 1,
+      technicianSeats: 1,
+    });
+    hostileTenantId = hostile.id;
+    const theirCustomer = await createCustomer({
+      tenantId: hostileTenantId,
+      name: 'SECRET 4a5 Customer',
+      attributes: { secret_fact: 'MUST NOT LEAK' } as never,
+    });
+    const theirJob = await createJob({
+      tenantId: hostileTenantId,
+      customerId: theirCustomer.id,
+      title: 'SECRET 4a5 Job',
+    });
+    hostileVisitId = (
+      await pg.query<{ id: string }>(
+        `insert into assignments
+           (tenant_id, job_id, technician_id, starts_at, ends_at, status)
+         values ($1, $2, null, '${HOSTILE_DAY}T09:00:00Z', '${HOSTILE_DAY}T10:00:00Z', 'confirmed')
+         returning id`,
+        [tenantId, theirJob.id],
+      )
+    ).rows[0].id;
+  });
+
+  afterAll(async () => {
+    await pg.query('delete from assignments where id = $1', [hostileVisitId]);
+    await pg.query('delete from jobs where tenant_id = $1', [hostileTenantId]);
+    await pg.query('delete from customers where tenant_id = $1', [hostileTenantId]);
+    await pg.query('delete from tenants where id = $1', [hostileTenantId]);
+  });
+
+  test('tier gates: every quick-edit surface is managers-only', async () => {
+    const roster = await fetch(`${base}/board/api/roster`, { headers: tma(900000002) });
+    expect(roster.status).toBe(403);
+    for (const path of ['/board/api/book', '/board/api/promise', '/board/api/job']) {
+      const resp = await post(path, {}, 900000002);
+      expect(resp.status).toBe(403);
+      expect(((await resp.json()) as { error: string }).error).toBe('managers only');
+    }
+  });
+
+  test('roster: active + seat-exempt appear, offboarded never; {ref,name} shape', async () => {
+    const resp = await fetch(`${base}/board/api/roster`, { headers: tma(900000001) });
+    expect(resp.status).toBe(200);
+    const { technicians } = (await resp.json()) as {
+      technicians: Array<{ ref: string; name: string }>;
+    };
+    const refs = technicians.map((t) => t.ref);
+    expect(refs).toContain('board-mgr');
+    expect(refs).toContain('board-t1');
+    expect(refs).toContain('board-exempt'); // seat-exempt = bookable name
+    expect(refs).not.toContain('board-off'); // offboarded never
+    expect(technicians.find((t) => t.ref === 'board-t1')).toEqual({
+      ref: 'board-t1',
+      name: 'Tess One',
+    });
+  });
+
+  test('book: validation 400s; unpromised preview writes NOTHING; commit books; overlap → 409', async () => {
+    expect(
+      (await post('/board/api/book', { customerId: 'x', date: BOOK_DAY, startTime: '09:00', endTime: '10:00' }, 900000001)).status,
+    ).toBe(400);
+    expect((await post('/board/api/book', { date: BOOK_DAY, startTime: '09:00', endTime: '10:00' }, 900000001)).status).toBe(400);
+    expect((await post('/board/api/book', { jobId: probeJobId, date: BOOK_DAY, startTime: '09:00' }, 900000001)).status).toBe(400);
+    expect(
+      (await post('/board/api/book', { jobId: probeJobId, date: BOOK_DAY, startTime: '09:00', endTime: '10:00', technicianRef: '' }, 900000001)).status,
+    ).toBe(400);
+    expect(
+      (await post('/board/api/book', { jobId: probeJobId, date: BOOK_DAY, startTime: '09:00', endTime: '10:00', promiseLevel: 'sworn' }, 900000001)).status,
+    ).toBe(400);
+
+    const body = { jobId: probeJobId, date: BOOK_DAY, startTime: '09:00', endTime: '10:00', technicianRef: 'board-t2' };
+    const preview = await post('/board/api/book', body, 900000001, true);
+    expect(preview.status).toBe(200);
+    const p = (await preview.json()) as { requiresConfirmation: boolean; newJob: boolean; jobTitle: string };
+    expect(p).toMatchObject({ requiresConfirmation: false, newJob: false, jobTitle: 'Quick edit probe job' });
+    // Preview wrote NOTHING.
+    const before = await pg.query(
+      "select id from assignments where job_id = $1 and status = 'confirmed'",
+      [probeJobId],
+    );
+    expect(before.rows).toHaveLength(0);
+
+    const commit = await post('/board/api/book', body, 900000001);
+    expect(commit.status).toBe(200);
+    const c = (await commit.json()) as { status: string; assignmentId: string; promiseLevel: string };
+    expect(c.status).toBe('booked');
+    expect(c.promiseLevel).toBe('none');
+    // SQL read-back: confirmed row for the job, held by board-t2.
+    const row = await pg.query(
+      `select a.status, t.ref from assignments a join technicians t on t.id = a.technician_id
+        where a.id = $1`,
+      [c.assignmentId],
+    );
+    expect(row.rows[0]).toEqual({ status: 'confirmed', ref: 'board-t2' });
+    // The shared verb's overlap refusal travels as a 409 with the message.
+    const clash = await post('/board/api/book', body, 900000001);
+    expect(clash.status).toBe(409);
+    expect(((await clash.json()) as { error: string }).error).toContain('already has a confirmed visit');
+  });
+
+  test('book with a promise: preview stages the one dialog; commit records it', async () => {
+    const body = {
+      jobId: probeJobId,
+      date: BOOK_DAY,
+      startTime: '13:00',
+      endTime: '14:00',
+      technicianRef: 'board-t2',
+      promiseLevel: 'day',
+    };
+    const preview = await post('/board/api/book', body, 900000001, true);
+    expect(((await preview.json()) as { requiresConfirmation: boolean }).requiresConfirmation).toBe(true);
+    const commit = await post('/board/api/book', body, 900000001);
+    expect(commit.status).toBe(200);
+    const c = (await commit.json()) as { assignmentId: string; promiseLevel: string };
+    expect(c.promiseLevel).toBe('day');
+    const row = await pg.query(
+      'select promise_level, promised_day::text as promised_day from assignments where id = $1',
+      [c.assignmentId],
+    );
+    expect(row.rows[0]).toEqual({ promise_level: 'day', promised_day: BOOK_DAY });
+  });
+
+  test('promise: one-shot old→new + ledger event; unknown id → 409', async () => {
+    const resp = await post(
+      '/board/api/promise',
+      { assignmentId: notesVisitId, promiseLevel: 'time_only' },
+      900000001,
+    );
+    expect(resp.status).toBe(200);
+    expect(((await resp.json()) as { changes: unknown }).changes).toEqual({
+      promiseLevel: { from: 'none', to: 'time_only' },
+      promisedDay: { from: null, to: null }, // time_only carries no day
+    });
+    const row = await pg.query(
+      'select promise_level, promised_day from assignments where id = $1',
+      [notesVisitId],
+    );
+    expect(row.rows[0]).toEqual({ promise_level: 'time_only', promised_day: null });
+    const ev = await pg.query(
+      "select actor_ref from schedule_events where assignment_id = $1 and kind = 'promise_updated'",
+      [notesVisitId],
+    );
+    expect(ev.rows).toEqual([{ actor_ref: 'board-mgr' }]);
+    expect((await post('/board/api/promise', { assignmentId: notesVisitId, promiseLevel: 'oath' }, 900000001)).status).toBe(400);
+    const unknown = await post(
+      '/board/api/promise',
+      { assignmentId: '00000000-0000-0000-0000-000000000009', promiseLevel: 'day' },
+      900000001,
+    );
+    expect(unknown.status).toBe(409);
+    expect(((await unknown.json()) as { error: string }).error).toBe('visit not found');
+  });
+
+  test('job: title+priority old→new + SQL read-back; jobType and empty patches → 400', async () => {
+    const resp = await post(
+      '/board/api/job',
+      { jobId: probeJobId, title: 'Renamed probe job', priority: 'urgent' },
+      900000001,
+    );
+    expect(resp.status).toBe(200);
+    expect(((await resp.json()) as { changes: unknown }).changes).toEqual({
+      title: { from: 'Quick edit probe job', to: 'Renamed probe job' },
+      priority: { from: 'routine', to: 'urgent' },
+    });
+    const row = await pg.query('select title, priority from jobs where id = $1', [probeJobId]);
+    expect(row.rows[0]).toEqual({ title: 'Renamed probe job', priority: 'urgent' });
+    const ev = await pg.query(
+      "select detail from schedule_events where kind = 'job_updated' and detail->>'jobId' = $1",
+      [probeJobId],
+    );
+    expect(ev.rows).toHaveLength(1);
+    expect((await post('/board/api/job', { jobId: probeJobId, jobType: 'repair' }, 900000001)).status).toBe(400);
+    expect((await post('/board/api/job', { jobId: probeJobId, priority: 'asap' }, 900000001)).status).toBe(400);
+    expect((await post('/board/api/job', { jobId: probeJobId }, 900000001)).status).toBe(400);
+  });
+
+  test('detail: jobId/jobPriority/customerNotes ride — folded, capped at 8, values truncated', async () => {
+    const resp = await fetch(`${base}/board/api/visit?assignmentId=${notesVisitId}`, {
+      headers: tma(900000001),
+    });
+    expect(resp.status).toBe(200);
+    const d = (await resp.json()) as {
+      jobId: string | null;
+      jobPriority: string | null;
+      customerNotes: Array<{ key: string; value: string }>;
+    };
+    expect(d.jobId).not.toBeNull();
+    expect(d.jobPriority).toBe('routine');
+    // Fold BEFORE cap: the retracted fact vanished, leaving exactly 9 live
+    // facts → capped to 8 in jsonb's deterministic key order (fact_8 trimmed).
+    expect(d.customerNotes.map((n) => n.key)).toEqual([
+      'aa',
+      'fact_1',
+      'fact_2',
+      'fact_3',
+      'fact_4',
+      'fact_5',
+      'fact_6',
+      'fact_7',
+    ]);
+    const long = d.customerNotes.find((n) => n.key === 'aa');
+    expect(long).toBeDefined();
+    expect(long!.value).toHaveLength(80);
+    expect(long!.value.endsWith('…')).toBe(true);
+    // BOTH tiers see notes (recorded decision): the visit's own technician
+    // gets the same section.
+    const techView = await fetch(`${base}/board/api/visit?assignmentId=${notesVisitId}`, {
+      headers: tma(900000002),
+    });
+    expect(techView.status).toBe(200);
+    expect(
+      ((await techView.json()) as { customerNotes: unknown[] }).customerNotes,
+    ).toHaveLength(8);
+  });
+
+  test('detail: a hostile cross-tenant job withholds jobId, priority, and notes', async () => {
+    const resp = await fetch(`${base}/board/api/visit?assignmentId=${hostileVisitId}`, {
+      headers: tma(900000001),
+    });
+    expect(resp.status).toBe(200);
+    const raw = await resp.text();
+    expect(raw).not.toContain('SECRET');
+    expect(raw).not.toContain('MUST NOT LEAK');
+    const d = JSON.parse(raw) as {
+      jobId: string | null;
+      jobPriority: string | null;
+      customerNotes: unknown[];
+    };
+    expect(d.jobId).toBeNull();
+    expect(d.jobPriority).toBeNull();
+    expect(d.customerNotes).toEqual([]);
   });
 });
 

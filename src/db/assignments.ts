@@ -268,7 +268,7 @@ export async function listAssignmentsForTenant(
 
 export type AssignmentDetailRow = Assignment & {
   jobs:
-    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'customer_id'> & {
+    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'priority' | 'customer_id'> & {
         customers: Pick<
           Customer,
           | 'name'
@@ -279,6 +279,10 @@ export type AssignmentDetailRow = Assignment & {
           | 'city'
           | 'state'
           | 'postal_code'
+          // L3 standing facts — the detail sheet's customer-notes section
+          // (plan 4a.5). Detail is a tap path, not the board-load path, so
+          // the JSONB rides only here, never on the day/bucket selects.
+          | 'attributes'
           | 'tenant_id'
         > | null;
       })
@@ -291,7 +295,7 @@ export type AssignmentDetailRow = Assignment & {
 // ('a' + 'b') string widens to `string`, which makes the inference collapse to
 // GenericStringError and breaks the build.
 const DETAIL_SELECT =
-  '*, jobs(id,tenant_id,title,customer_id,customers(name,phone,email,address_line1,address_line2,city,state,postal_code,tenant_id)), technicians(id,ref,display_name,tenant_id)';
+  '*, jobs(id,tenant_id,title,priority,customer_id,customers(name,phone,email,address_line1,address_line2,city,state,postal_code,attributes,tenant_id)), technicians(id,ref,display_name,tenant_id)';
 
 // One visit + its job/customer/technician, tenant-scoped at the ROOT only.
 // A cross-tenant or unknown id reads as null (same contract as

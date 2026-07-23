@@ -24,13 +24,16 @@ import {
   listTimeOffForTechnician,
   listUnassignedAssignments,
   rescheduleAssignment,
+  updateAssignmentPromise,
   updateAssignmentStatus,
+  updateJobDetails,
   updateJobStatus,
   type Assignment,
   type Customer,
   type Job,
   type JobPriority,
   type PromiseLevel,
+  type UpdateJobDetailsInput,
   type Technician,
   type WeeklyPattern,
 } from '../db/index.js';
@@ -672,4 +675,95 @@ export async function cancelVisit(input: CancelVisitInput): Promise<Assignment> 
     detail: { day: cancelled.starts_at.slice(0, 10), reason: input.reason },
   });
   return cancelled;
+}
+
+// ---- Shared edit cores (plan 4a.5): ONE body per verb, every surface calls it ----
+//
+// The set_promise / update_job MCP handlers used to hold this logic inline;
+// the board endpoints need the same writes, and hand-copying the CAS + ledger
+// event is exactly how two surfaces start disagreeing. Handlers keep their
+// validation and echo composition; these cores own the guarded write + event.
+
+export interface SetVisitPromiseResult {
+  previous: Assignment;
+  updated: Assignment;
+}
+
+// Correct a visit's promise record. The promised day is SERVER-derived from
+// the visit's own row (bookVisit precedent — caller date math never touches
+// the promise record); 'none'/'time_only' carry no day. CAS on the row read
+// here, so the old→new echo callers compose is honest.
+export async function setVisitPromise(
+  tenantId: string,
+  assignmentId: string,
+  promiseLevel: PromiseLevel,
+  actorRef: string,
+): Promise<SetVisitPromiseResult> {
+  const row = await getAssignmentForTenant(assignmentId, tenantId);
+  if (!row) throw new Error('visit not found');
+  if (row.status !== 'confirmed' && row.status !== 'proposed') {
+    throw new Error(`this visit is ${row.status} — promises are corrected on live visits only`);
+  }
+  const promisedDay = carriesPromisedDay(promiseLevel) ? row.starts_at.slice(0, 10) : null;
+  const updated = await updateAssignmentPromise(
+    tenantId,
+    assignmentId,
+    promiseLevel,
+    promisedDay,
+    row.updated_at, // CAS — the echo must describe THIS read
+  );
+  // The promise level gates every future move/cancel confirmation on this
+  // visit — the change joins the append-only ledger like every schedule
+  // mutation: who changed what, when, old → new, forever.
+  await appendScheduleEvent({
+    tenantId,
+    assignmentId,
+    kind: 'promise_updated',
+    actorRef,
+    detail: {
+      promiseLevel: { from: row.promise_level, to: updated.promise_level },
+      promisedDay: { from: row.promised_day, to: updated.promised_day },
+    },
+  });
+  return { previous: row, updated };
+}
+
+export interface UpdateJobIdentityResult {
+  previous: Job;
+  updated: Job;
+}
+
+// Correct a job's identity (title / jobType / priority). jobType — including
+// null-to-clear — is part of the core: the MCP handler writes it and tests pin
+// it (plan review finding #2); surfaces that expose less (the board: title +
+// priority) restrict at their own layer. The type-duration warning stays
+// MCP-side (it is conversational steering, not a write concern).
+export async function updateJobIdentity(
+  tenantId: string,
+  jobId: string,
+  patch: UpdateJobDetailsInput,
+  actorRef: string,
+): Promise<UpdateJobIdentityResult> {
+  const job = await getJob(jobId);
+  // Tenant guard: a cross-tenant (or unknown) id reads as not found.
+  if (!job || job.tenant_id !== tenantId) throw new Error('job not found');
+  const updated = await updateJobDetails(tenantId, jobId, patch, job.updated_at);
+  // The identity edit is schedule-visible (board lanes, schedule reads) — it
+  // joins the append-only event ledger like every other schedule mutation.
+  await appendScheduleEvent({
+    tenantId,
+    kind: 'job_updated',
+    actorRef,
+    detail: {
+      jobId,
+      ...(patch.title !== undefined ? { title: { from: job.title, to: updated.title } } : {}),
+      ...(patch.jobType !== undefined
+        ? { jobType: { from: job.job_type, to: updated.job_type } }
+        : {}),
+      ...(patch.priority !== undefined
+        ? { priority: { from: job.priority, to: updated.priority } }
+        : {}),
+    },
+  });
+  return { previous: job, updated };
 }

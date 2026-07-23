@@ -28,8 +28,6 @@ import {
   requestSandboxRetirement as liveRequestRetirement,
   cancelSandboxRetirement as liveCancelRetirement,
   updateTechnician,
-  updateAssignmentPromise,
-  updateJobDetails,
   getTenant,
   setTechnicianHorizonDays,
   insertTechnician,
@@ -63,6 +61,7 @@ import {
   type Customer,
   type FoldImpact,
   type Job,
+  JOB_PRIORITIES,
   type JobPriority,
   type CaptureChannel,
   type Json,
@@ -120,16 +119,16 @@ import {
   bookVisit,
   bookingRequiresConfirmation,
   cancelVisit,
-  carriesPromisedDay,
   isPromiseLevel,
   moveVisit,
   previewBookVisit,
   previewCancelVisit,
   previewMoveVisit,
+  setVisitPromise,
+  updateJobIdentity,
 } from '../schedule/booking.js';
 import { isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
-  appendScheduleEvent,
   latestScheduleVersion,
   listAssignmentsForTenant,
   listUnassignedAssignments,
@@ -189,7 +188,6 @@ export interface ServerDeps {
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
 const BRIEF_FOCUSES: BriefFocus[] = ['next_visit', 'full_history'];
 const TIERS: TechnicianTier[] = ['manager', 'technician'];
-const JOB_PRIORITIES: JobPriority[] = ['emergency', 'urgent', 'routine', 'maintenance'];
 
 // The technician tool surface — what every badge sees (the doorman runbook's
 // tool-count verification counts exactly these).
@@ -4021,11 +4019,10 @@ async function dispatch(
         throw new Error(`invalid priority: ${String(args.priority)}`);
       }
       const priorityArg = args.priority as JobPriority | undefined;
-      const job = await getJob(jobId);
-      // Tenant guard: a cross-tenant (or unknown) id reads as not found.
-      if (!job || job.tenant_id !== tenantId) throw new Error('job not found');
       const jobTypeArg = args.jobType as string | null | undefined;
-      const updated = await updateJobDetails(
+      // Shared core (plan 4a.5): tenant guard + CAS write + the job_updated
+      // ledger event live in ONE body the board endpoint calls too.
+      const { previous: job, updated } = await updateJobIdentity(
         tenantId,
         jobId,
         {
@@ -4033,26 +4030,8 @@ async function dispatch(
           ...(jobTypeArg !== undefined ? { jobType: jobTypeArg } : {}),
           ...(priorityArg !== undefined ? { priority: priorityArg } : {}),
         },
-        job.updated_at, // CAS — the old→new echo must describe THIS read
+        identity.technicianRef,
       );
-      // The identity edit is schedule-visible (board lanes, schedule reads) —
-      // it joins the append-only event ledger like every other schedule
-      // mutation: who changed what, when, old → new, forever.
-      await appendScheduleEvent({
-        tenantId,
-        kind: 'job_updated',
-        actorRef: identity.technicianRef,
-        detail: {
-          jobId,
-          ...(str('title') !== undefined ? { title: { from: job.title, to: updated.title } } : {}),
-          ...(jobTypeArg !== undefined
-            ? { jobType: { from: job.job_type, to: updated.job_type } }
-            : {}),
-          ...(priorityArg !== undefined
-            ? { priority: { from: job.priority, to: updated.priority } }
-            : {}),
-        } as unknown as Json,
-      });
       // A newly set type only drives scheduling if a duration is stored for
       // it — say so NOW, not as a surprise error at the next find_slots.
       const typeWarning =
@@ -4097,42 +4076,17 @@ async function dispatch(
           `invalid promiseLevel: ${String(args.promiseLevel ?? '')} (use none, day, time, or time_only)`,
         );
       }
-      // Tenant guard: a cross-tenant (or unknown) id reads as not found.
-      const row = await getAssignmentForTenant(assignmentId, tenantId);
-      if (!row) throw new Error('visit not found');
-      if (row.status !== 'confirmed' && row.status !== 'proposed') {
-        throw new Error(
-          `this visit is ${row.status} — promises are corrected on live visits only`,
-        );
-      }
-      // The promise is about THIS visit, so its day comes from the row itself
-      // (bookVisit derives promised_day from the booked date the same way) —
-      // agent date math never touches the promise record. Promising a
-      // DIFFERENT day than the visit is booked is move_visit's job: the
-      // schedule should match the promise, not diverge from it.
-      const promisedDay = carriesPromisedDay(promiseLevelArg as PromiseLevel)
-        ? row.starts_at.slice(0, 10)
-        : null;
-      const updated = await updateAssignmentPromise(
+      // Shared core (plan 4a.5): tenant guard + live-status check + SERVER-
+      // derived promised day (the promise is about THIS visit — its day comes
+      // from the row itself; promising a DIFFERENT day than the visit is
+      // booked is move_visit's job) + CAS write + the promise_updated ledger
+      // event, in ONE body the board endpoint calls too.
+      const { previous: row, updated } = await setVisitPromise(
         tenantId,
         assignmentId,
-        promiseLevelArg as PromiseLevel,
-        promisedDay,
-        row.updated_at, // CAS — the old→new echo must describe THIS read
+        promiseLevelArg,
+        identity.technicianRef,
       );
-      // The promise level gates every future move/cancel confirmation on this
-      // visit — the change joins the append-only ledger like every schedule
-      // mutation (update_job precedent): who changed what, when, old → new.
-      await appendScheduleEvent({
-        tenantId,
-        assignmentId,
-        kind: 'promise_updated',
-        actorRef: identity.technicianRef,
-        detail: {
-          promiseLevel: { from: row.promise_level, to: updated.promise_level },
-          promisedDay: { from: row.promised_day, to: updated.promised_day },
-        } as unknown as Json,
-      });
       const visitDate = updated.starts_at.slice(0, 10);
       return {
         status: 'ok',

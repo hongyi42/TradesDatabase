@@ -219,11 +219,15 @@ existing server tests, which keep passing):
   `updateJobIdentity`; returns old→new per changed field.
 
 ### Automated verification
-- [ ] gates pass; existing `set_promise`/`update_job` MCP tests still green post-extraction
-- [ ] new boardApi tests: tier gates (403), roster filtering (offboarded excluded, seat-exempt
+- [x] gates pass; existing `set_promise`/`update_job` MCP tests still green post-extraction
+      (618/618, 2026-07-23)
+- [x] new boardApi tests: tier gates (403), roster filtering (offboarded excluded, seat-exempt
       included), book preview/commit incl. promise staging + jobId-only rule, promise old→new +
       ledger event, job edit old→new, notes folded/capped/truncated + hostile-tenant re-check,
       detail jobId withheld cross-tenant
+- Phase-2 note: adversarial review round 1 — no blocking findings; observation carried to
+  Phase 3: never send `?preview=1` to `/board/api/promise` or `/board/api/job` (one-shot
+  endpoints ignore it and commit).
 
 ---
 

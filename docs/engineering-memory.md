@@ -250,6 +250,15 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
 - Small but sharp: non-interactive ssh lacks `nemoclaw` on PATH
   (`export PATH=$HOME/.local/bin:$PATH`); `nemoclaw upload` writes 640 but the gateway needs
   660 (`doctor --fix`); `nemoclaw exec` eats stdin in heredocs (`</dev/null`).
+- **CLI chat probes run on the EMBEDDED agent, not the gateway** (observed 2026-07-23,
+  4a.5 detach probe): `nemoclaw <s> agent --agent main --session-id <fresh> -m "…"` gets
+  "gateway closed (1008): pairing required" (the box CLI device isn't gateway-paired) and
+  falls back to an embedded agent reading the same `openclaw.json` — so a CLI probe DOES
+  exercise deployed Render code + doorman + badge + real tool choice, but NOT the gateway's
+  cached tools/list, and it TRUNCATES AGENTS.md at 12,000 chars (`[agent/embedded] …
+  truncating`) — never judge AGENTS.md-dependent behavior (board-link lines, batching,
+  contract parentheticals) from a CLI probe; the Telegram path is the authority. Use a
+  fresh `--session-id` so probes never pollute the user-facing chat context.
 
 **Working on the spine / Composio:**
 - **When inbound email "stops working", check the webhook subscription FIRST** — it's

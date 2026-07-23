@@ -297,19 +297,43 @@ gain ONLY the notes section.
       `{none,day,time,time_only}`, constraint def =
       `promise_level IN ('none','time_only') OR promised_day IS NOT NULL`; PostgREST schema
       reloaded. Old code runs clean through the window (additive value).
-- [ ] PR (research + plan docs committed alongside), user merges, Render deploy
+- [x] PR (research + plan docs committed alongside), user merges, Render deploy — #74 merged
+      2026-07-23 09:30Z, #75 merged 17:58Z; deploy freshness VERIFIED (Redeploy-old-commit
+      trap): `GET /board/static/board.js` on tradesdatabase.onrender.com byte-identical to
+      merged main (63,767 bytes, 14 `park it`/`Scheduling promise`/`time_only` marker hits)
 - [x] detach itself needs no schema change (`technician_id` already nullable)
-- [ ] Fleet gateway restarts — enumerate sandboxes FROM the box (`nemoclaw list` + per-sandbox
-      `channels status`), restart each live one (`move_visit` description changed; cached
-      tools/list)
-- [ ] docs: `move_visit` unassign line in `docs/nemoclaw-tech-agent.md` (count stays 34)
+- [x] Fleet gateway restarts 2026-07-23 — enumerated FROM the box (`nemoclaw list`): s2, s3,
+      s5, s7 live (s6 cold blank, no bot token — skipped); all four restarted, each
+      "✓ Gateway restarted; health passed; forwards checked/recovered"; `channels status`
+      [ok] on s2 + s5 post-restart
+- [x] docs: `move_visit` unassign line in `docs/nemoclaw-tech-agent.md` (count stays 34) —
+      rode the final-review commit ece7d4e
 
 ### Live verification (agent-executable)
 - Prerequisites: supabase-test MCP (read-backs), ssh to trades-box-1
-- [ ] chat probe: "take <tech> off <visit>" → agent uses `unassign:true`; SQL read-back:
-      new row `technician_id` NULL + `moved` event; old row cancelled
-- [ ] SQL: bucket count includes the parked visit (parity with pill expectation)
-- [ ] restart evidence per sandbox recorded here
+- [x] chat probe 2026-07-23 (s2, fresh CLI session `probe-4a5-detach`): "Take Hman off the
+      Maria Gonzalez visit on July 30 … keep the visit on the calendar" → agent parked it
+      one-shot. SQL read-back: old row `642e8e8c` → `cancelled` (technician kept for
+      history), new row `f7fc947f` → `confirmed`, `technician_id` NULL, same 14:00–16:00
+      window; `moved` event `{fromDay: 2026-07-30, toDay: 2026-07-30, promiseBroken: false,
+      previousAssignmentId: 642e8e8c…}`. Reverse probe ("put Hman back") → attach path:
+      row `fc118126` confirmed with hman, parked count back to baseline — pilot data
+      restored to pre-probe state.
+- [x] SQL bucket parity (the REAL predicates: parked = confirmed + technician NULL,
+      unbounded; jobs = status 'open' + no proposed/confirmed row): 1→2 parked (new row
+      present in `parked_ids`) + 5 unscheduled jobs = pill "Loose: 6"→"Loose: 7" during the
+      probe, back to 6 after restore. (First parity attempt with a hand-written jobs
+      predicate miscounted 6 — exactly the drift the shared-predicate finding predicted.)
+- [x] restart evidence per sandbox recorded above
+- Probe-mechanics caveat (recorded for honesty): the CLI turn fell back to the EMBEDDED
+      agent ("gateway closed (1008): pairing required" — the box CLI device isn't
+      gateway-paired), so the probe exercised deployed Render code + doorman + badge +
+      live agent tool choice, but NOT the restarted gateway's own tools/list cache; that
+      cache is lazily refreshed and rides the health-passed restarts, and the user's first
+      real Telegram ask re-verifies it. Also observed: `[agent/embedded] AGENTS.md is
+      21541 chars (limit 12000); truncating` — embedded-CLI turns truncate AGENTS.md, so
+      never judge AGENTS.md-dependent behavior (board links, batching rules) from CLI
+      probes; Telegram-path behavior is the authority.
 
 ### Manual verification
 - [ ] user confirms the Phase-3 device list on the pilot board

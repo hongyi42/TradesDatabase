@@ -292,11 +292,13 @@ gain ONLY the notes section.
 ## Phase 4: rollout
 
 ### Changes / steps
-- [ ] **Migration FIRST, then deploy** (PR #58 lesson; the enum addition is additive so old
-      code runs clean through the window): apply `<ts>_promise_time_only.sql` to the pilot,
-      verify ledger + a `select unnest(enum_range(null::promise_level))` read-back
+- [x] **Migration FIRST, then deploy** — applied to the pilot 2026-07-23 BEFORE the deploy
+      (correct order this time): both files via MCP apply_migration; read-backs: enum =
+      `{none,day,time,time_only}`, constraint def =
+      `promise_level IN ('none','time_only') OR promised_day IS NOT NULL`; PostgREST schema
+      reloaded. Old code runs clean through the window (additive value).
 - [ ] PR (research + plan docs committed alongside), user merges, Render deploy
-- [ ] detach itself needs no schema change (`technician_id` already nullable)
+- [x] detach itself needs no schema change (`technician_id` already nullable)
 - [ ] Fleet gateway restarts — enumerate sandboxes FROM the box (`nemoclaw list` + per-sandbox
       `channels status`), restart each live one (`move_visit` description changed; cached
       tools/list)

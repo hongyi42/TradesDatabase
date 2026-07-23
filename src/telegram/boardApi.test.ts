@@ -25,6 +25,24 @@ let base: string;
 let tenantId: string;
 let prevToken: string | undefined;
 
+// Relative dates for technician-tier fixtures/reads: the visibility horizon
+// (today + 28 default) clamps technician reads, so fixed dates rot the day
+// they cross it. today+5 stays comfortably inside; today+40 is safely beyond.
+const relDate = (days: number): string =>
+  new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+const REL_T1_DATE = relDate(5);
+// EVERY date fixture is a DISTINCT relative offset (review gap: a relative
+// fixture drifting across a fixed date breaks bookings/counts deterministically
+// weeks later — distinct offsets can never collide with each other).
+const DAY_A = relDate(3); // the main team day (t1 / t2 / unassigned)
+const DAY_B = relDate(4); // the manager's own visit (Mine tab subject)
+const DAY_MOVE = relDate(6); // the move test's target day
+const DAY_PROM = relDate(7); // promised-visit fixture
+const DAY_PROM2 = relDate(8); // its preview move target
+const DAY_X1 = relDate(20); // cross-tenant hostile rows: manager reads —
+const DAY_X2 = relDate(21); // the horizon never clamps managers, so far
+const DAY_X3 = relDate(22); // offsets are safe
+
 function signSlip(userId: number, token = TOKEN): string {
   const params = new URLSearchParams({
     auth_date: String(Math.floor(Date.now() / 1000)),
@@ -87,7 +105,7 @@ beforeAll(async () => {
     state: 'OR',
     postalCode: '97477',
   });
-  const bookArgs = { tenantId, customerId: casa.id, actorRef: 'board-mgr', date: '2026-09-01' };
+  const bookArgs = { tenantId, customerId: casa.id, actorRef: 'board-mgr', date: DAY_A };
   await bookVisit({ ...bookArgs, technicianRef: 'board-t1', title: 'AC tune-up', startTime: '09:00', endTime: '11:00' });
   await bookVisit({ ...bookArgs, technicianRef: 'board-t2', title: 'Filter swap', startTime: '10:00', endTime: '12:00' });
   await bookVisit({ ...bookArgs, title: 'Duct inspection', startTime: '13:00', endTime: '15:00' });
@@ -96,11 +114,40 @@ beforeAll(async () => {
   // This is the "My schedule" tab's subject.
   await bookVisit({
     ...bookArgs,
-    date: '2026-09-02',
+    date: DAY_B,
     technicianRef: 'board-mgr',
     title: 'Site walkthrough',
     startTime: '08:00',
     endTime: '09:00',
+  });
+  // A t1 visit at a RELATIVE near date: the technician-tier day-read tests
+  // target this one — technician reads clamp at the visibility horizon
+  // (Plan 4a), so their fixtures must never sit on fixed far-future dates.
+  await bookVisit({
+    ...bookArgs,
+    date: REL_T1_DATE,
+    technicianRef: 'board-t1',
+    title: 'Near relative visit',
+    startTime: '09:00',
+    endTime: '11:00',
+  });
+  // Companions on the SAME relative day so the technician self-filter tests
+  // stay discriminating (review gap: alone, "own stops only" would pass even
+  // with the filter broken): someone else's visit + an unassigned one.
+  await bookVisit({
+    ...bookArgs,
+    date: REL_T1_DATE,
+    technicianRef: 'board-t2',
+    title: 'Near rival visit',
+    startTime: '12:00',
+    endTime: '13:00',
+  });
+  await bookVisit({
+    ...bookArgs,
+    date: REL_T1_DATE,
+    title: 'Near unassigned visit',
+    startTime: '14:00',
+    endTime: '15:00',
   });
 
   server = createHttpServer();
@@ -177,16 +224,16 @@ describe('board static shell', () => {
 
 describe('GET /board/api/day', () => {
   test('no/garbled/misfit auth → bare 401', async () => {
-    const bare = await day('?from=2026-09-01');
+    const bare = await day(`?from=${DAY_A}`);
     expect(bare.status).toBe(401);
     expect(await bare.text()).toBe('');
-    expect((await day('?from=2026-09-01', { Authorization: 'tma not-a-slip' })).status).toBe(401);
+    expect((await day(`?from=${DAY_A}`, { Authorization: 'tma not-a-slip' })).status).toBe(401);
     // Valid slip for an id nobody on any roster holds → 401 too.
-    expect((await day('?from=2026-09-01', tma(900000777))).status).toBe(401);
+    expect((await day(`?from=${DAY_A}`, tma(900000777))).status).toBe(401);
   });
 
   test('manager slip → whole team incl. the unassigned stop (null name/ref, unassigned:true)', async () => {
-    const resp = await day('?from=2026-09-01', tma(900000001));
+    const resp = await day(`?from=${DAY_A}`, tma(900000001));
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as DayResponse;
     expect(body.tier).toBe('manager');
@@ -214,7 +261,7 @@ describe('GET /board/api/day', () => {
   test('BoardStop shape is complete and stable (guards embed field drift)', async () => {
     // The day read is one PostgREST embed; a projection typo would silently
     // drop a field. Pin the whole key set AND every value for one known stop.
-    const resp = await day('?from=2026-09-01', tma(900000001));
+    const resp = await day(`?from=${DAY_A}`, tma(900000001));
     const body = (await resp.json()) as DayResponse;
     const stop = body.days[0].stops.find((s) => s.start.slice(11, 16) === '09:00');
     if (!stop) throw new Error('expected a 09:00 stop');
@@ -247,11 +294,14 @@ describe('GET /board/api/day', () => {
       status: 'confirmed',
     });
     expect(typeof stop.jobId).toBe('string');
-    expect(stop.end.slice(0, 16)).toBe('2026-09-01T11:00');
+    expect(stop.end.slice(0, 16)).toBe(`${DAY_A}T11:00`);
   });
 
   test('technician slip → own stops only; the unassigned stop is absent by construction', async () => {
-    const resp = await day('?from=2026-09-01', tma(900000002));
+    // Relative near date (Plan 4a): technician reads clamp at the horizon, so
+    // this test targets the REL fixture day (which also holds a rival's visit
+    // and an unassigned one — the count of 1 is a real discrimination).
+    const resp = await day(`?from=${REL_T1_DATE}`, tma(900000002));
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as DayResponse;
     expect(body.tier).toBe('technician');
@@ -263,7 +313,7 @@ describe('GET /board/api/day', () => {
   });
 
   test("manager view=mine → only the manager's own visits; team default unchanged", async () => {
-    const mine = await day('?from=2026-09-01&to=2026-09-02&view=mine', tma(900000001));
+    const mine = await day(`?from=${DAY_A}&to=${DAY_B}&view=mine`, tma(900000001));
     expect(mine.status).toBe(200);
     const mineBody = (await mine.json()) as DayResponse;
     expect(mineBody.view).toBe('mine');
@@ -274,11 +324,11 @@ describe('GET /board/api/day', () => {
       unassigned: false,
       customer: 'Board Casa',
     });
-    expect(mineStops[0].start.slice(0, 16)).toBe('2026-09-02T08:00');
+    expect(mineStops[0].start.slice(0, 16)).toBe(`${DAY_B}T08:00`);
 
     // Same window WITHOUT the param: the full team view — t1, t2, the
     // unassigned stop AND the manager's own visit, all present.
-    const team = await day('?from=2026-09-01&to=2026-09-02', tma(900000001));
+    const team = await day(`?from=${DAY_A}&to=${DAY_B}`, tma(900000001));
     expect(team.status).toBe(200);
     const teamBody = (await team.json()) as DayResponse;
     expect(teamBody.view).toBe('team');
@@ -287,7 +337,9 @@ describe('GET /board/api/day', () => {
 
   test('technician view param is inert: mine is a no-op, team/garbage never widen the read', async () => {
     for (const probe of ['view=mine', 'view=team', 'view=%00junk']) {
-      const resp = await day(`?from=2026-09-01&to=2026-09-02&${probe}`, tma(900000002));
+      // Single relative day holding t1's visit + a rival's + an unassigned
+      // one: a widened read would see 3 stops, so 1 is a real discrimination.
+      const resp = await day(`?from=${REL_T1_DATE}&to=${REL_T1_DATE}&${probe}`, tma(900000002));
       expect(resp.status).toBe(200);
       const body = (await resp.json()) as DayResponse;
       expect(body.view).toBe('mine');
@@ -297,10 +349,51 @@ describe('GET /board/api/day', () => {
     }
   });
 
+  test('technician visibility horizon: beyond → empty + note; straddling → trimmed; managers never clamp', async () => {
+    // Fully beyond today+28 (default horizon): 200, no days, self-explaining.
+    const beyond = await day(`?from=${relDate(40)}&to=${relDate(41)}`, tma(900000002));
+    expect(beyond.status).toBe(200);
+    const beyondBody = (await beyond.json()) as DayResponse & {
+      horizonNote?: string;
+      horizonEnd?: string;
+    };
+    expect(beyondBody.days).toEqual([]);
+    expect(beyondBody.horizonNote).toContain("isn't published yet");
+    // Structured companion: the client branches on from > horizonEnd, never
+    // by parsing the sentence.
+    expect(beyondBody.horizonEnd && beyondBody.from > beyondBody.horizonEnd).toBe(true);
+
+    // Straddling: trimmed `to` + note. Firm-local today can lag the
+    // UTC-derived relDate by a day — pin bounds, not the exact trim date.
+    const straddle = await day(`?from=${relDate(25)}&to=${relDate(31)}`, tma(900000002));
+    expect(straddle.status).toBe(200);
+    const straddleBody = (await straddle.json()) as DayResponse & {
+      horizonNote?: string;
+      horizonEnd?: string;
+    };
+    expect(straddleBody.horizonNote).toContain("isn't published yet");
+    expect(straddleBody.to < relDate(31)).toBe(true);
+    expect(straddleBody.to >= relDate(27)).toBe(true);
+    // A trimmed window's `to` IS the horizon end — deterministic even with
+    // the firm-local-vs-UTC one-day skew.
+    expect(straddleBody.to).toBe(straddleBody.horizonEnd);
+
+    // Managers never clamp — team view AND the Mine tab (the clamp keys on
+    // TIER, never the self-filter; a mine-view regression would silently
+    // blind the manager's own far weeks).
+    for (const probe of ['', '&view=mine']) {
+      const mgr = await day(`?from=${relDate(40)}&to=${relDate(41)}${probe}`, tma(900000001));
+      expect(mgr.status).toBe(200);
+      const mgrBody = (await mgr.json()) as DayResponse & { horizonNote?: string };
+      expect(mgrBody.horizonNote).toBeUndefined();
+      expect(mgrBody.to).toBe(relDate(41));
+    }
+  });
+
   test('same validation contract as get_team_schedule: bad date / inverted / >14 days → 400', async () => {
     expect((await day('?from=september', tma(900000001))).status).toBe(400);
-    expect((await day('?from=2026-09-02&to=2026-09-01', tma(900000001))).status).toBe(400);
-    const capped = await day('?from=2026-09-01&to=2026-10-01', tma(900000001));
+    expect((await day(`?from=${DAY_B}&to=${DAY_A}`, tma(900000001))).status).toBe(400);
+    const capped = await day(`?from=${DAY_A}&to=${relDate(33)}`, tma(900000001));
     expect(capped.status).toBe(400);
     expect(((await capped.json()) as { error: string }).error).toContain('14 days');
   });
@@ -316,7 +409,7 @@ describe('GET /board/api/day', () => {
       displayName: 'Elsewhere Manager',
     });
     await updateTechnician(dupe.id, { telegram_user_id: '900000001', state: 'active' });
-    const resp = await day('?from=2026-09-01', tma(900000001));
+    const resp = await day(`?from=${DAY_A}`, tma(900000001));
     expect(resp.status).toBe(409);
     expect(((await resp.json()) as { error: string }).error).toBe('account on multiple firms');
     // Restore: offboard the twin so later tests see one firm again.
@@ -399,6 +492,136 @@ describe('GET /board/api/visit (tap-into-a-visit detail)', () => {
   });
 });
 
+describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
+  // Relative dates only (top-level relDate): the bucket anchors at firm-local
+  // today, so fixed fixtures rot (and the suite's DAY_A unassigned visit is
+  // consumed by the drag-to-assign test below — order-coupled; never build on
+  // it).
+  const bucket = (headers: Record<string, string> = {}) =>
+    fetch(`${base}/board/api/bucket`, { headers });
+
+  let parkedDate: string;
+  let probeTenantId: string;
+  let hostileVisitId: string;
+  let mismatchedJobId2: string;
+
+  beforeAll(async () => {
+    parkedDate = relDate(9);
+    const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
+      .rows[0].id as string;
+    // A real parked visit (unassigned, future) via the real verb.
+    await bookVisit({
+      tenantId,
+      customerId: casaId,
+      title: 'Bucket parked visit',
+      date: parkedDate,
+      startTime: '09:00',
+      endTime: '11:00',
+      actorRef: 'board-mgr',
+    });
+    // An unscheduled open job — no visit at all.
+    await createJob({ tenantId, customerId: casaId, title: 'Bucket bare job', priority: 'urgent' });
+    // A parked visit whose day already PASSED — missed work must surface
+    // flagged overdue, never vanish (final-review finding: it used to drop
+    // out of the tray while its job stayed hidden by the live-row anti-join).
+    await bookVisit({
+      tenantId,
+      customerId: casaId,
+      title: 'Bucket overdue visit',
+      date: relDate(-8),
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'board-mgr',
+    });
+
+    // Hostile shapes for the withholding assertions (the cross-tenant suite's
+    // fixtures are its own — this suite cleans up after itself).
+    const probe = await createTenant('Bucket Probe Tenant', {
+      managerSeats: 1,
+      technicianSeats: 1,
+    });
+    probeTenantId = probe.id;
+    const theirCustomer = await createCustomer({
+      tenantId: probeTenantId,
+      name: 'SECRET Bucket Customer',
+    });
+    const theirJob = await createJob({
+      tenantId: probeTenantId,
+      customerId: theirCustomer.id,
+      title: 'SECRET Bucket Job',
+    });
+    // Our tenant's parked visit pointing at THEIR job (raw SQL — the verbs
+    // would never mint it).
+    hostileVisitId = (
+      await pg.query<{ id: string }>(
+        `insert into assignments (tenant_id, job_id, technician_id, starts_at, ends_at, status)
+         values ($1, $2, null, $3, $4, 'confirmed') returning id`,
+        [tenantId, theirJob.id, `${relDate(11)}T09:00:00Z`, `${relDate(11)}T10:00:00Z`],
+      )
+    ).rows[0].id;
+    // Our open job whose customer is THEIRS (createJob validates no
+    // relationship — no raw SQL needed).
+    mismatchedJobId2 = (
+      await createJob({ tenantId, customerId: theirCustomer.id, title: 'Bucket foreign customer' })
+    ).id;
+  });
+
+  afterAll(async () => {
+    await pg.query('delete from assignments where id = $1', [hostileVisitId]);
+    await pg.query('delete from jobs where id = $1', [mismatchedJobId2]);
+    await pg.query('delete from jobs where tenant_id = $1', [probeTenantId]);
+    await pg.query('delete from customers where tenant_id = $1', [probeTenantId]);
+    await pg.query('delete from tenants where id = $1', [probeTenantId]);
+  });
+
+  test('no slip → 401; technician slip → 403 managers only', async () => {
+    expect((await bucket()).status).toBe(401);
+    const tech = await bucket(tma(900000002));
+    expect(tech.status).toBe(403);
+    expect(((await tech.json()) as { error: string }).error).toBe('managers only');
+  });
+
+  test('manager: both sections, HH:MM/weekday shapes, names embedded', async () => {
+    const resp = await bucket(tma(900000001));
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as {
+      parkedVisits: Array<Record<string, unknown>>;
+      unscheduledJobs: Array<Record<string, unknown>>;
+    };
+    const parked = body.parkedVisits.find((v) => v.jobTitle === 'Bucket parked visit');
+    expect(parked).toMatchObject({
+      date: parkedDate,
+      startTime: '09:00',
+      endTime: '11:00',
+      customer: 'Board Casa',
+    });
+    expect(parked?.weekday).toMatch(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/);
+    expect(typeof parked?.assignmentId).toBe('string');
+    expect(parked?.overdue).toBe(false);
+    // The past parked visit surfaces, flagged — it never silently vanishes.
+    const overdue = body.parkedVisits.find((v) => v.jobTitle === 'Bucket overdue visit');
+    expect(overdue).toMatchObject({ date: relDate(-8), overdue: true });
+    const bare = body.unscheduledJobs.find((j) => j.title === 'Bucket bare job');
+    expect(bare).toMatchObject({ customer: 'Board Casa', priority: 'urgent' });
+    // Jobs WITH a live visit never appear in the jobs half.
+    expect(body.unscheduledJobs.some((j) => j.title === 'Bucket parked visit')).toBe(false);
+  });
+
+  test('cross-tenant names are withheld, rows kept', async () => {
+    const resp = await bucket(tma(900000001));
+    const raw = await resp.text();
+    expect(raw).not.toContain('SECRET');
+    const body = JSON.parse(raw) as {
+      parkedVisits: Array<Record<string, unknown>>;
+      unscheduledJobs: Array<Record<string, unknown>>;
+    };
+    const hostile = body.parkedVisits.find((v) => v.assignmentId === hostileVisitId);
+    expect(hostile).toMatchObject({ customer: null, jobTitle: null });
+    const mismatched = body.unscheduledJobs.find((j) => j.jobId === mismatchedJobId2);
+    expect(mismatched).toMatchObject({ title: 'Bucket foreign customer', customer: null });
+  });
+});
+
 describe('cross-tenant nested rows never leak through the embedded read', () => {
   // Both board reads now fetch assignment + job + customer + technician in ONE
   // PostgREST embed. The foreign keys are ID-ONLY — not one of them carries
@@ -441,7 +664,7 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
     const inserted = await pg.query<{ id: string }>(
       `insert into assignments
          (tenant_id, job_id, technician_id, starts_at, ends_at, status)
-       values ($1, $2, null, '2026-09-15T09:00:00Z', '2026-09-15T10:00:00Z', 'confirmed')
+       values ($1, $2, null, '${DAY_X1}T09:00:00Z', '${DAY_X1}T10:00:00Z', 'confirmed')
        returning id`,
       [tenantId, theirJob.id],
     );
@@ -474,7 +697,7 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
     const insertedTech = await pg.query<{ id: string }>(
       `insert into assignments
          (tenant_id, job_id, technician_id, starts_at, ends_at, status)
-       values ($1, $2, $3, '2026-09-16T09:00:00Z', '2026-09-16T10:00:00Z', 'confirmed')
+       values ($1, $2, $3, '${DAY_X2}T09:00:00Z', '${DAY_X2}T10:00:00Z', 'confirmed')
        returning id`,
       [tenantId, ourJob.id, theirTech.id],
     );
@@ -494,7 +717,7 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
     const insertedCust = await pg.query<{ id: string }>(
       `insert into assignments
          (tenant_id, job_id, technician_id, starts_at, ends_at, status)
-       values ($1, $2, null, '2026-09-17T09:00:00Z', '2026-09-17T10:00:00Z', 'confirmed')
+       values ($1, $2, null, '${DAY_X3}T09:00:00Z', '${DAY_X3}T10:00:00Z', 'confirmed')
        returning id`,
       [tenantId, mismatchedJob.id],
     );
@@ -530,7 +753,7 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
       unassigned: false,
     });
 
-    const grid = await day('?from=2026-09-16', tma(900000001));
+    const grid = await day(`?from=${DAY_X2}`, tma(900000001));
     expect(grid.status).toBe(200);
     const gridRaw = await grid.text();
     expect(gridRaw).not.toContain('SECRET');
@@ -548,7 +771,7 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
   test("our own job pointing at another firm's customer withholds that customer", async () => {
     // The job passes the tenant check (it IS ours) — only a check on the
     // CUSTOMER's own tenant can catch this one.
-    const grid = await day('?from=2026-09-17', tma(900000001));
+    const grid = await day(`?from=${DAY_X3}`, tma(900000001));
     expect(grid.status).toBe(200);
     const raw = await grid.text();
     expect(raw).not.toContain('SECRET');
@@ -579,7 +802,7 @@ describe('cross-tenant nested rows never leak through the embedded read', () => 
   });
 
   test('day view shows the stop but withholds the other firm\'s customer', async () => {
-    const resp = await day('?from=2026-09-15', tma(900000001));
+    const resp = await day(`?from=${DAY_X1}`, tma(900000001));
     expect(resp.status).toBe(200);
     const raw = await resp.text();
     expect(raw).not.toContain('SECRET');
@@ -624,7 +847,7 @@ describe('board write path (Phase 3)', () => {
     // Present-but-empty ref = MCP-layer parity: an error, never "keep current".
     const emptyRef = await post(
       '/board/api/move',
-      { assignmentId: 'x', date: '2026-09-03', startTime: '09:00', technicianRef: '', reason: 'r' },
+      { assignmentId: 'x', date: DAY_MOVE, startTime: '09:00', technicianRef: '', reason: 'r' },
       900000001,
     );
     expect(emptyRef.status).toBe(400);
@@ -638,10 +861,12 @@ describe('board write path (Phase 3)', () => {
   });
 
   test('preview → requiresConfirmation false (unpromised), NO write; commit → moved row + moved event', async () => {
-    const [t1Row] = await assignmentRows("t.ref = 'board-t1' and a.status = 'confirmed'");
+    const [t1Row] = await assignmentRows(
+      `t.ref = 'board-t1' and a.status = 'confirmed' and a.starts_at::date = '${DAY_A}'`,
+    );
     const body = {
       assignmentId: t1Row.id,
-      date: '2026-09-03',
+      date: DAY_MOVE,
       startTime: '09:00',
       endTime: '11:00',
       reason: 'shuffle for parts pickup',
@@ -649,11 +874,11 @@ describe('board write path (Phase 3)', () => {
     const preview = await post('/board/api/move', body, 900000001, true);
     expect(preview.status).toBe(200);
     const p = (await preview.json()) as { requiresConfirmation: boolean; promiseBroken: boolean; toDay: string };
-    expect(p).toMatchObject({ requiresConfirmation: false, promiseBroken: false, toDay: '2026-09-03' });
-    // Preview wrote NOTHING: the row is untouched, still on 2026-09-01.
+    expect(p).toMatchObject({ requiresConfirmation: false, promiseBroken: false, toDay: DAY_MOVE });
+    // Preview wrote NOTHING: the row is untouched, still on DAY_A.
     const [after] = await assignmentRows('a.id = $1', [t1Row.id]);
     expect(after.status).toBe('confirmed');
-    expect(after.starts_at.slice(0, 10)).toBe('2026-09-01');
+    expect(after.starts_at.slice(0, 10)).toBe(DAY_A);
 
     const commit = await post('/board/api/move', body, 900000001);
     expect(commit.status).toBe(200);
@@ -662,9 +887,13 @@ describe('board write path (Phase 3)', () => {
     // day, and a 'moved' schedule_events row hangs off the NEW assignment.
     const [old] = await assignmentRows('a.id = $1', [t1Row.id]);
     expect(old.status).toBe('cancelled');
-    const moved = await assignmentRows("t.ref = 'board-t1' and a.status = 'confirmed'");
+    // Pinned to the TARGET day: t1 also holds the suite's relative-date
+    // fixture, so a ref-wide count would drift with the calendar.
+    const moved = await assignmentRows(
+      `t.ref = 'board-t1' and a.status = 'confirmed' and a.starts_at::date = '${DAY_MOVE}'`,
+    );
     expect(moved).toHaveLength(1);
-    expect(moved[0].starts_at.slice(0, 10)).toBe('2026-09-03');
+    expect(moved[0].starts_at.slice(0, 10)).toBe(DAY_MOVE);
     const events = await pg.query(
       "select kind from schedule_events where assignment_id = $1 and kind = 'moved'",
       [moved[0].id],
@@ -678,7 +907,7 @@ describe('board write path (Phase 3)', () => {
       technicianRef: 'board-t2',
       customerId: (await pg.query("select id from customers where name = 'Board Casa'")).rows[0].id,
       title: 'Promised furnace check',
-      date: '2026-09-05',
+      date: DAY_PROM,
       startTime: '09:00',
       endTime: '10:00',
       promiseLevel: 'day',
@@ -686,7 +915,7 @@ describe('board write path (Phase 3)', () => {
     });
     const preview = await post(
       '/board/api/move',
-      { assignmentId: assignment.id, date: '2026-09-06', startTime: '09:00', endTime: '10:00', reason: 'r' },
+      { assignmentId: assignment.id, date: DAY_PROM2, startTime: '09:00', endTime: '10:00', reason: 'r' },
       900000001,
       true,
     );
@@ -716,13 +945,13 @@ describe('board write path (Phase 3)', () => {
 
   test('drag-to-assign: commit with technicianRef attaches the person to an unassigned visit', async () => {
     const [unassigned] = await assignmentRows(
-      "a.technician_id is null and a.status = 'confirmed' and a.starts_at = '2026-09-01T13:00:00Z'",
+      `a.technician_id is null and a.status = 'confirmed' and a.starts_at = '${DAY_A}T13:00:00Z'`,
     );
     const resp = await post(
       '/board/api/move',
       {
         assignmentId: unassigned.id,
-        date: '2026-09-01',
+        date: DAY_A,
         startTime: '13:00',
         endTime: '15:00',
         technicianRef: 'board-t1',
@@ -732,7 +961,7 @@ describe('board write path (Phase 3)', () => {
     );
     expect(resp.status).toBe(200);
     const rows = await assignmentRows(
-      "a.status = 'confirmed' and a.starts_at = '2026-09-01T13:00:00Z'",
+      `a.status = 'confirmed' and a.starts_at = '${DAY_A}T13:00:00Z'`,
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].ref).toBe('board-t1'); // person attached
@@ -746,7 +975,7 @@ describe('board write path (Phase 3)', () => {
       tenantId,
       customerId: (await pg.query("select id from customers where name = 'Board Casa'")).rows[0].id,
       title: 'Clash probe',
-      date: '2026-09-01',
+      date: DAY_A,
       startTime: '10:30',
       endTime: '11:30',
       actorRef: 'board-mgr',
@@ -755,7 +984,7 @@ describe('board write path (Phase 3)', () => {
       '/board/api/move',
       {
         assignmentId: assignment.id,
-        date: '2026-09-01',
+        date: DAY_A,
         startTime: '10:30',
         endTime: '11:30',
         technicianRef: 'board-t2',
@@ -770,7 +999,10 @@ describe('board write path (Phase 3)', () => {
     const [row] = await assignmentRows('a.id = $1', [assignment.id]);
     expect(row.status).toBe('confirmed');
     expect(row.technician_id).toBeNull();
-    const t2 = await assignmentRows("t.ref = 'board-t2' and a.status = 'confirmed'");
+    // Pinned to DAY_A: t2 also holds the REL companion fixture.
+    const t2 = await assignmentRows(
+      `t.ref = 'board-t2' and a.status = 'confirmed' and a.starts_at::date = '${DAY_A}'`,
+    );
     expect(t2).toHaveLength(1);
   });
 });

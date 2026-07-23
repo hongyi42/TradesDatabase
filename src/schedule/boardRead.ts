@@ -2,10 +2,14 @@ import {
   getAssignmentWithRefsForTenant,
   getTenant,
   listAssignmentsWithRefsForTenant,
+  listUnassignedAssignmentsWithRefs,
+  listUnscheduledOpenJobsWithCustomer,
   type Assignment,
 } from '../db/index.js';
 import { formatAddress } from '../routes/deepLink.js';
 import { localDateISO } from './availability.js';
+import { weekdayLabel } from './fit.js';
+import { clampToTechnicianHorizon, horizonDaysFor } from './policy.js';
 
 // The dispatch board's day view — originally a deliberate mirror of
 // get_team_schedule's body (src/mcp/server.ts, post-Feature-A shape) for the
@@ -49,6 +53,13 @@ export interface BoardDays {
   from: string;
   to: string;
   days: { date: string; stops: BoardStop[] }[];
+  // Present when a technician-tier read was clamped at the visibility horizon
+  // (Plan 4a): the payload explains the missing days itself. horizonEnd is
+  // the STRUCTURED companion (the last visible day) — clients branch on data,
+  // never by parsing the sentence (final-review finding: the client's
+  // days-empty proxy conflated "fully beyond" with "trimmed but empty").
+  horizonNote?: string;
+  horizonEnd?: string;
 }
 
 export interface ReadBoardDaysInput {
@@ -58,6 +69,10 @@ export interface ReadBoardDaysInput {
   // Set for the technician self-view: only that person's stops. null/omitted =
   // manager view (whole team, unassigned included).
   viewerTechnicianId?: string | null;
+  // Technician-tier reads clamp at today + tenants.technician_horizon_days.
+  // Keyed on TIER by the caller, never on the self-filter — the manager's
+  // "Mine" tab uses viewerTechnicianId too and must keep far weeks.
+  clampToHorizon?: boolean;
 }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -65,12 +80,17 @@ const DATE = /^\d{4}-\d{2}-\d{2}$/;
 export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDays> {
   const { tenantId } = input;
   let from = input.from;
+  // The tenant row (timezone + horizon) costs an uncached round-trip — fetch
+  // it only when actually needed: the from-default (once per board session)
+  // or the clamp (technician tier). Managers passing `from` keep the
+  // PR #70-era zero-extra-read button path.
+  const tenant = !from || input.clampToHorizon ? await getTenant(tenantId) : null;
   if (!from) {
-    const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+    const tz = tenant?.timezone ?? 'UTC';
     from = localDateISO(new Date().toISOString(), tz);
   }
   if (!DATE.test(from)) throw new InvalidRangeError('from must be YYYY-MM-DD');
-  const toDay = input.to ?? from;
+  let toDay = input.to ?? from;
   if (!DATE.test(toDay) || from > toDay) {
     throw new InvalidRangeError('from/to must be YYYY-MM-DD with from <= to');
   }
@@ -78,6 +98,23 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
     (Date.parse(`${toDay}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
   if (!Number.isFinite(spanDays)) throw new InvalidRangeError('from/to is not a real calendar date');
   if (spanDays > 14) throw new InvalidRangeError('range is capped at 14 days');
+
+  // Horizon clamp AFTER validation (a garbage range is still a 400, never a
+  // quiet clamp). Trim + note, not an error: the payload explains itself.
+  // The policy itself lives in ONE place (schedule/policy.ts).
+  let horizonNote: string | undefined;
+  let horizonEnd: string | undefined;
+  if (input.clampToHorizon) {
+    const tz = tenant?.timezone ?? 'UTC';
+    const today = localDateISO(new Date().toISOString(), tz);
+    const clamp = clampToTechnicianHorizon(today, from, toDay, horizonDaysFor(tenant));
+    horizonEnd = clamp.horizonEnd;
+    if (clamp.beyond) {
+      return { from, to: toDay, days: [], horizonNote: clamp.horizonNote, horizonEnd };
+    }
+    toDay = clamp.to;
+    horizonNote = clamp.horizonNote;
+  }
 
   // ONE embedded read for the whole window (was: assignments + jobs-with-
   // customer + the full roster = three serial round-trips per board button).
@@ -145,7 +182,103 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
   const days = [...byDay.entries()]
     .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(([date, stops]) => ({ date, stops }));
-  return { from, to: toDay, days };
+  return {
+    from,
+    to: toDay,
+    days,
+    ...(horizonNote ? { horizonNote } : {}),
+    ...(horizonEnd ? { horizonEnd } : {}),
+  };
+}
+
+// ---- The loose bucket (Plan 4a): what the freeze will consume, made visible ----
+//
+// Two halves: parked visits (confirmed, nobody attached, from today onward —
+// UNBOUNDED, because the point is catching visits parked beyond any board
+// window) and unscheduled open jobs (no visit at all — until now surfaced
+// NOWHERE). One shape for both consumers (board tray + agent parity): dates
+// ship as date + server-computed weekday + HH:MM slices, never raw
+// timestamptz (the naive-local convention makes the wire's '+00:00' a lie —
+// PR #72's lesson).
+
+export interface UnscheduledJob {
+  jobId: string;
+  title: string | null;
+  customer: string | null;
+  priority: string;
+  createdAt: string;
+}
+
+export interface LooseBucket {
+  parkedVisits: {
+    assignmentId: string;
+    date: string;
+    weekday: string;
+    startTime: string;
+    endTime: string;
+    customer: string | null;
+    jobTitle: string | null;
+    // The visit's day already slipped past with nobody attached — the most
+    // forgettable row of all (final-review finding: it used to vanish from
+    // the tray entirely, while its job stayed hidden by the live-assignment
+    // anti-join — invisible on every surface at once).
+    overdue: boolean;
+  }[];
+  unscheduledJobs: UnscheduledJob[];
+}
+
+// THE unscheduled-jobs projection — the board tray AND get_team_schedule's
+// recall view both call this, so the two surfaces agree by construction
+// (final-review finding: parity was previously by duplication, tenant
+// re-check included). The job row is already tenant-filtered by the query;
+// only the embedded customer needs the re-check (ID-only foreign keys).
+export async function readUnscheduledJobs(tenantId: string): Promise<UnscheduledJob[]> {
+  return (await listUnscheduledOpenJobsWithCustomer(tenantId)).map((job) => ({
+    jobId: job.id,
+    title: job.title,
+    customer: job.customers && job.customers.tenant_id === tenantId ? job.customers.name : null,
+    priority: job.priority,
+    createdAt: job.created_at,
+  }));
+}
+
+export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
+  // The jobs read is independent of the tenant read — start it first so the
+  // three queries run at depth 2, not 3 (final-review efficiency finding).
+  const jobsPromise = readUnscheduledJobs(tenantId);
+  const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+  const today = localDateISO(new Date().toISOString(), tz);
+  // Parked visits are read UNBOUNDED into the past: a parked visit whose day
+  // slipped by is missed work, not history — it surfaces flagged `overdue`
+  // instead of disappearing. (Terminal rows still drop via status; note the
+  // recorded limitation that `proposed` unassigned rows are invisible to
+  // BOTH halves — no production writer mints them today; Plan 3c/4b decides.)
+  const [parked, unscheduledJobs] = await Promise.all([
+    listUnassignedAssignmentsWithRefs(tenantId, '1970-01-01T00:00:00.000Z'),
+    jobsPromise,
+  ]);
+  return {
+    parkedVisits: parked.map((row) => {
+      // ID-only foreign keys: re-check each nested row's tenant before its
+      // name/title reaches a screen (withhold the field, keep the row —
+      // the boardRead security pattern above).
+      const job = row.jobs && row.jobs.tenant_id === tenantId ? row.jobs : null;
+      const customer =
+        job && job.customers && job.customers.tenant_id === tenantId ? job.customers : null;
+      const date = row.starts_at.slice(0, 10);
+      return {
+        assignmentId: row.id,
+        date,
+        weekday: weekdayLabel(date),
+        startTime: row.starts_at.slice(11, 16),
+        endTime: row.ends_at.slice(11, 16),
+        customer: customer?.name ?? null,
+        jobTitle: job ? job.title : null,
+        overdue: date < today,
+      };
+    }),
+    unscheduledJobs,
+  };
 }
 
 // The tap-into-a-visit detail view (contact + logistics only — user decision

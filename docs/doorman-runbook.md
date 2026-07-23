@@ -323,7 +323,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
   `get_customer_context`, `get_job`, `resolve_date`, `list_recent_captures`, `brief_customer`,
   `answer_customer_question`, `web_search`, `read_webpage`, `send_email`, `retract_capture`,
   `record_standing_fact`, `get_schedule`. (A badge whose roster row is an ACTIVE `tier='manager'`
-  lists **33** — `get_schedule` is REMOVED (2026-07-19: it is the technician route view; a
+  lists **34** — `get_schedule` is REMOVED (2026-07-19: it is the technician route view; a
   manager's only schedule read is get_team_schedule, which includes visits they hold, and
   schedule viewing lives on the dispatch board) while the 8 seat/lifecycle-management tools are
   added: add/deactivate/reactivate technician seat, bind_telegram, list_team,
@@ -331,7 +331,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
   2026-07-14: get_team_schedule, book_visit, move_visit, cancel_visit; plus the 5
   schedule-input tools since 2026-07-20: set_availability, add_time_off, remove_time_off,
   set_job_duration, set_technician_skills (one-shot, no confirm); plus `find_slots` since
-  2026-07-20 — the read-only ranked slot finder (books nothing; carries the board link like every schedule answer — originally excluded, which made the agent FABRICATE one, live 2026-07-21); plus `update_job` since 2026-07-21 — one-shot job-identity editor (title/jobType/priority, old→new echo); plus `set_promise` since 2026-07-22 — one-shot promise-record editor (promiseLevel none/day/time, old→new echo, promised day server-derived from the visit); see
+  2026-07-20 — the read-only ranked slot finder (books nothing; carries the board link like every schedule answer — originally excluded, which made the agent FABRICATE one, live 2026-07-21); plus `update_job` since 2026-07-21 — one-shot job-identity editor (title/jobType/priority, old→new echo); plus `set_promise` since 2026-07-22 — one-shot promise-record editor (promiseLevel none/day/time, old→new echo, promised day server-derived from the visit); plus `set_technician_horizon` since 2026-07-22 — one-shot visibility dial (weeks 1-12, per-tenant; technician reads beyond it answer "not published yet"); see
   nemoclaw-tech-agent.md §4. Since 2026-07-19 `add_technician_seat` also takes `seatExempt:true`
   — a schedule-only person occupying NO seat, whom bind_telegram/get_connect_link refuse.)
   - `401 / bad identity signature` from upstream → `GATEWAY_IDENTITY_SECRET` differs between host and

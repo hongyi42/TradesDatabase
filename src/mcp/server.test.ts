@@ -29,6 +29,12 @@ import { localDateISO } from '../schedule/availability.js';
 // Drive the MCP server over the SDK's in-memory transport (no network/stdio).
 // The extractor is stubbed so record_field_note never calls the live model.
 const pg = new PgClient({ connectionString: process.env.DATABASE_URL });
+
+// Relative test date (UTC-derived; firm-local today can lag it by one day —
+// assertions near a boundary pin bounds, not exact dates). ONE copy at module
+// scope: the get_schedule fixtures and the horizon suite both anchor on it.
+const relDay = (n: number): string =>
+  new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
 let tenantId: string;
 let techMcpId: string; // tech-mcp's roster UUID — assignment fixtures need it
 let client: Client;
@@ -1577,7 +1583,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
     );
     try {
       // The full manager surface: every base spine tool EXCEPT get_schedule
-      // (technician route view, removed 2026-07-19) + the 20 admin tools —
+      // (technician route view, removed 2026-07-19) + the 21 admin tools —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
@@ -1590,7 +1596,8 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('find_slots');
       expect(mgrTools).toContain('update_job');
       expect(mgrTools).toContain('set_promise');
-      expect(mgrTools).toHaveLength(33);
+      expect(mgrTools).toContain('set_technician_horizon');
+      expect(mgrTools).toHaveLength(34);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -1993,7 +2000,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(33); // base minus get_schedule + 20 admin
+        expect(mgrTools).toHaveLength(34); // base minus get_schedule + 21 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -2114,14 +2121,18 @@ describe('sensitivity filtering (manager_only L1 rows)', () => {
 });
 
 describe('get_schedule', () => {
-  // Deterministic fixtures, far from other suites' dates; identity tech-mcp.
-  const G1 = '2026-09-14'; // Monday
-  const G2 = '2026-09-15';
+  // RELATIVE fixtures (Plan 4a): the technician horizon clamps reads beyond
+  // today + tenants.technician_horizon_days (default 28), so fixed dates rot
+  // the day they cross the horizon. today+7/+8 stay comfortably inside it;
+  // identity tech-mcp.
+  const G1 = relDay(7);
+  const G2 = relDay(8);
   const stubOptimize: ServerDeps['optimizeStopOrder'] = async (stops) => ({
     order: stops.map((_, i) => stops.length - 1 - i), // reverse, so reordering is observable
     legMinutes: [7, 8],
     totalMinutes: 15,
   });
+  const gAssignmentIds: string[] = [];
 
   beforeAll(async () => {
     // Confirmed assignments for tech-mcp (the DB-owned schedule — the mirror
@@ -2136,7 +2147,7 @@ describe('get_schedule', () => {
           : {}),
       });
       const job = await createJob({ tenantId, customerId: customer.id, title: key });
-      await createAssignment({
+      const row = await createAssignment({
         tenantId,
         jobId: job.id,
         technicianId: techMcpId,
@@ -2144,11 +2155,21 @@ describe('get_schedule', () => {
         endsAt: new Date(Date.parse(startISO) + 60 * 60_000).toISOString(),
         status: 'confirmed',
       });
+      gAssignmentIds.push(row.id);
     };
     await mk('g1-a', `${G1}T15:00:00.000Z`);
     await mk('g1-b', `${G1}T17:00:00.000Z`);
     await mk('g2-a', `${G2}T16:00:00.000Z`);
     await mk('g2-noaddr', `${G2}T18:00:00.000Z`, false);
+  });
+
+  afterAll(async () => {
+    // Relative fixtures MUST NOT outlive the suite: later suites in this file
+    // use fixed future dates (2026-12-*, 2027-*), and today+7/+8 sweeps across
+    // them as the calendar advances — leaked rows would break their exact
+    // reads deterministically weeks from now (final-review finding; the same
+    // hazard boardApi.test.ts solves with all-relative distinct offsets).
+    await pg.query('delete from assignments where id = any($1::uuid[])', [gAssignmentIds]);
   });
 
   async function scheduleClient(extra: Partial<ServerDeps> = {}) {
@@ -2207,6 +2228,12 @@ describe('get_schedule', () => {
       expect(r.data.status).toBe('ok');
       expect([before, after]).toContain(r.data.from);
       expect(r.data.to).toBe(r.data.from);
+      // Empty-string from/to ALSO mean "today" (agents routinely emit "" for
+      // optional params; main + the board API both default it — pinned after
+      // a final-review near-regression turned "" into invalid_range).
+      const empty = await callWith('get_schedule', { from: '', to: '' });
+      expect(empty.data.status).toBe('ok');
+      expect([before, after]).toContain(empty.data.from);
     } finally {
       await c.close();
     }
@@ -2231,11 +2258,14 @@ describe('get_schedule', () => {
     }
   });
 
-  test('zero-stop range → explicit empty days', async () => {
+  test('zero-stop range → explicit empty days (within-horizon — not the clamp)', async () => {
     const { client: c, callWith } = await scheduleClient();
     try {
-      const r = await callWith('get_schedule', { from: '2027-01-04', to: '2027-01-05' });
+      // Relative near dates: inside the horizon so days:[] means "genuinely
+      // no stops", never a clamped answer (which would pass vacuously).
+      const r = await callWith('get_schedule', { from: relDay(2), to: relDay(3) });
       expect(r.data).toMatchObject({ status: 'ok', days: [] });
+      expect(r.data.horizonNote).toBeUndefined();
     } finally {
       await c.close();
     }
@@ -2243,7 +2273,8 @@ describe('get_schedule', () => {
 
   test('roster-less badge → empty days, no crash', async () => {
     // A valid badge with NO roster row keeps the plain-technician surface;
-    // its schedule is simply empty (daySource returns []).
+    // its schedule is simply empty (daySource returns []). G1/G2 are
+    // within-horizon so this is the empty-roster case, not the clamp.
     const { client: c, callWith } = await clientFor(
       { tenantId, technicianRef: 'badge-no-roster-row' },
       { optimizeStopOrder: stubOptimize },
@@ -2252,6 +2283,27 @@ describe('get_schedule', () => {
       const r = await callWith('get_schedule', { from: G1, to: G2 });
       expect(r.isError).toBe(false);
       expect(r.data).toMatchObject({ status: 'ok', days: [] });
+      expect(r.data.horizonNote).toBeUndefined();
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('technician visibility horizon: beyond → empty + note; straddling → trimmed + note', async () => {
+    const { client: c, callWith } = await scheduleClient();
+    try {
+      // Fully beyond today + 28 (default horizon): ok, empty, self-explaining.
+      const beyond = await callWith('get_schedule', { from: relDay(40), to: relDay(41) });
+      expect(beyond.data.status).toBe('ok');
+      expect(beyond.data.days).toEqual([]);
+      expect(beyond.data.horizonNote).toContain("isn't published yet");
+      // Straddling the horizon: trimmed `to` + note. Firm-local today can lag
+      // the UTC-derived relDay by one day, so pin bounds, not the exact date.
+      const straddle = await callWith('get_schedule', { from: relDay(25), to: relDay(31) });
+      expect(straddle.data.status).toBe('ok');
+      expect(straddle.data.horizonNote).toContain("isn't published yet");
+      expect(straddle.data.to < relDay(31)).toBe(true);
+      expect(straddle.data.to >= relDay(27)).toBe(true);
     } finally {
       await c.close();
     }
@@ -3623,6 +3675,30 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       expect(farStop).toMatchObject({ unassigned: true, customer: 'Recall Roy' });
       // Assigned visits never appear here.
       expect(recallStops.map((s) => s.assignmentId)).not.toContain(aBooked.data.assignmentId);
+
+      // Plan 4a agent parity: the recall view also carries the bucket's other
+      // half — open jobs with NO visit at all — plus the explaining note.
+      const bareJob = await createJob({
+        tenantId,
+        customerId: customer.id,
+        title: 'Recall bare job',
+        priority: 'urgent',
+      });
+      const recall2 = await callWith('get_team_schedule', { unassignedOnly: true });
+      const jobs = recall2.data.unscheduledJobs as Array<Record<string, unknown>>;
+      const bare = jobs.find((j) => j.jobId === bareJob.id);
+      expect(bare).toMatchObject({
+        title: 'Recall bare job',
+        customer: 'Recall Roy',
+        priority: 'urgent',
+      });
+      // Jobs with a live visit (the far-out booking's job) stay OUT.
+      expect(jobs.map((j) => j.jobId)).not.toContain(booked.data.jobId);
+      expect(recall2.data.note).toContain('unscheduledJobs');
+      // The windowed mode does NOT carry the jobs half.
+      const windowed = await callWith('get_team_schedule', {});
+      expect(windowed.data.unscheduledJobs).toBeUndefined();
+
       // Garbage flag type is rejected.
       const bad = await callWith('get_team_schedule', { unassignedOnly: 'yes' });
       expect(bad.data.status).toBe('invalid_range');
@@ -4935,6 +5011,64 @@ describe('set_promise (the promise-record editor)', () => {
       ).rejects.toThrow(/changed while updating/);
     } finally {
       await mgrClient.close();
+    }
+  });
+});
+
+describe('set_technician_horizon (the visibility-horizon dial)', () => {
+  test('validates, echoes old→new, SQL read-back; the clamp consumes the SETTING', { timeout: 30_000 }, async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    const { client: techClient, callWith: techCall } = await clientFor({
+      tenantId,
+      technicianRef: 'tech-mcp',
+    });
+    try {
+      // Technician badge → refused (admin dispatch gate).
+      const gated = await techCall('set_technician_horizon', { weeks: 6 });
+      expect(gated.isError).toBe(true);
+
+      // Validation: missing / zero / oversized / fractional / string.
+      for (const weeks of [undefined, 0, 13, 2.5, '6']) {
+        const bad = await callWith(
+          'set_technician_horizon',
+          weeks === undefined ? {} : { weeks },
+        );
+        expect(bad.isError).toBe(true);
+        expect(bad.text).toContain('whole number from 1 to 12');
+      }
+
+      // Set 6 weeks: old→new echo + SQL read-back of 42.
+      const set = await callWith('set_technician_horizon', { weeks: 6 });
+      expect(set.isError).toBe(false);
+      expect(set.data.changes.technicianHorizonDays).toEqual({ from: 28, to: 42 });
+      expect(set.data.note).toContain('6 week');
+      const row = await pg.query<{ technician_horizon_days: number }>(
+        'select technician_horizon_days from tenants where id = $1',
+        [tenantId],
+      );
+      expect(row.rows[0].technician_horizon_days).toBe(42);
+
+      // Discovery: get_team_schedule carries the current value.
+      const team = await callWith('get_team_schedule', {});
+      expect(team.data.technicianHorizonDays).toBe(42);
+
+      // The clamp consumes the SETTING, not the default: at 1 week, a
+      // technician read 10 days out clamps (empty + note)…
+      const tight = await callWith('set_technician_horizon', { weeks: 1 });
+      expect(tight.data.changes.technicianHorizonDays).toEqual({ from: 42, to: 7 });
+      const clamped = await techCall('get_schedule', { from: relDay(10), to: relDay(11) });
+      expect(clamped.data.status).toBe('ok');
+      expect(clamped.data.days).toEqual([]);
+      expect(clamped.data.horizonNote).toContain("isn't published yet");
+      // …and back at 4 weeks the same read answers normally (no note).
+      await callWith('set_technician_horizon', { weeks: 4 });
+      const open = await techCall('get_schedule', { from: relDay(10), to: relDay(11) });
+      expect(open.data.horizonNote).toBeUndefined();
+    } finally {
+      // Restore the migration default for any later suite.
+      await pg.query('update tenants set technician_horizon_days = 28 where id = $1', [tenantId]);
+      await mgrClient.close();
+      await techClient.close();
     }
   });
 });

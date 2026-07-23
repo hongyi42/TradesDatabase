@@ -122,7 +122,12 @@
         esc(stop.promiseLevel === 'time' ? 'time' : 'day') +
         '</span>';
     }
-    if (stop.locked) badges += '<span class="badge lock">locked</span>';
+    // `locked` is NOT badged: it marks a manual placement for the FUTURE
+    // auto-scheduler to route around — today every visit is manual, so the
+    // badge read as "can't be changed" on rows that are freely movable
+    // (user finding 2026-07-23). The promise ladder is what actually gates
+    // changes, and it has its own badge above. Revisit the flag's display
+    // when the 4b solver gives "pinned" real meaning.
     return badges;
   }
 
@@ -572,7 +577,6 @@
     }
     rows += detailRow('Promise', promiseText(d));
     var flags = [];
-    if (d.locked) flags.push('locked (manager-pinned)');
     if (d.status !== 'confirmed') flags.push(d.status);
     if (flags.length) rows += detailRow('Flags', esc(flags.join(', ')));
     return (

@@ -35,9 +35,21 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 - **Telegram is the entire UI** (2026-07-03). No web front end exists or is planned. Managers
   and technicians do everything through their Telegram agent chat; the Telegram **Mini App
-  dispatch board** (2026-07-14) is the one recorded, deliberate extension — and it's
-  view/gesture, not a new surface class. Operators (us) appear only at initial setup and
-  breakage; anything else operator-side is debt to automate.
+  dispatch board** (2026-07-14) is the one recorded, deliberate extension. **Evolved
+  2026-07-23 (user decision):** the board is no longer view-only-plus-gestures — it is *the
+  manager's hands* for quick direct edits (a manager already in the Mini App won't exit to
+  chat and come back); the agent's role is **autonomy + recommendation** (propose/solve/
+  confirm/nudge). Non-negotiable guardrail: every board gesture calls the same
+  `src/schedule/booking.ts` verbs as chat — one write path, one promise-ladder gate, never a
+  parallel editing logic. Operators (us) appear only at initial setup and breakage; anything
+  else operator-side is debt to automate.
+- **Vocabulary must track what actually gates** (2026-07-23, PR #74). `assignments.locked`
+  marks a manual placement for the *future* auto-scheduler (Plan 4b) to route around — every
+  manual book/move stamps it true, so a "locked" badge appeared on every visit and read as
+  "this time can't change" (false: no-promise visits move freely, one-shot). The badge is
+  gone; the **promise ladder** is the human-facing constraint vocabulary. Don't surface
+  solver-internal flags to humans until the solver exists; when 4b lands, `locked` can
+  resurface as "pinned — won't be auto-moved".
 - **Two access tiers, `manager` and `technician`** (2026-07-02/04). Technician = broad
   non-manager catch-all (field techs, office, sales). Manager seats price higher and get the
   **entire Composio catalog + self-serve pairing** (risk accepted deliberately — no structural

@@ -285,4 +285,3 @@ body.dragging .stop.draggable { cursor: grabbing; }
   color: var(--accent-fg);
   white-space: nowrap;
 }
-.badge.lock { background: var(--hint); }

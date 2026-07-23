@@ -402,6 +402,69 @@ export async function listUnassignedAssignments(
   return data ?? [];
 }
 
+// ---- Loose-bucket reads (Plan 4a): the tray + agent-parity surfaces ----
+//
+// Same ID-ONLY-foreign-key caveat as the board reads above: callers must
+// re-check every nested row's tenant_id before surfacing its name/title.
+
+// Single string literal — see the DETAIL_SELECT note above.
+const BUCKET_SELECT =
+  '*, jobs(id,tenant_id,title,customer_id,customers(name,tenant_id))';
+
+export type AssignmentBucketRow = Assignment & {
+  jobs:
+    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'customer_id'> & {
+        customers: Pick<Customer, 'name' | 'tenant_id'> | null;
+      })
+    | null;
+};
+
+// listUnassignedAssignments with the customer/job names embedded — the tray's
+// parked-visits read (one round trip, the board-latency doctrine).
+export async function listUnassignedAssignmentsWithRefs(
+  tenantId: string,
+  fromISO: string,
+): Promise<AssignmentBucketRow[]> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select(BUCKET_SELECT)
+    .eq('tenant_id', tenantId)
+    .is('technician_id', null)
+    .eq('status', 'confirmed')
+    .gte('starts_at', fromISO)
+    .order('starts_at', { ascending: true });
+  if (error) throw new Error(`listUnassignedAssignmentsWithRefs failed: ${error.message}`);
+  return (data ?? []) as AssignmentBucketRow[];
+}
+
+export type UnscheduledJobRow = Job & {
+  customers: Pick<Customer, 'name' | 'tenant_id'> | null;
+};
+
+// listUnassignedOpenJobs with the customer name embedded — the bucket's
+// unscheduled-jobs half. Same JS anti-join; the existing name-less function
+// stays for its current callers.
+export async function listUnscheduledOpenJobsWithCustomer(
+  tenantId: string,
+): Promise<UnscheduledJobRow[]> {
+  const { data, error } = await getClient()
+    .from('jobs')
+    .select('*, assignments(id,status), customers(name,tenant_id)')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'open')
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`listUnscheduledOpenJobsWithCustomer failed: ${error.message}`);
+  return (data ?? [])
+    .filter(
+      (row) => !row.assignments.some((a) => a.status === 'proposed' || a.status === 'confirmed'),
+    )
+    .map((row) => {
+      const job: UnscheduledJobRow & { assignments?: unknown } = { ...row };
+      delete job.assignments;
+      return job as UnscheduledJobRow;
+    });
+}
+
 // The scheduler's work queue: open jobs with NO live (proposed/confirmed)
 // assignment. One embedded select, anti-join filtered in JS — PostgREST
 // anti-joins are awkward and tenant job counts are small.

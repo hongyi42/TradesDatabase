@@ -824,6 +824,7 @@ export type Database = {
           id: string
           manager_seats: number
           name: string
+          technician_horizon_days: number
           technician_seats: number
           timezone: string
         }
@@ -833,6 +834,7 @@ export type Database = {
           id?: string
           manager_seats?: number
           name: string
+          technician_horizon_days?: number
           technician_seats?: number
           timezone?: string
         }
@@ -842,6 +844,7 @@ export type Database = {
           id?: string
           manager_seats?: number
           name?: string
+          technician_horizon_days?: number
           technician_seats?: number
           timezone?: string
         }

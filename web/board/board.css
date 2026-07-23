@@ -22,6 +22,36 @@ body {
 header h1 { font-size: 18px; margin: 4px 0 2px; }
 .range { color: var(--hint); font-size: 13px; margin-bottom: 10px; }
 
+/* Loose-bucket pill (managers only): the always-visible "work exists that the
+   board window can't show" signal. Sits beside the title; count fills async. */
+.head-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.bucket-pill {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.bucket-pill:active { background: var(--accent); color: var(--accent-fg); }
+
+/* Tray sections (inside the shared detail sheet). Rows echo the Unassigned
+   lane's dashed affordance; parked-visit rows are tappable. */
+.bucket-section h3 { font-size: 13px; margin: 12px 0 4px; color: var(--hint); }
+.bucket-row {
+  border: 1px dashed var(--hint);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin: 6px 0;
+}
+.bucket-row.bucket-visit { border-color: var(--accent); cursor: pointer; }
+.bucket-row-main { font-weight: 500; }
+.bucket-row-sub { color: var(--hint); font-size: 13px; }
+.bucket-empty { color: var(--hint); font-size: 13px; padding: 6px 2px; }
+
 /* Week pager: ‹ [label (Today)] › — all tiers, both tabs. */
 .pager { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
 .pager-btn {

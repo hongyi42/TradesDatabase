@@ -4,7 +4,12 @@ import path from 'node:path';
 import { verifyInitData } from './initData.js';
 import * as rosterCache from './rosterCache.js';
 import { findRosterByTelegramUserIdGlobal, type Technician } from '../db/index.js';
-import { InvalidRangeError, readBoardDays, readVisitDetail } from '../schedule/boardRead.js';
+import {
+  InvalidRangeError,
+  readBoardDays,
+  readLooseBucket,
+  readVisitDetail,
+} from '../schedule/boardRead.js';
 import {
   cancelVisit,
   moveVisit,
@@ -181,6 +186,9 @@ export async function handleBoardRequest(
           from: url.searchParams.get('from') ?? undefined,
           to: url.searchParams.get('to') ?? undefined,
           viewerTechnicianId: isManager && !mine ? null : auth.technician.id,
+          // TIER, never the self-filter: the manager's Mine tab must keep far
+          // weeks; only technician-tier reads clamp at the horizon (Plan 4a).
+          clampToHorizon: !isManager,
         });
         json(res, 200, {
           tier: auth.technician.tier,
@@ -231,6 +239,23 @@ export async function handleBoardRequest(
         return;
       }
       json(res, 200, detail);
+      return;
+    }
+
+    // The loose bucket (Plan 4a): parked visits + unscheduled jobs — the
+    // tray's data. Manager-only: the bucket is dispatch work, and the pill
+    // never renders for technicians (their fetch would be a wasted 403).
+    if (pathname === '/board/api/bucket' && req.method === 'GET') {
+      const auth = await authBoard(req);
+      if (!auth.ok) {
+        deny(res, auth);
+        return;
+      }
+      if (auth.technician.tier !== 'manager') {
+        json(res, 403, { error: 'managers only' });
+        return;
+      }
+      json(res, 200, await readLooseBucket(auth.tenantId));
       return;
     }
 

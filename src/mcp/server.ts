@@ -31,6 +31,7 @@ import {
   updateAssignmentPromise,
   updateJobDetails,
   getTenant,
+  setTechnicianHorizonDays,
   insertTechnician,
   isInactiveState,
   isSeatCapError,
@@ -102,6 +103,7 @@ import {
 } from '../routes/googleRoutes.js';
 import { buildMapsDeepLink, formatAddress, type RouteStop } from '../routes/deepLink.js';
 import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
+import { DEFAULT_TECHNICIAN_HORIZON_DAYS } from '../schedule/policy.js';
 import {
   addDaysISO,
   assembleFitContext,
@@ -129,6 +131,7 @@ import {
   latestScheduleVersion,
   listAssignmentsForTenant,
   listUnassignedAssignments,
+  listUnscheduledOpenJobsWithCustomer,
   listJobsWithCustomerByIds,
   type PromiseLevel,
 } from '../db/index.js';
@@ -840,6 +843,25 @@ const ADMIN_TOOLS = [
         },
       },
       required: ['ref', 'skills'],
+    },
+  },
+  {
+    name: 'set_technician_horizon',
+    description:
+      'Set how far ahead TECHNICIANS can see the schedule (manager only), in whole weeks ' +
+      '(1-12; default 4). Done immediately in ONE call — echo old → new. Beyond the horizon ' +
+      'their schedule reads and board views answer "not published yet"; managers always see ' +
+      'everything. Tune it to the firm: fast-filling schedules may want more visible weeks, ' +
+      'slow ones fewer. get_team_schedule shows the current value (technicianHorizonDays).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        weeks: {
+          type: 'integer',
+          description: 'Whole weeks ahead technicians may see (1-12).',
+        },
+      },
+      required: ['weeks'],
     },
   },
   {
@@ -1703,13 +1725,18 @@ async function dispatch(
         return { status: 'invalid_range', note: 'from/to must be YYYY-MM-DD strings' };
       }
       // Default "today" is the FIRM's local day, not UTC: for a Pacific-time
-      // tenant every evening ask would otherwise default to tomorrow.
+      // tenant every evening ask would otherwise default to tomorrow. The
+      // tenant row is fetched ALWAYS now (not only when from is absent): the
+      // horizon clamp below needs today + technician_horizon_days regardless
+      // — one read serves both.
+      const scheduleTenant = await getTenant(tenantId);
+      const today = localDateISO(
+        new Date().toISOString(),
+        scheduleTenant?.timezone ?? 'UTC',
+      );
       let from = str('from');
       let to = str('to');
-      if (!from) {
-        const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
-        from = localDateISO(new Date().toISOString(), tz);
-      }
+      from ??= today;
       to ??= from;
       const DATE = /^\d{4}-\d{2}-\d{2}$/;
       if (!DATE.test(from) || !DATE.test(to) || from > to) {
@@ -1725,6 +1752,21 @@ async function dispatch(
       if (spanDays > 14) {
         return { status: 'invalid_range', note: 'range is capped at 14 days' };
       }
+      // Technician visibility horizon (Plan 4a) — this tool is technician-only
+      // (managers are blocked at dispatch), so no tier test. Clamp AFTER
+      // validation: garbage stays invalid_range, never a quiet clamp. Trim +
+      // note, not an error — the payload explains the missing days itself.
+      const horizonEnd = addDaysISO(
+        today,
+        scheduleTenant?.technician_horizon_days ?? DEFAULT_TECHNICIAN_HORIZON_DAYS,
+      );
+      const horizonNote =
+        `the schedule past ${horizonEnd} isn't published yet — check back closer to the date`;
+      if (from > horizonEnd) {
+        return { status: 'ok', from, to, days: [], horizonNote };
+      }
+      const horizonTrimmed = to > horizonEnd;
+      if (horizonTrimmed) to = horizonEnd;
       const optimize = deps.optimizeStopOrder ?? liveOptimizeStopOrder;
       const dayStops = await listDayStops(tenantId, identity.technicianRef, from, to);
       // Days are independent — optimize them concurrently (a 14-day ask is one
@@ -1764,7 +1806,7 @@ async function dispatch(
           };
         }),
       );
-      return { status: 'ok', from, to, days };
+      return { status: 'ok', from, to, days, ...(horizonTrimmed ? { horizonNote } : {}) };
     }
     case 'web_search': {
       const query = str('query')?.trim();
@@ -2539,12 +2581,15 @@ async function dispatch(
         return { status: 'invalid_range', note: 'unassignedOnly must be a boolean' };
       }
       const unassignedOnly = args.unassignedOnly === true;
+      // Tenant fetched regardless of `from` now: the response carries the
+      // technician-horizon setting for discovery ("what is it now?" — Plan 4a;
+      // manager tool, not the board button path, so one read is fine).
+      const teamTenant = await getTenant(tenantId);
+      const technicianHorizonDays =
+        teamTenant?.technician_horizon_days ?? DEFAULT_TECHNICIAN_HORIZON_DAYS;
       let from = str('from');
       const to = str('to');
-      if (!from) {
-        const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
-        from = localDateISO(new Date().toISOString(), tz);
-      }
+      from ??= localDateISO(new Date().toISOString(), teamTenant?.timezone ?? 'UTC');
       const DATE = /^\d{4}-\d{2}-\d{2}$/;
       if (!DATE.test(from)) {
         return { status: 'invalid_range', note: 'from must be YYYY-MM-DD' };
@@ -2638,9 +2683,35 @@ async function dispatch(
         // weekday is server-computed everywhere a date is emitted (the
         // find_slots lesson: the agent is unreliable at calendar math).
         .map(([date, stops]) => ({ date, weekday: weekdayLabel(date), stops }));
-      return unassignedOnly
-        ? { status: 'ok', from, unassignedOnly: true, scheduleVersion, days }
-        : { status: 'ok', from, to: toDay, scheduleVersion, days };
+      if (unassignedOnly) {
+        // Agent parity with the board's loose-bucket tray (Plan 4a): the
+        // recall view also names open jobs with NO visit at all — until now
+        // surfaced nowhere. Embedded customer rows re-check their own tenant
+        // (ID-only foreign keys, the assignments.ts security note).
+        const unscheduledJobs = (await listUnscheduledOpenJobsWithCustomer(tenantId)).map(
+          (job) => ({
+            jobId: job.id,
+            title: job.title,
+            customer:
+              job.customers && job.customers.tenant_id === tenantId ? job.customers.name : null,
+            priority: job.priority,
+            createdAt: job.created_at,
+          }),
+        );
+        return {
+          status: 'ok',
+          from,
+          unassignedOnly: true,
+          scheduleVersion,
+          technicianHorizonDays,
+          days,
+          unscheduledJobs,
+          note:
+            'unscheduledJobs are open jobs with NO visit at all — booking one takes it off ' +
+            'this list. days hold parked visits (booked, nobody attached).',
+        };
+      }
+      return { status: 'ok', from, to: toDay, scheduleVersion, technicianHorizonDays, days };
     }
     case 'book_visit': {
       const subjectRef = identity.technicianRef;
@@ -3862,6 +3933,33 @@ async function dispatch(
               'unknown" and are never excluded from scheduling on that basis. Tell the manager.'
             : `${target.display_name}'s skills are now: ${updated.skills.join(', ')} (full ` +
               'replacement). Tell the manager exactly this.',
+      };
+    }
+    case 'set_technician_horizon': {
+      if (
+        typeof args.weeks !== 'number' ||
+        !Number.isInteger(args.weeks) ||
+        args.weeks < 1 ||
+        args.weeks > 12
+      ) {
+        throw new Error('weeks must be a whole number from 1 to 12');
+      }
+      // Old value read before the write so the echo is old → new (update_job
+      // idiom). Plain update, no CAS — settings row, effectively single-writer
+      // (setTenantSeats precedent); the DB CHECK (7-84) backstops range.
+      const beforeDays =
+        (await getTenant(tenantId))?.technician_horizon_days ?? DEFAULT_TECHNICIAN_HORIZON_DAYS;
+      const updatedTenant = await setTechnicianHorizonDays(tenantId, args.weeks * 7);
+      return {
+        status: 'ok',
+        changes: {
+          technicianHorizonDays: { from: beforeDays, to: updatedTenant.technician_horizon_days },
+        },
+        note:
+          `technicians now see at most ${args.weeks} week(s) — ` +
+          `${updatedTenant.technician_horizon_days} days — ahead (was ${beforeDays} days); ` +
+          'schedule reads beyond that answer "not published yet". Tell the manager exactly ' +
+          'what changed (old → new).',
       };
     }
     case 'update_job': {

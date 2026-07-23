@@ -20,7 +20,9 @@ import {
   listAssignmentsForJob,
   listAssignmentsForTechnician,
   listAssignmentsForTenant,
+  listUnassignedAssignmentsWithRefs,
   listUnassignedOpenJobs,
+  listUnscheduledOpenJobsWithCustomer,
   rescheduleAssignment,
   updateAssignmentStatus,
 } from './assignments.js';
@@ -576,5 +578,93 @@ describe('job type durations', () => {
     // (migration default 120).
     expect(await getJobDurationMinutes(tenantId, 'plumbing')).toBe(120);
     expect(await getJobDurationMinutes(tenantId, null)).toBe(120);
+  });
+});
+
+describe('loose-bucket listers (Plan 4a)', () => {
+  // Relative dates only — a bucket read is anchored at "today", so fixed
+  // fixtures rot. Naive-local convention: wall-clock written as if UTC.
+  const rel = (days: number, hh: string): string => {
+    const d = new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+    return `${d}T${hh}:00.000Z`;
+  };
+  let parkedFutureId: string;
+  let bucketJobId: string;
+
+  beforeAll(async () => {
+    const customer = await createCustomer({ tenantId, name: 'Bucket Casa' });
+    // Parked visit in the future (unassigned, confirmed).
+    const parkedJob = await createJob({ tenantId, customerId: customer.id, title: 'Parked work' });
+    parkedFutureId = (
+      await createAssignment({
+        tenantId,
+        jobId: parkedJob.id,
+        technicianId: null,
+        startsAt: rel(10, '09:00'),
+        endsAt: rel(10, '11:00'),
+        status: 'confirmed',
+      })
+    ).id;
+    // Parked visit in the PAST — must be excluded by the from bound.
+    const pastJob = await createJob({ tenantId, customerId: customer.id, title: 'Past parked' });
+    await createAssignment({
+      tenantId,
+      jobId: pastJob.id,
+      technicianId: null,
+      startsAt: rel(-10, '09:00'),
+      endsAt: rel(-10, '11:00'),
+      status: 'confirmed',
+    });
+    // Unassigned CANCELLED future visit — the status filter must drop it.
+    const cancelledJob = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'Cancelled parked',
+    });
+    const c = await createAssignment({
+      tenantId,
+      jobId: cancelledJob.id,
+      technicianId: null,
+      startsAt: rel(12, '09:00'),
+      endsAt: rel(12, '11:00'),
+      status: 'confirmed',
+    });
+    await updateAssignmentStatus(c.id, 'cancelled');
+    // Unscheduled open job (no assignment at all), priority carried.
+    bucketJobId = (
+      await createJob({
+        tenantId,
+        customerId: customer.id,
+        title: 'Bucket bare job',
+        priority: 'urgent',
+      })
+    ).id;
+  });
+
+  test('listUnassignedAssignmentsWithRefs embeds names; from bound excludes past rows', async () => {
+    const rows = await listUnassignedAssignmentsWithRefs(
+      tenantId,
+      `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`,
+    );
+    const mine = rows.find((r) => r.id === parkedFutureId);
+    expect(mine).toBeDefined();
+    expect(mine?.jobs?.title).toBe('Parked work');
+    expect(mine?.jobs?.customers?.name).toBe('Bucket Casa');
+    // Past and cancelled parked visits are out; nothing here is assigned.
+    expect(rows.some((r) => r.jobs?.title === 'Past parked')).toBe(false);
+    expect(rows.some((r) => r.jobs?.title === 'Cancelled parked')).toBe(false);
+    expect(rows.every((r) => r.technician_id === null)).toBe(true);
+  });
+
+  test('listUnscheduledOpenJobsWithCustomer: embeds the customer, keeps priority, anti-joins live rows', async () => {
+    const jobs = await listUnscheduledOpenJobsWithCustomer(tenantId);
+    const bare = jobs.find((j) => j.id === bucketJobId);
+    expect(bare).toBeDefined();
+    expect(bare?.customers?.name).toBe('Bucket Casa');
+    expect(bare?.priority).toBe('urgent');
+    // The parked visits' jobs carry LIVE (confirmed) assignments → excluded.
+    expect(jobs.some((j) => j.title === 'Parked work')).toBe(false);
+    // The stripped embed key never leaks into the row shape.
+    expect(bare && 'assignments' in bare).toBe(false);
   });
 });

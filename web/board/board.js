@@ -30,6 +30,10 @@
     view: 'team',
     weekOffset: 0,
     today: null,
+    // Last-fetched loose bucket (managers only) — feeds the header pill's
+    // count between loads; the tray itself re-fetches on open so it is never
+    // stale. null = not yet fetched this session.
+    bucket: null,
   };
 
   function actionable() {
@@ -264,8 +268,17 @@
         : state.weekOffset < 0
           ? 'Past week — read-only'
           : '';
+    // The loose-bucket pill (managers only): the can't-forget signal for
+    // parked visits + unscheduled jobs. Count fills asynchronously AFTER the
+    // board paints (fetchBucket) — nothing new on the button path; between
+    // loads the last known count renders immediately.
+    var pill = isManager
+      ? '<button type="button" class="bucket-pill" id="bucket-pill">' +
+        esc(state.bucket ? 'Loose: ' + bucketCount(state.bucket) : 'Loose: …') +
+        '</button>'
+      : '';
     var head =
-      '<header><h1>Dispatch board</h1>' +
+      '<header><div class="head-row"><h1>Dispatch board</h1>' + pill + '</div>' +
       (isManager ? tabsBar() : '') +
       pagerBar(data.from, data.to) +
       (note ? '<div class="range">' + esc(note) + '</div>' : '') +
@@ -273,10 +286,19 @@
     // Render EVERY day in the window, empty ones included — empty days are the
     // drop targets that make "move to Thursday" possible at all.
     var html = head;
-    var date = data.from;
-    while (date <= data.to) {
-      html += renderDay(date, byDate[date] || [], teamLayout);
-      date = addDays(date, 1);
+    // Technician horizon (Plan 4a): a window fully beyond the horizon comes
+    // back with days:[] + horizonNote — show the note, not seven empty day
+    // sections claiming "No visits". A TRIMMED window (note + days) renders
+    // its days (data.to is already trimmed server-side) with the note after.
+    if (data.horizonNote && !data.days.length) {
+      html += '<div class="empty">' + esc(data.horizonNote) + '</div>';
+    } else {
+      var date = data.from;
+      while (date <= data.to) {
+        html += renderDay(date, byDate[date] || [], teamLayout);
+        date = addDays(date, 1);
+      }
+      if (data.horizonNote) html += '<div class="range">' + esc(data.horizonNote) + '</div>';
     }
     app.innerHTML = html;
     state.rendered = true;
@@ -362,6 +384,9 @@
         state.weekOffset = offset;
         state.today = anchor;
         render(data);
+        // Pill fill AFTER the paint, manager-gated, never awaited (a
+        // technician call would be a guaranteed 403 — review gap #2).
+        if (data.tier === 'manager') fetchBucket();
         return data;
       });
     }
@@ -386,6 +411,115 @@
     return load(requestedView, requestedOffset).catch(function () {
       if (state.rendered) toast('Network error — the board may be stale; try again.', true);
       else showEmpty('Network error — reopen the board to retry.');
+    });
+  }
+
+  // ---- Loose-bucket pill + tray (managers only) ----
+
+  function bucketCount(b) {
+    return b.parkedVisits.length + b.unscheduledJobs.length;
+  }
+
+  function setPillText(text) {
+    var pill = document.getElementById('bucket-pill');
+    if (pill) pill.textContent = text;
+  }
+
+  // Async pill fill: fires AFTER a successful render, never awaited, and only
+  // for managers (a technician call would be a guaranteed 403). A failure
+  // leaves the pill at its last text — the pill is advisory, never a blocker.
+  function fetchBucket() {
+    return fetch('/board/api/bucket', { headers: authHeaders() })
+      .then(function (resp) {
+        if (!resp.ok) return null;
+        return resp.json();
+      })
+      .then(function (b) {
+        if (!b) return null;
+        state.bucket = b;
+        setPillText('Loose: ' + bucketCount(b));
+        return b;
+      })
+      .catch(function () {
+        return null;
+      });
+  }
+
+  function bucketVisitRow(v) {
+    // Server-composed strings verbatim (weekday/date/times) — no client date
+    // math. Tappable: opens the visit's normal detail sheet.
+    return (
+      '<div class="bucket-row bucket-visit" data-id="' + esc(v.assignmentId) + '">' +
+      '<div class="bucket-row-main">' +
+      esc(v.weekday + ' ' + v.date + ' · ' + v.startTime + '–' + v.endTime) +
+      '</div><div class="bucket-row-sub">' +
+      esc((v.customer || 'Unknown customer') + (v.jobTitle ? ' — ' + v.jobTitle : '')) +
+      '</div></div>'
+    );
+  }
+
+  function bucketJobRow(j) {
+    return (
+      '<div class="bucket-row">' +
+      '<div class="bucket-row-main">' + esc(j.title || 'Untitled job') + '</div>' +
+      '<div class="bucket-row-sub">' +
+      esc((j.customer || 'Unknown customer') + ' · ' + j.priority) +
+      '</div></div>'
+    );
+  }
+
+  function renderBucketSheet(b) {
+    var rows;
+    if (bucketCount(b) === 0) {
+      rows = '<div class="bucket-empty">Nothing loose — all work is scheduled.</div>';
+    } else {
+      rows =
+        '<div class="bucket-section"><h3>Parked visits (' + b.parkedVisits.length + ')</h3>' +
+        (b.parkedVisits.length
+          ? b.parkedVisits.map(bucketVisitRow).join('')
+          : '<div class="bucket-empty">None</div>') +
+        '</div>' +
+        '<div class="bucket-section"><h3>Unscheduled jobs (' + b.unscheduledJobs.length + ')</h3>' +
+        (b.unscheduledJobs.length
+          ? b.unscheduledJobs.map(bucketJobRow).join('')
+          : '<div class="bucket-empty">None</div>') +
+        '</div>';
+    }
+    return (
+      '<div class="detail-sheet" role="dialog" aria-modal="true">' +
+      '<button type="button" class="detail-close" aria-label="Close">✕</button>' +
+      '<h2>Loose bucket</h2>' +
+      rows +
+      '</div>'
+    );
+  }
+
+  function openBucket() {
+    // Re-fetch on open so the tray is never stale (the fetch also refreshes
+    // the pill count); ~one round trip on a deliberate tap, not a load path.
+    fetchBucket().then(function (b) {
+      if (!b) {
+        toast('Could not load the loose bucket — try again.', true);
+        return;
+      }
+      var prev = document.getElementById('detail-overlay');
+      if (prev) prev.remove();
+      var ov = document.createElement('div');
+      ov.id = 'detail-overlay';
+      ov.innerHTML = renderBucketSheet(b);
+      ov.addEventListener('click', function (e) {
+        if (e.target === ov || (e.target.closest && e.target.closest('.detail-close'))) {
+          closeDetail();
+          return;
+        }
+        // Tap a parked visit → its normal detail sheet (replace-open swaps
+        // the overlay instantly; openDetail already supports it).
+        var row = e.target.closest && e.target.closest('.bucket-visit');
+        if (row) openDetail(row.getAttribute('data-id'));
+      });
+      document.body.appendChild(ov);
+      void ov.offsetHeight;
+      ov.classList.add('open');
     });
   }
 
@@ -725,6 +859,11 @@
         // Same commit rule as tabs: the target week rides as a REQUEST;
         // state.weekOffset moves only when that week's data renders.
         refresh(undefined, step === '0' ? 0 : state.weekOffset + Number(step));
+        return;
+      }
+      var bucketPill = e.target.closest && e.target.closest('.bucket-pill');
+      if (bucketPill) {
+        openBucket();
         return;
       }
       var btn = e.target.closest && e.target.closest('.stop-cancel');

@@ -62,6 +62,26 @@ export async function createTenant(
   return data;
 }
 
+// Technician visibility horizon in days (Plan 4a): how far ahead
+// technician-tier schedule reads may see. Plain update, no CAS — a settings
+// row is effectively single-writer (the setTenantSeats precedent); the DB
+// CHECK (7-84) backstops range.
+export async function setTechnicianHorizonDays(
+  tenantId: string,
+  days: number,
+): Promise<Tenant> {
+  const { data, error } = await getClient()
+    .from('tenants')
+    .update({ technician_horizon_days: days })
+    .eq('id', tenantId)
+    .select()
+    .single();
+  if (error || !data) {
+    throw new Error(`setTechnicianHorizonDays failed: ${error?.message ?? 'no row returned'}`);
+  }
+  return data;
+}
+
 // Purchased seat capacity per tier (the DB seat-cap trigger reads these).
 export async function setTenantSeats(
   tenantId: string,

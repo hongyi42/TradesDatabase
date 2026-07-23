@@ -39,6 +39,7 @@ const DAY_B = relDate(4); // the manager's own visit (Mine tab subject)
 const DAY_MOVE = relDate(6); // the move test's target day
 const DAY_PROM = relDate(7); // promised-visit fixture
 const DAY_PROM2 = relDate(8); // its preview move target
+const DAY_PARK = relDate(13); // detach (unassign) fixture — its own day
 const DAY_X1 = relDate(20); // cross-tenant hostile rows: manager reads —
 const DAY_X2 = relDate(21); // the horizon never clamps managers, so far
 const DAY_X3 = relDate(22); // offsets are safe
@@ -899,6 +900,50 @@ describe('board write path (Phase 3)', () => {
       [moved[0].id],
     );
     expect(events.rows).toHaveLength(1);
+  });
+
+  test('unassign parks via the endpoint; unassign + technicianRef → 400 (plan 4a.5)', async () => {
+    const { assignment } = await bookVisit({
+      tenantId,
+      technicianRef: 'board-t2',
+      customerId: (await pg.query("select id from customers where name = 'Board Casa'")).rows[0].id,
+      title: 'Park probe visit',
+      date: DAY_PARK,
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'board-mgr',
+    });
+    // Both steering args → 400 before any verb runs.
+    const both = await post(
+      '/board/api/move',
+      { assignmentId: assignment.id, date: DAY_PARK, startTime: '09:00', technicianRef: 'board-t1', unassign: true, reason: 'r' },
+      900000001,
+    );
+    expect(both.status).toBe(400);
+    expect(((await both.json()) as { error: string }).error).toContain('not both');
+    // Non-boolean unassign → 400.
+    const badFlag = await post(
+      '/board/api/move',
+      { assignmentId: assignment.id, date: DAY_PARK, startTime: '09:00', unassign: 'yes', reason: 'r' },
+      900000001,
+    );
+    expect(badFlag.status).toBe(400);
+    // Preview echoes the park; commit detaches — SQL read-back is the second
+    // channel: new confirmed row with technician_id NULL, old row cancelled.
+    const body = { assignmentId: assignment.id, date: DAY_PARK, startTime: '09:00', unassign: true, reason: 'tech pulled off' };
+    const preview = await post('/board/api/move', body, 900000001, true);
+    expect(preview.status).toBe(200);
+    const p = (await preview.json()) as { unassign: boolean; requiresConfirmation: boolean };
+    expect(p.unassign).toBe(true);
+    expect(p.requiresConfirmation).toBe(false); // unpromised — one dialog never appears
+    const commit = await post('/board/api/move', body, 900000001);
+    expect(commit.status).toBe(200);
+    const [old] = await assignmentRows('a.id = $1', [assignment.id]);
+    expect(old.status).toBe('cancelled');
+    const parkedRows = await assignmentRows(
+      `a.status = 'confirmed' and a.technician_id is null and a.starts_at::date = '${DAY_PARK}'`,
+    );
+    expect(parkedRows).toHaveLength(1);
   });
 
   test('a promise-breaking move previews requiresConfirmation:true', async () => {

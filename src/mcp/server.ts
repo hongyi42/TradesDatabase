@@ -120,6 +120,7 @@ import {
   bookVisit,
   bookingRequiresConfirmation,
   cancelVisit,
+  carriesPromisedDay,
   isPromiseLevel,
   moveVisit,
   previewBookVisit,
@@ -681,7 +682,7 @@ const ADMIN_TOOLS = [
         date: { type: 'string', description: 'YYYY-MM-DD, firm-local. First call only.' },
         startTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default; ask the manager if unstated.' },
         endTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default length; ask the manager if unstated.' },
-        promiseLevel: { type: 'string', enum: ['none', 'day', 'time'], description: 'What the customer was ACTUALLY told (default "none" = nothing promised). Set "day"/"time" only when the manager indicates a promise was made. First call only.' },
+        promiseLevel: { type: 'string', enum: ['none', 'day', 'time', 'time_only'], description: 'What the customer was ACTUALLY told (default "none" = nothing promised). "day" = told the day; "time" = told the day AND time; "time_only" = told a time but NOT the day (the day may still move). Set a level only when the manager indicates a promise was made. First call only.' },
         priority: { type: 'string', enum: ['emergency', 'urgent', 'routine', 'maintenance'], description: 'Triage tier for the NEW job when booking by customerId (default "routine"). Rejected with jobId — an existing job keeps its recorded priority. First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
@@ -692,13 +693,17 @@ const ADMIN_TOOLS = [
     name: 'move_visit',
     description:
       'Move a booked visit (manager only) — also how a technician gets ATTACHED to an ' +
-      'unassigned visit (pass technicianRef with the same day/time). Reversible and internal ' +
+      'unassigned visit (pass technicianRef with the same day/time), and how one gets TAKEN ' +
+      'OFF: unassign:true parks the visit — pulls the person off, keeps day/time; find it ' +
+      'under get_team_schedule unassignedOnly:true or the board\'s loose bucket. Reversible ' +
+      'and internal ' +
       '(no customer promise affected) → done in ONE call ({status:"moved"}) — ALWAYS tell the ' +
       'manager what moved; never act silently. If the move would break what the customer was ' +
       'promised (promiseBroken TRUE — they heard a different day/time and someone must tell ' +
       'them) you instead get {status:"needs_confirmation", confirmId} with a preview — show ' +
       'it, get an explicit yes, call again with ONLY confirmId. Call with assignmentId + ' +
-      'date + startTime (+ optional endTime/technicianRef) + reason. When the result carries ' +
+      'date + startTime (+ optional endTime/technicianRef OR unassign) + reason. When the ' +
+      'result carries ' +
       'boardNote, ALWAYS end your report with its exact [See it on the board](…) line — it ' +
       'renders as a tappable link.',
     inputSchema: {
@@ -708,7 +713,8 @@ const ADMIN_TOOLS = [
         date: { type: 'string', description: 'New YYYY-MM-DD. First call only.' },
         startTime: { type: 'string', description: 'New HH:MM. First call only.' },
         endTime: { type: 'string', description: 'New HH:MM (default: keep the old duration). First call only.' },
-        technicianRef: { type: 'string', description: 'Reassign to this roster ref (default: same technician). First call only.' },
+        technicianRef: { type: 'string', description: 'Reassign to this roster ref (default: same technician). First call only. Mutually exclusive with unassign.' },
+        unassign: { type: 'boolean', description: 'true = park the visit: pull the person off, keep day/time (the reverse of attaching). Mutually exclusive with technicianRef. First call only.' },
         reason: { type: 'string', description: 'Why it is moving (kept on the record). First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
@@ -902,7 +908,9 @@ const ADMIN_TOOLS = [
     name: 'set_promise',
     description:
       "Correct a visit's PROMISE record (manager only) — what the customer was ACTUALLY told: " +
-      "'none' (nothing promised), 'day' (told which day), 'time' (told the exact time). Pass " +
+      "'none' (nothing promised), 'day' (told which day), 'time' (told day AND time), " +
+      "'time_only' (told a time but NOT the day — the time gates changes, the day moves " +
+      'freely). Pass ' +
       'assignmentId + promiseLevel; done in ONE call — this corrects the record of what was ' +
       'said, nothing moves. The promised day is derived from the visit itself — you never ' +
       "compute a date. Use it the MOMENT you notice a promise went unrecorded (e.g. the " +
@@ -917,10 +925,11 @@ const ADMIN_TOOLS = [
         assignmentId: { type: 'string', description: 'The visit whose promise record is wrong.' },
         promiseLevel: {
           type: 'string',
-          enum: ['none', 'day', 'time'],
+          enum: ['none', 'day', 'time', 'time_only'],
           description:
             "What the customer was ACTUALLY told. 'day'/'time' anchor to the visit's own " +
-            "date (server-derived); 'none' clears the promise.",
+            "date (server-derived); 'time_only' anchors to the visit's start time with NO " +
+            "promised day; 'none' clears the promise.",
         },
       },
       required: ['assignmentId', 'promiseLevel'],
@@ -2980,6 +2989,10 @@ async function dispatch(
         if (!date || !startTime) throw new Error('date and startTime are required');
         if (!reason) throw new Error('reason is required — say why the visit is moving');
         const technicianRefArg = str('technicianRef');
+        if (args.unassign !== undefined && typeof args.unassign !== 'boolean') {
+          throw new Error('unassign must be a boolean');
+        }
+        const unassignArg = args.unassign === true;
         const preview = await previewMoveVisit({
           tenantId,
           assignmentId,
@@ -2987,6 +3000,7 @@ async function dispatch(
           startTime,
           ...(str('endTime') ? { endTime: str('endTime') } : {}),
           ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
+          ...(unassignArg ? { unassign: true } : {}),
           reason,
           actorRef: subjectRef,
         });
@@ -3002,6 +3016,7 @@ async function dispatch(
             startTime,
             endTime: preview.endTime, // resolved — preview == commit
             ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}),
+            ...(unassignArg ? { unassign: true } : {}),
             reason,
             actorRef: subjectRef,
           });
@@ -3012,11 +3027,15 @@ async function dispatch(
             date,
             startTime,
             endTime: preview.endTime,
+            ...(unassignArg ? { unassigned: true } : {}),
             promiseBroken: false,
             ...(moved.warning ? { warning: moved.warning } : {}),
-            note:
-              'Moved in one step — no customer promise was affected, so no confirmation was ' +
-              'needed. Tell the manager exactly what moved.',
+            note: unassignArg
+              ? 'Parked in one step — the person was taken off; the visit keeps its slot and ' +
+                'now shows under Unassigned (board) / unassignedOnly (get_team_schedule). ' +
+                'Tell the manager exactly what happened.'
+              : 'Moved in one step — no customer promise was affected, so no confirmation was ' +
+                'needed. Tell the manager exactly what moved.',
           };
         }
         // Staging replaces any prior staged move (the new confirmId is the
@@ -3038,6 +3057,10 @@ async function dispatch(
             startTime,
             endTime: preview.endTime, // resolved — preview == commit
             technicianRef: technicianRefArg ?? null,
+            // Persisted so the confirm-time replay commits the SAME move that
+            // was previewed — dropping it here would confirm a park as a
+            // technician-keeping move (plan review finding #1).
+            unassign: unassignArg,
             reason,
             preview: preview as unknown as Json,
             stagedAt: new Date().toISOString(),
@@ -3070,6 +3093,7 @@ async function dispatch(
         startTime?: string;
         endTime?: string;
         technicianRef?: string | null;
+        unassign?: boolean;
         reason?: string;
         stagedAt?: string;
       };
@@ -3098,6 +3122,7 @@ async function dispatch(
           startTime: d.startTime,
           endTime: d.endTime,
           ...(d.technicianRef ? { technicianRef: d.technicianRef } : {}),
+          ...(d.unassign === true ? { unassign: true } : {}),
           reason: d.reason,
           actorRef: subjectRef,
         });
@@ -3123,6 +3148,7 @@ async function dispatch(
         date: d.date,
         startTime: d.startTime,
         endTime: d.endTime,
+        ...(d.unassign === true ? { unassigned: true } : {}),
         promiseBroken: moved.promiseBroken,
         ...(moved.promiseBroken
           ? { note: 'the customer was promised a different day — make sure someone tells them' }
@@ -4068,7 +4094,7 @@ async function dispatch(
       const promiseLevelArg = str('promiseLevel');
       if (!promiseLevelArg || !isPromiseLevel(promiseLevelArg)) {
         throw new Error(
-          `invalid promiseLevel: ${String(args.promiseLevel ?? '')} (use none, day, or time)`,
+          `invalid promiseLevel: ${String(args.promiseLevel ?? '')} (use none, day, time, or time_only)`,
         );
       }
       // Tenant guard: a cross-tenant (or unknown) id reads as not found.
@@ -4084,7 +4110,9 @@ async function dispatch(
       // agent date math never touches the promise record. Promising a
       // DIFFERENT day than the visit is booked is move_visit's job: the
       // schedule should match the promise, not diverge from it.
-      const promisedDay = promiseLevelArg === 'none' ? null : row.starts_at.slice(0, 10);
+      const promisedDay = carriesPromisedDay(promiseLevelArg as PromiseLevel)
+        ? row.starts_at.slice(0, 10)
+        : null;
       const updated = await updateAssignmentPromise(
         tenantId,
         assignmentId,
@@ -4128,9 +4156,14 @@ async function dispatch(
                 'requires the manager to confirm first (the customer was told the day; a ' +
                 'same-day time shift stays one-shot). Tell the manager exactly what ' +
                 'changed, old → new.'
-              : 'Promise recorded — moving or cancelling this visit now requires the ' +
-                'manager to confirm first (the customer was told the exact time). Tell ' +
-                'the manager exactly what changed, old → new.',
+              : updated.promise_level === 'time_only'
+                ? 'Promise recorded — changing this visit\'s START TIME, or cancelling it, ' +
+                  'now requires the manager to confirm first (the customer was told the ' +
+                  'time but not the day — the day may still move freely). Tell the manager ' +
+                  'exactly what changed, old → new.'
+                : 'Promise recorded — moving or cancelling this visit now requires the ' +
+                  'manager to confirm first (the customer was told the day AND time). Tell ' +
+                  'the manager exactly what changed, old → new.',
       };
     }
     case 'find_slots': {

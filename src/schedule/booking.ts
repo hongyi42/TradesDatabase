@@ -38,7 +38,7 @@ import { isTechnicianAvailableOn } from './availability.js';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
-const PROMISE_LEVELS: PromiseLevel[] = ['none', 'day', 'time'];
+const PROMISE_LEVELS: PromiseLevel[] = ['none', 'day', 'time', 'time_only'];
 
 // The naive-local storage form: local wall-clock written as if UTC.
 export function naiveLocalISO(date: string, hhmm: string): string {
@@ -47,6 +47,15 @@ export function naiveLocalISO(date: string, hhmm: string): string {
 
 export function isPromiseLevel(v: unknown): v is PromiseLevel {
   return typeof v === 'string' && (PROMISE_LEVELS as string[]).includes(v);
+}
+
+// Which levels carry a promised DAY: 'day' and 'time' (= day+time). 'none'
+// promises nothing; 'time_only' promises a TIME with no day — the day moves
+// freely, so promised_day stays NULL (the DB check allows exactly this pair).
+// ONE predicate for every promisedDay stamping site (bookVisit / moveVisit /
+// set_promise) so they can never drift (plan 4a.5).
+export function carriesPromisedDay(level: PromiseLevel): boolean {
+  return level === 'day' || level === 'time';
 }
 
 // Minutes → 'HH:MM' on the same day, clamped to 23:59 (a move that preserves
@@ -320,9 +329,9 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       endsAt: r.endISO,
       status: 'confirmed',
       promiseLevel: r.promiseLevel,
-      // Stamp a promised day ONLY when a promise was actually made — a 'none'
-      // booking has no promised day (the CHECK constraint requires this pairing).
-      promisedDay: r.promiseLevel === 'none' ? null : input.date,
+      // Stamp a promised day ONLY for day-carrying levels — 'none' promises
+      // nothing and 'time_only' promises no DAY (the CHECK backstops the pair).
+      promisedDay: carriesPromisedDay(r.promiseLevel) ? input.date : null,
       locked: true,
     });
   } catch (err) {
@@ -378,6 +387,7 @@ export interface MoveVisitInput {
   startTime: string; // HH:MM
   endTime?: string; // HH:MM, default = preserve the old duration
   technicianRef?: string; // omit = same technician
+  unassign?: boolean; // true = DETACH: park the visit person-less (plan 4a.5)
   reason: string;
   actorRef: string;
 }
@@ -407,16 +417,25 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
     throw new Error(`cannot move a ${old.status} assignment`);
   }
 
+  if (input.unassign && input.technicianRef) {
+    throw new Error(
+      'pass ONE of technicianRef (attach/reassign) or unassign:true (park the visit) — not both',
+    );
+  }
   // Resolve the TARGET technician either way — the availability warning must
   // fire for a same-technician move onto an off-day too (review finding).
   // An unassigned row moved without a ref stays unassigned (technician null);
-  // passing a ref is how a person gets ATTACHED to an unassigned visit.
-  const technician = input.technicianRef
-    ? await resolveTechnician(tenantId, input.technicianRef)
-    : old.technician_id
-      ? await getTechnicianById(old.technician_id, tenantId)
-      : null;
-  const targetTechnicianId = technician?.id ?? old.technician_id;
+  // passing a ref is how a person gets ATTACHED to an unassigned visit;
+  // unassign:true DETACHES — the target is nobody, so there is no availability
+  // advisory and no overlap pre-check (NULL rows are exempt from the DB guard).
+  const technician = input.unassign
+    ? null
+    : input.technicianRef
+      ? await resolveTechnician(tenantId, input.technicianRef)
+      : old.technician_id
+        ? await getTechnicianById(old.technician_id, tenantId)
+        : null;
+  const targetTechnicianId = input.unassign ? null : (technician?.id ?? old.technician_id);
 
   const oldDurationMin = Math.round(
     (Date.parse(old.ends_at) - Date.parse(old.starts_at)) / 60_000,
@@ -428,7 +447,10 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
 
   // Does this move break what the customer was told? A day-level promise
   // breaks only when the DAY changes; a time-level promise (customer heard
-  // "Tuesday 9:00") also breaks when the start TIME moves on the same day.
+  // "Tuesday 9:00") also breaks when the start TIME moves on the same day;
+  // a time_only promise ("we'll come at 9, day TBD") breaks ONLY when the
+  // start time changes — the day moves freely (its promised_day is NULL, so
+  // dayChanged is never consulted for it).
   const dayChanged = old.promised_day !== input.date;
   const timeChanged = old.starts_at.slice(11, 16) !== input.startTime;
   const promiseBroken =
@@ -436,16 +458,39 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
       ? dayChanged
       : old.promise_level === 'time'
         ? dayChanged || timeChanged
-        : false;
+        : old.promise_level === 'time_only'
+          ? timeChanged
+          : false;
 
-  // No target technician (unassigned staying unassigned) → nothing to clash
-  // with; the DB guard likewise ignores NULL rows.
+  // No target technician (a detach, or unassigned staying unassigned) →
+  // nothing to clash with; the DB guard likewise ignores NULL rows. That
+  // exemption is exactly why the person-less RESULT needs resolveBooking's
+  // identical-duplicate refusal instead (same customer + exact window,
+  // excluding the moved row itself): a park must not silently land on top of
+  // an existing identical parked visit.
   if (targetTechnicianId) {
     const clashes = await overlappingConfirmed(targetTechnicianId, startISO, endISO, old.id);
     if (clashes.length > 0) {
       throw new Error(
         `that slot overlaps a confirmed visit on ${input.date} — the booking was NOT moved`,
       );
+    }
+  } else {
+    const movedJob = await getJob(old.job_id);
+    const startMs = Date.parse(startISO);
+    const endMs = Date.parse(endISO);
+    for (const row of await listUnassignedAssignments(tenantId, startISO)) {
+      if (row.id === old.id) continue;
+      if (Date.parse(row.starts_at) > startMs) break; // ordered — past the window
+      if (Date.parse(row.starts_at) !== startMs || Date.parse(row.ends_at) !== endMs) continue;
+      const rowJob = await getJob(row.job_id);
+      if (movedJob && rowJob?.customer_id === movedJob.customer_id) {
+        throw new Error(
+          `an identical unassigned visit for this customer already exists at ` +
+            `${input.date} ${input.startTime}–${endTime} — likely a duplicate; attach a ` +
+            `technician to it or change the time`,
+        );
+      }
     }
   }
   const warning = technician
@@ -462,6 +507,10 @@ export interface MoveVisitPreview {
   toDay: string;
   startTime: string;
   endTime: string; // resolved — store on the stage
+  // The OLD row's level — what is at stake. Surfaces phrase the confirm on it
+  // ("was told 09:00" for time_only vs "was told Thursday" for day levels).
+  promiseLevel: PromiseLevel;
+  unassign: boolean; // true = this move PARKS the visit (detach)
   promiseBroken: boolean;
   requiresConfirmation: boolean; // = promiseBroken (the doctrine's verdict for moves)
   warning?: string;
@@ -479,6 +528,8 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
     toDay: input.date,
     startTime: input.startTime,
     endTime: r.endTime,
+    promiseLevel: r.old.promise_level,
+    unassign: !!input.unassign,
     promiseBroken: r.promiseBroken,
     requiresConfirmation: r.promiseBroken,
     ...(r.warning ? { warning: r.warning } : {}),
@@ -501,12 +552,16 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
     result = await rescheduleAssignment(r.old.id, {
       startsAt: r.startISO,
       endsAt: r.endISO,
-      ...(input.technicianRef && r.technician ? { technicianId: r.technician.id } : {}),
+      ...(input.unassign
+        ? { technicianId: null } // explicit null = DETACH (rescheduleAssignment's !== undefined idiom)
+        : input.technicianRef && r.technician
+          ? { technicianId: r.technician.id }
+          : {}),
       reason: input.reason,
       status: 'confirmed', // default-'proposed' would vanish from every reader
       // Promise level carries from the old row; the promised day tracks the new
-      // date only when a promise exists. A 'none' visit stays promise-free.
-      promisedDay: r.old.promise_level === 'none' ? null : input.date,
+      // date only for day-carrying levels ('none'/'time_only' stay day-free).
+      promisedDay: carriesPromisedDay(r.old.promise_level) ? input.date : null,
       locked: true,
     });
   } catch (err) {

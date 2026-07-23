@@ -5015,6 +5015,152 @@ describe('set_promise (the promise-record editor)', () => {
   });
 });
 
+describe('move_visit unassign + time_only (plan 4a.5)', () => {
+  test('one-shot park, staged-confirm park (the preview==commit path), time_only record', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Park Probe Cust' });
+    // Own probe tech — standalone-runnable (the update_job round-2 lesson).
+    const pkt = await insertTechnician({
+      tenantId,
+      ref: 'park-probe-tech',
+      displayName: 'Park Probe Tech',
+      seatExempt: true,
+    });
+    await setTechnicianAvailability(pkt.id, {
+      mon: [['08:00', '17:00']],
+      tue: [['08:00', '17:00']],
+      wed: [['08:00', '17:00']],
+      thu: [['08:00', '17:00']],
+      fri: [['08:00', '17:00']],
+      sat: [],
+      sun: [],
+    });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // Non-boolean unassign REJECTED, never coerced (find_slots rule).
+      const badFlag = await callWith('move_visit', {
+        assignmentId: 'x',
+        date: '2027-07-05',
+        startTime: '09:00',
+        reason: 'r',
+        unassign: 'yes',
+      });
+      expect(badFlag.isError).toBe(true);
+      expect(badFlag.text).toContain('unassign must be a boolean');
+
+      // Unpromised park: ONE call, technician gone, row visible as unassigned.
+      const booked = await callWith('book_visit', {
+        customerId: customer.id,
+        technicianRef: 'park-probe-tech',
+        date: '2027-07-05', // a Monday, clear of other fixtures
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      expect(booked.data.status).toBe('booked');
+      const parked = await callWith('move_visit', {
+        assignmentId: booked.data.assignmentId,
+        date: '2027-07-05',
+        startTime: '09:00',
+        unassign: true,
+        reason: 'tech pulled off',
+      });
+      expect(parked.isError).toBe(false);
+      expect(parked.data.status).toBe('moved');
+      expect(parked.data.unassigned).toBe(true);
+      expect(parked.data.note).toContain('Parked in one step');
+      const parkedRow = await pg.query(
+        'select technician_id from assignments where id = $1',
+        [parked.data.assignmentId],
+      );
+      expect(parkedRow.rows[0].technician_id).toBeNull();
+
+      // Both steering args at once → the shared verb refuses.
+      const both = await callWith('move_visit', {
+        assignmentId: parked.data.assignmentId,
+        date: '2027-07-05',
+        startTime: '09:00',
+        technicianRef: 'park-probe-tech',
+        unassign: true,
+        reason: 'contradiction',
+      });
+      expect(both.isError).toBe(true);
+      expect(both.text).toContain('not both');
+
+      // STAGED-CONFIRM PARK (plan review finding #1): a promise-breaking
+      // cross-day park must stage, and the CONFIRM must still detach —
+      // dropping unassign from the staged detail would commit a plain move
+      // that keeps the technician (preview ≠ commit on the one gated path).
+      const promised = await callWith('book_visit', {
+        customerId: customer.id,
+        technicianRef: 'park-probe-tech',
+        date: '2027-07-06',
+        startTime: '09:00',
+        endTime: '10:00',
+        promiseLevel: 'day',
+      });
+      const stagedPromised = await callWith('book_visit', { confirmId: promised.data.confirmId });
+      expect(stagedPromised.data.status).toBe('booked');
+      const parkStage = await callWith('move_visit', {
+        assignmentId: stagedPromised.data.assignmentId,
+        date: '2027-07-07', // day change on a day-promise → break → stage
+        startTime: '09:00',
+        unassign: true,
+        reason: 'park it for the reflow',
+      });
+      expect(parkStage.data.status).toBe('needs_confirmation');
+      expect(parkStage.data.preview.unassign).toBe(true);
+      expect(parkStage.data.preview.promiseLevel).toBe('day');
+      const parkConfirmed = await callWith('move_visit', { confirmId: parkStage.data.confirmId });
+      expect(parkConfirmed.isError).toBe(false);
+      expect(parkConfirmed.data.status).toBe('moved');
+      expect(parkConfirmed.data.unassigned).toBe(true);
+      const confirmedRow = await pg.query(
+        'select technician_id, promise_level, promised_day::text as promised_day from assignments where id = $1',
+        [parkConfirmed.data.assignmentId],
+      );
+      expect(confirmedRow.rows[0].technician_id).toBeNull();
+      expect(confirmedRow.rows[0].promise_level).toBe('day');
+      expect(confirmedRow.rows[0].promised_day).toBe('2027-07-07');
+
+      // time_only end to end: set_promise stores it with NO promised day; a
+      // day move stays one-shot; a time change stages.
+      const nineAm = await callWith('book_visit', {
+        customerId: customer.id,
+        technicianRef: 'park-probe-tech',
+        date: '2027-07-08',
+        startTime: '09:00',
+        endTime: '10:00',
+      });
+      const toTimeOnly = await callWith('set_promise', {
+        assignmentId: nineAm.data.assignmentId,
+        promiseLevel: 'time_only',
+      });
+      expect(toTimeOnly.isError).toBe(false);
+      expect(toTimeOnly.data.changes.promiseLevel).toEqual({ from: 'none', to: 'time_only' });
+      expect(toTimeOnly.data.changes.promisedDay).toEqual({ from: null, to: null });
+      expect(toTimeOnly.data.note).toContain('START TIME');
+      expect(toTimeOnly.data.note).toContain('day may still move freely');
+      const dayMove = await callWith('move_visit', {
+        assignmentId: nineAm.data.assignmentId,
+        date: '2027-07-09',
+        startTime: '09:00',
+        reason: 'day shuffle under a time_only promise',
+      });
+      expect(dayMove.isError).toBe(false);
+      expect(dayMove.data.status).toBe('moved'); // one-shot — the day was never promised
+      const timeMove = await callWith('move_visit', {
+        assignmentId: dayMove.data.assignmentId,
+        date: '2027-07-09',
+        startTime: '13:00',
+        reason: 'time shift under a time_only promise',
+      });
+      expect(timeMove.data.status).toBe('needs_confirmation');
+      expect(timeMove.data.preview.promiseLevel).toBe('time_only');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+});
+
 describe('set_technician_horizon (the visibility-horizon dial)', () => {
   test('validates, echoes old→new, SQL read-back; the clamp consumes the SETTING', { timeout: 30_000 }, async () => {
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });

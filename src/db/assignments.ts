@@ -124,7 +124,7 @@ export function isOverlapViolation(err: unknown): boolean {
 export interface RescheduleInput {
   startsAt: string;
   endsAt: string;
-  technicianId?: string; // omit = same technician
+  technicianId?: string | null; // omit = same technician; null = DETACH (park unassigned)
   reason: string; // why the old booking was undone (kept on the cancelled row)
   // Omitted → the new row keeps the old row's promise fields (a move carries
   // the promise). status keeps its 'proposed' default for existing callers;
@@ -161,7 +161,9 @@ export async function rescheduleAssignment(
   const created = await createAssignment({
     tenantId: old.tenant_id,
     jobId: old.job_id,
-    technicianId: input.technicianId ?? old.technician_id,
+    // The promisedDay idiom below, not `??`: an explicit null means DETACH,
+    // and `??` would silently resurrect the old technician (plan 4a.5).
+    technicianId: input.technicianId !== undefined ? input.technicianId : old.technician_id,
     startsAt: input.startsAt,
     endsAt: input.endsAt,
     status: input.status,

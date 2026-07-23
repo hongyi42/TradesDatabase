@@ -1,0 +1,10 @@
+-- Fourth promise level: time_only — the customer was told a TIME but not the
+-- day ("we'll come at 9, I'll confirm which day"). ADDITIVE value: stored
+-- 'time' keeps meaning day+time — renaming it would break live writers during
+-- the migrate/deploy window on the pilot (user decision 2026-07-23, plan 4a.5).
+--
+-- Split across two migration files on purpose: a new enum value cannot be
+-- USED in the same transaction that adds it (Postgres restriction), and each
+-- migration file runs in its own transaction — the constraint that references
+-- 'time_only' lives in the companion file.
+alter type promise_level add value if not exists 'time_only';

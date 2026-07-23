@@ -986,7 +986,7 @@ export type Database = {
         | "paid"
         | "cancelled"
         | "declined"
-      promise_level: "none" | "day" | "time"
+      promise_level: "none" | "day" | "time" | "time_only"
       review_status: "open" | "resolved" | "dismissed"
       technician_state:
         | "invited"
@@ -1156,7 +1156,7 @@ export const Constants = {
         "cancelled",
         "declined",
       ],
-      promise_level: ["none", "day", "time"],
+      promise_level: ["none", "day", "time", "time_only"],
       review_status: ["open", "resolved", "dismissed"],
       technician_state: [
         "invited",

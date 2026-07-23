@@ -330,6 +330,19 @@ export async function handleBoardRequest(
           });
           return;
         }
+        // Detach (plan 4a.5): unassign:true parks the visit. Exactly-true
+        // check — anything else present is a caller bug, not a park request.
+        if ('unassign' in body && typeof body.unassign !== 'boolean') {
+          json(res, 400, { error: 'unassign must be a boolean' });
+          return;
+        }
+        const unassign = body.unassign === true;
+        if (unassign && str(body, 'technicianRef')) {
+          json(res, 400, {
+            error: 'pass technicianRef to attach/reassign OR unassign:true to park — not both',
+          });
+          return;
+        }
         const input = {
           tenantId: auth.tenantId,
           assignmentId,
@@ -337,6 +350,7 @@ export async function handleBoardRequest(
           startTime,
           endTime: str(body, 'endTime'),
           technicianRef: str(body, 'technicianRef'), // set = assign/reassign (Feature A attach)
+          ...(unassign ? { unassign: true } : {}),
           reason,
           actorRef: auth.technician.ref,
         };

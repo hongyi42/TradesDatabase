@@ -367,3 +367,27 @@ body.dragging .stop.draggable { cursor: grabbing; }
 }
 .note-row { border-top: 1px solid var(--card); padding: 6px 0; font-size: 13px; }
 .note-key { color: var(--hint); }
+
+/* ---- 4a.6 board polish ---- */
+/* Why a sheet is read-only — a gate that hides its affordances must say so,
+   or it reads as a missing feature (user finding 2026-07-23). */
+.sheet-note {
+  color: var(--hint);
+  font-size: 12px;
+  border-left: 2px solid var(--hint);
+  padding: 2px 0 2px 8px;
+  margin: 0 0 10px;
+}
+/* Secondary tray action (Edit on an unscheduled job) — deliberately quieter
+   than .bucket-assign, which is the row's primary move. */
+.bucket-edit {
+  flex: none;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  padding: 6px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}

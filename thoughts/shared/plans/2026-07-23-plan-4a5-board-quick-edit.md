@@ -338,6 +338,24 @@ gain ONLY the notes section.
 ### Manual verification
 - [ ] user confirms the Phase-3 device list on the pilot board
 
+#### 4a.6 board polish — BUILT 2026-07-23 (branch `feature-4a6-board-polish`)
+All five findings below are fixed; gates green (620/620, +1 new test). No migration, UI +
+one test only. Server behavior unchanged except the audit-reason wording board writes send.
+- (1) latency → roster warm-up right after the manager's board paints (de-duplicated with
+  an in-flight promise so a picker opened mid-flight reuses it), and the picker now dismisses
+  on tap instead of hanging through preview→commit. The preview→commit pair itself STAYS —
+  it is the confirmation doctrine, not overhead.
+- (2) vocab → "Unassigned visits" in the tray, "None — leave unassigned" in the picker,
+  "Leave unassigned" in the booking sheet, "now unassigned" toasts, audit reasons
+  "Unassigned on the …". The wire key `parkedVisits` and the `unassign` verb are unchanged
+  (contract + action word).
+- (3) unscheduled-job editing → `openJobForm` extracted as ONE body for both entry points;
+  the tray job row gained an Edit button. Pinned by a new test: a job with NO visit edits in
+  place, the tray reflects the new title, and no visit is minted.
+- (4) the missing-pencils bug → tab term dropped from `canEdit`; read-only sheets now state
+  the reason (`.sheet-note`).
+- (5) `busyHint` "free" → "available".
+
 #### Device-check results (user, 2026-07-23)
 PASSED on the pilot board: drag-to-park, tray booking, editable sheet round-trips,
 compressed customer-notes section, past-write guard (no affordances on past days / Mine tab).

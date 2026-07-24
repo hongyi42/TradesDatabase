@@ -1358,6 +1358,40 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
     expect((await post('/board/api/job', { jobId: probeJobId }, 900000001)).status).toBe(400);
   });
 
+  // 4a.6 (user device finding): a job with NO visit was already editable —
+  // /board/api/job is keyed by jobId, never by an assignment — but the only
+  // UI path ran through a VISIT's detail sheet, so managers had to schedule a
+  // job before they could fix its description. The tray's Edit button closes
+  // that gap; this pins the contract it stands on, including that an identity
+  // edit never mints a visit.
+  test('job edit needs no visit: an unscheduled tray job edits in place (4a.6)', async () => {
+    const casa = await createCustomer({ tenantId, name: 'Tray Edit Casa' });
+    const job = await createJob({ tenantId, customerId: casa.id, title: 'Wrong title' });
+    const trayTitle = async () => {
+      const resp = await fetch(`${base}/board/api/bucket`, { headers: tma(900000001) });
+      const body = (await resp.json()) as {
+        unscheduledJobs: Array<{ jobId: string; title: string | null }>;
+      };
+      return body.unscheduledJobs.find((j) => j.jobId === job.id)?.title;
+    };
+    expect(await trayTitle()).toBe('Wrong title');
+
+    const resp = await post(
+      '/board/api/job',
+      { jobId: job.id, title: 'Right title', priority: 'urgent' },
+      900000001,
+    );
+    expect(resp.status).toBe(200);
+    const row = await pg.query('select title, priority from jobs where id = $1', [job.id]);
+    expect(row.rows[0]).toEqual({ title: 'Right title', priority: 'urgent' });
+    expect(await trayTitle()).toBe('Right title');
+    const visits = await pg.query(
+      'select count(*)::int as n from assignments where job_id = $1',
+      [job.id],
+    );
+    expect(visits.rows[0].n).toBe(0);
+  });
+
   test('detail: jobId/jobPriority/customerNotes ride — folded, capped at 8, values truncated', async () => {
     const resp = await fetch(`${base}/board/api/visit?assignmentId=${notesVisitId}`, {
       headers: tma(900000001),

@@ -413,8 +413,12 @@
         state.today = anchor;
         render(data);
         // Pill fill AFTER the paint, manager-gated, never awaited (a
-        // technician call would be a guaranteed 403 — review gap #2).
-        if (data.tier === 'manager') fetchBucket();
+        // technician call would be a guaranteed 403 — review gap #2). The
+        // roster warm-up rides the same rule (4a.6).
+        if (data.tier === 'manager') {
+          fetchBucket();
+          prefetchRoster();
+        }
         return data;
       });
     }
@@ -486,7 +490,12 @@
       esc(
         (v.overdue ? 'OVERDUE — the day passed with nobody assigned · ' : '') +
           (v.customer || 'Unknown customer') +
-          (v.jobTitle ? ' — ' + v.jobTitle : ''),
+          (v.jobTitle ? ' — ' + v.jobTitle : '') +
+          // The row was ALWAYS tappable into the full sheet, but "Assign" was
+          // its only visible action, so the edit path read as nonexistent
+          // (user finding 2026-07-23) — say it, like the job rows do. Overdue
+          // rows open read-only (the date gate), so they promise less.
+          (v.overdue ? ' · tap to open' : ' · tap to edit'),
       ) +
       '</div></div>' +
       // No Assign on OVERDUE rows: attaching keeps the visit's own (past)
@@ -504,14 +513,20 @@
 
   function bucketJobRow(j) {
     // Tappable (plan 4a.5): opens the booking sheet — the tray finally drains
-    // from the same screen that shows it.
+    // from the same screen that shows it. Edit (4a.6): an unscheduled job's
+    // title/priority were only reachable through a VISIT's sheet, so a
+    // manager had to schedule a job before they could fix its description
+    // (user finding 2026-07-23). /board/api/job is keyed by jobId and never
+    // needed a visit — only the UI was missing.
     return (
       '<div class="bucket-row bucket-job" data-job="' + esc(j.jobId) + '"' +
-      ' data-title="' + esc(j.title || '') + '">' +
+      ' data-title="' + esc(j.title || '') + '" data-priority="' + esc(j.priority || '') + '">' +
       '<div class="bucket-row-txt"><div class="bucket-row-main">' + esc(j.title || 'Untitled job') + '</div>' +
       '<div class="bucket-row-sub">' +
       esc((j.customer || 'Unknown customer') + ' · ' + j.priority + ' · tap to book') +
-      '</div></div></div>'
+      '</div></div>' +
+      '<button type="button" class="bucket-edit">Edit</button>' +
+      '</div>'
     );
   }
 
@@ -521,7 +536,12 @@
       rows = '<div class="bucket-empty">Nothing loose — all work is scheduled.</div>';
     } else {
       rows =
-        '<div class="bucket-section"><h3>Parked visits (' + b.parkedVisits.length + ')</h3>' +
+        // "Unassigned", never "parked" (user decision 2026-07-23): the tray
+        // and the day-column lane show the SAME state (nobody attached) — two
+        // names for one state read as two concepts. What differs is scope: the
+        // lane shows the viewed day, the tray shows every day plus jobs with
+        // no visit at all. `unassign` stays the VERB (an action, not a state).
+        '<div class="bucket-section"><h3>Unassigned visits (' + b.parkedVisits.length + ')</h3>' +
         (b.parkedVisits.length
           ? b.parkedVisits.map(bucketVisitRow).join('')
           : '<div class="bucket-empty">None</div>') +
@@ -564,7 +584,7 @@
         var assign = e.target.closest && e.target.closest('.bucket-assign');
         if (assign) {
           openPicker({
-            title: 'Assign parked visit',
+            title: 'Assign unassigned visit',
             allowNone: false,
             date: assign.getAttribute('data-date'),
             onPick: function (ref) {
@@ -585,6 +605,21 @@
               );
             },
           });
+          return;
+        }
+        // Edit an UNSCHEDULED job's identity (4a.6) — checked before the row
+        // tap below, because the button lives inside the row.
+        var jobEdit = e.target.closest && e.target.closest('.bucket-edit');
+        if (jobEdit) {
+          var editRow = jobEdit.closest('.bucket-job');
+          if (editRow) {
+            openJobForm({
+              jobId: editRow.getAttribute('data-job'),
+              title: editRow.getAttribute('data-title'),
+              priority: editRow.getAttribute('data-priority'),
+              onDone: openBucket, // came from the tray — go back to it (re-fetched)
+            });
+          }
           return;
         }
         // Book an unscheduled job (plan 4a.5): the booking sheet.
@@ -630,16 +665,21 @@
 
   function renderDetail(d) {
     var c = d.customer || {};
-    // Edit affordances (plan 4a.5): manager + Team tab + a live, TODAY-OR-
-    // FUTURE visit — the same triple gate every other board write carries
-    // (review finding #2: without the tab/date checks, a manager paging to
-    // last week could rewrite history from the sheet). Past visits render a
-    // read-only sheet; deliberate history corrections stay a chat job. The
-    // server re-gates tier regardless; technician sheets gain ONLY the notes
-    // section below.
+    // Edit affordances (plan 4a.5): manager + a live, TODAY-OR-FUTURE visit.
+    // The DATE term is what protects history (deliberate corrections stay a
+    // chat job); the server independently re-gates tier AND floors past dates,
+    // so this is disclosure, not the enforcement boundary.
+    //
+    // The Team-tab term was REMOVED in 4a.6 (user device finding 2026-07-23):
+    // the loose-bucket pill renders on BOTH tabs, so a sheet opened from the
+    // tray while on "My schedule" came up silently read-only — and out-of-
+    // window unassigned visits are reachable ONLY through the tray, so that
+    // was the whole experience for them. The tab said nothing about whether a
+    // visit may be edited; it only described which list you happened to be
+    // looking at. (Drag/✕ keep their own tab gate in actionable(): those act
+    // on the RENDERED lane layout, which really is Team-tab-only.)
     var canEdit =
       state.isManager &&
-      state.view === 'team' &&
       d.status === 'confirmed' &&
       state.today !== null &&
       d.start.slice(0, 10) >= state.today;
@@ -693,10 +733,24 @@
           esc(n.value) + '</div>';
       });
     }
+    // A read-only sheet SAYS WHY (4a.6, user device finding): silently
+    // dropping every ✎ is indistinguishable from "this can't be edited at
+    // all" — which is exactly how the tab-gated tray sheet was read. State the
+    // reason instead, so a gate is always self-explaining.
+    var why = '';
+    if (state.isManager && !canEdit) {
+      why =
+        d.status !== 'confirmed'
+          ? 'Read-only — this visit is ' + d.status + '.'
+          : state.today !== null && d.start.slice(0, 10) < state.today
+            ? 'Read-only — the day has passed. Ask the assistant in chat to correct past visits.'
+            : 'Read-only — reopen the board and try again.';
+    }
     return (
       '<div class="detail-sheet" role="dialog" aria-modal="true">' +
       '<button type="button" class="detail-close" aria-label="Close">✕</button>' +
       '<h2>' + esc(c.name || 'Unknown customer') + '</h2>' +
+      (why ? '<div class="sheet-note">' + esc(why) + '</div>' : '') +
       rows +
       '</div>'
     );
@@ -780,23 +834,51 @@
 
   // ---- Quick-edit machinery (plan 4a.5) ----
 
-  function fetchRoster(cb) {
-    if (state.roster) {
-      cb(state.roster);
-      return;
-    }
-    fetch('/board/api/roster', { headers: authHeaders() })
+  // ONE roster fetch, de-duplicated: the post-paint warm-up and a picker
+  // opened before it lands share the same in-flight promise instead of racing
+  // two identical requests.
+  var rosterInFlight = null;
+  function loadRoster() {
+    if (state.roster) return Promise.resolve(state.roster);
+    if (rosterInFlight) return rosterInFlight;
+    rosterInFlight = fetch('/board/api/roster', { headers: authHeaders() })
       .then(function (r) {
         return r.ok ? r.json() : null;
       })
       .then(function (b) {
+        rosterInFlight = null;
         if (b && b.technicians) {
           state.roster = b.technicians;
-          cb(state.roster);
-        } else {
-          toast('Could not load the team list — try again.', true);
-          cb(null);
+          return state.roster;
         }
+        return null;
+      })
+      .catch(function (err) {
+        rosterInFlight = null;
+        throw err;
+      });
+    return rosterInFlight;
+  }
+
+  // Warm the cache just after the board paints (4a.6 — user reported the
+  // assign gesture felt slow): the first Assign used to pay a whole extra
+  // round-trip with the manager already staring at the sheet. Silent and
+  // never awaited — a failure just leaves the cache empty, and the picker's
+  // own on-demand fetch keeps the error path.
+  function prefetchRoster() {
+    if (state.roster) return;
+    loadRoster().catch(function () {});
+  }
+
+  function fetchRoster(cb) {
+    loadRoster()
+      .then(function (list) {
+        if (list) {
+          cb(list);
+          return;
+        }
+        toast('Could not load the team list — try again.', true);
+        cb(null);
       })
       .catch(function () {
         toast('Network error — could not load the team list.', true);
@@ -812,8 +894,9 @@
     return name;
   }
 
-  // "2 visits" / "free" for a date the board has already painted; '' outside
-  // the rendered window (no data, no claim).
+  // "2 visits" / "available" for a date the board has already painted; ''
+  // outside the rendered window (no data, no claim). "available" — not "free"
+  // (user, 2026-07-23): free reads as "costs nothing" on a page about work.
   function busyHint(ref, date) {
     var stops = state.stopsByDate && state.stopsByDate[date];
     if (!stops) return '';
@@ -821,7 +904,7 @@
     stops.forEach(function (s) {
       if (s.technicianRef === ref) n++;
     });
-    return n === 0 ? 'free' : n + (n === 1 ? ' visit' : ' visits');
+    return n === 0 ? 'available' : n + (n === 1 ? ' visit' : ' visits');
   }
 
   // Overlay helper for the new sheets (picker / mini-forms): the
@@ -859,7 +942,7 @@
       if (opts.allowNone) {
         rows +=
           '<div class="picker-row" data-pick="">' +
-          '<span class="picker-name">None — park it</span>' +
+          '<span class="picker-name">None — leave unassigned</span>' +
           '<span class="picker-hint">nobody assigned</span></div>';
       }
       roster.forEach(function (t) {
@@ -873,7 +956,13 @@
       });
       openSheet(sheetShell(opts.title, rows), function (e) {
         var row = e.target.closest && e.target.closest('.picker-row');
-        if (row) opts.onPick(row.getAttribute('data-pick') || null);
+        if (!row) return;
+        // Dismiss BEFORE the write starts (4a.6): a move is preview →
+        // (confirm) → commit, and holding the picker open across both round
+        // trips read as a frozen tap. Failures still toast, and every write
+        // path refreshes the board, so nothing is hidden by closing early.
+        closeDetail();
+        opts.onPick(row.getAttribute('data-pick') || null);
       });
     });
   }
@@ -1017,14 +1106,14 @@
             date: vDate,
             startTime: hhmm(d.start),
             endTime: hhmm(d.end),
-            reason: ref ? 'Assigned on the visit sheet' : 'Parked on the visit sheet',
+            reason: ref ? 'Assigned on the visit sheet' : 'Unassigned on the visit sheet',
           };
           if (ref) body.technicianRef = ref;
           else body.unassign = true;
           postMove(
             body,
             function () {
-              return ref ? 'Assigned to ' + rosterName(ref) : 'Parked — nobody assigned';
+              return ref ? 'Assigned to ' + rosterName(ref) : 'Now unassigned — nobody on it';
             },
             hhmm(d.start),
           );
@@ -1120,58 +1209,72 @@
       return;
     }
     if (kind === 'job') {
-      openSheet(
-        sheetShell(
-          'Edit job',
-          fieldRow('Title', '<input type="text" id="qe-title" value="' + esc(d.jobTitle || '') + '">') +
-            fieldRow('Priority', selectHtml('qe-priority', PRIORITY_OPTIONS, d.jobPriority || 'routine')) +
-            formButtons('Save'),
-        ),
-        function (e, ov) {
-          var btn = e.target.closest && e.target.closest('[data-form]');
-          if (!btn) return;
-          if (btn.getAttribute('data-form') === 'cancel') {
-            openDetail(d.assignmentId);
-            return;
-          }
-          var body = { jobId: d.jobId };
-          var title = val(ov, 'qe-title').trim();
-          if (title && title !== (d.jobTitle || '')) body.title = title;
-          var priority = val(ov, 'qe-priority');
-          if (priority !== d.jobPriority) body.priority = priority;
-          if (!body.title && !body.priority) {
-            openDetail(d.assignmentId);
-            return;
-          }
-          apiPost('/board/api/job', body)
-            .then(function (r) {
-              if (!r.ok) {
-                toast(r.body.error || 'Job update failed (' + r.status + ')', true);
-                return;
-              }
-              toast(
-                'Job updated' +
-                  (body.title ? ' — title: ' + body.title : '') +
-                  (body.priority ? ' — priority: ' + body.priority : ''),
-              );
-              openDetail(d.assignmentId);
-              refresh(); // the title shows on cards behind the sheet
-            })
-            .catch(function () {
-              toast('Network error — nothing was changed.', true);
-            });
+      openJobForm({
+        jobId: d.jobId,
+        title: d.jobTitle,
+        priority: d.jobPriority,
+        onDone: function () {
+          openDetail(d.assignmentId); // same id — a job edit never remints the visit
         },
-      );
+      });
     }
+  }
+
+  // The job-identity form — ONE body for both entry points (4a.6): the visit
+  // sheet's Purpose ✎ and the tray's Edit on a job that has no visit yet.
+  // `onDone` is where the caller came from, so Cancel/Save return there.
+  function openJobForm(opts) {
+    openSheet(
+      sheetShell(
+        'Edit job',
+        fieldRow('Title', '<input type="text" id="qe-title" value="' + esc(opts.title || '') + '">') +
+          fieldRow('Priority', selectHtml('qe-priority', PRIORITY_OPTIONS, opts.priority || 'routine')) +
+          formButtons('Save'),
+      ),
+      function (e, ov) {
+        var btn = e.target.closest && e.target.closest('[data-form]');
+        if (!btn) return;
+        if (btn.getAttribute('data-form') === 'cancel') {
+          opts.onDone();
+          return;
+        }
+        var body = { jobId: opts.jobId };
+        var title = val(ov, 'qe-title').trim();
+        if (title && title !== (opts.title || '')) body.title = title;
+        var priority = val(ov, 'qe-priority');
+        if (priority !== opts.priority) body.priority = priority;
+        if (!body.title && !body.priority) {
+          opts.onDone();
+          return;
+        }
+        apiPost('/board/api/job', body)
+          .then(function (r) {
+            if (!r.ok) {
+              toast(r.body.error || 'Job update failed (' + r.status + ')', true);
+              return;
+            }
+            toast(
+              'Job updated' +
+                (body.title ? ' — title: ' + body.title : '') +
+                (body.priority ? ' — priority: ' + body.priority : ''),
+            );
+            opts.onDone();
+            refresh(); // the title shows on cards behind the sheet
+          })
+          .catch(function () {
+            toast('Network error — nothing was changed.', true);
+          });
+      },
+    );
   }
 
   // The tray's booking sheet (plan 4a.5): day + start + end are REQUIRED —
   // the server never invents a visit length (standing user decision) — plus
-  // technician-or-park and the promise selector.
+  // technician-or-leave-unassigned and the promise selector.
   function openBookingForm(jobId, title) {
     fetchRoster(function (roster) {
       if (!roster) return;
-      var techOptions = [['', 'Leave unassigned — park it']];
+      var techOptions = [['', 'Leave unassigned']];
       roster.forEach(function (t) {
         techOptions.push([t.ref, t.name]);
       });
@@ -1289,9 +1392,11 @@
     }
     if (sameDay && !body.technicianRef && !body.unassign) return; // dropped where it already was
     // The audit reason tracks what the move ACTUALLY does, not the drop
-    // target (final-review finding: a parked card day-moved via the
-    // Unassigned lane was stamped "Parked").
-    body.reason = body.unassign ? 'Parked on the dispatch board' : 'Moved on the dispatch board';
+    // target (final-review finding: an already-unassigned card day-moved via
+    // the Unassigned lane was stamped as if it had just been detached).
+    body.reason = body.unassign
+      ? 'Unassigned on the dispatch board'
+      : 'Moved on the dispatch board';
     postMove(
       body,
       function () {
@@ -1300,7 +1405,7 @@
           (body.technicianRef
             ? ' — now with ' + (laneLabel || body.technicianRef)
             : body.unassign
-              ? ' — parked, nobody assigned'
+              ? ' — now unassigned, nobody on it'
               : '')
         );
       },
@@ -1579,8 +1684,18 @@
   // from the server; refresh() then keeps the current tab/week.
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden && state.rendered) {
+      var prev = state.today;
       state.today = null;
-      refresh();
+      refresh().then(function () {
+        // A FAILED re-anchor must not strand the page anchor-less (4a.6):
+        // every write gate reads state.today, so a null one silently turns
+        // every sheet read-only — over an already-rendered board whose cards
+        // still look editable — until some later load happens to succeed.
+        // Restoring the previous anchor is safe: the server floors past-dated
+        // board writes regardless, so a stale-by-one-day anchor can only cost
+        // a refused write, never a wrong one.
+        if (state.today === null) state.today = prev;
+      });
     }
   });
   refresh();

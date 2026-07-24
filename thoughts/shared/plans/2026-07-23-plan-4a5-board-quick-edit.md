@@ -338,6 +338,69 @@ gain ONLY the notes section.
 ### Manual verification
 - [ ] user confirms the Phase-3 device list on the pilot board
 
+#### 4a.6 board polish — BUILT 2026-07-23 (branch `feature-4a6-board-polish`)
+All five findings below are fixed; gates green (620/620, +1 new test). No migration, UI +
+one test only. Server behavior unchanged except the audit-reason wording board writes send.
+- (1) latency → roster warm-up right after the manager's board paints (de-duplicated with
+  an in-flight promise so a picker opened mid-flight reuses it), and the picker now dismisses
+  on tap instead of hanging through preview→commit. The preview→commit pair itself STAYS —
+  it is the confirmation doctrine, not overhead.
+- (2) vocab → "Unassigned visits" in the tray, "None — leave unassigned" in the picker,
+  "Leave unassigned" in the booking sheet, "now unassigned" toasts, audit reasons
+  "Unassigned on the …". The wire key `parkedVisits` and the `unassign` verb are unchanged
+  (contract + action word).
+- (3) unscheduled-job editing → `openJobForm` extracted as ONE body for both entry points;
+  the tray job row gained an Edit button. Pinned by a new test: a job with NO visit edits in
+  place, the tray reflects the new title, and no visit is minted.
+- (4) the missing-pencils bug → **two independent causes**, both closed. (a) the tab term
+  dropped from `canEdit`; (b) `visibilitychange` nulls `state.today` to force re-learning the
+  firm-local day, but a FAILED refresh left it null over an already-rendered board — every
+  sheet gate reads it, so all editing went read-only while the cards behind still looked
+  editable. The anchor is now restored when the re-anchor doesn't land (safe: the server
+  floors past-dated board writes, so a stale-by-one-day anchor can only cost a refused
+  write). Cause (b) fires on ANY tab, including Team — it is the candidate if the user was
+  not on "My schedule". Read-only sheets now state the reason (`.sheet-note`), so neither
+  cause can present silently again.
+- (5) `busyHint` "free" → "available".
+
+#### Device-check results (user, 2026-07-23)
+PASSED on the pilot board: drag-to-park, tray booking, editable sheet round-trips,
+compressed customer-notes section, past-write guard (no affordances on past days / Mine tab).
+
+Findings → all folded into the **4a.6 board-polish** follow-up:
+1. **Tap-assign latency** — the picker→assign gesture feels slow. Candidate causes: roster
+   GET on every picker open (not cached across opens), the sequential
+   preview→commit→full-`refresh()` chain (three round-trips before the card moves), and
+   Render cold-start. Fix shapes: cache the roster per session, optimistic lane update, or
+   patch the moved card from the commit response instead of reloading the whole board.
+2. **"Parked" vs "Unassigned" — USER DECIDED: unify on "Unassigned."** They are the same
+   state (`technician_id NULL`, confirmed); the two names read as two concepts. The real
+   difference is scope, not state (lane = person-less visits on the viewed day + drop
+   target; tray = person-less visits ANY day, incl. beyond the window/overdue, PLUS jobs
+   with no visit at all). Rename "parked visit" → "unassigned visit" in board copy;
+   `unassign` stays the verb name (it is an action, not a state).
+3. **Unscheduled jobs cannot be edited without scheduling them first** — the tray job row
+   taps straight into the booking sheet; title/priority editing lives only on a *visit's*
+   detail sheet. `POST /board/api/job` is jobId-keyed and would already serve an
+   unscheduled job — the UI just never offers it. Fix: an edit affordance on the job row
+   (or an "edit details" step inside the booking sheet).
+4. **Unassigned visits open a sheet with NO ✎ at all** (user, confirmed on device — the
+   sheet opens, the pencils are absent). `canEdit` (board.js:640) never tests for a
+   technician, and the live rows are all `confirmed` + future with tenant-valid jobIds, so
+   the failing term is **`state.view === 'team'`**: the loose-bucket pill renders for
+   managers on BOTH tabs (board.js:302), so opening the tray from **My schedule** yields a
+   sheet gated read-only — while an assigned visit, tapped from a lane, is only reachable
+   on the Team tab and therefore always edits fine. Compounding: out-of-window unassigned
+   visits (2 of 3 on the pilot) are reachable ONLY via the tray, so the tray is exactly
+   where this bites. **Fix: drop the tab term from `canEdit`** — it carries no safety that
+   the remaining terms don't (manager tier + `confirmed` + today-or-future, with the server
+   re-gating tier AND the past-date floor); it was belt-and-braces from Phase-3 review
+   finding #2, whose actual protection is the date term. **Plus: a read-only sheet must SAY
+   why** (one muted line — "Past visit — read-only", etc.) instead of silently omitting
+   affordances; silent omission is what made this look like a missing feature. Also give
+   tray visit rows the job row's "tap to …" hint.
+5. **Picker busy-hint copy: "free" → "available"** (user) — `busyHint`, board.js:824.
+
 ## Final review gate
 Bundled `/code-review` on the full diff; Important findings fixed + gates re-run before the
 plan flips to `complete`.

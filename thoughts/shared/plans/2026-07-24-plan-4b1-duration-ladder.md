@@ -13,27 +13,34 @@ duration**, because duration lives only in `job_type_durations` keyed by job typ
 jobs have no type at all, and the one stored duration (`drainage replacement`) matches nothing.
 A freeze run today would correctly place zero jobs.
 
-This plan moves duration onto the **job itself**, sourced from a **closed ladder** the manager
-picks from rather than a table they must maintain. It is the first of four: **4b-1 duration
-(here) → 4b-2 unplaced visits → 4b-3 the freeze → 4b-4 autonomy toggle.**
+This plan moves duration onto the **job itself**, offered as a **ladder of common lengths** —
+with free minutes available when reality demands it — rather than a job-type table the manager
+must maintain. It is the first of four: **4b-1 duration (here) → 4b-2 unplaced visits →
+4b-3 the freeze → 4b-4 autonomy toggle.**
 
 ## Decisions
 
-- **Duration model replaced by a fixed ladder** (user, 2026-07-24) — duration is a pick from
-  `15m · 30m · 45m · 1h · 1.5h · 2h · 3h · 4h · 6h · 8h`. Ten rungs, denser at the short end
-  where a fixed error costs proportionally more. Chosen over free-text minutes because a closed
-  set is a one-tap answer in chat, which is what removes the coverage bottleneck; the user's
-  3-hour concern is met by rung density, not by reopening the set.
-- **Ladder enforced in the typed layer, not the database** — the migration checks only `> 0`;
-  `DURATION_LADDER` in `src/db/jobs.ts` is the single list every surface validates against (the
-  `JOB_PRIORITIES` idiom, `src/db/jobs.ts:173`). Chosen so changing a rung is a one-line edit,
-  not a pilot migration.
-- **Every stored value is a rung** — the invariant that makes the board picker and Phase 4's
-  gate honest. Consequence (plan-review finding): `bookVisit` records the booked span onto its
-  new job shell **only when the span lands exactly on a rung**; an 08:00–09:20 booking leaves
-  the job's duration null rather than storing 80. Storing an off-ladder value would render as
-  "not set" in the picker and be silently wiped by an unrelated title edit. Nothing is lost —
-  a job that already has a visit is not work the freeze needs to place.
+- **A ladder of common lengths, with a free-minutes escape hatch** (user, 2026-07-24, revised
+  after the off-ladder-booking question) — the usual answer is a pick from
+  `15m · 30m · 45m · 1h · 1.5h · 2h · 3h · 4h · 6h · 8h`, denser at the short end where a fixed
+  error costs proportionally more. The ladder is what makes the common case one tap in chat,
+  which is what removes the coverage bottleneck; **any whole number of minutes is also
+  accepted**, so a firm whose standard callout is 20 minutes is never forced to round. The
+  ladder is a default path, not a vocabulary.
+- **`DURATION_LADDER` is presentation, not validation** — `src/db/jobs.ts` exports it so every
+  surface offers the SAME rungs (the `JOB_PRIORITIES` single-list idiom, :173), but the gate is
+  `Number.isInteger(m) && m > 0 && m <= MAX_DURATION_MINUTES`. Changing a rung stays a one-line
+  edit and never a migration, because the database only checks `> 0`.
+- **Upper bound `MAX_DURATION_MINUTES = 1440` (24h)** — implementer's call, recorded here:
+  with free text there is nothing to catch `6000` typed for `600`, and a job estimate longer
+  than a day is multi-visit work, not a bigger number. Chosen over no bound so one slip cannot
+  poison the freeze's capacity math.
+- **Booked spans are recorded verbatim** — `bookVisit` writes `end − start` onto the job shell
+  it mints, whatever the value; an 08:00–09:20 booking stores 80. This is what the free-minutes
+  decision buys. The earlier "rungs only" rule would have discarded a measured fact, and the
+  loss surfaced on cancellation: the job returns to the loose bucket
+  (`listUnscheduledOpenJobsWithCustomer` counts it unscheduled once no proposed/confirmed
+  assignment remains) and the freeze would have to re-ask a length the system already knew.
 - **Column is NULLABLE** — "we have never been told" must stay representable and visible.
   `not null` is impossible anyway (18 existing rows, and `src/writePath/recordFieldNote.ts:203`
   mints jobs from inbound mail with nobody to ask). "Required at creation" is enforced at the
@@ -63,7 +70,7 @@ but it means the automatic weekly placement we're building would have nothing to
 ```
   TODAY                                  AFTER THIS PLAN
   job ──has type?──▶ job_type_durations   job ──▶ duration_minutes  ◀── the answer
-        │  (usually no)      │  (1 row)          (a rung: 15m…8h)
+        │  (usually no)      │  (1 row)       (a rung 15m…8h, or any minutes)
         ▼                    ▼                          ▲
       "ask the manager"   "ask the manager"     job_type_durations
                                                 (now just pre-selects a rung)
@@ -127,14 +134,17 @@ alter table jobs add column duration_minutes integer
 **`src/db/jobs.ts`**
 - Export the ladder beside `JOB_PRIORITIES` (:173):
   ```ts
-  // The closed set of job lengths (user decision 2026-07-24). Denser at the
-  // short end: a 15-minute error on a 30-minute call matters, on a 6-hour
-  // install it does not. Enforced HERE, not in the DB — every surface (MCP
-  // tools, board endpoint, the freeze) validates against this one list, so
-  // changing a rung is a one-line edit. (JOB_PRIORITIES precedent.)
+  // The OFFERED job lengths (user decision 2026-07-24) — denser at the short
+  // end: a 15-minute error on a 30-minute call matters, on a 6-hour install it
+  // does not. Every surface offers THIS list (JOB_PRIORITIES precedent), but it
+  // is presentation, not validation: free minutes are accepted so a firm whose
+  // standard callout is 20 minutes is never forced to round.
   export const DURATION_LADDER = [15, 30, 45, 60, 90, 120, 180, 240, 360, 480] as const;
-  export const isLadderDuration = (m: unknown): m is number =>
-    typeof m === 'number' && (DURATION_LADDER as readonly number[]).includes(m);
+  // The bound catches typos (6000 for 600). A job estimate longer than a day is
+  // multi-visit work, not a bigger number.
+  export const MAX_DURATION_MINUTES = 1440;
+  export const isValidDuration = (m: unknown): m is number =>
+    typeof m === 'number' && Number.isInteger(m) && m > 0 && m <= MAX_DURATION_MINUTES;
   // '1h 30m' — one label composer, so chat and board agree verbatim.
   export const formatDuration = (m: number): string =>
     m % 60 === 0 ? `${m / 60}h` : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
@@ -143,9 +153,10 @@ alter table jobs add column duration_minutes integer
   `duration_minutes: input.durationMinutes ?? null`.
 - `UpdateJobDetailsInput` (:175) gains `durationMinutes?: number | null` (null = clear back to
   unknown, mirroring `jobType`'s clear arm — a wrong length needs a real undo).
-  `updateJobDetails` (:186) validates non-null values with `isLadderDuration` and throws naming
-  the rungs. **This type is what `updateJobIdentity` (`src/schedule/booking.ts:740`) already
-  takes**, so no separate signature change there.
+  `updateJobDetails` (:186) validates non-null values with `isValidDuration`; the error names
+  the bound and offers the ladder as suggestions, never as the allowed set. **This type is what
+  `updateJobIdentity` (`src/schedule/booking.ts:740`) already takes**, so no separate signature
+  change there.
 
 **`src/synthesis/fixtures.ts`** (plan-review finding — missed footprint)
 - The `job()` fixture at :25 builds a complete `Job` Row literal; every generated column is
@@ -154,9 +165,9 @@ alter table jobs add column duration_minutes integer
 ### Automated verification
 - [ ] `npx supabase db reset` applies the migration locally without error
 - [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] new tests in `src/db/scheduling.test.ts`: `createJob` persists a rung and defaults to null;
-      `updateJobDetails` accepts every rung, rejects `45.5` / `100` / `0` with a message naming
-      the ladder, and accepts `null` as a clear
+- [ ] new tests in `src/db/scheduling.test.ts`: `createJob` persists a duration and defaults to
+      null; `updateJobDetails` accepts every rung, **accepts an off-ladder `20` and `80`**,
+      rejects `45.5` / `0` / `-30` / `6000`, and accepts `null` as a clear
 - [ ] new test in `src/db/schema.test.ts` asserting `jobs.duration_minutes` exists and is
       nullable (the column-presence idiom at :100-110, not the table check at :90)
 
@@ -187,16 +198,21 @@ re-described as a per-type suggestion rather than the source of truth.
   ```ts
   durationMinutes: {
     type: ['integer', 'null'],
-    enum: [...DURATION_LADDER, null],
+    // NO enum — free minutes are allowed. The rungs are OFFERED in the text so
+    // the agent proposes them as choices; a manager who says "20 minutes" gets
+    // 20, not a rounded lie.
+    minimum: 1,
+    maximum: 1440,
     description:
-      'How long this job takes — one of 15, 30, 45, 60, 90, 120, 180, 240, 360, 480 minutes. ' +
-      'Ask the manager which; NEVER pick one yourself. Pass null to clear it back to unknown.',
+      'How long this job takes, in whole minutes. Offer these first: 15, 30, 45, 60, 90, 120, ' +
+      '180, 240, 360, 480. Any other whole number is fine if the manager states one. ASK the ' +
+      'manager; NEVER pick a length yourself. Pass null to clear it back to unknown.',
   }
   ```
   and extend the tool description: setting it is what makes the job placeable.
-- `update_job` handler (:4011): reject non-integer / off-ladder values with a message listing
-  the rungs (copy the `JOB_PRIORITIES` guard shape at :4026), pass through to
-  `updateJobIdentity`, and echo it in `changes` old → new.
+- `update_job` handler (:4011): reject non-integers, `<= 0`, and `> 1440` via `isValidDuration`
+  (copy the `JOB_PRIORITIES` guard shape at :4026 — the message states the bound and lists the
+  rungs as suggestions), pass through to `updateJobIdentity`, echo in `changes` old → new.
 - `find_slots` duration resolution (:4243-4274): insert the job-level branch between the
   subject-visit branch and the type lookup —
   ```ts
@@ -205,9 +221,10 @@ re-described as a per-type suggestion rather than the source of truth.
     durationAssumption = `using this job's recorded length (${formatDuration(durationMin)})`;
   } else {
   ```
-- `vocabularyGuidance` (:4215): **add** the ladder remedy as the primary one — "ask the manager
-  how long it takes and set it on the job with `update_job` (durationMinutes: 15/30/45/60/90/
-  120/180/240/360/480)". Existing assertions are pinned and must survive verbatim:
+- `vocabularyGuidance` (:4215): **add** the duration remedy as the primary one — "ask the
+  manager how long it takes and set it on the job with `update_job`; offer 15/30/45/60/90/120/
+  180/240/360/480 as choices, but take whatever whole number they state". Existing assertions
+  are pinned and must survive verbatim:
   `src/mcp/server.test.ts:4217-4219` requires the untyped arm to still contain
   `'no recorded type'`, the configured-type list (`'drainage (300m)'`) **and** `'assumedType'`;
   `:4838-4840` requires the typed arm to contain `'update_job'` and **not** contain
@@ -218,15 +235,16 @@ re-described as a per-type suggestion rather than the source of truth.
 - Replace the local `fmtMin` (:4205) with the imported `formatDuration`.
 
 **`src/schedule/booking.ts`**
-- `bookVisit`'s job-shell mint (:318-326): record the booked span **only when it is a rung** —
+- `bookVisit`'s job-shell mint (:318-326): record the booked span **verbatim** —
   ```ts
-  // Ladder invariant: every stored duration_minutes is a rung, so the board
-  // picker can always render the current value and Phase 4's gate stays true.
-  // An off-ladder span (08:00-09:20) says something about ONE visit, not about
-  // how long this kind of job takes — leave it unknown rather than store 80.
-  const spanMin = Math.round((Date.parse(r.endISO) - Date.parse(r.startISO)) / 60_000);
-  ...(isLadderDuration(spanMin) ? { durationMinutes: spanMin } : {}),
+  // A MEASURED value, not an invented one, so the never-guess rule holds. Kept
+  // even when off-ladder (08:00-09:20 → 80): free minutes are allowed, and
+  // discarding it would leave the job duration-less if the visit is later
+  // cancelled — the freeze would re-ask a length we already knew.
+  durationMinutes: Math.round((Date.parse(r.endISO) - Date.parse(r.startISO)) / 60_000),
   ```
+  Spans over `MAX_DURATION_MINUTES` (a genuine multi-day booking) store `null` rather than
+  breaching the bound — a booking that long is not a per-job estimate.
 - `BookVisitPreview` (:264-302) states it carries "EXACTLY what commit will write". Add the
   derived `jobDurationMinutes: number | null` to the preview on the `customerId` (shell-minting)
   path so that invariant still holds (plan-review finding).
@@ -236,7 +254,8 @@ re-described as a per-type suggestion rather than the source of truth.
 ### Automated verification
 - [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
 - [ ] new tests in `src/mcp/server.test.ts`: `update_job` sets a rung and echoes old → new;
-      rejects `45.5` and `100` naming the ladder; accepts `null` to clear
+      **accepts an off-ladder `20`**; rejects `45.5` / `0` / `6000` naming the bound; accepts
+      `null` to clear
 - [ ] new test: `find_slots` on a job with `duration_minutes` set and **no** `job_type` returns
       candidates (today this throws "no recorded type"); `durationAssumption` names the job's
       recorded length
@@ -244,8 +263,8 @@ re-described as a per-type suggestion rather than the source of truth.
       message contains the ladder values — with `src/mcp/server.test.ts:4217-4219` and
       `:4838-4840` still passing unmodified
 - [ ] new tests in `src/schedule/booking.test.ts`: booking 09:00–11:00 on the `customerId` path
-      mints a job with `duration_minutes = 120`; booking **08:00–09:20 leaves it null** (pins
-      the ladder invariant the plan introduces)
+      mints a job with `duration_minutes = 120`; booking **08:00–09:20 stores 80** (pins that
+      an off-ladder measurement is kept, the whole point of the free-minutes decision)
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP; a sandbox with a working spine MCP (s2 = manager-sam)
@@ -290,7 +309,7 @@ not compile). Both select strings **must stay single string literals** — see t
 
 **`src/telegram/boardApi.ts`**
 - `/board/api/job` (:404-458): accept `durationMinutes` — `null` clears, a number must pass
-  `isLadderDuration` else `400` listing the rungs. The "nothing to update" guard (:434) must
+  `isValidDuration` else `400` stating the bound. The "nothing to update" guard (:434) must
   test **`'durationMinutes' in body`**, not truthiness, or a clear-to-null reads as absent. Add
   it to the `changes` echo (:449).
 
@@ -300,8 +319,10 @@ not compile). Both select strings **must stay single string literals** — see t
   handler (:614-620) opens the picker showing "not set" and a title-only edit **wipes a real
   stored value**.
 - `openJobForm`: add a `<select>` of the ladder (labels via a JS mirror of `formatDuration`)
-  with a leading `— length not set —` option. If the current value is off-ladder (possible only
-  if a rung is later removed), render it as an extra option so it is never silently lost.
+  with a leading `— length not set —` option and a trailing `Custom…` option that reveals a
+  `<input type="number" min="1" max="1440">`. **Off-ladder values are normal**, not an edge
+  case: whenever the current value is not a rung (an 80-minute booking, a manager's typed 20),
+  render it as its own selected option so it is displayed correctly and never silently lost.
 - `openJobForm` submit (:1241-1249): the guard `if (!body.title && !body.priority)` must become
   a presence test that includes duration — a duration-only edit currently sends nothing, and
   `null` is falsy so a clear would no-op too.
@@ -313,9 +334,9 @@ not compile). Both select strings **must stay single string literals** — see t
 ### Automated verification
 - [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass
 - [ ] new tests in `src/telegram/boardApi.test.ts`: POST `/board/api/job` with a rung updates
-      `duration_minutes` and echoes the change; an off-ladder value returns 400 naming the
-      rungs; `durationMinutes: null` **clears** it (pins the `in`-guard, not truthiness); a
-      duration-only POST is accepted
+      `duration_minutes` and echoes the change; **an off-ladder `20` is accepted**; `0` and
+      `6000` return 400 stating the bound; `durationMinutes: null` **clears** it (pins the
+      `in`-guard, not truthiness); a duration-only POST is accepted
 - [ ] new test: `/board/api/bucket` returns `durationMinutes` on unscheduled jobs (null when
       unset); `/board/api/visit` returns `jobDurationMinutes`
 
@@ -332,7 +353,10 @@ asserts the file is served), so these are the only checks on it:
 - [ ] Setting a length from the tray Edit button survives a board reload
 - [ ] **Editing only the title on a job that already has a length leaves the length intact**
 - [ ] Editing only the length (no title/priority change) actually saves
-- [ ] The control is reachable and legible at phone width
+- [ ] `Custom…` accepts a typed 20 minutes, and re-opening the sheet shows **20**, not the
+      nearest rung and not "not set"
+- [ ] The control is reachable and legible at phone width, and the number keypad appears for
+      the custom input
 
 ---
 *Manual items present — pause for the user's device pass before Phase 4.*
@@ -360,8 +384,9 @@ live ingest path, so an unscoped "all open jobs" count is never stably zero (pla
 finding):
 - [ ] `select count(*) from jobs where id in (<the 18 ids>) and duration_minutes is null`
       returns 0
-- [ ] `select count(*) from jobs where id in (<the 18 ids>) and duration_minutes not in
-      (15,30,45,60,90,120,180,240,360,480)` returns 0
+- [ ] `select count(*) from jobs where id in (<the 18 ids>) and (duration_minutes <= 0 or
+      duration_minutes > 1440)` returns 0. **Not** an `in (<ladder>)` check — free minutes are
+      valid, so a rung-membership gate would fail on correct data.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP.

@@ -352,8 +352,15 @@ one test only. Server behavior unchanged except the audit-reason wording board w
 - (3) unscheduled-job editing → `openJobForm` extracted as ONE body for both entry points;
   the tray job row gained an Edit button. Pinned by a new test: a job with NO visit edits in
   place, the tray reflects the new title, and no visit is minted.
-- (4) the missing-pencils bug → tab term dropped from `canEdit`; read-only sheets now state
-  the reason (`.sheet-note`).
+- (4) the missing-pencils bug → **two independent causes**, both closed. (a) the tab term
+  dropped from `canEdit`; (b) `visibilitychange` nulls `state.today` to force re-learning the
+  firm-local day, but a FAILED refresh left it null over an already-rendered board — every
+  sheet gate reads it, so all editing went read-only while the cards behind still looked
+  editable. The anchor is now restored when the re-anchor doesn't land (safe: the server
+  floors past-dated board writes, so a stale-by-one-day anchor can only cost a refused
+  write). Cause (b) fires on ANY tab, including Team — it is the candidate if the user was
+  not on "My schedule". Read-only sheets now state the reason (`.sheet-note`), so neither
+  cause can present silently again.
 - (5) `busyHint` "free" → "available".
 
 #### Device-check results (user, 2026-07-23)

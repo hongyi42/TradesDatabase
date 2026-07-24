@@ -1684,8 +1684,18 @@
   // from the server; refresh() then keeps the current tab/week.
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden && state.rendered) {
+      var prev = state.today;
       state.today = null;
-      refresh();
+      refresh().then(function () {
+        // A FAILED re-anchor must not strand the page anchor-less (4a.6):
+        // every write gate reads state.today, so a null one silently turns
+        // every sheet read-only — over an already-rendered board whose cards
+        // still look editable — until some later load happens to succeed.
+        // Restoring the previous anchor is safe: the server floors past-dated
+        // board writes regardless, so a stale-by-one-day anchor can only cost
+        // a refused write, never a wrong one.
+        if (state.today === null) state.today = prev;
+      });
     }
   });
   refresh();

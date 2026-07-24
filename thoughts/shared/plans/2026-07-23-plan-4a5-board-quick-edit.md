@@ -338,6 +338,44 @@ gain ONLY the notes section.
 ### Manual verification
 - [ ] user confirms the Phase-3 device list on the pilot board
 
+#### Device-check results (user, 2026-07-23)
+PASSED on the pilot board: drag-to-park, tray booking, editable sheet round-trips,
+compressed customer-notes section, past-write guard (no affordances on past days / Mine tab).
+
+Findings → all folded into the **4a.6 board-polish** follow-up:
+1. **Tap-assign latency** — the picker→assign gesture feels slow. Candidate causes: roster
+   GET on every picker open (not cached across opens), the sequential
+   preview→commit→full-`refresh()` chain (three round-trips before the card moves), and
+   Render cold-start. Fix shapes: cache the roster per session, optimistic lane update, or
+   patch the moved card from the commit response instead of reloading the whole board.
+2. **"Parked" vs "Unassigned" — USER DECIDED: unify on "Unassigned."** They are the same
+   state (`technician_id NULL`, confirmed); the two names read as two concepts. The real
+   difference is scope, not state (lane = person-less visits on the viewed day + drop
+   target; tray = person-less visits ANY day, incl. beyond the window/overdue, PLUS jobs
+   with no visit at all). Rename "parked visit" → "unassigned visit" in board copy;
+   `unassign` stays the verb name (it is an action, not a state).
+3. **Unscheduled jobs cannot be edited without scheduling them first** — the tray job row
+   taps straight into the booking sheet; title/priority editing lives only on a *visit's*
+   detail sheet. `POST /board/api/job` is jobId-keyed and would already serve an
+   unscheduled job — the UI just never offers it. Fix: an edit affordance on the job row
+   (or an "edit details" step inside the booking sheet).
+4. **Unassigned visits open a sheet with NO ✎ at all** (user, confirmed on device — the
+   sheet opens, the pencils are absent). `canEdit` (board.js:640) never tests for a
+   technician, and the live rows are all `confirmed` + future with tenant-valid jobIds, so
+   the failing term is **`state.view === 'team'`**: the loose-bucket pill renders for
+   managers on BOTH tabs (board.js:302), so opening the tray from **My schedule** yields a
+   sheet gated read-only — while an assigned visit, tapped from a lane, is only reachable
+   on the Team tab and therefore always edits fine. Compounding: out-of-window unassigned
+   visits (2 of 3 on the pilot) are reachable ONLY via the tray, so the tray is exactly
+   where this bites. **Fix: drop the tab term from `canEdit`** — it carries no safety that
+   the remaining terms don't (manager tier + `confirmed` + today-or-future, with the server
+   re-gating tier AND the past-date floor); it was belt-and-braces from Phase-3 review
+   finding #2, whose actual protection is the date term. **Plus: a read-only sheet must SAY
+   why** (one muted line — "Past visit — read-only", etc.) instead of silently omitting
+   affordances; silent omission is what made this look like a missing feature. Also give
+   tray visit rows the job row's "tap to …" hint.
+5. **Picker busy-hint copy: "free" → "available"** (user) — `busyHint`, board.js:824.
+
 ## Final review gate
 Bundled `/code-review` on the full diff; Important findings fixed + gates re-run before the
 plan flips to `complete`.

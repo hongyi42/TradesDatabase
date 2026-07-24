@@ -162,6 +162,29 @@ Beyond those in the 2026-07-22 document (all still true), the ones that bind 4b:
   the agent acts unprompted, so the toggle only becomes meaningful when the freeze's automatic
   trigger exists. It gates a capability 4b itself creates.
 
+## User decisions (2026-07-24)
+
+- **Duration model REPLACED — a fixed ladder, required at creation, never defaulted.** Instead
+  of today's `job_type_durations` lookup (which the pilot has effectively never populated: 1
+  row, matching 0 open jobs), duration becomes a **choice from a fixed set of levels** — 15
+  min, 30 min, 1 h, 2 h, 4 h, … — and it is a **required input when work is created**, exactly
+  as a description is. When a duration is missing, the system **asks the manager**; it never
+  backs into a default. This preserves the standing fail-closed rule ("never invent a job
+  length") while removing the reason coverage stayed at zero: the manager answers a
+  one-tap-style question instead of maintaining a job-type table.
+  *Wrinkle the plan must handle:* the freeze places jobs that have **no visit yet**, so the
+  duration must exist at the **job** level (or be collected for the batch as the freeze's
+  opening move) — capturing it only at visit-creation time would leave the freeze's own inputs
+  empty. Today `book_visit` already requires explicit start AND end times, so the manual path
+  is already fail-closed; the gap is exactly the never-visited jobs.
+- **Engine: Google Route Optimization API** (user choice over the `fit.ts` batch option, with
+  the geocoding cost stated). Consequences the plan must carry as their own phases:
+  address→coordinate geocoding + coordinate storage + a re-geocode rule on address edits + a
+  fail path for addresses that do not geocode; and **confirming that the Enterprise-tier Fleet
+  Routing SKU can be enabled on the billing account without a sales agreement** — a hard
+  prerequisite, since its free tier is what makes the choice ~$0 at pilot volume.
+- **Time-TBD storage shape: OPEN** — user asked for a simpler explanation before deciding.
+
 ## Decision Points
 
 1. **The solver engine.** (a) **`fit.ts` batch greedy** — no vendor, no geocoding, reuses a

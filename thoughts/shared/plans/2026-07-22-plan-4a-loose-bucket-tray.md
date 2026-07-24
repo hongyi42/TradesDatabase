@@ -2,8 +2,13 @@
 date: 2026-07-22
 task: Plan 4a — the loose bucket gets a visual home (board tray + always-visible count) + the technician visibility horizon; first slice of the freeze series
 research: thoughts/shared/research/2026-07-22-plan-4-freeze-ritual-surfaces.md
-status: draft
+status: complete
 ---
+
+<!-- COMPLETE 2026-07-24: shipped (PR #73), pilot migration 20260723070451, deployed,
+     gateways restarted, all automated + live + manual checks passed with evidence below.
+     The board-side vocabulary shipped in 4a.6 says "Unassigned", not "parked" — the wire
+     key `parkedVisits` and this document's older wording predate that rename. -->    
 
 ## Overview
 
@@ -425,17 +430,28 @@ read-backs.
       BOTH tenants read 28 (SQL, 2026-07-23). NOTE: the user deployed BEFORE the migration
       — inverted order survived by design (reads fall back to the 28-day default; only a
       set_technician_horizon call in the short window would have errored; none occurred)
-- [ ] SQL: parked=1 + unscheduled=5 (overdue=0) → expected pill "Loose: 6" — awaiting the
-      user's screenshot as the second channel
-- [ ] Agent chat: `get_team_schedule unassignedOnly` answer now names the unscheduled jobs
-      (user relays or screenshots; SQL read-back as the second channel)
-- [ ] Agent chat: "let technicians see 6 weeks ahead" → set_technician_horizon old→new
-      echo; SQL read-back shows 42
+- [x] SQL ↔ pill parity: user confirmed the pill on the deployed board (2026-07-23). Counts
+      move with the data — "Loose: 6" (1 parked + 5 jobs) at the time of that check, "Loose:
+      5" (3 + 2) after the 4a.5 device pass; both matched SQL run against the READERS' own
+      predicates (confirmed + technician_id IS NULL, unbounded; jobs status 'open' with no
+      proposed/confirmed row).
+- [x] Agent chat 2026-07-24 (s2, session `probe-4a-closeout`): "What work is currently
+      unassigned or unscheduled?" → named BOTH halves exactly — 3 unassigned visits (Becker
+      Jul 25 with its day promise, Gonzalez Jul 30, Gonzalez Aug 5) and 2 open jobs with no
+      visit — matching the SQL above row for row. The recall view is real, not a count.
+- [x] Agent chat 2026-07-24 (s2, session `probe-4a-horizon`): "Let technicians see 6 weeks
+      ahead" → `set_technician_horizon` echoed "4 weeks (28 days) → 6 weeks (42 days)";
+      SQL read-back `technician_horizon_days = 42` (weeks→days conversion correct). Reverted
+      in-chat afterwards ("set it back to 4 weeks") → SQL back to 28: the pilot's setting is
+      unchanged by this probe, and the reverse direction is verified too.
 
 ### Manual verification
-- [ ] Pill + tray on your phone (Phase 2 checks, on the deployed board)
-- [ ] A technician asking their agent for a week ~5+ weeks out gets the "isn't published
-      yet" wording (can fold into Ben's owed device pass)
+- [x] Pill + tray on your phone (user confirmed on the deployed board, 2026-07-23)
+- [x] A technician asking their agent for a week ~5+ weeks out gets the "isn't published
+      yet" wording — verified 2026-07-24 from **s5 (ben-shelton)** while the horizon was 42:
+      asked for the week of Sept 14 → "hasn't been published yet — the schedule is currently
+      only published through September 4, 2026", which is exactly today + 42 days. This is
+      the agent-side half; the phone-rendering half stays in Ben's owed device pass.
 
 ---
 *Pause after Phase 4 for the device checks.*

@@ -279,12 +279,17 @@ gain ONLY the notes section.
   demands it). Round-2 verification below.
 
 ### Manual verification (device — can fold into the owed 4a phone pass)
-- [ ] picker: assign a parked visit; reassign a lane card; "None" parks an assigned visit
-- [ ] drag a card onto Unassigned → parks; pill count rises; overdue behavior unchanged
-- [ ] tray: book the garage-sink job with times + promise "day" → confirm dialog → lands on
-      board; pill drops
-- [ ] sheet edits: title, priority, times, promise each round-trip with old→new toast
-- [ ] technician phone: notes visible, no ✎/picker/drag anywhere
+User's manager-phone pass, 2026-07-23 (findings below → all fixed in 4a.6):
+- [x] picker: assign / reassign / "None" — worked (latency finding raised)
+- [x] drag a card onto Unassigned → parks; pill count rises; overdue behavior unchanged
+- [x] tray: book a job with times + promise → confirm dialog → lands on board; pill drops
+- [x] sheet edits: title, priority, times, promise each round-trip with old→new toast
+- [ ] **technician phone: notes visible, no ✎/picker/drag anywhere** — THE LAST BOX. Folds
+      into Ben's owed device pass. Agent-side half of the horizon check already passed from
+      s5 (see the 4a plan's Phase-4 evidence); this is the phone-rendering half. Code-side
+      the tier gate is unconditional (`canEdit`/`pencil` and `actionable()` both require
+      `state.isManager`, and every write endpoint 403s a technician — test-pinned), so the
+      remaining risk is rendering/account, not authorization.
 
 ---
 *Pause after Phase 3 for the device checks.*
@@ -336,7 +341,9 @@ gain ONLY the notes section.
       probes; Telegram-path behavior is the authority.
 
 ### Manual verification
-- [ ] user confirms the Phase-3 device list on the pilot board
+- [x] user confirms the Phase-3 device list on the pilot board (manager side, 2026-07-23 —
+      5 passes + 5 findings, all fixed and deployed as 4a.6 on 2026-07-24; deploy freshness
+      re-verified byte-identical). Technician side remains the one open box above.
 
 #### 4a.6 board polish — BUILT 2026-07-23 (branch `feature-4a6-board-polish`)
 All five findings below are fixed; gates green (620/620, +1 new test). No migration, UI +

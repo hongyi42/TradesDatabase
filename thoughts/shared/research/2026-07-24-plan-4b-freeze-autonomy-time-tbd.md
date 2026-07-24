@@ -162,6 +162,62 @@ Beyond those in the 2026-07-22 document (all still true), the ones that bind 4b:
   the agent acts unprompted, so the toggle only becomes meaningful when the freeze's automatic
   trigger exists. It gates a capability 4b itself creates.
 
+## How the optimizer actually takes input (verified 2026-07-24)
+
+Researched because of the user's architectural point: **the time-TBD question IS the
+optimizer's input question.** An optimizer earns its cost by *choosing* when and who; if every
+visit already carries fixed times, there is nothing left to choose and the API degenerates into
+a sequence validator. Flexibility is expressed as **time windows wider than the visit's
+duration** — so the schedule model must be able to say "2 hours, somewhere on Thursday".
+
+**The model has no concept of days.** Everything is absolute timestamps inside
+`globalStartTime`/`globalEndTime` ("no times outside of this range can be considered valid").
+"Thursday" is expressed as a time window covering Thursday's working hours. Under this repo's
+naive-local storage convention, that translation happens at the API boundary.
+
+| Our concept | ROI representation | Source |
+|---|---|---|
+| Job to place, no day fixed | `VisitRequest` with **no** `timeWindows` — "the absence of `TimeWindow` means that the vehicle can perform this visit at any time" (within global bounds) | ShipmentModel |
+| "Thursday, time TBD" | **one** `TimeWindow` = Thursday's working hours | ShipmentModel |
+| "This week, any working day" | **multiple** `timeWindows` — "must be disjoint … and in increasing order" (one per working day) | ShipmentModel |
+| Duration (the new ladder) | `VisitRequest.duration` — "time spent by the vehicle between arrival and departure" | ShipmentModel |
+| Technician working hours | `Vehicle.startTimeWindows` / `endTimeWindows` | ShipmentModel |
+| Lunch / rest | `BreakRule` / `BreakRequest` (`earliestStartTime`, `latestStartTime`, `minDuration`) | ShipmentModel |
+| "It must be Ben" | `Shipment.allowedVehicleIndices` — "the set of vehicles that may perform this shipment" | ShipmentModel |
+| Soft preference (e.g. prefer mornings) | `softStartTime`/`softEndTime` + `costPerHourBeforeSoftStartTime`/`costPerHourAfterSoftEndTime` | ShipmentModel |
+| "Couldn't fit it" — report, don't fail | `Shipment.penaltyCost`: "if the shipment is not completed, this penalty is added to the overall cost"; without it, completion is **mandatory** | ShipmentModel |
+| Manual placements are sacred | `injectedSolutionConstraint` — "may be used to freeze portions of routes … which must not be modified"; with `constraintRelaxations` empty, "all non-empty vehicle routes are fully constrained" | InjectedSolutionConstraint |
+| Partial freedom (let it re-time but not re-assign) | `ConstraintRelaxation.Level`: `RELAX_VISIT_TIMES_AFTER_THRESHOLD` keeps vehicle + sequence, relaxes times; `..._AND_SEQUENCE_...` keeps vehicle only; `RELAX_ALL_AFTER_THRESHOLD` frees everything and visits "can potentially become unperformed" | InjectedSolutionConstraint |
+
+### The optimizer cannot double-book — by construction
+
+A `ShipmentRoute` is a strictly time-ordered sequence for ONE vehicle: "if there are n visits,
+there are n+1 transitions" and "a visit is always surrounded by a transition before it (same
+index) and a transition after it (index + 1)". Each `Transition` accounts for every second
+between visits — `totalDuration = travelDuration + delayDuration + breakDuration +
+waitDuration`. Two visits on one vehicle therefore **cannot** overlap: the solver's output is
+conflict-free by construction, and it also refuses to place work that cannot fit (surfacing it
+as a skipped shipment when `penaltyCost` is set).
+
+Source: [ShipmentRoute](https://developers.google.com/maps/documentation/route-optimization/reference/rest/v1/ShipmentRoute),
+[ShipmentModel](https://developers.google.com/maps/documentation/route-optimization/reference/rest/v1/ShipmentModel),
+[InjectedSolutionConstraint](https://developers.google.com/maps/documentation/route-optimization/reference/rest/v1/InjectedSolutionConstraint).
+
+### Correction to this document's earlier objection about nullable times
+
+The user's challenge is correct, and it narrows the earlier finding. The `tstzrange(null,null)`
+result stands as a fact, but it only bites if timeless rows are left **inside** the exclusion
+constraint. A visit that has a day but no time is **not claiming a slot** — it is demand, not
+schedule — so it does not belong in a double-booking guard at all. Narrowing the constraint's
+predicate (e.g. `where (status = 'confirmed' and starts_at is not null)`) keeps today's
+protection exactly as strong for placed visits while letting unplaced ones exist.
+
+Double-booking is then caught where it actually occurs — at **placement**: the optimizer cannot
+produce an overlap, and the DB guard re-checks each committed row, catching anything a manual
+booking raced in between solve and commit. What genuinely changes is the *failure mode*: a firm
+can accept more day-only work than a day can hold, and only discover it at freeze time — which
+the API reports as skipped shipments rather than hiding.
+
 ## User decisions (2026-07-24)
 
 - **Duration model REPLACED — a fixed ladder, required at creation, never defaulted.** Instead
@@ -195,13 +251,19 @@ Beyond those in the 2026-07-22 document (all still true), the ones that bind 4b:
    recommendation, a per-driver subscription (~$35–49/driver/month, pricing now 20 days stale
    and unverified); (d) **heuristic-only, no drive term**. Note the bucket is currently five
    items across two or three technicians.
-2. **The time-TBD shape.** (a) **`timesProvisional` boolean** — keep concrete placeholder times
-   so the overlap guard and gap arithmetic keep working, badge the visit "time TBD" everywhere,
-   and forbid announcing a provisional time to a customer; (b) **nullable times** — honest
-   modelling, but requires reworking the exclusion constraint and every reader, and removes the
-   row from double-booking protection (see the verified range behaviour); (c) **a day-bucket
-   convention** — store the firm's full working day as the span and treat that as "unscheduled
-   within the day".
+2. **The time-TBD shape — REFRAMED by the optimizer research.** This is not a storage detail;
+   it is what the freeze is allowed to decide. (a) **Unplaced visits: times null until placed**
+   — the visit carries day (or day range) + duration; the exclusion guard is narrowed to placed
+   rows; this is ROI's native input and preserves the optimizer's freedom. Cost: every reader
+   of visit times needs an unplaced path (10 non-test files touch `starts_at`), and the board
+   must show unplaced work as demand rather than on the time grid. (b) **`timesProvisional`
+   flag over placeholder times** — smallest blast radius and no constraint surgery, but the
+   placeholder is a fiction the solver would have to be told to ignore, and any code that
+   forgets the flag shows a time nobody promised. (c) **Full-day span** — no schema change, but
+   a 2-hour job consumes a 9-hour day in every capacity calculation, which is precisely the
+   flexibility the optimizer needs.
+   *Note:* flexibility comes from the **window being wider than the duration**, so (a) and (b)
+   can both feed ROI — the real difference is whether the stored times mean anything.
 3. **Autonomy granularity.** One per-tenant boolean ("the assistant may act on its own") versus
    per-capability flags (may it freeze? may it move a promised visit? may it message customers?).
    The horizon setting is the precedent for either.

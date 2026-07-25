@@ -3202,7 +3202,7 @@ async function dispatch(
         const assignmentId = str('assignmentId');
         const reason = str('reason')?.trim();
         if (!assignmentId) throw new Error('assignmentId is required');
-        if (!reason) throw new Error('reason is required — say why the visit is being cancelled');
+        if (!reason) throw new Error('reason is required — say why the visit is being unscheduled');
         const preview = await previewUnscheduleVisit(tenantId, assignmentId);
         // Doctrine (2026-07-17, verdict computed in booking.ts): cancelling an
         // UNPROMISED visit is internal + reversible (the job stays open;
@@ -3250,7 +3250,7 @@ async function dispatch(
           status: 'needs_confirmation',
           confirmId: item.id,
           preview: staged.preview ?? preview,
-          note: 'Nothing was cancelled. Show the manager exactly this preview; on their explicit yes call again with ONLY confirmId.',
+          note: 'Nothing was unscheduled. Show the manager exactly this preview; on their explicit yes call again with ONLY confirmId.',
         };
       }
       // CONFIRM — consume-first.
@@ -3264,16 +3264,16 @@ async function dispatch(
       const d = (item.detail ?? {}) as { assignmentId?: string; reason?: string; stagedAt?: string };
       if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
-        throw new Error('confirmation expired — restage the cancellation and confirm again');
+        throw new Error('confirmation expired — restage the unschedule and confirm again');
       }
       if (!d.assignmentId || !d.reason) {
-        throw new Error('staged cancellation is malformed — restage with assignmentId + reason');
+        throw new Error('staged unschedule is malformed — restage with assignmentId + reason');
       }
       const consumed = await resolveReviewItem(
         item.id,
         tenantId,
         'resolved',
-        `cancellation confirmed by ${subjectRef}`,
+        `unschedule confirmed by ${subjectRef}`,
       );
       if (!consumed) {
         throw new Error('already confirmed or cancelled — nothing was changed by this call');
@@ -3292,12 +3292,12 @@ async function dispatch(
           await annotateResolvedReviewItem(
             confirmId,
             tenantId,
-            `confirmed but cancellation FAILED (${msg}) — the visit is unchanged`,
+            `confirmed but unschedule FAILED (${msg}) — the visit is unchanged`,
           );
         } catch {
           /* advisory */
         }
-        throw new Error(`visit NOT cancelled: ${msg}`);
+        throw new Error(`visit NOT unscheduled: ${msg}`);
       }
       return {
         status: 'unscheduled',

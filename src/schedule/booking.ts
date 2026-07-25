@@ -635,7 +635,7 @@ export async function previewUnscheduleVisit(
   const target = await getAssignmentForTenant(assignmentId, tenantId);
   if (!target) throw new Error('assignment not found');
   if (target.status !== 'confirmed' && target.status !== 'proposed') {
-    throw new Error(`cannot cancel a ${target.status} assignment`);
+    throw new Error(`cannot unschedule a ${target.status} assignment`);
   }
   const job = await getJob(target.job_id);
   const customer = job ? await getCustomer(job.customer_id) : null;
@@ -649,7 +649,7 @@ export async function previewUnscheduleVisit(
 }
 
 export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Assignment> {
-  if (!input.reason?.trim()) throw new Error('reason is required for a cancellation');
+  if (!input.reason?.trim()) throw new Error('reason is required for an unschedule');
   // Tenant guard first — this module is the reuse surface for Plans 2–3, and
   // updateAssignmentStatus alone is id-only.
   const target = await getAssignmentForTenant(input.assignmentId, input.tenantId);
@@ -660,7 +660,7 @@ export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Assi
   // nothing useful.
   if (target.status !== 'confirmed' && target.status !== 'proposed') {
     throw new Error(
-      `cannot cancel a ${target.status} assignment — the visit may have been moved or already ` +
+      `cannot unschedule a ${target.status} assignment — the visit may have been moved or already ` +
         'cancelled; check get_team_schedule for its current booking',
     );
   }

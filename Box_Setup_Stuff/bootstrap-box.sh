@@ -584,7 +584,7 @@ EOF
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-07-18)
+## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-07-25)
 
 The rule, in general: confirm only what is irreversible or externally visible (a customer
 promise at stake). Everything reversible — just do it, then SAY WHAT YOU DID (day, time,
@@ -619,9 +619,9 @@ EOF
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## The dispatch board link (host-managed; refreshed 2026-07-19)
+## The dispatch board link (host-managed; refreshed 2026-07-25)
 
-Scheduling results (book_visit / move_visit / unschedule_visit AND both schedule reads) carry
+Scheduling results (book_visit / move_visit / unschedule_visit / cancel_job AND both schedule reads) carry
 boardLink + boardNote when the board is configured. EVERY reply that used one of these
 tools — plain reads included, "what's the schedule" included — must END with the exact
 bracketed line from boardNote: [See it on the board](<boardLink>). That line is Telegram

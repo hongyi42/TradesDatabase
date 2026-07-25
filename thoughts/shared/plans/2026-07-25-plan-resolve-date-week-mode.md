@@ -182,11 +182,17 @@ and description in `server.ts`, and tests that pin the live-bite fixture.
 
 ### Automated verification
 
-- [ ] `npm run typecheck` passes
-- [ ] `npm run lint` passes
-- [ ] `npm test` passes (all suites — the tool-count pins must NOT change: still 35)
-- [ ] the new dateResolve week tests + the server-level week test pass (listed above)
-- [ ] `npm run build` passes (pre-PR gate)
+- [x] `npm run typecheck` passes (2026-07-25, clean)
+- [x] `npm run lint` passes (clean)
+- [x] `npm test` passes — **656 passed | 5 skipped** (baseline 646 + 10 new; both
+      35-tool pins untouched)
+- [x] the new dateResolve week tests + the server-level week test pass (the live-bite
+      regression fixture asserts weekStart 2026-07-27 from Sat 2026-07-25)
+- [x] `npm run build` passes (clean)
+- Adversarial review (fresh context, commit 95401eb): **NO FINDINGS** — all four folded
+      plan-review findings verified in; arithmetic machine-re-verified incl. a 7-day sweep
+      showing the ambiguity branch fires on exactly getUTCDay 0 and 6; new server test
+      shown flake-free on any run day.
 
 ### Live verification (agent-executable)
 

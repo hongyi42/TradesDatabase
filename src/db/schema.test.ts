@@ -110,6 +110,17 @@ describe('context spine schema', () => {
     expect(techCols.get('service_cities')?.data_type).toBe('ARRAY');
   });
 
+  test('jobs.duration_minutes exists and is NULLABLE (Plan 4b-1)', async () => {
+    const jobCols = await columns('jobs');
+    expect(jobCols.get('duration_minutes')?.data_type).toBe('integer');
+    // NULL = "never been told" — it must stay representable, because inbound
+    // capture mints jobs with nobody to ask. Readers stay fail-closed on null.
+    expect(
+      jobCols.get('duration_minutes')?.is_nullable,
+      'NULL = length unknown (fail closed, never defaulted)',
+    ).toBe('YES');
+  });
+
   test('assignments carries the no_confirmed_overlap exclusion constraint', async () => {
     const { rows } = await client.query<{ conname: string; contype: string }>(
       `select conname, contype from pg_constraint

@@ -163,19 +163,30 @@ alter table jobs add column duration_minutes integer
   required, so add `duration_minutes: null`. Without this, Phase 1's own `typecheck` gate fails.
 
 ### Automated verification
-- [ ] `npx supabase db reset` applies the migration locally without error
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] new tests in `src/db/scheduling.test.ts`: `createJob` persists a duration and defaults to
+- [x] `npx supabase db reset` applies the migration locally without error
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass — **49 files / 627 tests**
+- [x] new tests in `src/db/scheduling.test.ts`: `createJob` persists a duration and defaults to
       null; `updateJobDetails` accepts every rung, **accepts an off-ladder `20` and `80`**,
       rejects `45.5` / `0` / `-30` / `6000`, and accepts `null` as a clear
-- [ ] new test in `src/db/schema.test.ts` asserting `jobs.duration_minutes` exists and is
+- [x] new test in `src/db/schema.test.ts` asserting `jobs.duration_minutes` exists and is
       nullable (the column-presence idiom at :100-110, not the table check at :90)
+- [x] *(added)* `formatDuration` labels every rung + boundaries — it is the one composer chat
+      and the board share, so drift would desynchronise copy silently
+
+Phase-1 review (fresh context) found **no correctness defects**. It independently regenerated
+`database.types.ts` from `--local` and confirmed the committed file is byte-identical (proving
+it did not come from `--linked`), and mutation-tested the new guards: removing them fails 2
+tests, and removing *only* the `<= MAX_DURATION_MINUTES` clause still fails on 1441, so the
+bound is independently pinned rather than riding on the integer/positive checks.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP (hosted pilot project).
 - [ ] Apply the migration to the pilot **before** any later phase deploys. It is additive and
-      nullable, so no code reads it yet. **Evidence:** `npx supabase migration list --linked`
-      showing `20260724120000` applied, plus an `information_schema.columns` read-back.
+      nullable, so no code reads it yet. **Evidence:** the pilot's migration registry plus an
+      `information_schema.columns` read-back.
+      *Note (review finding): the pilot registry stamps its OWN versions, not repo filenames
+      (repo `20260723090000_promise_time_only_value` ↔ pilot `20260723103350`). Match on the
+      migration NAME, not the `20260724120000` version.*
 
 ### Manual verification
 - [ ] User go-ahead before the pilot migration runs (pilot writes require authorization).

@@ -12,7 +12,14 @@ import {
 import { addTimeOff, deleteTimeOff, listTimeOffForTechnician } from './timeOff.js';
 import { getJobDurationMinutes, upsertJobTypeDuration } from './jobTypeDurations.js';
 import { createCustomer } from './customers.js';
-import { createJob } from './jobs.js';
+import {
+  createJob,
+  getJob,
+  updateJobDetails,
+  DURATION_LADDER,
+  MAX_DURATION_MINUTES,
+  formatDuration,
+} from './jobs.js';
 import {
   createAssignment,
   getAssignmentForTenant,
@@ -618,6 +625,87 @@ describe('job type durations', () => {
     // (migration default 120).
     expect(await getJobDurationMinutes(tenantId, 'plumbing')).toBe(120);
     expect(await getJobDurationMinutes(tenantId, null)).toBe(120);
+  });
+});
+
+describe('job duration ladder (Plan 4b-1)', () => {
+  let customerId: string;
+
+  beforeAll(async () => {
+    customerId = (await createCustomer({ tenantId, name: 'Duration Casa' })).id;
+  });
+
+  const freshJob = async (durationMinutes?: number | null) =>
+    createJob({
+      tenantId,
+      customerId,
+      title: 'Duration subject',
+      ...(durationMinutes !== undefined ? { durationMinutes } : {}),
+    });
+
+  test('createJob persists a duration and defaults to null', async () => {
+    expect((await freshJob()).duration_minutes).toBeNull();
+    expect((await freshJob(120)).duration_minutes).toBe(120);
+    // Off-ladder is legal at every write point — the ladder is offered, not
+    // enforced (user decision 2026-07-24: a 20-minute callout is not a lie).
+    expect((await freshJob(20)).duration_minutes).toBe(20);
+    await expect(freshJob(6000)).rejects.toThrow(/whole number of minutes/);
+  });
+
+  test('updateJobDetails accepts every rung', async () => {
+    let job = await freshJob();
+    for (const rung of DURATION_LADDER) {
+      job = await updateJobDetails(tenantId, job.id, { durationMinutes: rung }, job.updated_at);
+      expect(job.duration_minutes).toBe(rung);
+    }
+  });
+
+  test('updateJobDetails accepts off-ladder minutes and clears with null', async () => {
+    let job = await freshJob();
+    // 20 = a firm whose standard callout is not a rung; 80 = the span a
+    // 08:00-09:20 booking measures (Phase 2 writes exactly this).
+    for (const off of [20, 80, MAX_DURATION_MINUTES]) {
+      job = await updateJobDetails(tenantId, job.id, { durationMinutes: off }, job.updated_at);
+      expect(job.duration_minutes).toBe(off);
+    }
+    // null is an explicit CLEAR back to unknown, not "no change" — the undo
+    // arm, mirroring jobType's.
+    job = await updateJobDetails(tenantId, job.id, { durationMinutes: null }, job.updated_at);
+    expect(job.duration_minutes).toBeNull();
+  });
+
+  test('updateJobDetails rejects non-integers, zero, negatives and over-bound', async () => {
+    const job = await freshJob(60);
+    for (const bad of [45.5, 0, -30, MAX_DURATION_MINUTES + 1]) {
+      await expect(
+        updateJobDetails(tenantId, job.id, { durationMinutes: bad }, job.updated_at),
+      ).rejects.toThrow(/whole number of minutes/);
+    }
+    // The rejections left the stored value untouched (no partial patch).
+    expect((await getJob(job.id))?.duration_minutes).toBe(60);
+  });
+
+  // formatDuration is the ONE label composer chat and the board both render, so
+  // a drift here would desynchronise copy across surfaces silently.
+  test('formatDuration labels every rung and the boundaries', () => {
+    expect(DURATION_LADDER.map(formatDuration)).toEqual([
+      '15m', '30m', '45m', '1h', '1h 30m', '2h', '3h', '4h', '6h', '8h',
+    ]);
+    expect(formatDuration(59)).toBe('59m');
+    expect(formatDuration(80)).toBe('1h 20m'); // the 08:00-09:20 booked span
+    expect(formatDuration(MAX_DURATION_MINUTES)).toBe('24h');
+  });
+
+  test('a duration-only update is not "nothing to update"', async () => {
+    const job = await freshJob();
+    const updated = await updateJobDetails(
+      tenantId,
+      job.id,
+      { durationMinutes: 90 },
+      job.updated_at,
+    );
+    expect(updated.duration_minutes).toBe(90);
+    expect(updated.title).toBe(job.title); // nothing else moved
   });
 });
 

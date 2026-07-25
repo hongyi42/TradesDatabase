@@ -357,13 +357,22 @@ not compile). Both select strings **must stay single string literals** — see t
 - Style the select to match the existing priority control; no new colour tokens.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass
-- [ ] new tests in `src/telegram/boardApi.test.ts`: POST `/board/api/job` with a rung updates
-      `duration_minutes` and echoes the change; **an off-ladder `20` is accepted**; `0` and
-      `6000` return 400 stating the bound; `durationMinutes: null` **clears** it (pins the
-      `in`-guard, not truthiness); a duration-only POST is accepted
-- [ ] new test: `/board/api/bucket` returns `durationMinutes` on unscheduled jobs (null when
-      unset); `/board/api/visit` returns `jobDurationMinutes`
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass — **49 files /
+      631 tests**
+- [x] new tests in `src/telegram/boardApi.test.ts`: POST `/board/api/job` with a rung updates
+      `duration_minutes` and echoes the change; **an off-ladder `20` is accepted**; `0` / `6000`
+      / `45.5` return 400 stating the bound with no write; `durationMinutes: null` **clears** it
+      (pins the `in`-guard, not truthiness); a duration-only POST is accepted
+- [x] new test: `/board/api/bucket` returns `durationMinutes` on unscheduled jobs (`toBeNull()`
+      when unset, so omission is caught); `/board/api/visit` returns `jobDurationMinutes`, and
+      a jobId-path booking leaves a cleared length alone (the Phase-2 contract, re-pinned here)
+
+Phase-3 review (fresh context) found **no correctness defects**; it traced the board.js flow
+end-to-end by reading (attr → parse → options → guard → toast), confirmed the change listener
+cannot be orphaned (openSheet is fully synchronous), and confirmed the recall view's new field
+breaks no pinned test (`toMatchObject`). Its two observations were adopted: the Custom input
+now REFUSES "45.5" like the server does (Number.isInteger, not parseInt truncation), and the
+jobType-rejection copy now names length as a board-editable field.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP; the deployed board reachable over HTTPS.

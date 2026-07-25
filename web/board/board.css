@@ -310,6 +310,8 @@ body.dragging .stop.draggable { cursor: grabbing; }
 .picker-name { font-weight: 600; }
 .picker-hint { color: var(--hint); font-size: 12px; white-space: nowrap; }
 .field-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
+/* The Custom-minutes row (4b-1): hidden until the length select says custom. */
+.field-hidden { display: none; }
 .field-row > span { flex: 0 0 76px; color: var(--hint); font-size: 13px; }
 .field-row input,
 .field-row select {

@@ -268,7 +268,7 @@ export async function listAssignmentsForTenant(
 
 export type AssignmentDetailRow = Assignment & {
   jobs:
-    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'priority' | 'customer_id'> & {
+    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'priority' | 'duration_minutes' | 'customer_id'> & {
         customers: Pick<
           Customer,
           | 'name'
@@ -295,7 +295,7 @@ export type AssignmentDetailRow = Assignment & {
 // ('a' + 'b') string widens to `string`, which makes the inference collapse to
 // GenericStringError and breaks the build.
 const DETAIL_SELECT =
-  '*, jobs(id,tenant_id,title,priority,customer_id,customers(name,phone,email,address_line1,address_line2,city,state,postal_code,attributes,tenant_id)), technicians(id,ref,display_name,tenant_id)';
+  '*, jobs(id,tenant_id,title,priority,duration_minutes,customer_id,customers(name,phone,email,address_line1,address_line2,city,state,postal_code,attributes,tenant_id)), technicians(id,ref,display_name,tenant_id)';
 
 // One visit + its job/customer/technician, tenant-scoped at the ROOT only.
 // A cross-tenant or unknown id reads as null (same contract as
@@ -483,11 +483,11 @@ export async function listUnassignedAssignmentsWithRefs(
 // board load (final-review efficiency finding). Single string literal — see
 // the DETAIL_SELECT note above.
 const UNSCHEDULED_JOBS_SELECT =
-  'id,tenant_id,customer_id,title,status,priority,created_at, assignments(id,status), customers(name,tenant_id)';
+  'id,tenant_id,customer_id,title,status,priority,duration_minutes,created_at, assignments(id,status), customers(name,tenant_id)';
 
 export type UnscheduledJobRow = Pick<
   Job,
-  'id' | 'tenant_id' | 'customer_id' | 'title' | 'status' | 'priority' | 'created_at'
+  'id' | 'tenant_id' | 'customer_id' | 'title' | 'status' | 'priority' | 'duration_minutes' | 'created_at'
 > & {
   customers: Pick<Customer, 'name' | 'tenant_id'> | null;
 };

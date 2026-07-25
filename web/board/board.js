@@ -518,12 +518,20 @@
     // manager had to schedule a job before they could fix its description
     // (user finding 2026-07-23). /board/api/job is keyed by jobId and never
     // needed a visit — only the UI was missing.
+    // data-duration mirrors data-title/priority (4b-1): without it the Edit
+    // form would open showing "not set" on a job that HAS a length, and an
+    // unrelated title edit would silently wipe the stored value.
     return (
       '<div class="bucket-row bucket-job" data-job="' + esc(j.jobId) + '"' +
-      ' data-title="' + esc(j.title || '') + '" data-priority="' + esc(j.priority || '') + '">' +
+      ' data-title="' + esc(j.title || '') + '" data-priority="' + esc(j.priority || '') + '"' +
+      ' data-duration="' + (j.durationMinutes != null ? esc(String(j.durationMinutes)) : '') + '">' +
       '<div class="bucket-row-txt"><div class="bucket-row-main">' + esc(j.title || 'Untitled job') + '</div>' +
       '<div class="bucket-row-sub">' +
-      esc((j.customer || 'Unknown customer') + ' · ' + j.priority + ' · tap to book') +
+      esc(
+        (j.customer || 'Unknown customer') + ' · ' + j.priority + ' · ' +
+        (j.durationMinutes != null ? fmtDur(j.durationMinutes) : 'length not set') +
+        ' · tap to book',
+      ) +
       '</div></div>' +
       '<button type="button" class="bucket-edit">Edit</button>' +
       '</div>'
@@ -613,10 +621,12 @@
         if (jobEdit) {
           var editRow = jobEdit.closest('.bucket-job');
           if (editRow) {
+            var durAttr = editRow.getAttribute('data-duration');
             openJobForm({
               jobId: editRow.getAttribute('data-job'),
               title: editRow.getAttribute('data-title'),
               priority: editRow.getAttribute('data-priority'),
+              duration: durAttr ? parseInt(durAttr, 10) : null,
               onDone: openBucket, // came from the tray — go back to it (re-fetched)
             });
           }
@@ -691,7 +701,16 @@
     var rows = '';
     if (d.jobTitle || (canEdit && d.jobId)) {
       // The Purpose editor needs the tenant-checked jobId; withheld → no ✎.
-      rows += detailRow('Purpose', esc(d.jobTitle || 'Untitled job') + (d.jobId ? pencil('job') : ''));
+      // Length beside Purpose (4b-1): same form edits both, and "length not
+      // set" is shown, not hidden — the sheet is where a manager learns which
+      // work is placeable.
+      rows += detailRow(
+        'Purpose',
+        esc(
+          (d.jobTitle || 'Untitled job') + ' · ' +
+          (d.jobDurationMinutes != null ? fmtDur(d.jobDurationMinutes) : 'length not set'),
+        ) + (d.jobId ? pencil('job') : ''),
+      );
     }
     rows += detailRow(
       'When',
@@ -1057,6 +1076,36 @@
     return label;
   }
 
+  // The OFFERED job lengths (plan 4b-1) — mirrors DURATION_LADDER in
+  // src/db/jobs.ts. Presentation only: any whole 1..1440 minutes is legal
+  // server-side, so Custom… below is a first-class path, not an escape hatch
+  // for errors.
+  var DURATION_LADDER = [15, 30, 45, 60, 90, 120, 180, 240, 360, 480];
+
+  // JS mirror of src/db/jobs.ts formatDuration — chat and board must label a
+  // length identically ('1h 30m').
+  function fmtDur(m) {
+    if (m % 60 === 0) return m / 60 + 'h';
+    if (m < 60) return m + 'm';
+    return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+  }
+
+  // Options for the length select: not-set, the ladder, the CURRENT value as
+  // its own option when off-ladder (an 80-minute booked span or a typed 20 is
+  // NORMAL data — it must display correctly, never read as "not set" and never
+  // be silently lost by an unrelated edit), then Custom….
+  function durationOptions(current) {
+    var opts = [['', '— length not set —']];
+    DURATION_LADDER.forEach(function (m) {
+      opts.push([String(m), fmtDur(m)]);
+    });
+    if (typeof current === 'number' && DURATION_LADDER.indexOf(current) === -1) {
+      opts.push([String(current), fmtDur(current)]);
+    }
+    opts.push(['custom', 'Custom…']);
+    return opts;
+  }
+
   function fieldRow(label, inputHtml) {
     return '<label class="field-row"><span>' + esc(label) + '</span>' + inputHtml + '</label>';
   }
@@ -1213,6 +1262,7 @@
         jobId: d.jobId,
         title: d.jobTitle,
         priority: d.jobPriority,
+        duration: d.jobDurationMinutes,
         onDone: function () {
           openDetail(d.assignmentId); // same id — a job edit never remints the visit
         },
@@ -1224,11 +1274,22 @@
   // sheet's Purpose ✎ and the tray's Edit on a job that has no visit yet.
   // `onDone` is where the caller came from, so Cancel/Save return there.
   function openJobForm(opts) {
+    // Current length, normalised: a number or null ("not set").
+    var curDur = typeof opts.duration === 'number' && isFinite(opts.duration) ? opts.duration : null;
     openSheet(
       sheetShell(
         'Edit job',
         fieldRow('Title', '<input type="text" id="qe-title" value="' + esc(opts.title || '') + '">') +
           fieldRow('Priority', selectHtml('qe-priority', PRIORITY_OPTIONS, opts.priority || 'routine')) +
+          // Length (4b-1): the ladder is offered, any whole minutes accepted —
+          // Custom… reveals the number input (numeric keypad via type=number).
+          fieldRow(
+            'Length',
+            selectHtml('qe-duration', durationOptions(curDur), curDur != null ? String(curDur) : ''),
+          ) +
+          '<div id="qe-duration-custom-row" class="field-hidden">' +
+          fieldRow('Minutes', '<input type="number" id="qe-duration-custom" min="1" max="1440" step="1">') +
+          '</div>' +
           formButtons('Save'),
       ),
       function (e, ov) {
@@ -1243,7 +1304,25 @@
         if (title && title !== (opts.title || '')) body.title = title;
         var priority = val(ov, 'qe-priority');
         if (priority !== opts.priority) body.priority = priority;
-        if (!body.title && !body.priority) {
+        var durSel = val(ov, 'qe-duration');
+        var newDur;
+        if (durSel === 'custom') {
+          // Number(), not parseInt: "45.5" must be REFUSED like the server
+          // refuses it, not silently truncated to 45 (review observation).
+          var typed = Number(val(ov, 'qe-duration-custom'));
+          if (!(Number.isInteger(typed) && typed >= 1 && typed <= 1440)) {
+            toast('Custom length must be whole minutes from 1 to 1440.', true);
+            return;
+          }
+          newDur = typed;
+        } else {
+          newDur = durSel === '' ? null : parseInt(durSel, 10);
+        }
+        // Presence, not truthiness (4b-1 review): null = an explicit CLEAR, so
+        // the field rides in the body whenever the value CHANGED — including
+        // a change to null.
+        if (newDur !== curDur) body.durationMinutes = newDur;
+        if (!body.title && !body.priority && !('durationMinutes' in body)) {
           opts.onDone();
           return;
         }
@@ -1256,7 +1335,10 @@
             toast(
               'Job updated' +
                 (body.title ? ' — title: ' + body.title : '') +
-                (body.priority ? ' — priority: ' + body.priority : ''),
+                (body.priority ? ' — priority: ' + body.priority : '') +
+                ('durationMinutes' in body
+                  ? ' — length: ' + (newDur != null ? fmtDur(newDur) : 'not set')
+                  : ''),
             );
             opts.onDone();
             refresh(); // the title shows on cards behind the sheet
@@ -1266,6 +1348,17 @@
           });
       },
     );
+    // Reveal the custom-minutes row only when Custom… is picked. openSheet
+    // appends synchronously, so the overlay exists here; change events don't
+    // bubble into its click delegation, hence the direct listener.
+    var ovEl = document.getElementById('detail-overlay');
+    var durSelEl = ovEl && ovEl.querySelector('#qe-duration');
+    if (durSelEl) {
+      durSelEl.addEventListener('change', function () {
+        var row = ovEl.querySelector('#qe-duration-custom-row');
+        if (row) row.classList.toggle('field-hidden', durSelEl.value !== 'custom');
+      });
+    }
   }
 
   // The tray's booking sheet (plan 4a.5): day + start + end are REQUIRED —

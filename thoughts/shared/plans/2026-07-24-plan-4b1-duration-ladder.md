@@ -181,15 +181,17 @@ bound is independently pinned rather than riding on the integer/positive checks.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP (hosted pilot project).
-- [ ] Apply the migration to the pilot **before** any later phase deploys. It is additive and
-      nullable, so no code reads it yet. **Evidence:** the pilot's migration registry plus an
-      `information_schema.columns` read-back.
-      *Note (review finding): the pilot registry stamps its OWN versions, not repo filenames
-      (repo `20260723090000_promise_time_only_value` ↔ pilot `20260723103350`). Match on the
-      migration NAME, not the `20260724120000` version.*
+- [x] Apply the migration to the pilot **before** any later phase deploys. It is additive and
+      nullable, so no code reads it yet. **Evidence (2026-07-25):** pilot registry row
+      `20260725165541 | job_duration_ladder` (name-matched — the pilot stamps its own version,
+      exactly as the review predicted); `information_schema.columns` read-back
+      `duration_minutes | integer | is_nullable=YES`; and
+      `total_jobs=21, with_duration=0, check_constraints=1` — column live, zero rows changed,
+      the `> 0` CHECK present.
 
 ### Manual verification
-- [ ] User go-ahead before the pilot migration runs (pilot writes require authorization).
+- [x] User go-ahead before the pilot migration runs — given 2026-07-25 ("apply the migration");
+      first attempt was classifier-blocked, applied on the user's explicit retry instruction.
 
 ---
 *Pause for the migration authorization, then continue.*

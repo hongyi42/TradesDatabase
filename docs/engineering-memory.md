@@ -194,7 +194,13 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
 - **Deferred / backlog (each has an owner-stated reason — check before resurrecting):**
   `reflow_day` batch cascade (3c); ROI/whole-plan optimization → Plan 4's freeze; jargon
   leaking into chat (conflict #1 — fix must NOT be verbatim templates); Sat/Sun "next week"
-  boundary warning on `resolve_date` results; agent latency (~84s serial GLM round-trips);
+  boundary warning on `resolve_date` results — **BITTEN LIVE 2026-07-25, candidate for
+  promotion**: on a Saturday, "cancel Tom for next week's visit" made the agent window "next
+  week" as Tue Jul 28–Sun Aug 2, missing a real confirmed **Monday Jul 27** visit ("no visits
+  for Tom Nguyen next week"); reproduced verbatim on a fresh session; data layer verified
+  clean (`get_team_schedule` renders that visit for any window covering the 27th — no state
+  filter, no reader gap). Ask-first doctrine held; the failure is pure week-boundary date
+  math, the exact class `resolve_date` was built for; agent latency (~84s serial GLM round-trips);
   Feature C (per-tenant agent memory layer); Feature D (customer/job-level L3 write path);
   Telegram unbind/offboarding (apply path is additive-only); board-auth 401 logging (PR #51
   closed unmerged — debug future 401s with the "mint-a-slip" probe: sign a fake initData slip

@@ -153,7 +153,7 @@ identify by which chat answers):
 | s5 | ben-shelton, invited technician (@ragisan03_bot, TG 8991633730) | |
 | s6 | COLD BLANK (@ragisan2_bot) | the pool's one free blank (from s1's recycle) |
 | s7 | Yutao (manager, active, Default Tenant, TG 8639645984) | the box's DEFAULT sandbox; NOT in `sandbox_pool` (provisioned outside the pool, like pre-pool s2/s3) |
-| s8 | manager-joy (Joy, manager, active, Default Tenant, TG 8816690083) | onboarded 2026-07-24; onboarded config says deepinfra-prod but the LIVE gateway runs nvidia-prod — the config-applying restart died mid-flight and left a stale shields-transition lock (see ops trap below); as of 2026-07-25 the gateway has NOT been restarted since the #79/#80 tool-vocabulary deploy, so her bot may advertise the stale pre-rename tool list |
+| s8 | manager-joy (Joy, manager, active, Default Tenant, TG 8816690083) | onboarded 2026-07-24; a crashed restart left a stale shields-transition lock (see ops trap below) — owner cleared it 2026-07-25 and the gateway now restarts clean (wired + restarted with the fleet, tool list fresh). The `nemoclaw list` "differs from onboarded" note (nvidia-prod live vs deepinfra-prod onboarded) reflects the medic's balance-out NVIDIA failover, not a broken sandbox |
 | s1, s4 | retired/recycled | historical only |
 
 **Board:** one global non-AI bot `@DashboardMan_bot` (plain code on Render; tenant isolation
@@ -173,19 +173,49 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   Plans 3a+3b (schedule input verbs + `find_slots`); Plan 4a + 4a.5/4a.6 (loose-bucket tray +
   board quick-edit + polish); **cancel vocabulary (PR #80) + duration ladder 4b-1 (PR #79),
   both merged+deployed 2026-07-25** — served board.js byte-verified against main; gateways
-  s2/s3/s5/s7 restarted (s8 blocked on the stale-lock trap below); live probes on s2 passed:
+  s2/s3/s5/s7 restarted (s8 followed once the owner cleared its stale lock). **Same-day wire
+  pass** (the step gateway restarts do NOT cover — AGENTS.md blocks only refresh on
+  `bootstrap-box.sh wire`): updated script shipped to the box, s2/s3/s5/s7/s8 wired, all 5
+  gateways restarted again; verify grep shows unschedule_visit×3 + cancel_job×2 in every
+  sandbox's AGENTS.md. Residual: the append-ONCE accuracy-rules block on s2+s3 still lists
+  "(…, book_visit, move_visit, cancel_visit)" as staged tools — dead name AND contradicts the
+  one-shot doctrine; owner owes the one-line in-container sed + `/usr/local/sbin` install;
+  structural fix = make that block refreshable (delete-then-append) like the doctrine block.
+  **GLM swap (PR #81, same day): NOT live until Render redeploys with `INFERENCE_API_KEY`
+  set** — it merged after the #79/#80 deploy. Live probes on s2 passed:
   `find_slots` fail-closed → set length 90 → SQL read-back → candidates from the job's own
   length; `unschedule_visit` → "work isn't cancelled … back in the loose bucket" + assignment
   `cancelled`/job `open`; `cancel_job` → two-step demanded, visit cascade, terminal `cancelled`,
   ledger triple (`booked`/`cancelled`+`jobCancellation`/`job_cancelled`); minted-shell
   `duration_minutes` recorded (60). Telegram-path doctrine + board device checks remain the
-  owner's pass (CLI probes can't judge AGENTS.md-dependent behavior).
+  owner's pass (CLI probes can't judge AGENTS.md-dependent behavior). **Device-pass finding
+  (2026-07-25, owner): verb-follows-noun gap** — vague "cancel Tom …" correctly triggers the
+  which-kind ask, but "cancel <person>'s visit <day>" (noun = visit) silently resolves to
+  unschedule with no cancel_job offer. Mitigations that held: promise-gated confirm + the
+  preview's "work stays open → loose bucket" disclosure before acting; edge = promise-none
+  one-shots disclose only after the fact (reversible). Candidate fix, recorded not built: a
+  result-embedded self-heal line on unschedule preview/one-shot replies — "if the WORK itself
+  is dead, say so and I'll cancel the job instead" (the book_visit promiseLevel-line pattern;
+  server result strings need only a deploy, no fleet restart).
   Doctrine from the Plan-3 reshape stands: **no monolithic auto-scheduler; agency stays in the
   agent, tools measure** (research: `thoughts/shared/research/2026-07-20-flexible-scheduling-agent-toolset.md`).
 - **Deferred / backlog (each has an owner-stated reason — check before resurrecting):**
   `reflow_day` batch cascade (3c); ROI/whole-plan optimization → Plan 4's freeze; jargon
   leaking into chat (conflict #1 — fix must NOT be verbatim templates); Sat/Sun "next week"
-  boundary warning on `resolve_date` results; agent latency (~84s serial GLM round-trips);
+  boundary warning on `resolve_date` results — **BITTEN LIVE 2026-07-25, candidate for
+  promotion; trajectory-diagnosed (session log, not inference)**: on a Saturday, "cancel Tom
+  for next week's visit" missed a real confirmed **Monday Jul 27** visit. The agent did NOT
+  skip the tool — it reasoned "I'm told not to do calendar math myself" and called
+  `resolve_date(monday/sunday, weeksAhead:1)` → Aug 3–9, correct per the tool's own semantics
+  but not what a human means by "next week" ON A SATURDAY (they mean the week starting in 2
+  days — that's `weeksAhead:0`). It then HAND-ROLLED a second window "Jul 28–Aug 2" (Tue
+  start, no resolve_date behind it) — GLM math sneaking back through the gap — so both
+  windows excluded Jul 27, and even its clarifying question offered two wrong week-starts.
+  Root causes: (a) resolve_date has NO week-range concept, forcing agent-composed windows;
+  (b) weeksAhead semantics diverge from colloquial "next week" on Sat/Sun with no warning.
+  Fix shape when promoted: a week mode returning {weekStart, weekEnd}, flagged ambiguous on
+  Sat/Sun with BOTH candidate ranges so the clarifying question contains the right options.
+  Data layer verified clean; ask-first doctrine held; agent latency (~84s serial GLM round-trips);
   Feature C (per-tenant agent memory layer); Feature D (customer/job-level L3 write path);
   Telegram unbind/offboarding (apply path is additive-only); board-auth 401 logging (PR #51
   closed unmerged — debug future 401s with the "mint-a-slip" probe: sign a fake initData slip

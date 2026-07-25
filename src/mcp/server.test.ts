@@ -3273,9 +3273,9 @@ describe('record_standing_fact (staged two-step)', () => {
   });
 });
 
-describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => {
+describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', () => {
   test('technician badge is denied all four tools', async () => {
-    for (const name of ['get_team_schedule', 'book_visit', 'move_visit', 'cancel_visit']) {
+    for (const name of ['get_team_schedule', 'book_visit', 'move_visit', 'unschedule_visit']) {
       const denied = await call(name, {});
       expect(denied.isError).toBe(true);
       expect(denied.text).toContain('manager badge');
@@ -3400,7 +3400,7 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
 
       // resolve_review refuses to "resolve" a live scheduling token; dismissing
       // cancels it (then its confirm finds nothing).
-      const cancelStage = await callWith('cancel_visit', {
+      const cancelStage = await callWith('unschedule_visit', {
         assignmentId: movedId,
         reason: 'testing the refusal',
       });
@@ -3410,25 +3410,28 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
         resolution: 'resolved',
       });
       expect(refused.isError).toBe(true);
-      expect(refused.text).toContain('cancel_visit');
+      expect(refused.text).toContain('unschedule_visit');
       const dismissed = await callWith('resolve_review', {
         reviewItemId: cancelStage.data.confirmId,
         resolution: 'dismissed',
       });
       expect(dismissed.isError).toBe(false);
-      const deadConfirm = await callWith('cancel_visit', { confirmId: cancelStage.data.confirmId });
+      const deadConfirm = await callWith('unschedule_visit', { confirmId: cancelStage.data.confirmId });
       expect(deadConfirm.isError).toBe(true);
       expect(deadConfirm.text).toContain('confirmation not found');
 
       // CANCEL for real: restage (fresh preview) then confirm.
-      const cancelStage2 = await callWith('cancel_visit', {
+      const cancelStage2 = await callWith('unschedule_visit', {
         assignmentId: movedId,
         reason: 'customer cancelled',
       });
       expect(cancelStage2.data.preview).toMatchObject({ customerName: 'Sched Henderson' });
-      const cancelled = await callWith('cancel_visit', { confirmId: cancelStage2.data.confirmId });
-      expect(cancelled.data.status).toBe('cancelled');
-      // The cancelled visit no longer appears on the board.
+      const cancelled = await callWith('unschedule_visit', { confirmId: cancelStage2.data.confirmId });
+      // Vocabulary (2026-07-25): the wire status says what the tool DID — the
+      // visit is unscheduled; "cancelled" is reserved for the terminal verb.
+      expect(cancelled.data.status).toBe('unscheduled');
+      expect(cancelled.data.note).toContain('loose bucket');
+      // The unscheduled visit no longer appears on the board.
       const gone = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02' });
       expect(gone.data.days).toHaveLength(0);
     } finally {
@@ -3485,13 +3488,15 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       expect(moved.data.promiseBroken).toBe(false);
       expect(moved.data.note).toContain('one step');
 
-      // Cancelling it: one-shot as well.
-      const cancelled = await callWith('cancel_visit', {
+      // Unscheduling it: one-shot as well — and the result must say the WORK
+      // survives (the job returns to the loose bucket).
+      const cancelled = await callWith('unschedule_visit', {
         assignmentId: moved.data.assignmentId,
         reason: 'not needed',
       });
-      expect(cancelled.data.status).toBe('cancelled');
+      expect(cancelled.data.status).toBe('unscheduled');
       expect(cancelled.data.note).toContain('one step');
+      expect(cancelled.data.note).toContain('loose bucket');
 
       // The PROMISED path also requires both times — staged and confirmed with
       // exactly the stated window (preview == commit).

@@ -611,14 +611,14 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
   };
 }
 
-export interface CancelVisitInput {
+export interface UnscheduleVisitInput {
   tenantId: string;
   assignmentId: string;
   reason: string;
   actorRef: string;
 }
 
-export interface CancelVisitPreview {
+export interface UnscheduleVisitPreview {
   assignmentId: string;
   customerName: string | null;
   day: string;
@@ -626,10 +626,10 @@ export interface CancelVisitPreview {
   requiresConfirmation: boolean; // the doctrine's verdict for this cancel
 }
 
-export async function previewCancelVisit(
+export async function previewUnscheduleVisit(
   tenantId: string,
   assignmentId: string,
-): Promise<CancelVisitPreview> {
+): Promise<UnscheduleVisitPreview> {
   const target = await getAssignmentForTenant(assignmentId, tenantId);
   if (!target) throw new Error('assignment not found');
   if (target.status !== 'confirmed' && target.status !== 'proposed') {
@@ -646,7 +646,7 @@ export async function previewCancelVisit(
   };
 }
 
-export async function cancelVisit(input: CancelVisitInput): Promise<Assignment> {
+export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Assignment> {
   if (!input.reason?.trim()) throw new Error('reason is required for a cancellation');
   // Tenant guard first — this module is the reuse surface for Plans 2–3, and
   // updateAssignmentStatus alone is id-only.

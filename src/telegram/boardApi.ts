@@ -13,11 +13,11 @@ import {
 } from '../schedule/boardRead.js';
 import {
   bookVisit,
-  cancelVisit,
+  unscheduleVisit,
   isPromiseLevel,
   moveVisit,
   previewBookVisit,
-  previewCancelVisit,
+  previewUnscheduleVisit,
   previewMoveVisit,
   setVisitPromise,
   updateJobIdentity,
@@ -498,14 +498,14 @@ export async function handleBoardRequest(
         }
         if (pathname === '/board/api/cancel') {
           if (preview) {
-            json(res, 200, await previewCancelVisit(auth.tenantId, assignmentId));
+            json(res, 200, await previewUnscheduleVisit(auth.tenantId, assignmentId));
             return;
           }
           if (!reason) {
             json(res, 400, { error: 'reason is required' });
             return;
           }
-          const cancelled = await cancelVisit({
+          const cancelled = await unscheduleVisit({
             tenantId: auth.tenantId,
             assignmentId,
             reason,

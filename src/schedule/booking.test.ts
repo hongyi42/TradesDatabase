@@ -14,7 +14,7 @@ import {
 import { latestScheduleVersion, listScheduleEventsSince } from '../db/scheduleEvents.js';
 import {
   bookVisit,
-  cancelVisit,
+  unscheduleVisit,
   moveVisit,
   naiveLocalISO,
   previewBookVisit,
@@ -409,7 +409,7 @@ describe('moveVisit', () => {
       }),
     ).rejects.toThrow(/assignment not found/);
     await expect(
-      cancelVisit({
+      unscheduleVisit({
         tenantId: OTHER_TENANT,
         assignmentId: assignment.id,
         reason: 'wrong tenant',
@@ -573,7 +573,7 @@ describe('unassigned bookings (technician-optional)', () => {
       endTime: '10:00',
       actorRef: 'manager-test',
     });
-    await cancelVisit({
+    await unscheduleVisit({
       tenantId,
       assignmentId: cancelled.assignment.id,
       reason: 'never mind',
@@ -778,7 +778,7 @@ describe('detach (unassign) + time_only promise — plan 4a.5', () => {
   });
 });
 
-describe('cancelVisit', () => {
+describe('unscheduleVisit', () => {
   test('cancels with reason kept and appends the event', async () => {
     const customer = await createCustomer({ tenantId, name: 'Cancel Cara' });
     const { assignment, job } = await bookVisit({
@@ -791,7 +791,7 @@ describe('cancelVisit', () => {
       actorRef: 'manager-test',
     });
     const before = await latestScheduleVersion(tenantId);
-    const cancelled = await cancelVisit({
+    const cancelled = await unscheduleVisit({
       tenantId,
       assignmentId: assignment.id,
       reason: 'customer cancelled',

@@ -98,7 +98,7 @@ get_schedule in the MANAGER profile) plus the 21 seat/lifecycle+scheduling tools
 manager surface (send_email since 2026-07-04, retract_capture since 2026-07-06, web_search and
 read_webpage since 2026-07-13, record_standing_fact since 2026-07-14, resolve_date since
 2026-07-17; the 4 scheduling tools
-`get_team_schedule`/`book_visit`/`move_visit`/`cancel_visit` since 2026-07-14; the 5
+`get_team_schedule`/`book_visit`/`move_visit`/`unschedule_visit` since 2026-07-14; the 5
 schedule-input tools `set_availability`/`add_time_off`/`remove_time_off`/`set_job_duration`/
 `set_technician_skills` since 2026-07-20 — all one-shot, no confirm; `set_availability` is the
 step that makes a person schedulable, tracked by an `availability_setup` review item opened at
@@ -123,7 +123,7 @@ agent cannot talk past them.
 
 **Confirmation doctrine (2026-07-17, user decision):** confirm only what is **irreversible or
 externally visible** (a customer promise at stake); everything reversible happens in ONE call
-and the agent reports what it did. Concretely: `book_visit`/`move_visit`/`cancel_visit` act
+and the agent reports what it did. Concretely: `book_visit`/`move_visit`/`unschedule_visit` act
 one-shot when no customer promise is affected (book with `promiseLevel:'none'`, move with
 `promiseBroken:false`, cancel of an unpromised visit) and still stage→confirm when one is;
 `add_technician_seat` is now two-step (permanent ref + a seat — still two-step with

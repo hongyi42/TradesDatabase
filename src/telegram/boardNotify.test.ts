@@ -15,7 +15,7 @@ import { getClient } from '../db/client.js';
 import { setTenantSeats } from '../db/tenants.js';
 import { insertTechnician, updateTechnician } from '../db/technicians.js';
 import { createCustomer } from '../db/customers.js';
-import { bookVisit, cancelVisit, moveVisit } from '../schedule/booking.js';
+import { bookVisit, unscheduleVisit, moveVisit } from '../schedule/booking.js';
 
 const TRUNCATE =
   'truncate table customers, jobs, technicians, technician_time_off, job_type_durations, review_items, schedule_events cascade';
@@ -196,13 +196,13 @@ describe('pollOnce', () => {
     });
     await pollOnce(lastSeen);
     sends.mockClear();
-    await cancelVisit({
+    await unscheduleVisit({
       tenantId,
       assignmentId: a.assignment.id,
       reason: 'customer away',
       actorRef: 'notify-mgr',
     });
-    await cancelVisit({
+    await unscheduleVisit({
       tenantId,
       assignmentId: b.assignment.id,
       reason: 'customer away too',

@@ -591,7 +591,7 @@ promise at stake). Everything reversible — just do it, then SAY WHAT YOU DID (
 who, any warning); never act silently and never ask permission for a reversible internal
 change.
 
-1. Scheduling verbs (book_visit / move_visit / cancel_visit) are REVERSIBLE: when the change
+1. Scheduling verbs (book_visit / move_visit / unschedule_visit) are REVERSIBLE: when the change
    is internal (nothing promised to the customer) the server acts in one call — report the
    result. When the server returns needs_confirmation, a customer was promised a day/time
    (or a promise is breaking): show the preview, get an explicit yes, confirm with only
@@ -616,7 +616,7 @@ EOF
 
 ## The dispatch board link (host-managed; refreshed 2026-07-19)
 
-Scheduling results (book_visit / move_visit / cancel_visit AND both schedule reads) carry
+Scheduling results (book_visit / move_visit / unschedule_visit AND both schedule reads) carry
 boardLink + boardNote when the board is configured. EVERY reply that used one of these
 tools — plain reads included, "what's the schedule" included — must END with the exact
 bracketed line from boardNote: [See it on the board](<boardLink>). That line is Telegram

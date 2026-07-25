@@ -159,7 +159,7 @@
       (stop.address ? '<div class="stop-address">' + esc(stop.address) + '</div>' : '') +
       '</div><div class="stop-badges">' + stopBadges(stop) + '</div>' +
       (canAct
-        ? '<button type="button" class="stop-cancel" aria-label="Cancel visit">✕</button>'
+        ? '<button type="button" class="stop-cancel" aria-label="Unschedule visit">✕</button>'
         : '') +
       '</div>'
     );
@@ -1417,18 +1417,18 @@
     var body = { assignmentId: card.getAttribute('data-id') };
     apiPost('/board/api/cancel', body, true).then(function (p) {
       if (!p.ok) {
-        toast(p.body.error || 'Cancel failed (' + p.status + ')', true);
+        toast(p.body.error || 'Unschedule failed (' + p.status + ')', true);
         return;
       }
       var commit = function () {
         apiPost(
           '/board/api/cancel',
-          { assignmentId: body.assignmentId, reason: 'Cancelled on the dispatch board' },
+          { assignmentId: body.assignmentId, reason: 'Unscheduled on the dispatch board' },
           false,
         )
           .then(function (r) {
             if (!r.ok) {
-              toast(r.body.error || 'Cancel failed (' + r.status + ')', true);
+              toast(r.body.error || 'Unschedule failed (' + r.status + ')', true);
               refresh();
               return;
             }
@@ -1436,14 +1436,15 @@
             // the cancel one-shot must still "say what you did" in full.
             var hadPromise = r.body.promiseLevel && r.body.promiseLevel !== 'none';
             toast(
-              'Cancelled ' + (p.body.customerName || 'the visit') + ' on ' + p.body.day +
+              'Unscheduled ' + (p.body.customerName || 'the visit') + ' on ' + p.body.day +
+                ' — back in the loose bucket' +
                 (hadPromise ? '. This visit was PROMISED to the customer — tell them' : ''),
               !!hadPromise,
             );
             refresh();
           })
           .catch(function () {
-            toast('Network error — the cancel may or may not have landed; refreshing.', true);
+            toast('Network error — the unschedule may or may not have landed; refreshing.', true);
             refresh();
           });
       };
@@ -1458,7 +1459,7 @@
               ? 'was promised the day AND time on ' + p.body.day
               : 'was promised a day on ' + p.body.day;
         confirmAsk(
-          (p.body.customerName || 'The customer') + ' ' + stake + '. Cancel anyway?',
+          (p.body.customerName || 'The customer') + ' ' + stake + '. Unschedule anyway?',
           function (yes) {
             if (yes) commit();
           },

@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { runForcedTool, type ForcedToolSpec } from '../model/forcedTool.js';
 import type { Json } from '../db/index.js';
 
 // Candidate structured fields the model proposes from a raw note. Every field is
@@ -36,10 +36,10 @@ const EXTRACTION_SYSTEM =
   'clearly indicates the job is finished (completed) or actively underway (in_progress).';
 
 // Single forced tool — the model's only move is to return this structured object.
-const EXTRACTION_TOOL: Anthropic.Tool = {
+const EXTRACTION_TOOL: ForcedToolSpec = {
   name: 'record_extraction',
   description: 'Record the structured fields extracted from the technician field note.',
-  input_schema: {
+  inputSchema: {
     type: 'object',
     properties: {
       customerName: { type: 'string', description: 'Customer / household / site name if stated.' },
@@ -68,24 +68,20 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
   },
 };
 
-// Default extractor: Claude Sonnet, forced through the extraction tool so the
-// reply is always a structured object (or an error we can surface).
-export const sonnetExtractor: Extractor = async (rawText) => {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
-  const client = new Anthropic({ apiKey });
-  const message = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
+// Default extractor: whichever provider MODEL_PROVIDER selects (GLM-5.2 by
+// default), forced through the extraction tool so the reply is always a structured
+// object (or an error we can surface).
+//
+// laborHours is declared `number` in the schema, so runForcedTool coerces a quoted
+// "4" back to 4 — an OpenAI-compatible model emitting numbers as strings would
+// otherwise write a string into a numeric L2 column. `attributes` has no declared
+// property types, so free-form L3 facts (gate code "0412") pass through untouched.
+export const defaultExtractor: Extractor = async (rawText) => {
+  const args = await runForcedTool(EXTRACTION_TOOL, {
     system: EXTRACTION_SYSTEM,
-    tools: [EXTRACTION_TOOL],
-    tool_choice: { type: 'tool', name: EXTRACTION_TOOL.name },
-    messages: [{ role: 'user', content: rawText }],
+    user: rawText,
+    maxTokens: 1024,
+    label: 'defaultExtractor',
   });
-  const toolUse = message.content.find(
-    (block): block is Anthropic.ToolUseBlock =>
-      block.type === 'tool_use' && block.name === EXTRACTION_TOOL.name,
-  );
-  if (!toolUse) throw new Error('sonnetExtractor: model returned no record_extraction tool_use block');
-  return toolUse.input as ExtractedFields;
+  return args as unknown as ExtractedFields;
 };

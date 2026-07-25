@@ -16,7 +16,9 @@
 //
 // Writes target the TEST Supabase project only (reads SUPABASE_* from .env). L2 rows
 // it creates are cleaned up; the one L1 raw_capture is append-only (left in place).
-// Build first: `npm run build`. ANTHROPIC_API_KEY must be set (real extractor runs).
+// Build first: `npm run build`. The active model key must be set (a real extractor call runs):
+// INFERENCE_API_KEY for the default GLM provider (MODEL_PROVIDER=openai), or ANTHROPIC_API_KEY
+// with MODEL_PROVIDER=anthropic.
 
 import 'dotenv/config';
 import { createHmac, randomBytes, randomInt } from 'node:crypto';

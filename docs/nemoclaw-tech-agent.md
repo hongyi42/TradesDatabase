@@ -16,7 +16,8 @@ Telegram (per-tech bot)  ──voice/text──▶  NemoClaw sandbox (OpenClaw r
    voice auto-transcribed (cloud STT)         │  calls our MCP tools over stdio
                                               ▼
                               trades-spine MCP server  ──▶  Supabase (the spine)
-                              (holds SUPABASE_* + ANTHROPIC_API_KEY; tenant pinned)
+                              (holds SUPABASE_* + the model key: INFERENCE_API_KEY for
+                               the GLM default, ANTHROPIC_API_KEY when flipped; tenant pinned)
 ```
 
 - **Per technician:** one named NemoClaw sandbox (`nemoclaw tech-<name>`), lighter policy than the
@@ -48,7 +49,11 @@ secrets via env/SecretRef so they never enter the model context:
         "env": {
           "SUPABASE_URL":              { "secretRef": "supabase-url" },
           "SUPABASE_SERVICE_ROLE_KEY": { "secretRef": "supabase-service-role-key" },
-          "ANTHROPIC_API_KEY":         { "secretRef": "anthropic-api-key" },
+          // Model provider for the spine's forced-tool calls (classify/extract/brief/answer).
+          // Default 'openai' → GLM-5.2 via DeepInfra (INFERENCE_API_KEY). Set 'anthropic'
+          // + ANTHROPIC_API_KEY to run Claude instead — no code change.
+          "MODEL_PROVIDER":            "openai",
+          "INFERENCE_API_KEY":         { "secretRef": "inference-api-key" },
           "DEFAULT_TENANT_ID":         "<this firm's tenant uuid>"
         }
       }
@@ -65,7 +70,7 @@ one identity via `DEFAULT_TENANT_ID`/`DEFAULT_TECHNICIAN_REF`). The central alte
 HTTP server every bot calls**, with identity asserted per request by the gateway:
 
 - One host runs `npm run mcp:serve:http` → `node dist/mcp/httpServer.js` (Streamable HTTP, **stateless**).
-  Secrets (`SUPABASE_*`, `ANTHROPIC_API_KEY`, `GATEWAY_IDENTITY_SECRET`) live **only on this host** —
+  Secrets (`SUPABASE_*`, the model key `INFERENCE_API_KEY`/`ANTHROPIC_API_KEY`, `GATEWAY_IDENTITY_SECRET`) live **only on this host** —
   no sandbox holds them, which closes the per-box key-exfiltration risk.
 - The gateway reaches it over **mTLS on a private network** + an optional IP allowlist (`ALLOWED_CLIENT_IPS`).
   This restricts *who may connect*; it is **deploy-time infra, not in this repo**.
@@ -181,8 +186,9 @@ same write-path (`channel: 'email'`). This does **not** require NemoClaw — `in
 > unchanged**. Keep the direct creds only for the single-mailbox dev/test path.
 - Provide Gmail OAuth2 creds in env: `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`
   (or swap in a Workspace service account with domain-wide delegation).
-- A Sonnet classifier ([src/email/classify.ts](../src/email/classify.ts)) drops personal/marketing
-  mail before anything is written; only work mail reaches L1/L2.
+- A classifier ([src/email/classify.ts](../src/email/classify.ts)) — GLM-5.2 by default,
+  `MODEL_PROVIDER`-switchable — drops personal/marketing mail before anything is written; only work
+  mail reaches L1/L2.
 - Run it on a schedule (cron/worker), or expose it as another connector on the agent.
 - **Before enabling the cron, add idempotency:** `ingestEmail` does not dedup by message id and the
   default fetcher uses an overlapping `newer_than:7d` window, so repeated runs would create duplicate
@@ -454,7 +460,8 @@ classifier path we already have — now fed by Composio's Gmail trigger. Defense
 1. **Trigger-side** (`GMAIL_NEW_GMAIL_MESSAGE` `query`/`labelIds`) — only fire for matching mail; also
    minimizes personal mail transiting our infra.
 2. **Cheap deterministic drop** in the webhook handler (list/marketing headers, sender denylist).
-3. **Sonnet classifier** ([src/email/classify.ts](../src/email/classify.ts)) — the real work/personal call.
+3. **Model classifier** ([src/email/classify.ts](../src/email/classify.ts)) — the real work/personal
+   call (GLM-5.2 by default; `MODEL_PROVIDER` selects the provider).
 - **Classify _before_ the L1 insert.** `raw_captures` is append-only (no delete path), so personal mail
   written to L1 is retained forever — the classifier must gate the insert, never run after it.
 - Bias low-confidence to a **review bucket**, not a silent drop (dropping a real work email is costlier).

@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { runForcedTool, type ForcedToolSpec } from '../model/forcedTool.js';
 
 export interface EmailInput {
   subject: string;
@@ -20,10 +20,10 @@ const CLASSIFY_SYSTEM =
   '(newsletters, marketing, receipts unrelated to jobs, personal mail). Only work email should ' +
   'enter the customer/job record. When unsure, prefer isWork=false.';
 
-const CLASSIFY_TOOL: Anthropic.Tool = {
+const CLASSIFY_TOOL: ForcedToolSpec = {
   name: 'classify_email',
   description: 'Record whether the email is work-related to the trades business.',
-  input_schema: {
+  inputSchema: {
     type: 'object',
     properties: {
       isWork: { type: 'boolean', description: 'True only if work-related to the trades business.' },
@@ -34,26 +34,19 @@ const CLASSIFY_TOOL: Anthropic.Tool = {
   },
 };
 
-// Default classifier: Claude Sonnet, forced through the classify tool. Verified by
-// a live spot-check (not in the always-run suite); ingestEmail tests stub it.
-export const sonnetClassifier: WorkClassifier = async (email) => {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
-  const client = new Anthropic({ apiKey });
-  const message = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 256,
+// Default classifier: whichever provider MODEL_PROVIDER selects (GLM-5.2 by
+// default), forced through the classify tool. Verified by a live spot-check (not
+// in the always-run suite); ingestEmail tests stub it.
+//
+// isWork is declared boolean in the schema, so runForcedTool coerces a quoted
+// "true"/"false" — the classify-before-L1 gate must never read a truthy STRING
+// "false" as work mail and append a personal email to the append-only L1 log.
+export const defaultClassifier: WorkClassifier = async (email) => {
+  const args = await runForcedTool(CLASSIFY_TOOL, {
     system: CLASSIFY_SYSTEM,
-    tools: [CLASSIFY_TOOL],
-    tool_choice: { type: 'tool', name: CLASSIFY_TOOL.name },
-    messages: [
-      { role: 'user', content: `From: ${email.from}\nSubject: ${email.subject}\n\n${email.body}` },
-    ],
+    user: `From: ${email.from}\nSubject: ${email.subject}\n\n${email.body}`,
+    maxTokens: 256,
+    label: 'defaultClassifier',
   });
-  const toolUse = message.content.find(
-    (block): block is Anthropic.ToolUseBlock =>
-      block.type === 'tool_use' && block.name === CLASSIFY_TOOL.name,
-  );
-  if (!toolUse) throw new Error('sonnetClassifier: model returned no classify_email tool_use block');
-  return toolUse.input as Classification;
+  return args as unknown as Classification;
 };

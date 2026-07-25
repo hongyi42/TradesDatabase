@@ -17,7 +17,7 @@ import {
   type JobStatus,
   type Json,
 } from '../db/index.js';
-import { sonnetExtractor, type Extractor, type ExtractedFields } from './extract.js';
+import { defaultExtractor, type Extractor, type ExtractedFields } from './extract.js';
 import { matchIdentity, type MatchResult, type ScheduledCustomerDraft } from './identityMatch.js';
 
 // Identity resolved during the staged-confirm flow (MCP tool path): commit must
@@ -74,7 +74,7 @@ export async function recordFieldNote(
   input: RecordFieldNoteInput,
   deps: { extract?: Extractor } = {},
 ): Promise<RecordFieldNoteResult> {
-  const extract = deps.extract ?? sonnetExtractor;
+  const extract = deps.extract ?? defaultExtractor;
   const { tenantId, technicianRef, channel } = input;
 
   // (1) L1 first — append the verbatim note.

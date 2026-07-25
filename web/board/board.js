@@ -1077,10 +1077,13 @@
   }
 
   // The OFFERED job lengths (plan 4b-1) — mirrors DURATION_LADDER in
-  // src/db/jobs.ts. Presentation only: any whole 1..1440 minutes is legal
-  // server-side, so Custom… below is a first-class path, not an escape hatch
-  // for errors.
+  // src/db/jobs.ts (the PRIORITY_OPTIONS client-mirror precedent: this webview
+  // is plain script, no build step). Presentation only: any whole minutes up
+  // to the bound is legal server-side, so Custom… below is a first-class path.
+  // Keep BOTH constants in lockstep with src/db/jobs.ts when editing a rung
+  // or the bound — the one fact per surface, not per line (review finding).
   var DURATION_LADDER = [15, 30, 45, 60, 90, 120, 180, 240, 360, 480];
+  var MAX_DURATION_MINUTES = 1440;
 
   // JS mirror of src/db/jobs.ts formatDuration — chat and board must label a
   // length identically ('1h 30m').
@@ -1288,7 +1291,11 @@
             selectHtml('qe-duration', durationOptions(curDur), curDur != null ? String(curDur) : ''),
           ) +
           '<div id="qe-duration-custom-row" class="field-hidden">' +
-          fieldRow('Minutes', '<input type="number" id="qe-duration-custom" min="1" max="1440" step="1">') +
+          fieldRow(
+            'Minutes',
+            '<input type="number" id="qe-duration-custom" min="1" max="' +
+              MAX_DURATION_MINUTES + '" step="1">',
+          ) +
           '</div>' +
           formButtons('Save'),
       ),
@@ -1310,8 +1317,8 @@
           // Number(), not parseInt: "45.5" must be REFUSED like the server
           // refuses it, not silently truncated to 45 (review observation).
           var typed = Number(val(ov, 'qe-duration-custom'));
-          if (!(Number.isInteger(typed) && typed >= 1 && typed <= 1440)) {
-            toast('Custom length must be whole minutes from 1 to 1440.', true);
+          if (!(Number.isInteger(typed) && typed >= 1 && typed <= MAX_DURATION_MINUTES)) {
+            toast('Custom length must be whole minutes from 1 to ' + MAX_DURATION_MINUTES + '.', true);
             return;
           }
           newDur = typed;

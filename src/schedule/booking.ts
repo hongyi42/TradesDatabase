@@ -309,12 +309,20 @@ export async function previewBookVisit(input: BookVisitInput): Promise<BookVisit
   };
 }
 
-// The span a booking measures, in whole minutes — what the minted job shell
-// stores as its duration. null when the span falls outside the typed-layer
-// bound (a multi-day span is not a per-job estimate); same-day bookings are
-// always 1..1439 so the guard is future-proofing, not a live branch.
+// THE ISO-pair → whole-minutes computation (final-review consolidation: this
+// arithmetic previously existed in three hand-written copies — here, moveVisit'
+// s duration default, and find_slots' subject-visit branch — which could drift
+// in rounding semantics independently).
+export function spanMinutes(startISO: string, endISO: string): number {
+  return Math.round((Date.parse(endISO) - Date.parse(startISO)) / 60_000);
+}
+
+// The span a booking measures — what the minted job shell stores as its
+// duration. null when the span falls outside the typed-layer bound (a
+// multi-day span is not a per-job estimate); same-day bookings are always
+// 1..1439 so the guard is future-proofing, not a live branch.
 function bookedSpanMinutes(startISO: string, endISO: string): number | null {
-  const span = Math.round((Date.parse(endISO) - Date.parse(startISO)) / 60_000);
+  const span = spanMinutes(startISO, endISO);
   return isValidDuration(span) ? span : null;
 }
 
@@ -467,9 +475,7 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
         : null;
   const targetTechnicianId = input.unassign ? null : (technician?.id ?? old.technician_id);
 
-  const oldDurationMin = Math.round(
-    (Date.parse(old.ends_at) - Date.parse(old.starts_at)) / 60_000,
-  );
+  const oldDurationMin = spanMinutes(old.starts_at, old.ends_at);
   const endTime = input.endTime ?? addMinutesClamped(input.startTime, oldDurationMin);
   validateDayAndTimes(input.date, input.startTime, endTime);
   const startISO = naiveLocalISO(input.date, input.startTime);

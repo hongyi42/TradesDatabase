@@ -10,6 +10,7 @@
 // same convention the sheet mirror established. UTC-day readers stay correct;
 // availability checks interpret these timestamps with timezone 'UTC'.
 import {
+  ALLOWED_TRANSITIONS,
   appendScheduleEvent,
   createAssignment,
   createJob,
@@ -22,6 +23,7 @@ import {
   isOverlapViolation,
   listAssignmentsForTechnician,
   listTimeOffForTechnician,
+  listAssignmentsForJob,
   listIdenticalUnassignedVisits,
   rescheduleAssignment,
   updateAssignmentPromise,
@@ -762,4 +764,139 @@ export async function updateJobIdentity(
     },
   });
   return { previous: job, updated };
+}
+
+// ---------------------------------------------------------------------------
+// cancel_job (cancel-vocabulary plan, 2026-07-25): the TERMINAL verb. Where
+// unscheduleVisit takes one calendar attempt off while the work survives,
+// cancelJob closes the WORK: the job leaves the loose bucket and every live
+// visit dies with it. Terminal per ALLOWED_TRANSITIONS (cancelled → []), so
+// the confirmation doctrine's irreversible arm applies — every surface must
+// stage-and-confirm; there is no one-shot path.
+
+export interface CancelJobVisit {
+  assignmentId: string;
+  day: string;
+  startTime: string;
+  promiseLevel: PromiseLevel;
+  technicianRef: string | null;
+}
+
+export interface CancelJobPreview {
+  jobId: string;
+  jobTitle: string | null;
+  customerName: string | null;
+  // Every live (confirmed/proposed) visit that dies with the job — promises
+  // included, so the confirm dialog states the full stake.
+  visits: CancelJobVisit[];
+  // ALWAYS true — single-sourced here like every requiresConfirmation, so no
+  // surface can ever grow a one-shot arm for a terminal action.
+  requiresConfirmation: true;
+}
+
+// Tenant guard is EXPLICIT (plan-review finding): getJob and every cascade
+// helper are id-only, so the guard lives here (the updateJobIdentity idiom)
+// and all cascade rows are reached only through the guarded job.
+async function resolveCancelJob(tenantId: string, jobId: string): Promise<Job> {
+  const job = await getJob(jobId);
+  if (!job || job.tenant_id !== tenantId) throw new Error('job not found');
+  if (!ALLOWED_TRANSITIONS[job.status].includes('cancelled')) {
+    throw new Error(
+      `cannot cancel a ${job.status} job — only open or in-progress work can be cancelled` +
+        (job.status === 'cancelled' ? ' (it already is)' : ''),
+    );
+  }
+  return job;
+}
+
+const liveRowsForJob = async (jobId: string): Promise<Assignment[]> =>
+  (await listAssignmentsForJob(jobId)).filter(
+    (r) => r.status === 'confirmed' || r.status === 'proposed',
+  );
+
+export async function previewCancelJob(
+  tenantId: string,
+  jobId: string,
+): Promise<CancelJobPreview> {
+  const job = await resolveCancelJob(tenantId, jobId);
+  const customer = await getCustomer(job.customer_id);
+  const rows = await liveRowsForJob(job.id);
+  // Ref resolution mirrors findDisplacementCandidates: cache per technician.
+  const refCache = new Map<string, string | null>();
+  const visits: CancelJobVisit[] = [];
+  for (const row of rows) {
+    let ref: string | null = null;
+    if (row.technician_id) {
+      if (!refCache.has(row.technician_id)) {
+        const t = await getTechnicianById(row.technician_id, tenantId);
+        refCache.set(row.technician_id, t?.ref ?? null);
+      }
+      ref = refCache.get(row.technician_id) ?? null;
+    }
+    visits.push({
+      assignmentId: row.id,
+      day: row.starts_at.slice(0, 10),
+      startTime: row.starts_at.slice(11, 16),
+      promiseLevel: row.promise_level,
+      technicianRef: ref,
+    });
+  }
+  return {
+    jobId: job.id,
+    jobTitle: job.title,
+    customerName: customer && customer.tenant_id === tenantId ? customer.name : null,
+    visits,
+    requiresConfirmation: true,
+  };
+}
+
+export interface CancelJobInput {
+  tenantId: string;
+  jobId: string;
+  reason: string;
+  actorRef: string;
+}
+
+export interface CancelJobResult {
+  job: Job;
+  cancelledVisits: Assignment[];
+}
+
+export async function cancelJob(input: CancelJobInput): Promise<CancelJobResult> {
+  const { tenantId } = input;
+  if (!input.reason?.trim()) throw new Error('reason is required for a job cancellation');
+  const job = await resolveCancelJob(tenantId, input.jobId);
+
+  // Cascade order (recorded decision): visits FIRST, job LAST. Each visit
+  // gets its own 'cancelled' ledger event — the existing boardNotify copy
+  // pushes to the affected technician — and a crash mid-cascade leaves a
+  // re-runnable state (the job is still open; already-cancelled rows are
+  // simply absent from the next run's live list). Completed/terminal rows
+  // are never touched.
+  const cancelledVisits: Assignment[] = [];
+  for (const row of await liveRowsForJob(job.id)) {
+    const cancelled = await updateAssignmentStatus(row.id, 'cancelled', input.reason);
+    cancelledVisits.push(cancelled);
+    await appendScheduleEvent({
+      tenantId,
+      assignmentId: cancelled.id,
+      kind: 'cancelled',
+      actorRef: input.actorRef,
+      detail: {
+        day: cancelled.starts_at.slice(0, 10),
+        reason: input.reason,
+        jobCancellation: true, // distinguishes cascade rows from lone unschedules
+      },
+    });
+  }
+  // Guarded transition — a concurrent flip between our read and this write
+  // surfaces instead of being overwritten (updateJobStatus's CAS-on-status).
+  const cancelledJob = await updateJobStatus(job.id, 'cancelled');
+  await appendScheduleEvent({
+    tenantId,
+    kind: 'job_cancelled', // plain-text kind; produces no push (manager-initiated)
+    actorRef: input.actorRef,
+    detail: { jobId: job.id, reason: input.reason, visitsCancelled: cancelledVisits.length },
+  });
+  return { job: cancelledJob, cancelledVisits };
 }

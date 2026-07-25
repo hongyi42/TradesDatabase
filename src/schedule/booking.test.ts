@@ -7,13 +7,17 @@ import { addTimeOff } from '../db/timeOff.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob, getJob } from '../db/jobs.js';
 import {
+  listAssignmentsForJob,
   listAssignmentsForTechnician,
   listUnassignedAssignments,
   listUnassignedOpenJobs,
+  updateAssignmentStatus,
 } from '../db/assignments.js';
 import { latestScheduleVersion, listScheduleEventsSince } from '../db/scheduleEvents.js';
 import {
   bookVisit,
+  cancelJob,
+  previewCancelJob,
   unscheduleVisit,
   moveVisit,
   naiveLocalISO,
@@ -802,5 +806,115 @@ describe('unscheduleVisit', () => {
     expect(await latestScheduleVersion(tenantId)).toBeGreaterThan(before);
     // The job survives a cancelled visit (rebooking is the job machine's business).
     expect((await getJob(job.id))?.status).toBe('open');
+  });
+});
+
+describe('cancelJob — the terminal verb (cancel-vocabulary plan, 2026-07-25)', () => {
+  test('cascade: live visits die with their own events, job flips, ledger complete', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Terminal Tess' });
+    // One job, two live visits (one assigned, one PARKED person-less — the
+    // cascade must cover null-technician rows) + one COMPLETED visit that the
+    // cascade must never touch.
+    const first = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      title: 'full repipe',
+      date: '2027-01-04',
+      startTime: '09:00',
+      endTime: '11:00',
+      actorRef: 'manager-test',
+    });
+    const jobId = first.job.id;
+    const parked = await bookVisit({
+      tenantId,
+      jobId,
+      date: '2027-01-06',
+      startTime: '09:00',
+      endTime: '11:00',
+      actorRef: 'manager-test',
+    });
+    const done = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      jobId,
+      date: '2027-01-05',
+      startTime: '13:00',
+      endTime: '14:00',
+      promiseLevel: 'day',
+      actorRef: 'manager-test',
+    });
+    const completedRow = await updateAssignmentStatus(done.assignment.id, 'completed');
+    expect(completedRow.status).toBe('completed');
+
+    // Preview: both LIVE visits listed with their promise levels; completed
+    // row absent; requiresConfirmation is always true (terminal).
+    const preview = await previewCancelJob(tenantId, jobId);
+    expect(preview.requiresConfirmation).toBe(true);
+    expect(preview.jobTitle).toBe('full repipe');
+    expect(preview.customerName).toBe('Terminal Tess');
+    expect(preview.visits.map((v) => v.assignmentId).sort()).toEqual(
+      [first.assignment.id, parked.assignment.id].sort(),
+    );
+    expect(preview.visits.find((v) => v.assignmentId === first.assignment.id)?.technicianRef).toBe(
+      'book-tech',
+    );
+    expect(preview.visits.find((v) => v.assignmentId === parked.assignment.id)?.technicianRef).toBeNull();
+
+    const result = await cancelJob({
+      tenantId,
+      jobId,
+      reason: 'customer called it off',
+      actorRef: 'manager-test',
+    });
+    expect(result.job.status).toBe('cancelled');
+    expect(result.cancelledVisits.map((v) => v.id).sort()).toEqual(
+      [first.assignment.id, parked.assignment.id].sort(),
+    );
+    // The completed row is history, untouched.
+    const rows = await listAssignmentsForJob(jobId);
+    expect(rows.find((r) => r.id === done.assignment.id)?.status).toBe('completed');
+    expect(rows.filter((r) => r.status === 'cancelled')).toHaveLength(2);
+    // Ledger: one 'cancelled' per visit (jobCancellation-stamped) + one
+    // job_cancelled with the count.
+    const events = await listScheduleEventsSince(tenantId, 0, 200);
+    const visitEvents = events.filter(
+      (e) =>
+        e.kind === 'cancelled' &&
+        (e.detail as { jobCancellation?: boolean } | null)?.jobCancellation === true,
+    );
+    expect(visitEvents).toHaveLength(2);
+    const jobEvent = events.find((e) => e.kind === 'job_cancelled');
+    expect(jobEvent?.assignment_id).toBeNull();
+    expect((jobEvent?.detail as { visitsCancelled?: number }).visitsCancelled).toBe(2);
+  });
+
+  test('terminal/unknown/cross-tenant refusals; reason required', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Refusal Rae' });
+    const { job } = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      title: 'one and done',
+      date: '2027-01-11',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    await cancelJob({ tenantId, jobId: job.id, reason: 'gone', actorRef: 'manager-test' });
+    // Already cancelled → terminal refusal that says so.
+    await expect(previewCancelJob(tenantId, job.id)).rejects.toThrow(/it already is/);
+    await expect(
+      cancelJob({ tenantId, jobId: job.id, reason: 'again', actorRef: 'manager-test' }),
+    ).rejects.toThrow(/cannot cancel a cancelled job/);
+    // Cross-tenant and unknown ids read as not found (tenant guard is explicit
+    // — every helper underneath is id-only; the plan-review finding).
+    await expect(previewCancelJob(OTHER_TENANT, job.id)).rejects.toThrow('job not found');
+    await expect(
+      previewCancelJob(tenantId, '00000000-0000-0000-0000-000000000001'),
+    ).rejects.toThrow('job not found');
+    await expect(
+      cancelJob({ tenantId, jobId: job.id, reason: '  ', actorRef: 'manager-test' }),
+    ).rejects.toThrow('reason is required');
   });
 });

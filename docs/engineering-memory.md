@@ -202,6 +202,17 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   unschedule option says the job "goes back to the loose bucket" even when the visit is
   UNASSIGNED (already tray-visible — it never left); candidate conditional phrasing when
   technician_id is null, same deploy-only result-string class.
+  **"next <weekday>" both-and-ask rule VIOLATED live 2026-07-25 (trajectory-diagnosed,
+  same day as the week fix):** "is there any job next thursday" (asked on a Saturday) →
+  agent called `resolve_date {weekday: thursday, weeksAhead: 1}` ONCE (→ Aug 6), silently
+  picking one reading despite the description's explicit resolve-both-and-ask order; the
+  manager meant Jul 30 (weeksAhead 0). The rule exists only as prompt-layer steering (tool
+  description + §0f item 3) — the documented GLM class. Candidate mechanism (week-mode's
+  sibling, recorded not built): a `saidNext: true` flag on weekday mode — the server returns
+  BOTH candidate dates + a result-embedded ask note, shrinking the agent's job from
+  "resolve twice and compose the question" to "relay the result". Also verified same session:
+  NO date is injected into agent context — today's date appears ONLY in resolve_date results
+  (by §0f design), confirmed by a full-session grep (1 hit, the tool result).
   **resolve_date week mode SHIPPED + REPLAY-VERIFIED 2026-07-25 (PR #82):** the deferred
   Sat/Sun boundary item, promoted and closed same-day. Replay of the verbatim failing
   message on a fresh session: `resolve_date {week: 1}` → both Monday-anchored windows

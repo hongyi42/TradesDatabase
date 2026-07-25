@@ -294,14 +294,26 @@ Render service, and this branch is not deployed until the PR merges. Run them to
 Phase 3's deploy-freshness check after the merge+deploy, before Phase 4's seed.*
 - Prerequisites: `supabase-test` MCP; a sandbox with a working spine MCP (s2 = manager-sam)
   reachable via `nemoclaw <sandbox> agent`; Phase 1's pilot migration applied.
-- [ ] Restart the gateway across the live fleet first — `docs/engineering-memory.md` records
+- [x] Restart the gateway across the live fleet first — `docs/engineering-memory.md` records
       that the gateway caches `tools/list`, so the new `update_job` schema is invisible to live
-      chat until it does.
-- [ ] Ask the agent in chat to set a pilot job's length, then read `duration_minutes` back for
-      that `job_id` over `supabase-test`. **Evidence:** the chat reply and the SQL row. Restore
-      the prior value (null) afterwards.
-- [ ] Ask for slots on that job (which has no `job_type`) and confirm candidates come back
-      instead of the no-type error. **Evidence:** the returned candidates.
+      chat until it does. 2026-07-25: enumerated FROM the box (`nemoclaw list`): s2/s3/s5/s7/s8
+      live-bound, s6 parked (placeholder allowlist id). s2/s3/s5/s7 restarted, each "✓ Gateway
+      restarted; health passed; forwards checked/recovered". s8 (Joy, onboarded 07-24) blocked
+      by a stale shields-transition lock (owner PID dead — a 07-24 restart died mid-flight);
+      lock removal classifier-denied, handed to the user as a one-liner.
+- [x] Ask the agent in chat to set a pilot job's length, then read `duration_minutes` back for
+      that `job_id` over `supabase-test`. **Evidence** 2026-07-25 (s2, session `probe-4b1-len-1`):
+      "Set the length of Visit for Tom Becker to 90 minutes" → "duration updated from 85 → 90";
+      SQL read-back `duration_minutes = 90` at 21:48:56Z. (The "from 85" was REAL — the user was
+      concurrently editing the same job via the board Custom control, set 85 before the probe and
+      85 again after; final SQL state 85 is the user's own value, so no restore-to-null was run.)
+- [x] Ask for slots on that job (which has no `job_type`) and confirm candidates come back
+      instead of the no-type error. **Evidence** 2026-07-25 (s2, sessions `probe-4b1-slots-1/2`):
+      pre-length probe correctly REFUSED (no stated/job/type length; disclosed the tenant's only
+      type-table entry drainage=300 doesn't apply; offered the ladder + "any other whole number").
+      Post-length probe returned day-level candidates (Mon/Tue/Wed, Aug 10–12), used the job's
+      own length ("The job's recorded length is 1h 25m" — live value 85, off-ladder label
+      composed by `formatDuration`), and disclosed availability-less techs skipped (Joy, Yutao).
 
 ### Manual verification
 None.
@@ -376,9 +388,10 @@ jobType-rejection copy now names length as a board-editable field.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP; the deployed board reachable over HTTPS.
-- [ ] After deploy, byte-compare the served `/board/static/board.js` against `main` to prove the
-      deploy is fresh (Render "Redeploy" reuses the OLD commit — recorded trap). **Evidence:**
-      the hash comparison.
+- [x] After deploy, byte-compare the served `/board/static/board.js` against `main` to prove the
+      deploy is fresh (Render "Redeploy" reuses the OLD commit — recorded trap). **Evidence**
+      2026-07-25: `curl` of the served file vs merged main's `web/board/board.js` → `cmp` exit 0,
+      BYTE-IDENTICAL (both PRs #80+#79 in the deploy).
 
 ### Manual verification
 There is no automated coverage of `board.js` (`src/telegram/boardApi.test.ts:207-223` only
@@ -388,7 +401,9 @@ asserts the file is served), so these are the only checks on it:
 - [ ] **Editing only the title on a job that already has a length leaves the length intact**
 - [ ] Editing only the length (no title/priority change) actually saves
 - [ ] `Custom…` accepts a typed 20 minutes, and re-opening the sheet shows **20**, not the
-      nearest rung and not "not set"
+      nearest rung and not "not set" (partial live evidence 2026-07-25: the user typed a Custom
+      **85** on the pilot board during the probe window — stored as 85, read back by `find_slots`
+      as "1h 25m"; the re-open-the-sheet display check is still the device pass's to confirm)
 - [ ] The control is reachable and legible at phone width, and the number keypad appears for
       the custom input
 

@@ -153,6 +153,7 @@ identify by which chat answers):
 | s5 | ben-shelton, invited technician (@ragisan03_bot, TG 8991633730) | |
 | s6 | COLD BLANK (@ragisan2_bot) | the pool's one free blank (from s1's recycle) |
 | s7 | Yutao (manager, active, Default Tenant, TG 8639645984) | the box's DEFAULT sandbox; NOT in `sandbox_pool` (provisioned outside the pool, like pre-pool s2/s3) |
+| s8 | manager-joy (Joy, manager, active, Default Tenant, TG 8816690083) | onboarded 2026-07-24; onboarded config says deepinfra-prod but the LIVE gateway runs nvidia-prod — the config-applying restart died mid-flight and left a stale shields-transition lock (see ops trap below); as of 2026-07-25 the gateway has NOT been restarted since the #79/#80 tool-vocabulary deploy, so her bot may advertise the stale pre-rename tool list |
 | s1, s4 | retired/recycled | historical only |
 
 **Board:** one global non-AI bot `@DashboardMan_bot` (plain code on Render; tenant isolation
@@ -168,13 +169,19 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   (PR #54); seat-exempt schedulable person (PR #58); board link on every schedule answer
   (PR #59, merged 2026-07-20 — **post-merge box rollout still unverified**: wire re-run
   s2/s3/s5 + gateway restarts + live "what's the schedule" re-test); scheduling-inputs schema
-  groundwork — technician skills + job priority homes (PR #62, merged 2026-07-20).
-- **Awaiting plan approval (do not implement before the owner approves):** Plan 3a
-  (schedule input verbs) + 3b (`find_slots`) —
-  [thoughts/shared/plans/2026-07-20-plan-3a-schedule-input-verbs.md](../thoughts/shared/plans/2026-07-20-plan-3a-schedule-input-verbs.md),
-  [2026-07-20-plan-3b-find-slots.md](../thoughts/shared/plans/2026-07-20-plan-3b-find-slots.md).
-  Doctrine from the Plan-3 reshape: **no monolithic auto-scheduler; agency stays in the agent,
-  tools measure** (research: `thoughts/shared/research/2026-07-20-flexible-scheduling-agent-toolset.md`).
+  groundwork — technician skills + job priority homes (PR #62, merged 2026-07-20);
+  Plans 3a+3b (schedule input verbs + `find_slots`); Plan 4a + 4a.5/4a.6 (loose-bucket tray +
+  board quick-edit + polish); **cancel vocabulary (PR #80) + duration ladder 4b-1 (PR #79),
+  both merged+deployed 2026-07-25** — served board.js byte-verified against main; gateways
+  s2/s3/s5/s7 restarted (s8 blocked on the stale-lock trap below); live probes on s2 passed:
+  `find_slots` fail-closed → set length 90 → SQL read-back → candidates from the job's own
+  length; `unschedule_visit` → "work isn't cancelled … back in the loose bucket" + assignment
+  `cancelled`/job `open`; `cancel_job` → two-step demanded, visit cascade, terminal `cancelled`,
+  ledger triple (`booked`/`cancelled`+`jobCancellation`/`job_cancelled`); minted-shell
+  `duration_minutes` recorded (60). Telegram-path doctrine + board device checks remain the
+  owner's pass (CLI probes can't judge AGENTS.md-dependent behavior).
+  Doctrine from the Plan-3 reshape stands: **no monolithic auto-scheduler; agency stays in the
+  agent, tools measure** (research: `thoughts/shared/research/2026-07-20-flexible-scheduling-agent-toolset.md`).
 - **Deferred / backlog (each has an owner-stated reason — check before resurrecting):**
   `reflow_day` batch cascade (3c); ROI/whole-plan optimization → Plan 4's freeze; jargon
   leaking into chat (conflict #1 — fix must NOT be verbatim templates); Sat/Sun "next week"
@@ -250,6 +257,14 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
 - Small but sharp: non-interactive ssh lacks `nemoclaw` on PATH
   (`export PATH=$HOME/.local/bin:$PATH`); `nemoclaw upload` writes 640 but the gateway needs
   660 (`doctor --fix`); `nemoclaw exec` eats stdin in heredocs (`</dev/null`).
+- **A crashed `gateway restart` leaves a stale shields-transition lock that blocks every later
+  restart** (observed 2026-07-25 on s8, from a restart that died 07-24): the next restart waits
+  30s then aborts with "Timed out … waiting for shields transition lock … recorded owner PID
+  <n> is not running". NemoClaw refuses to clear it itself; the fix is exactly what the error
+  says — confirm the owner PID is dead and no transition process is running (`ps`), then remove
+  `~/.nemoclaw/state/shields-transition-lock-<s>.json` on the box and retry. Side effect of the
+  original crash: the sandbox keeps running its PRE-restart config (s8 showed
+  "live gateway differs from onboarded" drift for a full day).
 - **CLI chat probes run on the EMBEDDED agent, not the gateway** (observed 2026-07-23,
   4a.5 detach probe): `nemoclaw <s> agent --agent main --session-id <fresh> -m "…"` gets
   "gateway closed (1008): pairing required" (the box CLI device isn't gateway-paired) and

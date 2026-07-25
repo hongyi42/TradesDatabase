@@ -243,9 +243,12 @@ first point the work is coherent enough to deploy.**
 - `setVisitPromise` (:692): `promisedDay` (:703) derives from `starts_at`. For an unplaced row
   use `earliest_date` **only when `earliest_date === latest_date`**; refuse a multi-day range,
   and refuse `'time'`/`'time_only'` outright (see Decisions).
-- `cancelVisit` (:649) ledger detail (:671), `previewCancelVisit` (:629),
+- `unscheduleVisit` ledger detail, `previewUnscheduleVisit`,
   `MoveVisitPreview.fromDay` (:526, :600) and `:643` all use
   `promised_day ?? starts_at.slice(0,10)` — extend the fallback chain to `earliest_date`.
+  (Names updated 2026-07-25: PR #80 renamed `cancelVisit`/`previewCancelVisit` to the
+  unschedule pair and added terminal `cancelJob` — its cascade also touches these lines, and
+  the :649/:629/:671 line anchors have shifted; re-locate by symbol when implementing.)
 - `BookVisitPreview` (:264): `startTime`/`endTime` become nullable; add the date range.
 
 **`src/mcp/server.ts`**

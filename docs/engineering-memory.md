@@ -188,7 +188,15 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   `cancelled`/job `open`; `cancel_job` → two-step demanded, visit cascade, terminal `cancelled`,
   ledger triple (`booked`/`cancelled`+`jobCancellation`/`job_cancelled`); minted-shell
   `duration_minutes` recorded (60). Telegram-path doctrine + board device checks remain the
-  owner's pass (CLI probes can't judge AGENTS.md-dependent behavior).
+  owner's pass (CLI probes can't judge AGENTS.md-dependent behavior). **Device-pass finding
+  (2026-07-25, owner): verb-follows-noun gap** — vague "cancel Tom …" correctly triggers the
+  which-kind ask, but "cancel <person>'s visit <day>" (noun = visit) silently resolves to
+  unschedule with no cancel_job offer. Mitigations that held: promise-gated confirm + the
+  preview's "work stays open → loose bucket" disclosure before acting; edge = promise-none
+  one-shots disclose only after the fact (reversible). Candidate fix, recorded not built: a
+  result-embedded self-heal line on unschedule preview/one-shot replies — "if the WORK itself
+  is dead, say so and I'll cancel the job instead" (the book_visit promiseLevel-line pattern;
+  server result strings need only a deploy, no fleet restart).
   Doctrine from the Plan-3 reshape stands: **no monolithic auto-scheduler; agency stays in the
   agent, tools measure** (research: `thoughts/shared/research/2026-07-20-flexible-scheduling-agent-toolset.md`).
 - **Deferred / backlog (each has an owner-stated reason — check before resurrecting):**

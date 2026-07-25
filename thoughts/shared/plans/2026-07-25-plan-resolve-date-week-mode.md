@@ -225,24 +225,28 @@ None in-repo (rollout + evidence only; check the boxes below into this plan file
 
 ### Automated verification
 
-- [ ] deploy freshness: served `/board/static/board.js` byte-identical to main (the recorded
-      Render old-commit trap check; board.js is unchanged by this plan, so identical = fresh)
+- [x] deploy freshness: served `/board/static/board.js` byte-identical to main (`cmp` exit 0,
+      2026-07-25 post-#82-deploy). Fleet: enumerated from the box (s2/s3/s5/s7/s8 live-bound,
+      s6 parked), all five gateways restarted "✓ health passed".
 
 ### Live verification (agent-executable)
 
 - Prerequisites: ssh `tradesbox`; `supabase-test` MCP for read-backs; s2 reachable via
   `nemoclaw s2 agent --session-id <fresh>` (CLI probes exercise deployed code + real tool
   choice; AGENTS.md-dependent judgments stay with the Telegram device pass).
-- [ ] Direct tool check: a fresh-session probe asking the agent to "resolve next week" (or a
-      scripted MCP call) returns `resolved_week` with `weekStart`/`weekEnd`; on a weekend run
-      it carries `boundaryAmbiguous` + `alternate`. **Evidence:** the returned object.
-- [ ] **The replay**: fresh session, verbatim "Cancel Tom for next week's visit". PASS = the
-      agent either surfaces the real next-week visit(s) for both Toms (SQL read-back names the
-      window it searched, which must include the coming Monday) or asks a clarifying question
-      whose candidate week-starts are BOTH real Mondays from the tool result. FAIL = any
-      hand-rolled window (a non-Monday "week starting" in its reply is the tell).
-      **Evidence:** the reply + the session trajectory's tool-call list
-      (`/sandbox/.openclaw/agents/main/sessions/<id>.jsonl` — the 2026-07-25 recipe).
+- [x] Direct tool check — satisfied inside the replay with stronger evidence: the trajectory
+      shows `resolve_date {week: 1}` called on a Saturday and BOTH windows the agent then
+      searched are the resolved_week result's ranges (primary Jul 27–Aug 2, alternate
+      Aug 3–9) — i.e. the ambiguous result was returned and consumed.
+- [x] **The replay** (2026-07-25, s2 session `probe-weekmode-replay-1`, verbatim message):
+      **PASS — better than the minimum bar.** Reply: "I found a visit for **Tom Nguyen** on
+      **Monday, July 27th** (9:00–12:00), assigned to Judy Testing. That's the only Tom visit
+      coming up in either possible 'next week'" + the which-kind-of-cancel question. The
+      previously-invisible visit is FOUND outright. Trajectory (tool-call list): find_customer
+      → `resolve_date {week: 1}` → get_team_schedule 2026-07-27..2026-08-02 →
+      get_team_schedule 2026-08-03..2026-08-09. Zero hand-rolled dates; both windows
+      Monday-anchored, server-computed. (Old trajectory for contrast: weeksAhead:1 pair +
+      hand-rolled Tue-start window, visit missed.)
 
 ### Manual verification
 

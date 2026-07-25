@@ -196,7 +196,18 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   one-shots disclose only after the fact (reversible). Candidate fix, recorded not built: a
   result-embedded self-heal line on unschedule preview/one-shot replies — "if the WORK itself
   is dead, say so and I'll cancel the job instead" (the book_visit promiseLevel-line pattern;
-  server result strings need only a deploy, no fleet restart).
+  server result strings need only a deploy, no fleet restart). C10 rerun (owner, later same
+  day): the agent DID ask which-kind for a visit-noun phrase — the gap is GLM-variance, not
+  deterministic, which strengthens the self-heal-line case. Second copy nit from C10: the
+  unschedule option says the job "goes back to the loose bucket" even when the visit is
+  UNASSIGNED (already tray-visible — it never left); candidate conditional phrasing when
+  technician_id is null, same deploy-only result-string class.
+  **resolve_date week mode SHIPPED + REPLAY-VERIFIED 2026-07-25 (PR #82):** the deferred
+  Sat/Sun boundary item, promoted and closed same-day. Replay of the verbatim failing
+  message on a fresh session: `resolve_date {week: 1}` → both Monday-anchored windows
+  searched (Jul 27–Aug 2 primary + Aug 3–9 alternate) → the previously-invisible Tom Nguyen
+  Monday visit FOUND outright. Evidence in the plan
+  (`thoughts/shared/plans/2026-07-25-plan-resolve-date-week-mode.md`).
   Doctrine from the Plan-3 reshape stands: **no monolithic auto-scheduler; agency stays in the
   agent, tools measure** (research: `thoughts/shared/research/2026-07-20-flexible-scheduling-agent-toolset.md`).
 - **Deferred / backlog (each has an owner-stated reason — check before resurrecting):**

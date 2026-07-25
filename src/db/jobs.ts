@@ -36,11 +36,22 @@ export interface CreateJobInput {
   // the future bump-the-bumpable). Default 'routine'.
   priority?: JobPriority;
   priceCents?: number | null;
+  // How long the work takes (plan 4b-1) — the freeze's core input, which is why
+  // it lives on the JOB and not only on a visit: the freeze places jobs that
+  // have no visit yet. Null = never been told; readers stay fail-closed.
+  durationMinutes?: number | null;
   attributes?: Json; // L3
   sourceCaptureId?: string | null;
 }
 
 export async function createJob(input: CreateJobInput): Promise<Job> {
+  // Validated at BOTH typed-layer write points (here and updateJobDetails), so
+  // "every stored duration is a whole 1..MAX minutes" holds no matter which
+  // surface wrote it — the DB only checks > 0, by design (the ladder and its
+  // bound must stay editable without a pilot migration).
+  if (input.durationMinutes != null && !isValidDuration(input.durationMinutes)) {
+    throw new Error(durationError());
+  }
   const { data, error } = await getClient()
     .from('jobs')
     .insert({
@@ -51,6 +62,7 @@ export async function createJob(input: CreateJobInput): Promise<Job> {
       status: input.status ?? 'open',
       priority: input.priority ?? 'routine',
       price_cents: input.priceCents ?? null,
+      duration_minutes: input.durationMinutes ?? null,
       attributes: input.attributes ?? {},
       source_capture_id: input.sourceCaptureId ?? null,
     })
@@ -172,6 +184,31 @@ export async function updateJobStatus(id: string, next: JobStatus): Promise<Job>
 // against ONE list (MCP handlers + the board job endpoint — plan 4a.5).
 export const JOB_PRIORITIES: JobPriority[] = ['emergency', 'urgent', 'routine', 'maintenance'];
 
+// ── Job duration (plan 4b-1) ────────────────────────────────────────────────
+// The OFFERED job lengths (user decision 2026-07-24) — denser at the short end:
+// a 15-minute error on a 30-minute call matters, on a 6-hour install it does
+// not. Every surface offers THIS list (JOB_PRIORITIES precedent), but it is
+// PRESENTATION, not validation: free minutes are accepted so a firm whose
+// standard callout is 20 minutes is never forced to round to a lie.
+export const DURATION_LADDER = [15, 30, 45, 60, 90, 120, 180, 240, 360, 480] as const;
+
+// The bound catches typos (6000 for 600). A job estimate longer than a day is
+// multi-visit work, not a bigger number.
+export const MAX_DURATION_MINUTES = 1440;
+
+export const isValidDuration = (m: unknown): m is number =>
+  typeof m === 'number' && Number.isInteger(m) && m > 0 && m <= MAX_DURATION_MINUTES;
+
+// '1h 30m' — ONE label composer, so chat and board agree verbatim.
+export const formatDuration = (m: number): string =>
+  m % 60 === 0 ? `${m / 60}h` : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+
+// The shared rejection text: states the bound, offers the ladder as choices —
+// never as the allowed set (free minutes are legal).
+export const durationError = (): string =>
+  `durationMinutes must be a whole number of minutes from 1 to ${MAX_DURATION_MINUTES} ` +
+  `(common lengths: ${DURATION_LADDER.join(', ')}; any other whole number is fine)`;
+
 export interface UpdateJobDetailsInput {
   title?: string;
   // string = set (normalized lowercase — must match set_job_duration's
@@ -181,6 +218,11 @@ export interface UpdateJobDetailsInput {
   // (review finding — the tool's "reversible" claim must hold every way).
   jobType?: string | null;
   priority?: JobPriority;
+  // number = set (any whole 1..MAX_DURATION_MINUTES — the ladder is offered,
+  // not enforced); null = CLEAR back to unknown. The clear arm exists for the
+  // same reason jobType's does: a wrong length is scheduling-authoritative, so
+  // it needs a real undo, not just an overwrite.
+  durationMinutes?: number | null;
 }
 
 export async function updateJobDetails(
@@ -210,8 +252,14 @@ export async function updateJobDetails(
     }
   }
   if (input.priority !== undefined) patch.priority = input.priority;
+  if (input.durationMinutes !== undefined) {
+    if (input.durationMinutes !== null && !isValidDuration(input.durationMinutes)) {
+      throw new Error(durationError());
+    }
+    patch.duration_minutes = input.durationMinutes; // null = explicit clear
+  }
   if (Object.keys(patch).length === 0) {
-    throw new Error('nothing to update — pass title, jobType, or priority');
+    throw new Error('nothing to update — pass title, jobType, priority, or durationMinutes');
   }
   const { data, error } = await getClient()
     .from('jobs')

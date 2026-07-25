@@ -213,6 +213,9 @@ export interface UnscheduledJob {
   title: string | null;
   customer: string | null;
   priority: string;
+  // How long the work takes (plan 4b-1) — null = "length not set", shown, not
+  // hidden: the tray is where the manager learns which work is placeable.
+  durationMinutes: number | null;
   createdAt: string;
 }
 
@@ -245,6 +248,7 @@ export async function readUnscheduledJobs(tenantId: string): Promise<Unscheduled
     title: job.title,
     customer: job.customers && job.customers.tenant_id === tenantId ? job.customers.name : null,
     priority: job.priority,
+    durationMinutes: job.duration_minutes,
     createdAt: job.created_at,
   }));
 }
@@ -326,6 +330,9 @@ export interface VisitDetail {
   jobId: string | null;
   jobTitle: string | null;
   jobPriority: string | null;
+  // The job's recorded length (plan 4b-1) — editable through the same job
+  // form as title/priority; null = not set.
+  jobDurationMinutes: number | null;
   // Compressed standing facts (plan 4a.5): retraction-folded, capped, values
   // truncated — BOTH tiers see them (facts already reach technicians through
   // the agent's customer reads; recorded decision 2026-07-23).
@@ -406,6 +413,7 @@ export async function readVisitDetail(
     jobId: job ? row.job_id : null,
     jobTitle: job ? job.title : null,
     jobPriority: job ? job.priority : null,
+    jobDurationMinutes: job ? job.duration_minutes : null,
     customerNotes: customer ? await composeCustomerNotes(customer.attributes) : [],
     customer:
       customer

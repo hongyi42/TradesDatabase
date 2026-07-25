@@ -285,6 +285,7 @@ export type Database = {
           attributes: Json
           created_at: string
           customer_id: string
+          duration_minutes: number | null
           id: string
           job_type: string | null
           price_cents: number | null
@@ -299,6 +300,7 @@ export type Database = {
           attributes?: Json
           created_at?: string
           customer_id: string
+          duration_minutes?: number | null
           id?: string
           job_type?: string | null
           price_cents?: number | null
@@ -313,6 +315,7 @@ export type Database = {
           attributes?: Json
           created_at?: string
           customer_id?: string
+          duration_minutes?: number | null
           id?: string
           job_type?: string | null
           price_cents?: number | null

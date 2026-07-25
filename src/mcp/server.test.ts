@@ -3458,6 +3458,10 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(booked.data.status).toBe('booked');
       expect(booked.data.promiseLevel).toBe('none');
       expect(booked.data.note).toContain('one step');
+      // 4b-1 (final-review finding): the minted shell RECORDS the booked span
+      // as the job's length — a silently-stored value unless echoed here, the
+      // same rule that put jobTitle on this result (live E2E 2026-07-21).
+      expect(booked.data.jobDurationMinutes).toBe(60);
       const id = booked.data.assignmentId as string;
 
       const team = await callWith('get_team_schedule', { from: '2026-12-15', to: '2026-12-15' });
@@ -4165,9 +4169,15 @@ describe('find_slots (Plan 3b)', () => {
       const two = await callWith('find_slots', { customerId: henderson.id, jobId: 'x' });
       expect(two.isError).toBe(true);
       expect(two.text).toContain('exactly one');
+      // Since 4b-1 the shared bound applies here too (durationError): the
+      // 6000-for-600 typo that update_job refuses must not become a 100-hour
+      // slot search that answers "nothing fits".
       const badMin = await callWith('find_slots', { customerId: henderson.id, durationMinutes: 0 });
       expect(badMin.isError).toBe(true);
-      expect(badMin.text).toContain('greater than 0');
+      expect(badMin.text).toContain('1 to 1440');
+      const overMax = await callWith('find_slots', { customerId: henderson.id, durationMinutes: 6000 });
+      expect(overMax.isError).toBe(true);
+      expect(overMax.text).toContain('1 to 1440');
       const badSkills = await callWith('find_slots', {
         customerId: henderson.id,
         durationMinutes: 60,
@@ -4298,6 +4308,142 @@ describe('find_slots (Plan 3b)', () => {
       expect(guessedStated.data.assumedType).toBe('drainage');
       expect(guessedStated.data.assumedTypeNote).toContain('guess');
       expect(guessedStated.data.candidates[0].reasons[0]).toContain('1h drainage');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test("job-level duration (4b-1): own length beats the type table; ladder rides the error", { timeout: 30_000 }, async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // Never-configured arm FIRST (review observation: the 4b-1 rewrite left
+      // it unpinned): with NO type durations stored at all, the no-duration
+      // error still leads with the ladder remedy. Earlier tests plant rows, so
+      // clear and re-plant below — this test must stay standalone-runnable.
+      await pg.query('delete from job_type_durations where tenant_id = $1', [tenantId]);
+      const bareJob = await createJob({
+        tenantId,
+        customerId: henderson.id,
+        title: 'unsized chore',
+        status: 'open',
+      });
+      const bare = await callWith('find_slots', { jobId: bareJob.id });
+      expect(bare.isError).toBe(true);
+      expect(bare.text).toContain('No job-type durations are configured yet');
+      expect(bare.text).toContain('update_job');
+      expect(bare.text).toContain('15/30/45/60/90/120/180/240/360/480');
+      await upsertJobTypeDuration(tenantId, 'drainage', 300); // restore prior state
+
+      // A job with its OWN length and NO type — before 4b-1 this threw
+      // 'no recorded type'; now the job's recorded length applies directly.
+      const ownOnly = await createJob({
+        tenantId,
+        customerId: henderson.id,
+        title: 'fence gate repair',
+        status: 'open',
+        durationMinutes: 90,
+      });
+      const own = await callWith('find_slots', {
+        jobId: ownOnly.id,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-01',
+        latestDate: '2027-03-02',
+      });
+      expect(own.isError).toBe(false);
+      expect(own.data.durationAssumption).toContain("using this job's recorded length (1h 30m)");
+      expect(own.data.candidates.length).toBeGreaterThan(0);
+
+      // A stated override of the job's OWN length is disclosed, exactly as a
+      // type override always was (review observation: the note must not go
+      // silent on the new source).
+      const overridden = await callWith('find_slots', {
+        jobId: ownOnly.id,
+        durationMinutes: 60,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-01',
+        latestDate: '2027-03-01',
+      });
+      expect(overridden.isError).toBe(false);
+      expect(overridden.data.durationAssumption).toContain(
+        "not this job's recorded length (1h 30m)",
+      );
+
+      // Own length OUTRANKS a configured type: drainage is stored at 300m,
+      // but the job says 45 — the more specific value wins, disclosed.
+      const both = await createJob({
+        tenantId,
+        customerId: henderson.id,
+        title: 'quick drain check',
+        status: 'open',
+        jobType: 'drainage',
+        durationMinutes: 45,
+      });
+      const specific = await callWith('find_slots', {
+        jobId: both.id,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-01',
+        latestDate: '2027-03-01',
+      });
+      expect(specific.isError).toBe(false);
+      expect(specific.data.durationAssumption).toContain("using this job's recorded length (45m)");
+      expect(specific.data.durationAssumption).not.toContain('assuming 300');
+
+      // A stated override on a job with BOTH a type and its own length must
+      // name the source precedence would actually have used — the own length,
+      // not the type default (final-review finding: the disclosure branch
+      // order had drifted from the resolution chain in the same diff).
+      const combined = await callWith('find_slots', {
+        jobId: both.id,
+        durationMinutes: 60,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-01',
+        latestDate: '2027-03-01',
+      });
+      expect(combined.isError).toBe(false);
+      expect(combined.data.durationAssumption).toContain("not this job's recorded length (45m)");
+      expect(combined.data.durationAssumption).not.toContain("stored 'drainage'");
+
+      // assumedType on a job with a recorded length is REFUSED (final-review
+      // finding: the own-length branch would otherwise skip the lookup that
+      // validates the type, while every reason string still brands it).
+      const brandAttempt = await callWith('find_slots', {
+        jobId: ownOnly.id,
+        assumedType: 'instal', // typo'd type — nothing would ever vet it
+      });
+      expect(brandAttempt.isError).toBe(true);
+      expect(brandAttempt.text).toContain('has a recorded length (1h 30m)');
+      expect(brandAttempt.text).toContain('assumedType only resolves an unknown duration');
+
+      // Same rule on an EXISTING VISIT subject (round-2 finding): the booked
+      // length is known, so assumedType is refused there too, not silently
+      // branded onto every reason string.
+      const booked = await callWith('book_visit', {
+        jobId: ownOnly.id,
+        technicianRef: 'slots-bob',
+        date: '2027-03-02',
+        startTime: '09:00',
+        endTime: '10:30',
+      });
+      const visitBrand = await callWith('find_slots', {
+        assignmentId: booked.data.assignmentId,
+        assumedType: 'instal',
+      });
+      expect(visitBrand.isError).toBe(true);
+      expect(visitBrand.text).toContain("this visit's booked length applies");
+
+      // Neither own length nor type: still fail-closed, and the error now
+      // carries the ladder as the primary remedy (any whole number accepted).
+      const neither = await createJob({
+        tenantId,
+        customerId: henderson.id,
+        title: 'mystery task',
+        status: 'open',
+      });
+      const err = await callWith('find_slots', { jobId: neither.id });
+      expect(err.isError).toBe(true);
+      expect(err.text).toContain('update_job');
+      expect(err.text).toContain('15/30/45/60/90/120/180/240/360/480');
+      expect(err.text).toContain('any whole number works');
     } finally {
       await mgrClient.close();
     }
@@ -4710,6 +4856,92 @@ describe('find_slots (Plan 3b)', () => {
 });
 
 describe('update_job (the job identity editor)', () => {
+  test('durationMinutes: rungs and free minutes stored, bound enforced, null clears (4b-1)', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Duration Edit Cust' });
+    const job = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'water heater flush',
+      status: 'open',
+    });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // A rung, echoed old → new.
+      const rung = await callWith('update_job', { jobId: job.id, durationMinutes: 120 });
+      expect(rung.isError).toBe(false);
+      expect(rung.data.changes.durationMinutes).toEqual({ from: null, to: 120 });
+
+      // OFF-ladder is legal — the ladder is offered, never enforced (user
+      // decision 2026-07-24: a 20-minute callout must not become a rounded lie).
+      const off = await callWith('update_job', { jobId: job.id, durationMinutes: 20 });
+      expect(off.isError).toBe(false);
+      expect(off.data.changes.durationMinutes).toEqual({ from: 120, to: 20 });
+
+      // Non-integers, zero, and over-bound fail with the shared message —
+      // bound named, ladder offered as suggestions.
+      for (const bad of [45.5, 0, 6000]) {
+        const r = await callWith('update_job', { jobId: job.id, durationMinutes: bad });
+        expect(r.isError).toBe(true);
+        expect(r.text).toContain('1 to 1440');
+        expect(r.text).toContain('any other whole number is fine');
+      }
+      // The rejections wrote nothing.
+      const row = await pg.query('select duration_minutes from jobs where id = $1', [job.id]);
+      expect(row.rows[0].duration_minutes).toBe(20);
+
+      // null = explicit CLEAR back to unknown (the undo arm).
+      const cleared = await callWith('update_job', { jobId: job.id, durationMinutes: null });
+      expect(cleared.isError).toBe(false);
+      expect(cleared.data.changes.durationMinutes).toEqual({ from: 20, to: null });
+
+      // The ledger carried the change (updateJobIdentity is the shared core).
+      const ev = await pg.query(
+        "select detail from schedule_events where tenant_id = $1 and kind = 'job_updated' order by id desc limit 1",
+        [tenantId],
+      );
+      expect(ev.rows[0].detail.durationMinutes).toEqual({ from: 20, to: null });
+
+      // Placeability warnings (final-review findings). The job is currently
+      // duration-less and untyped, so clearing again warns about stranding…
+      await callWith('update_job', { jobId: job.id, durationMinutes: 60 });
+      const strand = await callWith('update_job', { jobId: job.id, durationMinutes: null });
+      expect(strand.isError).toBe(false);
+      expect(strand.data.warning).toContain('no usable length');
+      expect(strand.data.warning).toContain('durationMinutes');
+
+      // …setting an unconfigured type on a job WITH its own length still warns
+      // (the type is unwired tenant-wide) but says this job stays placeable…
+      await callWith('update_job', { jobId: job.id, durationMinutes: 90 });
+      const typedButOwn = await callWith('update_job', { jobId: job.id, jobType: 'fencing' });
+      expect(typedButOwn.isError).toBe(false);
+      expect(typedButOwn.data.warning).toContain("no stored duration for 'fencing'");
+      expect(typedButOwn.data.warning).toContain('own recorded length (1h 30m)');
+
+      // …and clearing the length on that typed-but-unconfigured job warns via
+      // the strand arm, not silence (the newly reachable path).
+      const strandTyped = await callWith('update_job', { jobId: job.id, durationMinutes: null });
+      expect(strandTyped.isError).toBe(false);
+      expect(strandTyped.data.warning).toContain('no usable length');
+
+      // A title-only edit on the stranded job stays warning-free (the edit
+      // touched no scheduling input — no nagging, and no extra DB read).
+      const titleOnly = await callWith('update_job', { jobId: job.id, title: 'Quiet rename' });
+      expect(titleOnly.isError).toBe(false);
+      expect(titleOnly.data.warning).toBeUndefined();
+
+      // Clearing the TYPE when it was the only duration source also strands —
+      // warned via the same arm (round-2 finding: this case was silent even
+      // pre-4b-1). Wire the type up, drop the own length, then clear the type.
+      await callWith('set_job_duration', { jobType: 'fencing', minutes: 60 });
+      const typeCleared = await callWith('update_job', { jobId: job.id, jobType: null });
+      expect(typeCleared.isError).toBe(false);
+      expect(typeCleared.data.warning).toContain('no usable length');
+      await pg.query('delete from job_type_durations where tenant_id = $1', [tenantId]);
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
   test('gate + validation + old→new echo + scheduling authority', { timeout: 30_000 }, async () => {
     const denied = await call('update_job', { jobId: 'x', title: 'nope' });
     expect(denied.isError).toBe(true);

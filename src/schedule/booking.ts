@@ -21,6 +21,7 @@ import {
   getTechnicianById,
   isInactiveState,
   isOverlapViolation,
+  isValidDuration,
   listAssignmentsForTechnician,
   listTimeOffForTechnician,
   listAssignmentsForJob,
@@ -278,6 +279,10 @@ export interface BookVisitPreview {
   // tier, or the stated/default tier of the shell about to be minted — shown
   // so the manager confirms exactly what commit writes (preview == commit).
   priority: JobPriority;
+  // What the job's duration will be after commit (the priority idiom above):
+  // the existing job's stored length, or — on the shell-minting path — the
+  // span this booking measures. Preview == commit must cover the 4b-1 write.
+  jobDurationMinutes: number | null;
   requiresConfirmation: boolean; // the doctrine's verdict — surfaces branch on THIS
   warning?: string;
 }
@@ -298,9 +303,29 @@ export async function previewBookVisit(input: BookVisitInput): Promise<BookVisit
     endTime: r.endTime,
     promiseLevel: r.promiseLevel,
     priority: r.existingJob ? r.existingJob.priority : (input.priority ?? 'routine'),
+    jobDurationMinutes: r.existingJob
+      ? r.existingJob.duration_minutes
+      : bookedSpanMinutes(r.startISO, r.endISO),
     requiresConfirmation: bookingRequiresConfirmation(r.promiseLevel),
     ...(r.warning ? { warning: r.warning } : {}),
   };
+}
+
+// THE ISO-pair → whole-minutes computation (final-review consolidation: this
+// arithmetic previously existed in three hand-written copies — here, moveVisit'
+// s duration default, and find_slots' subject-visit branch — which could drift
+// in rounding semantics independently).
+export function spanMinutes(startISO: string, endISO: string): number {
+  return Math.round((Date.parse(endISO) - Date.parse(startISO)) / 60_000);
+}
+
+// The span a booking measures — what the minted job shell stores as its
+// duration. null when the span falls outside the typed-layer bound (a
+// multi-day span is not a per-job estimate); same-day bookings are always
+// 1..1439 so the guard is future-proofing, not a live branch.
+function bookedSpanMinutes(startISO: string, endISO: string): number | null {
+  const span = spanMinutes(startISO, endISO);
+  return isValidDuration(span) ? span : null;
 }
 
 export interface BookVisitResult {
@@ -325,6 +350,13 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       title: input.title ?? null,
       status: 'open',
       ...(input.priority ? { priority: input.priority } : {}),
+      // The booked span, recorded VERBATIM onto the fresh shell (plan 4b-1): a
+      // MEASURED value, not an invented one, so the never-guess rule holds.
+      // Kept even off-ladder (08:00-09:20 → 80) — discarding it would leave
+      // the job duration-less if the visit is later cancelled, and the freeze
+      // would re-ask a length we already knew. isValidDuration guards the
+      // (today unreachable) over-24h span: store null, not a bound breach.
+      durationMinutes: bookedSpanMinutes(r.startISO, r.endISO),
     }));
 
   let assignment: Assignment;
@@ -445,9 +477,7 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
         : null;
   const targetTechnicianId = input.unassign ? null : (technician?.id ?? old.technician_id);
 
-  const oldDurationMin = Math.round(
-    (Date.parse(old.ends_at) - Date.parse(old.starts_at)) / 60_000,
-  );
+  const oldDurationMin = spanMinutes(old.starts_at, old.ends_at);
   const endTime = input.endTime ?? addMinutesClamped(input.startTime, oldDurationMin);
   validateDayAndTimes(input.date, input.startTime, endTime);
   const startISO = naiveLocalISO(input.date, input.startTime);
@@ -760,6 +790,9 @@ export async function updateJobIdentity(
         : {}),
       ...(patch.priority !== undefined
         ? { priority: { from: job.priority, to: updated.priority } }
+        : {}),
+      ...(patch.durationMinutes !== undefined
+        ? { durationMinutes: { from: job.duration_minutes, to: updated.duration_minutes } }
         : {}),
     },
   });

@@ -22,7 +22,13 @@ import {
   setVisitPromise,
   updateJobIdentity,
 } from '../schedule/booking.js';
-import { getTenant, JOB_PRIORITIES, type JobPriority } from '../db/index.js';
+import {
+  durationError,
+  getTenant,
+  isValidDuration,
+  JOB_PRIORITIES,
+  type JobPriority,
+} from '../db/index.js';
 import { localDateISO } from '../schedule/availability.js';
 
 // The dispatch board's HTTP surface, mounted by httpServer.ts BEFORE the IP
@@ -412,7 +418,9 @@ export async function handleBoardRequest(
             return;
           }
           if ('jobType' in body) {
-            json(res, 400, { error: 'jobType is edited in chat — the board edits title and priority' });
+            json(res, 400, {
+              error: 'jobType is edited in chat — the board edits title, priority, and length',
+            });
             return;
           }
           if ('title' in body && str(body, 'title') === undefined) {
@@ -431,8 +439,20 @@ export async function handleBoardRequest(
             }
             priority = body.priority as JobPriority;
           }
-          if (title === undefined && priority === undefined) {
-            json(res, 400, { error: 'nothing to update — pass title and/or priority' });
+          // Presence, not truthiness (plan 4b-1 review): null is the explicit
+          // CLEAR arm, and a falsy test would misread a clear as absent.
+          let durationMinutes: number | null | undefined;
+          if ('durationMinutes' in body) {
+            if (body.durationMinutes !== null && !isValidDuration(body.durationMinutes)) {
+              json(res, 400, { error: durationError() });
+              return;
+            }
+            durationMinutes = body.durationMinutes as number | null;
+          }
+          if (title === undefined && priority === undefined && durationMinutes === undefined) {
+            json(res, 400, {
+              error: 'nothing to update — pass title, priority, and/or durationMinutes',
+            });
             return;
           }
           const { previous, updated } = await updateJobIdentity(
@@ -441,6 +461,7 @@ export async function handleBoardRequest(
             {
               ...(title !== undefined ? { title } : {}),
               ...(priority !== undefined ? { priority } : {}),
+              ...(durationMinutes !== undefined ? { durationMinutes } : {}),
             },
             auth.technician.ref,
           );
@@ -452,6 +473,14 @@ export async function handleBoardRequest(
                 : {}),
               ...(priority !== undefined
                 ? { priority: { from: previous.priority, to: updated.priority } }
+                : {}),
+              ...(durationMinutes !== undefined
+                ? {
+                    durationMinutes: {
+                      from: previous.duration_minutes,
+                      to: updated.duration_minutes,
+                    },
+                  }
                 : {}),
             },
           });

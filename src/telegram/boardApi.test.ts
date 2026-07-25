@@ -1426,6 +1426,76 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
     expect(visits.rows[0].n).toBe(0);
   });
 
+  test('job length end-to-end (4b-1): ladder + free minutes + null-clear + tray/detail rides', async () => {
+    const casa = await createCustomer({ tenantId, name: 'Length Casa' });
+    const job = await createJob({ tenantId, customerId: casa.id, title: 'Fence repair' });
+
+    // The tray reports "not set" as null, not by omission.
+    const trayDuration = async () => {
+      const resp = await fetch(`${base}/board/api/bucket`, { headers: tma(900000001) });
+      const body = (await resp.json()) as {
+        unscheduledJobs: Array<{ jobId: string; durationMinutes: number | null }>;
+      };
+      const row = body.unscheduledJobs.find((j) => j.jobId === job.id);
+      expect(row).toBeDefined(); // the field must RIDE, not be absent
+      return row!.durationMinutes;
+    };
+    expect(await trayDuration()).toBeNull();
+
+    // A rung, echoed old → new.
+    const rung = await post('/board/api/job', { jobId: job.id, durationMinutes: 120 }, 900000001);
+    expect(rung.status).toBe(200);
+    expect(((await rung.json()) as { changes: unknown }).changes).toEqual({
+      durationMinutes: { from: null, to: 120 },
+    });
+    expect(await trayDuration()).toBe(120);
+
+    // OFF-ladder 20 is legal (the ladder is offered, never enforced) — and a
+    // duration-only POST is a real update, not "nothing to update".
+    const off = await post('/board/api/job', { jobId: job.id, durationMinutes: 20 }, 900000001);
+    expect(off.status).toBe(200);
+    expect(await trayDuration()).toBe(20);
+
+    // Bound violations 400 with the shared message; nothing written.
+    for (const bad of [0, 6000, 45.5]) {
+      const r = await post('/board/api/job', { jobId: job.id, durationMinutes: bad }, 900000001);
+      expect(r.status).toBe(400);
+      expect(((await r.json()) as { error: string }).error).toContain('1 to 1440');
+    }
+    expect(await trayDuration()).toBe(20);
+
+    // null CLEARS (presence guard, not truthiness — the review-pinned trap:
+    // a falsy test would misread the clear as an empty patch and 400).
+    const clear = await post('/board/api/job', { jobId: job.id, durationMinutes: null }, 900000001);
+    expect(clear.status).toBe(200);
+    expect(((await clear.json()) as { changes: unknown }).changes).toEqual({
+      durationMinutes: { from: 20, to: null },
+    });
+    expect(await trayDuration()).toBeNull();
+
+    // The visit detail rides jobDurationMinutes — null when unset, the value
+    // once set (the sheet's Purpose row renders from exactly this field).
+    const { assignment } = await bookVisit({
+      tenantId,
+      jobId: job.id,
+      date: '2027-06-07',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'board-mgr',
+    });
+    const detail = async () => {
+      const resp = await fetch(`${base}/board/api/visit?assignmentId=${assignment.id}`, {
+        headers: tma(900000001),
+      });
+      expect(resp.status).toBe(200);
+      return ((await resp.json()) as { jobDurationMinutes: number | null }).jobDurationMinutes;
+    };
+    // The jobId-path booking left the cleared length alone (Phase 2 contract).
+    expect(await detail()).toBeNull();
+    await post('/board/api/job', { jobId: job.id, durationMinutes: 45 }, 900000001);
+    expect(await detail()).toBe(45);
+  });
+
   test('detail: jobId/jobPriority/customerNotes ride — folded, capped at 8, values truncated', async () => {
     const resp = await fetch(`${base}/board/api/visit?assignmentId=${notesVisitId}`, {
       headers: tma(900000001),

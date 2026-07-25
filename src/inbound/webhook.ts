@@ -8,7 +8,7 @@ import {
   tenantExists as liveTenantExists,
   upsertDroppedAudit,
 } from '../db/index.js';
-import { sonnetClassifier } from '../email/classify.js';
+import { defaultClassifier } from '../email/classify.js';
 import type { WorkClassifier } from '../email/classify.js';
 import { resolveNormalizer as liveResolveNormalizer } from './normalize.js';
 import type { Normalizer } from './normalize.js';
@@ -133,7 +133,7 @@ export async function handleInboundWebhook(
   }
 
   const recordFieldNote = deps.recordFieldNote ?? liveRecordFieldNote;
-  const classify = deps.classify ?? sonnetClassifier;
+  const classify = deps.classify ?? defaultClassifier;
   const resolveNormalizer = deps.resolveNormalizer ?? liveResolveNormalizer;
   const tenantExists = deps.tenantExists ?? liveTenantExists;
   const recordDrop = deps.recordDrop ?? upsertDroppedAudit;

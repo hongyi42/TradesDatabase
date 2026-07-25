@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { runForcedTool, type ForcedToolSpec } from '../model/forcedTool.js';
 import type { CustomerContext } from '../db/index.js';
 import { serializeContextForPrompt, validateCitations, type Citation } from './grounding.js';
 
@@ -25,10 +25,10 @@ const BRIEFING_SYSTEM =
   "tech's flags). Focus full_history: the customer's history over time (recurring issues, prior quotes).";
 
 // Single forced tool — the model's only move is to return this structured object.
-const BRIEFING_TOOL: Anthropic.Tool = {
+const BRIEFING_TOOL: ForcedToolSpec = {
   name: 'record_briefing',
   description: 'Record the grounded customer briefing and the captures backing each claim.',
-  input_schema: {
+  inputSchema: {
     type: 'object',
     properties: {
       briefing: { type: 'string', description: 'The briefing prose for the technician.' },
@@ -51,29 +51,23 @@ const BRIEFING_TOOL: Anthropic.Tool = {
   },
 };
 
-// Default briefer: Claude Sonnet, forced through the briefing tool. Citations are
-// validated against the real capture set before returning — a hallucinated id is
-// dropped here, not trusted from the model.
-export const sonnetBriefer: Briefer = async (context, focus) => {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
-  const client = new Anthropic({ apiKey });
-  const message = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
+// Default briefer: whichever provider MODEL_PROVIDER selects (GLM-5.2 by default),
+// forced through the briefing tool. Citations are validated against the real
+// capture set before returning — a hallucinated id is dropped here, not trusted
+// from the model.
+//
+// NOTE: validateCitations drops unmatched ids SILENTLY. A model that copies capture
+// UUIDs less accurately therefore degrades into briefings that read complete but
+// cite nothing, with no error and no failing test. Unmeasured on every provider —
+// this is the metric a synthesis eval needs to cover first.
+export const defaultBriefer: Briefer = async (context, focus) => {
+  const args = await runForcedTool(BRIEFING_TOOL, {
     system: BRIEFING_SYSTEM,
-    tools: [BRIEFING_TOOL],
-    tool_choice: { type: 'tool', name: BRIEFING_TOOL.name },
-    messages: [
-      { role: 'user', content: `Focus: ${focus}\n\n${serializeContextForPrompt(context)}` },
-    ],
+    user: `Focus: ${focus}\n\n${serializeContextForPrompt(context)}`,
+    maxTokens: 1024,
+    label: 'defaultBriefer',
   });
-  const toolUse = message.content.find(
-    (block): block is Anthropic.ToolUseBlock =>
-      block.type === 'tool_use' && block.name === BRIEFING_TOOL.name,
-  );
-  if (!toolUse) throw new Error('sonnetBriefer: model returned no record_briefing tool_use block');
-  const { briefing, citations } = toolUse.input as {
+  const { briefing, citations } = args as unknown as {
     briefing: string;
     citations?: Citation[];
   };

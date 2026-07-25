@@ -76,7 +76,8 @@ JSON summary line; a failed step exits 1 so Render marks the run failed:
      are no longer read (sheet sync retired 2026-07-15) and can be removed.
      It does NOT need `COMPOSIO_GMAIL_AUTH_CONFIG_ID` (only link *minting* on the web service
      reads it — the sweep never mints), `COMPOSIO_WEBHOOK_SECRET`, `GATEWAY_IDENTITY_SECRET`,
-     or `ANTHROPIC_API_KEY` (the job never receives webhooks, serves MCP, or classifies).
+     or any model-provider key (`INFERENCE_API_KEY` / `ANTHROPIC_API_KEY`) — the job never
+     receives webhooks, serves MCP, or classifies.
 3. Local dry-run: `npm run build && node -r dotenv/config dist/jobs/lifecycle.js`.
 
 ## Badge rollout to a host (per host, one-time)

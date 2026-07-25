@@ -63,7 +63,7 @@ import {
 } from '../db/index.js';
 import { recordFieldNote, type ResolvedIdentity } from '../writePath/recordFieldNote.js';
 import { matchIdentity, type MatchResult } from '../writePath/identityMatch.js';
-import { sonnetExtractor, type ExtractedFields } from '../writePath/extract.js';
+import { defaultExtractor, type ExtractedFields } from '../writePath/extract.js';
 import {
   requireOutboundCapable,
   sendGmailEmail as liveSendGmailEmail,
@@ -81,8 +81,8 @@ import {
 } from '../composio/offboarding.js';
 import type { Extractor } from '../writePath/extract.js';
 import {
-  sonnetBriefer,
-  sonnetAnswerer,
+  defaultBriefer,
+  defaultAnswerer,
   type Briefer,
   type Answerer,
   type BriefFocus,
@@ -1172,7 +1172,7 @@ async function dispatch(
         if (!text && !blobPath) throw new Error('text or blobPath is required to stage a note');
         // The ?? fallback is mandatory: production constructs the server with
         // no extract dep (stdio main() / httpServer) — only tests inject stubs.
-        const extracted = await (deps.extract ?? sonnetExtractor)(text ?? '');
+        const extracted = await (deps.extract ?? defaultExtractor)(text ?? '');
         const stagedAt = new Date().toISOString();
         const match = await matchIdentity({
           tenantId,
@@ -1513,7 +1513,7 @@ async function dispatch(
         throw new Error('customer not found');
       }
       const focus = (focusArg as BriefFocus | undefined) ?? 'next_visit';
-      return (deps.brief ?? sonnetBriefer)(
+      return (deps.brief ?? defaultBriefer)(
         { ...ctx, recentCaptures: dropSensitive(ctx.recentCaptures) },
         focus,
       );
@@ -1527,7 +1527,7 @@ async function dispatch(
       if (!ctx.customer || ctx.customer.tenant_id !== tenantId) {
         throw new Error('customer not found');
       }
-      return (deps.answer ?? sonnetAnswerer)(
+      return (deps.answer ?? defaultAnswerer)(
         { ...ctx, recentCaptures: dropSensitive(ctx.recentCaptures) },
         question,
       );

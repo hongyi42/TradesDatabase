@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { runForcedTool, type ForcedToolSpec } from '../model/forcedTool.js';
 import type { CustomerContext } from '../db/index.js';
 import { serializeContextForPrompt, validateCitations, type Citation } from './grounding.js';
 
@@ -17,10 +17,10 @@ const ANSWER_SYSTEM =
   'Ground every claim in a specific capture and record its captureId in `citations`.';
 
 // Single forced tool — the model's only move is to return this structured object.
-const ANSWER_TOOL: Anthropic.Tool = {
+const ANSWER_TOOL: ForcedToolSpec = {
   name: 'record_answer',
   description: 'Record the grounded answer and the captures backing each claim.',
-  input_schema: {
+  inputSchema: {
     type: 'object',
     properties: {
       answer: { type: 'string', description: 'The answer for the technician (or that it is unknown).' },
@@ -43,28 +43,17 @@ const ANSWER_TOOL: Anthropic.Tool = {
   },
 };
 
-// Default answerer: Claude Sonnet, forced through the answer tool. Citations are
-// validated against the real capture set before returning — a hallucinated id is
-// dropped here, not trusted from the model.
-export const sonnetAnswerer: Answerer = async (context, question) => {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
-  const client = new Anthropic({ apiKey });
-  const message = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
+// Default answerer: whichever provider MODEL_PROVIDER selects (GLM-5.2 by default),
+// forced through the answer tool. Citations are validated against the real capture
+// set before returning — a hallucinated id is dropped here, not trusted from the
+// model. Same silent-degradation caveat as defaultBriefer.
+export const defaultAnswerer: Answerer = async (context, question) => {
+  const args = await runForcedTool(ANSWER_TOOL, {
     system: ANSWER_SYSTEM,
-    tools: [ANSWER_TOOL],
-    tool_choice: { type: 'tool', name: ANSWER_TOOL.name },
-    messages: [
-      { role: 'user', content: `Question: ${question}\n\n${serializeContextForPrompt(context)}` },
-    ],
+    user: `Question: ${question}\n\n${serializeContextForPrompt(context)}`,
+    maxTokens: 1024,
+    label: 'defaultAnswerer',
   });
-  const toolUse = message.content.find(
-    (block): block is Anthropic.ToolUseBlock =>
-      block.type === 'tool_use' && block.name === ANSWER_TOOL.name,
-  );
-  if (!toolUse) throw new Error('sonnetAnswerer: model returned no record_answer tool_use block');
-  const { answer, citations } = toolUse.input as { answer: string; citations?: Citation[] };
+  const { answer, citations } = args as unknown as { answer: string; citations?: Citation[] };
   return { answer, citations: validateCitations(citations, context) };
 };

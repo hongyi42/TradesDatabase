@@ -2,7 +2,7 @@ import { google } from 'googleapis';
 import { recordFieldNote } from '../writePath/recordFieldNote.js';
 import { upsertDroppedAudit } from '../db/index.js';
 import type { Extractor } from '../writePath/extract.js';
-import { sonnetClassifier, type WorkClassifier, type EmailInput } from './classify.js';
+import { defaultClassifier, type WorkClassifier, type EmailInput } from './classify.js';
 import { formatEmailRawText } from './format.js';
 
 export interface Email extends EmailInput {
@@ -78,7 +78,7 @@ export async function ingestEmail(
   deps: IngestDeps = {},
 ): Promise<IngestResult> {
   const fetch = deps.fetch ?? gmailFetcher;
-  const classify = deps.classify ?? sonnetClassifier;
+  const classify = deps.classify ?? defaultClassifier;
 
   const emails = await fetch();
   let ingested = 0;

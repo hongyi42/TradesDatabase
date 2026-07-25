@@ -176,7 +176,10 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   fresh local stacks then break with `permission denied`). Old revoked NVIDIA key may still
   sit in `/root/s4-nvidia.env` on the box — refresh before the next `provision` run. Render
   `ANTHROPIC_API_KEY` was found invalid 2026-07-04 (write-path spine tools fail) — verify it
-  was fixed.
+  was fixed. NOTE: since the 2026-07-25 provider switch the four spine forced-tool calls
+  (classify/extract/brief/answer) use `INFERENCE_API_KEY` (GLM-5.2 via DeepInfra) by default
+  (`MODEL_PROVIDER=openai`, `src/model/forcedTool.ts`); `ANTHROPIC_API_KEY` only bites when
+  `MODEL_PROVIDER=anthropic`. So the on-Render key to keep valid is now `INFERENCE_API_KEY`.
 - **Pending human tests:** Ben's phone board test (read-only day view, no tab bar, push on
   move); promised-visit confirm dialog via board drag; Judy items above.
 

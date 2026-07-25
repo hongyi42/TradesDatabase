@@ -195,12 +195,19 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   `reflow_day` batch cascade (3c); ROI/whole-plan optimization → Plan 4's freeze; jargon
   leaking into chat (conflict #1 — fix must NOT be verbatim templates); Sat/Sun "next week"
   boundary warning on `resolve_date` results — **BITTEN LIVE 2026-07-25, candidate for
-  promotion**: on a Saturday, "cancel Tom for next week's visit" made the agent window "next
-  week" as Tue Jul 28–Sun Aug 2, missing a real confirmed **Monday Jul 27** visit ("no visits
-  for Tom Nguyen next week"); reproduced verbatim on a fresh session; data layer verified
-  clean (`get_team_schedule` renders that visit for any window covering the 27th — no state
-  filter, no reader gap). Ask-first doctrine held; the failure is pure week-boundary date
-  math, the exact class `resolve_date` was built for; agent latency (~84s serial GLM round-trips);
+  promotion; trajectory-diagnosed (session log, not inference)**: on a Saturday, "cancel Tom
+  for next week's visit" missed a real confirmed **Monday Jul 27** visit. The agent did NOT
+  skip the tool — it reasoned "I'm told not to do calendar math myself" and called
+  `resolve_date(monday/sunday, weeksAhead:1)` → Aug 3–9, correct per the tool's own semantics
+  but not what a human means by "next week" ON A SATURDAY (they mean the week starting in 2
+  days — that's `weeksAhead:0`). It then HAND-ROLLED a second window "Jul 28–Aug 2" (Tue
+  start, no resolve_date behind it) — GLM math sneaking back through the gap — so both
+  windows excluded Jul 27, and even its clarifying question offered two wrong week-starts.
+  Root causes: (a) resolve_date has NO week-range concept, forcing agent-composed windows;
+  (b) weeksAhead semantics diverge from colloquial "next week" on Sat/Sun with no warning.
+  Fix shape when promoted: a week mode returning {weekStart, weekEnd}, flagged ambiguous on
+  Sat/Sun with BOTH candidate ranges so the clarifying question contains the right options.
+  Data layer verified clean; ask-first doctrine held; agent latency (~84s serial GLM round-trips);
   Feature C (per-tenant agent memory layer); Feature D (customer/job-level L3 write path);
   Telegram unbind/offboarding (apply path is additive-only); board-auth 401 logging (PR #51
   closed unmerged — debug future 401s with the "mint-a-slip" probe: sign a fake initData slip

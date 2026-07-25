@@ -10,7 +10,7 @@ import { insertTechnician, updateTechnician } from '../db/technicians.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
-import { bookVisit } from '../schedule/booking.js';
+import { bookVisit, cancelJob } from '../schedule/booking.js';
 import * as rosterCache from './rosterCache.js';
 
 // Integration: the /board routes over a real HTTP server on an ephemeral port
@@ -607,6 +607,40 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
     expect(bare).toMatchObject({ customer: 'Board Casa', priority: 'urgent' });
     // Jobs WITH a live visit never appear in the jobs half.
     expect(body.unscheduledJobs.some((j) => j.title === 'Bucket parked visit')).toBe(false);
+  });
+
+  test('a cancelled job leaves BOTH tray halves (cancel-vocabulary plan)', async () => {
+    const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
+      .rows[0].id as string;
+    // A job with a parked visit AND bucket presence, then cancel_job's core:
+    // the tray must drop the job (status filter) and its visit (cascade) in
+    // the same stroke — the freeze's input must never contain dead work.
+    const doomed = await bookVisit({
+      tenantId,
+      customerId: casaId,
+      title: 'Bucket doomed visit',
+      date: relDate(12),
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'board-mgr',
+    });
+    const before = (await (await bucket(tma(900000001))).json()) as {
+      parkedVisits: Array<{ jobTitle: string | null }>;
+    };
+    expect(before.parkedVisits.some((v) => v.jobTitle === 'Bucket doomed visit')).toBe(true);
+
+    await cancelJob({
+      tenantId,
+      jobId: doomed.job.id,
+      reason: 'customer called it off',
+      actorRef: 'board-mgr',
+    });
+    const after = (await (await bucket(tma(900000001))).json()) as {
+      parkedVisits: Array<{ jobTitle: string | null }>;
+      unscheduledJobs: Array<{ jobId: string }>;
+    };
+    expect(after.parkedVisits.some((v) => v.jobTitle === 'Bucket doomed visit')).toBe(false);
+    expect(after.unscheduledJobs.some((j) => j.jobId === doomed.job.id)).toBe(false);
   });
 
   test('cross-tenant names are withheld, rows kept', async () => {

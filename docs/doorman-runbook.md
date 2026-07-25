@@ -333,7 +333,11 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://172.17.0.1:3001/ \
   set_job_duration, set_technician_skills (one-shot, no confirm); plus `find_slots` since
   2026-07-20 — the read-only ranked slot finder (books nothing; carries the board link like every schedule answer — originally excluded, which made the agent FABRICATE one, live 2026-07-21); plus `update_job` since 2026-07-21 — one-shot job-identity editor (title/jobType/priority, old→new echo); plus `set_promise` since 2026-07-22 — one-shot promise-record editor (promiseLevel none/day/time/time_only since 2026-07-23, old→new echo, promised day server-derived from the visit — NULL for none/time_only); plus `set_technician_horizon` since 2026-07-22 — one-shot visibility dial (weeks 1-12, per-tenant; technician reads beyond it answer "not published yet"); see
   nemoclaw-tech-agent.md §4. Since 2026-07-19 `add_technician_seat` also takes `seatExempt:true`
-  — a schedule-only person occupying NO seat, whom bind_telegram/get_connect_link refuse.)
+  — a schedule-only person occupying NO seat, whom bind_telegram/get_connect_link refuse.
+  2026-07-25 vocabulary change: `cancel_visit` RENAMED `unschedule_visit` (same behavior — off
+  the calendar, job returns to the loose bucket; "cancel" now always means the terminal thing)
+  and NEW `cancel_job` — terminal work cancellation, always two-step confirm, cascades its
+  live visits. Historical lines above keep the old name as history.)
   - `401 / bad identity signature` from upstream → `GATEWAY_IDENTITY_SECRET` differs between host and
     Render (Invariant 2).
   - connection error to upstream → the host isn't on Render's `ALLOWED_CLIENT_IPS` (Step 4).

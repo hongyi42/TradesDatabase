@@ -20,6 +20,7 @@ export type ReviewKind =
   | 'pending_booking'
   | 'pending_visit_move'
   | 'pending_visit_cancel'
+  | 'pending_job_cancel'
   | 'pending_seat_add'
   // Onboarding task-reminder (NOT a staged token): opened when a seat is
   // confirmed, auto-resolved by set_availability, dismissable as the explicit

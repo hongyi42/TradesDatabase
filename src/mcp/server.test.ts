@@ -1597,7 +1597,8 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('update_job');
       expect(mgrTools).toContain('set_promise');
       expect(mgrTools).toContain('set_technician_horizon');
-      expect(mgrTools).toHaveLength(34);
+      expect(mgrTools).toContain('cancel_job'); // the terminal verb (2026-07-25)
+      expect(mgrTools).toHaveLength(35);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2000,7 +2001,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(34); // base minus get_schedule + 21 admin
+        expect(mgrTools).toHaveLength(35); // base minus get_schedule + 21 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -3273,9 +3274,9 @@ describe('record_standing_fact (staged two-step)', () => {
   });
 });
 
-describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => {
+describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', () => {
   test('technician badge is denied all four tools', async () => {
-    for (const name of ['get_team_schedule', 'book_visit', 'move_visit', 'cancel_visit']) {
+    for (const name of ['get_team_schedule', 'book_visit', 'move_visit', 'unschedule_visit']) {
       const denied = await call(name, {});
       expect(denied.isError).toBe(true);
       expect(denied.text).toContain('manager badge');
@@ -3400,7 +3401,7 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
 
       // resolve_review refuses to "resolve" a live scheduling token; dismissing
       // cancels it (then its confirm finds nothing).
-      const cancelStage = await callWith('cancel_visit', {
+      const cancelStage = await callWith('unschedule_visit', {
         assignmentId: movedId,
         reason: 'testing the refusal',
       });
@@ -3410,25 +3411,28 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
         resolution: 'resolved',
       });
       expect(refused.isError).toBe(true);
-      expect(refused.text).toContain('cancel_visit');
+      expect(refused.text).toContain('unschedule_visit');
       const dismissed = await callWith('resolve_review', {
         reviewItemId: cancelStage.data.confirmId,
         resolution: 'dismissed',
       });
       expect(dismissed.isError).toBe(false);
-      const deadConfirm = await callWith('cancel_visit', { confirmId: cancelStage.data.confirmId });
+      const deadConfirm = await callWith('unschedule_visit', { confirmId: cancelStage.data.confirmId });
       expect(deadConfirm.isError).toBe(true);
       expect(deadConfirm.text).toContain('confirmation not found');
 
       // CANCEL for real: restage (fresh preview) then confirm.
-      const cancelStage2 = await callWith('cancel_visit', {
+      const cancelStage2 = await callWith('unschedule_visit', {
         assignmentId: movedId,
         reason: 'customer cancelled',
       });
       expect(cancelStage2.data.preview).toMatchObject({ customerName: 'Sched Henderson' });
-      const cancelled = await callWith('cancel_visit', { confirmId: cancelStage2.data.confirmId });
-      expect(cancelled.data.status).toBe('cancelled');
-      // The cancelled visit no longer appears on the board.
+      const cancelled = await callWith('unschedule_visit', { confirmId: cancelStage2.data.confirmId });
+      // Vocabulary (2026-07-25): the wire status says what the tool DID — the
+      // visit is unscheduled; "cancelled" is reserved for the terminal verb.
+      expect(cancelled.data.status).toBe('unscheduled');
+      expect(cancelled.data.note).toContain('loose bucket');
+      // The unscheduled visit no longer appears on the board.
       const gone = await callWith('get_team_schedule', { from: '2026-12-02', to: '2026-12-02' });
       expect(gone.data.days).toHaveLength(0);
     } finally {
@@ -3485,13 +3489,15 @@ describe('scheduling tools (book/move/cancel_visit + get_team_schedule)', () => 
       expect(moved.data.promiseBroken).toBe(false);
       expect(moved.data.note).toContain('one step');
 
-      // Cancelling it: one-shot as well.
-      const cancelled = await callWith('cancel_visit', {
+      // Unscheduling it: one-shot as well — and the result must say the WORK
+      // survives (the job returns to the loose bucket).
+      const cancelled = await callWith('unschedule_visit', {
         assignmentId: moved.data.assignmentId,
         reason: 'not needed',
       });
-      expect(cancelled.data.status).toBe('cancelled');
+      expect(cancelled.data.status).toBe('unscheduled');
       expect(cancelled.data.note).toContain('one step');
+      expect(cancelled.data.note).toContain('loose bucket');
 
       // The PROMISED path also requires both times — staged and confirmed with
       // exactly the stated window (preview == commit).
@@ -5215,6 +5221,116 @@ describe('set_technician_horizon (the visibility-horizon dial)', () => {
       await pg.query('update tenants set technician_horizon_days = 28 where id = $1', [tenantId]);
       await mgrClient.close();
       await techClient.close();
+    }
+  });
+});
+
+describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
+  test('never one-shots, confirm cascades, job leaves the recall view', { timeout: 30_000 }, async () => {
+    const denied = await call('cancel_job', { jobId: 'x', reason: 'nope' });
+    expect(denied.isError).toBe(true);
+    expect(denied.text).toContain('manager badge');
+
+    const customer = await createCustomer({ tenantId, name: 'Cancel Job Casa' });
+    // A visit-LESS, promise-free job: the reversible verbs would one-shot an
+    // action this safe-looking — cancel_job must stage anyway (terminal).
+    const bare = await createJob({ tenantId, customerId: customer.id, title: 'never happened' });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const unknown = await callWith('cancel_job', {
+        jobId: '00000000-0000-0000-0000-000000000001',
+        reason: 'ghost',
+      });
+      expect(unknown.isError).toBe(true);
+      expect(unknown.text).toContain('job not found');
+
+      const stage1 = await callWith('cancel_job', { jobId: bare.id, reason: 'duplicate entry' });
+      expect(stage1.isError).toBe(false);
+      expect(stage1.data.status).toBe('needs_confirmation');
+      expect(stage1.data.note).toContain('TERMINAL');
+      // Nothing died at stage time.
+      const still = await pg.query('select status from jobs where id = $1', [bare.id]);
+      expect(still.rows[0].status).toBe('open');
+
+      // The job is in the recall view's unscheduledJobs before the confirm…
+      const before = await callWith('get_team_schedule', { unassignedOnly: true });
+      expect(
+        (before.data.unscheduledJobs as Array<{ jobId: string }>).map((j) => j.jobId),
+      ).toContain(bare.id);
+
+      // Restage supersedes the caller's prior token: the old confirmId dies.
+      const stage2 = await callWith('cancel_job', { jobId: bare.id, reason: 'duplicate entry' });
+      expect(stage2.data.confirmId).not.toBe(stage1.data.confirmId);
+      const staleConfirm = await callWith('cancel_job', { confirmId: stage1.data.confirmId });
+      expect(staleConfirm.isError).toBe(true);
+      expect(staleConfirm.text).toContain('confirmation not found');
+
+      const confirmed = await callWith('cancel_job', { confirmId: stage2.data.confirmId });
+      expect(confirmed.isError).toBe(false);
+      expect(confirmed.data.status).toBe('cancelled');
+      expect(confirmed.data.jobTitle).toBe('never happened');
+      expect(confirmed.data.visitsCancelled).toEqual([]);
+      const after = await pg.query('select status from jobs where id = $1', [bare.id]);
+      expect(after.rows[0].status).toBe('cancelled');
+      // …and gone from it after (the bucket-exit contract: the freeze must
+      // never see dead work).
+      const recall = await callWith('get_team_schedule', { unassignedOnly: true });
+      expect(
+        (recall.data.unscheduledJobs as Array<{ jobId: string }>).map((j) => j.jobId),
+      ).not.toContain(bare.id);
+
+      // A used token cannot commit twice.
+      const replay = await callWith('cancel_job', { confirmId: stage2.data.confirmId });
+      expect(replay.isError).toBe(true);
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('cascade through the tool: promised visit disclosed in the preview, then dies', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Cascade Cal' });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const booked = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'patio drainage',
+        date: '2027-02-01',
+        startTime: '09:00',
+        endTime: '11:00',
+      });
+      expect(booked.data.status).toBe('booked'); // unassigned + unpromised → one-shot
+      const jobId = booked.data.jobId as string;
+      await callWith('set_promise', {
+        assignmentId: booked.data.assignmentId,
+        promiseLevel: 'day',
+      });
+
+      const stage = await callWith('cancel_job', { jobId, reason: 'customer called it off' });
+      const preview = stage.data.preview as {
+        visits: Array<{ assignmentId: string; promiseLevel: string; day: string }>;
+      };
+      // The stake is stated: the promised visit rides the preview.
+      expect(preview.visits).toHaveLength(1);
+      expect(preview.visits[0]).toMatchObject({
+        assignmentId: booked.data.assignmentId,
+        promiseLevel: 'day',
+        day: '2027-02-01',
+      });
+
+      const confirmed = await callWith('cancel_job', { confirmId: stage.data.confirmId });
+      expect(confirmed.isError).toBe(false);
+      expect(confirmed.data.visitsCancelled).toEqual([
+        { assignmentId: booked.data.assignmentId, day: '2027-02-01' },
+      ]);
+      // Off the board.
+      const day = await callWith('get_team_schedule', { from: '2027-02-01', to: '2027-02-01' });
+      expect(day.data.days).toHaveLength(0);
+      // Terminal: a second cancel_job on the same job refuses with the truth.
+      const again = await callWith('cancel_job', { jobId, reason: 'again' });
+      expect(again.isError).toBe(true);
+      expect(again.text).toContain('it already is');
+    } finally {
+      await mgrClient.close();
     }
   });
 });

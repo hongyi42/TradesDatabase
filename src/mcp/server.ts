@@ -118,11 +118,13 @@ import {
 import {
   bookVisit,
   bookingRequiresConfirmation,
-  cancelVisit,
+  cancelJob,
+  previewCancelJob,
+  unscheduleVisit,
   isPromiseLevel,
   moveVisit,
   previewBookVisit,
-  previewCancelVisit,
+  previewUnscheduleVisit,
   previewMoveVisit,
   setVisitPromise,
   updateJobIdentity,
@@ -720,20 +722,47 @@ const ADMIN_TOOLS = [
     },
   },
   {
-    name: 'cancel_visit',
+    name: 'unschedule_visit',
     description:
-      'Cancel a booked visit (manager only). Reversible and internal (nothing promised to ' +
-      'the customer) → done in ONE call ({status:"cancelled"}) — ALWAYS tell the manager what ' +
-      'was cancelled; never act silently. If the customer was promised anything (any ' +
+      'Take a booked visit OFF the calendar (manager only). The WORK is NOT cancelled: the ' +
+      'job returns to the loose bucket for rebooking — say so in your report. For "the ' +
+      'customer called the whole thing off / we are not doing this work", use cancel_job ' +
+      'instead. If the manager\'s words could mean either ("cancel the Hendersons"), ASK ' +
+      'which they mean — never guess. Reversible and internal (nothing promised to the ' +
+      'customer) → done in ONE call ({status:"unscheduled"}) — ALWAYS tell the manager what ' +
+      'was unscheduled; never act silently. If the customer was promised anything (any ' +
       'promiseLevel other than "none") you instead ' +
       'get {status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
-      'yes, call again with ONLY confirmId. Call with assignmentId + reason. The job stays ' +
-      'open for rebooking either way. When the result carries boardNote, ALWAYS end your ' +
+      'yes, call again with ONLY confirmId. Call with assignmentId + reason. When the result ' +
+      'carries boardNote, ALWAYS end your ' +
       'report with its exact [See it on the board](…) line — it renders as a tappable link.',
     inputSchema: {
       type: 'object',
       properties: {
-        assignmentId: { type: 'string', description: 'The visit to cancel. First call only.' },
+        assignmentId: { type: 'string', description: 'The visit to unschedule. First call only.' },
+        reason: { type: 'string', description: 'Why (kept on the record). First call only.' },
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'cancel_job',
+    description:
+      'Cancel the WORK itself (manager only) — TERMINAL: the job closes for good (there is ' +
+      'no un-cancel; work that revives later is a NEW job), it leaves the loose bucket, and ' +
+      'every remaining scheduled visit comes off the calendar with it. ALWAYS two-step: the ' +
+      'first call returns {status:"needs_confirmation", confirmId} with a preview naming the ' +
+      'job and each visit that would die (with any customer promise) — show it, get an ' +
+      'explicit yes, call again with ONLY confirmId. Call with jobId + reason. For taking ' +
+      'ONE visit off the calendar while the work continues, use unschedule_visit instead. ' +
+      'If the manager\'s words could mean either ("cancel the Hendersons"), ASK which they ' +
+      'mean — never guess. When the result carries boardNote, ALWAYS end your report with ' +
+      'its exact [See it on the board](…) line.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: 'The job (the WORK) to cancel. First call only.' },
         reason: { type: 'string', description: 'Why (kept on the record). First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
@@ -882,7 +911,7 @@ const ADMIN_TOOLS = [
       "set_job_duration vocabulary (scheduling then treats the type as authoritative; if no " +
       'duration is stored for it yet, the result says so — store one with set_job_duration). ' +
       'Pass jobType: null to CLEAR a mistaken type back to untyped. It never touches visits, ' +
-      'dates, times, or job status (move_visit / cancel_visit own those).',
+      'dates, times, or job status (move_visit / unschedule_visit own those).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1044,7 +1073,10 @@ const BOARD_LINK_TOOL_NAMES = new Set([
   'get_team_schedule',
   'book_visit',
   'move_visit',
-  'cancel_visit',
+  'unschedule_visit',
+  // cancel_job's result changes what the board shows (job gone from the
+  // bucket, visits gone from lanes) → same doctrine, same fabrication risk.
+  'cancel_job',
   // find_slots was originally EXCLUDED ("commits nothing") — wrong call: the
   // AGENTS.md doctrine says EVERY schedule answer ends with the board line
   // (reads included — get_team_schedule is a read), so the agent, told to
@@ -2828,7 +2860,7 @@ async function dispatch(
             ...(booked.warning ? { warning: booked.warning } : {}),
             note:
               'Booked in one step — nothing was promised to the customer, so no confirmation ' +
-              'was needed (undo = move_visit / cancel_visit). Tell the manager exactly what ' +
+              'was needed (undo = move_visit / unschedule_visit). Tell the manager exactly what ' +
               'was booked: the JOB (jobTitle above — their words to object to if you assumed ' +
               'it), customer, day, time, and who. This visit is recorded as promise-free ' +
               '(promiseLevel "none"): if the manager\'s words actually said the customer was ' +
@@ -3162,7 +3194,7 @@ async function dispatch(
         ...(moved.warning ? { warning: moved.warning } : {}),
       };
     }
-    case 'cancel_visit': {
+    case 'unschedule_visit': {
       const subjectRef = identity.technicianRef;
       const confirmId = str('confirmId');
       if (!confirmId) {
@@ -3170,26 +3202,27 @@ async function dispatch(
         const assignmentId = str('assignmentId');
         const reason = str('reason')?.trim();
         if (!assignmentId) throw new Error('assignmentId is required');
-        if (!reason) throw new Error('reason is required — say why the visit is being cancelled');
-        const preview = await previewCancelVisit(tenantId, assignmentId);
+        if (!reason) throw new Error('reason is required — say why the visit is being unscheduled');
+        const preview = await previewUnscheduleVisit(tenantId, assignmentId);
         // Doctrine (2026-07-17, verdict computed in booking.ts): cancelling an
         // UNPROMISED visit is internal + reversible (the job stays open;
         // rebook any time) → one step. Cancelling a promised visit stages —
         // the customer expects someone, and the manager must own telling them.
         if (!preview.requiresConfirmation) {
-          const cancelledRow = await cancelVisit({
+          const cancelledRow = await unscheduleVisit({
             tenantId,
             assignmentId,
             reason,
             actorRef: subjectRef,
           });
           return {
-            status: 'cancelled',
+            status: 'unscheduled',
             assignmentId: cancelledRow.id,
             day: cancelledRow.starts_at.slice(0, 10),
             note:
-              'Cancelled in one step — nothing was promised to the customer, so no ' +
-              'confirmation was needed. The job stays open for rebooking; tell the manager.',
+              'Unscheduled in one step — nothing was promised to the customer, so no ' +
+              'confirmation was needed. The WORK is not cancelled: the job is back in the ' +
+              'loose bucket for rebooking; tell the manager exactly that.',
           };
         }
         // Staging replaces any prior staged cancel; one-shot cancels above
@@ -3217,7 +3250,7 @@ async function dispatch(
           status: 'needs_confirmation',
           confirmId: item.id,
           preview: staged.preview ?? preview,
-          note: 'Nothing was cancelled. Show the manager exactly this preview; on their explicit yes call again with ONLY confirmId.',
+          note: 'Nothing was unscheduled. Show the manager exactly this preview; on their explicit yes call again with ONLY confirmId.',
         };
       }
       // CONFIRM — consume-first.
@@ -3226,28 +3259,28 @@ async function dispatch(
         subjectRef,
       });
       if (!item) {
-        throw new Error('confirmation not found — call cancel_visit again with assignmentId + reason to restage');
+        throw new Error('confirmation not found — call unschedule_visit again with assignmentId + reason to restage');
       }
       const d = (item.detail ?? {}) as { assignmentId?: string; reason?: string; stagedAt?: string };
       if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
-        throw new Error('confirmation expired — restage the cancellation and confirm again');
+        throw new Error('confirmation expired — restage the unschedule and confirm again');
       }
       if (!d.assignmentId || !d.reason) {
-        throw new Error('staged cancellation is malformed — restage with assignmentId + reason');
+        throw new Error('staged unschedule is malformed — restage with assignmentId + reason');
       }
       const consumed = await resolveReviewItem(
         item.id,
         tenantId,
         'resolved',
-        `cancellation confirmed by ${subjectRef}`,
+        `unschedule confirmed by ${subjectRef}`,
       );
       if (!consumed) {
         throw new Error('already confirmed or cancelled — nothing was changed by this call');
       }
       let cancelledRow;
       try {
-        cancelledRow = await cancelVisit({
+        cancelledRow = await unscheduleVisit({
           tenantId,
           assignmentId: d.assignmentId,
           reason: d.reason,
@@ -3259,18 +3292,123 @@ async function dispatch(
           await annotateResolvedReviewItem(
             confirmId,
             tenantId,
-            `confirmed but cancellation FAILED (${msg}) — the visit is unchanged`,
+            `confirmed but unschedule FAILED (${msg}) — the visit is unchanged`,
           );
         } catch {
           /* advisory */
         }
-        throw new Error(`visit NOT cancelled: ${msg}`);
+        throw new Error(`visit NOT unscheduled: ${msg}`);
+      }
+      return {
+        status: 'unscheduled',
+        assignmentId: cancelledRow.id,
+        day: cancelledRow.starts_at.slice(0, 10),
+        note: 'the work is not cancelled — the job is back in the loose bucket for rebooking',
+      };
+    }
+    case 'cancel_job': {
+      const subjectRef = identity.technicianRef;
+      const confirmId = str('confirmId');
+      if (!confirmId) {
+        // STAGE — always. Terminal per the job state machine, so the doctrine's
+        // irreversible arm applies: there is NO one-shot path, even for a
+        // visit-less promise-free job (unschedule_visit's one-shot arm is what
+        // reversibility buys; this verb has none to spend).
+        const jobId = str('jobId');
+        const reason = str('reason')?.trim();
+        if (!jobId) throw new Error('jobId is required');
+        if (!reason) throw new Error('reason is required — say why the work is being cancelled');
+        const preview = await previewCancelJob(tenantId, jobId);
+        // Staging replaces any prior staged job-cancel BY THIS CALLER (the
+        // unschedule_visit idiom: subjectRef = caller, per-caller supersede +
+        // only-the-stager-confirms; the jobId rides in the detail).
+        await resolveOpenReviewItemFor(
+          tenantId,
+          'pending_job_cancel',
+          subjectRef,
+          'dismissed',
+          'superseded by a new job-cancel request',
+        );
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_job_cancel',
+          subjectRef,
+          detail: {
+            jobId,
+            reason,
+            preview: preview as unknown as Json,
+            stagedAt: new Date().toISOString(),
+          } as unknown as Json,
+        });
+        const staged = (item.detail ?? {}) as { preview?: unknown };
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          preview: staged.preview ?? preview,
+          note:
+            'Nothing was cancelled. This is TERMINAL — show the manager exactly this ' +
+            'preview: the JOB closes for good and every listed visit comes off the calendar ' +
+            '(promises included). On their explicit yes call again with ONLY confirmId.',
+        };
+      }
+      // CONFIRM — consume-first (unschedule_visit idiom).
+      const item = await getOpenReviewItem(confirmId, tenantId, {
+        kind: 'pending_job_cancel',
+        subjectRef,
+      });
+      if (!item) {
+        throw new Error('confirmation not found — call cancel_job again with jobId + reason to restage');
+      }
+      const d = (item.detail ?? {}) as { jobId?: string; reason?: string; stagedAt?: string };
+      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'confirmation expired');
+        throw new Error('confirmation expired — restage the job cancellation and confirm again');
+      }
+      if (!d.jobId || !d.reason) {
+        throw new Error('staged job cancellation is malformed — restage with jobId + reason');
+      }
+      const consumed = await resolveReviewItem(
+        item.id,
+        tenantId,
+        'resolved',
+        `job cancellation confirmed by ${subjectRef}`,
+      );
+      if (!consumed) {
+        throw new Error('already confirmed or cancelled — nothing was changed by this call');
+      }
+      let result;
+      try {
+        result = await cancelJob({
+          tenantId,
+          jobId: d.jobId,
+          reason: d.reason,
+          actorRef: subjectRef,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        try {
+          await annotateResolvedReviewItem(
+            confirmId,
+            tenantId,
+            `confirmed but job cancellation FAILED (${msg}) — check get_team_schedule before retrying`,
+          );
+        } catch {
+          /* advisory */
+        }
+        throw new Error(`job NOT cancelled: ${msg}`);
       }
       return {
         status: 'cancelled',
-        assignmentId: cancelledRow.id,
-        day: cancelledRow.starts_at.slice(0, 10),
-        note: 'the job stays open for rebooking',
+        jobId: result.job.id,
+        jobTitle: result.job.title,
+        visitsCancelled: result.cancelledVisits.map((v) => ({
+          assignmentId: v.id,
+          day: v.starts_at.slice(0, 10),
+        })),
+        note:
+          'The WORK is cancelled — the job left the loose bucket and the visits above are ' +
+          'off the calendar. Tell the manager exactly what died; affected technicians were ' +
+          'notified per visit.',
       };
     }
     case 'add_technician_seat': {
@@ -4598,7 +4736,8 @@ async function dispatch(
       const STAGED_ACTION_KINDS: Record<string, string> = {
         pending_booking: 'book_visit',
         pending_visit_move: 'move_visit',
-        pending_visit_cancel: 'cancel_visit',
+        pending_visit_cancel: 'unschedule_visit',
+        pending_job_cancel: 'cancel_job',
         pending_seat_add: 'add_technician_seat',
       };
       if (STAGED_ACTION_KINDS[open.kind] && resolution === 'resolved') {

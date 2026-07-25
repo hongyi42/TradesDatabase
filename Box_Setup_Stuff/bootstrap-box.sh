@@ -584,21 +584,26 @@ EOF
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-07-18)
+## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-07-25)
 
 The rule, in general: confirm only what is irreversible or externally visible (a customer
 promise at stake). Everything reversible — just do it, then SAY WHAT YOU DID (day, time,
 who, any warning); never act silently and never ask permission for a reversible internal
 change.
 
-1. Scheduling verbs (book_visit / move_visit / cancel_visit) are REVERSIBLE: when the change
+1. Scheduling verbs (book_visit / move_visit / unschedule_visit) are REVERSIBLE: when the change
    is internal (nothing promised to the customer) the server acts in one call — report the
    result. When the server returns needs_confirmation, a customer was promised a day/time
    (or a promise is breaking): show the preview, get an explicit yes, confirm with only
-   confirmId.
-2. add_technician_seat is two-step (it mints a permanent ref and burns a purchased seat):
+   confirmId. unschedule_visit takes a visit OFF the calendar — the WORK survives and the
+   job returns to the loose bucket; say so.
+2. cancel_job is TERMINAL — the WORK closes for good and its remaining visits die with it;
+   there is no un-cancel. ALWAYS two-step: show the preview (job + every visit + promises),
+   get an explicit yes, confirm with only confirmId. If the manager's words could mean
+   either a visit or the whole job ("cancel the Hendersons"), ASK which — never guess.
+3. add_technician_seat is two-step (it mints a permanent ref and burns a purchased seat):
    stage, show the minted ref, get a yes, confirm with only confirmId.
-3. book_visit requires BOTH startTime and endTime — the server assumes NO default length.
+4. book_visit requires BOTH startTime and endTime — the server assumes NO default length.
    Pass exactly the times the manager stated (a range like "12-1pm" means startTime 12:00
    AND endTime 13:00). If the manager did not say when the visit starts or ends, ask them
    BEFORE booking — never guess or invent a length.
@@ -614,9 +619,9 @@ EOF
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## The dispatch board link (host-managed; refreshed 2026-07-19)
+## The dispatch board link (host-managed; refreshed 2026-07-25)
 
-Scheduling results (book_visit / move_visit / cancel_visit AND both schedule reads) carry
+Scheduling results (book_visit / move_visit / unschedule_visit / cancel_job AND both schedule reads) carry
 boardLink + boardNote when the board is configured. EVERY reply that used one of these
 tools — plain reads included, "what's the schedule" included — must END with the exact
 bracketed line from boardNote: [See it on the board](<boardLink>). That line is Telegram

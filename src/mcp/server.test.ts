@@ -4297,6 +4297,99 @@ describe('find_slots (Plan 3b)', () => {
     }
   });
 
+  test("job-level duration (4b-1): own length beats the type table; ladder rides the error", { timeout: 30_000 }, async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // Never-configured arm FIRST (review observation: the 4b-1 rewrite left
+      // it unpinned): with NO type durations stored at all, the no-duration
+      // error still leads with the ladder remedy. Earlier tests plant rows, so
+      // clear and re-plant below — this test must stay standalone-runnable.
+      await pg.query('delete from job_type_durations where tenant_id = $1', [tenantId]);
+      const bareJob = await createJob({
+        tenantId,
+        customerId: henderson.id,
+        title: 'unsized chore',
+        status: 'open',
+      });
+      const bare = await callWith('find_slots', { jobId: bareJob.id });
+      expect(bare.isError).toBe(true);
+      expect(bare.text).toContain('No job-type durations are configured yet');
+      expect(bare.text).toContain('update_job');
+      expect(bare.text).toContain('15/30/45/60/90/120/180/240/360/480');
+      await upsertJobTypeDuration(tenantId, 'drainage', 300); // restore prior state
+
+      // A job with its OWN length and NO type — before 4b-1 this threw
+      // 'no recorded type'; now the job's recorded length applies directly.
+      const ownOnly = await createJob({
+        tenantId,
+        customerId: henderson.id,
+        title: 'fence gate repair',
+        status: 'open',
+        durationMinutes: 90,
+      });
+      const own = await callWith('find_slots', {
+        jobId: ownOnly.id,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-01',
+        latestDate: '2027-03-02',
+      });
+      expect(own.isError).toBe(false);
+      expect(own.data.durationAssumption).toContain("using this job's recorded length (1h 30m)");
+      expect(own.data.candidates.length).toBeGreaterThan(0);
+
+      // A stated override of the job's OWN length is disclosed, exactly as a
+      // type override always was (review observation: the note must not go
+      // silent on the new source).
+      const overridden = await callWith('find_slots', {
+        jobId: ownOnly.id,
+        durationMinutes: 60,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-01',
+        latestDate: '2027-03-01',
+      });
+      expect(overridden.isError).toBe(false);
+      expect(overridden.data.durationAssumption).toContain(
+        "not this job's recorded length (1h 30m)",
+      );
+
+      // Own length OUTRANKS a configured type: drainage is stored at 300m,
+      // but the job says 45 — the more specific value wins, disclosed.
+      const both = await createJob({
+        tenantId,
+        customerId: henderson.id,
+        title: 'quick drain check',
+        status: 'open',
+        jobType: 'drainage',
+        durationMinutes: 45,
+      });
+      const specific = await callWith('find_slots', {
+        jobId: both.id,
+        technicianRef: 'slots-bob',
+        earliestDate: '2027-03-01',
+        latestDate: '2027-03-01',
+      });
+      expect(specific.isError).toBe(false);
+      expect(specific.data.durationAssumption).toContain("using this job's recorded length (45m)");
+      expect(specific.data.durationAssumption).not.toContain('assuming 300');
+
+      // Neither own length nor type: still fail-closed, and the error now
+      // carries the ladder as the primary remedy (any whole number accepted).
+      const neither = await createJob({
+        tenantId,
+        customerId: henderson.id,
+        title: 'mystery task',
+        status: 'open',
+      });
+      const err = await callWith('find_slots', { jobId: neither.id });
+      expect(err.isError).toBe(true);
+      expect(err.text).toContain('update_job');
+      expect(err.text).toContain('15/30/45/60/90/120/180/240/360/480');
+      expect(err.text).toContain('any whole number works');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
   test('DENSITY decides the candidate mode through the full tool; slots are decision-ready', { timeout: 30_000 }, async () => {
     // Two far-out Mondays, same distance class from today: an EMPTY one and a
     // PACKED one. Density, not date, must pick the mode. (The engine-level
@@ -4704,6 +4797,55 @@ describe('find_slots (Plan 3b)', () => {
 });
 
 describe('update_job (the job identity editor)', () => {
+  test('durationMinutes: rungs and free minutes stored, bound enforced, null clears (4b-1)', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Duration Edit Cust' });
+    const job = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'water heater flush',
+      status: 'open',
+    });
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // A rung, echoed old → new.
+      const rung = await callWith('update_job', { jobId: job.id, durationMinutes: 120 });
+      expect(rung.isError).toBe(false);
+      expect(rung.data.changes.durationMinutes).toEqual({ from: null, to: 120 });
+
+      // OFF-ladder is legal — the ladder is offered, never enforced (user
+      // decision 2026-07-24: a 20-minute callout must not become a rounded lie).
+      const off = await callWith('update_job', { jobId: job.id, durationMinutes: 20 });
+      expect(off.isError).toBe(false);
+      expect(off.data.changes.durationMinutes).toEqual({ from: 120, to: 20 });
+
+      // Non-integers, zero, and over-bound fail with the shared message —
+      // bound named, ladder offered as suggestions.
+      for (const bad of [45.5, 0, 6000]) {
+        const r = await callWith('update_job', { jobId: job.id, durationMinutes: bad });
+        expect(r.isError).toBe(true);
+        expect(r.text).toContain('1 to 1440');
+        expect(r.text).toContain('any other whole number is fine');
+      }
+      // The rejections wrote nothing.
+      const row = await pg.query('select duration_minutes from jobs where id = $1', [job.id]);
+      expect(row.rows[0].duration_minutes).toBe(20);
+
+      // null = explicit CLEAR back to unknown (the undo arm).
+      const cleared = await callWith('update_job', { jobId: job.id, durationMinutes: null });
+      expect(cleared.isError).toBe(false);
+      expect(cleared.data.changes.durationMinutes).toEqual({ from: 20, to: null });
+
+      // The ledger carried the change (updateJobIdentity is the shared core).
+      const ev = await pg.query(
+        "select detail from schedule_events where tenant_id = $1 and kind = 'job_updated' order by id desc limit 1",
+        [tenantId],
+      );
+      expect(ev.rows[0].detail.durationMinutes).toEqual({ from: 20, to: null });
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
   test('gate + validation + old→new echo + scheduling authority', { timeout: 30_000 }, async () => {
     const denied = await call('update_job', { jobId: 'x', title: 'nope' });
     expect(denied.isError).toBe(true);

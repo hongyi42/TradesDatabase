@@ -54,6 +54,10 @@ import {
   upsertJobTypeDuration,
   findJobTypeDurationMinutes,
   listJobTypeDurations,
+  DURATION_LADDER,
+  durationError,
+  formatDuration,
+  isValidDuration,
   getAssignmentForTenant,
   getTechnicianById,
   unwrapAttributes,
@@ -816,11 +820,13 @@ const ADMIN_TOOLS = [
   {
     name: 'set_job_duration',
     description:
-      'Set how long a job type takes by default (manager only), e.g. "maintenance takes 60 ' +
-      'minutes", "installs take 8 hours" (pass minutes: 480). Done immediately in ONE call — ' +
+      'Set a DEFAULT length for new jobs of a type (manager only), e.g. "maintenance takes 60 ' +
+      'minutes", "installs take 8 hours" (pass minutes: 480). A SUGGESTION, not the source of ' +
+      "truth: each job's own durationMinutes (update_job) always wins over the type default. " +
+      'Done immediately in ONE call — ' +
       'echo what was stored. Job types are free text, matched case-insensitively; setting an ' +
-      'existing type replaces its minutes. The scheduler NEVER assumes a duration: untyped or ' +
-      'unconfigured jobs require the manager to state one per booking.',
+      'existing type replaces its minutes. The scheduler NEVER assumes a duration: jobs with ' +
+      'no own length and no configured type require the manager to state one.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -874,11 +880,14 @@ const ADMIN_TOOLS = [
   {
     name: 'update_job',
     description:
-      "Correct an existing job's IDENTITY (manager only): title, jobType, and/or priority — " +
-      'pass jobId plus any of the three. Reversible and internal → done in ONE call; ALWAYS ' +
+      "Correct an existing job's IDENTITY (manager only): title, jobType, priority, and/or " +
+      'durationMinutes — pass jobId plus any of them. Reversible and internal → done in ONE ' +
+      'call; ALWAYS ' +
       'tell the manager exactly what changed (old → new). THIS is how a wrong or assumed job ' +
       'title gets fixed — the title displays on the board and every schedule read, so correct ' +
-      'it here, never by only recording a fact. Setting jobType links the job to the stored ' +
+      'it here, never by only recording a fact. Setting durationMinutes is what makes the job ' +
+      'PLACEABLE: scheduling reads the job’s own length first and never invents one. ' +
+      'Setting jobType links the job to the stored ' +
       "set_job_duration vocabulary (scheduling then treats the type as authoritative; if no " +
       'duration is stored for it yet, the result says so — store one with set_job_duration). ' +
       'Pass jobType: null to CLEAR a mistaken type back to untyped. It never touches visits, ' +
@@ -898,6 +907,19 @@ const ADMIN_TOOLS = [
           type: 'string',
           enum: ['emergency', 'urgent', 'routine', 'maintenance'],
           description: 'New triage tier.',
+        },
+        durationMinutes: {
+          type: ['integer', 'null'],
+          // NO enum — free minutes are allowed. The rungs are OFFERED in the
+          // text so the agent proposes them as choices; a manager who says
+          // "20 minutes" gets 20, not a rounded lie.
+          minimum: 1,
+          maximum: 1440,
+          description:
+            'How long this job takes, in whole minutes. Offer these first: ' +
+            `${DURATION_LADDER.join(', ')}. Any other whole number is fine if the manager ` +
+            'states one. ASK the manager; NEVER pick a length yourself. Pass null to clear ' +
+            'it back to unknown.',
         },
       },
       required: ['jobId'],
@@ -948,9 +970,11 @@ const ADMIN_TOOLS = [
       'you are unreliable at calendar math. dayLevel:true = a LOOSE day: quote the DAY to ' +
       'the manager, not the exact time. Concrete slots are bookable verbatim with book_visit. Duration is ' +
       'NEVER assumed: pass durationMinutes when the manager stated a length; otherwise the ' +
-      "job's stored type duration applies and the result DISCLOSES it (durationAssumption — " +
-      'relay it). If no duration is known you get an error listing the configured types: map ' +
-      'the job onto one (pass assumedType) or ask the manager — never guess minutes. ' +
+      "job's own recorded length (update_job), then its stored type duration, applies — and " +
+      'the result DISCLOSES which (durationAssumption — ' +
+      'relay it). If no duration is known you get an error listing the remedies: set the ' +
+      "job's length, map it onto a configured type (pass assumedType), or ask the manager — " +
+      'never guess minutes. ' +
       'requiredSkills excludes ONLY people whose configured skill list lacks the skill; ' +
       'people with NO skills recorded are included with a confirm-first warning. When ' +
       'nothing fits, the result names the binding constraint plus displacement candidates ' +
@@ -4028,6 +4052,17 @@ async function dispatch(
       }
       const priorityArg = args.priority as JobPriority | undefined;
       const jobTypeArg = args.jobType as string | null | undefined;
+      // Whole 1..1440 or null-to-clear (plan 4b-1) — the ladder is OFFERED in
+      // the schema text, never enforced; the typed layer re-checks, but a bad
+      // value must fail HERE with the shared message, not as a generic throw.
+      if (
+        args.durationMinutes !== undefined &&
+        args.durationMinutes !== null &&
+        !isValidDuration(args.durationMinutes)
+      ) {
+        throw new Error(durationError());
+      }
+      const durationArg = args.durationMinutes as number | null | undefined;
       // Shared core (plan 4a.5): tenant guard + CAS write + the job_updated
       // ledger event live in ONE body the board endpoint calls too.
       const { previous: job, updated } = await updateJobIdentity(
@@ -4037,16 +4072,21 @@ async function dispatch(
           ...(str('title') !== undefined ? { title: str('title')! } : {}),
           ...(jobTypeArg !== undefined ? { jobType: jobTypeArg } : {}),
           ...(priorityArg !== undefined ? { priority: priorityArg } : {}),
+          ...(durationArg !== undefined ? { durationMinutes: durationArg } : {}),
         },
         identity.technicianRef,
       );
       // A newly set type only drives scheduling if a duration is stored for
-      // it — say so NOW, not as a surprise error at the next find_slots.
+      // it — say so NOW, not as a surprise error at the next find_slots. Since
+      // 4b-1 the job's OWN length outranks the type lookup, so a job that
+      // already carries duration_minutes is placeable regardless — warning
+      // then would claim a problem that does not exist.
       const typeWarning =
-        updated.job_type && jobTypeArg !== undefined
+        updated.job_type && jobTypeArg !== undefined && updated.duration_minutes === null
           ? (await findJobTypeDurationMinutes(tenantId, updated.job_type)) === null
-            ? `no stored duration for '${updated.job_type}' yet — set_job_duration makes it ` +
-              'schedulable by type (until then, scheduling asks for durationMinutes)'
+            ? `no stored duration for '${updated.job_type}' yet — set this job's ` +
+              'durationMinutes (update_job) to make it placeable, or set_job_duration to ' +
+              'make the type schedulable in general'
             : undefined
           : undefined;
       // Old → new per changed field: the echo IS the disclosure — the manager
@@ -4061,6 +4101,9 @@ async function dispatch(
           ...(jobTypeArg !== undefined ? { jobType: change(job.job_type, updated.job_type) } : {}),
           ...(priorityArg !== undefined
             ? { priority: change(job.priority, updated.priority) }
+            : {}),
+          ...(durationArg !== undefined
+            ? { durationMinutes: change(job.duration_minutes, updated.duration_minutes) }
             : {}),
         },
         ...(typeWarning ? { warning: typeWarning } : {}),
@@ -4202,33 +4245,38 @@ async function dispatch(
       if (!customer || customer.tenant_id !== tenantId) throw new Error('customer not found');
 
       // ------- duration: fail-closed, disclosed, never invented
-      const fmtMin = (m: number): string =>
-        m % 60 === 0 ? `${m / 60}h` : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
       // The configured vocabulary rides in every no-duration error so the
       // AGENT does the language-level mapping with the choices in hand — the
       // server never fuzzy-matches (a wrong match silently books a wrong-
       // length job).
+      // Since 4b-1 the PRIMARY remedy is the job's own durationMinutes
+      // (update_job): ask the manager, offer the ladder, take any whole
+      // number. The type routes remain as secondary paths.
       // typedJob variant matters: assumedType is REFUSED for jobs that already
       // carry a type, so advising it there would send the agent into a
-      // two-error loop (review finding) — a typed job's remedies are storing
-      // the duration, a one-off durationMinutes, or correcting the type.
+      // two-error loop (review finding) — a typed job's remedies are the job's
+      // own duration, the type's stored duration, a one-off durationMinutes,
+      // or correcting the type.
+      const ladderOffer =
+        'ask the manager how long this job takes and set it with update_job ' +
+        `(durationMinutes — offer ${DURATION_LADDER.join('/')}; any whole number works)`;
       const vocabularyGuidance = async (typedJob: boolean): Promise<string> => {
         const rows = await listJobTypeDurations(tenantId);
         const remedy = typedJob
-          ? "store this type's duration with set_job_duration, pass durationMinutes " +
-            '(one-off), or correct a wrong type with update_job'
-          : 'if this job is one of those, call again with assumedType set to that type; ' +
-            'otherwise ask the manager how long it takes, then pass durationMinutes ' +
-            '(one-off) or set_job_duration (general rule)';
+          ? `${ladderOffer}; or store this type's duration with set_job_duration, pass ` +
+            'durationMinutes (one-off), or correct a wrong type with update_job'
+          : `${ladderOffer}; if this job is one of those types, call again with assumedType ` +
+            'set to that type; a one-off durationMinutes also works';
         return rows.length > 0
           ? `Configured types: ${rows.map((r) => `${r.job_type} (${r.minutes}m)`).join(', ')}. ` +
               remedy.charAt(0).toUpperCase() +
               remedy.slice(1) +
               '.'
-          : `No job-type durations are configured yet — ask the manager how long this job takes, then ${
+          : `No job-type durations are configured yet — ${
               typedJob
-                ? 'pass durationMinutes, set_job_duration, or correct the type with update_job'
-                : 'pass durationMinutes (and consider set_job_duration to store the rule)'
+                ? `${ladderOffer}; pass durationMinutes (one-off), set_job_duration, or ` +
+                  'correct the type with update_job'
+                : `${ladderOffer}, or pass durationMinutes (one-off)`
             }.`;
       };
       // A job row that already carries a type is AUTHORITATIVE — agent
@@ -4245,17 +4293,30 @@ async function dispatch(
       let assumedTypeNote: string | undefined;
       if (statedMinutes !== undefined) {
         durationMin = statedMinutes;
+        // Overriding ANY stored value is disclosed — the type default, and
+        // since 4b-1 the job's own recorded length too (review observation:
+        // the override note must not go silent on the new source).
         if (job?.job_type) {
           durationAssumption =
-            `using your stated ${fmtMin(durationMin)} for this visit — not the stored ` +
+            `using your stated ${formatDuration(durationMin)} for this visit — not the stored ` +
             `'${job.job_type}' duration`;
+        } else if (job?.duration_minutes) {
+          durationAssumption =
+            `using your stated ${formatDuration(durationMin)} for this visit — not this ` +
+            `job's recorded length (${formatDuration(job.duration_minutes)})`;
         }
       } else if (subjectRow) {
         // An existing visit's booked length is a real value — no assumption.
         durationMin = Math.round(
           (Date.parse(subjectRow.ends_at) - Date.parse(subjectRow.starts_at)) / 60_000,
         );
-        durationAssumption = `using this visit's booked length (${fmtMin(durationMin)})`;
+        durationAssumption = `using this visit's booked length (${formatDuration(durationMin)})`;
+      } else if (job?.duration_minutes) {
+        // The job's OWN length (plan 4b-1) outranks the type lookup: a stored
+        // per-job value — manager-stated or booking-measured — is more specific
+        // than a per-type default. Also a real value, so no fail-closed error.
+        durationMin = job.duration_minutes;
+        durationAssumption = `using this job's recorded length (${formatDuration(durationMin)})`;
       } else {
         const lookupType = job?.job_type?.trim().toLowerCase() || assumedType;
         if (!lookupType) {
@@ -4283,7 +4344,7 @@ async function dispatch(
           ' — present it to the manager as a guess ("treating this as ' +
           `${assumedType} — say otherwise")`;
       }
-      const durationLabel = `${fmtMin(durationMin)} ${job?.job_type ?? assumedType ?? 'visit'}`;
+      const durationLabel = `${formatDuration(durationMin)} ${job?.job_type ?? assumedType ?? 'visit'}`;
 
       // ------- date range (get_team_schedule idiom: informative, not thrown)
       const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';

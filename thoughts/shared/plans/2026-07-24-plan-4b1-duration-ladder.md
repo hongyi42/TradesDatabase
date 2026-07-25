@@ -265,21 +265,33 @@ re-described as a per-type suggestion rather than the source of truth.
   (:753-762) alongside title/type/priority. Its input type needs no change (see Phase 1).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] new tests in `src/mcp/server.test.ts`: `update_job` sets a rung and echoes old → new;
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass — **49 files / 630 tests**
+- [x] new tests in `src/mcp/server.test.ts`: `update_job` sets a rung and echoes old → new;
       **accepts an off-ladder `20`**; rejects `45.5` / `0` / `6000` naming the bound; accepts
-      `null` to clear
-- [ ] new test: `find_slots` on a job with `duration_minutes` set and **no** `job_type` returns
-      candidates (today this throws "no recorded type"); `durationAssumption` names the job's
-      recorded length
-- [ ] new test: `find_slots` on a job with neither duration nor type still throws, and the
-      message contains the ladder values — with `src/mcp/server.test.ts:4217-4219` and
-      `:4838-4840` still passing unmodified
-- [ ] new tests in `src/schedule/booking.test.ts`: booking 09:00–11:00 on the `customerId` path
-      mints a job with `duration_minutes = 120`; booking **08:00–09:20 stores 80** (pins that
-      an off-ladder measurement is kept, the whole point of the free-minutes decision)
+      `null` to clear; the ledger event carries the change
+- [x] new test: `find_slots` on a job with `duration_minutes` set and **no** `job_type` returns
+      candidates; `durationAssumption` names the job's recorded length; the job's own length
+      **outranks** a configured type (45m beats drainage-300m, disclosed)
+- [x] new test: `find_slots` on a job with neither duration nor type still throws, and the
+      message contains the ladder values — pinned tests (untyped arm incl. `assumedType`; typed
+      arm without it) passing unmodified
+- [x] new tests in `src/schedule/booking.test.ts`: booking 09:00–11:00 on the `customerId` path
+      mints a job with `duration_minutes = 120`; booking **08:00–09:20 stores 80**; the jobId
+      path leaves an existing job's length untouched; preview == commit on the new field
+
+Phase-2 review (fresh context) found **no correctness gaps**; its two observations were both
+adopted: (a) the never-configured `vocabularyGuidance` arms are now pinned by a test (cleared
+rows → the error leads with the ladder remedy); (b) a stated `durationMinutes` that overrides
+the job's **own** recorded length now discloses the override, exactly as the type-default
+override always did — before this fix the note went silent on the new source. Additional
+refinement beyond the plan: `typeWarning` is now suppressed when the job carries its own
+duration (the job is placeable regardless, so the warning would claim a problem that does not
+exist).
 
 ### Live verification (agent-executable)
+*Deferred to post-deploy (implementation note 2026-07-25): these checks exercise the LIVE
+Render service, and this branch is not deployed until the PR merges. Run them together with
+Phase 3's deploy-freshness check after the merge+deploy, before Phase 4's seed.*
 - Prerequisites: `supabase-test` MCP; a sandbox with a working spine MCP (s2 = manager-sam)
   reachable via `nemoclaw <sandbox> agent`; Phase 1's pilot migration applied.
 - [ ] Restart the gateway across the live fleet first — `docs/engineering-memory.md` records

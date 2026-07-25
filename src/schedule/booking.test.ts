@@ -98,6 +98,74 @@ describe('bookVisit', () => {
     expect(booked?.actor_ref).toBe('manager-test');
   });
 
+  test('the booked span lands on the minted shell verbatim — rung or not (4b-1)', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Span Casa' });
+    // A 2h booking → the shell records 120 (a rung, incidentally).
+    const twoHours = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      title: 'boiler service',
+      date: '2026-12-14',
+      startTime: '09:00',
+      endTime: '11:00',
+      actorRef: 'manager-test',
+    });
+    expect(twoHours.job.duration_minutes).toBe(120);
+    // Preview == commit: the preview disclosed the same value.
+    const preview = await previewBookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      title: 'boiler service preview',
+      date: '2026-12-15',
+      startTime: '09:00',
+      endTime: '11:00',
+      actorRef: 'manager-test',
+    });
+    expect(preview.jobDurationMinutes).toBe(120);
+
+    // An OFF-ladder span is kept verbatim (08:00-09:20 → 80): a measured
+    // value, not an invented one — discarding it would leave the job
+    // duration-less if this visit is later cancelled, and the freeze would
+    // re-ask a length we already knew (the whole point of free minutes).
+    const offLadder = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      title: 'gutter clear',
+      date: '2026-12-16',
+      startTime: '08:00',
+      endTime: '09:20',
+      actorRef: 'manager-test',
+    });
+    expect(offLadder.job.duration_minutes).toBe(80);
+
+    // The jobId path never touches an existing job's stored length: booking a
+    // second 1h visit on the 80-minute job leaves 80 in place, and the preview
+    // reports the EXISTING length (post-commit truth), not the span.
+    const onExisting = await previewBookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      jobId: offLadder.job.id,
+      date: '2026-12-17',
+      startTime: '13:00',
+      endTime: '14:00',
+      actorRef: 'manager-test',
+    });
+    expect(onExisting.jobDurationMinutes).toBe(80);
+    const second = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      jobId: offLadder.job.id,
+      date: '2026-12-17',
+      startTime: '13:00',
+      endTime: '14:00',
+      actorRef: 'manager-test',
+    });
+    expect(second.job.duration_minutes).toBe(80);
+  });
+
   test('an explicit day promise records the promised day', async () => {
     const customer = await createCustomer({ tenantId, name: 'Promised Pat' });
     const { assignment } = await bookVisit({

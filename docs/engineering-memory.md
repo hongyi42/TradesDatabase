@@ -153,7 +153,7 @@ identify by which chat answers):
 | s5 | ben-shelton, invited technician (@ragisan03_bot, TG 8991633730) | |
 | s6 | COLD BLANK (@ragisan2_bot) | the pool's one free blank (from s1's recycle) |
 | s7 | Yutao (manager, active, Default Tenant, TG 8639645984) | the box's DEFAULT sandbox; NOT in `sandbox_pool` (provisioned outside the pool, like pre-pool s2/s3) |
-| s8 | manager-joy (Joy, manager, active, Default Tenant, TG 8816690083) | onboarded 2026-07-24; onboarded config says deepinfra-prod but the LIVE gateway runs nvidia-prod — the config-applying restart died mid-flight and left a stale shields-transition lock (see ops trap below); as of 2026-07-25 the gateway has NOT been restarted since the #79/#80 tool-vocabulary deploy, so her bot may advertise the stale pre-rename tool list |
+| s8 | manager-joy (Joy, manager, active, Default Tenant, TG 8816690083) | onboarded 2026-07-24; a crashed restart left a stale shields-transition lock (see ops trap below) — owner cleared it 2026-07-25 and the gateway now restarts clean (wired + restarted with the fleet, tool list fresh). The `nemoclaw list` "differs from onboarded" note (nvidia-prod live vs deepinfra-prod onboarded) reflects the medic's balance-out NVIDIA failover, not a broken sandbox |
 | s1, s4 | retired/recycled | historical only |
 
 **Board:** one global non-AI bot `@DashboardMan_bot` (plain code on Render; tenant isolation
@@ -173,7 +173,16 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   Plans 3a+3b (schedule input verbs + `find_slots`); Plan 4a + 4a.5/4a.6 (loose-bucket tray +
   board quick-edit + polish); **cancel vocabulary (PR #80) + duration ladder 4b-1 (PR #79),
   both merged+deployed 2026-07-25** — served board.js byte-verified against main; gateways
-  s2/s3/s5/s7 restarted (s8 blocked on the stale-lock trap below); live probes on s2 passed:
+  s2/s3/s5/s7 restarted (s8 followed once the owner cleared its stale lock). **Same-day wire
+  pass** (the step gateway restarts do NOT cover — AGENTS.md blocks only refresh on
+  `bootstrap-box.sh wire`): updated script shipped to the box, s2/s3/s5/s7/s8 wired, all 5
+  gateways restarted again; verify grep shows unschedule_visit×3 + cancel_job×2 in every
+  sandbox's AGENTS.md. Residual: the append-ONCE accuracy-rules block on s2+s3 still lists
+  "(…, book_visit, move_visit, cancel_visit)" as staged tools — dead name AND contradicts the
+  one-shot doctrine; owner owes the one-line in-container sed + `/usr/local/sbin` install;
+  structural fix = make that block refreshable (delete-then-append) like the doctrine block.
+  **GLM swap (PR #81, same day): NOT live until Render redeploys with `INFERENCE_API_KEY`
+  set** — it merged after the #79/#80 deploy. Live probes on s2 passed:
   `find_slots` fail-closed → set length 90 → SQL read-back → candidates from the job's own
   length; `unschedule_visit` → "work isn't cancelled … back in the loose bucket" + assignment
   `cancelled`/job `open`; `cancel_job` → two-step demanded, visit cascade, terminal `cancelled`,

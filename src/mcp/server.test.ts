@@ -205,6 +205,40 @@ describe('MCP server', () => {
     expect(explicit.data).toMatchObject({ status: 'resolved', date: '2026-07-17', weekday: 'friday' });
   });
 
+  test('resolve_date week mode: server-computed Mon–Sun range, taught in the description', async () => {
+    // The description + schema are the contract the fleet's cached tools/list
+    // teaches after the rollout restart — pin that the mode is discoverable.
+    const { tools } = await client.listTools();
+    const def = tools.find((t) => t.name === 'resolve_date');
+    expect(def?.description).toContain('week');
+    expect(def?.description).toContain('weekStart');
+    const props = (def?.inputSchema as { properties?: Record<string, unknown> })?.properties;
+    expect(props?.week).toBeDefined();
+
+    // Quoted number — models quote integers; intArg must coerce (same contract
+    // as weeksAhead/dayShift).
+    const wk = await call('resolve_date', { week: '1' });
+    expect(wk.data.status).toBe('resolved_week');
+    const today = localDateISO(new Date().toISOString(), 'America/Los_Angeles');
+    expect(wk.data.today).toBe(today);
+    expect(wk.data.timezone).toBe('America/Los_Angeles');
+    // Next week's range: starts strictly after today, Monday through Sunday.
+    expect(wk.data.weekStart > today).toBe(true);
+    expect(new Date(`${wk.data.weekStart}T00:00:00.000Z`).getUTCDay()).toBe(1);
+    expect(new Date(`${wk.data.weekEnd}T00:00:00.000Z`).getUTCDay()).toBe(0);
+    // The weekend ambiguity contract, keyed on the SERVER's firm-local day so
+    // the assertion is exact on any day the suite runs.
+    const dow = new Date(`${today}T00:00:00.000Z`).getUTCDay();
+    if (dow === 0 || dow === 6) {
+      expect(wk.data.boundaryAmbiguous).toBe(true);
+      expect(wk.data.alternate).toBeDefined();
+      expect(wk.data.note).toMatch(/ask/i);
+    } else {
+      expect(wk.data.boundaryAmbiguous).toBeUndefined();
+      expect(wk.data.alternate).toBeUndefined();
+    }
+  });
+
   test('record_field_note stages (NO L1), resolves identity, and records only on the final confirm', async () => {
     // FIRM-local today (seed tenant tz = America/Los_Angeles): the matcher
     // consults the capture's firm-local day, so the fixture must book there.

@@ -264,7 +264,10 @@ const TOOLS = [
       'actual date. You get back {date, weekday, today, timezone}; USE the returned date. If it ' +
       'comes back unresolvable, ask the person which exact date they mean — never guess. NOTE: ' +
       '"next <weekday>" is genuinely ambiguous (this coming one vs the following week\'s) — ' +
-      'resolve BOTH weeksAhead 0 and 1 and ask the person which date they mean; do not assume.',
+      'resolve BOTH weeksAhead 0 and 1 and ask the person which date they mean; do not assume. ' +
+      'For week RANGES ("this week", "next week") pass week alone — you get back ' +
+      '{weekStart, weekEnd}; on weekends the result is flagged ambiguous with an alternate ' +
+      'range — relay both and ask, never pick.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -276,6 +279,11 @@ const TOOLS = [
         weeksAhead: {
           type: 'integer',
           description: 'With weekday: 0 = this coming <day>, 1 = next week\'s, 2 = the week after. Default 0.',
+        },
+        week: {
+          type: 'integer',
+          description:
+            '"this week" = 0, "next week" = 1, "the week after next" = 2. A week RANGE (Mon–Sun); use ALONE, without weekday/dayShift/explicitDate.',
         },
         dayShift: {
           type: 'integer',
@@ -1702,6 +1710,7 @@ async function dispatch(
         ...(intArg('weeksAhead') !== undefined ? { weeksAhead: intArg('weeksAhead') } : {}),
         ...(intArg('dayShift') !== undefined ? { dayShift: intArg('dayShift') } : {}),
         ...(str('explicitDate') ? { explicitDate: str('explicitDate') } : {}),
+        ...(intArg('week') !== undefined ? { week: intArg('week') } : {}),
       });
       return { ...result, today: todayLocal, timezone: tz };
     }

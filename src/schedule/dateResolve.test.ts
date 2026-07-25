@@ -10,8 +10,14 @@ const WED_2026_07_15 = '2026-07-15';
 
 function resolved(p: ResolveDateParams): { date: string; weekday: string } {
   const r = resolveDate(p);
-  if (r.status !== 'resolved') throw new Error(`expected resolved, got: ${r.reason}`);
+  if (r.status !== 'resolved') throw new Error(`expected resolved, got: ${JSON.stringify(r)}`);
   return { date: r.date, weekday: r.weekday };
+}
+
+function resolvedWeek(p: ResolveDateParams) {
+  const r = resolveDate(p);
+  if (r.status !== 'resolved_week') throw new Error(`expected resolved_week, got: ${JSON.stringify(r)}`);
+  return r;
 }
 
 describe('resolveDate — weekday mode (this/next/further weeks)', () => {
@@ -113,6 +119,86 @@ describe('resolveDate — explicitDate mode', () => {
       expect(r.status).toBe('unresolvable');
     });
   }
+});
+
+describe('resolveDate — week mode (calendar-anchored Mon–Sun ranges)', () => {
+  // Anchors are hand-computed: 2026-07-20 is a Monday, so Jul 20–26 is one
+  // calendar week and Jul 27–Aug 2 the next. 2026-07-22 = Wednesday,
+  // 2026-07-25 = Saturday, 2026-07-26 = Sunday.
+  test('mid-week: week 0 is the current Mon–Sun, week 1 the next; no ambiguity flag', () => {
+    const thisWeek = resolvedWeek({ todayLocal: '2026-07-22', week: 0 });
+    expect(thisWeek.weekStart).toBe('2026-07-20');
+    expect(thisWeek.weekEnd).toBe('2026-07-26');
+    expect(thisWeek.boundaryAmbiguous).toBeUndefined();
+    expect(thisWeek.alternate).toBeUndefined();
+
+    const nextWeek = resolvedWeek({ todayLocal: '2026-07-22', week: 1 });
+    expect(nextWeek.weekStart).toBe('2026-07-27');
+    expect(nextWeek.weekEnd).toBe('2026-08-02');
+    expect(nextWeek.boundaryAmbiguous).toBeUndefined();
+  });
+
+  test('THE live-bite regression: Saturday "next week" contains the coming Monday, flagged ambiguous', () => {
+    // 2026-07-25 (Sat): the pilot manager's "next week" meant Jul 27–Aug 2 —
+    // the week holding the Tom Nguyen Monday visit the agent missed. The
+    // primary range must contain Jul 27; the occurrence-anchored reading
+    // (Aug 3–9) rides along as the alternate, with the ask instruction.
+    const r = resolvedWeek({ todayLocal: '2026-07-25', week: 1 });
+    expect(r.weekStart).toBe('2026-07-27');
+    expect(r.weekEnd).toBe('2026-08-02');
+    expect(r.boundaryAmbiguous).toBe(true);
+    expect(r.alternate).toEqual({ weekStart: '2026-08-03', weekEnd: '2026-08-09' });
+    expect(r.note).toMatch(/ask/i);
+  });
+
+  test('Sunday "next week" starts tomorrow, flagged ambiguous', () => {
+    const r = resolvedWeek({ todayLocal: '2026-07-26', week: 1 });
+    expect(r.weekStart).toBe('2026-07-27');
+    expect(r.weekEnd).toBe('2026-08-02');
+    expect(r.boundaryAmbiguous).toBe(true);
+  });
+
+  test('Saturday "this week" is the mostly-past current week, ambiguous with the coming one', () => {
+    const r = resolvedWeek({ todayLocal: '2026-07-25', week: 0 });
+    expect(r.weekStart).toBe('2026-07-20');
+    expect(r.weekEnd).toBe('2026-07-26');
+    expect(r.boundaryAmbiguous).toBe(true);
+    expect(r.alternate).toEqual({ weekStart: '2026-07-27', weekEnd: '2026-08-02' });
+  });
+
+  test('weekEnd is always weekStart+6 and a Sunday, across a year boundary too', () => {
+    // 2026-12-31 is a Thursday; week 1 → Mon 2027-01-04.
+    const r = resolvedWeek({ todayLocal: '2026-12-31', week: 1 });
+    expect(r.weekStart).toBe('2027-01-04');
+    expect(r.weekEnd).toBe('2027-01-10');
+    expect(new Date(`${r.weekEnd}T00:00:00.000Z`).getUTCDay()).toBe(0);
+    expect(new Date(`${r.weekStart}T00:00:00.000Z`).getUTCDay()).toBe(1);
+  });
+
+  test('week combined with another mode is unresolvable (exactly-one rule)', () => {
+    expect(resolveDate({ todayLocal: '2026-07-22', week: 1, weekday: 'friday' }).status).toBe('unresolvable');
+    expect(resolveDate({ todayLocal: '2026-07-22', week: 1, dayShift: 1 }).status).toBe('unresolvable');
+    expect(resolveDate({ todayLocal: '2026-07-22', week: 1, explicitDate: '2026-07-24' }).status).toBe('unresolvable');
+  });
+
+  test('week with weeksAhead is unresolvable and the reason steers to week alone', () => {
+    const r = resolveDate({ todayLocal: '2026-07-22', week: 1, weeksAhead: 1 });
+    expect(r.status).toBe('unresolvable');
+    if (r.status === 'unresolvable') expect(r.reason).toMatch(/weeksAhead only applies/);
+  });
+
+  test('negative, oversized, or fractional week is unresolvable', () => {
+    expect(resolveDate({ todayLocal: '2026-07-22', week: -1 }).status).toBe('unresolvable');
+    expect(resolveDate({ todayLocal: '2026-07-22', week: 53 }).status).toBe('unresolvable');
+    expect(resolveDate({ todayLocal: '2026-07-22', week: 1.5 }).status).toBe('unresolvable');
+  });
+
+  test('the mode-refusal strings name week (result text is agent steering)', () => {
+    const none = resolveDate({ todayLocal: '2026-07-22' });
+    if (none.status === 'unresolvable') expect(none.reason).toMatch(/or week/);
+    const many = resolveDate({ todayLocal: '2026-07-22', weekday: 'friday', dayShift: 1 });
+    if (many.status === 'unresolvable') expect(many.reason).toMatch(/or week/);
+  });
 });
 
 describe('resolveDate — validation and refusals (the clarify path)', () => {

@@ -3412,6 +3412,22 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(rows[0].earliest_date).toBe('2026-12-14');
       expect(rows[0].promise_level).toBe('day');
 
+      // A RANGE that straddles `from` is still-live work and must not be
+      // clamped out of recall (review finding: only a fully-past range drops).
+      const straddle = await callWith('book_visit', {
+        customerId: customer.id, title: 'tbd straddle', timeTbd: true,
+        earliestDate: '2026-12-10', latestDate: '2026-12-20',
+      });
+      const recallStraddle = await callWith('get_team_schedule', {
+        unassignedOnly: true, from: '2026-12-15',
+      });
+      const straddleStops = (
+        recallStraddle.data.days as Array<{ stops: Array<Record<string, unknown>> }>
+      ).flatMap((d) => d.stops);
+      expect(
+        straddleStops.some((st) => st.assignmentId === straddle.data.assignmentId),
+      ).toBe(true);
+
       // The recall view lists it with its day and NO invented time.
       const recall = await callWith('get_team_schedule', { unassignedOnly: true });
       const allStops: Array<Record<string, unknown>> = (

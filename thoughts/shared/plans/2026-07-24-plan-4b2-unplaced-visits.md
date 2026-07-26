@@ -293,24 +293,22 @@ first point the work is coherent enough to deploy.**
   `latest_date < today`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass
-- [ ] `src/schedule/booking.test.ts`: a `timeTbd` booking creates null times + the range;
-      `timeTbd` + `startTime` is rejected; `promiseLevel: 'time'` on a `timeTbd` booking is
-      rejected; moving an unplaced visit to a real time places it (times set, range cleared);
-      moving one **without** `endTime` uses the job's `duration_minutes` and errors when null;
-      two identical unplaced bookings for one customer are refused
-- [ ] **`src/mcp/server.test.ts`: a `timeTbd` booking with `promiseLevel: 'day'` stages AND
-      confirms successfully** — the regression for the malformed-stage finding; assert the
-      committed row has null times and the range set
-- [ ] `src/mcp/server.test.ts`: `get_team_schedule { unassignedOnly: true }` lists an unplaced
-      visit with its day and no time, and does not throw
-- [ ] `src/mcp/server.test.ts`: `find_slots` on an unplaced visit returns candidates sized by the
-      job's `duration_minutes`, defaulting its search range to the visit's own
-- [ ] `src/mcp/server.test.ts`: `set_promise 'day'` on a single-day unplaced visit stamps
-      `promised_day`; on a multi-day range it is refused; `'time'`/`'time_only'` refused on any
-      unplaced visit
-- [ ] `src/telegram/boardApi.test.ts`: `/board/api/bucket` lists an unassigned unplaced visit
-      (assert this fails before the `.or()` change and passes after)
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass —
+      **673 passed | 5 skipped** (P1 baseline 662 + 11)
+- [x] booking.test.ts: all six behaviors + review additions ('time_only' refusals pinned;
+      day-promised placement same-day keeps / other-day breaks; mixed date+earliestDate
+      stamps the RANGE day — review finding 2 fixed)
+- [x] **the staged timeTbd + day-promise regression**: stages with the unplaced-shape preview,
+      confirms, row read-back null times + range + promise (fails against the old confirm guard)
+- [x] `get_team_schedule { unassignedOnly: true }` lists it (day, null times, timeTbd flag) —
+      AND a range straddling `from` stays visible (review finding 1: clamp now drops only
+      fully-past ranges)
+- [x] `find_slots` on the unplaced visit: fail-closed while duration-less, then candidates
+      sized by the job's 120m with every candidate on the visit's own day (window default)
+- [x] `set_promise` semantics pinned (day/single-day stamps; range refused; time + time_only
+      refused)
+- [x] `/board/api/bucket` lists the unplaced visit (timeTbd, null times, latestDate, overdue
+      false) — invisible without the `.or()` widening
 
 ### Live verification (agent-executable)
 Deferred to Phase 5 — the pilot has no migration until then.

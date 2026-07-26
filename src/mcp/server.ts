@@ -2750,9 +2750,16 @@ async function dispatch(
         // to the requested days by start-day, the daySource precedent (the
         // upper arm applies only in windowed mode). An UNPLACED row (null
         // times, plan 4b-2 — only the unassignedOnly recall view can see one)
-        // belongs to its range's earliest day and reports no times.
+        // belongs to its range's earliest day; it drops only when its WHOLE
+        // range is past (review finding: a Mon–Fri range asked about on
+        // Wednesday is live upcoming work — clamping on the earliest day hid
+        // it from recall while the tray still showed it).
         const day = row.starts_at ? row.starts_at.slice(0, 10) : (row.earliest_date as string);
-        if (day < from || (toDay !== null && day > toDay)) continue;
+        if (row.starts_at) {
+          if (day < from || (toDay !== null && day > toDay)) continue;
+        } else if ((row.latest_date as string) < from) {
+          continue;
+        }
         const customer = jobById.get(row.job_id)?.customers ?? null;
         // technician_id may be NULL (unassigned booking) — the ?? null echoes
         // below render that as a person-less stop in both modes.

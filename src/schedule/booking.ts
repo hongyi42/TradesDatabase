@@ -491,10 +491,11 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       promiseLevel: r.promiseLevel,
       // Stamp a promised day ONLY for day-carrying levels — 'none' promises
       // nothing and 'time_only' promises no DAY (the CHECK backstops the pair).
-      // An unplaced day-promise is single-day by the resolve guard, so its
-      // promised day IS the range day.
+      // An unplaced day-promise is single-day by the resolve guard, and its
+      // promised day IS the range day — never input.date, which may name a
+      // different day than the range when both are passed (review finding).
       promisedDay: carriesPromisedDay(r.promiseLevel)
-        ? (input.date ?? r.earliestDate)
+        ? (r.startISO ? (input.date as string) : (r.earliestDate as string))
         : null,
       locked: true,
     });

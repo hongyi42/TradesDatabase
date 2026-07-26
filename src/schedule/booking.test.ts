@@ -901,6 +901,12 @@ describe('unplaced (timeTbd) bookings + placing them — plan 4b-2', () => {
     await expect(
       bookVisit({
         tenantId, customerId: customer.id, timeTbd: true,
+        earliestDate: '2026-11-19', promiseLevel: 'time_only', actorRef: 'mgr',
+      }),
+    ).rejects.toThrow(/needs a booked time/);
+    await expect(
+      bookVisit({
+        tenantId, customerId: customer.id, timeTbd: true,
         earliestDate: '2026-11-19', latestDate: '2026-11-20',
         promiseLevel: 'day', actorRef: 'mgr',
       }),
@@ -982,6 +988,43 @@ describe('unplaced (timeTbd) bookings + placing them — plan 4b-2', () => {
     ).rejects.toThrow(/no recorded length/);
   });
 
+  test('placing a day-promised unplaced visit: same day keeps the promise, another day breaks it', async () => {
+    const customer = await mkCustomer('TBD DayPromise');
+    const mk = () =>
+      bookVisit({
+        tenantId, customerId: customer.id, title: `promised ${Math.random()}`,
+        timeTbd: true, earliestDate: '2026-12-16',
+        promiseLevel: 'day', actorRef: 'mgr',
+      });
+    const sameDay = await mk();
+    expect(sameDay.assignment.promised_day).toBe('2026-12-16'); // the RANGE day, always
+    const placedSame = await moveVisit({
+      tenantId, assignmentId: sameDay.assignment.id,
+      date: '2026-12-16', startTime: '09:00', endTime: '10:00',
+      reason: 'placing on the promised day', actorRef: 'mgr',
+    });
+    expect(placedSame.promiseBroken).toBe(false);
+
+    const otherDay = await mk();
+    const placedOther = await moveVisit({
+      tenantId, assignmentId: otherDay.assignment.id,
+      date: '2026-12-17', startTime: '09:00', endTime: '10:00',
+      reason: 'placing on a different day', actorRef: 'mgr',
+    });
+    expect(placedOther.promiseBroken).toBe(true); // the customer heard the 16th
+  });
+
+  test('a mixed date + earliestDate day-promise stamps the RANGE day, not date', async () => {
+    const customer = await mkCustomer('TBD MixedStamp');
+    const r = await bookVisit({
+      tenantId, customerId: customer.id, title: 'mixed stamp',
+      timeTbd: true, date: '2026-12-01', earliestDate: '2026-12-18',
+      promiseLevel: 'day', actorRef: 'mgr',
+    });
+    expect(r.assignment.earliest_date).toBe('2026-12-18');
+    expect(r.assignment.promised_day).toBe('2026-12-18'); // never the stray date arg
+  });
+
   test('set promise on unplaced: day works on single-day, refused on a range; time refused', async () => {
     const customer = await mkCustomer('TBD SetPromise');
     const single = await bookVisit({
@@ -993,6 +1036,9 @@ describe('unplaced (timeTbd) bookings + placing them — plan 4b-2', () => {
     expect(done.updated.promised_day).toBe('2026-12-07');
     await expect(
       setVisitPromise(tenantId, single.assignment.id, 'time', 'mgr'),
+    ).rejects.toThrow(/needs a booked time/);
+    await expect(
+      setVisitPromise(tenantId, single.assignment.id, 'time_only', 'mgr'),
     ).rejects.toThrow(/needs a booked time/);
 
     const ranged = await bookVisit({

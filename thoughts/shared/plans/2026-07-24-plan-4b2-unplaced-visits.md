@@ -417,14 +417,15 @@ literal, so the new required field breaks Phase 4's own typecheck before any new
 class as 4b-1's fixtures finding). Add `commitmentsByDate: new Map()`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] `src/schedule/fit.test.ts`: a day with 3 unplaced assigned visits scores **below** an
-      otherwise identical empty day; that same day still emits a **day-level** candidate
-      (density unchanged — weight, not shape); "their day is empty" does not appear on it
-- [ ] `src/schedule/fit.db.test.ts`: `assembleFitContext` populates `commitmentsByDate` from
-      unplaced rows across a multi-day range
-- [ ] existing `find_slots` tests in `src/mcp/server.test.ts` pass unchanged — no unplaced rows
-      in those fixtures, so no score may move
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass — **681 passed | 5 skipped**
+- [x] fit.test.ts: 3-commitment day scores strictly below the empty twin, stays day-level
+      (3 > DENSE_DAY_STOPS, so a wrongly-keyed mode switch would fail the assert), and reads
+      "3 other visit(s)", never "day is empty"
+- [x] fit.db.test.ts: cross-range folding pinned per day (1/2/1/undefined), stops isolation,
+      and excludeAssignmentId freeing the unplaced subject's own load
+- [x] existing find_slots server tests pass UNTOUCHED (reviewer verified preservation comes
+      from the dual-increment sync, not luck)
+- Review (fresh context): **NO FINDINGS**.
 
 ### Live verification (agent-executable)
 Deferred to Phase 5.

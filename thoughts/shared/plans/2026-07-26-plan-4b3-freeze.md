@@ -325,10 +325,19 @@ The manager-facing verb: solve → staged plan → confirm → sequential commit
   {actor}): placed N, skipped M — see the board."
 
 ### Automated verification
-- [ ] gates; server.test.ts suite: stage→confirm happy path (rows read back placed+unlocked,
+- [x] gates; server.test.ts suite: stage→confirm happy path (rows read back placed+unlocked,
       queues drained), version-drift refusal, skip reporting (locked row stays untouched),
       partial-failure honesty (fake solver + a forced verb failure), horizon default + cap
-- [ ] boardNotify test: `freeze_committed` pushes to managers only
+      (714 passed, 2026-07-26)
+- [x] boardNotify test: `freeze_committed` pushes to managers only
+- [x] Phase review (fresh-context agent): 5 findings, all fixed — (1) version pin read
+      AFTER the solve left a mid-solve acceptance hole → pinned BEFORE assembly (spurious
+      re-run is the only failure mode now); (2) freeze_committed append could mask the
+      commit result → best-effort try/catch; (3) non-string confirmId coerced into the
+      STAGE branch and destroyed the caller's token → explicit reject; (4) out-of-scope
+      doc unstaged; (5) added the missing tests: 12h expiry (backdated token),
+      cross-manager kind-wide supersede, and the promise belt (direct commitFreezePlan
+      with a promise-breaking placement → skipped, row untouched).
 
 ### Live verification (agent-executable) — the Phase-5-style rollout E2E, run AFTER deploy:
 - Prerequisites: `supabase-test` MCP; s2 CLI probe; SA key + APIs enabled on the Google

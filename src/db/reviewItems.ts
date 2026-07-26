@@ -22,6 +22,9 @@ export type ReviewKind =
   | 'pending_visit_cancel'
   | 'pending_job_cancel'
   | 'pending_seat_add'
+  // The staged freeze plan (plan 4b-3): ONE open token per TENANT, kind-wide
+  // (staging dismisses every open one first — see findOpenReviewItemsByKind).
+  | 'pending_freeze'
   // Onboarding task-reminder (NOT a staged token): opened when a seat is
   // confirmed, auto-resolved by set_availability, dismissable as the explicit
   // "no availability yet" acknowledgment (user decision 2026-07-20).
@@ -229,6 +232,26 @@ export async function getOpenReviewItem(
   const { data, error } = await query.maybeSingle();
   if (error) throw new Error(`getOpenReviewItem failed: ${error.message}`);
   return data;
+}
+
+// Every OPEN item of a kind, tenant-wide (plan 4b-3). The partial unique
+// index is per (tenant, kind, SUBJECT) — so two managers could each hold an
+// open `pending_freeze` under their own subjectRef. The freeze wants ONE live
+// plan per TENANT: staging first dismisses every open token of the kind,
+// whoever staged it, via this lister.
+export async function findOpenReviewItemsByKind(
+  tenantId: string,
+  kind: ReviewKind,
+): Promise<ReviewItem[]> {
+  const { data, error } = await getClient()
+    .from('review_items')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('kind', kind)
+    .eq('status', 'open')
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`findOpenReviewItemsByKind failed: ${error.message}`);
+  return data ?? [];
 }
 
 export async function listOpenReviewItems(tenantId: string): Promise<ReviewItem[]> {

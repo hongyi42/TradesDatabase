@@ -39,6 +39,7 @@ import {
   type Customer,
   type Job,
   type JobPriority,
+  type Json,
   type PromiseLevel,
   type UpdateJobDetailsInput,
   type Technician,
@@ -85,6 +86,15 @@ export function carriesPromisedDay(level: PromiseLevel): boolean {
 // classify any future fifth level as promise-safe).
 export function carriesPromisedTime(level: PromiseLevel): boolean {
   return level === 'time' || level === 'time_only';
+}
+
+// eventDetailExtra → a spreadable record. Non-object values (arrays/scalars —
+// a caller bug) are dropped rather than crashing the write; spread FIRST so
+// computed detail keys always win a name clash.
+function extraDetail(extra: Json | undefined): Record<string, Json> {
+  return extra && typeof extra === 'object' && !Array.isArray(extra)
+    ? (extra as Record<string, Json>)
+    : {};
 }
 
 // Minutes → 'HH:MM' on the same day, clamped to 23:59 (a move that preserves
@@ -178,6 +188,14 @@ export interface BookVisitInput {
   // 'routine'). Ignored on the jobId path — the MCP layer rejects the
   // combination outright so an unstored urgency is never reported as stored.
   priority?: JobPriority;
+  // Why this booking happened (optional — moves REQUIRE one; a book usually
+  // speaks for itself). Recorded in the 'booked' event detail when present;
+  // the freeze passes 'freeze <run>' so ledger rows say who decided (4b-3).
+  reason?: string;
+  // Extra ledger-event detail (plan 4b-3): merged UNDER the computed keys —
+  // computed detail always wins on a name clash. The freeze stamps
+  // { freezeRun } here so committed rows are findable as one run.
+  eventDetailExtra?: Json;
   actorRef: string;
 }
 
@@ -538,6 +556,8 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
     kind: 'booked',
     actorRef: input.actorRef,
     detail: {
+      ...extraDetail(input.eventDetailExtra), // computed keys below win clashes
+      ...(input.reason?.trim() ? { reason: input.reason } : {}),
       ...(r.startISO
         ? { date: input.date, startTime: r.startTime, endTime: r.endTime }
         : {
@@ -569,6 +589,8 @@ export interface MoveVisitInput {
   technicianRef?: string; // omit = same technician
   unassign?: boolean; // true = DETACH: park the visit person-less (plan 4a.5)
   reason: string;
+  // Extra ledger-event detail — same contract as BookVisitInput's (4b-3).
+  eventDetailExtra?: Json;
   actorRef: string;
 }
 
@@ -793,6 +815,7 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
     kind: 'moved',
     actorRef: input.actorRef,
     detail: {
+      ...extraDetail(input.eventDetailExtra), // computed keys below win clashes
       fromDay: visitDay(r.old),
       toDay: input.date,
       promiseBroken: r.promiseBroken,

@@ -15,6 +15,7 @@ import { getClient } from '../db/client.js';
 import { setTenantSeats } from '../db/tenants.js';
 import { insertTechnician, updateTechnician } from '../db/technicians.js';
 import { createCustomer } from '../db/customers.js';
+import { appendScheduleEvent } from '../db/scheduleEvents.js';
 import { bookVisit, unscheduleVisit, moveVisit } from '../schedule/booking.js';
 
 const TRUNCATE =
@@ -266,5 +267,30 @@ describe('pollOnce', () => {
       { userId: '910000001', text: 'A visit landed on your schedule: 2026-10-10, 09:00–10:00.' },
     ]);
     await pg.query("update technicians set state = 'active' where ref = 'notify-n2'");
+  });
+
+  test('freeze_committed pushes the run summary to bound MANAGERS only (plan 4b-3)', async () => {
+    // First manager-directed push: the bound technicians (n1/n2) must NOT
+    // hear it — their committed rows already pushed individually.
+    const mgr = await insertTechnician({
+      tenantId,
+      ref: 'notify-mgr9',
+      displayName: 'Manager Nine',
+      tier: 'manager',
+    });
+    await updateTechnician(mgr.id, { telegram_user_id: '910000009', state: 'active' });
+    await appendScheduleEvent({
+      tenantId,
+      kind: 'freeze_committed',
+      actorRef: 'notify-mgr9',
+      detail: { freezeRun: '2026-07-26T08:00:00.000Z', placed: 3, skipped: 2 },
+    });
+    expect(await pollOnce(lastSeen)).toBe(1);
+    expect(sentTo()).toEqual([
+      {
+        userId: '910000009',
+        text: 'Freeze ran (by notify-mgr9): placed 3, skipped 2 — see the board.',
+      },
+    ]);
   });
 });

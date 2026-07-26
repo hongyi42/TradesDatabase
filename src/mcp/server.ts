@@ -39,6 +39,7 @@ import {
   listRawCapturesForCustomer,
   listTeam,
   findOpenReviewItem,
+  findOpenReviewItemsByKind,
   isFactBundle,
   resolveOpenReviewItemFor,
   resolveReviewItem,
@@ -137,6 +138,10 @@ import {
   updateJobIdentity,
   type VisitLockSelector,
 } from '../schedule/booking.js';
+import { assembleFreezeInputs, solveFreeze, type FreezePlan } from '../schedule/freezeSolve.js';
+import { commitFreezePlan } from '../schedule/freezeCommit.js';
+import type { GeocodeTransport } from '../routes/geocode.js';
+import type { MintRoiToken, RoiTransport } from '../routes/roiClient.js';
 import { isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
   latestScheduleVersion,
@@ -194,6 +199,11 @@ export interface ServerDeps {
   cancelRetirement?: typeof liveCancelRetirement;
   webSearch?: typeof braveWebSearch; // Brave seam — tests never need BRAVE_API_KEY
   fetchPage?: typeof fetchPageText; // fetch seam — tests never hit the network
+  // Freeze seams (plan 4b-3) — tests never need the Maps key, the SA key, or
+  // the network; production leaves all three unset (live clients).
+  geocode?: GeocodeTransport;
+  roiTransport?: RoiTransport;
+  roiMintToken?: MintRoiToken;
 }
 
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
@@ -831,6 +841,33 @@ const ADMIN_TOOLS = [
     },
   },
   {
+    name: 'run_freeze',
+    description:
+      'The freeze (manager only; ALWAYS two-step): auto-place the loose work — open jobs ' +
+      'with no visit, visits with nobody attached, and time-TBD visits — onto real slots ' +
+      'via the route solver. The first call books NOTHING: it returns ' +
+      '{status:"needs_confirmation", confirmId} with the whole proposed plan — every ' +
+      'placement (who, day, time, customer), every visit it could NOT place with the reason ' +
+      "(no length set, no working pattern, pinned, address failed…), and each technician's " +
+      'committed-vs-available minutes. Show the manager ALL of it (placements, skips, ' +
+      'capacity, the pin line), get an explicit yes, then call again with ONLY confirmId — ' +
+      'the plan books through the normal verbs, one visit at a time. The proposal is valid ' +
+      'for 12 hours and dies automatically if the schedule changes underneath it ' +
+      '(re-run for a fresh plan). Placing never breaks a customer promise (day-fenced ' +
+      'visits land inside their fence) and NEVER touches pinned or already-placed visits. ' +
+      'Default horizon: today through +13 days; throughDate extends/shortens it (cap 31 ' +
+      'days out). When the result carries boardNote, ALWAYS end your report with its exact ' +
+      '[See it on the board](…) line.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        throughDate: { type: 'string', description: 'Horizon end YYYY-MM-DD (default today+13; must be today or later, at most 31 days out). First call only.' },
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'resolve_review',
     description:
       'Close a review item (manager only) as resolved (handled) or dismissed (not an issue). ' +
@@ -1177,6 +1214,8 @@ const BOARD_LINK_TOOL_NAMES = new Set([
   'set_promise',
   // A pin flip changes what the board shows (the Pinned chip) — same doctrine.
   'set_visit_locks',
+  // A freeze proposal/commit is the definition of a schedule answer.
+  'run_freeze',
 ]);
 
 function boardMiniAppLink(): string | null {
@@ -4544,6 +4583,161 @@ async function dispatch(
             'manager the count and days.',
       };
     }
+    case 'run_freeze': {
+      const subjectRef = identity.technicianRef;
+      const confirmId = str('confirmId');
+      // Rejected, never coerced-to-absent (the find_slots rule): a non-string
+      // confirmId falling into the STAGE branch would dismiss-and-supersede
+      // the very token the caller was trying to confirm.
+      if (args.confirmId !== undefined && !confirmId) {
+        throw new Error('confirmId must be a string');
+      }
+      const freezeDeps = {
+        ...(deps.roiTransport ? { transport: deps.roiTransport } : {}),
+        ...(deps.roiMintToken ? { mintToken: deps.roiMintToken } : {}),
+      };
+      if (!confirmId) {
+        // STAGE: solve and hold the WHOLE plan behind one token. Horizon is
+        // firm-local today → +13 unless throughDate narrows/extends it.
+        const tenant = await getTenant(tenantId);
+        const today = localDateISO(new Date().toISOString(), tenant?.timezone ?? 'UTC');
+        const throughArg = str('throughDate');
+        let horizonTo = addDaysISO(today, 13);
+        if (args.throughDate !== undefined && !throughArg) {
+          throw new Error('throughDate must be a YYYY-MM-DD string');
+        }
+        if (throughArg) {
+          if (!isRealDateISO(throughArg)) {
+            throw new Error('throughDate must be a real YYYY-MM-DD date');
+          }
+          if (throughArg < today) {
+            throw new Error(`throughDate ${throughArg} is in the past (firm-local today is ${today})`);
+          }
+          if (throughArg > addDaysISO(today, 31)) {
+            throw new Error('throughDate is capped at 31 days out — schedules that far are guesses');
+          }
+          horizonTo = throughArg;
+        }
+        // Version BEFORE the solve (phase-review finding 1): a booking that
+        // lands while the solve is in flight must make the confirm-time
+        // recheck FIRE. Pinned after the solve, that event's id would be
+        // inside the pin while the plan was solved blind to it — a stale plan
+        // sails through. Pinned before, the failure mode is only ever a
+        // spurious "schedule changed, run it again".
+        const scheduleVersion = await latestScheduleVersion(tenantId);
+        const inputs = await assembleFreezeInputs(
+          tenantId,
+          today,
+          horizonTo,
+          deps.geocode ? { geocode: deps.geocode } : {},
+        );
+        const plan = await solveFreeze(inputs, freezeDeps);
+        // ONE live plan per TENANT: dismiss every open token kind-wide
+        // (two managers must never hold two competing plans).
+        for (const open of await findOpenReviewItemsByKind(tenantId, 'pending_freeze')) {
+          await resolveReviewItem(open.id, tenantId, 'dismissed', 'superseded by a new freeze run');
+        }
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_freeze',
+          subjectRef,
+          detail: {
+            plan: plan as unknown as Json,
+            scheduleVersion,
+            horizonFrom: today,
+            horizonTo,
+            stagedAt: new Date().toISOString(),
+          } as unknown as Json,
+        });
+        const pinnedCount = plan.skipped.filter((s) => s.reason.includes('pinned')).length;
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          requiresConfirmation: true,
+          horizon: { from: today, to: horizonTo },
+          scheduleVersion,
+          // Server-computed weekday on every emitted date (the house rule).
+          placements: plan.placements.map((p) => ({ ...p, weekday: weekdayLabel(p.date) })),
+          skipped: plan.skipped,
+          capacity: plan.capacity,
+          note:
+            'NOTHING is booked yet. Show the manager the WHOLE plan: every placement ' +
+            '(weekday, date, time, who, customer), every skipped item WITH its reason, and ' +
+            'each technician\'s committed vs available minutes. ' +
+            `The pin line — always say it: ${pinnedCount} pinned visit(s) were left untouched; ` +
+            "pin anything else you don't want rearranged (set_visit_locks), then run the " +
+            'freeze again. On an explicit yes, call run_freeze again with ONLY confirmId. ' +
+            'The proposal expires in 12 hours and dies if the schedule changes underneath it.',
+        };
+      }
+      // CONFIRM. Any active manager may confirm (one tenant-wide plan); the
+      // confirming manager becomes the actor on every committed row.
+      const item = await getOpenReviewItem(confirmId, tenantId, { kind: 'pending_freeze' });
+      if (!item) {
+        throw new Error('confirmation not found — run run_freeze again for a fresh plan');
+      }
+      const d = (item.detail ?? {}) as {
+        plan?: FreezePlan;
+        scheduleVersion?: number;
+        stagedAt?: string;
+      };
+      // 12h expiry, NOT the house 15 minutes (plan decision): a morning
+      // cron-fired proposal must survive until the manager reads it — the
+      // REAL staleness guard is the version pin below, not the clock.
+      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 12 * 3600_000) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'freeze proposal expired (12h)');
+        throw new Error('this freeze proposal expired (12 hours) — run the freeze again for a fresh plan');
+      }
+      if (!d.plan || typeof d.scheduleVersion !== 'number') {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'malformed staged plan');
+        throw new Error('the staged plan is malformed — run the freeze again');
+      }
+      const currentVersion = await latestScheduleVersion(tenantId);
+      if (currentVersion !== d.scheduleVersion) {
+        await resolveReviewItem(
+          item.id,
+          tenantId,
+          'dismissed',
+          `schedule changed under the plan (v${d.scheduleVersion} → v${currentVersion})`,
+        );
+        throw new Error(
+          'the schedule changed since this plan was solved — nothing was booked; run the ' +
+            'freeze again for a fresh plan',
+        );
+      }
+      // CONSUME FIRST (at-most-once, the send_email idiom), then commit.
+      const consumed = await resolveReviewItem(
+        item.id,
+        tenantId,
+        'resolved',
+        `freeze confirmed by ${subjectRef}`,
+      );
+      if (!consumed) {
+        throw new Error('confirmation not found — run run_freeze again for a fresh plan');
+      }
+      const runStamp = new Date().toISOString();
+      const result = await commitFreezePlan(tenantId, d.plan, subjectRef, runStamp);
+      return {
+        status: result.failed ? 'partial' : 'committed',
+        placed: result.committed.length,
+        placements: result.committed.map((c) => ({
+          ...c.placement,
+          weekday: weekdayLabel(c.placement.date),
+          assignmentId: c.assignmentId,
+        })),
+        ...(result.skippedAtCommit.length > 0 ? { skippedAtCommit: result.skippedAtCommit } : {}),
+        ...(result.failed ? { failed: result.failed } : {}),
+        note: result.failed
+          ? 'The run STOPPED at the failed row — everything listed in placements IS booked; ' +
+            'the failed visit and everything after it are unchanged. Tell the manager exactly ' +
+            'what landed and what did not. Re-running the freeze is safe: placed visits leave ' +
+            'the queues.'
+          : 'Committed. Tell the manager what was placed (count + the placements), anything ' +
+            'skipped at commit, and that technicians were notified of their new visits. ' +
+            'None of the placed visits are pinned — offer set_visit_locks if the manager ' +
+            'wants this plan protected from the next freeze.',
+      };
+    }
     case 'find_slots': {
       // Non-string args are REJECTED, never coerced-to-absent: str() maps
       // {technicianRef: 123} to undefined, which would silently UN-PIN the
@@ -5093,6 +5287,10 @@ async function dispatch(
         pending_visit_cancel: 'unschedule_visit',
         pending_job_cancel: 'cancel_job',
         pending_seat_add: 'add_technician_seat',
+        // Dismiss-only like every staged token (plan 4b-3 review finding 4):
+        // without this entry, resolve_review would "resolve" the freeze plan
+        // while booking nothing.
+        pending_freeze: 'run_freeze',
       };
       if (STAGED_ACTION_KINDS[open.kind] && resolution === 'resolved') {
         throw new Error(

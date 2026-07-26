@@ -1664,7 +1664,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
     );
     try {
       // The full manager surface: every base spine tool EXCEPT get_schedule
-      // (technician route view, removed 2026-07-19) + the 22 admin tools —
+      // (technician route view, removed 2026-07-19) + the 24 admin tools —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
@@ -2084,7 +2084,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(37); // base minus get_schedule + 23 admin
+        expect(mgrTools).toHaveLength(37); // base minus get_schedule + 24 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',

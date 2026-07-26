@@ -375,7 +375,8 @@ doctrine) and rolls the whole plan out. No server code, no migration, no new env
   block changes), Phase 4 live E2E, then this phase's ritual E2E.
 
 ### Automated verification
-- [ ] full gates one final time on the merged branch
+- [x] full gates one final time (714 passed, 2026-07-26, feature-4b3-freeze pre-merge;
+      re-run on main after merge is part of the rollout tail)
 
 ### Live verification (agent-executable)
 - Prerequisites: as Phase 4 (deployed stack, wired fleet).

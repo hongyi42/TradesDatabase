@@ -129,10 +129,13 @@ you don't want rearranged, say yes. Nothing ever commits unattended.
   **Geocoding API is enabled** on the Google Cloud project (console → APIs & Services).
 - **Phase 3:** `GOOGLE_ROUTES_SA_KEY_JSON` in `.env` (NEW) — a service-account key JSON
   (console → IAM → Service Accounts → create, grant **Route Optimization Editor**, create
-  JSON key; paste the JSON as the env value). Also: **Route Optimization API enabled**, and
-  the user's recorded open question — **does Enterprise-tier Fleet Routing enable without a
-  sales agreement?** Check in console billing BEFORE this phase; if it needs a contract, stop
-  and surface.
+  JSON key; paste the JSON as the env value). Also: **Route Optimization API enabled**. The
+  Enterprise-SKU contract question is RESOLVED at the docs level (2026-07-26): setup is the
+  standard self-serve flow — project → billing → enable → OAuth — with no allowlist or
+  agreement mentioned ("Enterprise" is the pricing-tier label, not an access gate;
+  https://developers.google.com/maps/documentation/route-optimization/cloud-setup). The
+  sales-gated thing is the separate Last Mile Fleet Solution. Residual check: the Enable
+  click + the first successful `optimizeTours` call are the empirical proof.
 - **Phases 1/4/5:** none new (Phase 5 lost its migration and cron-service env needs when
   unattended commits were dropped). Phase 2's migration touches the pilot only on explicit
   user go.

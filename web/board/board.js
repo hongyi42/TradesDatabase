@@ -554,28 +554,28 @@
   }
 
   function bucketJobRow(j) {
-    // Tappable (plan 4a.5): opens the booking sheet — the tray finally drains
-    // from the same screen that shows it. Edit (4a.6): an unscheduled job's
-    // title/priority were only reachable through a VISIT's sheet, so a
-    // manager had to schedule a job before they could fix its description
-    // (user finding 2026-07-23). /board/api/job is keyed by jobId and never
-    // needed a visit — only the UI was missing.
-    // data-duration mirrors data-title/priority (4b-1): without it the Edit
-    // form would open showing "not set" on a job that HAS a length, and an
-    // unrelated title edit would silently wipe the stored value.
+    // Tappable: opens the JOB SHEET (D1, user decision 2026-07-26) — one
+    // affordance for everything, the same tap→sheet pattern visit rows use.
+    // The old split (invisible tap-to-book + a lone visible Edit button)
+    // taught users the pencil was THE action and hid booking entirely.
+    // Priority is deliberately absent from board copy (same decision): the
+    // field survives for find_slots/chat, but managers shouldn't be asked to
+    // speak enum — the agent translates real words instead.
+    // data-duration mirrors data-title (4b-1): without it the edit form would
+    // open showing "not set" on a job that HAS a length, and an unrelated
+    // title edit would silently wipe the stored value.
     return (
       '<div class="bucket-row bucket-job" data-job="' + esc(j.jobId) + '"' +
-      ' data-title="' + esc(j.title || '') + '" data-priority="' + esc(j.priority || '') + '"' +
+      ' data-title="' + esc(j.title || '') + '"' +
+      ' data-customer="' + esc(j.customer || '') + '"' +
       ' data-duration="' + (j.durationMinutes != null ? esc(String(j.durationMinutes)) : '') + '">' +
       '<div class="bucket-row-txt"><div class="bucket-row-main">' + esc(j.title || 'Untitled job') + '</div>' +
       '<div class="bucket-row-sub">' +
       esc(
-        (j.customer || 'Unknown customer') + ' · ' + j.priority + ' · ' +
-        (j.durationMinutes != null ? fmtDur(j.durationMinutes) : 'length not set') +
-        ' · tap to book',
+        (j.customer || 'Unknown customer') + ' · ' +
+        (j.durationMinutes != null ? fmtDur(j.durationMinutes) : 'length not set'),
       ) +
       '</div></div>' +
-      '<button type="button" class="bucket-edit">Edit</button>' +
       '</div>'
     );
   }
@@ -674,27 +674,17 @@
           });
           return;
         }
-        // Edit an UNSCHEDULED job's identity (4a.6) — checked before the row
-        // tap below, because the button lives inside the row.
-        var jobEdit = e.target.closest && e.target.closest('.bucket-edit');
-        if (jobEdit) {
-          var editRow = jobEdit.closest('.bucket-job');
-          if (editRow) {
-            var durAttr = editRow.getAttribute('data-duration');
-            openJobForm({
-              jobId: editRow.getAttribute('data-job'),
-              title: editRow.getAttribute('data-title'),
-              priority: editRow.getAttribute('data-priority'),
-              duration: durAttr ? parseInt(durAttr, 10) : null,
-              onDone: openBucket, // came from the tray — go back to it (re-fetched)
-            });
-          }
-          return;
-        }
-        // Book an unscheduled job (plan 4a.5): the booking sheet.
+        // Tap an unscheduled job → its JOB SHEET (D1): edit rows + the Book
+        // visit call-to-action, mirroring how visit rows open their sheet.
         var jobRow = e.target.closest && e.target.closest('.bucket-job');
         if (jobRow) {
-          openBookingForm(jobRow.getAttribute('data-job'), jobRow.getAttribute('data-title'));
+          var durAttr = jobRow.getAttribute('data-duration');
+          openJobSheet({
+            jobId: jobRow.getAttribute('data-job'),
+            title: jobRow.getAttribute('data-title'),
+            customer: jobRow.getAttribute('data-customer'),
+            duration: durAttr ? parseInt(durAttr, 10) : null,
+          });
           return;
         }
         // Tap a parked visit → its normal detail sheet (replace-open swaps
@@ -1134,12 +1124,6 @@
       });
   }
 
-  var PRIORITY_OPTIONS = [
-    ['emergency', 'emergency'],
-    ['urgent', 'urgent'],
-    ['routine', 'routine'],
-    ['maintenance', 'maintenance'],
-  ];
   var PROMISE_OPTIONS = [
     ['none', 'No promise'],
     ['day', 'Day only'],
@@ -1156,8 +1140,8 @@
   }
 
   // The OFFERED job lengths (plan 4b-1) — mirrors DURATION_LADDER in
-  // src/db/jobs.ts (the PRIORITY_OPTIONS client-mirror precedent: this webview
-  // is plain script, no build step). Presentation only: any whole minutes up
+  // src/db/jobs.ts (client-mirror: this webview is plain script, no build
+  // step). Presentation only: any whole minutes up
   // to the bound is legal server-side, so Custom… below is a first-class path.
   // Keep BOTH constants in lockstep with src/db/jobs.ts when editing a rung
   // or the bound — the one fact per surface, not per line (review finding).
@@ -1370,7 +1354,6 @@
       openJobForm({
         jobId: d.jobId,
         title: d.jobTitle,
-        priority: d.jobPriority,
         duration: d.jobDurationMinutes,
         onDone: function () {
           openDetail(d.assignmentId); // same id — a job edit never remints the visit
@@ -1382,6 +1365,58 @@
   // The job-identity form — ONE body for both entry points (4a.6): the visit
   // sheet's Purpose ✎ and the tray's Edit on a job that has no visit yet.
   // `onDone` is where the caller came from, so Cancel/Save return there.
+  // The JOB SHEET (D1, user decision 2026-07-26): tap an unscheduled tray job
+  // → a detail sheet in the visit-sheet idiom (rows + pencils) with ONE
+  // primary action, Book visit. Replaces the old invisible tap-to-book +
+  // visible-Edit-only split that hid the primary action behind a bare row tap.
+  function openJobSheet(opts) {
+    openSheet(
+      sheetShell(
+        opts.title || 'Untitled job',
+        detailRow(
+          'Purpose',
+          esc(opts.title || 'Untitled job') +
+            ' <button type="button" class="edit-btn" data-edit="job" aria-label="Edit">✎</button>',
+        ) +
+          detailRow(
+            'Length',
+            esc(opts.duration != null ? fmtDur(opts.duration) : 'not set') +
+              ' <button type="button" class="edit-btn" data-edit="job" aria-label="Edit">✎</button>',
+          ) +
+          detailRow('Customer', esc(opts.customer || 'Unknown customer')) +
+          // ONE primary action, no Cancel: a "Cancel" button on a JOB sheet
+          // reads as "cancel the job" — the shell's ✕ / backdrop already
+          // close (openSheet wires them).
+          '<div class="sheet-btnrow">' +
+          '<button type="button" class="sheet-btn primary" data-form="save">Book visit</button>' +
+          '</div>',
+      ),
+      function (e) {
+        var pencil = e.target.closest && e.target.closest('[data-edit]');
+        if (pencil) {
+          openJobForm({
+            jobId: opts.jobId,
+            title: opts.title,
+            duration: opts.duration,
+            onDone: function (saved) {
+              // Come back to THIS sheet, showing what was just saved (a hop
+              // back to the tray would lose the user's place mid-flow).
+              if (saved) {
+                opts.title = saved.title;
+                opts.duration = saved.duration;
+              }
+              openJobSheet(opts);
+            },
+          });
+          return;
+        }
+        if (e.target.closest && e.target.closest('[data-form="save"]')) {
+          openBookingForm(opts.jobId, opts.title);
+        }
+      },
+    );
+  }
+
   function openJobForm(opts) {
     // Current length, normalised: a number or null ("not set").
     var curDur = typeof opts.duration === 'number' && isFinite(opts.duration) ? opts.duration : null;
@@ -1389,7 +1424,10 @@
       sheetShell(
         'Edit job',
         fieldRow('Title', '<input type="text" id="qe-title" value="' + esc(opts.title || '') + '">') +
-          fieldRow('Priority', selectHtml('qe-priority', PRIORITY_OPTIONS, opts.priority || 'routine')) +
+          // Priority deliberately absent (user decision 2026-07-26): the field
+          // lives on for find_slots and chat (the agent translates "burst
+          // pipe" → emergency), but the board never asks a human to pick from
+          // an enum. /board/api/job still accepts it for API parity.
           // Length (4b-1): the ladder is offered, any whole minutes accepted —
           // Custom… reveals the number input (numeric keypad via type=number).
           fieldRow(
@@ -1415,8 +1453,6 @@
         var body = { jobId: opts.jobId };
         var title = val(ov, 'qe-title').trim();
         if (title && title !== (opts.title || '')) body.title = title;
-        var priority = val(ov, 'qe-priority');
-        if (priority !== opts.priority) body.priority = priority;
         var durSel = val(ov, 'qe-duration');
         var newDur;
         if (durSel === 'custom') {
@@ -1435,7 +1471,7 @@
         // the field rides in the body whenever the value CHANGED — including
         // a change to null.
         if (newDur !== curDur) body.durationMinutes = newDur;
-        if (!body.title && !body.priority && !('durationMinutes' in body)) {
+        if (!body.title && !('durationMinutes' in body)) {
           opts.onDone();
           return;
         }
@@ -1448,12 +1484,16 @@
             toast(
               'Job updated' +
                 (body.title ? ' — title: ' + body.title : '') +
-                (body.priority ? ' — priority: ' + body.priority : '') +
                 ('durationMinutes' in body
                   ? ' — length: ' + (newDur != null ? fmtDur(newDur) : 'not set')
                   : ''),
             );
-            opts.onDone();
+            // Hand the saved values back so a sheet can re-render itself
+            // without a refetch (the job sheet's return path).
+            opts.onDone({
+              title: body.title || opts.title || '',
+              duration: 'durationMinutes' in body ? newDur : curDur,
+            });
             refresh(); // the title shows on cards behind the sheet
           })
           .catch(function () {

@@ -222,7 +222,14 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   (config scan + vendor docs check, github.com/openclaw/openclaw issue #53404 still open).
   resolve_date STAYS the arithmetic authority (the eval's weekday-walking tier: 41% with
   injection alone, 98%+ with the tool). Rollout: deploy-only — result fields are per-call,
-  NO fleet gateway restart needed (tools/list unchanged).
+  NO fleet gateway restart needed (tools/list unchanged). Rider is BEST-EFFORT (review
+  finding): it decorates after dispatch has committed, so a grounding failure omits `now`
+  rather than erroring a committed result (which would invite a retry double-book).
+  **Deliberate decision (2026-07-25): NO AGENTS.md/bootstrap line for the rider** — condition
+  B works by mere presence in context, unlike boardLink which needed a fused instruction to
+  make the model ACT. Watch item for the next device pass: does the agent parrot "Right now
+  it is…" into replies? If yes, a one-line "never quote the `now` field" rides the NEXT wire
+  change (not a wire pass of its own).
   **resolve_date week mode SHIPPED + REPLAY-VERIFIED 2026-07-25 (PR #82):** the deferred
   Sat/Sun boundary item, promoted and closed same-day. Replay of the verbatim failing
   message on a fresh session: `resolve_date {week: 1}` → both Monday-anchored windows

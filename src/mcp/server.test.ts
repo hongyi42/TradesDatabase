@@ -242,25 +242,31 @@ describe('MCP server', () => {
   test('every object tool result carries the temporal grounding rider `now`; arrays keep their shape', async () => {
     // The rider is the eval's condition-B line, firm-local (seed tenant tz =
     // America/Los_Angeles) — computed here with the same Intl formatting so a
-    // wiring or timezone regression fails loudly.
-    const expectHuman = new Date().toLocaleDateString('en-US', {
-      timeZone: 'America/Los_Angeles',
-      weekday: 'long',
-      month: 'long',
-      day: 'numeric',
-      year: 'numeric',
-    });
-    const expectLine = `Right now it is ${expectHuman}, in the America/Los_Angeles timezone.`;
+    // wiring or timezone regression fails loudly. Computed via a THUNK and
+    // accepted before-or-after each call, so a firm-local midnight rollover
+    // mid-test can't flake the exact-string match (review finding).
+    const lineNow = (): string => {
+      const human = new Date().toLocaleDateString('en-US', {
+        timeZone: 'America/Los_Angeles',
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+      });
+      return `Right now it is ${human}, in the America/Los_Angeles timezone.`;
+    };
 
     // An arbitrary object result gets the rider… (get_schedule: technician
     // surface, object-shaped result)
+    const before1 = lineNow();
     const sched = await call('get_schedule', {});
-    expect(sched.data.now).toBe(expectLine);
+    expect([before1, lineNow()]).toContain(sched.data.now);
 
     // …resolve_date keeps its own today/timezone fields alongside it (no
     // key collision: `weekday` there is the RESOLVED day's, `now` is today's).
+    const before2 = lineNow();
     const rd = await call('resolve_date', { dayShift: 0 });
-    expect(rd.data.now).toBe(expectLine);
+    expect([before2, lineNow()]).toContain(rd.data.now);
     expect(rd.data.today).toBeDefined();
     expect(rd.data.timezone).toBe('America/Los_Angeles');
 
@@ -670,7 +676,12 @@ describe('MCP server', () => {
         ref: 'bob-marley',
         confirmId: first.data.confirmId,
       });
-      expect(confirmed.data).toMatchObject({ status: 'deactivated', ref: 'bob-marley' });
+      // Closed shape: exactly these keys + the universal grounding rider.
+      expect(confirmed.data).toEqual({
+        status: 'deactivated',
+        ref: 'bob-marley',
+        now: expect.any(String),
+      });
       const state = await pg.query<{ state: string }>(
         "select state from technicians where tenant_id = $1 and ref = 'bob-marley'",
         [tenantId],
@@ -679,7 +690,11 @@ describe('MCP server', () => {
 
       // Repeat deactivation is idempotent, not an error.
       const repeat = await callWith('deactivate_technician_seat', { ref: 'bob-marley' });
-      expect(repeat.data).toMatchObject({ status: 'already_deactivated', ref: 'bob-marley' });
+      expect(repeat.data).toEqual({
+        status: 'already_deactivated',
+        ref: 'bob-marley',
+        now: expect.any(String),
+      });
 
       // The freed seat is immediately usable — the earlier capped add now works
       // (fresh stage: the failed confirm consumed its token).

@@ -4908,12 +4908,18 @@ async function dispatch(
 const TZ_TTL_MS = 10 * 60 * 1000;
 const tzCache = new Map<string, { tz: string; at: number }>();
 async function groundingNow(tenantId: string): Promise<string> {
+  // ONE clock read for both the staleness check and the re-stamp — separate
+  // reads could serve a stale tz yet re-stamp it fresh at the TTL boundary,
+  // extending it to 2×TTL (review finding).
+  const at = Date.now();
   const hit = tzCache.get(tenantId);
-  const tz =
-    hit && Date.now() - hit.at < TZ_TTL_MS
-      ? hit.tz
-      : ((await getTenant(tenantId))?.timezone ?? 'UTC');
-  if (!hit || Date.now() - hit.at >= TZ_TTL_MS) tzCache.set(tenantId, { tz, at: Date.now() });
+  let tz: string;
+  if (hit && at - hit.at < TZ_TTL_MS) {
+    tz = hit.tz;
+  } else {
+    tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+    tzCache.set(tenantId, { tz, at });
+  }
   // The exact condition-B format the eval measured (80.6% vs bare-date 66.3%):
   // weekday spelled out, firm-local, timezone named.
   const human = new Date().toLocaleDateString('en-US', {
@@ -4948,16 +4954,6 @@ export function createServer(deps: ServerDeps = {}): Server {
     const { name, arguments: args } = request.params;
     try {
       const result = await dispatch(name, (args ?? {}) as Record<string, unknown>, deps);
-      // Temporal grounding rider — every successful object result carries
-      // `now` (the eval-verified rich-grounding line: date + weekday + tz;
-      // condition B of thoughts/shared/research/2026-07-15-date-reliability-eval.md,
-      // user decision 2026-07-25). The agent runtime injects NO date into
-      // context (verified against a live session the same day), so tool
-      // results are the only self-refreshing channel: a session that crosses
-      // midnight re-grounds on its next call, which no inject-at-session-start
-      // scheme gets right. This line tells the model what today IS —
-      // resolve_date remains the sole authority for date ARITHMETIC.
-      const nowLine = deps.identity ? await groundingNow(deps.identity.tenantId) : null;
       // boardLink decoration happens HERE — one seam covering every return
       // path of the scheduling cases (dispatch has ~8 result literals across
       // book/move/cancel one-shot + staged + the two schedule reads).
@@ -4983,12 +4979,30 @@ export function createServer(deps: ServerDeps = {}): Server {
               boardNote: `ALWAYS end this reply with the exact line: [See it on the board](${link})`,
             }
           : result;
+      // Temporal grounding rider — every successful object result carries
+      // `now` (the eval-verified rich-grounding line: date + weekday + tz;
+      // condition B of thoughts/shared/research/2026-07-15-date-reliability-eval.md,
+      // user decision 2026-07-25). The agent runtime injects NO date into
+      // context, so tool results are the only self-refreshing channel — a
+      // session crossing midnight re-grounds on its next call. It states what
+      // today IS; resolve_date remains the sole authority for date ARITHMETIC.
       // Arrays keep their shape (a rider would change the contract);
-      // object results — staged previews included — get the line.
-      const grounded =
-        nowLine && decorated && typeof decorated === 'object' && !Array.isArray(decorated)
-          ? { ...(decorated as Record<string, unknown>), now: nowLine }
-          : decorated;
+      // object results — staged previews included — get the line. BEST-EFFORT:
+      // by this point dispatch has already committed side effects, so a
+      // grounding failure (transient DB error, malformed tenant tz) must never
+      // convert a committed success into an error — the agent would retry and,
+      // e.g., double-book (review finding). Omit the rider instead.
+      let grounded = decorated;
+      if (deps.identity && decorated && typeof decorated === 'object' && !Array.isArray(decorated)) {
+        try {
+          grounded = {
+            ...(decorated as Record<string, unknown>),
+            now: await groundingNow(deps.identity.tenantId),
+          };
+        } catch {
+          // decoration, not payload — the result stands without it
+        }
+      }
       return { content: [{ type: 'text' as const, text: JSON.stringify(grounded) }] };
     } catch (err) {
       return {

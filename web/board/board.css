@@ -393,3 +393,30 @@ body.dragging .stop.draggable { cursor: grabbing; }
   font-weight: 600;
   cursor: pointer;
 }
+
+/* "No time yet" strip (plan 4b-2): unplaced-but-assigned work on its day,
+   above the time grid — visually distinct from placed stop cards. */
+.tbd-strip {
+  border: 1px dashed var(--border, #bbb);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin: 6px 0 8px;
+}
+.tbd-strip-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+.tbd-card {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--card-bg, rgba(127, 127, 127, 0.08));
+  margin-bottom: 4px;
+  cursor: pointer;
+}
+.tbd-card:last-child { margin-bottom: 0; }
+.tbd-main { font-weight: 600; font-size: 13px; }
+.tbd-sub { font-size: 12px; opacity: 0.75; }
+.tbd-toggle input { margin-left: auto; }

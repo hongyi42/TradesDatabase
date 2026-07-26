@@ -93,6 +93,27 @@ alone = perfect basics, coin-flip weekday phrases. Decision: keep `resolve_date`
 path; add grounding riders ({today, weekday, timezone} on spine tool results) for tool-free
 moments; the "next <weekday>" ambiguity needs the ask-mechanism (`saidNext`) regardless.
 
+## Live end-to-end run 2026-07-25 (deployed stack, post-PR #82 + #83)
+
+Owner asked for the same testing against the LIVE agent. Method: the 14 phrase templates
+(+ "next thursday", the same-day live bite) anchored to real today (Sat 2026-07-25 — the
+reference date can't be varied live), one FRESH embedded-agent session per case on s2
+(`probe-dateval-live-1..15`; embedded path exercises deployed Render + real tool choice;
+AGENTS.md-truncation caveat noted).
+
+**Score: 15/15.** All five offsets, all four "this/coming" weekday walks (correctly
+weekend-aware: "this friday" on a Saturday → Jul 31), both "two weeks from" (one showed its
+working), explicit passthrough with weekday label — and ALL THREE ambiguous "next <weekday>"
+cases (friday, monday, thursday) got the designed **both-candidates-and-ask** response,
+including "next thursday", which had silently resolved to Aug 6 hours earlier. 3/3 asks is
+favorable but not causal proof the grounding rider fixed the ask-behavior (GLM variance is
+documented; `saidNext` remains the mechanism-level guarantee, still open). Bonus case-5
+behavior: volunteered "that's a Saturday — if your team doesn't work weekends…".
+
+Rider verification in the same run: tool results in the probe trajectories carry the exact
+condition-B `now` line (grep evidence, 1–2 hits per session) → PR #83 verifiably live.
+**Parrot watch: CLEAN** — zero of 15 replies quoted "Right now it is…".
+
 ## Remaining
 
 - GLM's residual ~2% is a couple of stray arg choices plus the inherent "next" ambiguity, which

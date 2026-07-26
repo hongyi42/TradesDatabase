@@ -12,6 +12,8 @@ import {
   readVisitDetail,
 } from '../schedule/boardRead.js';
 import {
+  attachUnplacedVisit,
+  previewAttachUnplacedVisit,
   bookVisit,
   unscheduleVisit,
   isPromiseLevel,
@@ -351,14 +353,30 @@ export async function handleBoardRequest(
             json(res, 400, { error: 'jobId is required' });
             return;
           }
+          const timeTbd = body.timeTbd === true;
           const date = str(body, 'date');
           const startTime = str(body, 'startTime');
           const endTime = str(body, 'endTime');
-          if (!date || !startTime || !endTime) {
+          const earliestDate = str(body, 'earliestDate');
+          const latestDate = str(body, 'latestDate');
+          // The unplaced arm (plan 4b-2): the form's "time not settled" toggle
+          // posts timeTbd + the day (range optional) and NO times — the shape
+          // rules live in resolveBooking; here only the required fields gate.
+          if (timeTbd) {
+            if (startTime || endTime) {
+              json(res, 400, { error: 'timeTbd bookings carry no times — clear them' });
+              return;
+            }
+            if (!earliestDate && !date) {
+              json(res, 400, { error: 'a timeTbd booking needs the day (earliestDate or date)' });
+              return;
+            }
+          } else if (!date || !startTime || !endTime) {
             json(res, 400, { error: 'date, startTime and endTime are required' });
             return;
           }
-          if (!(await boardDateAllowed(auth.tenantId, date))) {
+          const gateDate = timeTbd ? (earliestDate ?? date) : date;
+          if (!(await boardDateAllowed(auth.tenantId, gateDate as string))) {
             json(res, 400, { error: PAST_DATE_ERROR });
             return;
           }
@@ -381,9 +399,16 @@ export async function handleBoardRequest(
           const input = {
             tenantId: auth.tenantId,
             jobId,
-            date,
-            startTime,
-            endTime,
+            ...(date ? { date } : {}),
+            ...(startTime ? { startTime } : {}),
+            ...(endTime ? { endTime } : {}),
+            ...(timeTbd
+              ? {
+                  timeTbd: true,
+                  ...(earliestDate ? { earliestDate } : {}),
+                  ...(latestDate ? { latestDate } : {}),
+                }
+              : {}),
             technicianRef: str(body, 'technicianRef'),
             ...(promiseLevel ? { promiseLevel } : {}),
             actorRef: auth.technician.ref,
@@ -545,8 +570,73 @@ export async function handleBoardRequest(
           // promiseBroken — the cancel one-shots, so the toast must tell).
           json(res, 200, {
             status: 'cancelled',
-            day: cancelled.starts_at.slice(0, 10),
+            // Placed day, else the unplaced range's day (plan 4b-2).
+            day: cancelled.starts_at?.slice(0, 10) ?? cancelled.earliest_date ?? null,
             promiseLevel: cancelled.promise_level,
+          });
+          return;
+        }
+        // Attach a person to an UNPLACED visit, keeping it unplaced (plan
+        // 4b-2 Phase 3): the tray's Assign on a time-TBD row posts this
+        // instead of inventing a time. Routed before the date/time gate —
+        // an attach carries neither.
+        if (body.attachUnplaced === true) {
+          // Times alongside an attach are a caller bug — silently ignoring
+          // them would let a buggy client believe it PLACED the visit (the
+          // route's own priority/timeTbd refusal standard; review finding).
+          if (str(body, 'date') || str(body, 'startTime') || str(body, 'endTime')) {
+            json(res, 400, {
+              error: 'attachUnplaced keeps the visit time-TBD — drop date/times, or place it with a normal move',
+            });
+            return;
+          }
+          const attachRef = str(body, 'technicianRef');
+          const detach = body.unassign === true;
+          const attachId = str(body, 'assignmentId');
+          if (!attachId || !reason || (detach ? attachRef !== undefined : !attachRef)) {
+            json(res, 400, {
+              error: 'assignmentId, reason, and ONE of technicianRef (attach) or unassign:true (park back) are required',
+            });
+            return;
+          }
+          const tz = (await getTenant(auth.tenantId))?.timezone ?? 'UTC';
+          // The board's past floor, on the RANGE END: a straddling range
+          // stays actionable; a fully-past one is a chat job (review
+          // finding — every other /move write already has this floor).
+          const notBeforeDate = localDateISO(new Date().toISOString(), tz);
+          // The client's move flow previews first — an attach is reversible
+          // (unassign:true parks it back) and keeps the promise untouched, so
+          // requiresConfirmation stays false, but the preview runs the SAME
+          // guards the commit will (final-review finding: an unconditional
+          // green light walked a stale tab through the picker + confirm into
+          // a guaranteed 409; every sibling write validates at preview).
+          if (preview) {
+            const attachPreview = await previewAttachUnplacedVisit({
+              tenantId: auth.tenantId,
+              assignmentId: attachId,
+              technicianRef: detach ? null : (attachRef as string),
+              notBeforeDate,
+            });
+            json(res, 200, { status: 'preview', attach: true, ...attachPreview });
+            return;
+          }
+          const attached = await attachUnplacedVisit({
+            tenantId: auth.tenantId,
+            assignmentId: attachId,
+            technicianRef: detach ? null : (attachRef as string),
+            reason,
+            actorRef: auth.technician.ref,
+            notBeforeDate,
+          });
+          json(res, 200, {
+            status: 'moved',
+            attach: !detach,
+            unassigned: detach,
+            timeTbd: true,
+            assignmentId: attached.created.id,
+            earliestDate: attached.created.earliest_date,
+            latestDate: attached.created.latest_date,
+            promiseLevel: attached.created.promise_level,
           });
           return;
         }
@@ -601,8 +691,10 @@ export async function handleBoardRequest(
         json(res, 200, {
           status: 'moved',
           promiseBroken: moved.promiseBroken,
-          start: moved.created.starts_at,
-          end: moved.created.ends_at,
+          // A move ALWAYS produces a placed row (rescheduleAssignment requires
+          // times) — assert instead of widening the payload (plan 4b-2).
+          start: moved.created.starts_at as string,
+          end: moved.created.ends_at as string,
           ...(moved.warning ? { warning: moved.warning } : {}),
         });
         return;

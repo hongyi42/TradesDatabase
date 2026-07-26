@@ -135,7 +135,12 @@ one-shot when no customer promise is affected (book with `promiseLevel:'none'`, 
 `seatExempt:true`, where no seat burns but the ref mint stays permanent); `book_visit` has NO default
 times (2026-07-18, user decision — the 2h job-length default was removed after it overrode a
 stated "12–1pm" in the pilot): `startTime` and `endTime` are required, the agent passes
-exactly what the manager stated and asks when a time is missing.
+exactly what the manager stated and asks when a time is missing. **One recorded exception
+(2026-07-25, plan 4b-2):** when the manager *explicitly* says the time is unsettled
+("sometime Thursday", "time TBD"), the agent books with `timeTbd:true` + `earliestDate`
+(/`latestDate` for a range) and NO times — `timeTbd` is never the agent's own choice when a
+time was stated, and a time-TBD visit can hold promise level `none` or `day` only. Placing it
+later is a normal `move_visit` with real times.
 
 **Board link (2026-07-18):** scheduling results carry `boardLink` — the Telegram Mini App
 dispatch board (`t.me/<board-bot>?startapp`, decorated server-side from `BOARD_BOT_HANDLE`,

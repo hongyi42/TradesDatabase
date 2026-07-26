@@ -2,7 +2,7 @@
 date: 2026-07-25
 task: resolve_date week mode — server-resolved week RANGES with Sat/Sun boundary ambiguity surfaced
 research: none (trajectory-diagnosed live bite, evidence in docs/engineering-memory.md §Deferred and the 2026-07-25 session)
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -250,8 +250,9 @@ None in-repo (rollout + evidence only; check the boxes below into this plan file
 
 ### Manual verification
 
-- [ ] (weekend-timing permitting) the same phrase from the manager's real Telegram chat gets a
-      clarifying question with two correct Monday-anchored ranges — the Telegram path is the
+- [x] (weekend-timing permitting) the same phrase from the manager's real Telegram chat gets a
+      clarifying question with two correct Monday-anchored ranges — owner-confirmed 2026-07-25
+      ("The week range check is complete") — the Telegram path is the
       doctrine authority, and this is the user-visible shape of the fix.
 
 ---

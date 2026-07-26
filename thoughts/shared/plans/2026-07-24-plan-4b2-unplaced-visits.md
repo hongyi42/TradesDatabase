@@ -195,16 +195,21 @@ uses `--linked`, the hosted pilot, which lacks the columns until Phase 5).
   write, so an unguarded throw cancels the visit and then reports failure.
 
 ### Automated verification
-- [ ] `npx supabase db reset` applies cleanly
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` **all pass** — no
-      expected-failure carve-out; if something does not compile, it is a site this plan missed
-- [ ] new tests in `src/db/scheduling.test.ts`: an unplaced row inserts; a half-filled row
-      (times + range, or neither) is rejected by `assignment_placed_or_windowed`
-- [ ] **new test pinning the narrowed guard**: two *placed* overlapping confirmed rows for one
-      technician still raise the exclusion violation, **and** two unplaced confirmed rows for
-      that technician on the same day both insert
-- [ ] new test in `src/db/schema.test.ts`: `starts_at` nullable; `earliest_date`/`latest_date`
-      exist
+- [x] `npx supabase db reset` applies cleanly (2026-07-25, incl. reviewer's from-scratch replay)
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` **all pass** —
+      tsc enumerated 29 broken sites (the four named + six the plan under-listed:
+      boardApi cancel echo, book_visit echo, cancel_job loop, boardNotify, readVisitDetail,
+      fixture casts); all guarded. **662 passed | 5 skipped** (baseline 657 + 5 new).
+- [x] scheduling.test.ts: unplaced insert ✓; half-filled rejected at BOTH layers (typed XOR
+      incl. the mixed cross-shapes from review finding 1, and raw-SQL against the DB check
+      incl. the all-null row + inverted range)
+- [x] narrowed guard pinned: placed overlap still 23P01, two unplaced confirmed twins insert
+      (reviewer verified the test FAILS against the old constraint)
+- [x] schema.test.ts: nullable times, date columns, and the constraint predicate
+      (`starts_at IS NOT NULL` via pg_get_constraintdef)
+- Review (fresh context): 1 minor (XOR cross-shapes — closed) + 1 nit (constraint-level
+      "neither" pin — added); early Phase-3 null-guards (boardNotify, VisitDetail) judged
+      correct and matching Phase 3's spec.
 
 ### Live verification (agent-executable)
 None — no live surface changes yet.
@@ -288,24 +293,22 @@ first point the work is coherent enough to deploy.**
   `latest_date < today`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass
-- [ ] `src/schedule/booking.test.ts`: a `timeTbd` booking creates null times + the range;
-      `timeTbd` + `startTime` is rejected; `promiseLevel: 'time'` on a `timeTbd` booking is
-      rejected; moving an unplaced visit to a real time places it (times set, range cleared);
-      moving one **without** `endTime` uses the job's `duration_minutes` and errors when null;
-      two identical unplaced bookings for one customer are refused
-- [ ] **`src/mcp/server.test.ts`: a `timeTbd` booking with `promiseLevel: 'day'` stages AND
-      confirms successfully** — the regression for the malformed-stage finding; assert the
-      committed row has null times and the range set
-- [ ] `src/mcp/server.test.ts`: `get_team_schedule { unassignedOnly: true }` lists an unplaced
-      visit with its day and no time, and does not throw
-- [ ] `src/mcp/server.test.ts`: `find_slots` on an unplaced visit returns candidates sized by the
-      job's `duration_minutes`, defaulting its search range to the visit's own
-- [ ] `src/mcp/server.test.ts`: `set_promise 'day'` on a single-day unplaced visit stamps
-      `promised_day`; on a multi-day range it is refused; `'time'`/`'time_only'` refused on any
-      unplaced visit
-- [ ] `src/telegram/boardApi.test.ts`: `/board/api/bucket` lists an unassigned unplaced visit
-      (assert this fails before the `.or()` change and passes after)
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass —
+      **673 passed | 5 skipped** (P1 baseline 662 + 11)
+- [x] booking.test.ts: all six behaviors + review additions ('time_only' refusals pinned;
+      day-promised placement same-day keeps / other-day breaks; mixed date+earliestDate
+      stamps the RANGE day — review finding 2 fixed)
+- [x] **the staged timeTbd + day-promise regression**: stages with the unplaced-shape preview,
+      confirms, row read-back null times + range + promise (fails against the old confirm guard)
+- [x] `get_team_schedule { unassignedOnly: true }` lists it (day, null times, timeTbd flag) —
+      AND a range straddling `from` stays visible (review finding 1: clamp now drops only
+      fully-past ranges)
+- [x] `find_slots` on the unplaced visit: fail-closed while duration-less, then candidates
+      sized by the job's 120m with every candidate on the visit's own day (window default)
+- [x] `set_promise` semantics pinned (day/single-day stamps; range refused; time + time_only
+      refused)
+- [x] `/board/api/bucket` lists the unplaced visit (timeTbd, null times, latestDate, overdue
+      false) — invisible without the `.or()` widening
 
 ### Live verification (agent-executable)
 Deferred to Phase 5 — the pilot has no migration until then.
@@ -368,13 +371,16 @@ manual-verified in Phase 5:
 - Booking form: a "time not settled yet" toggle that hides the time inputs and posts `timeTbd`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass
-- [ ] `src/telegram/boardApi.test.ts`: `/board/api/book` with `timeTbd` creates an unplaced
-      visit; `/board/api/day` returns it under `unplaced` for **every** day its range covers and
-      **never** on the time grid; **a day whose only work is unplaced still appears in `days`**;
-      a **technician-tier** request gets no `unplaced` at all
-- [ ] `src/telegram/boardNotify.test.ts`: a push about an unplaced visit renders the day and
-      "time not set", never `undefined`
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass —
+      **679 passed | 5 skipped** (P2 baseline 673 + 6)
+- [x] boardApi tests: `/book` timeTbd via the endpoint; `/day` carries the 3-day range under
+      `unplaced` on every covered day, never on the grid, days-with-only-unplaced appear,
+      technician tier gets none; PLUS the review round: attach+times 400, detach parks back
+      (unassign:true), fully-past range attach refused (board floor on latest_date)
+- [x] boardNotify: unplaced push renders "<day>, time not set", no `undefined`
+- Review (fresh context): 4 findings, all fixed — attach crash window now ledgered +
+      honestly reported (moveVisit parity), detach path added (reversibility restored),
+      silently-ignored fields refused, past floor mirrored server-side.
 
 ### Live verification (agent-executable)
 Deferred to Phase 5.
@@ -411,14 +417,15 @@ literal, so the new required field breaks Phase 4's own typecheck before any new
 class as 4b-1's fixtures finding). Add `commitmentsByDate: new Map()`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] `src/schedule/fit.test.ts`: a day with 3 unplaced assigned visits scores **below** an
-      otherwise identical empty day; that same day still emits a **day-level** candidate
-      (density unchanged — weight, not shape); "their day is empty" does not appear on it
-- [ ] `src/schedule/fit.db.test.ts`: `assembleFitContext` populates `commitmentsByDate` from
-      unplaced rows across a multi-day range
-- [ ] existing `find_slots` tests in `src/mcp/server.test.ts` pass unchanged — no unplaced rows
-      in those fixtures, so no score may move
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass — **681 passed | 5 skipped**
+- [x] fit.test.ts: 3-commitment day scores strictly below the empty twin, stays day-level
+      (3 > DENSE_DAY_STOPS, so a wrongly-keyed mode switch would fail the assert), and reads
+      "3 other visit(s)", never "day is empty"
+- [x] fit.db.test.ts: cross-range folding pinned per day (1/2/1/undefined), stops isolation,
+      and excludeAssignmentId freeing the unplaced subject's own load
+- [x] existing find_slots server tests pass UNTOUCHED (reviewer verified preservation comes
+      from the dual-increment sync, not luck)
+- Review (fresh context): **NO FINDINGS**.
 
 ### Live verification (agent-executable)
 Deferred to Phase 5.

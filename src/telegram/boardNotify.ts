@@ -27,9 +27,13 @@ interface Push {
   text: string;
 }
 
-const day = (row: Assignment): string => row.starts_at.slice(0, 10);
+// Unplaced rows (plan 4b-2) have a day range and no times — a push must say
+// so, never render 'undefined–undefined'.
+const day = (row: Assignment): string => row.starts_at?.slice(0, 10) ?? row.earliest_date ?? '?';
 const span = (row: Assignment): string =>
-  `${row.starts_at.slice(11, 16)}–${row.ends_at.slice(11, 16)}`;
+  row.starts_at && row.ends_at
+    ? `${row.starts_at.slice(11, 16)}–${row.ends_at.slice(11, 16)}`
+    : 'time not set';
 
 const detailStr = (detail: Record<string, unknown>, key: string): string | null =>
   typeof detail[key] === 'string' ? (detail[key] as string) : null;

@@ -295,8 +295,8 @@ describe('assignments', () => {
     expect(created.status).toBe('proposed');
     expect(created.technician_id).toBe(tech.id); // same tech unless overridden
     // New row carries exactly the requested times (normalize tz formatting).
-    expect(new Date(created.starts_at).toISOString()).toBe('2026-09-05T14:00:00.000Z');
-    expect(new Date(created.ends_at).toISOString()).toBe('2026-09-05T16:00:00.000Z');
+    expect(new Date(created.starts_at as string).toISOString()).toBe('2026-09-05T14:00:00.000Z');
+    expect(new Date(created.ends_at as string).toISOString()).toBe('2026-09-05T16:00:00.000Z');
 
     const history = await listAssignmentsForJob(job.id);
     expect(history.map((r) => r.id)).toEqual([created.id, cancelled.id]); // newest first
@@ -428,6 +428,114 @@ describe('assignments', () => {
     // so it re-enters the queue (job.status is still 'open'; closing the JOB
     // is the job state machine's business, not the assignment's).
     expect(byTitle.has('walk')).toBe(true);
+  });
+});
+
+describe('unplaced visits (Plan 4b-2): shapes + the narrowed overlap guard)', () => {
+  async function makeJob(title: string) {
+    const customer = await createCustomer({ tenantId, name: `Cust for ${title}` });
+    return createJob({ tenantId, customerId: customer.id, title, status: 'open' });
+  }
+
+  test('an UNPLACED row inserts: null times, day range, confirmed', async () => {
+    const job = await makeJob('unplaced-insert');
+    const a = await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: null,
+      startsAt: null,
+      endsAt: null,
+      earliestDate: '2026-10-01',
+      latestDate: '2026-10-03',
+      status: 'confirmed',
+    });
+    expect(a.starts_at).toBeNull();
+    expect(a.ends_at).toBeNull();
+    expect(a.earliest_date).toBe('2026-10-01');
+    expect(a.latest_date).toBe('2026-10-03');
+  });
+
+  test('half-filled shapes are rejected: typed layer XOR + the DB check itself', async () => {
+    const job = await makeJob('half-filled');
+    // Typed layer: neither shape.
+    await expect(
+      createAssignment({ tenantId, jobId: job.id, technicianId: null, startsAt: null, endsAt: null }),
+    ).rejects.toThrow(/BOTH times .* or BOTH range dates/);
+    // Typed layer: a complete shape mixed with HALF of the other (the
+    // cross-shape the plain XOR missed — review finding).
+    await expect(
+      createAssignment({
+        tenantId, jobId: job.id, technicianId: null,
+        startsAt: '2026-10-05T09:00:00.000Z', endsAt: '2026-10-05T10:00:00.000Z',
+        earliestDate: '2026-10-05',
+      }),
+    ).rejects.toThrow(/BOTH times .* or BOTH range dates/);
+    // Typed layer: both shapes at once.
+    await expect(
+      createAssignment({
+        tenantId, jobId: job.id, technicianId: null,
+        startsAt: '2026-10-05T09:00:00.000Z', endsAt: '2026-10-05T10:00:00.000Z',
+        earliestDate: '2026-10-05', latestDate: '2026-10-05',
+      }),
+    ).rejects.toThrow(/BOTH times .* or BOTH range dates/);
+    // The DB check is the backstop — prove it fires on a RAW half-filled
+    // insert the typed layer never sees (times + range mixed).
+    await expect(
+      pg.query(
+        `insert into assignments (tenant_id, job_id, starts_at, ends_at, earliest_date, latest_date)
+         values ($1, $2, '2026-10-05T09:00:00Z', '2026-10-05T10:00:00Z', '2026-10-05', '2026-10-05')`,
+        [tenantId, job.id],
+      ),
+    ).rejects.toThrow(/assignment_placed_or_windowed/);
+    // The all-null "neither" row must be rejected by the CONSTRAINT itself,
+    // not only the typed layer (review nit — both arms demand non-nulls).
+    await expect(
+      pg.query(
+        `insert into assignments (tenant_id, job_id) values ($1, $2)`,
+        [tenantId, job.id],
+      ),
+    ).rejects.toThrow(/assignment_placed_or_windowed/);
+    // And on an inverted range.
+    await expect(
+      pg.query(
+        `insert into assignments (tenant_id, job_id, earliest_date, latest_date)
+         values ($1, $2, '2026-10-06', '2026-10-05')`,
+        [tenantId, job.id],
+      ),
+    ).rejects.toThrow(/assignment_placed_or_windowed/);
+  });
+
+  test('the narrowed guard: placed overlaps still raise 23P01; unplaced twins both insert', async () => {
+    const job = await makeJob('narrowed-guard');
+    const D = (h: number) => `2026-10-12T${String(h).padStart(2, '0')}:00:00.000Z`;
+    // Placed protection is EXACTLY as before.
+    await createAssignment({
+      tenantId, jobId: job.id, technicianId: tech.id,
+      startsAt: D(8), endsAt: D(10), status: 'confirmed',
+    });
+    try {
+      await createAssignment({
+        tenantId, jobId: job.id, technicianId: tech.id,
+        startsAt: D(9), endsAt: D(11), status: 'confirmed',
+      });
+      expect.unreachable('overlapping placed insert must raise the exclusion constraint');
+    } catch (err) {
+      expect(isOverlapViolation(err)).toBe(true);
+    }
+    // Two UNPLACED confirmed rows for the SAME technician both insert — an
+    // unplaced row is demand, not schedule; tstzrange(null,null) would have
+    // blocked the whole calendar without the starts_at predicate.
+    const u1 = await createAssignment({
+      tenantId, jobId: job.id, technicianId: tech.id,
+      startsAt: null, endsAt: null,
+      earliestDate: '2026-10-12', latestDate: '2026-10-12', status: 'confirmed',
+    });
+    const u2 = await createAssignment({
+      tenantId, jobId: job.id, technicianId: tech.id,
+      startsAt: null, endsAt: null,
+      earliestDate: '2026-10-12', latestDate: '2026-10-14', status: 'confirmed',
+    });
+    expect(u1.id).not.toBe(u2.id);
   });
 });
 

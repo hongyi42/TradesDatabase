@@ -8,6 +8,14 @@ export type Assignment = Database['public']['Tables']['assignments']['Row'];
 export type AssignmentStatus = Database['public']['Enums']['assignment_status'];
 export type PromiseLevel = Database['public']['Enums']['promise_level'];
 
+// Rows that HAVE times (plan 4b-2). Every reader whose query filters on
+// starts_at/ends_at returns these by construction: a SQL comparison against
+// NULL is never true, so unplaced rows cannot appear in a time-range result.
+// A type, not a comment, so the property is compiler-checked.
+export type PlacedAssignment = Assignment & { starts_at: string; ends_at: string };
+export const isPlaced = (a: Assignment): a is PlacedAssignment =>
+  a.starts_at !== null && a.ends_at !== null;
+
 // Hardcoded, auditable state machine (jobs.ts pattern). Times on a row are
 // immutable — a reschedule is cancel + insert, never an edit — so status is the
 // only mutable business field and cancelled/completed are terminal.
@@ -22,8 +30,12 @@ export interface CreateAssignmentInput {
   tenantId: string;
   jobId: string;
   technicianId: string | null; // null = unassigned ("book now, assign later")
-  startsAt: string; // ISO timestamptz (naive-local convention — see the promise-ladder migration)
-  endsAt: string; // ISO timestamptz, exclusive
+  // PLACED shape: both times, no range. UNPLACED shape (plan 4b-2): both range
+  // dates, no times. Exactly one shape — enforced below, DB check backstops.
+  startsAt: string | null; // ISO timestamptz (naive-local convention — see the promise-ladder migration)
+  endsAt: string | null; // ISO timestamptz, exclusive
+  earliestDate?: string | null; // YYYY-MM-DD — the unplaced day (or range start)
+  latestDate?: string | null; // YYYY-MM-DD — range end (= earliestDate for one day)
   status?: AssignmentStatus;
   sourceCaptureId?: string | null;
   // Commitment ladder: what the customer was told. The DB check requires
@@ -37,6 +49,20 @@ export interface CreateAssignmentInput {
 // no_confirmed_overlap exclusion constraint — preserve the SQLSTATE so callers
 // can detect it via isOverlapViolation (Object.assign idiom, insertTechnician).
 export async function createAssignment(input: CreateAssignmentInput): Promise<Assignment> {
+  const placed = input.startsAt !== null && input.endsAt !== null;
+  const windowed = input.earliestDate != null && input.latestDate != null;
+  const anyTime = input.startsAt !== null || input.endsAt !== null;
+  const anyRange = input.earliestDate != null || input.latestDate != null;
+  // Times XOR range — a half-filled row would read as placed to some surfaces
+  // and unplaced to others; catch it before the DB check does, with a message
+  // that names the shapes. The anyTime/anyRange term closes the mixed
+  // cross-shapes (a complete shape PLUS half of the other — review finding):
+  // the DB check rejects those too, but with a raw 23514 instead of this.
+  if (placed === windowed || (anyTime && anyRange)) {
+    throw new Error(
+      'createAssignment: provide BOTH times (placed) or BOTH range dates (unplaced) — never a mix',
+    );
+  }
   const { data, error } = await getClient()
     .from('assignments')
     .insert({
@@ -45,6 +71,8 @@ export async function createAssignment(input: CreateAssignmentInput): Promise<As
       technician_id: input.technicianId,
       starts_at: input.startsAt,
       ends_at: input.endsAt,
+      earliest_date: input.earliestDate ?? null,
+      latest_date: input.latestDate ?? null,
       status: input.status ?? 'proposed',
       source_capture_id: input.sourceCaptureId ?? null,
       promise_level: input.promiseLevel ?? 'none',
@@ -235,7 +263,7 @@ export async function listAssignmentsForTenant(
   fromISO: string,
   toISO: string,
   statuses: AssignmentStatus[] = ['confirmed'],
-): Promise<Assignment[]> {
+): Promise<PlacedAssignment[]> {
   const { data, error } = await getClient()
     .from('assignments')
     .select()
@@ -245,7 +273,8 @@ export async function listAssignmentsForTenant(
     .in('status', statuses)
     .order('starts_at', { ascending: true });
   if (error) throw new Error(`listAssignmentsForTenant failed: ${error.message}`);
-  return data ?? [];
+  // Placed by construction: the lt/gt time filters never match NULL.
+  return (data ?? []) as PlacedAssignment[];
 }
 
 // ---- Dispatch-board reads: the whole visit graph in ONE round-trip ----
@@ -337,12 +366,14 @@ const DAY_SELECT =
   '*, jobs(id,tenant_id,customer_id,customers(name,address_line1,address_line2,city,state,postal_code,tenant_id)), technicians(id,ref,display_name,tenant_id)';
 
 // Same filters as listAssignmentsForTenant, plus the embedded graph.
+export type PlacedAssignmentDayRow = AssignmentDayRow & { starts_at: string; ends_at: string };
+
 export async function listAssignmentsWithRefsForTenant(
   tenantId: string,
   fromISO: string,
   toISO: string,
   statuses: AssignmentStatus[] = ['confirmed'],
-): Promise<AssignmentDayRow[]> {
+): Promise<PlacedAssignmentDayRow[]> {
   const { data, error } = await getClient()
     .from('assignments')
     .select(DAY_SELECT)
@@ -352,7 +383,8 @@ export async function listAssignmentsWithRefsForTenant(
     .in('status', statuses)
     .order('starts_at', { ascending: true });
   if (error) throw new Error(`listAssignmentsWithRefsForTenant failed: ${error.message}`);
-  return (data ?? []) as AssignmentDayRow[];
+  // Placed by construction: the lt/gt time filters never match NULL.
+  return (data ?? []) as PlacedAssignmentDayRow[];
 }
 
 // Rows overlapping the [fromISO, toISO) window for one technician, live
@@ -362,7 +394,7 @@ export async function listAssignmentsForTechnician(
   fromISO: string,
   toISO: string,
   statuses: AssignmentStatus[] = ['proposed', 'confirmed'],
-): Promise<Assignment[]> {
+): Promise<PlacedAssignment[]> {
   const { data, error } = await getClient()
     .from('assignments')
     .select()
@@ -372,7 +404,8 @@ export async function listAssignmentsForTechnician(
     .in('status', statuses)
     .order('starts_at', { ascending: true });
   if (error) throw new Error(`listAssignmentsForTechnician failed: ${error.message}`);
-  return data ?? [];
+  // Placed by construction: the lt/gt time filters never match NULL.
+  return (data ?? []) as PlacedAssignment[];
 }
 
 // The booking's full history — every row ever written for the job, newest
@@ -396,14 +429,18 @@ export async function listUnassignedAssignments(
   tenantId: string,
   fromISO: string,
 ): Promise<Assignment[]> {
+  // DELIBERATELY WIDE (plan 4b-2): unplaced rows (null starts_at) are part of
+  // the recall surface — a parked time-TBD visit must be visible SOMEWHERE the
+  // moment it exists. NULLs order last. (PostgREST .or() syntax verified
+  // against the local stack during plan review.)
   const { data, error } = await getClient()
     .from('assignments')
     .select()
     .eq('tenant_id', tenantId)
     .is('technician_id', null)
     .eq('status', 'confirmed')
-    .gte('starts_at', fromISO)
-    .order('starts_at', { ascending: true });
+    .or(`starts_at.gte.${fromISO},starts_at.is.null`)
+    .order('starts_at', { ascending: true, nullsFirst: false });
   if (error) throw new Error(`listUnassignedAssignments failed: ${error.message}`);
   return data ?? [];
 }
@@ -443,6 +480,78 @@ export async function listIdenticalUnassignedVisits(
   }));
 }
 
+// ASSIGNED-and-unplaced rows intersecting a day window (plan 4b-2 Phase 3):
+// the board's "no time yet" strip. Confirmed rows with a person attached and
+// no times; the range-intersection predicate (earliest <= to AND latest >=
+// from) shows a Tue–Thu visit on each covered day. DAY_SELECT shape so the
+// strip carries customer/technician names in the same single round trip.
+// Single string literal — see the DETAIL_SELECT note above. The strip shows
+// what the work IS (title) and how long it takes (4b-1 duration), unlike the
+// time-grid day view where the sheet fetches those on tap.
+const UNPLACED_STRIP_SELECT =
+  '*, jobs(id,tenant_id,title,duration_minutes,customer_id,customers(name,tenant_id)), technicians(id,ref,display_name,tenant_id)';
+
+export type UnplacedStripRow = Assignment & {
+  jobs:
+    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'duration_minutes' | 'customer_id'> & {
+        customers: Pick<Customer, 'name' | 'tenant_id'> | null;
+      })
+    | null;
+  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
+};
+
+export async function listUnplacedAssignedForRange(
+  tenantId: string,
+  fromDate: string, // YYYY-MM-DD inclusive
+  toDate: string, // YYYY-MM-DD inclusive
+): Promise<UnplacedStripRow[]> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select(UNPLACED_STRIP_SELECT)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'confirmed')
+    .not('technician_id', 'is', null)
+    .is('starts_at', null)
+    .lte('earliest_date', toDate)
+    .gte('latest_date', fromDate)
+    .order('earliest_date', { ascending: true });
+  if (error) throw new Error(`listUnplacedAssignedForRange failed: ${error.message}`);
+  return (data ?? []) as UnplacedStripRow[];
+}
+
+// Range-keyed sibling of the guard above (plan 4b-2): unplaced rows are ALSO
+// exempt from the DB overlap guard, so a retried one-shot timeTbd booking
+// would silently duplicate without this exact-range check. Keyed on the
+// TECHNICIAN too (final-review finding): a retry duplicates with the SAME
+// person-or-nobody, so that is the twin key — without it a legitimate second
+// same-range visit for one customer with a DIFFERENT technician (two trades,
+// same week) was refused as a duplicate.
+export async function listIdenticalUnplacedVisits(
+  tenantId: string,
+  earliestDate: string,
+  latestDate: string,
+  technicianId: string | null,
+): Promise<IdenticalUnassignedRow[]> {
+  let query = getClient()
+    .from('assignments')
+    .select(IDENTICAL_UNASSIGNED_SELECT)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'confirmed')
+    .is('starts_at', null)
+    .eq('earliest_date', earliestDate)
+    .eq('latest_date', latestDate);
+  query =
+    technicianId === null ? query.is('technician_id', null) : query.eq('technician_id', technicianId);
+  const { data, error } = await query;
+  if (error) throw new Error(`listIdenticalUnplacedVisits failed: ${error.message}`);
+  return (
+    (data ?? []) as Array<{ id: string; jobs: { customer_id: string; tenant_id: string } | null }>
+  ).map((row) => ({
+    id: row.id,
+    customerId: row.jobs && row.jobs.tenant_id === tenantId ? row.jobs.customer_id : null,
+  }));
+}
+
 // ---- Loose-bucket reads (Plan 4a): the tray + agent-parity surfaces ----
 //
 // Same ID-ONLY-foreign-key caveat as the board reads above: callers must
@@ -466,14 +575,15 @@ export async function listUnassignedAssignmentsWithRefs(
   tenantId: string,
   fromISO: string,
 ): Promise<AssignmentBucketRow[]> {
+  // DELIBERATELY WIDE — same rule as listUnassignedAssignments above.
   const { data, error } = await getClient()
     .from('assignments')
     .select(BUCKET_SELECT)
     .eq('tenant_id', tenantId)
     .is('technician_id', null)
     .eq('status', 'confirmed')
-    .gte('starts_at', fromISO)
-    .order('starts_at', { ascending: true });
+    .or(`starts_at.gte.${fromISO},starts_at.is.null`)
+    .order('starts_at', { ascending: true, nullsFirst: false });
   if (error) throw new Error(`listUnassignedAssignmentsWithRefs failed: ${error.message}`);
   return (data ?? []) as AssignmentBucketRow[];
 }

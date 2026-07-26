@@ -606,7 +606,12 @@ change.
 4. book_visit requires BOTH startTime and endTime — the server assumes NO default length.
    Pass exactly the times the manager stated (a range like "12-1pm" means startTime 12:00
    AND endTime 13:00). If the manager did not say when the visit starts or ends, ask them
-   BEFORE booking — never guess or invent a length.
+   BEFORE booking — never guess or invent a length. ONE exception: when the manager
+   EXPLICITLY says the time is not settled ("sometime Thursday", "time TBD"), book with
+   timeTbd:true + earliestDate (and latestDate for a range like "sometime next week") and
+   NO times. timeTbd is NEVER your own choice when a time was stated. A time-TBD visit
+   shows as "time not set" — never invent a time for it; placing it later is a normal
+   move_visit with real times.
 EOF
     ok "confirmation-doctrine block refreshed in ${agent}'s AGENTS.md"
     # Board-link relay — REFRESHED on every run since 2026-07-19 (delete-then-

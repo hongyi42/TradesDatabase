@@ -396,15 +396,16 @@ jobType-rejection copy now names length as a board-editable field.
 ### Manual verification
 There is no automated coverage of `board.js` (`src/telegram/boardApi.test.ts:207-223` only
 asserts the file is served), so these are the only checks on it:
-- [ ] The tray shows "length not set" on the pilot's unscheduled jobs
-- [ ] Setting a length from the tray Edit button survives a board reload
-- [ ] **Editing only the title on a job that already has a length leaves the length intact**
-- [ ] Editing only the length (no title/priority change) actually saves
-- [ ] `Custom…` accepts a typed 20 minutes, and re-opening the sheet shows **20**, not the
+- [x] The tray shows "length not set" on the pilot's unscheduled jobs
+  *(All six boxes: owner device pass 2026-07-25 — "test A passed"; Custom-minutes storage independently corroborated by the owner's live 85-minute write observed mid-probe.)*
+- [x] Setting a length from the tray Edit button survives a board reload
+- [x] **Editing only the title on a job that already has a length leaves the length intact**
+- [x] Editing only the length (no title/priority change) actually saves
+- [x] `Custom…` accepts a typed 20 minutes, and re-opening the sheet shows **20**, not the
       nearest rung and not "not set" (partial live evidence 2026-07-25: the user typed a Custom
       **85** on the pilot board during the probe window — stored as 85, read back by `find_slots`
       as "1h 25m"; the re-open-the-sheet display check is still the device pass's to confirm)
-- [ ] The control is reachable and legible at phone width, and the number keypad appears for
+- [x] The control is reachable and legible at phone width, and the number keypad appears for
       the custom input
 
 ---

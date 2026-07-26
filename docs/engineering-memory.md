@@ -181,8 +181,11 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   "(…, book_visit, move_visit, cancel_visit)" as staged tools — dead name AND contradicts the
   one-shot doctrine; owner owes the one-line in-container sed + `/usr/local/sbin` install;
   structural fix = make that block refreshable (delete-then-append) like the doctrine block.
-  **GLM swap (PR #81, same day): NOT live until Render redeploys with `INFERENCE_API_KEY`
-  set** — it merged after the #79/#80 deploy. Live probes on s2 passed:
+  **GLM swap (PR #81): LIVE since ~2026-07-26 (owner confirmed — `INFERENCE_API_KEY` set on
+  Render and deployed).** The spine's four forced-tool calls (classify/extract/brief/answer)
+  now run GLM-5.2 via DeepInfra; `MODEL_PROVIDER=anthropic` remains the env-var revert.
+  Inbound classify E2E runs externally (owner's collaborator), not through this pilot.
+  Live probes on s2 passed:
   `find_slots` fail-closed → set length 90 → SQL read-back → candidates from the job's own
   length; `unschedule_visit` → "work isn't cancelled … back in the loose bucket" + assignment
   `cancelled`/job `open`; `cancel_job` → two-step demanded, visit cascade, terminal `cancelled`,

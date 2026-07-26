@@ -260,7 +260,11 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   `PATH=$PATH:/home/ubuntu/.local/bin`. Residual: the 7 manual board checks (strip rendering,
   range-spans-3-days reads as ONE visit per day, unplaced-only day renders, sheet + Place,
   tray Assign keeps it unplaced, tech phone unchanged, booking-form TBD toggle) are the
-  owner's phone pass. An assignments row is now PLACED (`starts_at`+`ends_at`, range null)
+  owner's phone pass. Check ordering matters: the STRIP only shows ASSIGNED time-TBD work,
+  so book-unassigned lands in the TRAY (correctly, no strip) — Assign FIRST, then run the
+  strip checks. The tech-phone check (no strip on Ben's view even for HIS OWN time-TBD
+  visit) is DEFERRED into Ben's standing device pass (owner decision 2026-07-26) — 4b-2's
+  plan flips to complete on the 6 manager-phone checks; Ben's box closes with his pass. An assignments row is now PLACED (`starts_at`+`ends_at`, range null)
   **or** UNPLACED (`earliest_date`+`latest_date` DATE range, times null) — never half of each
   (`assignment_placed_or_windowed` CHECK). Facts other work builds on: (a) the `no_confirmed_overlap` double-booking guard is
   **narrowed to placed rows** (`starts_at is not null` — an unplaced tstzrange(null,null)

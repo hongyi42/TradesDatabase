@@ -857,12 +857,13 @@ export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Assi
   return cancelled;
 }
 
-// Attach a technician to an UNPLACED visit while KEEPING it unplaced (plan
-// 4b-2 Phase 3): the tray's obvious action on a parked time-TBD row must not
-// invent a time. Times are immutable by convention (a reschedule is cancel +
-// insert), so the attach follows the same shape: cancel the old row, insert a
-// fresh unplaced row carrying the range/promise with the person attached.
-// Placed rows are refused — attaching THEM is move_visit's job (same times).
+// Attach a technician to an UNPLACED visit — or DETACH one (technicianRef
+// null) — while KEEPING it unplaced (plan 4b-2 Phase 3): the tray's obvious
+// action on a parked time-TBD row must not invent a time, and an attach must
+// stay reversible (park it back). Times are immutable by convention (a
+// reschedule is cancel + insert), so both directions follow that shape: cancel
+// the old row, insert a fresh unplaced row carrying the range/promise.
+// Placed rows are refused — move_visit owns them (same times).
 export interface AttachUnplacedResult {
   cancelled: Assignment;
   created: Assignment;
@@ -871,9 +872,12 @@ export interface AttachUnplacedResult {
 export async function attachUnplacedVisit(input: {
   tenantId: string;
   assignmentId: string;
-  technicianRef: string;
+  technicianRef: string | null; // null = DETACH (park back unassigned)
   reason: string;
   actorRef: string;
+  // Board policy floor (passed by the board endpoint only — chat keeps its
+  // history-correction ability): refuse when the WHOLE range is already past.
+  notBeforeDate?: string;
 }): Promise<AttachUnplacedResult> {
   const { tenantId } = input;
   if (!input.reason?.trim()) throw new Error('reason is required for an attach');
@@ -885,23 +889,59 @@ export async function attachUnplacedVisit(input: {
   if (isPlaced(old)) {
     throw new Error('this visit has times — attach a person with move_visit (same day/time)');
   }
-  const technician = await resolveTechnician(tenantId, input.technicianRef);
+  if (input.notBeforeDate && (old.latest_date as string) < input.notBeforeDate) {
+    throw new Error(
+      'this visit\'s whole day range has passed — recovering it is a chat job ' +
+        '(board writes never target the past)',
+    );
+  }
+  if (input.technicianRef === null && old.technician_id === null) {
+    throw new Error('this visit is already unassigned');
+  }
+  const technician = input.technicianRef
+    ? await resolveTechnician(tenantId, input.technicianRef)
+    : null;
   const cancelled = await updateAssignmentStatus(old.id, 'cancelled', input.reason);
-  const created = await createAssignment({
-    tenantId,
-    jobId: old.job_id,
-    technicianId: technician.id,
-    startsAt: null,
-    endsAt: null,
-    earliestDate: old.earliest_date,
-    latestDate: old.latest_date,
-    status: 'confirmed',
-    promiseLevel: old.promise_level,
-    promisedDay: old.promised_day,
-    locked: old.locked,
-  });
-  // 'moved' so boardNotify's existing copy fires: the technician hears "a
-  // visit landed on your schedule: <day>, time not set" (the day/span
+  let created: Assignment;
+  try {
+    created = await createAssignment({
+      tenantId,
+      jobId: old.job_id,
+      technicianId: technician?.id ?? null,
+      startsAt: null,
+      endsAt: null,
+      earliestDate: old.earliest_date,
+      latestDate: old.latest_date,
+      status: 'confirmed',
+      promiseLevel: old.promise_level,
+      promisedDay: old.promised_day,
+      locked: old.locked,
+    });
+  } catch (err) {
+    // Cancel-first means ANY insert failure leaves the visit gone from every
+    // reader — say so honestly and ledger the stranding, exactly like
+    // moveVisit's identical window (review finding: the bare escape read as a
+    // no-op 500 while the visit had really been removed).
+    const why = err instanceof Error ? err.message : String(err);
+    try {
+      await appendScheduleEvent({
+        tenantId,
+        assignmentId: old.id,
+        kind: 'move_failed',
+        actorRef: input.actorRef,
+        detail: { toDay: visitDay(old), reason: why },
+      });
+    } catch {
+      /* advisory */
+    }
+    throw new Error(
+      `the old row was removed but re-creating the visit failed (${why}) — ` +
+        'the visit is currently UNSCHEDULED; book it again',
+    );
+  }
+  // 'moved' so boardNotify's existing copy fires: an attach pushes "a visit
+  // landed on your schedule: <day>, time not set" to the new person; a detach
+  // pushes "moved off your schedule" to the displaced one (the day/span
   // fallbacks own the unplaced rendering).
   await appendScheduleEvent({
     tenantId,
@@ -911,7 +951,7 @@ export async function attachUnplacedVisit(input: {
     detail: {
       fromDay: visitDay(old),
       toDay: visitDay(created),
-      attachedTechnicianRef: technician.ref,
+      attachedTechnicianRef: technician?.ref ?? null,
       promiseBroken: false,
       previousAssignmentId: old.id,
     },

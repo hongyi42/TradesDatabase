@@ -610,6 +610,82 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     expect(rows[0].latest_date).toBe(d3);
     stripAssignmentId = rows[0].id as string; // afterAll cancels the live row
   });
+
+  test('attach refusals + detach parks it back (review findings)', async () => {
+    // Times alongside an attach → 400, never silently ignored.
+    const mixed = await fetch(`${base}/board/api/move`, {
+      method: 'POST',
+      headers: { ...tma(900000001), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        assignmentId: stripAssignmentId,
+        attachUnplaced: true,
+        technicianRef: 'board-t1',
+        date: relDate(21),
+        startTime: '09:00',
+        reason: 'mixed shapes',
+      }),
+    });
+    expect(mixed.status).toBe(400);
+
+    // Detach (unassign:true) parks it back — still unplaced, nobody attached.
+    const detach = await fetch(`${base}/board/api/move`, {
+      method: 'POST',
+      headers: { ...tma(900000001), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        assignmentId: stripAssignmentId,
+        attachUnplaced: true,
+        unassign: true,
+        reason: 'park it back',
+      }),
+    });
+    expect(detach.status).toBe(200);
+    const parked = (await detach.json()) as Record<string, unknown>;
+    expect(parked.unassigned).toBe(true);
+    const { rows } = await pg.query(
+      'select id, starts_at, technician_id from assignments where id = $1',
+      [parked.assignmentId],
+    );
+    expect(rows[0].starts_at).toBeNull();
+    expect(rows[0].technician_id).toBeNull();
+    stripAssignmentId = rows[0].id as string;
+  });
+
+  test('an attach to a fully-past unplaced range is refused (board floor)', async () => {
+    const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
+      .rows[0].id as string;
+    const pastJob = (
+      await pg.query(
+        `insert into jobs (tenant_id, customer_id, title, status)
+         values ($1, $2, 'Past tbd job', 'open') returning id`,
+        [tenantId, casaId],
+      )
+    ).rows[0].id as string;
+    const pastRow = (
+      await pg.query(
+        `insert into assignments (tenant_id, job_id, earliest_date, latest_date, status)
+         values ($1, $2, $3, $4, 'confirmed') returning id`,
+        [tenantId, pastJob, relDate(-10), relDate(-8)],
+      )
+    ).rows[0].id as string;
+    try {
+      const resp = await fetch(`${base}/board/api/move`, {
+        method: 'POST',
+        headers: { ...tma(900000001), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          assignmentId: pastRow,
+          attachUnplaced: true,
+          technicianRef: 'board-t1',
+          reason: 'past attach',
+        }),
+      });
+      expect(resp.status).toBe(409);
+      const body = (await resp.json()) as { error: string };
+      expect(body.error).toContain('passed');
+    } finally {
+      await pg.query("update assignments set status = 'cancelled' where id = $1", [pastRow]);
+      await pg.query("update jobs set status = 'cancelled' where id = $1", [pastJob]);
+    }
+  });
 });
 
 describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {

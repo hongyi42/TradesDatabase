@@ -580,30 +580,48 @@ export async function handleBoardRequest(
         // instead of inventing a time. Routed before the date/time gate —
         // an attach carries neither.
         if (body.attachUnplaced === true) {
+          // Times alongside an attach are a caller bug — silently ignoring
+          // them would let a buggy client believe it PLACED the visit (the
+          // route's own priority/timeTbd refusal standard; review finding).
+          if (str(body, 'date') || str(body, 'startTime') || str(body, 'endTime')) {
+            json(res, 400, {
+              error: 'attachUnplaced keeps the visit time-TBD — drop date/times, or place it with a normal move',
+            });
+            return;
+          }
           const attachRef = str(body, 'technicianRef');
+          const detach = body.unassign === true;
           const attachId = str(body, 'assignmentId');
-          if (!attachId || !attachRef || !reason) {
-            json(res, 400, { error: 'assignmentId, technicianRef and reason are required' });
+          if (!attachId || !reason || (detach ? attachRef !== undefined : !attachRef)) {
+            json(res, 400, {
+              error: 'assignmentId, reason, and ONE of technicianRef (attach) or unassign:true (park back) are required',
+            });
             return;
           }
           // The client's move flow previews first — an attach is reversible
-          // (detach undoes it) and keeps the promise untouched, so the
-          // preview just green-lights the commit (requiresConfirmation
+          // (unassign:true parks it back) and keeps the promise untouched, so
+          // the preview just green-lights the commit (requiresConfirmation
           // false; committing on the preview call would double-attach).
           if (preview) {
             json(res, 200, { status: 'preview', attach: true, requiresConfirmation: false });
             return;
           }
+          const tz = (await getTenant(auth.tenantId))?.timezone ?? 'UTC';
           const attached = await attachUnplacedVisit({
             tenantId: auth.tenantId,
             assignmentId: attachId,
-            technicianRef: attachRef,
+            technicianRef: detach ? null : (attachRef as string),
             reason,
             actorRef: auth.technician.ref,
+            // The board's past floor, on the RANGE END: a straddling range
+            // stays actionable; a fully-past one is a chat job (review
+            // finding — every other /move write already has this floor).
+            notBeforeDate: localDateISO(new Date().toISOString(), tz),
           });
           json(res, 200, {
             status: 'moved',
-            attach: true,
+            attach: !detach,
+            unassigned: detach,
             timeTbd: true,
             assignmentId: attached.created.id,
             earliestDate: attached.created.earliest_date,

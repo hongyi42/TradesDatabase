@@ -371,13 +371,16 @@ manual-verified in Phase 5:
 - Booking form: a "time not settled yet" toggle that hides the time inputs and posts `timeTbd`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass
-- [ ] `src/telegram/boardApi.test.ts`: `/board/api/book` with `timeTbd` creates an unplaced
-      visit; `/board/api/day` returns it under `unplaced` for **every** day its range covers and
-      **never** on the time grid; **a day whose only work is unplaced still appears in `days`**;
-      a **technician-tier** request gets no `unplaced` at all
-- [ ] `src/telegram/boardNotify.test.ts`: a push about an unplaced visit renders the day and
-      "time not set", never `undefined`
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass —
+      **679 passed | 5 skipped** (P2 baseline 673 + 6)
+- [x] boardApi tests: `/book` timeTbd via the endpoint; `/day` carries the 3-day range under
+      `unplaced` on every covered day, never on the grid, days-with-only-unplaced appear,
+      technician tier gets none; PLUS the review round: attach+times 400, detach parks back
+      (unassign:true), fully-past range attach refused (board floor on latest_date)
+- [x] boardNotify: unplaced push renders "<day>, time not set", no `undefined`
+- Review (fresh context): 4 findings, all fixed — attach crash window now ledgered +
+      honestly reported (moveVisit parity), detach path added (reversibility restored),
+      silently-ignored fields refused, past floor mirrored server-side.
 
 ### Live verification (agent-executable)
 Deferred to Phase 5.

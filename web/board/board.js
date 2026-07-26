@@ -1234,21 +1234,23 @@
             closeDetail();
             return;
           }
-          // An UNPLACED visit attaches without inventing a time (plan 4b-2).
+          // An UNPLACED visit attaches — or parks back — without inventing a
+          // time (plan 4b-2): None detaches, a name attaches; both keep the
+          // day range.
           if (!d.start) {
-            if (!ref) {
-              toast('This visit has nobody attached yet — pick a person.', true);
-              return;
-            }
+            var tbdBody = {
+              assignmentId: d.assignmentId,
+              attachUnplaced: true,
+              reason: ref ? 'Assigned on the visit sheet' : 'Unassigned on the visit sheet',
+            };
+            if (ref) tbdBody.technicianRef = ref;
+            else tbdBody.unassign = true;
             postMove(
-              {
-                assignmentId: d.assignmentId,
-                attachUnplaced: true,
-                technicianRef: ref,
-                reason: 'Assigned on the visit sheet',
-              },
+              tbdBody,
               function () {
-                return 'Assigned to ' + rosterName(ref) + ' — time still to be set';
+                return ref
+                  ? 'Assigned to ' + rosterName(ref) + ' — time still to be set'
+                  : 'Now unassigned — back in the loose bucket, time still to be set';
               },
               null,
             );

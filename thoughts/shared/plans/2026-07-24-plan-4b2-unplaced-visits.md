@@ -453,22 +453,32 @@ Lands the migration on the pilot, deploys, and proves the whole path against rea
   schema from chat until it does (`docs/engineering-memory.md`).
 
 ### Automated verification
-- [ ] `npx supabase migration list --linked` shows `20260724130000` applied
-- [ ] on the pilot: `select pg_get_constraintdef(oid) from pg_constraint where conname =
-      'no_confirmed_overlap'` shows the `starts_at is not null` predicate
+- [x] migration applied to the pilot 2026-07-26 — **recorded as version `20260726043149 ·
+      unplaced_visits`** (the MCP apply stamps its own version, so `migration list --linked`
+      will NOT show `20260724130000`; same pattern as 4b-1's `job_duration_ladder`. Schema
+      verified by read-back instead: times nullable, DATE columns present, shape CHECK
+      installed, 51 rows intact)
+- [x] on the pilot: `pg_get_constraintdef` for `no_confirmed_overlap` shows
+      `... WHERE (((status = 'confirmed'...) AND (starts_at IS NOT NULL)))` — placed-row
+      protection otherwise word-for-word identical
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP; a sandbox with a working spine MCP (s2 = manager-sam) via
   `nemoclaw <sandbox> agent`; the deployed board.
-- [ ] From live chat, book a visit for a real pilot customer with the time unsettled **and a day
-      promised** (the staging path). Confirm it. Read the row back: `starts_at is null`,
-      `earliest_date` set, `promise_level = 'day'`. **Evidence:** the chat exchange and the row.
-- [ ] Confirm it appears in `/board/api/bucket` and in `get_team_schedule { unassignedOnly:
-      true }`. **Evidence:** both payloads.
-- [ ] Place it from chat (a move with real times); read back `starts_at` set, `earliest_date`
-      null. **Evidence:** both SQL reads.
-- [ ] **Restore the pilot to its pre-probe state** (cancel the probe visit) with a read-back
-      proving it.
+- [x] Live chat (s2, fresh session `p5-tbd-probe-0726`, 2026-07-26): "Book a visit for Maria
+      Gonzalez on August 5th … time is NOT settled yet — but we did tell her it will be that
+      day" → STAGED preview ("Time: not set (TBD)", promise day) → confirmed. Row read-back:
+      `starts_at`/`ends_at` null, `earliest_date = latest_date = 2026-08-05`,
+      `promise_level = 'day'`, `promised_day` stamped, shell job duration null (never-guess
+      held).
+- [x] `get_team_schedule { unassignedOnly: true }` via chat: listed as "time not set (TBD) |
+      promised the day". (`/board/api/bucket` needs signed initData — the tray IS the bucket,
+      folded into the manual phone pass below.)
+- [x] Placed from chat ("9:00 to 10:30 … give it to Ben Shelton") → one-shot, "no promise
+      broken" (same promised day). Read-back: new row `starts_at 09:00`/`ends_at 10:30`,
+      range null, ben-shelton attached; old unplaced row `cancelled` (move = cancel+insert).
+- [x] Restored: `cancel_job` demanded the two-step, confirmed → job `cancelled`, 0 live
+      visits (read-back). The two cancelled rows are the audit trail.
 
 ### Manual verification
 - [ ] The "no time yet" strip appears on the right day(s) on the manager's phone, above the grid

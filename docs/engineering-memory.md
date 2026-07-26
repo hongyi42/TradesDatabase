@@ -243,12 +243,26 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   (`thoughts/shared/plans/2026-07-25-plan-resolve-date-week-mode.md`).
   Doctrine from the Plan-3 reshape stands: **no monolithic auto-scheduler; agency stays in the
   agent, tools measure** (research: `thoughts/shared/research/2026-07-20-flexible-scheduling-agent-toolset.md`).
-  **Unplaced visits (plan 4b-2) IMPLEMENTED 2026-07-25, branch `feature-4b2-unplaced-visits`
-  — NOT yet on the pilot (migration `20260724130000_unplaced_visits.sql` applied to the LOCAL
-  stack only; pilot apply is Phase 5, migration-BEFORE-deploy, owner gate):** an assignments
-  row is now PLACED (`starts_at`+`ends_at`, range null) **or** UNPLACED (`earliest_date`+
-  `latest_date` DATE range, times null) — never half of each (`assignment_placed_or_windowed`
-  CHECK). Facts other work builds on: (a) the `no_confirmed_overlap` double-booking guard is
+  **Unplaced visits (plan 4b-2) LIVE 2026-07-26 (PR #84 merged+deployed; pilot migration
+  applied 2026-07-25 via MCP — recorded on the pilot as version `20260726043149 ·
+  unplaced_visits`, NOT the repo file's `20260724130000`; the MCP stamps its own apply-time
+  version, same as 4b-1's `job_duration_ladder` — so `migration list --linked` under-reports
+  and `db push --linked` would try to re-apply the local file and fail on existing columns;
+  trust schema read-backs, not the version ledger):** rollout completed same day — served
+  board.js byte-identical to main; s2/s3/s5/s7/s8 gateways restarted, wire pass shipped the
+  updated doctrine block (timeTbd ×2 verified in every AGENTS.md), gateways restarted again
+  (s6 stays parked); live probes on s2 all passed: staged timeTbd+day-promise booking on a
+  real customer (preview said "Time: not set (TBD)"), row read-back exact unplaced shape,
+  recall view listed "time not set (TBD) | promised the day", placing via chat one-shot with
+  "no promise broken" (same promised day) and range→times swap verified, cancel_job two-step
+  restored the pilot (0 live probe visits). Wire-pass PATH note: non-interactive ssh lacks
+  `~/.local/bin`, so `bootstrap-box.sh wire` dies at its bare `nemoclaw` call — prefix
+  `PATH=$PATH:/home/ubuntu/.local/bin`. Residual: the 7 manual board checks (strip rendering,
+  range-spans-3-days reads as ONE visit per day, unplaced-only day renders, sheet + Place,
+  tray Assign keeps it unplaced, tech phone unchanged, booking-form TBD toggle) are the
+  owner's phone pass. An assignments row is now PLACED (`starts_at`+`ends_at`, range null)
+  **or** UNPLACED (`earliest_date`+`latest_date` DATE range, times null) — never half of each
+  (`assignment_placed_or_windowed` CHECK). Facts other work builds on: (a) the `no_confirmed_overlap` double-booking guard is
   **narrowed to placed rows** (`starts_at is not null` — an unplaced tstzrange(null,null)
   would have blocked the whole calendar; unplaced = demand, not schedule); (b) the PR #53
   "times required" rule has its **one recorded exception**: `book_visit timeTbd:true` +
@@ -260,11 +274,10 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   `move_visit` (endTime falls back old span → job `duration_minutes` → explicit required);
   attach/detach-keeping-unplaced = `attachUnplacedVisit` (board `/move` `attachUnplaced:true`);
   (e) fit engine: unplaced work adds day LOAD (`commitmentsByDate`), never day SHAPE
-  (`DENSE_DAY_STOPS` counts placed stops only). Regenerating types (`npm run gen:types`,
-  --linked) before the pilot migration lands would produce stale nullability — don't.
-  Fleet rollout note: the AGENTS.md doctrine block gained the timeTbd exception (bootstrap
-  `wire` refresh) — run the wire pass only AFTER the server deploy, or agents will pass a
-  flag the server doesn't know.
+  (`DENSE_DAY_STOPS` counts placed stops only). `npm run gen:types` (--linked) is unblocked
+  now the pilot migration is applied. Doctrine-block ordering recipe (held for this rollout,
+  keep for the next): AGENTS.md contract changes wire only AFTER the server deploy, or
+  agents pass flags the server doesn't know.
 - **Deferred / backlog (each has an owner-stated reason — check before resurrecting):**
   `reflow_day` batch cascade (3c); ROI/whole-plan optimization → Plan 4's freeze; jargon
   leaking into chat (conflict #1 — fix must NOT be verbatim templates); Sat/Sun "next week"

@@ -2,7 +2,7 @@
 date: 2026-07-24
 task: Plan 4b-2 — unplaced visits: a visit may hold a day (or a range of days) with no time yet
 research: thoughts/shared/research/2026-07-24-plan-4b-freeze-autonomy-time-tbd.md
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -481,10 +481,17 @@ Lands the migration on the pilot, deploys, and proves the whole path against rea
       visits (read-back). The two cancelled rows are the audit trail.
 
 ### Manual verification
-- [ ] The "no time yet" strip appears on the right day(s) on the manager's phone, above the grid
-- [ ] A visit whose range spans three days reads as **one** visit on each, not three visits
-- [ ] A day whose only work is unplaced still renders
-- [ ] Tapping an unplaced visit opens the sheet without error, shows the range, and offers Place
-- [ ] Assign on an unplaced tray row attaches a person and keeps it unplaced
-- [ ] On Ben's technician phone: the strip is **absent** and his day view is unchanged
-- [ ] The booking form's "time not settled yet" toggle hides the time inputs and books cleanly
+Owner phone pass 2026-07-26, run as the combined 11-step walkthrough with the PR #85 job
+sheet (ordering note: the strip shows ASSIGNED time-TBD work only, so the pass books
+unassigned → verifies tray-only → assigns → then runs the strip checks). All manager-phone
+checks confirmed:
+- [x] The "no time yet" strip appears on the right day(s) on the manager's phone, above the grid
+- [x] A visit whose range spans three days reads as **one** visit on each, not three visits
+- [x] A day whose only work is unplaced still renders
+- [x] Tapping an unplaced visit opens the sheet without error, shows the range, and offers Place
+- [x] Assign on an unplaced tray row attaches a person and keeps it unplaced (tray → strip)
+- [ ] On Ben's technician phone: the strip is **absent** and his day view is unchanged —
+      **DEFERRED into Ben's standing device pass (owner decision 2026-07-26)**; the plan is
+      complete on the manager-phone checks, this box closes with his pass (tracked in
+      engineering-memory §4 pending human tests)
+- [x] The booking form's "time not settled yet" toggle hides the time inputs and books cleanly

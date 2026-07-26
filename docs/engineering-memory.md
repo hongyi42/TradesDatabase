@@ -264,7 +264,11 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   so book-unassigned lands in the TRAY (correctly, no strip) — Assign FIRST, then run the
   strip checks. The tech-phone check (no strip on Ben's view even for HIS OWN time-TBD
   visit) is DEFERRED into Ben's standing device pass (owner decision 2026-07-26) — 4b-2's
-  plan flips to complete on the 6 manager-phone checks; Ben's box closes with his pass. An assignments row is now PLACED (`starts_at`+`ends_at`, range null)
+  plan flips to complete on the 6 manager-phone checks; Ben's box closes with his pass.
+  **MANUAL PASS DONE 2026-07-26 (owner, combined 11-step walkthrough on the deployed PR #85
+  job sheet): all 6 manager-phone 4b-2 checks + all 5 job-sheet checks confirmed — 4b-2
+  plan status: complete.** The only open 4b-2 box is Ben's tier check inside his standing
+  device pass. An assignments row is now PLACED (`starts_at`+`ends_at`, range null)
   **or** UNPLACED (`earliest_date`+`latest_date` DATE range, times null) — never half of each
   (`assignment_placed_or_windowed` CHECK). Facts other work builds on: (a) the `no_confirmed_overlap` double-booking guard is
   **narrowed to placed rows** (`starts_at is not null` — an unplaced tstzrange(null,null)

@@ -62,6 +62,12 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   seat (structural server-side cap, never trusted to the agent). All purchased seats'
   sandboxes are **pre-built cold** (hardware up, identity empty). Seats are reusable;
   **technician refs are permanent and never reused across humans** (L1 is append-only).
+- **EXPLORATORY direction — software-for-physical-data exchange** (2026-07-26, not committed):
+  possible free/discounted tier where shops trade consented job-site video (quota'd in
+  complete-job-gated minutes, narration ×2) for seats — footage as physical-AI training data.
+  Full design incl. consent architecture, valuation math, and the **videos-never-enter-L1**
+  constraint: [Physical-Data-Exchange-Direction.md](Physical-Data-Exchange-Direction.md).
+  Gated on privacy-lawyer review; nothing is built.
   Pool invariant: free blanks = purchased seats − active members. The only un-automatable
   step is creating Telegram bots at BotFather (no API) — pre-create and vault tokens.
 - **Spine scope boundary** (2026-07-06): the spine is the **customer/job record**, not a

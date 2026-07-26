@@ -1,6 +1,6 @@
 ---
 date: 2026-07-26
-task: Plan 4b-3 — the freeze: human-privilege visit locks, geocoding, ROI-backed solve, manager-invoked run_freeze with staged batch commit, and the autonomy switch + cron auto-run
+task: Plan 4b-3 — the freeze: human-privilege visit locks, geocoding, ROI-backed solve, manager-invoked run_freeze with staged batch commit, and the scheduled freeze-reminder ritual
 research: thoughts/shared/research/2026-07-26-plan-4b3-weekly-freeze-foundations.md
 status: draft
 ---
@@ -10,13 +10,23 @@ status: draft
 Build the freeze: a solve that takes the three loose queues (open jobs with no visit,
 person-less visits, time-TBD visits) and places them onto real slots via Google's Route
 Optimization API ("ROI"), behind a staged whole-plan confirmation — plus the lock model that
-makes "don't auto-move this" a deliberate human act, and the per-tenant autonomy switch with
-a cron auto-run for hands-off firms.
+makes "don't auto-move this" a deliberate human act, and the scheduled ritual: recurring
+freeze runs fire from the agents' EXISTING OpenClaw cron capability and land as a proposal +
+reminder in the manager's chat, never as an unattended commit.
 
 ## Decisions
 
-- **Scope (user, 2026-07-26): autonomy switch + cron auto-run INCLUDED** (rejected the
-  defer-autonomy slice).
+- **Scope (user, 2026-07-26, twice revised): scheduled runs INCLUDED, unattended commits
+  REJECTED.** First chose "autonomy switch + cron auto-run"; then reversed the commit half:
+  a scheduled firing must produce a PROPOSAL + reminder so the manager can pin/unpin visits
+  before approving a solve that may arrange the whole week. Consequence: `run_freeze` ALWAYS
+  stages — there is no commit-without-confirmation arm, hence no capability to gate, hence
+  **no autonomy column, no set_autonomy verb, no lifecycle sweep step** (all dropped).
+  Cadence lives in the sandbox agents' existing OpenClaw cron (the 2026-07-20 heartbeat-off
+  doctrine, bootstrap-box.sh §0g: on-demand, "every Friday…" is the canonical legit
+  recurring ask; each firing wakes the full agent with tools). Recorded durability limit:
+  agent cron jobs are wiped by sandbox rebuilds — re-creating them joins the rebuild recipe.
+  If a firm ever wants true hands-off commits, that is a NEW decision, not this plan.
 - **Drain scope (user): the three queues only.** The freeze never re-places anything already
   placed. Re-solve mode is a later plan.
 - **Lock model (user): locking is a human privilege.** Nothing auto-locks anymore —
@@ -45,26 +55,22 @@ a cron auto-run for hands-off firms.
   kind-wide — new `findOpenReviewItemsByKind` helper — or two managers hold two plans;
   review finding 5) holding the whole plan + `scheduleVersion` pinned at solve time; confirm
   re-checks the version — drift = a clear "schedule changed, run the freeze again" error,
-  never a merge. Expiry is lazy (nothing sweeps), so every gate that asks "is a token open?"
-  must treat a token past its 15-min expiry as ABSENT (and dismiss it) — otherwise one
-  abandoned run blocks the autonomy cron forever. The unused `proposed` tier stays unused.
+  never a merge. **`pending_freeze` expiry = 12 hours**, not the house 15 minutes: a
+  morning cron-fired proposal must survive until the manager reads it, and the REAL
+  staleness guard for a freeze is the version pin, not the clock. Restaging dismisses any
+  open token kind-wide. The unused `proposed` tier stays unused.
 - **Commit** (implementer): sequential, through the existing verbs only (every gate fires per
   row). Mid-batch failure: stop, report exactly what landed, token consumed — the remedy is
   re-running the freeze (idempotent: placed rows leave the queues).
 - **Events/pushes** (implementer): committed rows reuse `booked`/`moved` (actor = the
-  confirming manager, or `'system'` on autonomous runs; `detail.freezeRun: <ISO>` marker) —
-  technicians get today's push copy unchanged. NEW kind `freeze_committed` + boardNotify copy
-  pushes the run summary to the tenant's MANAGERS (first manager-directed push; autonomous
-  runs must say what they did — the doctrine).
-- **Autonomy semantics** (implementer, from the definition "may act on its own"): `on` =
-  the cron solves AND commits without asking, then reports. Structurally safe under the
-  doctrine because drain-only placements are all reversible one-shots: an unplaced row can
-  hold promise `none`/`day` only, and a day-promise placement inside its one-day fence is
-  never a break (booking.ts:639-646). Anything the solve can't place is reported, never
-  forced. `off` = the cron does nothing (the freeze-due nudge is 4c's, recorded).
-- **Cadence v1** (implementer): autonomous runs at most once per 24h per tenant
-  (`last_auto_freeze_at` stamp), only when loose work exists and no `pending_freeze` token is
-  open. Finer tuning deferred until a firm asks (recorded 2026-07-22 constraint).
+  confirming manager; `detail.freezeRun: <ISO>` marker) — technicians get today's push copy
+  unchanged. NEW kind `freeze_committed` + boardNotify copy pushes the run summary to the
+  tenant's MANAGERS (first manager-directed push; multi-manager firms hear what a colleague
+  committed).
+- **The lock-cleanup nudge** (user's stated purpose for the reminder): the `run_freeze`
+  preview always ends with the pin line — how many pinned visits were left untouched, and
+  "pin anything else you don't want rearranged, then run the freeze again" — so the
+  cleanup moment is IN the proposal, not tribal knowledge.
 - **ROI model mapping** (implementer; review-hardened): one ROI vehicle per (technician,
   working day in horizon) — pattern-having techs only; vehicle window = the day's pattern
   span, interior pattern gaps as `BreakRequest`s. Already-placed visits of vehicle-having
@@ -110,10 +116,11 @@ working pattern, pinned, address failed), and each technician's committed-vs-ava
 — then books it all in one confirmed go. Placing never breaks a promise (day-fenced visits
 land inside their fence), so the only gate is your yes to the plan.
 
-**Phase 5 — hands-off mode.** A per-firm switch: `autonomy on` lets the nightly sweep run
-the freeze by itself when loose work is waiting — it commits, then messages the manager
-"freeze ran: placed 4, skipped 1 (no duration)." `off` (the default) = nothing ever runs
-unasked.
+**Phase 5 — the ritual.** No new machinery: "run the freeze every Friday morning" becomes a
+scheduled job the manager's own agent already knows how to create (the same cron capability
+that handles "remind me Friday"). When it fires, the agent runs the freeze and the full
+proposal lands in the manager's chat — which IS the reminder: look it over, pin anything
+you don't want rearranged, say yes. Nothing ever commits unattended.
 
 ## Secrets & env preflight
 
@@ -126,10 +133,9 @@ unasked.
   the user's recorded open question — **does Enterprise-tier Fleet Routing enable without a
   sales agreement?** Check in console billing BEFORE this phase; if it needs a contract, stop
   and surface.
-- **Phase 5:** both Google vars must ALSO be set on the **Render cron service** (review
-  finding 8 — `runLifecycle` runs there, not on the web service; without them the autoFreeze
-  step key-gates itself off).
-- **Phases 1/4:** none new. Phase 2/5 migrations touch the pilot only on explicit user go.
+- **Phases 1/4/5:** none new (Phase 5 lost its migration and cron-service env needs when
+  unattended commits were dropped). Phase 2's migration touches the pilot only on explicit
+  user go.
 
 `npx supabase start` running for every phase (`.env.test`, per CLAUDE.md).
 
@@ -267,20 +273,22 @@ The manager-facing verb: solve → staged plan → confirm → sequential commit
   this): `BookVisitInput` and `MoveVisitInput` gain optional `eventDetailExtra?: Json`,
   merged into the `booked`/`moved` event detail (spread last, never overriding computed
   keys). `bookVisit` also gains optional `reason?` recorded in the detail.
-- **`src/schedule/freezeCommit.ts`** (new — review finding 8: lifecycle must not import the
-  MCP handler): `commitFreezePlan(tenantId, plan, actorRef)` — sequential per placement:
+- **`src/schedule/freezeCommit.ts`** (new — shared-core house pattern; keeps the commit
+  loop testable and out of the MCP handler): `commitFreezePlan(tenantId, plan, actorRef)` —
+  sequential per placement:
   unscheduled job → `bookVisit`; person-less placed → `moveVisit` (SAME times +
   `technicianRef`); unplaced → `moveVisit` (date + times). Every call carries
   `reason: 'freeze <runDate>'` + `eventDetailExtra: { freezeRun }`. **Belt (review finding
   9): before each `moveVisit`, `previewMoveVisit` — any `promiseBroken: true` placement is
-  SKIPPED and reported, never committed** (the autonomy-safety claim must not rest on window
-  construction alone). Row failure: stop, return partial summary. Ends with the
-  `freeze_committed` event.
+  SKIPPED and reported, never committed** (a window-construction bug must not convert a
+  manager's plan-level yes into an unreviewed promise break). Row failure: stop, return
+  partial summary. Ends with the `freeze_committed` event.
 - **`src/mcp/server.ts`**: tool `run_freeze` (manager-only). No args → horizon today→+13
   (firm-local); `throughDate` overrides (≥ today, cap 31 days). Solve → dismiss any open
-  `pending_freeze` kind-wide → stage ONE item (detail: plan + `scheduleVersion` + horizon) →
-  preview: placements (day, server-computed weekday, time, who, customer),
-  skipped-with-reasons, capacity lines, `requiresConfirmation: true`. Confirm: expiry check,
+  `pending_freeze` kind-wide → stage ONE item (detail: plan + `scheduleVersion` + horizon;
+  12h expiry per the Staging decision) → preview: placements (day, server-computed weekday,
+  time, who, customer), skipped-with-reasons, capacity lines, the pin-cleanup line (Decisions),
+  `requiresConfirmation: true`. Confirm: expiry check,
   version recheck (drift → consume + "the schedule changed — run the freeze again"), then
   `commitFreezePlan`. **Add `pending_freeze` to `STAGED_ACTION_KINDS` (server.ts:5006-5015)
   as dismiss-only** — review finding 4: without it, `resolve_review_item` silently
@@ -310,37 +318,35 @@ The manager-facing verb: solve → staged plan → confirm → sequential commit
 ---
 *Pause after Phase 4 for the manual read + the live E2E gate.*
 
-## Phase 5: Autonomy switch + cron auto-run
+## Phase 5: The scheduled ritual (reminder, not autopilot)
 
 ### What this phase does
-The per-tenant switch, its chat verb, and the daily hands-off run.
+Wires the recurring-freeze ask into the agents' EXISTING OpenClaw cron capability (§0g
+doctrine) and rolls the whole plan out. No server code, no migration, no new env.
 
 ### Changes required
-- **Migration** `tenant_autonomy.sql`: `tenants.autonomous_freeze boolean not null default
-  false`, `tenants.last_auto_freeze_at timestamptz` (nullable).
-- **`src/db/tenants.ts`**: `setAutonomousFreeze(tenantId, on)`,
-  `listAutonomousFreezeTenants()`, `stampAutoFreeze(tenantId)` (review finding 8 — none
-  exist; horizon-setter idiom).
-- **`src/mcp/server.ts`**: tool `set_autonomy` (manager-only, one-shot, old→new echo):
-  description states exactly what `on` unlocks ("the assistant may run the freeze by itself,
-  at most daily, and reports every run") — never oversells beyond the freeze.
-- **`src/jobs/lifecycle.ts`**: step 5 `autoFreeze`: for `listAutonomousFreezeTenants()`
-  where (`last_auto_freeze_at` null or >24h) and loose work exists and no LIVE (unexpired)
-  `pending_freeze` — expired tokens count as absent and are dismissed (the Staging
-  decision's deadlock rule) → `solveFreeze` + `commitFreezePlan` with `actorRef: 'system'`
-  (no staging token), stamp via `stampAutoFreeze`, manager push via `freeze_committed`.
-  Key-gated like steps 3/4: missing `GOOGLE_ROUTES_SA_KEY_JSON`/`GOOGLE_MAPS_API_KEY` →
-  step skips cleanly, never a permanently red cron. Isolated-step idiom.
+- **`Box_Setup_Stuff/bootstrap-box.sh`** (the refreshable doctrine block) +
+  **`docs/nemoclaw-tech-agent.md`**: the freeze-ritual contract — when a manager asks for a
+  recurring freeze ("every Friday morning"), create an OpenClaw cron job per the §0g rules
+  (explicit ask · ≥hourly · finite) whose payload is: run `run_freeze` for the coming window
+  and present the proposal with the pin-cleanup line; the proposal in chat IS the reminder;
+  NEVER confirm a freeze without the manager's yes in that conversation. Rebuild recipe note:
+  agent cron jobs are wiped by rebuilds — re-create the firm's freeze schedule after one
+  (joins the existing §0g "re-run after one" line).
+- **Rollout** (the plan's deploy tail): Phase 2 migration to the pilot (user go,
+  read-back verify), Phase-1 pilot lock reset (user go), deploy, freshness byte-check,
+  fleet gateway restarts + WIRE pass (new tools `set_visit_locks`/`run_freeze` + doctrine
+  block changes), Phase 4 live E2E, then this phase's ritual E2E.
 
 ### Automated verification
-- [ ] gates; lifecycle test: on/off gating, 24h stamp, no-loose-work no-op, open-token no-op,
-      system actor on events; tenants schema test
+- [ ] full gates one final time on the merged branch
 
 ### Live verification (agent-executable)
-- Prerequisites: as Phase 4.
-- [ ] Pilot rollout (user-gated migrations first, deploy, fleet restarts + wire pass for the
-      new tools): `set_autonomy on` via chat → echo; flip back off after observing one
-      cron-window behavior (or verify gating via SQL stamp read-back). Evidence: echoes + rows.
+- Prerequisites: as Phase 4 (deployed stack, wired fleet).
+- [ ] On s2: ask the agent to schedule a ONE-SHOT freeze reminder a few minutes out
+      (`--at … --delete-after-run` per §0g); when it fires, the proposal + pin line arrives
+      in chat unprompted; confirm or dismiss; SQL read-back matches. Evidence: the
+      unprompted chat message + read-backs.
 
 ### Manual verification
-- [ ] Manager push copy for an autonomous run reads right on the phone
+- [ ] The cron-fired proposal reads as a sensible morning briefing on the phone (judgment)

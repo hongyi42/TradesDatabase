@@ -480,6 +480,45 @@ export async function listIdenticalUnassignedVisits(
   }));
 }
 
+// ASSIGNED-and-unplaced rows intersecting a day window (plan 4b-2 Phase 3):
+// the board's "no time yet" strip. Confirmed rows with a person attached and
+// no times; the range-intersection predicate (earliest <= to AND latest >=
+// from) shows a Tue–Thu visit on each covered day. DAY_SELECT shape so the
+// strip carries customer/technician names in the same single round trip.
+// Single string literal — see the DETAIL_SELECT note above. The strip shows
+// what the work IS (title) and how long it takes (4b-1 duration), unlike the
+// time-grid day view where the sheet fetches those on tap.
+const UNPLACED_STRIP_SELECT =
+  '*, jobs(id,tenant_id,title,duration_minutes,customer_id,customers(name,tenant_id)), technicians(id,ref,display_name,tenant_id)';
+
+export type UnplacedStripRow = Assignment & {
+  jobs:
+    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'duration_minutes' | 'customer_id'> & {
+        customers: Pick<Customer, 'name' | 'tenant_id'> | null;
+      })
+    | null;
+  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
+};
+
+export async function listUnplacedAssignedForRange(
+  tenantId: string,
+  fromDate: string, // YYYY-MM-DD inclusive
+  toDate: string, // YYYY-MM-DD inclusive
+): Promise<UnplacedStripRow[]> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select(UNPLACED_STRIP_SELECT)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'confirmed')
+    .not('technician_id', 'is', null)
+    .is('starts_at', null)
+    .lte('earliest_date', toDate)
+    .gte('latest_date', fromDate)
+    .order('earliest_date', { ascending: true });
+  if (error) throw new Error(`listUnplacedAssignedForRange failed: ${error.message}`);
+  return (data ?? []) as UnplacedStripRow[];
+}
+
 // Range-keyed sibling of the guard above (plan 4b-2): unplaced rows are ALSO
 // exempt from the DB overlap guard, so a retried one-shot timeTbd booking
 // would silently duplicate without this exact-range check.

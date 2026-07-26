@@ -857,6 +857,68 @@ export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Assi
   return cancelled;
 }
 
+// Attach a technician to an UNPLACED visit while KEEPING it unplaced (plan
+// 4b-2 Phase 3): the tray's obvious action on a parked time-TBD row must not
+// invent a time. Times are immutable by convention (a reschedule is cancel +
+// insert), so the attach follows the same shape: cancel the old row, insert a
+// fresh unplaced row carrying the range/promise with the person attached.
+// Placed rows are refused — attaching THEM is move_visit's job (same times).
+export interface AttachUnplacedResult {
+  cancelled: Assignment;
+  created: Assignment;
+}
+
+export async function attachUnplacedVisit(input: {
+  tenantId: string;
+  assignmentId: string;
+  technicianRef: string;
+  reason: string;
+  actorRef: string;
+}): Promise<AttachUnplacedResult> {
+  const { tenantId } = input;
+  if (!input.reason?.trim()) throw new Error('reason is required for an attach');
+  const old = await getAssignmentForTenant(input.assignmentId, tenantId);
+  if (!old) throw new Error('assignment not found');
+  if (old.status !== 'confirmed' && old.status !== 'proposed') {
+    throw new Error(`cannot attach to a ${old.status} assignment`);
+  }
+  if (isPlaced(old)) {
+    throw new Error('this visit has times — attach a person with move_visit (same day/time)');
+  }
+  const technician = await resolveTechnician(tenantId, input.technicianRef);
+  const cancelled = await updateAssignmentStatus(old.id, 'cancelled', input.reason);
+  const created = await createAssignment({
+    tenantId,
+    jobId: old.job_id,
+    technicianId: technician.id,
+    startsAt: null,
+    endsAt: null,
+    earliestDate: old.earliest_date,
+    latestDate: old.latest_date,
+    status: 'confirmed',
+    promiseLevel: old.promise_level,
+    promisedDay: old.promised_day,
+    locked: old.locked,
+  });
+  // 'moved' so boardNotify's existing copy fires: the technician hears "a
+  // visit landed on your schedule: <day>, time not set" (the day/span
+  // fallbacks own the unplaced rendering).
+  await appendScheduleEvent({
+    tenantId,
+    assignmentId: created.id,
+    kind: 'moved',
+    actorRef: input.actorRef,
+    detail: {
+      fromDay: visitDay(old),
+      toDay: visitDay(created),
+      attachedTechnicianRef: technician.ref,
+      promiseBroken: false,
+      previousAssignmentId: old.id,
+    },
+  });
+  return { cancelled, created };
+}
+
 // ---- Shared edit cores (plan 4a.5): ONE body per verb, every surface calls it ----
 //
 // The set_promise / update_job MCP handlers used to hold this logic inline;

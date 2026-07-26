@@ -7,6 +7,7 @@ import {
   isInactiveState,
   listAssignmentsWithRefsForTenant,
   listTeam,
+  listUnplacedAssignedForRange,
   listUnassignedAssignmentsWithRefs,
   listUnscheduledOpenJobsWithCustomer,
   isPlaced,
@@ -57,10 +58,26 @@ export interface BoardStop {
   jobId: string | null;
 }
 
+// One "no time yet" strip entry (plan 4b-2): an assigned visit holding a day
+// (or range) with no time. It appears on EVERY day its range covers, labelled
+// with the full range so a Tue–Thu visit reads as one visit, not three.
+export interface UnplacedStop {
+  assignmentId: string;
+  technicianRef: string | null;
+  technicianName: string | null;
+  customer: string | null;
+  jobId: string | null;
+  jobTitle: string | null;
+  jobDurationMinutes: number | null;
+  earliestDate: string;
+  latestDate: string;
+  promiseLevel: Assignment['promise_level'];
+}
+
 export interface BoardDays {
   from: string;
   to: string;
-  days: { date: string; stops: BoardStop[] }[];
+  days: { date: string; stops: BoardStop[]; unplaced: UnplacedStop[] }[];
   // Present when a technician-tier read was clamped at the visibility horizon
   // (Plan 4a): the payload explains the missing days itself. horizonEnd is
   // the STRUCTURED companion (the last visible day) — clients branch on data,
@@ -126,12 +143,20 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
 
   // ONE embedded read for the whole window (was: assignments + jobs-with-
   // customer + the full roster = three serial round-trips per board button).
-  const rows = await listAssignmentsWithRefsForTenant(
-    tenantId,
-    `${from}T00:00:00.000Z`,
-    new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
-    ['confirmed'],
-  );
+  // The unplaced strip read (plan 4b-2) is independent — run both in parallel
+  // (manager view only: a technician's day view is an operational document,
+  // and timeless work is not actionable for a read-only viewer).
+  const [rows, unplacedRows] = await Promise.all([
+    listAssignmentsWithRefsForTenant(
+      tenantId,
+      `${from}T00:00:00.000Z`,
+      new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
+      ['confirmed'],
+    ),
+    input.viewerTechnicianId != null
+      ? Promise.resolve([])
+      : listUnplacedAssignedForRange(tenantId, from, toDay),
+  ]);
   const visible =
     input.viewerTechnicianId != null
       ? rows.filter((r) => r.technician_id === input.viewerTechnicianId)
@@ -187,9 +212,49 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
     });
     byDay.set(day, bucket);
   }
-  const days = [...byDay.entries()]
-    .sort(([a], [b]) => (a < b ? -1 : 1))
-    .map(([date, stops]) => ({ date, stops }));
+  // The strip: each unplaced row lands on EVERY day of its range within the
+  // window. Seeded into ITS OWN map first, then unioned with the placed map —
+  // a day whose ONLY work is unplaced must still appear (plan finding: byDay
+  // entries were created only inside the placed-row loop, so a time-TBD visit
+  // on an otherwise-empty Thursday vanished entirely).
+  const unplacedByDay = new Map<string, UnplacedStop[]>();
+  for (const row of unplacedRows) {
+    const job = row.jobs && row.jobs.tenant_id === tenantId ? row.jobs : null;
+    const customer =
+      job && job.customers && job.customers.tenant_id === tenantId ? job.customers : null;
+    const technician =
+      row.technicians && row.technicians.tenant_id === tenantId ? row.technicians : null;
+    const stop: UnplacedStop = {
+      assignmentId: row.id,
+      technicianRef: technician?.ref ?? null,
+      technicianName: technician?.display_name ?? null,
+      customer: customer?.name ?? null,
+      jobId: job ? row.job_id : null,
+      jobTitle: job ? job.title : null,
+      jobDurationMinutes: job ? job.duration_minutes : null,
+      earliestDate: row.earliest_date as string,
+      latestDate: row.latest_date as string,
+      promiseLevel: row.promise_level,
+    };
+    const first = (row.earliest_date as string) < from ? from : (row.earliest_date as string);
+    const last = (row.latest_date as string) > toDay ? toDay : (row.latest_date as string);
+    for (
+      let t = Date.parse(`${first}T00:00:00Z`);
+      t <= Date.parse(`${last}T00:00:00Z`);
+      t += 86_400_000
+    ) {
+      const d = new Date(t).toISOString().slice(0, 10);
+      unplacedByDay.set(d, [...(unplacedByDay.get(d) ?? []), stop]);
+    }
+  }
+  const allDates = [...new Set([...byDay.keys(), ...unplacedByDay.keys()])];
+  const days = allDates
+    .sort((a, b) => (a < b ? -1 : 1))
+    .map((date) => ({
+      date,
+      stops: byDay.get(date) ?? [],
+      unplaced: unplacedByDay.get(date) ?? [],
+    }));
   return {
     from,
     to: toDay,

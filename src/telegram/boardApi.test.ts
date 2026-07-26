@@ -494,6 +494,124 @@ describe('GET /board/api/visit (tap-into-a-visit detail)', () => {
   });
 });
 
+describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
+  let stripAssignmentId: string;
+  let stripJobId: string;
+  let d1: string;
+  let d2: string;
+  let d3: string;
+
+  beforeAll(async () => {
+    d1 = relDate(21);
+    d2 = relDate(22);
+    d3 = relDate(23);
+    const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
+      .rows[0].id as string;
+    // An ASSIGNED unplaced visit spanning three days, booked via the board
+    // endpoint itself (timeTbd + range + technician).
+    const resp = await fetch(`${base}/board/api/book`, {
+      method: 'POST',
+      headers: { ...tma(900000001), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jobId: (
+          await pg.query(
+            `insert into jobs (tenant_id, customer_id, title, status)
+             values ($1, $2, 'Strip ranged job', 'open') returning id`,
+            [tenantId, casaId],
+          )
+        ).rows[0].id,
+        timeTbd: true,
+        earliestDate: d1,
+        latestDate: d3,
+        technicianRef: 'board-t1',
+      }),
+    });
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { assignmentId: string; jobId: string; timeTbd?: boolean };
+    stripAssignmentId = body.assignmentId;
+    stripJobId = body.jobId;
+  });
+
+  afterAll(async () => {
+    await pg.query("update assignments set status = 'cancelled' where id = $1", [stripAssignmentId]);
+    await pg.query("update jobs set status = 'cancelled' where id = $1", [stripJobId]);
+  });
+
+  test('the manager day view carries it under `unplaced` on EVERY covered day, never on the grid', async () => {
+    const resp = await fetch(`${base}/board/api/day?from=${d1}&to=${d3}`, {
+      headers: tma(900000001),
+    });
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as {
+      days: Array<{
+        date: string;
+        stops: Array<{ assignmentId: string }>;
+        unplaced: Array<Record<string, unknown>>;
+      }>;
+    };
+    // A day whose ONLY work is unplaced still appears — all three days do.
+    expect(body.days.map((d) => d.date)).toEqual([d1, d2, d3]);
+    for (const day of body.days) {
+      const mine = day.unplaced.find((u) => u.assignmentId === stripAssignmentId);
+      expect(mine, `day ${day.date} must carry the strip entry`).toBeDefined();
+      // Labelled with the FULL range so it reads as one visit, not three.
+      expect(mine?.earliestDate).toBe(d1);
+      expect(mine?.latestDate).toBe(d3);
+      expect(mine?.technicianRef).toBe('board-t1');
+      expect(mine?.jobTitle).toBe('Strip ranged job');
+      // Never on the time grid.
+      expect(day.stops.some((st) => st.assignmentId === stripAssignmentId)).toBe(false);
+    }
+  });
+
+  test('a technician-tier day view gets NO unplaced strip at all', async () => {
+    const resp = await fetch(`${base}/board/api/day?from=${d1}&to=${d3}`, {
+      headers: tma(900000002), // board-t1's own view — the visit is THEIRS, still hidden
+    });
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as { days: Array<{ unplaced?: unknown[] }> };
+    for (const day of body.days) {
+      expect(day.unplaced ?? []).toEqual([]);
+    }
+  });
+
+  test('timeTbd + times is a 400; attachUnplaced re-attaches keeping the range', async () => {
+    const bad = await fetch(`${base}/board/api/book`, {
+      method: 'POST',
+      headers: { ...tma(900000001), 'content-type': 'application/json' },
+      body: JSON.stringify({ jobId: stripJobId, timeTbd: true, earliestDate: d1, startTime: '09:00' }),
+    });
+    expect(bad.status).toBe(400);
+
+    const attach = await fetch(`${base}/board/api/move`, {
+      method: 'POST',
+      headers: { ...tma(900000001), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        assignmentId: stripAssignmentId,
+        attachUnplaced: true,
+        technicianRef: 'board-t2',
+        reason: 'strip attach test',
+      }),
+    });
+    expect(attach.status).toBe(200);
+    const body = (await attach.json()) as Record<string, unknown>;
+    expect(body.status).toBe('moved');
+    expect(body.timeTbd).toBe(true);
+    expect(body.earliestDate).toBe(d1);
+    expect(body.latestDate).toBe(d3);
+    // The row: new id, still unplaced, new person; the old row cancelled.
+    const { rows } = await pg.query(
+      `select id, starts_at, earliest_date::text, latest_date::text, technician_id
+         from assignments where id = $1`,
+      [body.assignmentId],
+    );
+    expect(rows[0].starts_at).toBeNull();
+    expect(rows[0].earliest_date).toBe(d1);
+    expect(rows[0].latest_date).toBe(d3);
+    stripAssignmentId = rows[0].id as string; // afterAll cancels the live row
+  });
+});
+
 describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
   // Relative dates only (top-level relDate): the bucket anchors at firm-local
   // today, so fixed fixtures rot (and the suite's DAY_A unassigned visit is

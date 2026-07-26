@@ -186,7 +186,31 @@
   // the visit — moveVisit's unassign detach); its data-lane is ''. Flat
   // layout (technician view, manager's Mine tab): a plain time-ordered list,
   // no lanes.
-  function renderDay(date, stops, teamLayout) {
+  // One "no time yet" strip card (plan 4b-2): an assigned visit holding this
+  // day (or a range covering it) with no time. Tappable into the normal
+  // detail sheet; a multi-day range is labelled in full so it reads as ONE
+  // visit appearing on each covered day, never as three visits.
+  function tbdCard(u) {
+    var range =
+      u.earliestDate === u.latestDate
+        ? ''
+        : ' · ' + u.earliestDate + ' – ' + u.latestDate;
+    return (
+      '<div class="tbd-card" data-id="' + esc(u.assignmentId) + '">' +
+      '<div class="tbd-main">' + esc(u.customer || 'Unknown customer') +
+      (u.jobTitle ? ' — ' + esc(u.jobTitle) : '') + '</div>' +
+      '<div class="tbd-sub">' +
+      esc(
+        (u.technicianName || 'Unassigned') +
+          ' · ' +
+          (u.jobDurationMinutes != null ? fmtDur(u.jobDurationMinutes) : 'length not set') +
+          range,
+      ) +
+      '</div></div>'
+    );
+  }
+
+  function renderDay(date, stops, teamLayout, unplaced) {
     // Per-DAY write gate: the calendar week 0 contains already-past days, and
     // those are as read-only as past weeks (a live drop target on yesterday
     // is a one-mis-drag history rewrite). state.today is the firm-local
@@ -200,8 +224,14 @@
       '<section class="day' + (isToday ? ' today' : '') + '" data-date="' + esc(date) + '">' +
       '<h2>' + esc(dayName(date)) + ' · ' + esc(date) +
       (isToday ? ' <span class="today-tag">Today</span>' : '') + '</h2>';
+    if (unplaced && unplaced.length) {
+      html +=
+        '<div class="tbd-strip"><div class="tbd-strip-title">No time yet</div>' +
+        unplaced.map(tbdCard).join('') +
+        '</div>';
+    }
     if (!stops.length) {
-      html += '<div class="day-empty">No visits</div>';
+      if (!unplaced || !unplaced.length) html += '<div class="day-empty">No visits</div>';
     } else if (!teamLayout) {
       html += stops
         .map(function (s) {
@@ -278,8 +308,10 @@
     if (isManager && data.view) state.view = data.view;
     var teamLayout = isManager && data.view !== 'mine';
     var byDate = {};
+    var unplacedByDate = {};
     data.days.forEach(function (d) {
       byDate[d.date] = d.stops;
+      unplacedByDate[d.date] = d.unplaced || [];
     });
     // The picker's busy hints read from what the board just painted — but
     // ONLY the team layout shows the whole team; a Mine-tab payload holds one
@@ -323,7 +355,7 @@
     } else {
       var date = data.from;
       while (date <= data.to) {
-        html += renderDay(date, byDate[date] || [], teamLayout);
+        html += renderDay(date, byDate[date] || [], teamLayout, unplacedByDate[date] || []);
         date = addDays(date, 1);
       }
       if (data.horizonNote) html += '<div class="range">' + esc(data.horizonNote) + '</div>';
@@ -482,10 +514,17 @@
     // math. Tappable: opens the visit's normal detail sheet; the Assign
     // button opens the picker (plan 4a.5 — the tray is manager-only, so the
     // affordance needs no tier gate here).
+    // A time-TBD row (plan 4b-2) has no times — its main line says so and
+    // carries the range; Assign posts an attach that KEEPS it unplaced.
+    var whenTxt = v.timeTbd
+      ? v.weekday + ' ' + v.date +
+        (v.latestDate && v.latestDate !== v.date ? ' – ' + v.latestDate : '') +
+        ' · no time yet'
+      : v.weekday + ' ' + v.date + ' · ' + v.startTime + '–' + v.endTime;
     return (
       '<div class="bucket-row bucket-visit" data-id="' + esc(v.assignmentId) + '">' +
       '<div class="bucket-row-txt"><div class="bucket-row-main">' +
-      esc(v.weekday + ' ' + v.date + ' · ' + v.startTime + '–' + v.endTime) +
+      esc(whenTxt) +
       '</div><div class="bucket-row-sub">' +
       esc(
         (v.overdue ? 'OVERDUE — the day passed with nobody assigned · ' : '') +
@@ -505,8 +544,11 @@
       (v.overdue
         ? ''
         : '<button type="button" class="bucket-assign" data-id="' + esc(v.assignmentId) + '"' +
-          ' data-date="' + esc(v.date) + '" data-start="' + esc(v.startTime) + '"' +
-          ' data-end="' + esc(v.endTime) + '">Assign</button>') +
+          ' data-date="' + esc(v.date) + '"' +
+          (v.timeTbd
+            ? ' data-tbd="1"'
+            : ' data-start="' + esc(v.startTime) + '" data-end="' + esc(v.endTime) + '"') +
+          '>Assign</button>') +
       '</div>'
     );
   }
@@ -597,6 +639,23 @@
             date: assign.getAttribute('data-date'),
             onPick: function (ref) {
               if (!ref) return;
+              // A time-TBD row attaches WITHOUT inventing a time (plan 4b-2):
+              // the visit keeps its day range and stays unplaced.
+              if (assign.getAttribute('data-tbd')) {
+                postMove(
+                  {
+                    assignmentId: assign.getAttribute('data-id'),
+                    attachUnplaced: true,
+                    technicianRef: ref,
+                    reason: 'Assigned from the loose bucket',
+                  },
+                  function () {
+                    return 'Assigned to ' + rosterName(ref) + ' — time still to be set';
+                  },
+                  null,
+                );
+                return;
+              }
               postMove(
                 {
                   assignmentId: assign.getAttribute('data-id'),
@@ -660,14 +719,16 @@
 
   function promiseText(d) {
     // Disambiguated copy (user question 2026-07-23): the date is the day the
-    // VISIT was promised FOR — never the day the telling happened.
-    var day = d.promisedDay || d.start.slice(0, 10);
+    // VISIT was promised FOR — never the day the telling happened. An
+    // UNPLACED visit (plan 4b-2) has no start — its day comes from the range,
+    // and time-level promises cannot exist on it (refused server-side).
+    var day = d.promisedDay || (d.start ? d.start.slice(0, 10) : d.earliestDate);
     var when = dayName(day) + ' ' + day;
-    if (d.promiseLevel === 'time') {
+    if (d.promiseLevel === 'time' && d.start) {
       return "Customer was told we're coming " + esc(when) + ' at ' + esc(hhmm(d.start));
     }
     if (d.promiseLevel === 'day') return "Customer was told we're coming " + esc(when);
-    if (d.promiseLevel === 'time_only') {
+    if (d.promiseLevel === 'time_only' && d.start) {
       return 'Customer was told ' + esc(hhmm(d.start)) + ', day not promised';
     }
     return 'Nothing promised to the customer';
@@ -688,11 +749,16 @@
     // visit may be edited; it only described which list you happened to be
     // looking at. (Drag/✕ keep their own tab gate in actionable(): those act
     // on the RENDERED lane layout, which really is Team-tab-only.)
+    // The visit's anchor day: placed start, else the range start (unplaced,
+    // plan 4b-2). The date floor and the read-only reason both key on it.
+    var anchorDay = d.start ? d.start.slice(0, 10) : d.earliestDate;
+    var isTbd = !d.start;
     var canEdit =
       state.isManager &&
       d.status === 'confirmed' &&
       state.today !== null &&
-      d.start.slice(0, 10) >= state.today;
+      // An unplaced visit stays editable while ANY of its range is ahead.
+      (isTbd ? d.latestDate >= state.today : anchorDay >= state.today);
     var pencil = function (kind) {
       return canEdit
         ? ' <button type="button" class="edit-btn" data-edit="' + kind + '" aria-label="Edit">✎</button>'
@@ -712,11 +778,24 @@
         ) + (d.jobId ? pencil('job') : ''),
       );
     }
-    rows += detailRow(
-      'When',
-      esc(dayName(d.start.slice(0, 10)) + ' · ' + d.start.slice(0, 10)) +
-        ', ' + esc(hhmm(d.start) + '–' + hhmm(d.end)) + pencil('when'),
-    );
+    if (isTbd) {
+      // "Place" is the same When editor — it opens with the range day
+      // prefilled and empty times, and saving books real times (a move).
+      rows += detailRow(
+        'When',
+        esc(
+          dayName(d.earliestDate) + ' · ' + d.earliestDate +
+            (d.latestDate !== d.earliestDate ? ' – ' + d.latestDate : '') +
+            ' · no time yet',
+        ) + (canEdit ? ' <button type="button" class="edit-btn" data-edit="when" aria-label="Place">Place</button>' : ''),
+      );
+    } else {
+      rows += detailRow(
+        'When',
+        esc(dayName(d.start.slice(0, 10)) + ' · ' + d.start.slice(0, 10)) +
+          ', ' + esc(hhmm(d.start) + '–' + hhmm(d.end)) + pencil('when'),
+      );
+    }
     rows += detailRow('Technician', esc(d.technicianName || 'Unassigned') + pencil('tech'));
     if (c.phone) {
       // tel: href keeps only digits and + — the display keeps the stored form.
@@ -761,7 +840,7 @@
       why =
         d.status !== 'confirmed'
           ? 'Read-only — this visit is ' + d.status + '.'
-          : state.today !== null && d.start.slice(0, 10) < state.today
+          : state.today !== null && (isTbd ? d.latestDate < state.today : anchorDay < state.today)
             ? 'Read-only — the day has passed. Ask the assistant in chat to correct past visits.'
             : 'Read-only — reopen the board and try again.';
     }
@@ -1141,7 +1220,9 @@
   // the same shared verbs chat drives. NOTE: /promise and /job are ONE-SHOT
   // endpoints; never send them ?preview=1 (it is ignored and would commit).
   function openEditor(kind, d) {
-    var vDate = d.start.slice(0, 10);
+    // Unplaced visits (plan 4b-2): the editors prefill from the range day and
+    // EMPTY times — placing means typing real ones.
+    var vDate = d.start ? d.start.slice(0, 10) : d.earliestDate;
     if (kind === 'tech') {
       openPicker({
         title: 'Assign technician',
@@ -1151,6 +1232,26 @@
         onPick: function (ref) {
           if ((ref || null) === (d.technicianRef || null)) {
             closeDetail();
+            return;
+          }
+          // An UNPLACED visit attaches without inventing a time (plan 4b-2).
+          if (!d.start) {
+            if (!ref) {
+              toast('This visit has nobody attached yet — pick a person.', true);
+              return;
+            }
+            postMove(
+              {
+                assignmentId: d.assignmentId,
+                attachUnplaced: true,
+                technicianRef: ref,
+                reason: 'Assigned on the visit sheet',
+              },
+              function () {
+                return 'Assigned to ' + rosterName(ref) + ' — time still to be set';
+              },
+              null,
+            );
             return;
           }
           var body = {
@@ -1182,8 +1283,8 @@
             '<input type="date" id="qe-date" value="' + esc(vDate) + '"' +
               (state.today ? ' min="' + esc(state.today) + '"' : '') + '>',
           ) +
-            fieldRow('Start', '<input type="time" id="qe-start" value="' + esc(hhmm(d.start)) + '">') +
-            fieldRow('End', '<input type="time" id="qe-end" value="' + esc(hhmm(d.end)) + '">') +
+            fieldRow('Start', '<input type="time" id="qe-start" value="' + esc(d.start ? hhmm(d.start) : '') + '">') +
+            fieldRow('End', '<input type="time" id="qe-end" value="' + esc(d.end ? hhmm(d.end) : '') + '">') +
             formButtons('Save'),
         ),
         function (e, ov) {
@@ -1215,9 +1316,12 @@
           postMove(
             body,
             function () {
-              return 'Moved to ' + body.date + ' ' + body.startTime + '–' + body.endTime;
+              return (
+                (d.start ? 'Moved to ' : 'Placed — ') +
+                body.date + ' ' + body.startTime + '–' + body.endTime
+              );
             },
-            hhmm(d.start),
+            d.start ? hhmm(d.start) : null,
           );
         },
       );
@@ -1386,28 +1490,67 @@
             '<input type="date" id="qe-date"' +
               (state.today ? ' min="' + esc(state.today) + '"' : '') + '>',
           ) +
+            '<label class="field-row tbd-toggle"><span>Time not settled yet</span>' +
+            '<input type="checkbox" id="qe-tbd"></label>' +
+            '<div id="qe-times">' +
             fieldRow('Start', '<input type="time" id="qe-start">') +
             fieldRow('End', '<input type="time" id="qe-end">') +
+            '</div>' +
+            '<div id="qe-until" style="display:none">' +
+            fieldRow(
+              'Until (optional)',
+              '<input type="date" id="qe-latest"' +
+                (state.today ? ' min="' + esc(state.today) + '"' : '') + '>',
+            ) +
+            '<div class="field-note">Leave empty for a single day; set it for "sometime that week".</div>' +
+            '</div>' +
             fieldRow('Technician', selectHtml('qe-tech', techOptions, '')) +
             fieldRow('Promise', selectHtml('qe-promise', PROMISE_OPTIONS, 'none')) +
             formButtons('Book visit'),
         ),
         function (e, ov) {
+          // The toggle hides the time inputs and books UNPLACED (plan 4b-2).
+          var tbdBox = e.target.id === 'qe-tbd' ? e.target : null;
+          if (tbdBox) {
+            var times = ov.querySelector('#qe-times');
+            var until = ov.querySelector('#qe-until');
+            if (times) times.style.display = tbdBox.checked ? 'none' : '';
+            if (until) until.style.display = tbdBox.checked ? '' : 'none';
+            return;
+          }
           var btn = e.target.closest && e.target.closest('[data-form]');
           if (!btn) return;
           if (btn.getAttribute('data-form') === 'cancel') {
             closeDetail();
             return;
           }
-          var body = {
-            jobId: jobId,
-            date: val(ov, 'qe-date'),
-            startTime: val(ov, 'qe-start'),
-            endTime: val(ov, 'qe-end'),
-          };
-          if (!body.date || !body.startTime || !body.endTime) {
-            toast('Day, start and end are all required.', true);
-            return;
+          var tbdEl = ov.querySelector('#qe-tbd');
+          var isTbd = !!(tbdEl && tbdEl.checked);
+          var body;
+          if (isTbd) {
+            body = { jobId: jobId, timeTbd: true, earliestDate: val(ov, 'qe-date') };
+            var latest = val(ov, 'qe-latest');
+            if (latest) body.latestDate = latest;
+            if (!body.earliestDate) {
+              toast('Pick the day (or the range start).', true);
+              return;
+            }
+            if (body.latestDate && body.latestDate < body.earliestDate) {
+              toast('"Until" must be on or after the day.', true);
+              return;
+            }
+            body.date = body.earliestDate; // the past-date belt below reuses it
+          } else {
+            body = {
+              jobId: jobId,
+              date: val(ov, 'qe-date'),
+              startTime: val(ov, 'qe-start'),
+              endTime: val(ov, 'qe-end'),
+            };
+            if (!body.date || !body.startTime || !body.endTime) {
+              toast('Day, start and end are all required.', true);
+              return;
+            }
           }
           // Same belt as the When editor: min= doesn't stop a typed past date.
           if (state.today && body.date < state.today) {
@@ -1437,7 +1580,10 @@
                     }
                     closeDetail();
                     toast(
-                      'Booked — ' + body.date + ' ' + body.startTime + '–' + body.endTime +
+                      'Booked — ' + body.date +
+                        (isTbd
+                          ? (body.latestDate ? ' – ' + body.latestDate : '') + ', time to be set'
+                          : ' ' + body.startTime + '–' + body.endTime) +
                         (ref ? ' with ' + rosterName(ref) : ', unassigned') +
                         (r.body.warning ? '. ' + r.body.warning : ''),
                     );
@@ -1451,7 +1597,7 @@
               if (p.body.requiresConfirmation) {
                 confirmAsk(
                   'This records a promise to the customer (' + promiseLabel(level) + ') for ' +
-                    body.date + ' ' + body.startTime + '. Book it?',
+                    body.date + (isTbd ? ' (time to be set)' : ' ' + body.startTime) + '. Book it?',
                   function (yes) {
                     if (yes) commit();
                   },
@@ -1687,6 +1833,12 @@
       var bucketPill = e.target.closest && e.target.closest('.bucket-pill');
       if (bucketPill) {
         openBucket();
+        return;
+      }
+      // A "no time yet" strip card opens the normal detail sheet (plan 4b-2).
+      var tbd = e.target.closest && e.target.closest('.tbd-card');
+      if (tbd) {
+        openDetail(tbd.getAttribute('data-id'));
         return;
       }
       var btn = e.target.closest && e.target.closest('.stop-cancel');

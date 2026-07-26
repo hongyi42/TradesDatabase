@@ -103,6 +103,23 @@ describe('pollOnce', () => {
     expect(sends).not.toHaveBeenCalled();
   });
 
+  test('an UNPLACED booking push renders the day and "time not set", never undefined (plan 4b-2)', async () => {
+    await bookVisit({
+      tenantId,
+      customerId,
+      title: 'Notify tbd visit',
+      technicianRef: 'notify-n1',
+      timeTbd: true,
+      earliestDate: '2026-10-20',
+      actorRef: 'notify-mgr',
+    });
+    expect(await pollOnce(lastSeen)).toBe(1);
+    expect(sentTo()).toEqual([
+      { userId: '910000001', text: 'New visit on your schedule: 2026-10-20, time not set.' },
+    ]);
+    expect(sentTo()[0].text).not.toContain('undefined');
+  });
+
   test('a same-person move sends ONE moved message, not an add + a remove', async () => {
     const { assignment } = await book({
       technicianRef: 'notify-n1',

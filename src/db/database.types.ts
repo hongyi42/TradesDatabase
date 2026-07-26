@@ -128,7 +128,10 @@ export type Database = {
           city: string | null
           created_at: string
           email: string | null
+          geocoded_at: string | null
           id: string
+          lat: number | null
+          lng: number | null
           name: string
           phone: string | null
           postal_code: string | null
@@ -144,7 +147,10 @@ export type Database = {
           city?: string | null
           created_at?: string
           email?: string | null
+          geocoded_at?: string | null
           id?: string
+          lat?: number | null
+          lng?: number | null
           name: string
           phone?: string | null
           postal_code?: string | null
@@ -160,7 +166,10 @@ export type Database = {
           city?: string | null
           created_at?: string
           email?: string | null
+          geocoded_at?: string | null
           id?: string
+          lat?: number | null
+          lng?: number | null
           name?: string
           phone?: string | null
           postal_code?: string | null

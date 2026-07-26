@@ -55,6 +55,16 @@ describe('context spine schema', () => {
     }
   });
 
+  test('customers carries nullable solver coordinates (plan 4b-3 Phase 2)', async () => {
+    const cols = await columns('customers');
+    expect(cols.get('lat')?.data_type, 'customers.lat').toBe('double precision');
+    expect(cols.get('lng')?.data_type, 'customers.lng').toBe('double precision');
+    expect(cols.get('geocoded_at')?.udt_name, 'customers.geocoded_at').toBe('timestamptz');
+    for (const c of ['lat', 'lng', 'geocoded_at']) {
+      expect(cols.get(c)?.is_nullable, `customers.${c} nullable`).toBe('YES');
+    }
+  });
+
   test('jobs.status uses the job_status enum', async () => {
     const status = (await columns('jobs')).get('status');
     expect(status?.data_type).toBe('USER-DEFINED');

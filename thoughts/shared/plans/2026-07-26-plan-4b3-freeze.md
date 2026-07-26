@@ -228,9 +228,15 @@ address writes, fail path.
   finding.
 
 ### Automated verification
-- [ ] gates; geocode tests (fake transport: success persists + reuses without re-call;
+- [x] gates; geocode tests (fake transport: success persists + reuses without re-call;
       ZERO_RESULTS → null, nothing persisted; missing address → null, no API call)
-- [ ] schema test: columns exist, nullable
+      (697 passed, 2026-07-26)
+- [x] schema test: columns exist, nullable
+- [x] Invalidation audit CONCLUDED: **no address-column updater exists in src/**
+      (createCustomer only inserts; trySetCustomerAttribute touches attributes only) —
+      recorded as ⚠ comments on updateCustomerCoords + the migration header; a future
+      address editor must null lat/lng/geocoded_at in the same update.
+- [x] Phase review (fresh-context agent): no findings; audit independently re-verified.
 
 ### Live verification — deferred to Phase 5 rollout. Manual: none.
 ---

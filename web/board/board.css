@@ -380,20 +380,6 @@ body.dragging .stop.draggable { cursor: grabbing; }
   padding: 2px 0 2px 8px;
   margin: 0 0 10px;
 }
-/* Secondary tray action (Edit on an unscheduled job) — deliberately quieter
-   than .bucket-assign, which is the row's primary move. */
-.bucket-edit {
-  flex: none;
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 7px;
-  padding: 6px 11px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
 /* "No time yet" strip (plan 4b-2): unplaced-but-assigned work on its day,
    above the time grid — visually distinct from placed stop cards. */
 .tbd-strip {

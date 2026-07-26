@@ -309,6 +309,38 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   explicit start–end ALWAYS wins for that visit; job `duration_minutes` is the planning
   default (sizes find_slots, proposes a move's end, measured-once onto a minted shell) —
   a mismatch is legitimate and never reconciled.
+  **4b-3 THE FREEZE IMPLEMENTED 2026-07-26 — PR #86 OPEN (feature-4b3-freeze), awaiting
+  merge; NOT deployed.** Five phases: (1) pinning became a HUMAN privilege — `bookVisit`/
+  `moveVisit` no longer auto-stamp `locked:true` (moves/attaches carry the flag);
+  `setVisitLocks` core = ONE guarded bulk UPDATE (atomic, `status in (confirmed,proposed)`
+  predicated), `set_visit_locks` chat verb + `/board/api/lock` + Pinned chip on day grid,
+  strip, tray, and sheet toggle; manager surface 35 → **37 tools**. (2)
+  `customers.lat/lng/geocoded_at` + lazy Geocoding fill (`ensureCustomerCoords`;
+  no_address vs unlocatable reasons; migration applied LOCAL only — **pilot on explicit
+  go**). Audit fact: NO address-column updater exists in src/ today; whoever builds one must
+  null the coords in the same update (guard comments at `updateCustomerCoords` + the
+  migration header). (3) `roiClient` (Route Optimization API needs a SERVICE ACCOUNT —
+  API keys/end-user creds refused; projectId read from the key JSON;
+  `GOOGLE_ROUTES_SA_KEY_JSON` one-line in env) + `freezeSolve` (vehicle per tech-workday,
+  pattern gaps as breaks, placed visits = context shipments with LARGE penaltyCost never
+  mandatory, fences → ONE contiguous arrival window — **the API rejects adjacent
+  TimeWindows**, cited in-file; response parsing keys on LABELS — proto3 omits zero-valued
+  indexes). (4) `run_freeze`: always two-step; ONE tenant-wide `pending_freeze` token (12h
+  expiry, kind-wide supersede, `scheduleVersion` pinned BEFORE the solve, consume-first,
+  stage-race closed by rewriting detail); commit walks the normal verbs sequentially with a
+  promiseBroken belt and relays per-row warnings; `freeze_committed` summary pushes to
+  MANAGERS. (5) §0h freeze-ritual AGENTS.md block (refreshed per wire run): a cron-fired
+  freeze presents the proposal and STOPS — the manager's yes in the conversation is the only
+  commit path. **ROLLOUT ORDERING TRAP: the one-time pilot lock reset (`update assignments
+  set locked=false where status in ('confirmed','proposed')`) runs AFTER the deploy and
+  BEFORE the first freeze/board use** — without it every pre-4b-3 row reads "pinned" and the
+  first freeze skips the whole backlog; before the deploy, the old code re-stamps.
+  **Recorded limitation:** the confirm-time version pin cannot see `set_availability`/
+  time-off changes (they append no schedule event) — the relayed commit warnings are the
+  signal; the full fix (those verbs joining the event ledger) is future work. Day-0 rule:
+  the freeze trims run-day windows to firm-local NOW (`bookVisit` has no past-time guard —
+  only the board floors dates). Freeze input truth: pattern-less techs are INVISIBLE
+  (3 of 5 active pilot techs have no pattern as of 2026-07-26 — manager sets them in chat).
 - **Deferred / backlog (each has an owner-stated reason — check before resurrecting):**
   `reflow_day` batch cascade (3c); ROI/whole-plan optimization → Plan 4's freeze; jargon
   leaking into chat (conflict #1 — fix must NOT be verbatim templates); Sat/Sun "next week"

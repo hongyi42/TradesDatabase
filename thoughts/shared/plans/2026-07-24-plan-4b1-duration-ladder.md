@@ -2,7 +2,7 @@
 date: 2026-07-24
 task: Plan 4b-1 — job-level duration from a fixed ladder, required at creation, never defaulted
 research: thoughts/shared/research/2026-07-24-plan-4b-freeze-autonomy-time-tbd.md
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -432,16 +432,19 @@ Queries are scoped to the pilot tenant **and to the specific job ids written** �
 multi-tenant, and `src/writePath/recordFieldNote.ts:203` mints duration-less open jobs on the
 live ingest path, so an unscoped "all open jobs" count is never stably zero (plan-review
 finding):
-- [ ] `select count(*) from jobs where id in (<the 18 ids>) and duration_minutes is null`
-      returns 0
-- [ ] `select count(*) from jobs where id in (<the 18 ids>) and (duration_minutes <= 0 or
-      duration_minutes > 1440)` returns 0. **Not** an `in (<ladder>)` check — free minutes are
-      valid, so a rung-membership gate would fail on correct data.
+- [x] Seed applied 2026-07-26 (16 pairs — the drafted 18 shrank to 16: Tom Becker's job got
+      its length from a board edit, the AC repair went terminal; user go: "do as you must").
+      Scoped null-count over the 16 written ids = 0; guarded `where duration_minutes is
+      null` so nothing was overwritten. Pilot-wide: 17/17 open jobs now carry a length.
+- [x] Range check over the 16 ids: 0 rows outside (0, 1440] — values span 45–480.
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP.
-- [ ] `find_slots` from live chat on a previously untyped pilot job now returns candidates.
-      **Evidence:** the chat reply plus the job's `duration_minutes` read back over SQL.
+- [x] Live chat (s2, session `p4b1-seed-verify-0726`): "When can we fit the kitchen faucet
+      replacement job?" (+ customer Marcus Lee) → find_slots returned day-level candidates
+      across three days, correctly quoting DAYS, and offered time-TBD booking unprompted.
+      The job was duration-less before the seed (90m written).
 
 ### Manual verification
-- [ ] User go-ahead on the 18 title→minutes pairs before the write runs.
+- [x] User go-ahead recorded 2026-07-26: "For the seed data, do as you must to make sure
+      testing goes smoothly." Pairs shown 2026-07-25.

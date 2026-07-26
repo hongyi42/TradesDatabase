@@ -80,7 +80,9 @@ reminder in the manager's chat, never as an unattended commit.
   solve (review finding 1). Context shipments are NEVER committed. Placed visits of
   pattern-less techs are omitted entirely (those techs have no vehicle and receive no new
   work). Queue items = shipments with `penaltyCost` (skippable, reported): unplaced rows get
-  fence∩horizon windows (per-day windows for ranges); a placed person-less visit gets **its
+  fence∩horizon windows (**ONE contiguous window per range — corrected at Phase 3 review:
+  the API rejects adjacent TimeWindows, "must be disjoint … nor adjacent", ShipmentModel
+  reference, so per-day windows would fail every solve**); a placed person-less visit gets **its
   own exact start–end as the window** — the solver only picks WHO, and the commit attaches at
   the same times (review finding 2); `duration` from the job; `allowedVehicleIndices` when a
   technician is attached. No depot: vehicles omit start/end locations (recorded limitation:
@@ -269,10 +271,19 @@ The pure solve: queues + capacity in, placement plan out. No chat surface, no wr
   this boundary only.
 
 ### Automated verification
-- [ ] gates; freezeSolve tests with a FAKE transport: model shape (windows from fences,
+- [x] gates; freezeSolve tests with a FAKE transport: model shape (windows from fences,
       breaks from split patterns, fixed shipments for placed rows, allowedVehicleIndices for
       assigned rows, penaltyCost present), response parsing, every skip reason, capacity math
-- [ ] roiClient test: auth header minted from fake key, error propagation
+      (711 passed, 2026-07-26)
+- [x] roiClient test: auth header minted from fake key, error propagation — PLUS the live
+      seams: mint error paths against real env handling, Bearer header on a stubbed fetch
+- [x] Phase review (fresh-context agent, live-doc verified): 5 findings, all fixed —
+      (1) per-day fence windows are ADJACENT and the API rejects adjacent TimeWindows →
+      one contiguous window per range (Decisions bullet corrected, cited); (2) an attached
+      tech with zero vehicle days serialized `allowedVehicleIndices: []` = "ALL vehicles" →
+      assembly-side skip + builder belt; (3) adjacent/unsorted stored pattern windows →
+      normalizeWindows (sort+merge) before span/break math; (4) live mint/transport seams
+      untested → added; (5) three skip reasons unpinned → pinned.
 
 ### Live verification — none here (first live call is Phase 4's E2E). Manual: none.
 ---

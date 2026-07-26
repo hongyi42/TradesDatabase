@@ -277,8 +277,15 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     }
     // Same duplicate hazard as person-less placed rows, range-keyed: unplaced
     // rows are ALSO exempt from the DB guard, so a transport retry would
-    // silently duplicate without this.
-    const twins = await listIdenticalUnplacedVisits(tenantId, earliestDate, latestDate);
+    // silently duplicate without this. Technician-keyed — a retry carries the
+    // same person-or-nobody, and a DIFFERENT technician on the same range is
+    // a legitimate second visit (two trades, same week), not a twin.
+    const twins = await listIdenticalUnplacedVisits(
+      tenantId,
+      earliestDate,
+      latestDate,
+      technician?.id ?? null,
+    );
     if (twins.some((t) => t.customerId === customer.id)) {
       throw new Error(
         `an identical time-TBD visit for ${customer.name} already exists for ` +
@@ -869,18 +876,23 @@ export interface AttachUnplacedResult {
   created: Assignment;
 }
 
-export async function attachUnplacedVisit(input: {
+interface AttachUnplacedGuardInput {
   tenantId: string;
   assignmentId: string;
   technicianRef: string | null; // null = DETACH (park back unassigned)
-  reason: string;
-  actorRef: string;
   // Board policy floor (passed by the board endpoint only — chat keeps its
   // history-correction ability): refuse when the WHOLE range is already past.
   notBeforeDate?: string;
-}): Promise<AttachUnplacedResult> {
+}
+
+// Shared front-half: every guard the commit enforces, writes NOTHING — the
+// board previews with exactly these checks (final-review finding: the preview
+// used to green-light unconditionally while every sibling write validates at
+// preview, so a stale tab walked the picker + confirm into a guaranteed 409).
+async function resolveAttachUnplaced(
+  input: AttachUnplacedGuardInput,
+): Promise<{ old: Assignment; technician: Technician | null }> {
   const { tenantId } = input;
-  if (!input.reason?.trim()) throw new Error('reason is required for an attach');
   const old = await getAssignmentForTenant(input.assignmentId, tenantId);
   if (!old) throw new Error('assignment not found');
   if (old.status !== 'confirmed' && old.status !== 'proposed') {
@@ -901,6 +913,41 @@ export async function attachUnplacedVisit(input: {
   const technician = input.technicianRef
     ? await resolveTechnician(tenantId, input.technicianRef)
     : null;
+  return { old, technician };
+}
+
+export interface AttachUnplacedPreview {
+  assignmentId: string;
+  technicianRef: string | null; // resolved target; null = detach
+  earliestDate: string;
+  latestDate: string;
+  // An attach is reversible (unassign:true parks it back) and keeps the
+  // promise untouched — never confirm-gated (the confirmation doctrine).
+  requiresConfirmation: false;
+}
+
+export async function previewAttachUnplacedVisit(
+  input: AttachUnplacedGuardInput,
+): Promise<AttachUnplacedPreview> {
+  const { old, technician } = await resolveAttachUnplaced(input);
+  return {
+    assignmentId: old.id,
+    technicianRef: technician?.ref ?? null,
+    earliestDate: old.earliest_date as string,
+    latestDate: old.latest_date as string,
+    requiresConfirmation: false,
+  };
+}
+
+export async function attachUnplacedVisit(
+  input: AttachUnplacedGuardInput & {
+    reason: string;
+    actorRef: string;
+  },
+): Promise<AttachUnplacedResult> {
+  const { tenantId } = input;
+  if (!input.reason?.trim()) throw new Error('reason is required for an attach');
+  const { old, technician } = await resolveAttachUnplaced(input);
   const cancelled = await updateAssignmentStatus(old.id, 'cancelled', input.reason);
   let created: Assignment;
   try {

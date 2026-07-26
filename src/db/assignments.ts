@@ -521,13 +521,18 @@ export async function listUnplacedAssignedForRange(
 
 // Range-keyed sibling of the guard above (plan 4b-2): unplaced rows are ALSO
 // exempt from the DB overlap guard, so a retried one-shot timeTbd booking
-// would silently duplicate without this exact-range check.
+// would silently duplicate without this exact-range check. Keyed on the
+// TECHNICIAN too (final-review finding): a retry duplicates with the SAME
+// person-or-nobody, so that is the twin key — without it a legitimate second
+// same-range visit for one customer with a DIFFERENT technician (two trades,
+// same week) was refused as a duplicate.
 export async function listIdenticalUnplacedVisits(
   tenantId: string,
   earliestDate: string,
   latestDate: string,
+  technicianId: string | null,
 ): Promise<IdenticalUnassignedRow[]> {
-  const { data, error } = await getClient()
+  let query = getClient()
     .from('assignments')
     .select(IDENTICAL_UNASSIGNED_SELECT)
     .eq('tenant_id', tenantId)
@@ -535,6 +540,9 @@ export async function listIdenticalUnplacedVisits(
     .is('starts_at', null)
     .eq('earliest_date', earliestDate)
     .eq('latest_date', latestDate);
+  query =
+    technicianId === null ? query.is('technician_id', null) : query.eq('technician_id', technicianId);
+  const { data, error } = await query;
   if (error) throw new Error(`listIdenticalUnplacedVisits failed: ${error.message}`);
   return (
     (data ?? []) as Array<{ id: string; jobs: { customer_id: string; tenant_id: string } | null }>

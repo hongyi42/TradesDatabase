@@ -140,6 +140,7 @@ import {
   latestScheduleVersion,
   listAssignmentsForTenant,
   listUnassignedAssignments,
+  listUnplacedAssignedForRange,
   listJobsWithCustomerByIds,
   type PromiseLevel,
 } from '../db/index.js';
@@ -644,7 +645,10 @@ const ADMIN_TOOLS = [
       "told: none/day/time/time_only), promisedDay, and locked (manager-pinned). Stops with " +
       'unassigned:true have NOBODY attached yet and need a person (attach with move_visit). ' +
       'Pass unassignedOnly:true to list ALL upcoming visits with nobody attached, however far ' +
-      'out (no 14-day cap) — use it when the manager asks what still needs assigning. Also ' +
+      'out (no 14-day cap) — use it when the manager asks what still needs assigning. Stops ' +
+      'with timeTbd:true hold a day (or an earliestDate–latestDate range) and NO time yet — ' +
+      'say "time not set", never invent one; they appear in both views (windowed when a ' +
+      'person is attached, unassignedOnly when not). Also ' +
       'returns scheduleVersion — quote it when discussing changes so staleness is detectable. ' +
       'When the result carries boardNote, ALWAYS end your reply with its exact ' +
       '[See it on the board](…) line — EVERY schedule answer ends with it, plain reads included; ' +
@@ -2731,14 +2735,24 @@ async function dispatch(
       // assignment, so listUnassignedOpenJobs skips it, and per-technician
       // readers never see a null technician). Same stop shape either way —
       // ONE builder below, so the two views can never drift.
+      // Windowed mode ALSO folds in ASSIGNED-and-unplaced rows (final-review
+      // finding): the placed reader is time-filtered, so without this read an
+      // attached time-TBD visit was invisible to every chat surface — the
+      // agent denied it existed and could never fetch its assignmentId to
+      // place, move, or cancel it. Independent reads, so they run in parallel.
       const rows = unassignedOnly
         ? await listUnassignedAssignments(tenantId, `${from}T00:00:00.000Z`)
-        : await listAssignmentsForTenant(
-            tenantId,
-            `${from}T00:00:00.000Z`,
-            new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
-            ['confirmed'],
-          );
+        : (
+            await Promise.all([
+              listAssignmentsForTenant(
+                tenantId,
+                `${from}T00:00:00.000Z`,
+                new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
+                ['confirmed'],
+              ),
+              listUnplacedAssignedForRange(tenantId, from, toDay as string),
+            ])
+          ).flat();
       const jobs = await listJobsWithCustomerByIds(tenantId, [
         ...new Set(rows.map((r) => r.job_id)),
       ]);
@@ -2749,12 +2763,16 @@ async function dispatch(
         // Overlap semantics can pull in a row starting before `from` — clamp
         // to the requested days by start-day, the daySource precedent (the
         // upper arm applies only in windowed mode). An UNPLACED row (null
-        // times, plan 4b-2 — only the unassignedOnly recall view can see one)
-        // belongs to its range's earliest day; it drops only when its WHOLE
-        // range is past (review finding: a Mon–Fri range asked about on
-        // Wednesday is live upcoming work — clamping on the earliest day hid
-        // it from recall while the tray still showed it).
-        const day = row.starts_at ? row.starts_at.slice(0, 10) : (row.earliest_date as string);
+        // times, plan 4b-2 — both modes can see one now: recall shows the
+        // person-less, windowed shows the assigned) lands on its range's
+        // earliest day CLAMPED to `from` (final-review finding: an unclamped
+        // straddling range emitted a day group dated before the requested
+        // window — the one invariant every other read here keeps). It drops
+        // only when its WHOLE range is past (review finding: a Mon–Fri range
+        // asked about on Wednesday is live upcoming work).
+        const rangeDay = row.starts_at === null ? (row.earliest_date as string) : null;
+        const day =
+          row.starts_at?.slice(0, 10) ?? ((rangeDay as string) < from ? from : (rangeDay as string));
         if (row.starts_at) {
           if (day < from || (toDay !== null && day > toDay)) continue;
         } else if ((row.latest_date as string) < from) {
@@ -2940,7 +2958,11 @@ async function dispatch(
             unassigned: booked.assignment.technician_id === null,
             // Placed: the booked day. Unplaced: the range start (+ range echo
             // below) — the reply must speak in days, never invent a time.
-            date: date ?? booked.assignment.earliest_date,
+            // ROW-derived, never the input: on a mixed date+earliestDate call
+            // resolveBooking books the RANGE day, so echoing the ignored
+            // `date` arg would report a day the row doesn't hold
+            // (final-review finding).
+            date: booked.assignment.starts_at?.slice(0, 10) ?? booked.assignment.earliest_date,
             // Resolved times from the row itself (naive-local, exact slices).
             // Null on a timeTbd booking (plan 4b-2).
             startTime: booked.assignment.starts_at?.slice(11, 16) ?? null,
@@ -4659,8 +4681,10 @@ async function dispatch(
       // "when can we fit this?" means within the days it already holds
       // (plan 4b-2); explicit args still override, placed subjects keep the
       // today-forward default.
-      const earliest = str('earliestDate') ?? subjectRow?.earliest_date ?? todayISO;
-      const latest = str('latestDate') ?? subjectRow?.latest_date ?? addDaysISO(todayISO, 13);
+      const earliestArg = str('earliestDate');
+      const latestArg = str('latestDate');
+      let earliest = earliestArg ?? subjectRow?.earliest_date ?? todayISO;
+      let latest = latestArg ?? subjectRow?.latest_date ?? addDaysISO(todayISO, 13);
       // Non-string range args → invalid_range, not a silent default window
       // (mirrors get_team_schedule's guard).
       if (
@@ -4679,19 +4703,36 @@ async function dispatch(
           note: 'earliestDate/latestDate must be YYYY-MM-DD with earliest <= latest',
         };
       }
-      const spanDays =
-        (Date.parse(`${latest}T00:00:00Z`) - Date.parse(`${earliest}T00:00:00Z`)) / 86_400_000 + 1;
-      if (!Number.isFinite(spanDays)) {
+      // Parseability BEFORE the clamps below — addDaysISO throws on a
+      // regex-passing garbage date ('2026-02-31'), and garbage must stay an
+      // invalid_range, never an exception.
+      if (
+        !Number.isFinite(Date.parse(`${earliest}T00:00:00Z`)) ||
+        !Number.isFinite(Date.parse(`${latest}T00:00:00Z`))
+      ) {
         return { status: 'invalid_range', note: 'earliestDate/latestDate is not a real calendar date' };
-      }
-      if (spanDays > 14) {
-        return { status: 'invalid_range', note: 'range is capped at 14 days' };
       }
       if (latest < todayISO) {
         return {
           status: 'invalid_range',
           note: `the whole range is in the past (today is ${todayISO}) — slots can only be found from today onward`,
         };
+      }
+      // Subject-DEFAULTED bounds are clamped, never thrown (final-review
+      // finding): the 14-day cap and the today floor are rules about the
+      // caller's ARGUMENTS, and erroring on values the caller never passed is
+      // a dead end — a "sometime this month" visit (a range chat happily
+      // books) must still answer a bare find_slots call. Explicit args keep
+      // the hard errors below.
+      if (earliestArg === undefined && earliest < todayISO) earliest = todayISO;
+      if (latestArg === undefined) {
+        const cap = addDaysISO(earliest, 13);
+        if (latest > cap) latest = cap;
+      }
+      const spanDays =
+        (Date.parse(`${latest}T00:00:00Z`) - Date.parse(`${earliest}T00:00:00Z`)) / 86_400_000 + 1;
+      if (spanDays > 14) {
+        return { status: 'invalid_range', note: 'range is capped at 14 days' };
       }
       // Unknown/deactivated pin → a clear error, not an empty search.
       if (pinnedRef) await resolveScheduleInputTarget(tenantId, pinnedRef);

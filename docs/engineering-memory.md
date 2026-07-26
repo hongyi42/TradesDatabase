@@ -243,6 +243,28 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   (`thoughts/shared/plans/2026-07-25-plan-resolve-date-week-mode.md`).
   Doctrine from the Plan-3 reshape stands: **no monolithic auto-scheduler; agency stays in the
   agent, tools measure** (research: `thoughts/shared/research/2026-07-20-flexible-scheduling-agent-toolset.md`).
+  **Unplaced visits (plan 4b-2) IMPLEMENTED 2026-07-25, branch `feature-4b2-unplaced-visits`
+  — NOT yet on the pilot (migration `20260724130000_unplaced_visits.sql` applied to the LOCAL
+  stack only; pilot apply is Phase 5, migration-BEFORE-deploy, owner gate):** an assignments
+  row is now PLACED (`starts_at`+`ends_at`, range null) **or** UNPLACED (`earliest_date`+
+  `latest_date` DATE range, times null) — never half of each (`assignment_placed_or_windowed`
+  CHECK). Facts other work builds on: (a) the `no_confirmed_overlap` double-booking guard is
+  **narrowed to placed rows** (`starts_at is not null` — an unplaced tstzrange(null,null)
+  would have blocked the whole calendar; unplaced = demand, not schedule); (b) the PR #53
+  "times required" rule has its **one recorded exception**: `book_visit timeTbd:true` +
+  `earliestDate`/`latestDate`, explicit-manager-words only, promise `none`/`day` only;
+  (c) time-filtered readers return `PlacedAssignment` by construction — an assigned unplaced
+  visit is served by `listUnplacedAssignedForRange` (board strip per covered day, windowed
+  `get_team_schedule` on its clamped earliest day) and a person-less one by the widened
+  `listUnassignedAssignments` (tray + `unassignedOnly` recall); (d) placing = normal
+  `move_visit` (endTime falls back old span → job `duration_minutes` → explicit required);
+  attach/detach-keeping-unplaced = `attachUnplacedVisit` (board `/move` `attachUnplaced:true`);
+  (e) fit engine: unplaced work adds day LOAD (`commitmentsByDate`), never day SHAPE
+  (`DENSE_DAY_STOPS` counts placed stops only). Regenerating types (`npm run gen:types`,
+  --linked) before the pilot migration lands would produce stale nullability — don't.
+  Fleet rollout note: the AGENTS.md doctrine block gained the timeTbd exception (bootstrap
+  `wire` refresh) — run the wire pass only AFTER the server deploy, or agents will pass a
+  flag the server doesn't know.
 - **Deferred / backlog (each has an owner-stated reason — check before resurrecting):**
   `reflow_day` batch cascade (3c); ROI/whole-plan optimization → Plan 4's freeze; jargon
   leaking into chat (conflict #1 — fix must NOT be verbatim templates); Sat/Sun "next week"

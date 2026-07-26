@@ -575,6 +575,51 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     }
   });
 
+  test("the manager's Mine tab keeps their OWN strip — TIER gates it, never the self-filter", async () => {
+    // Final-review finding: gated on viewerTechnicianId, the Mine tab lost
+    // the strip entirely and the two manager tabs contradicted each other.
+    const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
+      .rows[0].id as string;
+    const mgrJob = (
+      await pg.query(
+        `insert into jobs (tenant_id, customer_id, title, status)
+         values ($1, $2, 'Mine strip job', 'open') returning id`,
+        [tenantId, casaId],
+      )
+    ).rows[0].id as string;
+    const resp = await fetch(`${base}/board/api/book`, {
+      method: 'POST',
+      headers: { ...tma(900000001), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jobId: mgrJob,
+        timeTbd: true,
+        earliestDate: d1,
+        technicianRef: 'board-mgr',
+      }),
+    });
+    expect(resp.status).toBe(200);
+    const mgrVisit = ((await resp.json()) as { assignmentId: string }).assignmentId;
+    try {
+      const mine = await fetch(`${base}/board/api/day?from=${d1}&to=${d3}&view=mine`, {
+        headers: tma(900000001),
+      });
+      expect(mine.status).toBe(200);
+      const body = (await mine.json()) as {
+        view: string;
+        days: Array<{ date: string; unplaced: Array<{ assignmentId: string }> }>;
+      };
+      expect(body.view).toBe('mine');
+      const stripIds = body.days.flatMap((d) => d.unplaced.map((u) => u.assignmentId));
+      // Their own unplaced visit is there; board-t1's is filtered out — the
+      // self-filter applies WITHIN the strip, it doesn't remove the strip.
+      expect(stripIds).toContain(mgrVisit);
+      expect(stripIds).not.toContain(stripAssignmentId);
+    } finally {
+      await pg.query("update assignments set status = 'cancelled' where id = $1", [mgrVisit]);
+      await pg.query("update jobs set status = 'cancelled' where id = $1", [mgrJob]);
+    }
+  });
+
   test('timeTbd + times is a 400; attachUnplaced re-attaches keeping the range', async () => {
     const bad = await fetch(`${base}/board/api/book`, {
       method: 'POST',
@@ -684,6 +729,69 @@ describe('the "no time yet" strip (plan 4b-2 Phase 3)', () => {
     } finally {
       await pg.query("update assignments set status = 'cancelled' where id = $1", [pastRow]);
       await pg.query("update jobs set status = 'cancelled' where id = $1", [pastJob]);
+    }
+  });
+
+  test('the attach PREVIEW runs the commit guards: valid → green light, placed subject → 409 (final-review fix)', async () => {
+    // Valid target: the detached strip row (unplaced, unassigned) previews
+    // clean and is NOT modified by the preview.
+    const ok = await fetch(`${base}/board/api/move?preview=1`, {
+      method: 'POST',
+      headers: { ...tma(900000001), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        assignmentId: stripAssignmentId,
+        attachUnplaced: true,
+        technicianRef: 'board-t1',
+        reason: 'preview probe',
+      }),
+    });
+    expect(ok.status).toBe(200);
+    const okBody = (await ok.json()) as Record<string, unknown>;
+    expect(okBody.status).toBe('preview');
+    expect(okBody.attach).toBe(true);
+    expect(okBody.requiresConfirmation).toBe(false);
+    expect(okBody.earliestDate).toBe(d1);
+    const after = await pg.query('select technician_id, status from assignments where id = $1', [
+      stripAssignmentId,
+    ]);
+    expect(after.rows[0].technician_id).toBeNull(); // preview wrote nothing
+    expect(after.rows[0].status).toBe('confirmed');
+
+    // A PLACED subject refuses at PREVIEW time, not after the picker walk
+    // (the finding: the old preview green-lit unconditionally and the user
+    // discovered the refusal only at commit).
+    const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
+      .rows[0].id as string;
+    const placedJob = (
+      await pg.query(
+        `insert into jobs (tenant_id, customer_id, title, status)
+         values ($1, $2, 'Placed preview job', 'open') returning id`,
+        [tenantId, casaId],
+      )
+    ).rows[0].id as string;
+    const placedRow = (
+      await pg.query(
+        `insert into assignments (tenant_id, job_id, starts_at, ends_at, status)
+         values ($1, $2, $3, $4, 'confirmed') returning id`,
+        [tenantId, placedJob, `${relDate(25)}T09:00:00Z`, `${relDate(25)}T10:00:00Z`],
+      )
+    ).rows[0].id as string;
+    try {
+      const refused = await fetch(`${base}/board/api/move?preview=1`, {
+        method: 'POST',
+        headers: { ...tma(900000001), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          assignmentId: placedRow,
+          attachUnplaced: true,
+          technicianRef: 'board-t1',
+          reason: 'preview probe placed',
+        }),
+      });
+      expect(refused.status).toBe(409);
+      expect(((await refused.json()) as { error: string }).error).toContain('has times');
+    } finally {
+      await pg.query("update assignments set status = 'cancelled' where id = $1", [placedRow]);
+      await pg.query("update jobs set status = 'cancelled' where id = $1", [placedJob]);
     }
   });
 });
@@ -816,6 +924,42 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
         booked.assignment.id,
       ]);
       await pg.query("update jobs set status = 'cancelled' where id = $1", [booked.job.id]);
+    }
+  });
+
+  test('the tray is ordered by each visit\'s DAY — a soon time-TBD range outranks a far placed visit', async () => {
+    // Final-review finding: the SQL orders on starts_at with NULLs last, so
+    // every time-TBD row sank to the bottom regardless of how soon its range
+    // is — the most urgent parked work rendered below visits weeks out.
+    const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
+      .rows[0].id as string;
+    const soonTbd = await bookVisit({
+      tenantId,
+      customerId: casaId,
+      title: 'Bucket soon TBD',
+      timeTbd: true,
+      earliestDate: relDate(5), // BEFORE 'Bucket parked visit' at relDate(9)
+      latestDate: relDate(6),
+      actorRef: 'board-mgr',
+    });
+    try {
+      const resp = await bucket(tma(900000001));
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as {
+        parkedVisits: Array<{ jobTitle: string | null; date: string }>;
+      };
+      const dates = body.parkedVisits.map((v) => v.date);
+      expect([...dates].sort()).toEqual(dates); // ascending by day, one rule for both shapes
+      const tbdIdx = body.parkedVisits.findIndex((v) => v.jobTitle === 'Bucket soon TBD');
+      const placedIdx = body.parkedVisits.findIndex((v) => v.jobTitle === 'Bucket parked visit');
+      expect(tbdIdx).toBeGreaterThanOrEqual(0);
+      expect(placedIdx).toBeGreaterThanOrEqual(0);
+      expect(tbdIdx).toBeLessThan(placedIdx);
+    } finally {
+      await pg.query("update assignments set status = 'cancelled' where id = $1", [
+        soonTbd.assignment.id,
+      ]);
+      await pg.query("update jobs set status = 'cancelled' where id = $1", [soonTbd.job.id]);
     }
   });
 

@@ -13,6 +13,7 @@ import {
 } from '../schedule/boardRead.js';
 import {
   attachUnplacedVisit,
+  previewAttachUnplacedVisit,
   bookVisit,
   unscheduleVisit,
   isPromiseLevel,
@@ -598,25 +599,34 @@ export async function handleBoardRequest(
             });
             return;
           }
+          const tz = (await getTenant(auth.tenantId))?.timezone ?? 'UTC';
+          // The board's past floor, on the RANGE END: a straddling range
+          // stays actionable; a fully-past one is a chat job (review
+          // finding — every other /move write already has this floor).
+          const notBeforeDate = localDateISO(new Date().toISOString(), tz);
           // The client's move flow previews first — an attach is reversible
           // (unassign:true parks it back) and keeps the promise untouched, so
-          // the preview just green-lights the commit (requiresConfirmation
-          // false; committing on the preview call would double-attach).
+          // requiresConfirmation stays false, but the preview runs the SAME
+          // guards the commit will (final-review finding: an unconditional
+          // green light walked a stale tab through the picker + confirm into
+          // a guaranteed 409; every sibling write validates at preview).
           if (preview) {
-            json(res, 200, { status: 'preview', attach: true, requiresConfirmation: false });
+            const attachPreview = await previewAttachUnplacedVisit({
+              tenantId: auth.tenantId,
+              assignmentId: attachId,
+              technicianRef: detach ? null : (attachRef as string),
+              notBeforeDate,
+            });
+            json(res, 200, { status: 'preview', attach: true, ...attachPreview });
             return;
           }
-          const tz = (await getTenant(auth.tenantId))?.timezone ?? 'UTC';
           const attached = await attachUnplacedVisit({
             tenantId: auth.tenantId,
             assignmentId: attachId,
             technicianRef: detach ? null : (attachRef as string),
             reason,
             actorRef: auth.technician.ref,
-            // The board's past floor, on the RANGE END: a straddling range
-            // stays actionable; a fully-past one is a chat job (review
-            // finding — every other /move write already has this floor).
-            notBeforeDate: localDateISO(new Date().toISOString(), tz),
+            notBeforeDate,
           });
           json(res, 200, {
             status: 'moved',

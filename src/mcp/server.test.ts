@@ -3421,12 +3421,25 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       const recallStraddle = await callWith('get_team_schedule', {
         unassignedOnly: true, from: '2026-12-15',
       });
-      const straddleStops = (
-        recallStraddle.data.days as Array<{ stops: Array<Record<string, unknown>> }>
-      ).flatMap((d) => d.stops);
-      expect(
-        straddleStops.some((st) => st.assignmentId === straddle.data.assignmentId),
-      ).toBe(true);
+      const straddleDays = recallStraddle.data.days as Array<{
+        date: string;
+        stops: Array<Record<string, unknown>>;
+      }>;
+      const straddleDay = straddleDays.find((d) =>
+        d.stops.some((st) => st.assignmentId === straddle.data.assignmentId),
+      );
+      expect(straddleDay).toBeDefined();
+      // …and its day group is CLAMPED to `from` (final-review finding: the
+      // unclamped earliest_date emitted a group dated before the requested
+      // window — the agent relayed live Dec 15–20 work as five days past).
+      expect(straddleDay?.date).toBe('2026-12-15');
+      const straddleStop = straddleDay?.stops.find(
+        (st) => st.assignmentId === straddle.data.assignmentId,
+      );
+      // The true range still rides the stop — the clamp adjusts the group
+      // key, never the data.
+      expect(straddleStop?.earliestDate).toBe('2026-12-10');
+      expect(straddleStop?.latestDate).toBe('2026-12-20');
 
       // The recall view lists it with its day and NO invented time.
       const recall = await callWith('get_team_schedule', { unassignedOnly: true });
@@ -3483,6 +3496,101 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
           techRow2.rows[0].id,
         ]);
       }
+      await mgrClient.close();
+    }
+  });
+
+  test('assigned time-TBD visits: windowed visibility + clamped day, wide-range find_slots, row-derived echo — final-review fixes', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({
+      tenantId,
+      name: 'TBD Wanda',
+      addressLine1: '4 Fold Court',
+      city: 'Clovis',
+      state: 'CA',
+      postalCode: '93611',
+    });
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      // An ASSIGNED time-TBD visit must appear in the WINDOWED team schedule
+      // (final-review finding: the placed reader is time-filtered and the
+      // recall view filters technician IS NULL, so an attached unplaced visit
+      // was invisible to every chat surface — the agent denied it existed and
+      // could never fetch its id to place, move, or cancel it).
+      const booked = await callWith('book_visit', {
+        customerId: customer.id, title: 'assigned tbd', timeTbd: true,
+        technicianRef: 'tech-mcp',
+        earliestDate: '2026-12-21', latestDate: '2026-12-23',
+      });
+      expect(booked.data.status).toBe('booked');
+      const assignmentId = booked.data.assignmentId as string;
+      // Full-window read: lands on its own earliest day, person attached.
+      const full = await callWith('get_team_schedule', {
+        from: '2026-12-20', to: '2026-12-24',
+      });
+      const fullDays = full.data.days as Array<{
+        date: string;
+        stops: Array<Record<string, unknown>>;
+      }>;
+      const fullDay = fullDays.find((d) => d.stops.some((st) => st.assignmentId === assignmentId));
+      expect(fullDay?.date).toBe('2026-12-21');
+      const stop = fullDay?.stops.find((st) => st.assignmentId === assignmentId);
+      expect(stop).toMatchObject({
+        timeTbd: true,
+        technicianRef: 'tech-mcp',
+        unassigned: false,
+        startTime: null,
+        endTime: null,
+        earliestDate: '2026-12-21',
+        latestDate: '2026-12-23',
+      });
+      // Mid-range window: still visible, day group clamped to `from`.
+      const mid = await callWith('get_team_schedule', {
+        from: '2026-12-22', to: '2026-12-24',
+      });
+      const midDays = mid.data.days as Array<{
+        date: string;
+        stops: Array<Record<string, unknown>>;
+      }>;
+      const midDay = midDays.find((d) => d.stops.some((st) => st.assignmentId === assignmentId));
+      expect(midDay?.date).toBe('2026-12-22');
+      // A window the range never touches stays clean.
+      const outside = await callWith('get_team_schedule', {
+        from: '2026-12-26', to: '2026-12-28',
+      });
+      const outsideStops = (
+        outside.data.days as Array<{ stops: Array<Record<string, unknown>> }>
+      ).flatMap((d) => d.stops);
+      expect(outsideStops.some((st) => st.assignmentId === assignmentId)).toBe(false);
+
+      // find_slots on a subject whose range is WIDER than the 14-day cap:
+      // the subject-defaulted window CLAMPS instead of erroring (final-review
+      // finding: "sometime this month" booked fine, then a bare find_slots
+      // call died with invalid_range blaming args the agent never passed).
+      const wide = await callWith('book_visit', {
+        customerId: customer.id, title: 'whole month', timeTbd: true,
+        earliestDate: '2027-02-01', latestDate: '2027-02-28',
+      });
+      const wideId = wide.data.assignmentId as string;
+      await callWith('update_job', { jobId: wide.data.jobId, durationMinutes: 60 });
+      const slots = await callWith('find_slots', { assignmentId: wideId });
+      expect(slots.data.status).not.toBe('invalid_range');
+      const searched = slots.data.searched as { days: number } | undefined;
+      if (searched) expect(searched.days).toBeLessThanOrEqual(14);
+
+      // One-shot echo derives the day from the ROW: on a mixed
+      // date+earliestDate call the range day wins the booking, and the echo
+      // must report the day the row actually holds, not the ignored arg.
+      const mixed = await callWith('book_visit', {
+        customerId: customer.id, title: 'mixed args', timeTbd: true,
+        date: '2026-12-28', earliestDate: '2026-12-29',
+      });
+      expect(mixed.data.status).toBe('booked');
+      expect(mixed.data.date).toBe('2026-12-29');
+      expect(mixed.data.earliestDate).toBe('2026-12-29');
+    } finally {
       await mgrClient.close();
     }
   });

@@ -935,6 +935,40 @@ describe('unplaced (timeTbd) bookings + placing them — plan 4b-2', () => {
     ).rejects.toThrow(/identical time-TBD visit/);
   });
 
+  test('the twin key includes the technician: same range + DIFFERENT person books; same person retries refuse', async () => {
+    // Two trades, same customer, same week ("plumber Alice Aug 4–6, then
+    // electrician Bob Aug 4–6") is a legitimate pattern, not a duplicate —
+    // the twin key is person-or-nobody (final-review finding: the unkeyed
+    // guard refused the second trade while the placed path allowed it).
+    const customer = await mkCustomer('TBD Two Trades');
+    await bookVisit({
+      tenantId, customerId: customer.id, title: 'first trade', timeTbd: true,
+      technicianRef: 'book-tech',
+      earliestDate: '2026-11-30', latestDate: '2026-12-02', actorRef: 'mgr',
+    });
+    // Different person, same range: books fine.
+    const second = await bookVisit({
+      tenantId, customerId: customer.id, title: 'second trade', timeTbd: true,
+      technicianRef: 'helper-hank',
+      earliestDate: '2026-11-30', latestDate: '2026-12-02', actorRef: 'mgr',
+    });
+    expect(second.assignment.starts_at).toBeNull();
+    // Same person, same range: the retry hazard the guard exists for.
+    await expect(
+      bookVisit({
+        tenantId, customerId: customer.id, title: 'retry', timeTbd: true,
+        technicianRef: 'book-tech',
+        earliestDate: '2026-11-30', latestDate: '2026-12-02', actorRef: 'mgr',
+      }),
+    ).rejects.toThrow(/identical time-TBD visit/);
+    // A person-less twin of an ASSIGNED visit is not a twin either.
+    const parked = await bookVisit({
+      tenantId, customerId: customer.id, title: 'parked too', timeTbd: true,
+      earliestDate: '2026-11-30', latestDate: '2026-12-02', actorRef: 'mgr',
+    });
+    expect(parked.assignment.technician_id).toBeNull();
+  });
+
   test('moving an unplaced visit to real times PLACES it: times set, range cleared', async () => {
     const customer = await mkCustomer('TBD Place');
     const booked = await bookVisit({

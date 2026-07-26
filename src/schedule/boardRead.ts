@@ -143,20 +143,28 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
 
   // ONE embedded read for the whole window (was: assignments + jobs-with-
   // customer + the full roster = three serial round-trips per board button).
-  // The unplaced strip read (plan 4b-2) is independent — run both in parallel
-  // (manager view only: a technician's day view is an operational document,
-  // and timeless work is not actionable for a read-only viewer).
-  const [rows, unplacedRows] = await Promise.all([
+  // The unplaced strip read (plan 4b-2) is independent — run both in parallel.
+  // The strip is gated on TIER (clampToHorizon — the same tier signal
+  // documented above), never on the self-filter: the manager's Mine tab
+  // passes viewerTechnicianId too and must keep their own strip, while a
+  // technician's day view stays an operational document with no timeless work
+  // (plan decision). Final-review finding: keyed on the self-filter, the two
+  // manager tabs contradicted each other.
+  const [rows, allUnplaced] = await Promise.all([
     listAssignmentsWithRefsForTenant(
       tenantId,
       `${from}T00:00:00.000Z`,
       new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
       ['confirmed'],
     ),
-    input.viewerTechnicianId != null
+    input.clampToHorizon
       ? Promise.resolve([])
       : listUnplacedAssignedForRange(tenantId, from, toDay),
   ]);
+  const unplacedRows =
+    input.viewerTechnicianId != null
+      ? allUnplaced.filter((r) => r.technician_id === input.viewerTechnicianId)
+      : allUnplaced;
   const visible =
     input.viewerTechnicianId != null
       ? rows.filter((r) => r.technician_id === input.viewerTechnicianId)
@@ -337,8 +345,12 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
     listUnassignedAssignmentsWithRefs(tenantId, '1970-01-01T00:00:00.000Z'),
     jobsPromise,
   ]);
-  return {
-    parkedVisits: parked.map((row) => {
+  // Sorted by each visit's DAY after mapping, not by the SQL order: the query
+  // orders on starts_at with NULLs last, which shoved every time-TBD row to
+  // the bottom of the tray regardless of how soon its range is (final-review
+  // finding: a range starting tomorrow rendered below a placed visit weeks
+  // out). Stable sort keeps same-day relative order.
+  const parkedVisits = parked.map((row) => {
       // ID-only foreign keys: re-check each nested row's tenant before its
       // name/title reaches a screen (withhold the field, keep the row —
       // the boardRead security pattern above).
@@ -362,9 +374,9 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
         jobTitle: job ? job.title : null,
         overdue: placedRow ? date < today : (row.latest_date as string) < today,
       };
-    }),
-    unscheduledJobs,
-  };
+    });
+  parkedVisits.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return { parkedVisits, unscheduledJobs };
 }
 
 // The board picker's roster read (plan 4a.5): every name chat booking would

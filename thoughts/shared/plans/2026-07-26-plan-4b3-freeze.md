@@ -182,23 +182,30 @@ skip in auto-scheduling") as recorded doctrine. Independently shippable.
 status in ('confirmed','proposed')` — auto-stamped noise, no human chose them.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] booking.test.ts: booked + moved rows land `locked:false`; a move of a locked row keeps it
-- [ ] EXISTING pins flipped (review finding 6): boardApi.test.ts:295/:458 and
-      server.test.ts:3681 assert `locked: true` on verb-created rows — update to `false`
-      (or explicit-lock fixtures); booking.test.ts:98/:352/:523 likewise
-- [ ] new setVisitLocks tests: ids path, range path (placed + unplaced fence overlap), empty
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` (691 passed, 2026-07-26)
+- [x] booking.test.ts: booked + moved rows land `locked:false`; a move of a locked row keeps it
+- [x] EXISTING pins flipped (review finding 6): boardApi.test.ts:295/:458 and
+      server.test.ts:3681 assert `locked: true` on verb-created rows — updated to `false`;
+      booking.test.ts:98/:352/:523 likewise; manager tool-count pins 35→36 (two sites)
+- [x] new setVisitLocks tests: ids path, range path (placed + unplaced fence overlap), empty
       refusal, `lock_updated` event shape
-- [ ] server.test.ts: `set_visit_locks` both selectors; boardApi.test.ts: `/lock` toggle + tier gate
+- [x] server.test.ts: `set_visit_locks` both selectors; boardApi.test.ts: `/lock` toggle + tier gate
+- [x] Phase review (fresh-context agent): 2 findings, both fixed — scripts/seed.mjs and
+      scripts/backfill-schedule.mjs still auto-stamped `locked: true` (a re-seed would
+      reintroduce the noise the pilot reset purges); stamps dropped, gates re-run green.
 
 ### Live verification (agent-executable)
 Deferred to Phase 5 rollout (no pilot schema change in this phase).
 
 ### Manual verification
-- [ ] Pinned chip renders on a locked visit (day grid + sheet); toggle flips it
+- [ ] Pinned chip renders on a locked visit (day grid + sheet); toggle flips it —
+      **DEFERRED to the Phase-5 rollout tail**: the board is a deployed Telegram Mini App,
+      so the phone glance is only possible after deploy (joins the post-deploy checklist,
+      the 4b-2 pattern).
 
 ---
-*Pause: manual item above (one phone glance) — confirm before Phase 2.*
+*Pause note: the manual item is un-executable pre-deploy, so implementation proceeds; the
+chip check joins the rollout checklist.*
 
 ## Phase 2: Geocoding
 

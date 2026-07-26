@@ -22,12 +22,14 @@ import {
   isInactiveState,
   isOverlapViolation,
   isValidDuration,
+  listAssignmentsForLockRange,
   listAssignmentsForTechnician,
   listTimeOffForTechnician,
   listAssignmentsForJob,
   listIdenticalUnassignedVisits,
   listIdenticalUnplacedVisits,
   rescheduleAssignment,
+  updateAssignmentLocked,
   updateAssignmentPromise,
   updateAssignmentStatus,
   updateJobDetails,
@@ -504,7 +506,9 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       promisedDay: carriesPromisedDay(r.promiseLevel)
         ? (r.startISO ? (input.date as string) : (r.earliestDate as string))
         : null,
-      locked: true,
+      // locked stays at its FALSE default (plan 4b-3): pinning is a human
+      // privilege — no verb auto-stamps it. A manager pins via
+      // set_visit_locks / the board toggle when they mean "hands off".
     });
   } catch (err) {
     // The pre-check raced a concurrent booking and the DB guard fired. If WE
@@ -751,8 +755,9 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
       status: 'confirmed', // default-'proposed' would vanish from every reader
       // Promise level carries from the old row; the promised day tracks the new
       // date only for day-carrying levels ('none'/'time_only' stay day-free).
+      // locked is deliberately OMITTED (plan 4b-3): rescheduleAssignment then
+      // carries the old row's flag — a move never re-decides a human's pin.
       promisedDay: carriesPromisedDay(r.old.promise_level) ? input.date : null,
-      locked: true,
     });
   } catch (err) {
     // rescheduleAssignment cancels FIRST, so ANY insert failure here — the
@@ -1074,6 +1079,94 @@ export async function setVisitPromise(
     },
   });
   return { previous: row, updated };
+}
+
+// ---- Visit locks (plan 4b-3): pinning is a HUMAN privilege ----
+//
+// `locked` = a manager pinned this visit: automatic scheduling (the freeze)
+// must never place, move, or consider it — on unplaced rows it means "I'll
+// place this myself". Nothing auto-locks; this core is the ONE writer every
+// surface (chat verb, board toggle) calls. Reversible + internal → one-shot,
+// no confirmation (the doctrine).
+
+export type VisitLockSelector =
+  | { assignmentIds: string[] }
+  | { from: string; to: string; technicianRef?: string };
+
+export interface SetVisitLocksResult {
+  updated: Assignment[];
+  days: string[]; // distinct visit days touched, sorted
+}
+
+export async function setVisitLocks(
+  tenantId: string,
+  selector: VisitLockSelector,
+  locked: boolean,
+  actorRef: string,
+): Promise<SetVisitLocksResult> {
+  let targets: Assignment[];
+  let rangeDetail: { from?: string; to?: string } = {};
+  if ('assignmentIds' in selector) {
+    const ids = [...new Set(selector.assignmentIds)];
+    if (ids.length === 0) throw new Error('assignmentIds is empty — name at least one visit');
+    targets = [];
+    for (const id of ids) {
+      const row = await getAssignmentForTenant(id, tenantId);
+      if (!row) throw new Error(`visit ${id} not found`);
+      // Terminal rows have nothing to protect — refuse instead of silently
+      // stamping a flag no reader will ever consult.
+      if (row.status !== 'confirmed' && row.status !== 'proposed') {
+        throw new Error(`cannot ${locked ? 'pin' : 'unpin'} a ${row.status} visit`);
+      }
+      targets.push(row);
+    }
+  } else {
+    if (
+      !DATE_RE.test(selector.from) ||
+      !DATE_RE.test(selector.to) ||
+      selector.from > selector.to
+    ) {
+      throw new Error('from/to must be YYYY-MM-DD with from <= to');
+    }
+    const technician = selector.technicianRef
+      ? await resolveTechnician(tenantId, selector.technicianRef)
+      : null;
+    targets = await listAssignmentsForLockRange(
+      tenantId,
+      selector.from,
+      selector.to,
+      technician?.id,
+    );
+    rangeDetail = { from: selector.from, to: selector.to };
+    // Refuse an empty resolution — a silent zero-row "success" would let the
+    // manager believe next week is pinned when nothing was.
+    if (targets.length === 0) {
+      throw new Error(
+        `nothing matched ${selector.from}–${selector.to}` +
+          (technician ? ` for ${technician.display_name}` : '') +
+          ' — no confirmed visits on those days',
+      );
+    }
+  }
+  const updated: Assignment[] = [];
+  for (const row of targets) {
+    updated.push(await updateAssignmentLocked(tenantId, row.id, locked));
+  }
+  // ONE ledger entry per run — a batch is one human act, not N rows of noise.
+  await appendScheduleEvent({
+    tenantId,
+    kind: 'lock_updated',
+    actorRef,
+    detail: {
+      locked,
+      assignmentIds: updated.map((r) => r.id),
+      ...rangeDetail,
+    },
+  });
+  return {
+    updated,
+    days: [...new Set(updated.map((r) => visitDay(r)))].sort(),
+  };
 }
 
 export interface UpdateJobIdentityResult {

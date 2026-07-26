@@ -584,7 +584,7 @@ EOF
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-07-25)
+## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-07-26)
 
 The rule, in general: confirm only what is irreversible or externally visible (a customer
 promise at stake). Everything reversible — just do it, then SAY WHAT YOU DID (day, time,
@@ -612,6 +612,11 @@ change.
    NO times. timeTbd is NEVER your own choice when a time was stated. A time-TBD visit
    shows as "time not set" — never invent a time for it; placing it later is a normal
    move_visit with real times.
+5. Pinning (set_visit_locks) is one-shot and reversible: pin/unpin immediately, then say
+   what changed (count + days). A PINNED visit is the manager's "hands off" mark —
+   automatic scheduling never places, moves, or considers it (on a time-TBD visit it means
+   "I'll place this myself"). NOTHING pins automatically: a fresh booking is NOT pinned,
+   and you pin only when the manager says so ("pin it", "lock next week").
 EOF
     ok "confirmation-doctrine block refreshed in ${agent}'s AGENTS.md"
     # Board-link relay — REFRESHED on every run since 2026-07-19 (delete-then-

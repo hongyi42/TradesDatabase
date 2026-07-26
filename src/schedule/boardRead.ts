@@ -72,6 +72,9 @@ export interface UnplacedStop {
   earliestDate: string;
   latestDate: string;
   promiseLevel: Assignment['promise_level'];
+  // PINNED by a manager (plan 4b-3): auto-scheduling must never touch it —
+  // on an unplaced row it reads "I'll place this myself"; the strip chips it.
+  locked: boolean;
 }
 
 export interface BoardDays {
@@ -243,6 +246,7 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
       earliestDate: row.earliest_date as string,
       latestDate: row.latest_date as string,
       promiseLevel: row.promise_level,
+      locked: row.locked,
     };
     const first = (row.earliest_date as string) < from ? from : (row.earliest_date as string);
     const last = (row.latest_date as string) > toDay ? toDay : (row.latest_date as string);

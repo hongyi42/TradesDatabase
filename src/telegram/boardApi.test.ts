@@ -292,7 +292,7 @@ describe('GET /board/api/day', () => {
       address: '12 Board St, Springfield, OR, 97477',
       promiseLevel: 'none',
       promisedDay: null,
-      locked: true,
+      locked: false, // human-privilege pinning (plan 4b-3): no verb auto-locks
       status: 'confirmed',
     });
     expect(typeof stop.jobId).toBe('string');
@@ -455,7 +455,7 @@ describe('GET /board/api/visit (tap-into-a-visit detail)', () => {
       jobTitle: 'AC tune-up',
       promiseLevel: 'none',
       promisedDay: null,
-      locked: true,
+      locked: false, // human-privilege pinning (plan 4b-3)
       customer: {
         name: 'Board Casa',
         phone: '555-014-2000',
@@ -1586,11 +1586,41 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
   test('tier gates: every quick-edit surface is managers-only', async () => {
     const roster = await fetch(`${base}/board/api/roster`, { headers: tma(900000002) });
     expect(roster.status).toBe(403);
-    for (const path of ['/board/api/book', '/board/api/promise', '/board/api/job']) {
+    for (const path of ['/board/api/book', '/board/api/promise', '/board/api/job', '/board/api/lock']) {
       const resp = await post(path, {}, 900000002);
       expect(resp.status).toBe(403);
       expect(((await resp.json()) as { error: string }).error).toBe('managers only');
     }
+  });
+
+  test('lock toggle (plan 4b-3): one-shot pin/unpin; preview + non-boolean refused', async () => {
+    // Preview is refused — the toggle is one-shot by doctrine.
+    const pv = await post('/board/api/lock', { assignmentId: notesVisitId, locked: true }, 900000001, true);
+    expect(pv.status).toBe(400);
+    const nb = await post('/board/api/lock', { assignmentId: notesVisitId, locked: 'yes' }, 900000001);
+    expect(nb.status).toBe(400);
+    expect(((await nb.json()) as { error: string }).error).toBe('locked must be a boolean');
+
+    const pin = await post('/board/api/lock', { assignmentId: notesVisitId, locked: true }, 900000001);
+    expect(pin.status).toBe(200);
+    expect(await pin.json()).toEqual({ status: 'ok', locked: true });
+    // The chip's data: the day read now carries locked:true for this stop.
+    const dayResp = await day(`?from=${NOTES_DAY}`, tma(900000001));
+    const dayBody = (await dayResp.json()) as DayResponse;
+    const stop = dayBody.days[0].stops.find((s) => s.assignmentId === notesVisitId);
+    expect(stop?.locked).toBe(true);
+
+    const unpin = await post('/board/api/lock', { assignmentId: notesVisitId, locked: false }, 900000001);
+    expect(unpin.status).toBe(200);
+    expect(await unpin.json()).toEqual({ status: 'ok', locked: false });
+
+    // Unknown id → verb refusal (409), never a server fault.
+    const missing = await post(
+      '/board/api/lock',
+      { assignmentId: '00000000-0000-0000-0000-00000000dead', locked: true },
+      900000001,
+    );
+    expect(missing.status).toBe(409);
   });
 
   test('roster: active + seat-exempt appear, offboarded never; {ref,name} shape', async () => {

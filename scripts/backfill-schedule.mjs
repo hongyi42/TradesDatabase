@@ -204,7 +204,9 @@ for (const row of rows) {
       status: 'confirmed',
       promiseLevel: 'time',
       promisedDay,
-      locked: true,
+      // No locked stamp (plan 4b-3): `locked` now means a manager PINNED the
+      // visit against auto-scheduling — a meaning mirror rows never carried.
+      // The 'time' promise level above is what protects these bookings.
     });
     await appendScheduleEvent({
       tenantId,

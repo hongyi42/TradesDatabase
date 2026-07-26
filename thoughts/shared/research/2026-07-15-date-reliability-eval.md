@@ -69,6 +69,30 @@ robustness point: the server's stringified-int coercion is load-bearing for GLM 
 3. **Grounding alone (B) is ~+10 pts; the tool gives the rest.** Handing the model the weekday
    helps, but it still does the final arithmetic unreliably. The deterministic tool closes the gap.
 
+## Re-run 2026-07-25 (fresh DeepInfra key; owner asked whether date injection alone suffices)
+
+Same harness, same corpus, live `zai-org/GLM-5.2`: **A 66.3% · B 80.6% · C 99.0%** (tool called
+98/98) — replicates July 17 within noise. The per-template table splits the story cleanly:
+
+- **Offset + passthrough templates (today/tomorrow/in-3-days/a-week-out/explicit): 42/42 in
+  condition A.** With the date injected, GLM's *basic* date math is perfect — the owner's
+  intuition holds for this tier.
+- **Weekday-walking templates ("this friday", "next monday", "two weeks from this monday"):
+  23/56 (41%) in A, 31/56 in B, 55/56 in C.** This tier is the entire gap, and it is the tier
+  scheduling conversations live in.
+- The raw failures show BOTH failure kinds: true arithmetic errors ("two weeks from this
+  monday" → +7 not +14) and the "next <weekday>" convention split ("next monday" → the coming
+  Monday repeatedly — same split the owner hit live on 2026-07-25). Condition C pins the
+  convention via the tool's parameter description, which is why C holds 6–7/7 there.
+- Many A-failures are "got none" — the model produced no date at all despite "reply with only
+  the date". On a booking path that's a stall, not a wrong booking — less dangerous than
+  silent-wrong, but not an answer either.
+
+**Conclusion (2026-07-25): date injection and the tool are complements, not rivals.** Injection
+alone = perfect basics, coin-flip weekday phrases. Decision: keep `resolve_date` on the money
+path; add grounding riders ({today, weekday, timezone} on spine tool results) for tool-free
+moments; the "next <weekday>" ambiguity needs the ask-mechanism (`saidNext`) regardless.
+
 ## Remaining
 
 - GLM's residual ~2% is a couple of stray arg choices plus the inherent "next" ambiguity, which

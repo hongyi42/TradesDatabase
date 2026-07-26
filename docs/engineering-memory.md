@@ -196,7 +196,46 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   one-shots disclose only after the fact (reversible). Candidate fix, recorded not built: a
   result-embedded self-heal line on unschedule preview/one-shot replies — "if the WORK itself
   is dead, say so and I'll cancel the job instead" (the book_visit promiseLevel-line pattern;
-  server result strings need only a deploy, no fleet restart).
+  server result strings need only a deploy, no fleet restart). C10 rerun (owner, later same
+  day): the agent DID ask which-kind for a visit-noun phrase — the gap is GLM-variance, not
+  deterministic, which strengthens the self-heal-line case. Second copy nit from C10: the
+  unschedule option says the job "goes back to the loose bucket" even when the visit is
+  UNASSIGNED (already tray-visible — it never left); candidate conditional phrasing when
+  technician_id is null, same deploy-only result-string class.
+  **"next <weekday>" both-and-ask rule VIOLATED live 2026-07-25 (trajectory-diagnosed,
+  same day as the week fix):** "is there any job next thursday" (asked on a Saturday) →
+  agent called `resolve_date {weekday: thursday, weeksAhead: 1}` ONCE (→ Aug 6), silently
+  picking one reading despite the description's explicit resolve-both-and-ask order; the
+  manager meant Jul 30 (weeksAhead 0). The rule exists only as prompt-layer steering (tool
+  description + §0f item 3) — the documented GLM class. Candidate mechanism (week-mode's
+  sibling, recorded not built): a `saidNext: true` flag on weekday mode — the server returns
+  BOTH candidate dates + a result-embedded ask note, shrinking the agent's job from
+  "resolve twice and compose the question" to "relay the result". Also verified same session:
+  NO date is injected into agent context — today's date appears ONLY in resolve_date results
+  (by §0f design), confirmed by a full-session grep (1 hit, the tool result).
+  **Temporal grounding riders SHIPPED 2026-07-25 (user decision after the eval re-run —
+  A 66.3% / B 80.6% / C 99.0%, re-run recorded in the date-reliability research doc):** every
+  successful object tool result carries `now` (the condition-B line: date + weekday + tz,
+  firm-local, 10-min-memoized tenant tz) via the ONE decoration seam in `src/mcp/server.ts`
+  (same seam as boardLink). Arrays keep their shape. Self-refreshing across midnight — the
+  reason injection-at-session-start was rejected; OpenClaw has no per-prompt injection hook
+  (config scan + vendor docs check, github.com/openclaw/openclaw issue #53404 still open).
+  resolve_date STAYS the arithmetic authority (the eval's weekday-walking tier: 41% with
+  injection alone, 98%+ with the tool). Rollout: deploy-only — result fields are per-call,
+  NO fleet gateway restart needed (tools/list unchanged). Rider is BEST-EFFORT (review
+  finding): it decorates after dispatch has committed, so a grounding failure omits `now`
+  rather than erroring a committed result (which would invite a retry double-book).
+  **Deliberate decision (2026-07-25): NO AGENTS.md/bootstrap line for the rider** — condition
+  B works by mere presence in context, unlike boardLink which needed a fused instruction to
+  make the model ACT. Watch item for the next device pass: does the agent parrot "Right now
+  it is…" into replies? If yes, a one-line "never quote the `now` field" rides the NEXT wire
+  change (not a wire pass of its own).
+  **resolve_date week mode SHIPPED + REPLAY-VERIFIED 2026-07-25 (PR #82):** the deferred
+  Sat/Sun boundary item, promoted and closed same-day. Replay of the verbatim failing
+  message on a fresh session: `resolve_date {week: 1}` → both Monday-anchored windows
+  searched (Jul 27–Aug 2 primary + Aug 3–9 alternate) → the previously-invisible Tom Nguyen
+  Monday visit FOUND outright. Evidence in the plan
+  (`thoughts/shared/plans/2026-07-25-plan-resolve-date-week-mode.md`).
   Doctrine from the Plan-3 reshape stands: **no monolithic auto-scheduler; agency stays in the
   agent, tools measure** (research: `thoughts/shared/research/2026-07-20-flexible-scheduling-agent-toolset.md`).
 - **Deferred / backlog (each has an owner-stated reason — check before resurrecting):**

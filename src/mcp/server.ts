@@ -4900,6 +4900,38 @@ async function dispatch(
   }
 }
 
+// ─── temporal grounding rider ────────────────────────────────────────────
+// The firm timezone backs EVERY tool result's `now` line, so it is memoized
+// (10-min TTL) rather than re-read per call — resolve_date's own per-call
+// getTenant stays as-is (it is one tool; this seam is all of them). A tz
+// change on the tenant propagates within the TTL.
+const TZ_TTL_MS = 10 * 60 * 1000;
+const tzCache = new Map<string, { tz: string; at: number }>();
+async function groundingNow(tenantId: string): Promise<string> {
+  // ONE clock read for both the staleness check and the re-stamp — separate
+  // reads could serve a stale tz yet re-stamp it fresh at the TTL boundary,
+  // extending it to 2×TTL (review finding).
+  const at = Date.now();
+  const hit = tzCache.get(tenantId);
+  let tz: string;
+  if (hit && at - hit.at < TZ_TTL_MS) {
+    tz = hit.tz;
+  } else {
+    tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+    tzCache.set(tenantId, { tz, at });
+  }
+  // The exact condition-B format the eval measured (80.6% vs bare-date 66.3%):
+  // weekday spelled out, firm-local, timezone named.
+  const human = new Date().toLocaleDateString('en-US', {
+    timeZone: tz,
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+  return `Right now it is ${human}, in the ${tz} timezone.`;
+}
+
 export function createServer(deps: ServerDeps = {}): Server {
   const server = new Server(
     { name: 'trades-spine', version: '0.1.0' },
@@ -4947,7 +4979,31 @@ export function createServer(deps: ServerDeps = {}): Server {
               boardNote: `ALWAYS end this reply with the exact line: [See it on the board](${link})`,
             }
           : result;
-      return { content: [{ type: 'text' as const, text: JSON.stringify(decorated) }] };
+      // Temporal grounding rider — every successful object result carries
+      // `now` (the eval-verified rich-grounding line: date + weekday + tz;
+      // condition B of thoughts/shared/research/2026-07-15-date-reliability-eval.md,
+      // user decision 2026-07-25). The agent runtime injects NO date into
+      // context, so tool results are the only self-refreshing channel — a
+      // session crossing midnight re-grounds on its next call. It states what
+      // today IS; resolve_date remains the sole authority for date ARITHMETIC.
+      // Arrays keep their shape (a rider would change the contract);
+      // object results — staged previews included — get the line. BEST-EFFORT:
+      // by this point dispatch has already committed side effects, so a
+      // grounding failure (transient DB error, malformed tenant tz) must never
+      // convert a committed success into an error — the agent would retry and,
+      // e.g., double-book (review finding). Omit the rider instead.
+      let grounded = decorated;
+      if (deps.identity && decorated && typeof decorated === 'object' && !Array.isArray(decorated)) {
+        try {
+          grounded = {
+            ...(decorated as Record<string, unknown>),
+            now: await groundingNow(deps.identity.tenantId),
+          };
+        } catch {
+          // decoration, not payload — the result stands without it
+        }
+      }
+      return { content: [{ type: 'text' as const, text: JSON.stringify(grounded) }] };
     } catch (err) {
       return {
         content: [{ type: 'text' as const, text: err instanceof Error ? err.message : String(err) }],

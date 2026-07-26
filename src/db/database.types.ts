@@ -120,6 +120,133 @@ export type Database = {
           },
         ]
       }
+      cost_events: {
+        Row: {
+          created_at: string
+          id: string
+          metadata: Json | null
+          method: string
+          occurred_at: string
+          provider: string
+          quantity: number
+          sku: string
+          source_ref: string | null
+          technician_ref: string | null
+          tenant_id: string
+          unit: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          metadata?: Json | null
+          method: string
+          occurred_at?: string
+          provider: string
+          quantity: number
+          sku: string
+          source_ref?: string | null
+          technician_ref?: string | null
+          tenant_id: string
+          unit: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          metadata?: Json | null
+          method?: string
+          occurred_at?: string
+          provider?: string
+          quantity?: number
+          sku?: string
+          source_ref?: string | null
+          technician_ref?: string | null
+          tenant_id?: string
+          unit?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cost_events_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      cost_rates: {
+        Row: {
+          created_at: string
+          effective_from: string
+          effective_to: string | null
+          id: string
+          provider: string
+          sku: string
+          source_url: string | null
+          unit: string
+          unit_cost_usd: number
+        }
+        Insert: {
+          created_at?: string
+          effective_from: string
+          effective_to?: string | null
+          id?: string
+          provider: string
+          sku: string
+          source_url?: string | null
+          unit: string
+          unit_cost_usd: number
+        }
+        Update: {
+          created_at?: string
+          effective_from?: string
+          effective_to?: string | null
+          id?: string
+          provider?: string
+          sku?: string
+          source_url?: string | null
+          unit?: string
+          unit_cost_usd?: number
+        }
+        Relationships: []
+      }
+      cost_rollup_monthly: {
+        Row: {
+          computed_at: string
+          cost_usd: number
+          method: string
+          period_start: string
+          provider: string
+          quantity: number
+          tenant_id: string
+        }
+        Insert: {
+          computed_at?: string
+          cost_usd?: number
+          method: string
+          period_start: string
+          provider: string
+          quantity?: number
+          tenant_id: string
+        }
+        Update: {
+          computed_at?: string
+          cost_usd?: number
+          method?: string
+          period_start?: string
+          provider?: string
+          quantity?: number
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cost_rollup_monthly_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       customers: {
         Row: {
           address_line1: string | null
@@ -257,6 +384,45 @@ export type Database = {
           id?: string
           name?: string
           token_hash?: string
+        }
+        Relationships: []
+      }
+      infra_costs: {
+        Row: {
+          allocation: string
+          amount_usd: number
+          created_at: string
+          id: string
+          item: string
+          period_end: string
+          period_start: string
+          source: string
+          updated_at: string
+          vendor: string
+        }
+        Insert: {
+          allocation: string
+          amount_usd: number
+          created_at?: string
+          id?: string
+          item: string
+          period_end: string
+          period_start: string
+          source?: string
+          updated_at?: string
+          vendor: string
+        }
+        Update: {
+          allocation?: string
+          amount_usd?: number
+          created_at?: string
+          id?: string
+          item?: string
+          period_end?: string
+          period_start?: string
+          source?: string
+          updated_at?: string
+          vendor?: string
         }
         Relationships: []
       }
@@ -972,7 +1138,14 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      rollup_costs: {
+        Args: { p_period_start: string }
+        Returns: {
+          rows_written: number
+          tenants_touched: number
+          unpriced_events: number
+        }[]
+      }
     }
     Enums: {
       assignment_status: "proposed" | "confirmed" | "cancelled" | "completed"

@@ -1,5 +1,5 @@
 import { runForcedTool, type ForcedToolSpec } from '../model/forcedTool.js';
-import type { Json } from '../db/index.js';
+import type { CostContext, Json } from '../db/index.js';
 
 // Candidate structured fields the model proposes from a raw note. Every field is
 // optional — extraction is best-effort interpretation (overview §5: the model
@@ -25,7 +25,9 @@ export interface ExtractedFields {
 
 // Injected into the write-path so tests can supply a deterministic stub instead
 // of calling the live model.
-export type Extractor = (rawText: string) => Promise<ExtractedFields>;
+// `ctx` is optional so every existing 1-arg stub stays assignable; when present
+// the live implementation bills the call against that tenant.
+export type Extractor = (rawText: string, ctx?: CostContext) => Promise<ExtractedFields>;
 
 const EXTRACTION_SYSTEM =
   'You extract structured fields from a trades technician field note (HVAC/plumbing/' +
@@ -76,12 +78,15 @@ const EXTRACTION_TOOL: ForcedToolSpec = {
 // "4" back to 4 — an OpenAI-compatible model emitting numbers as strings would
 // otherwise write a string into a numeric L2 column. `attributes` has no declared
 // property types, so free-form L3 facts (gate code "0412") pass through untouched.
-export const defaultExtractor: Extractor = async (rawText) => {
+//
+// `ctx` only carries the tenant for cost attribution; runForcedTool bills the
+// call against whichever provider is actually active.
+export const defaultExtractor: Extractor = async (rawText, ctx) => {
   const args = await runForcedTool(EXTRACTION_TOOL, {
     system: EXTRACTION_SYSTEM,
     user: rawText,
     maxTokens: 1024,
     label: 'defaultExtractor',
-  });
+  }, ctx);
   return args as unknown as ExtractedFields;
 };

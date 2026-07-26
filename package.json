@@ -16,6 +16,7 @@
     "seed:local": "npm run seed -- --local",
     "db:push": "npx supabase db push",
     "gen:types": "mkdir -p src/db && npx supabase gen types typescript --linked > src/db/database.types.ts",
+    "gen:types:local": "mkdir -p src/db && npx supabase gen types typescript --local > src/db/database.types.ts",
     "job:lifecycle": "node dist/jobs/lifecycle.js"
   },
   "devDependencies": {

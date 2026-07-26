@@ -45,6 +45,42 @@ export async function getTenantByName(name: string): Promise<Tenant> {
   return data;
 }
 
+export interface TenantSeats {
+  id: string;
+  name: string;
+  seats: number;
+}
+
+// Every tenant with its purchased seat count — the denominator of cost-per-seat,
+// which is the commercially meaningful figure on the operator dashboard.
+//
+// Paginated: PostgREST silently caps responses at db-max-rows (1000), and a
+// truncated read here would not error — tenants past the cap would simply render
+// as "(unknown tenant)" with no seats, so their cost-per-seat would read as
+// unknown rather than wrong. Quiet either way, hence the paging.
+export async function listTenantSeats(): Promise<TenantSeats[]> {
+  const PAGE = 1000;
+  const client = getClient();
+  const out: TenantSeats[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await client
+      .from('tenants')
+      .select('id, name, manager_seats, technician_seats')
+      .order('id')
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`listTenantSeats failed: ${error.message}`);
+    const rows = data ?? [];
+    out.push(
+      ...rows.map((t) => ({
+        id: t.id,
+        name: t.name,
+        seats: (t.manager_seats ?? 0) + (t.technician_seats ?? 0),
+      })),
+    );
+    if (rows.length < PAGE) return out;
+  }
+}
+
 export async function createTenant(
   name: string,
   seats: { managerSeats?: number; technicianSeats?: number } = {},

@@ -62,11 +62,18 @@ function recorder(result: Partial<RecordFieldNoteResult> = {}) {
 // Recording stub for the classifier — captures what it was fed (to prove clean body).
 function classifyStub(isWork: boolean) {
   const calls: EmailInput[] = [];
-  const fn: WorkClassifier = async (email) => {
+  // The cost context is captured too. Without this the ctx argument threaded at
+  // webhook.ts is untested — every stub ignores extra arguments, so deleting it
+  // would leave the whole suite green while the classifier's Anthropic spend
+  // (billed on EVERY inbound email, including the ones then dropped) silently
+  // stopped being attributed to anyone.
+  const contexts: Array<{ tenantId: string; technicianRef?: string | null } | undefined> = [];
+  const fn: WorkClassifier = async (email, ctx) => {
     calls.push(email);
+    contexts.push(ctx);
     return { isWork, reason: 'stub' };
   };
-  return { calls, fn };
+  return { calls, contexts, fn };
 }
 
 // Recording stub for the drop audit.
@@ -213,6 +220,10 @@ describe('handleInboundWebhook', () => {
     expect(cls.calls[0].body).toBe('still noisy'); // exactly messageText — no "Subject:/From:" prefix
     expect(cls.calls[0].body).not.toContain('Subject:');
     expect(cls.calls[0]).toMatchObject({ from: 'jane@homeowner.com', subject: 'AC repair' });
+    // …and it is billed to whoever's mailbox this arrived in. This classifier
+    // runs on every inbound email, so an unattributed call is real spend with
+    // no tenant on it.
+    expect(cls.contexts[0]).toEqual({ tenantId: TENANT, technicianRef: 'tech-test' });
   });
 
   test('composite user_id → tenant split + person attribution; tenantExists sees only the tenant part', async () => {

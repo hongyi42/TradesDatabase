@@ -95,7 +95,11 @@ afterAll(async () => {
     // 'sump-pump' on the persistent seed tenant; leaking it made that test's
     // no-stored-duration assertion order-dependent across suite runs — the
     // one-off 582-run flake, reproduced and root-caused.
-    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations cascade',
+    // cost_events included: dispatch now writes one spine tool_call row per
+    // call, so a suite run leaves hundreds behind. Left uncleaned they would
+    // skew any later test that counts spine events per tenant — which is
+    // exactly what the rollup's allocation split does.
+    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations, cost_events cascade',
   );
   // Restore the seed capacity (2/5) so post-suite live checks see known values.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
@@ -969,6 +973,50 @@ describe('MCP server', () => {
       "select count(*)::text as n from raw_captures where raw_text = 'sneaky cross-tenant write'",
     );
     expect(caps.rows[0].n).toBe('0');
+  });
+});
+
+// The spine counter is the ALLOCATION BASIS for inference cost: agent inference
+// runs on a gateway shared by every tenant on one API key, so there is no
+// per-tenant split to read from the provider. The rollup divides the DeepInfra
+// invoice by these counts — if they are wrong, every tenant's inference figure
+// is wrong.
+describe('spine tool_call cost counter', () => {
+  test('one event per tool call, tagged with the calling tenant', async () => {
+    await pg.query("delete from cost_events where provider = 'spine'");
+    await call('find_customer', { query: 'nobody-by-this-name' });
+    await call('list_recent_captures', { limit: 1 });
+    const { rows } = await pg.query(
+      `select tenant_id, metadata->>'tool' as tool from cost_events
+       where provider = 'spine' and sku = 'tool_call' order by created_at`,
+    );
+    expect(rows.map((r) => r.tool)).toEqual(['find_customer', 'list_recent_captures']);
+    expect(rows.every((r) => r.tenant_id === tenantId)).toBe(true);
+  });
+
+  // Cost accounting must never break the thing it measures. A ledger write that
+  // fails is a missing row; a tool that fails because the ledger did is an
+  // outage — the driveMeasured:false precedent, applied to money.
+  test('a failing cost write does not break the tool', async () => {
+    const { callWith } = await clientFor(
+      { tenantId, technicianRef: 'tech-mcp' },
+      { recordCost: async () => { throw new Error('cost ledger is down'); } },
+    );
+    const res = await callWith('find_customer', { query: 'nobody-by-this-name' });
+    expect(res.isError).toBe(false);
+    expect(res.data).toEqual([]);
+  });
+
+  test('a REFUSED call still counts — the agent burned a turn on it', async () => {
+    await pg.query("delete from cost_events where provider = 'spine'");
+    // A technician badge reaching for a manager-only tool: refused by the tier
+    // gate, but the inference that produced the attempt was already paid for.
+    const res = await call('list_team', {});
+    expect(res.isError).toBe(true);
+    const { rows } = await pg.query(
+      `select metadata->>'tool' as tool from cost_events where provider = 'spine'`,
+    );
+    expect(rows.map((r) => r.tool)).toEqual(['list_team']);
   });
 });
 

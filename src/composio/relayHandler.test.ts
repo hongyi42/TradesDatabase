@@ -146,6 +146,64 @@ describe('isRelayPath', () => {
   });
 });
 
+// Composio bills the tool CALL. The relay is an MCP proxy, so most of what
+// crosses it — the handshake, the tool listing, SSE opens — costs nothing;
+// counting every relayed request would inflate the Composio cost line badly.
+describe('handleComposioRelay cost metering', () => {
+  const billed = async (over: { method?: string; body?: unknown }) => {
+    process.env.COMPOSIO_API_KEY = 'key-1';
+    const calls: Array<{ tenantId: string }> = [];
+    const { forward } = stubForward();
+    await handleComposioRelay(
+      fakeReq({ method: over.method ?? 'POST' }),
+      fakeRes().res,
+      over.body === undefined ? '' : JSON.stringify(over.body),
+      deps({ forward, recordCost: async (ctx) => void calls.push({ tenantId: ctx!.tenantId }) }),
+    );
+    return calls;
+  };
+
+  test('a tools/call POST bills exactly once, tagged with the caller tenant', async () => {
+    const calls = await billed({ body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: {} } });
+    expect(calls).toEqual([{ tenantId: TENANT }]);
+  });
+
+  test('protocol traffic bills nothing', async () => {
+    expect(await billed({ body: { method: 'initialize' } })).toEqual([]);
+    expect(await billed({ body: { method: 'notifications/initialized' } })).toEqual([]);
+    expect(await billed({ body: { method: 'tools/list' } })).toEqual([]);
+    // A bare GET is an SSE stream open — no body, no tool call.
+    expect(await billed({ method: 'GET' })).toEqual([]);
+  });
+
+  test('a failing cost write still forwards the call', async () => {
+    process.env.COMPOSIO_API_KEY = 'key-1';
+    const { forward, calls } = stubForward();
+    await handleComposioRelay(
+      fakeReq(),
+      fakeRes().res,
+      JSON.stringify({ method: 'tools/call' }),
+      deps({ forward, recordCost: async () => { throw new Error('cost ledger is down'); } }),
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  test('a request that never reaches Composio bills nothing', async () => {
+    // No API key configured -> 503 before the forward. Billing at the roster
+    // read instead of the forward would have charged for this.
+    const calls: Array<unknown> = [];
+    const captured = fakeRes();
+    await handleComposioRelay(
+      fakeReq(),
+      captured.res,
+      JSON.stringify({ method: 'tools/call' }),
+      deps({ recordCost: async () => void calls.push(1) }),
+    );
+    expect(captured.status).toBe(503);
+    expect(calls).toEqual([]);
+  });
+});
+
 describe('handleComposioRelay', () => {
   test('missing identity headers throw (the bare-401 contract belongs to the caller)', async () => {
     const { res } = fakeRes();

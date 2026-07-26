@@ -34,7 +34,7 @@ which the host applies with no rebuild (see the rollout section below).
 
 ## The heartbeat: one Render Cron Job
 
-`src/jobs/lifecycle.ts` (`npm run job:lifecycle`) runs four isolated sweeps and prints one
+`src/jobs/lifecycle.ts` (`npm run job:lifecycle`) runs six isolated sweeps and prints one
 JSON summary line; a failed step exits 1 so Render marks the run failed:
 
 1. **Pairing sweep** — every `invited`/`pending_verification` row with a link issued gets
@@ -56,6 +56,23 @@ JSON summary line; a failed step exits 1 so Render marks the run failed:
    (`src/composio/logIngest.ts`): pulls Composio's v3.1 tool-execution logs over an overlapping
    60-min window and appends state-changing actions into L1 (`outbound_email` / `agent_action`,
    keys-only redaction, `manager_only` sensitivity). Same `COMPOSIO_API_KEY` skip gate.
+
+5. **Brave cost backfill (since 2026-07-24)** — replays the last 6h of
+   `web_requests` rows with `kind='search'` into `cost_events` (`backfillBraveCostEvents`,
+   `src/db/costs.ts`). No live instrumentation needed: `web_requests` already carries the tenant,
+   the person, and the timestamp. Reports rows **scanned** — the
+   `(tenant, provider, sku, source_ref)` key makes a replay a no-op, so a steady tick inserts
+   nothing.
+6. **Cost rollup (since 2026-07-24)** — `rollupCosts` calls the `rollup_costs(period_start)`
+   RPC for the current month: metered events priced at the rate in force *on the day each
+   happened*, plus each `infra_costs` bill split by its own allocation rule
+   (`per_spine_tool_call` divides the inference invoice by each tenant's spine tool-call count).
+   Idempotent — it recomputes the period, so every tick refreshes what `/admin` reads.
+
+   **Both steps report `{skipped}` rather than failing** when the cost tables are absent, so a
+   deploy that lands before the migration does not turn the heartbeat red for a self-resolving
+   condition. Neither needs a new environment variable.
+
 
 ## Render setup (dashboard, one-time)
 

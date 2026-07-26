@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { recordModelUsage, type CostContext } from '../db/index.js';
 
 // One transport for every "forced single tool" model call in the spine.
 //
@@ -144,10 +145,17 @@ export function parseOpenAiToolArgs(
   }
 }
 
+// Args plus what the call cost us. Usage is optional: a provider that stops
+// returning it must not break the call — it is reported by the recorder instead.
+export interface ForcedToolReply {
+  args: Record<string, unknown>;
+  usage?: { inputTokens?: number; outputTokens?: number };
+}
+
 async function callAnthropic(
   tool: ForcedToolSpec,
   req: ForcedToolRequest,
-): Promise<Record<string, unknown>> {
+): Promise<ForcedToolReply> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
   const client = new Anthropic({ apiKey });
@@ -170,13 +178,19 @@ async function callAnthropic(
       block.type === 'tool_use' && block.name === tool.name,
   );
   if (!toolUse) throw new Error(`${req.label}: model returned no ${tool.name} tool_use block`);
-  return toolUse.input as Record<string, unknown>;
+  return {
+    args: toolUse.input as Record<string, unknown>,
+    usage: {
+      inputTokens: message.usage?.input_tokens,
+      outputTokens: message.usage?.output_tokens,
+    },
+  };
 }
 
 async function callOpenAiCompatible(
   tool: ForcedToolSpec,
   req: ForcedToolRequest,
-): Promise<Record<string, unknown>> {
+): Promise<ForcedToolReply> {
   const apiKey = process.env.INFERENCE_API_KEY;
   if (!apiKey) throw new Error('INFERENCE_API_KEY is not set');
   const baseUrl = (process.env.INFERENCE_BASE_URL || DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, '');
@@ -209,7 +223,19 @@ async function callOpenAiCompatible(
     // Truncated: a gateway error body can be an entire HTML page.
     throw new Error(`${req.label}: inference ${res.status}: ${(await res.text()).slice(0, 200)}`);
   }
-  return parseOpenAiToolArgs(await res.json(), tool.name, req.label);
+  // Read the body ONCE: parse the tool args and the usage block from the same
+  // object (res.json() cannot be called twice).
+  const body = (await res.json()) as {
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
+  };
+  return {
+    args: parseOpenAiToolArgs(body, tool.name, req.label),
+    // OpenAI-compatible naming differs from Anthropic's.
+    usage: {
+      inputTokens: body.usage?.prompt_tokens,
+      outputTokens: body.usage?.completion_tokens,
+    },
+  };
 }
 
 // The single entry point. Returns the tool's arguments, schema-coerced; throws
@@ -217,10 +243,18 @@ async function callOpenAiCompatible(
 export async function runForcedTool(
   tool: ForcedToolSpec,
   req: ForcedToolRequest,
+  ctx?: CostContext,
 ): Promise<Record<string, unknown>> {
-  const args =
-    activeProvider() === 'anthropic'
+  const provider = activeProvider();
+  const reply =
+    provider === 'anthropic'
       ? await callAnthropic(tool, req)
       : await callOpenAiCompatible(tool, req);
-  return coerceBySchema(args, tool.inputSchema) as Record<string, unknown>;
+  // ONE billing site for all four spine model calls. It lives here rather than in
+  // each caller because this is also the only place that knows which provider
+  // actually served the request — the SKUs differ, and MODEL_PROVIDER can flip
+  // under the callers without them noticing. Failure-isolated inside the
+  // recorder: cost accounting must never break the call it measures.
+  await recordModelUsage(provider, reply.usage, ctx);
+  return coerceBySchema(reply.args, tool.inputSchema) as Record<string, unknown>;
 }

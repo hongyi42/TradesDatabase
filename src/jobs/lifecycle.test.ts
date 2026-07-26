@@ -63,10 +63,20 @@ const INGEST_OK = {
   rowErrors: 0,
 };
 
+// The two cost steps default to REAL database accessors, so every runLifecycle
+// call here must inject them — otherwise this "pure unit tests" file quietly
+// starts writing to the database on each of the 11 calls below.
+const COST_STUBS = {
+  backfillBrave: async () => ({ scanned: 0 }),
+  latestBrave: async () => null,
+  rollup: async () => ({ rowsWritten: 0, tenantsTouched: 0, unpricedEvents: 0 }),
+};
+
 describe('runLifecycle', () => {
   test('sweeps only rows with a link issued; counts paired', async () => {
     const checked: string[] = [];
     const summary = await runLifecycle(NOW, {
+      ...COST_STUBS,
       listInStates: async () => [
         row({ ref: 'linked', link_issued_at: '2026-07-02T11:00:00.000Z' }),
         row({ id: 'r2', ref: 'never-linked', link_issued_at: null }),
@@ -82,9 +92,110 @@ describe('runLifecycle', () => {
     expect(summary.ok).toBe(true);
   });
 
+  // Between this phase merging and the migration reaching the pilot, the cost
+  // tables simply do not exist there. main() exits 1 on ok:false and Render
+  // marks the run FAILED, so treating that as an error would alarm every 15
+  // minutes for a condition that resolves itself. Same shape as the existing
+  // COMPOSIO_API_KEY skip gates.
+  describe('cost steps', () => {
+    const missing = new Error(
+      'rollupCosts failed: Could not find the function public.rollup_costs(p_period_start) in the schema cache (PGRST202)',
+    );
+
+    test('a not-yet-migrated ledger is SKIPPED, not an error', async () => {
+      const summary = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        listInStates: async () => [],
+        expire: async () => EXPIRE_OK,
+        backfillBrave: async () => { throw new Error('relation "web_requests" does not exist'); },
+        rollup: async () => { throw missing; },
+      });
+      expect(summary.braveBackfill).toEqual({ skipped: 'cost ledger not migrated here yet' });
+      expect(summary.costRollup).toEqual({ skipped: 'cost ledger not migrated here yet' });
+      expect(summary.ok).toBe(true); // the cron stays green
+    });
+
+    test('a GENUINE fault still fails the run', async () => {
+      const summary = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        listInStates: async () => [],
+        expire: async () => EXPIRE_OK,
+        rollup: async () => { throw new Error('connection terminated unexpectedly'); },
+      });
+      expect(summary.costRollup).toEqual({ stepError: 'connection terminated unexpectedly' });
+      expect(summary.ok).toBe(false);
+      // …and the earlier steps still reported normally.
+      expect(summary.pairing).toEqual({ checked: 0, paired: 0, rowErrors: 0 });
+      expect(summary.braveBackfill).toMatchObject({ scanned: 0 });
+    });
+
+    // Invoices arrive AFTER the month they cover: the July DeepInfra bill is
+    // entered in August. A current-month-only rollup would therefore never
+    // allocate a completed month's inference cost — the whole allocated-cost
+    // mechanism would silently produce nothing for every settled month.
+    test('rolls up the previous month as well as the current one', async () => {
+      const months: string[] = [];
+      const summary = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        listInStates: async () => [],
+        expire: async () => EXPIRE_OK,
+        rollup: async (month: string) => {
+          months.push(month);
+          return { rowsWritten: 2, tenantsTouched: 1, unpricedEvents: 3 };
+        },
+      });
+      expect(months).toEqual(['2026-07-01', '2026-06-01']); // NOW is 2026-07-02
+      expect(summary.costRollup).toEqual({
+        months: ['2026-07-01', '2026-06-01'],
+        rowsWritten: 4,
+        tenantsTouched: 1,
+        unpricedEvents: 6, // surfaced so a price-book gap is visible in the log
+      });
+    });
+
+    test('previous-month arithmetic crosses a year boundary', async () => {
+      const months: string[] = [];
+      await runLifecycle('2026-01-09T00:00:00.000Z', {
+        ...COST_STUBS,
+        listInStates: async () => [],
+        expire: async () => EXPIRE_OK,
+        rollup: async (m: string) => { months.push(m); return { rowsWritten: 0, tenantsTouched: 0, unpricedEvents: 0 }; },
+      });
+      expect(months).toEqual(['2026-01-01', '2025-12-01']);
+    });
+
+    // A fixed look-back window would bill only the last few hours on the first
+    // run after the migration and abandon everything already in web_requests.
+    test('the backfill sweeps from the beginning when the ledger is empty', async () => {
+      const sinces: string[] = [];
+      await runLifecycle(NOW, {
+        ...COST_STUBS,
+        listInStates: async () => [],
+        expire: async () => EXPIRE_OK,
+        latestBrave: async () => null,
+        backfillBrave: async (since: string) => { sinces.push(since); return { scanned: 7 }; },
+      });
+      expect(sinces).toEqual(['2026-07-01T00:00:00.000Z']);
+    });
+
+    test('the backfill resumes from the watermark, with an overlap', async () => {
+      const sinces: string[] = [];
+      const summary = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        listInStates: async () => [],
+        expire: async () => EXPIRE_OK,
+        latestBrave: async () => '2026-07-02T09:00:00.000Z',
+        backfillBrave: async (since: string) => { sinces.push(since); return { scanned: 2 }; },
+      });
+      expect(sinces).toEqual(['2026-07-02T08:00:00.000Z']); // 1h overlap
+      expect(summary.braveBackfill).toEqual({ scanned: 2, since: '2026-07-02T08:00:00.000Z' });
+    });
+  });
+
   test('a throwing step is reported and fails the run â€” but the other steps still ran', async () => {
     let expired = false;
     const summary = await runLifecycle(NOW, {
+      ...COST_STUBS,
       listInStates: async () => {
         throw new Error('db unreachable');
       },
@@ -100,6 +211,7 @@ describe('runLifecycle', () => {
 
   test('per-row pairing errors are counted, retried next tick, and do NOT fail the run', async () => {
     const summary = await runLifecycle(NOW, {
+      ...COST_STUBS,
       listInStates: async () => [row({ ref: 'flaky' }), row({ id: 'r2', ref: 'fine' })],
       checkPairing: async (t) => {
         if (t.ref === 'flaky') throw new Error('composio blip');
@@ -115,6 +227,7 @@ describe('runLifecycle', () => {
     // e.g. a missing/revoked COMPOSIO_API_KEY throws for every row; exit 0
     // would leave Render green while pairing is dead indefinitely.
     const summary = await runLifecycle(NOW, {
+      ...COST_STUBS,
       listInStates: async () => [row({ ref: 'a' }), row({ id: 'r2', ref: 'b' })],
       checkPairing: async () => {
         throw new Error('401 invalid api key');
@@ -127,6 +240,7 @@ describe('runLifecycle', () => {
 
   test('sessions step: skipped cleanly when COMPOSIO_API_KEY is unset â€” never red', async () => {
     const summary = await runLifecycle(NOW, {
+      ...COST_STUBS,
       listInStates: async () => [],
       expire: async () => EXPIRE_OK,
       ensureSession: async () => {
@@ -141,6 +255,7 @@ describe('runLifecycle', () => {
     process.env.COMPOSIO_API_KEY = 'test-key';
     const ensured: string[] = [];
     const summary = await runLifecycle(NOW, {
+      ...COST_STUBS,
       listInStates: async (states) =>
         states.includes('active')
           ? [
@@ -168,6 +283,7 @@ describe('runLifecycle', () => {
     process.env.COMPOSIO_API_KEY = 'test-key';
     const ensured: string[] = [];
     const summary = await runLifecycle(NOW, {
+      ...COST_STUBS,
       listInStates: async (states) =>
         states.includes('active')
           ? [
@@ -191,6 +307,7 @@ describe('runLifecycle', () => {
   test('sessions step: EVERY attempted row failing goes red (exists-rows never dilute it)', async () => {
     process.env.COMPOSIO_API_KEY = 'test-key';
     const summary = await runLifecycle(NOW, {
+      ...COST_STUBS,
       listInStates: async (states) =>
         states.includes('active')
           ? [
@@ -213,6 +330,7 @@ describe('runLifecycle', () => {
   test('logIngest step: skipped when the key is unset; reported when set; stepError goes red', async () => {
     // Unset key: skipped, and the injected thrower proves no reach-through.
     const skipped = await runLifecycle(NOW, {
+      ...COST_STUBS,
       listInStates: async () => [],
       expire: async () => EXPIRE_OK,
       ingestLogs: async () => {
@@ -225,6 +343,7 @@ describe('runLifecycle', () => {
     // Key set: the summary is reported; per-row errors do not go red.
     process.env.COMPOSIO_API_KEY = 'test-key';
     const ran = await runLifecycle(NOW, {
+      ...COST_STUBS,
       listInStates: async () => [],
       expire: async () => EXPIRE_OK,
       ensureSession: async () => ({ status: 'skipped', reason: 'state is invited' }),
@@ -238,6 +357,7 @@ describe('runLifecycle', () => {
 
     // A step-level throw goes red but never blocks the other steps.
     const red = await runLifecycle(NOW, {
+      ...COST_STUBS,
       listInStates: async () => [],
       expire: async () => EXPIRE_OK,
       ensureSession: async () => ({ status: 'skipped', reason: 'state is invited' }),

@@ -217,11 +217,16 @@ export async function handleInboundWebhook(
     // (non-work) row could never be removed (CLAUDE.md). Feed the CLEAN body (sourceMeta),
     // NOT the header-prefixed rawText — so the verdict matches the Gmail pull path.
     if (envelope.requiresWorkClassifier) {
-      const { isWork, reason } = await classify({
-        from: meta.from ?? '',
-        subject: meta.subject ?? '',
-        body: meta.body ?? '',
-      });
+      const { isWork, reason } = await classify(
+        {
+          from: meta.from ?? '',
+          subject: meta.subject ?? '',
+          body: meta.body ?? '',
+        },
+        // Billed even when the verdict is "personal" and the mail is dropped —
+        // we paid for the triage either way.
+        { tenantId, technicianRef },
+      );
       if (!isWork) {
         // Content-free audit receipt only — the dropped email itself is not stored.
         // technicianRef says WHOSE mailbox this arrived in: Gmail message ids are

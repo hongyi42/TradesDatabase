@@ -2,7 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolveIdentityFromHeaders } from '../mcp/identity.js';
-import { getTechnician, isInactiveState } from '../db/index.js';
+import { getTechnician, isInactiveState, recordComposioCall } from '../db/index.js';
 import { ensurePersonSession, getSessionMcpUrl } from './sessions.js';
 
 // The composio-doorman relay: sandbox → doorman → THIS route → that person's
@@ -30,6 +30,18 @@ export interface RelayDeps {
   ensureSession?: typeof ensurePersonSession;
   getMcpUrl?: typeof getSessionMcpUrl;
   forward?: ForwardFn;
+  recordCost?: typeof recordComposioCall;
+}
+
+// Composio bills the tool CALL. An MCP request body carrying any other method —
+// initialize, notifications/initialized, tools/list — costs nothing, so counting
+// every relayed request would inflate the Composio line substantially.
+function isToolCall(parsed: unknown): boolean {
+  return (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    (parsed as { method?: unknown }).method === 'tools/call'
+  );
 }
 
 // All three forms must route here — a query string on the bare path would
@@ -140,8 +152,11 @@ export async function handleComposioRelay(
     }
   }
 
+  // Declared OUTSIDE the block so the billing gate below can read it: the relay
+  // also proxies initialize / notifications/initialized / tools/list and bare
+  // GET SSE opens, none of which are billable Composio tool calls.
+  let parsed: unknown;
   if (rawBody.length > 0) {
-    let parsed: unknown;
     try {
       parsed = JSON.parse(rawBody);
     } catch {
@@ -180,6 +195,23 @@ export async function handleComposioRelay(
   for (const name of ['mcp-session-id', 'mcp-protocol-version']) {
     const value = header(req, name);
     if (value) headers[name] = value;
+  }
+
+  // Bill exactly the tool CALLS. Everything above this point can early-return
+  // without ever reaching Composio, so the counter sits here at the forward —
+  // not at the roster read, where it would count requests that never billed.
+  if (req.method === 'POST' && isToolCall(parsed)) {
+    // .catch() at the CALL SITE, not trusting the recorder to swallow its own
+    // failures: isolation has to be a property of this handler, or it silently
+    // evaporates the day someone swaps the default or injects another recorder.
+    await (deps.recordCost ?? recordComposioCall)({
+      tenantId: identity.tenantId,
+      technicianRef: identity.technicianRef,
+    }).catch((err: unknown) => {
+      console.error(
+        `cost: relay tool_call not recorded — ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
   }
 
   await (deps.forward ?? defaultForward)(url, req.method ?? 'POST', headers, body, res);

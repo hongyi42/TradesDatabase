@@ -141,6 +141,15 @@ exactly what the manager stated and asks when a time is missing.
 dispatch board (`t.me/<board-bot>?startapp`, decorated server-side from `BOARD_BOT_HANDLE`,
 absent when unset). The agent ends every schedule-change report with it ("See it on the
 board: …"), relayed exactly — never an invented or remembered URL.
+
+**Temporal grounding rider (2026-07-25):** every successful object-shaped tool result also
+carries `now` — `"Right now it is Saturday, July 25, 2026, in the America/Los_Angeles
+timezone."` (firm-local, tenant timezone). The agent runtime injects no date into context, so
+this line is how the model knows what today is between `resolve_date` calls; it self-refreshes
+every call, so sessions crossing midnight stay grounded. It states what today IS —
+`resolve_date` remains the only sanctioned way to compute any OTHER date (eval:
+date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array-shaped results
+(e.g. `list_recent_captures`) keep their shape and carry no rider.
 - The agent calls `record_field_note({ text, channel })`. **Nothing is recorded by this call** —
   the note is staged server-side (a review-item token) and the response carries a `confirmId`.
 - If the result `status` is `needs_identity`, the agent asks the technician which customer

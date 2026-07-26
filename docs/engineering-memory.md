@@ -213,6 +213,16 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   "resolve twice and compose the question" to "relay the result". Also verified same session:
   NO date is injected into agent context — today's date appears ONLY in resolve_date results
   (by §0f design), confirmed by a full-session grep (1 hit, the tool result).
+  **Temporal grounding riders SHIPPED 2026-07-25 (user decision after the eval re-run —
+  A 66.3% / B 80.6% / C 99.0%, re-run recorded in the date-reliability research doc):** every
+  successful object tool result carries `now` (the condition-B line: date + weekday + tz,
+  firm-local, 10-min-memoized tenant tz) via the ONE decoration seam in `src/mcp/server.ts`
+  (same seam as boardLink). Arrays keep their shape. Self-refreshing across midnight — the
+  reason injection-at-session-start was rejected; OpenClaw has no per-prompt injection hook
+  (config scan + vendor docs check, github.com/openclaw/openclaw issue #53404 still open).
+  resolve_date STAYS the arithmetic authority (the eval's weekday-walking tier: 41% with
+  injection alone, 98%+ with the tool). Rollout: deploy-only — result fields are per-call,
+  NO fleet gateway restart needed (tools/list unchanged).
   **resolve_date week mode SHIPPED + REPLAY-VERIFIED 2026-07-25 (PR #82):** the deferred
   Sat/Sun boundary item, promoted and closed same-day. Replay of the verbatim failing
   message on a fresh session: `resolve_date {week: 1}` → both Monday-anchored windows

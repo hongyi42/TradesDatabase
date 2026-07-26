@@ -239,6 +239,38 @@ describe('MCP server', () => {
     }
   });
 
+  test('every object tool result carries the temporal grounding rider `now`; arrays keep their shape', async () => {
+    // The rider is the eval's condition-B line, firm-local (seed tenant tz =
+    // America/Los_Angeles) — computed here with the same Intl formatting so a
+    // wiring or timezone regression fails loudly.
+    const expectHuman = new Date().toLocaleDateString('en-US', {
+      timeZone: 'America/Los_Angeles',
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+    });
+    const expectLine = `Right now it is ${expectHuman}, in the America/Los_Angeles timezone.`;
+
+    // An arbitrary object result gets the rider… (get_schedule: technician
+    // surface, object-shaped result)
+    const sched = await call('get_schedule', {});
+    expect(sched.data.now).toBe(expectLine);
+
+    // …resolve_date keeps its own today/timezone fields alongside it (no
+    // key collision: `weekday` there is the RESOLVED day's, `now` is today's).
+    const rd = await call('resolve_date', { dayShift: 0 });
+    expect(rd.data.now).toBe(expectLine);
+    expect(rd.data.today).toBeDefined();
+    expect(rd.data.timezone).toBe('America/Los_Angeles');
+
+    // …and array results stay arrays (the rider must not change their shape).
+    const caps = await call('list_recent_captures', {
+      jobId: '00000000-0000-0000-0000-000000000000',
+    });
+    expect(Array.isArray(caps.data)).toBe(true);
+  });
+
   test('record_field_note stages (NO L1), resolves identity, and records only on the final confirm', async () => {
     // FIRM-local today (seed tenant tz = America/Los_Angeles): the matcher
     // consults the capture's firm-local day, so the fixture must book there.
@@ -638,7 +670,7 @@ describe('MCP server', () => {
         ref: 'bob-marley',
         confirmId: first.data.confirmId,
       });
-      expect(confirmed.data).toEqual({ status: 'deactivated', ref: 'bob-marley' });
+      expect(confirmed.data).toMatchObject({ status: 'deactivated', ref: 'bob-marley' });
       const state = await pg.query<{ state: string }>(
         "select state from technicians where tenant_id = $1 and ref = 'bob-marley'",
         [tenantId],
@@ -647,7 +679,7 @@ describe('MCP server', () => {
 
       // Repeat deactivation is idempotent, not an error.
       const repeat = await callWith('deactivate_technician_seat', { ref: 'bob-marley' });
-      expect(repeat.data).toEqual({ status: 'already_deactivated', ref: 'bob-marley' });
+      expect(repeat.data).toMatchObject({ status: 'already_deactivated', ref: 'bob-marley' });
 
       // The freed seat is immediately usable — the earlier capped add now works
       // (fresh stage: the failed confirm consumed its token).

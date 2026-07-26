@@ -4900,6 +4900,32 @@ async function dispatch(
   }
 }
 
+// ─── temporal grounding rider ────────────────────────────────────────────
+// The firm timezone backs EVERY tool result's `now` line, so it is memoized
+// (10-min TTL) rather than re-read per call — resolve_date's own per-call
+// getTenant stays as-is (it is one tool; this seam is all of them). A tz
+// change on the tenant propagates within the TTL.
+const TZ_TTL_MS = 10 * 60 * 1000;
+const tzCache = new Map<string, { tz: string; at: number }>();
+async function groundingNow(tenantId: string): Promise<string> {
+  const hit = tzCache.get(tenantId);
+  const tz =
+    hit && Date.now() - hit.at < TZ_TTL_MS
+      ? hit.tz
+      : ((await getTenant(tenantId))?.timezone ?? 'UTC');
+  if (!hit || Date.now() - hit.at >= TZ_TTL_MS) tzCache.set(tenantId, { tz, at: Date.now() });
+  // The exact condition-B format the eval measured (80.6% vs bare-date 66.3%):
+  // weekday spelled out, firm-local, timezone named.
+  const human = new Date().toLocaleDateString('en-US', {
+    timeZone: tz,
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+  return `Right now it is ${human}, in the ${tz} timezone.`;
+}
+
 export function createServer(deps: ServerDeps = {}): Server {
   const server = new Server(
     { name: 'trades-spine', version: '0.1.0' },
@@ -4922,6 +4948,16 @@ export function createServer(deps: ServerDeps = {}): Server {
     const { name, arguments: args } = request.params;
     try {
       const result = await dispatch(name, (args ?? {}) as Record<string, unknown>, deps);
+      // Temporal grounding rider — every successful object result carries
+      // `now` (the eval-verified rich-grounding line: date + weekday + tz;
+      // condition B of thoughts/shared/research/2026-07-15-date-reliability-eval.md,
+      // user decision 2026-07-25). The agent runtime injects NO date into
+      // context (verified against a live session the same day), so tool
+      // results are the only self-refreshing channel: a session that crosses
+      // midnight re-grounds on its next call, which no inject-at-session-start
+      // scheme gets right. This line tells the model what today IS —
+      // resolve_date remains the sole authority for date ARITHMETIC.
+      const nowLine = deps.identity ? await groundingNow(deps.identity.tenantId) : null;
       // boardLink decoration happens HERE — one seam covering every return
       // path of the scheduling cases (dispatch has ~8 result literals across
       // book/move/cancel one-shot + staged + the two schedule reads).
@@ -4947,7 +4983,13 @@ export function createServer(deps: ServerDeps = {}): Server {
               boardNote: `ALWAYS end this reply with the exact line: [See it on the board](${link})`,
             }
           : result;
-      return { content: [{ type: 'text' as const, text: JSON.stringify(decorated) }] };
+      // Arrays keep their shape (a rider would change the contract);
+      // object results — staged previews included — get the line.
+      const grounded =
+        nowLine && decorated && typeof decorated === 'object' && !Array.isArray(decorated)
+          ? { ...(decorated as Record<string, unknown>), now: nowLine }
+          : decorated;
+      return { content: [{ type: 'text' as const, text: JSON.stringify(grounded) }] };
     } catch (err) {
       return {
         content: [{ type: 'text' as const, text: err instanceof Error ? err.message : String(err) }],

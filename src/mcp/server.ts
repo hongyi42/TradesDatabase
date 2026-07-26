@@ -678,7 +678,11 @@ const ADMIN_TOOLS = [
       'startTime and endTime are REQUIRED ' +
       '— the server assumes NO default length. Pass exactly the times the manager stated ' +
       '(a range like "12-1pm" means startTime 12:00 AND endTime 13:00); if the manager did ' +
-      'not say when the visit starts or ends, ASK them — never guess. Omit technicianRef to ' +
+      'not say when the visit starts or ends, ASK them — never guess. ONE exception: when ' +
+      'the manager EXPLICITLY says the time is not settled ("Thursday, time TBD"), pass ' +
+      'timeTbd:true with NO times — the visit books UNPLACED, holding the day (earliestDate, ' +
+      'or a range with latestDate) until someone places it. timeTbd is NEVER your own choice ' +
+      'when a time was stated. Omit technicianRef to ' +
       'book WITHOUT a technician (put it on the calendar, assign later — attach someone with ' +
       'move_visit; find these via get_team_schedule unassignedOnly:true). promiseLevel ' +
       'records what the customer was ACTUALLY told and defaults to "none". Pass "day" ONLY ' +
@@ -696,6 +700,9 @@ const ADMIN_TOOLS = [
         date: { type: 'string', description: 'YYYY-MM-DD, firm-local. First call only.' },
         startTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default; ask the manager if unstated.' },
         endTime: { type: 'string', description: 'HH:MM 24h. REQUIRED on first call — no default length; ask the manager if unstated.' },
+        timeTbd: { type: 'boolean', description: 'true ONLY when the manager explicitly said the time is unsettled — books an UNPLACED visit (day known, no times). Requires NO startTime/endTime. Never your own inference. First call only.' },
+        earliestDate: { type: 'string', description: 'With timeTbd: the day (YYYY-MM-DD), or the range start. Defaults to date. First call only.' },
+        latestDate: { type: 'string', description: 'With timeTbd: range end (YYYY-MM-DD), for "sometime that week". Defaults to earliestDate. First call only.' },
         promiseLevel: { type: 'string', enum: ['none', 'day', 'time', 'time_only'], description: 'What the customer was ACTUALLY told (default "none" = nothing promised). "day" = told the day; "time" = told the day AND time; "time_only" = told a time but NOT the day (the day may still move). Set a level only when the manager indicates a promise was made. First call only.' },
         priority: { type: 'string', enum: ['emergency', 'urgent', 'routine', 'maintenance'], description: 'Triage tier for the NEW job when booking by customerId (default "routine"). Rejected with jobId — an existing job keeps its recorded priority. First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
@@ -2741,8 +2748,10 @@ async function dispatch(
       for (const row of rows) {
         // Overlap semantics can pull in a row starting before `from` — clamp
         // to the requested days by start-day, the daySource precedent (the
-        // upper arm applies only in windowed mode).
-        const day = row.starts_at.slice(0, 10);
+        // upper arm applies only in windowed mode). An UNPLACED row (null
+        // times, plan 4b-2 — only the unassignedOnly recall view can see one)
+        // belongs to its range's earliest day and reports no times.
+        const day = row.starts_at ? row.starts_at.slice(0, 10) : (row.earliest_date as string);
         if (day < from || (toDay !== null && day > toDay)) continue;
         const customer = jobById.get(row.job_id)?.customers ?? null;
         // technician_id may be NULL (unassigned booking) — the ?? null echoes
@@ -2769,8 +2778,18 @@ async function dispatch(
           // agent will act on (live 2026-07-22: it relabeled a 4 PM visit
           // "4:00 PM UTC" and fabricated a "9 AM Pacific" conversion for the
           // manager). The date rides on the day group.
-          startTime: row.starts_at.slice(11, 16),
-          endTime: row.ends_at.slice(11, 16),
+          startTime: row.starts_at?.slice(11, 16) ?? null,
+          endTime: row.ends_at?.slice(11, 16) ?? null,
+          // Time-TBD marker (plan 4b-2): null times are DATA, but the agent
+          // must say "time not set yet", never invent one — flag + range so
+          // the recall view reads honestly.
+          ...(row.starts_at === null
+            ? {
+                timeTbd: true,
+                earliestDate: row.earliest_date,
+                latestDate: row.latest_date,
+              }
+            : {}),
           promiseLevel: row.promise_level,
           promisedDay: row.promised_day,
           locked: row.locked,
@@ -2826,17 +2845,32 @@ async function dispatch(
             'technicianRef was empty — pass the roster ref, or omit the field entirely to book unassigned',
           );
         }
+        const timeTbd = args.timeTbd === true;
         const date = str('date');
-        if (!date) throw new Error('date is required');
+        const earliestDateArg = str('earliestDate');
+        const latestDateArg = str('latestDate');
         // No default times exist (user decision 2026-07-18): a booking carries
-        // exactly the times the manager stated, or it doesn't happen yet.
+        // exactly the times the manager stated, or it doesn't happen yet. The
+        // ONE exception (plan 4b-2) is an explicit timeTbd, which must carry
+        // NO times at all — mixing the shapes is always an agent error.
         const startTime = str('startTime');
         const endTime = str('endTime');
-        if (!startTime || !endTime) {
+        if (timeTbd && (startTime || endTime)) {
+          throw new Error(
+            'timeTbd means the time is NOT settled — drop startTime/endTime, or book ' +
+              'normally with both and no timeTbd',
+          );
+        }
+        if (!timeTbd && (!startTime || !endTime)) {
           throw new Error(
             'startTime and endTime are required — the server assumes no default length. ' +
-              'If the manager did not say when the visit starts or ends, ask them, then book.',
+              'If the manager did not say when the visit starts or ends, ask them, then book. ' +
+              '(Only an EXPLICIT "time not settled" from the manager books without times: timeTbd:true.)',
           );
+        }
+        if (!timeTbd && !date) throw new Error('date is required');
+        if (timeTbd && !date && !earliestDateArg) {
+          throw new Error('a timeTbd booking needs the day: pass earliestDate (or date)');
         }
         const promiseLevelArg = str('promiseLevel');
         if (promiseLevelArg && !isPromiseLevel(promiseLevelArg)) {
@@ -2863,9 +2897,16 @@ async function dispatch(
           ...(customerId ? { customerId } : {}),
           ...(jobId ? { jobId } : {}),
           title: str('title') ?? null,
-          date,
-          startTime,
-          endTime,
+          ...(date ? { date } : {}),
+          ...(startTime ? { startTime } : {}),
+          ...(endTime ? { endTime } : {}),
+          ...(timeTbd
+            ? {
+                timeTbd: true,
+                ...(earliestDateArg ? { earliestDate: earliestDateArg } : {}),
+                ...(latestDateArg ? { latestDate: latestDateArg } : {}),
+              }
+            : {}),
           ...(promiseLevelArg ? { promiseLevel: promiseLevelArg as PromiseLevel } : {}),
           ...(priorityArg ? { priority: priorityArg as JobPriority } : {}),
           actorRef: subjectRef,
@@ -2890,12 +2931,20 @@ async function dispatch(
             customer: booked.customer.name,
             technicianRef: technicianRef ?? null,
             unassigned: booked.assignment.technician_id === null,
-            date,
+            // Placed: the booked day. Unplaced: the range start (+ range echo
+            // below) — the reply must speak in days, never invent a time.
+            date: date ?? booked.assignment.earliest_date,
             // Resolved times from the row itself (naive-local, exact slices).
-            // Nullable since plan 4b-2 — a placed booking always has them;
-            // the fallback is type-honesty, not a live path.
+            // Null on a timeTbd booking (plan 4b-2).
             startTime: booked.assignment.starts_at?.slice(11, 16) ?? null,
             endTime: booked.assignment.ends_at?.slice(11, 16) ?? null,
+            ...(booked.assignment.starts_at === null
+              ? {
+                  timeTbd: true,
+                  earliestDate: booked.assignment.earliest_date,
+                  latestDate: booked.assignment.latest_date,
+                }
+              : {}),
             promiseLevel: booked.assignment.promise_level,
             jobPriority: booked.job.priority,
             // Same silent-stored-value rule as jobTitle (final-review finding):
@@ -2908,7 +2957,9 @@ async function dispatch(
               'Booked in one step — nothing was promised to the customer, so no confirmation ' +
               'was needed (undo = move_visit / unschedule_visit). Tell the manager exactly what ' +
               'was booked: the JOB (jobTitle above — their words to object to if you assumed ' +
-              'it), customer, day, time, and who. On a new job the booked span is stored as ' +
+              'it), customer, day, time, and who. A timeTbd result has NO time — say "time ' +
+              'not set yet" and the day (or range); placing it later is a move_visit with real ' +
+              'times. On a new job the booked span is stored as ' +
               "the job's length (jobDurationMinutes) — mention it; update_job corrects it. " +
               'This visit is recorded as promise-free ' +
               '(promiseLevel "none"): if the manager\'s words actually said the customer was ' +
@@ -2937,11 +2988,17 @@ async function dispatch(
             jobId: jobId ?? null,
             title: str('title') ?? null,
             technicianRef: technicianRef ?? null,
-            date,
+            date: preview.date,
             // RESOLVED times/promise — the staged copy is the booking of
-            // record; commit passes exactly these so preview == commit.
+            // record; commit passes exactly these so preview == commit. On a
+            // timeTbd stage the times are NULL and the RANGE is the record
+            // (plan 4b-2's severe finding: the old guard read null times as
+            // corruption, stranding the manager with a dead confirm).
             startTime: preview.startTime,
             endTime: preview.endTime,
+            timeTbd: preview.timeTbd,
+            earliestDate: preview.earliestDate,
+            latestDate: preview.latestDate,
             promiseLevel: preview.promiseLevel,
             // The INPUT priority (null on the jobId path, where the arg is
             // rejected) — commit passes this, while preview.priority above
@@ -2976,8 +3033,13 @@ async function dispatch(
         title?: string | null;
         technicianRef?: string | null; // null = staged unassigned booking
         date?: string;
-        startTime?: string;
-        endTime?: string;
+        startTime?: string | null;
+        endTime?: string | null;
+        // The unplaced stage shape (plan 4b-2): timeTbd true, range set,
+        // times null. Absent on pre-feature tokens (treated as placed).
+        timeTbd?: boolean;
+        earliestDate?: string | null;
+        latestDate?: string | null;
         promiseLevel?: PromiseLevel;
         // Absent on tokens staged before the priority feature deployed — the
         // malformed guard below deliberately does NOT require it; commit then
@@ -2991,14 +3053,15 @@ async function dispatch(
       }
       // An explicit null technicianRef is a VALID staged unassigned booking;
       // an ABSENT key is corruption (every stage writes the field) — refuse it
-      // rather than silently committing a nobody-attached visit.
-      if (
-        d.technicianRef === undefined ||
-        !d.date ||
-        !d.startTime ||
-        !d.endTime ||
-        (!d.customerId && !d.jobId)
-      ) {
+      // rather than silently committing a nobody-attached visit. A timeTbd
+      // stage VALIDLY carries null times + a range (plan 4b-2): judging those
+      // by the placed rule stranded the manager with a dead confirm and
+      // nothing booked (the staged supersede had already killed prior tokens).
+      const stagedUnplaced = d.timeTbd === true;
+      const shapeValid = stagedUnplaced
+        ? !!d.earliestDate && !d.startTime && !d.endTime
+        : !!d.date && !!d.startTime && !!d.endTime;
+      if (d.technicianRef === undefined || !shapeValid || (!d.customerId && !d.jobId)) {
         throw new Error('staged booking is malformed — restage with the booking details');
       }
       const consumed = await resolveReviewItem(
@@ -3018,9 +3081,17 @@ async function dispatch(
           ...(d.customerId ? { customerId: d.customerId } : {}),
           ...(d.jobId ? { jobId: d.jobId } : {}),
           title: d.title ?? null,
-          date: d.date,
-          startTime: d.startTime,
-          endTime: d.endTime,
+          ...(stagedUnplaced
+            ? {
+                timeTbd: true,
+                earliestDate: d.earliestDate as string,
+                ...(d.latestDate ? { latestDate: d.latestDate } : {}),
+              }
+            : {
+                date: d.date as string,
+                startTime: d.startTime as string,
+                endTime: d.endTime as string,
+              }),
           promiseLevel: d.promiseLevel,
           ...(d.priority ? { priority: d.priority } : {}),
           actorRef: subjectRef,
@@ -3046,9 +3117,16 @@ async function dispatch(
         customer: booked.customer.name,
         technicianRef: d.technicianRef ?? null,
         unassigned: booked.assignment.technician_id === null,
-        date: d.date,
-        startTime: d.startTime,
-        endTime: d.endTime,
+        date: d.date ?? booked.assignment.earliest_date,
+        startTime: d.startTime ?? null,
+        endTime: d.endTime ?? null,
+        ...(stagedUnplaced
+          ? {
+              timeTbd: true,
+              earliestDate: booked.assignment.earliest_date,
+              latestDate: booked.assignment.latest_date,
+            }
+          : {}),
         promiseLevel: booked.assignment.promise_level,
         jobPriority: booked.job.priority,
         ...(booked.warning ? { warning: booked.warning } : {}),
@@ -4398,6 +4476,8 @@ async function dispatch(
         id: string;
         starts_at: string | null; // null = UNPLACED (plan 4b-2)
         ends_at: string | null;
+        earliest_date: string | null; // the unplaced day range — defaults the search window
+        latest_date: string | null;
         technician_id: string | null;
         status: string;
       } | null = null;
@@ -4492,17 +4572,7 @@ async function dispatch(
             `using your stated ${formatDuration(durationMin)} for this visit — not the stored ` +
             `'${job.job_type}' duration`;
         }
-      } else if (subjectRow) {
-        // TEMPORARY (Phase 1, unplaced-visits plan): an unplaced subject has
-        // no booked span — Date.parse(null) math would yield NaN and silently
-        // match no gap. Phase 2 replaces this refusal with real support (the
-        // job's own duration + the visit's range as the default window).
-        if (subjectRow.starts_at === null || subjectRow.ends_at === null) {
-          throw new Error(
-            'this visit has no time yet — searching slots for unplaced visits is not ' +
-              'supported yet; pass durationMinutes to search by length instead',
-          );
-        }
+      } else if (subjectRow && subjectRow.starts_at !== null && subjectRow.ends_at !== null) {
         // An existing visit's booked length is a real value — no assumption.
         // Same refusal rule as the own-length branch below (round-2 review):
         // the duration is KNOWN here, so assumedType would ride every reason
@@ -4515,6 +4585,18 @@ async function dispatch(
         }
         durationMin = spanMinutes(subjectRow.starts_at, subjectRow.ends_at);
         durationAssumption = `using this visit's booked length (${formatDuration(durationMin)})`;
+      } else if (subjectRow && job?.duration_minutes) {
+        // UNPLACED subject (plan 4b-2): no booked span exists — the job's own
+        // recorded length (4b-1) is the honest stand-in. Same assumedType
+        // refusal as every known-duration branch.
+        if (assumedType) {
+          throw new Error(
+            `this job has a recorded length (${formatDuration(job.duration_minutes)}) — its own ` +
+              'value applies; to use a different length, pass durationMinutes',
+          );
+        }
+        durationMin = job.duration_minutes;
+        durationAssumption = `this visit has no time yet — using the job's recorded length (${formatDuration(durationMin)})`;
       } else if (job?.duration_minutes) {
         // The job's OWN length (plan 4b-1) outranks the type lookup: a stored
         // per-job value — manager-stated or booking-measured — is more specific
@@ -4566,8 +4648,12 @@ async function dispatch(
       const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
       const nowISO = new Date().toISOString();
       const todayISO = localDateISO(nowISO, tz);
-      const earliest = str('earliestDate') ?? todayISO;
-      const latest = str('latestDate') ?? addDaysISO(todayISO, 13);
+      // An UNPLACED subject's own day range is the natural default window —
+      // "when can we fit this?" means within the days it already holds
+      // (plan 4b-2); explicit args still override, placed subjects keep the
+      // today-forward default.
+      const earliest = str('earliestDate') ?? subjectRow?.earliest_date ?? todayISO;
+      const latest = str('latestDate') ?? subjectRow?.latest_date ?? addDaysISO(todayISO, 13);
       // Non-string range args → invalid_range, not a silent default window
       // (mirrors get_team_schedule's guard).
       if (

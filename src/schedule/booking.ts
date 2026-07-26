@@ -26,6 +26,7 @@ import {
   listTimeOffForTechnician,
   listAssignmentsForJob,
   listIdenticalUnassignedVisits,
+  listIdenticalUnplacedVisits,
   rescheduleAssignment,
   updateAssignmentPromise,
   updateAssignmentStatus,
@@ -155,14 +156,21 @@ export interface BookVisitInput {
   customerId?: string;
   jobId?: string;
   title?: string | null; // job-shell title on the customerId path
-  date: string; // YYYY-MM-DD, firm-local
+  date?: string; // YYYY-MM-DD, firm-local (required for a PLACED booking)
   // Both times are REQUIRED — the server assumes NO default length (user
   // decision 2026-07-18: a booking carries exactly the times the manager
   // stated; when a time wasn't stated, the agent asks instead of the server
   // inventing one). Moves differ: preserving the OLD duration there carries a
   // real value forward, not an invented one.
-  startTime: string; // HH:MM
-  endTime: string; // HH:MM
+  // RECORDED EXCEPTION (plan 4b-2): under timeTbd:true — the manager
+  // EXPLICITLY said the time is unsettled — times are absent and the visit
+  // books UNPLACED, holding a day (or day range) until placed. Omitting times
+  // is never an accident: without the flag they stay required.
+  startTime?: string; // HH:MM
+  endTime?: string; // HH:MM
+  timeTbd?: boolean; // true = book UNPLACED (day known, time not yet)
+  earliestDate?: string; // YYYY-MM-DD — the unplaced day / range start (default: date)
+  latestDate?: string; // YYYY-MM-DD — range end (default: earliestDate)
   promiseLevel?: PromiseLevel; // default 'none' — record only promises actually made
   // Triage tier for the job SHELL minted on the customerId path (default
   // 'routine'). Ignored on the jobId path — the MCP layer rejects the
@@ -186,10 +194,14 @@ interface ResolvedBooking {
   technician: Technician | null; // null = unassigned booking
   customer: Customer;
   existingJob: Job | null;
-  startTime: string;
-  endTime: string;
-  startISO: string;
-  endISO: string;
+  // PLACED: all four set, range null. UNPLACED (timeTbd): all four null,
+  // range set — the same one-shape-only rule the DB enforces.
+  startTime: string | null;
+  endTime: string | null;
+  startISO: string | null;
+  endISO: string | null;
+  earliestDate: string | null;
+  latestDate: string | null;
   promiseLevel: PromiseLevel;
   warning?: string;
 }
@@ -225,7 +237,85 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     customer = byId;
   }
 
+  // ---- UNPLACED arm (plan 4b-2): the manager explicitly said the time is
+  // unsettled. The visit holds a day (or range) and NO times; no overlap
+  // pre-check (it claims no slot) and no pattern-based availability advisory
+  // (there is no time to check a window against) — but full-day time off on
+  // the range is still meaningful, so that half of the advisory stays.
+  if (input.timeTbd) {
+    if (input.startTime !== undefined || input.endTime !== undefined) {
+      throw new Error(
+        'timeTbd means NO times — drop startTime/endTime, or book normally with both',
+      );
+    }
+    const earliestDate = input.earliestDate ?? input.date;
+    if (!earliestDate) {
+      throw new Error('a timeTbd booking needs the day: pass earliestDate (or date)');
+    }
+    const latestDate = input.latestDate ?? earliestDate;
+    if (!DATE_RE.test(earliestDate) || !DATE_RE.test(latestDate)) {
+      throw new Error('earliestDate/latestDate must be YYYY-MM-DD');
+    }
+    if (earliestDate > latestDate) {
+      throw new Error('earliestDate must be on or before latestDate');
+    }
+    const promiseLevel = input.promiseLevel ?? 'none';
+    // A timeless visit cannot hold a TIME promise — the break test could
+    // never fire and the promise would gate nothing (plan decision). And a
+    // DAY promise needs one day to point at: a range is not a told day.
+    if (carriesPromisedTime(promiseLevel)) {
+      throw new Error(
+        `promiseLevel '${promiseLevel}' needs a booked time — place the visit (book with ` +
+          'times) before recording a time promise',
+      );
+    }
+    if (promiseLevel === 'day' && earliestDate !== latestDate) {
+      throw new Error(
+        'a day promise needs ONE day — book a single-day timeTbd visit (earliestDate = ' +
+          'latestDate) or narrow the range first',
+      );
+    }
+    // Same duplicate hazard as person-less placed rows, range-keyed: unplaced
+    // rows are ALSO exempt from the DB guard, so a transport retry would
+    // silently duplicate without this.
+    const twins = await listIdenticalUnplacedVisits(tenantId, earliestDate, latestDate);
+    if (twins.some((t) => t.customerId === customer.id)) {
+      throw new Error(
+        `an identical time-TBD visit for ${customer.name} already exists for ` +
+          `${earliestDate}${latestDate !== earliestDate ? `–${latestDate}` : ''} — likely a ` +
+          'duplicate; place that one, move it, or change its day',
+      );
+    }
+    let warning: string | undefined;
+    if (technician) {
+      const timeOff = await listTimeOffForTechnician(technician.id, earliestDate, latestDate);
+      if (timeOff.length > 0) {
+        warning = `${technician.display_name} has time off booked in ${earliestDate}–${latestDate}${
+          timeOff[0].reason ? ` (${timeOff[0].reason})` : ''
+        }`;
+      }
+    }
+    return {
+      technician,
+      customer,
+      existingJob,
+      startTime: null,
+      endTime: null,
+      startISO: null,
+      endISO: null,
+      earliestDate,
+      latestDate,
+      promiseLevel,
+      ...(warning ? { warning } : {}),
+    };
+  }
+
   const { startTime, endTime } = input;
+  if (!input.date || startTime === undefined || endTime === undefined) {
+    throw new Error(
+      'date, startTime, and endTime are all required — only an explicit timeTbd booking omits times',
+    );
+  }
   validateDayAndTimes(input.date, startTime, endTime);
   const startISO = naiveLocalISO(input.date, startTime);
   const endISO = naiveLocalISO(input.date, endTime);
@@ -266,6 +356,8 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     endTime,
     startISO,
     endISO,
+    earliestDate: null,
+    latestDate: null,
     // Default 'none': a fresh booking promises the customer NOTHING unless the
     // manager says otherwise. Recording 'day' by default let the schedule
     // "know" the customer was told a day nobody actually told them — an
@@ -283,9 +375,14 @@ export interface BookVisitPreview {
   customerName: string;
   newJob: boolean; // true = confirming will mint a job shell
   jobTitle: string | null;
+  // PLACED: date + both times set, range null. UNPLACED (timeTbd): times
+  // null, range set, date = the range start (the day the manager named).
   date: string;
-  startTime: string; // as the manager stated — store these on the stage
-  endTime: string;
+  startTime: string | null; // as the manager stated — store these on the stage
+  endTime: string | null;
+  timeTbd: boolean;
+  earliestDate: string | null;
+  latestDate: string | null;
   promiseLevel: PromiseLevel;
   // What the job's priority will be after commit: the existing job's recorded
   // tier, or the stated/default tier of the shell about to be minted — shown
@@ -310,14 +407,19 @@ export async function previewBookVisit(input: BookVisitInput): Promise<BookVisit
     customerName: r.customer.name,
     newJob: r.existingJob === null,
     jobTitle: r.existingJob?.title ?? input.title ?? null,
-    date: input.date,
+    date: r.earliestDate ?? (input.date as string),
     startTime: r.startTime,
     endTime: r.endTime,
+    timeTbd: r.startISO === null,
+    earliestDate: r.earliestDate,
+    latestDate: r.latestDate,
     promiseLevel: r.promiseLevel,
     priority: r.existingJob ? r.existingJob.priority : (input.priority ?? 'routine'),
     jobDurationMinutes: r.existingJob
       ? r.existingJob.duration_minutes
-      : bookedSpanMinutes(r.startISO, r.endISO),
+      : r.startISO && r.endISO
+        ? bookedSpanMinutes(r.startISO, r.endISO)
+        : null,
     requiresConfirmation: bookingRequiresConfirmation(r.promiseLevel),
     ...(r.warning ? { warning: r.warning } : {}),
   };
@@ -368,7 +470,10 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       // the job duration-less if the visit is later cancelled, and the freeze
       // would re-ask a length we already knew. isValidDuration guards the
       // (today unreachable) over-24h span: store null, not a bound breach.
-      durationMinutes: bookedSpanMinutes(r.startISO, r.endISO),
+      // A timeTbd booking measures nothing — the shell stays duration-less
+      // (fail-closed, never invented; plan 4b-2).
+      durationMinutes:
+        r.startISO && r.endISO ? bookedSpanMinutes(r.startISO, r.endISO) : null,
     }));
 
   let assignment: Assignment;
@@ -379,11 +484,18 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       technicianId: r.technician?.id ?? null,
       startsAt: r.startISO,
       endsAt: r.endISO,
+      // The unplaced shape (plan 4b-2): range set exactly when times are null.
+      earliestDate: r.earliestDate,
+      latestDate: r.latestDate,
       status: 'confirmed',
       promiseLevel: r.promiseLevel,
       // Stamp a promised day ONLY for day-carrying levels — 'none' promises
       // nothing and 'time_only' promises no DAY (the CHECK backstops the pair).
-      promisedDay: carriesPromisedDay(r.promiseLevel) ? input.date : null,
+      // An unplaced day-promise is single-day by the resolve guard, so its
+      // promised day IS the range day.
+      promisedDay: carriesPromisedDay(r.promiseLevel)
+        ? (input.date ?? r.earliestDate)
+        : null,
       locked: true,
     });
   } catch (err) {
@@ -402,7 +514,7 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
       // Only reachable with a technician attached — the DB guard never fires
       // on NULL rows; the fallback text is TS-narrowing, not a real case.
       throw new Error(
-        `${r.technician?.display_name ?? 'the technician'} already has a confirmed visit overlapping ${input.date} ${r.startTime}–${r.endTime}`,
+        `${r.technician?.display_name ?? 'the technician'} already has a confirmed visit overlapping ${input.date ?? ''} ${r.startTime ?? ''}–${r.endTime ?? ''}`,
       );
     }
     throw err;
@@ -414,9 +526,13 @@ export async function bookVisit(input: BookVisitInput): Promise<BookVisitResult>
     kind: 'booked',
     actorRef: input.actorRef,
     detail: {
-      date: input.date,
-      startTime: r.startTime,
-      endTime: r.endTime,
+      ...(r.startISO
+        ? { date: input.date, startTime: r.startTime, endTime: r.endTime }
+        : {
+            timeTbd: true,
+            earliestDate: r.earliestDate,
+            latestDate: r.latestDate,
+          }),
       promiseLevel: assignment.promise_level,
       technicianRef: r.technician?.ref ?? null,
       customerId: r.customer.id,
@@ -445,11 +561,9 @@ export interface MoveVisitInput {
 }
 
 interface ResolvedMove {
-  // PLACED for now: Phase 1 of the unplaced-visits plan refuses unplaced
-  // subjects here (dead code until a writer exists); Phase 2 widens this back
-  // to Assignment and adds real placement semantics (duration from the job,
-  // isPlaced-guarded promise-break math).
-  old: import('../db/index.js').PlacedAssignment;
+  // May be UNPLACED (plan 4b-2): moving an unplaced visit to real times IS
+  // the placing verb — the reschedule produces a placed row either way.
+  old: Assignment;
   // The TARGET technician. null has two readings — an UNASSIGNED visit staying
   // unassigned (the common case: old.technician_id is null and no ref given),
   // or a roster row that vanished (near-unreachable: techs deactivate, never
@@ -472,12 +586,6 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
   if (old.status !== 'confirmed' && old.status !== 'proposed') {
     throw new Error(`cannot move a ${old.status} assignment`);
   }
-  // TEMPORARY (Phase 1, unplaced-visits plan): unplaced rows cannot be moved
-  // yet — Phase 2 turns a move into the PLACING verb. Unreachable until a
-  // writer mints unplaced rows; explicit so the failure is a message, not NaN.
-  if (!isPlaced(old)) {
-    throw new Error('this visit has no time yet — placing unplaced visits is not supported yet');
-  }
 
   if (input.unassign && input.technicianRef) {
     throw new Error(
@@ -499,8 +607,26 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
         : null;
   const targetTechnicianId = input.unassign ? null : (technician?.id ?? old.technician_id);
 
-  const oldDurationMin = spanMinutes(old.starts_at, old.ends_at);
-  const endTime = input.endTime ?? addMinutesClamped(input.startTime, oldDurationMin);
+  // Default length for the new slot: the old booked span when placed; for an
+  // UNPLACED subject there is no span — the job's own recorded length (4b-1)
+  // stands in, and when that is null too the manager must state endTime
+  // (never invented — the booking doctrine).
+  let endTime: string;
+  if (input.endTime !== undefined) {
+    endTime = input.endTime;
+  } else if (isPlaced(old)) {
+    endTime = addMinutesClamped(input.startTime, spanMinutes(old.starts_at, old.ends_at));
+  } else {
+    const movedJob = await getJob(old.job_id);
+    if (movedJob?.duration_minutes) {
+      endTime = addMinutesClamped(input.startTime, movedJob.duration_minutes);
+    } else {
+      throw new Error(
+        'this visit has no time yet and its job has no recorded length — pass endTime, ' +
+          "or set the job's length first (update_job durationMinutes)",
+      );
+    }
+  }
   validateDayAndTimes(input.date, input.startTime, endTime);
   const startISO = naiveLocalISO(input.date, input.startTime);
   const endISO = naiveLocalISO(input.date, endTime);
@@ -510,7 +636,10 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
   // time-carrying one when the start TIME changes ('time' = both axes;
   // 'time_only' has promised_day NULL, so dayChanged is never consulted).
   const dayChanged = old.promised_day !== input.date;
-  const timeChanged = old.starts_at.slice(11, 16) !== input.startTime;
+  // An unplaced row has no old time — placing it is never a TIME break
+  // (isPlaced guard, plan 4b-2). Time promises cannot exist on unplaced rows
+  // anyway (refused at booking and set_promise), so this arm is belt only.
+  const timeChanged = isPlaced(old) && old.starts_at.slice(11, 16) !== input.startTime;
   const promiseBroken =
     (carriesPromisedDay(old.promise_level) && dayChanged) ||
     (carriesPromisedTime(old.promise_level) && timeChanged);
@@ -754,12 +883,26 @@ export async function setVisitPromise(
   if (row.status !== 'confirmed' && row.status !== 'proposed') {
     throw new Error(`this visit is ${row.status} — promises are corrected on live visits only`);
   }
-  // TEMPORARY (Phase 1, unplaced-visits plan): promise semantics for unplaced
-  // rows (single-day ranges only; no time levels) arrive with Phase 2.
+  // Unplaced rows (plan 4b-2): a TIME promise is incoherent on a timeless
+  // visit (its break test could never fire — the promise would gate nothing),
+  // and a DAY promise needs exactly one day to point at.
   if (!isPlaced(row)) {
-    throw new Error('this visit has no time yet — promises on unplaced visits are not supported yet');
+    if (carriesPromisedTime(promiseLevel)) {
+      throw new Error(
+        `promiseLevel '${promiseLevel}' needs a booked time — place the visit first ` +
+          '(move it to real times), then record the time promise',
+      );
+    }
+    if (promiseLevel === 'day' && row.earliest_date !== row.latest_date) {
+      throw new Error(
+        'a day promise needs ONE day and this visit holds a range ' +
+          `(${row.earliest_date}–${row.latest_date}) — move it to a single day first`,
+      );
+    }
   }
-  const promisedDay = carriesPromisedDay(promiseLevel) ? row.starts_at.slice(0, 10) : null;
+  const promisedDay = carriesPromisedDay(promiseLevel)
+    ? (row.starts_at ? row.starts_at.slice(0, 10) : (row.earliest_date as string))
+    : null;
   const updated = await updateAssignmentPromise(
     tenantId,
     assignmentId,

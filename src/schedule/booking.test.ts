@@ -5,7 +5,7 @@ import { setTenantSeats } from '../db/tenants.js';
 import { insertTechnician, setTechnicianAvailability, type Technician, type WeeklyPattern } from '../db/technicians.js';
 import { addTimeOff } from '../db/timeOff.js';
 import { createCustomer } from '../db/customers.js';
-import { createJob, getJob } from '../db/jobs.js';
+import { createJob, getJob, updateJobDetails } from '../db/jobs.js';
 import {
   listAssignmentsForJob,
   listAssignmentsForTechnician,
@@ -23,6 +23,7 @@ import {
   naiveLocalISO,
   previewBookVisit,
   previewMoveVisit,
+  setVisitPromise,
 } from './booking.js';
 
 // Integration against the local stack, scheduling.test.ts truncate discipline.
@@ -225,8 +226,10 @@ describe('bookVisit', () => {
         actorRef: 'manager-test',
         // endTime deliberately omitted (cast: the untyped MCP boundary —
         // e.g. a malformed staged detail — can still produce this shape).
+        // Message updated by plan 4b-2: the required-check now names the ONE
+        // legal omission (an explicit timeTbd booking).
       } as Parameters<typeof bookVisit>[0]),
-    ).rejects.toThrow(/must be HH:MM/);
+    ).rejects.toThrow(/endTime are all required/);
     expect((await listUnassignedOpenJobs(tenantId)).length).toBe(before);
   });
 
@@ -847,6 +850,158 @@ describe('detach (unassign) + time_only promise — plan 4a.5', () => {
     expect(moved.created.promise_level).toBe('time_only');
     expect(moved.created.promised_day).toBeNull();
     expect(moved.promiseBroken).toBe(false);
+  });
+});
+
+describe('unplaced (timeTbd) bookings + placing them — plan 4b-2', () => {
+  async function mkCustomer(name: string) {
+    return createCustomer({ tenantId, name });
+  }
+
+  test('a timeTbd booking creates NULL times + the day range; the shell stays duration-less', async () => {
+    const customer = await mkCustomer('TBD Tina');
+    const r = await bookVisit({
+      tenantId,
+      customerId: customer.id,
+      title: 'tbd single day',
+      timeTbd: true,
+      earliestDate: '2026-11-19',
+      actorRef: 'mgr',
+    });
+    expect(r.assignment.starts_at).toBeNull();
+    expect(r.assignment.ends_at).toBeNull();
+    expect(r.assignment.earliest_date).toBe('2026-11-19');
+    expect(r.assignment.latest_date).toBe('2026-11-19'); // defaults to earliest
+    expect(r.assignment.status).toBe('confirmed');
+    // No span was measured — the never-guess rule holds for the shell too.
+    expect(r.job.duration_minutes).toBeNull();
+  });
+
+  test('timeTbd with a startTime is rejected; missing day is rejected', async () => {
+    const customer = await mkCustomer('TBD Mix');
+    await expect(
+      bookVisit({
+        tenantId, customerId: customer.id, timeTbd: true,
+        earliestDate: '2026-11-19', startTime: '09:00', actorRef: 'mgr',
+      }),
+    ).rejects.toThrow(/timeTbd means NO times/);
+    await expect(
+      bookVisit({ tenantId, customerId: customer.id, timeTbd: true, actorRef: 'mgr' }),
+    ).rejects.toThrow(/needs the day/);
+  });
+
+  test('time promises are refused on timeTbd; a day promise needs ONE day', async () => {
+    const customer = await mkCustomer('TBD Promise');
+    await expect(
+      bookVisit({
+        tenantId, customerId: customer.id, timeTbd: true,
+        earliestDate: '2026-11-19', promiseLevel: 'time', actorRef: 'mgr',
+      }),
+    ).rejects.toThrow(/needs a booked time/);
+    await expect(
+      bookVisit({
+        tenantId, customerId: customer.id, timeTbd: true,
+        earliestDate: '2026-11-19', latestDate: '2026-11-20',
+        promiseLevel: 'day', actorRef: 'mgr',
+      }),
+    ).rejects.toThrow(/ONE day/);
+    // Single-day + day promise is coherent and stamps the promised day.
+    const ok = await bookVisit({
+      tenantId, customerId: customer.id, title: 'tbd promised',
+      timeTbd: true, earliestDate: '2026-11-19',
+      promiseLevel: 'day', actorRef: 'mgr',
+    });
+    expect(ok.assignment.promise_level).toBe('day');
+    expect(ok.assignment.promised_day).toBe('2026-11-19');
+  });
+
+  test('identical unplaced twins for one customer are refused (retry hazard)', async () => {
+    const customer = await mkCustomer('TBD Twin');
+    await bookVisit({
+      tenantId, customerId: customer.id, title: 'twin', timeTbd: true,
+      earliestDate: '2026-11-23', latestDate: '2026-11-25', actorRef: 'mgr',
+    });
+    await expect(
+      bookVisit({
+        tenantId, customerId: customer.id, title: 'twin again', timeTbd: true,
+        earliestDate: '2026-11-23', latestDate: '2026-11-25', actorRef: 'mgr',
+      }),
+    ).rejects.toThrow(/identical time-TBD visit/);
+  });
+
+  test('moving an unplaced visit to real times PLACES it: times set, range cleared', async () => {
+    const customer = await mkCustomer('TBD Place');
+    const booked = await bookVisit({
+      tenantId, customerId: customer.id, title: 'place me', timeTbd: true,
+      earliestDate: '2026-11-30', actorRef: 'mgr',
+    });
+    const moved = await moveVisit({
+      tenantId,
+      assignmentId: booked.assignment.id,
+      date: '2026-11-30',
+      startTime: '09:00',
+      endTime: '10:30',
+      technicianRef: tech.ref,
+      reason: 'placing the visit',
+      actorRef: 'mgr',
+    });
+    expect(moved.created.starts_at).toBe('2026-11-30T09:00:00+00:00');
+    expect(moved.created.ends_at).toBe('2026-11-30T10:30:00+00:00');
+    expect(moved.created.earliest_date).toBeNull();
+    expect(moved.created.latest_date).toBeNull();
+    expect(moved.created.technician_id).toBe(tech.id);
+    // Placing is never a TIME break (there was no old time).
+    expect(moved.promiseBroken).toBe(false);
+  });
+
+  test('placing without endTime uses the job length; errors when that is null too', async () => {
+    const customer = await mkCustomer('TBD Length');
+    const withLen = await bookVisit({
+      tenantId, customerId: customer.id, title: 'has length', timeTbd: true,
+      earliestDate: '2026-12-01', actorRef: 'mgr',
+    });
+    await updateJobDetails(tenantId, withLen.job.id, { durationMinutes: 90 },
+      (await getJob(withLen.job.id))!.updated_at);
+    const moved = await moveVisit({
+      tenantId, assignmentId: withLen.assignment.id,
+      date: '2026-12-01', startTime: '13:00',
+      reason: 'placing with job length', actorRef: 'mgr',
+    });
+    expect(moved.created.ends_at).toBe('2026-12-01T14:30:00+00:00'); // 13:00 + 90m
+
+    const noLen = await bookVisit({
+      tenantId, customerId: customer.id, title: 'no length', timeTbd: true,
+      earliestDate: '2026-12-02', actorRef: 'mgr',
+    });
+    await expect(
+      moveVisit({
+        tenantId, assignmentId: noLen.assignment.id,
+        date: '2026-12-02', startTime: '13:00',
+        reason: 'no length anywhere', actorRef: 'mgr',
+      }),
+    ).rejects.toThrow(/no recorded length/);
+  });
+
+  test('set promise on unplaced: day works on single-day, refused on a range; time refused', async () => {
+    const customer = await mkCustomer('TBD SetPromise');
+    const single = await bookVisit({
+      tenantId, customerId: customer.id, title: 'single', timeTbd: true,
+      earliestDate: '2026-12-07', actorRef: 'mgr',
+    });
+    const done = await setVisitPromise(tenantId, single.assignment.id, 'day', 'mgr');
+    expect(done.updated.promise_level).toBe('day');
+    expect(done.updated.promised_day).toBe('2026-12-07');
+    await expect(
+      setVisitPromise(tenantId, single.assignment.id, 'time', 'mgr'),
+    ).rejects.toThrow(/needs a booked time/);
+
+    const ranged = await bookVisit({
+      tenantId, customerId: customer.id, title: 'ranged', timeTbd: true,
+      earliestDate: '2026-12-08', latestDate: '2026-12-10', actorRef: 'mgr',
+    });
+    await expect(
+      setVisitPromise(tenantId, ranged.assignment.id, 'day', 'mgr'),
+    ).rejects.toThrow(/ONE day/);
   });
 });
 

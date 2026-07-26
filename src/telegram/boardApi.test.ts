@@ -583,6 +583,48 @@ describe('GET /board/api/bucket (the loose-bucket tray, Plan 4a)', () => {
     expect(((await tech.json()) as { error: string }).error).toBe('managers only');
   });
 
+  test('an unassigned UNPLACED visit appears in the tray with timeTbd + null times (plan 4b-2)', async () => {
+    const casaId = (await pg.query("select id from customers where name = 'Board Casa'"))
+      .rows[0].id as string;
+    const tbdStart = relDate(15);
+    const tbdEnd = relDate(17);
+    const booked = await bookVisit({
+      tenantId,
+      customerId: casaId,
+      title: 'Bucket time-TBD visit',
+      timeTbd: true,
+      earliestDate: tbdStart,
+      latestDate: tbdEnd,
+      actorRef: 'board-mgr',
+    });
+    try {
+      const resp = await bucket(tma(900000001));
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as {
+        parkedVisits: Array<Record<string, unknown>>;
+      };
+      // Without the widened .or() reader (.gte alone) this row is invisible —
+      // the assertion below fails, which is exactly the regression pin.
+      const mine = body.parkedVisits.find(
+        (v) => v.assignmentId === booked.assignment.id,
+      );
+      expect(mine).toBeDefined();
+      expect(mine?.timeTbd).toBe(true);
+      expect(mine?.date).toBe(tbdStart);
+      expect(mine?.latestDate).toBe(tbdEnd);
+      expect(mine?.startTime).toBeNull();
+      expect(mine?.endTime).toBeNull();
+      expect(mine?.overdue).toBe(false); // the range is in the future
+    } finally {
+      // Terminal flips, not deletes: a delete cascades toward append-only L1
+      // territory; cancelled rows vanish from every bucket read regardless.
+      await pg.query("update assignments set status = 'cancelled' where id = $1", [
+        booked.assignment.id,
+      ]);
+      await pg.query("update jobs set status = 'cancelled' where id = $1", [booked.job.id]);
+    }
+  });
+
   test('manager: both sections, HH:MM/weekday shapes, names embedded', async () => {
     const resp = await bucket(tma(900000001));
     expect(resp.status).toBe(200);

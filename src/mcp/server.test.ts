@@ -3356,6 +3356,121 @@ describe('record_standing_fact (staged two-step)', () => {
 });
 
 describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', () => {
+  test('timeTbd + day promise: stages AND confirms (the malformed-stage regression), then recall + find_slots + set_promise semantics — plan 4b-2', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({
+      tenantId,
+      name: 'TBD Ursula',
+      addressLine1: '9 Window Way',
+      city: 'Clovis',
+      state: 'CA',
+      postalCode: '93611',
+    });
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      // timeTbd + times together is an agent error, refused loudly.
+      const mixed = await callWith('book_visit', {
+        customerId: customer.id, title: 'tbd mixed', timeTbd: true,
+        earliestDate: '2026-12-14', startTime: '09:00',
+      });
+      expect(mixed.isError).toBe(true);
+      expect(mixed.text).toContain('NOT settled');
+
+      // THE regression (plan-review severe finding): a day-promised timeTbd
+      // booking routes through STAGING — the stage must carry the unplaced
+      // shape and the confirm must accept it as valid, not "malformed".
+      const staged = await callWith('book_visit', {
+        customerId: customer.id,
+        title: 'tbd promised install',
+        timeTbd: true,
+        earliestDate: '2026-12-14',
+        promiseLevel: 'day',
+      });
+      expect(staged.data.status).toBe('needs_confirmation');
+      expect(staged.data.preview).toMatchObject({
+        timeTbd: true,
+        earliestDate: '2026-12-14',
+        latestDate: '2026-12-14',
+        startTime: null,
+        endTime: null,
+        promiseLevel: 'day',
+      });
+      const booked = await callWith('book_visit', { confirmId: staged.data.confirmId });
+      expect(booked.data.status).toBe('booked');
+      expect(booked.data.timeTbd).toBe(true);
+      expect(booked.data.startTime).toBeNull();
+      const assignmentId = booked.data.assignmentId as string;
+      // Row read-back: null times, range set, promise stamped.
+      const { rows } = await pg.query(
+        'select starts_at, ends_at, earliest_date::text, latest_date::text, promise_level, promised_day from assignments where id = $1',
+        [assignmentId],
+      );
+      expect(rows[0].starts_at).toBeNull();
+      expect(rows[0].ends_at).toBeNull();
+      expect(rows[0].earliest_date).toBe('2026-12-14');
+      expect(rows[0].promise_level).toBe('day');
+
+      // The recall view lists it with its day and NO invented time.
+      const recall = await callWith('get_team_schedule', { unassignedOnly: true });
+      const allStops: Array<Record<string, unknown>> = (
+        recall.data.days as Array<{ date: string; stops: Array<Record<string, unknown>> }>
+      ).flatMap((d) => d.stops.map((st) => ({ ...st, date: d.date })));
+      const mine = allStops.find((st) => st.assignmentId === assignmentId);
+      expect(mine).toBeDefined();
+      expect(mine?.date).toBe('2026-12-14');
+      expect(mine?.startTime).toBeNull();
+      expect(mine?.timeTbd).toBe(true);
+
+      // find_slots on the unplaced visit: duration from the JOB's recorded
+      // length; the search window defaults to the visit's own day. Give
+      // tech-mcp a working pattern so 2026-12-14 (a Monday) has real gaps.
+      const techRow = await pg.query('select id from technicians where tenant_id = $1 and ref = $2', [tenantId, 'tech-mcp']);
+      await setTechnicianAvailability(techRow.rows[0].id as string, {
+        mon: [['08:00', '17:00']], tue: [['08:00', '17:00']], wed: [['08:00', '17:00']],
+        thu: [['08:00', '17:00']], fri: [['08:00', '17:00']], sat: [], sun: [],
+      });
+      const jobId = booked.data.jobId as string;
+      const noLen = await callWith('find_slots', { assignmentId });
+      expect(noLen.isError).toBe(true); // fail-closed: no length anywhere yet
+      const upd = await callWith('update_job', { jobId, durationMinutes: 120 });
+      expect(upd.data.status).toBe('ok');
+      const slots = await callWith('find_slots', { assignmentId });
+      expect(slots.data.status).toBe('ok');
+      expect(slots.data.durationAssumption).toContain("job's recorded length");
+      // The window defaulted to the visit's OWN day: every candidate must sit
+      // on 2026-12-14 (a one-day search space proves the range default).
+      const cands = slots.data.candidates as Array<{ date: string; endTime: string; startTime: string }>;
+      expect(cands.length).toBeGreaterThan(0);
+      expect(cands.every((c) => c.date === '2026-12-14')).toBe(true);
+      // …and each candidate spans the job's 120 recorded minutes.
+      expect(cands[0].endTime >= '10:00').toBe(true);
+
+      // set_promise semantics: 'time' refused on the unplaced row; 'none' ok.
+      const timeRefused = await callWith('set_promise', { assignmentId, promiseLevel: 'time' });
+      expect(timeRefused.isError).toBe(true);
+      expect(timeRefused.text).toContain('booked time');
+      const cleared = await callWith('set_promise', { assignmentId, promiseLevel: 'none' });
+      expect(cleared.data.status).toBe('ok');
+      expect(cleared.data.date).toBe('2026-12-14'); // derived from the range day
+    } finally {
+      // Restore tech-mcp's no-pattern state — the big scheduling test below
+      // asserts the "no working pattern" availability warning.
+      const techRow2 = await pg.query(
+        'select id from technicians where tenant_id = $1 and ref = $2',
+        [tenantId, 'tech-mcp'],
+      );
+      if (techRow2.rows[0]) {
+        // Raw restore: the typed setter requires a pattern; clearing = null.
+        await pg.query('update technicians set availability = null where id = $1', [
+          techRow2.rows[0].id,
+        ]);
+      }
+      await mgrClient.close();
+    }
+  });
+
   test('technician badge is denied all four tools', async () => {
     for (const name of ['get_team_schedule', 'book_visit', 'move_visit', 'unschedule_visit']) {
       const denied = await call(name, {});

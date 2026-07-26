@@ -9,6 +9,7 @@ import {
   listTeam,
   listUnassignedAssignmentsWithRefs,
   listUnscheduledOpenJobsWithCustomer,
+  isPlaced,
   unwrapAttributes,
   type Assignment,
   type Json,
@@ -224,8 +225,11 @@ export interface LooseBucket {
     assignmentId: string;
     date: string;
     weekday: string;
-    startTime: string;
-    endTime: string;
+    // Null on an UNPLACED (time-TBD) visit — date/latestDate carry the range.
+    startTime: string | null;
+    endTime: string | null;
+    timeTbd: boolean;
+    latestDate: string | null;
     customer: string | null;
     jobTitle: string | null;
     // The visit's day already slipped past with nobody attached — the most
@@ -276,16 +280,22 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
       const job = row.jobs && row.jobs.tenant_id === tenantId ? row.jobs : null;
       const customer =
         job && job.customers && job.customers.tenant_id === tenantId ? job.customers : null;
-      const date = row.starts_at.slice(0, 10);
+      // UNPLACED rows (plan 4b-2) live in the tray too: their day is the
+      // range start, their times read null, and overdue means the WHOLE
+      // range slipped past (latest_date < today), not just its first day.
+      const placedRow = isPlaced(row);
+      const date = placedRow ? row.starts_at.slice(0, 10) : (row.earliest_date as string);
       return {
         assignmentId: row.id,
         date,
         weekday: weekdayLabel(date),
-        startTime: row.starts_at.slice(11, 16),
-        endTime: row.ends_at.slice(11, 16),
+        startTime: placedRow ? row.starts_at.slice(11, 16) : null,
+        endTime: placedRow ? row.ends_at.slice(11, 16) : null,
+        timeTbd: !placedRow,
+        latestDate: row.latest_date,
         customer: customer?.name ?? null,
         jobTitle: job ? job.title : null,
-        overdue: date < today,
+        overdue: placedRow ? date < today : (row.latest_date as string) < today,
       };
     }),
     unscheduledJobs,

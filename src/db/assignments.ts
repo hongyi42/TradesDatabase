@@ -428,19 +428,21 @@ export async function listAssignmentsForJob(jobId: string): Promise<Assignment[]
 export async function listUnassignedAssignments(
   tenantId: string,
   fromISO: string,
-): Promise<PlacedAssignment[]> {
+): Promise<Assignment[]> {
+  // DELIBERATELY WIDE (plan 4b-2): unplaced rows (null starts_at) are part of
+  // the recall surface — a parked time-TBD visit must be visible SOMEWHERE the
+  // moment it exists. NULLs order last. (PostgREST .or() syntax verified
+  // against the local stack during plan review.)
   const { data, error } = await getClient()
     .from('assignments')
     .select()
     .eq('tenant_id', tenantId)
     .is('technician_id', null)
     .eq('status', 'confirmed')
-    .gte('starts_at', fromISO)
-    .order('starts_at', { ascending: true });
+    .or(`starts_at.gte.${fromISO},starts_at.is.null`)
+    .order('starts_at', { ascending: true, nullsFirst: false });
   if (error) throw new Error(`listUnassignedAssignments failed: ${error.message}`);
-  // Placed by construction (.gte on starts_at excludes NULL) — Phase 2 of the
-  // unplaced-visits plan deliberately widens this reader with an .or() filter.
-  return (data ?? []) as PlacedAssignment[];
+  return data ?? [];
 }
 
 // Exact-window parked twins for the person-less duplicate guard (plan 4a.5
@@ -478,6 +480,31 @@ export async function listIdenticalUnassignedVisits(
   }));
 }
 
+// Range-keyed sibling of the guard above (plan 4b-2): unplaced rows are ALSO
+// exempt from the DB overlap guard, so a retried one-shot timeTbd booking
+// would silently duplicate without this exact-range check.
+export async function listIdenticalUnplacedVisits(
+  tenantId: string,
+  earliestDate: string,
+  latestDate: string,
+): Promise<IdenticalUnassignedRow[]> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select(IDENTICAL_UNASSIGNED_SELECT)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'confirmed')
+    .is('starts_at', null)
+    .eq('earliest_date', earliestDate)
+    .eq('latest_date', latestDate);
+  if (error) throw new Error(`listIdenticalUnplacedVisits failed: ${error.message}`);
+  return (
+    (data ?? []) as Array<{ id: string; jobs: { customer_id: string; tenant_id: string } | null }>
+  ).map((row) => ({
+    id: row.id,
+    customerId: row.jobs && row.jobs.tenant_id === tenantId ? row.jobs.customer_id : null,
+  }));
+}
+
 // ---- Loose-bucket reads (Plan 4a): the tray + agent-parity surfaces ----
 //
 // Same ID-ONLY-foreign-key caveat as the board reads above: callers must
@@ -497,23 +524,21 @@ export type AssignmentBucketRow = Assignment & {
 
 // listUnassignedAssignments with the customer/job names embedded — the tray's
 // parked-visits read (one round trip, the board-latency doctrine).
-export type PlacedAssignmentBucketRow = AssignmentBucketRow & { starts_at: string; ends_at: string };
-
 export async function listUnassignedAssignmentsWithRefs(
   tenantId: string,
   fromISO: string,
-): Promise<PlacedAssignmentBucketRow[]> {
+): Promise<AssignmentBucketRow[]> {
+  // DELIBERATELY WIDE — same rule as listUnassignedAssignments above.
   const { data, error } = await getClient()
     .from('assignments')
     .select(BUCKET_SELECT)
     .eq('tenant_id', tenantId)
     .is('technician_id', null)
     .eq('status', 'confirmed')
-    .gte('starts_at', fromISO)
-    .order('starts_at', { ascending: true });
+    .or(`starts_at.gte.${fromISO},starts_at.is.null`)
+    .order('starts_at', { ascending: true, nullsFirst: false });
   if (error) throw new Error(`listUnassignedAssignmentsWithRefs failed: ${error.message}`);
-  // Placed by construction (.gte excludes NULL) — Phase 2 widens (see above).
-  return (data ?? []) as PlacedAssignmentBucketRow[];
+  return (data ?? []) as AssignmentBucketRow[];
 }
 
 // Named columns, no '*': jobs carry the elastic L3 `attributes` JSONB, which

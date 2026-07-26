@@ -461,6 +461,15 @@ describe('unplaced visits (Plan 4b-2): shapes + the narrowed overlap guard)', ()
     await expect(
       createAssignment({ tenantId, jobId: job.id, technicianId: null, startsAt: null, endsAt: null }),
     ).rejects.toThrow(/BOTH times .* or BOTH range dates/);
+    // Typed layer: a complete shape mixed with HALF of the other (the
+    // cross-shape the plain XOR missed — review finding).
+    await expect(
+      createAssignment({
+        tenantId, jobId: job.id, technicianId: null,
+        startsAt: '2026-10-05T09:00:00.000Z', endsAt: '2026-10-05T10:00:00.000Z',
+        earliestDate: '2026-10-05',
+      }),
+    ).rejects.toThrow(/BOTH times .* or BOTH range dates/);
     // Typed layer: both shapes at once.
     await expect(
       createAssignment({
@@ -475,6 +484,14 @@ describe('unplaced visits (Plan 4b-2): shapes + the narrowed overlap guard)', ()
       pg.query(
         `insert into assignments (tenant_id, job_id, starts_at, ends_at, earliest_date, latest_date)
          values ($1, $2, '2026-10-05T09:00:00Z', '2026-10-05T10:00:00Z', '2026-10-05', '2026-10-05')`,
+        [tenantId, job.id],
+      ),
+    ).rejects.toThrow(/assignment_placed_or_windowed/);
+    // The all-null "neither" row must be rejected by the CONSTRAINT itself,
+    // not only the typed layer (review nit — both arms demand non-nulls).
+    await expect(
+      pg.query(
+        `insert into assignments (tenant_id, job_id) values ($1, $2)`,
         [tenantId, job.id],
       ),
     ).rejects.toThrow(/assignment_placed_or_windowed/);

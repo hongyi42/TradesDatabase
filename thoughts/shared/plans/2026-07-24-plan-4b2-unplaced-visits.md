@@ -195,16 +195,21 @@ uses `--linked`, the hosted pilot, which lacks the columns until Phase 5).
   write, so an unguarded throw cancels the visit and then reports failure.
 
 ### Automated verification
-- [ ] `npx supabase db reset` applies cleanly
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` **all pass** — no
-      expected-failure carve-out; if something does not compile, it is a site this plan missed
-- [ ] new tests in `src/db/scheduling.test.ts`: an unplaced row inserts; a half-filled row
-      (times + range, or neither) is rejected by `assignment_placed_or_windowed`
-- [ ] **new test pinning the narrowed guard**: two *placed* overlapping confirmed rows for one
-      technician still raise the exclusion violation, **and** two unplaced confirmed rows for
-      that technician on the same day both insert
-- [ ] new test in `src/db/schema.test.ts`: `starts_at` nullable; `earliest_date`/`latest_date`
-      exist
+- [x] `npx supabase db reset` applies cleanly (2026-07-25, incl. reviewer's from-scratch replay)
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` **all pass** —
+      tsc enumerated 29 broken sites (the four named + six the plan under-listed:
+      boardApi cancel echo, book_visit echo, cancel_job loop, boardNotify, readVisitDetail,
+      fixture casts); all guarded. **662 passed | 5 skipped** (baseline 657 + 5 new).
+- [x] scheduling.test.ts: unplaced insert ✓; half-filled rejected at BOTH layers (typed XOR
+      incl. the mixed cross-shapes from review finding 1, and raw-SQL against the DB check
+      incl. the all-null row + inverted range)
+- [x] narrowed guard pinned: placed overlap still 23P01, two unplaced confirmed twins insert
+      (reviewer verified the test FAILS against the old constraint)
+- [x] schema.test.ts: nullable times, date columns, and the constraint predicate
+      (`starts_at IS NOT NULL` via pg_get_constraintdef)
+- Review (fresh context): 1 minor (XOR cross-shapes — closed) + 1 nit (constraint-level
+      "neither" pin — added); early Phase-3 null-guards (boardNotify, VisitDetail) judged
+      correct and matching Phase 3's spec.
 
 ### Live verification (agent-executable)
 None — no live surface changes yet.

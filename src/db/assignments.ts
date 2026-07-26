@@ -51,10 +51,14 @@ export interface CreateAssignmentInput {
 export async function createAssignment(input: CreateAssignmentInput): Promise<Assignment> {
   const placed = input.startsAt !== null && input.endsAt !== null;
   const windowed = input.earliestDate != null && input.latestDate != null;
+  const anyTime = input.startsAt !== null || input.endsAt !== null;
+  const anyRange = input.earliestDate != null || input.latestDate != null;
   // Times XOR range — a half-filled row would read as placed to some surfaces
   // and unplaced to others; catch it before the DB check does, with a message
-  // that names the shapes.
-  if (placed === windowed) {
+  // that names the shapes. The anyTime/anyRange term closes the mixed
+  // cross-shapes (a complete shape PLUS half of the other — review finding):
+  // the DB check rejects those too, but with a raw 23514 instead of this.
+  if (placed === windowed || (anyTime && anyRange)) {
     throw new Error(
       'createAssignment: provide BOTH times (placed) or BOTH range dates (unplaced) — never a mix',
     );

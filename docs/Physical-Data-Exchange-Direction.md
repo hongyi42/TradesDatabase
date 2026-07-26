@@ -235,14 +235,49 @@ Any job-based physical-service vertical fits — HVAC/plumbing/electrical first,
 repair, landscaping, cleaning, restoration, and eventually any vertical where skilled physical
 work happens at scheduled visits with recordable outcomes.
 
-Positioning vs. the field: paid-collection programs (Tradeye, the
-[$50K–$200K/dataset program market](https://www.dataxpower.com/blog/humanoid-robot-data-collection-cost))
-buy staged or semi-staged footage with cash and rebuild QA per program. Ours arrives as a
-byproduct of software the shop already runs: real jobs, outcome labels, consent artifacts, and
-duration cross-checks for free. [1 hour of human egocentric hand data can contribute more to
-policy performance than an hour of robot teleoperation](https://www.labellerr.com/blog/egocentric-datasets-robotics/) —
-and human POV footage of licensed skilled work is precisely the slice that can't be scraped or
-easily staged.
+### Competitive landscape (checked 2026-07-26)
+
+A landscape sweep found **no company running this exact barter** — enterprise software to
+physical-labor SMBs with footage as the payment. Every *adjacent* seat is occupied, which
+validates the model while leaving this specific position open:
+
+- **Cash-for-footage collectors** (compete for the same footage, pay money instead of
+  software): [Tradeye](https://tradeyecapture.com/) pays licensed trades pros for narrated POV
+  of real home-service jobs; [Egolab.AI (founded Jan 2026) and Objectways strap head cams on
+  factory and household workers](https://www.eweek.com/news/factory-workers-cameras-ai-robot-training/)
+  (~₹250/hr in India); [gig platforms recruit trades workers for recording
+  tasks](https://www.micro1.ai/experts-guide/how-skilled-trade-based-workers-can-earn-from-ai-training);
+  program-based collection runs
+  [$50K–$200K per dataset](https://www.dataxpower.com/blog/humanoid-robot-data-collection-cost).
+  All pay per hour, rebuild QA and consent per program, and own no ongoing software
+  relationship with the business. Ours arrives as a byproduct of software the shop already
+  runs — real jobs, outcome labels, consent artifacts, duration cross-checks for free.
+- **Vertical-SaaS data moats, internal use only:** [ServiceTitan markets itself as "born in
+  the trades, trained on the trades"](https://www.servicetitan.com/features/ai) — customer
+  operational data powers its own AI features; CompanyCam holds huge contractor photo/video
+  archives. Both are paid products; neither collects footage as *consideration* nor
+  (publicly) licenses it as training data. **Watch item: an incumbent is one "record jobs for
+  seat credits" program away from this model** — the durable defense is the consent +
+  verification machinery and the ground-truth linkage, not the idea itself.
+- **Product-plus-data-rights precedents** (proof the bundle sells):
+  [Nexar](https://venturebeat.com/uncategorized/nexar-which-sells-analytics-services-on-top-of-dash-cam-footage-raises-53m)
+  sells dashcams and monetizes the anonymized road data on top; in agriculture, Climate
+  FieldView's [free basic tier](https://www.precisionfarmingdealer.com/articles/7198-helping-farmers-use-precision-tools-in-common-software-platforms)
+  plus the [~$1B Climate Corp acquisition](https://www.globalagtechinitiative.com/digital-farming/data-management/climate-corp-connecting-the-fieldview-dots/)
+  showed aggregated physical-world data carrying company-scale value behind free software.
+- **Robot-deployment data flywheels** (the capital-heavy version of the same thesis):
+  [Physical Intelligence raised $1.4B in Jan 2026](https://opendatascience.com/recent-2026-robotics-projects-you-should-know-about/)
+  to learn from real-world deployments including construction;
+  [Universal Robots × Scale AI](https://www.universal-robots.com/news-and-media/news-center/universal-robots-scale-ai-launch-imitation-learning-system-accelerate-ai-training-lab-to-factory/)
+  ship an integrated customer-data flywheel. They deploy *robots* to earn data; we deploy
+  *software* — radically cheaper per hour of footage.
+- **Price trend to respect:** teleoperation data fell from
+  [~$340/hr in early 2024 to ~$136/hr by Q4 2025](https://www.roboticscenter.ai/state-of-robotics-2026).
+  Generic footage is commoditizing. The slices that hold value are the ones that can't be
+  staged or scraped — [human egocentric footage of skilled work outperforms teleoperation
+  hour-for-hour](https://www.labellerr.com/blog/egocentric-datasets-robotics/), and licensed
+  trades work in real homes with outcome ground truth and a clean consent chain is exactly
+  that slice. This argues for quality/rarity weighting over raw volume as the program matures.
 
 ## 8. Open questions / next steps
 
@@ -279,3 +314,12 @@ Legal: [MultiState 2026 state privacy laws](https://www.multistate.us/insider/20
 [EFF on FTC v. Ring](https://www.eff.org/deeplinks/2023/06/ftc-forces-ring-take-user-privacy-seriously) ·
 [Ring settlement coverage](https://www.fastcompany.com/91113236/ftc-ring-refunds-customers-video-privacy-settlement) ·
 [Avvo video vs. audio consent](https://www.avvo.com/legal-answers/can-i-video-and-audio-record-a-repairman-in-my-hom-4781668.html).
+Landscape (§7): [eWeek worker head-cam programs](https://www.eweek.com/news/factory-workers-cameras-ai-robot-training/) ·
+[micro1 trades AI gigs](https://www.micro1.ai/experts-guide/how-skilled-trade-based-workers-can-earn-from-ai-training) ·
+[ServiceTitan AI](https://www.servicetitan.com/features/ai) ·
+[Nexar data model](https://venturebeat.com/uncategorized/nexar-which-sells-analytics-services-on-top-of-dash-cam-footage-raises-53m) ·
+[FieldView free tier](https://www.precisionfarmingdealer.com/articles/7198-helping-farmers-use-precision-tools-in-common-software-platforms) ·
+[Climate Corp acquisition](https://www.globalagtechinitiative.com/digital-farming/data-management/climate-corp-connecting-the-fieldview-dots/) ·
+[Physical Intelligence $1.4B](https://opendatascience.com/recent-2026-robotics-projects-you-should-know-about/) ·
+[UR × Scale AI flywheel](https://www.universal-robots.com/news-and-media/news-center/universal-robots-scale-ai-launch-imitation-learning-system-accelerate-ai-training-lab-to-factory/) ·
+[State of Robotics 2026 (teleop price trend)](https://www.roboticscenter.ai/state-of-robotics-2026).

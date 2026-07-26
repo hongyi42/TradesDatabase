@@ -34,11 +34,13 @@ import type { RouteStop } from '../routes/deepLink.js';
 // ---------------------------------------------------------------------------
 // Pure minute math
 
-const toMin = (hhmm: string): number => {
+// Exported since 4b-3: freezeSolve shares THE minute math (a second copy could
+// drift from the one find_slots trusts).
+export const toMin = (hhmm: string): number => {
   const [h, m] = hhmm.split(':').map(Number);
   return h * 60 + m;
 };
-const toHHMM = (min: number): string =>
+export const toHHMM = (min: number): string =>
   `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
 // Emission clamp: a slot may END at minute 1440 ('24:00' window edge) but
@@ -432,8 +434,10 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
 }
 
 // Displacement candidates for the no-fit block: what COULD move to make room.
-// Promise-free visits first (nothing was told to a customer), then by day;
-// locked status rides along so the manager knows which are their own pins.
+// Promise-free visits first (nothing was told to a customer), then UNPINNED
+// before pinned (4b-3: locked now means a manager said hands-off — a pin only
+// binds AUTOMATIC scheduling, so a pinned row may still be suggested, but
+// never ahead of an equally-free unpinned one), then by day.
 export interface DisplacementCandidate {
   assignmentId: string;
   customer: string | null;
@@ -469,7 +473,9 @@ export async function findDisplacementCandidates(
   const ordered = [...rows].sort((a, b) => {
     const ap = a.promise_level === 'none' ? 0 : 1;
     const bp = b.promise_level === 'none' ? 0 : 1;
-    return ap - bp || (a.starts_at < b.starts_at ? -1 : 1);
+    const al = a.locked ? 1 : 0;
+    const bl = b.locked ? 1 : 0;
+    return ap - bp || al - bl || (a.starts_at < b.starts_at ? -1 : 1);
   });
   for (const row of ordered.slice(0, limit)) {
     let ref: string | null = null;

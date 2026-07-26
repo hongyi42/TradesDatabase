@@ -191,9 +191,11 @@ describe('buildFreezeModel', () => {
     expect(visit.duration).toBe('5400s');
     // ONE contiguous arrival window for the whole fence — the API rejects
     // adjacent windows ("must be disjoint … nor adjacent"), so per-day
-    // windows would fail every real solve (phase-review finding 1).
+    // windows would fail every real solve (phase-review finding 1). End
+    // bound sits INSIDE the last day (arrival is inclusive — midnight-after
+    // would legalize a day-after arrival; final-review finding).
     expect(visit.timeWindows).toEqual([
-      { startTime: '2027-05-03T00:00:00Z', endTime: '2027-05-06T00:00:00Z' },
+      { startTime: '2027-05-03T00:00:00Z', endTime: '2027-05-05T23:59:59Z' },
     ]);
 
     // Person-less placed: arrival pinned to the stored start; any vehicle.
@@ -386,13 +388,31 @@ describe('solveFreeze (fake transport)', () => {
     expect(empty.placements).toHaveLength(0);
 
     const noVeh = await solveFreeze(
-      baseInputs({ vehicles: [], queue: [windowedItem()], capacity: [] }),
+      baseInputs({
+        vehicles: [],
+        // One ATTACHED item (hits the orphan pre-filter's specific reason)
+        // and one person-less (hits the generic no-pattern arm).
+        queue: [
+          windowedItem(),
+          windowedItem({ jobId: 'job-free', assignmentId: 'asg-free', technicianRef: null }),
+        ],
+        capacity: [],
+      }),
       { transport: explode, mintToken: explode },
     );
     expect(noVeh.placements).toHaveLength(0);
-    expect(noVeh.skipped).toEqual([
-      expect.objectContaining({ ref: 'asg-w', reason: expect.stringContaining('set_availability') }),
-    ]);
+    expect(noVeh.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ref: 'asg-w',
+          reason: expect.stringContaining('no working days in this horizon'),
+        }),
+        expect.objectContaining({
+          ref: 'asg-free',
+          reason: expect.stringContaining('set_availability'),
+        }),
+      ]),
+    );
   });
 });
 
@@ -518,7 +538,9 @@ describe('assembleFreezeInputs (integration)', { timeout: 30_000 }, () => {
     });
     await setVisitLocks(tenantId, { assignmentIds: [pinRow.assignment.id] }, true, 'mgr');
 
-    const inputs = await assembleFreezeInputs(tenantId, FROM, TO, { geocode: zeroResultsGeocode });
+    const inputs = await assembleFreezeInputs(tenantId, FROM, TO, '00:00', {
+      geocode: zeroResultsGeocode,
+    });
     // The ONLY geocoded address was the unlocatable customer's — everyone
     // else was pre-coded (no re-calls) or address-less (no call at all).
     expect(geocodeCalls).toEqual(['999 Nowhere Rd, Atlantis']);
@@ -579,5 +601,18 @@ describe('assembleFreezeInputs (integration)', { timeout: 30_000 }, () => {
         technicianRef: 'fz-pat', committedMin: 90, availableMin: 1920,
       }),
     ]);
+  });
+
+  test("day-0 now clamp: the run day's past hours are not capacity (final review)", async () => {
+    // 12:30 falls in Pat's lunch gap — the morning window (ends 12:00) drops
+    // entirely; the afternoon window survives whole.
+    const inputs = await assembleFreezeInputs(tenantId, FROM, TO, '12:30', {
+      geocode: zeroResultsGeocode,
+    });
+    const day0 = inputs.vehicles.find((v) => v.technicianRef === 'fz-pat' && v.date === FROM);
+    expect(day0?.windows).toEqual([['13:00', '17:00']]);
+    expect(
+      inputs.capacity.find((c) => c.technicianRef === 'fz-pat')?.availableMin,
+    ).toBe(240 + 3 * 480); // day-0 afternoon only + Tue–Thu whole days
   });
 });

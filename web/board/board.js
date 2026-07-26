@@ -527,6 +527,10 @@
       '<div class="bucket-row bucket-visit" data-id="' + esc(v.assignmentId) + '">' +
       '<div class="bucket-row-txt"><div class="bucket-row-main">' +
       esc(whenTxt) +
+      // Pinned (plan 4b-3): a pinned parked visit is "I'll place this
+      // myself" — the tray must show it or the freeze's skip contradicts
+      // what the manager saw here.
+      (v.locked ? ' <span class="badge pinned">📌 Pinned</span>' : '') +
       '</div><div class="bucket-row-sub">' +
       esc(
         (v.overdue ? 'OVERDUE — the day passed with nobody assigned · ' : '') +

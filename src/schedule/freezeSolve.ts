@@ -38,7 +38,6 @@
 // index-keyed reader silently misattributes the first shipment/vehicle.
 
 import {
-  getJob,
   isPlaced,
   listAssignmentsForTenant,
   listJobsWithCustomerByIds,
@@ -49,10 +48,10 @@ import {
   listUnscheduledOpenJobsWithCustomer,
   type WeeklyPattern,
 } from '../db/index.js';
-import { addDaysISO, dayWindows } from './fit.js';
+import { addDaysISO, dayWindows, toMin } from './fit.js';
 import { ensureCoordsById, type CustomerCoords, type GeocodeTransport, type LatLng } from '../routes/geocode.js';
 import { optimizeTours, type MintRoiToken, type RoiTransport } from '../routes/roiClient.js';
-import { spanMinutes } from './booking.js';
+import { addMinutesClamped, spanMinutes } from './booking.js';
 
 // ---------------------------------------------------------------------------
 // Shapes
@@ -139,11 +138,19 @@ export interface FreezePlan {
 // ---------------------------------------------------------------------------
 // Input assembly (the impure half)
 
-const skipLabel = (customer: string | null, title: string | null): string =>
+// The one label composer for skip lines — freezeCommit shares it so a
+// commit-time skip reads exactly like a solve-time one.
+export const skipLabel = (customer: string | null, title: string | null): string =>
   [customer, title].filter(Boolean).join(' — ') || 'unnamed';
 
 const LADDER_REMEDY =
   "no length set — ask how long it takes and record it (update_job durationMinutes), then run the freeze again";
+
+// Exported as a CONSTANT (final-review finding): run_freeze's pin-cleanup
+// line counts pinned skips — matching this exact string, never a substring
+// grep over prose that a copy tweak would silently break.
+export const PINNED_SKIP_REASON =
+  'pinned by a manager — the freeze never touches pinned visits';
 
 const coordSkipReason = (c: CustomerCoords & { ok: false }): string =>
   c.reason === 'no_address'
@@ -154,6 +161,12 @@ export async function assembleFreezeInputs(
   tenantId: string,
   horizonFrom: string,
   horizonTo: string,
+  // Firm-local wall clock HH:MM (the find_slots nowHHMM precedent): day-0
+  // vehicle windows are trimmed to it so a 3 PM freeze can never propose —
+  // and then BOOK — this morning's already-past hours (final-review finding;
+  // bookVisit has no past-time guard, only the board does). '00:00' default
+  // keeps hand-built test fixtures whole-day.
+  nowHHMM = '00:00',
   deps: { geocode?: GeocodeTransport } = {},
 ): Promise<FreezeInputs> {
   const skipped: FreezeSkip[] = [];
@@ -175,53 +188,64 @@ export async function assembleFreezeInputs(
 
   const vehicles: FreezeVehicle[] = [];
   const availableByRef = new Map<string, number>();
-  for (const t of patternTechs) {
-    const timeOff = await listTimeOffForTechnician(t.id, horizonFrom, horizonTo);
+  // Independent per tech — one parallel batch (final-review efficiency).
+  const timeOffByTech = await Promise.all(
+    patternTechs.map((t) => listTimeOffForTechnician(t.id, horizonFrom, horizonTo)),
+  );
+  patternTechs.forEach((t, ti) => {
     const offDates = new Set<string>();
-    for (const r of timeOff) {
+    for (const r of timeOffByTech[ti]) {
       for (let d = r.starts_on; d <= r.ends_on; d = addDaysISO(d, 1)) offDates.add(d);
     }
     for (let date = horizonFrom; date <= horizonTo; date = addDaysISO(date, 1)) {
       if (offDates.has(date)) continue;
-      const windows = normalizeWindows(dayWindows(t.availability as WeeklyPattern, date));
+      let windows = normalizeWindows(dayWindows(t.availability as WeeklyPattern, date));
+      // Day-0 "now" clamp (the freeGaps notBefore precedent): the run day's
+      // already-past hours are not capacity, and without this trim the
+      // solver proposes — and bookVisit, which has no past-time guard,
+      // BOOKS — this morning's slots on an afternoon run (final-review).
+      if (date === horizonFrom && nowHHMM !== '00:00') {
+        windows = windows
+          .filter(([, e]) => e > nowHHMM)
+          .map(([s, e]): [string, string] => [s >= nowHHMM ? s : nowHHMM, e]);
+      }
       if (windows.length === 0) continue;
       vehicles.push({ technicianRef: t.ref, technicianName: t.display_name, date, windows });
-      const minutes = windows.reduce(
-        (sum, [s, e]) => sum + (toMin(e === '24:00' ? '23:59' : e) - toMin(s) + (e === '24:00' ? 1 : 0)),
-        0,
-      );
+      // toMin('24:00') is 1440, so plain end−start sums whole-day windows.
+      const minutes = windows.reduce((sum, [s, e]) => sum + toMin(e) - toMin(s), 0);
       availableByRef.set(t.ref, (availableByRef.get(t.ref) ?? 0) + minutes);
     }
-  }
+  });
   // Refs that actually got at least one working day — an attached queue row
   // whose person has NO vehicle days must be skipped, not serialized as an
   // empty allowedVehicleIndices (which the API reads as "ALL vehicles";
   // phase-review finding 2).
   const vehicleRefs = new Set(vehicles.map((v) => v.technicianRef));
 
-  // -- Context: every placed confirmed visit of a vehicle-having tech in the
-  // horizon. The tenant-wide read includes person-less rows — those are QUEUE
-  // (picked up below via the bucket reader), not context.
-  const placedRows = (
-    await listAssignmentsForTenant(
+  // -- Context read + the three queues: independent, one parallel batch.
+  // Context = placed confirmed visits of vehicle-having techs in the horizon
+  // (the tenant-wide read includes person-less rows — those are QUEUE, picked
+  // up via the bucket reader). Queue 2 reads from EPOCH (the tray's idiom):
+  // a person-less visit whose day already slipped past must surface as a
+  // SKIP, never vanish — the today-lower-bounded read silently dropped it
+  // (final-review finding; "a silent drop must never read as covered").
+  const techById = new Map(team.map((t) => [t.id, t]));
+  const [allPlaced, jobsQueue, personLess, assignedUnplaced] = await Promise.all([
+    listAssignmentsForTenant(
       tenantId,
       `${horizonFrom}T00:00:00.000Z`,
       `${addDaysISO(horizonTo, 1)}T00:00:00.000Z`,
       ['confirmed'],
-    )
-  ).filter((r) => r.technician_id !== null);
-  const techById = new Map(team.map((t) => [t.id, t]));
+    ),
+    listUnscheduledOpenJobsWithCustomer(tenantId),
+    listUnassignedAssignmentsWithRefs(tenantId, '1970-01-01T00:00:00.000Z'),
+    listUnplacedAssignedForRange(tenantId, horizonFrom, horizonTo),
+  ]);
+  const placedRows = allPlaced.filter((r) => r.technician_id !== null);
   const contextRows = placedRows.filter((r) => {
     const t = techById.get(r.technician_id as string);
     return t !== undefined && patternRefs.has(t.ref);
   });
-
-  // -- The three queues.
-  const [jobsQueue, personLess, assignedUnplaced] = await Promise.all([
-    listUnscheduledOpenJobsWithCustomer(tenantId),
-    listUnassignedAssignmentsWithRefs(tenantId, `${horizonFrom}T00:00:00.000Z`),
-    listUnplacedAssignedForRange(tenantId, horizonFrom, horizonTo),
-  ]);
 
   // -- One geocoding batch for every customer the model touches (queue items
   // AND context visits). Queue-1 rows embed the customer NAME only, so the
@@ -296,13 +320,30 @@ export async function assembleFreezeInputs(
     const customer = job && job.customers && job.customers.tenant_id === tenantId ? job.customers.name : null;
     const label = skipLabel(customer, job?.title ?? null);
     if (r.locked) {
-      skipped.push({ ref: r.id, label, reason: 'pinned by a manager — the freeze never touches pinned visits' });
+      skipped.push({ ref: r.id, label, reason: PINNED_SKIP_REASON });
       continue;
     }
     if (isPlaced(r)) {
       const day = r.starts_at.slice(0, 10);
       if (day > horizonTo) {
         skipped.push({ ref: r.id, label, reason: `beyond this freeze's horizon (${day}) — still needs a person` });
+        continue;
+      }
+      // Missed work, not history: say so instead of silently omitting it.
+      if (day < horizonFrom) {
+        skipped.push({
+          ref: r.id,
+          label,
+          reason: `its date (${day}) already passed with nobody attached — rebook it, or fix it in chat`,
+        });
+        continue;
+      }
+      if (day === horizonFrom && r.starts_at.slice(11, 16) < nowHHMM) {
+        skipped.push({
+          ref: r.id,
+          label,
+          reason: 'its time today has already passed with nobody attached — move it, or handle it in chat',
+        });
         continue;
       }
       const c = coordsFor(job?.customer_id);
@@ -337,12 +378,13 @@ export async function assembleFreezeInputs(
       skipped.push({ ref: r.id, label, reason: `beyond this freeze's horizon (${fenceFrom}–${fenceTo})` });
       continue;
     }
-    const movedJob = await getJob(r.job_id);
-    if (!movedJob?.duration_minutes) {
+    // The embed carries duration_minutes since the final review (was an N+1
+    // getJob per row); `== null` matches queue 3's guard verbatim.
+    if (job?.duration_minutes == null) {
       skipped.push({ ref: r.id, label, reason: LADDER_REMEDY });
       continue;
     }
-    const c = coordsFor(job?.customer_id);
+    const c = coordsFor(job.customer_id);
     if (!c.ok) {
       skipped.push({ ref: r.id, label, reason: coordSkipReason(c) });
       continue;
@@ -352,9 +394,9 @@ export async function assembleFreezeInputs(
       jobId: r.job_id,
       assignmentId: r.id,
       customer,
-      jobTitle: job?.title ?? null,
+      jobTitle: job.title,
       technicianRef: null,
-      durationMin: movedJob.duration_minutes,
+      durationMin: job.duration_minutes,
       coords: c.coords,
       windowFrom: fenceFrom < horizonFrom ? horizonFrom : fenceFrom,
       windowTo: fenceTo > horizonTo ? horizonTo : fenceTo,
@@ -372,7 +414,7 @@ export async function assembleFreezeInputs(
     const tech = r.technicians && r.technicians.tenant_id === tenantId ? r.technicians : null;
     const label = skipLabel(customer, job?.title ?? null);
     if (r.locked) {
-      skipped.push({ ref: r.id, label, reason: 'pinned by a manager — the freeze never touches pinned visits' });
+      skipped.push({ ref: r.id, label, reason: PINNED_SKIP_REASON });
       continue;
     }
     if (!tech || !patternRefs.has(tech.ref)) {
@@ -438,13 +480,6 @@ export async function assembleFreezeInputs(
 
 // ---------------------------------------------------------------------------
 // Model building (pure)
-
-const toMin = (hhmm: string): number => {
-  const [h, m] = hhmm.split(':').map(Number);
-  return h * 60 + m;
-};
-const toHHMM = (min: number): string =>
-  `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
 // Pattern windows arrive as stored — assertValidPattern checks each window in
 // isolation, so unsorted, overlapping, or ADJACENT windows are storable
@@ -526,12 +561,16 @@ export function buildFreezeModel(inputs: FreezeInputs): unknown {
     // fence is a contiguous day range, and the API rejects adjacent windows —
     // see the vendor-facts header). TimeWindow bounds the ARRIVAL; the
     // vehicle's own windows keep it inside the pattern.
+    // End bound is INSIDE the last fence day (23:59:59): the arrival bound is
+    // inclusive, so a midnight-after end would legalize arrival at 00:00 of
+    // the day AFTER the fence — real for a night-shift pattern starting
+    // 00:00 (final-review finding).
     const timeWindows = item.exactStart
       ? [{ startTime: rfcFromISO(item.exactStart), endTime: rfcFromISO(item.exactStart) }]
       : [
           {
             startTime: `${item.windowFrom}T00:00:00Z`,
-            endTime: `${addDaysISO(item.windowTo, 1)}T00:00:00Z`,
+            endTime: `${item.windowTo}T23:59:59Z`,
           },
         ];
     const allowed = item.technicianRef ? vehicleIndexesByRef.get(item.technicianRef) ?? [] : null;
@@ -617,14 +656,31 @@ export async function solveFreeze(
     capacity,
   });
 
+  // Belt over hand-built inputs (assembly already skips these): an attached
+  // item whose person has no vehicle days must not reach the model — and its
+  // skip must carry the REAL reason, not the transient-looking solver
+  // fallback below (final-review finding).
+  const vehicleRefs = new Set(inputs.vehicles.map((v) => v.technicianRef));
+  const orphaned = inputs.queue.filter(
+    (i) => i.technicianRef !== null && !vehicleRefs.has(i.technicianRef),
+  );
+  const queue = inputs.queue.filter((i) => !orphaned.includes(i));
+  const orphanSkips: FreezeSkip[] = orphaned.map((item) => ({
+    ref: item.assignmentId ?? `job:${item.jobId}`,
+    label: skipLabel(item.customer, item.jobTitle),
+    reason:
+      'assigned to someone with no working days in this horizon — move it, or rerun a later week',
+  }));
+
   // Nothing to place, or nobody to place onto — no API call, an honest plan.
-  if (inputs.queue.length === 0) return finish([], inputs.skipped);
+  if (queue.length === 0) return finish([], [...inputs.skipped, ...orphanSkips]);
   if (inputs.vehicles.length === 0) {
     return finish(
       [],
       [
         ...inputs.skipped,
-        ...inputs.queue.map((item) => ({
+        ...orphanSkips,
+        ...queue.map((item) => ({
           ref: item.assignmentId ?? `job:${item.jobId}`,
           label: skipLabel(item.customer, item.jobTitle),
           reason: 'nobody has a working pattern in this horizon — set_availability, then rerun',
@@ -633,9 +689,9 @@ export async function solveFreeze(
     );
   }
 
-  const response = (await optimizeTours(buildFreezeModel(inputs), deps)) as RoiResponse;
+  const response = (await optimizeTours(buildFreezeModel({ ...inputs, queue }), deps)) as RoiResponse;
 
-  const itemByLabel = new Map(inputs.queue.map((item) => [queueLabel(item), item]));
+  const itemByLabel = new Map(queue.map((item) => [queueLabel(item), item]));
   const placements: FreezePlacement[] = [];
   const skipped = [...inputs.skipped];
   const placedLabels = new Set<string>();
@@ -656,7 +712,6 @@ export async function solveFreeze(
         ? item.exactStart.slice(11, 16)
         : visit.startTime.slice(11, 16);
       const placementDate = item.exactStart ? item.exactStart.slice(0, 10) : visit.startTime.slice(0, 10);
-      const endMin = Math.min(toMin(startTime) + item.durationMin, 23 * 60 + 59);
       placements.push({
         kind: item.kind,
         jobId: item.jobId,
@@ -666,20 +721,24 @@ export async function solveFreeze(
         technicianRef,
         date: placementDate,
         startTime,
-        endTime: item.exactEnd ? item.exactEnd.slice(11, 16) : toHHMM(endMin),
+        // THE booking-layer clamp (23:59 same-day) — never a local copy.
+        endTime: item.exactEnd
+          ? item.exactEnd.slice(11, 16)
+          : addMinutesClamped(startTime, item.durationMin),
       });
       const cap = capacity.find((c) => c.technicianRef === technicianRef);
       if (cap) cap.committedMin += item.durationMin;
     }
   }
 
+  skipped.push(...orphanSkips);
   // Solver-side skips: queue shipments the solve left unperformed. Belt: any
   // queue item missing from BOTH routes and skippedShipments is still
   // reported (a silent drop must never read as "covered").
   const skippedLabels = new Set(
     (response.skippedShipments ?? []).map((s) => s.label).filter((l): l is string => !!l),
   );
-  for (const item of inputs.queue) {
+  for (const item of queue) {
     const label = queueLabel(item);
     if (placedLabels.has(label)) continue;
     skipped.push({

@@ -205,25 +205,29 @@ export async function rescheduleAssignment(
   return { cancelled, created };
 }
 
-// Flip one row's PIN flag (plan 4b-3). Locking is a human privilege, so this
-// small writer — not the booking verbs — is the only place `locked` changes
-// after insert (reschedules CARRY the flag, they never re-decide it).
-// Tenant-guarded; a cross-tenant or unknown id throws.
-export async function updateAssignmentLocked(
+// Flip PIN flags in ONE statement (plan 4b-3; final-review hardening: the
+// original per-row loop could half-apply a batch on a transient fault — rows
+// pinned, no ledger event, error reported — and stamp a row that went
+// terminal between check and write). Locking is a human privilege, so this
+// writer — not the booking verbs — is the only place `locked` changes after
+// insert (reschedules CARRY the flag). The status predicate makes the
+// live-rows-only rule enforcement, not advisory; returns exactly the rows
+// that changed.
+export async function updateAssignmentsLocked(
   tenantId: string,
-  assignmentId: string,
+  assignmentIds: string[],
   locked: boolean,
-): Promise<Assignment> {
+): Promise<Assignment[]> {
+  if (assignmentIds.length === 0) return [];
   const { data, error } = await getClient()
     .from('assignments')
     .update({ locked })
-    .eq('id', assignmentId)
     .eq('tenant_id', tenantId)
-    .select()
-    .maybeSingle();
-  if (error) throw new Error(`updateAssignmentLocked failed: ${error.message}`);
-  if (!data) throw new Error('updateAssignmentLocked: assignment not found');
-  return data;
+    .in('id', assignmentIds)
+    .in('status', ['confirmed', 'proposed'])
+    .select();
+  if (error) throw new Error(`updateAssignmentsLocked failed: ${error.message}`);
+  return data ?? [];
 }
 
 // The lock verbs' range read (plan 4b-3): every CONFIRMED visit whose day
@@ -613,13 +617,15 @@ export async function listIdenticalUnplacedVisits(
 // Same ID-ONLY-foreign-key caveat as the board reads above: callers must
 // re-check every nested row's tenant_id before surfacing its name/title.
 
-// Single string literal — see the DETAIL_SELECT note above.
+// Single string literal — see the DETAIL_SELECT note above. duration_minutes
+// rides along (4b-3): the freeze's queue-2 ladder needs the job length, and
+// fetching it per row was an N+1 the strip's sibling select never had.
 const BUCKET_SELECT =
-  '*, jobs(id,tenant_id,title,customer_id,customers(name,tenant_id))';
+  '*, jobs(id,tenant_id,title,duration_minutes,customer_id,customers(name,tenant_id))';
 
 export type AssignmentBucketRow = Assignment & {
   jobs:
-    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'customer_id'> & {
+    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'duration_minutes' | 'customer_id'> & {
         customers: Pick<Customer, 'name' | 'tenant_id'> | null;
       })
     | null;

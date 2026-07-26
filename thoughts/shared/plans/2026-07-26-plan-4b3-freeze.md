@@ -373,6 +373,15 @@ doctrine) and rolls the whole plan out. No server code, no migration, no new env
   read-back verify), Phase-1 pilot lock reset (user go), deploy, freshness byte-check,
   fleet gateway restarts + WIRE pass (new tools `set_visit_locks`/`run_freeze` + doctrine
   block changes), Phase 4 live E2E, then this phase's ritual E2E.
+  **ORDERING (final-review finding): the lock reset runs AFTER the deploy and BEFORE the
+  first freeze/board use.** Reset-before-deploy → the still-live old code re-stamps
+  `locked:true` on every new booking; deploy-without-reset → every pre-existing pilot row
+  (all auto-stamped `true`) wears a Pinned chip nobody chose and the first `run_freeze`
+  skips the ENTIRE backlog as "pinned". Run the reset in the same sitting as the deploy.
+  **Recorded limitation (final-review):** the confirm-time version pin cannot see
+  `set_availability`/`add_time_off`/`remove_time_off` (they append no schedule event) —
+  mitigated by relaying the booking verbs' per-row warnings in the commit summary; the
+  full fix (those three verbs joining the event ledger) is future work.
 
 ### Automated verification
 - [x] full gates one final time (714 passed, 2026-07-26, feature-4b3-freeze pre-merge;

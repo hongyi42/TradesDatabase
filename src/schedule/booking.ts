@@ -29,7 +29,7 @@ import {
   listIdenticalUnassignedVisits,
   listIdenticalUnplacedVisits,
   rescheduleAssignment,
-  updateAssignmentLocked,
+  updateAssignmentsLocked,
   updateAssignmentPromise,
   updateAssignmentStatus,
   updateJobDetails,
@@ -100,8 +100,9 @@ function extraDetail(extra: Json | undefined): Record<string, Json> {
 // Minutes → 'HH:MM' on the same day, clamped to 23:59 (a move that preserves
 // the old duration onto a late start books to end-of-day rather than crossing
 // the UTC-day boundary the readers bucket by; pass endTime explicitly to
-// control it).
-function addMinutesClamped(hhmm: string, minutes: number): string {
+// control it). Exported since 4b-3: the freeze's placement end-times use THE
+// same clamp, never a hand-rolled copy.
+export function addMinutesClamped(hhmm: string, minutes: number): string {
   const [h, m] = hhmm.split(':').map(Number);
   const total = Math.min(h * 60 + m + minutes, 23 * 60 + 59);
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
@@ -1171,9 +1172,19 @@ export async function setVisitLocks(
       );
     }
   }
-  const updated: Assignment[] = [];
-  for (const row of targets) {
-    updated.push(await updateAssignmentLocked(tenantId, row.id, locked));
+  // ONE guarded bulk UPDATE (final-review hardening): atomic — a batch can
+  // never half-apply with no ledger trace — and its status predicate closes
+  // the check-then-write gap (a row cancelled since the read simply doesn't
+  // match, instead of getting stamped).
+  const updated = await updateAssignmentsLocked(
+    tenantId,
+    targets.map((r) => r.id),
+    locked,
+  );
+  if (updated.length === 0) {
+    throw new Error(
+      'nothing matched — the selected visits changed state while updating; check the schedule and try again',
+    );
   }
   // ONE ledger entry per run — a batch is one human act, not N rows of noise.
   await appendScheduleEvent({

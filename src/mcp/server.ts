@@ -138,7 +138,12 @@ import {
   updateJobIdentity,
   type VisitLockSelector,
 } from '../schedule/booking.js';
-import { assembleFreezeInputs, solveFreeze, type FreezePlan } from '../schedule/freezeSolve.js';
+import {
+  assembleFreezeInputs,
+  solveFreeze,
+  PINNED_SKIP_REASON,
+  type FreezePlan,
+} from '../schedule/freezeSolve.js';
 import { commitFreezePlan } from '../schedule/freezeCommit.js';
 import type { GeocodeTransport } from '../routes/geocode.js';
 import type { MintRoiToken, RoiTransport } from '../routes/roiClient.js';
@@ -4546,6 +4551,14 @@ async function dispatch(
         throw new Error('locked (boolean) is required — true pins, false unpins');
       }
       const locked = args.locked;
+      // Rejected, never coerced-to-absent (the find_slots rule; final-review
+      // finding): a non-string technicianRef silently widening "pin Ben's
+      // week" into a ROSTER-WIDE pin is exactly the trap.
+      for (const k of ['from', 'to', 'technicianRef']) {
+        if (args[k] !== undefined && typeof args[k] !== 'string') {
+          throw new Error(`${k} must be a string`);
+        }
+      }
       const from = str('from');
       const to = str('to');
       const technicianRefArg = str('technicianRef');
@@ -4629,6 +4642,9 @@ async function dispatch(
           tenantId,
           today,
           horizonTo,
+          // Firm-local wall clock: day-0 windows trim to it so an afternoon
+          // freeze never proposes (then books) this morning's slots.
+          localTimeHHMM(new Date().toISOString(), tenant?.timezone ?? 'UTC'),
           deps.geocode ? { geocode: deps.geocode } : {},
         );
         const plan = await solveFreeze(inputs, freezeDeps);
@@ -4637,19 +4653,29 @@ async function dispatch(
         for (const open of await findOpenReviewItemsByKind(tenantId, 'pending_freeze')) {
           await resolveReviewItem(open.id, tenantId, 'dismissed', 'superseded by a new freeze run');
         }
+        const stagedDetail = {
+          plan: plan as unknown as Json,
+          scheduleVersion,
+          horizonFrom: today,
+          horizonTo,
+          stagedAt: new Date().toISOString(),
+        } as unknown as Json;
         const item = await upsertOpenReviewItem({
           tenantId,
           kind: 'pending_freeze',
           subjectRef,
-          detail: {
-            plan: plan as unknown as Json,
-            scheduleVersion,
-            horizonFrom: today,
-            horizonTo,
-            stagedAt: new Date().toISOString(),
-          } as unknown as Json,
+          detail: stagedDetail,
         });
-        const pinnedCount = plan.skipped.filter((s) => s.reason.includes('pinned')).length;
+        // Stage-race close (final-review finding): on a unique-violation the
+        // upsert returns the EXISTING open row with ITS detail — two racing
+        // stages could hand back a confirmId whose stored plan differs from
+        // the placements shown below. Write OUR detail onto whichever row we
+        // got; null = it closed concurrently → restage.
+        const pinned = await updateOpenReviewItemDetail(item.id, tenantId, stagedDetail);
+        if (!pinned) {
+          throw new Error('another freeze run superseded this one mid-stage — run run_freeze again');
+        }
+        const pinnedCount = plan.skipped.filter((s) => s.reason === PINNED_SKIP_REASON).length;
         return {
           status: 'needs_confirmation',
           confirmId: item.id,
@@ -4717,6 +4743,16 @@ async function dispatch(
       }
       const runStamp = new Date().toISOString();
       const result = await commitFreezePlan(tenantId, d.plan, subjectRef, runStamp);
+      // Verb advisories, surfaced per row (a time-off or pattern change that
+      // landed after the solve doesn't bump the schedule version — these
+      // warnings are the manager's only signal the world moved).
+      const commitWarnings = result.committed
+        .filter((c) => c.warning)
+        .map((c) => ({
+          assignmentId: c.assignmentId,
+          customer: c.placement.customer,
+          warning: c.warning as string,
+        }));
       return {
         status: result.failed ? 'partial' : 'committed',
         placed: result.committed.length,
@@ -4725,9 +4761,10 @@ async function dispatch(
           weekday: weekdayLabel(c.placement.date),
           assignmentId: c.assignmentId,
         })),
+        ...(commitWarnings.length > 0 ? { warnings: commitWarnings } : {}),
         ...(result.skippedAtCommit.length > 0 ? { skippedAtCommit: result.skippedAtCommit } : {}),
         ...(result.failed ? { failed: result.failed } : {}),
-        note: result.failed
+        note: (result.failed
           ? 'The run STOPPED at the failed row — everything listed in placements IS booked; ' +
             'the failed visit and everything after it are unchanged. Tell the manager exactly ' +
             'what landed and what did not. Re-running the freeze is safe: placed visits leave ' +
@@ -4735,7 +4772,12 @@ async function dispatch(
           : 'Committed. Tell the manager what was placed (count + the placements), anything ' +
             'skipped at commit, and that technicians were notified of their new visits. ' +
             'None of the placed visits are pinned — offer set_visit_locks if the manager ' +
-            'wants this plan protected from the next freeze.',
+            'wants this plan protected from the next freeze.') +
+          (commitWarnings.length > 0
+            ? ' RELAY every entry in warnings — each flags a placement that landed on time ' +
+              'off or outside a working pattern (the schedule may have changed after the ' +
+              'plan was solved); the manager may want to move those.'
+            : ''),
       };
     }
     case 'find_slots': {
@@ -5196,7 +5238,9 @@ async function dispatch(
                 : {
                     hint:
                       'nothing fits even two weeks past the range — a shorter visit may ' +
-                      'fit, or one of the displacement candidates below could move (move_visit)',
+                      'fit, or one of the displacement candidates below could move ' +
+                      '(move_visit). A candidate with locked:true was PINNED by a manager ' +
+                      '("hands off") — disclose the pin before suggesting it moves.',
                   }
               : {}),
             displacementCandidates: await findDisplacementCandidates(
@@ -5224,7 +5268,32 @@ async function dispatch(
       };
     }
     case 'list_pending_reviews': {
-      return listOpenReviewItems(tenantId);
+      // A pending_freeze token embeds the WHOLE staged plan (possibly
+      // hundreds of rows, possibly stale) — summarize it here instead of
+      // flooding the context and tempting the agent to relay placements the
+      // confirm-time version check would refuse (final-review finding).
+      return (await listOpenReviewItems(tenantId)).map((item) => {
+        if (item.kind !== 'pending_freeze') return item;
+        const d = (item.detail ?? {}) as {
+          plan?: { placements?: unknown[]; skipped?: unknown[] };
+          scheduleVersion?: number;
+          horizonFrom?: string;
+          horizonTo?: string;
+          stagedAt?: string;
+        };
+        return {
+          ...item,
+          detail: {
+            summary: 'a staged freeze plan — confirm or restage via run_freeze, never relay from here',
+            horizonFrom: d.horizonFrom ?? null,
+            horizonTo: d.horizonTo ?? null,
+            placements: d.plan?.placements?.length ?? 0,
+            skipped: d.plan?.skipped?.length ?? 0,
+            scheduleVersion: d.scheduleVersion ?? null,
+            stagedAt: d.stagedAt ?? null,
+          },
+        };
+      });
     }
     case 'resolve_review': {
       const reviewItemId = str('reviewItemId');

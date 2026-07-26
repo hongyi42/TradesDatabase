@@ -10,7 +10,7 @@
 // heals it without an invalidation hook.
 
 import { formatAddress } from './deepLink.js';
-import { getCustomer, updateCustomerCoords, type Customer } from '../db/index.js';
+import { listCustomersByIds, updateCustomerCoords, type Customer } from '../db/index.js';
 
 export interface LatLng {
   lat: number;
@@ -86,17 +86,20 @@ export async function ensureCustomerCoords(
   return { ok: true, coords };
 }
 
-// Batch convenience for the solve assembler: resolve MANY customers with one
-// point-read + fill each, deduplicated by id (a tenant's queue often repeats
-// a customer). Sequential on purpose — geocoding bursts are rare (only
+// Batch convenience for the solve assembler: ONE customer read for the whole
+// deduplicated id set (final review: the per-id point reads were N serial
+// round trips on every freeze even with all coords cached), then fill each.
+// The GEOCODE calls stay sequential on purpose — bursts are rare (only
 // never-geocoded rows) and the Geocoding API rate-limits.
 export async function ensureCoordsById(
   customerIds: string[],
   deps: { geocode?: GeocodeTransport } = {},
 ): Promise<Map<string, CustomerCoords>> {
+  const unique = [...new Set(customerIds)];
+  const byId = new Map((await listCustomersByIds(unique)).map((c) => [c.id, c]));
   const out = new Map<string, CustomerCoords>();
-  for (const id of [...new Set(customerIds)]) {
-    const customer = await getCustomer(id);
+  for (const id of unique) {
+    const customer = byId.get(id);
     if (!customer) {
       out.set(id, { ok: false, reason: 'no_address' });
       continue;

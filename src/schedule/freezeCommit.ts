@@ -21,11 +21,16 @@ import {
   previewMoveVisit,
   type MoveVisitInput,
 } from './booking.js';
-import type { FreezePlacement, FreezePlan, FreezeSkip } from './freezeSolve.js';
+import { skipLabel, type FreezePlacement, type FreezePlan, type FreezeSkip } from './freezeSolve.js';
 
 export interface FreezeCommittedRow {
   placement: FreezePlacement;
   assignmentId: string; // the resulting PLACED row's id (moves remint)
+  // The verb's advisory (time off booked meanwhile, outside the pattern…) —
+  // RELAYED, never swallowed (final-review finding: the version pin can't see
+  // availability/time-off changes, so these warnings are the manager's only
+  // signal that the world moved under the plan).
+  warning?: string;
 }
 
 export interface FreezeCommitResult {
@@ -62,7 +67,11 @@ export async function commitFreezePlan(
           eventDetailExtra,
           actorRef,
         });
-        committed.push({ placement: p, assignmentId: booked.assignment.id });
+        committed.push({
+          placement: p,
+          assignmentId: booked.assignment.id,
+          ...(booked.warning ? { warning: booked.warning } : {}),
+        });
         continue;
       }
       // unassigned_visit: SAME stored times, the solver only chose WHO.
@@ -84,7 +93,7 @@ export async function commitFreezePlan(
       if (preview.promiseBroken) {
         skippedAtCommit.push({
           ref: p.assignmentId as string,
-          label: [p.customer, p.jobTitle].filter(Boolean).join(' — ') || 'unnamed',
+          label: skipLabel(p.customer, p.jobTitle),
           reason:
             'placing it here would break what the customer was told — left untouched ' +
             '(move it by hand if the promise really changed)',
@@ -92,7 +101,11 @@ export async function commitFreezePlan(
         continue;
       }
       const moved = await moveVisit(moveInput);
-      committed.push({ placement: p, assignmentId: moved.created.id });
+      committed.push({
+        placement: p,
+        assignmentId: moved.created.id,
+        ...(moved.warning ? { warning: moved.warning } : {}),
+      });
     } catch (err) {
       failed = { placement: p, error: err instanceof Error ? err.message : String(err) };
       break;

@@ -1609,6 +1609,13 @@ describe('board quick-edit API (plan 4a.5): roster, book, promise, job, detail a
     const dayBody = (await dayResp.json()) as DayResponse;
     const stop = dayBody.days[0].stops.find((s) => s.assignmentId === notesVisitId);
     expect(stop?.locked).toBe(true);
+    // …and the DETAIL read forwards the truth too (final-review finding: the
+    // sheet's Pin/Unpin toggle keys on this — a hardcoded false would make
+    // Unpin unreachable from the board while every other test stays green).
+    const detailResp = await fetch(`${base}/board/api/visit?assignmentId=${notesVisitId}`, {
+      headers: tma(900000001),
+    });
+    expect(((await detailResp.json()) as { locked: boolean }).locked).toBe(true);
 
     const unpin = await post('/board/api/lock', { assignmentId: notesVisitId, locked: false }, 900000001);
     expect(unpin.status).toBe(200);

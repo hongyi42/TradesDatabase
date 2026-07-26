@@ -114,6 +114,17 @@ export async function getCustomer(id: string): Promise<Customer | null> {
   return data;
 }
 
+// Batch point-read (plan 4b-3 final review): the freeze geocodes every
+// customer a solve touches — one query instead of N serial getCustomer round
+// trips. Id-only like getCustomer; tenant guarding stays the caller's job
+// (module convention above).
+export async function listCustomersByIds(ids: string[]): Promise<Customer[]> {
+  if (ids.length === 0) return [];
+  const { data, error } = await getClient().from('customers').select().in('id', ids);
+  if (error) throw new Error(`listCustomersByIds failed: ${error.message}`);
+  return data ?? [];
+}
+
 // Exact phone match within a tenant. Used by deterministic identity matching —
 // the caller decides what a unique (length === 1) result means.
 export async function findCustomersByPhone(tenantId: string, phone: string): Promise<Customer[]> {

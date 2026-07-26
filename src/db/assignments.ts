@@ -8,6 +8,14 @@ export type Assignment = Database['public']['Tables']['assignments']['Row'];
 export type AssignmentStatus = Database['public']['Enums']['assignment_status'];
 export type PromiseLevel = Database['public']['Enums']['promise_level'];
 
+// Rows that HAVE times (plan 4b-2). Every reader whose query filters on
+// starts_at/ends_at returns these by construction: a SQL comparison against
+// NULL is never true, so unplaced rows cannot appear in a time-range result.
+// A type, not a comment, so the property is compiler-checked.
+export type PlacedAssignment = Assignment & { starts_at: string; ends_at: string };
+export const isPlaced = (a: Assignment): a is PlacedAssignment =>
+  a.starts_at !== null && a.ends_at !== null;
+
 // Hardcoded, auditable state machine (jobs.ts pattern). Times on a row are
 // immutable — a reschedule is cancel + insert, never an edit — so status is the
 // only mutable business field and cancelled/completed are terminal.
@@ -22,8 +30,12 @@ export interface CreateAssignmentInput {
   tenantId: string;
   jobId: string;
   technicianId: string | null; // null = unassigned ("book now, assign later")
-  startsAt: string; // ISO timestamptz (naive-local convention — see the promise-ladder migration)
-  endsAt: string; // ISO timestamptz, exclusive
+  // PLACED shape: both times, no range. UNPLACED shape (plan 4b-2): both range
+  // dates, no times. Exactly one shape — enforced below, DB check backstops.
+  startsAt: string | null; // ISO timestamptz (naive-local convention — see the promise-ladder migration)
+  endsAt: string | null; // ISO timestamptz, exclusive
+  earliestDate?: string | null; // YYYY-MM-DD — the unplaced day (or range start)
+  latestDate?: string | null; // YYYY-MM-DD — range end (= earliestDate for one day)
   status?: AssignmentStatus;
   sourceCaptureId?: string | null;
   // Commitment ladder: what the customer was told. The DB check requires
@@ -37,6 +49,16 @@ export interface CreateAssignmentInput {
 // no_confirmed_overlap exclusion constraint — preserve the SQLSTATE so callers
 // can detect it via isOverlapViolation (Object.assign idiom, insertTechnician).
 export async function createAssignment(input: CreateAssignmentInput): Promise<Assignment> {
+  const placed = input.startsAt !== null && input.endsAt !== null;
+  const windowed = input.earliestDate != null && input.latestDate != null;
+  // Times XOR range — a half-filled row would read as placed to some surfaces
+  // and unplaced to others; catch it before the DB check does, with a message
+  // that names the shapes.
+  if (placed === windowed) {
+    throw new Error(
+      'createAssignment: provide BOTH times (placed) or BOTH range dates (unplaced) — never a mix',
+    );
+  }
   const { data, error } = await getClient()
     .from('assignments')
     .insert({
@@ -45,6 +67,8 @@ export async function createAssignment(input: CreateAssignmentInput): Promise<As
       technician_id: input.technicianId,
       starts_at: input.startsAt,
       ends_at: input.endsAt,
+      earliest_date: input.earliestDate ?? null,
+      latest_date: input.latestDate ?? null,
       status: input.status ?? 'proposed',
       source_capture_id: input.sourceCaptureId ?? null,
       promise_level: input.promiseLevel ?? 'none',
@@ -235,7 +259,7 @@ export async function listAssignmentsForTenant(
   fromISO: string,
   toISO: string,
   statuses: AssignmentStatus[] = ['confirmed'],
-): Promise<Assignment[]> {
+): Promise<PlacedAssignment[]> {
   const { data, error } = await getClient()
     .from('assignments')
     .select()
@@ -245,7 +269,8 @@ export async function listAssignmentsForTenant(
     .in('status', statuses)
     .order('starts_at', { ascending: true });
   if (error) throw new Error(`listAssignmentsForTenant failed: ${error.message}`);
-  return data ?? [];
+  // Placed by construction: the lt/gt time filters never match NULL.
+  return (data ?? []) as PlacedAssignment[];
 }
 
 // ---- Dispatch-board reads: the whole visit graph in ONE round-trip ----
@@ -337,12 +362,14 @@ const DAY_SELECT =
   '*, jobs(id,tenant_id,customer_id,customers(name,address_line1,address_line2,city,state,postal_code,tenant_id)), technicians(id,ref,display_name,tenant_id)';
 
 // Same filters as listAssignmentsForTenant, plus the embedded graph.
+export type PlacedAssignmentDayRow = AssignmentDayRow & { starts_at: string; ends_at: string };
+
 export async function listAssignmentsWithRefsForTenant(
   tenantId: string,
   fromISO: string,
   toISO: string,
   statuses: AssignmentStatus[] = ['confirmed'],
-): Promise<AssignmentDayRow[]> {
+): Promise<PlacedAssignmentDayRow[]> {
   const { data, error } = await getClient()
     .from('assignments')
     .select(DAY_SELECT)
@@ -352,7 +379,8 @@ export async function listAssignmentsWithRefsForTenant(
     .in('status', statuses)
     .order('starts_at', { ascending: true });
   if (error) throw new Error(`listAssignmentsWithRefsForTenant failed: ${error.message}`);
-  return (data ?? []) as AssignmentDayRow[];
+  // Placed by construction: the lt/gt time filters never match NULL.
+  return (data ?? []) as PlacedAssignmentDayRow[];
 }
 
 // Rows overlapping the [fromISO, toISO) window for one technician, live
@@ -362,7 +390,7 @@ export async function listAssignmentsForTechnician(
   fromISO: string,
   toISO: string,
   statuses: AssignmentStatus[] = ['proposed', 'confirmed'],
-): Promise<Assignment[]> {
+): Promise<PlacedAssignment[]> {
   const { data, error } = await getClient()
     .from('assignments')
     .select()
@@ -372,7 +400,8 @@ export async function listAssignmentsForTechnician(
     .in('status', statuses)
     .order('starts_at', { ascending: true });
   if (error) throw new Error(`listAssignmentsForTechnician failed: ${error.message}`);
-  return data ?? [];
+  // Placed by construction: the lt/gt time filters never match NULL.
+  return (data ?? []) as PlacedAssignment[];
 }
 
 // The booking's full history — every row ever written for the job, newest
@@ -395,7 +424,7 @@ export async function listAssignmentsForJob(jobId: string): Promise<Assignment[]
 export async function listUnassignedAssignments(
   tenantId: string,
   fromISO: string,
-): Promise<Assignment[]> {
+): Promise<PlacedAssignment[]> {
   const { data, error } = await getClient()
     .from('assignments')
     .select()
@@ -405,7 +434,9 @@ export async function listUnassignedAssignments(
     .gte('starts_at', fromISO)
     .order('starts_at', { ascending: true });
   if (error) throw new Error(`listUnassignedAssignments failed: ${error.message}`);
-  return data ?? [];
+  // Placed by construction (.gte on starts_at excludes NULL) — Phase 2 of the
+  // unplaced-visits plan deliberately widens this reader with an .or() filter.
+  return (data ?? []) as PlacedAssignment[];
 }
 
 // Exact-window parked twins for the person-less duplicate guard (plan 4a.5
@@ -462,10 +493,12 @@ export type AssignmentBucketRow = Assignment & {
 
 // listUnassignedAssignments with the customer/job names embedded — the tray's
 // parked-visits read (one round trip, the board-latency doctrine).
+export type PlacedAssignmentBucketRow = AssignmentBucketRow & { starts_at: string; ends_at: string };
+
 export async function listUnassignedAssignmentsWithRefs(
   tenantId: string,
   fromISO: string,
-): Promise<AssignmentBucketRow[]> {
+): Promise<PlacedAssignmentBucketRow[]> {
   const { data, error } = await getClient()
     .from('assignments')
     .select(BUCKET_SELECT)
@@ -475,7 +508,8 @@ export async function listUnassignedAssignmentsWithRefs(
     .gte('starts_at', fromISO)
     .order('starts_at', { ascending: true });
   if (error) throw new Error(`listUnassignedAssignmentsWithRefs failed: ${error.message}`);
-  return (data ?? []) as AssignmentBucketRow[];
+  // Placed by construction (.gte excludes NULL) — Phase 2 widens (see above).
+  return (data ?? []) as PlacedAssignmentBucketRow[];
 }
 
 // Named columns, no '*': jobs carry the elastic L3 `attributes` JSONB, which

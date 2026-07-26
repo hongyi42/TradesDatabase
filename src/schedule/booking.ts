@@ -31,6 +31,7 @@ import {
   updateAssignmentStatus,
   updateJobDetails,
   updateJobStatus,
+  isPlaced,
   type Assignment,
   type Customer,
   type Job,
@@ -49,6 +50,17 @@ const PROMISE_LEVELS: PromiseLevel[] = ['none', 'day', 'time', 'time_only'];
 // The naive-local storage form: local wall-clock written as if UTC.
 export function naiveLocalISO(date: string, hhmm: string): string {
   return `${date}T${hhmm}:00.000Z`;
+}
+
+// The day a visit belongs to, for replies and ledger events: the promised day
+// wins (what the customer was told), else the placed start's day, else the
+// unplaced range's earliest day (plan 4b-2 — an unplaced row HAS a day, just
+// no time). '?' is unreachable today (the DB check forces one shape) and
+// exists so a malformed row degrades a label, never a booking.
+export function visitDay(row: Assignment): string {
+  return (
+    row.promised_day ?? (row.starts_at ? row.starts_at.slice(0, 10) : (row.earliest_date ?? '?'))
+  );
 }
 
 export function isPromiseLevel(v: unknown): v is PromiseLevel {
@@ -433,7 +445,11 @@ export interface MoveVisitInput {
 }
 
 interface ResolvedMove {
-  old: Assignment;
+  // PLACED for now: Phase 1 of the unplaced-visits plan refuses unplaced
+  // subjects here (dead code until a writer exists); Phase 2 widens this back
+  // to Assignment and adds real placement semantics (duration from the job,
+  // isPlaced-guarded promise-break math).
+  old: import('../db/index.js').PlacedAssignment;
   // The TARGET technician. null has two readings — an UNASSIGNED visit staying
   // unassigned (the common case: old.technician_id is null and no ref given),
   // or a roster row that vanished (near-unreachable: techs deactivate, never
@@ -455,6 +471,12 @@ async function resolveMove(input: MoveVisitInput): Promise<ResolvedMove> {
   if (!old) throw new Error('assignment not found');
   if (old.status !== 'confirmed' && old.status !== 'proposed') {
     throw new Error(`cannot move a ${old.status} assignment`);
+  }
+  // TEMPORARY (Phase 1, unplaced-visits plan): unplaced rows cannot be moved
+  // yet — Phase 2 turns a move into the PLACING verb. Unreachable until a
+  // writer mints unplaced rows; explicit so the failure is a message, not NaN.
+  if (!isPlaced(old)) {
+    throw new Error('this visit has no time yet — placing unplaced visits is not supported yet');
   }
 
   if (input.unassign && input.technicianRef) {
@@ -555,7 +577,7 @@ export async function previewMoveVisit(input: MoveVisitInput): Promise<MoveVisit
     assignmentId: r.old.id,
     customerName: customer?.name ?? null,
     technicianName: r.technician?.display_name ?? null,
-    fromDay: r.old.promised_day ?? r.old.starts_at.slice(0, 10),
+    fromDay: visitDay(r.old),
     toDay: input.date,
     startTime: input.startTime,
     endTime: r.endTime,
@@ -629,7 +651,7 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
     kind: 'moved',
     actorRef: input.actorRef,
     detail: {
-      fromDay: r.old.promised_day ?? r.old.starts_at.slice(0, 10),
+      fromDay: visitDay(r.old),
       toDay: input.date,
       promiseBroken: r.promiseBroken,
       previousAssignmentId: r.old.id,
@@ -672,7 +694,7 @@ export async function previewUnscheduleVisit(
   return {
     assignmentId: target.id,
     customerName: customer?.name ?? null,
-    day: target.promised_day ?? target.starts_at.slice(0, 10),
+    day: visitDay(target),
     promiseLevel: target.promise_level,
     requiresConfirmation: bookingRequiresConfirmation(target.promise_level),
   };
@@ -700,7 +722,7 @@ export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Assi
     assignmentId: cancelled.id,
     kind: 'cancelled',
     actorRef: input.actorRef,
-    detail: { day: cancelled.starts_at.slice(0, 10), reason: input.reason },
+    detail: { day: visitDay(cancelled), reason: input.reason },
   });
   return cancelled;
 }
@@ -731,6 +753,11 @@ export async function setVisitPromise(
   if (!row) throw new Error('visit not found');
   if (row.status !== 'confirmed' && row.status !== 'proposed') {
     throw new Error(`this visit is ${row.status} — promises are corrected on live visits only`);
+  }
+  // TEMPORARY (Phase 1, unplaced-visits plan): promise semantics for unplaced
+  // rows (single-day ranges only; no time levels) arrive with Phase 2.
+  if (!isPlaced(row)) {
+    throw new Error('this visit has no time yet — promises on unplaced visits are not supported yet');
   }
   const promisedDay = carriesPromisedDay(promiseLevel) ? row.starts_at.slice(0, 10) : null;
   const updated = await updateAssignmentPromise(
@@ -868,8 +895,10 @@ export async function previewCancelJob(
     }
     visits.push({
       assignmentId: row.id,
-      day: row.starts_at.slice(0, 10),
-      startTime: row.starts_at.slice(11, 16),
+      day: visitDay(row),
+      // An unplaced visit has a day but no time — say so rather than crash
+      // the cancel preview (its cascade must cover EVERY live row).
+      startTime: row.starts_at ? row.starts_at.slice(11, 16) : 'no time set',
       promiseLevel: row.promise_level,
       technicianRef: ref,
     });
@@ -916,7 +945,7 @@ export async function cancelJob(input: CancelJobInput): Promise<CancelJobResult>
       kind: 'cancelled',
       actorRef: input.actorRef,
       detail: {
-        day: cancelled.starts_at.slice(0, 10),
+        day: visitDay(cancelled),
         reason: input.reason,
         jobCancellation: true, // distinguishes cascade rows from lone unschedules
       },

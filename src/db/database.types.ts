@@ -37,15 +37,17 @@ export type Database = {
       assignments: {
         Row: {
           created_at: string
-          ends_at: string
+          earliest_date: string | null
+          ends_at: string | null
           id: string
           job_id: string
+          latest_date: string | null
           locked: boolean
           promise_level: Database["public"]["Enums"]["promise_level"]
           promised_day: string | null
           reason: string | null
           source_capture_id: string | null
-          starts_at: string
+          starts_at: string | null
           status: Database["public"]["Enums"]["assignment_status"]
           technician_id: string | null
           tenant_id: string
@@ -53,15 +55,17 @@ export type Database = {
         }
         Insert: {
           created_at?: string
-          ends_at: string
+          earliest_date?: string | null
+          ends_at?: string | null
           id?: string
           job_id: string
+          latest_date?: string | null
           locked?: boolean
           promise_level?: Database["public"]["Enums"]["promise_level"]
           promised_day?: string | null
           reason?: string | null
           source_capture_id?: string | null
-          starts_at: string
+          starts_at?: string | null
           status?: Database["public"]["Enums"]["assignment_status"]
           technician_id?: string | null
           tenant_id: string
@@ -69,15 +73,17 @@ export type Database = {
         }
         Update: {
           created_at?: string
-          ends_at?: string
+          earliest_date?: string | null
+          ends_at?: string | null
           id?: string
           job_id?: string
+          latest_date?: string | null
           locked?: boolean
           promise_level?: Database["public"]["Enums"]["promise_level"]
           promised_day?: string | null
           reason?: string | null
           source_capture_id?: string | null
-          starts_at?: string
+          starts_at?: string | null
           status?: Database["public"]["Enums"]["assignment_status"]
           technician_id?: string | null
           tenant_id?: string

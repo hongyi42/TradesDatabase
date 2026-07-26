@@ -121,6 +121,27 @@ describe('context spine schema', () => {
     ).toBe('YES');
   });
 
+  test('assignments: times NULLABLE + day-range columns exist (Plan 4b-2)', async () => {
+    const cols = await columns('assignments');
+    // NULL times = an UNPLACED visit (day known, time not yet).
+    expect(cols.get('starts_at')?.is_nullable).toBe('YES');
+    expect(cols.get('ends_at')?.is_nullable).toBe('YES');
+    expect(cols.get('earliest_date')?.data_type).toBe('date');
+    expect(cols.get('latest_date')?.data_type).toBe('date');
+  });
+
+  test('the narrowed overlap guard carries the starts_at predicate (Plan 4b-2)', async () => {
+    const { rows } = await client.query<{ def: string }>(
+      `select pg_get_constraintdef(oid) as def from pg_constraint
+        where conname = 'no_confirmed_overlap'
+          and conrelid = 'public.assignments'::regclass`,
+    );
+    expect(rows).toHaveLength(1);
+    // Unplaced rows are demand, not schedule — they must sit OUTSIDE the guard
+    // or tstzrange(null,null) blocks the technician's entire calendar.
+    expect(rows[0].def).toContain('starts_at IS NOT NULL');
+  });
+
   test('assignments carries the no_confirmed_overlap exclusion constraint', async () => {
     const { rows } = await client.query<{ conname: string; contype: string }>(
       `select conname, contype from pg_constraint

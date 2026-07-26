@@ -21,6 +21,7 @@ import {
   listTeam,
   listTimeOffForTechnician,
   type Assignment,
+  type PlacedAssignment,
   type JobPriority,
   type Technician,
   type WeeklyPattern,
@@ -291,7 +292,9 @@ const expandDates = (startsOn: string, endsOn: string): string[] => {
 // Clamp an assignment row onto ONE day's HH:MM span. Rows are naive-local;
 // a row spilling past midnight (backfill-sourced) still blocks the morning of
 // the day it runs into (review finding #7 — overlap, not start-day, semantics).
-export function clampRowToDay(row: Assignment, dateISO: string): VisitSpan | null {
+// PlacedAssignment: every caller feeds range-filtered rows (compiler-checked
+// since plan 4b-2 — an unplaced row has no span to clamp).
+export function clampRowToDay(row: PlacedAssignment, dateISO: string): VisitSpan | null {
   // Compare INSTANTS, never strings: PostgREST renders timestamptz as
   // '…T00:00:00+00:00' (offset suffix, no ms) while locally built literals end
   // '.000Z', and ASCII '+' < '.' misclassifies midnight-aligned rows — a

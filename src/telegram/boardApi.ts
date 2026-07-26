@@ -545,7 +545,8 @@ export async function handleBoardRequest(
           // promiseBroken — the cancel one-shots, so the toast must tell).
           json(res, 200, {
             status: 'cancelled',
-            day: cancelled.starts_at.slice(0, 10),
+            // Placed day, else the unplaced range's day (plan 4b-2).
+            day: cancelled.starts_at?.slice(0, 10) ?? cancelled.earliest_date ?? null,
             promiseLevel: cancelled.promise_level,
           });
           return;

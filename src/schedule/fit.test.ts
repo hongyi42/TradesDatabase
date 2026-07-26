@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { WeeklyPattern } from '../db/technicians.js';
-import type { Assignment } from '../db/index.js';
+import type { PlacedAssignment } from '../db/index.js';
 import type { RouteStop } from '../routes/deepLink.js';
 import {
   clampRowToDay,
@@ -118,7 +118,7 @@ describe('dayWindows', () => {
 
 describe('clampRowToDay', () => {
   const row = (starts: string, ends: string) =>
-    ({ starts_at: starts, ends_at: ends }) as unknown as Assignment;
+    ({ starts_at: starts, ends_at: ends }) as unknown as PlacedAssignment;
 
   test('within-day row keeps its HH:MM span; non-overlapping day is null', () => {
     const r = row('2026-07-21T09:00:00.000Z', '2026-07-21T11:00:00.000Z');

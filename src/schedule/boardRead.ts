@@ -316,8 +316,11 @@ export async function readRosterForBoard(tenantId: string): Promise<BoardRosterE
 export interface VisitDetail {
   assignmentId: string;
   status: Assignment['status'];
-  start: string;
-  end: string;
+  // Null on an UNPLACED visit (plan 4b-2) — the range below carries the day.
+  start: string | null;
+  end: string | null;
+  earliestDate: string | null;
+  latestDate: string | null;
   promiseLevel: Assignment['promise_level'];
   promisedDay: string | null;
   locked: boolean;
@@ -401,6 +404,8 @@ export async function readVisitDetail(
     status: row.status,
     start: row.starts_at,
     end: row.ends_at,
+    earliestDate: row.earliest_date,
+    latestDate: row.latest_date,
     promiseLevel: row.promise_level,
     promisedDay: row.promised_day,
     locked: row.locked,

@@ -2892,8 +2892,10 @@ async function dispatch(
             unassigned: booked.assignment.technician_id === null,
             date,
             // Resolved times from the row itself (naive-local, exact slices).
-            startTime: booked.assignment.starts_at.slice(11, 16),
-            endTime: booked.assignment.ends_at.slice(11, 16),
+            // Nullable since plan 4b-2 — a placed booking always has them;
+            // the fallback is type-honesty, not a live path.
+            startTime: booked.assignment.starts_at?.slice(11, 16) ?? null,
+            endTime: booked.assignment.ends_at?.slice(11, 16) ?? null,
             promiseLevel: booked.assignment.promise_level,
             jobPriority: booked.job.priority,
             // Same silent-stored-value rule as jobTitle (final-review finding):
@@ -3264,7 +3266,8 @@ async function dispatch(
           return {
             status: 'unscheduled',
             assignmentId: cancelledRow.id,
-            day: cancelledRow.starts_at.slice(0, 10),
+            // Placed day, else the unplaced range's day (plan 4b-2).
+            day: cancelledRow.starts_at?.slice(0, 10) ?? cancelledRow.earliest_date ?? null,
             note:
               'Unscheduled in one step — nothing was promised to the customer, so no ' +
               'confirmation was needed. The WORK is not cancelled: the job is back in the ' +
@@ -3348,7 +3351,8 @@ async function dispatch(
       return {
         status: 'unscheduled',
         assignmentId: cancelledRow.id,
-        day: cancelledRow.starts_at.slice(0, 10),
+        // Placed day, else the unplaced range's day (plan 4b-2).
+        day: cancelledRow.starts_at?.slice(0, 10) ?? cancelledRow.earliest_date ?? null,
         note: 'the work is not cancelled — the job is back in the loose bucket for rebooking',
       };
     }
@@ -3449,7 +3453,8 @@ async function dispatch(
         jobTitle: result.job.title,
         visitsCancelled: result.cancelledVisits.map((v) => ({
           assignmentId: v.id,
-          day: v.starts_at.slice(0, 10),
+          // Placed day, else the unplaced range's day (plan 4b-2).
+          day: v.starts_at?.slice(0, 10) ?? v.earliest_date ?? null,
         })),
         note:
           'The WORK is cancelled — the job left the loose bucket and the visits above are ' +
@@ -4318,7 +4323,7 @@ async function dispatch(
         promiseLevelArg,
         identity.technicianRef,
       );
-      const visitDate = updated.starts_at.slice(0, 10);
+      const visitDate = (updated.starts_at ?? updated.earliest_date ?? '').slice(0, 10);
       return {
         status: 'ok',
         assignmentId,
@@ -4391,8 +4396,8 @@ async function dispatch(
       let job: Job | null = null;
       let subjectRow: {
         id: string;
-        starts_at: string;
-        ends_at: string;
+        starts_at: string | null; // null = UNPLACED (plan 4b-2)
+        ends_at: string | null;
         technician_id: string | null;
         status: string;
       } | null = null;
@@ -4488,6 +4493,16 @@ async function dispatch(
             `'${job.job_type}' duration`;
         }
       } else if (subjectRow) {
+        // TEMPORARY (Phase 1, unplaced-visits plan): an unplaced subject has
+        // no booked span — Date.parse(null) math would yield NaN and silently
+        // match no gap. Phase 2 replaces this refusal with real support (the
+        // job's own duration + the visit's range as the default window).
+        if (subjectRow.starts_at === null || subjectRow.ends_at === null) {
+          throw new Error(
+            'this visit has no time yet — searching slots for unplaced visits is not ' +
+              'supported yet; pass durationMinutes to search by length instead',
+          );
+        }
         // An existing visit's booked length is a real value — no assumption.
         // Same refusal rule as the own-length branch below (round-2 review):
         // the duration is KNOWN here, so assumedType would ride every reason

@@ -278,6 +278,19 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   now the pilot migration is applied. Doctrine-block ordering recipe (held for this rollout,
   keep for the next): AGENTS.md contract changes wire only AFTER the server deploy, or
   agents pass flags the server doesn't know.
+  **Board job sheet + priority retired from board copy (PR #85, 2026-07-26, two user
+  decisions):** tray job rows now open a JOB SHEET (Purpose ✎ / Length ✎ / Customer /
+  "Book visit" primary) — the old split (invisible tap-to-book + lone visible Edit button)
+  taught users the pencil was THE action. Deliberate details: edits return to the sheet, not
+  the tray; NO Cancel button on a job sheet (reads as "cancel the job" — ✕/backdrop close).
+  **Priority is a board-UI-retired field, not a dead field:** 24/24 pilot jobs sat at
+  routine (nobody speaks enum mid-booking); it stays in the schema, in `find_slots` scoring
+  (EARLINESS_PER_DAY 30/15/3/1), in chat (`update_job` — the agent translates "burst pipe" →
+  emergency), and `/board/api/job` still accepts it. Board copy must not resurface it without
+  a new decision. Length-vs-times doctrine (recorded while deciding this): a visit's
+  explicit start–end ALWAYS wins for that visit; job `duration_minutes` is the planning
+  default (sizes find_slots, proposes a move's end, measured-once onto a minted shell) —
+  a mismatch is legitimate and never reconciled.
 - **Deferred / backlog (each has an owner-stated reason — check before resurrecting):**
   `reflow_day` batch cascade (3c); ROI/whole-plan optimization → Plan 4's freeze; jargon
   leaking into chat (conflict #1 — fix must NOT be verbatim templates); Sat/Sun "next week"

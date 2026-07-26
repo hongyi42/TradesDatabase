@@ -188,7 +188,12 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   `cancelled`/job `open`; `cancel_job` → two-step demanded, visit cascade, terminal `cancelled`,
   ledger triple (`booked`/`cancelled`+`jobCancellation`/`job_cancelled`); minted-shell
   `duration_minutes` recorded (60). Telegram-path doctrine + board device checks remain the
-  owner's pass (CLI probes can't judge AGENTS.md-dependent behavior). **Device-pass finding
+  owner's pass (CLI probes can't judge AGENTS.md-dependent behavior). **Device pass CLOSED
+  2026-07-25 (owner):** board 4b-1 checks (A) ✓, Unschedule labels (B) ✓, chat doctrine (C)
+  ✓ — C9 ask + C10 cancel_job two-step + C11 one-shot unschedule + C12 board links all
+  confirmed; week-range phone check ✓ (week-mode plan flipped complete). **Ben's technician
+  phone pass (D) DEFERRED again; GLM-classify live check (E) DROPPED — owner's friend runs it
+  on his own laptop, not through this pilot.** **Device-pass finding
   (2026-07-25, owner): verb-follows-noun gap** — vague "cancel Tom …" correctly triggers the
   which-kind ask, but "cancel <person>'s visit <day>" (noun = visit) silently resolves to
   unschedule with no cancel_job offer. Mitigations that held: promise-gated confirm + the

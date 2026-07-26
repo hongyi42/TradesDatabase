@@ -17,8 +17,9 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 - **Every code change goes through a PR before `main`** (standing rule, 2026-07-12). Direct
   push only on an explicit per-change waiver. "You may commit" authorizes a commit, **not** a
-  push. **Doc-only carve-out (2026-07-13):** markdown-only diffs (`docs/`, `thoughts/`,
-  READMEs) skip the PR — commit on `main` locally, the owner pushes.
+  push. **Doc-only carve-out (2026-07-13; push extension 2026-07-26):** markdown-only diffs
+  (`docs/`, `thoughts/`, READMEs) skip the PR — commit on `main` and push directly (the
+  owner-pushes step is retired for doc-only diffs).
 - **RPI workflow** (research → plan → implement) for non-trivial features; the plan is the
   human-review gate. Two concurrent features: plan both first, compare footprints. Details in
   `CLAUDE.md`.

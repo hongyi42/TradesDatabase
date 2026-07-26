@@ -173,6 +173,48 @@ describe('assembleFitContext — who is in, who is out, always named', () => {
 });
 
 describe('assembleFitContext — assignment rows become day context', () => {
+  test('unplaced assigned rows fold into commitmentsByDate across their whole range, never into stops (plan 4b-2)', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Fit tbd cust' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'fit tbd', status: 'open' });
+    // Tue–Thu unplaced range for sparky + one placed Wednesday visit.
+    const tbd = await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: sparky.id,
+      startsAt: null,
+      endsAt: null,
+      earliestDate: '2026-08-04',
+      latestDate: '2026-08-06',
+      status: 'confirmed',
+    });
+    const placedWed = await makeVisit({
+      technicianId: sparky.id,
+      startsAt: '2026-08-05T09:00:00.000Z',
+      endsAt: '2026-08-05T10:00:00.000Z',
+    });
+    try {
+      const c = await ctx({ technicianRef: sparky.ref });
+      const sp = c.technicians[0];
+      // Load on every covered day; the placed Wednesday visit stacks on top.
+      expect(sp.commitmentsByDate.get('2026-08-04')).toBe(1);
+      expect(sp.commitmentsByDate.get('2026-08-05')).toBe(2);
+      expect(sp.commitmentsByDate.get('2026-08-06')).toBe(1);
+      expect(sp.commitmentsByDate.get('2026-08-07')).toBeUndefined();
+      // Shape untouched: stops count ONLY the placed visit.
+      expect(sp.stopsByDate.get('2026-08-04')).toBeUndefined();
+      expect(sp.stopsByDate.get('2026-08-05')).toBe(1);
+      // The subject-exclusion also frees an unplaced subject's own load.
+      const excluded = await ctx({ technicianRef: sparky.ref, excludeAssignmentId: tbd.id });
+      expect(excluded.technicians[0].commitmentsByDate.get('2026-08-04')).toBeUndefined();
+      expect(excluded.technicians[0].commitmentsByDate.get('2026-08-05')).toBe(1);
+    } finally {
+      // Self-clean BOTH rows: the displacement suite shares this week and
+      // caps at 5 candidates — a leftover placed visit shifts its ordering.
+      await pg.query("update assignments set status = 'cancelled' where id = $1", [tbd.id]);
+      await pg.query("update assignments set status = 'cancelled' where id = $1", [placedWed.id]);
+    }
+  });
+
   test('confirmed rows only; unassigned rows block nobody; city rides lowercased; excludeAssignmentId frees the subject', async () => {
     const mine = await makeVisit({
       technicianId: plumber.id,

@@ -20,6 +20,7 @@ import {
   listJobsWithCustomerByIds,
   listTeam,
   listTimeOffForTechnician,
+  listUnplacedAssignedForRange,
   type Assignment,
   type PlacedAssignment,
   type JobPriority,
@@ -126,7 +127,13 @@ export interface FitTechnician {
   visitsByDate: Map<string, VisitSpan[]>;
   citiesByDate: Map<string, Set<string>>; // lowercase customer cities that day
   serviceCities: string[];
+  // PLACED stops only — feeds DENSE_DAY_STOPS, which asks whether the route
+  // has SHAPE (gap-fill vs day-level candidates).
   stopsByDate: Map<string, number>;
+  // Placed + UNPLACED-assigned (plan 4b-2): how COMMITTED the day is. Load is
+  // weight without shape — it lowers a day's score but never flips it into
+  // gap-fill mode (timeless visits give weight, not shape).
+  commitmentsByDate: Map<string, number>;
 }
 
 export interface GenerateCandidatesInput {
@@ -197,6 +204,7 @@ export function generateCandidates(input: GenerateCandidatesInput): SlotCandidat
       );
       if (gaps.length === 0) continue;
       const stops = tech.stopsByDate.get(date) ?? 0;
+      const commitments = tech.commitmentsByDate.get(date) ?? stops;
       const sameCity =
         input.customerCity !== null &&
         ((tech.citiesByDate.get(date)?.has(input.customerCity) ?? false) ||
@@ -206,14 +214,16 @@ export function generateCandidates(input: GenerateCandidatesInput): SlotCandidat
         // threading choice; emit each concretely (drive deltas attach here).
         for (const gap of gaps) {
           out.push(
-            buildCandidate(input, tech, date, gap, false, fromToday, stops, sameCity),
+            buildCandidate(input, tech, date, gap, false, fromToday, stops, commitments, sameCity),
           );
         }
       } else {
         // OPEN day: one day-level candidate; the first fitting gap is the
         // suggested internal window — the DAY is what gets quoted (quote
         // days, not times; the loose day will reshape before it arrives).
-        out.push(buildCandidate(input, tech, date, gaps[0], true, fromToday, stops, sameCity));
+        out.push(
+          buildCandidate(input, tech, date, gaps[0], true, fromToday, stops, commitments, sameCity),
+        );
       }
     }
   }
@@ -237,6 +247,7 @@ function buildCandidate(
   dayLevel: boolean,
   fromToday: number,
   stops: number,
+  commitments: number, // placed + unplaced — the load axis (plan 4b-2)
   sameCity: boolean,
 ): SlotCandidate {
   const startTime = gap.start;
@@ -247,7 +258,10 @@ function buildCandidate(
   if (morning && (input.priority === 'routine' || input.priority === 'maintenance')) {
     score += MORNING_BONUS;
   }
-  score -= stops * LIGHT_DAY_PER_STOP;
+  // Load (light-day) scores on COMMITMENTS: three time-TBD visits weigh the
+  // day down exactly like three placed ones (plan 4b-2). Density (the
+  // gap-fill/day-level mode switch above) keeps using placed stops.
+  score -= commitments * LIGHT_DAY_PER_STOP;
   if (sameCity) score += SAME_CITY_BONUS;
 
   const weekday = weekdayLabel(date);
@@ -256,7 +270,9 @@ function buildCandidate(
       ? `${weekday} ${date} with ${tech.name} — day-level fit for the ${input.durationLabel} (free ${gap.start}–${gap.end}); quote the DAY, not a time`
       : `${weekday} ${date} with ${tech.name}, ${startTime}–${endTime} — fits the ${input.durationLabel} (free ${gap.start}–${gap.end})`,
     ...(sameCity ? ['same city as another visit/coverage that day'] : []),
-    ...(stops === 0 ? ['their day is empty'] : [`${stops} other visit(s) that day`]),
+    // "Empty" keys on commitments — a day holding three time-TBD visits is
+    // NOT empty even though its time grid is (plan 4b-2 review guard).
+    ...(commitments === 0 ? ['their day is empty'] : [`${commitments} other visit(s) that day`]),
   ];
   return {
     technicianRef: tech.ref,
@@ -347,15 +363,22 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
     eligible.push(t);
   }
 
-  // One tenant-wide visit read covers every technician's day context.
-  const rows = (
-    await listAssignmentsForTenant(
+  // One tenant-wide visit read covers every technician's day context; the
+  // range-filtered read cannot see UNPLACED rows, so a second read brings the
+  // assigned time-TBD load in (plan 4b-2) — both run in parallel.
+  const [placedRows, unplacedRows] = await Promise.all([
+    listAssignmentsForTenant(
       input.tenantId,
       `${input.earliest}T00:00:00.000Z`,
       addDaysISO(input.latest, 1) + 'T00:00:00.000Z',
       ['confirmed'],
-    )
-  ).filter((r) => r.technician_id !== null && r.id !== input.excludeAssignmentId);
+    ),
+    listUnplacedAssignedForRange(input.tenantId, input.earliest, input.latest),
+  ]);
+  const rows = placedRows.filter(
+    (r) => r.technician_id !== null && r.id !== input.excludeAssignmentId,
+  );
+  const unplaced = unplacedRows.filter((r) => r.id !== input.excludeAssignmentId);
   const jobs = await listJobsWithCustomerByIds(input.tenantId, [
     ...new Set(rows.map((r) => r.job_id)),
   ]);
@@ -370,7 +393,9 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
     const visitsByDate = new Map<string, VisitSpan[]>();
     const citiesByDate = new Map<string, Set<string>>();
     const stopsByDate = new Map<string, number>();
+    const commitmentsByDate = new Map<string, number>();
     const mine = rows.filter((r) => r.technician_id === t.id);
+    const myUnplaced = unplaced.filter((r) => r.technician_id === t.id);
     const span = daysBetween(input.earliest, input.latest);
     for (let i = 0; i <= span; i++) {
       const date = addDaysISO(input.earliest, i);
@@ -379,8 +404,16 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
         if (!clamped) continue;
         visitsByDate.set(date, [...(visitsByDate.get(date) ?? []), clamped]);
         stopsByDate.set(date, (stopsByDate.get(date) ?? 0) + 1);
+        commitmentsByDate.set(date, (commitmentsByDate.get(date) ?? 0) + 1);
         const city = cityByJob.get(row.job_id);
         if (city) citiesByDate.set(date, new Set([...(citiesByDate.get(date) ?? []), city]));
+      }
+      // Unplaced load: the visit weighs on EVERY day of its range — it will
+      // land on one of them, and until placed each day must budget for it.
+      for (const row of myUnplaced) {
+        if ((row.earliest_date as string) <= date && date <= (row.latest_date as string)) {
+          commitmentsByDate.set(date, (commitmentsByDate.get(date) ?? 0) + 1);
+        }
       }
     }
     technicians.push({
@@ -392,6 +425,7 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
       citiesByDate,
       serviceCities: t.service_cities,
       stopsByDate,
+      commitmentsByDate,
     });
   }
   return { technicians, skippedNoPattern, skippedSkills, unknownSkills };

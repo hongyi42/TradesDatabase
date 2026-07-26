@@ -42,6 +42,7 @@ const tech = (over: Partial<FitTechnician> = {}): FitTechnician => ({
   citiesByDate: new Map(),
   serviceCities: [],
   stopsByDate: new Map(),
+  commitmentsByDate: new Map(),
   ...over,
 });
 
@@ -144,6 +145,36 @@ describe('clampRowToDay', () => {
     const toMidnight = row('2026-08-03T22:00:00+00:00', '2026-08-04T00:00:00+00:00');
     expect(clampRowToDay(toMidnight, '2026-08-03')).toEqual({ start: '22:00', end: '24:00' });
     expect(clampRowToDay(toMidnight, '2026-08-04')).toBeNull();
+  });
+});
+
+describe('unplaced commitments — load without shape (plan 4b-2 Phase 4)', () => {
+  test('a day with 3 unplaced commitments scores below an identical empty day, stays day-level, and is never called empty', () => {
+    const loaded = tech({
+      ref: 'loaded',
+      name: 'Loaded',
+      commitmentsByDate: new Map([['2026-07-21', 3]]),
+    });
+    const empty = tech({ ref: 'empty', name: 'Empty' });
+    const cands = generateCandidates(
+      baseInput({
+        earliest: '2026-07-21',
+        latest: '2026-07-21',
+        technicians: [loaded, empty],
+      }),
+    );
+    const loadedCand = cands.find((c) => c.technicianRef === 'loaded');
+    const emptyCand = cands.find((c) => c.technicianRef === 'empty');
+    expect(loadedCand).toBeDefined();
+    expect(emptyCand).toBeDefined();
+    // Weight: the committed day scores strictly lower.
+    expect((loadedCand as SlotCandidate).score).toBeLessThan((emptyCand as SlotCandidate).score);
+    // But NOT shape: zero placed stops keeps it a day-level candidate.
+    expect((loadedCand as SlotCandidate).dayLevel).toBe(true);
+    // And it is never described as empty.
+    expect((loadedCand as SlotCandidate).reasons.join(' ')).not.toContain('day is empty');
+    expect((loadedCand as SlotCandidate).reasons.join(' ')).toContain('3 other visit(s)');
+    expect((emptyCand as SlotCandidate).reasons.join(' ')).toContain('day is empty');
   });
 });
 

@@ -73,7 +73,10 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   corpora, 100k+ hours are free under Apache 2.0, and auto-repair robotics is dead
   (RoboTire Chapter 7). What survives: the consent architecture, spine-linked outcome ground
   truth, and provenance+indemnity as the differentiator. Read §9 before repeating any
-  valuation number from §3.
+  valuation number from §3 — a vendor-layer audit (§9.9) found **every per-hour market price
+  in this space traces to unsourced SEO content**, and that the free 100k-hour corpus setting
+  the price floor has documented consent problems (unpaid, allegedly unconsented Indian
+  factory workers). Clean provenance is the scarce good, not the compliance overhead.
   Pool invariant: free blanks = purchased seats − active members. The only un-automatable
   step is creating Telegram bots at BotFather (no API) — pre-create and vault tokens.
 - **Spine scope boundary** (2026-07-06): the spine is the **customer/job record**, not a

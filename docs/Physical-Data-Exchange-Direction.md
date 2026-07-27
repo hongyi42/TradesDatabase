@@ -622,6 +622,60 @@ ego camera + 4–5 stationary synchronized cameras + three language streams incl
 commentary**. It is 1,286 hours and contains no automotive work. That is the corpus shape to
 copy — and the hole to fill.
 
+#### What "instrumented bay" physically means
+
+⚠️ **Sketch, not a sourced bill of materials.** Component classes and rough ranges come from the
+research pass; **this build has not been priced or prototyped.**
+
+```
+        ceiling / truss cameras
+         C1 ▼            ▼ C2          ego cam on tech ●
+     ┌──────────────────────────────┐
+     │        ═══════════           │   ← car on lift (rises!)
+ C3▶ │      [  engine bay  ]        │ ◀C4    cameras must cover
+     │        ═══════════           │        BOTH lift heights
+     │   C5 ▲  under-car  ▲ C6      │
+     └──────────────────────────────┘
+              │
+     ┌────────┴─────────┐    ┌──────────────────┐
+     │  EDGE BOX        │◄───│ INSTRUMENTED     │
+     │  sync + buffer   │    │ TOOLS: torque    │
+     │  + overnight     │    │ wrench, IMU pucks│
+     │    upload        │    └──────────────────┘
+     └────────┬─────────┘
+              ▼  job_id from the agent → every stream tagged
+          SPINE (job record, consent artifact, outcome)
+```
+
+| Component | Purpose | Rough cost |
+|---|---|---|
+| 4–6 fixed cameras (global shutter, wide FOV, low-light) | Triangulate hand/tool pose; see what the ego cam can't | $200–600 ea |
+| Under-car / underhood camera | The auto-specific gap — work happens *inside* cavities | included above |
+| Ego camera on the tech | Robot-equivalent viewpoint; follows into tight spaces | $300–800 |
+| **Time sync** (hardware trigger / PTP) | **Where amateur builds fail.** Without ms-level alignment you cannot triangulate and cannot tie torque to frames | $200–500 |
+| **Calibration** (charuco target + workflow) | Camera-to-camera geometry. Garbage in → garbage 3D | labor |
+| **Instrumented torque wrench** (logging + timestamp) | **The differentiated signal** | $500–2,000 |
+| IMU pucks on ratchet / impact gun | Cheap motion + orientation on common tools | $20–50 ea |
+| Edge box (mini PC + disk) | Ingest, timestamp, buffer, compress, upload overnight | $1,500–2,500 |
+| **Job-ID trigger from the agent** | Start/stop tied to the spine job → every stream inherits job, consent, outcome | **software — ours** |
+
+**≈$5–10k per bay**, before install labor.
+
+**What will actually bite:** calibration drift in a working shop (things get knocked); mixed and
+poor lighting, near-dark under a car; the car itself occluding views even with 6 cameras;
+storage and bandwidth (**EgoDex was ~500 TB raw for 829 hours from a *single* camera** — six
+streams cannot be cloud-streamed over a shop's internet, so local buffering is mandatory);
+durability against grease, impact and heat; and technicians resenting the rig.
+
+**Build it in phases — the first one answers the biggest risk cheaply:**
+
+| Phase | Build | Question it answers |
+|---|---|---|
+| **0** | One bay, 4 action cams + ego cam, clapper/flash sync, a laptop | **Can we recover usable triangulated hand pose from a real repair, through real occlusion?** If no, the whole direction stops here — for the price of a weekend. |
+| 1 | Add torque logging | Does tool telemetry align to video frames? |
+| 2 | Harden: hardware sync, calibration workflow, edge box, auto-upload, job linkage | Is it operable by a shop, not by us? |
+| 3 | Replicate to N bays | Does it scale without an engineer per site? |
+
 **Quantity needed is far smaller than intuition suggests, which is the encouraging part.**
 Frontier results run on hundreds of hours, not millions: π0.5 ≈ **400 hrs across ~100
 environments** (and saturated there); Figure Helix ≈ **500 hrs total**; NVIDIA GR00T N1 used

@@ -594,17 +594,64 @@ stays stuck at head-cam video. **This — not consent-lightness — is auto repa
 and it directly attacks the two things that make our footage low-value: occlusion and missing
 force.**
 
+**First, what a service job actually consists of** — because "auto repair = wrenching" is wrong,
+and getting this right changes which sensor matters most. ⚠️ *Reasoned from domain knowledge, not
+from a sourced time-and-motion study — worth verifying with a real shop.*
+
+```
+A REAL SERVICE JOB
+├── DIAGNOSIS         ← often MOST of the billable difficulty; ZERO manipulation
+│     scan tool, multimeter, scope, smoke machine, test drive, listening
+├── ACCESS / TEARDOWN ← mostly NOT wrenching
+│     prying clips, unplugging connectors, trim panels, hoses, brackets
+├── THE REPAIR        ← varies enormously
+│     fastening │ pressing/pulling │ fluids │ electrical │ cutting/grinding
+│     │ heat on seized parts │ welding │ cleaning/prep │ adjustment │ reflash
+├── VERIFICATION      ← re-scan, road test, leak check
+└── CLEANUP + DOCUMENTATION
+```
+
+Fastener work is perhaps a quarter to a third of hands-on time — **and diagnosis, which involves
+no manipulation at all, is frequently where the value is.**
+
+**Sensor coverage by work type:**
+
+| Work type | Best capture | Coverage |
+|---|---|---|
+| **Diagnosis** | **Scan-tool data stream — already digital (OBD-II)** + narration + outcome | **Excellent, and essentially free** |
+| Fastening | Instrumented torque wrench | Excellent — and uniquely invisible to video |
+| Fine manipulation (clips, connectors, routing) | Multi-view triangulated hand pose | Good — this is what the camera rig is for |
+| Pressing / pulling / prying | Load cell (awkward) or IMU + video | **Partial — force still mostly lost** |
+| Fluids, cleaning, adjustment | Video + procedure alignment | Low value, low dexterity content |
+| Cutting / heat / welding | Video | Low value, high variance |
+| Software reflash / ADAS calibration | Not physical | n/a |
+
+**The most valuable "instrumented tool" in the bay already exists and is already digital: the
+scan tool.** Every car since OBD-II emits fault codes, live sensor streams, and freeze-frame
+data, and it is plugged in during exactly the phase where the expensive reasoning happens.
+Capturing that stream costs no new hardware. **And the diagnostics-copilot buyers in §6 —
+Bosch, Snap-on — are the companies that *make* scan tools.** What they lack is not the stream;
+it is the stream paired with the technician's reasoning and a confirmed outcome.
+
 **What a lab training an auto-repair robot would need, ranked:**
 
 | # | Signal | Why it's needed | How to capture it |
 |---|---|---|---|
-| 1 | **Torque / force on fasteners** | The decisive variable in fastener work has **no visual signature**. Unrecoverable from any video, ever. | **Instrumented tools** — digital torque wrench with data logging; IMU on ratchet/impact gun |
-| 2 | **Metrically accurate 3D hand pose** | The action label. Monocular estimation scores **0%** where stereo scores 85% (§2.1) | Stereo/multi-view triangulation — the bay rig, not a single head-cam |
-| 3 | **Multi-view coverage** | Beats occlusion — hands vanish under hoods and under cars | **Fixed bay cameras** (4–6) + ego view + under-car camera, hardware-synchronized |
-| 4 | **6-DoF tool pose** | Where the wrench/socket is in space | SLAM, LiDAR-inertial, or VR-constellation tracking on the tool |
-| 5 | **Narrated diagnostic reasoning** | The *why*; also the channel through which video demonstrably pays off (§2.1) | Tech's voice, at the workpiece — audio-consent tier (§10) |
-| 6 | **Procedure + outcome ground truth** | Aligns each capture to a canonical OEM procedure and to whether the repair actually held | **Spine linkage — we already have this** |
+| 1 | **Metrically accurate 3D hand pose** | The action label, and it covers *all* manipulation — not just the fastener slice. Monocular estimation scores **0%** where stereo scores 85% (§2.1) | Stereo/multi-view triangulation — the bay rig, not a single head-cam |
+| 2 | **Multi-view coverage** | Beats occlusion — hands vanish under hoods and under cars | **Fixed bay cameras** (4–6) + ego view + under-car camera, hardware-synchronized |
+| 3 | **Torque / force on fasteners** | Narrower than first assessed (~¼–⅓ of hands-on time) but **uniquely unrecoverable from video, ever** — the one signal that never commoditizes | **Instrumented tools** — digital torque wrench with logging; IMU pucks on ratchet/impact gun |
+| 4 | **Narrated diagnostic reasoning + scan-tool stream** | Diagnosis is where the difficulty lives, and it is not a manipulation problem at all | Tech's voice (audio-consent tier, §10) + OBD-II capture |
+| 5 | **6-DoF tool pose** | Where the tool is in space | SLAM, LiDAR-inertial, or VR-constellation tracking |
+| 6 | **Procedure + outcome ground truth** | Aligns each capture to a canonical OEM procedure and to whether the repair held | **Spine linkage — we already have this** |
 | 7 | **Failures and recoveries** | Humans generate [10× more valid recovery data/hr than teleop](https://arxiv.org/abs/2607.19745) | Don't stop recording when it goes wrong |
+
+**This taxonomy cuts both ways, and the net is a strategic tilt.** Auto repair being
+diagnosis-heavy and manipulation-diverse makes it *less* robot-tractable than a fastener-centric
+reading suggested — more evidence for why RoboTire failed. But the same fact makes it *more*
+valuable to the diagnostics-copilot buyers, who want reasoning rather than motion. **The
+camera rig serves both; the torque wrench serves only the robotics bet; the scan-tool stream
+serves only the copilot bet and costs nothing.** Capture all three and the direction stays
+viable whichever buyer materializes.
 
 **Capture tiers, with the trade-offs:**
 
@@ -612,7 +659,7 @@ force.**
 |---|---|---|---|
 | **0** | Head/chest cam only (current plan) | ~$150–300/tech | Commodity. Competes with free YouTube. |
 | **1** | Ego cam + 4–6 fixed synchronized bay cameras | ~$3–5k/bay | Triangulated hand pose + occlusion coverage. Crosses from "video" to "action-labeled." |
-| **2** | Tier 1 + **instrumented tools (torque logging)** | +~$1–2k/bay | **The differentiated tier.** Nobody else is capturing torque — the ego-data field is doing kitchens and factory floors. |
+| **2** | Tier 1 + **scan-tool capture** + **instrumented tools (torque logging)** | +~$1–2k/bay (scan-tool capture ≈ free) | **The differentiated tier.** Nobody is capturing torque — the ego-data field is doing kitchens and factory floors — and nobody is pairing the OBD-II stream with the tech's reasoning and a confirmed outcome. |
 | **3** | Tier 2 + gloves/tactile | +$900–6,500/tech | ⚠️ Research-grade but likely impractical: grease, heat, sharp edges, durability. [StretchSense](https://stretchsense.com/hardware/) ($895/pair, capacitive, no line-of-sight needed) is the only plausible candidate. |
 
 **Tier 2 is the target.** Tier 3 is where the shop floor defeats the hardware.

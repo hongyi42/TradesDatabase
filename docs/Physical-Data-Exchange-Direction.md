@@ -6,6 +6,14 @@ document launches before a privacy lawyer reviews the consent architecture** (§
 what to bring them). Market figures and legal landscape were checked against live sources on
 2026-07-26 and will drift — re-verify before building.
 
+> **⚠️ READ §9 FIRST. A deep supply/demand study (2026-07-26, same day) materially challenged
+> the "sell footage to robotics labs" half of this thesis.** Raw video without action labels is
+> the weakest training modality in the published literature, no robotics lab has publicly
+> licensed a third-party corpus at a disclosed price, and 100k+ hours of egocentric video are
+> free under Apache 2.0. §§2–3 quota and valuation numbers were derived BEFORE that study and
+> are now **provisional**. The consent architecture (§5) and data architecture (§6) survive
+> unchanged and are still the defensible assets.
+
 ## 1. Central thesis
 
 > **We trade enterprise-level AI software to small physical-labor businesses in exchange for
@@ -281,16 +289,269 @@ validates the model while leaving this specific position open:
 
 ## 8. Open questions / next steps
 
+**Reordered after §9.** The strategic question now outranks the operational ones:
+
+0. **Decide the buyer before scaling collection** (§9.6). "Diagnostics/repair-copilot corpus"
+   and "robotics manipulation corpus" imply different capture specs, different pricing, and
+   different verticals. Cheapest next step: 3–5 discovery calls with the diagnostics-copilot
+   tier (Bosch, Snap-on, ALLDATA/Mitchell/Identifix) before building any ingest pipeline.
 1. **Lawyer review** of the consent architecture (§5 checklist) — gate for everything else.
 2. Draft the **template consent form** + tech script (+ Spanish); decide launch states.
 3. **Meter real seat cost** off the DeepInfra dashboard for a quarter; re-derive the
-   100-min number from actuals (§3 formula).
+   100-min number from actuals (§3 formula) — noting §9 moved the value estimate down.
 4. Design the **ingest gate** (consent check, completeness/active-minute estimation, narration
    scoring, visit-duration cross-check) — a future RPI feature; not started.
 5. Pick the **video store** + retention policy (deletable object storage, lifecycle rules).
 6. **Accounting/tax** treatment of the barter; E&O/cyber insurance for holding home footage.
 7. Revisit quota refinements (rarity bonuses, per-job caps) **only after** a quarter of real
    ingest data.
+8. **Verify the auto-repair consent assumption** (§9.5) — it was reasoned, not researched
+   (search budget exhausted). Specifically: employee-monitoring notice duties, customer
+   personal effects/VIN/plate exposure, and shop-floor conversation audio.
+
+## 9. Supply & demand reality check (deep study, 2026-07-26)
+
+Five parallel research tracks (~25 primary papers, lab technical reports, vendor pages, and
+market sources). **This section supersedes the more optimistic framing in §§1–4 wherever they
+conflict.** Confidence is flagged throughout; several widely-circulated market numbers turned
+out to trace to unsourced vendor marketing.
+
+### 9.1 The modality ladder — value tracks ACTION LABELS, not pixels
+
+```
+  ACTION-LABEL DENSITY ──────────────────────────────────────►
+LOW                                                        HIGH
+
+Internet    Passive ego     Sensorized ego      Handheld     Teleop on
+3rd-person  video           human demo          gripper      target robot
+video       (Ego4D)         (Aria/Vision Pro)   (UMI)        (ALOHA)
+   │             │                 │                │             │
+semantics   semantics +      6-DoF hand pose    6-DoF EE +    joint angles
+  only      narration        + SLAM + MANO      grip width    @50Hz, encoder-true
+
+        ◄── OUR PRODUCT SITS HERE          value increases ──►
+```
+
+The user's intuition was right: **a person in a sensor suit is worth far more than a person
+with a camera.** Mechanically, what the expensive modalities capture that video cannot:
+6-DoF hand/end-effector pose, per-joint angles from encoders, gripper aperture, and (rarely)
+contact force. Apple's [EgoDex](https://arxiv.org/abs/2505.11709) captures **25 joints per
+hand as SE(3) poses at 30Hz** from Vision Pro; [ALOHA](https://arxiv.org/abs/2304.13705) logs
+14-dim absolute joint positions at 50Hz on a $20k rig;
+[UMI](https://umi-gripper.github.io/) reconstructs 6-DoF pose via SLAM at 6.1mm/3.5° accuracy
+on a **$371** handheld rig. **Force is the systematic hole in nearly every pipeline** — ALOHA,
+UMI, Aria, Vision Pro and mocap suits all record zero force information, and
+[Sparsh-X](https://arxiv.org/abs/2506.14754) measured **+63% policy success** from adding
+multimodal touch. For fastener work (torque, seized bolts), the decisive variable is invisible
+to video by construction.
+
+### 9.2 Passive video: the evidence is worse than the marketing
+
+Our product is **raw RGB with no action labels** — the weakest rung. The strongest evidence:
+
+- **Toyota Research Institute** (89 policies, 2,835 real rollouts, 2,271 hours of passive
+  egocentric video — 4.3× their robot data): *"Single-phase co-training with latent actions
+  yields no improvement over the baseline"*
+  ([arXiv 2602.01067](https://arxiv.org/abs/2602.01067)). Benefits appeared only in the
+  low-robot-data regime and **diminished as robot data grew**. Crucially, the same video **did**
+  help when routed through **VLM-generated language annotations** — value via the *semantic*
+  channel, not the action channel.
+- **HumanEgo's own ablation** ([arXiv 2605.24934](https://arxiv.org/abs/2605.24934)): raw human
+  **RGB only → 7.5%** success; **+ 3D spatial tokens from stereo hand tracking → 85%**;
+  monocular hand-tracking substitute → **0%**. Their headline "human video beats teleop" holds
+  only *with* Aria's calibrated sensors. Anyone citing the headline without the ablation is
+  overselling.
+- **[Dasari et al., CoRL 2023](https://arxiv.org/abs/2310.09289)** — pretraining on **ImageNet
+  (41%) beat Ego4D (28%)** for real-world robot success. Egocentric video was not special.
+- **[LARY benchmark](https://arxiv.org/abs/2604.11689)** (Apr 2026): specialized latent-action
+  models trained on video encode *less* action information (LAPA 20.2%) than generic
+  self-supervised video encoders (V-JEPA 2 76.6%).
+- **[VC-1/CortexBench](https://arxiv.org/abs/2303.18240)**: *"scaling dataset size and
+  diversity does not improve performance universally"*; no pretrained representation dominated.
+- **Rodney Brooks'** critique of the Figure/Tesla video bet: video omits force, touch and
+  proprioception; each human hand has ~17,000 mechanoreceptors
+  ([essay](https://rodneybrooks.com/why-todays-humanoids-wont-learn-dexterity/)).
+
+Honest counterweight: [ATM](https://arxiv.org/abs/2401.00025) showed **0% → 63%** on real tasks
+from adding passive human video via point tracks; [EgoScale](https://arxiv.org/abs/2602.16710)
+(NVIDIA, 20,854 hrs) fits a log-linear scaling law at **R²=0.9983** with **+54%** success — but
+EgoScale explicitly runs *"off-the-shelf SLAM and hand-pose estimation"* then retargets 21
+keypoints into robot joint space, i.e. it converts video into action labels first. **Every
+large win adds an extraction step or routes through language.**
+
+### 9.3 What frontier labs actually train on
+
+| Lab | Human video? | Evidence quality |
+|---|---|---|
+| **Physical Intelligence** (π0/π0.5/π0.7) | Added egocentric human video only in Dec 2025; π0.5's 400 hrs across ~100 homes is robot data | arXiv reports, but π0.7 publishes **no** data table |
+| **Google DeepMind** (Gemini Robotics 1.5) | **No** — named as *future work*: *"An important next step is to leverage… real-world human videos"* | 62-page report, **zero** occurrences of "hours" |
+| **NVIDIA** (GR00T) | **Yes — 20,854 hrs (EgoScale)**, action-labeled; N1 used 88 hrs real teleop vs 6,500 sim-equivalent hours | Best-documented; open weights |
+| **1X** | **Yes — 900 hrs** egocentric human video (1X World Model) | Blog, but quantified |
+| **Figure** | Claims **"100% egocentric human video, no robot demonstrations"** — but for a *navigation* policy, no metrics, no paper | Blog only |
+| **Skild AI** | Claims YouTube + headcam video | Marketing only, **zero numbers** |
+| **Tesla** | Executive statements + in-house helmet-cam collectors ($25–48/hr) | **No technical artifact of any kind** |
+| **Generalist AI** | GEN-1: 500k+ hrs from *"low-cost wearable devices on humans"* | Blog; sensorized wearables, not wild video |
+
+**The pattern that matters: the labs with peer-reviewable artifacts have modest, quantified, or
+explicitly deferred human-video claims. The labs with the boldest human-video marketing publish
+no papers and no hours.** And where labs *do* consume human video at scale, it is
+**purpose-collected sensorized capture** (Figure↔Brookfield homes, NVIDIA EgoScale, Tesla
+helmet rigs), not licensed third-party archives.
+
+### 9.4 Demand: no archive-licensing market (the crux)
+
+**No robotics lab has publicly licensed a pre-existing third-party corpus at a disclosed
+price.** What exists instead:
+
+- **Commissioned collection to spec.** [Scale AI](https://scale.com/physical-ai) (1,000+ hrs/day,
+  "robotless egocentric platform"), [XDOF](https://techcrunch.com/2026/06/17/collecting-robot-training-data-is-dirty-unglamorous-work-some-ai-labs-are-already-paying-xdof-to-do-it/)
+  ($70M raised, *"20 customers including several frontier AI labs"*),
+  [Config](https://techcrunch.com/2026/05/11/koreas-biggest-manufacturers-back-config-the-tsmc-of-robot-data/)
+  (100k+ hrs). Industry-wide, [MIT Tech Review reports robotics companies spend *"more than
+  $100 million each year"*](https://www.technologyreview.com/2026/04/01/1134863/humanoid-data-training-gig-economy-2026-breakthrough-technology/)
+  buying real-world data — **as services, not archives**.
+- **Access-for-equity.** [Figure↔Brookfield](https://www.figure.ai/news/figure-announces-strategic-partnership-with-brookfield):
+  Brookfield gave access to 100k+ residential units *and invested in Figure's Series C*. No cash
+  for data disclosed. **This is the closest structural analogue to our model — and it was paid
+  in equity, not licensing fees.**
+- **Free supply sets the floor.** [Egocentric-100K](https://huggingface.co/datasets/builddotai/Egocentric-100K):
+  **100,405 hours, Apache 2.0, free.** Open X-Embodiment: 1M+ trajectories, CC-BY. NVIDIA
+  publishes sim data CC-BY-4.0.
+- **Collector wages are the real price signal.** micro1 pays **$15/hr**; Chinese collection
+  centers **~¥20 (~$3)/hr** ([Rest of World](https://restofworld.org/2026/china-ai-robotics-training-data/));
+  Tesla's in-house operators $25.25–48/hr. Vendor rate cards ($25–60/hr egocentric) are
+  **client-side** prices for managed programs, not what raw footage fetches.
+- **Prices are collapsing.** All-in teleop data **$340/hr (2024) → ~$118/hr (2026)**; commodity
+  bulk egocentric reportedly trades **below production cost**. ⚠️ These $/hr figures trace to
+  **unsourced vendor marketing** — treat as directional only.
+- **The one proven video-licensing market is generative media, not robotics:**
+  [$1–4/minute for unpublished creator footage](https://the-decoder.com/openai-and-google-are-buying-youtubers-unpublished-videos-for-up-to-4-per-minute/).
+  Note Shutterstock's data-licensing revenue **fell 47% to $21.0M in Q1 2026** — lumpy and
+  deal-driven, not an annuity.
+
+**What buyers do require:** per-person releases naming AI training, all-party audio consent,
+BIPA notice, chain of custody, de-identification, and **indemnity**. This is where we're
+genuinely differentiated: [Ego4D's own license is "AS-IS" with "NO FINANCIAL LIABILITY
+WHATSOEVER"](https://ego4d-data.org/pdfs/Ego4D-Licenses-Draft.pdf) — free corpora offer zero
+indemnity. Post-[*Bartz v. Anthropic*](https://www.jurist.org/news/2026/07/judge-approves-record-1-5-billion-settlement-involving-anthropic/)
+($1.5B, where training was fair use but **acquisition was not**) and under EU AI Act Art. 53
+(**licensed data carries lighter disclosure than scraped data**), a clean provenance file has
+independent value. **Our product may be a defensible provenance file with footage attached.**
+
+### 9.5 Auto repair specifically
+
+**The robotics angle is weak — and the market already voted.**
+[RoboTire filed Chapter 7](https://www.moderntiredealer.com/home/article/33019234/robotire-files-for-bankruptcy)
+despite a $7.5M Series A from Discount Tire's parent. **The single most constrained, most
+repeatable task in the entire shop — a wheel at fixed height with a standard lug pattern — was
+not economically viable.** The one survivor,
+[Automated Tire's SmartBay](https://www.therobotreport.com/automated-tire-decloaks-smartbay-autonomous-tire-changing/)
+(~$4,900/mo), is semi-automated: humans still remove old tires, position new ones, connect air
+lines, mount weights. [UVeye](https://www.prnewswire.com/news-releases/uveye-secures-191m-in-funding-to-meet-soaring-demand-for-ai-powered-vehicle-inspection-systems-302363100.html)
+($191M raised, 125+ dealers) is pure **sensing** — no hands. EV battery service robotics is
+research-stage and explicitly human–robot *collaborative*. Humanoids in automotive are in
+**manufacturing** (Figure↔BMW, ~$25/robot-hour), where it's the same car at the same station —
+the opposite of service work.
+
+Why service is structurally hostile: unconstrained inputs (every make/year/trim, plus rust and
+prior repairs); **occlusion** (work happens under hoods and under cars — hands hidden by the
+workpiece); tool diversity; **force invisibility**; the billable difficulty is *diagnosis*, not
+wrenching; and safety-critical liability (brakes, steering, airbags).
+
+**Occlusion deserves emphasis because it compounds:** hand-pose label quality is the measured
+transfer bottleneck (triangulated 3D labels transfer far better than monocular; injected noise
+degrades performance monotonically), and a head-cam under a car is the worst case for exactly
+that signal. Even Apple concedes EgoDex's *"dexterous annotations can be imperfect, especially
+during heavy occlusion."*
+
+**Genuine points in auto repair's favor:**
+- **Procedure ground truth is rare and we'd have it.** ALLDATA/Mitchell carry unedited OEM
+  repair procedures and labor-time guides — footage can be aligned to a canonical procedure
+  taxonomy. Most egocentric datasets have **no** ground-truth procedure spec.
+- **Scene diversity beats hours.** A 2026 co-training study found *"scene diversity matters more
+  than scale"* ([arXiv 2606.06627](https://arxiv.org/html/2606.06627v1)), and π0.5 saturated at
+  ~100 environments. An auto bay is a distinctive, underrepresented scene.
+- **Underrepresented verbs:** torquing, prying, seating, threading — robot datasets are
+  dominated by pick-and-place.
+- **No public egocentric corpus covers skilled trades in service settings.** Ego-Exo4D's only
+  repair task is **bike repair (82 hrs)**; EgoDex is tabletop; EPIC-KITCHENS is cooking;
+  Build AI is factory floors. ⚠️ But note this cuts both ways: it may be unserved because
+  **no buyer has asked** — no lab or vendor was found expressing demand for trades footage.
+
+**⚠️ Consent assumption — reasoned, NOT verified** (search budget exhausted before this pass).
+The intuition that a car in a bay is lighter than a customer's living room is directionally
+right — no home interior, no family members, no bystanders. But three items need real research
+before it becomes a strategic premise: (a) **the technician is the primary recorded subject**,
+so employee-monitoring notice duties apply and are the *shop's* obligation to discharge;
+(b) the customer's **vehicle interior** can expose personal effects, documents, garage codes,
+plates and VINs; (c) **shop-floor conversation audio** re-triggers the all-party-consent map if
+narration ships. Lighter than in-home, not free.
+
+### 9.6 Oversupply: yes, from three directions
+
+1. **Free corpora already exceed any plausible output.** 100,405 hours, Apache 2.0. Our
+   100 min/seat/month × even 1,000 seats ≈ 1,667 hrs/yr — **1.7% of one free dataset.**
+2. **YouTube is the unpriced competitor.** ChrisFix alone has 11M+ subscribers and the format
+   is *explicitly first-person, narrated auto repair*. Thousands of hours of well-lit narrated
+   POV repair are already public and scrapeable. Any VLM or benchmark buyer takes that first,
+   for free.
+3. **The user's own hypothesis is correct — chains can flood this cheaply.** A multi-state chain
+   with 500 techs can generate more footage in a month than our whole pilot in a year, at
+   marginal cost near zero. Combined with the **$340 → $118/hr** price collapse, **undifferentiated
+   auto-repair footage is a commodity headed toward zero.**
+
+Also note the **DVI incumbency**: video-documented inspection is *already standard practice*
+(Tekmetric shops average **$741/RO with DVI vs $612 without**), and Shopmonkey's terms let it
+*"use the Inputs and Outputs… to develop, improve, and evaluate the Services"* unless the shop
+opts out; Tekmetric claims a *"transferable, sub-licensable"* license over user content. **But
+DVI footage is the wrong footage** — a 30–90 second phone clip of a worn pad *to justify a
+sale*: condition evidence, not procedure record, no hands working, no continuous action. That
+gap is real. It also means incumbents are positioned to become AI *builders*, not data *brokers*.
+
+### 9.7 Where the value actually is
+
+**The strongest under-explored buyer is not robotics — it's the diagnostics/repair-copilot
+tier.** Bosch's ESI[tronic] AI assistant, Snap-on APOLLO GEN 4, ALLDATA (400k techs / 115k
+shops), Mitchell 1, Identifix. They are shipping AI **now**, they have budget, and the asset
+they lack is exactly what both DVI footage and YouTube lack: **narrated expert diagnostic
+reasoning tied to a confirmed outcome.** Our spine supplies the outcome half automatically
+(what was done, whether it worked, whether there was a callback). ⚠️ Caveat: these buyers are
+architected around OEM procedures and DTC text, not video — this requires evangelism, and no
+procurement precedent was found.
+
+**Ranked realism of buyers:** (1) diagnostics copilots — narration + outcomes; (2) robotics
+foundation labs — real buyers, commodity prices, want annotation quality a head-cam can't give;
+(3) technician training/workforce (they buy *content*, low ceiling); (4) AR/smart-glasses
+assistance; (5) warranty-fraud/repair verification (they want verified *capture infrastructure*,
+C2PA-style, not a corpus — possibly a product idea rather than a data sale); (6) video-
+understanding benchmarks (high signal, ~zero revenue — but note
+[ExAct](https://arxiv.org/html/2506.06277) shows Gemini 2.5 Pro at **55.35% vs 82.02% human
+experts** on expert procedural video, a real capability gap); (7) insurance/claims — **closed**,
+Solera alone claims **1.5B+ damaged-vehicle images**.
+
+### 9.8 What this changes
+
+**Survives intact:** the consent architecture (§5), the data architecture (§6), spine-linked
+outcome ground truth, and the software-for-data exchange as *customer acquisition*.
+
+**Now provisional:** the §3 valuation. The $25–40/hr market anchor is a **managed-program client
+rate**, not what raw footage fetches; collector wages ($3–15/hr) and free 100k-hour corpora are
+the truer comparables. Value per footage-hour should be re-derived downward, which pushes the
+quota up — and a higher quota is exactly what §2 warns creates homeowner pressure. **This
+tension is unresolved and is the strongest argument for treating footage as a strategic option
+(and an acquisition lever) rather than as cost recovery.**
+
+**Three sharpened strategic reads:**
+1. **Don't sell "we have footage." Sell "we have consented, outcome-labeled, procedure-aligned
+   footage with indemnity."** Raw volume is commoditized from two directions; provenance is not.
+2. **If the robotics buyer matters, capture must move up the modality ladder** — at minimum
+   stereo or multi-view for triangulated hand pose, ideally instrumented tools for torque.
+   That's a hardware program, not a software program, and it changes the unit economics
+   completely.
+3. **Auto repair's consent advantage is real but its data advantage is weaker than trades
+   in-home**, which is the genuinely unserved corpus. The consent-lightness that makes auto
+   repair attractive is the same property that makes its footage easy for everyone else to
+   collect. **Consent-hard, data-scarce may be the better moat than consent-easy, data-abundant.**
 
 ## Sources
 

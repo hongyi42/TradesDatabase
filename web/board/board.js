@@ -656,37 +656,20 @@
         // doctrine) — the page has no write path and serves no confirm id.
         '<div class="freeze-hint">To confirm: reply <b>yes</b> to the assistant in chat — this page can’t book anything.</div>';
     }
-    return (
-      '<div class="detail-sheet" role="dialog" aria-modal="true">' +
-      '<button type="button" class="detail-close" aria-label="Close">✕</button>' +
-      '<h2>Freeze proposal</h2>' +
-      inner +
-      '</div>'
-    );
+    return inner;
   }
 
   function openProposal() {
     // Re-fetch on open — never stale (the tray idiom). The fetch also
     // reconciles the pill, so an expired proposal both says so in the sheet
-    // AND drops its pill on the same tap.
+    // AND drops its pill on the same tap. Read-only: the shared sheet
+    // helpers with a no-op body click (phase review: reuse, don't re-roll).
     fetchFreezeProposal().then(function (v) {
       if (!v) {
         toast('Could not load the freeze proposal — try again.', true);
         return;
       }
-      var prev = document.getElementById('detail-overlay');
-      if (prev) prev.remove();
-      var ov = document.createElement('div');
-      ov.id = 'detail-overlay';
-      ov.innerHTML = renderProposalSheet(v);
-      ov.addEventListener('click', function (e) {
-        if (e.target === ov || (e.target.closest && e.target.closest('.detail-close'))) {
-          closeDetail();
-        }
-      });
-      document.body.appendChild(ov);
-      void ov.offsetHeight;
-      ov.classList.add('open');
+      openSheet(sheetShell('Freeze proposal', renderProposalSheet(v)), function () {});
     });
   }
 

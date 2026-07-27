@@ -318,15 +318,26 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   explicit start–end ALWAYS wins for that visit; job `duration_minutes` is the planning
   default (sizes find_slots, proposes a move's end, measured-once onto a minted shell) —
   a mismatch is legitimate and never reconciled.
-  **4b-3 THE FREEZE IMPLEMENTED 2026-07-26 — PR #86 OPEN (feature-4b3-freeze), awaiting
-  merge; NOT deployed.** Five phases: (1) pinning became a HUMAN privilege — `bookVisit`/
+  **4b-3 THE FREEZE MERGED + DEPLOYED 2026-07-26 (PR #86 → main b6e23d3). Rollout tail
+  same day: gates re-run on merged main (715 pass); served board.js byte-identical to main;
+  pilot geocoding migration applied via MCP + 3-column read-back (the MCP stamps its own
+  apply-time version — trust read-backs, as with 4b-1/4b-2); wire pass s2/s3/s5/s7/s8
+  (verify grep per sandbox: freeze-ritual ×1, run_freeze ×2, set_visit_locks ×2) and all
+  five gateway restarts health-passed. STILL OPEN: the pilot lock reset (read-back confirms
+  all 16 confirmed rows sit at locked=true — operator SQL is user-court; run it BEFORE the
+  first freeze/board use), confirming `GOOGLE_ROUTES_SA_KEY_JSON` exists on the RENDER
+  service (local .env alone doesn't reach the deployed solve), then the Phase-4 live E2E
+  (the first real `optimizeTours` call), the ritual one-shot cron E2E, and the phone
+  checks. Pilot freeze inputs read back 2026-07-26: patterns on Hman + Sam only; ONE
+  job-duration pair; queues = 2 person-less visits + 9 visitless jobs.**
+  Five phases: (1) pinning became a HUMAN privilege — `bookVisit`/
   `moveVisit` no longer auto-stamp `locked:true` (moves/attaches carry the flag);
   `setVisitLocks` core = ONE guarded bulk UPDATE (atomic, `status in (confirmed,proposed)`
   predicated), `set_visit_locks` chat verb + `/board/api/lock` + Pinned chip on day grid,
   strip, tray, and sheet toggle; manager surface 35 → **37 tools**. (2)
   `customers.lat/lng/geocoded_at` + lazy Geocoding fill (`ensureCustomerCoords`;
-  no_address vs unlocatable reasons; migration applied LOCAL only — **pilot on explicit
-  go**). Audit fact: NO address-column updater exists in src/ today; whoever builds one must
+  no_address vs unlocatable reasons; migration applied LOCAL + PILOT, read-back
+  verified). Audit fact: NO address-column updater exists in src/ today; whoever builds one must
   null the coords in the same update (guard comments at `updateCustomerCoords` + the
   migration header). (3) `roiClient` (Route Optimization API needs a SERVICE ACCOUNT —
   API keys/end-user creds refused; projectId read from the key JSON;

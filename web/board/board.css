@@ -38,6 +38,26 @@ header h1 { font-size: 18px; margin: 4px 0 2px; }
 }
 .bucket-pill:active { background: var(--accent); color: var(--accent-fg); }
 
+/* Freeze-proposal pill (proposal-view feature): the bucket pill's twin, but
+   rendered ONLY while a proposal is open — no placeholder state. */
+.freeze-pill {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.freeze-pill:active { background: var(--accent); color: var(--accent-fg); }
+
+/* Proposal sheet (read-only): reuses the bucket-section/row vocabulary; only
+   the day headers and the confirm-in-chat hint are new. */
+.freeze-day { font-size: 13px; margin: 10px 0 4px; color: var(--hint); }
+.freeze-hint { font-size: 13px; margin: 14px 0 4px; color: var(--hint); }
+
 /* Tray sections (inside the shared detail sheet). Rows echo the Unassigned
    lane's dashed affordance; parked-visit rows are tappable. */
 .bucket-section h3 { font-size: 13px; margin: 12px 0 4px; color: var(--hint); }

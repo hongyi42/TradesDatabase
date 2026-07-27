@@ -34,6 +34,11 @@
     // pill between loads. Only the number is kept: the tray re-fetches on
     // open, and a cached payload would invite rendering stale rows from it.
     bucketCount: null,
+    // Whether an OPEN freeze proposal exists (managers only) — the freeze
+    // pill's render condition. Only the boolean is kept: the sheet re-fetches
+    // on open (same never-stale rule as the tray), and the server computes
+    // the open/expired/stale states — the client does no expiry math.
+    freezeOpen: null,
     // Session-cached roster for the assign picker (plan 4a.5) — fetched on
     // first picker open, never on the load path. Names change rarely; a
     // reopen of the webview clears it naturally.
@@ -338,8 +343,15 @@
         esc(state.bucketCount === null ? 'Loose: …' : 'Loose: ' + state.bucketCount) +
         '</button>'
       : '';
+    // The freeze pill renders only while a proposal is OPEN (last known —
+    // the async probe reconciles after the paint via syncFreezePill). No
+    // placeholder state: outside the ~12h proposal window there is nothing
+    // to advertise (plan decision: pill, not a tab).
+    var freezePill = isManager && state.freezeOpen
+      ? '<button type="button" class="freeze-pill" id="freeze-pill">📋 Freeze proposal</button>'
+      : '';
     var head =
-      '<header><div class="head-row"><h1>Dispatch board</h1>' + pill + '</div>' +
+      '<header><div class="head-row"><h1>Dispatch board</h1>' + pill + freezePill + '</div>' +
       (isManager ? tabsBar() : '') +
       pagerBar(data.from, data.to) +
       (note ? '<div class="range">' + esc(note) + '</div>' : '') +
@@ -451,6 +463,7 @@
         // roster warm-up rides the same rule (4a.6).
         if (data.tier === 'manager') {
           fetchBucket();
+          fetchFreezeProposal();
           prefetchRoster();
         }
         return data;
@@ -509,6 +522,172 @@
       .catch(function () {
         return null;
       });
+  }
+
+  // Async freeze-proposal probe (proposal-view feature, 2026-07-27): fires
+  // AFTER a successful render, manager-only, never awaited — the tray-pill
+  // idiom. Two jobs: keep state.freezeOpen current (the pill's render
+  // condition) and hand openProposal its fresh payload. The endpoint serves
+  // computed states (open / expired / stale / none) — no client date math.
+  function fetchFreezeProposal() {
+    return fetch('/board/api/freeze-proposal', { headers: authHeaders() })
+      .then(function (resp) {
+        if (!resp.ok) return null;
+        return resp.json();
+      })
+      .then(function (v) {
+        if (!v) return null;
+        state.freezeOpen = v.state === 'open';
+        syncFreezePill();
+        return v;
+      })
+      .catch(function () {
+        return null;
+      });
+  }
+
+  // The pill lives inside render()'s HTML but the probe lands after the
+  // paint — reconcile the DOM in place rather than re-rendering the board.
+  function syncFreezePill() {
+    var existing = document.getElementById('freeze-pill');
+    if (state.freezeOpen && !existing && state.isManager) {
+      var head = document.querySelector('.head-row');
+      if (!head) return;
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'freeze-pill';
+      b.id = 'freeze-pill';
+      b.textContent = '📋 Freeze proposal';
+      head.appendChild(b);
+    } else if (!state.freezeOpen && existing) {
+      existing.remove();
+    }
+  }
+
+  function proposalPlacementRow(p, nameByRef) {
+    return (
+      '<div class="bucket-row"><div class="bucket-row-txt">' +
+      '<div class="bucket-row-main">' +
+      esc(
+        p.startTime + '–' + p.endTime + ' · ' +
+          (p.customer || 'Unknown customer') +
+          (p.jobTitle ? ' — ' + p.jobTitle : ''),
+      ) +
+      '</div><div class="bucket-row-sub">' +
+      // Placements carry only the ref; capacity carries the display names —
+      // the map is built once per sheet from data already in the payload.
+      esc(nameByRef[p.technicianRef] || p.technicianRef) +
+      '</div></div></div>'
+    );
+  }
+
+  function renderProposalSheet(v) {
+    var inner;
+    if (v.state !== 'open') {
+      // expired / stale / none: the server's message says what happened and
+      // what to do (run the freeze again in chat) — nothing else renders.
+      inner = '<div class="bucket-empty">' + esc(v.message) + '</div>';
+    } else {
+      var nameByRef = {};
+      v.capacity.forEach(function (c) {
+        nameByRef[c.technicianRef] = c.technicianName;
+      });
+      // Group placements by day. Lexicographic sort IS chronological for
+      // YYYY-MM-DD and HH:MM — string ordering, not client date math; the
+      // weekday arrives server-computed (house rule).
+      var byDate = {};
+      v.placements.forEach(function (p) {
+        (byDate[p.date] = byDate[p.date] || []).push(p);
+      });
+      var placed = Object.keys(byDate)
+        .sort()
+        .map(function (date) {
+          var rows = byDate[date].sort(function (a, b) {
+            return a.startTime < b.startTime ? -1 : a.startTime > b.startTime ? 1 : 0;
+          });
+          return (
+            '<h4 class="freeze-day">' + esc((rows[0].weekday ? rows[0].weekday + ' ' : '') + date) + '</h4>' +
+            rows
+              .map(function (p) {
+                return proposalPlacementRow(p, nameByRef);
+              })
+              .join('')
+          );
+        })
+        .join('');
+      inner =
+        '<div class="range">' + esc('Covers ' + v.horizonFrom + ' – ' + v.horizonTo) + '</div>' +
+        '<div class="bucket-section"><h3>Placements (' + v.placements.length + ')</h3>' +
+        (v.placements.length ? placed : '<div class="bucket-empty">Nothing to place.</div>') +
+        '</div>' +
+        '<div class="bucket-section"><h3>Skipped (' + v.skipped.length + ')</h3>' +
+        (v.skipped.length
+          ? v.skipped
+              .map(function (s) {
+                // Label + the server-composed reason VERBATIM — the reasons
+                // are the product here (why work did not land).
+                return (
+                  '<div class="bucket-row"><div class="bucket-row-txt">' +
+                  '<div class="bucket-row-main">' + esc(s.label) + '</div>' +
+                  '<div class="bucket-row-sub">' + esc(s.reason) + '</div>' +
+                  '</div></div>'
+                );
+              })
+              .join('')
+          : '<div class="bucket-empty">Nothing was skipped.</div>') +
+        '</div>' +
+        '<div class="bucket-section"><h3>Capacity</h3>' +
+        v.capacity
+          .map(function (c) {
+            return (
+              '<div class="bucket-row"><div class="bucket-row-txt">' +
+              '<div class="bucket-row-main">' + esc(c.technicianName) + '</div>' +
+              '<div class="bucket-row-sub">' +
+              esc(fmtDur(c.committedMin) + ' committed · ' + fmtDur(c.availableMin) + ' available') +
+              '</div></div></div>'
+            );
+          })
+          .join('') +
+        '</div>' +
+        '<div class="range">' +
+        esc('📌 ' + v.pinnedCount + ' pinned visit(s) left untouched — pinned work is never rearranged.') +
+        '</div>' +
+        // Copy only, never a button: confirmation lives in CHAT (ritual
+        // doctrine) — the page has no write path and serves no confirm id.
+        '<div class="freeze-hint">To confirm: reply <b>yes</b> to the assistant in chat — this page can’t book anything.</div>';
+    }
+    return (
+      '<div class="detail-sheet" role="dialog" aria-modal="true">' +
+      '<button type="button" class="detail-close" aria-label="Close">✕</button>' +
+      '<h2>Freeze proposal</h2>' +
+      inner +
+      '</div>'
+    );
+  }
+
+  function openProposal() {
+    // Re-fetch on open — never stale (the tray idiom). The fetch also
+    // reconciles the pill, so an expired proposal both says so in the sheet
+    // AND drops its pill on the same tap.
+    fetchFreezeProposal().then(function (v) {
+      if (!v) {
+        toast('Could not load the freeze proposal — try again.', true);
+        return;
+      }
+      var prev = document.getElementById('detail-overlay');
+      if (prev) prev.remove();
+      var ov = document.createElement('div');
+      ov.id = 'detail-overlay';
+      ov.innerHTML = renderProposalSheet(v);
+      ov.addEventListener('click', function (e) {
+        if (e.target === ov || (e.target.closest && e.target.closest('.detail-close'))) {
+          closeDetail();
+        }
+      });
+      document.body.appendChild(ov);
+      void ov.offsetHeight;
+      ov.classList.add('open');
+    });
   }
 
   function bucketVisitRow(v) {
@@ -1910,6 +2089,11 @@
         openBucket();
         return;
       }
+      var freezePillBtn = e.target.closest && e.target.closest('.freeze-pill');
+      if (freezePillBtn) {
+        openProposal();
+        return;
+      }
       // A "no time yet" strip card opens the normal detail sheet (plan 4b-2).
       var tbd = e.target.closest && e.target.closest('.tbd-card');
       if (tbd) {
@@ -2026,5 +2210,19 @@
       });
     }
   });
-  refresh();
+  refresh().then(function () {
+    // Deep link: t.me/<bot>?startapp=freeze arrives as start_param — open the
+    // proposal sheet after the first paint. This is ROUTING, not trust: the
+    // endpoint independently authenticates and tier-gates every fetch, so a
+    // technician tapping a forwarded manager link is simply not routed (their
+    // fetch would only 403). Fallback: Telegram also passes the value as the
+    // tgWebAppStartParam query param — read via window.location (bare
+    // `location` fails the lint gate's web-globals list).
+    var sp = (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
+    if (!sp) {
+      var m = /[?&]tgWebAppStartParam=([^&]+)/.exec(window.location.search);
+      if (m) sp = m[1];
+    }
+    if (sp === 'freeze' && state.isManager) openProposal();
+  });
 })();

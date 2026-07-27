@@ -2,7 +2,7 @@
 date: 2026-07-26
 task: Plan 4b-3 — the freeze: human-privilege visit locks, geocoding, ROI-backed solve, manager-invoked run_freeze with staged batch commit, and the scheduled freeze-reminder ritual
 research: thoughts/shared/research/2026-07-26-plan-4b3-weekly-freeze-foundations.md
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -200,7 +200,7 @@ status in ('confirmed','proposed')` — auto-stamped noise, no human chose them.
 Deferred to Phase 5 rollout (no pilot schema change in this phase).
 
 ### Manual verification
-- [ ] Pinned chip renders on a locked visit (day grid + sheet); toggle flips it —
+- [x] **PASSED (owner phone, 2026-07-27).** Pinned chip renders on a locked visit (day grid + sheet); toggle flips it —
       **DEFERRED to the Phase-5 rollout tail**: the board is a deployed Telegram Mini App,
       so the phone glance is only possible after deploy (joins the post-deploy checklist,
       the 4b-2 pattern).
@@ -371,7 +371,10 @@ The manager-facing verb: solve → staged plan → confirm → sequential commit
       tokens / 0 pinned / 0 schedule writes / queues 2+2 intact.
 
 ### Manual verification
-- [ ] The proposal reads sensibly on the phone (a judgment call: would you approve it?)
+- [x] **DONE-WITH-FINDING (owner, 2026-07-27): readability FAILED** — schedule tables
+      render poorly in Telegram text; follow-up feature planned + approved
+      (`thoughts/shared/plans/2026-07-27-freeze-proposal-board-view.md`: read-only board
+      proposal view + chat-copy shrink). The freeze itself is correct; the surface moves.
 ---
 *Pause after Phase 4 for the manual read + the live E2E gate.*
 
@@ -433,4 +436,6 @@ doctrine) and rolls the whole plan out. No server code, no migration, no new env
       worked immediately once pointed at `list_pending_reviews` → `resolve_review`.
 
 ### Manual verification
-- [ ] The cron-fired proposal reads as a sensible morning briefing on the phone (judgment)
+- [x] **DONE-WITH-FINDING (owner, 2026-07-27): same verdict as Phase 4** — the cron fire
+      delivered on time, but the briefing belongs on the board; covered by the same
+      follow-up plan.

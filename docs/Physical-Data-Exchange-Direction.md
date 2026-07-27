@@ -102,6 +102,13 @@ Our product is raw RGB with no action labels — the lowest rung. The strongest 
   low-robot-data regime and **diminished as robot data grew**. Crucially, the same video **did**
   help when routed through **VLM-generated language annotations** — value flows through the
   *semantic* channel, not the action channel.
+  **⚠️ Scope limit — do not over-read this.** TRI's baseline was trained on their own
+  action-labeled robot teleoperation data; the experiment measures *"does adding raw human video
+  on top help?"* It does **not** test **sensorized human capture**, where the human's actions are
+  *measured* rather than inferred from pixels — and the evidence there points the other way
+  (HumanEgo, EgoScale, EgoMimic). The finding is that **latent actions cannot synthesize the
+  rungs of the ladder you skipped**; it is silent on, and arguably an argument *for*,
+  instrumenting capture (§12.1).
 - **The HumanEgo ablation is the single clearest number**
   ([arXiv 2605.24934](https://arxiv.org/abs/2605.24934)): raw human **RGB only → 7.5%** success;
   **+ 3D spatial tokens from stereo hand tracking → 85%**; monocular hand-tracking substitute →

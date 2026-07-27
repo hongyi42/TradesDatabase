@@ -350,9 +350,13 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   — `resolve_review`'s description is written in pairing-verification terms only, so it
   claimed "the only lever is 12h expiry" and, worse, dismissal nudges made it RE-RUN the
   freeze (kind-wide supersede) instead; it used `list_pending_reviews` →
-  `resolve_review dismissed` correctly the moment it was pointed there. REMAINING: the
-  owner's two phone checks (Pinned chip render + toggle; the cron-fired proposal
-  readability — it DID land in the real chat), then the plan flips complete.
+  `resolve_review dismissed` correctly the moment it was pointed there. **Phone-check
+  verdict (owner, 2026-07-27): the cron proposal DID land but readability FAILED —
+  schedule tables render poorly in Telegram text; owner's direction = a READ-ONLY
+  freeze-proposal view on the existing board Mini App (board shows the plan, chat keeps
+  the human yes — ritual doctrine untouched); follow-up feature, scope/timing pending
+  owner decision.** REMAINING: the Pinned-chip phone check, then the plan flips complete
+  (the readability box closes as done-with-finding).
   Five phases: (1) pinning became a HUMAN privilege — `bookVisit`/
   `moveVisit` no longer auto-stamp `locked:true` (moves/attaches carry the flag);
   `setVisitLocks` core = ONE guarded bulk UPDATE (atomic, `status in (confirmed,proposed)`

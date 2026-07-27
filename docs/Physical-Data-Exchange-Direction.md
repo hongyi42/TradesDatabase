@@ -158,7 +158,24 @@ helmet rigs), never licensed third-party archives.
 
 ---
 
-## 3. Demand: there is no archive-licensing market
+## 3. Demand: real and large — but for collection *services*, not archives
+
+**Demand for egocentric data is not hypothetical.** Money is visibly moving: NVIDIA consumed
+**20,854 action-labeled hours** for GR00T ([EgoScale](https://arxiv.org/abs/2602.16710)),
+1X used **900 hours**, Generalist's GEN-1 runs on **500k+ hours** from body-worn devices,
+Innodata tells investors in an [8-K](https://www.sec.gov/Archives/edgar/data/903651/000110465926020514/tm265812d1_ex99-1.htm)
+it now sells *"egocentric and affordance-rich data"*, and vendors are being funded specifically
+to collect it — [XDOF $70M](https://techcrunch.com/2026/06/17/collecting-robot-training-data-is-dirty-unglamorous-work-some-ai-labs-are-already-paying-xdof-to-do-it/),
+[Config](https://techcrunch.com/2026/05/11/koreas-biggest-manufacturers-back-config-the-tsmc-of-robot-data/),
+[Mecka AI $60M / ~$100M ARR run-rate](https://fortune.com/2026/06/01/mecka-ai-series-a-60-million-robotics-data-training/).
+[MIT Tech Review puts industry-wide spend above $100M/year.](https://www.technologyreview.com/2026/04/01/1134863/humanoid-data-training-gig-economy-2026-breakthrough-technology/)
+
+**But that demand has a specific shape, and it is not "we will buy your footage."** Three
+qualifiers decide whether we can sell into it:
+
+1. **They want sensorized, action-labeled capture** (§2) — hand pose, 6-DoF, SLAM — not raw RGB.
+2. **They buy commissioned collection to spec, not archives** (below).
+3. **Price is floored by free corpora and $1–15/hr collectors** (§4, §5).
 
 **No robotics lab has publicly licensed a pre-existing third-party corpus at a disclosed
 price.** What exists instead:

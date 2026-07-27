@@ -580,6 +580,72 @@ property that makes its footage easy for *everyone else* to collect (§5: YouTub
 incumbents). Trades work in homes is the genuinely unserved corpus. **Consent-hard and
 data-scarce may be a better moat than consent-easy and data-abundant.**
 
+### 12.1 The instrumented-bay path (the strongest argument for auto repair)
+
+The tension above assumes we collect *video*. If we instead collect **instrumented capture**, the
+analysis flips — because a repair bay has a property a customer's living room does not:
+
+> **The bay is a fixed, owned, controlled environment. You install capture equipment once and
+> amortize it over thousands of jobs.**
+
+You cannot bolt a camera rig into every customer's kitchen. You can bolt one into a bay. That
+single fact is what lets auto repair climb the modality ladder (§2) while in-home trades work
+stays stuck at head-cam video. **This — not consent-lightness — is auto repair's real advantage,
+and it directly attacks the two things that make our footage low-value: occlusion and missing
+force.**
+
+**What a lab training an auto-repair robot would need, ranked:**
+
+| # | Signal | Why it's needed | How to capture it |
+|---|---|---|---|
+| 1 | **Torque / force on fasteners** | The decisive variable in fastener work has **no visual signature**. Unrecoverable from any video, ever. | **Instrumented tools** — digital torque wrench with data logging; IMU on ratchet/impact gun |
+| 2 | **Metrically accurate 3D hand pose** | The action label. Monocular estimation scores **0%** where stereo scores 85% (§2.1) | Stereo/multi-view triangulation — the bay rig, not a single head-cam |
+| 3 | **Multi-view coverage** | Beats occlusion — hands vanish under hoods and under cars | **Fixed bay cameras** (4–6) + ego view + under-car camera, hardware-synchronized |
+| 4 | **6-DoF tool pose** | Where the wrench/socket is in space | SLAM, LiDAR-inertial, or VR-constellation tracking on the tool |
+| 5 | **Narrated diagnostic reasoning** | The *why*; also the channel through which video demonstrably pays off (§2.1) | Tech's voice, at the workpiece — audio-consent tier (§10) |
+| 6 | **Procedure + outcome ground truth** | Aligns each capture to a canonical OEM procedure and to whether the repair actually held | **Spine linkage — we already have this** |
+| 7 | **Failures and recoveries** | Humans generate [10× more valid recovery data/hr than teleop](https://arxiv.org/abs/2607.19745) | Don't stop recording when it goes wrong |
+
+**Capture tiers, with the trade-offs:**
+
+| Tier | Stack | Rough cost | What it buys |
+|---|---|---|---|
+| **0** | Head/chest cam only (current plan) | ~$150–300/tech | Commodity. Competes with free YouTube. |
+| **1** | Ego cam + 4–6 fixed synchronized bay cameras | ~$3–5k/bay | Triangulated hand pose + occlusion coverage. Crosses from "video" to "action-labeled." |
+| **2** | Tier 1 + **instrumented tools (torque logging)** | +~$1–2k/bay | **The differentiated tier.** Nobody else is capturing torque — the ego-data field is doing kitchens and factory floors. |
+| **3** | Tier 2 + gloves/tactile | +$900–6,500/tech | ⚠️ Research-grade but likely impractical: grease, heat, sharp edges, durability. [StretchSense](https://stretchsense.com/hardware/) ($895/pair, capacitive, no line-of-sight needed) is the only plausible candidate. |
+
+**Tier 2 is the target.** Tier 3 is where the shop floor defeats the hardware.
+
+**The design template already exists:** [Ego-Exo4D](https://ego-exo4d-data.org/) is literally
+ego camera + 4–5 stationary synchronized cameras + three language streams including **expert
+commentary**. It is 1,286 hours and contains no automotive work. That is the corpus shape to
+copy — and the hole to fill.
+
+**Quantity needed is far smaller than intuition suggests, which is the encouraging part.**
+Frontier results run on hundreds of hours, not millions: π0.5 ≈ **400 hrs across ~100
+environments** (and saturated there); Figure Helix ≈ **500 hrs total**; NVIDIA GR00T N1 used
+**88 hrs** of real teleop; Dyna post-trains on *"tens of hours"*; and
+[Lin et al.](https://arxiv.org/abs/2410.18647) found **diversity ≫ volume**, recommending ~50
+demonstrations per environment-object pair. At the industry yield of **3–4 usable hours per
+operator-day** (§4), **~20 instrumented bays produce 15,000+ hours/year** — an order of
+magnitude more than any published frontier model consumed.
+
+**The strategic consequence: 20 instrumented bays beat 1,000 shops with head-cams.** That
+inverts the §7 quota design, which optimizes for breadth. If the instrumented path is chosen,
+the program becomes narrow and deep — fewer partners, capital equipment, a real installation
+program — and it stops being a pure software play.
+
+**⚠️ Honest risks in this direction:**
+- **No buyer exists today.** RoboTire's bankruptcy says the near-term robot market is not there.
+  This is a bet that a buyer *appears*, and pre-building a corpus for a market that doesn't yet
+  exist is a genuine venture bet, not a de-risked one.
+- **It becomes a hardware company.** Installation, calibration, maintenance, breakage, and
+  capital — a different business from shipping a Telegram agent.
+- **The bet's most durable asset is force data**, precisely because it can never be recovered
+  from archival video. Every additional year of YouTube auto-repair content leaves torque
+  exactly as unmeasured as before. If any part of this direction compounds, that is the part.
+
 ---
 
 ## 13. Generalizing beyond trades
@@ -655,6 +721,9 @@ specific position open:
 2. **If the robotics buyer matters, capture must move up the modality ladder** (§2) — stereo or
    multi-view for triangulated hand pose, instrumented tools for torque. That is a hardware
    program with completely different unit economics. Decide deliberately; don't drift into it.
+   **The auto bay is the one venue where this is affordable** (§12.1): a fixed, owned environment
+   where a rig installs once and amortizes over thousands of jobs, and where **~20 instrumented
+   bays out-produce 1,000 shops with head-cams.**
 3. **Consent-hard, data-scarce beats consent-easy, data-abundant.** The property that makes a
    vertical easy to collect in is the same property that makes its footage worthless. Trades
    in-home is unserved precisely because it is hard.

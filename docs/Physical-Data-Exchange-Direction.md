@@ -250,13 +250,15 @@ physical-labor SMBs with footage as the payment. Every *adjacent* seat is occupi
 validates the model while leaving this specific position open:
 
 - **Cash-for-footage collectors** (compete for the same footage, pay money instead of
-  software): [Tradeye](https://tradeyecapture.com/) pays licensed trades pros for narrated POV
-  of real home-service jobs; [Egolab.AI (founded Jan 2026) and Objectways strap head cams on
-  factory and household workers](https://www.eweek.com/news/factory-workers-cameras-ai-robot-training/)
-  (~₹250/hr in India); [gig platforms recruit trades workers for recording
+  software): ⚠️ **[Tradeye](https://tradeyecapture.com/) was cited in the first draft as
+  validating trades-footage demand — a later vendor audit found it is a placeholder** (logo,
+  tagline, contact form; no products, team, or funding). **Do not cite it as market
+  validation.** Real operators: [Egolab.AI (founded Jan 2026) and Objectways strap head cams
+  on factory and household workers](https://www.eweek.com/news/factory-workers-cameras-ai-robot-training/);
+  [gig platforms recruit trades workers for recording
   tasks](https://www.micro1.ai/experts-guide/how-skilled-trade-based-workers-can-earn-from-ai-training);
-  program-based collection runs
-  [$50K–$200K per dataset](https://www.dataxpower.com/blog/humanoid-robot-data-collection-cost).
+  [Mecka AI](https://fortune.com/2026/06/01/mecka-ai-series-a-60-million-robotics-data-training/)
+  ($60M raised, ~$100M ARR run-rate on signed contracts) is the substantive one.
   All pay per hour, rebuild QA and consent per program, and own no ongoing software
   relationship with the business. Ours arrives as a byproduct of software the shop already
   runs — real jobs, outcome labels, consent artifacts, duration cross-checks for free.
@@ -541,9 +543,73 @@ quota up — and a higher quota is exactly what §2 warns creates homeowner pres
 tension is unresolved and is the strongest argument for treating footage as a strategic option
 (and an acquisition lever) rather than as cost recovery.**
 
+### 9.9 Vendor-layer economics (late audit — corrects §3 and §7)
+
+A follow-up audit of the collection-vendor layer produced the sharpest pricing evidence in
+this document, and **two corrections to earlier drafts**.
+
+**Correction 1 — every $/hr client price in this doc is unsourced vendor marketing.** The audit
+searched SEC filings (EDGAR full-text: "egocentric video" in 10-Ks = **zero hits**), federal
+procurement records, and journalism. **No vendor in this market publishes a client-facing price
+for egocentric or robotics data — not one.** Scale, Mecka, micro1, Turing, Objectways,
+Innodata, Appen, Telus: all demo-gated. The `$25–60/hr egocentric` and `$340 → $118/hr` figures
+that anchor §3 trace to [DataX Power](https://www.dataxpower.com/blog/humanoid-robot-data-collection-cost)
+and [roboticscenter.ai](https://www.roboticscenter.ai/research/robot-data-collection-cost-breakdown)
+— both **SEO content sites with no methodology, no named team, no citations, and a "Request a
+Quote" CTA.** They rank top-3 on Google, which is why they propagate. **Treat every per-hour
+market price in §3 as unverified.**
+
+**Correction 2 — Tradeye is a placeholder**, not the trades-footage competitor cited in §7.
+
+**What IS verified — the collector-pay side, from actual job postings:**
+
+| Role | Pay | Note |
+|---|---|---|
+| [OpenTrain — egocentric video capture](https://www.opentrain.ai/jobs) | **$6.00/hr** | **Same rate for US, Canada, Brazil, Indonesia, Mexico** |
+| OpenTrain — robot teleoperator | $30–55/hr | US, **on-site** |
+| Objectways — egocentric (US) | $160 per 8-hr shift → 4 usable hrs | ≈$20/hr effort, ≈**$40/usable video-hour** |
+| Objectways — international | $3–10/hr | approved hours only |
+| [micro1 — chore filming](https://www.technologyreview.com/2026/04/01/1134863/humanoid-data-training-gig-economy-2026-breakthrough-technology/) | $15/hr | global |
+| [Human Archive (YC W26)](https://techcrunch.com/2026/05/26/human-archive-taps-into-indias-services-startups-to-collect-data-for-physical-ai/) | **$1.00/hr** | India |
+
+Two structural facts worth internalizing: **geographic arbitrage has been replaced by
+task-category arbitrage** (OpenTrain pays a Californian and an Indonesian the *same* $6/hr for
+egocentric capture, while paying $30–55/hr for US on-site teleoperation — the discriminator is
+whether you must physically show up); and **"approved hours only" is the load-bearing clause**
+in every posting, with rejection criteria (hands not in frame, poor lighting, "staged") that
+push all quality risk onto the collector. **No posting discloses its rejection rate.**
+
+**Two operational numbers that map straight onto our design:**
+- **3–4 usable hours per operator per working day** (Unidata's disclosed metric). An 8-hour
+  shift yields 3–4 billable hours — cost per *delivered* hour is roughly 2× the wage. Our
+  complete-job-gated minutes are the same idea, and this is the industry's own yield benchmark
+  to calibrate the ingest gate against.
+- **This is a 35–45% gross-margin services business, not software** — audited: Appen **40.3%**,
+  Innodata **40%** (compressing: AI-data segment fell 44% → 37% YoY), TaskUs ~37.8%,
+  TELUS Digital 23.5% GAAP. Take rates across the layer cluster at 30–60%. Anyone modeling
+  data collection at software margins is wrong.
+
+**⚠️ The most strategically important finding in the whole study: the free supply that
+undercuts us may be legally radioactive.** Build AI's `Egocentric-100K` — the 100,405-hour
+Apache 2.0 corpus that sets the price floor — came from Egolab.AI's capture at Indian garment
+factories. A [Scroll.in investigation](https://scroll.in/article/1092960/how-big-tech-is-harnessing-the-data-of-indian-factory-workers-to-train-robots)
+found workers at the named factory (Pearl Global, Gurugram) received **no separate payment**
+and said **their consent was never obtained**; an Egolab executive: *"We took consent to use
+the device and we did it in our own way."* The Hugging Face dataset card carries **no consent,
+privacy, or provenance statement** for 14,228 recorded workers.
+
+That changes the competitive read. The free corpora aren't just un-indemnified — several
+carry unresolved consent exposure, in a market where [*Bartz v. Anthropic*](https://www.jurist.org/news/2026/07/judge-approves-record-1-5-billion-settlement-involving-anthropic/)
+established that **acquisition, not training, is where liability lives** ($1.5B), and where the
+FTC has already ordered algorithmic disgorgement over improperly obtained home video. **A buyer
+who cares about that cannot use the free 100k hours — and there is currently no consented,
+documented, indemnified alternative at any price.** That is the actual product.
+
 **Three sharpened strategic reads:**
 1. **Don't sell "we have footage." Sell "we have consented, outcome-labeled, procedure-aligned
-   footage with indemnity."** Raw volume is commoditized from two directions; provenance is not.
+   footage with indemnity."** Raw volume is commoditized from two directions; provenance is
+   not — and §9.9 shows the cheapest competing supply has documented consent problems, which
+   makes clean provenance the scarce good rather than the compliance overhead.
 2. **If the robotics buyer matters, capture must move up the modality ladder** — at minimum
    stereo or multi-view for triangulated hand pose, ideally instrumented tools for torque.
    That's a hardware program, not a software program, and it changes the unit economics

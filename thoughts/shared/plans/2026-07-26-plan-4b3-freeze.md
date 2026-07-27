@@ -360,6 +360,15 @@ The manager-facing verb: solve → staged plan → confirm → sequential commit
       SA-key auth + self-serve enablement empirically proven; the failed first probe also
       verified the failure path — Geocoding REQUEST_DENIED relayed honestly, nothing
       staged; root cause = key-level API restriction missing Geocoding API, user fixed).
+- [x] **PIN-PROTECTION ADDENDUM (2026-07-27, probe `probe-4b3-pin-1`, stage-only):** the
+      first two live runs had 0 pinned items (post-reset), so the protection path itself
+      was live-verified separately: chat "pin the unassigned Aug-5 HVAC visit" →
+      `set_visit_locks` → row read-back `locked=true`; stage-only `run_freeze` → the
+      pinned visit moved to the SKIP list ("pinned by a manager — the freeze never
+      touches pinned visits") and the pin line counted it ("1 pinned visit was left
+      untouched"); the solver re-planned around it (2 placements, redistributed).
+      Cleanup: token dismissed via `resolve_review`, visit unpinned; read-back 0 open
+      tokens / 0 pinned / 0 schedule writes / queues 2+2 intact.
 
 ### Manual verification
 - [ ] The proposal reads sensibly on the phone (a judgment call: would you approve it?)

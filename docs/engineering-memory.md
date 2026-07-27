@@ -354,8 +354,14 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   verdict (owner, 2026-07-27): the cron proposal DID land but readability FAILED —
   schedule tables render poorly in Telegram text; owner's direction = a READ-ONLY
   freeze-proposal view on the existing board Mini App (board shows the plan, chat keeps
-  the human yes — ritual doctrine untouched); follow-up feature, scope/timing pending
-  owner decision.** REMAINING: the Pinned-chip phone check, then the plan flips complete
+  the human yes — ritual doctrine untouched); owner chose to plan it now — research:
+  `thoughts/shared/research/2026-07-27-freeze-proposal-board-view.md`.**
+  **Pin-protection live addendum (2026-07-27): PASS** — the first two E2Es ran post-reset
+  with 0 pinned items, so the protection path was verified separately, stage-only: chat
+  pin → `locked=true` read-back → `run_freeze` proposal skipped it ("pinned by a manager
+  — the freeze never touches pinned visits", pin line = 1, solver re-planned around it)
+  → dismissed + unpinned; read-back 0 open tokens / 0 pinned / 0 schedule writes,
+  queues intact. REMAINING: the Pinned-chip phone check, then the plan flips complete
   (the readability box closes as done-with-finding).
   Five phases: (1) pinning became a HUMAN privilege — `bookVisit`/
   `moveVisit` no longer auto-stamp `locked:true` (moves/attaches carry the flag);

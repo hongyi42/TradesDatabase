@@ -27,15 +27,17 @@ const monthName = (p) =>
     timeZone: 'UTC',
   });
 
-async function fetchReport(p) {
-  const res = await fetch(`/admin/api/costs?period=${encodeURIComponent(p)}`, {
-    headers: { Authorization: `Bearer ${token()}` },
-  });
+async function get(path) {
+  const res = await fetch(path, { headers: { Authorization: `Bearer ${token()}` } });
   if (res.status === 401) throw new Error('unauthorized');
   if (res.status === 503) throw new Error('the dashboard is not configured on this server');
   if (!res.ok) throw new Error(`request failed (${res.status})`);
   return res.json();
 }
+
+const fetchReport = (p) => get(`/admin/api/costs?period=${encodeURIComponent(p)}`);
+const fetchTenant = (id, p) =>
+  get(`/admin/api/tenant?tenantId=${encodeURIComponent(id)}&period=${encodeURIComponent(p)}`);
 
 // Append the est. marker to any element showing a part-allocated figure. Used on
 // the headline total, the per-tenant Cost and $/seat cells, and each breakdown
@@ -65,18 +67,25 @@ function renderProviders(byProvider) {
     name.className = 'bar-name';
     name.textContent = p.provider;
 
+    // TWO segments, not one tinted bar: since the spine's model calls moved to
+    // GLM on DeepInfra, that vendor carries both precisely-metered spine spend
+    // and the allocated share of the agent invoice. One bar flagged "est." would
+    // either slander the measured half or launder the estimated half.
     const track = document.createElement('div');
     track.className = 'bar-track';
-    const fill = document.createElement('div');
-    // Hatched when any part of the total was allocated rather than metered.
-    fill.className = p.hasEstimate ? 'bar-fill est' : 'bar-fill';
-    fill.style.width = `${Math.max((p.costUsd / max) * 100, 1)}%`;
-    track.append(fill);
+    for (const [amount, cls] of [[p.measuredUsd, 'bar-fill'], [p.allocatedUsd, 'bar-fill est']]) {
+      if (amount <= 0) continue;
+      const seg = document.createElement('div');
+      seg.className = cls;
+      seg.style.width = `${Math.max((amount / max) * 100, 1)}%`;
+      seg.title = `${cls.includes('est') ? 'allocated' : 'measured'} ${usd(amount)}`;
+      track.append(seg);
+    }
 
     const value = document.createElement('div');
     value.className = 'bar-value';
     value.textContent = usd(p.costUsd);
-    if (p.hasEstimate) markEstimate(value);
+    if (p.allocatedUsd > 0) markEstimate(value);
 
     row.append(name, track, value);
     host.append(row);
@@ -97,55 +106,33 @@ function renderTenants(tenants) {
     name.className = 'tenant-name';
     name.textContent = t.tenantName;
 
-    const seats = document.createElement('td');
-    seats.className = 'num';
-    seats.textContent = t.seats || '—';
+    // Seat tiers stay SEPARATE. Manager seats price higher and cost more to serve
+    // than technician seats, so a blended $/seat divides two different products by
+    // one denominator and describes neither — it is omitted rather than shown
+    // misleadingly.
+    const mgr = document.createElement('td');
+    mgr.className = 'num';
+    mgr.textContent = t.managerSeats || '—';
+
+    const tech = document.createElement('td');
+    tech.className = 'num';
+    tech.textContent = t.technicianSeats || '—';
 
     const cost = document.createElement('td');
     cost.className = 'num';
     cost.textContent = usd(t.costUsd);
     if (t.hasEstimate) markEstimate(cost);
 
-    // The number that actually matters commercially: cost per seat is gross
-    // margin per seat once you know what a seat sells for. '—' when seats are
-    // unknown — "we can't say" is not the same claim as "$0.00".
-    const perSeat = document.createElement('td');
-    perSeat.className = 'num';
-    perSeat.textContent = t.costPerSeatUsd === null ? '—' : usd(t.costPerSeatUsd);
-    if (t.hasEstimate && t.costPerSeatUsd !== null) markEstimate(perSeat);
+    const open = document.createElement('td');
+    const link = document.createElement('button');
+    link.type = 'button';
+    link.className = 'link';
+    link.textContent = 'Breakdown ›';
+    link.addEventListener('click', () => showTenant(t.tenantId));
+    open.append(link);
 
-    const breakdown = document.createElement('td');
-    breakdown.className = 'breakdown';
-    breakdown.append(
-      ...t.lines.flatMap((l, i) => {
-        const s = document.createElement('span');
-        s.textContent = `${l.provider} ${usd(l.costUsd)}`;
-        if (l.method === 'allocated') markEstimate(s);
-        return i === 0 ? [s] : [document.createTextNode(' · '), s];
-      }),
-    );
-
-    tr.append(name, seats, cost, perSeat, breakdown);
+    tr.append(name, mgr, tech, cost, open);
     body.append(tr);
-  }
-}
-
-function renderTrend(trend) {
-  const host = $('trend');
-  host.textContent = '';
-  const max = Math.max(...trend.map((t) => t.totalUsd), 0.0001);
-  for (const t of trend) {
-    const col = document.createElement('div');
-    col.className = 'trend-col';
-    const bar = document.createElement('div');
-    bar.className = 'trend-bar';
-    bar.style.height = `${Math.max((t.totalUsd / max) * 100, 1)}%`;
-    bar.title = `${t.period}: ${usd(t.totalUsd)}`;
-    const label = document.createElement('div');
-    label.className = 'trend-label';
-    label.textContent = t.period.slice(5);
-    col.append(bar, label);
-    host.append(col);
   }
 }
 
@@ -169,15 +156,109 @@ function render(report) {
 
   renderProviders(report.byProvider);
   renderTenants(report.tenants);
-  renderTrend(report.trend);
+  paintTrend($('trend'), report.trend);
   // Never offer a future month — there is nothing there to show.
   $('next').disabled = report.period >= new Date().toISOString().slice(0, 7);
+}
+
+// Render a bar chart of six monthly totals into `host`.
+function paintTrend(host, trend) {
+  host.textContent = '';
+  const max = Math.max(...trend.map((t) => t.totalUsd), 0.0001);
+  for (const t of trend) {
+    const col = document.createElement('div');
+    col.className = 'trend-col';
+    const bar = document.createElement('div');
+    bar.className = 'trend-bar';
+    bar.style.height = `${Math.max((t.totalUsd / max) * 100, 1)}%`;
+    bar.title = `${t.period}: ${usd(t.totalUsd)}`;
+    const label = document.createElement('div');
+    label.className = 'trend-label';
+    label.textContent = t.period.slice(5);
+    col.append(bar, label);
+    host.append(col);
+  }
+}
+
+function renderTenantPage(r) {
+  $('t-name').textContent = r.tenantName;
+  $('t-seats').textContent = `${r.managerSeats} manager · ${r.technicianSeats} technician`;
+  $('t-period').textContent = monthName(r.period);
+  $('t-total').textContent = usd(r.totalUsd);
+  $('t-measured').textContent = usd(r.measuredUsd);
+  const alloc = $('t-allocated');
+  alloc.textContent = usd(r.allocatedUsd);
+  if (r.allocatedUsd > 0) markEstimate(alloc);
+
+  const provBody = $('t-providers').querySelector('tbody');
+  provBody.textContent = '';
+  for (const p of r.providers) {
+    const tr = document.createElement('tr');
+    for (const [text, cls] of [[p.provider, ''], [p.method, 'breakdown'], [usd(p.costUsd), 'num']]) {
+      const td = document.createElement('td');
+      td.className = cls;
+      td.textContent = text;
+      if (cls === 'num' && p.method === 'allocated') markEstimate(td);
+      tr.append(td);
+    }
+    provBody.append(tr);
+  }
+
+  const useBody = $('t-usage').querySelector('tbody');
+  useBody.textContent = '';
+  for (const u of r.usage) {
+    const tr = document.createElement('tr');
+    const cells = [
+      [u.provider, ''],
+      [u.sku, 'breakdown'],
+      [`${u.quantity.toLocaleString()} ${u.unit}`, 'num'],
+      [u.events.toLocaleString(), 'num'],
+      // null cost = no rate covers this line. '—' says "not priced", which is a
+      // different claim from "$0.00" — spine is unpriced BY DESIGN.
+      [u.costUsd === null ? '—' : usd(u.costUsd), 'num'],
+    ];
+    for (const [text, cls] of cells) {
+      const td = document.createElement('td');
+      td.className = cls;
+      td.textContent = text;
+      tr.append(td);
+    }
+    useBody.append(tr);
+  }
+  const unpriced = r.usage.filter((u) => u.costUsd === null).map((u) => `${u.provider}/${u.sku}`);
+  $('t-usage-note').textContent = unpriced.length
+    ? `Not priced: ${unpriced.join(', ')} — spine is a counter (it drives the inference split), anything else means a gap in the price book.`
+    : '';
+
+  paintTrend($('t-trend'), r.trend);
+}
+
+let currentTenantId = null;
+
+async function showTenant(tenantId) {
+  currentTenantId = tenantId;
+  try {
+    renderTenantPage(await fetchTenant(tenantId, period));
+    $('app').hidden = true;
+    $('tenant').hidden = false;
+    window.scrollTo(0, 0);
+  } catch (err) {
+    if (err.message === 'unauthorized') return load();
+    $('t-usage-note').textContent = err.message;
+  }
+}
+
+function showOverview() {
+  currentTenantId = null;
+  $('tenant').hidden = true;
+  $('app').hidden = false;
 }
 
 async function load() {
   try {
     render(await fetchReport(period));
     $('gate').hidden = true;
+    $('tenant').hidden = true;
     $('app').hidden = false;
   } catch (err) {
     if (err.message === 'unauthorized') {
@@ -202,14 +283,16 @@ $('gate').addEventListener('submit', (e) => {
   load();
 });
 
-$('prev').addEventListener('click', () => {
-  period = shift(period, -1);
-  load();
-});
-$('next').addEventListener('click', () => {
-  period = shift(period, 1);
-  load();
-});
+// The month pager drives whichever view is open, so stepping months while
+// looking at one tenant keeps you on that tenant.
+const step = (delta) => {
+  period = shift(period, delta);
+  if (currentTenantId) showTenant(currentTenantId);
+  else load();
+};
+$('prev').addEventListener('click', () => step(-1));
+$('next').addEventListener('click', () => step(1));
+$('back').addEventListener('click', showOverview);
 
 if (token()) load();
 else $('gate').hidden = false;

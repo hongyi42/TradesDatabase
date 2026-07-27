@@ -138,3 +138,17 @@ td.num { white-space: nowrap; }
   .bar-row { grid-template-columns: 5.5rem 1fr auto; }
   .card .figure { font-size: 1.45rem; }
 }
+
+/* Inline navigation buttons — the tenant drill-down and the back link. Buttons
+   rather than anchors: there is no router, so these are actions, not URLs. */
+.link {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--accent); font: inherit; font-size: 0.86rem;
+}
+.link:hover { text-decoration: underline; }
+#tenant .topbar h1 { margin-top: 0.35rem; }
+
+/* The vendor bar is now SEGMENTED — measured (solid) then allocated (hatched),
+   laid side by side so the split is visible without a legend. */
+.bar-track { display: flex; }
+.bar-fill { flex: none; }

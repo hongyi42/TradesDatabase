@@ -98,21 +98,38 @@ describe('runLifecycle', () => {
   // minutes for a condition that resolves itself. Same shape as the existing
   // COMPOSIO_API_KEY skip gates.
   describe('cost steps', () => {
-    const missing = new Error(
-      'rollupCosts failed: Could not find the function public.rollup_costs(p_period_start) in the schema cache (PGRST202)',
-    );
+    // The REAL shape: the accessors wrap the PostgrestError and attach it as
+    // `cause`, so the structured code travels with the error. A bare message
+    // saying "does not exist" is deliberately NOT enough — that text also
+    // appears on a half-applied migration or a botched rename, and swallowing
+    // those would leave a green cron and an empty ledger forever.
+    const missing = new Error('rollupCosts failed: …', { cause: { code: 'PGRST202' } });
+    const missingTable = new Error('backfill failed: …', { cause: { code: '42P01' } });
 
     test('a not-yet-migrated ledger is SKIPPED, not an error', async () => {
       const summary = await runLifecycle(NOW, {
         ...COST_STUBS,
         listInStates: async () => [],
         expire: async () => EXPIRE_OK,
-        backfillBrave: async () => { throw new Error('relation "web_requests" does not exist'); },
+        backfillBrave: async () => { throw missingTable; },
         rollup: async () => { throw missing; },
       });
       expect(summary.braveBackfill).toEqual({ skipped: 'cost ledger not migrated here yet' });
       expect(summary.costRollup).toEqual({ skipped: 'cost ledger not migrated here yet' });
       expect(summary.ok).toBe(true); // the cron stays green
+    });
+
+    // A codeless "does not exist" is a REAL fault — a half-applied migration, a
+    // renamed column — and must go red rather than be mistaken for "not migrated".
+    test('a codeless "does not exist" is treated as a real fault, not a skip', async () => {
+      const summary = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        listInStates: async () => [],
+        expire: async () => EXPIRE_OK,
+        rollup: async () => { throw new Error('column cost_events.occurred_at does not exist'); },
+      });
+      expect(summary.costRollup).toHaveProperty('stepError');
+      expect(summary.ok).toBe(false);
     });
 
     test('a GENUINE fault still fails the run', async () => {

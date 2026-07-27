@@ -1146,6 +1146,17 @@ export type Database = {
           unpriced_events: number
         }[]
       }
+      tenant_cost_detail: {
+        Args: { p_period_start: string; p_tenant_id: string }
+        Returns: {
+          cost_usd: number
+          events: number
+          provider: string
+          quantity: number
+          sku: string
+          unit: string
+        }[]
+      }
     }
     Enums: {
       assignment_status: "proposed" | "confirmed" | "cancelled" | "completed"

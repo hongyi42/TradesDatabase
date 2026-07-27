@@ -100,20 +100,34 @@ export interface RecorderDeps {
 export interface ModelUsage {
   inputTokens?: number;
   outputTokens?: number;
+  // Cached prompt tokens, when the provider reports them. DeepInfra prices these
+  // at $0.18/M against $0.93/M fresh — a 5.2x difference on the line that
+  // dominates the bill (recorded input:output ratio ~230:1). Billing them at the
+  // full input rate would over-report the largest measured figure by roughly the
+  // cache-hit share, which engineering-memory puts at ~25%.
+  cachedInputTokens?: number;
 }
 
-// Provider -> the (provider, sku) pair seeded in cost_rates. Keyed on the value
-// `activeProvider()` returns, so a MODEL_PROVIDER flip re-prices automatically
-// instead of silently billing the wrong vendor.
+// Ledger vendor -> the (provider, sku) triple seeded in cost_rates.
 //
 // Phase 3's rollup INNER joins cost_rates, so an event whose sku is not seeded
 // is dropped from the dashboard SILENTLY — this map is what keeps the collector
 // and the price book speaking the same vocabulary, and costs.test.ts pins it
 // against the seed.
-export const MODEL_SKUS: Record<string, { provider: string; input: string; output: string }> = {
-  // MODEL_PROVIDER unset/'openai' -> GLM-5.2 on DeepInfra (the default since the
-  // spine's model calls moved behind runForcedTool).
-  openai: { provider: 'deepinfra', input: 'glm-5.2-input', output: 'glm-5.2-output' },
+//
+// Keyed on the LEDGER VENDOR, not the wire format. 'openai' is a protocol, not a
+// company: INFERENCE_BASE_URL decides who actually serves (and bills) the
+// request, and NVIDIA is the documented failover. Keying on activeProvider()
+// would keep stamping 'deepinfra' after a failover and price NVIDIA traffic
+// against a DeepInfra invoice that never arrives — precisely the switch the
+// sibling provider-readiness plan is built around.
+export const MODEL_SKUS: Record<string, { provider: string; input: string; output: string; cachedInput?: string }> = {
+  deepinfra: {
+    provider: 'deepinfra',
+    input: 'glm-5.2-input',
+    output: 'glm-5.2-output',
+    cachedInput: 'glm-5.2-cached-input',
+  },
   // Kept whole as an env-var rollback, so its prices stay in the book too.
   anthropic: {
     provider: 'anthropic',
@@ -130,19 +144,19 @@ export const MODEL_SKUS: Record<string, { provider: string; input: string; outpu
 // each one assumed, which stops being true the moment MODEL_PROVIDER flips.
 //
 // NOTE this is spine spend, where the tenant IS known. Agent inference on the
-// box shares the same vendor but has no per-tenant boundary, so it arrives via
-// the allocated path instead — both land under provider 'deepinfra', separated
-// by `method`.
+// box shares the same vendor AND THE SAME ACCOUNT, so its invoice already
+// contains these tokens — the rollup nets this measured spend out of the bill
+// before allocating the remainder, or the same dollars would be counted twice.
 export async function recordModelUsage(
-  provider: string,
+  vendor: string,
   usage: ModelUsage | undefined,
   ctx: CostContext | undefined,
   deps: RecorderDeps = {},
 ): Promise<void> {
   if (!ctx) return; // uninstrumented caller — nothing to attribute this to
   try {
-    const skus = MODEL_SKUS[provider];
-    if (!skus) throw new Error(`no cost_rates SKUs are mapped for provider '${provider}'`);
+    const skus = MODEL_SKUS[vendor];
+    if (!skus) throw new Error(`no cost_rates SKUs are mapped for vendor '${vendor}'`);
     const base = {
       tenantId: ctx.tenantId,
       technicianRef: ctx.technicianRef,
@@ -151,8 +165,19 @@ export async function recordModelUsage(
       method: 'measured' as const,
     };
     const rows: CostEventInput[] = [];
+    // prompt_tokens INCLUDES cached tokens on OpenAI-compatible endpoints, so
+    // the fresh-input count is the difference. Split only when the provider
+    // actually reports a cache figure and we have a SKU priced for it —
+    // otherwise everything stays on the input line, which is the honest
+    // fallback rather than a guess.
+    const cached = usage?.cachedInputTokens;
+    const splitCache = typeof cached === 'number' && cached > 0 && !!skus.cachedInput;
     if (typeof usage?.inputTokens === 'number') {
-      rows.push({ ...base, sku: skus.input, quantity: usage.inputTokens });
+      const fresh = splitCache ? Math.max(usage.inputTokens - (cached as number), 0) : usage.inputTokens;
+      rows.push({ ...base, sku: skus.input, quantity: fresh });
+      if (splitCache) {
+        rows.push({ ...base, sku: skus.cachedInput as string, quantity: cached as number });
+      }
     }
     if (typeof usage?.outputTokens === 'number') {
       rows.push({ ...base, sku: skus.output, quantity: usage.outputTokens });
@@ -162,7 +187,7 @@ export async function recordModelUsage(
     // model-spend line with no error anywhere. For a ledger, the quiet
     // under-report is the worst failure there is. The throw lands in this
     // function's own catch, so it logs without breaking the call.
-    if (rows.length === 0) throw new Error(`usage absent on a ${provider} model call`);
+    if (rows.length === 0) throw new Error(`usage absent on a ${vendor} model call`);
     await (deps.append ?? appendCostEvents)(rows);
   } catch (err) {
     console.error(
@@ -229,7 +254,9 @@ export async function backfillBraveCostEvents(sinceIso: string): Promise<{ scann
       .order('created_at')
       .order('id')
       .range(from, from + BACKFILL_PAGE - 1);
-    if (error) throw new Error(`backfillBraveCostEvents failed: ${error.message}`);
+    if (error) {
+      throw new Error(`backfillBraveCostEvents failed: ${error.message}`, { cause: error });
+    }
     const rows = data ?? [];
     if (rows.length > 0) {
       await appendCostEvents(
@@ -327,7 +354,10 @@ export interface RollupResult {
 // it every cron tick converges rather than accumulating.
 export async function rollupCosts(periodStart: string): Promise<RollupResult> {
   const { data, error } = await getClient().rpc('rollup_costs', { p_period_start: periodStart });
-  if (error) throw new Error(`rollupCosts failed: ${error.message}`);
+  // `cause` carries the PostgrestError so isMissingCostLedger can read its CODE.
+  // Wrapping message-only would leave the predicate with nothing but prose, and
+  // prose-matching is exactly what made it swallow real faults.
+  if (error) throw new Error(`rollupCosts failed: ${error.message}`, { cause: error });
   const row = (data ?? [])[0];
   return {
     rowsWritten: row?.rows_written ?? 0,
@@ -360,11 +390,69 @@ export async function latestBraveCostEventAt(): Promise<string | null> {
 // `main()` exits 1 on ok:false and Render marks the run FAILED, so without this
 // the heartbeat would alarm every 15 minutes for a condition that is expected
 // and self-resolving. Same shape as the COMPOSIO_API_KEY skip gates.
-//   42883 = undefined_function, 42P01 = undefined_table.
-// PostgREST surfaces these as PGRST202 (no matching function) / PGRST205.
+//
+// Matched on the STRUCTURED CODE only, never on message text. A free-text
+// `/does not exist/` also swallows `column cost_events.occurred_at does not
+// exist` and `relation "technicians" does not exist` — i.e. a half-applied
+// migration or a botched rename would report a green cron and an empty ledger
+// forever, which reads as "no spend". That silent under-report is the exact
+// failure this whole design is built to avoid, and it is likelier than usual
+// here: the pilot's ledger is drifted and these migrations are applied by hand,
+// one at a time, so a partial apply is a live scenario.
+//   42883 = undefined_function · 42P01 = undefined_table
+//   PGRST202 = no matching function · PGRST205 = table not in the schema cache
+const MISSING_LEDGER_CODES = new Set(['42883', '42P01', 'PGRST202', 'PGRST205']);
+
 export function isMissingCostLedger(err: unknown): boolean {
+  // The accessors wrap PostgrestError in an Error, so the code travels on the
+  // wrapped cause when present and on the raw object otherwise.
+  const candidates = [err, (err as { cause?: unknown })?.cause];
+  for (const c of candidates) {
+    const code = (c as { code?: unknown } | null | undefined)?.code;
+    if (typeof code === 'string' && MISSING_LEDGER_CODES.has(code)) return true;
+  }
+  // Fallback for the wrapped-message case: require the code to appear as a
+  // delimited token, so a message merely CONTAINING "does not exist" is not
+  // enough — the code must be there.
   const text = err instanceof Error ? err.message : String(err);
-  return /42883|42P01|PGRST202|PGRST205|could not find the function|does not exist/i.test(text);
+  return [...MISSING_LEDGER_CODES].some((code) =>
+    new RegExp(`(^|[^0-9A-Za-z])${code}([^0-9A-Za-z]|$)`).test(text),
+  );
+}
+
+export interface TenantCostDetailRow {
+  provider: string;
+  sku: string;
+  unit: string;
+  quantity: number;
+  events: number;
+  costUsd: number | null; // null = no rate covered this line
+}
+
+// Per-sku detail for ONE tenant and month — what the tenant page shows.
+//
+// Aggregated in Postgres: the spine counter writes one row per tool call, so a
+// busy tenant has thousands of cost_events in a month and a client-side rollup
+// would silently stop at PostgREST's 1000-row cap. Includes UNPRICED lines
+// (cost null) — notably `spine`, which is the inference allocation basis and is
+// exactly what an operator opens this page to understand.
+export async function readTenantCostDetail(
+  tenantId: string,
+  periodStart: string,
+): Promise<TenantCostDetailRow[]> {
+  const { data, error } = await getClient().rpc('tenant_cost_detail', {
+    p_tenant_id: tenantId,
+    p_period_start: periodStart,
+  });
+  if (error) throw new Error(`readTenantCostDetail failed: ${error.message}`);
+  return (data ?? []).map((r) => ({
+    provider: r.provider,
+    sku: r.sku,
+    unit: r.unit,
+    quantity: Number(r.quantity),
+    events: r.events,
+    costUsd: r.cost_usd === null ? null : Number(r.cost_usd),
+  }));
 }
 
 // The dashboard's read. Deliberately the ROLLUP table and never raw cost_events:

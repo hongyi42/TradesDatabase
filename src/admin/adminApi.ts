@@ -2,7 +2,13 @@ import type http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
-import { listTenantSeats, readRollup, type CostRollupRow } from '../db/index.js';
+import {
+  listTenantSeats,
+  readRollup,
+  readTenantCostDetail,
+  type CostRollupRow,
+  type TenantCostDetailRow,
+} from '../db/index.js';
 
 // The operator cost dashboard's HTTP surface, mounted by httpServer.ts BEFORE
 // the IP allowlist: this page loads in an operator's ordinary browser, not
@@ -98,9 +104,13 @@ async function serveStatic(res: http.ServerResponse, name: string): Promise<void
 export interface TenantCostLine {
   tenantId: string;
   tenantName: string;
-  seats: number;
+  // Reported as a MIX, never a total. Manager seats price higher and cost more to
+  // serve than technician seats, so "$/seat" over their sum divides two different
+  // products by one denominator and describes neither. Showing the mix lets the
+  // reader do the comparison the numbers actually support.
+  managerSeats: number;
+  technicianSeats: number;
   costUsd: number;
-  costPerSeatUsd: number | null;
   // Does ANY part of this tenant's cost come from an allocated bill? The
   // headline Cost and $/seat figures must carry the marker too, not only the
   // breakdown text — inference is allocated by design and is usually the
@@ -121,7 +131,17 @@ export interface CostReport {
   // True when any part of totalUsd was allocated rather than metered.
   totalHasEstimate: boolean;
   previousTotalUsd: number;
-  byProvider: Array<{ provider: string; costUsd: number; hasEstimate: boolean }>;
+  // measured and allocated are kept APART, not merged behind a hasEstimate flag.
+  // Since the spine's model calls moved to GLM-5.2 on DeepInfra, 'deepinfra'
+  // carries BOTH: per-tenant metered spine spend and the allocated share of the
+  // agent invoice. Collapsing them would flag a precisely measured figure as an
+  // estimate, or worse, imply the estimate was measured.
+  byProvider: Array<{
+    provider: string;
+    costUsd: number;
+    measuredUsd: number;
+    allocatedUsd: number;
+  }>;
   tenants: TenantCostLine[];
   trend: Array<{ period: string; totalUsd: number }>;
   generatedAt: string;
@@ -158,14 +178,12 @@ export async function buildCostReport(period: string): Promise<CostReport> {
     listTenantSeats().then((rows) => new Map(rows.map((t) => [t.id, t]))),
   ]);
 
-  const byProvider = new Map<string, { costUsd: number; hasEstimate: boolean }>();
+  const byProvider = new Map<string, { measuredUsd: number; allocatedUsd: number }>();
   const byTenant = new Map<string, CostRollupRow[]>();
   for (const r of current) {
-    const p = byProvider.get(r.provider) ?? { costUsd: 0, hasEstimate: false };
-    p.costUsd += Number(r.cost_usd);
-    // One allocated row anywhere in a provider's total makes the whole figure an
-    // estimate — the UI marks it as such rather than implying false precision.
-    p.hasEstimate = p.hasEstimate || r.method === 'allocated';
+    const p = byProvider.get(r.provider) ?? { measuredUsd: 0, allocatedUsd: 0 };
+    if (r.method === 'allocated') p.allocatedUsd += Number(r.cost_usd);
+    else p.measuredUsd += Number(r.cost_usd);
     byProvider.set(r.provider, p);
     byTenant.set(r.tenant_id, [...(byTenant.get(r.tenant_id) ?? []), r]);
   }
@@ -186,22 +204,18 @@ export async function buildCostReport(period: string): Promise<CostReport> {
     totalHasEstimate: current.some((r) => r.method === 'allocated'),
     previousTotalUsd: sum(previous),
     byProvider: [...byProvider.entries()]
-      .map(([provider, v]) => ({ provider, ...v }))
+      .map(([provider, v]) => ({ provider, costUsd: v.measuredUsd + v.allocatedUsd, ...v }))
       .sort((a, b) => b.costUsd - a.costUsd),
     tenants: [...byTenant.entries()]
       .map(([tenantId, rows]) => {
         const meta = tenants.get(tenantId);
-        const costUsd = sum(rows);
-        const seats = meta?.seats ?? 0;
         return {
           tenantId,
           tenantName: meta?.name ?? '(unknown tenant)',
-          seats,
-          costUsd,
+          managerSeats: meta?.managerSeats ?? 0,
+          technicianSeats: meta?.technicianSeats ?? 0,
+          costUsd: sum(rows),
           hasEstimate: rows.some((r) => r.method === 'allocated'),
-          // null, not 0, when there are no seats: "we don't know" and "it costs
-          // nothing per seat" are different claims, and only one is true.
-          costPerSeatUsd: seats > 0 ? costUsd / seats : null,
           lines: rows
             .map((r) => ({
               provider: r.provider,
@@ -217,6 +231,73 @@ export async function buildCostReport(period: string): Promise<CostReport> {
     generatedAt: new Date().toISOString(),
   };
 }
+
+export interface TenantReport {
+  period: string;
+  tenantId: string;
+  tenantName: string;
+  managerSeats: number;
+  technicianSeats: number;
+  totalUsd: number;
+  measuredUsd: number;
+  allocatedUsd: number;
+  // Rolled-up cost per provider, split by how it was derived.
+  providers: Array<{ provider: string; method: string; costUsd: number }>;
+  // Raw usage per sku — including UNPRICED lines (costUsd null), which is how an
+  // operator sees the spine tool-call count that drives the inference allocation.
+  usage: TenantCostDetailRow[];
+  trend: Array<{ period: string; totalUsd: number }>;
+  generatedAt: string;
+}
+
+// One tenant, one month. Split off the overview because the breakdown does not
+// fit a table cell — and because the interesting detail (per-sku units, the
+// unpriced spine counter) is a different question from "who costs the most".
+export async function buildTenantReport(
+  tenantId: string,
+  period: string,
+): Promise<TenantReport | null> {
+  const trendPeriods = Array.from({ length: 6 }, (_, i) => shiftMonth(period, -(5 - i)));
+  const [tenants, rollup, usage] = await Promise.all([
+    listTenantSeats(),
+    readRollup(monthStart(period)),
+    readTenantCostDetail(tenantId, monthStart(period)),
+  ]);
+  const meta = tenants.find((t) => t.id === tenantId);
+  // Unknown id => 404 at the caller, not an empty page that looks like "no spend".
+  if (!meta) return null;
+
+  const mine = rollup.filter((r) => r.tenant_id === tenantId);
+  const trend = await Promise.all(
+    trendPeriods.map(async (p, i) => ({
+      period: p,
+      totalUsd:
+        i === 5
+          ? sum(mine)
+          : sum((await readRollup(monthStart(p))).filter((r) => r.tenant_id === tenantId)),
+    })),
+  );
+
+  const of = (method: string) => sum(mine.filter((r) => r.method === method));
+  return {
+    period,
+    tenantId,
+    tenantName: meta.name,
+    managerSeats: meta.managerSeats,
+    technicianSeats: meta.technicianSeats,
+    totalUsd: sum(mine),
+    measuredUsd: of('measured'),
+    allocatedUsd: of('allocated'),
+    providers: mine
+      .map((r) => ({ provider: r.provider, method: r.method, costUsd: Number(r.cost_usd) }))
+      .sort((a, b) => b.costUsd - a.costUsd),
+    usage,
+    trend,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function handleAdminRequest(
   req: http.IncomingMessage,
@@ -258,6 +339,31 @@ export async function handleAdminRequest(
       const period = url.searchParams.get('period') ?? new Date().toISOString().slice(0, 7);
       if (!PERIOD.test(period)) return json(res, 400, { error: 'period must be YYYY-MM' });
       return json(res, 200, await buildCostReport(period));
+    }
+
+    if (pathname === '/admin/api/tenant') {
+      if (req.method !== 'GET') {
+        res.writeHead(405);
+        res.end();
+        return;
+      }
+      const auth = authAdmin(req);
+      if (!auth.ok) {
+        if (auth.code === 503) return json(res, 503, { error: 'admin dashboard is not configured' });
+        res.writeHead(401);
+        res.end();
+        return;
+      }
+      const url = new URL(req.url ?? '/admin', 'http://admin.local');
+      const tenantId = url.searchParams.get('tenantId') ?? '';
+      const period = url.searchParams.get('period') ?? new Date().toISOString().slice(0, 7);
+      // Shape-check the id before it reaches the RPC: a non-uuid would surface as
+      // a Postgres cast error and a 500 for what is a caller mistake.
+      if (!UUID.test(tenantId)) return json(res, 400, { error: 'tenantId must be a uuid' });
+      if (!PERIOD.test(period)) return json(res, 400, { error: 'period must be YYYY-MM' });
+      const report = await buildTenantReport(tenantId, period);
+      if (!report) return json(res, 404, { error: 'no such tenant' });
+      return json(res, 200, report);
     }
 
     res.writeHead(404);

@@ -6,6 +6,10 @@ import { hasModelCredentials } from '../model/forcedTool.js';
 // Live test: hits the active provider (MODEL_PROVIDER), gated on that provider's
 // key (skips in CI), mirroring src/email/classify.test.ts. Pure over an in-memory
 // context — no DB.
+// 120s, not vitest's 30s default: these were written when the spine called
+// Anthropic. GLM-5.2 on DeepInfra is slower — a real 30s timeout was observed
+// on the answerer once a key was present — so the default made the suite flake
+// intermittently. The latency itself is a separate, recorded concern.
 describe.skipIf(!hasModelCredentials())('defaultAnswerer (live)', () => {
   test('answers a question the record supports, with valid citations', async () => {
     const ctx = sampleContext();
@@ -18,7 +22,7 @@ describe.skipIf(!hasModelCredentials())('defaultAnswerer (live)', () => {
     for (const citation of result.citations) {
       expect(realIds.has(citation.captureId)).toBe(true);
     }
-  }, 30_000);
+  }, 120_000);
 
   test('does not fabricate when the record lacks the answer', async () => {
     const ctx = sampleContext();
@@ -32,5 +36,5 @@ describe.skipIf(!hasModelCredentials())('defaultAnswerer (live)', () => {
     for (const citation of result.citations) {
       expect(realIds.has(citation.captureId)).toBe(true);
     }
-  }, 30_000);
+  }, 120_000);
 });

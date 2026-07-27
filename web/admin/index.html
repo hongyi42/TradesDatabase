@@ -57,10 +57,10 @@
             <thead>
               <tr>
                 <th scope="col">Tenant</th>
-                <th scope="col" class="num">Seats</th>
+                <th scope="col" class="num">Mgr</th>
+                <th scope="col" class="num">Tech</th>
                 <th scope="col" class="num">Cost</th>
-                <th scope="col" class="num">$/seat</th>
-                <th scope="col">Breakdown</th>
+                <th scope="col"></th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -78,6 +78,63 @@
         <strong>allocated</strong> — split from a bill by a proxy metric, not metered directly.
         Inference is allocated by spine tool-call count; everything else is measured.
       </p>
+    </main>
+
+    <!-- Tenant detail. Same document, toggled — no build step means no router. -->
+    <main id="tenant" hidden>
+      <header class="topbar">
+        <div>
+          <button id="back" type="button" class="link">‹ All tenants</button>
+          <h1 id="t-name"></h1>
+          <p class="muted" id="t-seats"></p>
+        </div>
+        <div class="period"><span id="t-period"></span></div>
+      </header>
+
+      <section class="cards">
+        <div class="card">
+          <p class="label">Total</p>
+          <p class="figure" id="t-total">—</p>
+        </div>
+        <div class="card">
+          <p class="label">Measured</p>
+          <p class="figure" id="t-measured">—</p>
+          <p class="delta">metered directly</p>
+        </div>
+        <div class="card">
+          <p class="label">Allocated</p>
+          <p class="figure" id="t-allocated">—</p>
+          <p class="delta">split from a bill</p>
+        </div>
+      </section>
+
+      <section>
+        <h2>By vendor</h2>
+        <div class="scroll">
+          <table id="t-providers">
+            <thead><tr><th>Vendor</th><th>How</th><th class="num">Cost</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>Usage</h2>
+        <div class="scroll">
+          <table id="t-usage">
+            <thead>
+              <tr><th>Vendor</th><th>SKU</th><th class="num">Units</th><th class="num">Calls</th><th class="num">Cost</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="muted" id="t-usage-note"></p>
+      </section>
+
+      <section>
+        <h2>Six-month trend</h2>
+        <div id="t-trend" class="trend"></div>
+      </section>
     </main>
 
     <script src="/admin/static/admin.js"></script>

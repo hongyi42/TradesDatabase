@@ -48,11 +48,15 @@ export async function getTenantByName(name: string): Promise<Tenant> {
 export interface TenantSeats {
   id: string;
   name: string;
-  seats: number;
+  // Kept SEPARATE, never summed. The two tiers are different products: manager
+  // seats price higher AND cost more to serve (full Composio catalog + self-serve
+  // pairing), so a blended per-seat figure divides two different things by their
+  // total and means neither. See docs/engineering-memory.md §2.
+  managerSeats: number;
+  technicianSeats: number;
 }
 
-// Every tenant with its purchased seat count — the denominator of cost-per-seat,
-// which is the commercially meaningful figure on the operator dashboard.
+// Every tenant with its purchased seats, split by tier.
 //
 // Paginated: PostgREST silently caps responses at db-max-rows (1000), and a
 // truncated read here would not error — tenants past the cap would simply render
@@ -74,7 +78,8 @@ export async function listTenantSeats(): Promise<TenantSeats[]> {
       ...rows.map((t) => ({
         id: t.id,
         name: t.name,
-        seats: (t.manager_seats ?? 0) + (t.technician_seats ?? 0),
+        managerSeats: t.manager_seats ?? 0,
+        technicianSeats: t.technician_seats ?? 0,
       })),
     );
     if (rows.length < PAGE) return out;

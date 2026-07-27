@@ -57,16 +57,22 @@ JSON summary line; a failed step exits 1 so Render marks the run failed:
    60-min window and appends state-changing actions into L1 (`outbound_email` / `agent_action`,
    keys-only redaction, `manager_only` sensitivity). Same `COMPOSIO_API_KEY` skip gate.
 
-5. **Brave cost backfill (since 2026-07-24)** — replays the last 6h of
-   `web_requests` rows with `kind='search'` into `cost_events` (`backfillBraveCostEvents`,
+5. **Brave cost backfill (since 2026-07-25)** — replays `web_requests` rows with
+   `kind='search'` into `cost_events`, from a WATERMARK (the newest billed Brave
+   event, less a 1h overlap; from 2026-07-01 when the ledger is empty, so the
+   first run after migration sweeps everything rather than the last few hours) (`backfillBraveCostEvents`,
    `src/db/costs.ts`). No live instrumentation needed: `web_requests` already carries the tenant,
    the person, and the timestamp. Reports rows **scanned** — the
    `(tenant, provider, sku, source_ref)` key makes a replay a no-op, so a steady tick inserts
    nothing.
-6. **Cost rollup (since 2026-07-24)** — `rollupCosts` calls the `rollup_costs(period_start)`
-   RPC for the current month: metered events priced at the rate in force *on the day each
+6. **Cost rollup (since 2026-07-25)** — `rollupCosts` calls the `rollup_costs(period_start)`
+   RPC for the current month **and the previous one** (invoices arrive after the month
+   they cover, so a current-month-only rollup would never allocate a settled month): metered events priced at the rate in force *on the day each
    happened*, plus each `infra_costs` bill split by its own allocation rule
-   (`per_spine_tool_call` divides the inference invoice by each tenant's spine tool-call count).
+   (`per_spine_tool_call` divides the inference invoice by each tenant's spine tool-call count,
+   **after** netting out what was already metered for that vendor — one DeepInfra account means
+   the invoice already contains the spine's own tokens, and allocating it whole would count the
+   same dollars twice).
    Idempotent — it recomputes the period, so every tick refreshes what `/admin` reads.
 
    **Both steps report `{skipped}` rather than failing** when the cost tables are absent, so a

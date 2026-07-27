@@ -9,6 +9,7 @@ import {
   readRollup,
   recordModelUsage,
   recordComposioCall,
+  readTenantCostDetail,
   rollupCosts,
   upsertInfraCost,
   type CostEventInput,
@@ -53,16 +54,20 @@ const cleanup = async () => {
   // events, so cleanup can't key on the P prefix alone — but it stays scoped to
   // this file's own 'bf-%' technician refs so a real Brave row would survive.
   await pg.query("delete from web_requests where technician_ref like 'bf-%'");
-  // The rollup tests write real-vendor rows (anthropic/brave/spine), so cleanup
-  // covers those too — scoped to this file's own test tenants so a genuine row
-  // elsewhere survives.
-  await pg.query(
-    `delete from cost_events where provider like $1
-        or provider in ('brave', 'anthropic', 'spine')`,
-    [`${P}%`],
-  );
+  // ALL cost_events, not an allow-list of providers. The rollup tests write real
+  // vendor names (brave, anthropic, deepinfra, spine) and an enumerated list goes
+  // stale the moment a test adds another — which it did: 'deepinfra' was missing,
+  // so netting-test events survived into the next test and doubled its totals.
+  // Every row in this local stack is a test artifact, and vitest runs files
+  // sequentially (fileParallelism:false), so a blanket delete is safe.
+  await pg.query('delete from cost_events');
   await pg.query('delete from cost_rates where provider like $1', [`${P}%`]);
-  await pg.query('delete from infra_costs where vendor like $1', [`${P}%`]);
+  // ALL of it, not just the P-prefixed rows: the netting and allocation tests
+  // write real vendor names ('deepinfra'), and rollup_costs is GLOBAL — one
+  // leaked invoice allocates across every tenant and poisons the next test's
+  // absolute totals. infra_costs is empty on a fresh stack, so a blanket delete
+  // is safe and makes the file order-independent.
+  await pg.query('delete from infra_costs');
   await pg.query('delete from cost_rollup_monthly'); // fully derived — always safe to drop
 };
 
@@ -286,10 +291,10 @@ describe('recordModelUsage', () => {
     return { seen, append: async (rows: CostEventInput[]) => void seen.push(rows) };
   };
 
-  test('bills the DEFAULT provider (GLM on DeepInfra) as two token events', async () => {
+  test('bills the DEFAULT vendor (GLM on DeepInfra) as two token events', async () => {
     const { seen, append } = capture();
     await recordModelUsage(
-      'openai',
+      'deepinfra',
       { inputTokens: 4182, outputTokens: 97 },
       { tenantId: tenantA, technicianRef: 'tech-1' },
       { append },
@@ -302,6 +307,41 @@ describe('recordModelUsage', () => {
 
   // MODEL_PROVIDER=anthropic is the documented env-var rollback, so its SKUs must
   // stay priced too — a flip that billed the wrong vendor would be invisible.
+  // prompt_tokens INCLUDES the cached portion, and DeepInfra prices cached input
+  // at $0.18/M against $0.93/M fresh. Billing the whole lot at the input rate
+  // would over-report the largest measured line by the cache-hit share (~25%).
+  test('splits cached input onto its own cheaper SKU', async () => {
+    const { seen, append } = capture();
+    await recordModelUsage(
+      'deepinfra',
+      { inputTokens: 1000, cachedInputTokens: 400, outputTokens: 50 },
+      { tenantId: tenantA },
+      { append },
+    );
+    expect(seen[0].map((r) => [r.sku, r.quantity])).toEqual([
+      ['glm-5.2-input', 600], // 1000 total - 400 cached
+      ['glm-5.2-cached-input', 400],
+      ['glm-5.2-output', 50],
+    ]);
+  });
+
+  test('with no cache figure reported, everything stays on the input line', async () => {
+    const { seen, append } = capture();
+    await recordModelUsage('deepinfra', { inputTokens: 1000, outputTokens: 50 }, { tenantId: tenantA }, { append });
+    expect(seen[0].map((r) => [r.sku, r.quantity])).toEqual([
+      ['glm-5.2-input', 1000],
+      ['glm-5.2-output', 50],
+    ]);
+  });
+
+  // 'openai' is a WIRE FORMAT, not a company. Keying the ledger on it would bill
+  // an NVIDIA failover against a DeepInfra invoice that never arrives.
+  test('an unmapped vendor records nothing and says so', async () => {
+    const { seen, append } = capture();
+    await recordModelUsage('openai', { inputTokens: 1, outputTokens: 1 }, { tenantId: tenantA }, { append });
+    expect(seen).toHaveLength(0);
+  });
+
   test('bills the anthropic rollback under its own SKUs', async () => {
     const { seen, append } = capture();
     await recordModelUsage('anthropic', { inputTokens: 10, outputTokens: 2 }, { tenantId: tenantA }, { append });
@@ -322,19 +362,13 @@ describe('recordModelUsage', () => {
     }
   });
 
-  test('an unmapped provider records nothing rather than an unpriceable sku', async () => {
-    const { seen, append } = capture();
-    await recordModelUsage('some-future-vendor', { inputTokens: 1, outputTokens: 1 }, { tenantId: tenantA }, { append });
-    expect(seen).toHaveLength(0);
-  });
-
   test('a reply with no usage block is reported, not silently skipped', async () => {
     const { seen, append } = capture();
     const errs: unknown[] = [];
     const spy = console.error;
     console.error = (m: unknown) => void errs.push(m);
     try {
-      await recordModelUsage('openai', undefined, { tenantId: tenantA }, { append });
+      await recordModelUsage('deepinfra', undefined, { tenantId: tenantA }, { append });
     } finally {
       console.error = spy;
     }
@@ -344,13 +378,13 @@ describe('recordModelUsage', () => {
 
   test('no context means no attribution and no write', async () => {
     const { seen, append } = capture();
-    await recordModelUsage('openai', { inputTokens: 5, outputTokens: 5 }, undefined, { append });
+    await recordModelUsage('deepinfra', { inputTokens: 5, outputTokens: 5 }, undefined, { append });
     expect(seen).toHaveLength(0);
   });
 
   test('a failing appender is swallowed, not propagated', async () => {
     await expect(
-      recordModelUsage('openai', { inputTokens: 1, outputTokens: 1 }, { tenantId: tenantA }, {
+      recordModelUsage('deepinfra', { inputTokens: 1, outputTokens: 1 }, { tenantId: tenantA }, {
         append: async () => { throw new Error('db down'); },
       }),
     ).resolves.toBeUndefined();
@@ -490,6 +524,43 @@ describe('rollupCosts', () => {
 
   // Zero denominator: a brand-new month with no spine calls yet must not divide
   // by zero, and must not silently attribute the whole bill to nobody.
+  // ONE DeepInfra account: its invoice already CONTAINS the spine's own token
+  // spend, so allocating the bill whole on top of measuring those tokens counts
+  // the same dollars twice. Reproduced before the guard: $9.30 measured + $100
+  // invoice = $109.30 reported for $100 of real spend.
+  test('a vendor invoice is netted of what we already measured for it', async () => {
+    await appendCostEvents([
+      { tenantId: tenantA, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 10_000_000, unit: 'token', method: 'measured', occurredAt: at('05'), sourceRef: 'n1' },
+      { tenantId: tenantA, provider: 'spine', sku: 'tool_call', quantity: 100, unit: 'call', method: 'measured', occurredAt: at('05'), sourceRef: 'n2' },
+    ]);
+    await upsertInfraCost({
+      vendor: 'deepinfra', item: 'inference', periodStart: JULY, periodEnd: '2026-07-31',
+      amountUsd: 100, allocation: 'per_spine_tool_call',
+    });
+    await rollupCosts(JULY);
+    const rows = (await readRollup(JULY)).filter((r) => r.provider === 'deepinfra');
+    const measured = rows.filter((r) => r.method === 'measured').reduce((s, r) => s + Number(r.cost_usd), 0);
+    const allocated = rows.filter((r) => r.method === 'allocated').reduce((s, r) => s + Number(r.cost_usd), 0);
+    expect(measured).toBeCloseTo(9.3, 6); // 10M x $0.00000093
+    expect(allocated).toBeCloseTo(100 - 9.3, 6); // the REMAINDER, not the whole bill
+    // The whole point: the two together equal the actual invoice.
+    expect(measured + allocated).toBeCloseTo(100, 6);
+  });
+
+  test('measurement exceeding the invoice allocates nothing, never a negative', async () => {
+    await appendCostEvents([
+      { tenantId: tenantA, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 10_000_000, unit: 'token', method: 'measured', occurredAt: at('05'), sourceRef: 'x1' },
+      { tenantId: tenantA, provider: 'spine', sku: 'tool_call', quantity: 5, unit: 'call', method: 'measured', occurredAt: at('05'), sourceRef: 'x2' },
+    ]);
+    await upsertInfraCost({
+      vendor: 'deepinfra', item: 'inference', periodStart: JULY, periodEnd: '2026-07-31',
+      amountUsd: 2, allocation: 'per_spine_tool_call', // less than the $9.30 measured
+    });
+    await rollupCosts(JULY);
+    const alloc = (await readRollup(JULY)).filter((r) => r.provider === 'deepinfra' && r.method === 'allocated');
+    expect(alloc.every((r) => Number(r.cost_usd) === 0) || alloc.length === 0).toBe(true);
+  });
+
   test('with no spine events the split falls back to equal shares', async () => {
     await upsertInfraCost({
       vendor: `${P}-lightsail`,
@@ -501,9 +572,23 @@ describe('rollupCosts', () => {
     });
     await rollupCosts(JULY);
     const rows = (await readRollup(JULY)).filter((r) => r.provider === `${P}-lightsail`);
-    const { rows: [{ n }] } = await pg.query('select count(*)::int n from tenants');
+    // The fallback population is tenants we ACTUALLY SERVE — an unfiltered
+    // count(*) over `tenants` sweeps in seeded demo rows and abandoned test
+    // tenants, diluting the paying customer's share and putting phantom spend on
+    // the dashboard. This fires on the first tick after migration and on every
+    // previous-month rollup that predates the collectors.
+    // Same population the function uses: tenants we actually serve, falling back
+    // to ALL tenants when none qualify (so a bill is never allocated to nobody).
+    const { rows: [{ n }] } = await pg.query(`select case when q.n > 0 then q.n else (select count(*) from tenants) end::int n
+      from (select count(*) n from tenants t
+             where exists (select 1 from technicians x where x.tenant_id = t.id and x.state = 'active')
+                or exists (select 1 from cost_events e where e.tenant_id = t.id
+                             and (e.occurred_at at time zone 'utc')::date >= $1
+                             and (e.occurred_at at time zone 'utc')::date < ($1::date + interval '1 month')::date)) q`, [JULY]);
     expect(rows).toHaveLength(n);
     for (const r of rows) expect(Number(r.cost_usd)).toBeCloseTo(40 / n, 6);
+    // And the shares still sum to the whole bill.
+    expect(rows.reduce((s, r) => s + Number(r.cost_usd), 0)).toBeCloseTo(40, 6);
   });
 
   test('two bills from one vendor in a month sum rather than overwrite', async () => {
@@ -534,6 +619,21 @@ describe('rollupCosts', () => {
     ]);
     const result = await rollupCosts(JULY);
     expect(result.unpricedEvents).toBe(1);
+  });
+
+  // A rate covering PART of the month must not render as a priced fact that is
+  // silently low: the unmatched events would each contribute quantity * 0.
+  test('a partially-priced sku reports as NOT PRICED, not as a low number', async () => {
+    await pg.query(`update cost_rates set effective_to = '2026-07-15' where provider = 'brave' and sku = 'search'`);
+    await appendCostEvents([
+      { tenantId: tenantA, provider: 'brave', sku: 'search', quantity: 1, unit: 'request', method: 'measured', occurredAt: at('10'), sourceRef: 'pp1' },
+      { tenantId: tenantA, provider: 'brave', sku: 'search', quantity: 1, unit: 'request', method: 'measured', occurredAt: at('20'), sourceRef: 'pp2' },
+    ]);
+    const detail = await readTenantCostDetail(tenantA, JULY);
+    const line = detail.find((d) => d.sku === 'search');
+    expect(line?.quantity).toBe(2);   // both events counted
+    expect(line?.costUsd).toBeNull(); // but NOT priced — half the month has no rate
+    await pg.query(`update cost_rates set effective_to = null where provider = 'brave' and sku = 'search'`);
   });
 
   test('a mid-month period_start is refused, not silently double-counted', async () => {
@@ -573,15 +673,22 @@ describe('rollupCosts', () => {
 // and a genuine outage is silently reported as "not migrated yet" and nobody is
 // paged. Both directions are pinned.
 describe('isMissingCostLedger', () => {
-  test('recognises the not-yet-migrated shapes', () => {
+  // Recognised only when the STRUCTURED CODE is present — as a delimited token in
+  // the message, or on the wrapped cause. The accessors attach the PostgrestError
+  // as `cause` precisely so this predicate has a code to read.
+  test('recognises the not-yet-migrated shapes by code', () => {
     for (const m of [
       'Could not find the function public.rollup_costs(p_period_start) in the schema cache (PGRST202)',
-      'relation "cost_events" does not exist',
       'ERROR: 42P01: relation "cost_rollup_monthly" does not exist',
       'function rollup_costs(date) does not exist (42883)',
       "Could not find the table 'public.cost_rates' in the schema cache (PGRST205)",
     ]) {
       expect(isMissingCostLedger(new Error(m))).toBe(true);
+    }
+    // The real PostgREST shape the cron actually sees: code on the cause.
+    for (const code of ['42883', '42P01', 'PGRST202', 'PGRST205']) {
+      const err = new Error('rollupCosts failed: something', { cause: { code } });
+      expect(isMissingCostLedger(err)).toBe(true);
     }
   });
 
@@ -592,9 +699,21 @@ describe('isMissingCostLedger', () => {
       'permission denied for table cost_events',
       'duplicate key value violates unique constraint',
       'JWT expired',
+      // The dangerous class: a HALF-APPLIED migration or a botched rename says
+      // "does not exist" too. Swallowing these would leave a green cron and an
+      // empty ledger forever, which reads as "no spend" — the silent
+      // under-report this whole design exists to avoid.
+      'column cost_events.occurred_at does not exist',
+      'relation "technicians" does not exist',
+      'column "unpriced_events" does not exist',
     ]) {
       expect(isMissingCostLedger(new Error(m))).toBe(false);
     }
+  });
+
+  test('recognises a structured PostgrestError code on the cause', () => {
+    const err = Object.assign(new Error('wrapped'), { cause: { code: '42P01' } });
+    expect(isMissingCostLedger(err)).toBe(true);
   });
 });
 

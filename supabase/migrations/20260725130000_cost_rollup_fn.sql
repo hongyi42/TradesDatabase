@@ -19,6 +19,8 @@ declare
   v_bill         record;
   v_written      integer := 0;
   v_unpriced     integer := 0;
+  v_measured     numeric;
+  v_serve_all    boolean;
   v_n            integer;
 begin
   -- Periods are whole months, and the DELETE below only clears the exact
@@ -38,7 +40,28 @@ begin
   -- and the failure would surface as a red heartbeat. Released at commit.
   perform pg_advisory_xact_lock(hashtext('rollup_costs'), 0);
 
-  select count(*) into v_tenant_count from tenants;
+  -- Only tenants we actually serve. An unfiltered count(*) sweeps in seeded demo
+  -- rows and abandoned test tenants, and the zero-denominator fallback below then
+  -- hands each of them a slice of a real invoice — diluting the paying customer's
+  -- figure and putting phantom spend on the dashboard. That fallback fires in two
+  -- ordinary windows: the first tick after migration, and every previous-month
+  -- rollup for months that predate the collectors.
+  select count(*) into v_tenant_count
+    from tenants t
+   where exists (select 1 from technicians x where x.tenant_id = t.id and x.state = 'active')
+      or exists (select 1 from cost_events e where e.tenant_id = t.id
+                   and (e.occurred_at at time zone 'utc')::date >= p_period_start
+                   and (e.occurred_at at time zone 'utc')::date <  v_period_end);
+
+  -- ...but if NOTHING qualifies, fall back to every tenant rather than allocating
+  -- the bill to nobody. A silently vanished invoice understates the total, which
+  -- is the same quiet under-report the filter above exists to prevent — just from
+  -- the other direction. v_serve_all drives both the count and the CTE so the two
+  -- populations can never disagree.
+  v_serve_all := (v_tenant_count = 0);
+  if v_serve_all then
+    select count(*) into v_tenant_count from tenants;
+  end if;
 
   -- FULL RECOMPUTE of the period: delete then insert. An upsert-only rollup
   -- would leave stale rows behind when an infra_costs row is removed or a
@@ -111,6 +134,29 @@ begin
          and period_start <  v_period_end
          and allocation <> 'unallocated'
     loop
+      -- ── Net out what we ALREADY measured for this vendor. ────────────────
+      -- Since the spine's model calls moved to GLM on DeepInfra (PR #81), one
+      -- vendor can carry both: per-tenant metered spine spend AND the agent
+      -- invoice. There is ONE DeepInfra account, so that invoice already
+      -- CONTAINS the spine's tokens — allocating it whole on top of measuring
+      -- them counts the same dollars twice and overstates the headline number.
+      -- Reproduced before this guard: $9.30 measured + $100 invoice = $109.30
+      -- reported for $100 of real spend.
+      --
+      -- greatest(...,0): if measurement somehow exceeds the invoice (a rate that
+      -- drifted above the vendor's real price), allocate nothing rather than a
+      -- negative share — the measured rows still stand on their own.
+      select coalesce(sum(e.quantity * r.unit_cost_usd), 0) into v_measured
+        from cost_events e
+        join cost_rates r
+          on r.provider = e.provider
+         and r.sku = e.sku
+         and (e.occurred_at at time zone 'utc')::date >= r.effective_from
+         and (e.occurred_at at time zone 'utc')::date <  coalesce(r.effective_to, 'infinity'::date)
+       where e.provider = v_bill.vendor
+         and (e.occurred_at at time zone 'utc')::date >= p_period_start
+         and (e.occurred_at at time zone 'utc')::date <  v_period_end;
+
       -- One weights CTE serves every rule, so the zero-denominator guard is
       -- written once instead of per-rule: when the chosen weight sums to zero
       -- (no spine calls yet, no active seats, no sandboxes), the split falls
@@ -124,7 +170,17 @@ begin
                   when 'per_sandbox'         then coalesce(b.sandboxes, 0)
                   else 1
                 end)::numeric as weight
-          from tenants t
+          -- Same population as v_tenant_count above: a tenant that is not in the
+          -- count must not be in the split either, or the shares stop summing
+          -- to the invoice.
+          from (
+            select t.id from tenants t
+             where v_serve_all
+                or exists (select 1 from technicians x where x.tenant_id = t.id and x.state = 'active')
+                or exists (select 1 from cost_events e where e.tenant_id = t.id
+                             and (e.occurred_at at time zone 'utc')::date >= p_period_start
+                             and (e.occurred_at at time zone 'utc')::date <  v_period_end)
+          ) t
           left join (
             select tenant_id, sum(quantity) as spine_qty
               from cost_events
@@ -148,7 +204,7 @@ begin
              p_period_start,
              v_bill.vendor,
              'allocated',
-             v_bill.amount_usd * (case
+             greatest(v_bill.amount_usd - v_measured, 0) * (case
                when tot.total > 0 then w.weight / tot.total
                else 1.0 / v_tenant_count
              end),

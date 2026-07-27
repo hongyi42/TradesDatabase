@@ -39,7 +39,7 @@ export type FreezeProposalView =
       capacity: FreezeCapacity[];
     };
 
-interface StagedDetail {
+export interface StagedFreezeDetail {
   plan: FreezePlan;
   scheduleVersion: number;
   stagedAt: string;
@@ -48,7 +48,7 @@ interface StagedDetail {
 // The confirm branch's malformed rule PLUS its `d.stagedAt &&` guard (plan
 // review finding 2): a valid-plan row with a missing/unparseable stagedAt
 // would otherwise serve `expiresAt: NaN` as `open` and break newest-wins.
-function validDetail(detail: unknown): StagedDetail | null {
+function validDetail(detail: unknown): StagedFreezeDetail | null {
   if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null;
   const d = detail as { plan?: unknown; scheduleVersion?: unknown; stagedAt?: unknown };
   if (!d.plan || typeof d.plan !== 'object') return null;
@@ -62,7 +62,33 @@ function validDetail(detail: unknown): StagedDetail | null {
   }
   if (typeof d.scheduleVersion !== 'number') return null;
   if (typeof d.stagedAt !== 'string' || !Number.isFinite(Date.parse(d.stagedAt))) return null;
-  return d as unknown as StagedDetail;
+  return d as unknown as StagedFreezeDetail;
+}
+
+// THE shared staleness kernel (final-review finding): the confirm branch and
+// the board projection both consume this one assessment, so "the page never
+// shows a plan the confirm would refuse" — and the inverse, "the confirm
+// never books a plan the page calls dead" — are structural, not a pair of
+// hand-mirrored checks drifting apart. A new refusal rule added here refuses
+// in chat and renders on the board in the same edit.
+export type StagedFreezeAssessment =
+  | { verdict: 'malformed' }
+  | { verdict: 'expired' }
+  | { verdict: 'stale'; pinnedVersion: number; currentVersion: number }
+  | { verdict: 'open'; detail: StagedFreezeDetail };
+
+export function assessStagedFreeze(
+  detail: unknown,
+  latestVersion: number,
+  nowMs: number,
+): StagedFreezeAssessment {
+  const d = validDetail(detail);
+  if (!d) return { verdict: 'malformed' };
+  if (nowMs - Date.parse(d.stagedAt) > FREEZE_PROPOSAL_TTL_MS) return { verdict: 'expired' };
+  if (d.scheduleVersion !== latestVersion) {
+    return { verdict: 'stale', pinnedVersion: d.scheduleVersion, currentVersion: latestVersion };
+  }
+  return { verdict: 'open', detail: d };
 }
 
 const NONE_MESSAGE = 'No freeze proposal is waiting. Ask the assistant to run the freeze in chat.';
@@ -76,11 +102,12 @@ export function projectFreezeProposal(
   // anomaly the per-subject unique index still permits — plan decision).
   const candidates = items
     .map((item) => validDetail(item.detail))
-    .filter((d): d is StagedDetail => d !== null)
+    .filter((d): d is StagedFreezeDetail => d !== null)
     .sort((a, b) => Date.parse(b.stagedAt) - Date.parse(a.stagedAt));
-  const d = candidates[0];
-  if (!d) return { state: 'none', message: NONE_MESSAGE };
-  if (nowMs - Date.parse(d.stagedAt) > FREEZE_PROPOSAL_TTL_MS) {
+  if (!candidates[0]) return { state: 'none', message: NONE_MESSAGE };
+  const a = assessStagedFreeze(candidates[0], latestVersion, nowMs);
+  if (a.verdict === 'malformed') return { state: 'none', message: NONE_MESSAGE }; // unreachable: pre-filtered
+  if (a.verdict === 'expired') {
     return {
       state: 'expired',
       message:
@@ -88,7 +115,7 @@ export function projectFreezeProposal(
         'Run the freeze again in chat for a fresh plan.',
     };
   }
-  if (d.scheduleVersion !== latestVersion) {
+  if (a.verdict === 'stale') {
     return {
       state: 'stale',
       message:
@@ -96,6 +123,17 @@ export function projectFreezeProposal(
         'book it. Run the freeze again in chat for a fresh plan.',
     };
   }
+  const d = a.detail;
+  // Horizons cap at 31 days, so distinct dates are few — memoize the weekday
+  // per date rather than constructing an Intl formatter per placement.
+  const weekdayByDate = new Map<string, string>();
+  const weekdayFor = (date: string): string => {
+    const hit = weekdayByDate.get(date);
+    if (hit) return hit;
+    const computed = weekdayLabel(date);
+    weekdayByDate.set(date, computed);
+    return computed;
+  };
   return {
     state: 'open',
     stagedAt: d.stagedAt,
@@ -105,7 +143,7 @@ export function projectFreezeProposal(
     // Exact match on the exported constant — never a substring grep (the
     // freezeSolve rule; a copy tweak must break tests, not counters).
     pinnedCount: d.plan.skipped.filter((s) => s.reason === PINNED_SKIP_REASON).length,
-    placements: d.plan.placements.map((p) => ({ ...p, weekday: weekdayLabel(p.date) })),
+    placements: d.plan.placements.map((p) => ({ ...p, weekday: weekdayFor(p.date) })),
     skipped: d.plan.skipped,
     capacity: d.plan.capacity,
     // Deliberately NO confirmId / row id: the page must not leak a confirm

@@ -343,15 +343,8 @@
         esc(state.bucketCount === null ? 'Loose: …' : 'Loose: ' + state.bucketCount) +
         '</button>'
       : '';
-    // The freeze pill renders only while a proposal is OPEN (last known —
-    // the async probe reconciles after the paint via syncFreezePill). No
-    // placeholder state: outside the ~12h proposal window there is nothing
-    // to advertise (plan decision: pill, not a tab).
-    var freezePill = isManager && state.freezeOpen
-      ? '<button type="button" class="freeze-pill" id="freeze-pill">📋 Freeze proposal</button>'
-      : '';
     var head =
-      '<header><div class="head-row"><h1>Dispatch board</h1>' + pill + freezePill + '</div>' +
+      '<header><div class="head-row"><h1>Dispatch board</h1>' + pill + '</div>' +
       (isManager ? tabsBar() : '') +
       pagerBar(data.from, data.to) +
       (note ? '<div class="range">' + esc(note) + '</div>' : '') +
@@ -376,6 +369,11 @@
     }
     app.innerHTML = html;
     state.rendered = true;
+    // The freeze pill has ONE renderer — syncFreezePill (final-review
+    // finding: a template copy + an imperative copy drift). Synchronous:
+    // it only reads state.freezeOpen (last known; the async probe
+    // re-reconciles when it lands).
+    syncFreezePill();
   }
 
   // ---- API ----
@@ -546,8 +544,11 @@
       });
   }
 
-  // The pill lives inside render()'s HTML but the probe lands after the
-  // paint — reconcile the DOM in place rather than re-rendering the board.
+  // The freeze pill's ONLY renderer: called synchronously after every paint
+  // AND when the async probe lands — one markup source, reconciled in place.
+  // Renders only while a proposal is OPEN (no placeholder state: outside the
+  // ~12h proposal window there is nothing to advertise — plan decision:
+  // pill, not a tab).
   function syncFreezePill() {
     var existing = document.getElementById('freeze-pill');
     if (state.freezeOpen && !existing && state.isManager) {
@@ -564,20 +565,14 @@
     }
   }
 
-  function proposalPlacementRow(p, nameByRef) {
+  // One row skeleton for all three proposal sections (final-review
+  // simplification: three hand-kept copies of the same markup drift).
+  function proposalRow(main, sub) {
     return (
       '<div class="bucket-row"><div class="bucket-row-txt">' +
-      '<div class="bucket-row-main">' +
-      esc(
-        p.startTime + '–' + p.endTime + ' · ' +
-          (p.customer || 'Unknown customer') +
-          (p.jobTitle ? ' — ' + p.jobTitle : ''),
-      ) +
-      '</div><div class="bucket-row-sub">' +
-      // Placements carry only the ref; capacity carries the display names —
-      // the map is built once per sheet from data already in the payload.
-      esc(nameByRef[p.technicianRef] || p.technicianRef) +
-      '</div></div></div>'
+      '<div class="bucket-row-main">' + esc(main) + '</div>' +
+      '<div class="bucket-row-sub">' + esc(sub) + '</div>' +
+      '</div></div>'
     );
   }
 
@@ -588,6 +583,10 @@
       // what to do (run the freeze again in chat) — nothing else renders.
       inner = '<div class="bucket-empty">' + esc(v.message) + '</div>';
     } else {
+      // Names come from the PAYLOAD's capacity rows, deliberately not
+      // rosterName(): the sheet must show the plan as SOLVED (solve-time
+      // names, present even when the roster cache is cold), and the data is
+      // already in hand — no extra fetch, no cache dependency.
       var nameByRef = {};
       v.capacity.forEach(function (c) {
         nameByRef[c.technicianRef] = c.technicianName;
@@ -609,7 +608,12 @@
             '<h4 class="freeze-day">' + esc((rows[0].weekday ? rows[0].weekday + ' ' : '') + date) + '</h4>' +
             rows
               .map(function (p) {
-                return proposalPlacementRow(p, nameByRef);
+                return proposalRow(
+                  p.startTime + '–' + p.endTime + ' · ' +
+                    (p.customer || 'Unknown customer') +
+                    (p.jobTitle ? ' — ' + p.jobTitle : ''),
+                  nameByRef[p.technicianRef] || p.technicianRef,
+                );
               })
               .join('')
           );
@@ -626,12 +630,7 @@
               .map(function (s) {
                 // Label + the server-composed reason VERBATIM — the reasons
                 // are the product here (why work did not land).
-                return (
-                  '<div class="bucket-row"><div class="bucket-row-txt">' +
-                  '<div class="bucket-row-main">' + esc(s.label) + '</div>' +
-                  '<div class="bucket-row-sub">' + esc(s.reason) + '</div>' +
-                  '</div></div>'
-                );
+                return proposalRow(s.label, s.reason);
               })
               .join('')
           : '<div class="bucket-empty">Nothing was skipped.</div>') +
@@ -639,12 +638,9 @@
         '<div class="bucket-section"><h3>Capacity</h3>' +
         v.capacity
           .map(function (c) {
-            return (
-              '<div class="bucket-row"><div class="bucket-row-txt">' +
-              '<div class="bucket-row-main">' + esc(c.technicianName) + '</div>' +
-              '<div class="bucket-row-sub">' +
-              esc(fmtDur(c.committedMin) + ' committed · ' + fmtDur(c.availableMin) + ' available') +
-              '</div></div></div>'
+            return proposalRow(
+              c.technicianName,
+              fmtDur(c.committedMin) + ' committed · ' + fmtDur(c.availableMin) + ' available',
             );
           })
           .join('') +
@@ -2198,12 +2194,15 @@
     // proposal sheet after the first paint. This is ROUTING, not trust: the
     // endpoint independently authenticates and tier-gates every fetch, so a
     // technician tapping a forwarded manager link is simply not routed (their
-    // fetch would only 403). Fallback: Telegram also passes the value as the
-    // tgWebAppStartParam query param — read via window.location (bare
-    // `location` fails the lint gate's web-globals list).
+    // fetch would only 403). Fallback: Telegram also passes the value as
+    // tgWebAppStartParam — in the query string OR the hash fragment
+    // (Telegram Web clients use the fragment; final-review finding), read
+    // via window.location (bare `location` fails the lint web-globals list).
     var sp = (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
     if (!sp) {
-      var m = /[?&]tgWebAppStartParam=([^&]+)/.exec(window.location.search);
+      var m = /[?&#]tgWebAppStartParam=([^&#]+)/.exec(
+        window.location.search + window.location.hash,
+      );
       if (m) sp = m[1];
     }
     if (sp === 'freeze' && state.isManager) openProposal();

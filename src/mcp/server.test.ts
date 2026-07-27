@@ -6052,7 +6052,10 @@ describe('run_freeze (plan 4b-3: stage → confirm the whole plan)', () => {
       // no-link fallback are pinned here — a copy rewrite that drops either
       // half must break a test, not ship silently.
       expect(staged.data.note).toContain('SHORT summary');
-      expect(staged.data.note).toContain('If this result carries NO board link');
+      // The fallback keys on the proposalLink FIELD by name — "board link"
+      // prose would send a field-literal agent down the fallback on every
+      // decorated stage (final-review finding).
+      expect(staged.data.note).toContain('If this result carries no proposalLink field');
 
       // A DIFFERENT staged tool keeps the exclusion — no board fields at all.
       // Self-contained fixture (phase review finding 1): person-less +

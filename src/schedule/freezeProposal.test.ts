@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  assessStagedFreeze,
   FREEZE_PROPOSAL_TTL_MS,
   projectFreezeProposal,
   type FreezeProposalView,
@@ -104,6 +105,27 @@ describe('projectFreezeProposal', () => {
     ]) {
       expect(projectFreezeProposal([row(detail)], 7, NOW).state).toBe('none');
     }
+  });
+
+  test('assessStagedFreeze (the kernel BOTH the confirm branch and the board consume): a corrupt token never books', () => {
+    // The old inline confirm guard (`d.stagedAt &&`) let a missing-stagedAt
+    // row sail past expiry into a booking; the shared kernel calls it
+    // malformed — the confirm dismisses instead of committing (and the board
+    // agrees, showing none). One rule, two surfaces, by construction.
+    expect(assessStagedFreeze({ plan: plan(), scheduleVersion: 7 }, 7, NOW).verdict).toBe('malformed');
+    expect(assessStagedFreeze({ plan: {}, scheduleVersion: 7, stagedAt: new Date(NOW).toISOString() }, 7, NOW).verdict).toBe('malformed');
+    const open = assessStagedFreeze(
+      { plan: plan(), scheduleVersion: 7, stagedAt: new Date(NOW).toISOString() },
+      7,
+      NOW,
+    );
+    expect(open.verdict).toBe('open');
+    const stale = assessStagedFreeze(
+      { plan: plan(), scheduleVersion: 6, stagedAt: new Date(NOW).toISOString() },
+      7,
+      NOW,
+    );
+    expect(stale).toMatchObject({ verdict: 'stale', pinnedVersion: 6, currentVersion: 7 });
   });
 
   test('two open tokens (per-subject index anomaly) → newest stagedAt wins; invalid rows never outrank valid ones', () => {

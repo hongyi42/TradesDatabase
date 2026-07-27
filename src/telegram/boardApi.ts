@@ -320,10 +320,12 @@ export async function handleBoardRequest(
         json(res, 403, { error: 'managers only' });
         return;
       }
-      const [items, version] = await Promise.all([
-        findOpenReviewItemsByKind(auth.tenantId, 'pending_freeze'),
-        latestScheduleVersion(auth.tenantId),
-      ]);
+      // Items first, version only when something is open: this endpoint runs
+      // on every manager board paint, and outside the ~12h proposal window
+      // the version read would be pure waste (final-review efficiency
+      // finding). Sequencing costs one round-trip only in the rare open case.
+      const items = await findOpenReviewItemsByKind(auth.tenantId, 'pending_freeze');
+      const version = items.length ? await latestScheduleVersion(auth.tenantId) : 0;
       json(res, 200, projectFreezeProposal(items, version, Date.now()));
       return;
     }

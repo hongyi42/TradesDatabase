@@ -318,18 +318,41 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   explicit start–end ALWAYS wins for that visit; job `duration_minutes` is the planning
   default (sizes find_slots, proposes a move's end, measured-once onto a minted shell) —
   a mismatch is legitimate and never reconciled.
-  **4b-3 THE FREEZE MERGED + DEPLOYED 2026-07-26 (PR #86 → main b6e23d3). Rollout tail
-  same day: gates re-run on merged main (715 pass); served board.js byte-identical to main;
-  pilot geocoding migration applied via MCP + 3-column read-back (the MCP stamps its own
-  apply-time version — trust read-backs, as with 4b-1/4b-2); wire pass s2/s3/s5/s7/s8
-  (verify grep per sandbox: freeze-ritual ×1, run_freeze ×2, set_visit_locks ×2) and all
-  five gateway restarts health-passed. STILL OPEN: the pilot lock reset (read-back confirms
-  all 16 confirmed rows sit at locked=true — operator SQL is user-court; run it BEFORE the
-  first freeze/board use), confirming `GOOGLE_ROUTES_SA_KEY_JSON` exists on the RENDER
-  service (local .env alone doesn't reach the deployed solve), then the Phase-4 live E2E
-  (the first real `optimizeTours` call), the ritual one-shot cron E2E, and the phone
-  checks. Pilot freeze inputs read back 2026-07-26: patterns on Hman + Sam only; ONE
-  job-duration pair; queues = 2 person-less visits + 9 visitless jobs.**
+  **4b-3 THE FREEZE LIVE — ROLLED OUT + BOTH E2Es PASSED 2026-07-27 (PR #86 → main
+  b6e23d3).** Rollout in the correct order: gates re-run on merged main (715 pass); served
+  board.js byte-identical; pilot geocoding migration via MCP + 3-column read-back (the MCP
+  stamps its own apply-time version — trust read-backs, as with 4b-1/4b-2); the user ran
+  the one-time lock reset AFTER the deploy (read-back 16 locked → 0); wire pass
+  s2/s3/s5/s7/s8 (verify grep per sandbox: freeze-ritual ×1, run_freeze ×2,
+  set_visit_locks ×2) and all five gateway restarts health-passed. **Phase-4 live E2E
+  PASS** (s2 probe): proposal = 3 placements (incl. a person-less exact-time row keeping
+  its stored times, solver picked WHO) + 3 skips WITH reasons (2 pattern-less people by
+  name; a past-dated person-less row) + capacity table + pin line "0 pinned"; confirm →
+  rows at exact proposed times, ALL `locked=false`; ledger = ONE `freezeRun` stamp across
+  2× booked (reason "freeze <date>") + 1× moved + `freeze_committed` appended last; lazy
+  geocode persisted DURING the solve; full restore through the normal verbs (queues back
+  to 2+2, 0 pinned). **The first real `optimizeTours` call returned HTTP 200** — SA-key
+  auth + the self-serve SKU are empirically proven (local probe recipe: minimal
+  1-vehicle/0-shipment body; prints status only, never the token). **Phase-5 ritual E2E
+  PASS**: agent-created one-shot cron (deleteAfterRun; payload = the §0h contract) fired
+  at 09:30Z → job gone from the container cron store, a NEW `pending_freeze` staged at
+  09:30:42Z, and ZERO schedule writes with queues untouched — the fire proposed and
+  STOPPED; cleanup exercised kind-wide supersede + `resolve_review dismissed` live.
+  **Traps recorded from the rollout:** (a) Geocoding `REQUEST_DENIED` root cause was the
+  KEY's own API-restriction list lacking Geocoding API — enabling the API on the project
+  is NOT enough when the key carries an allowlist (fix: Credentials → key → API
+  restrictions → add Geocoding API; no env change, key value unchanged); the failed run
+  also proved the failure path (error relayed honestly, nothing staged). (b) Render env
+  values are BARE — the dotenv single quotes around `GOOGLE_ROUTES_SA_KEY_JSON` are
+  file syntax, not value; paste the raw one-line JSON. (c) **Agent-behavior finding
+  (candidate copy fix — bundle with the next tool-description wire pass, like the
+  chat-vs-board vocab item): the agent could not find the freeze dismiss lever unaided**
+  — `resolve_review`'s description is written in pairing-verification terms only, so it
+  claimed "the only lever is 12h expiry" and, worse, dismissal nudges made it RE-RUN the
+  freeze (kind-wide supersede) instead; it used `list_pending_reviews` →
+  `resolve_review dismissed` correctly the moment it was pointed there. REMAINING: the
+  owner's two phone checks (Pinned chip render + toggle; the cron-fired proposal
+  readability — it DID land in the real chat), then the plan flips complete.
   Five phases: (1) pinning became a HUMAN privilege — `bookVisit`/
   `moveVisit` no longer auto-stamp `locked:true` (moves/attaches carry the flag);
   `setVisitLocks` core = ONE guarded bulk UPDATE (atomic, `status in (confirmed,proposed)`

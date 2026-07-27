@@ -344,10 +344,22 @@ The manager-facing verb: solve → staged plan → confirm → sequential commit
   project; **the Phase-1 pilot lock reset has run** (review finding 7: every pre-existing
   row carries an auto-stamped lock — without the reset the freeze legitimately skips the
   whole backlog and the E2E is inconclusive).
-- [ ] Seed durations/patterns confirmed (16-pair seed + `set_availability`); then from live
-      chat: `run_freeze` → preview names placements + skips; confirm → SQL read-back of
-      placed rows (times set, `locked=false`, ledger `freezeRun` markers); restore by
-      unscheduling the probe placements. Evidence: chat exchange + row read-backs.
+- [x] **PASSED 2026-07-27** (s2 CLI probe `probe-4b3-freeze-2`, pilot inputs as found — no
+      extra seeding needed: patterns Hman+Sam, 2 person-less rows, 2 open jobs w/ lengths).
+      `run_freeze` proposal: 3 placements (Tom Becker pest 45m Mon Jul 27 8:00; Maria visit
+      Aug 5 8:00; person-less HVAC kept its stored Aug-5 12:00–13:00, solver picked WHO =
+      Hman), 3 skips WITH reasons (Joy + Yutao pattern-less; the Jul-26 person-less pest =
+      date already passed), capacity table (Hman 165/5400, Sam 0/3360), pin line "0 pinned"
+      (lock reset verified: 16→0 by read-back). Confirm → SQL read-backs: 3 confirmed rows
+      exact proposed times, ALL `locked=false`; ledger = one `freezeRun:
+      2026-07-27T09:20:31.674Z` stamp across 2× booked (reason "freeze 2026-07-27") + 1×
+      moved + `freeze_committed` appended last, actor manager-sam. Geocoding lazy-fill:
+      both customers' lat/lng stamped 09:18 (during solve, before commit). Restore via
+      normal verbs (2 unscheduled + 1 detached): queues back to 2 person-less + 2 open
+      jobs, 0 pinned. **First real `optimizeTours` call: HTTP 200** (minimal local probe;
+      SA-key auth + self-serve enablement empirically proven; the failed first probe also
+      verified the failure path — Geocoding REQUEST_DENIED relayed honestly, nothing
+      staged; root cause = key-level API restriction missing Geocoding API, user fixed).
 
 ### Manual verification
 - [ ] The proposal reads sensibly on the phone (a judgment call: would you approve it?)
@@ -373,6 +385,12 @@ doctrine) and rolls the whole plan out. No server code, no migration, no new env
   read-back verify), Phase-1 pilot lock reset (user go), deploy, freshness byte-check,
   fleet gateway restarts + WIRE pass (new tools `set_visit_locks`/`run_freeze` + doctrine
   block changes), Phase 4 live E2E, then this phase's ritual E2E.
+  **DONE 2026-07-26/27 in the correct order:** PR #86 merged (b6e23d3) + gates re-run on
+  main (715 pass) → deploy freshness (served board.js byte-identical) → pilot migration
+  applied via MCP (3-column read-back) → **lock reset run by the user AFTER deploy** (read
+  back 16 locked → 0) → wire pass s2/s3/s5/s7/s8 (grep per sandbox: ritual ×1,
+  run_freeze ×2, set_visit_locks ×2) + all 5 gateway restarts health-passed → Phase-4
+  live E2E passed (evidence above).
   **ORDERING (final-review finding): the lock reset runs AFTER the deploy and BEFORE the
   first freeze/board use.** Reset-before-deploy → the still-live old code re-stamps
   `locked:true` on every new booking; deploy-without-reset → every pre-existing pilot row
@@ -389,10 +407,21 @@ doctrine) and rolls the whole plan out. No server code, no migration, no new env
 
 ### Live verification (agent-executable)
 - Prerequisites: as Phase 4 (deployed stack, wired fleet).
-- [ ] On s2: ask the agent to schedule a ONE-SHOT freeze reminder a few minutes out
-      (`--at … --delete-after-run` per §0g); when it fires, the proposal + pin line arrives
-      in chat unprompted; confirm or dismiss; SQL read-back matches. Evidence: the
-      unprompted chat message + read-backs.
+- [x] **PASSED 2026-07-27** (s2 probe `probe-4b3-ritual-1`): agent created
+      `freeze-reminder-one-shot` (deleteAfterRun, fire 09:30 UTC, payload = the §0h
+      contract verbatim: run + present + STOP, never self-confirm). At the fire: job GONE
+      from `/sandbox/.openclaw/cron/jobs.json` (grep 0), a NEW open `pending_freeze` token
+      staged **09:30:42Z** (3 placements — the restored queues re-solved to the same
+      plan), and **ZERO freeze schedule writes after the fire + queues untouched (2
+      person-less + 2 open jobs)** — the cron fire proposed and stopped. Cleanup exercised
+      dismissal live: kind-wide supersede (a mid-conversation re-stage killed the 09:30
+      token instantly) then `resolve_review dismissed` on the survivor; final read-back:
+      all `pending_freeze` dismissed, zero open, still zero schedule writes.
+      **Agent-behavior finding (candidate copy fix, bundle with the next
+      description-change wire pass): the agent could not find the dismiss lever unaided** —
+      `resolve_review`'s description is written entirely in pairing-verification terms, so
+      it never connected it to a freeze token and claimed "the only lever is time";
+      worked immediately once pointed at `list_pending_reviews` → `resolve_review`.
 
 ### Manual verification
 - [ ] The cron-fired proposal reads as a sensible morning briefing on the phone (judgment)

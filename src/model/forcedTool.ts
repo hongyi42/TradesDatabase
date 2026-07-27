@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { recordModelUsage, type CostContext } from '../db/index.js';
 
 // One transport for every "forced single tool" model call in the spine.
 //
@@ -46,6 +47,26 @@ const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6';
 
 export function activeProvider(): ModelProvider {
   return process.env.MODEL_PROVIDER === 'anthropic' ? 'anthropic' : 'openai';
+}
+
+// WHO BILLS US — which is not the same question as which wire format we speak.
+// 'openai' is a protocol; INFERENCE_BASE_URL decides the company, and NVIDIA is
+// the documented failover. Deriving the ledger vendor from the resolved host
+// keeps a failover from being priced against a DeepInfra invoice that never
+// arrives. Unknown hosts return the host itself, so recordModelUsage reports an
+// unmapped vendor loudly instead of quietly billing the wrong one.
+export function ledgerVendor(): string {
+  if (activeProvider() === 'anthropic') return 'anthropic';
+  const raw = process.env.INFERENCE_BASE_URL || DEFAULT_OPENAI_BASE_URL;
+  let host: string;
+  try {
+    host = new URL(raw).hostname.toLowerCase();
+  } catch {
+    return 'unknown';
+  }
+  if (host.endsWith('deepinfra.com')) return 'deepinfra';
+  if (host.endsWith('nvidia.com')) return 'nvidia';
+  return host;
 }
 
 // True when the ACTIVE provider's key is present. Live-model tests gate on this
@@ -144,10 +165,17 @@ export function parseOpenAiToolArgs(
   }
 }
 
+// Args plus what the call cost us. Usage is optional: a provider that stops
+// returning it must not break the call — it is reported by the recorder instead.
+export interface ForcedToolReply {
+  args: Record<string, unknown>;
+  usage?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
+}
+
 async function callAnthropic(
   tool: ForcedToolSpec,
   req: ForcedToolRequest,
-): Promise<Record<string, unknown>> {
+): Promise<ForcedToolReply> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
   const client = new Anthropic({ apiKey });
@@ -170,13 +198,22 @@ async function callAnthropic(
       block.type === 'tool_use' && block.name === tool.name,
   );
   if (!toolUse) throw new Error(`${req.label}: model returned no ${tool.name} tool_use block`);
-  return toolUse.input as Record<string, unknown>;
+  return {
+    args: toolUse.input as Record<string, unknown>,
+    usage: {
+      inputTokens: message.usage?.input_tokens,
+      outputTokens: message.usage?.output_tokens,
+      // Anthropic reports cache reads separately; folded in so the ledger sees
+      // the same shape from both transports.
+      cachedInputTokens: message.usage?.cache_read_input_tokens ?? undefined,
+    },
+  };
 }
 
 async function callOpenAiCompatible(
   tool: ForcedToolSpec,
   req: ForcedToolRequest,
-): Promise<Record<string, unknown>> {
+): Promise<ForcedToolReply> {
   const apiKey = process.env.INFERENCE_API_KEY;
   if (!apiKey) throw new Error('INFERENCE_API_KEY is not set');
   const baseUrl = (process.env.INFERENCE_BASE_URL || DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, '');
@@ -209,7 +246,28 @@ async function callOpenAiCompatible(
     // Truncated: a gateway error body can be an entire HTML page.
     throw new Error(`${req.label}: inference ${res.status}: ${(await res.text()).slice(0, 200)}`);
   }
-  return parseOpenAiToolArgs(await res.json(), tool.name, req.label);
+  // Read the body ONCE: parse the tool args and the usage block from the same
+  // object (res.json() cannot be called twice).
+  const body = (await res.json()) as {
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      prompt_tokens_details?: { cached_tokens?: number } | null;
+    };
+  };
+  return {
+    args: parseOpenAiToolArgs(body, tool.name, req.label),
+    // OpenAI-compatible naming differs from Anthropic's. prompt_tokens is the
+    // TOTAL input including any cached portion, which the ledger prices at a
+    // different (much lower) rate — so hand the cache figure along when the
+    // endpoint reports one. DeepInfra returned prompt_tokens_details:null on a
+    // live probe (2026-07-25), in which case everything stays on the input line.
+    usage: {
+      inputTokens: body.usage?.prompt_tokens,
+      outputTokens: body.usage?.completion_tokens,
+      cachedInputTokens: body.usage?.prompt_tokens_details?.cached_tokens,
+    },
+  };
 }
 
 // The single entry point. Returns the tool's arguments, schema-coerced; throws
@@ -217,10 +275,17 @@ async function callOpenAiCompatible(
 export async function runForcedTool(
   tool: ForcedToolSpec,
   req: ForcedToolRequest,
+  ctx?: CostContext,
 ): Promise<Record<string, unknown>> {
-  const args =
+  const reply =
     activeProvider() === 'anthropic'
       ? await callAnthropic(tool, req)
       : await callOpenAiCompatible(tool, req);
-  return coerceBySchema(args, tool.inputSchema) as Record<string, unknown>;
+  // ONE billing site for all four spine model calls. It lives here rather than in
+  // each caller because this is also the only place that knows which provider
+  // actually served the request — the SKUs differ, and MODEL_PROVIDER can flip
+  // under the callers without them noticing. Failure-isolated inside the
+  // recorder: cost accounting must never break the call it measures.
+  await recordModelUsage(ledgerVendor(), reply.usage, ctx);
+  return coerceBySchema(reply.args, tool.inputSchema) as Record<string, unknown>;
 }

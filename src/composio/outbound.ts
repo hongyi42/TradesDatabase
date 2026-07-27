@@ -1,4 +1,4 @@
-import type { Technician } from '../db/index.js';
+import { recordComposioCall, type Technician } from '../db/index.js';
 import { compositeUserId, getComposioClient, type PairingClient } from './pairing.js';
 
 // Server-side outbound Composio actions — the technician send path. The agent
@@ -10,6 +10,7 @@ import { compositeUserId, getComposioClient, type PairingClient } from './pairin
 
 export interface OutboundDeps {
   client?: PairingClient;
+  recordCost?: typeof recordComposioCall;
 }
 
 export interface SendEmailInput {
@@ -50,6 +51,19 @@ export async function sendGmailEmail(
     userId: compositeUserId(tech),
     arguments: { recipient_email: to, subject, body },
     dangerouslySkipVersionCheck: true,
+  });
+  // A billed tool execution that NEVER traverses the doorman relay — the relay
+  // collector cannot see this path, so it is counted here or not at all. Billed
+  // on `successful === false` too: Composio charged for the attempt.
+  // .catch() at the call site — a cost-ledger fault must never fail a send the
+  // customer is waiting on (and which Composio has already charged for).
+  await (deps.recordCost ?? recordComposioCall)({
+    tenantId: tech.tenant_id,
+    technicianRef: tech.ref,
+  }).catch((err: unknown) => {
+    console.error(
+      `cost: outbound send not recorded — ${err instanceof Error ? err.message : String(err)}`,
+    );
   });
   if (result.successful === false) {
     const errText = typeof result.error === 'string' ? result.error : JSON.stringify(result.error ?? 'unknown error');

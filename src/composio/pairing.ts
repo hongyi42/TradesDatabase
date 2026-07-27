@@ -1,6 +1,7 @@
 import { Composio } from '@composio/core';
 import {
   casTechnician,
+  recordComposioCall,
   updateTechnician,
   upsertOpenReviewItem,
   type Technician,
@@ -83,6 +84,7 @@ export interface PairingDeps {
   update?: typeof updateTechnician;
   cas?: typeof casTechnician;
   openReviewItem?: typeof upsertOpenReviewItem;
+  recordCost?: typeof recordComposioCall;
 }
 
 // Mint a Connect Link (Composio-hosted OAuth page) for this person and stamp
@@ -151,6 +153,9 @@ export async function checkPairing(
   // Advisory: a null email still opens the review item — the manager can
   // dismiss (wrong mailbox → unpair) if they can't identify it.
   let email: string | null = null;
+  // Did the execution actually happen? A throw before/inside it means Composio
+  // billed nothing, so the counter below must not fire.
+  let billed = false;
   try {
     const profile = await client.tools.execute('GMAIL_GET_PROFILE', {
       connectedAccountId: active.id,
@@ -158,11 +163,31 @@ export async function checkPairing(
       arguments: {},
       dangerouslySkipVersionCheck: true,
     });
+    // Set IMMEDIATELY after the execution: everything below is pure parsing that
+    // cannot throw today, but pushing the flag past it would make the "a throw
+    // means Composio billed nothing" invariant one edit away from false — and
+    // that failure is a silent under-count.
+    billed = true;
     const data = profile?.data as Record<string, unknown> | undefined;
     const nested = (data?.response_data ?? data) as Record<string, unknown> | undefined;
     email = typeof nested?.emailAddress === 'string' ? nested.emailAddress : null;
   } catch {
     /* advisory — see above */
+  }
+  // Billed OUTSIDE the advisory try: another Composio execution that never
+  // traverses the relay, and the only one that accrues with no human action at
+  // all (the 15-min cron runs it for every invited/pending row). Kept out of the
+  // block above so a ledger fault cannot land in that catch and silently blank
+  // the email — cost accounting must not degrade what it measures.
+  if (billed) {
+    await (deps.recordCost ?? recordComposioCall)({
+      tenantId: tech.tenant_id,
+      technicianRef: tech.ref,
+    }).catch((err: unknown) => {
+      console.error(
+        `cost: pairing probe not recorded — ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
   }
   // One-time shape log (plan: check for an untyped email field on the raw
   // account object). Key names only — data/params may carry token material.

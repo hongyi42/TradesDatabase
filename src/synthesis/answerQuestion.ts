@@ -1,5 +1,5 @@
 import { runForcedTool, type ForcedToolSpec } from '../model/forcedTool.js';
-import type { CustomerContext } from '../db/index.js';
+import type { CostContext, CustomerContext } from '../db/index.js';
 import { serializeContextForPrompt, validateCitations, type Citation } from './grounding.js';
 
 export interface CustomerAnswer {
@@ -8,7 +8,12 @@ export interface CustomerAnswer {
 }
 
 // Injected so tests can supply a deterministic stub instead of the live model.
-export type Answerer = (context: CustomerContext, question: string) => Promise<CustomerAnswer>;
+// `ctx` is optional so existing 2-arg stubs stay assignable.
+export type Answerer = (
+  context: CustomerContext,
+  question: string,
+  ctx?: CostContext,
+) => Promise<CustomerAnswer>;
 
 const ANSWER_SYSTEM =
   'You answer a question about a trades customer using ONLY the provided customer record. ' +
@@ -47,13 +52,13 @@ const ANSWER_TOOL: ForcedToolSpec = {
 // forced through the answer tool. Citations are validated against the real capture
 // set before returning — a hallucinated id is dropped here, not trusted from the
 // model. Same silent-degradation caveat as defaultBriefer.
-export const defaultAnswerer: Answerer = async (context, question) => {
+export const defaultAnswerer: Answerer = async (context, question, ctx) => {
   const args = await runForcedTool(ANSWER_TOOL, {
     system: ANSWER_SYSTEM,
     user: `Question: ${question}\n\n${serializeContextForPrompt(context)}`,
     maxTokens: 1024,
     label: 'defaultAnswerer',
-  });
+  }, ctx);
   const { answer, citations } = args as unknown as { answer: string; citations?: Citation[] };
   return { answer, citations: validateCitations(citations, context) };
 };

@@ -1,5 +1,5 @@
 import { runForcedTool, type ForcedToolSpec } from '../model/forcedTool.js';
-import type { CustomerContext } from '../db/index.js';
+import type { CostContext, CustomerContext } from '../db/index.js';
 import { serializeContextForPrompt, validateCitations, type Citation } from './grounding.js';
 
 // next_visit = a pre-visit cheat-sheet (the open job, access notes, what the last
@@ -14,7 +14,12 @@ export interface CustomerBriefing {
 }
 
 // Injected so tests can supply a deterministic stub instead of the live model.
-export type Briefer = (context: CustomerContext, focus: BriefFocus) => Promise<CustomerBriefing>;
+// `ctx` is optional so existing 2-arg stubs stay assignable.
+export type Briefer = (
+  context: CustomerContext,
+  focus: BriefFocus,
+  ctx?: CostContext,
+) => Promise<CustomerBriefing>;
 
 const BRIEFING_SYSTEM =
   'You brief a trades technician (HVAC/plumbing/electrical/etc.) on a customer before a visit. ' +
@@ -60,13 +65,13 @@ const BRIEFING_TOOL: ForcedToolSpec = {
 // UUIDs less accurately therefore degrades into briefings that read complete but
 // cite nothing, with no error and no failing test. Unmeasured on every provider —
 // this is the metric a synthesis eval needs to cover first.
-export const defaultBriefer: Briefer = async (context, focus) => {
+export const defaultBriefer: Briefer = async (context, focus, ctx) => {
   const args = await runForcedTool(BRIEFING_TOOL, {
     system: BRIEFING_SYSTEM,
     user: `Focus: ${focus}\n\n${serializeContextForPrompt(context)}`,
     maxTokens: 1024,
     label: 'defaultBriefer',
-  });
+  }, ctx);
   const { briefing, citations } = args as unknown as {
     briefing: string;
     citations?: Citation[];

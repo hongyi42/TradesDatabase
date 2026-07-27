@@ -13,6 +13,7 @@ import {
 } from '../db/index.js';
 import { handleComposioRelay, isRelayPath } from '../composio/relayHandler.js';
 import { handleBoardRequest, isBoardPath } from '../telegram/boardApi.js';
+import { handleAdminRequest, isAdminPath } from '../admin/adminApi.js';
 
 // Central HTTP entrypoint (Architecture A). Every NemoClaw bot reaches this one
 // server through the gateway. It runs STATELESS (sessionIdGenerator: undefined):
@@ -285,6 +286,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         }
       }
       await handleBoardRequest(req, res, boardBody);
+      return;
+    }
+    // Operator cost dashboard — routed BEFORE the IP allowlist for the same
+    // reason as the board: it loads in an operator's ordinary browser, not
+    // through the gateway, so the allowlist would 403 every real user. It
+    // authenticates itself with a bearer token, and the underlying tables have
+    // RLS enabled so the anon key cannot reach the data around this handler.
+    // GET-only, so no body to read or cap.
+    if (isAdminPath(req.url)) {
+      await handleAdminRequest(req, res);
       return;
     }
     if (!allowed(req)) {

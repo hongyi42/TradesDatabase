@@ -1,0 +1,154 @@
+/* Operator cost dashboard. No build step, no framework — the board's precedent.
+   Dark by default with a light override, because this gets opened on a phone at
+   odd hours as often as on a desktop. */
+
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --line: #262b36;
+  --text: #e7eaf0;
+  --muted: #8b94a7;
+  --accent: #5b9cff;
+  --measured: #4ec9a5;
+  --estimate: #e0a458;
+  --danger: #e2557b;
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --line: #e2e5ea;
+    --text: #1b1f27;
+    --muted: #626b7c;
+    --accent: #2563eb;
+    --measured: #0f8a68;
+    --estimate: #a86a12;
+    --danger: #c0304f;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 1.25rem;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+h1 { font-size: 1.35rem; margin: 0; }
+h2 { font-size: 0.95rem; margin: 1.75rem 0 0.6rem; color: var(--muted); font-weight: 600;
+     text-transform: uppercase; letter-spacing: 0.04em; }
+.muted { color: var(--muted); font-size: 0.85rem; margin: 0.2rem 0 0; }
+.error { color: var(--danger); font-size: 0.85rem; }
+
+/* ── Token gate ─────────────────────────────────────────────────────────── */
+#gate {
+  max-width: 22rem; margin: 12vh auto 0; background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 1.5rem;
+}
+#gate label { display: block; margin: 1.2rem 0 0.35rem; font-size: 0.85rem; color: var(--muted); }
+#gate input, #gate button {
+  width: 100%; padding: 0.6rem 0.7rem; border-radius: 8px; font-size: 1rem;
+  border: 1px solid var(--line); background: var(--bg); color: var(--text);
+}
+#gate button {
+  margin-top: 0.8rem; background: var(--accent); color: #fff; border-color: transparent;
+  font-weight: 600; cursor: pointer;
+}
+
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+main { max-width: 60rem; margin: 0 auto; }
+.topbar {
+  display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;
+  justify-content: space-between; padding-bottom: 1rem; border-bottom: 1px solid var(--line);
+}
+.period { display: flex; align-items: center; gap: 0.5rem; font-variant-numeric: tabular-nums; }
+.period button {
+  width: 2rem; height: 2rem; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 1.1rem;
+}
+.period button:disabled { opacity: 0.35; cursor: default; }
+
+.cards { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+         margin-top: 1.25rem; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+        padding: 0.9rem 1rem; }
+.card .label { margin: 0; font-size: 0.78rem; color: var(--muted); text-transform: uppercase;
+               letter-spacing: 0.04em; }
+.card .figure { margin: 0.35rem 0 0; font-size: 1.7rem; font-weight: 650;
+                font-variant-numeric: tabular-nums; }
+.delta { margin: 0.15rem 0 0; font-size: 0.82rem; color: var(--muted); }
+.delta.up { color: var(--danger); }
+.delta.down { color: var(--measured); }
+
+/* ── Vendor bars ────────────────────────────────────────────────────────── */
+.bars { display: grid; gap: 0.5rem; }
+.bar-row { display: grid; grid-template-columns: 7.5rem 1fr auto; gap: 0.6rem; align-items: center; }
+.bar-name { font-size: 0.86rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+            white-space: nowrap; }
+.bar-track { background: var(--line); border-radius: 999px; height: 0.55rem; overflow: hidden; }
+.bar-fill { height: 100%; background: var(--measured); border-radius: 999px; }
+/* An allocated figure is HATCHED, not just tinted: colour alone fails for a
+   colour-blind reader, and the whole disclosure decision rests on this being
+   unmistakable at a glance. */
+.bar-fill.est {
+  background: repeating-linear-gradient(
+    45deg, var(--estimate), var(--estimate) 4px, transparent 4px, transparent 8px
+  ), var(--line);
+}
+.bar-value { font-size: 0.86rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ── Table ──────────────────────────────────────────────────────────────── */
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { text-align: left; padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--line);
+         vertical-align: top; }
+th { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+     font-weight: 600; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.num { white-space: nowrap; }
+.tenant-name { font-weight: 600; }
+.breakdown { color: var(--muted); font-size: 0.82rem; }
+.breakdown span { white-space: nowrap; }
+
+/* The estimate marker. Dotted underline + tag, so it survives greyscale. */
+.est-key, .est-tag {
+  color: var(--estimate); font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.03em; border-bottom: 1px dotted var(--estimate); padding-bottom: 1px;
+}
+.est-tag { margin-left: 0.3rem; }
+
+/* ── Trend ──────────────────────────────────────────────────────────────── */
+.trend { display: flex; align-items: flex-end; gap: 0.5rem; height: 7rem; }
+.trend-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end;
+             align-items: center; gap: 0.35rem; height: 100%; }
+.trend-bar { width: 100%; background: var(--accent); border-radius: 5px 5px 0 0; min-height: 2px; }
+.trend-label { font-size: 0.7rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.footnote { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--line);
+            color: var(--muted); font-size: 0.82rem; }
+
+@media (max-width: 30rem) {
+  body { padding: 0.9rem; }
+  .bar-row { grid-template-columns: 5.5rem 1fr auto; }
+  .card .figure { font-size: 1.45rem; }
+}
+
+/* Inline navigation buttons — the tenant drill-down and the back link. Buttons
+   rather than anchors: there is no router, so these are actions, not URLs. */
+.link {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--accent); font: inherit; font-size: 0.86rem;
+}
+.link:hover { text-decoration: underline; }
+#tenant .topbar h1 { margin-top: 0.35rem; }
+
+/* The vendor bar is now SEGMENTED — measured (solid) then allocated (hatched),
+   laid side by side so the split is visible without a legend. */
+.bar-track { display: flex; }
+.bar-fill { flex: none; }

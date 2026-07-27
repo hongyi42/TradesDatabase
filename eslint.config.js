@@ -25,6 +25,12 @@ export default tseslint.config(
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         Telegram: 'readonly',
+        // The admin dashboard holds its bearer token in sessionStorage —
+        // deliberately not the URL, where it would land in history and logs.
+        sessionStorage: 'readonly',
+        Date: 'readonly',
+        Math: 'readonly',
+        encodeURIComponent: 'readonly',
       },
     },
     rules: {

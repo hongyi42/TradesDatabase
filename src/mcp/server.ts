@@ -63,6 +63,7 @@ import {
   getAssignmentForTenant,
   getTechnicianById,
   unwrapAttributes,
+  appendCostEvents,
   WEEK_DAYS,
   type Customer,
   type FoldImpact,
@@ -209,6 +210,9 @@ export interface ServerDeps {
   geocode?: GeocodeTransport;
   roiTransport?: RoiTransport;
   roiMintToken?: MintRoiToken;
+  // Cost-ledger seam. Injectable for the same reason as the rest: without it
+  // every hermetic dispatch test would start writing to the real database.
+  recordCost?: typeof appendCostEvents;
 }
 
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
@@ -1470,6 +1474,28 @@ async function dispatch(
   // and the sensitivity filter must never drift apart (same predicate as
   // isActiveManager; review finding: it was hand-written three times).
   const activeManager = !!caller && caller.tier === 'manager' && caller.state === 'active';
+  // The inference allocation basis. Agent inference happens on the box, through
+  // a gateway shared by every tenant on one API key, so there is no per-tenant
+  // split to read from the provider — this counter is the proxy the rollup
+  // divides the DeepInfra invoice by. Counted here, before the tier gate, so a
+  // refused call still counts: the agent burned a turn deciding to make it.
+  // Failure-isolated inside recordCost — cost accounting never breaks a tool.
+  await (deps.recordCost ?? appendCostEvents)([
+    {
+      tenantId,
+      technicianRef: identity.technicianRef,
+      provider: 'spine',
+      sku: 'tool_call',
+      quantity: 1,
+      unit: 'call',
+      method: 'measured',
+      metadata: { tool: name },
+    },
+  ]).catch((err: unknown) => {
+    console.error(
+      `cost: spine tool_call not recorded — ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
   // The real tier gate (the tools/list filter is cosmetic): applied by tool
   // NAME so no admin case can be added without it.
   if (ADMIN_TOOL_NAMES.has(name) && !activeManager) {
@@ -1525,7 +1551,10 @@ async function dispatch(
         if (!text && !blobPath) throw new Error('text or blobPath is required to stage a note');
         // The ?? fallback is mandatory: production constructs the server with
         // no extract dep (stdio main() / httpServer) — only tests inject stubs.
-        const extracted = await (deps.extract ?? defaultExtractor)(text ?? '');
+        const extracted = await (deps.extract ?? defaultExtractor)(text ?? '', {
+          tenantId,
+          technicianRef: subjectRef,
+        });
         const stagedAt = new Date().toISOString();
         const match = await matchIdentity({
           tenantId,
@@ -1870,6 +1899,7 @@ async function dispatch(
       return (deps.brief ?? defaultBriefer)(
         { ...ctx, recentCaptures: dropSensitive(ctx.recentCaptures) },
         focus,
+        { tenantId, technicianRef: identity.technicianRef },
       );
     }
     case 'answer_customer_question': {
@@ -1884,6 +1914,7 @@ async function dispatch(
       return (deps.answer ?? defaultAnswerer)(
         { ...ctx, recentCaptures: dropSensitive(ctx.recentCaptures) },
         question,
+        { tenantId, technicianRef: identity.technicianRef },
       );
     }
     case 'get_schedule': {

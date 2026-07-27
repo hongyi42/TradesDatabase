@@ -95,10 +95,17 @@ describe('requireOutboundCapable', () => {
   });
 });
 
+// Stubbed in every call below. Left unstubbed, `deps.recordCost ??
+// recordComposioCall` falls through to the real DB accessor, and this file's
+// "nothing here needs a database" claim quietly stops being true — the writes
+// fail the tenant FK and get swallowed, so the only symptom is a round-trip per
+// send on every suite run.
+const noCost = async () => {};
+
 describe('sendGmailEmail', () => {
   test('correct slug, skip flag, and roster-derived ids (never from args)', async () => {
     const { client, calls } = clientStub({ successful: true, data: { id: 'msg-1' } });
-    await sendGmailEmail(tech(), MSG, { client });
+    await sendGmailEmail(tech(), MSG, { client, recordCost: noCost });
     expect(calls).toHaveLength(1);
     expect(calls[0].slug).toBe('GMAIL_SEND_EMAIL');
     expect(calls[0].body).toMatchObject({
@@ -111,25 +118,25 @@ describe('sendGmailEmail', () => {
 
   test('gate runs inside send too: non-active / unpaired rows never reach Composio', async () => {
     const { client, calls } = clientStub({ successful: true, data: {} });
-    await expect(sendGmailEmail(tech({ state: 'offboarding' }), MSG, { client })).rejects.toThrow(
+    await expect(sendGmailEmail(tech({ state: 'offboarding' }), MSG, { client, recordCost: noCost })).rejects.toThrow(
       'not active',
     );
     await expect(
-      sendGmailEmail(tech({ composio_connected_account_id: null }), MSG, { client }),
+      sendGmailEmail(tech({ composio_connected_account_id: null }), MSG, { client, recordCost: noCost }),
     ).rejects.toThrow('no paired mailbox');
     expect(calls).toHaveLength(0);
   });
 
   test('successful:false â†’ throws with Composio error text', async () => {
     const { client } = clientStub({ successful: false, error: 'quota exceeded' });
-    await expect(sendGmailEmail(tech(), MSG, { client })).rejects.toThrow(
+    await expect(sendGmailEmail(tech(), MSG, { client, recordCost: noCost })).rejects.toThrow(
       'Composio send failed: quota exceeded',
     );
   });
 
   test('parses the flat envelope (data.id / data.threadId)', async () => {
     const { client } = clientStub({ successful: true, data: { id: 'm-flat', threadId: 't-flat' } });
-    const r = await sendGmailEmail(tech(), MSG, { client });
+    const r = await sendGmailEmail(tech(), MSG, { client, recordCost: noCost });
     expect(r).toEqual({ messageId: 'm-flat', threadId: 't-flat' });
   });
 
@@ -138,13 +145,60 @@ describe('sendGmailEmail', () => {
       successful: true,
       data: { response_data: { message_id: 'm-nested', thread_id: 't-nested' } },
     });
-    const r = await sendGmailEmail(tech(), MSG, { client });
+    const r = await sendGmailEmail(tech(), MSG, { client, recordCost: noCost });
     expect(r).toEqual({ messageId: 'm-nested', threadId: 't-nested' });
   });
 
   test('no parseable ids â†’ nulls (caller falls back to the confirm-id external id)', async () => {
     const { client } = clientStub({ successful: true, data: { ok: true } });
-    const r = await sendGmailEmail(tech(), MSG, { client });
+    const r = await sendGmailEmail(tech(), MSG, { client, recordCost: noCost });
     expect(r).toEqual({ messageId: null, threadId: null });
+  });
+
+  // GMAIL_SEND_EMAIL is a billed Composio execution that never crosses the
+  // doorman relay — the relay's collector cannot see this path, so it is
+  // counted here or not at all.
+  describe('cost metering', () => {
+    const capture = () => {
+      const calls: Array<{ tenantId: string; technicianRef?: string | null }> = [];
+      return {
+        calls,
+        recordCost: async (ctx?: { tenantId: string; technicianRef?: string | null }) => {
+          if (ctx) calls.push(ctx);
+        },
+      };
+    };
+
+    test('bills one call per send, tagged with the roster row', async () => {
+      const { client } = clientStub({ successful: true, data: { id: 'm' } });
+      const { calls, recordCost } = capture();
+      await sendGmailEmail(tech(), MSG, { client, recordCost });
+      expect(calls).toEqual([{ tenantId: tech().tenant_id, technicianRef: tech().ref }]);
+    });
+
+    test('bills a rejected send too — Composio charged for the attempt', async () => {
+      const { client } = clientStub({ successful: false, error: 'quota exceeded' });
+      const { calls, recordCost } = capture();
+      await expect(sendGmailEmail(tech(), MSG, { client, recordCost })).rejects.toThrow('quota exceeded');
+      expect(calls).toHaveLength(1);
+    });
+
+    test('bills nothing when the gate stops the send before Composio', async () => {
+      const { client } = clientStub({ successful: true, data: {} });
+      const { calls, recordCost } = capture();
+      await expect(
+        sendGmailEmail(tech({ composio_connected_account_id: null }), MSG, { client, recordCost }),
+      ).rejects.toThrow('no paired mailbox');
+      expect(calls).toEqual([]);
+    });
+
+    test('a failing cost write still delivers the send result', async () => {
+      const { client } = clientStub({ successful: true, data: { id: 'm-ok', threadId: 't-ok' } });
+      const r = await sendGmailEmail(tech(), MSG, {
+        client,
+        recordCost: async () => { throw new Error('cost ledger is down'); },
+      });
+      expect(r).toEqual({ messageId: 'm-ok', threadId: 't-ok' });
+    });
   });
 });

@@ -1,5 +1,11 @@
 import { fileURLToPath } from 'node:url';
-import { listTechniciansInStates } from '../db/index.js';
+import {
+  backfillBraveCostEvents,
+  isMissingCostLedger,
+  latestBraveCostEventAt,
+  listTechniciansInStates,
+  rollupCosts,
+} from '../db/index.js';
 import { checkPairing } from '../composio/pairing.js';
 import { expireOffboarding, type ExpireResult } from '../composio/offboarding.js';
 import { ensurePersonSession } from '../composio/sessions.js';
@@ -14,7 +20,11 @@ import { runLogIngestion, type LogIngestSummary } from '../composio/logIngest.js
 //     (self-healing, ≤15-min latency; skipped cleanly when COMPOSIO_API_KEY
 //     is unset so a cron deployed without the key never goes permanently red);
 // (4) ingest Composio execution logs into L1 (the manager-action audit; same
-//     key gate, overlapping 60-min window so a missed tick loses nothing).
+//     key gate, overlapping 60-min window so a missed tick loses nothing);
+// (5) replay Brave searches from web_requests into the cost ledger;
+// (6) recompute the current month's per-tenant cost rollup (idempotent).
+// Steps 5-6 report `skipped` — not an error — when the cost tables are absent,
+// so a deploy that lands before the migration does not turn the cron red.
 // (The schedule-sheet mirror step retired with the Telegram-schedule series
 // Plan 1 — the DB owns the schedule; the sheet is no longer an input.)
 // Each step is isolated: one failing step is REPORTED (ok:false → exit 1 →
@@ -26,6 +36,9 @@ export interface LifecycleDeps {
   expire?: typeof expireOffboarding;
   ensureSession?: typeof ensurePersonSession;
   ingestLogs?: typeof runLogIngestion;
+  backfillBrave?: typeof backfillBraveCostEvents;
+  latestBrave?: typeof latestBraveCostEventAt;
+  rollup?: typeof rollupCosts;
 }
 
 export interface LifecycleSummary {
@@ -36,8 +49,29 @@ export interface LifecycleSummary {
     | { skipped: string }
     | { stepError: string };
   logIngest: LogIngestSummary | { skipped: string } | { stepError: string };
+  braveBackfill: { scanned: number; since: string } | { skipped: string } | { stepError: string };
+  costRollup:
+    | { months: string[]; rowsWritten: number; tenantsTouched: number; unpricedEvents: number }
+    | { skipped: string }
+    | { stepError: string };
   ok: boolean;
 }
+
+// Overlap re-read on top of the watermark: enough to absorb clock skew and rows
+// that landed out of order, and free to repeat because the
+// (tenant, provider, sku, source_ref) key makes a replay a no-op.
+const BRAVE_OVERLAP_MS = 60 * 60 * 1000; // 1h
+// Where to start when the ledger holds no Brave events yet — i.e. the very first
+// run after the migration lands. A fixed look-back window here would silently
+// bill only the last few hours and abandon every earlier search in web_requests.
+const BRAVE_BACKFILL_EPOCH = '2026-07-01T00:00:00.000Z';
+
+const monthStart = (iso: string): string => `${iso.slice(0, 7)}-01`;
+const previousMonthStart = (iso: string): string => {
+  const d = new Date(`${monthStart(iso)}T00:00:00.000Z`);
+  d.setUTCMonth(d.getUTCMonth() - 1);
+  return d.toISOString().slice(0, 10);
+};
 
 const msg = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -50,6 +84,9 @@ export async function runLifecycle(
   const expire = deps.expire ?? expireOffboarding;
   const ensureSession = deps.ensureSession ?? ensurePersonSession;
   const ingestLogs = deps.ingestLogs ?? runLogIngestion;
+  const backfillBrave = deps.backfillBrave ?? backfillBraveCostEvents;
+  const latestBrave = deps.latestBrave ?? latestBraveCostEventAt;
+  const rollup = deps.rollup ?? rollupCosts;
   let ok = true;
 
   // 1. Pairing sweep — only rows a link was ever issued for (checkPairing
@@ -146,7 +183,58 @@ export async function runLifecycle(
     }
   }
 
-  return { pairing, offboarding, sessions, logIngest, ok };
+  // 5. Brave cost backfill — web_requests already logs every search with its
+  // tenant, so the ledger is replayed from it rather than instrumented live.
+  // Returns rows SCANNED: the upsert ignores duplicates, so a steady tick
+  // re-reads its window and inserts nothing.
+  let braveBackfill: LifecycleSummary['braveBackfill'];
+  try {
+    // Watermarked, not a fixed window: the first run after the migration must
+    // sweep everything web_requests already holds, and a cron outage of any
+    // length must not leave a permanent hole in the ledger.
+    const watermark = await latestBrave();
+    const since = watermark
+      ? new Date(Date.parse(watermark) - BRAVE_OVERLAP_MS).toISOString()
+      : BRAVE_BACKFILL_EPOCH;
+    braveBackfill = { ...(await backfillBrave(since)), since };
+  } catch (err) {
+    // Not-yet-migrated is EXPECTED between this phase merging and the pilot
+    // migration landing — report it as skipped, or the heartbeat goes red every
+    // 15 minutes for a condition that resolves itself.
+    braveBackfill = isMissingCostLedger(err)
+      ? { skipped: 'cost ledger not migrated here yet' }
+      : { stepError: msg(err) };
+    if (!isMissingCostLedger(err)) ok = false;
+  }
+
+  // 6. Cost rollup — units x rates, plus the monthly-bill allocation, for the
+  // CURRENT month. Idempotent (it recomputes the period), so every tick simply
+  // refreshes what the dashboard reads.
+  let costRollup: LifecycleSummary['costRollup'];
+  try {
+    // BOTH the current month and the previous one. Invoices arrive after the
+    // month they cover — the July DeepInfra bill is entered in August — so a
+    // current-month-only rollup would never allocate a completed month's
+    // inference cost at all, which is the entire allocated-cost mechanism.
+    // Rate corrections land late for the same reason. The recompute is
+    // idempotent, so re-running a settled month is free.
+    const months = [monthStart(nowIso), previousMonthStart(nowIso)];
+    const totals = { months, rowsWritten: 0, tenantsTouched: 0, unpricedEvents: 0 };
+    for (const month of months) {
+      const r = await rollup(month);
+      totals.rowsWritten += r.rowsWritten;
+      totals.unpricedEvents += r.unpricedEvents;
+      totals.tenantsTouched = Math.max(totals.tenantsTouched, r.tenantsTouched);
+    }
+    costRollup = totals;
+  } catch (err) {
+    costRollup = isMissingCostLedger(err)
+      ? { skipped: 'cost ledger not migrated here yet' }
+      : { stepError: msg(err) };
+    if (!isMissingCostLedger(err)) ok = false;
+  }
+
+  return { pairing, offboarding, sessions, logIngest, braveBackfill, costRollup, ok };
 }
 
 async function main(): Promise<void> {

@@ -69,9 +69,21 @@ function dbStubs(opts: { casMiss?: boolean } = {}) {
   };
 }
 
-// Everything checkPairing/unpair need, from one stub set.
+// Everything checkPairing/unpair need, from one stub set. recordCost is stubbed
+// like every other seam: unstubbed it falls through to the real accessor and
+// this "pure unit test" file starts making DB round-trips (which then fail the
+// tenant FK and are silently swallowed) on every run.
+const costCalls: Array<{ tenantId: string; technicianRef?: string | null }> = [];
 function pairingDeps(db: ReturnType<typeof dbStubs>, client: PairingClient) {
-  return { client, update: db.update, cas: db.cas, openReviewItem: db.openReviewItem };
+  return {
+    client,
+    update: db.update,
+    cas: db.cas,
+    openReviewItem: db.openReviewItem,
+    recordCost: async (ctx?: { tenantId: string; technicianRef?: string | null }) => {
+      if (ctx) costCalls.push(ctx);
+    },
+  };
 }
 
 // Configurable Composio client stub; records every call.
@@ -283,6 +295,50 @@ describe('checkPairing', () => {
     expect(r).toEqual({ status: 'paired', connectedAccountId: 'ca_abc123', email: null });
     expect(db.casCalls[0].patch.connected_email).toBeNull();
     expect(db.items[0].detail).toMatchObject({ email: null });
+  });
+
+  // GMAIL_GET_PROFILE is a billed Composio execution that never crosses the
+  // doorman relay, so the relay's collector cannot see it — it is counted here
+  // or nowhere. It also runs unattended on the 15-minute cron for every
+  // invited/pending row, making it the only Composio cost that accrues with no
+  // human action at all.
+  describe('cost metering', () => {
+    test('bills exactly one call when the profile probe actually runs', async () => {
+      costCalls.length = 0;
+      const db = dbStubs();
+      const { client } = clientStub({ accounts: [ACTIVE_GMAIL] });
+      await checkPairing(tech(), pairingDeps(db, client));
+      expect(costCalls).toEqual([{ tenantId: tech().tenant_id, technicianRef: tech().ref }]);
+    });
+
+    test('bills nothing on the paths that never execute a tool', async () => {
+      costCalls.length = 0;
+      const db = dbStubs();
+      // No ACTIVE account -> returns before the profile probe.
+      await checkPairing(
+        tech(),
+        pairingDeps(db, clientStub({ accounts: [{ id: 'ca_x', status: 'INITIATED', toolkit: { slug: 'gmail' } }] }).client),
+      );
+      // Wrong state -> returns before listing accounts at all.
+      await checkPairing(tech({ state: 'active' }), pairingDeps(db, clientStub({ accounts: [ACTIVE_GMAIL] }).client));
+      // The execution itself threw -> Composio billed nothing.
+      await checkPairing(
+        tech(),
+        pairingDeps(db, clientStub({ accounts: [ACTIVE_GMAIL], profileThrows: true }).client),
+      );
+      expect(costCalls).toEqual([]);
+    });
+
+    test('a failing cost write leaves pairing verification intact', async () => {
+      const db = dbStubs();
+      const { client } = clientStub({ accounts: [ACTIVE_GMAIL] });
+      const r = await checkPairing(tech(), {
+        ...pairingDeps(db, client),
+        recordCost: async () => { throw new Error('cost ledger is down'); },
+      });
+      // Still paired, and the email the manager verifies against is still there.
+      expect(r).toEqual({ status: 'paired', connectedAccountId: 'ca_abc123', email: 'jane.doe@gmail.com' });
+    });
   });
 
   test('reads a nested response_data profile shape too', async () => {

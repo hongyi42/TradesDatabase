@@ -84,7 +84,11 @@ export async function ingestEmail(
   let ingested = 0;
   let skipped = 0;
   for (const email of emails) {
-    const { isWork, reason } = await classify({ subject: email.subject, body: email.body, from: email.from });
+    const { isWork, reason } = await classify(
+      { subject: email.subject, body: email.body, from: email.from },
+      // Billed even when the mail is dropped as personal — see webhook.ts.
+      { tenantId, technicianRef },
+    );
     if (!isWork) {
       // classify-before-L1: the email itself is NOT stored (privacy — append-only L1
       // must not retain personal mail). Record only a content-free audit receipt so a

@@ -52,6 +52,14 @@ function validDetail(detail: unknown): StagedDetail | null {
   if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null;
   const d = detail as { plan?: unknown; scheduleVersion?: unknown; stagedAt?: unknown };
   if (!d.plan || typeof d.plan !== 'object') return null;
+  // The open branch maps/filters these three unguarded — a shapeless plan
+  // object must degrade to `none`, never 500 the endpoint (phase review
+  // finding 3: no current writer produces this, but "never throw" is the
+  // module's contract, not an assumption about writers).
+  const p = d.plan as { placements?: unknown; skipped?: unknown; capacity?: unknown };
+  if (!Array.isArray(p.placements) || !Array.isArray(p.skipped) || !Array.isArray(p.capacity)) {
+    return null;
+  }
   if (typeof d.scheduleVersion !== 'number') return null;
   if (typeof d.stagedAt !== 'string' || !Number.isFinite(Date.parse(d.stagedAt))) return null;
   return d as unknown as StagedDetail;

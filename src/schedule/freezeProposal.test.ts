@@ -98,6 +98,9 @@ describe('projectFreezeProposal', () => {
       { plan: good, scheduleVersion: '7', stagedAt: new Date(NOW).toISOString() },
       { plan: good, scheduleVersion: 7 }, // stagedAt missing — the confirm path's `d.stagedAt &&` guard
       { plan: good, scheduleVersion: 7, stagedAt: 'not-a-date' }, // would serve expiresAt: NaN as open
+      // Shapeless plan object: truthy but arrayless — must degrade, not throw
+      // (the endpoint's "never 500 on stored junk" contract).
+      { plan: {}, scheduleVersion: 7, stagedAt: new Date(NOW).toISOString() },
     ]) {
       expect(projectFreezeProposal([row(detail)], 7, NOW).state).toBe('none');
     }

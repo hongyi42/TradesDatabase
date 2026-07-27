@@ -6050,13 +6050,15 @@ describe('run_freeze (plan 4b-3: stage → confirm the whole plan)', () => {
       expect(staged.data.note).toContain('NOTHING is booked yet');
 
       // A DIFFERENT staged tool keeps the exclusion — no board fields at all.
+      // Self-contained fixture (phase review finding 1): person-less +
+      // day-promise stages without depending on a sibling test's technician.
       const cust = await createCustomer({ tenantId, name: 'Seam Probe Cust' });
       const job = await createJob({
         tenantId, customerId: cust.id, title: 'seam probe', status: 'open',
       });
       const otherStage = await callWith('book_visit', {
         jobId: job.id, date: relDay(9), startTime: '09:00', endTime: '10:00',
-        technicianRef: 'frz-tech', promiseLevel: 'day',
+        promiseLevel: 'day',
       });
       expect(otherStage.data.status).toBe('needs_confirmation');
       expect(otherStage.data.boardLink).toBeUndefined();
@@ -6069,6 +6071,20 @@ describe('run_freeze (plan 4b-3: stage → confirm the whole plan)', () => {
       expect(bare.data.status).toBe('needs_confirmation');
       expect(bare.data.proposalLink).toBeUndefined();
       expect(bare.data.boardNote).toBeUndefined();
+
+      // The COMMITTED freeze result rides the generic branch: decoration is
+      // per-call, so re-setting the handle before the confirm must yield
+      // boardLink + the committed-idiom note (plan checklist, review
+      // finding 2 — previously untested for run_freeze specifically).
+      process.env.BOARD_BOT_HANDLE = 'DashboardMan_bot';
+      const confirmed = await callWith('run_freeze', { confirmId: bare.data.confirmId });
+      expect(confirmed.isError).toBe(false);
+      expect(confirmed.data.boardLink).toBe('https://t.me/DashboardMan_bot?startapp');
+      expect(confirmed.data.boardNote).toBe(
+        'ALWAYS end this reply with the exact line: ' +
+          '[See it on the board](https://t.me/DashboardMan_bot?startapp)',
+      );
+      expect(confirmed.data.proposalLink).toBeUndefined();
     } finally {
       if (prev === undefined) delete process.env.BOARD_BOT_HANDLE;
       else process.env.BOARD_BOT_HANDLE = prev;

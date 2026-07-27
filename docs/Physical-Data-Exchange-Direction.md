@@ -314,6 +314,11 @@ confirmed outcome.** Our spine supplies the outcome half automatically. ⚠️ C
 are architected around OEM procedures and DTC text, not video — this needs evangelism, and no
 procurement precedent was found.
 
+**→ §12.2 is the cheap way to serve this buyer.** Because diagnostic reasoning is *verbal*,
+capturing it needs a microphone and an OBD-II dongle rather than a camera rig — no capital
+program, a much lighter consent surface, and it uses the conversational agent we already ship.
+**Read §12.2 before committing to any hardware.**
+
 **Buyers ranked by realism:**
 
 | # | Buyer | Wants | Blocker |
@@ -737,6 +742,58 @@ inverts the §7 quota design, which optimizes for breadth. If the instrumented p
 the program becomes narrow and deep — fewer partners, capital equipment, a real installation
 program — and it stops being a pure software play.
 
+### 12.2 The verbal path — and why it may beat the bay
+
+**If diagnosis is where the value is, and diagnosis is mostly reasoning, then the reasoning is
+verbal — and verbal capture needs no bay build at all.** This observation splits the direction
+into two products with radically different costs, and it is not auto-repair-specific: it applies
+to any diagnosis-heavy trade (HVAC especially).
+
+| | **A — Diagnostic reasoning corpus** | **B — Manipulation corpus** |
+|---|---|---|
+| Captures | Narrated reasoning + scan-tool/OBD-II stream + confirmed outcome | Multi-view hand pose + torque + tool pose |
+| Hardware | **A microphone and a dongle.** The agent they already use. | $5–10k/bay rig (§12.1) |
+| Buyer | **Exists today** — Bosch, Snap-on, ALLDATA, Mitchell, Identifix (§6) | Does not exist yet (RoboTire, §12) |
+| Business shape | **Software. What we already are.** | Hardware, install, calibration, capital |
+| Privacy surface | **Low** — see below | High (video in a customer's space) |
+
+**Three reasons A is the stronger opening move:**
+
+1. **It fits the product we already have.** Real diagnosis involves long silent stretches;
+   "thinking aloud" is an unnatural skill. But an agent can *prompt* it — "what are you seeing?",
+   "what's your hypothesis?", "did that fix it?" **A conversational capture loop is exactly what
+   a Telegram agent is good at**, and it needs no new hardware in the bay.
+2. **The outcome linkage is the moat, and it is already ours.** Anyone can record a technician
+   talking; that is a podcast. **Narration + a confirmed outcome is supervised reasoning data**,
+   and only the spine knows whether the repair held or came back. This is the same asset in a
+   cheaper wrapper.
+3. **⚠️ It largely dissolves the legal problem this document opens with.** A technician
+   dictating their own reasoning to the agent is **not surveillance of a customer's home or
+   vehicle** — it is a worker creating a work record. No customer likeness, no home interior, no
+   bystanders, no video-voyeurism exposure, no biometric statutes. The consent architecture in
+   §10 gets much lighter. (Not zero: audio still touches all-party-consent states if ambient
+   conversation is captured, so the design must be **dictation to the agent, not ambient
+   recording** — a materially different and safer object.)
+
+**This is also the option most consistent with the strongest evidence in the whole study.** TRI's
+finding (§2.1) was that 2,271 hours of passive video paid off **through the language channel and
+not the action channel**. Language was where the value was all along; A goes straight at it.
+
+**What A genuinely loses:** where the probe went, which pin was back-probed, what the visual cue
+looked like, the physical access path. That matters for a robot and much less for a copilot.
+Partial mitigation is cheap — a few photos at key moments, which shops already take for DVI (§5).
+
+**⚠️ Risks specific to A:** no procurement precedent was found for a narrated-reasoning corpus,
+so the buyer's willingness to pay is unproven; technicians may narrate inconsistently or resent
+being prompted mid-job; and the volume needed is unknown. **All three are testable for the cost
+of instrumenting a handful of shops with software we mostly already ship** — which is the point.
+
+**Suggested sequencing:** run A first (cheap, buyer exists, doubles as a product feature —
+narrated job notes are useful to the shop *itself*). Treat B as an option to exercise only if
+a robotics buyer materializes or A proves the capture loop works. **B's phase 0 (§12.1) stays
+the right first experiment for the robotics bet — but it need not be the first experiment
+overall.**
+
 **⚠️ Honest risks in this direction:**
 - **No buyer exists today.** RoboTire's bankruptcy says the near-term robot market is not there.
   This is a bet that a buyer *appears*, and pre-building a corpus for a market that doesn't yet
@@ -797,6 +854,11 @@ specific position open:
    ALLDATA/Mitchell/Identifix). **Ask one question: *"what provenance documentation would you
    need before you could use footage like this?"*** Their answer prices the product better than
    anything findable on the open web (§4).
+0b. **Test the verbal path first (§12.2) — it is the cheapest experiment in this document.**
+   Narrated reasoning + OBD-II stream + confirmed outcome needs a microphone and a dongle, not a
+   bay build; serves the buyer who exists today; carries a far lighter consent surface (worker
+   dictation, not customer surveillance); and doubles as a shop-facing feature since narrated
+   job notes are useful to the shop itself. **Do not commit hardware capital before this runs.**
 1. **Lawyer review** of the consent architecture (§10 checklist) — gate for everything else.
 2. Draft the **template consent form** + tech script (+ Spanish); decide launch states.
 3. **Meter real seat cost** off the DeepInfra dashboard for a quarter; re-derive the 100-min

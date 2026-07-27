@@ -67,7 +67,13 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   complete-job-gated minutes, narration ×2) for seats — footage as physical-AI training data.
   Full design incl. consent architecture, valuation math, and the **videos-never-enter-L1**
   constraint: [Physical-Data-Exchange-Direction.md](Physical-Data-Exchange-Direction.md).
-  Gated on privacy-lawyer review; nothing is built.
+  Gated on privacy-lawyer review; nothing is built. **A same-day deep supply/demand study
+  (§9 of that doc) materially challenged the data-sale half** — raw video without action
+  labels is the weakest training modality, no robotics lab publicly licenses third-party
+  corpora, 100k+ hours are free under Apache 2.0, and auto-repair robotics is dead
+  (RoboTire Chapter 7). What survives: the consent architecture, spine-linked outcome ground
+  truth, and provenance+indemnity as the differentiator. Read §9 before repeating any
+  valuation number from §3.
   Pool invariant: free blanks = purchased seats − active members. The only un-automatable
   step is creating Telegram bots at BotFather (no API) — pre-create and vault tokens.
 - **Spine scope boundary** (2026-07-06): the spine is the **customer/job record**, not a

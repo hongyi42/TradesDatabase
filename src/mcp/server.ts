@@ -144,6 +144,7 @@ import {
   PINNED_SKIP_REASON,
   type FreezePlan,
 } from '../schedule/freezeSolve.js';
+import { FREEZE_PROPOSAL_TTL_MS } from '../schedule/freezeProposal.js';
 import { commitFreezePlan } from '../schedule/freezeCommit.js';
 import type { GeocodeTransport } from '../routes/geocode.js';
 import type { MintRoiToken, RoiTransport } from '../routes/roiClient.js';
@@ -1223,7 +1224,7 @@ const BOARD_LINK_TOOL_NAMES = new Set([
   'run_freeze',
 ]);
 
-function boardMiniAppLink(): string | null {
+function boardMiniAppLink(param?: string): string | null {
   const handle = (process.env.BOARD_BOT_HANDLE ?? '').trim().replace(/^@/, '');
   if (!handle) return null;
   // Telegram username rules — anything else is treated as UNSET, never
@@ -1236,7 +1237,12 @@ function boardMiniAppLink(): string | null {
     );
     return null;
   }
-  return `https://t.me/${handle}?startapp`;
+  // `?startapp=<param>` reaches the Mini App as start_param (inside the signed
+  // initData and via initDataUnsafe — https://core.telegram.org/bots/webapps,
+  // verified 2026-07-27). Internal callers pass literals; anything outside the
+  // conservative charset is dropped rather than minted into a tenant-wide link.
+  const suffix = param && /^[a-z0-9_-]{1,64}$/.test(param) ? `=${param}` : '';
+  return `https://t.me/${handle}?startapp${suffix}`;
 }
 
 // Audit channels: L1 rows that exist to hold the ACTOR accountable for an
@@ -4710,7 +4716,8 @@ async function dispatch(
       // 12h expiry, NOT the house 15 minutes (plan decision): a morning
       // cron-fired proposal must survive until the manager reads it — the
       // REAL staleness guard is the version pin below, not the clock.
-      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 12 * 3600_000) {
+      // Single-sourced with the board's proposal view (freezeProposal.ts).
+      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > FREEZE_PROPOSAL_TTL_MS) {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'freeze proposal expired (12h)');
         throw new Error('this freeze proposal expired (12 hours) — run the freeze again for a fresh plan');
       }
@@ -5459,23 +5466,38 @@ export function createServer(deps: ServerDeps = {}): Server {
       // nothing, so the board cannot show the pending change — offering "see
       // it on the board" mid-confirmation would show the OLD schedule at the
       // exact moment precision matters. The link rides committed results only.
-      const decorated =
-        link &&
-        result &&
-        typeof result === 'object' &&
-        !Array.isArray(result) &&
-        (result as { status?: unknown }).status !== 'needs_confirmation'
-          ? {
+      // ONE exception (proposal-view feature, 2026-07-27): run_freeze's stage
+      // result — the board's proposal view shows exactly the staged plan, so
+      // the premise inverts for this tool alone. It gets `proposalLink`
+      // (deep-linked via ?startapp=freeze) + a fused boardNote; the field is
+      // boardNote, NEVER `note` — the stage result already carries `note`
+      // ("NOTHING is booked yet…") and this spread lands after the result, so
+      // a `note`-named attachment would silently clobber the instruction
+      // (plan review finding 1).
+      let decorated = result;
+      if (link && result && typeof result === 'object' && !Array.isArray(result)) {
+        if ((result as { status?: unknown }).status !== 'needs_confirmation') {
+          decorated = {
+            ...(result as Record<string, unknown>),
+            boardLink: link,
+            // Instruction + payload FUSED into the result (the resolve_date
+            // lesson: description-only wording is too weak for the live
+            // model — it skipped the link on plain schedule reads,
+            // 2026-07-19). The bracketed line is Telegram markdown; the
+            // bridge renders it as a tappable "See it on the board".
+            boardNote: `ALWAYS end this reply with the exact line: [See it on the board](${link})`,
+          };
+        } else if (name === 'run_freeze') {
+          const proposalLink = boardMiniAppLink('freeze');
+          if (proposalLink) {
+            decorated = {
               ...(result as Record<string, unknown>),
-              boardLink: link,
-              // Instruction + payload FUSED into the result (the resolve_date
-              // lesson: description-only wording is too weak for the live
-              // model — it skipped the link on plain schedule reads,
-              // 2026-07-19). The bracketed line is Telegram markdown; the
-              // bridge renders it as a tappable "See it on the board".
-              boardNote: `ALWAYS end this reply with the exact line: [See it on the board](${link})`,
-            }
-          : result;
+              proposalLink,
+              boardNote: `ALWAYS end this reply with the exact line: [Review the full proposal on the board](${proposalLink})`,
+            };
+          }
+        }
+      }
       // Temporal grounding rider — every successful object result carries
       // `now` (the eval-verified rich-grounding line: date + weekday + tz;
       // condition B of thoughts/shared/research/2026-07-15-date-reliability-eval.md,

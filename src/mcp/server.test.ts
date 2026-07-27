@@ -6024,6 +6024,57 @@ describe('run_freeze (plan 4b-3: stage → confirm the whole plan)', () => {
     expect(rows[0].status).toBe('confirmed');
     expect(rows[0].starts_at).toContain(`${relDay(4)} 09:00`);
   });
+
+  test('stage result carries proposalLink + fused boardNote; the stage note SURVIVES; other staged tools stay undecorated', { timeout: 30_000 }, async () => {
+    // Asserted WITH the handle set (plan review finding 1): unset ⇒ no
+    // decoration ⇒ a `note`-clobbering attachment would ship invisibly.
+    const prev = process.env.BOARD_BOT_HANDLE;
+    const { client: mgrClient, callWith } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      freezeDeps,
+    );
+    try {
+      process.env.BOARD_BOT_HANDLE = 'DashboardMan_bot';
+      const staged = await callWith('run_freeze', {});
+      expect(staged.isError).toBe(false);
+      expect(staged.data.status).toBe('needs_confirmation');
+      // The ONE seam exception: the proposal view shows the staged plan, so
+      // the "board would show the OLD schedule" premise inverts here alone.
+      expect(staged.data.proposalLink).toBe('https://t.me/DashboardMan_bot?startapp=freeze');
+      expect(staged.data.boardNote).toBe(
+        'ALWAYS end this reply with the exact line: ' +
+          '[Review the full proposal on the board](https://t.me/DashboardMan_bot?startapp=freeze)',
+      );
+      expect(staged.data.boardLink).toBeUndefined(); // committed-result field only
+      // The clobber guard: the stage instruction must survive the decoration.
+      expect(staged.data.note).toContain('NOTHING is booked yet');
+
+      // A DIFFERENT staged tool keeps the exclusion — no board fields at all.
+      const cust = await createCustomer({ tenantId, name: 'Seam Probe Cust' });
+      const job = await createJob({
+        tenantId, customerId: cust.id, title: 'seam probe', status: 'open',
+      });
+      const otherStage = await callWith('book_visit', {
+        jobId: job.id, date: relDay(9), startTime: '09:00', endTime: '10:00',
+        technicianRef: 'frz-tech', promiseLevel: 'day',
+      });
+      expect(otherStage.data.status).toBe('needs_confirmation');
+      expect(otherStage.data.boardLink).toBeUndefined();
+      expect(otherStage.data.proposalLink).toBeUndefined();
+      expect(otherStage.data.boardNote).toBeUndefined();
+
+      // Handle unset ⇒ the stage result carries NO proposal fields either.
+      delete process.env.BOARD_BOT_HANDLE;
+      const bare = await callWith('run_freeze', {});
+      expect(bare.data.status).toBe('needs_confirmation');
+      expect(bare.data.proposalLink).toBeUndefined();
+      expect(bare.data.boardNote).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.BOARD_BOT_HANDLE;
+      else process.env.BOARD_BOT_HANDLE = prev;
+      await mgrClient.close();
+    }
+  });
 });
 
 describe('move_visit unassign + time_only (plan 4a.5)', () => {

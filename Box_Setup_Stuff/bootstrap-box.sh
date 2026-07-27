@@ -584,7 +584,7 @@ EOF
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-07-25)
+## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-07-26)
 
 The rule, in general: confirm only what is irreversible or externally visible (a customer
 promise at stake). Everything reversible — just do it, then SAY WHAT YOU DID (day, time,
@@ -612,6 +612,11 @@ change.
    NO times. timeTbd is NEVER your own choice when a time was stated. A time-TBD visit
    shows as "time not set" — never invent a time for it; placing it later is a normal
    move_visit with real times.
+5. Pinning (set_visit_locks) is one-shot and reversible: pin/unpin immediately, then say
+   what changed (count + days). A PINNED visit is the manager's "hands off" mark —
+   automatic scheduling never places, moves, or considers it (on a time-TBD visit it means
+   "I'll place this myself"). NOTHING pins automatically: a fresh booking is NOT pinned,
+   and you pin only when the manager says so ("pin it", "lock next week").
 EOF
     ok "confirmation-doctrine block refreshed in ${agent}'s AGENTS.md"
     # Board-link relay — REFRESHED on every run since 2026-07-19 (delete-then-
@@ -789,6 +794,44 @@ EOF
     fi
   else
     echo "    WARN: no running container for ${agent} — append the §0g block manually once it's up"
+  fi
+
+  # Freeze ritual — REFRESHED on every run (delete-then-append, the
+  # confirmation-doctrine idiom): the ritual's TEXT will evolve with the
+  # freeze, and an append-once grep would pin boxes to the first version
+  # (template-drift trap). Plan 4b-3 Phase 5.
+  log "freeze-ritual block (§0h — run_freeze proposes, the manager decides; refreshed per run)"
+  if [ -n "$cid" ]; then
+    if docker exec "$cid" grep -q "The freeze ritual" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+      docker exec -u sandbox "$cid" sh -c 'awk '\''/^## The freeze ritual/{skip=1; next} skip && /^## /{skip=0} !skip'\'' /sandbox/.openclaw/workspace/AGENTS.md > /tmp/agents-md.tmp && cat /tmp/agents-md.tmp > /sandbox/.openclaw/workspace/AGENTS.md && rm -f /tmp/agents-md.tmp'
+    fi
+    docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+
+## The freeze ritual — propose, never autopilot (host-managed; refreshed; added 2026-07-26)
+
+run_freeze auto-places the loose work (open jobs with no visit, visits with nobody attached,
+time-TBD visits) by proposing a WHOLE plan. It is always two-step, and the second step is
+always a HUMAN's yes:
+
+1. When a manager asks to run the freeze, call run_freeze and show the ENTIRE proposal:
+   every placement (weekday, date, time, who, customer), every skipped item WITH its reason
+   (no length set, no working pattern, pinned, address failed…), each technician's committed
+   vs available minutes, and the pin line (how many pinned visits were left untouched —
+   "pin it" / set_visit_locks is how the manager protects a visit from the freeze).
+2. NEVER confirm a freeze without the manager's explicit yes IN THE CONVERSATION. A
+   scheduled firing is a PROPOSAL + reminder, never an unattended commit: when a cron job
+   runs the freeze, present the proposal and STOP — the manager reads it, pins/unpins
+   anything they want protected, then says yes (confirm with ONLY confirmId) or ignores it
+   (the proposal expires in 12 hours; a later run supersedes it).
+3. A recurring freeze ("run the freeze every Friday morning") rides the normal cron rules
+   (§ Scheduled / recurring work): explicit ask, one named task, sane cadence — that phrase
+   is the canonical legitimate recurring job. NOTE: cron jobs are wiped by sandbox
+   rebuilds — after a rebuild, re-create the firm's freeze schedule once the manager
+   confirms it is still wanted.
+EOF
+    ok "freeze-ritual block refreshed in ${agent}'s AGENTS.md"
+  else
+    echo "    WARN: no running container for ${agent} — append the §0h freeze-ritual block manually once it's up"
   fi
 
   log "heartbeat OFF (blind 30-min poll → 0m; scheduled work uses cron instead — added 2026-07-20)"

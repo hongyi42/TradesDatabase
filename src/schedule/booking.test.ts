@@ -23,6 +23,7 @@ import {
   naiveLocalISO,
   previewBookVisit,
   previewMoveVisit,
+  setVisitLocks,
   setVisitPromise,
 } from './booking.js';
 
@@ -74,7 +75,7 @@ describe('naiveLocalISO', () => {
 });
 
 describe('bookVisit', () => {
-  test('customerId path mints a job shell, books confirmed+locked; promises NOTHING by default', async () => {
+  test('customerId path mints a job shell, books confirmed and UNPINNED; promises NOTHING by default', async () => {
     const customer = await createCustomer({ tenantId, name: 'Henderson' });
     const { assignment, job, warning } = await bookVisit({
       tenantId,
@@ -95,7 +96,9 @@ describe('bookVisit', () => {
     // stamps NO promised day (never invent a promise the manager didn't make).
     expect(assignment.promise_level).toBe('none');
     expect(assignment.promised_day).toBeNull();
-    expect(assignment.locked).toBe(true);
+    // Pinning is a HUMAN privilege (plan 4b-3): no verb auto-locks — a fresh
+    // booking lands unpinned until a manager pins it deliberately.
+    expect(assignment.locked).toBe(false);
     expect(assignment.starts_at).toContain('2026-11-02T09:00');
     // Event trail: a 'booked' event exists for this assignment.
     const events = await listScheduleEventsSince(tenantId, 0, 50);
@@ -349,7 +352,7 @@ describe('moveVisit', () => {
     expect(moved.created.status).toBe('confirmed'); // BLOCKER-#1 regression pin
     expect(moved.created.promise_level).toBe('day'); // carried
     expect(moved.created.promised_day).toBe('2026-11-10'); // recomputed
-    expect(moved.created.locked).toBe(true);
+    expect(moved.created.locked).toBe(false); // carried from the unpinned source, never re-stamped
     // Duration preserved (09–11 was 2h → 13:00–15:00).
     expect(moved.created.ends_at).toContain('2026-11-10T15:00');
     // Visible to the ['confirmed']-filtered read every surface uses.
@@ -520,7 +523,7 @@ describe('unassigned bookings (technician-optional)', () => {
     expect(warning).toBeUndefined();
     expect(assignment.technician_id).toBeNull();
     expect(assignment.status).toBe('confirmed');
-    expect(assignment.locked).toBe(true);
+    expect(assignment.locked).toBe(false); // human-privilege pinning (plan 4b-3)
   });
 
   test('unassigned same-window: different customers land; an identical duplicate is refused', async () => {
@@ -1219,5 +1222,166 @@ describe('cancelJob — the terminal verb (cancel-vocabulary plan, 2026-07-25)',
     await expect(
       cancelJob({ tenantId, jobId: job.id, reason: '  ', actorRef: 'manager-test' }),
     ).rejects.toThrow('reason is required');
+  });
+});
+
+// ---- setVisitLocks (plan 4b-3): pinning is a human privilege ----
+describe('setVisitLocks', () => {
+  test('ids path: pins and unpins; a move CARRIES a pin; one lock_updated event per run', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Pin Petra' });
+    const { assignment } = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      title: 'furnace check',
+      date: '2027-02-01', // Monday
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    expect(assignment.locked).toBe(false);
+
+    const pinned = await setVisitLocks(
+      tenantId,
+      { assignmentIds: [assignment.id] },
+      true,
+      'manager-test',
+    );
+    expect(pinned.updated).toHaveLength(1);
+    expect(pinned.updated[0].locked).toBe(true);
+    expect(pinned.days).toEqual(['2027-02-01']);
+
+    // ONE ledger entry for the run, with the batch detail shape.
+    const events = await listScheduleEventsSince(tenantId, 0, 200);
+    const lockEvents = events.filter((e) => e.kind === 'lock_updated');
+    const evt = lockEvents.find(
+      (e) => (e.detail as { assignmentIds?: string[] }).assignmentIds?.includes(assignment.id),
+    );
+    expect(evt?.actor_ref).toBe('manager-test');
+    expect(evt?.detail).toMatchObject({ locked: true, assignmentIds: [assignment.id] });
+
+    // A move of a PINNED visit keeps the pin (carried, never re-decided).
+    const moved = await moveVisit({
+      tenantId,
+      assignmentId: assignment.id,
+      date: '2027-02-02',
+      startTime: '11:00',
+      reason: 'shuffle',
+      actorRef: 'manager-test',
+    });
+    expect(moved.created.locked).toBe(true);
+
+    // Unpin flips it back.
+    const unpinned = await setVisitLocks(
+      tenantId,
+      { assignmentIds: [moved.created.id] },
+      false,
+      'manager-test',
+    );
+    expect(unpinned.updated[0].locked).toBe(false);
+  });
+
+  test('range path: placed by start-day, unplaced by fence overlap; outside rows untouched', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Range Rhea' });
+    const inRange = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      title: 'in-range placed',
+      date: '2027-03-01', // Monday
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    // Person-less UNPLACED row whose fence STRADDLES the range end — fence
+    // overlap must catch it even though its earliest day is inside and latest
+    // is beyond.
+    const straddler = await bookVisit({
+      tenantId,
+      customerId: customer.id,
+      title: 'straddling tbd',
+      timeTbd: true,
+      earliestDate: '2027-03-05',
+      latestDate: '2027-03-10',
+      actorRef: 'manager-test',
+    });
+    const outside = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      title: 'outside placed',
+      date: '2027-03-08', // next Monday — outside [03-01, 03-07]
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+
+    const result = await setVisitLocks(
+      tenantId,
+      { from: '2027-03-01', to: '2027-03-07' },
+      true,
+      'manager-test',
+    );
+    const ids = result.updated.map((r) => r.id);
+    expect(ids).toContain(inRange.assignment.id);
+    expect(ids).toContain(straddler.assignment.id);
+    expect(ids).not.toContain(outside.assignment.id);
+    // Detail carries the range so the ledger reads as the human act it was.
+    const events = await listScheduleEventsSince(tenantId, 0, 200);
+    const evt = events
+      .filter((e) => e.kind === 'lock_updated')
+      .find((e) => (e.detail as { from?: string }).from === '2027-03-01');
+    expect(evt?.detail).toMatchObject({ locked: true, from: '2027-03-01', to: '2027-03-07' });
+
+    // technicianRef narrowing: only Bob's rows — the person-less straddler
+    // stays pinned from above but is NOT re-selected.
+    const narrowed = await setVisitLocks(
+      tenantId,
+      { from: '2027-03-01', to: '2027-03-07', technicianRef: 'book-tech' },
+      false,
+      'manager-test',
+    );
+    expect(narrowed.updated.map((r) => r.id)).toEqual([inRange.assignment.id]);
+  });
+
+  test('refusals: empty range, empty ids, terminal row, unknown id, bad dates', async () => {
+    await expect(
+      setVisitLocks(tenantId, { from: '2028-01-03', to: '2028-01-04' }, true, 'manager-test'),
+    ).rejects.toThrow(/nothing matched/);
+    await expect(
+      setVisitLocks(tenantId, { assignmentIds: [] }, true, 'manager-test'),
+    ).rejects.toThrow(/assignmentIds is empty/);
+    await expect(
+      setVisitLocks(tenantId, { from: '2028-01-05', to: '2028-01-04' }, true, 'manager-test'),
+    ).rejects.toThrow(/from <= to/);
+    await expect(
+      setVisitLocks(
+        tenantId,
+        { assignmentIds: ['00000000-0000-0000-0000-000000000002'] },
+        true,
+        'manager-test',
+      ),
+    ).rejects.toThrow(/not found/);
+    // A cancelled row has nothing to protect.
+    const customer = await createCustomer({ tenantId, name: 'Terminal Tia' });
+    const { assignment } = await bookVisit({
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      title: 'soon gone',
+      date: '2027-04-05',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    });
+    await unscheduleVisit({
+      tenantId,
+      assignmentId: assignment.id,
+      reason: 'clearing',
+      actorRef: 'manager-test',
+    });
+    await expect(
+      setVisitLocks(tenantId, { assignmentIds: [assignment.id] }, true, 'manager-test'),
+    ).rejects.toThrow(/cannot pin a cancelled visit/);
   });
 });

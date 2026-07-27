@@ -9,8 +9,9 @@
 //     address_line1 match, else CREATE from the row's denormalized fields.
 //   booking:    an open job shell + a CONFIRMED assignment with the row's
 //     times (naive-local, exactly as the mirror stored them),
-//     promise_level='time', promisedDay = the start's UTC day, locked=true
-//     (sheet rows were firm commitments the manager placed by hand).
+//     promise_level='time', promisedDay = the start's UTC day. NOT locked
+//     (4b-3: `locked` = manager-pinned against auto-scheduling; placed +
+//     'time'-promised is what protects these rows — see the call site).
 //   ledger:     a 'backfilled' schedule_event carrying {externalRowKey} —
 //     ALSO the idempotency key: rows already backfilled are skipped.
 //   overlaps:   the DB's no_confirmed_overlap guard refusals are reported and
@@ -204,7 +205,12 @@ for (const row of rows) {
       status: 'confirmed',
       promiseLevel: 'time',
       promisedDay,
-      locked: true,
+      // No locked stamp (plan 4b-3): `locked` now means a manager PINNED the
+      // visit against auto-scheduling — a meaning mirror rows never carried.
+      // What protects these bookings from the freeze is that they are PLACED
+      // (the freeze never re-places placed visits) and 'time'-promised; an
+      // operator who wants them freeze-proof under future re-solve modes
+      // pins them explicitly after import (set_visit_locks).
     });
     await appendScheduleEvent({
       tenantId,

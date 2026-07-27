@@ -80,7 +80,9 @@ reminder in the manager's chat, never as an unattended commit.
   solve (review finding 1). Context shipments are NEVER committed. Placed visits of
   pattern-less techs are omitted entirely (those techs have no vehicle and receive no new
   work). Queue items = shipments with `penaltyCost` (skippable, reported): unplaced rows get
-  fence∩horizon windows (per-day windows for ranges); a placed person-less visit gets **its
+  fence∩horizon windows (**ONE contiguous window per range — corrected at Phase 3 review:
+  the API rejects adjacent TimeWindows, "must be disjoint … nor adjacent", ShipmentModel
+  reference, so per-day windows would fail every solve**); a placed person-less visit gets **its
   own exact start–end as the window** — the solver only picks WHO, and the commit attaches at
   the same times (review finding 2); `duration` from the job; `allowedVehicleIndices` when a
   technician is attached. No depot: vehicles omit start/end locations (recorded limitation:
@@ -182,23 +184,30 @@ skip in auto-scheduling") as recorded doctrine. Independently shippable.
 status in ('confirmed','proposed')` — auto-stamped noise, no human chose them.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] booking.test.ts: booked + moved rows land `locked:false`; a move of a locked row keeps it
-- [ ] EXISTING pins flipped (review finding 6): boardApi.test.ts:295/:458 and
-      server.test.ts:3681 assert `locked: true` on verb-created rows — update to `false`
-      (or explicit-lock fixtures); booking.test.ts:98/:352/:523 likewise
-- [ ] new setVisitLocks tests: ids path, range path (placed + unplaced fence overlap), empty
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` (691 passed, 2026-07-26)
+- [x] booking.test.ts: booked + moved rows land `locked:false`; a move of a locked row keeps it
+- [x] EXISTING pins flipped (review finding 6): boardApi.test.ts:295/:458 and
+      server.test.ts:3681 assert `locked: true` on verb-created rows — updated to `false`;
+      booking.test.ts:98/:352/:523 likewise; manager tool-count pins 35→36 (two sites)
+- [x] new setVisitLocks tests: ids path, range path (placed + unplaced fence overlap), empty
       refusal, `lock_updated` event shape
-- [ ] server.test.ts: `set_visit_locks` both selectors; boardApi.test.ts: `/lock` toggle + tier gate
+- [x] server.test.ts: `set_visit_locks` both selectors; boardApi.test.ts: `/lock` toggle + tier gate
+- [x] Phase review (fresh-context agent): 2 findings, both fixed — scripts/seed.mjs and
+      scripts/backfill-schedule.mjs still auto-stamped `locked: true` (a re-seed would
+      reintroduce the noise the pilot reset purges); stamps dropped, gates re-run green.
 
 ### Live verification (agent-executable)
 Deferred to Phase 5 rollout (no pilot schema change in this phase).
 
 ### Manual verification
-- [ ] Pinned chip renders on a locked visit (day grid + sheet); toggle flips it
+- [ ] Pinned chip renders on a locked visit (day grid + sheet); toggle flips it —
+      **DEFERRED to the Phase-5 rollout tail**: the board is a deployed Telegram Mini App,
+      so the phone glance is only possible after deploy (joins the post-deploy checklist,
+      the 4b-2 pattern).
 
 ---
-*Pause: manual item above (one phone glance) — confirm before Phase 2.*
+*Pause note: the manual item is un-executable pre-deploy, so implementation proceeds; the
+chip check joins the rollout checklist.*
 
 ## Phase 2: Geocoding
 
@@ -221,9 +230,15 @@ address writes, fail path.
   finding.
 
 ### Automated verification
-- [ ] gates; geocode tests (fake transport: success persists + reuses without re-call;
+- [x] gates; geocode tests (fake transport: success persists + reuses without re-call;
       ZERO_RESULTS → null, nothing persisted; missing address → null, no API call)
-- [ ] schema test: columns exist, nullable
+      (697 passed, 2026-07-26)
+- [x] schema test: columns exist, nullable
+- [x] Invalidation audit CONCLUDED: **no address-column updater exists in src/**
+      (createCustomer only inserts; trySetCustomerAttribute touches attributes only) —
+      recorded as ⚠ comments on updateCustomerCoords + the migration header; a future
+      address editor must null lat/lng/geocoded_at in the same update.
+- [x] Phase review (fresh-context agent): no findings; audit independently re-verified.
 
 ### Live verification — deferred to Phase 5 rollout. Manual: none.
 ---
@@ -256,10 +271,19 @@ The pure solve: queues + capacity in, placement plan out. No chat surface, no wr
   this boundary only.
 
 ### Automated verification
-- [ ] gates; freezeSolve tests with a FAKE transport: model shape (windows from fences,
+- [x] gates; freezeSolve tests with a FAKE transport: model shape (windows from fences,
       breaks from split patterns, fixed shipments for placed rows, allowedVehicleIndices for
       assigned rows, penaltyCost present), response parsing, every skip reason, capacity math
-- [ ] roiClient test: auth header minted from fake key, error propagation
+      (711 passed, 2026-07-26)
+- [x] roiClient test: auth header minted from fake key, error propagation — PLUS the live
+      seams: mint error paths against real env handling, Bearer header on a stubbed fetch
+- [x] Phase review (fresh-context agent, live-doc verified): 5 findings, all fixed —
+      (1) per-day fence windows are ADJACENT and the API rejects adjacent TimeWindows →
+      one contiguous window per range (Decisions bullet corrected, cited); (2) an attached
+      tech with zero vehicle days serialized `allowedVehicleIndices: []` = "ALL vehicles" →
+      assembly-side skip + builder belt; (3) adjacent/unsorted stored pattern windows →
+      normalizeWindows (sort+merge) before span/break math; (4) live mint/transport seams
+      untested → added; (5) three skip reasons unpinned → pinned.
 
 ### Live verification — none here (first live call is Phase 4's E2E). Manual: none.
 ---
@@ -301,10 +325,19 @@ The manager-facing verb: solve → staged plan → confirm → sequential commit
   {actor}): placed N, skipped M — see the board."
 
 ### Automated verification
-- [ ] gates; server.test.ts suite: stage→confirm happy path (rows read back placed+unlocked,
+- [x] gates; server.test.ts suite: stage→confirm happy path (rows read back placed+unlocked,
       queues drained), version-drift refusal, skip reporting (locked row stays untouched),
       partial-failure honesty (fake solver + a forced verb failure), horizon default + cap
-- [ ] boardNotify test: `freeze_committed` pushes to managers only
+      (714 passed, 2026-07-26)
+- [x] boardNotify test: `freeze_committed` pushes to managers only
+- [x] Phase review (fresh-context agent): 5 findings, all fixed — (1) version pin read
+      AFTER the solve left a mid-solve acceptance hole → pinned BEFORE assembly (spurious
+      re-run is the only failure mode now); (2) freeze_committed append could mask the
+      commit result → best-effort try/catch; (3) non-string confirmId coerced into the
+      STAGE branch and destroyed the caller's token → explicit reject; (4) out-of-scope
+      doc unstaged; (5) added the missing tests: 12h expiry (backdated token),
+      cross-manager kind-wide supersede, and the promise belt (direct commitFreezePlan
+      with a promise-breaking placement → skipped, row untouched).
 
 ### Live verification (agent-executable) — the Phase-5-style rollout E2E, run AFTER deploy:
 - Prerequisites: `supabase-test` MCP; s2 CLI probe; SA key + APIs enabled on the Google
@@ -340,9 +373,19 @@ doctrine) and rolls the whole plan out. No server code, no migration, no new env
   read-back verify), Phase-1 pilot lock reset (user go), deploy, freshness byte-check,
   fleet gateway restarts + WIRE pass (new tools `set_visit_locks`/`run_freeze` + doctrine
   block changes), Phase 4 live E2E, then this phase's ritual E2E.
+  **ORDERING (final-review finding): the lock reset runs AFTER the deploy and BEFORE the
+  first freeze/board use.** Reset-before-deploy → the still-live old code re-stamps
+  `locked:true` on every new booking; deploy-without-reset → every pre-existing pilot row
+  (all auto-stamped `true`) wears a Pinned chip nobody chose and the first `run_freeze`
+  skips the ENTIRE backlog as "pinned". Run the reset in the same sitting as the deploy.
+  **Recorded limitation (final-review):** the confirm-time version pin cannot see
+  `set_availability`/`add_time_off`/`remove_time_off` (they append no schedule event) —
+  mitigated by relaying the booking verbs' per-row warnings in the commit summary; the
+  full fix (those three verbs joining the event ledger) is future work.
 
 ### Automated verification
-- [ ] full gates one final time on the merged branch
+- [x] full gates one final time (714 passed, 2026-07-26, feature-4b3-freeze pre-merge;
+      re-run on main after merge is part of the rollout tail)
 
 ### Live verification (agent-executable)
 - Prerequisites: as Phase 4 (deployed stack, wired fleet).

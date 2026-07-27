@@ -3,6 +3,7 @@ import {
   getTechnicianById,
   isInactiveState,
   latestScheduleVersion,
+  listManagersWithTelegram,
   listScheduleEventsSince,
   listTenantIdsWithTelegramBindings,
   type Assignment,
@@ -118,6 +119,22 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
         out.push({
           userId: tech.telegram_user_id,
           text: `A reschedule of your visit (to ${toDay}) failed — it is currently UNSCHEDULED; check the board.`,
+        });
+      }
+      break;
+    }
+    case 'freeze_committed': {
+      // The run summary goes to MANAGERS (plan 4b-3) — the first
+      // manager-directed push: in a multi-manager firm, everyone hears what a
+      // colleague committed. Technicians hear nothing extra here: each
+      // committed row already produced its own booked/moved push above.
+      const placed = typeof detail.placed === 'number' ? detail.placed : '?';
+      const skipped = typeof detail.skipped === 'number' ? detail.skipped : '?';
+      for (const m of await listManagersWithTelegram(tenantId)) {
+        if (!m.telegram_user_id) continue;
+        out.push({
+          userId: m.telegram_user_id,
+          text: `Freeze ran (by ${ev.actor_ref ?? 'a manager'}): placed ${placed}, skipped ${skipped} — see the board.`,
         });
       }
       break;

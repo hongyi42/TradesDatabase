@@ -1664,7 +1664,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
     );
     try {
       // The full manager surface: every base spine tool EXCEPT get_schedule
-      // (technician route view, removed 2026-07-19) + the 21 admin tools —
+      // (technician route view, removed 2026-07-19) + the 24 admin tools —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
@@ -1679,7 +1679,9 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('set_promise');
       expect(mgrTools).toContain('set_technician_horizon');
       expect(mgrTools).toContain('cancel_job'); // the terminal verb (2026-07-25)
-      expect(mgrTools).toHaveLength(35);
+      expect(mgrTools).toContain('set_visit_locks'); // human-privilege pinning (plan 4b-3)
+      expect(mgrTools).toContain('run_freeze'); // the freeze (plan 4b-3)
+      expect(mgrTools).toHaveLength(37);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2082,7 +2084,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(35); // base minus get_schedule + 21 admin
+        expect(mgrTools).toHaveLength(37); // base minus get_schedule + 24 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -3678,7 +3680,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         customer: 'Sched Henderson',
         promiseLevel: 'day',
         promisedDay: '2026-12-01',
-        locked: true,
+        locked: false, // human-privilege pinning (plan 4b-3): no verb auto-locks
         // Wall-clock HH:MM slices only. The raw timestamptz must never reach
         // the agent: its '+00:00' marker lies under the naive-local convention
         // (live 2026-07-22: the agent fabricated a UTC→Pacific conversion for
@@ -5570,6 +5572,457 @@ describe('set_promise (the promise-record editor)', () => {
     } finally {
       await mgrClient.close();
     }
+  });
+});
+
+describe('set_visit_locks (plan 4b-3: human-privilege pinning)', () => {
+  test('ids + range selectors, selector exclusivity, technician gate', { timeout: 30_000 }, async () => {
+    const customer = await createCustomer({ tenantId, name: 'Lock Verb Cust' });
+    // Own probe tech — standalone-runnable (the update_job round-2 lesson).
+    const lvt = await insertTechnician({
+      tenantId,
+      ref: 'lock-verb-tech',
+      displayName: 'Lock Verb Tech',
+      seatExempt: true,
+    });
+    await setTechnicianState(lvt.id, 'active');
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'mgr-test',
+    });
+    try {
+      // The technician-tier default client hits the admin gate.
+      const gated = await call('set_visit_locks', { locked: true, from: '2027-08-02', to: '2027-08-03' });
+      expect(gated.isError).toBe(true);
+      expect(gated.text).toContain('admin tools require a manager badge');
+
+      const bookedA = await callWith('book_visit', {
+        customerId: customer.id, title: 'lock probe A', technicianRef: 'lock-verb-tech',
+        date: '2027-08-02', startTime: '09:00', endTime: '10:00',
+      });
+      expect(bookedA.data.status).toBe('booked');
+      const bookedTbd = await callWith('book_visit', {
+        customerId: customer.id, title: 'lock probe tbd', timeTbd: true,
+        earliestDate: '2027-08-03', latestDate: '2027-08-06',
+      });
+      expect(bookedTbd.data.status).toBe('booked');
+
+      // Both selectors at once is refused, never silently resolved.
+      const both = await callWith('set_visit_locks', {
+        locked: true, assignmentIds: [bookedA.data.assignmentId], from: '2027-08-02', to: '2027-08-03',
+      });
+      expect(both.isError).toBe(true);
+      expect(both.text).toContain('ONE selector');
+      const neither = await callWith('set_visit_locks', { locked: true });
+      expect(neither.isError).toBe(true);
+      expect(neither.text).toContain('BOTH from and to');
+
+      // ids selector: pin one visit; echo carries count + server-computed days.
+      const pinOne = await callWith('set_visit_locks', {
+        locked: true, assignmentIds: [bookedA.data.assignmentId],
+      });
+      expect(pinOne.data.status).toBe('ok');
+      expect(pinOne.data.count).toBe(1);
+      expect(pinOne.data.days).toEqual([{ date: '2027-08-02', weekday: 'Mon' }]);
+
+      // Range selector: catches the placed row AND the fence-overlapping
+      // time-TBD row (its range starts inside the window).
+      const pinWeek = await callWith('set_visit_locks', {
+        locked: true, from: '2027-08-02', to: '2027-08-04',
+      });
+      expect(pinWeek.data.count).toBeGreaterThanOrEqual(2);
+      const { rows } = await pg.query(
+        'select locked from assignments where id = any($1::uuid[])',
+        [[bookedA.data.assignmentId, bookedTbd.data.assignmentId]],
+      );
+      expect(rows.every((r: { locked: boolean }) => r.locked)).toBe(true);
+
+      // The pinned marker reaches get_team_schedule (the copy the agent reads).
+      const team = await callWith('get_team_schedule', { from: '2027-08-02', to: '2027-08-04' });
+      const stops = (team.data.days as Array<{ stops: Array<Record<string, unknown>> }>).flatMap(
+        (d) => d.stops,
+      );
+      expect(stops.find((s) => s.assignmentId === bookedA.data.assignmentId)?.locked).toBe(true);
+
+      // Unpin by range; empty re-resolution refuses loudly.
+      const unpin = await callWith('set_visit_locks', {
+        locked: false, from: '2027-08-02', to: '2027-08-06',
+      });
+      expect(unpin.data.status).toBe('ok');
+      const empty = await callWith('set_visit_locks', {
+        locked: true, from: '2027-09-06', to: '2027-09-07',
+      });
+      expect(empty.isError).toBe(true);
+      expect(empty.text).toContain('nothing matched');
+    } finally {
+      await mgrClient.close();
+    }
+  });
+});
+
+describe('run_freeze (plan 4b-3: stage → confirm the whole plan)', () => {
+  // A deterministic greedy "solver": walks the REAL model the handler built,
+  // seats every q| shipment on its first allowed vehicle at the earliest
+  // feasible time (exact-window shipments keep their own start). Context
+  // shipments are ignored (treated as seated).
+  type RoiModel = {
+    vehicles: Array<{ label: string; startTimeWindows: Array<{ startTime: string }> }>;
+    shipments: Array<{
+      label: string;
+      allowedVehicleIndices?: number[];
+      deliveries: Array<{
+        duration: string;
+        timeWindows: Array<{ startTime: string; endTime: string }>;
+      }>;
+    }>;
+  };
+  const greedyRoi = async (_url: string, _token: string, body: unknown) => {
+    const model = (body as { model: RoiModel }).model;
+    const routes = model.vehicles.map((v) => ({
+      vehicleLabel: v.label,
+      visits: [] as Array<{ shipmentLabel: string; startTime: string }>,
+    }));
+    const cursor = model.vehicles.map((v) => Date.parse(v.startTimeWindows[0].startTime));
+    // Context pre-pass: existing visits occupy their vehicle — advance that
+    // vehicle's cursor past them so greedy never double-books a real slot.
+    for (const s of model.shipments) {
+      if (!s.label.startsWith('ctx|') || !s.allowedVehicleIndices) continue;
+      const idx = s.allowedVehicleIndices[0];
+      const d = s.deliveries[0];
+      const end =
+        Date.parse(d.timeWindows[0].startTime) + Number.parseInt(d.duration, 10) * 1000;
+      cursor[idx] = Math.max(cursor[idx], end);
+    }
+    for (const s of model.shipments) {
+      if (!s.label.startsWith('q|')) continue;
+      const allowed = s.allowedVehicleIndices ?? model.vehicles.map((_, i) => i);
+      const idx = allowed[0];
+      const d = s.deliveries[0];
+      const durMs = Number.parseInt(d.duration, 10) * 1000;
+      const tw = d.timeWindows[0];
+      const exact = tw.startTime === tw.endTime;
+      const startMs = exact
+        ? Date.parse(tw.startTime)
+        : Math.max(cursor[idx], Date.parse(tw.startTime));
+      routes[idx].visits.push({
+        shipmentLabel: s.label,
+        startTime: new Date(startMs).toISOString().replace('.000Z', 'Z'),
+      });
+      cursor[idx] = Math.max(cursor[idx], startMs + durMs);
+    }
+    return { routes, skippedShipments: [] };
+  };
+  const freezeDeps: Partial<ServerDeps> = {
+    roiTransport: greedyRoi,
+    roiMintToken: async () => ({ token: 'tok', projectId: 'proj' }),
+    // The freeze reads TENANT-WIDE queues, and earlier suites leave rows for
+    // customers with addresses but no coords — those must degrade to
+    // "couldn't be located" skips, never a crash. MY fixtures are pre-coded,
+    // so they never reach this fake.
+    geocode: async () => ({ status: 'ZERO_RESULTS', results: [] }),
+  };
+  const ALL_WEEK: WeeklyPattern = {
+    mon: [['08:00', '17:00']], tue: [['08:00', '17:00']], wed: [['08:00', '17:00']],
+    thu: [['08:00', '17:00']], fri: [['08:00', '17:00']], sat: [['08:00', '17:00']],
+    sun: [['08:00', '17:00']],
+  };
+
+  test('stage → confirm: queues drain through the real verbs; pins/version/expiry/partial honesty', { timeout: 60_000 }, async () => {
+    const frz = await insertTechnician({
+      tenantId, ref: 'frz-tech', displayName: 'Freeze Fiona', seatExempt: true,
+    });
+    await setTechnicianAvailability(frz.id, ALL_WEEK);
+    const { updateCustomerCoords } = await import('../db/customers.js');
+    const casa = await createCustomer({
+      tenantId, name: 'Freeze Casa', addressLine1: '7 Freeze Way', city: 'Clovis', state: 'CA',
+    });
+    await updateCustomerCoords(casa.id, 36.8, -119.7);
+
+    // Queue fixtures: an unscheduled job, a person-less PLACED visit (exact),
+    // an assigned time-TBD visit, and a PINNED time-TBD visit (must be
+    // skipped and untouched).
+    const jobA = await createJob({
+      tenantId, customerId: casa.id, title: 'freeze job A', status: 'open', durationMinutes: 120,
+    });
+    const { client: mgrClient, callWith } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      freezeDeps,
+    );
+    try {
+      // jobA stays visit-less (queue 1). The exact person-less visit (queue 2)
+      // gets its own job so the two queues stay distinguishable.
+      const exactJob = await createJob({
+        tenantId, customerId: casa.id, title: 'freeze exact', status: 'open', durationMinutes: 60,
+      });
+      const exactRow = await callWith('book_visit', {
+        jobId: exactJob.id, date: relDay(2), startTime: '10:00', endTime: '11:00',
+      });
+      expect(exactRow.data.unassigned).toBe(true);
+      const tbdJob = await createJob({
+        tenantId, customerId: casa.id, title: 'freeze tbd', status: 'open', durationMinutes: 60,
+      });
+      const tbdRow = await callWith('book_visit', {
+        jobId: tbdJob.id, technicianRef: 'frz-tech', timeTbd: true,
+        earliestDate: relDay(2), latestDate: relDay(6),
+      });
+      expect(tbdRow.data.timeTbd).toBe(true);
+      const pinJob = await createJob({
+        tenantId, customerId: casa.id, title: 'freeze pinned', status: 'open', durationMinutes: 60,
+      });
+      const pinRow = await callWith('book_visit', {
+        jobId: pinJob.id, technicianRef: 'frz-tech', timeTbd: true,
+        earliestDate: relDay(3), latestDate: relDay(3),
+      });
+      await callWith('set_visit_locks', {
+        locked: true, assignmentIds: [pinRow.data.assignmentId],
+      });
+
+      // ---- STAGE: default horizon, whole plan held behind one token.
+      const staged = await callWith('run_freeze', {});
+      expect(staged.data.status).toBe('needs_confirmation');
+      expect(staged.data.requiresConfirmation).toBe(true);
+      const { from, to } = staged.data.horizon as { from: string; to: string };
+      expect(Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)).toBe(
+        13 * 86_400_000,
+      );
+      // Assertions key on MY fixtures — the tenant-wide queues can carry
+      // leftovers from earlier suites (all of which skip on missing coords).
+      const placements = staged.data.placements as Array<Record<string, unknown>>;
+      const mine = placements.filter((p) =>
+        [jobA.id, exactJob.id, tbdJob.id].includes(p.jobId as string),
+      );
+      expect(mine).toHaveLength(3);
+      for (const p of placements) expect(typeof p.weekday).toBe('string');
+      const skipped = staged.data.skipped as Array<{ ref: string; reason: string }>;
+      expect(skipped.find((s) => s.ref === pinRow.data.assignmentId)?.reason).toContain('pinned');
+      expect(staged.data.note).toContain('1 pinned visit(s) were left untouched');
+      expect(
+        (staged.data.capacity as Array<{ technicianRef: string }>).find(
+          (c) => c.technicianRef === 'frz-tech',
+        ),
+      ).toBeDefined();
+
+      // Horizon validation (stage-only paths; each stage supersedes).
+      const past = await callWith('run_freeze', { throughDate: '2020-01-01' });
+      expect(past.isError).toBe(true);
+      expect(past.text).toContain('in the past');
+      const far = await callWith('run_freeze', { throughDate: relDay(40) });
+      expect(far.isError).toBe(true);
+      expect(far.text).toContain('capped at 31 days');
+
+      // resolve_review must never fake-resolve the plan (dismiss-only kind).
+      const restaged = await callWith('run_freeze', {});
+      const fakeResolve = await callWith('resolve_review', {
+        reviewItemId: restaged.data.confirmId, resolution: 'resolved',
+      });
+      expect(fakeResolve.isError).toBe(true);
+      expect(fakeResolve.text).toContain('run_freeze');
+
+      // Restaging superseded the FIRST token kind-wide.
+      const staleConfirm = await callWith('run_freeze', { confirmId: staged.data.confirmId });
+      expect(staleConfirm.isError).toBe(true);
+      expect(staleConfirm.text).toContain('confirmation not found');
+
+      // Version drift: any schedule change under the plan kills the token.
+      const driftJob = await createJob({
+        tenantId, customerId: casa.id, title: 'drift probe', status: 'open',
+      });
+      // Booked ONTO the tech: a person-less probe would join queue 2 and
+      // inflate the fresh plan below — attached+placed makes it context.
+      await callWith('book_visit', {
+        jobId: driftJob.id, technicianRef: 'frz-tech',
+        date: relDay(9), startTime: '07:00', endTime: '07:30',
+      });
+      const drifted = await callWith('run_freeze', { confirmId: restaged.data.confirmId });
+      expect(drifted.isError).toBe(true);
+      expect(drifted.text).toContain('schedule changed');
+      // Consumed — a replay finds nothing.
+      const replay = await callWith('run_freeze', { confirmId: restaged.data.confirmId });
+      expect(replay.isError).toBe(true);
+      expect(replay.text).toContain('confirmation not found');
+
+      // ---- Fresh stage → CONFIRM: the happy path.
+      const fresh = await callWith('run_freeze', {});
+      expect(fresh.data.status).toBe('needs_confirmation');
+      const committed = await callWith('run_freeze', { confirmId: fresh.data.confirmId });
+      expect(committed.data.status).toBe('committed');
+      expect(committed.data.placed).toBe(3);
+
+      // Row read-backs: placed, UNPINNED, on the right person; ledger marked.
+      const { rows: aRows } = await pg.query(
+        `select a.starts_at, a.locked, t.ref from assignments a
+           left join technicians t on t.id = a.technician_id
+          where a.job_id = $1 and a.status = 'confirmed'`,
+        [jobA.id],
+      );
+      expect(aRows).toHaveLength(1);
+      expect(aRows[0].starts_at).not.toBeNull();
+      expect(aRows[0].locked).toBe(false);
+      expect(aRows[0].ref).toBe('frz-tech');
+      // The exact person-less visit kept ITS OWN times, gained the person.
+      const { rows: eRows } = await pg.query(
+        `select a.starts_at::text, t.ref from assignments a
+           left join technicians t on t.id = a.technician_id
+          where a.job_id = $1 and a.status = 'confirmed'`,
+        [exactJob.id],
+      );
+      expect(eRows).toHaveLength(1);
+      expect(eRows[0].starts_at).toContain(`${relDay(2)} 10:00`);
+      expect(eRows[0].ref).toBe('frz-tech');
+      // The attached time-TBD visit is now placed inside its fence.
+      const { rows: tRows } = await pg.query(
+        `select a.starts_at, a.earliest_date from assignments a
+          where a.job_id = $1 and a.status = 'confirmed'`,
+        [tbdJob.id],
+      );
+      expect(tRows).toHaveLength(1);
+      expect(tRows[0].starts_at).not.toBeNull();
+      expect(tRows[0].earliest_date).toBeNull();
+      // The PINNED visit is untouched: still unplaced, still pinned.
+      const { rows: pRows } = await pg.query(
+        `select starts_at, locked from assignments where id = $1`,
+        [pinRow.data.assignmentId],
+      );
+      expect(pRows[0].starts_at).toBeNull();
+      expect(pRows[0].locked).toBe(true);
+      // Ledger: every committed row carries the freezeRun marker + reason,
+      // and the run summary event exists.
+      const { rows: evRows } = await pg.query(
+        `select kind from schedule_events
+          where tenant_id = $1 and detail->>'freezeRun' is not null
+          order by id`,
+        [tenantId],
+      );
+      const kinds = evRows.map((r: { kind: string }) => r.kind);
+      expect(kinds.filter((k) => k === 'booked' || k === 'moved')).toHaveLength(3);
+      expect(kinds).toContain('freeze_committed');
+
+      // ---- Partial-failure honesty: sabotage one target between stage+confirm
+      // WITHOUT bumping the schedule version (direct status flip, no event).
+      const jobB = await createJob({
+        tenantId, customerId: casa.id, title: 'freeze job B', status: 'open', durationMinutes: 60,
+      });
+      const lateJob = await createJob({
+        tenantId, customerId: casa.id, title: 'freeze late', status: 'open', durationMinutes: 45,
+      });
+      const lateRow = await callWith('book_visit', {
+        jobId: lateJob.id, technicianRef: 'frz-tech', timeTbd: true,
+        earliestDate: relDay(7), latestDate: relDay(8),
+      });
+      // That booking bumped the version — stage AFTER it.
+      const partialStage = await callWith('run_freeze', {});
+      expect((partialStage.data.placements as unknown[]).length).toBe(2);
+      await updateAssignmentStatus(lateRow.data.assignmentId as string, 'cancelled');
+      const partial = await callWith('run_freeze', { confirmId: partialStage.data.confirmId });
+      expect(partial.data.status).toBe('partial');
+      expect(partial.data.placed).toBe(1);
+      expect((partial.data.failed as { error: string }).error).toContain('cannot move');
+      expect(partial.data.note).toContain('STOPPED');
+      // jobB really landed; re-running is safe (idempotent by drained queues).
+      const { rows: bRows } = await pg.query(
+        `select starts_at from assignments where job_id = $1 and status = 'confirmed'`,
+        [jobB.id],
+      );
+      expect(bRows).toHaveLength(1);
+
+      // ---- 12h expiry: backdate the staged token 13h → confirm refuses.
+      const oldStage = await callWith('run_freeze', {});
+      await pg.query(
+        `update review_items set detail = jsonb_set(detail, '{stagedAt}', to_jsonb($1::text))
+          where id = $2`,
+        [new Date(Date.now() - 13 * 3600_000).toISOString(), oldStage.data.confirmId],
+      );
+      const expired = await callWith('run_freeze', { confirmId: oldStage.data.confirmId });
+      expect(expired.isError).toBe(true);
+      expect(expired.text).toContain('expired (12 hours)');
+
+      // ---- ONE plan per TENANT: a DIFFERENT manager's stage supersedes this
+      // manager's token (kind-wide dismiss, review finding 5).
+      const mgr2 = await insertTechnician({
+        tenantId, ref: 'mgr-two', displayName: 'Manager Two', tier: 'manager',
+      });
+      await setTechnicianState(mgr2.id, 'active');
+      const mineStage = await callWith('run_freeze', {});
+      const { client: mgr2Client, callWith: callAsMgr2 } = await clientFor(
+        { tenantId, technicianRef: 'mgr-two' },
+        freezeDeps,
+      );
+      try {
+        const theirs = await callAsMgr2('run_freeze', {});
+        expect(theirs.data.status).toBe('needs_confirmation');
+        const superseded = await callWith('run_freeze', { confirmId: mineStage.data.confirmId });
+        expect(superseded.isError).toBe(true);
+        expect(superseded.text).toContain('confirmation not found');
+        // ...and either manager may confirm the ONE live plan — dismiss it
+        // here so no token leaks out of the suite.
+        const dismissed = await callAsMgr2('resolve_review', {
+          reviewItemId: theirs.data.confirmId, resolution: 'dismissed',
+        });
+        expect(dismissed.isError).toBe(false);
+      } finally {
+        await mgr2Client.close();
+      }
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('the promise belt: a plan row that would break a promise is SKIPPED at commit, never booked', async () => {
+    // Unreachable via the real solver by construction (day-fenced placements
+    // land inside their fence) — which is exactly why the belt needs a direct
+    // unit test: a window-construction bug must not convert the manager's
+    // plan-level yes into an unreviewed promise break.
+    const { commitFreezePlan } = await import('../schedule/freezeCommit.js');
+    const { bookVisit } = await import('../schedule/booking.js');
+    const belt = await insertTechnician({
+      tenantId, ref: 'belt-tech', displayName: 'Belt Bella', seatExempt: true,
+    });
+    expect(belt.state).toBe('active');
+    const casa = await createCustomer({ tenantId, name: 'Belt Casa' });
+    const promised = await bookVisit({
+      tenantId, technicianRef: 'belt-tech', customerId: casa.id, title: 'promised install',
+      date: relDay(4), startTime: '09:00', endTime: '10:00',
+      promiseLevel: 'day', actorRef: 'mgr-test',
+    });
+    const result = await commitFreezePlan(
+      tenantId,
+      {
+        horizonFrom: relDay(0),
+        horizonTo: relDay(13),
+        placements: [
+          {
+            kind: 'unplaced_visit',
+            jobId: promised.job.id,
+            assignmentId: promised.assignment.id,
+            customer: 'Belt Casa',
+            jobTitle: 'promised install',
+            technicianRef: 'belt-tech',
+            date: relDay(5), // ANOTHER day — breaks the day promise
+            startTime: '11:00',
+            endTime: '12:00',
+          },
+        ],
+        skipped: [],
+        capacity: [],
+      },
+      'mgr-test',
+      new Date().toISOString(),
+    );
+    expect(result.committed).toHaveLength(0);
+    expect(result.failed).toBeNull();
+    expect(result.skippedAtCommit).toEqual([
+      expect.objectContaining({
+        ref: promised.assignment.id,
+        reason: expect.stringContaining('break what the customer was told'),
+      }),
+    ]);
+    // The row is genuinely untouched.
+    const { rows } = await pg.query(
+      `select starts_at::text, status from assignments where id = $1`,
+      [promised.assignment.id],
+    );
+    expect(rows[0].status).toBe('confirmed');
+    expect(rows[0].starts_at).toContain(`${relDay(4)} 09:00`);
   });
 });
 

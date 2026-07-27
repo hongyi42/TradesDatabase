@@ -86,10 +86,43 @@ export async function setCustomerAttribute(id: string, key: string, bundle: Json
   throw new Error(`setCustomerAttribute: customer ${id} changed concurrently; write not applied`);
 }
 
+// Persist lazily-geocoded solver coordinates (plan 4b-3 Phase 2).
+// ⚠ Future address editors: NO address-column updater exists in the app today
+// (audited 2026-07-26 — createCustomer only inserts; trySetCustomerAttribute
+// touches attributes only). Whichever change first UPDATES address_line1/2,
+// city, state, or postal_code MUST also null lat/lng/geocoded_at in the same
+// update, or the solver keeps routing to the old location.
+export async function updateCustomerCoords(
+  id: string,
+  lat: number,
+  lng: number,
+): Promise<Customer> {
+  const { data, error } = await getClient()
+    .from('customers')
+    .update({ lat, lng, geocoded_at: new Date().toISOString() })
+    .eq('id', id)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`updateCustomerCoords failed: ${error.message}`);
+  if (!data) throw new Error('updateCustomerCoords: customer not found');
+  return data;
+}
+
 export async function getCustomer(id: string): Promise<Customer | null> {
   const { data, error } = await getClient().from('customers').select().eq('id', id).maybeSingle();
   if (error) throw new Error(`getCustomer failed: ${error.message}`);
   return data;
+}
+
+// Batch point-read (plan 4b-3 final review): the freeze geocodes every
+// customer a solve touches — one query instead of N serial getCustomer round
+// trips. Id-only like getCustomer; tenant guarding stays the caller's job
+// (module convention above).
+export async function listCustomersByIds(ids: string[]): Promise<Customer[]> {
+  if (ids.length === 0) return [];
+  const { data, error } = await getClient().from('customers').select().in('id', ids);
+  if (error) throw new Error(`listCustomersByIds failed: ${error.message}`);
+  return data ?? [];
 }
 
 // Exact phone match within a tenant. Used by deterministic identity matching —

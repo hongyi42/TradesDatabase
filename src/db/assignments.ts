@@ -42,7 +42,10 @@ export interface CreateAssignmentInput {
   // promisedDay whenever promiseLevel is not 'none'.
   promiseLevel?: PromiseLevel;
   promisedDay?: string | null; // YYYY-MM-DD
-  locked?: boolean; // manual manager placement — Plan-3 optimizer routes around it
+  // PINNED by a manager (plan 4b-3): auto-scheduling must never place, move,
+  // or consider the visit. A HUMAN privilege — no verb auto-stamps it; the
+  // default is false and only set_visit_locks / the board toggle flip it.
+  locked?: boolean;
 }
 
 // Insert one assignment row. Inserting as 'confirmed' can raise the DB's
@@ -200,6 +203,63 @@ export async function rescheduleAssignment(
     locked: input.locked ?? old.locked,
   });
   return { cancelled, created };
+}
+
+// Flip PIN flags in ONE statement (plan 4b-3; final-review hardening: the
+// original per-row loop could half-apply a batch on a transient fault — rows
+// pinned, no ledger event, error reported — and stamp a row that went
+// terminal between check and write). Locking is a human privilege, so this
+// writer — not the booking verbs — is the only place `locked` changes after
+// insert (reschedules CARRY the flag). The status predicate makes the
+// live-rows-only rule enforcement, not advisory; returns exactly the rows
+// that changed.
+export async function updateAssignmentsLocked(
+  tenantId: string,
+  assignmentIds: string[],
+  locked: boolean,
+): Promise<Assignment[]> {
+  if (assignmentIds.length === 0) return [];
+  const { data, error } = await getClient()
+    .from('assignments')
+    .update({ locked })
+    .eq('tenant_id', tenantId)
+    .in('id', assignmentIds)
+    .in('status', ['confirmed', 'proposed'])
+    .select();
+  if (error) throw new Error(`updateAssignmentsLocked failed: ${error.message}`);
+  return data ?? [];
+}
+
+// The lock verbs' range read (plan 4b-3): every CONFIRMED visit whose day
+// intersects [fromDate, toDate] — placed rows by their start DAY (a lock pins
+// a day's plan, so start-day membership is the natural key, not overlap),
+// unplaced rows by fence overlap. Person-less rows included: "I'll place this
+// myself" applies to a parked visit too.
+export async function listAssignmentsForLockRange(
+  tenantId: string,
+  fromDate: string, // YYYY-MM-DD inclusive
+  toDate: string, // YYYY-MM-DD inclusive
+  technicianId?: string,
+): Promise<Assignment[]> {
+  const dayAfterTo = new Date(Date.parse(`${toDate}T00:00:00Z`) + 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  let query = getClient()
+    .from('assignments')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('status', 'confirmed')
+    .or(
+      `and(starts_at.gte.${fromDate}T00:00:00.000Z,starts_at.lt.${dayAfterTo}T00:00:00.000Z),` +
+        `and(starts_at.is.null,earliest_date.lte.${toDate},latest_date.gte.${fromDate})`,
+    );
+  if (technicianId) query = query.eq('technician_id', technicianId);
+  const { data, error } = await query.order('starts_at', {
+    ascending: true,
+    nullsFirst: false,
+  });
+  if (error) throw new Error(`listAssignmentsForLockRange failed: ${error.message}`);
+  return data ?? [];
 }
 
 // Tenant-guarded point read for tool/module surfaces: a cross-tenant or
@@ -557,13 +617,15 @@ export async function listIdenticalUnplacedVisits(
 // Same ID-ONLY-foreign-key caveat as the board reads above: callers must
 // re-check every nested row's tenant_id before surfacing its name/title.
 
-// Single string literal — see the DETAIL_SELECT note above.
+// Single string literal — see the DETAIL_SELECT note above. duration_minutes
+// rides along (4b-3): the freeze's queue-2 ladder needs the job length, and
+// fetching it per row was an N+1 the strip's sibling select never had.
 const BUCKET_SELECT =
-  '*, jobs(id,tenant_id,title,customer_id,customers(name,tenant_id))';
+  '*, jobs(id,tenant_id,title,duration_minutes,customer_id,customers(name,tenant_id))';
 
 export type AssignmentBucketRow = Assignment & {
   jobs:
-    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'customer_id'> & {
+    | (Pick<Job, 'id' | 'tenant_id' | 'title' | 'duration_minutes' | 'customer_id'> & {
         customers: Pick<Customer, 'name' | 'tenant_id'> | null;
       })
     | null;

@@ -72,6 +72,9 @@ export interface UnplacedStop {
   earliestDate: string;
   latestDate: string;
   promiseLevel: Assignment['promise_level'];
+  // PINNED by a manager (plan 4b-3): auto-scheduling must never touch it —
+  // on an unplaced row it reads "I'll place this myself"; the strip chips it.
+  locked: boolean;
 }
 
 export interface BoardDays {
@@ -243,6 +246,7 @@ export async function readBoardDays(input: ReadBoardDaysInput): Promise<BoardDay
       earliestDate: row.earliest_date as string,
       latestDate: row.latest_date as string,
       promiseLevel: row.promise_level,
+      locked: row.locked,
     };
     const first = (row.earliest_date as string) < from ? from : (row.earliest_date as string);
     const last = (row.latest_date as string) > toDay ? toDay : (row.latest_date as string);
@@ -305,6 +309,10 @@ export interface LooseBucket {
     latestDate: string | null;
     customer: string | null;
     jobTitle: string | null;
+    // PINNED (plan 4b-3): a pinned person-less row is exactly the "I'll
+    // place this myself" case — the tray must show the pin or the manager
+    // reads the row as freeze-fodder while the proposal skips it.
+    locked: boolean;
     // The visit's day already slipped past with nobody attached — the most
     // forgettable row of all (final-review finding: it used to vanish from
     // the tray entirely, while its job stayed hidden by the live-assignment
@@ -372,6 +380,7 @@ export async function readLooseBucket(tenantId: string): Promise<LooseBucket> {
         latestDate: row.latest_date,
         customer: customer?.name ?? null,
         jobTitle: job ? job.title : null,
+        locked: row.locked,
         overdue: placedRow ? date < today : (row.latest_date as string) < today,
       };
     });

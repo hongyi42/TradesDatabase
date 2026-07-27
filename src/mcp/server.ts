@@ -39,6 +39,7 @@ import {
   listRawCapturesForCustomer,
   listTeam,
   findOpenReviewItem,
+  findOpenReviewItemsByKind,
   isFactBundle,
   resolveOpenReviewItemFor,
   resolveReviewItem,
@@ -131,10 +132,21 @@ import {
   previewBookVisit,
   previewUnscheduleVisit,
   previewMoveVisit,
+  setVisitLocks,
   setVisitPromise,
   spanMinutes,
   updateJobIdentity,
+  type VisitLockSelector,
 } from '../schedule/booking.js';
+import {
+  assembleFreezeInputs,
+  solveFreeze,
+  PINNED_SKIP_REASON,
+  type FreezePlan,
+} from '../schedule/freezeSolve.js';
+import { commitFreezePlan } from '../schedule/freezeCommit.js';
+import type { GeocodeTransport } from '../routes/geocode.js';
+import type { MintRoiToken, RoiTransport } from '../routes/roiClient.js';
 import { isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
   latestScheduleVersion,
@@ -192,6 +204,11 @@ export interface ServerDeps {
   cancelRetirement?: typeof liveCancelRetirement;
   webSearch?: typeof braveWebSearch; // Brave seam — tests never need BRAVE_API_KEY
   fetchPage?: typeof fetchPageText; // fetch seam — tests never hit the network
+  // Freeze seams (plan 4b-3) — tests never need the Maps key, the SA key, or
+  // the network; production leaves all three unset (live clients).
+  geocode?: GeocodeTransport;
+  roiTransport?: RoiTransport;
+  roiMintToken?: MintRoiToken;
 }
 
 const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 'technician_photo'];
@@ -642,7 +659,9 @@ const ADMIN_TOOLS = [
       "(YYYY-MM-DD; both optional — default today in the firm's timezone; capped at 14 days), " +
       "every technician's confirmed visits with customer, address, times, promiseLevel (what " +
       'the customer was ' +
-      "told: none/day/time/time_only), promisedDay, and locked (manager-pinned). Stops with " +
+      'told: none/day/time/time_only), promisedDay, and locked (true = PINNED by a manager — ' +
+      'automatic scheduling never places, moves, or considers it; say "pinned", and ' +
+      'set_visit_locks flips it). Stops with ' +
       'unassigned:true have NOBODY attached yet and need a person (attach with move_visit). ' +
       'Pass unassignedOnly:true to list ALL upcoming visits with nobody attached, however far ' +
       'out (no 14-day cap) — use it when the manager asks what still needs assigning. Stops ' +
@@ -692,6 +711,8 @@ const ADMIN_TOOLS = [
       'records what the customer was ACTUALLY told and defaults to "none". Pass "day" ONLY ' +
       'when the manager says the customer was told the day, or "time" when told an exact ' +
       'time. NEVER assume a promise was made. When talking to customers, offer DAYS, not times. ' +
+      'A fresh booking is NOT pinned — if the manager wants automatic scheduling\'s hands off ' +
+      'it ("pin it", "don\'t let the freeze move this"), follow up with set_visit_locks. ' +
       'When the result carries boardNote, ALWAYS end your report with its exact ' +
       '[See it on the board](…) line — it renders as a tappable link.',
     inputSchema: {
@@ -789,6 +810,63 @@ const ADMIN_TOOLS = [
       properties: {
         jobId: { type: 'string', description: 'The job (the WORK) to cancel. First call only.' },
         reason: { type: 'string', description: 'Why (kept on the record). First call only.' },
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'set_visit_locks',
+    description:
+      'Pin or unpin visits (manager only). PINNED = the manager\'s "hands off" mark: ' +
+      'automatic scheduling (the freeze) will never place, move, or consider a pinned ' +
+      'visit; unpinning hands it back. NOTHING is ever pinned automatically — pinning is a ' +
+      'deliberate human act, so set it only when the manager says so ("pin it", "lock next ' +
+      'week"). Works on placed AND time-TBD visits (pinning a time-TBD visit means "I will ' +
+      'place this myself"). Reversible and internal → done in ONE call — ALWAYS report the ' +
+      'count and days touched; never act silently. Call with locked + EITHER assignmentIds ' +
+      '(specific visits) OR from/to (every confirmed visit on those days, optionally ' +
+      'narrowed to one technicianRef) — "lock everything next week" is from/to for that ' +
+      'week. When the result carries boardNote, ALWAYS end your report with its exact ' +
+      '[See it on the board](…) line.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        locked: { type: 'boolean', description: 'true = pin, false = unpin.' },
+        assignmentIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Specific visit ids to pin/unpin. Mutually exclusive with from/to.',
+        },
+        from: { type: 'string', description: 'Range start YYYY-MM-DD — selects every confirmed visit on the days [from,to] (placed by day; time-TBD by range overlap). Requires to.' },
+        to: { type: 'string', description: 'Range end YYYY-MM-DD inclusive. Requires from.' },
+        technicianRef: { type: 'string', description: 'With from/to: only this person\'s visits.' },
+      },
+      required: ['locked'],
+    },
+  },
+  {
+    name: 'run_freeze',
+    description:
+      'The freeze (manager only; ALWAYS two-step): auto-place the loose work — open jobs ' +
+      'with no visit, visits with nobody attached, and time-TBD visits — onto real slots ' +
+      'via the route solver. The first call books NOTHING: it returns ' +
+      '{status:"needs_confirmation", confirmId} with the whole proposed plan — every ' +
+      'placement (who, day, time, customer), every visit it could NOT place with the reason ' +
+      "(no length set, no working pattern, pinned, address failed…), and each technician's " +
+      'committed-vs-available minutes. Show the manager ALL of it (placements, skips, ' +
+      'capacity, the pin line), get an explicit yes, then call again with ONLY confirmId — ' +
+      'the plan books through the normal verbs, one visit at a time. The proposal is valid ' +
+      'for 12 hours and dies automatically if the schedule changes underneath it ' +
+      '(re-run for a fresh plan). Placing never breaks a customer promise (day-fenced ' +
+      'visits land inside their fence) and NEVER touches pinned or already-placed visits. ' +
+      'Default horizon: today through +13 days; throughDate extends/shortens it (cap 31 ' +
+      'days out). When the result carries boardNote, ALWAYS end your report with its exact ' +
+      '[See it on the board](…) line.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        throughDate: { type: 'string', description: 'Horizon end YYYY-MM-DD (default today+13; must be today or later, at most 31 days out). First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
       required: [],
@@ -1139,6 +1217,10 @@ const BOARD_LINK_TOOL_NAMES = new Set([
   // A promise correction changes what move/cancel will ask (and the board
   // pins promised visits) — its confirmation is a schedule answer too.
   'set_promise',
+  // A pin flip changes what the board shows (the Pinned chip) — same doctrine.
+  'set_visit_locks',
+  // A freeze proposal/commit is the definition of a schedule answer.
+  'run_freeze',
 ]);
 
 function boardMiniAppLink(): string | null {
@@ -2993,7 +3075,8 @@ async function dispatch(
               'This visit is recorded as promise-free ' +
               '(promiseLevel "none"): if the manager\'s words actually said the customer was ' +
               'told a day or time, correct that NOW with set_promise — an unrecorded promise ' +
-              'lets the visit move later with no confirmation.',
+              'lets the visit move later with no confirmation. The visit is NOT pinned — if ' +
+              "the manager wants the auto-scheduler's hands off it, pin it (set_visit_locks).",
           };
         }
         const preview = await previewBookVisit(bookInput);
@@ -4463,6 +4546,240 @@ async function dispatch(
                   'the manager exactly what changed, old → new.',
       };
     }
+    case 'set_visit_locks': {
+      if (typeof args.locked !== 'boolean') {
+        throw new Error('locked (boolean) is required — true pins, false unpins');
+      }
+      const locked = args.locked;
+      // Rejected, never coerced-to-absent (the find_slots rule; final-review
+      // finding): a non-string technicianRef silently widening "pin Ben's
+      // week" into a ROSTER-WIDE pin is exactly the trap.
+      for (const k of ['from', 'to', 'technicianRef']) {
+        if (args[k] !== undefined && typeof args[k] !== 'string') {
+          throw new Error(`${k} must be a string`);
+        }
+      }
+      const from = str('from');
+      const to = str('to');
+      const technicianRefArg = str('technicianRef');
+      // Exactly ONE selector — a call carrying both is an agent bug, and
+      // silently preferring one would act on visits the manager didn't name.
+      if (args.assignmentIds !== undefined && (from || to || technicianRefArg)) {
+        throw new Error('pass ONE selector: assignmentIds, or from/to (+ optional technicianRef)');
+      }
+      let selector: VisitLockSelector;
+      if (args.assignmentIds !== undefined) {
+        const ids = args.assignmentIds;
+        if (!Array.isArray(ids) || ids.length === 0 || ids.some((v) => typeof v !== 'string' || !v)) {
+          throw new Error('assignmentIds must be a non-empty array of visit ids');
+        }
+        selector = { assignmentIds: ids as string[] };
+      } else {
+        if (!from || !to) {
+          throw new Error('pass assignmentIds, or BOTH from and to (YYYY-MM-DD)');
+        }
+        selector = { from, to, ...(technicianRefArg ? { technicianRef: technicianRefArg } : {}) };
+      }
+      const result = await setVisitLocks(tenantId, selector, locked, identity.technicianRef);
+      return {
+        status: 'ok',
+        locked,
+        count: result.updated.length,
+        // Server-computed days (the find_slots lesson) so the report never
+        // needs agent calendar math.
+        days: result.days.map((d) => ({ date: d, weekday: weekdayLabel(d) })),
+        note: locked
+          ? 'Pinned — automatic scheduling will never place, move, or consider these ' +
+            'visits; moving one by hand stays a normal move_visit. Tell the manager the ' +
+            'count and days; unpinning is set_visit_locks with locked:false.'
+          : 'Unpinned — automatic scheduling may consider these visits again. Tell the ' +
+            'manager the count and days.',
+      };
+    }
+    case 'run_freeze': {
+      const subjectRef = identity.technicianRef;
+      const confirmId = str('confirmId');
+      // Rejected, never coerced-to-absent (the find_slots rule): a non-string
+      // confirmId falling into the STAGE branch would dismiss-and-supersede
+      // the very token the caller was trying to confirm.
+      if (args.confirmId !== undefined && !confirmId) {
+        throw new Error('confirmId must be a string');
+      }
+      const freezeDeps = {
+        ...(deps.roiTransport ? { transport: deps.roiTransport } : {}),
+        ...(deps.roiMintToken ? { mintToken: deps.roiMintToken } : {}),
+      };
+      if (!confirmId) {
+        // STAGE: solve and hold the WHOLE plan behind one token. Horizon is
+        // firm-local today → +13 unless throughDate narrows/extends it.
+        const tenant = await getTenant(tenantId);
+        const today = localDateISO(new Date().toISOString(), tenant?.timezone ?? 'UTC');
+        const throughArg = str('throughDate');
+        let horizonTo = addDaysISO(today, 13);
+        if (args.throughDate !== undefined && !throughArg) {
+          throw new Error('throughDate must be a YYYY-MM-DD string');
+        }
+        if (throughArg) {
+          if (!isRealDateISO(throughArg)) {
+            throw new Error('throughDate must be a real YYYY-MM-DD date');
+          }
+          if (throughArg < today) {
+            throw new Error(`throughDate ${throughArg} is in the past (firm-local today is ${today})`);
+          }
+          if (throughArg > addDaysISO(today, 31)) {
+            throw new Error('throughDate is capped at 31 days out — schedules that far are guesses');
+          }
+          horizonTo = throughArg;
+        }
+        // Version BEFORE the solve (phase-review finding 1): a booking that
+        // lands while the solve is in flight must make the confirm-time
+        // recheck FIRE. Pinned after the solve, that event's id would be
+        // inside the pin while the plan was solved blind to it — a stale plan
+        // sails through. Pinned before, the failure mode is only ever a
+        // spurious "schedule changed, run it again".
+        const scheduleVersion = await latestScheduleVersion(tenantId);
+        const inputs = await assembleFreezeInputs(
+          tenantId,
+          today,
+          horizonTo,
+          // Firm-local wall clock: day-0 windows trim to it so an afternoon
+          // freeze never proposes (then books) this morning's slots.
+          localTimeHHMM(new Date().toISOString(), tenant?.timezone ?? 'UTC'),
+          deps.geocode ? { geocode: deps.geocode } : {},
+        );
+        const plan = await solveFreeze(inputs, freezeDeps);
+        // ONE live plan per TENANT: dismiss every open token kind-wide
+        // (two managers must never hold two competing plans).
+        for (const open of await findOpenReviewItemsByKind(tenantId, 'pending_freeze')) {
+          await resolveReviewItem(open.id, tenantId, 'dismissed', 'superseded by a new freeze run');
+        }
+        const stagedDetail = {
+          plan: plan as unknown as Json,
+          scheduleVersion,
+          horizonFrom: today,
+          horizonTo,
+          stagedAt: new Date().toISOString(),
+        } as unknown as Json;
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_freeze',
+          subjectRef,
+          detail: stagedDetail,
+        });
+        // Stage-race close (final-review finding): on a unique-violation the
+        // upsert returns the EXISTING open row with ITS detail — two racing
+        // stages could hand back a confirmId whose stored plan differs from
+        // the placements shown below. Write OUR detail onto whichever row we
+        // got; null = it closed concurrently → restage.
+        const pinned = await updateOpenReviewItemDetail(item.id, tenantId, stagedDetail);
+        if (!pinned) {
+          throw new Error('another freeze run superseded this one mid-stage — run run_freeze again');
+        }
+        const pinnedCount = plan.skipped.filter((s) => s.reason === PINNED_SKIP_REASON).length;
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          requiresConfirmation: true,
+          horizon: { from: today, to: horizonTo },
+          scheduleVersion,
+          // Server-computed weekday on every emitted date (the house rule).
+          placements: plan.placements.map((p) => ({ ...p, weekday: weekdayLabel(p.date) })),
+          skipped: plan.skipped,
+          capacity: plan.capacity,
+          note:
+            'NOTHING is booked yet. Show the manager the WHOLE plan: every placement ' +
+            '(weekday, date, time, who, customer), every skipped item WITH its reason, and ' +
+            'each technician\'s committed vs available minutes. ' +
+            `The pin line — always say it: ${pinnedCount} pinned visit(s) were left untouched; ` +
+            "pin anything else you don't want rearranged (set_visit_locks), then run the " +
+            'freeze again. On an explicit yes, call run_freeze again with ONLY confirmId. ' +
+            'The proposal expires in 12 hours and dies if the schedule changes underneath it.',
+        };
+      }
+      // CONFIRM. Any active manager may confirm (one tenant-wide plan); the
+      // confirming manager becomes the actor on every committed row.
+      const item = await getOpenReviewItem(confirmId, tenantId, { kind: 'pending_freeze' });
+      if (!item) {
+        throw new Error('confirmation not found — run run_freeze again for a fresh plan');
+      }
+      const d = (item.detail ?? {}) as {
+        plan?: FreezePlan;
+        scheduleVersion?: number;
+        stagedAt?: string;
+      };
+      // 12h expiry, NOT the house 15 minutes (plan decision): a morning
+      // cron-fired proposal must survive until the manager reads it — the
+      // REAL staleness guard is the version pin below, not the clock.
+      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 12 * 3600_000) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'freeze proposal expired (12h)');
+        throw new Error('this freeze proposal expired (12 hours) — run the freeze again for a fresh plan');
+      }
+      if (!d.plan || typeof d.scheduleVersion !== 'number') {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'malformed staged plan');
+        throw new Error('the staged plan is malformed — run the freeze again');
+      }
+      const currentVersion = await latestScheduleVersion(tenantId);
+      if (currentVersion !== d.scheduleVersion) {
+        await resolveReviewItem(
+          item.id,
+          tenantId,
+          'dismissed',
+          `schedule changed under the plan (v${d.scheduleVersion} → v${currentVersion})`,
+        );
+        throw new Error(
+          'the schedule changed since this plan was solved — nothing was booked; run the ' +
+            'freeze again for a fresh plan',
+        );
+      }
+      // CONSUME FIRST (at-most-once, the send_email idiom), then commit.
+      const consumed = await resolveReviewItem(
+        item.id,
+        tenantId,
+        'resolved',
+        `freeze confirmed by ${subjectRef}`,
+      );
+      if (!consumed) {
+        throw new Error('confirmation not found — run run_freeze again for a fresh plan');
+      }
+      const runStamp = new Date().toISOString();
+      const result = await commitFreezePlan(tenantId, d.plan, subjectRef, runStamp);
+      // Verb advisories, surfaced per row (a time-off or pattern change that
+      // landed after the solve doesn't bump the schedule version — these
+      // warnings are the manager's only signal the world moved).
+      const commitWarnings = result.committed
+        .filter((c) => c.warning)
+        .map((c) => ({
+          assignmentId: c.assignmentId,
+          customer: c.placement.customer,
+          warning: c.warning as string,
+        }));
+      return {
+        status: result.failed ? 'partial' : 'committed',
+        placed: result.committed.length,
+        placements: result.committed.map((c) => ({
+          ...c.placement,
+          weekday: weekdayLabel(c.placement.date),
+          assignmentId: c.assignmentId,
+        })),
+        ...(commitWarnings.length > 0 ? { warnings: commitWarnings } : {}),
+        ...(result.skippedAtCommit.length > 0 ? { skippedAtCommit: result.skippedAtCommit } : {}),
+        ...(result.failed ? { failed: result.failed } : {}),
+        note: (result.failed
+          ? 'The run STOPPED at the failed row — everything listed in placements IS booked; ' +
+            'the failed visit and everything after it are unchanged. Tell the manager exactly ' +
+            'what landed and what did not. Re-running the freeze is safe: placed visits leave ' +
+            'the queues.'
+          : 'Committed. Tell the manager what was placed (count + the placements), anything ' +
+            'skipped at commit, and that technicians were notified of their new visits. ' +
+            'None of the placed visits are pinned — offer set_visit_locks if the manager ' +
+            'wants this plan protected from the next freeze.') +
+          (commitWarnings.length > 0
+            ? ' RELAY every entry in warnings — each flags a placement that landed on time ' +
+              'off or outside a working pattern (the schedule may have changed after the ' +
+              'plan was solved); the manager may want to move those.'
+            : ''),
+      };
+    }
     case 'find_slots': {
       // Non-string args are REJECTED, never coerced-to-absent: str() maps
       // {technicianRef: 123} to undefined, which would silently UN-PIN the
@@ -4921,7 +5238,9 @@ async function dispatch(
                 : {
                     hint:
                       'nothing fits even two weeks past the range — a shorter visit may ' +
-                      'fit, or one of the displacement candidates below could move (move_visit)',
+                      'fit, or one of the displacement candidates below could move ' +
+                      '(move_visit). A candidate with locked:true was PINNED by a manager ' +
+                      '("hands off") — disclose the pin before suggesting it moves.',
                   }
               : {}),
             displacementCandidates: await findDisplacementCandidates(
@@ -4949,7 +5268,32 @@ async function dispatch(
       };
     }
     case 'list_pending_reviews': {
-      return listOpenReviewItems(tenantId);
+      // A pending_freeze token embeds the WHOLE staged plan (possibly
+      // hundreds of rows, possibly stale) — summarize it here instead of
+      // flooding the context and tempting the agent to relay placements the
+      // confirm-time version check would refuse (final-review finding).
+      return (await listOpenReviewItems(tenantId)).map((item) => {
+        if (item.kind !== 'pending_freeze') return item;
+        const d = (item.detail ?? {}) as {
+          plan?: { placements?: unknown[]; skipped?: unknown[] };
+          scheduleVersion?: number;
+          horizonFrom?: string;
+          horizonTo?: string;
+          stagedAt?: string;
+        };
+        return {
+          ...item,
+          detail: {
+            summary: 'a staged freeze plan — confirm or restage via run_freeze, never relay from here',
+            horizonFrom: d.horizonFrom ?? null,
+            horizonTo: d.horizonTo ?? null,
+            placements: d.plan?.placements?.length ?? 0,
+            skipped: d.plan?.skipped?.length ?? 0,
+            scheduleVersion: d.scheduleVersion ?? null,
+            stagedAt: d.stagedAt ?? null,
+          },
+        };
+      });
     }
     case 'resolve_review': {
       const reviewItemId = str('reviewItemId');
@@ -5012,6 +5356,10 @@ async function dispatch(
         pending_visit_cancel: 'unschedule_visit',
         pending_job_cancel: 'cancel_job',
         pending_seat_add: 'add_technician_seat',
+        // Dismiss-only like every staged token (plan 4b-3 review finding 4):
+        // without this entry, resolve_review would "resolve" the freeze plan
+        // while booking nothing.
+        pending_freeze: 'run_freeze',
       };
       if (STAGED_ACTION_KINDS[open.kind] && resolution === 'resolved') {
         throw new Error(

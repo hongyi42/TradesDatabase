@@ -6048,6 +6048,11 @@ describe('run_freeze (plan 4b-3: stage → confirm the whole plan)', () => {
       expect(staged.data.boardLink).toBeUndefined(); // committed-result field only
       // The clobber guard: the stage instruction must survive the decoration.
       expect(staged.data.note).toContain('NOTHING is booked yet');
+      // The Phase-3 summary contract (fused, the strongest lever) + its
+      // no-link fallback are pinned here — a copy rewrite that drops either
+      // half must break a test, not ship silently.
+      expect(staged.data.note).toContain('SHORT summary');
+      expect(staged.data.note).toContain('If this result carries NO board link');
 
       // A DIFFERENT staged tool keeps the exclusion — no board fields at all.
       // Self-contained fixture (phase review finding 1): person-less +

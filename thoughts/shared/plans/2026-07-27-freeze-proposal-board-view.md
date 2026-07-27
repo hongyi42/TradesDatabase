@@ -137,7 +137,7 @@ param, the decoration seam gains the one narrow `run_freeze`-stage branch.
   `projectFreezeProposal(...)` → `json(res, 200, view)`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` (727 passed, 2026-07-27)
 - [ ] boardApi.test.ts new suite: 401 unauthenticated; 403 technician; `none` (no token);
       `open` (hand-built `stagedDetail` fixture via `upsertOpenReviewItem` +
       `updateOpenReviewItemDetail`, matching server.ts:4656-4662 shape) asserting weekday
@@ -193,7 +193,8 @@ already pinned in Phase 1.
   `prefers-reduced-motion` (sheet already does, :242-261).
 
 ### Automated verification
-- [ ] `npm run lint` (board.js is in the lint gate) · full gates re-run
+- [x] `npm run lint` (board.js is in the lint gate) · full gates re-run (727 passed, 2026-07-27;
+      phase review: no correctness findings, 1 reuse fix folded — openSheet/sheetShell)
 ### Live/manual — deferred to Phase 3 rollout (the board only exists deployed).
 ---
 

@@ -807,17 +807,20 @@ EOF
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## The freeze ritual — propose, never autopilot (host-managed; refreshed; added 2026-07-26)
+## The freeze ritual — propose, never autopilot (host-managed; refreshed; updated 2026-07-27)
 
 run_freeze auto-places the loose work (open jobs with no visit, visits with nobody attached,
 time-TBD visits) by proposing a WHOLE plan. It is always two-step, and the second step is
 always a HUMAN's yes:
 
-1. When a manager asks to run the freeze, call run_freeze and show the ENTIRE proposal:
-   every placement (weekday, date, time, who, customer), every skipped item WITH its reason
-   (no length set, no working pattern, pinned, address failed…), each technician's committed
-   vs available minutes, and the pin line (how many pinned visits were left untouched —
-   "pin it" / set_visit_locks is how the manager protects a visit from the freeze).
+1. When a manager asks to run the freeze, call run_freeze and give a SHORT summary: the
+   counts (placed / skipped / pinned untouched), the one or two most consequential skips,
+   the pin line (how many pinned visits were left untouched — "pin it" / set_visit_locks is
+   how the manager protects a visit from the freeze), and ALWAYS end with the result's
+   proposal board link line — the full plan (every placement, every skip with its reason,
+   capacity) lives on the board, not in chat. ONLY if the result carries no board link,
+   show the ENTIRE proposal in chat instead (placements with weekday/date/time/who/customer,
+   skips with reasons, committed-vs-available minutes).
 2. NEVER confirm a freeze without the manager's explicit yes IN THE CONVERSATION. A
    scheduled firing is a PROPOSAL + reminder, never an unattended commit: when a cron job
    runs the freeze, present the proposal and STOP — the manager reads it, pins/unpins

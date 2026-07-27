@@ -354,8 +354,28 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   verdict (owner, 2026-07-27): the cron proposal DID land but readability FAILED —
   schedule tables render poorly in Telegram text; owner's direction = a READ-ONLY
   freeze-proposal view on the existing board Mini App (board shows the plan, chat keeps
-  the human yes — ritual doctrine untouched); owner chose to plan it now — research:
+  the human yes — ritual doctrine untouched); research:
   `thoughts/shared/research/2026-07-27-freeze-proposal-board-view.md`.**
+  **PROPOSAL VIEW IMPLEMENTED same day — PR #88 OPEN (feature-freeze-proposal-view,
+  728 tests), plan `thoughts/shared/plans/2026-07-27-freeze-proposal-board-view.md`.**
+  Owner decisions: deep link + header pill (no tab); manager-only. Shape worth knowing:
+  `assessStagedFreeze` (src/schedule/freezeProposal.ts) is now THE staleness kernel —
+  the `run_freeze` confirm branch and the board's `GET /board/api/freeze-proposal` both
+  consume it, so open/expired/stale/malformed agree by construction (and a corrupt token
+  now dismisses as malformed instead of crashing AFTER consuming — behavior change,
+  pinned). The decoration seam's ONE staged exception: run_freeze's stage result carries
+  `proposalLink` (`?startapp=freeze`) + fused `boardNote` — never `note` (the stage
+  result's own instruction lives there; a same-named attachment would clobber it
+  silently when the handle is set). All three chat-copy homes key the fallback on the
+  **`proposalLink` field BY NAME** — "board link" prose sent a field-literal agent down
+  the full-plan fallback on every decorated stage (final-review catch). Deep-link
+  fallback reads `tgWebAppStartParam` from query AND hash (Telegram Web uses the
+  fragment). Rollout classes when merged: deploy (note copy) + gateway restarts ×5
+  (descriptions incl. the resolve_review rider) + wire pass ×5 (§0h now says
+  summary + link). Recorded-not-fixed: two-open-token stage race (pre-existing, tiny
+  window); probe returns the full payload per manager paint (`?summary=1` = the future
+  lever); a `boardView`-declaration seam is the generalization if a second staged tool
+  ever grows a board view.
   **Pin-protection live addendum (2026-07-27): PASS** — the first two E2Es ran post-reset
   with 0 pinned items, so the protection path was verified separately, stage-only: chat
   pin → `locked=true` read-back → `run_freeze` proposal skipped it ("pinned by a manager

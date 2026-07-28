@@ -8,9 +8,15 @@ vi.mock('./boardBot.js', () => ({
   sendBoardMessage: vi.fn().mockResolvedValue(undefined),
   setBoardMenuButton: vi.fn().mockResolvedValue(undefined),
 }));
+// Spy-wrap the db barrel the notifier imports from (originals still run) so a
+// test can inject a TRANSIENT resolution failure mid-batch — the cursor-hold
+// contract is unreachable otherwise.
+vi.mock('../db/index.js', { spy: true });
 
 import { sendBoardMessage } from './boardBot.js';
 import { pollOnce } from './boardNotify.js';
+import { getAssignmentForTenant } from '../db/index.js';
+import { getAssignmentForTenant as realGetAssignmentForTenant } from '../db/assignments.js';
 import { getClient } from '../db/client.js';
 import { setTenantSeats } from '../db/tenants.js';
 import { insertTechnician, updateTechnician } from '../db/technicians.js';
@@ -324,7 +330,9 @@ describe('pollOnce', () => {
     await burst('notify-n1', '2026-11-04', 4, { freezeRun: '2026-11-01T08:00:00.000Z' });
     expect(await pollOnce(lastSeen)).toBe(1);
     const [push] = sentTo();
-    expect(push.text).toContain('The schedule freeze made 4 changes to your schedule:');
+    // No count in the freeze header — a slow commit can straddle poll ticks,
+    // so a batch count would misstate what the freeze did.
+    expect(push.text).toContain('The schedule freeze updated your schedule:');
     expect(push.text).toContain('• New visit on your schedule: 2026-11-04, 05:00–06:00.');
   });
 
@@ -344,6 +352,31 @@ describe('pollOnce', () => {
     expect(push.text).toContain('Your schedule changed — 14 updates:');
     expect(push.text.split('\n').filter((l) => l.startsWith('•'))).toHaveLength(12);
     expect(push.text).toContain('…and 2 more — open the board for the full list.');
+  });
+
+  test('a mid-batch resolution failure sends what resolved, holds the cursor, and resends nothing', async () => {
+    await book({ technicianRef: 'notify-n1', date: '2026-11-09', startTime: '08:00', endTime: '09:00' });
+    await book({ technicianRef: 'notify-n2', date: '2026-11-09', startTime: '10:00', endTime: '11:00' });
+    await book({ technicianRef: 'notify-n1', date: '2026-11-09', startTime: '12:00', endTime: '13:00' });
+    // The first event resolves for real; the SECOND event's row lookup dies (a
+    // transient DB blip); the third is never reached this tick.
+    vi.mocked(getAssignmentForTenant)
+      .mockImplementationOnce(realGetAssignmentForTenant)
+      .mockImplementationOnce(async () => {
+        throw new Error('transient db blip');
+      });
+    expect(await pollOnce(lastSeen)).toBe(1); // only the first event's push went out
+    expect(sentTo()).toEqual([
+      { userId: '910000001', text: 'New visit on your schedule: 2026-11-09, 08:00–09:00.' },
+    ]);
+    sends.mockClear();
+    // Next tick the blip is gone: the two held events deliver, and the
+    // already-sent first one does NOT repeat.
+    expect(await pollOnce(lastSeen)).toBe(2);
+    const texts = sentTo().map((p) => p.text);
+    expect(texts).toContain('New visit on your schedule: 2026-11-09, 10:00–11:00.');
+    expect(texts).toContain('New visit on your schedule: 2026-11-09, 12:00–13:00.');
+    expect(texts).not.toContain('New visit on your schedule: 2026-11-09, 08:00–09:00.');
   });
 
   test('freeze_committed pushes the run summary to bound MANAGERS only (plan 4b-3)', async () => {

@@ -52,11 +52,15 @@ function digestText(pushes: Push[]): string {
   if (more > 0) lines.push(`…and ${more} more — open the board for the full list.`);
   // Name the freeze only when EVERY line came from the same run — a mixed
   // burst (freeze + a manual edit that raced in) keeps the generic header
-  // rather than mis-attributing the manual change.
+  // rather than mis-attributing the manual change. No count in the freeze
+  // header: a slow commit can straddle two poll ticks, so this batch's count
+  // is NOT necessarily "what the freeze did" — the bullets speak for
+  // themselves. The generic header's count is a claim about the batch only,
+  // so it stays.
   const run = pushes[0]?.freezeRun;
   const header =
     run !== undefined && pushes.every((p) => p.freezeRun === run)
-      ? `The schedule freeze made ${pushes.length} changes to your schedule:`
+      ? 'The schedule freeze updated your schedule:'
       : `Your schedule changed — ${pushes.length} updates:`;
   return [header, ...lines].join('\n');
 }
@@ -229,6 +233,10 @@ export async function pollOnce(lastSeen: Map<string, number>): Promise<number> {
           sent++;
         } catch (err) {
           // Best-effort per message — one blocked bot never stalls the rest.
+          // Conscious v1 trade: a digest is ONE send, so one failure here
+          // loses the whole burst's notifications (vs one message before) —
+          // same no-replay posture as the in-memory cursor; the board remains
+          // the source of truth.
           console.error(`board notify: send to user ${userId} failed:`, err);
         }
       }

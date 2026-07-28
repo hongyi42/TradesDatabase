@@ -99,6 +99,18 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - **Agent model:** the GLM line is a standing decision (Nemotron-3 was "too dumb" — never
   restore it while debugging). Current: **GLM-5.2 via DeepInfra** (`zai-org/GLM-5.2`), NVIDIA
   `nvidia-prod` (`z-ai/glm-5.2`) as automatic failover ("medic v2", 5-min timer on the box).
+  **Medic v2 blind spot, proven 2026-07-28 (~01:08–01:20Z stall):** DeepInfra completions hung
+  (`LLM idle timeout (120s)` per turn; owner saw Telegram's generic "Something went wrong")
+  while the API stayed reachable (keyless curl → instant 422) and the status page stayed
+  green — and the medic ticked TWICE mid-stall logging "route OK on primary": its probe
+  (`inference set` live-verify) validates endpoint+key with a small call and passes while
+  real completions hang. Stall self-cleared in ~12 min. Diagnosis recipe: sandbox
+  `gateway-persistent.log` grep → **read back the dead turn's DB writes before assuming it
+  did nothing** (the owner's set_availability × 2 had LANDED; only the reply died) → keyless
+  curl from box+laptop (reachability vs lane) → `journalctl -u
+  nemoclaw-inference-medic.service` → explicit-session probe turn (`--session-id probe-…`,
+  never `--agent main`). Candidate medic v3 (recorded, not built): probe with a real 1-token
+  completion under a ~30s timeout so completion stalls trip the nvidia-prod failover.
 
 ## 3. Environments & infrastructure
 

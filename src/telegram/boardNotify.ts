@@ -15,6 +15,9 @@ import { sendBoardMessage } from './boardBot.js';
 // Turns the append-only schedule_events feed into canned Telegram pushes so a
 // person learns their day changed without opening anything. Plain code, no AI:
 // fixed copy per event kind, naive-local dates/times printed verbatim.
+// Bursts collapse: a recipient owed more than DIGEST_THRESHOLD messages in one
+// poll tick gets ONE digest instead (a freeze commit would otherwise machine-
+// gun each technician with a push per placed visit).
 //
 // Two null-technician realities (Feature A):
 //  - assignment.technician_id can be NULL (unassigned booking/move) — there is
@@ -26,6 +29,36 @@ import { sendBoardMessage } from './boardBot.js';
 interface Push {
   userId: string;
   text: string;
+  // Set when the source event was stamped by a freeze run (freezeCommit.ts
+  // puts `freezeRun` in every event it appends) — lets a burst digest say
+  // WHY the schedule just changed.
+  freezeRun?: string;
+}
+
+// A recipient getting more than this many messages in one poll tick has hit a
+// burst (a freeze commit, a manager's rapid board edits) — collapse the run of
+// singles into ONE digest message. At or below it, singles stay instant and
+// personal.
+const DIGEST_THRESHOLD = 3;
+// Digest bullet cap: keeps a big freeze readable on a phone and the message
+// safely under Telegram's 4096-char sendMessage limit.
+const DIGEST_MAX_LINES = 12;
+
+// One combined message for a recipient's burst. Reuses each single push's
+// sentence as a bullet, so the copy has exactly one home above.
+function digestText(pushes: Push[]): string {
+  const lines = pushes.slice(0, DIGEST_MAX_LINES).map((p) => `• ${p.text}`);
+  const more = pushes.length - DIGEST_MAX_LINES;
+  if (more > 0) lines.push(`…and ${more} more — open the board for the full list.`);
+  // Name the freeze only when EVERY line came from the same run — a mixed
+  // burst (freeze + a manual edit that raced in) keeps the generic header
+  // rather than mis-attributing the manual change.
+  const run = pushes[0]?.freezeRun;
+  const header =
+    run !== undefined && pushes.every((p) => p.freezeRun === run)
+      ? `The schedule freeze made ${pushes.length} changes to your schedule:`
+      : `Your schedule changed — ${pushes.length} updates:`;
+  return [header, ...lines].join('\n');
 }
 
 // Unplaced rows (plan 4b-2) have a day range and no times — a push must say
@@ -141,7 +174,8 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
     }
     // completed/backfilled and future kinds: no push.
   }
-  return out;
+  const run = detailStr(detail, 'freezeRun');
+  return run ? out.map((p) => ({ ...p, freezeRun: run })) : out;
 }
 
 // One poll pass over every tenant with live Telegram bindings. `lastSeen` is
@@ -156,33 +190,50 @@ export async function pollOnce(lastSeen: Map<string, number>): Promise<number> {
       after = await latestScheduleVersion(tenantId);
       lastSeen.set(tenantId, after);
     }
+    // Resolve first, send second: the whole tick's pushes are collected before
+    // anything goes out, so a burst aimed at one person (a freeze commit, a
+    // manager's rapid edits) can collapse into a single digest below.
+    const collected: Push[] = [];
+    let advanceTo = after;
     for (const ev of await listScheduleEventsSince(tenantId, after)) {
-      let pushes: Push[];
       try {
-        pushes = await pushesFor(tenantId, ev);
+        collected.push(...(await pushesFor(tenantId, ev)));
       } catch (err) {
         // RESOLUTION failure ≠ poison event: a transient DB fault while
         // resolving rows must NOT advance the cursor (that would drop the
-        // notification forever — in-memory cursor, no replay). Stop this
-        // tenant's tick here and retry the SAME cursor next tick; reads are
-        // idempotent and ordered delivery is preserved. Only SEND failures
-        // (below) advance past — that's the real poison-message risk.
+        // notification forever — in-memory cursor, no replay). Stop collecting
+        // here — everything resolved so far still sends and advances — and
+        // retry the SAME cursor next tick; reads are idempotent and ordered
+        // delivery is preserved. Only SEND failures (below) advance past —
+        // that's the real poison-message risk.
         console.error(`board notify: resolving event ${ev.id} failed (will retry):`, err);
         break;
       }
-      for (const push of pushes) {
+      // Advance PAST the event even if its sends fail below: a poison event
+      // must not wedge the cursor into an infinite resend loop.
+      advanceTo = Number(ev.id);
+    }
+
+    const byUser = new Map<string, Push[]>();
+    for (const p of collected) {
+      const list = byUser.get(p.userId);
+      if (list) list.push(p);
+      else byUser.set(p.userId, [p]);
+    }
+    for (const [userId, pushes] of byUser) {
+      const texts =
+        pushes.length > DIGEST_THRESHOLD ? [digestText(pushes)] : pushes.map((p) => p.text);
+      for (const text of texts) {
         try {
-          await sendBoardMessage(push.userId, push.text);
+          await sendBoardMessage(userId, text);
           sent++;
         } catch (err) {
           // Best-effort per message — one blocked bot never stalls the rest.
-          console.error(`board notify: send for event ${ev.id} failed:`, err);
+          console.error(`board notify: send to user ${userId} failed:`, err);
         }
       }
-      // Advance PAST the event even when its sends failed: a poison event must
-      // not wedge the cursor into an infinite resend loop.
-      lastSeen.set(tenantId, Number(ev.id));
     }
+    if (advanceTo !== after) lastSeen.set(tenantId, advanceTo);
   }
   return sent;
 }

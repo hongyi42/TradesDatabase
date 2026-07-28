@@ -16,6 +16,7 @@ import { setTenantSeats } from '../db/tenants.js';
 import { insertTechnician, updateTechnician } from '../db/technicians.js';
 import { createCustomer } from '../db/customers.js';
 import { appendScheduleEvent } from '../db/scheduleEvents.js';
+import type { Json } from '../db/database.types.js';
 import { bookVisit, unscheduleVisit, moveVisit } from '../schedule/booking.js';
 
 const TRUNCATE =
@@ -65,7 +66,13 @@ beforeEach(async () => {
   sends.mockClear();
 });
 
-const book = (args: { technicianRef?: string; date: string; startTime: string; endTime: string }) =>
+const book = (args: {
+  technicianRef?: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  eventDetailExtra?: Json;
+}) =>
   bookVisit({
     tenantId,
     customerId,
@@ -73,6 +80,25 @@ const book = (args: { technicianRef?: string; date: string; startTime: string; e
     actorRef: 'notify-mgr',
     ...args,
   });
+
+// Books `count` back-to-back one-hour visits for one person on one day —
+// the shape of a freeze commit's burst. Sequential, so event order is fixed.
+const burst = async (
+  technicianRef: string,
+  date: string,
+  count: number,
+  eventDetailExtra?: Json,
+): Promise<void> => {
+  for (let i = 0; i < count; i++) {
+    await book({
+      technicianRef,
+      date,
+      startTime: `${String(5 + i).padStart(2, '0')}:00`,
+      endTime: `${String(6 + i).padStart(2, '0')}:00`,
+      ...(eventDetailExtra ? { eventDetailExtra } : {}),
+    });
+  }
+};
 
 describe('pollOnce', () => {
   test('first sight seeds at the current version — pre-boot events never notify', async () => {
@@ -267,6 +293,57 @@ describe('pollOnce', () => {
       { userId: '910000001', text: 'A visit landed on your schedule: 2026-10-10, 09:00–10:00.' },
     ]);
     await pg.query("update technicians set state = 'active' where ref = 'notify-n2'");
+  });
+
+  test('a burst to one person collapses into ONE digest; a bystander single stays a single', async () => {
+    await burst('notify-n1', '2026-11-02', 4);
+    await book({ technicianRef: 'notify-n2', date: '2026-11-02', startTime: '09:30', endTime: '10:30' });
+    expect(await pollOnce(lastSeen)).toBe(2); // one digest + one single, not 5
+    const pushes = sentTo();
+    expect(pushes).toHaveLength(2);
+    const toN1 = pushes.find((p) => p.userId === '910000001');
+    const toN2 = pushes.find((p) => p.userId === '910000002');
+    expect(toN1?.text).toContain('Your schedule changed — 4 updates:');
+    expect(toN1?.text).toContain('• New visit on your schedule: 2026-11-02, 05:00–06:00.');
+    expect(toN1?.text).toContain('• New visit on your schedule: 2026-11-02, 08:00–09:00.');
+    // The bystander's lone message is untouched by a colleague's burst.
+    expect(toN2?.text).toBe('New visit on your schedule: 2026-11-02, 09:30–10:30.');
+  });
+
+  test('exactly the threshold count (3) still sends as singles — the boundary is MORE than 3', async () => {
+    await burst('notify-n1', '2026-11-03', 3);
+    expect(await pollOnce(lastSeen)).toBe(3);
+    for (const p of sentTo()) {
+      expect(p.userId).toBe('910000001');
+      expect(p.text).toMatch(/^New visit on your schedule: 2026-11-03/);
+      expect(p.text).not.toContain('•');
+    }
+  });
+
+  test('a burst stamped by one freeze run names the freeze in the digest header', async () => {
+    await burst('notify-n1', '2026-11-04', 4, { freezeRun: '2026-11-01T08:00:00.000Z' });
+    expect(await pollOnce(lastSeen)).toBe(1);
+    const [push] = sentTo();
+    expect(push.text).toContain('The schedule freeze made 4 changes to your schedule:');
+    expect(push.text).toContain('• New visit on your schedule: 2026-11-04, 05:00–06:00.');
+  });
+
+  test('a mixed burst (freeze rows + a manual edit that raced in) keeps the generic header', async () => {
+    await burst('notify-n1', '2026-11-05', 3, { freezeRun: '2026-11-01T09:00:00.000Z' });
+    await book({ technicianRef: 'notify-n1', date: '2026-11-05', startTime: '10:00', endTime: '11:00' });
+    expect(await pollOnce(lastSeen)).toBe(1);
+    const [push] = sentTo();
+    expect(push.text).toContain('Your schedule changed — 4 updates:');
+    expect(push.text).not.toContain('freeze');
+  });
+
+  test('a huge digest caps its bullet list and counts the remainder (Telegram length guard)', async () => {
+    await burst('notify-n1', '2026-11-06', 14);
+    expect(await pollOnce(lastSeen)).toBe(1);
+    const [push] = sentTo();
+    expect(push.text).toContain('Your schedule changed — 14 updates:');
+    expect(push.text.split('\n').filter((l) => l.startsWith('•'))).toHaveLength(12);
+    expect(push.text).toContain('…and 2 more — open the board for the full list.');
   });
 
   test('freeze_committed pushes the run summary to bound MANAGERS only (plan 4b-3)', async () => {

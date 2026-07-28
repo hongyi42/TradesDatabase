@@ -81,7 +81,8 @@ happened*, splits the monthly bills, and writes per-tenant totals — called fro
 15-minute cron.
 
 **Phase 4 — the page.** Plain HTML/CSS/JS at `/admin/costs`, same no-build-step pattern as the
-board. Total burn, split by vendor, per-tenant cost with a **cost-per-seat** column. Estimates
+board. Total burn, split by vendor, per-tenant cost with a ~~**cost-per-seat** column~~ **seat mix
+(cost-per-seat was retired during implementation — see Phase 4's manual checks)**. Estimates
 visibly marked.
 
 ## Facts to confirm before Phase 1
@@ -374,7 +375,8 @@ authenticated get zero rows. Pays down the slice of the `auto_expose_new_tables`
 2026-10-30, `engineering-memory` §4) that matters most.
 
 **`web/admin/index.html` · `admin.css` · `admin.js`** (new) — no build step, no framework. Total burn
-+ MoM delta; per-provider breakdown; per-tenant table with cost, **$/seat**, and a visible `est.`
++ MoM delta; per-provider breakdown; per-tenant table with cost, ~~**$/seat**~~ **the seat mix (Mgr /
+Tech as separate columns — see the retirement note in Phase 4's manual checks)**, and a visible `est.`
 marker on any `allocated` row; 90-day trend. `prefers-color-scheme`; phone-readable; token in
 `sessionStorage`, never in the URL.
 
@@ -407,14 +409,29 @@ confirm the live commit hash.
 
 ### Live verification (agent-executable)
 - Prerequisites: Supabase MCP read access to the pilot (**SELECT only**); the deployed Render URL.
-- [ ] `GET /admin/api/costs` with the real token → 200; cross-check one tenant's figure against a
+- [x] `GET /admin/api/costs` with the real token → 200; cross-check one tenant's figure against a
       direct SQL `SELECT` on `cost_rollup_monthly`. Same number in both channels; capture both.
-- [ ] Same request with no Authorization header → 401 against the live URL.
+      **Done 2026-07-27:** API reported `brave $0.015` for Default Tenant; SQL returned
+      `brave / measured / 0.01500000 / qty 3` — one row, and NO `spine` row (the unpriced counter
+      correctly drops out of the rollup while still showing in `tenant_cost_detail` as `—`).
+- [x] Same request with no Authorization header → 401 against the live URL.
+      **Done 2026-07-27**, plus the rest of the matrix: wrong token → 401, `period=2026-13` → 400,
+      POST → 405, non-uuid tenant → 400, unknown tenant → 404, `/admin/static/../.env` → 404.
+      401 (not 503) also proves `ADMIN_DASHBOARD_TOKEN` is set on Render.
+- [x] added after deploy: the cron is **live**, not merely green — `cost_rollup_monthly.computed_at`
+      was 8 seconds old when read (2026-07-28T03:16:26Z vs 03:16:34Z), so `braveBackfill` +
+      `costRollup` are running on the heartbeat against the pilot.
 
 ### Manual verification
 - [ ] Readable on your phone, and `est.` markers unmistakably distinct from measured figures at a
-      glance — the whole disclosure decision rests on this
-- [ ] The $/seat column tells you something you didn't already know
+      glance — the whole disclosure decision rests on this.
+      **BLOCKED until an `infra_costs` row exists:** with no invoice entered there is no allocated
+      spend, so the page currently renders no `est.` markers at all. Do this check on the first
+      month that has a real bill in it.
+- [x] ~~The $/seat column tells you something you didn't already know~~ — **RETIRED, not skipped.**
+      `$/seat` was cut during implementation (user decision): manager seats price higher AND cost
+      more to serve, so one denominator over their sum describes neither product. The table shows
+      the seat **mix** (Mgr / Tech as separate columns) instead. Nothing to eyeball here.
 
 ---
 *Pause after this phase for the manual checks.*

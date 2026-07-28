@@ -137,7 +137,7 @@ param, the decoration seam gains the one narrow `run_freeze`-stage branch.
   `projectFreezeProposal(...)` → `json(res, 200, view)`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` (727 passed, 2026-07-27)
 - [ ] boardApi.test.ts new suite: 401 unauthenticated; 403 technician; `none` (no token);
       `open` (hand-built `stagedDetail` fixture via `upsertOpenReviewItem` +
       `updateOpenReviewItemDetail`, matching server.ts:4656-4662 shape) asserting weekday
@@ -193,7 +193,8 @@ already pinned in Phase 1.
   `prefers-reduced-motion` (sheet already does, :242-261).
 
 ### Automated verification
-- [ ] `npm run lint` (board.js is in the lint gate) · full gates re-run
+- [x] `npm run lint` (board.js is in the lint gate) · full gates re-run (727 passed, 2026-07-27;
+      phase review: no correctness findings, 1 reuse fix folded — openSheet/sheetShell)
 ### Live/manual — deferred to Phase 3 rollout (the board only exists deployed).
 ---
 
@@ -227,8 +228,37 @@ The three copy homes shrink, the rider lands, docs sync, then the full rollout +
 rule: same-change update).
 
 ### Automated verification
-- [ ] full gates; server.test.ts copy pins updated (stage-note wording, descriptions)
-- [ ] `npm run build` before the PR
+- [x] full gates; server.test.ts copy pins updated (stage-note wording, descriptions)
+      (727 passed at Phase 3; 728 after the final review, 2026-07-27)
+- [x] `npm run build` before the PR
+
+### Final review (8 finder angles, 25 candidates → 11 fixed, rest recorded)
+Fixed on the branch (commit 8734fbf): (1) **shared staleness kernel**
+`assessStagedFreeze` — the confirm branch and the board projection now consume ONE
+assessment, closing the inverse-invariant gap (board said "none" for a plan chat would
+still book) AND a latent post-consume crash (a shapeless plan reached `commitFreezePlan`
+after the token was consumed; corrupt tokens now dismiss as malformed — new kernel test);
+(2) **field-name copy bug in all three homes**: the fallback said "carries NO board link"
+while the stage result's field is `proposalLink` — a field-literal agent would have dumped
+the full plan on every decorated stage, defeating the feature (pins updated); (3)
+**hash-fragment deep-link fallback** (Telegram Web delivers `tgWebAppStartParam` in the
+hash, not the query); (4) typed `boardMiniAppLink` param (`'freeze'` union — call-site
+typos are compile errors, not silently-degraded links); (5) single pill renderer
+(syncFreezePill only; the render-template copy removed); (6) seam single-spread (one
+instruction literal); (7) CSS dedup (freeze pill shares the bucket pill's rules; one hint
+style); (8) proposal row-skeleton helper; (9) endpoint reads items first, version only
+when open (drops a DB query from every no-proposal manager paint); (10) weekday memoized
+per date in the projection; (11) solve-time-names intent comment (deliberately not
+rosterName — cold-cache independence).
+Surfaced, recorded, NOT fixed (deliberate): the two-open-token stage race can show the
+newest plan while an older confirmId books a different one (pre-existing anomaly, tiny
+window, kind-wide dismiss is the mitigation); the probe ships the full payload per paint
+(pilot-scale plans are small; a `?summary=1` state-only variant is the future lever);
+the deep-link open double-fetches (the never-stale idiom); the fallback field-spec prose
+lives in three homes (layering is deliberate — result note = lever, description =
+discovery, §0h = doctrine); test fixtures hand-build the stagedDetail shape in two suites
+(mirrors pinned by comment); a declaration-based seam (`boardView` field) is the
+generalization if a second staged tool grows a board view.
 
 ### Rollout + Live verification (agent-executable; prerequisites: merged + deployed,
 `supabase-test` MCP, s2 CLI probe, ssh to trades-box-1)

@@ -27,12 +27,15 @@ import {
 } from '../schedule/booking.js';
 import {
   durationError,
+  findOpenReviewItemsByKind,
   getTenant,
   isValidDuration,
   JOB_PRIORITIES,
+  latestScheduleVersion,
   type JobPriority,
 } from '../db/index.js';
 import { localDateISO } from '../schedule/availability.js';
+import { projectFreezeProposal } from '../schedule/freezeProposal.js';
 
 // The dispatch board's HTTP surface, mounted by httpServer.ts BEFORE the IP
 // allowlist: board traffic comes from users' public browsers (the Telegram
@@ -299,6 +302,31 @@ export async function handleBoardRequest(
         return;
       }
       json(res, 200, { technicians: await readRosterForBoard(auth.tenantId) });
+      return;
+    }
+
+    // The staged freeze proposal (read-only; the CONFIRM lives in chat —
+    // ritual doctrine, so this surface has no write path and serves no
+    // confirmId). Manager-only like every proposal surface. The projection
+    // mirrors BOTH confirm-time staleness guards (12h clock + schedule-version
+    // pin), so the page can never show a plan the confirm would refuse.
+    if (pathname === '/board/api/freeze-proposal' && req.method === 'GET') {
+      const auth = await authBoard(req);
+      if (!auth.ok) {
+        deny(res, auth);
+        return;
+      }
+      if (auth.technician.tier !== 'manager') {
+        json(res, 403, { error: 'managers only' });
+        return;
+      }
+      // Items first, version only when something is open: this endpoint runs
+      // on every manager board paint, and outside the ~12h proposal window
+      // the version read would be pure waste (final-review efficiency
+      // finding). Sequencing costs one round-trip only in the rare open case.
+      const items = await findOpenReviewItemsByKind(auth.tenantId, 'pending_freeze');
+      const version = items.length ? await latestScheduleVersion(auth.tenantId) : 0;
+      json(res, 200, projectFreezeProposal(items, version, Date.now()));
       return;
     }
 

@@ -25,7 +25,8 @@ header h1 { font-size: 18px; margin: 4px 0 2px; }
 /* Loose-bucket pill (managers only): the always-visible "work exists that the
    board window can't show" signal. Sits beside the title; count fills async. */
 .head-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.bucket-pill {
+.bucket-pill,
+.freeze-pill {
   font: inherit;
   font-size: 13px;
   padding: 4px 12px;
@@ -36,7 +37,17 @@ header h1 { font-size: 18px; margin: 4px 0 2px; }
   cursor: pointer;
   white-space: nowrap;
 }
-.bucket-pill:active { background: var(--accent); color: var(--accent-fg); }
+.bucket-pill:active,
+.freeze-pill:active { background: var(--accent); color: var(--accent-fg); }
+
+/* Proposal sheet (read-only): reuses the bucket-section/row vocabulary; the
+   freeze pill shares the bucket pill's rules below (one restyle touches
+   both — they sit side by side in the head row); only the day headers and
+   the confirm-in-chat hint are new, and they share one hint style. */
+.freeze-day,
+.freeze-hint { font-size: 13px; color: var(--hint); }
+.freeze-day { margin: 10px 0 4px; }
+.freeze-hint { margin: 14px 0 4px; }
 
 /* Tray sections (inside the shared detail sheet). Rows echo the Unassigned
    lane's dashed affordance; parked-visit rows are tappable. */

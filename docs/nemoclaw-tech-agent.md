@@ -189,12 +189,18 @@ date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array
   results only per the §0e rules; server enforces SSRF guard, a length cap on non-search URLs,
   per-person daily caps, and logs every request to `web_requests`). Content comes back labeled
   untrusted; the §0e AGENTS.md block (Box_Setup_Stuff setup guide) carries the behavior rules.
-- **The freeze ritual (2026-07-26, manager tier):** `run_freeze` proposes a whole placement
-  plan (the three loose queues → real slots via Google's Route Optimization API) and is ALWAYS
-  two-step — the confirm is a human's yes in the conversation, never an unattended commit.
-  A recurring freeze ("every Friday morning") is an agent-side OpenClaw cron job under the
-  §0g rules whose payload is: run the freeze, present the proposal + the pin-cleanup line,
-  and STOP — the proposal in chat IS the reminder (12h expiry; a later run supersedes).
+- **The freeze ritual (2026-07-26, manager tier; chat copy reshaped 2026-07-27):**
+  `run_freeze` proposes a whole placement plan (the three loose queues → real slots via
+  Google's Route Optimization API) and is ALWAYS two-step — the confirm is a human's yes in
+  the conversation, never an unattended commit. The chat message is a SHORT summary (counts +
+  the most consequential skips + the pin-cleanup line) ending with the **proposal board
+  link** (`?startapp=freeze` deep link) — the full plan renders on the board's read-only
+  proposal view (`/board/api/freeze-proposal`, manager-only; mirrors the confirm path's 12h
+  clock AND schedule-version staleness guards; serves no confirm handle). Chat shows the
+  entire plan only when no board link is available. A recurring freeze ("every Friday
+  morning") is an agent-side OpenClaw cron job under the §0g rules whose payload is: run the
+  freeze, present the summary + proposal link, and STOP — the message in chat IS the
+  reminder (12h expiry; a later run supersedes; `resolve_review dismissed` cancels early).
   Pinning (`set_visit_locks`, the board's Pin toggle) is the manager's "hands off" mark; the
   freeze never touches pinned or already-placed visits. The §0h AGENTS.md block
   (Box_Setup_Stuff, refreshed per wire run) carries the behavior rules; agent cron jobs are

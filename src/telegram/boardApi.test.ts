@@ -11,6 +11,9 @@ import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
 import { appendRawCapture } from '../db/rawCaptures.js';
 import { bookVisit, cancelJob } from '../schedule/booking.js';
+import { upsertOpenReviewItem, updateOpenReviewItemDetail } from '../db/reviewItems.js';
+import { latestScheduleVersion } from '../db/scheduleEvents.js';
+import { PINNED_SKIP_REASON } from '../schedule/freezeSolve.js';
 import * as rosterCache from './rosterCache.js';
 
 // Integration: the /board routes over a real HTTP server on an ephemeral port
@@ -1988,5 +1991,128 @@ describe('route ordering', () => {
     // An unrouted /board/api/* path terminates in the board handler (404), it
     // must not fall through to the MCP catch-all.
     expect((await fetch(`${base}/board/api/nope`)).status).toBe(404);
+  });
+});
+
+describe('/board/api/freeze-proposal (read-only proposal view)', () => {
+  // The projection's full state matrix is pure-tested in freezeProposal.test.ts;
+  // this suite proves the WIRING: auth posture, the manager gate, the two DB
+  // reads, and that the served body is the projection's output — including the
+  // one state (stale) that needs a REAL schedule-version bump to manufacture.
+  const DAY_FRZ = relDate(25); // distinct offset (house rule — never collide)
+  const url = () => `${base}/board/api/freeze-proposal`;
+
+  const planFixture = () => ({
+    horizonFrom: relDate(0),
+    horizonTo: relDate(13),
+    placements: [
+      {
+        kind: 'unscheduled_job',
+        jobId: 'fixture-job',
+        assignmentId: null,
+        customer: 'Freeze Casa',
+        jobTitle: 'Proposal probe',
+        technicianRef: 'board-t1',
+        date: DAY_FRZ,
+        startTime: '09:00',
+        endTime: '10:00',
+      },
+    ],
+    skipped: [{ ref: 'a-pin', label: 'Pinned Pete', reason: PINNED_SKIP_REASON }],
+    capacity: [
+      { technicianRef: 'board-t1', technicianName: 'Tess One', committedMin: 60, availableMin: 480 },
+    ],
+  });
+
+  // Stage exactly what run_freeze stores (server.ts stagedDetail shape) —
+  // upsert then detail-rewrite, the stage-race idiom.
+  const stage = async (over: Record<string, unknown> = {}): Promise<string> => {
+    const item = await upsertOpenReviewItem({
+      tenantId,
+      kind: 'pending_freeze',
+      subjectRef: 'board-mgr',
+      detail: {},
+    });
+    const detail = {
+      plan: planFixture(),
+      scheduleVersion: await latestScheduleVersion(tenantId),
+      horizonFrom: relDate(0),
+      horizonTo: relDate(13),
+      stagedAt: new Date().toISOString(),
+      ...over,
+    };
+    const pinned = await updateOpenReviewItemDetail(item.id, tenantId, detail as never);
+    if (!pinned) throw new Error('fixture token closed unexpectedly');
+    return item.id;
+  };
+
+  beforeEach(async () => {
+    // Each test manufactures its own token; close any leftover kind-wide.
+    await pg.query("update review_items set status = 'dismissed' where kind = 'pending_freeze'");
+  });
+
+  test('401 with no slip; 403 for a technician (manager-only, every proposal surface)', async () => {
+    expect((await fetch(url())).status).toBe(401);
+    const res = await fetch(url(), { headers: tma(900000002) });
+    expect(res.status).toBe(403);
+  });
+
+  test('nothing staged → none, with the run-it-in-chat copy', async () => {
+    const res = await fetch(url(), { headers: tma(900000001) });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { state: string; message: string };
+    expect(body.state).toBe('none');
+    expect(body.message).toContain('run the freeze in chat');
+  });
+
+  test('open: serves the staged plan with weekday + pinnedCount, and leaks no confirm handle', async () => {
+    const id = await stage();
+    const res = await fetch(url(), { headers: tma(900000001) });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      state: string;
+      pinnedCount: number;
+      placements: Array<Record<string, unknown>>;
+    };
+    expect(body.state).toBe('open');
+    expect(body.pinnedCount).toBe(1);
+    expect(body.placements[0].weekday).toBeDefined(); // server-computed (house rule)
+    expect(body.placements[0].startTime).toBe('09:00');
+    // The ritual doctrine: the confirm handle must never reach the page.
+    const raw = JSON.stringify(body);
+    expect(raw).not.toContain(id);
+    expect(raw).not.toContain('confirmId');
+  });
+
+  test('backdated past the TTL → expired', async () => {
+    await stage({ stagedAt: new Date(Date.now() - 13 * 3600_000).toISOString() });
+    const res = await fetch(url(), { headers: tma(900000001) });
+    const body = (await res.json()) as { state: string; message: string };
+    expect(body.state).toBe('expired');
+    expect(body.message).toContain('12 hours');
+  });
+
+  test('a real booking after staging bumps the version → stale (the REAL staleness guard, wired live)', async () => {
+    await stage();
+    const casa = await createCustomer({ tenantId, name: 'Freeze Drift Casa' });
+    const job = await createJob({
+      tenantId,
+      customerId: casa.id,
+      title: 'version bumper',
+      status: 'open',
+    });
+    await bookVisit({
+      tenantId,
+      jobId: job.id,
+      title: 'version bumper',
+      date: DAY_FRZ,
+      startTime: '13:00',
+      endTime: '14:00',
+      actorRef: 'board-mgr',
+    });
+    const res = await fetch(url(), { headers: tma(900000001) });
+    const body = (await res.json()) as { state: string; message: string };
+    expect(body.state).toBe('stale');
+    expect(body.message).toContain('schedule changed');
   });
 });

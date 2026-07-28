@@ -143,8 +143,8 @@ import {
   assembleFreezeInputs,
   solveFreeze,
   PINNED_SKIP_REASON,
-  type FreezePlan,
 } from '../schedule/freezeSolve.js';
+import { assessStagedFreeze } from '../schedule/freezeProposal.js';
 import { commitFreezePlan } from '../schedule/freezeCommit.js';
 import type { GeocodeTransport } from '../routes/geocode.js';
 import type { MintRoiToken, RoiTransport } from '../routes/roiClient.js';
@@ -855,18 +855,19 @@ const ADMIN_TOOLS = [
       'The freeze (manager only; ALWAYS two-step): auto-place the loose work — open jobs ' +
       'with no visit, visits with nobody attached, and time-TBD visits — onto real slots ' +
       'via the route solver. The first call books NOTHING: it returns ' +
-      '{status:"needs_confirmation", confirmId} with the whole proposed plan — every ' +
-      'placement (who, day, time, customer), every visit it could NOT place with the reason ' +
-      "(no length set, no working pattern, pinned, address failed…), and each technician's " +
-      'committed-vs-available minutes. Show the manager ALL of it (placements, skips, ' +
-      'capacity, the pin line), get an explicit yes, then call again with ONLY confirmId — ' +
-      'the plan books through the normal verbs, one visit at a time. The proposal is valid ' +
-      'for 12 hours and dies automatically if the schedule changes underneath it ' +
-      '(re-run for a fresh plan). Placing never breaks a customer promise (day-fenced ' +
-      'visits land inside their fence) and NEVER touches pinned or already-placed visits. ' +
-      'Default horizon: today through +13 days; throughDate extends/shortens it (cap 31 ' +
-      'days out). When the result carries boardNote, ALWAYS end your report with its exact ' +
-      '[See it on the board](…) line.',
+      '{status:"needs_confirmation", confirmId} with the whole proposed plan. Give the ' +
+      'manager a SHORT summary — counts (placed / skipped / pinned untouched) plus the one ' +
+      'or two most consequential skips — and end with the proposal board link line (the ' +
+      'full plan lives on the board). If the result carries no proposalLink field, show the ' +
+      'ENTIRE plan in chat instead: every placement (who, day, time, customer), every skip with ' +
+      "its reason, and each technician's committed-vs-available minutes. Get an explicit " +
+      'yes, then call again with ONLY confirmId — the plan books through the normal verbs, ' +
+      'one visit at a time. The proposal is valid for 12 hours and dies automatically if ' +
+      'the schedule changes underneath it (re-run for a fresh plan). Placing never breaks ' +
+      'a customer promise (day-fenced visits land inside their fence) and NEVER touches ' +
+      'pinned or already-placed visits. Default horizon: today through +13 days; ' +
+      'throughDate extends/shortens it (cap 31 days out). When the result carries ' +
+      'boardNote, ALWAYS end your report with its exact bracketed line.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -879,9 +880,12 @@ const ADMIN_TOOLS = [
   {
     name: 'resolve_review',
     description:
-      'Close a review item (manager only) as resolved (handled) or dismissed (not an issue). ' +
-      'For a pairing verification: resolved = the mailbox is right (person goes active); ' +
-      'dismissed = wrong mailbox (pairing is torn down for a fresh connect link).',
+      'Close a review item (manager only): resolved = handled, dismissed = not an issue / ' +
+      'cancel it. For STAGED PROPOSALS (e.g. a pending freeze): dismissed CANCELS the ' +
+      'proposal — this is the chat way to kill it before its expiry; resolved is refused ' +
+      '(confirming happens via the staging tool, never here). For a pairing verification: ' +
+      'resolved = the mailbox is right (person goes active); dismissed = wrong mailbox ' +
+      '(pairing is torn down for a fresh connect link).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1227,7 +1231,10 @@ const BOARD_LINK_TOOL_NAMES = new Set([
   'run_freeze',
 ]);
 
-function boardMiniAppLink(): string | null {
+// `param` is a typed union so a call-site typo is a COMPILE error, not a
+// silently-degraded bare link under a note that promises the proposal view
+// (final-review finding); the regex stays as the runtime belt.
+function boardMiniAppLink(param?: 'freeze'): string | null {
   const handle = (process.env.BOARD_BOT_HANDLE ?? '').trim().replace(/^@/, '');
   if (!handle) return null;
   // Telegram username rules — anything else is treated as UNSET, never
@@ -1240,7 +1247,12 @@ function boardMiniAppLink(): string | null {
     );
     return null;
   }
-  return `https://t.me/${handle}?startapp`;
+  // `?startapp=<param>` reaches the Mini App as start_param (inside the signed
+  // initData and via initDataUnsafe — https://core.telegram.org/bots/webapps,
+  // verified 2026-07-27). Internal callers pass literals; anything outside the
+  // conservative charset is dropped rather than minted into a tenant-wide link.
+  const suffix = param && /^[a-z0-9_-]{1,64}$/.test(param) ? `=${param}` : '';
+  return `https://t.me/${handle}?startapp${suffix}`;
 }
 
 // Audit channels: L1 rows that exist to hold the ACTOR accountable for an
@@ -4718,13 +4730,19 @@ async function dispatch(
           skipped: plan.skipped,
           capacity: plan.capacity,
           note:
-            'NOTHING is booked yet. Show the manager the WHOLE plan: every placement ' +
-            '(weekday, date, time, who, customer), every skipped item WITH its reason, and ' +
-            'each technician\'s committed vs available minutes. ' +
-            `The pin line — always say it: ${pinnedCount} pinned visit(s) were left untouched; ` +
-            "pin anything else you don't want rearranged (set_visit_locks), then run the " +
-            'freeze again. On an explicit yes, call run_freeze again with ONLY confirmId. ' +
-            'The proposal expires in 12 hours and dies if the schedule changes underneath it.',
+            'NOTHING is booked yet. Give the manager a SHORT summary only — counts ' +
+            `(${plan.placements.length} placed / ${plan.skipped.length} skipped / ` +
+            `${pinnedCount} pinned untouched) plus the one or two most consequential ` +
+            'skips — and end with the proposal board link line (the full plan lives on ' +
+            'the board). If this result carries no proposalLink field, show the ENTIRE ' +
+            'plan in chat instead: every placement (weekday, date, time, who, customer), every ' +
+            "skipped item WITH its reason, and each technician's committed vs available " +
+            `minutes. The pin line — always say it: ${pinnedCount} pinned visit(s) were ` +
+            "left untouched; pin anything else you don't want rearranged " +
+            '(set_visit_locks), then run the freeze again. Booking happens only after ' +
+            'the manager\'s explicit yes — then call run_freeze again with ONLY ' +
+            'confirmId. The proposal expires in 12 hours and dies if the schedule ' +
+            'changes underneath it.',
         };
       }
       // CONFIRM. Any active manager may confirm (one tenant-wide plan); the
@@ -4733,35 +4751,39 @@ async function dispatch(
       if (!item) {
         throw new Error('confirmation not found — run run_freeze again for a fresh plan');
       }
-      const d = (item.detail ?? {}) as {
-        plan?: FreezePlan;
-        scheduleVersion?: number;
-        stagedAt?: string;
-      };
-      // 12h expiry, NOT the house 15 minutes (plan decision): a morning
+      // ONE staleness kernel, shared with the board's proposal view
+      // (assessStagedFreeze — final-review finding): the page and the confirm
+      // agree BY CONSTRUCTION on what is open/expired/stale/malformed. 12h
+      // expiry, NOT the house 15 minutes (plan decision): a morning
       // cron-fired proposal must survive until the manager reads it — the
-      // REAL staleness guard is the version pin below, not the clock.
-      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 12 * 3600_000) {
+      // REAL staleness guard is the version pin, not the clock. Note the
+      // kernel is STRICTER than the old inline checks: a row with a missing
+      // stagedAt or a shapeless plan is now malformed (dismissed), where it
+      // previously slipped to the commit and crashed AFTER consuming the
+      // token (plan.placements undefined) — corrupt tokens must never book.
+      const currentVersion = await latestScheduleVersion(tenantId);
+      const assessment = assessStagedFreeze(item.detail, currentVersion, Date.now());
+      if (assessment.verdict === 'expired') {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'freeze proposal expired (12h)');
         throw new Error('this freeze proposal expired (12 hours) — run the freeze again for a fresh plan');
       }
-      if (!d.plan || typeof d.scheduleVersion !== 'number') {
+      if (assessment.verdict === 'malformed') {
         await resolveReviewItem(item.id, tenantId, 'dismissed', 'malformed staged plan');
         throw new Error('the staged plan is malformed — run the freeze again');
       }
-      const currentVersion = await latestScheduleVersion(tenantId);
-      if (currentVersion !== d.scheduleVersion) {
+      if (assessment.verdict === 'stale') {
         await resolveReviewItem(
           item.id,
           tenantId,
           'dismissed',
-          `schedule changed under the plan (v${d.scheduleVersion} → v${currentVersion})`,
+          `schedule changed under the plan (v${assessment.pinnedVersion} → v${assessment.currentVersion})`,
         );
         throw new Error(
           'the schedule changed since this plan was solved — nothing was booked; run the ' +
             'freeze again for a fresh plan',
         );
       }
+      const d = assessment.detail;
       // CONSUME FIRST (at-most-once, the send_email idiom), then commit.
       const consumed = await resolveReviewItem(
         item.id,
@@ -5490,23 +5512,38 @@ export function createServer(deps: ServerDeps = {}): Server {
       // nothing, so the board cannot show the pending change — offering "see
       // it on the board" mid-confirmation would show the OLD schedule at the
       // exact moment precision matters. The link rides committed results only.
-      const decorated =
-        link &&
-        result &&
-        typeof result === 'object' &&
-        !Array.isArray(result) &&
-        (result as { status?: unknown }).status !== 'needs_confirmation'
-          ? {
-              ...(result as Record<string, unknown>),
-              boardLink: link,
-              // Instruction + payload FUSED into the result (the resolve_date
-              // lesson: description-only wording is too weak for the live
-              // model — it skipped the link on plain schedule reads,
-              // 2026-07-19). The bracketed line is Telegram markdown; the
-              // bridge renders it as a tappable "See it on the board".
-              boardNote: `ALWAYS end this reply with the exact line: [See it on the board](${link})`,
-            }
-          : result;
+      // ONE exception (proposal-view feature, 2026-07-27): run_freeze's stage
+      // result — the board's proposal view shows exactly the staged plan, so
+      // the premise inverts for this tool alone. It gets `proposalLink`
+      // (deep-linked via ?startapp=freeze) + a fused boardNote; the field is
+      // boardNote, NEVER `note` — the stage result already carries `note`
+      // ("NOTHING is booked yet…") and this spread lands after the result, so
+      // a `note`-named attachment would silently clobber the instruction
+      // (plan review finding 1).
+      // One spread + one instruction literal for both branches (final-review
+      // simplification): only the (field, label, url) triple varies. The
+      // instruction is FUSED into the result (the resolve_date lesson:
+      // description-only wording is too weak for the live model — it skipped
+      // the link on plain schedule reads, 2026-07-19); the bracketed line is
+      // Telegram markdown the bridge renders as a tappable link.
+      let deco: { key: 'boardLink' | 'proposalLink'; label: string; url: string } | null = null;
+      if (link && result && typeof result === 'object' && !Array.isArray(result)) {
+        if ((result as { status?: unknown }).status !== 'needs_confirmation') {
+          deco = { key: 'boardLink', label: 'See it on the board', url: link };
+        } else if (name === 'run_freeze') {
+          const proposalLink = boardMiniAppLink('freeze');
+          if (proposalLink) {
+            deco = { key: 'proposalLink', label: 'Review the full proposal on the board', url: proposalLink };
+          }
+        }
+      }
+      const decorated = deco
+        ? {
+            ...(result as Record<string, unknown>),
+            [deco.key]: deco.url,
+            boardNote: `ALWAYS end this reply with the exact line: [${deco.label}](${deco.url})`,
+          }
+        : result;
       // Temporal grounding rider — every successful object result carries
       // `now` (the eval-verified rich-grounding line: date + weekday + tz;
       // condition B of thoughts/shared/research/2026-07-15-date-reliability-eval.md,

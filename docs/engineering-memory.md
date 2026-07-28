@@ -407,6 +407,35 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   → dismissed + unpinned; read-back 0 open tokens / 0 pinned / 0 schedule writes,
   queues intact. REMAINING: the Pinned-chip phone check, then the plan flips complete
   (the readability box closes as done-with-finding).
+  **PER-TICK PUSH DIGEST LIVE 2026-07-28 (PR #89), owner-requested:** a freeze commit
+  used to machine-gun each technician with one push per placed visit (recurs every
+  weekly freeze). `boardNotify.pollOnce` now resolves the whole tick before sending,
+  groups per recipient, and collapses any run of MORE than `DIGEST_THRESHOLD` (3)
+  messages into one digest (bullets reuse the single-push sentences; cap
+  `DIGEST_MAX_LINES` 12 + "…and N more" — Telegram 4096 guard). A burst whose events all
+  share one `freezeRun` stamp gets "The schedule freeze updated your schedule:" —
+  deliberately COUNTLESS (a slow commit can straddle two poll ticks, so a batch count
+  would misstate the freeze). Cursor semantics unchanged and now test-pinned both ways
+  (mid-batch resolution failure holds + resends nothing — injected via
+  `vi.mock('../db/index.js', { spy: true })`). Recorded trade: a digest is ONE send, so
+  one transient send failure loses the whole burst (same no-replay posture as the
+  in-memory cursor; board = source of truth). Rollout class: board-worker redeploy ONLY
+  (no wire pass, no gateway restarts).
+  **REALISTIC WA SEED 2026-07-28 (owner-authorized pilot write; scratchpad scripts
+  seed-wa-visits.mjs + seed-wa-resume.mjs):** Default Tenant now models a real firm —
+  all 37 customers carry real, geocode-verified street-level Puget Sound addresses
+  (9 re-addressed from the Fresno placeholders — nulling `lat/lng/geocoded_at` in the
+  SAME update per the customers.ts guard, then refilled with verified coords — plus 28
+  new; 0 rows without coords); 121 placed visits Jul 29–Aug 9, 4-5 per tech-workday
+  inside availability patterns, geographically clustered per day (hman 36 = Seattle,
+  manager-joy 40 = Eastside, yutao 45 = South King/Tacoma); loose queue stocked (+6
+  duration'd jobs incl. 2 urgent, 3 person-less exact-time visits, 4 timeTbd fenced —
+  2 attached); exactly 2 OPEN pinned visits (both Aug-4). Traps hit: Joy's roster ref
+  is **`manager-joy`**, not 'joy' (first run crashed mid-phase-D; the resume script
+  guards with a refs-already-in-window check); terminal (cancelled) assignment rows
+  retain stale `locked=true` — always filter status when counting pins. The seeding
+  run doubled as the digest's first live burst (Joy + Yutao are Telegram-bound; hman is
+  unbound and silent). Owner-court: their own freeze E2E on this data + digest verdict.
   Five phases: (1) pinning became a HUMAN privilege — `bookVisit`/
   `moveVisit` no longer auto-stamp `locked:true` (moves/attaches carry the flag);
   `setVisitLocks` core = ONE guarded bulk UPDATE (atomic, `status in (confirmed,proposed)`

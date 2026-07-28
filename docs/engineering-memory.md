@@ -356,8 +356,20 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   freeze-proposal view on the existing board Mini App (board shows the plan, chat keeps
   the human yes — ritual doctrine untouched); research:
   `thoughts/shared/research/2026-07-27-freeze-proposal-board-view.md`.**
-  **PROPOSAL VIEW IMPLEMENTED same day — PR #88 OPEN (feature-freeze-proposal-view,
-  728 tests), plan `thoughts/shared/plans/2026-07-27-freeze-proposal-board-view.md`.**
+  **PROPOSAL VIEW LIVE 2026-07-28 — PR #88 merged (main 387f1c8), rollout complete:**
+  served board.js byte-identical; wire pass ×5 (new §0h `proposalLink` phrase verified
+  per sandbox) + five gateway restarts health-passed; s2 live E2E: the freeze reply is a
+  compact summary ENDING with the exact deep-link line
+  (`t.me/<bot>?startapp=freeze`), and the **unaided-dismiss retest PASSED** — a plain
+  "get rid of that proposal" (no tool names) → token dismissed, zero writes; pre-rider
+  the same ask made the agent re-RUN the freeze. Watch item: at pilot scale (3
+  placements/3 skips) the agent relays the compact FULL list rather than strict
+  counts-only — acceptable; re-judge on a large plan. Suite context: PR #87 (cost
+  dashboard) merged just before #88 — its `cost_events` migrations timestamp BEFORE the
+  geocoding migration, so a local stack needs `npx supabase migration up --include-all`
+  (plain `migration up` refuses out-of-order inserts); the first post-apply suite run
+  can flake on state left by the pre-migration failures — rerun before diagnosing.
+  Plan `thoughts/shared/plans/2026-07-27-freeze-proposal-board-view.md`.**
   Owner decisions: deep link + header pill (no tab); manager-only. Shape worth knowing:
   `assessStagedFreeze` (src/schedule/freezeProposal.ts) is now THE staleness kernel —
   the `run_freeze` confirm branch and the board's `GET /board/api/freeze-proposal` both

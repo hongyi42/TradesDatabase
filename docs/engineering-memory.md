@@ -420,7 +420,11 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   `vi.mock('../db/index.js', { spy: true })`). Recorded trade: a digest is ONE send, so
   one transient send failure loses the whole burst (same no-replay posture as the
   in-memory cursor; board = source of truth). Rollout class: board-worker redeploy ONLY
-  (no wire pass, no gateway restarts).
+  (no wire pass, no gateway restarts). Digest verified live by the owner 2026-07-29
+  (5-visit burst onto manager-sam arrived as one message). Owner direction same day:
+  notifications should arrive in the NEMOCLAW AGENT chat rather than the board bot
+  (board interaction is rare); design fork open — see the notification-transport
+  decision brief in the session log / upcoming plan doc.
   **REALISTIC WA SEED 2026-07-28 (owner-authorized pilot write; scratchpad scripts
   seed-wa-visits.mjs + seed-wa-resume.mjs):** Default Tenant now models a real firm —
   all 37 customers carry real, geocode-verified street-level Puget Sound addresses

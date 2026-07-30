@@ -25,20 +25,42 @@ import { weekdayLabel } from './fit.js';
 // the confirm branch imports this same constant.
 export const FREEZE_PROPOSAL_TTL_MS = 12 * 3600_000;
 
-export type FreezeProposalView =
+export type ProposalKind = 'freeze' | 'resolve';
+
+// One move line, fully server-composed (the board has no build step and does
+// no date math): weekday-labeled from→to labels, the technician change only
+// when the person actually changes, and the placements-idiom grouping pair
+// (toDate + toWeekday) so the sheet can group per day exactly like Placements.
+export type ProposalMoveView = {
+  fromLabel: string; // e.g. "Tue 2026-08-04 09:00–10:00"
+  toLabel: string;
+  customer: string | null;
+  jobTitle: string | null;
+  techChange: string | null; // "Joy Chen → Hman Lee", null when unchanged
+  toDate: string;
+  toWeekday: string;
+};
+
+type OpenProposalCommon = {
+  state: 'open';
+  stagedAt: string;
+  expiresAt: string; // stagedAt + TTL, served so the client does no math
+  horizonFrom: string;
+  horizonTo: string;
+  pinnedCount: number;
+  placements: (FreezePlacement & { weekday: string })[];
+  skipped: FreezeSkip[];
+  capacity: FreezeCapacity[];
+};
+
+// Kind-agnostic since plan 2026-07-30: the ONE open proposal (freeze OR
+// re-solve) — `kind` rides on every non-none state so the sheet titles and
+// copy can say which verb to rerun.
+export type ProposalView =
   | { state: 'none'; message: string }
-  | { state: 'expired' | 'stale'; message: string }
-  | {
-      state: 'open';
-      stagedAt: string;
-      expiresAt: string; // stagedAt + TTL, served so the client does no math
-      horizonFrom: string;
-      horizonTo: string;
-      pinnedCount: number;
-      placements: (FreezePlacement & { weekday: string })[];
-      skipped: FreezeSkip[];
-      capacity: FreezeCapacity[];
-    };
+  | { state: 'expired' | 'stale'; kind: ProposalKind; message: string }
+  | (OpenProposalCommon & { kind: 'freeze' })
+  | (OpenProposalCommon & { kind: 'resolve'; moves: ProposalMoveView[]; keptCount: number });
 
 export interface StagedFreezeDetail {
   plan: FreezePlan;
@@ -135,37 +157,58 @@ export function assessStagedResolve(
 
 const NONE_MESSAGE = 'No freeze proposal is waiting. Ask the assistant to run the freeze in chat.';
 
-export function projectFreezeProposal(
-  items: ReviewItem[],
+export function projectOpenProposal(
+  freezeItems: ReviewItem[],
+  resolveItems: ReviewItem[],
   latestVersion: number,
   nowMs: number,
-): FreezeProposalView {
-  // Newest stagedAt wins (staging dismisses kind-wide, so >1 open is an
-  // anomaly the per-subject unique index still permits — plan decision).
-  const candidates = items
-    .map((item) => validDetail(item.detail))
-    .filter((d): d is StagedFreezeDetail => d !== null)
-    .sort((a, b) => Date.parse(b.stagedAt) - Date.parse(a.stagedAt));
-  if (!candidates[0]) return { state: 'none', message: NONE_MESSAGE };
-  const a = assessStagedFreeze(candidates[0], latestVersion, nowMs);
+): ProposalView {
+  // Newest stagedAt wins across BOTH kinds (staging dismisses kind-wide, so
+  // two open of one kind is an index anomaly; freeze + resolve both open is
+  // legal but short-lived — committing either bumps the schedule version and
+  // stales the other, so the newest token is the only one worth showing).
+  // Resolve candidates parse under the RESOLVE rule: a freeze-shaped detail
+  // misfiled under pending_resolve can never outrank a valid token.
+  const candidates: { kind: ProposalKind; detail: StagedFreezeDetail }[] = [
+    ...freezeItems
+      .map((item) => validDetail(item.detail))
+      .filter((d): d is StagedFreezeDetail => d !== null)
+      .map((detail) => ({ kind: 'freeze' as const, detail })),
+    ...resolveItems
+      .map((item) => validResolveDetail(item.detail))
+      .filter((d): d is StagedResolveDetail => d !== null)
+      .map((detail) => ({ kind: 'resolve' as const, detail })),
+  ].sort((a, b) => Date.parse(b.detail.stagedAt) - Date.parse(a.detail.stagedAt));
+  const head = candidates[0];
+  if (!head) return { state: 'none', message: NONE_MESSAGE };
+  // The rerun instruction names the right verb; the freeze copy stays
+  // byte-identical to the shipped strings.
+  const verb = head.kind === 'resolve' ? 're-solve' : 'freeze';
+  const noun = head.kind === 'resolve' ? 're-plan' : 'freeze';
+  const a =
+    head.kind === 'resolve'
+      ? assessStagedResolve(head.detail, latestVersion, nowMs)
+      : assessStagedFreeze(head.detail, latestVersion, nowMs);
   if (a.verdict === 'malformed') return { state: 'none', message: NONE_MESSAGE }; // unreachable: pre-filtered
   if (a.verdict === 'expired') {
     return {
       state: 'expired',
+      kind: head.kind,
       message:
-        'This freeze proposal expired (proposals live 12 hours). ' +
-        'Run the freeze again in chat for a fresh plan.',
+        `This ${noun} proposal expired (proposals live 12 hours). ` +
+        `Run the ${verb} again in chat for a fresh plan.`,
     };
   }
   if (a.verdict === 'stale') {
     return {
       state: 'stale',
+      kind: head.kind,
       message:
         'The schedule changed since this plan was solved — the assistant will refuse to ' +
-        'book it. Run the freeze again in chat for a fresh plan.',
+        `book it. Run the ${verb} again in chat for a fresh plan.`,
     };
   }
-  const d = a.detail;
+  const d = head.detail;
   // Horizons cap at 31 days, so distinct dates are few — memoize the weekday
   // per date rather than constructing an Intl formatter per placement.
   const weekdayByDate = new Map<string, string>();
@@ -176,7 +219,7 @@ export function projectFreezeProposal(
     weekdayByDate.set(date, computed);
     return computed;
   };
-  return {
+  const common: OpenProposalCommon = {
     state: 'open',
     stagedAt: d.stagedAt,
     expiresAt: new Date(Date.parse(d.stagedAt) + FREEZE_PROPOSAL_TTL_MS).toISOString(),
@@ -191,4 +234,34 @@ export function projectFreezeProposal(
     // Deliberately NO confirmId / row id: the page must not leak a confirm
     // handle — the yes lives in chat (ritual doctrine).
   };
+  if (head.kind !== 'resolve') return { ...common, kind: 'freeze' };
+  // The Moves section's render source. Names come from the plan's own
+  // capacity rows (solve-time truth, no roster fetch); a technician who has
+  // no capacity row (e.g. deactivated since the solve) falls back to the ref.
+  const rp = d.plan as ResolvePlan;
+  const nameByRef = new Map(rp.capacity.map((c) => [c.technicianRef, c.technicianName]));
+  const techName = (ref: string): string => nameByRef.get(ref) ?? ref;
+  // Pre-sorted by (toDate, toStartTime) so the client only groups — it never
+  // sorts (the labels are display strings, not sort keys).
+  const moves = [...rp.moves]
+    .sort((x, y) => {
+      const kx = `${x.toDate} ${x.toStartTime}`;
+      const ky = `${y.toDate} ${y.toStartTime}`;
+      return kx < ky ? -1 : kx > ky ? 1 : 0;
+    })
+    .map(
+      (m): ProposalMoveView => ({
+        fromLabel: `${weekdayFor(m.fromDate)} ${m.fromDate} ${m.fromStart}–${m.fromEnd}`,
+        toLabel: `${weekdayFor(m.toDate)} ${m.toDate} ${m.toStartTime}–${m.toEndTime}`,
+        customer: m.customer,
+        jobTitle: m.jobTitle,
+        techChange:
+          m.fromTechnicianRef === m.toTechnicianRef
+            ? null
+            : `${techName(m.fromTechnicianRef)} → ${techName(m.toTechnicianRef)}`,
+        toDate: m.toDate,
+        toWeekday: weekdayFor(m.toDate),
+      }),
+    );
+  return { ...common, kind: 'resolve', moves, keptCount: rp.keptCount };
 }

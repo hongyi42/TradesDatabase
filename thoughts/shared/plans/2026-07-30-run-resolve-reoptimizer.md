@@ -384,14 +384,20 @@ Placements: per-day groups, `Tue 09:00–10:00 Maria Gonzalez → Wed 08:00–09
 says "re-plan" when kind is resolve.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass (board.js is lint-gated)
-- [ ] boardApi.test.ts: open resolve token → kind 'resolve' + moves array, no confirmId;
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass (880 + 5 key-gated skips;
+      board.js lint-gated)
+- [x] boardApi.test.ts: open resolve token → kind 'resolve' + moves array, no confirmId;
       freeze token → unchanged shape; both-open → newest wins; expired/stale parity.
+      Plus the pure matrix in freezeProposal.test.ts (resolve view compose/sort/techChange,
+      kind-aware expired/stale copy, misfiled-detail degradation).
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack.
-- [ ] Stage a resolve via the handler test-harness, `GET /board/api/freeze-proposal` with a
-      manager slip → moves render-source fields present; capture the JSON as evidence.
+- [x] Staged a resolve token, `GET /board/api/freeze-proposal` over real HTTP with a manager
+      slip → served JSON captured 2026-07-30: `kind:"resolve"`, `moves[0]` =
+      `{fromLabel:"Mon 2026-08-24 11:00–12:00", toLabel:"Mon 2026-08-24 08:00–09:00",
+      techChange:"Tess One → board-t2", toDate, toWeekday}`, `keptCount:2`, freeze sections
+      intact, no confirmId/row-id in the payload.
 
 ### Manual verification
 - [ ] On the phone: pill reads "Re-plan proposal"; sheet's Moves section is readable

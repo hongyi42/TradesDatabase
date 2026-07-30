@@ -2024,17 +2024,44 @@ describe('/board/api/freeze-proposal (read-only proposal view)', () => {
     ],
   });
 
-  // Stage exactly what run_freeze stores (server.ts stagedDetail shape) —
-  // upsert then detail-rewrite, the stage-race idiom.
-  const stage = async (over: Record<string, unknown> = {}): Promise<string> => {
+  // What run_resolve stores on top of the freeze shape (plan 2026-07-30):
+  // one cross-tech move — board-t1 has a capacity row (name 'Tess One'),
+  // board-t2 has none, so the served techChange proves BOTH name arms.
+  const resolvePlanFixture = () => ({
+    ...planFixture(),
+    moves: [
+      {
+        assignmentId: 'a-wire-mv',
+        jobId: 'fixture-job-mv',
+        customer: 'Wire Mover',
+        jobTitle: 'route probe',
+        fromTechnicianRef: 'board-t1',
+        fromDate: DAY_FRZ,
+        fromStart: '11:00',
+        fromEnd: '12:00',
+        toTechnicianRef: 'board-t2',
+        toDate: DAY_FRZ,
+        toStartTime: '08:00',
+        toEndTime: '09:00',
+      },
+    ],
+    keptCount: 2,
+  });
+
+  // Stage exactly what run_freeze / run_resolve store (server.ts stagedDetail
+  // shape) — upsert then detail-rewrite, the stage-race idiom.
+  const stage = async (
+    over: Record<string, unknown> = {},
+    kind: 'pending_freeze' | 'pending_resolve' = 'pending_freeze',
+  ): Promise<string> => {
     const item = await upsertOpenReviewItem({
       tenantId,
-      kind: 'pending_freeze',
+      kind,
       subjectRef: 'board-mgr',
       detail: {},
     });
     const detail = {
-      plan: planFixture(),
+      plan: kind === 'pending_resolve' ? resolvePlanFixture() : planFixture(),
       scheduleVersion: await latestScheduleVersion(tenantId),
       horizonFrom: relDate(0),
       horizonTo: relDate(13),
@@ -2047,8 +2074,10 @@ describe('/board/api/freeze-proposal (read-only proposal view)', () => {
   };
 
   beforeEach(async () => {
-    // Each test manufactures its own token; close any leftover kind-wide.
-    await pg.query("update review_items set status = 'dismissed' where kind = 'pending_freeze'");
+    // Each test manufactures its own token; close any leftover, both kinds.
+    await pg.query(
+      "update review_items set status = 'dismissed' where kind in ('pending_freeze', 'pending_resolve')",
+    );
   });
 
   test('401 with no slip; 403 for a technician (manager-only, every proposal surface)', async () => {
@@ -2071,10 +2100,12 @@ describe('/board/api/freeze-proposal (read-only proposal view)', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       state: string;
+      kind: string;
       pinnedCount: number;
       placements: Array<Record<string, unknown>>;
     };
     expect(body.state).toBe('open');
+    expect(body.kind).toBe('freeze'); // unchanged shape, now labeled
     expect(body.pinnedCount).toBe(1);
     expect(body.placements[0].weekday).toBeDefined(); // server-computed (house rule)
     expect(body.placements[0].startTime).toBe('09:00');
@@ -2082,6 +2113,95 @@ describe('/board/api/freeze-proposal (read-only proposal view)', () => {
     const raw = JSON.stringify(body);
     expect(raw).not.toContain(id);
     expect(raw).not.toContain('confirmId');
+  });
+
+  test('open resolve token → kind resolve with the moves render source, no confirm handle (plan 2026-07-30)', async () => {
+    const id = await stage({}, 'pending_resolve');
+    const res = await fetch(url(), { headers: tma(900000001) });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      state: string;
+      kind: string;
+      keptCount: number;
+      moves: Array<Record<string, unknown>>;
+      placements: Array<Record<string, unknown>>;
+    };
+    expect(body.state).toBe('open');
+    expect(body.kind).toBe('resolve');
+    expect(body.keptCount).toBe(2);
+    expect(body.moves).toHaveLength(1);
+    // Server-composed render source: weekday-labeled both ends, the
+    // capacity-name → ref-fallback techChange, and the grouping pair.
+    const mv = body.moves[0] as {
+      fromLabel: string;
+      toLabel: string;
+      techChange: string;
+      toDate: string;
+      toWeekday: string;
+    };
+    expect(mv.toWeekday).toMatch(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/); // relative fixture — assert the form
+    expect(mv.fromLabel).toBe(`${mv.toWeekday} ${DAY_FRZ} 11:00–12:00`);
+    expect(mv.toLabel).toBe(`${mv.toWeekday} ${DAY_FRZ} 08:00–09:00`);
+    expect(mv.techChange).toBe('Tess One → board-t2');
+    expect(mv.toDate).toBe(DAY_FRZ);
+    // The freeze sections ride along unchanged.
+    expect(body.placements[0].startTime).toBe('09:00');
+    const raw = JSON.stringify(body);
+    expect(raw).not.toContain(id);
+    expect(raw).not.toContain('confirmId');
+  });
+
+  test('both kinds open → the newest token wins; a backdated resolve token expires with re-solve copy', async () => {
+    await stage({ stagedAt: new Date(Date.now() - 3600_000).toISOString() });
+    await stage({}, 'pending_resolve');
+    const both = (await (await fetch(url(), { headers: tma(900000001) })).json()) as {
+      state: string;
+      kind: string;
+    };
+    expect(both.state).toBe('open');
+    expect(both.kind).toBe('resolve');
+    // Expired parity for the resolve kind, through the real endpoint.
+    await pg.query(
+      "update review_items set status = 'dismissed' where kind in ('pending_freeze', 'pending_resolve')",
+    );
+    await stage({ stagedAt: new Date(Date.now() - 13 * 3600_000).toISOString() }, 'pending_resolve');
+    const expired = (await (await fetch(url(), { headers: tma(900000001) })).json()) as {
+      state: string;
+      kind: string;
+      message: string;
+    };
+    expect(expired.state).toBe('expired');
+    expect(expired.kind).toBe('resolve');
+    expect(expired.message).toContain('Run the re-solve again');
+  });
+
+  test('a real booking after staging a resolve token → stale (version-pin parity with the freeze kind)', async () => {
+    await stage({}, 'pending_resolve');
+    const casa = await createCustomer({ tenantId, name: 'Resolve Drift Casa' });
+    const job = await createJob({
+      tenantId,
+      customerId: casa.id,
+      title: 'resolve version bumper',
+      status: 'open',
+    });
+    await bookVisit({
+      tenantId,
+      jobId: job.id,
+      title: 'resolve version bumper',
+      date: DAY_FRZ,
+      startTime: '15:00',
+      endTime: '16:00',
+      actorRef: 'board-mgr',
+    });
+    const body = (await (await fetch(url(), { headers: tma(900000001) })).json()) as {
+      state: string;
+      kind: string;
+      message: string;
+    };
+    expect(body.state).toBe('stale');
+    expect(body.kind).toBe('resolve');
+    expect(body.message).toContain('schedule changed');
+    expect(body.message).toContain('Run the re-solve again');
   });
 
   test('backdated past the TTL → expired', async () => {

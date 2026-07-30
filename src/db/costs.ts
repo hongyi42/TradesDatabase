@@ -334,6 +334,79 @@ export async function upsertInfraCost(input: InfraCostInput): Promise<InfraCost>
   return data;
 }
 
+export interface VendorInvoiceInput {
+  vendor: string;
+  item: string;
+  periodStart: string; // YYYY-MM-DD, first of the month
+  periodEnd: string; // YYYY-MM-DD
+  amountUsd: number;
+  source: 'invoice' | 'estimate';
+  // Used ONLY when creating the row. An existing row keeps whatever allocation
+  // it already has — see below.
+  defaultAllocation: InfraAllocation;
+}
+
+// Write an automatically-collected vendor bill, WITHOUT clobbering the operator's
+// allocation choice.
+//
+// Why this exists rather than reusing upsertInfraCost: that function emits
+// `allocation` unconditionally (it has to — PostgREST's DO UPDATE only touches
+// columns present in ?columns=), so an automated collector running every 15
+// minutes would reset the rule on every tick. If an operator decided July's
+// inference should split `per_active_seat` instead of `per_sandbox`, the next
+// cron tick would silently undo them — and the per-tenant figures would change
+// under their feet with no error anywhere.
+//
+// So: UPDATE first, INSERT only if nothing was there. The update deliberately
+// omits `allocation`; the insert supplies a default because the column is
+// NOT NULL. Amount and source are always refreshed — those ARE the collector's
+// job, and a mid-month figure legitimately grows every tick.
+export async function recordVendorInvoiceAmount(
+  input: VendorInvoiceInput,
+): Promise<{ created: boolean; allocation: InfraAllocation }> {
+  const client = getClient();
+  const { data: updated, error: updateError } = await client
+    .from('infra_costs')
+    .update({
+      amount_usd: input.amountUsd,
+      source: input.source,
+      period_end: input.periodEnd,
+    })
+    .eq('vendor', input.vendor)
+    .eq('item', input.item)
+    .eq('period_start', input.periodStart)
+    .select('allocation');
+  if (updateError) {
+    throw new Error(`recordVendorInvoiceAmount update failed: ${updateError.message}`, {
+      cause: updateError,
+    });
+  }
+  if (updated && updated.length > 0) {
+    return { created: false, allocation: updated[0].allocation as InfraAllocation };
+  }
+
+  const { data: inserted, error: insertError } = await client
+    .from('infra_costs')
+    .insert({
+      vendor: input.vendor,
+      item: input.item,
+      period_start: input.periodStart,
+      period_end: input.periodEnd,
+      amount_usd: input.amountUsd,
+      allocation: input.defaultAllocation,
+      source: input.source,
+    })
+    .select('allocation')
+    .single();
+  if (insertError || !inserted) {
+    throw new Error(
+      `recordVendorInvoiceAmount insert failed: ${insertError?.message ?? 'no row returned'}`,
+      { cause: insertError },
+    );
+  }
+  return { created: true, allocation: inserted.allocation as InfraAllocation };
+}
+
 export interface RollupResult {
   rowsWritten: number;
   tenantsTouched: number;

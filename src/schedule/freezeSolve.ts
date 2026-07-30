@@ -662,68 +662,65 @@ interface RoiResponse {
   skippedShipments?: { label?: string }[];
 }
 
-export async function solveFreeze(
-  inputs: FreezeInputs,
-  deps: { transport?: RoiTransport; mintToken?: MintRoiToken } = {},
-): Promise<FreezePlan> {
-  const capacity = inputs.capacity.map((c) => ({ ...c }));
-  const finish = (placements: FreezePlacement[], skipped: FreezeSkip[]): FreezePlan => ({
-    horizonFrom: inputs.horizonFrom,
-    horizonTo: inputs.horizonTo,
-    placements,
-    skipped,
-    capacity,
-  });
+// ---------------------------------------------------------------------------
+// Shared route-response mechanics (freeze + re-solve) — ONE home, so the two
+// verbs can never drift on parse semantics (labels, the exact-times rule, the
+// skip belts, the ctx| capacity notes).
 
-  // Belt over hand-built inputs (assembly already skips these): an attached
-  // item whose person has no vehicle days must not reach the model — and its
-  // skip must carry the REAL reason, not the transient-looking solver
-  // fallback below (final-review finding).
-  const vehicleRefs = new Set(inputs.vehicles.map((v) => v.technicianRef));
-  const orphaned = inputs.queue.filter(
+// Belt over hand-built inputs (assembly already skips these): an attached
+// item whose person has no vehicle days must not reach the model — and its
+// skip must carry the REAL reason, not the transient-looking solver fallback.
+function filterOrphans(
+  queue: FreezeQueueItem[],
+  vehicles: FreezeVehicle[],
+): { queue: FreezeQueueItem[]; orphanSkips: FreezeSkip[] } {
+  const vehicleRefs = new Set(vehicles.map((v) => v.technicianRef));
+  const orphaned = queue.filter(
     (i) => i.technicianRef !== null && !vehicleRefs.has(i.technicianRef),
   );
-  const queue = inputs.queue.filter((i) => !orphaned.includes(i));
-  const orphanSkips: FreezeSkip[] = orphaned.map((item) => ({
-    ref: item.assignmentId ?? `job:${item.jobId}`,
-    label: skipLabel(item.customer, item.jobTitle),
-    reason:
-      'assigned to someone with no working days in this horizon — move it, or rerun a later week',
-  }));
+  return {
+    queue: queue.filter((i) => !orphaned.includes(i)),
+    orphanSkips: orphaned.map((item) => ({
+      ref: item.assignmentId ?? `job:${item.jobId}`,
+      label: skipLabel(item.customer, item.jobTitle),
+      reason:
+        'assigned to someone with no working days in this horizon — move it, or rerun a later week',
+    })),
+  };
+}
 
-  // Nothing to place, or nobody to place onto — no API call, an honest plan.
-  if (queue.length === 0) return finish([], [...inputs.skipped, ...orphanSkips]);
-  if (inputs.vehicles.length === 0) {
-    return finish(
-      [],
-      [
-        ...inputs.skipped,
-        ...orphanSkips,
-        ...queue.map((item) => ({
-          ref: item.assignmentId ?? `job:${item.jobId}`,
-          label: skipLabel(item.customer, item.jobTitle),
-          reason: 'nobody has a working pattern in this horizon — set_availability, then rerun',
-        })),
-      ],
-    );
-  }
+interface WalkedRoutes {
+  placements: FreezePlacement[];
+  placedLabels: Set<string>;
+  skippedLabels: Set<string>;
+  // Route visits that are NOT queue shipments (ctx| for the freeze, mv| for
+  // the re-solve) — the caller decides what they mean; the freeze ignores
+  // them (context visits are NEVER committed).
+  otherVisits: { technicianRef: string; label: string; startTime: string }[];
+}
 
-  const response = (await optimizeTours(buildFreezeModel({ ...inputs, queue }), deps)) as RoiResponse;
-
+function walkRoutes(
+  response: RoiResponse,
+  queue: FreezeQueueItem[],
+  capacity: FreezeCapacity[],
+): WalkedRoutes {
   const itemByLabel = new Map(queue.map((item) => [queueLabel(item), item]));
   const placements: FreezePlacement[] = [];
-  const skipped = [...inputs.skipped];
   const placedLabels = new Set<string>();
-
+  const otherVisits: WalkedRoutes['otherVisits'] = [];
   for (const route of response.routes ?? []) {
     const vLabel = route.vehicleLabel;
     if (!vLabel?.startsWith('veh|')) continue;
     const technicianRef = vLabel.split('|')[1];
     for (const visit of route.visits ?? []) {
       const label = visit.shipmentLabel;
-      if (!label?.startsWith('q|')) continue; // context visits are NEVER committed
+      if (!label || !visit.startTime) continue;
+      if (!label.startsWith('q|')) {
+        otherVisits.push({ technicianRef, label, startTime: visit.startTime });
+        continue;
+      }
       const item = itemByLabel.get(label);
-      if (!item || !visit.startTime) continue;
+      if (!item) continue;
       placedLabels.add(label);
       // Exact-times rows keep their OWN stored times verbatim (the solver
       // only chose WHO); windowed rows take the solver's arrival.
@@ -749,42 +746,113 @@ export async function solveFreeze(
       if (cap) cap.committedMin += item.durationMin;
     }
   }
-
-  skipped.push(...orphanSkips);
-  // Solver-side skips: queue shipments the solve left unperformed. Belt: any
-  // queue item missing from BOTH routes and skippedShipments is still
-  // reported (a silent drop must never read as "covered").
   const skippedLabels = new Set(
     (response.skippedShipments ?? []).map((s) => s.label).filter((l): l is string => !!l),
   );
+  return { placements, placedLabels, skippedLabels, otherVisits };
+}
+
+// Solver-side skips: queue shipments the solve left unperformed. Belt: any
+// queue item missing from BOTH routes and skippedShipments is still reported
+// (a silent drop must never read as "covered").
+function queueSkips(
+  queue: FreezeQueueItem[],
+  placedLabels: Set<string>,
+  skippedLabels: Set<string>,
+  rerunHint: string,
+): FreezeSkip[] {
+  const out: FreezeSkip[] = [];
   for (const item of queue) {
     const label = queueLabel(item);
     if (placedLabels.has(label)) continue;
-    skipped.push({
+    out.push({
       ref: item.assignmentId ?? `job:${item.jobId}`,
       label: skipLabel(item.customer, item.jobTitle),
       reason: skippedLabels.has(label)
         ? 'no room in this window — every fitting day is full (or the visit clashes with existing bookings)'
-        : 'the solver returned no slot for this visit — rerun the freeze; if it persists, place it by hand',
+        : `the solver returned no slot for this visit — ${rerunHint}`,
     });
   }
-  // A skipped CONTEXT shipment = an existing booking the solver could not
-  // seat inside the pattern (booked on a warning). Surface as a capacity
-  // note, never a commit change — the visit is untouched either way.
+  return out;
+}
+
+// A skipped CONTEXT shipment = an existing booking the solver could not seat
+// inside the pattern (booked on a warning). Surface as a capacity note, never
+// a commit change — the visit is untouched either way.
+function contextSkipNotes(
+  skippedLabels: Set<string>,
+  context: FreezeContextVisit[],
+  keptParenthetical: string,
+): FreezeSkip[] {
+  const out: FreezeSkip[] = [];
   for (const label of skippedLabels) {
     if (!label.startsWith('ctx|')) continue;
     const assignmentId = label.slice(4);
-    const v = inputs.context.find((c) => c.assignmentId === assignmentId);
+    const v = context.find((c) => c.assignmentId === assignmentId);
     if (!v) continue;
-    skipped.push({
+    out.push({
       ref: assignmentId,
       label: `${v.technicianRef} ${v.date} ${v.startISO.slice(11, 16)}`,
       reason:
-        "an EXISTING booking sits outside this person's working pattern — kept as booked (the freeze never moves placed visits); it still counts toward their day",
+        `an EXISTING booking sits outside this person's working pattern — kept as booked ` +
+        `(${keptParenthetical}); it still counts toward their day`,
     });
   }
+  return out;
+}
 
-  return finish(placements, skipped);
+export async function solveFreeze(
+  inputs: FreezeInputs,
+  deps: { transport?: RoiTransport; mintToken?: MintRoiToken } = {},
+): Promise<FreezePlan> {
+  const capacity = inputs.capacity.map((c) => ({ ...c }));
+  const finish = (placements: FreezePlacement[], skipped: FreezeSkip[]): FreezePlan => ({
+    horizonFrom: inputs.horizonFrom,
+    horizonTo: inputs.horizonTo,
+    placements,
+    skipped,
+    capacity,
+  });
+
+  const { queue, orphanSkips } = filterOrphans(inputs.queue, inputs.vehicles);
+
+  // Nothing to place, or nobody to place onto — no API call, an honest plan.
+  if (queue.length === 0) return finish([], [...inputs.skipped, ...orphanSkips]);
+  if (inputs.vehicles.length === 0) {
+    return finish(
+      [],
+      [
+        ...inputs.skipped,
+        ...orphanSkips,
+        ...queue.map((item) => ({
+          ref: item.assignmentId ?? `job:${item.jobId}`,
+          label: skipLabel(item.customer, item.jobTitle),
+          reason: 'nobody has a working pattern in this horizon — set_availability, then rerun',
+        })),
+      ],
+    );
+  }
+
+  const response = (await optimizeTours(buildFreezeModel({ ...inputs, queue }), deps)) as RoiResponse;
+
+  const walked = walkRoutes(response, queue, capacity);
+  const skipped = [
+    ...inputs.skipped,
+    ...orphanSkips,
+    ...queueSkips(
+      queue,
+      walked.placedLabels,
+      walked.skippedLabels,
+      'rerun the freeze; if it persists, place it by hand',
+    ),
+    ...contextSkipNotes(
+      walked.skippedLabels,
+      inputs.context,
+      'the freeze never moves placed visits',
+    ),
+  ];
+
+  return finish(walked.placements, skipped);
 }
 
 // ---------------------------------------------------------------------------
@@ -962,17 +1030,7 @@ export async function solveResolve(
   // vehicle days), then the same no-API guards — a re-solve with nothing to
   // move OR place must answer honestly without a solver call, and a horizon
   // with zero working days (fleet-wide time off) keeps everything as booked.
-  const vehicleRefs = new Set(inputs.vehicles.map((v) => v.technicianRef));
-  const orphaned = inputs.queue.filter(
-    (i) => i.technicianRef !== null && !vehicleRefs.has(i.technicianRef),
-  );
-  const queue = inputs.queue.filter((i) => !orphaned.includes(i));
-  const orphanSkips: FreezeSkip[] = orphaned.map((item) => ({
-    ref: item.assignmentId ?? `job:${item.jobId}`,
-    label: skipLabel(item.customer, item.jobTitle),
-    reason:
-      'assigned to someone with no working days in this horizon — move it, or rerun a later week',
-  }));
+  const { queue, orphanSkips } = filterOrphans(inputs.queue, inputs.vehicles);
   const baseSkips = [...inputs.skipped, ...partitionSkips, ...orphanSkips];
 
   if (queue.length === 0 && movable.length === 0) {
@@ -999,103 +1057,68 @@ export async function solveResolve(
     deps,
   )) as RoiResponse;
 
-  const itemByLabel = new Map(queue.map((item) => [queueLabel(item), item]));
+  const walked = walkRoutes(response, queue, capacity);
   const movableByLabel = new Map(movable.map((m) => [movableLabel(m.assignmentId), m]));
-  const placements: FreezePlacement[] = [];
   const moves: ResolveMove[] = [];
-  const skipped = [...baseSkips];
-  const placedLabels = new Set<string>();
   const seenMovable = new Set<string>();
 
-  for (const route of response.routes ?? []) {
-    const vLabel = route.vehicleLabel;
-    if (!vLabel?.startsWith('veh|')) continue;
-    const technicianRef = vLabel.split('|')[1];
-    for (const visit of route.visits ?? []) {
-      const label = visit.shipmentLabel;
-      if (!label || !visit.startTime) continue;
-      if (label.startsWith('q|')) {
-        const item = itemByLabel.get(label);
-        if (!item) continue;
-        placedLabels.add(label);
-        const startTime = item.exactStart
-          ? item.exactStart.slice(11, 16)
-          : visit.startTime.slice(11, 16);
-        const placementDate = item.exactStart
-          ? item.exactStart.slice(0, 10)
-          : visit.startTime.slice(0, 10);
-        placements.push({
-          kind: item.kind,
-          jobId: item.jobId,
-          assignmentId: item.assignmentId,
-          customer: item.customer,
-          jobTitle: item.jobTitle,
-          technicianRef,
-          date: placementDate,
-          startTime,
-          endTime: item.exactEnd
-            ? item.exactEnd.slice(11, 16)
-            : addMinutesClamped(startTime, item.durationMin),
-        });
-        const cap = capacity.find((c) => c.technicianRef === technicianRef);
-        if (cap) cap.committedMin += item.durationMin;
-        continue;
-      }
-      if (!label.startsWith('mv|')) continue;
-      const m = movableByLabel.get(label);
-      if (!m) continue;
-      seenMovable.add(label);
-      const toDate = visit.startTime.slice(0, 10);
-      const toStartTime = visit.startTime.slice(11, 16);
-      // Unchanged on every axis = KEPT, not a zero-distance "move".
-      if (
-        technicianRef === m.technicianRef &&
-        toDate === m.date &&
-        toStartTime === m.startISO.slice(11, 16)
-      ) {
-        continue;
-      }
-      const span = spanMinutes(m.startISO, m.endISO);
-      moves.push({
-        assignmentId: m.assignmentId,
-        jobId: m.jobId,
-        customer: m.customer,
-        jobTitle: m.jobTitle,
-        fromTechnicianRef: m.technicianRef,
-        fromDate: m.date,
-        fromStart: m.startISO.slice(11, 16),
-        fromEnd: m.endISO.slice(11, 16),
-        toTechnicianRef: technicianRef,
-        toDate,
-        toStartTime,
-        toEndTime: addMinutesClamped(toStartTime, span),
-      });
-      // Capacity follows the visit across a technician change (the stage
-      // response, note relay, and board Capacity section all display these).
-      if (technicianRef !== m.technicianRef) {
-        const fromCap = capacity.find((c) => c.technicianRef === m.technicianRef);
-        const toCap = capacity.find((c) => c.technicianRef === technicianRef);
-        if (fromCap) fromCap.committedMin -= span;
-        if (toCap) toCap.committedMin += span;
-      }
+  for (const { technicianRef, label, startTime } of walked.otherVisits) {
+    if (!label.startsWith('mv|')) continue;
+    const m = movableByLabel.get(label);
+    if (!m) continue;
+    seenMovable.add(label);
+    const toDate = startTime.slice(0, 10);
+    const toStartTime = startTime.slice(11, 16);
+    // Unchanged on every axis = KEPT, not a zero-distance "move".
+    if (
+      technicianRef === m.technicianRef &&
+      toDate === m.date &&
+      toStartTime === m.startISO.slice(11, 16)
+    ) {
+      continue;
+    }
+    const span = spanMinutes(m.startISO, m.endISO);
+    moves.push({
+      assignmentId: m.assignmentId,
+      jobId: m.jobId,
+      customer: m.customer,
+      jobTitle: m.jobTitle,
+      fromTechnicianRef: m.technicianRef,
+      fromDate: m.date,
+      fromStart: m.startISO.slice(11, 16),
+      fromEnd: m.endISO.slice(11, 16),
+      toTechnicianRef: technicianRef,
+      toDate,
+      toStartTime,
+      toEndTime: addMinutesClamped(toStartTime, span),
+    });
+    // Capacity follows the visit across a technician change (the stage
+    // response, note relay, and board Capacity section all display these).
+    if (technicianRef !== m.technicianRef) {
+      const fromCap = capacity.find((c) => c.technicianRef === m.technicianRef);
+      const toCap = capacity.find((c) => c.technicianRef === technicianRef);
+      if (fromCap) fromCap.committedMin -= span;
+      if (toCap) toCap.committedMin += span;
     }
   }
 
-  // Queue skips: identical belts to the freeze.
-  const skippedLabels = new Set(
-    (response.skippedShipments ?? []).map((s) => s.label).filter((l): l is string => !!l),
-  );
-  for (const item of queue) {
-    const label = queueLabel(item);
-    if (placedLabels.has(label)) continue;
-    skipped.push({
-      ref: item.assignmentId ?? `job:${item.jobId}`,
-      label: skipLabel(item.customer, item.jobTitle),
-      reason: skippedLabels.has(label)
-        ? 'no room in this window — every fitting day is full (or the visit clashes with existing bookings)'
-        : 'the solver returned no slot for this visit — rerun; if it persists, place it by hand',
-    });
-  }
+  const skipped = [
+    ...baseSkips,
+    ...queueSkips(
+      queue,
+      walked.placedLabels,
+      walked.skippedLabels,
+      'rerun the re-solve; if it persists, place it by hand',
+    ),
+    // The statues that could not be seated (fixed context, e.g. a pinned
+    // visit booked outside the pattern) get the same capacity note a freeze
+    // reports — resolve ⊇ freeze must not LOSE information.
+    ...contextSkipNotes(
+      walked.skippedLabels,
+      inputs.context,
+      'this visit was not movable in this run',
+    ),
+  ];
   // A movable row the solver skipped OR omitted is KEPT as booked (its
   // penalty is near-infinite, so this is rare) — reported, never dropped.
   for (const m of movable) {
@@ -1109,5 +1132,5 @@ export async function solveResolve(
   }
   const keptCount = movable.length - moves.length;
 
-  return finish(placements, moves, keptCount, skipped);
+  return finish(walked.placements, moves, keptCount, skipped);
 }

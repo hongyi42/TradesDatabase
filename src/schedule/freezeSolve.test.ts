@@ -655,6 +655,37 @@ describe('solveResolve (fake transport)', () => {
     expect(plan.keptCount).toBe(1);
   });
 
+  test('a FIXED statue the solver could not seat still gets the freeze-parity capacity note (resolve ⊇ freeze)', async () => {
+    const pinnedLate = movableFix({
+      assignmentId: 'asg-pinlate',
+      technicianRef: 'p2',
+      date: '2027-05-03',
+      startISO: '2027-05-03T18:00:00.000Z', // after Pam's 15:00 end — unseatable
+      endISO: '2027-05-03T19:00:00.000Z',
+      locked: true, // a statue — ships as ctx|, not mv|
+    });
+    const plan = await solveResolve(
+      baseInputs({ context: [pinnedLate], queue: [windowedItem()] }),
+      {},
+      '00:00',
+      seams(
+        [
+          {
+            vehicleLabel: vehicleLabel('p1', '2027-05-03'),
+            visits: [{ shipmentLabel: 'q|asg-w', startTime: '2027-05-03T08:00:00Z' }],
+          },
+        ],
+        [{ label: 'ctx|asg-pinlate' }],
+      ),
+    );
+    expect(plan.skipped).toEqual([
+      expect.objectContaining({
+        ref: 'asg-pinlate',
+        reason: expect.stringContaining('kept as booked'),
+      }),
+    ]);
+  });
+
   test('guards: nothing movable + empty queue, or zero vehicles → NO API call, everything kept', async () => {
     const explode = async (): Promise<never> => {
       throw new Error('transport must not be called');

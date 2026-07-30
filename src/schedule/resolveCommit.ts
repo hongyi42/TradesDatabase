@@ -61,12 +61,30 @@ export function orderMoves(moves: ResolveMove[]): OrderedMoves {
       remaining = remaining.filter((m) => !ready.includes(m));
       continue;
     }
-    // Genuine cycle: park the member with the lowest assignmentId
-    // (deterministic). Parking vacates its CURRENT slot before any ordered
-    // move runs, so every edge through it dissolves.
-    const cycleNode = [...remaining].sort((a, b) =>
-      a.assignmentId.localeCompare(b.assignmentId),
-    )[0];
+    // Genuine cycle: park the CYCLE MEMBER with the lowest assignmentId
+    // (deterministic). Candidates are restricted to nodes actually ON a cycle
+    // — the stuck set also contains nodes merely DOWNSTREAM of one, and
+    // parking those would cost needless remints, ledger events, and a
+    // spurious moved-off/landed push pair (review finding). Parking vacates
+    // the member's CURRENT slot before any ordered move runs, so every edge
+    // through it dissolves.
+    const onCycle = (start: ResolveMove): boolean => {
+      const seen = new Set<ResolveMove>();
+      const stack = [...(waitsOn.get(start) ?? [])].filter((n) => remaining.includes(n));
+      while (stack.length > 0) {
+        const n = stack.pop() as ResolveMove;
+        if (n === start) return true;
+        if (seen.has(n)) continue;
+        seen.add(n);
+        stack.push(...[...(waitsOn.get(n) ?? [])].filter((x) => remaining.includes(x)));
+      }
+      return false;
+    };
+    const candidates = remaining.filter(onCycle);
+    // A stuck finite graph must contain a cycle; the fallback is pure defense
+    // against an impossible state (never park nothing and spin forever).
+    const pool = candidates.length > 0 ? candidates : remaining;
+    const cycleNode = pool.sort((a, b) => a.assignmentId.localeCompare(b.assignmentId))[0];
     parked.push(cycleNode);
     remaining = remaining.filter((m) => m !== cycleNode);
     for (const r of remaining) waitsOn.get(r)?.delete(cycleNode);
@@ -83,6 +101,12 @@ export interface ExecutedMove {
 export interface BatchMoveResult {
   moved: ExecutedMove[];
   skippedAtCommit: FreezeSkip[]; // the promise belt's refusals
+  // Parked rows that never got their re-attach (a later failure stopped the
+  // run, or the belt refused the attach): each sits CONFIRMED but PERSON-LESS
+  // at its original times. Surfaced by id so the caller's report can name
+  // them — a strand must never hide inside a routine skip list (review
+  // finding). assignmentId = the LIVE (post-park) row.
+  strandedParks: { move: ResolveMove; assignmentId: string }[];
   // Non-null = the run STOPPED here: everything in `moved` IS moved, this row
   // and everything after it are untouched (except a stranding — see header).
   failed: { ref: string; label: string; error: string } | null;
@@ -106,12 +130,19 @@ export async function executeOrderedMoves(
   const moved: ExecutedMove[] = [];
   const skippedAtCommit: FreezeSkip[] = [];
   const parkedIds = new Map<ResolveMove, string>();
+  const reattached = new Set<ResolveMove>();
 
   const fail = (m: ResolveMove, err: unknown): BatchMoveResult['failed'] => ({
     ref: m.assignmentId,
     label: skipLabel(m.customer, m.jobTitle),
     error: err instanceof Error ? err.message : String(err),
   });
+  // Every parked row that never re-attached, whatever stopped it — each is
+  // live, confirmed, and PERSON-LESS at its original times.
+  const strands = (): BatchMoveResult['strandedParks'] =>
+    parked
+      .filter((m) => parkedIds.has(m) && !reattached.has(m))
+      .map((m) => ({ move: m, assignmentId: parkedIds.get(m) as string }));
 
   // Parks first: person-less at the CURRENT times (guard-exempt), so every
   // cycle edge dissolves before the ordered moves run.
@@ -130,17 +161,17 @@ export async function executeOrderedMoves(
       });
       parkedIds.set(m, park.created.id);
     } catch (err) {
-      return { moved, skippedAtCommit, failed: fail(m, err) };
+      return { moved, skippedAtCommit, strandedParks: strands(), failed: fail(m, err) };
     }
   }
 
   // Ordered moves, then the parked rows' re-attaches (their targets are free
   // once everything else has landed) — against the REMINTED post-park ids.
-  const sequence: { move: ResolveMove; rowId: string }[] = [
-    ...ordered.map((move) => ({ move, rowId: move.assignmentId })),
-    ...parked.map((move) => ({ move, rowId: parkedIds.get(move) as string })),
+  const sequence: { move: ResolveMove; rowId: string; isParked: boolean }[] = [
+    ...ordered.map((move) => ({ move, rowId: move.assignmentId, isParked: false })),
+    ...parked.map((move) => ({ move, rowId: parkedIds.get(move) as string, isParked: true })),
   ];
-  for (const { move, rowId } of sequence) {
+  for (const { move, rowId, isParked } of sequence) {
     const input: MoveVisitInput = {
       tenantId,
       assignmentId: rowId,
@@ -155,32 +186,38 @@ export async function executeOrderedMoves(
     try {
       const preview = await previewMoveVisit(input);
       if (preview.promiseBroken) {
+        // A parked row refused here is NOT "left as booked" — it is sitting
+        // person-less; the copy must say so (review finding).
         skippedAtCommit.push({
           ref: rowId,
           label: skipLabel(move.customer, move.jobTitle),
-          reason:
-            'moving it there would break what the customer was told — left as booked ' +
-            '(move it by hand if the promise really changed)',
+          reason: isParked
+            ? 'its re-attach would break what the customer was told — the run parked it for ' +
+              'a swap, so it is currently UNASSIGNED at its original times; reassign it by hand'
+            : 'moving it there would break what the customer was told — left as booked ' +
+              '(move it by hand if the promise really changed)',
         });
         continue;
       }
       const result = await moveVisit(input);
+      if (isParked) reattached.add(move);
       moved.push({
         move,
         assignmentId: result.created.id,
         ...(result.warning ? { warning: result.warning } : {}),
       });
     } catch (err) {
-      return { moved, skippedAtCommit, failed: fail(move, err) };
+      return { moved, skippedAtCommit, strandedParks: strands(), failed: fail(move, err) };
     }
   }
-  return { moved, skippedAtCommit, failed: null };
+  return { moved, skippedAtCommit, strandedParks: strands(), failed: null };
 }
 
 export interface ResolveCommitResult {
   movedRows: ExecutedMove[];
   committed: FreezeCommittedRow[]; // queue placements (freeze walker)
   skippedAtCommit: FreezeSkip[];
+  strandedParks: { move: ResolveMove; assignmentId: string }[]; // see BatchMoveResult
   failed: { ref: string; label: string; error: string } | null;
 }
 
@@ -232,6 +269,7 @@ export async function commitResolvePlan(
         placed: committed.length,
         kept: plan.keptCount,
         skipped: plan.skipped.length + skippedAtCommit.length,
+        ...(batch.strandedParks.length > 0 ? { stranded: batch.strandedParks.length } : {}),
         ...(failed ? { stoppedAt: failed.ref, error: failed.error } : {}),
       },
     });
@@ -239,5 +277,11 @@ export async function commitResolvePlan(
     console.error('resolve_committed ledger append failed (commit result stands):', err);
   }
 
-  return { movedRows: batch.moved, committed, skippedAtCommit, failed };
+  return {
+    movedRows: batch.moved,
+    committed,
+    skippedAtCommit,
+    strandedParks: batch.strandedParks,
+    failed,
+  };
 }

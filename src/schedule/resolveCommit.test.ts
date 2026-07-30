@@ -6,7 +6,7 @@ import { insertTechnician, setTechnicianState } from '../db/technicians.js';
 import { createCustomer } from '../db/customers.js';
 import { createJob } from '../db/jobs.js';
 import { getAssignmentForTenant } from '../db/assignments.js';
-import { bookVisit } from './booking.js';
+import { bookVisit, setVisitPromise } from './booking.js';
 import { orderMoves, commitResolvePlan } from './resolveCommit.js';
 import type { ResolveMove, ResolvePlan } from './freezeSolve.js';
 
@@ -87,13 +87,28 @@ describe('orderMoves', () => {
   test('disjoint moves keep input order; cross-tech targets need no edges', () => {
     const one = mv({ assignmentId: 'one', toStartTime: '13:00', toEndTime: '14:00' });
     const two = mv({ assignmentId: 'two', fromStart: '10:00', fromEnd: '11:00', toStartTime: '15:00', toEndTime: '16:00' });
-    // Rita takes a slot that overlaps Ray's CURRENT 09:00 — different tech,
-    // different vehicle: no dependency.
+    // Rita arrives at a time overlapping Ray's CURRENT 09:00 — different
+    // technician, so no dependency: no edge, no reorder, no park.
     const cross = mv({ assignmentId: 'x', fromTechnicianRef: 'rc-rita', fromDate: '2027-06-08', toTechnicianRef: 'rc-rita', toDate: '2027-06-07', toStartTime: '09:00', toEndTime: '10:00' });
-    void cross;
-    const { ordered, parked } = orderMoves([one, two]);
+    const { ordered, parked } = orderMoves([one, two, cross]);
     expect(parked).toHaveLength(0);
-    expect(ordered.map((m) => m.assignmentId)).toEqual(['one', 'two']);
+    expect(ordered.map((m) => m.assignmentId)).toEqual(['one', 'two', 'x']);
+  });
+
+  test('a mixed chain+cycle graph parks ONLY a true cycle member — downstream chain nodes stay ordered', () => {
+    // Cycle: y ↔ z (partial-overlap swap: each target hits the other's
+    // current slot; final targets pairwise disjoint — solver-consistent).
+    // Chain: a's target clips y's current slot only (a waits on y).
+    const y = mv({ assignmentId: 'y', fromStart: '09:00', fromEnd: '10:00', toStartTime: '10:45', toEndTime: '11:45' });
+    const z = mv({ assignmentId: 'z', fromStart: '10:30', fromEnd: '11:30', toStartTime: '09:30', toEndTime: '10:30' });
+    const a = mv({ assignmentId: 'a', fromStart: '13:00', fromEnd: '14:00', toStartTime: '08:30', toEndTime: '09:15' });
+    const { ordered, parked } = orderMoves([a, y, z]);
+    // 'a' is merely DOWNSTREAM of the cycle — parking it would be a needless
+    // remint + push pair (review finding). Only the lowest-id CYCLE member
+    // ('y') parks; everything else orders.
+    expect(parked.map((m) => m.assignmentId)).toEqual(['y']);
+    expect(ordered.map((m) => m.assignmentId)).toEqual(expect.arrayContaining(['z', 'a']));
+    expect(ordered).toHaveLength(2);
   });
 });
 
@@ -156,6 +171,17 @@ async function runEvents(stamp: string): Promise<{ kind: string; detail: Record<
   return rows as { kind: string; detail: Record<string, unknown> }[];
 }
 
+// A falsely-fired freeze summary would carry detail.freezeRun (never
+// resolveRun) — the absence check must query by KIND + freezeRun or it can
+// never fail (review finding: the runEvents filter made it vacuous).
+async function freezeSummariesFor(stamp: string): Promise<number> {
+  const { rows } = await pg.query(
+    "select count(*)::int as n from schedule_events where kind = 'freeze_committed' and detail->>'freezeRun' = $1",
+    [stamp],
+  );
+  return rows[0].n as number;
+}
+
 describe('commitResolvePlan', { timeout: 30_000 }, () => {
   test('a chain commits in dependency order with zero overlap errors; every event stamped; NO freeze_committed', async () => {
     const stamp = STAMP;
@@ -193,7 +219,7 @@ describe('commitResolvePlan', { timeout: 30_000 }, () => {
     expect(events.filter((e) => e.kind === 'moved')).toHaveLength(2);
     const summary = events.find((e) => e.kind === 'resolve_committed');
     expect(summary?.detail).toMatchObject({ moved: 2, placed: 0, kept: 3 });
-    expect(events.filter((e) => e.kind === 'freeze_committed')).toHaveLength(0);
+    expect(await freezeSummariesFor(stamp)).toBe(0);
   });
 
   test('a strict swap commits via park-and-reattach on the REMINTED id; nothing left person-less', async () => {
@@ -297,6 +323,49 @@ describe('commitResolvePlan', { timeout: 30_000 }, () => {
     expect(summary?.detail).toMatchObject({ moved: 1, stoppedAt: doomed.assignment.id });
   });
 
+  test('a parked row whose re-attach the belt refuses is surfaced as a STRAND, never a routine skip', async () => {
+    const stamp = '2027-06-01T13:00:00.000Z';
+    // Cross-day swap → genuine cycle. The member that will PARK (lowest id —
+    // orderMoves is deterministic) gets a DAY promise, so its re-attach to
+    // the other day breaks it and the belt refuses AFTER the park.
+    const v1 = await book({ technicianRef: 'rc-ray', date: '2027-06-16', startTime: '09:00', endTime: '10:00' });
+    const v2 = await book({ technicianRef: 'rc-ray', date: '2027-06-17', startTime: '09:00', endTime: '10:00' });
+    const [low, high] =
+      v1.assignment.id < v2.assignment.id
+        ? [v1.assignment, v2.assignment]
+        : [v2.assignment, v1.assignment];
+    await setVisitPromise(tenantId, low.id, 'day', 'rc-mgr');
+    const dayOf = (a: { starts_at: string | null }) => (a.starts_at as string).slice(0, 10);
+    const result = await commitResolvePlan(
+      tenantId,
+      plan({
+        moves: [
+          moveOf(low.id, { tech: 'rc-ray', date: dayOf(low), start: '09:00', end: '10:00' }, { tech: 'rc-ray', date: dayOf(high), start: '09:00', end: '10:00' }),
+          moveOf(high.id, { tech: 'rc-ray', date: dayOf(high), start: '09:00', end: '10:00' }, { tech: 'rc-ray', date: dayOf(low), start: '09:00', end: '10:00' }),
+        ],
+      }),
+      'rc-mgr',
+      stamp,
+    );
+    expect(result.failed).toBeNull();
+    expect(result.strandedParks).toHaveLength(1);
+    const strand = result.strandedParks[0];
+    expect(strand.move.assignmentId).toBe(low.id);
+    // The live post-park row: confirmed, PERSON-LESS, at its original times.
+    const strandRow = await getAssignmentForTenant(strand.assignmentId, tenantId);
+    expect(strandRow?.status).toBe('confirmed');
+    expect(strandRow?.technician_id).toBeNull();
+    expect(strandRow?.starts_at?.slice(0, 10)).toBe(dayOf(low));
+    // The skip copy says UNASSIGNED — never "left as booked" (review finding).
+    expect(result.skippedAtCommit).toEqual([
+      expect.objectContaining({ reason: expect.stringContaining('currently UNASSIGNED') }),
+    ]);
+    // The other member still swapped successfully, and the ledger counts the strand.
+    expect(result.movedRows).toHaveLength(1);
+    const summary = (await runEvents(stamp)).find((e) => e.kind === 'resolve_committed');
+    expect(summary?.detail).toMatchObject({ moved: 1, stranded: 1 });
+  });
+
   test('queue placements ride the freeze walker with re-solve stamps/reasons and NO freeze summary', async () => {
     const stamp = '2027-06-01T12:00:00.000Z';
     const job = await createJob({
@@ -327,7 +396,7 @@ describe('commitResolvePlan', { timeout: 30_000 }, () => {
     const events = await runEvents(stamp);
     const booked = events.find((e) => e.kind === 'booked');
     expect(booked?.detail).toMatchObject({ reason: 're-solve 2027-06-01' });
-    expect(events.filter((e) => e.kind === 'freeze_committed')).toHaveLength(0);
+    expect(await freezeSummariesFor(stamp)).toBe(0);
     expect(events.find((e) => e.kind === 'resolve_committed')?.detail).toMatchObject({
       moved: 0,
       placed: 1,

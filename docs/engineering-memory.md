@@ -425,6 +425,14 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   notifications should arrive in the NEMOCLAW AGENT chat rather than the board bot
   (board interaction is rare); design fork open — see the notification-transport
   decision brief in the session log / upcoming plan doc.
+  **PRIORITY CALL (owner, 2026-07-30): re-solve mode FIRST; 4c and the notification
+  transport swap both DEFERRED.** 4c's read-only research is done and stands
+  (thoughts/shared/research/2026-07-30-plan-4c-customer-sender-foundations.md — headline:
+  no customer-facing sender exists; only 2 phones + 1 email across 37 pilot customers; no
+  customer-contact edit verb anywhere; sender-identity fork still open). Re-solve mode =
+  the horizon-wide re-optimizer where every unpinned visit is movable and promise level
+  sets the degree of freedom ('time' immovable, 'day' slides within its day, 'none' free);
+  it subsumes the deferred 3c reflow_day sketch. Research cycle started 2026-07-30.
   **REALISTIC WA SEED 2026-07-28 (owner-authorized pilot write; scratchpad scripts
   seed-wa-visits.mjs + seed-wa-resume.mjs):** Default Tenant now models a real firm —
   all 37 customers carry real, geocode-verified street-level Puget Sound addresses

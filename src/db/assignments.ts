@@ -278,6 +278,25 @@ export async function getAssignmentForTenant(
   return data;
 }
 
+// Batch point-read, tenant-guarded, ANY status — undo planning reads live
+// rows AND their cancelled predecessors in one query instead of N serial
+// getAssignmentForTenant round-trips (the listCustomersByIds precedent).
+// Unknown/cross-tenant ids simply don't come back; callers treat a miss
+// exactly like getAssignmentForTenant's null.
+export async function listAssignmentsByIds(
+  tenantId: string,
+  ids: string[],
+): Promise<Assignment[]> {
+  if (ids.length === 0) return [];
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select()
+    .eq('tenant_id', tenantId)
+    .in('id', ids);
+  if (error) throw new Error(`listAssignmentsByIds failed: ${error.message}`);
+  return data ?? [];
+}
+
 // Correct a visit's PROMISE record — what the customer was actually told —
 // after booking. Born from a live E2E finding (2026-07-22): a manager's "I
 // told Marcus we're coming Thursday" never became promiseLevel on the call,

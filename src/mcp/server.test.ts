@@ -1712,7 +1712,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
     );
     try {
       // The full manager surface: every base spine tool EXCEPT get_schedule
-      // (technician route view, removed 2026-07-19) + the 24 admin tools —
+      // (technician route view, removed 2026-07-19) + the 26 admin tools —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
@@ -1729,7 +1729,9 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('cancel_job'); // the terminal verb (2026-07-25)
       expect(mgrTools).toContain('set_visit_locks'); // human-privilege pinning (plan 4b-3)
       expect(mgrTools).toContain('run_freeze'); // the freeze (plan 4b-3)
-      expect(mgrTools).toHaveLength(37);
+      expect(mgrTools).toContain('run_resolve'); // the re-solve (plan 2026-07-30)
+      expect(mgrTools).toContain('undo_run'); // the safety net (plan 2026-07-30 Phase 5)
+      expect(mgrTools).toHaveLength(39);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2132,7 +2134,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(37); // base minus get_schedule + 24 admin
+        expect(mgrTools).toHaveLength(39); // base minus get_schedule + 26 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -5895,6 +5897,9 @@ describe('run_freeze (plan 4b-3: stage → confirm the whole plan)', () => {
       const committed = await callWith('run_freeze', { confirmId: fresh.data.confirmId });
       expect(committed.data.status).toBe('committed');
       expect(committed.data.placed).toBe(3);
+      // The pin OFFER (plan 2026-07-30): id-exact copy, pinned verbatim so a
+      // rewrite that loses the ids-based instruction breaks a test.
+      expect(committed.data.note).toContain('set_visit_locks with exactly the assignmentIds');
 
       // Row read-backs: placed, UNPINNED, on the right person; ledger marked.
       const { rows: aRows } = await pg.query(
@@ -6144,6 +6149,533 @@ describe('run_freeze (plan 4b-3: stage → confirm the whole plan)', () => {
     } finally {
       if (prev === undefined) delete process.env.BOARD_BOT_HANDLE;
       else process.env.BOARD_BOT_HANDLE = prev;
+      await mgrClient.close();
+    }
+  });
+});
+
+describe('run_resolve (plan 2026-07-30: movable placed visits, stage → confirm)', () => {
+  // Greedy fake with a FORCED-MOVES map: q| shipments seat greedily (the
+  // run_freeze fake's rules); mv| shipments land at their forced target, or —
+  // unlisted — at their soft time on their own technician's vehicle (KEPT).
+  type RoiModel = {
+    vehicles: Array<{ label: string; startTimeWindows: Array<{ startTime: string }> }>;
+    shipments: Array<{
+      label: string;
+      allowedVehicleIndices?: number[];
+      costsPerVehicleIndices?: number[];
+      deliveries: Array<{
+        duration: string;
+        timeWindows: Array<{ startTime: string; endTime: string; softStartTime?: string }>;
+      }>;
+    }>;
+  };
+  const forcedMoves = new Map<string, { vehicleLabel: string; startTime: string }>();
+  // Armed by the race test: fires ONCE, inside the solve — a booking that
+  // lands mid-solve must stale the token, which only holds if the version pin
+  // was taken BEFORE the solve (plan requirement: race the pin, not the stage).
+  let raceMidSolve: (() => Promise<void>) | null = null;
+  const resolveRoi = async (_url: string, _token: string, body: unknown) => {
+    if (raceMidSolve) {
+      const fire = raceMidSolve;
+      raceMidSolve = null;
+      await fire();
+    }
+    const model = (body as { model: RoiModel }).model;
+    const routes = model.vehicles.map((v) => ({
+      vehicleLabel: v.label,
+      visits: [] as Array<{ shipmentLabel: string; startTime: string }>,
+    }));
+    const idxByLabel = new Map(model.vehicles.map((v, i) => [v.label, i]));
+    const cursor = model.vehicles.map((v) => Date.parse(v.startTimeWindows[0].startTime));
+    for (const s of model.shipments) {
+      const d = s.deliveries[0];
+      if (s.label.startsWith('mv|')) {
+        const forced = forcedMoves.get(s.label);
+        if (forced) {
+          const idx = idxByLabel.get(forced.vehicleLabel);
+          if (idx !== undefined) routes[idx].visits.push({ shipmentLabel: s.label, startTime: forced.startTime });
+          continue;
+        }
+        // KEPT: its soft time, on a vehicle NOT priced as a tech change.
+        const soft = d.timeWindows[0].softStartTime as string;
+        const priced = new Set(s.costsPerVehicleIndices ?? []);
+        const own = model.vehicles.findIndex(
+          (v, i) => !priced.has(i) && v.label.endsWith(`|${soft.slice(0, 10)}`),
+        );
+        if (own >= 0) routes[own].visits.push({ shipmentLabel: s.label, startTime: soft });
+        continue;
+      }
+      if (!s.label.startsWith('q|')) continue;
+      const allowed = s.allowedVehicleIndices ?? model.vehicles.map((_, i) => i);
+      const idx = allowed[0];
+      const durMs = Number.parseInt(d.duration, 10) * 1000;
+      const tw = d.timeWindows[0];
+      const exact = tw.startTime === tw.endTime;
+      const startMs = exact ? Date.parse(tw.startTime) : Math.max(cursor[idx], Date.parse(tw.startTime));
+      routes[idx].visits.push({
+        shipmentLabel: s.label,
+        startTime: new Date(startMs).toISOString().replace('.000Z', 'Z'),
+      });
+      cursor[idx] = Math.max(cursor[idx], startMs + durMs);
+    }
+    return { routes, skippedShipments: [] };
+  };
+  const resolveDeps: Partial<ServerDeps> = {
+    roiTransport: resolveRoi,
+    roiMintToken: async () => ({ token: 'tok', projectId: 'proj' }),
+    geocode: async () => ({ status: 'ZERO_RESULTS', results: [] }),
+  };
+  const ALL_WEEK: WeeklyPattern = {
+    mon: [['08:00', '17:00']], tue: [['08:00', '17:00']], wed: [['08:00', '17:00']],
+    thu: [['08:00', '17:00']], fri: [['08:00', '17:00']], sat: [['08:00', '17:00']],
+    sun: [['08:00', '17:00']],
+  };
+
+  test('stage → confirm: moves land through the real verbs; scope/staleness/expiry/dismiss parity', { timeout: 60_000 }, async () => {
+    const rz = await insertTechnician({
+      tenantId, ref: 'rz-tech', displayName: 'Resolve Rhea', seatExempt: true,
+    });
+    await setTechnicianAvailability(rz.id, ALL_WEEK);
+    const { updateCustomerCoords } = await import('../db/customers.js');
+    const casa = await createCustomer({
+      tenantId, name: 'Resolve Casa', addressLine1: '9 Resolve Rd', city: 'Clovis', state: 'CA',
+    });
+    await updateCustomerCoords(casa.id, 36.85, -119.75);
+    const jobV1 = await createJob({
+      tenantId, customerId: casa.id, title: 'resolve v1', status: 'open', durationMinutes: 60,
+    });
+    const jobV2 = await createJob({
+      tenantId, customerId: casa.id, title: 'resolve v2', status: 'open', durationMinutes: 60,
+    });
+    const { client: mgrClient, callWith } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      resolveDeps,
+    );
+    try {
+      const v1 = await callWith('book_visit', {
+        jobId: jobV1.id, technicianRef: 'rz-tech', date: relDay(2), startTime: '09:00', endTime: '10:00',
+      });
+      const v2 = await callWith('book_visit', {
+        jobId: jobV2.id, technicianRef: 'rz-tech', date: relDay(2), startTime: '11:00', endTime: '12:00',
+      });
+      // Force v1 a day later at 13:00; v2 (unlisted) is KEPT.
+      forcedMoves.clear();
+      forcedMoves.set(`mv|${v1.data.assignmentId}`, {
+        vehicleLabel: `veh|rz-tech|${relDay(3)}`,
+        startTime: `${relDay(3)}T13:00:00Z`,
+      });
+
+      // ---- Scope arg validation (stage-only paths).
+      const ghost = await callWith('run_resolve', { technicianRef: 'ghost-nobody' });
+      expect(ghost.isError).toBe(true);
+      expect(ghost.text).toContain("no active roster member 'ghost-nobody'");
+      const badDate = await callWith('run_resolve', { onDate: '2020-01-01' });
+      expect(badDate.isError).toBe(true);
+      expect(badDate.text).toContain('inside the horizon');
+      const junkDate = await callWith('run_resolve', { onDate: 'not-a-date' });
+      expect(junkDate.isError).toBe(true);
+      expect(junkDate.text).toContain('real YYYY-MM-DD');
+
+      // ---- STAGE: the forced move shows as from→to; the kept row does NOT.
+      const staged = await callWith('run_resolve', {});
+      expect(staged.data.status).toBe('needs_confirmation');
+      expect(staged.data.requiresConfirmation).toBe(true);
+      const moves = staged.data.moves as Array<Record<string, unknown>>;
+      const v1Move = moves.find((m) => m.assignmentId === v1.data.assignmentId);
+      expect(v1Move).toMatchObject({
+        fromDate: relDay(2),
+        fromStart: '09:00',
+        toDate: relDay(3),
+        toStartTime: '13:00',
+        toTechnicianRef: 'rz-tech',
+      });
+      expect(typeof v1Move?.fromWeekday).toBe('string');
+      expect(typeof v1Move?.toWeekday).toBe('string');
+      expect(moves.find((m) => m.assignmentId === v2.data.assignmentId)).toBeUndefined();
+      expect(Array.isArray(staged.data.placements)).toBe(true); // queues ride the same stage
+      expect(staged.data.keptCount as number).toBeGreaterThanOrEqual(1);
+      // Empty-string args are REJECTED, never coerced-to-absent (freeze parity).
+      const emptyScope = await callWith('run_resolve', { technicianRef: '' });
+      expect(emptyScope.isError).toBe(true);
+      expect(emptyScope.text).toContain('non-empty');
+      expect(staged.data.note).toContain('NOTHING is moved or booked yet');
+      expect(staged.data.note).toContain('SHORT summary');
+      expect(staged.data.note).toContain('If this result carries no proposalLink field');
+      expect(staged.data.note).toContain('pinned visit(s) were left untouched');
+
+      // ---- Scoped stage narrows movability and echoes the scope.
+      const scoped = await callWith('run_resolve', { technicianRef: 'rz-tech' });
+      expect(scoped.data.scope).toEqual({ technicianRef: 'rz-tech' });
+      const scopedMoves = scoped.data.moves as Array<Record<string, unknown>>;
+      expect(scopedMoves.find((m) => m.assignmentId === v1.data.assignmentId)).toBeDefined();
+
+      // ---- resolve_review: dismiss-only kind (resolved is refused, names the verb).
+      const fakeResolve = await callWith('resolve_review', {
+        reviewItemId: scoped.data.confirmId, resolution: 'resolved',
+      });
+      expect(fakeResolve.isError).toBe(true);
+      expect(fakeResolve.text).toContain('run_resolve');
+
+      // ---- Version drift kills the token at confirm.
+      const driftJob = await createJob({
+        tenantId, customerId: casa.id, title: 'resolve drift', status: 'open',
+      });
+      await callWith('book_visit', {
+        jobId: driftJob.id, technicianRef: 'rz-tech',
+        date: relDay(10), startTime: '07:00', endTime: '07:30',
+      });
+      const drifted = await callWith('run_resolve', { confirmId: scoped.data.confirmId });
+      expect(drifted.isError).toBe(true);
+      expect(drifted.text).toContain('schedule changed');
+      // Dismissed, not just refused — a replay finds nothing (token closure).
+      const driftReplay = await callWith('run_resolve', { confirmId: scoped.data.confirmId });
+      expect(driftReplay.text).toContain('confirmation not found');
+
+      // ---- Version pin taken BEFORE the solve: a booking landing MID-SOLVE
+      // (inside the transport fake) must stale the token. A pin taken after
+      // the solve would swallow this booking and confirm a blind plan.
+      const raceJob = await createJob({
+        tenantId, customerId: casa.id, title: 'mid-solve race', status: 'open',
+      });
+      raceMidSolve = async () => {
+        const { bookVisit: rawBook } = await import('../schedule/booking.js');
+        await rawBook({
+          tenantId, jobId: raceJob.id, technicianRef: 'rz-tech',
+          date: relDay(11), startTime: '07:00', endTime: '07:30', actorRef: 'race-probe',
+        });
+      };
+      const racedStage = await callWith('run_resolve', {});
+      expect(racedStage.data.status).toBe('needs_confirmation');
+      const racedConfirm = await callWith('run_resolve', { confirmId: racedStage.data.confirmId });
+      expect(racedConfirm.isError).toBe(true);
+      expect(racedConfirm.text).toContain('schedule changed');
+
+      // ---- Malformed: a freeze-shaped detail under pending_resolve dismisses.
+      const { upsertOpenReviewItem: upsertItem } = await import('../db/reviewItems.js');
+      const bogus = await upsertItem({
+        tenantId,
+        kind: 'pending_resolve',
+        subjectRef: 'mgr-test',
+        detail: {
+          plan: { placements: [], skipped: [], capacity: [] }, // no moves/keptCount
+          scheduleVersion: 0,
+          stagedAt: new Date().toISOString(),
+        },
+      });
+      const malformed = await callWith('run_resolve', { confirmId: bogus.id });
+      expect(malformed.isError).toBe(true);
+      expect(malformed.text).toContain('malformed');
+      const malformedReplay = await callWith('run_resolve', { confirmId: bogus.id });
+      expect(malformedReplay.text).toContain('confirmation not found');
+
+      // ---- 12h expiry (backdated stagedAt).
+      const oldStage = await callWith('run_resolve', {});
+      await pg.query(
+        `update review_items set detail = jsonb_set(detail, '{stagedAt}', to_jsonb($1::text))
+          where id = $2`,
+        [new Date(Date.now() - 13 * 3600_000).toISOString(), oldStage.data.confirmId],
+      );
+      const expired = await callWith('run_resolve', { confirmId: oldStage.data.confirmId });
+      expect(expired.isError).toBe(true);
+      expect(expired.text).toContain('expired (12 hours)');
+      const expiredReplay = await callWith('run_resolve', { confirmId: oldStage.data.confirmId });
+      expect(expiredReplay.text).toContain('confirmation not found');
+
+      // ---- Fresh stage → CONFIRM: the move commits through the real verbs.
+      const freezeSummariesBefore = (
+        await pg.query(
+          `select count(*)::int as n from schedule_events where tenant_id = $1 and kind = 'freeze_committed'`,
+          [tenantId],
+        )
+      ).rows[0].n as number;
+      const fresh = await callWith('run_resolve', {});
+      expect(fresh.data.status).toBe('needs_confirmation');
+      const confirmed = await callWith('run_resolve', { confirmId: fresh.data.confirmId });
+      expect(confirmed.isError).toBe(false);
+      expect(confirmed.data.status).toBe('committed');
+      expect(confirmed.data.moved as number).toBeGreaterThanOrEqual(1);
+      expect(typeof confirmed.data.keptCount).toBe('number');
+      expect(confirmed.data.note).toContain('set_visit_locks with exactly the assignmentIds');
+      // The response's move carries the MINTED id — read the real row back.
+      const committedMoves = confirmed.data.moves as Array<Record<string, unknown>>;
+      const minted = committedMoves.find(
+        (m) => typeof m.from === 'string' && (m.from as string).includes(`${relDay(2)} 09:00`),
+      );
+      expect(minted).toBeDefined();
+      expect(minted?.assignmentId).not.toBe(v1.data.assignmentId); // reminted, pinnable
+      const { rows: v1Rows } = await pg.query(
+        `select a.starts_at::text, a.locked, t.ref from assignments a
+           left join technicians t on t.id = a.technician_id
+          where a.id = $1 and a.status = 'confirmed'`,
+        [minted?.assignmentId],
+      );
+      expect(v1Rows).toHaveLength(1);
+      expect(v1Rows[0].starts_at).toContain(`${relDay(3)} 13:00`);
+      expect(v1Rows[0].locked).toBe(false);
+      expect(v1Rows[0].ref).toBe('rz-tech');
+      // Ledger: resolveRun-stamped moved events + the resolve summary; NOT
+      // one new freeze_committed row.
+      const { rows: evRows } = await pg.query(
+        `select kind from schedule_events
+          where tenant_id = $1 and detail->>'resolveRun' is not null order by id`,
+        [tenantId],
+      );
+      const kinds = evRows.map((r: { kind: string }) => r.kind);
+      expect(kinds).toContain('moved');
+      expect(kinds).toContain('resolve_committed');
+      const freezeSummariesAfter = (
+        await pg.query(
+          `select count(*)::int as n from schedule_events where tenant_id = $1 and kind = 'freeze_committed'`,
+          [tenantId],
+        )
+      ).rows[0].n as number;
+      expect(freezeSummariesAfter).toBe(freezeSummariesBefore);
+
+      // Cleanup: nothing left open.
+      forcedMoves.clear();
+    } finally {
+      await mgrClient.close();
+    }
+  });
+
+  test('the stage result carries proposalLink + fused boardNote (shared proposal view)', { timeout: 30_000 }, async () => {
+    const prev = process.env.BOARD_BOT_HANDLE;
+    const { client: mgrClient, callWith } = await clientFor(
+      { tenantId, technicianRef: 'mgr-test' },
+      resolveDeps,
+    );
+    try {
+      process.env.BOARD_BOT_HANDLE = 'DashboardMan_bot';
+      forcedMoves.clear();
+      const staged = await callWith('run_resolve', {});
+      expect(staged.isError).toBe(false);
+      expect(staged.data.proposalLink).toBe('https://t.me/DashboardMan_bot?startapp=freeze');
+      expect(staged.data.boardNote).toBe(
+        'ALWAYS end this reply with the exact line: ' +
+          '[Review the full proposal on the board](https://t.me/DashboardMan_bot?startapp=freeze)',
+      );
+      expect(staged.data.note).toContain('NOTHING is moved or booked yet'); // survives decoration
+      // Leave no open token behind.
+      const dismissed = await callWith('resolve_review', {
+        reviewItemId: staged.data.confirmId, resolution: 'dismissed',
+      });
+      expect(dismissed.isError).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.BOARD_BOT_HANDLE;
+      else process.env.BOARD_BOT_HANDLE = prev;
+      await mgrClient.close();
+    }
+  });
+});
+
+describe('undo_run (plan 2026-07-30 Phase 5: restore the latest run, 15-min token)', () => {
+  test('nothing_to_undo → stage → every dismissal path closes the token → confirm restores → nothing_to_restore', { timeout: 60_000 }, async () => {
+    // Own TENANT: the shared one already holds committed runs from the
+    // resolve suite, and the nothing_to_undo arm needs a clean ledger.
+    const t2 = await createTenant('Undo Verb Tenant', { managerSeats: 1, technicianSeats: 2 });
+    const mgr = await insertTechnician({
+      tenantId: t2.id, ref: 'undo-mgr', displayName: 'Undo Manager', tier: 'manager',
+    });
+    await setTechnicianState(mgr.id, 'active');
+    const tech = await insertTechnician({
+      tenantId: t2.id, ref: 'undo-tech', displayName: 'Undo Tech', seatExempt: true,
+    });
+    await setTechnicianState(tech.id, 'active');
+    const { bookVisit: rawBook } = await import('../schedule/booking.js');
+    const { commitResolvePlan: rawCommit } = await import('../schedule/resolveCommit.js');
+    const casa = await createCustomer({ tenantId: t2.id, name: 'Undo Verb Casa' });
+    const { client: mgrClient, callWith } = await clientFor({
+      tenantId: t2.id, technicianRef: 'undo-mgr',
+    });
+    try {
+      // ---- No committed run anywhere → honest no-op, no token.
+      const empty = await callWith('undo_run', {});
+      expect(empty.isError).toBe(false);
+      expect(empty.data.status).toBe('nothing_to_undo');
+      // Empty-string confirmId is rejected, never treated as a stage call.
+      const emptyId = await callWith('undo_run', { confirmId: '' });
+      expect(emptyId.isError).toBe(true);
+      expect(emptyId.text).toContain('confirmId must be a string');
+
+      // ---- A real resolve run to undo (module commit — no solver needed).
+      const RUN = '2027-08-01T08:00:00.000Z';
+      const a = await rawBook({
+        tenantId: t2.id, customerId: casa.id, title: 'undo verb a', technicianRef: 'undo-tech',
+        date: '2027-08-05', startTime: '09:00', endTime: '10:00', actorRef: 'undo-mgr',
+      });
+      const b = await rawBook({
+        tenantId: t2.id, customerId: casa.id, title: 'undo verb b', technicianRef: 'undo-tech',
+        date: '2027-08-05', startTime: '11:00', endTime: '12:00', actorRef: 'undo-mgr',
+      });
+      const mv = (id: string, fromStart: string, fromEnd: string, toStart: string, toEnd: string) => ({
+        assignmentId: id, jobId: 'unused', customer: 'Undo Verb Casa', jobTitle: 'undo verb',
+        fromTechnicianRef: 'undo-tech', fromDate: '2027-08-05', fromStart, fromEnd,
+        toTechnicianRef: 'undo-tech', toDate: '2027-08-05', toStartTime: toStart, toEndTime: toEnd,
+      });
+      const committed = await rawCommit(
+        t2.id,
+        {
+          horizonFrom: '2027-08-01', horizonTo: '2027-08-14', placements: [], skipped: [],
+          capacity: [], keptCount: 0,
+          moves: [
+            mv(a.assignment.id, '09:00', '10:00', '13:00', '14:00'),
+            mv(b.assignment.id, '11:00', '12:00', '15:00', '16:00'),
+          ],
+        },
+        'undo-mgr',
+        RUN,
+      );
+      expect(committed.failed).toBeNull();
+
+      // ---- STAGE: both restores listed with from→to strings, 15-min note.
+      const staged = await callWith('undo_run', {});
+      expect(staged.isError).toBe(false);
+      expect(staged.data.status).toBe('needs_confirmation');
+      expect(staged.data.undoes).toMatchObject({ kind: 'resolve', ranAt: RUN });
+      const movesBack = (staged.data.restores as { movesBack: Array<Record<string, unknown>> })
+        .movesBack;
+      expect(movesBack).toHaveLength(2);
+      expect(movesBack[0].to as string).toContain('(undo-tech)');
+      expect(staged.data.note).toContain('NOTHING is restored yet');
+      expect(staged.data.note).toContain('15 minutes');
+
+      // ---- resolve_review refuses "resolved" (live token), naming the verb.
+      const fakeResolve = await callWith('resolve_review', {
+        reviewItemId: staged.data.confirmId, resolution: 'resolved',
+      });
+      expect(fakeResolve.isError).toBe(true);
+      expect(fakeResolve.text).toContain('undo_run');
+
+      // ---- list_pending_reviews summarizes the token — counts only, never
+      // the embedded restore plan.
+      const reviews = await callWith('list_pending_reviews', {});
+      const token = (reviews.data as Array<{ kind: string; detail: Record<string, unknown> }>).find(
+        (i) => i.kind === 'pending_undo',
+      );
+      expect(token?.detail.summary).toContain('confirm or restage via undo_run');
+      expect(token?.detail.restores).toBe(2);
+      expect(JSON.stringify(token)).not.toContain('toStartTime'); // plan internals withheld
+
+      // ---- ANY schedule edit in the stage window dismisses at confirm.
+      await rawBook({
+        tenantId: t2.id, customerId: casa.id, title: 'version bump', technicianRef: 'undo-tech',
+        date: '2027-08-09', startTime: '09:00', endTime: '10:00', actorRef: 'undo-mgr',
+      });
+      const driftConfirm = await callWith('undo_run', { confirmId: staged.data.confirmId });
+      expect(driftConfirm.isError).toBe(true);
+      expect(driftConfirm.text).toContain('schedule changed');
+      const driftReplay = await callWith('undo_run', { confirmId: staged.data.confirmId });
+      expect(driftReplay.text).toContain('confirmation not found'); // token closed
+
+      // ---- The newer-run belt (version pin already implies it — doctor the
+      // pinned runEventId to prove the branch itself dismisses cleanly).
+      const restage1 = await callWith('undo_run', {});
+      await pg.query(
+        `update review_items set detail = jsonb_set(detail, '{runEventId}', to_jsonb(1)) where id = $1`,
+        [restage1.data.confirmId],
+      );
+      const newerRun = await callWith('undo_run', { confirmId: restage1.data.confirmId });
+      expect(newerRun.isError).toBe(true);
+      expect(newerRun.text).toContain('a newer run committed');
+      expect((await callWith('undo_run', { confirmId: restage1.data.confirmId })).text).toContain(
+        'confirmation not found',
+      );
+
+      // ---- 15-minute expiry (backdated), then malformed (plan stripped).
+      const restage2 = await callWith('undo_run', {});
+      await pg.query(
+        `update review_items set detail = jsonb_set(detail, '{stagedAt}', to_jsonb($1::text)) where id = $2`,
+        [new Date(Date.now() - 16 * 60_000).toISOString(), restage2.data.confirmId],
+      );
+      const expired = await callWith('undo_run', { confirmId: restage2.data.confirmId });
+      expect(expired.isError).toBe(true);
+      expect(expired.text).toContain('expired (15 minutes)');
+      expect((await callWith('undo_run', { confirmId: restage2.data.confirmId })).text).toContain(
+        'confirmation not found',
+      );
+      const restage3 = await callWith('undo_run', {});
+      await pg.query(`update review_items set detail = detail - 'plan' where id = $1`, [
+        restage3.data.confirmId,
+      ]);
+      const malformed = await callWith('undo_run', { confirmId: restage3.data.confirmId });
+      expect(malformed.isError).toBe(true);
+      expect(malformed.text).toContain('malformed');
+      // Closed by the DISMISSAL itself — replayed BEFORE any fresh stage could
+      // supersede it (review finding: the replay must attribute the closure).
+      expect((await callWith('undo_run', { confirmId: restage3.data.confirmId })).text).toContain(
+        'confirmation not found',
+      );
+      // SHAPELESS plan (deep-check arm, final-review finding): `{plan: {}}`
+      // is truthy — a shallow check would consume the token and then crash
+      // inside commitUndoRun on plan.run.kind. It must dismiss as malformed.
+      const restage4 = await callWith('undo_run', {});
+      await pg.query(
+        `update review_items set detail = jsonb_set(detail, '{plan}', '{}'::jsonb) where id = $1`,
+        [restage4.data.confirmId],
+      );
+      const shapeless = await callWith('undo_run', { confirmId: restage4.data.confirmId });
+      expect(shapeless.isError).toBe(true);
+      expect(shapeless.text).toContain('malformed');
+      expect((await callWith('undo_run', { confirmId: restage4.data.confirmId })).text).toContain(
+        'confirmation not found',
+      );
+
+      // ---- CONFIRM: rows restored through the real verbs, minted ids in the
+      // response, undo_committed in the ledger, replay closed.
+      const fresh = await callWith('undo_run', {});
+      expect(fresh.data.status).toBe('needs_confirmation');
+      const confirmed = await callWith('undo_run', { confirmId: fresh.data.confirmId });
+      expect(confirmed.isError).toBe(false);
+      expect(confirmed.data.status).toBe('restored');
+      expect(confirmed.data.restored).toBe(2);
+      expect(confirmed.data.undid).toMatchObject({ kind: 'resolve', ranAt: RUN });
+      const restoredMoves = confirmed.data.movedBack as Array<Record<string, unknown>>;
+      expect(restoredMoves).toHaveLength(2);
+      for (const m of restoredMoves) {
+        const { rows } = await pg.query(
+          `select starts_at::text from assignments where id = $1 and status = 'confirmed'`,
+          [m.assignmentId],
+        );
+        expect(rows).toHaveLength(1);
+        expect((m.at as string).includes(rows[0].starts_at.slice(11, 16))).toBe(true);
+      }
+      const { rows: sumRows } = await pg.query(
+        `select detail from schedule_events where tenant_id = $1 and kind = 'undo_committed'`,
+        [t2.id],
+      );
+      expect(sumRows).toHaveLength(1);
+      expect(sumRows[0].detail).toMatchObject({ undid: RUN, undidKind: 'resolve', restored: 2 });
+      expect((await callWith('undo_run', { confirmId: fresh.data.confirmId })).text).toContain(
+        'confirmation not found',
+      );
+
+      // ---- The latest run is STILL the resolve (undo summaries don't count),
+      // but its rows are now undo-reminted → honest "ALREADY undone" answer
+      // (final-review finding: without the undo-ledger check this read as
+      // "changed since the run", implying colleagues hand-edited), and no
+      // token is minted for it. A dangling open token from an earlier stage
+      // is dismissed even on this early-return path (final-review finding) —
+      // planted here to prove it.
+      const { upsertOpenReviewItem: plantToken } = await import('../db/reviewItems.js');
+      await plantToken({
+        tenantId: t2.id,
+        kind: 'pending_undo',
+        subjectRef: 'undo-mgr',
+        detail: { plan: {}, stagedAt: new Date().toISOString() },
+      });
+      const spent = await callWith('undo_run', {});
+      expect(spent.isError).toBe(false);
+      expect(spent.data.status).toBe('nothing_to_restore');
+      expect(spent.data.note).toContain('ALREADY undone');
+      expect((spent.data.skipped as unknown[]).length).toBeGreaterThanOrEqual(2);
+      expect(spent.data.confirmId).toBeUndefined();
+      const { rows: openTokens } = await pg.query(
+        `select count(*)::int as n from review_items where tenant_id = $1 and kind = 'pending_undo' and status = 'open'`,
+        [t2.id],
+      );
+      expect(openTokens[0].n).toBe(0);
+    } finally {
       await mgrClient.close();
     }
   });

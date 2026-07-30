@@ -142,14 +142,20 @@ import {
 import {
   assembleFreezeInputs,
   solveFreeze,
+  solveResolve,
   PINNED_SKIP_REASON,
+  type ResolveScope,
 } from '../schedule/freezeSolve.js';
-import { assessStagedFreeze } from '../schedule/freezeProposal.js';
+import { assessStagedFreeze, assessStagedResolve } from '../schedule/freezeProposal.js';
 import { commitFreezePlan } from '../schedule/freezeCommit.js';
+import { commitResolvePlan } from '../schedule/resolveCommit.js';
+import { commitUndoRun, planUndo, type UndoPlan } from '../schedule/undoRun.js';
 import type { GeocodeTransport } from '../routes/geocode.js';
 import type { MintRoiToken, RoiTransport } from '../routes/roiClient.js';
 import { isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
+  findUndoOfRun,
+  latestCommittedRun,
   latestScheduleVersion,
   listAssignmentsForTenant,
   listUnassignedAssignments,
@@ -878,6 +884,60 @@ const ADMIN_TOOLS = [
     },
   },
   {
+    name: 'run_resolve',
+    description:
+      'The re-solve (manager only; ALWAYS two-step): re-optimize the schedule — every ' +
+      'UNPINNED placed visit may move (promises limit movement: a promised day is kept, a ' +
+      'promised time never moves) and the loose queues drain into freed gaps, all via the ' +
+      'route solver. The first call moves NOTHING: it returns ' +
+      '{status:"needs_confirmation", confirmId} with the whole proposed plan. Give the ' +
+      'manager a SHORT summary — counts (moves / placed / kept / skipped / pinned ' +
+      'untouched) plus the one or two most consequential changes — and end with the ' +
+      'proposal board link line (the full plan lives on the board). If the result carries ' +
+      'no proposalLink field, show the ENTIRE plan in chat instead: every move (from → to, ' +
+      'weekday, who), every placement, every skip with its reason, and each technician\'s ' +
+      'committed-vs-available minutes. Get an explicit yes, then call again with ONLY ' +
+      'confirmId — moves and bookings commit through the normal verbs, one row at a time. ' +
+      'The proposal is valid for 12 hours and dies automatically if the schedule changes ' +
+      'underneath it. Pinned visits are NEVER touched — suggest pinning anything the ' +
+      'manager wants left alone BEFORE running. Default horizon: today through +13 days ' +
+      '(throughDate caps at 31 days out); technicianRef/onDate narrow WHO/WHAT may move ' +
+      '(e.g. redistribute one person\'s day). When the result carries boardNote, ALWAYS ' +
+      'end your report with its exact bracketed line.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        throughDate: { type: 'string', description: 'Horizon end YYYY-MM-DD (default today+13; at most 31 days out). First call only.' },
+        technicianRef: { type: 'string', description: 'Only this person\'s visits may MOVE (queues still place fleet-wide). First call only.' },
+        onDate: { type: 'string', description: 'Only this day\'s visits may MOVE, YYYY-MM-DD inside the horizon. First call only.' },
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'undo_run',
+    description:
+      'Undo the LATEST committed freeze or re-solve run (manager only; ALWAYS two-step). ' +
+      'RESTORE, not re-optimize: no solver — the run\'s own ledger trail is replayed ' +
+      'backwards through the normal verbs (moved visits return to their pre-run slot and ' +
+      'person, run placements return to the loose bucket). The first call restores ' +
+      'NOTHING: it returns {status:"needs_confirmation", confirmId} listing exactly what ' +
+      'would be restored, in chat (no board view for undo). Rows changed since the run — ' +
+      'hand-moved, cancelled, pinned, or whose pre-run technician is gone — are SKIPPED ' +
+      'and listed, never force-reverted. Get an explicit yes, then call again with ONLY ' +
+      'confirmId. The staged undo expires in 15 MINUTES (it is a fresh-mistake tool), and ' +
+      'dies if the schedule changes underneath it or a newer run commits. Only the latest ' +
+      'run is undoable — there is no deeper history.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'resolve_review',
     description:
       'Close a review item (manager only): resolved = handled, dismissed = not an issue / ' +
@@ -1229,6 +1289,10 @@ const BOARD_LINK_TOOL_NAMES = new Set([
   'set_visit_locks',
   // A freeze proposal/commit is the definition of a schedule answer.
   'run_freeze',
+  // Same for the re-solve (plan 2026-07-30).
+  'run_resolve',
+  // And for the undo — its result changes what the board shows everywhere.
+  'undo_run',
 ]);
 
 // `param` is a typed union so a call-site typo is a COMPILE error, not a
@@ -4823,13 +4887,503 @@ async function dispatch(
             'what landed and what did not. Re-running the freeze is safe: placed visits leave ' +
             'the queues.'
           : 'Committed. Tell the manager what was placed (count + the placements), anything ' +
-            'skipped at commit, and that technicians were notified of their new visits. ' +
-            'None of the placed visits are pinned — offer set_visit_locks if the manager ' +
-            'wants this plan protected from the next freeze.') +
+            'skipped at commit, and that technicians were notified of their new visits.') +
           (commitWarnings.length > 0
             ? ' RELAY every entry in warnings — each flags a placement that landed on time ' +
               'off or outside a working pattern (the schedule may have changed after the ' +
               'plan was solved); the manager may want to move those.'
+            : '') +
+          // On ANY commit with rows — a PARTIAL still has real committed
+          // placements worth protecting (review finding) — but never on a
+          // zero-row failure: offering to pin an empty list invites a bogus
+          // set_visit_locks call (final-review finding).
+          (result.committed.length > 0
+            ? ' OFFER to pin the committed placements so future freeze/re-plan runs leave ' +
+              "them alone: on the manager's yes call set_visit_locks with exactly the " +
+              'assignmentIds listed in placements.'
+            : ''),
+      };
+    }
+    case 'run_resolve': {
+      // The freeze's sibling (plan 2026-07-30): same stage/confirm shape,
+      // same version pin, same one-token-per-tenant rule — plus movable
+      // placed visits and scope narrowing.
+      const subjectRef = identity.technicianRef;
+      const confirmId = str('confirmId');
+      if (args.confirmId !== undefined && !confirmId) {
+        throw new Error('confirmId must be a string');
+      }
+      const resolveDeps = {
+        ...(deps.roiTransport ? { transport: deps.roiTransport } : {}),
+        ...(deps.roiMintToken ? { mintToken: deps.roiMintToken } : {}),
+      };
+      if (!confirmId) {
+        // STAGE. Reject non-string AND empty-string args (the run_freeze
+        // rule): '' must never silently take the default horizon or — worse —
+        // stage an UNSCOPED movable plan when the caller meant to narrow.
+        for (const k of ['throughDate', 'technicianRef', 'onDate']) {
+          if (args[k] !== undefined && (typeof args[k] !== 'string' || !str(k))) {
+            throw new Error(`${k} must be a non-empty string`);
+          }
+        }
+        const tenant = await getTenant(tenantId);
+        const today = localDateISO(new Date().toISOString(), tenant?.timezone ?? 'UTC');
+        const throughArg = str('throughDate');
+        let horizonTo = addDaysISO(today, 13);
+        if (throughArg) {
+          if (!isRealDateISO(throughArg)) {
+            throw new Error('throughDate must be a real YYYY-MM-DD date');
+          }
+          if (throughArg < today) {
+            throw new Error(`throughDate ${throughArg} is in the past (firm-local today is ${today})`);
+          }
+          if (throughArg > addDaysISO(today, 31)) {
+            throw new Error('throughDate is capped at 31 days out — schedules that far are guesses');
+          }
+          horizonTo = throughArg;
+        }
+        const scopeTech = str('technicianRef');
+        const onDate = str('onDate');
+        if (onDate) {
+          if (!isRealDateISO(onDate)) throw new Error('onDate must be a real YYYY-MM-DD date');
+          if (onDate < today || onDate > horizonTo) {
+            throw new Error(`onDate must fall inside the horizon (${today} – ${horizonTo})`);
+          }
+        }
+        if (scopeTech) {
+          // A typo'd ref would silently scope to NOBODY and stage an
+          // all-kept plan — reject unknown refs instead.
+          const roster = await listTeam(tenantId);
+          if (!roster.some((t) => t.ref === scopeTech && t.state === 'active')) {
+            throw new Error(`no active roster member '${scopeTech}' — check the ref`);
+          }
+        }
+        const scope: ResolveScope = {
+          ...(scopeTech ? { technicianRef: scopeTech } : {}),
+          ...(onDate ? { onDate } : {}),
+        };
+        // Version BEFORE the solve (the run_freeze rule): a booking landing
+        // mid-solve must make the confirm-time recheck FIRE.
+        const scheduleVersion = await latestScheduleVersion(tenantId);
+        const nowHHMM = localTimeHHMM(new Date().toISOString(), tenant?.timezone ?? 'UTC');
+        const inputs = await assembleFreezeInputs(
+          tenantId,
+          today,
+          horizonTo,
+          nowHHMM,
+          deps.geocode ? { geocode: deps.geocode } : {},
+        );
+        const plan = await solveResolve(inputs, scope, nowHHMM, resolveDeps);
+        // ONE live plan per TENANT, kind-wide (the freeze rule).
+        for (const open of await findOpenReviewItemsByKind(tenantId, 'pending_resolve')) {
+          await resolveReviewItem(open.id, tenantId, 'dismissed', 'superseded by a new re-solve run');
+        }
+        const stagedDetail = {
+          plan: plan as unknown as Json,
+          scheduleVersion,
+          horizonFrom: today,
+          horizonTo,
+          stagedAt: new Date().toISOString(),
+        } as unknown as Json;
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_resolve',
+          subjectRef,
+          detail: stagedDetail,
+        });
+        // Stage-race close (the run_freeze rule): write OUR detail onto
+        // whichever open row the upsert returned; null = closed concurrently.
+        const pinned = await updateOpenReviewItemDetail(item.id, tenantId, stagedDetail);
+        if (!pinned) {
+          throw new Error('another re-solve run superseded this one mid-stage — run run_resolve again');
+        }
+        const pinnedCount = plan.skipped.filter((s) => s.reason === PINNED_SKIP_REASON).length;
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          requiresConfirmation: true,
+          horizon: { from: today, to: horizonTo },
+          ...(scopeTech || onDate ? { scope } : {}),
+          scheduleVersion,
+          moves: plan.moves.map((m) => ({
+            ...m,
+            fromWeekday: weekdayLabel(m.fromDate),
+            toWeekday: weekdayLabel(m.toDate),
+          })),
+          placements: plan.placements.map((p) => ({ ...p, weekday: weekdayLabel(p.date) })),
+          keptCount: plan.keptCount,
+          skipped: plan.skipped,
+          capacity: plan.capacity,
+          note:
+            'NOTHING is moved or booked yet. Give the manager a SHORT summary only — counts ' +
+            `(${plan.moves.length} moves / ${plan.placements.length} placed / ` +
+            `${plan.keptCount} kept / ${plan.skipped.length} skipped / ${pinnedCount} pinned ` +
+            'untouched) plus the one or two most consequential changes — and end with the ' +
+            'proposal board link line (the full plan lives on the board). If this result ' +
+            'carries no proposalLink field, show the ENTIRE plan in chat instead: every move ' +
+            '(from → to, weekday, who), every placement, every skipped item WITH its reason, ' +
+            "and each technician's committed vs available minutes. The pin line — always " +
+            `say it: ${pinnedCount} pinned visit(s) were left untouched; pin anything else ` +
+            "the manager doesn't want rearranged (set_visit_locks), then run it again. " +
+            "Moving/booking happens only after the manager's explicit yes — then call " +
+            'run_resolve again with ONLY confirmId. The proposal expires in 12 hours and ' +
+            'dies if the schedule changes underneath it.',
+        };
+      }
+      // CONFIRM. Any active manager may confirm; the confirming manager is
+      // the actor on every committed row.
+      const item = await getOpenReviewItem(confirmId, tenantId, { kind: 'pending_resolve' });
+      if (!item) {
+        throw new Error('confirmation not found — run run_resolve again for a fresh plan');
+      }
+      const currentVersion = await latestScheduleVersion(tenantId);
+      const assessment = assessStagedResolve(item.detail, currentVersion, Date.now());
+      if (assessment.verdict === 'expired') {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 're-solve proposal expired (12h)');
+        throw new Error('this re-solve proposal expired (12 hours) — run it again for a fresh plan');
+      }
+      if (assessment.verdict === 'malformed') {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'malformed staged plan');
+        throw new Error('the staged plan is malformed — run the re-solve again');
+      }
+      if (assessment.verdict === 'stale') {
+        await resolveReviewItem(
+          item.id,
+          tenantId,
+          'dismissed',
+          `schedule changed under the plan (v${assessment.pinnedVersion} → v${assessment.currentVersion})`,
+        );
+        throw new Error(
+          'the schedule changed since this plan was solved — nothing was moved; run the ' +
+            're-solve again for a fresh plan',
+        );
+      }
+      const d = assessment.detail;
+      // CONSUME FIRST (at-most-once), then commit.
+      const consumed = await resolveReviewItem(
+        item.id,
+        tenantId,
+        'resolved',
+        `re-solve confirmed by ${subjectRef}`,
+      );
+      if (!consumed) {
+        throw new Error('confirmation not found — run run_resolve again for a fresh plan');
+      }
+      const runStamp = new Date().toISOString();
+      const result = await commitResolvePlan(tenantId, d.plan, subjectRef, runStamp);
+      const commitWarnings = [
+        ...result.movedRows
+          .filter((m) => m.warning)
+          .map((m) => ({
+            assignmentId: m.assignmentId,
+            customer: m.move.customer,
+            warning: m.warning as string,
+          })),
+        ...result.committed
+          .filter((c) => c.warning)
+          .map((c) => ({
+            assignmentId: c.assignmentId,
+            customer: c.placement.customer,
+            warning: c.warning as string,
+          })),
+      ];
+      return {
+        status: result.failed ? 'partial' : 'committed',
+        moved: result.movedRows.length,
+        // MINTED post-commit ids (review finding): the staged plan's ids are
+        // cancelled rows after commit — these are the pinnable ones.
+        moves: result.movedRows.map((m) => ({
+          assignmentId: m.assignmentId,
+          customer: m.move.customer,
+          jobTitle: m.move.jobTitle,
+          from: `${weekdayLabel(m.move.fromDate)} ${m.move.fromDate} ${m.move.fromStart} (${m.move.fromTechnicianRef})`,
+          to: `${weekdayLabel(m.move.toDate)} ${m.move.toDate} ${m.move.toStartTime} (${m.move.toTechnicianRef})`,
+        })),
+        placed: result.committed.length,
+        placements: result.committed.map((c) => ({
+          ...c.placement,
+          weekday: weekdayLabel(c.placement.date),
+          assignmentId: c.assignmentId,
+        })),
+        keptCount: d.plan.keptCount,
+        ...(commitWarnings.length > 0 ? { warnings: commitWarnings } : {}),
+        ...(result.skippedAtCommit.length > 0 ? { skippedAtCommit: result.skippedAtCommit } : {}),
+        ...(result.strandedParks.length > 0
+          ? {
+              strandedParks: result.strandedParks.map((s) => ({
+                assignmentId: s.assignmentId,
+                customer: s.move.customer,
+                jobTitle: s.move.jobTitle,
+                at: `${s.move.fromDate} ${s.move.fromStart}`,
+              })),
+            }
+          : {}),
+        ...(result.failed ? { failed: result.failed } : {}),
+        note:
+          (result.failed
+            ? 'The run STOPPED at the failed row — every move and placement listed IS ' +
+              'committed; the failed row and everything after it are unchanged. Tell the ' +
+              'manager exactly what landed and what did not. Re-running is safe.'
+            : 'Committed. Tell the manager what moved and what was placed (counts + the ' +
+              'lists), anything skipped at commit, and that technicians were notified.') +
+          (result.strandedParks.length > 0
+            ? ' URGENT: strandedParks lists visits left UNASSIGNED at their original times ' +
+              '(a swap could not complete) — the manager must reassign each by hand.'
+            : '') +
+          (commitWarnings.length > 0
+            ? ' RELAY every entry in warnings — each flags a row on time off or outside a ' +
+              'working pattern; the manager may want to move those.'
+            : '') +
+          // Same zero-row gate as the freeze note (final-review finding).
+          (result.movedRows.length + result.committed.length > 0
+            ? ' OFFER to pin what this run just scheduled so future re-plans leave it alone: ' +
+              "on the manager's yes call set_visit_locks with exactly the assignmentIds " +
+              'listed in moves and placements.'
+            : ''),
+      };
+    }
+    case 'undo_run': {
+      // The safety net (plan 2026-07-30 Phase 5): restore the LATEST committed
+      // run from its own ledger trail. No solver; 15-min token (fresh-mistake
+      // idiom), chat-only preview.
+      const subjectRef = identity.technicianRef;
+      const confirmId = str('confirmId');
+      if (args.confirmId !== undefined && !confirmId) {
+        throw new Error('confirmId must be a string');
+      }
+      if (!confirmId) {
+        // STAGE. Version BEFORE the plan reads (the run_freeze rule): an edit
+        // landing while planUndo walks its chains must make the confirm-time
+        // recheck FIRE — pinned after, that edit would be invisible and the
+        // undo would die mid-run instead of dismissing cleanly (review
+        // finding: same class as the pin-before-solve requirement).
+        const scheduleVersion = await latestScheduleVersion(tenantId);
+        // ONE live undo token per tenant, kind-wide — dismissed BEFORE the
+        // early returns below, so a nothing_to_undo/nothing_to_restore answer
+        // can never leave an older, now-dead-end token sitting open in
+        // list_pending_reviews (final-review finding; the sibling verbs'
+        // stage paths always supersede first).
+        for (const open of await findOpenReviewItemsByKind(tenantId, 'pending_undo')) {
+          await resolveReviewItem(open.id, tenantId, 'dismissed', 'superseded by a new undo stage');
+        }
+        const run = await latestCommittedRun(tenantId);
+        if (!run) {
+          return {
+            status: 'nothing_to_undo',
+            note:
+              'No committed freeze or re-solve run exists to undo. Tell the manager there ' +
+              'is nothing to roll back.',
+          };
+        }
+        const plan = await planUndo(tenantId, run);
+        const restoreCount =
+          plan.unschedules.length + plan.moves.length + plan.tbdRestores.length;
+        if (restoreCount === 0) {
+          // Nothing stageable — don't mint a token that could only commit a
+          // no-op. TWO honest causes, distinguished (final-review finding):
+          // a run that was ALREADY undone reads exactly like all-drift
+          // ("changed since the run") unless we check the undo ledger — and
+          // misattributing it implies colleagues hand-edited the schedule.
+          const undone = await findUndoOfRun(tenantId, run.stamp);
+          return {
+            status: 'nothing_to_restore',
+            undoes: { kind: run.kind, ranAt: run.stamp },
+            skipped: plan.skipped,
+            note: undone
+              ? 'This run was ALREADY undone — there is nothing further to roll back ' +
+                '(undo reaches only the latest run, and it has no deeper history). ' +
+                'Tell the manager the earlier undo already restored it.'
+              : 'The latest run has nothing restorable — every row it touched has since ' +
+                'been changed, pinned, or lost its pre-run technician (see skipped, with ' +
+                'reasons). Nothing was staged; relay the skip reasons to the manager.',
+          };
+        }
+        const stagedDetail = {
+          plan: plan as unknown as Json,
+          runEventId: run.eventId,
+          scheduleVersion,
+          stagedAt: new Date().toISOString(),
+        } as unknown as Json;
+        const item = await upsertOpenReviewItem({
+          tenantId,
+          kind: 'pending_undo',
+          subjectRef,
+          detail: stagedDetail,
+        });
+        // Stage-race close (the run_freeze rule).
+        const pinned = await updateOpenReviewItemDetail(item.id, tenantId, stagedDetail);
+        if (!pinned) {
+          throw new Error('another undo stage superseded this one — run undo_run again');
+        }
+        return {
+          status: 'needs_confirmation',
+          confirmId: item.id,
+          requiresConfirmation: true,
+          undoes: { kind: run.kind, ranAt: run.stamp },
+          restores: {
+            toLooseBucket: plan.unschedules.map((u) => ({
+              assignmentId: u.assignmentId,
+              label: u.label,
+              day: u.day,
+            })),
+            movesBack: plan.moves.map((m) => ({
+              assignmentId: m.assignmentId,
+              customer: m.customer,
+              jobTitle: m.jobTitle,
+              from: `${weekdayLabel(m.fromDate)} ${m.fromDate} ${m.fromStart} (${m.fromTechnicianRef || 'unassigned'})`,
+              to: `${weekdayLabel(m.toDate)} ${m.toDate} ${m.toStartTime} (${m.toTechnicianRef ?? 'unassigned'})`,
+            })),
+            backToTimeTbd: plan.tbdRestores.map((t) => ({
+              assignmentId: t.assignmentId,
+              label: t.label,
+              from: t.fromLabel,
+              to: `time-TBD ${t.earliestDate}${t.latestDate !== t.earliestDate ? `–${t.latestDate}` : ''}`,
+            })),
+          },
+          skipped: plan.skipped,
+          scheduleVersion,
+          note:
+            'NOTHING is restored yet. Show the manager the restore list in plain lines — ' +
+            'what returns to the loose bucket, what moves back where, what returns to ' +
+            'time-TBD — plus every skipped row WITH its reason (those are left alone). ' +
+            "On the manager's explicit yes call undo_run again with ONLY confirmId. The " +
+            'staged undo expires in 15 minutes and dies if the schedule changes or a ' +
+            'newer run commits.',
+        };
+      }
+      // CONFIRM.
+      const item = await getOpenReviewItem(confirmId, tenantId, { kind: 'pending_undo' });
+      if (!item) {
+        throw new Error('confirmation not found — run undo_run again for a fresh preview');
+      }
+      const d = (item.detail ?? {}) as {
+        plan?: UndoPlan;
+        runEventId?: number;
+        scheduleVersion?: number;
+        stagedAt?: string;
+      };
+      if (d.stagedAt && Date.now() - Date.parse(d.stagedAt) > 15 * 60_000) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'staged undo expired (15m)');
+        throw new Error(
+          'this staged undo expired (15 minutes) — run undo_run again for a fresh preview',
+        );
+      }
+      // DEEP shape check, the kernel's rule (final-review finding: `!d.plan`
+      // truthiness alone let a shapeless plan — a deploy-reshaped token, a
+      // partial detail — pass the gate, get CONSUMED, then crash inside
+      // commitUndoRun on plan.run.kind: token burned, nothing restored, and
+      // the history reads as a confirmed undo that never ran. Every field
+      // the commit dereferences is validated BEFORE the consume.)
+      const planShape = d.plan as
+        | {
+            run?: { kind?: unknown; stamp?: unknown };
+            unschedules?: unknown;
+            moves?: unknown;
+            tbdRestores?: unknown;
+            skipped?: unknown;
+          }
+        | undefined;
+      if (
+        !d.plan ||
+        !planShape ||
+        typeof planShape !== 'object' ||
+        (planShape.run?.kind !== 'freeze' && planShape.run?.kind !== 'resolve') ||
+        typeof planShape.run?.stamp !== 'string' ||
+        !Array.isArray(planShape.unschedules) ||
+        !Array.isArray(planShape.moves) ||
+        !Array.isArray(planShape.tbdRestores) ||
+        !Array.isArray(planShape.skipped) ||
+        typeof d.scheduleVersion !== 'number' ||
+        typeof d.runEventId !== 'number' ||
+        typeof d.stagedAt !== 'string'
+      ) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'malformed staged undo');
+        throw new Error('the staged undo is malformed — run undo_run again');
+      }
+      // The REAL staleness guard (freeze parity): ANY edit in the stage→
+      // confirm window dismisses cleanly here instead of the undo dying
+      // mid-run on rows the plan no longer describes.
+      const currentVersion = await latestScheduleVersion(tenantId);
+      if (currentVersion !== d.scheduleVersion) {
+        await resolveReviewItem(
+          item.id,
+          tenantId,
+          'dismissed',
+          `schedule changed under the staged undo (v${d.scheduleVersion} → v${currentVersion})`,
+        );
+        throw new Error(
+          'the schedule changed since this undo was staged — nothing was restored; run ' +
+            'undo_run again for a fresh preview',
+        );
+      }
+      // Belt on the version pin: a matching version already implies no newer
+      // run (every commit appends events), but the run identity is the claim
+      // this tool makes — check it explicitly.
+      const latestRun = await latestCommittedRun(tenantId);
+      if (!latestRun || latestRun.eventId !== d.runEventId) {
+        await resolveReviewItem(item.id, tenantId, 'dismissed', 'a newer run committed');
+        throw new Error(
+          'a newer run committed since this undo was staged — undo targets only the ' +
+            'latest run; run undo_run again',
+        );
+      }
+      // CONSUME FIRST (at-most-once), then restore.
+      const consumed = await resolveReviewItem(
+        item.id,
+        tenantId,
+        'resolved',
+        `undo confirmed by ${subjectRef}`,
+      );
+      if (!consumed) {
+        throw new Error('confirmation not found — run undo_run again for a fresh preview');
+      }
+      const undoStamp = new Date().toISOString();
+      const result = await commitUndoRun(tenantId, d.plan, subjectRef, undoStamp);
+      const restoredCount =
+        result.unscheduled.length + result.movedBack.length + result.rebooked.length;
+      return {
+        status: result.failed ? 'partial' : 'restored',
+        undid: { kind: d.plan.run.kind, ranAt: d.plan.run.stamp },
+        restored: restoredCount,
+        toLooseBucket: result.unscheduled,
+        movedBack: result.movedBack.map((m) => ({
+          assignmentId: m.assignmentId,
+          customer: m.move.customer,
+          jobTitle: m.move.jobTitle,
+          at: `${weekdayLabel(m.move.toDate)} ${m.move.toDate} ${m.move.toStartTime} (${m.move.toTechnicianRef ?? 'unassigned'})`,
+        })),
+        backToTimeTbd: result.rebooked,
+        ...(d.plan.skipped.length > 0 ? { skippedAtPlan: d.plan.skipped } : {}),
+        ...(result.skippedAtCommit.length > 0 ? { skippedAtCommit: result.skippedAtCommit } : {}),
+        ...(result.strandedParks.length > 0
+          ? {
+              strandedParks: result.strandedParks.map((s) => ({
+                assignmentId: s.assignmentId,
+                customer: s.move.customer,
+                jobTitle: s.move.jobTitle,
+                at: `${s.move.fromDate} ${s.move.fromStart}`,
+              })),
+            }
+          : {}),
+        ...(result.strandedUnplaced.length > 0 ? { strandedInBucket: result.strandedUnplaced } : {}),
+        ...(result.failed ? { failed: result.failed } : {}),
+        note:
+          (result.failed
+            ? 'The undo STOPPED at the failed row — everything listed IS restored; the ' +
+              'failed row and everything after it are unchanged. Tell the manager exactly ' +
+              'what was restored and what was not.'
+            : 'Restored. Tell the manager what went back where (the lists above), every ' +
+              'skipped row with its reason, and that technicians were notified.') +
+          (result.strandedParks.length > 0
+            ? ' URGENT: strandedParks lists visits left UNASSIGNED at their original ' +
+              'times (a swap restore could not complete) — the manager must reassign ' +
+              'each by hand.'
+            : '') +
+          (result.strandedUnplaced.length > 0
+            ? ' URGENT: strandedInBucket lists time-TBD visits this undo DID unschedule ' +
+              'but could not re-book — those rows are NOT unchanged: each job now sits ' +
+              'in the loose bucket with its old day range and promise dropped; re-book ' +
+              'each by hand.'
             : ''),
       };
     }
@@ -5326,22 +5880,56 @@ async function dispatch(
       // flooding the context and tempting the agent to relay placements the
       // confirm-time version check would refuse (final-review finding).
       return (await listOpenReviewItems(tenantId)).map((item) => {
-        if (item.kind !== 'pending_freeze') return item;
+        // A pending_undo token embeds the whole restore plan — same summarize
+        // rule (an unsummarized token would dump a horizon-wide restore list
+        // into context).
+        if (item.kind === 'pending_undo') {
+          const u = (item.detail ?? {}) as {
+            plan?: {
+              run?: { kind?: string; stamp?: string };
+              unschedules?: unknown[];
+              moves?: unknown[];
+              tbdRestores?: unknown[];
+              skipped?: unknown[];
+            };
+            stagedAt?: string;
+          };
+          return {
+            ...item,
+            detail: {
+              summary: 'a staged undo — confirm or restage via undo_run, never relay from here',
+              undoes: u.plan?.run?.kind ?? null,
+              restores:
+                (u.plan?.unschedules?.length ?? 0) +
+                (u.plan?.moves?.length ?? 0) +
+                (u.plan?.tbdRestores?.length ?? 0),
+              skipped: u.plan?.skipped?.length ?? 0,
+              stagedAt: u.stagedAt ?? null,
+            },
+          };
+        }
+        if (item.kind !== 'pending_freeze' && item.kind !== 'pending_resolve') return item;
         const d = (item.detail ?? {}) as {
-          plan?: { placements?: unknown[]; skipped?: unknown[] };
+          plan?: { placements?: unknown[]; skipped?: unknown[]; moves?: unknown[]; keptCount?: number };
           scheduleVersion?: number;
           horizonFrom?: string;
           horizonTo?: string;
           stagedAt?: string;
         };
+        const isFreeze = item.kind === 'pending_freeze';
         return {
           ...item,
           detail: {
-            summary: 'a staged freeze plan — confirm or restage via run_freeze, never relay from here',
+            summary: isFreeze
+              ? 'a staged freeze plan — confirm or restage via run_freeze, never relay from here'
+              : 'a staged re-solve plan — confirm or restage via run_resolve, never relay from here',
             horizonFrom: d.horizonFrom ?? null,
             horizonTo: d.horizonTo ?? null,
             placements: d.plan?.placements?.length ?? 0,
             skipped: d.plan?.skipped?.length ?? 0,
+            ...(isFreeze
+              ? {}
+              : { moves: d.plan?.moves?.length ?? 0, kept: d.plan?.keptCount ?? null }),
             scheduleVersion: d.scheduleVersion ?? null,
             stagedAt: d.stagedAt ?? null,
           },
@@ -5413,6 +6001,8 @@ async function dispatch(
         // without this entry, resolve_review would "resolve" the freeze plan
         // while booking nothing.
         pending_freeze: 'run_freeze',
+        pending_resolve: 'run_resolve',
+        pending_undo: 'undo_run',
       };
       if (STAGED_ACTION_KINDS[open.kind] && resolution === 'resolved') {
         throw new Error(
@@ -5530,7 +6120,9 @@ export function createServer(deps: ServerDeps = {}): Server {
       if (link && result && typeof result === 'object' && !Array.isArray(result)) {
         if ((result as { status?: unknown }).status !== 'needs_confirmation') {
           deco = { key: 'boardLink', label: 'See it on the board', url: link };
-        } else if (name === 'run_freeze') {
+        } else if (name === 'run_freeze' || name === 'run_resolve') {
+          // Both staged-plan verbs share the ONE proposal view (same deep
+          // link — the board shows whichever token is open).
           const proposalLink = boardMiniAppLink('freeze');
           if (proposalLink) {
             deco = { key: 'proposalLink', label: 'Review the full proposal on the board', url: proposalLink };

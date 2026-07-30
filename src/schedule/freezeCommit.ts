@@ -41,14 +41,27 @@ export interface FreezeCommitResult {
   failed: { placement: FreezePlacement; error: string } | null;
 }
 
+// Caller overrides (re-solve, plan 2026-07-30): the resolve commit reuses this
+// walker for its queue placements but must stamp { resolveRun }, write
+// "re-solve …" reasons, and suppress the freeze_committed summary (its own
+// resolve_committed replaces it — without suppression every resolve commit
+// would append a FALSE "a freeze ran" ledger row and double-push managers).
+// Defaults reproduce the freeze behavior byte-for-byte.
+export interface FreezeCommitOpts {
+  eventDetailExtra?: Json;
+  reasonPrefix?: string;
+  skipSummaryEvent?: boolean;
+}
+
 export async function commitFreezePlan(
   tenantId: string,
   plan: FreezePlan,
   actorRef: string,
   runStamp: string, // ISO — the freeze run's identity in every ledger row
+  opts: FreezeCommitOpts = {},
 ): Promise<FreezeCommitResult> {
-  const reason = `freeze ${runStamp.slice(0, 10)}`;
-  const eventDetailExtra: Json = { freezeRun: runStamp };
+  const reason = `${opts.reasonPrefix ?? 'freeze'} ${runStamp.slice(0, 10)}`;
+  const eventDetailExtra: Json = opts.eventDetailExtra ?? { freezeRun: runStamp };
   const committed: FreezeCommittedRow[] = [];
   const skippedAtCommit: FreezeSkip[] = [];
   let failed: FreezeCommitResult['failed'] = null;
@@ -118,6 +131,7 @@ export async function commitFreezePlan(
   // ARE booked and the token is consumed — a transient fault here must not
   // mask the result the manager needs to hear (phase-review finding 2); the
   // cost is one lost summary push.
+  if (opts.skipSummaryEvent) return { committed, skippedAtCommit, failed };
   try {
     await appendScheduleEvent({
       tenantId,

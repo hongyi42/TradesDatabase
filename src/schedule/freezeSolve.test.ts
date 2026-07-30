@@ -15,10 +15,18 @@ import { bookVisit, setVisitLocks } from './booking.js';
 import {
   assembleFreezeInputs,
   buildFreezeModel,
+  buildResolveModel,
+  partitionMovable,
   solveFreeze,
+  solveResolve,
   vehicleLabel,
+  movableLabel,
   QUEUE_PENALTY,
   CONTEXT_PENALTY,
+  PINNED_SKIP_REASON,
+  DISRUPTION_COST_PER_HOUR,
+  TECH_CHANGE_COST,
+  type FreezeContextVisit,
   type FreezeInputs,
   type FreezeQueueItem,
 } from './freezeSolve.js';
@@ -97,6 +105,18 @@ function baseInputs(over: Partial<FreezeInputs> = {}): FreezeInputs {
   };
 }
 
+// Context fixture: an ordinary movable-eligible visit unless overridden
+// (unpinned, promise 'none' — the movability additions default to "free").
+const ctxVisit = (over: Partial<FreezeContextVisit> & Pick<FreezeContextVisit, 'assignmentId' | 'technicianRef' | 'date' | 'startISO' | 'endISO' | 'coords'>): FreezeContextVisit => ({
+  locked: false,
+  promiseLevel: 'none',
+  promisedDay: null,
+  jobId: `job-of-${over.assignmentId}`,
+  customer: 'Ctx Customer',
+  jobTitle: 'ctx job',
+  ...over,
+});
+
 const windowedItem = (over: Partial<FreezeQueueItem> = {}): FreezeQueueItem => ({
   kind: 'unplaced_visit',
   jobId: 'job-w',
@@ -156,14 +176,14 @@ describe('buildFreezeModel', () => {
       baseInputs({
         queue: [windowedItem(), exact],
         context: [
-          {
+          ctxVisit({
             assignmentId: 'asg-ctx',
             technicianRef: 'p2',
             date: '2027-05-03',
             startISO: '2027-05-03T09:00:00.000Z',
             endISO: '2027-05-03T10:30:00.000Z',
             coords: null, // ungeocodable context → location-less, still pins time
-          },
+          }),
         ],
       }),
     ) as {
@@ -256,14 +276,14 @@ describe('buildFreezeModel', () => {
     const model = buildFreezeModel(
       baseInputs({
         context: [
-          {
+          ctxVisit({
             assignmentId: 'asg-sat',
             technicianRef: 'p1',
             date: '2027-05-08', // Saturday — no vehicle exists
             startISO: '2027-05-08T09:00:00.000Z',
             endISO: '2027-05-08T10:00:00.000Z',
             coords: COORDS,
-          },
+          }),
         ],
       }),
     ) as { model: { shipments: unknown[] } };
@@ -349,14 +369,14 @@ describe('solveFreeze (fake transport)', () => {
     const inputs = baseInputs({
       queue: [windowedItem()],
       context: [
-        {
+        ctxVisit({
           assignmentId: 'asg-late',
           technicianRef: 'p2',
           date: '2027-05-03',
           startISO: '2027-05-03T18:00:00.000Z', // after Pam's 15:00 end — unseatable
           endISO: '2027-05-03T19:00:00.000Z',
           coords: COORDS,
-        },
+        }),
       ],
     });
     const plan = await solveFreeze(inputs, {
@@ -411,6 +431,293 @@ describe('solveFreeze (fake transport)', () => {
           ref: 'asg-free',
           reason: expect.stringContaining('set_availability'),
         }),
+      ]),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-solve: partition, model, parse (plan 2026-07-30 Phase 1)
+
+const movableFix = (over: Partial<FreezeContextVisit> = {}) =>
+  ctxVisit({
+    assignmentId: 'asg-mv',
+    technicianRef: 'p1',
+    date: '2027-05-04',
+    startISO: '2027-05-04T10:00:00.000Z',
+    endISO: '2027-05-04T11:30:00.000Z',
+    coords: COORDS,
+    ...over,
+  });
+
+describe('partitionMovable', () => {
+  test('the matrix: pinned / time-promised / begun / out-of-scope stay fixed; coord-less fixed WITH a kept-skip; free rows move', () => {
+    const free = movableFix();
+    const pinned = movableFix({ assignmentId: 'asg-pin', locked: true });
+    const timed = movableFix({ assignmentId: 'asg-time', promiseLevel: 'time' });
+    const timeOnly = movableFix({ assignmentId: 'asg-tonly', promiseLevel: 'time_only' });
+    const dayPromised = movableFix({
+      assignmentId: 'asg-day',
+      promiseLevel: 'day',
+      promisedDay: '2027-05-04',
+    });
+    const begun = movableFix({
+      assignmentId: 'asg-begun',
+      date: FROM,
+      startISO: `${FROM}T08:00:00.000Z`,
+      endISO: `${FROM}T09:00:00.000Z`,
+    });
+    const otherTech = movableFix({ assignmentId: 'asg-p2', technicianRef: 'p2' });
+    const otherDay = movableFix({ assignmentId: 'asg-tue', date: '2027-05-05', startISO: '2027-05-05T10:00:00.000Z', endISO: '2027-05-05T11:00:00.000Z' });
+    const noCoords = movableFix({ assignmentId: 'asg-nocoord', coords: null });
+
+    const inputs = baseInputs({
+      context: [free, pinned, timed, timeOnly, dayPromised, begun, otherTech, otherDay, noCoords],
+    });
+
+    const all = partitionMovable(inputs, {}, '09:30');
+    const movableIds = all.movable.map((m) => m.assignmentId);
+    // 'day' rows ARE movable (within their day); 'time'/'time_only' are not.
+    expect(movableIds).toEqual(
+      expect.arrayContaining(['asg-mv', 'asg-day', 'asg-p2', 'asg-tue']),
+    );
+    expect(movableIds).toHaveLength(4);
+    expect(all.fixed.map((f) => f.assignmentId)).toEqual(
+      expect.arrayContaining(['asg-pin', 'asg-time', 'asg-tonly', 'asg-begun', 'asg-nocoord']),
+    );
+    expect(all.skips).toEqual([
+      // Pinned rows report a PINNED skip entry (final-review finding: the
+      // stage note's pin line and the board's pinnedCount count EXACTLY this
+      // reason — without it a manager's pinned placed visits read "0 pinned").
+      expect.objectContaining({ ref: 'asg-pin', reason: PINNED_SKIP_REASON }),
+      expect.objectContaining({ ref: 'asg-nocoord', reason: expect.stringContaining('kept as booked') }),
+    ]);
+
+    // Scope narrowing: technicianRef and onDate each shrink the movable set.
+    const byTech = partitionMovable(inputs, { technicianRef: 'p2' }, '09:30');
+    expect(byTech.movable.map((m) => m.assignmentId)).toEqual(['asg-p2']);
+    const byDate = partitionMovable(inputs, { onDate: '2027-05-05' }, '09:30');
+    expect(byDate.movable.map((m) => m.assignmentId)).toEqual(['asg-tue']);
+    // A begun row is only "begun" on day 0 with a real clock.
+    const wholeDay = partitionMovable(inputs, {}, '00:00');
+    expect(wholeDay.movable.map((m) => m.assignmentId)).toContain('asg-begun');
+  });
+});
+
+describe('buildResolveModel', () => {
+  test('movable shipment: soft window at the CURRENT slot, hard window per promise, tech-change priced, near-mandatory', () => {
+    const free = movableFix();
+    const dayPromised = movableFix({
+      assignmentId: 'asg-day',
+      promiseLevel: 'day',
+      promisedDay: '2027-05-04',
+    });
+    const model = buildResolveModel(baseInputs({ context: [free, dayPromised] }), [free, dayPromised]) as {
+      model: {
+        shipments: Array<{
+          label: string;
+          penaltyCost: number;
+          allowedVehicleIndices?: number[];
+          costsPerVehicle?: number[];
+          costsPerVehicleIndices?: number[];
+          deliveries: Array<{
+            arrivalLocation?: unknown;
+            duration: string;
+            timeWindows: Array<Record<string, unknown>>;
+          }>;
+        }>;
+      };
+    };
+    const mv = model.model.shipments.find((s) => s.label === movableLabel('asg-mv'));
+    expect(mv).toBeDefined();
+    expect(mv?.penaltyCost).toBe(CONTEXT_PENALTY); // never silently unscheduled
+    expect(mv?.allowedVehicleIndices).toBeUndefined(); // any tech may take it…
+    // …but p2's single vehicle (index 2) costs extra.
+    expect(mv?.costsPerVehicleIndices).toEqual([2]);
+    expect(mv?.costsPerVehicle).toEqual([TECH_CHANGE_COST]);
+    expect(mv?.deliveries[0].duration).toBe('5400s');
+    expect(mv?.deliveries[0].timeWindows).toEqual([
+      {
+        startTime: '2027-05-03T00:00:00Z', // 'none' → whole horizon
+        endTime: '2027-05-09T23:59:59Z', // end-inside rule
+        softStartTime: '2027-05-04T10:00:00Z',
+        softEndTime: '2027-05-04T10:00:00Z',
+        costPerHourBeforeSoftStartTime: DISRUPTION_COST_PER_HOUR,
+        costPerHourAfterSoftEndTime: DISRUPTION_COST_PER_HOUR,
+      },
+    ]);
+    const day = model.model.shipments.find((s) => s.label === movableLabel('asg-day'));
+    expect(day?.deliveries[0].timeWindows[0]).toMatchObject({
+      startTime: '2027-05-04T00:00:00Z', // 'day' → its promised day only
+      endTime: '2027-05-04T23:59:59Z',
+    });
+    // The movable rows left the fixed-context shipments (no ctx| duplicates).
+    expect(model.model.shipments.filter((s) => s.label.startsWith('ctx|'))).toHaveLength(0);
+  });
+
+  test('day-0 hard windows open at the run clock; with NO movable rows the model equals the freeze model byte-for-byte', () => {
+    const day0 = movableFix({
+      assignmentId: 'asg-d0',
+      date: FROM,
+      startISO: `${FROM}T15:00:00.000Z`,
+      endISO: `${FROM}T16:00:00.000Z`,
+    });
+    const model = buildResolveModel(baseInputs({ context: [day0] }), [day0], '12:30') as {
+      model: { shipments: Array<{ label: string; deliveries: Array<{ timeWindows: Array<Record<string, unknown>> }> }> };
+    };
+    const mv = model.model.shipments.find((s) => s.label === movableLabel('asg-d0'));
+    expect(mv?.deliveries[0].timeWindows[0]).toMatchObject({
+      startTime: `${FROM}T12:30:00Z`,
+    });
+
+    const inputs = baseInputs({
+      queue: [windowedItem()],
+      context: [movableFix({ assignmentId: 'asg-stay' })],
+    });
+    expect(buildResolveModel(inputs, [])).toEqual(buildFreezeModel(inputs));
+  });
+});
+
+describe('solveResolve (fake transport)', () => {
+  const seams = (routes: unknown[], skippedShipments: unknown[] = []) => ({
+    mintToken: async () => ({ token: 't', projectId: 'p' }),
+    transport: async () => ({ routes, skippedShipments }),
+  });
+
+  test('changed rows become moves (capacity follows cross-tech), identical rows are KEPT, skipped movables report kept-as-booked', async () => {
+    const moved = movableFix(); // p1 Tue 10:00 → will land p2 Wed 09:00
+    const stays = movableFix({
+      assignmentId: 'asg-stay',
+      startISO: '2027-05-04T13:00:00.000Z',
+      endISO: '2027-05-04T14:00:00.000Z',
+    });
+    const shifted = movableFix({
+      assignmentId: 'asg-shift', // same tech, same day, new time — still a move
+      startISO: '2027-05-04T08:00:00.000Z',
+      endISO: '2027-05-04T09:00:00.000Z',
+    });
+    const dropped = movableFix({ assignmentId: 'asg-drop' });
+    const inputs = baseInputs({ context: [moved, stays, shifted, dropped] });
+    const plan = await solveResolve(inputs, {}, '00:00', seams(
+      [
+        {
+          vehicleLabel: vehicleLabel('p2', '2027-05-03'),
+          visits: [{ shipmentLabel: movableLabel('asg-mv'), startTime: '2027-05-03T09:00:00Z' }],
+        },
+        {
+          vehicleLabel: vehicleLabel('p1', '2027-05-04'),
+          visits: [
+            { shipmentLabel: movableLabel('asg-stay'), startTime: '2027-05-04T13:00:00Z' },
+            { shipmentLabel: movableLabel('asg-shift'), startTime: '2027-05-04T15:00:00Z' },
+          ],
+        },
+      ],
+      [{ label: movableLabel('asg-drop') }],
+    ));
+
+    expect(plan.moves).toHaveLength(2);
+    const cross = plan.moves.find((m) => m.assignmentId === 'asg-mv');
+    expect(cross).toMatchObject({
+      fromTechnicianRef: 'p1',
+      fromDate: '2027-05-04',
+      fromStart: '10:00',
+      toTechnicianRef: 'p2',
+      toDate: '2027-05-03',
+      toStartTime: '09:00',
+      toEndTime: '10:30', // 90 min carried
+    });
+    const shift = plan.moves.find((m) => m.assignmentId === 'asg-shift');
+    expect(shift).toMatchObject({ toTechnicianRef: 'p1', toStartTime: '15:00' });
+    // kept = stays (identical) + dropped (solver-skipped, reported).
+    expect(plan.keptCount).toBe(2);
+    expect(plan.skipped).toEqual([
+      expect.objectContaining({ ref: 'asg-drop', reason: expect.stringContaining('kept as booked') }),
+    ]);
+    // Capacity: p1 base 60 − 90 (cross-tech out); p2 base 0 + 90 in. The
+    // same-tech shift moves no minutes.
+    expect(plan.capacity.find((c) => c.technicianRef === 'p1')?.committedMin).toBe(-30);
+    expect(plan.capacity.find((c) => c.technicianRef === 'p2')?.committedMin).toBe(90);
+  });
+
+  test('queues still place in the same solve (freeze parity)', async () => {
+    const plan = await solveResolve(
+      baseInputs({ queue: [windowedItem()], context: [movableFix()] }),
+      {},
+      '00:00',
+      seams([
+        {
+          vehicleLabel: vehicleLabel('p1', '2027-05-04'),
+          visits: [
+            { shipmentLabel: 'q|asg-w', startTime: '2027-05-04T08:30:00Z' },
+            { shipmentLabel: movableLabel('asg-mv'), startTime: '2027-05-04T10:00:00Z' },
+          ],
+        },
+      ]),
+    );
+    expect(plan.placements).toHaveLength(1);
+    expect(plan.placements[0]).toMatchObject({ assignmentId: 'asg-w', startTime: '08:30' });
+    expect(plan.moves).toHaveLength(0); // the movable landed exactly where it was
+    expect(plan.keptCount).toBe(1);
+  });
+
+  test('a FIXED statue the solver could not seat still gets the freeze-parity capacity note (resolve ⊇ freeze)', async () => {
+    const pinnedLate = movableFix({
+      assignmentId: 'asg-pinlate',
+      technicianRef: 'p2',
+      date: '2027-05-03',
+      startISO: '2027-05-03T18:00:00.000Z', // after Pam's 15:00 end — unseatable
+      endISO: '2027-05-03T19:00:00.000Z',
+      locked: true, // a statue — ships as ctx|, not mv|
+    });
+    const plan = await solveResolve(
+      baseInputs({ context: [pinnedLate], queue: [windowedItem()] }),
+      {},
+      '00:00',
+      seams(
+        [
+          {
+            vehicleLabel: vehicleLabel('p1', '2027-05-03'),
+            visits: [{ shipmentLabel: 'q|asg-w', startTime: '2027-05-03T08:00:00Z' }],
+          },
+        ],
+        [{ label: 'ctx|asg-pinlate' }],
+      ),
+    );
+    expect(plan.skipped).toEqual([
+      // The pin entry (partition) AND the freeze-parity capacity note (walk)
+      // — the same row, two honest reasons.
+      expect.objectContaining({ ref: 'asg-pinlate', reason: PINNED_SKIP_REASON }),
+      expect.objectContaining({
+        ref: 'asg-pinlate',
+        reason: expect.stringContaining('kept as booked'),
+      }),
+    ]);
+  });
+
+  test('guards: nothing movable + empty queue, or zero vehicles → NO API call, everything kept', async () => {
+    const explode = async (): Promise<never> => {
+      throw new Error('transport must not be called');
+    };
+    const noWork = await solveResolve(
+      baseInputs({ context: [movableFix({ locked: true })] }),
+      {},
+      '00:00',
+      { transport: explode, mintToken: explode },
+    );
+    expect(noWork.moves).toHaveLength(0);
+    expect(noWork.keptCount).toBe(0);
+
+    const noVehicles = await solveResolve(
+      baseInputs({ vehicles: [], queue: [windowedItem({ technicianRef: null })], context: [movableFix()], capacity: [] }),
+      {},
+      '00:00',
+      { transport: explode, mintToken: explode },
+    );
+    expect(noVehicles.moves).toHaveLength(0);
+    expect(noVehicles.keptCount).toBe(1); // kept, not dropped
+    expect(noVehicles.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ reason: expect.stringContaining('set_availability') }),
       ]),
     );
   });
@@ -557,6 +864,13 @@ describe('assembleFreezeInputs (integration)', { timeout: 30_000 }, () => {
       assignmentId: ctxVisit.assignment.id,
       technicianRef: 'fz-pat',
       coords: { lat: 36.81, lng: -119.71 },
+      // Movability inputs ride along (re-solve, plan 2026-07-30).
+      locked: false,
+      promiseLevel: 'none',
+      promisedDay: null,
+      jobId: ctxVisit.job.id,
+      customer: 'Coded Cara',
+      jobTitle: 'ctx visit',
     });
 
     // Queue: ready job + exact person-less + straddler (clamped) + Pat's tbd (clamped).

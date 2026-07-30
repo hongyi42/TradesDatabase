@@ -34,11 +34,15 @@
     // pill between loads. Only the number is kept: the tray re-fetches on
     // open, and a cached payload would invite rendering stale rows from it.
     bucketCount: null,
-    // Whether an OPEN freeze proposal exists (managers only) — the freeze
-    // pill's render condition. Only the boolean is kept: the sheet re-fetches
-    // on open (same never-stale rule as the tray), and the server computes
-    // the open/expired/stale states — the client does no expiry math.
+    // Whether an OPEN proposal exists (managers only) — the proposal pill's
+    // render condition. Only the boolean is kept: the sheet re-fetches on
+    // open (same never-stale rule as the tray), and the server computes the
+    // open/expired/stale states — the client does no expiry math.
     freezeOpen: null,
+    // Which KIND the open proposal is ('freeze' | 'resolve', plan
+    // 2026-07-30) — server-declared; picks the pill's and sheet's wording.
+    // null whenever nothing is open.
+    proposalKind: null,
     // Session-cached roster for the assign picker (plan 4a.5) — fetched on
     // first picker open, never on the load path. Names change rarely; a
     // reopen of the webview clears it naturally.
@@ -522,11 +526,13 @@
       });
   }
 
-  // Async freeze-proposal probe (proposal-view feature, 2026-07-27): fires
-  // AFTER a successful render, manager-only, never awaited — the tray-pill
-  // idiom. Two jobs: keep state.freezeOpen current (the pill's render
-  // condition) and hand openProposal its fresh payload. The endpoint serves
-  // computed states (open / expired / stale / none) — no client date math.
+  // Async proposal probe (proposal-view feature, 2026-07-27; kind-agnostic
+  // since plan 2026-07-30 — the endpoint serves the ONE open proposal,
+  // freeze or re-solve): fires AFTER a successful render, manager-only,
+  // never awaited — the tray-pill idiom. Two jobs: keep state.freezeOpen +
+  // state.proposalKind current (the pill's render inputs) and hand
+  // openProposal its fresh payload. The endpoint serves computed states
+  // (open / expired / stale / none) — no client date math.
   function fetchFreezeProposal() {
     return fetch('/board/api/freeze-proposal', { headers: authHeaders() })
       .then(function (resp) {
@@ -536,6 +542,7 @@
       .then(function (v) {
         if (!v) return null;
         state.freezeOpen = v.state === 'open';
+        state.proposalKind = v.state === 'open' ? v.kind : null;
         syncFreezePill();
         return v;
       })
@@ -544,21 +551,34 @@
       });
   }
 
-  // The freeze pill's ONLY renderer: called synchronously after every paint
+  // The pill's and sheet's shared wording — 're-plan' for a re-solve, the
+  // shipped 'freeze' copy otherwise (the server's kind decides; an unknown/
+  // absent kind falls back to freeze wording, never a blank).
+  function proposalTitle(kind) {
+    return kind === 'resolve' ? 'Re-plan proposal' : 'Freeze proposal';
+  }
+
+  // The proposal pill's ONLY renderer: called synchronously after every paint
   // AND when the async probe lands — one markup source, reconciled in place.
   // Renders only while a proposal is OPEN (no placeholder state: outside the
   // ~12h proposal window there is nothing to advertise — plan decision:
-  // pill, not a tab).
+  // pill, not a tab). The label re-syncs on every call: a freeze token
+  // superseded by a re-solve one must not keep saying "Freeze proposal".
   function syncFreezePill() {
     var existing = document.getElementById('freeze-pill');
-    if (state.freezeOpen && !existing && state.isManager) {
+    if (state.freezeOpen && state.isManager) {
+      var label = '📋 ' + proposalTitle(state.proposalKind);
+      if (existing) {
+        existing.textContent = label;
+        return;
+      }
       var head = document.querySelector('.head-row');
       if (!head) return;
       var b = document.createElement('button');
       b.type = 'button';
       b.className = 'freeze-pill';
       b.id = 'freeze-pill';
-      b.textContent = '📋 Freeze proposal';
+      b.textContent = label;
       head.appendChild(b);
     } else if (!state.freezeOpen && existing) {
       existing.remove();
@@ -619,8 +639,47 @@
           );
         })
         .join('');
+      // Moves — re-solve proposals only, rendered BEFORE Placements (plan
+      // 2026-07-30): what changes outranks what's new. Per-day groups keyed
+      // on the DESTINATION day (server pre-sorted by toDate+toStartTime);
+      // every string is server-composed — labels carry weekday+date+times,
+      // techChange exists only when the person actually changes.
+      var movesSection = '';
+      if (v.kind === 'resolve') {
+        var movesByDate = {};
+        v.moves.forEach(function (m) {
+          (movesByDate[m.toDate] = movesByDate[m.toDate] || []).push(m);
+        });
+        var moved = Object.keys(movesByDate)
+          .sort()
+          .map(function (date) {
+            var rows = movesByDate[date];
+            return (
+              '<h4 class="freeze-day">' +
+              esc((rows[0].toWeekday ? rows[0].toWeekday + ' ' : '') + date) + '</h4>' +
+              rows
+                .map(function (m) {
+                  return proposalRow(
+                    m.fromLabel + ' → ' + m.toLabel,
+                    (m.customer || 'Unknown customer') +
+                      (m.jobTitle ? ' — ' + m.jobTitle : '') +
+                      (m.techChange ? ' · ' + m.techChange : ''),
+                  );
+                })
+                .join('')
+            );
+          })
+          .join('');
+        movesSection =
+          '<div class="bucket-section"><h3>Moves (' + v.moves.length + ')</h3>' +
+          (v.moves.length ? moved : '<div class="bucket-empty">Nothing moves.</div>') +
+          '<div class="range">' +
+          esc(v.keptCount + ' visit(s) kept exactly as booked.') +
+          '</div></div>';
+      }
       inner =
         '<div class="range">' + esc('Covers ' + v.horizonFrom + ' – ' + v.horizonTo) + '</div>' +
+        movesSection +
         '<div class="bucket-section"><h3>Placements (' + v.placements.length + ')</h3>' +
         (v.placements.length ? placed : '<div class="bucket-empty">Nothing to place.</div>') +
         '</div>' +
@@ -650,7 +709,10 @@
         '</div>' +
         // Copy only, never a button: confirmation lives in CHAT (ritual
         // doctrine) — the page has no write path and serves no confirm id.
-        '<div class="freeze-hint">To confirm: reply <b>yes</b> to the assistant in chat — this page can’t book anything.</div>';
+        // Kind-aware wording; the freeze sentence stays byte-identical.
+        '<div class="freeze-hint">To confirm' +
+        (v.kind === 'resolve' ? ' this re-plan' : '') +
+        ': reply <b>yes</b> to the assistant in chat — this page can’t book anything.</div>';
     }
     return inner;
   }
@@ -662,10 +724,12 @@
     // helpers with a no-op body click (phase review: reuse, don't re-roll).
     fetchFreezeProposal().then(function (v) {
       if (!v) {
-        toast('Could not load the freeze proposal — try again.', true);
+        toast('Could not load the proposal — try again.', true);
         return;
       }
-      openSheet(sheetShell('Freeze proposal', renderProposalSheet(v)), function () {});
+      // Every non-none state carries the kind; `none` has no kind and falls
+      // back to the freeze title (nothing to advertise either way).
+      openSheet(sheetShell(proposalTitle(v.kind), renderProposalSheet(v)), function () {});
     });
   }
 

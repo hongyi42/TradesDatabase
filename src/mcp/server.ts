@@ -5144,7 +5144,12 @@ async function dispatch(
         throw new Error('confirmId must be a string');
       }
       if (!confirmId) {
-        // STAGE.
+        // STAGE. Version BEFORE the plan reads (the run_freeze rule): an edit
+        // landing while planUndo walks its chains must make the confirm-time
+        // recheck FIRE — pinned after, that edit would be invisible and the
+        // undo would die mid-run instead of dismissing cleanly (review
+        // finding: same class as the pin-before-solve requirement).
+        const scheduleVersion = await latestScheduleVersion(tenantId);
         const run = await latestCommittedRun(tenantId);
         if (!run) {
           return {
@@ -5174,7 +5179,6 @@ async function dispatch(
         for (const open of await findOpenReviewItemsByKind(tenantId, 'pending_undo')) {
           await resolveReviewItem(open.id, tenantId, 'dismissed', 'superseded by a new undo stage');
         }
-        const scheduleVersion = await latestScheduleVersion(tenantId);
         const stagedDetail = {
           plan: plan as unknown as Json,
           runEventId: run.eventId,
@@ -5319,6 +5323,7 @@ async function dispatch(
               })),
             }
           : {}),
+        ...(result.strandedUnplaced.length > 0 ? { strandedInBucket: result.strandedUnplaced } : {}),
         ...(result.failed ? { failed: result.failed } : {}),
         note:
           (result.failed
@@ -5330,6 +5335,12 @@ async function dispatch(
           (result.strandedParks.length > 0
             ? ' URGENT: strandedParks lists visits left UNASSIGNED at their original ' +
               'times (a swap restore could not complete) — the manager must reassign ' +
+              'each by hand.'
+            : '') +
+          (result.strandedUnplaced.length > 0
+            ? ' URGENT: strandedInBucket lists time-TBD visits this undo DID unschedule ' +
+              'but could not re-book — those rows are NOT unchanged: each job now sits ' +
+              'in the loose bucket with its old day range and promise dropped; re-book ' +
               'each by hand.'
             : ''),
       };

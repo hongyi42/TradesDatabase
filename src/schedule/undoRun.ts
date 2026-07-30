@@ -253,6 +253,14 @@ export interface UndoCommitResult {
   unscheduled: { assignmentId: string; label: string }[]; // back in the bucket
   movedBack: ExecutedMove[]; // minted post-restore ids
   rebooked: { assignmentId: string; label: string }[]; // fresh time-TBD rows
+  // Time-TBD restores this undo VACATED in step (1) but never re-booked (a
+  // later failure stopped the run before or inside step (3)): each placed row
+  // IS cancelled and its job sits in the loose bucket, fence/promise gone
+  // from live data. Surfaced by row so the caller's report can name them —
+  // "the failed row and everything after it are unchanged" is FALSE for
+  // these, and hiding them inside `failed` would repeat the strandedParks
+  // mistake (review finding).
+  strandedUnplaced: { assignmentId: string; jobId: string; label: string }[];
   skippedAtCommit: FreezeSkip[]; // the executor's promise-belt refusals
   strandedParks: BatchMoveResult['strandedParks'];
   failed: { ref: string; label: string; error: string } | null;
@@ -276,6 +284,8 @@ export async function commitUndoRun(
   // (1) EVERY unschedule first: the run's queue placements landed in freed
   // gaps, and a tbd-restore's live row occupies a slot too — both must vacate
   // before the inverse moves return, or those moves hit the overlap guard.
+  const vacatedTbd = new Set<string>();
+  const rebookedFor = new Set<string>();
   const vacates = [
     ...plan.unschedules.map((u) => ({ ...u, rebook: false })),
     ...plan.tbdRestores.map((t) => ({ assignmentId: t.assignmentId, label: t.label, rebook: true })),
@@ -289,7 +299,8 @@ export async function commitUndoRun(
         eventDetailExtra,
         actorRef,
       });
-      if (!v.rebook) unscheduled.push({ assignmentId: v.assignmentId, label: v.label });
+      if (v.rebook) vacatedTbd.add(v.assignmentId);
+      else unscheduled.push({ assignmentId: v.assignmentId, label: v.label });
     } catch (err) {
       failed = {
         ref: v.assignmentId,
@@ -330,6 +341,7 @@ export async function commitUndoRun(
           actorRef,
         });
         rebooked.push({ assignmentId: booked.assignment.id, label: t.label });
+        rebookedFor.add(t.assignmentId);
       } catch (err) {
         // Step (1) already unscheduled this visit — the honest state is "its
         // job is back in the loose bucket", and the error must say so.
@@ -344,6 +356,12 @@ export async function commitUndoRun(
       }
     }
   }
+
+  // Every tbd row vacated in step (1) that step (3) never re-booked, whatever
+  // stopped the run — see the UndoCommitResult comment.
+  const strandedUnplaced = plan.tbdRestores
+    .filter((t) => vacatedTbd.has(t.assignmentId) && !rebookedFor.has(t.assignmentId))
+    .map((t) => ({ assignmentId: t.assignmentId, jobId: t.jobId, label: t.label }));
 
   // The run summary — best-effort, freeze idiom: restores ARE committed by
   // now; a transient fault here must not mask the result.
@@ -360,6 +378,7 @@ export async function commitUndoRun(
         restored,
         skipped: plan.skipped.length + skippedAtCommit.length,
         ...(strandedParks.length > 0 ? { stranded: strandedParks.length } : {}),
+        ...(strandedUnplaced.length > 0 ? { strandedTbd: strandedUnplaced.length } : {}),
         ...(failed ? { stoppedAt: failed.ref, error: failed.error } : {}),
       },
     });
@@ -367,5 +386,13 @@ export async function commitUndoRun(
     console.error('undo_committed ledger append failed (restore result stands):', err);
   }
 
-  return { unscheduled, movedBack, rebooked, skippedAtCommit, strandedParks, failed };
+  return {
+    unscheduled,
+    movedBack,
+    rebooked,
+    strandedUnplaced,
+    skippedAtCommit,
+    strandedParks,
+    failed,
+  };
 }

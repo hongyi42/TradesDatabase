@@ -479,6 +479,71 @@ describe('planUndo + commitUndoRun', { timeout: 60_000 }, () => {
     expect(events.filter((e) => e.kind === 'booked')).toHaveLength(1);
   });
 
+  test('a tbd row vacated in step 1 whose rebook never runs (mid-run failure) is reported as strandedUnplaced — never "unchanged"', async () => {
+    const RUN = '2027-07-09T08:00:00.000Z';
+    const UNDO = '2027-07-09T09:00:00.000Z';
+    // One run: a normal move AND a time-TBD placement (resolve placements
+    // ride the freeze walker, which handles unplaced_visit rows).
+    const moved = await book({ technicianRef: 'un-rita', date: '2027-07-25', startTime: '09:00', endTime: '10:00' });
+    const tbd = await bookVisit({
+      tenantId,
+      customerId,
+      title: 'stranded tbd probe',
+      timeTbd: true,
+      earliestDate: '2027-07-25',
+      latestDate: '2027-07-26',
+      technicianRef: 'un-rita',
+      actorRef: 'un-mgr',
+    });
+    const committed = await commitResolvePlan(
+      tenantId,
+      plan({
+        moves: [
+          moveOf(moved.assignment.id, { tech: 'un-rita', date: '2027-07-25', start: '09:00', end: '10:00' }, { tech: 'un-rita', date: '2027-07-25', start: '13:00', end: '14:00' }),
+        ],
+        placements: [
+          {
+            kind: 'unplaced_visit',
+            jobId: tbd.job.id,
+            assignmentId: tbd.assignment.id,
+            customer: 'Undo Casa',
+            jobTitle: 'stranded tbd probe',
+            technicianRef: 'un-rita',
+            date: '2027-07-25',
+            startTime: '15:00',
+            endTime: '16:00',
+          },
+        ],
+      }),
+      'un-mgr',
+      RUN,
+    );
+    expect(committed.failed).toBeNull();
+    const undoPlan = await planUndo(tenantId, await runFor(RUN, 'resolve'));
+    expect(undoPlan.moves).toHaveLength(1);
+    expect(undoPlan.tbdRestores).toHaveLength(1);
+    // A hand booking now occupies the inverse move's target (09:00) — not in
+    // the plan, so step (2) fails AFTER step (1) vacated the tbd row.
+    await book({ technicianRef: 'un-rita', date: '2027-07-25', startTime: '08:30', endTime: '09:30', title: 'blocker' });
+    const result = await commitUndoRun(tenantId, undoPlan, 'un-mgr', UNDO);
+    expect(result.failed).not.toBeNull();
+    expect(result.rebooked).toEqual([]);
+    // The vacated-but-never-rebooked row is NAMED, with its job for rebooking.
+    expect(result.strandedUnplaced).toEqual([
+      expect.objectContaining({
+        assignmentId: undoPlan.tbdRestores[0].assignmentId,
+        jobId: tbd.job.id,
+      }),
+    ]);
+    // Its live row really is cancelled (the honest state the report claims).
+    const vacated = await getAssignmentForTenant(undoPlan.tbdRestores[0].assignmentId, tenantId);
+    expect(vacated?.status).toBe('cancelled');
+    // The summary counts it — forensics must not read this run as clean.
+    expect((await undoEvents(UNDO)).find((e) => e.kind === 'undo_committed')?.detail).toMatchObject(
+      { strandedTbd: 1 },
+    );
+  });
+
   test('undoing a freeze returns queue placements to the loose bucket — open jobs with no live visit, counts matching', async () => {
     const RUN = '2027-07-08T08:00:00.000Z';
     const UNDO = '2027-07-08T09:00:00.000Z';

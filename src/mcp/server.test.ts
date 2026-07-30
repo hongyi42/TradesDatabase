@@ -6601,6 +6601,11 @@ describe('undo_run (plan 2026-07-30 Phase 5: restore the latest run, 15-min toke
       const malformed = await callWith('undo_run', { confirmId: restage3.data.confirmId });
       expect(malformed.isError).toBe(true);
       expect(malformed.text).toContain('malformed');
+      // Closed by the DISMISSAL itself — replayed BEFORE any fresh stage could
+      // supersede it (review finding: the replay must attribute the closure).
+      expect((await callWith('undo_run', { confirmId: restage3.data.confirmId })).text).toContain(
+        'confirmation not found',
+      );
 
       // ---- CONFIRM: rows restored through the real verbs, minted ids in the
       // response, undo_committed in the ledger, replay closed.

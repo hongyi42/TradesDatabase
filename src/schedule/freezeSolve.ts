@@ -46,6 +46,7 @@ import {
   listUnassignedAssignmentsWithRefs,
   listUnplacedAssignedForRange,
   listUnscheduledOpenJobsWithCustomer,
+  type PromiseLevel,
   type WeeklyPattern,
 } from '../db/index.js';
 import { addDaysISO, dayWindows, toMin } from './fit.js';
@@ -83,6 +84,16 @@ export interface FreezeContextVisit {
   startISO: string; // naive-local
   endISO: string;
   coords: LatLng | null; // null = ungecodable — ships location-less (see header)
+  // Movability inputs (re-solve): the freeze ignores these — every context
+  // visit is a statue there. The assembler always fills them from the row +
+  // its job embed, so a re-solve can grade each visit's freedom without a
+  // second read.
+  locked: boolean;
+  promiseLevel: PromiseLevel;
+  promisedDay: string | null;
+  jobId: string;
+  customer: string | null;
+  jobTitle: string | null;
 }
 
 export interface FreezeVehicle {
@@ -266,9 +277,11 @@ export async function assembleFreezeInputs(
   const coordsFor = (customerId: string | undefined): CustomerCoords =>
     (customerId ? coordsById.get(customerId) : undefined) ?? { ok: false, reason: 'no_address' };
 
+  const contextJobById = new Map(contextJobs.map((j) => [j.id, j]));
   const context: FreezeContextVisit[] = contextRows.map((r) => {
     const t = techById.get(r.technician_id as string);
     const c = coordsFor(customerIdByJob.get(r.job_id));
+    const job = contextJobById.get(r.job_id);
     return {
       assignmentId: r.id,
       technicianRef: (t as { ref: string }).ref,
@@ -276,6 +289,12 @@ export async function assembleFreezeInputs(
       startISO: r.starts_at,
       endISO: r.ends_at,
       coords: c.ok ? c.coords : null,
+      locked: r.locked,
+      promiseLevel: r.promise_level,
+      promisedDay: r.promised_day,
+      jobId: r.job_id,
+      customer: job?.customers?.name ?? null, // reader is tenant-scoped already
+      jobTitle: job?.title ?? null,
     };
   });
 
@@ -766,4 +785,329 @@ export async function solveFreeze(
   }
 
   return finish(placements, skipped);
+}
+
+// ---------------------------------------------------------------------------
+// Re-solve (plan 2026-07-30): the freeze variant where UNPINNED placed visits
+// become movable and the promise ladder grades each visit's freedom. Same
+// pipeline shape — assemble (shared), partition, model, one solve, parse.
+
+// Disruption pricing, one home (fixed default, no knob — user decision):
+// displacing a visit by one hour costs as much as one hour of driving
+// (vehicles carry costPerTraveledHour: 1), so the solver only moves work when
+// the route genuinely improves. A day hop costs ~24 — same-day shuffles are
+// cheap, day changes need big wins. Changing WHO costs two drive-hours.
+export const DISRUPTION_COST_PER_HOUR = 1;
+export const TECH_CHANGE_COST = 2;
+
+export interface ResolveScope {
+  technicianRef?: string; // only this person's visits may move
+  onDate?: string; // only this day's visits may move (YYYY-MM-DD)
+}
+
+export interface ResolveMove {
+  assignmentId: string;
+  jobId: string;
+  customer: string | null;
+  jobTitle: string | null;
+  fromTechnicianRef: string;
+  fromDate: string;
+  fromStart: string; // HH:MM
+  fromEnd: string;
+  toTechnicianRef: string;
+  toDate: string;
+  toStartTime: string;
+  toEndTime: string;
+}
+
+export interface ResolvePlan extends FreezePlan {
+  moves: ResolveMove[];
+  keptCount: number; // movable rows the solver left exactly where they were
+}
+
+export const movableLabel = (assignmentId: string): string => `mv|${assignmentId}`;
+
+export interface MovablePartition {
+  movable: FreezeContextVisit[];
+  fixed: FreezeContextVisit[];
+  skips: FreezeSkip[]; // coord-less movable candidates — kept, with the reason
+}
+
+// Which context visits may move. Statues: pinned (human privilege), promise
+// 'time'/'time_only' (pinned-in-time by the ladder; time_only's "same clock,
+// any day" needs per-day pinpoint windows — deferred, v1 keeps them fixed),
+// out-of-scope rows, and day-0 rows already begun (the now-clamp precedent —
+// you cannot move the past). A movable candidate WITHOUT coords stays fixed
+// too, with a skip line: a location-less shipment with a wide window would
+// float freely at zero travel cost.
+export function partitionMovable(
+  inputs: FreezeInputs,
+  scope: ResolveScope,
+  nowHHMM: string,
+): MovablePartition {
+  const movable: FreezeContextVisit[] = [];
+  const fixed: FreezeContextVisit[] = [];
+  const skips: FreezeSkip[] = [];
+  for (const v of inputs.context) {
+    const begun =
+      v.date === inputs.horizonFrom && nowHHMM !== '00:00' && v.startISO.slice(11, 16) < nowHHMM;
+    const inScope =
+      (!scope.technicianRef || v.technicianRef === scope.technicianRef) &&
+      (!scope.onDate || v.date === scope.onDate);
+    const freeLevel = v.promiseLevel === 'none' || v.promiseLevel === 'day';
+    if (v.locked || !freeLevel || !inScope || begun) {
+      fixed.push(v);
+      continue;
+    }
+    if (v.coords === null) {
+      fixed.push(v);
+      skips.push({
+        ref: v.assignmentId,
+        label: skipLabel(v.customer, v.jobTitle),
+        reason:
+          "kept as booked — the customer's address couldn't be located on the map, so the solver can't route a move; check/correct it",
+      });
+      continue;
+    }
+    movable.push(v);
+  }
+  return { movable, fixed, skips };
+}
+
+// The freeze model + one shipment per movable visit. Hard window = the
+// promise-graded freedom; soft window = the CURRENT slot, so displacement is
+// priced per hour; costsPerVehicle prices handing the visit to someone else.
+export function buildResolveModel(
+  inputs: FreezeInputs,
+  movable: FreezeContextVisit[],
+  nowHHMM = '00:00',
+): unknown {
+  const movableIds = new Set(movable.map((m) => m.assignmentId));
+  const base = buildFreezeModel({
+    ...inputs,
+    context: inputs.context.filter((c) => !movableIds.has(c.assignmentId)),
+  }) as { model: { vehicles: unknown[]; shipments: unknown[] } };
+
+  for (const v of movable) {
+    // Hard window per promise level. Day-0 opens at the run's wall clock —
+    // the solver must not move a visit INTO this morning's past hours
+    // (bookVisit has no past guard; the vehicle windows are clamped, but the
+    // arrival window should agree rather than rely on it).
+    const promisedDay = v.promiseLevel === 'day' ? (v.promisedDay ?? v.date) : null;
+    const from = promisedDay ?? inputs.horizonFrom;
+    const to = promisedDay ?? inputs.horizonTo;
+    const startHHMM = from === inputs.horizonFrom && nowHHMM !== '00:00' ? nowHHMM : '00:00';
+    const hardStart = `${from}T${startHHMM}:00Z`;
+    const hardEnd = `${to}T23:59:59Z`; // end-inside rule (see queue windows above)
+    const otherVehicleIdx: number[] = [];
+    inputs.vehicles.forEach((veh, i) => {
+      if (veh.technicianRef !== v.technicianRef) otherVehicleIdx.push(i);
+    });
+    base.model.shipments.push({
+      label: movableLabel(v.assignmentId),
+      // Near-mandatory: the solver may not silently UNSCHEDULE an existing
+      // visit — a skipped movable row means "kept as booked", never dropped.
+      penaltyCost: CONTEXT_PENALTY,
+      ...(otherVehicleIdx.length > 0
+        ? {
+            costsPerVehicle: otherVehicleIdx.map(() => TECH_CHANGE_COST),
+            costsPerVehicleIndices: otherVehicleIdx,
+          }
+        : {}),
+      deliveries: [
+        {
+          arrivalLocation: { latitude: (v.coords as LatLng).lat, longitude: (v.coords as LatLng).lng },
+          duration: seconds(spanMinutes(v.startISO, v.endISO)),
+          timeWindows: [
+            {
+              startTime: hardStart,
+              endTime: hardEnd,
+              softStartTime: rfcFromISO(v.startISO),
+              softEndTime: rfcFromISO(v.startISO),
+              costPerHourBeforeSoftStartTime: DISRUPTION_COST_PER_HOUR,
+              costPerHourAfterSoftEndTime: DISRUPTION_COST_PER_HOUR,
+            },
+          ],
+        },
+      ],
+    });
+  }
+  return base;
+}
+
+export async function solveResolve(
+  inputs: FreezeInputs,
+  scope: ResolveScope,
+  nowHHMM: string,
+  deps: { transport?: RoiTransport; mintToken?: MintRoiToken } = {},
+): Promise<ResolvePlan> {
+  const { movable, skips: partitionSkips } = partitionMovable(inputs, scope, nowHHMM);
+  const capacity = inputs.capacity.map((c) => ({ ...c }));
+  const finish = (
+    placements: FreezePlacement[],
+    moves: ResolveMove[],
+    keptCount: number,
+    skipped: FreezeSkip[],
+  ): ResolvePlan => ({
+    horizonFrom: inputs.horizonFrom,
+    horizonTo: inputs.horizonTo,
+    placements,
+    moves,
+    keptCount,
+    skipped,
+    capacity,
+  });
+
+  // Same orphan belt as the freeze (attached queue rows whose person has no
+  // vehicle days), then the same no-API guards — a re-solve with nothing to
+  // move OR place must answer honestly without a solver call, and a horizon
+  // with zero working days (fleet-wide time off) keeps everything as booked.
+  const vehicleRefs = new Set(inputs.vehicles.map((v) => v.technicianRef));
+  const orphaned = inputs.queue.filter(
+    (i) => i.technicianRef !== null && !vehicleRefs.has(i.technicianRef),
+  );
+  const queue = inputs.queue.filter((i) => !orphaned.includes(i));
+  const orphanSkips: FreezeSkip[] = orphaned.map((item) => ({
+    ref: item.assignmentId ?? `job:${item.jobId}`,
+    label: skipLabel(item.customer, item.jobTitle),
+    reason:
+      'assigned to someone with no working days in this horizon — move it, or rerun a later week',
+  }));
+  const baseSkips = [...inputs.skipped, ...partitionSkips, ...orphanSkips];
+
+  if (queue.length === 0 && movable.length === 0) {
+    return finish([], [], 0, baseSkips);
+  }
+  if (inputs.vehicles.length === 0) {
+    return finish(
+      [],
+      [],
+      movable.length, // nothing can move with nobody working — all kept
+      [
+        ...baseSkips,
+        ...queue.map((item) => ({
+          ref: item.assignmentId ?? `job:${item.jobId}`,
+          label: skipLabel(item.customer, item.jobTitle),
+          reason: 'nobody has a working pattern in this horizon — set_availability, then rerun',
+        })),
+      ],
+    );
+  }
+
+  const response = (await optimizeTours(
+    buildResolveModel({ ...inputs, queue }, movable, nowHHMM),
+    deps,
+  )) as RoiResponse;
+
+  const itemByLabel = new Map(queue.map((item) => [queueLabel(item), item]));
+  const movableByLabel = new Map(movable.map((m) => [movableLabel(m.assignmentId), m]));
+  const placements: FreezePlacement[] = [];
+  const moves: ResolveMove[] = [];
+  const skipped = [...baseSkips];
+  const placedLabels = new Set<string>();
+  const seenMovable = new Set<string>();
+
+  for (const route of response.routes ?? []) {
+    const vLabel = route.vehicleLabel;
+    if (!vLabel?.startsWith('veh|')) continue;
+    const technicianRef = vLabel.split('|')[1];
+    for (const visit of route.visits ?? []) {
+      const label = visit.shipmentLabel;
+      if (!label || !visit.startTime) continue;
+      if (label.startsWith('q|')) {
+        const item = itemByLabel.get(label);
+        if (!item) continue;
+        placedLabels.add(label);
+        const startTime = item.exactStart
+          ? item.exactStart.slice(11, 16)
+          : visit.startTime.slice(11, 16);
+        const placementDate = item.exactStart
+          ? item.exactStart.slice(0, 10)
+          : visit.startTime.slice(0, 10);
+        placements.push({
+          kind: item.kind,
+          jobId: item.jobId,
+          assignmentId: item.assignmentId,
+          customer: item.customer,
+          jobTitle: item.jobTitle,
+          technicianRef,
+          date: placementDate,
+          startTime,
+          endTime: item.exactEnd
+            ? item.exactEnd.slice(11, 16)
+            : addMinutesClamped(startTime, item.durationMin),
+        });
+        const cap = capacity.find((c) => c.technicianRef === technicianRef);
+        if (cap) cap.committedMin += item.durationMin;
+        continue;
+      }
+      if (!label.startsWith('mv|')) continue;
+      const m = movableByLabel.get(label);
+      if (!m) continue;
+      seenMovable.add(label);
+      const toDate = visit.startTime.slice(0, 10);
+      const toStartTime = visit.startTime.slice(11, 16);
+      // Unchanged on every axis = KEPT, not a zero-distance "move".
+      if (
+        technicianRef === m.technicianRef &&
+        toDate === m.date &&
+        toStartTime === m.startISO.slice(11, 16)
+      ) {
+        continue;
+      }
+      const span = spanMinutes(m.startISO, m.endISO);
+      moves.push({
+        assignmentId: m.assignmentId,
+        jobId: m.jobId,
+        customer: m.customer,
+        jobTitle: m.jobTitle,
+        fromTechnicianRef: m.technicianRef,
+        fromDate: m.date,
+        fromStart: m.startISO.slice(11, 16),
+        fromEnd: m.endISO.slice(11, 16),
+        toTechnicianRef: technicianRef,
+        toDate,
+        toStartTime,
+        toEndTime: addMinutesClamped(toStartTime, span),
+      });
+      // Capacity follows the visit across a technician change (the stage
+      // response, note relay, and board Capacity section all display these).
+      if (technicianRef !== m.technicianRef) {
+        const fromCap = capacity.find((c) => c.technicianRef === m.technicianRef);
+        const toCap = capacity.find((c) => c.technicianRef === technicianRef);
+        if (fromCap) fromCap.committedMin -= span;
+        if (toCap) toCap.committedMin += span;
+      }
+    }
+  }
+
+  // Queue skips: identical belts to the freeze.
+  const skippedLabels = new Set(
+    (response.skippedShipments ?? []).map((s) => s.label).filter((l): l is string => !!l),
+  );
+  for (const item of queue) {
+    const label = queueLabel(item);
+    if (placedLabels.has(label)) continue;
+    skipped.push({
+      ref: item.assignmentId ?? `job:${item.jobId}`,
+      label: skipLabel(item.customer, item.jobTitle),
+      reason: skippedLabels.has(label)
+        ? 'no room in this window — every fitting day is full (or the visit clashes with existing bookings)'
+        : 'the solver returned no slot for this visit — rerun; if it persists, place it by hand',
+    });
+  }
+  // A movable row the solver skipped OR omitted is KEPT as booked (its
+  // penalty is near-infinite, so this is rare) — reported, never dropped.
+  for (const m of movable) {
+    const label = movableLabel(m.assignmentId);
+    if (seenMovable.has(label)) continue;
+    skipped.push({
+      ref: m.assignmentId,
+      label: skipLabel(m.customer, m.jobTitle),
+      reason: 'kept as booked — the solver found no better slot for it',
+    });
+  }
+  const keptCount = movable.length - moves.length;
+
+  return finish(placements, moves, keptCount, skipped);
 }

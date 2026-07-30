@@ -923,7 +923,23 @@ export function partitionMovable(
       (!scope.technicianRef || v.technicianRef === scope.technicianRef) &&
       (!scope.onDate || v.date === scope.onDate);
     const freeLevel = v.promiseLevel === 'none' || v.promiseLevel === 'day';
-    if (v.locked || !freeLevel || !inScope || begun) {
+    // Pinned rows get a SKIP ENTRY, not just silence: the stage note's
+    // mandated pin line and the board's pinnedCount both count EXACTLY this
+    // reason, and without an entry a manager who pinned placed visits —
+    // the tool's own advice — reads "0 pinned untouched" and concludes the
+    // pins were ignored (final-review finding). Checked before scope on
+    // purpose: a pinned visit is "left untouched" whether or not it was in
+    // scope.
+    if (v.locked) {
+      fixed.push(v);
+      skips.push({
+        ref: v.assignmentId,
+        label: skipLabel(v.customer, v.jobTitle),
+        reason: PINNED_SKIP_REASON,
+      });
+      continue;
+    }
+    if (!freeLevel || !inScope || begun) {
       fixed.push(v);
       continue;
     }

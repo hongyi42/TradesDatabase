@@ -2086,12 +2086,13 @@ describe('/board/api/freeze-proposal (read-only proposal view)', () => {
     expect(res.status).toBe(403);
   });
 
-  test('nothing staged → none, with the run-it-in-chat copy', async () => {
+  test('nothing staged → none, with the verb-neutral run-it-in-chat copy', async () => {
     const res = await fetch(url(), { headers: tma(900000001) });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { state: string; message: string };
     expect(body.state).toBe('none');
-    expect(body.message).toContain('run the freeze in chat');
+    expect(body.message).toContain('run the freeze');
+    expect(body.message).toContain('re-plan');
   });
 
   test('open: serves the staged plan with weekday + pinnedCount, and leaks no confirm handle', async () => {

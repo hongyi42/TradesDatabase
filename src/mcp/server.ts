@@ -154,6 +154,7 @@ import type { GeocodeTransport } from '../routes/geocode.js';
 import type { MintRoiToken, RoiTransport } from '../routes/roiClient.js';
 import { isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
+  findUndoOfRun,
   latestCommittedRun,
   latestScheduleVersion,
   listAssignmentsForTenant,
@@ -4892,11 +4893,15 @@ async function dispatch(
               'off or outside a working pattern (the schedule may have changed after the ' +
               'plan was solved); the manager may want to move those.'
             : '') +
-          // Unconditional (review finding: a PARTIAL commit still has real
-          // committed placements worth protecting): none are pinned — offer.
-          ' OFFER to pin the committed placements so future freeze/re-plan runs leave ' +
-          "them alone: on the manager's yes call set_visit_locks with exactly the " +
-          'assignmentIds listed in placements.',
+          // On ANY commit with rows — a PARTIAL still has real committed
+          // placements worth protecting (review finding) — but never on a
+          // zero-row failure: offering to pin an empty list invites a bogus
+          // set_visit_locks call (final-review finding).
+          (result.committed.length > 0
+            ? ' OFFER to pin the committed placements so future freeze/re-plan runs leave ' +
+              "them alone: on the manager's yes call set_visit_locks with exactly the " +
+              'assignmentIds listed in placements.'
+            : ''),
       };
     }
     case 'run_resolve': {
@@ -5129,9 +5134,12 @@ async function dispatch(
             ? ' RELAY every entry in warnings — each flags a row on time off or outside a ' +
               'working pattern; the manager may want to move those.'
             : '') +
-          ' OFFER to pin what this run just scheduled so future re-plans leave it alone: ' +
-          "on the manager's yes call set_visit_locks with exactly the assignmentIds " +
-          'listed in moves and placements.',
+          // Same zero-row gate as the freeze note (final-review finding).
+          (result.movedRows.length + result.committed.length > 0
+            ? ' OFFER to pin what this run just scheduled so future re-plans leave it alone: ' +
+              "on the manager's yes call set_visit_locks with exactly the assignmentIds " +
+              'listed in moves and placements.'
+            : ''),
       };
     }
     case 'undo_run': {
@@ -5150,6 +5158,14 @@ async function dispatch(
         // undo would die mid-run instead of dismissing cleanly (review
         // finding: same class as the pin-before-solve requirement).
         const scheduleVersion = await latestScheduleVersion(tenantId);
+        // ONE live undo token per tenant, kind-wide — dismissed BEFORE the
+        // early returns below, so a nothing_to_undo/nothing_to_restore answer
+        // can never leave an older, now-dead-end token sitting open in
+        // list_pending_reviews (final-review finding; the sibling verbs'
+        // stage paths always supersede first).
+        for (const open of await findOpenReviewItemsByKind(tenantId, 'pending_undo')) {
+          await resolveReviewItem(open.id, tenantId, 'dismissed', 'superseded by a new undo stage');
+        }
         const run = await latestCommittedRun(tenantId);
         if (!run) {
           return {
@@ -5163,21 +5179,24 @@ async function dispatch(
         const restoreCount =
           plan.unschedules.length + plan.moves.length + plan.tbdRestores.length;
         if (restoreCount === 0) {
-          // Nothing stageable — every touched row drifted/pinned/lost its
-          // tech. Don't mint a token that could only commit a no-op.
+          // Nothing stageable — don't mint a token that could only commit a
+          // no-op. TWO honest causes, distinguished (final-review finding):
+          // a run that was ALREADY undone reads exactly like all-drift
+          // ("changed since the run") unless we check the undo ledger — and
+          // misattributing it implies colleagues hand-edited the schedule.
+          const undone = await findUndoOfRun(tenantId, run.stamp);
           return {
             status: 'nothing_to_restore',
             undoes: { kind: run.kind, ranAt: run.stamp },
             skipped: plan.skipped,
-            note:
-              'The latest run has nothing restorable — every row it touched has since ' +
-              'been changed, pinned, or lost its pre-run technician (see skipped, with ' +
-              'reasons). Nothing was staged; relay the skip reasons to the manager.',
+            note: undone
+              ? 'This run was ALREADY undone — there is nothing further to roll back ' +
+                '(undo reaches only the latest run, and it has no deeper history). ' +
+                'Tell the manager the earlier undo already restored it.'
+              : 'The latest run has nothing restorable — every row it touched has since ' +
+                'been changed, pinned, or lost its pre-run technician (see skipped, with ' +
+                'reasons). Nothing was staged; relay the skip reasons to the manager.',
           };
-        }
-        // ONE live undo token per tenant, kind-wide (the staged-token rule).
-        for (const open of await findOpenReviewItemsByKind(tenantId, 'pending_undo')) {
-          await resolveReviewItem(open.id, tenantId, 'dismissed', 'superseded by a new undo stage');
         }
         const stagedDetail = {
           plan: plan as unknown as Json,
@@ -5249,8 +5268,31 @@ async function dispatch(
           'this staged undo expired (15 minutes) — run undo_run again for a fresh preview',
         );
       }
+      // DEEP shape check, the kernel's rule (final-review finding: `!d.plan`
+      // truthiness alone let a shapeless plan — a deploy-reshaped token, a
+      // partial detail — pass the gate, get CONSUMED, then crash inside
+      // commitUndoRun on plan.run.kind: token burned, nothing restored, and
+      // the history reads as a confirmed undo that never ran. Every field
+      // the commit dereferences is validated BEFORE the consume.)
+      const planShape = d.plan as
+        | {
+            run?: { kind?: unknown; stamp?: unknown };
+            unschedules?: unknown;
+            moves?: unknown;
+            tbdRestores?: unknown;
+            skipped?: unknown;
+          }
+        | undefined;
       if (
         !d.plan ||
+        !planShape ||
+        typeof planShape !== 'object' ||
+        (planShape.run?.kind !== 'freeze' && planShape.run?.kind !== 'resolve') ||
+        typeof planShape.run?.stamp !== 'string' ||
+        !Array.isArray(planShape.unschedules) ||
+        !Array.isArray(planShape.moves) ||
+        !Array.isArray(planShape.tbdRestores) ||
+        !Array.isArray(planShape.skipped) ||
         typeof d.scheduleVersion !== 'number' ||
         typeof d.runEventId !== 'number' ||
         typeof d.stagedAt !== 'string'

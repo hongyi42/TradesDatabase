@@ -23,6 +23,7 @@ import {
   movableLabel,
   QUEUE_PENALTY,
   CONTEXT_PENALTY,
+  PINNED_SKIP_REASON,
   DISRUPTION_COST_PER_HOUR,
   TECH_CHANGE_COST,
   type FreezeContextVisit,
@@ -485,6 +486,10 @@ describe('partitionMovable', () => {
       expect.arrayContaining(['asg-pin', 'asg-time', 'asg-tonly', 'asg-begun', 'asg-nocoord']),
     );
     expect(all.skips).toEqual([
+      // Pinned rows report a PINNED skip entry (final-review finding: the
+      // stage note's pin line and the board's pinnedCount count EXACTLY this
+      // reason — without it a manager's pinned placed visits read "0 pinned").
+      expect.objectContaining({ ref: 'asg-pin', reason: PINNED_SKIP_REASON }),
       expect.objectContaining({ ref: 'asg-nocoord', reason: expect.stringContaining('kept as booked') }),
     ]);
 
@@ -679,6 +684,9 @@ describe('solveResolve (fake transport)', () => {
       ),
     );
     expect(plan.skipped).toEqual([
+      // The pin entry (partition) AND the freeze-parity capacity note (walk)
+      // — the same row, two honest reasons.
+      expect.objectContaining({ ref: 'asg-pinlate', reason: PINNED_SKIP_REASON }),
       expect.objectContaining({
         ref: 'asg-pinlate',
         reason: expect.stringContaining('kept as booked'),

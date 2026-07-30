@@ -574,3 +574,25 @@ pin offer aborts on cancelled rows; undo confirm re-checks the staged scheduleVe
 scoped E2E must pre-check queues (resolve drains them tenant-wide); pinned-since-run rows
 skip+report in undo; deactivated predecessor tech skips instead of stranding;
 `pending_undo` joins the list_pending_reviews summarizer.*
+
+*FINAL 8-angle code review 2026-07-30 (whole-branch diff, after per-phase reviews): 25
+candidates → 10 fixed, gates re-green (892+5): (1) pinned PLACED visits now emit
+PINNED_SKIP_REASON entries from `partitionMovable` — the stage pin line and board
+pinnedCount no longer read "0 pinned" when a manager pinned placed rows; (2) undo confirm's
+malformed gate validates the FULL plan shape (run.kind/stamp + all arrays) before
+consuming — a shapeless token dismisses cleanly instead of burning + crashing; (3)
+`validResolveDetail` validates per-MOVE fields — a corrupt `toTechnicianRef: null` is
+malformed, never a silent person-less park; (4) undo stage supersedes open tokens BEFORE
+its nothing_to_* early returns (no dangling dead-end token); (5) `findUndoOfRun` — a
+re-stage after a successful undo now says "ALREADY undone", not "changed since the run";
+(6) resolve/undo manager pushes carry STRANDED tails; (7) both pin offers gate on nonzero
+committed rows (no offer against empty lists); (8) NONE_MESSAGE verb-neutral; (9)
+`assessStagedResolve` returns verdicts explicitly (cast removed — a future kernel verdict
+degrades to malformed, never falls through post-consume); (10) `planUndo` reads identity
+once per row (liveOrSkip returns it). Recorded follow-ups, deliberately NOT done here:
+batch planUndo's reads into ~4 queries (listJobsWithCustomerByIds precedent); merge the
+board endpoint's two kind reads into one `.in()`; factor the run_freeze/run_resolve
+stage/confirm skeleton + single-source horizon constants; TTL-parameterize the staleness
+kernel so undo_run's inline trio joins it; board.js per-day-section helper; shared
+ResolvePlan test-fixture builder; boardNotify manager-push helper; orderMoves pool-fallback
+loudness.*

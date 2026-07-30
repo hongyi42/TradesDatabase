@@ -90,7 +90,10 @@ export async function planUndo(tenantId: string, run: CommittedRun): Promise<Und
     return typeof d.previousAssignmentId === 'string' ? d.previousAssignmentId : null;
   };
 
-  // Per-call memo: identity/technician reads repeat across chains.
+  // Per-call memo for TECHNICIAN reads (the same tech repeats across
+  // chains); job/customer identity is read exactly once per row — liveOrSkip
+  // fetches it and hands it back so callers never re-read (review finding:
+  // the label fetch and the caller's fetch were duplicating 2 queries/row).
   const techByIdCache = new Map<string, Technician | null>();
   const techById = async (id: string): Promise<Technician | null> => {
     const hit = techByIdCache.get(id);
@@ -112,9 +115,16 @@ export async function planUndo(tenantId: string, run: CommittedRun): Promise<Und
   const tbdRestores: UndoTbdRestore[] = [];
   const skipped: FreezeSkip[] = [];
 
-  // The shared drift/pin gate on a chain's LIVE row. Returns the row when the
-  // restore may proceed; pushes the skip and returns null otherwise.
-  const liveOrSkip = async (liveId: string): Promise<Assignment | null> => {
+  // The shared drift/pin gate on a chain's LIVE row. Returns the row PLUS
+  // its identity (already fetched for the skip label — callers must not
+  // re-read it) when the restore may proceed; pushes the skip and returns
+  // null otherwise.
+  interface GatedRow {
+    live: Assignment;
+    customer: string | null;
+    jobTitle: string | null;
+  }
+  const liveOrSkip = async (liveId: string): Promise<GatedRow | null> => {
     const live = await getAssignmentForTenant(liveId, tenantId);
     if (!live) {
       skipped.push({ ref: liveId, label: liveId, reason: 'row not found — left alone' });
@@ -143,7 +153,7 @@ export async function planUndo(tenantId: string, run: CommittedRun): Promise<Und
       });
       return null;
     }
-    return live;
+    return { live, customer, jobTitle };
   };
 
   // ---- moved chains → inverse moves / tbd restores
@@ -164,9 +174,9 @@ export async function planUndo(tenantId: string, run: CommittedRun): Promise<Und
     }
     const liveId = tail.assignment_id as string;
     const predecessorId = prevOf(head) as string;
-    const live = await liveOrSkip(liveId);
-    if (!live) continue;
-    const { customer, jobTitle } = await identityFor(live);
+    const gated = await liveOrSkip(liveId);
+    if (!gated) continue;
+    const { live, customer, jobTitle } = gated;
     const label = skipLabel(customer, jobTitle);
     const prior = await getAssignmentForTenant(predecessorId, tenantId);
     if (!prior) {
@@ -236,13 +246,12 @@ export async function planUndo(tenantId: string, run: CommittedRun): Promise<Und
 
   // ---- booked rows (queue placements) → back to the loose bucket
   for (const ev of bookedEvents) {
-    const live = await liveOrSkip(ev.assignment_id as string);
-    if (!live) continue;
-    const { customer, jobTitle } = await identityFor(live);
+    const gated = await liveOrSkip(ev.assignment_id as string);
+    if (!gated) continue;
     unschedules.push({
-      assignmentId: live.id,
-      label: skipLabel(customer, jobTitle),
-      day: visitDay(live),
+      assignmentId: gated.live.id,
+      label: skipLabel(gated.customer, gated.jobTitle),
+      day: visitDay(gated.live),
     });
   }
 

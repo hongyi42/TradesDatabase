@@ -104,6 +104,24 @@ describe('assessStagedResolve (plan 2026-07-30: the generalized kernel)', () => 
     expect(assessStagedFreeze(detailOf(60_000), 7, NOW).verdict).toBe('open');
   });
 
+  test('per-MOVE shape is validated: a corrupt move row (null/empty/missing target fields) is MALFORMED — never a silent person-less park at commit', () => {
+    const base = resolvePlan().moves[0];
+    for (const corrupt of [
+      { ...base, toTechnicianRef: null }, // the executor would PARK this silently
+      { ...base, toTechnicianRef: '' },
+      { ...base, assignmentId: 42 },
+      { ...base, toStartTime: undefined },
+      'not-an-object',
+    ]) {
+      const detail = {
+        plan: resolvePlan({ moves: [corrupt as never] }),
+        scheduleVersion: 7,
+        stagedAt: new Date(NOW).toISOString(),
+      };
+      expect(assessStagedResolve(detail, 7, NOW).verdict).toBe('malformed');
+    }
+  });
+
   test('junk shapes are malformed for both kernels alike', () => {
     for (const junk of [null, 42, 'x', [], { plan: { placements: [], skipped: [], capacity: [] } }]) {
       expect(assessStagedResolve(junk, 7, NOW).verdict).toBe('malformed');
@@ -112,10 +130,11 @@ describe('assessStagedResolve (plan 2026-07-30: the generalized kernel)', () => 
 });
 
 describe('projectOpenProposal — freeze tokens (the shipped view, unchanged shape)', () => {
-  test('no open items → none, with chat-pointing copy', () => {
+  test('no open items → none, with verb-NEUTRAL chat-pointing copy (the none state cannot know which kind vanished)', () => {
     const v = projectOpenProposal([], [], 7, NOW);
     expect(v.state).toBe('none');
-    expect((v as { message: string }).message).toContain('run the freeze in chat');
+    expect((v as { message: string }).message).toContain('run the freeze');
+    expect((v as { message: string }).message).toContain('re-plan');
   });
 
   test('fresh + version-matched → open, with kind, weekday, pinnedCount, expiresAt — and NO confirm handle', () => {

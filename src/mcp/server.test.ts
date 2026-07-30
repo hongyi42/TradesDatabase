@@ -6606,6 +6606,20 @@ describe('undo_run (plan 2026-07-30 Phase 5: restore the latest run, 15-min toke
       expect((await callWith('undo_run', { confirmId: restage3.data.confirmId })).text).toContain(
         'confirmation not found',
       );
+      // SHAPELESS plan (deep-check arm, final-review finding): `{plan: {}}`
+      // is truthy — a shallow check would consume the token and then crash
+      // inside commitUndoRun on plan.run.kind. It must dismiss as malformed.
+      const restage4 = await callWith('undo_run', {});
+      await pg.query(
+        `update review_items set detail = jsonb_set(detail, '{plan}', '{}'::jsonb) where id = $1`,
+        [restage4.data.confirmId],
+      );
+      const shapeless = await callWith('undo_run', { confirmId: restage4.data.confirmId });
+      expect(shapeless.isError).toBe(true);
+      expect(shapeless.text).toContain('malformed');
+      expect((await callWith('undo_run', { confirmId: restage4.data.confirmId })).text).toContain(
+        'confirmation not found',
+      );
 
       // ---- CONFIRM: rows restored through the real verbs, minted ids in the
       // response, undo_committed in the ledger, replay closed.
@@ -6637,11 +6651,23 @@ describe('undo_run (plan 2026-07-30 Phase 5: restore the latest run, 15-min toke
       );
 
       // ---- The latest run is STILL the resolve (undo summaries don't count),
-      // but its rows are now undo-reminted → honest nothing_to_restore, and
-      // no token is minted for it.
+      // but its rows are now undo-reminted → honest "ALREADY undone" answer
+      // (final-review finding: without the undo-ledger check this read as
+      // "changed since the run", implying colleagues hand-edited), and no
+      // token is minted for it. A dangling open token from an earlier stage
+      // is dismissed even on this early-return path (final-review finding) —
+      // planted here to prove it.
+      const { upsertOpenReviewItem: plantToken } = await import('../db/reviewItems.js');
+      await plantToken({
+        tenantId: t2.id,
+        kind: 'pending_undo',
+        subjectRef: 'undo-mgr',
+        detail: { plan: {}, stagedAt: new Date().toISOString() },
+      });
       const spent = await callWith('undo_run', {});
       expect(spent.isError).toBe(false);
       expect(spent.data.status).toBe('nothing_to_restore');
+      expect(spent.data.note).toContain('ALREADY undone');
       expect((spent.data.skipped as unknown[]).length).toBeGreaterThanOrEqual(2);
       expect(spent.data.confirmId).toBeUndefined();
       const { rows: openTokens } = await pg.query(

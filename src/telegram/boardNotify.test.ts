@@ -387,13 +387,21 @@ describe('pollOnce', () => {
         undidKind: 'resolve',
         restored: 3,
         skipped: 1,
+        // Stranded counts ride into the push (final-review finding): a
+        // colleague manager's summary must not read routine when rows sit
+        // person-less / dropped to the bucket.
+        stranded: 1,
+        strandedTbd: 2,
       },
     });
     expect(await pollOnce(lastSeen)).toBe(1);
     expect(sentTo()).toEqual([
       {
         userId: '910000010',
-        text: 'Undo ran (by notify-mgr10): restored 3, skipped 1 — see the board.',
+        text:
+          'Undo ran (by notify-mgr10): restored 3, skipped 1 — see the board. ' +
+          'STRANDED: 1 visit(s) left with NOBODY assigned; 2 visit(s) dropped to the ' +
+          'loose bucket un-rebooked — fix by hand.',
       },
     ]);
     // Same single-manager hygiene as the resolve test above.

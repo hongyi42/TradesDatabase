@@ -81,6 +81,28 @@ export async function latestCommittedRun(tenantId: string): Promise<CommittedRun
   return { stamp, kind, eventId: Number(data.id) };
 }
 
+// The newest undo that targeted a given run, if any. latestCommittedRun
+// deliberately ignores undo summaries (undo targets only real runs), so
+// without this a re-stage after a successful undo would misattribute every
+// skip to hand edits ("changed since the run") instead of saying the run was
+// already rolled back (final-review finding).
+export async function findUndoOfRun(
+  tenantId: string,
+  undidStamp: string,
+): Promise<ScheduleEvent | null> {
+  const { data, error } = await getClient()
+    .from('schedule_events')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('kind', 'undo_committed')
+    .eq('detail->>undid', undidStamp)
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`findUndoOfRun failed: ${error.message}`);
+  return data;
+}
+
 // Every event a batch run stamped, oldest first (callers reverse for undo
 // order). PostgREST JSON filter on the detail key the run's commit wrote.
 export async function listEventsByRunStamp(

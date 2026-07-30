@@ -126,12 +126,28 @@ export interface StagedResolveDetail extends StagedFreezeDetail {
 // The freeze rule AND the resolve additions: a detail whose plan lacks a
 // `moves` array or a numeric `keptCount` is malformed for THIS kind (a
 // freeze-shaped detail staged under pending_resolve must dismiss, never
-// commit as a zero-move run).
+// commit as a zero-move run). Per-MOVE shape too (final-review finding):
+// the commit dereferences these fields row by row, and the executor's
+// null-target arm now means a corrupt `toTechnicianRef: null` would silently
+// PARK the visit person-less instead of failing loudly — a stored token is
+// unvalidated JSON, so the malformed gate is where bad rows must die.
 function validResolveDetail(detail: unknown): StagedResolveDetail | null {
   const d = validDetail(detail);
   if (!d) return null;
   const p = d.plan as { moves?: unknown; keptCount?: unknown };
   if (!Array.isArray(p.moves) || typeof p.keptCount !== 'number') return null;
+  for (const m of p.moves as Array<Record<string, unknown>>) {
+    if (!m || typeof m !== 'object') return null;
+    for (const k of [
+      'assignmentId',
+      'toTechnicianRef',
+      'toDate',
+      'toStartTime',
+      'toEndTime',
+    ] as const) {
+      if (typeof m[k] !== 'string' || m[k] === '') return null;
+    }
+  }
   return d as StagedResolveDetail;
 }
 
@@ -150,12 +166,21 @@ export function assessStagedResolve(
   if (!d) return { verdict: 'malformed' };
   const a = assessStagedFreeze(detail, latestVersion, nowMs);
   // validResolveDetail passing implies the freeze kernel cannot say
-  // malformed; expiry and version verdicts pass through unchanged.
+  // malformed; expiry and version verdicts pass through EXPLICITLY — never
+  // via a cast, so a verdict added to the kernel later degrades to a clean
+  // malformed dismissal here instead of compiling silently and falling
+  // through the caller's if-chain after the token is consumed
+  // (final-review finding).
   if (a.verdict === 'open') return { verdict: 'open', detail: d };
-  return a as StagedResolveAssessment;
+  if (a.verdict === 'expired' || a.verdict === 'stale') return a;
+  return { verdict: 'malformed' };
 }
 
-const NONE_MESSAGE = 'No freeze proposal is waiting. Ask the assistant to run the freeze in chat.';
+// Verb-neutral (final-review finding): the none state cannot know which kind
+// just vanished — a manager whose RE-SOLVE token was dismissed between the
+// pill probe and the sheet fetch must not be steered to the wrong verb.
+const NONE_MESSAGE =
+  'No proposal is waiting. Ask the assistant to run the freeze — or the re-plan — in chat.';
 
 export function projectOpenProposal(
   freezeItems: ReviewItem[],

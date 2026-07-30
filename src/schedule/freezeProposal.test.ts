@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'vitest';
 import {
   assessStagedFreeze,
+  assessStagedResolve,
   FREEZE_PROPOSAL_TTL_MS,
   projectFreezeProposal,
   type FreezeProposalView,
 } from './freezeProposal.js';
-import { PINNED_SKIP_REASON, type FreezePlan } from './freezeSolve.js';
+import { PINNED_SKIP_REASON, type FreezePlan, type ResolvePlan } from './freezeSolve.js';
 import type { ReviewItem } from '../db/reviewItems.js';
 
 // Pure-state matrix for the board's proposal view — no DB. The endpoint's
@@ -51,6 +52,64 @@ const staged = (agoMs: number, version = 7, p: FreezePlan = plan()) =>
     scheduleVersion: version,
     stagedAt: new Date(NOW - agoMs).toISOString(),
   });
+
+describe('assessStagedResolve (plan 2026-07-30: the generalized kernel)', () => {
+  const resolvePlan = (over: Partial<ResolvePlan> = {}): ResolvePlan => ({
+    ...plan(),
+    moves: [
+      {
+        assignmentId: 'a-mv',
+        jobId: 'job-mv',
+        customer: 'Move Marta',
+        jobTitle: 'panel check',
+        fromTechnicianRef: 'mike-c',
+        fromDate: '2026-08-04',
+        fromStart: '09:00',
+        fromEnd: '10:00',
+        toTechnicianRef: 'mike-c',
+        toDate: '2026-08-05',
+        toStartTime: '13:00',
+        toEndTime: '14:00',
+      },
+    ],
+    keptCount: 4,
+    ...over,
+  });
+  const detailOf = (agoMs: number, version = 7, p: ResolvePlan = resolvePlan()) => ({
+    plan: p,
+    scheduleVersion: version,
+    stagedAt: new Date(NOW - agoMs).toISOString(),
+  });
+
+  test('a valid resolve detail is open; expiry and version verdicts pass through the freeze kernel', () => {
+    const open = assessStagedResolve(detailOf(60_000), 7, NOW);
+    expect(open.verdict).toBe('open');
+    if (open.verdict === 'open') {
+      expect(open.detail.plan.moves).toHaveLength(1);
+      expect(open.detail.plan.keptCount).toBe(4);
+    }
+    expect(assessStagedResolve(detailOf(FREEZE_PROPOSAL_TTL_MS + 1), 7, NOW).verdict).toBe('expired');
+    expect(assessStagedResolve(detailOf(60_000, 3), 7, NOW)).toEqual({
+      verdict: 'stale',
+      pinnedVersion: 3,
+      currentVersion: 7,
+    });
+  });
+
+  test('a freeze-shaped detail (no moves/keptCount) is MALFORMED for the resolve kind — it must dismiss, never commit as a zero-move run', () => {
+    const freezeShaped = { plan: plan(), scheduleVersion: 7, stagedAt: new Date(NOW).toISOString() };
+    expect(assessStagedResolve(freezeShaped, 7, NOW).verdict).toBe('malformed');
+    // …while the FREEZE kernel still accepts a resolve detail (extra fields
+    // are inert to it) — byte-compatible in that direction.
+    expect(assessStagedFreeze(detailOf(60_000), 7, NOW).verdict).toBe('open');
+  });
+
+  test('junk shapes are malformed for both kernels alike', () => {
+    for (const junk of [null, 42, 'x', [], { plan: { placements: [], skipped: [], capacity: [] } }]) {
+      expect(assessStagedResolve(junk, 7, NOW).verdict).toBe('malformed');
+    }
+  });
+});
 
 describe('projectFreezeProposal', () => {
   test('no open items → none, with chat-pointing copy', () => {

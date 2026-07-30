@@ -16,6 +16,7 @@ import {
   type FreezePlacement,
   type FreezePlan,
   type FreezeSkip,
+  type ResolvePlan,
 } from './freezeSolve.js';
 import { weekdayLabel } from './fit.js';
 
@@ -89,6 +90,47 @@ export function assessStagedFreeze(
     return { verdict: 'stale', pinnedVersion: d.scheduleVersion, currentVersion: latestVersion };
   }
   return { verdict: 'open', detail: d };
+}
+
+// ---------------------------------------------------------------------------
+// Re-solve tokens (plan 2026-07-30): same TTL, same version pin, same
+// malformed rule — PLUS the plan must carry the resolve arrays. Built ON the
+// freeze kernel so the two verbs cannot drift on staleness semantics.
+
+export interface StagedResolveDetail extends StagedFreezeDetail {
+  plan: ResolvePlan;
+}
+
+// The freeze rule AND the resolve additions: a detail whose plan lacks a
+// `moves` array or a numeric `keptCount` is malformed for THIS kind (a
+// freeze-shaped detail staged under pending_resolve must dismiss, never
+// commit as a zero-move run).
+function validResolveDetail(detail: unknown): StagedResolveDetail | null {
+  const d = validDetail(detail);
+  if (!d) return null;
+  const p = d.plan as { moves?: unknown; keptCount?: unknown };
+  if (!Array.isArray(p.moves) || typeof p.keptCount !== 'number') return null;
+  return d as StagedResolveDetail;
+}
+
+export type StagedResolveAssessment =
+  | { verdict: 'malformed' }
+  | { verdict: 'expired' }
+  | { verdict: 'stale'; pinnedVersion: number; currentVersion: number }
+  | { verdict: 'open'; detail: StagedResolveDetail };
+
+export function assessStagedResolve(
+  detail: unknown,
+  latestVersion: number,
+  nowMs: number,
+): StagedResolveAssessment {
+  const d = validResolveDetail(detail);
+  if (!d) return { verdict: 'malformed' };
+  const a = assessStagedFreeze(detail, latestVersion, nowMs);
+  // validResolveDetail passing implies the freeze kernel cannot say
+  // malformed; expiry and version verdicts pass through unchanged.
+  if (a.verdict === 'open') return { verdict: 'open', detail: d };
+  return a as StagedResolveAssessment;
 }
 
 const NONE_MESSAGE = 'No freeze proposal is waiting. Ask the assistant to run the freeze in chat.';

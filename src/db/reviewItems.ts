@@ -25,6 +25,10 @@ export type ReviewKind =
   // The staged freeze plan (plan 4b-3): ONE open token per TENANT, kind-wide
   // (staging dismisses every open one first — see findOpenReviewItemsByKind).
   | 'pending_freeze'
+  // The staged re-solve plan (plan 2026-07-30): same one-per-tenant kind-wide
+  // rule; no cross-kind supersede with pending_freeze — committing either
+  // bumps the schedule version, which stales the other at confirm.
+  | 'pending_resolve'
   // Onboarding task-reminder (NOT a staged token): opened when a seat is
   // confirmed, auto-resolved by set_availability, dismissable as the explicit
   // "no availability yet" acknowledgment (user decision 2026-07-20).

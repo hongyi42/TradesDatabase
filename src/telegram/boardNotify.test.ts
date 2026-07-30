@@ -336,6 +336,39 @@ describe('pollOnce', () => {
     expect(push.text).toContain('• New visit on your schedule: 2026-11-04, 05:00–06:00.');
   });
 
+  test('a burst stamped by one RESOLVE run gets the re-plan header (plan 2026-07-30)', async () => {
+    await burst('notify-n1', '2026-11-14', 4, { resolveRun: '2026-11-01T08:30:00.000Z' });
+    expect(await pollOnce(lastSeen)).toBe(1);
+    const [push] = sentTo();
+    expect(push.text).toContain('The schedule re-plan updated your schedule:');
+    expect(push.text).not.toContain('freeze');
+  });
+
+  test('resolve_committed pushes the run summary to bound MANAGERS only', async () => {
+    const mgr = await insertTechnician({
+      tenantId,
+      ref: 'notify-mgr8',
+      displayName: 'Manager Eight',
+      tier: 'manager',
+    });
+    await updateTechnician(mgr.id, { telegram_user_id: '910000008', state: 'active' });
+    await appendScheduleEvent({
+      tenantId,
+      kind: 'resolve_committed',
+      actorRef: 'notify-mgr8',
+      detail: { resolveRun: '2026-11-02T08:00:00.000Z', moved: 4, placed: 2, kept: 7 },
+    });
+    expect(await pollOnce(lastSeen)).toBe(1);
+    expect(sentTo()).toEqual([
+      {
+        userId: '910000008',
+        text: 'Re-solve ran (by notify-mgr8): moved 4, placed 2, kept 7 — see the board.',
+      },
+    ]);
+    // Deactivate so later manager-push tests still see exactly ONE manager.
+    await pg.query("update technicians set state = 'offboarded' where ref = 'notify-mgr8'");
+  });
+
   test('a mixed burst (freeze rows + a manual edit that raced in) keeps the generic header', async () => {
     await burst('notify-n1', '2026-11-05', 3, { freezeRun: '2026-11-01T09:00:00.000Z' });
     await book({ technicianRef: 'notify-n1', date: '2026-11-05', startTime: '10:00', endTime: '11:00' });

@@ -800,37 +800,51 @@ EOF
   # confirmation-doctrine idiom): the ritual's TEXT will evolve with the
   # freeze, and an append-once grep would pin boxes to the first version
   # (template-drift trap). Plan 4b-3 Phase 5.
-  log "freeze-ritual block (§0h — run_freeze proposes, the manager decides; refreshed per run)"
+  log "freeze-ritual block (§0h — run_freeze/run_resolve propose + undo_run restores, the manager decides; refreshed per run)"
   if [ -n "$cid" ]; then
     if docker exec "$cid" grep -q "The freeze ritual" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
       docker exec -u sandbox "$cid" sh -c 'awk '\''/^## The freeze ritual/{skip=1; next} skip && /^## /{skip=0} !skip'\'' /sandbox/.openclaw/workspace/AGENTS.md > /tmp/agents-md.tmp && cat /tmp/agents-md.tmp > /sandbox/.openclaw/workspace/AGENTS.md && rm -f /tmp/agents-md.tmp'
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## The freeze ritual — propose, never autopilot (host-managed; refreshed; updated 2026-07-27)
+## The freeze ritual — propose, never autopilot (covers run_freeze, run_resolve, undo_run; host-managed; refreshed; updated 2026-07-30)
 
 run_freeze auto-places the loose work (open jobs with no visit, visits with nobody attached,
-time-TBD visits) by proposing a WHOLE plan. It is always two-step, and the second step is
-always a HUMAN's yes:
+time-TBD visits) by proposing a WHOLE plan. run_resolve is its sibling re-optimizer: the same
+proposal ritual, but already-placed UNPINNED visits may also MOVE (promises limit movement —
+a promised day is kept, a promised time never moves; technicianRef/onDate narrow who/what may
+move). Both are always two-step, and the second step is always a HUMAN's yes:
 
-1. When a manager asks to run the freeze, call run_freeze and give a SHORT summary: the
-   counts (placed / skipped / pinned untouched), the one or two most consequential skips,
-   the pin line (how many pinned visits were left untouched — "pin it" / set_visit_locks is
-   how the manager protects a visit from the freeze), and ALWAYS end with the result's
-   proposal board link line — the full plan (every placement, every skip with its reason,
+1. When a manager asks to run the freeze or the re-solve, call the tool and give a SHORT
+   summary: the counts (for a freeze: placed / skipped / pinned untouched; for a re-solve:
+   moves / placed / kept / skipped / pinned untouched), the one or two most consequential
+   changes or skips, the pin line ("pin it" / set_visit_locks is how the manager protects a
+   visit from automatic scheduling), and ALWAYS end with the result's proposal board link
+   line — the full plan (every move from→to, every placement, every skip with its reason,
    capacity) lives on the board, not in chat. ONLY if the result carries no proposalLink
-   field, show the ENTIRE proposal in chat instead (placements with
-   weekday/date/time/who/customer, skips with reasons, committed-vs-available minutes).
-2. NEVER confirm a freeze without the manager's explicit yes IN THE CONVERSATION. A
-   scheduled firing is a PROPOSAL + reminder, never an unattended commit: when a cron job
-   runs the freeze, present the proposal and STOP — the manager reads it, pins/unpins
-   anything they want protected, then says yes (confirm with ONLY confirmId) or ignores it
-   (the proposal expires in 12 hours; a later run supersedes it).
-3. A recurring freeze ("run the freeze every Friday morning") rides the normal cron rules
+   field, show the ENTIRE proposal in chat instead (moves with from→to/weekday/who,
+   placements with weekday/date/time/who/customer, skips with reasons,
+   committed-vs-available minutes).
+2. NEVER confirm a freeze or re-solve without the manager's explicit yes IN THE
+   CONVERSATION. A scheduled firing is a PROPOSAL + reminder, never an unattended commit:
+   when a cron job runs one, present the proposal and STOP — the manager reads it,
+   pins/unpins anything they want protected, then says yes (confirm with ONLY confirmId) or
+   ignores it (the proposal expires in 12 hours; a later run supersedes it).
+3. After EITHER commit, the reply tells you to OFFER pinning what the run just scheduled —
+   ask once ("want these pinned so future re-plans leave them alone?"); on yes call
+   set_visit_locks with exactly the assignmentIds listed in the commit reply (they are the
+   MINTED ids — never re-use ids from the earlier proposal).
+4. undo_run is the safety net, same two-step shape, tighter clock: it restores the LATEST
+   committed freeze/re-solve from its own records (no solver — moved visits return to their
+   pre-run slot and person, run placements return to the loose bucket; anything the manager
+   changed or pinned since is skipped and listed, never force-reverted). The staged undo
+   expires in 15 MINUTES and only the latest run is reachable. Present the restore list,
+   get the explicit yes, confirm with ONLY confirmId. Never run it unasked.
+5. A recurring freeze ("run the freeze every Friday morning") rides the normal cron rules
    (§ Scheduled / recurring work): explicit ask, one named task, sane cadence — that phrase
-   is the canonical legitimate recurring job. NOTE: cron jobs are wiped by sandbox
-   rebuilds — after a rebuild, re-create the firm's freeze schedule once the manager
-   confirms it is still wanted.
+   is the canonical legitimate recurring job. Recurring RE-SOLVES follow the same rules.
+   NOTE: cron jobs are wiped by sandbox rebuilds — after a rebuild, re-create the firm's
+   schedule jobs once the manager confirms they are still wanted.
 EOF
     ok "freeze-ritual block refreshed in ${agent}'s AGENTS.md"
   else

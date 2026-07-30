@@ -433,6 +433,41 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   the horizon-wide re-optimizer where every unpinned visit is movable and promise level
   sets the degree of freedom ('time' immovable, 'day' slides within its day, 'none' free);
   it subsumes the deferred 3c reflow_day sketch. Research cycle started 2026-07-30.
+  **RE-SOLVE + UNDO BUILT 2026-07-30 (branch `feature-run-resolve`, plan
+  `thoughts/shared/plans/2026-07-30-run-resolve-reoptimizer.md`; every phase
+  adversarially reviewed; PR/rollout pending):** `run_resolve` = the freeze's sibling —
+  every UNPINNED confirmed placed future visit becomes a movable shipment (hard window =
+  promise-graded freedom: 'none' → horizon, 'day' → its promised day; 'time'/'time_only'
+  stay fixed context in v1) with a SOFT window pinned at its current slot so displacement
+  is priced (`DISRUPTION_COST_PER_HOUR` 1, `TECH_CHANGE_COST` 2 via costsPerVehicle —
+  emergent: day hops cost ~24, same-day shuffles are cheap); queues drain in the same
+  solve (resolve ⊇ freeze); un-moved rows report as KEPT. **Batch-move commit ordering**
+  (the crux): `orderMoves` toposorts vacate-before-arrive edges; a true cycle (strict
+  swap) PARKS its lowest-id member person-less at its current times (guard-exempt), the
+  rest commit in order, and the park re-attaches LAST **against its REMINTED post-park
+  id** (moves cancel+remint — the pre-park id is a cancelled row); un-reattached parks
+  surface as `strandedParks`, never routine skips. Token = `pending_resolve` through the
+  SAME 12h staleness kernel (version pinned BEFORE the solve); the board proposal
+  view/pill/sheet are now kind-agnostic with a Moves section (from→to weekday labels,
+  techChange only when the person changes, server-composed). Both commit replies now end
+  with the **pin OFFER** (unconditional — partial commits too): one manager yes →
+  `set_visit_locks` with the MINTED ids the reply carries (staged ids are cancelled rows
+  post-commit — passing them would abort the pin batch). **`undo_run`** = restore, never
+  re-optimize: no solver; the run-stamped ledger + cancelled predecessor rows ARE the
+  memory. planUndo COLLAPSES same-run `previousAssignmentId` chains (a park+attach swap =
+  two events, one visit) to the live final row + true pre-run state; drift/pinned/
+  gone-technician rows skip with reasons, never force-revert. Commit order: ALL
+  unschedules first (placements landed in freed gaps), inverse moves through the SHARED
+  batch executor (ordering + park + promise belt), time-TBD rebooks last; tbd rows
+  vacated but never re-booked surface as `strandedUnplaced` ("NOT unchanged — job in the
+  loose bucket"). `pending_undo` token: 15-MIN TTL (send_email idiom), version read
+  BEFORE the plan reads, confirm re-checks version AND latest-run identity, latest run
+  only (undo summaries aren't candidates — a spent run honestly reports
+  nothing_to_restore). Manager surface 37 → **39 tools** (`run_resolve`, `undo_run`);
+  suite 855 → 891. Rollout classes when merged: deploy + wire pass ×5 (§0h ritual now
+  covers all three verbs) + gateway restarts ×5; live E2Es per the plan's Phase 6
+  (stage-only s2, scoped commit on manager-sam, undo ride-along, digest headers, board
+  Re-plan phone check).
   **REALISTIC WA SEED 2026-07-28 (owner-authorized pilot write; scratchpad scripts
   seed-wa-visits.mjs + seed-wa-resume.mjs):** Default Tenant now models a real firm —
   all 37 customers carry real, geocode-verified street-level Puget Sound addresses

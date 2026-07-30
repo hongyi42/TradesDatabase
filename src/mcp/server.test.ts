@@ -1712,7 +1712,7 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
     );
     try {
       // The full manager surface: every base spine tool EXCEPT get_schedule
-      // (technician route view, removed 2026-07-19) + the 24 admin tools —
+      // (technician route view, removed 2026-07-19) + the 25 admin tools —
       // the count the runbook/Box_Setup_Stuff verification steps cite.
       const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
       expect(mgrTools).toContain('reactivate_technician_seat');
@@ -2133,7 +2133,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(38); // base minus get_schedule + 24 admin
+        expect(mgrTools).toHaveLength(38); // base minus get_schedule + 25 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -6170,7 +6170,16 @@ describe('run_resolve (plan 2026-07-30: movable placed visits, stage → confirm
     }>;
   };
   const forcedMoves = new Map<string, { vehicleLabel: string; startTime: string }>();
+  // Armed by the race test: fires ONCE, inside the solve — a booking that
+  // lands mid-solve must stale the token, which only holds if the version pin
+  // was taken BEFORE the solve (plan requirement: race the pin, not the stage).
+  let raceMidSolve: (() => Promise<void>) | null = null;
   const resolveRoi = async (_url: string, _token: string, body: unknown) => {
+    if (raceMidSolve) {
+      const fire = raceMidSolve;
+      raceMidSolve = null;
+      await fire();
+    }
     const model = (body as { model: RoiModel }).model;
     const routes = model.vehicles.map((v) => ({
       vehicleLabel: v.label,
@@ -6283,7 +6292,12 @@ describe('run_resolve (plan 2026-07-30: movable placed visits, stage → confirm
       expect(typeof v1Move?.fromWeekday).toBe('string');
       expect(typeof v1Move?.toWeekday).toBe('string');
       expect(moves.find((m) => m.assignmentId === v2.data.assignmentId)).toBeUndefined();
+      expect(Array.isArray(staged.data.placements)).toBe(true); // queues ride the same stage
       expect(staged.data.keptCount as number).toBeGreaterThanOrEqual(1);
+      // Empty-string args are REJECTED, never coerced-to-absent (freeze parity).
+      const emptyScope = await callWith('run_resolve', { technicianRef: '' });
+      expect(emptyScope.isError).toBe(true);
+      expect(emptyScope.text).toContain('non-empty');
       expect(staged.data.note).toContain('NOTHING is moved or booked yet');
       expect(staged.data.note).toContain('SHORT summary');
       expect(staged.data.note).toContain('If this result carries no proposalLink field');
@@ -6313,6 +6327,28 @@ describe('run_resolve (plan 2026-07-30: movable placed visits, stage → confirm
       const drifted = await callWith('run_resolve', { confirmId: scoped.data.confirmId });
       expect(drifted.isError).toBe(true);
       expect(drifted.text).toContain('schedule changed');
+      // Dismissed, not just refused — a replay finds nothing (token closure).
+      const driftReplay = await callWith('run_resolve', { confirmId: scoped.data.confirmId });
+      expect(driftReplay.text).toContain('confirmation not found');
+
+      // ---- Version pin taken BEFORE the solve: a booking landing MID-SOLVE
+      // (inside the transport fake) must stale the token. A pin taken after
+      // the solve would swallow this booking and confirm a blind plan.
+      const raceJob = await createJob({
+        tenantId, customerId: casa.id, title: 'mid-solve race', status: 'open',
+      });
+      raceMidSolve = async () => {
+        const { bookVisit: rawBook } = await import('../schedule/booking.js');
+        await rawBook({
+          tenantId, jobId: raceJob.id, technicianRef: 'rz-tech',
+          date: relDay(11), startTime: '07:00', endTime: '07:30', actorRef: 'race-probe',
+        });
+      };
+      const racedStage = await callWith('run_resolve', {});
+      expect(racedStage.data.status).toBe('needs_confirmation');
+      const racedConfirm = await callWith('run_resolve', { confirmId: racedStage.data.confirmId });
+      expect(racedConfirm.isError).toBe(true);
+      expect(racedConfirm.text).toContain('schedule changed');
 
       // ---- Malformed: a freeze-shaped detail under pending_resolve dismisses.
       const { upsertOpenReviewItem: upsertItem } = await import('../db/reviewItems.js');
@@ -6329,6 +6365,8 @@ describe('run_resolve (plan 2026-07-30: movable placed visits, stage → confirm
       const malformed = await callWith('run_resolve', { confirmId: bogus.id });
       expect(malformed.isError).toBe(true);
       expect(malformed.text).toContain('malformed');
+      const malformedReplay = await callWith('run_resolve', { confirmId: bogus.id });
+      expect(malformedReplay.text).toContain('confirmation not found');
 
       // ---- 12h expiry (backdated stagedAt).
       const oldStage = await callWith('run_resolve', {});
@@ -6340,6 +6378,8 @@ describe('run_resolve (plan 2026-07-30: movable placed visits, stage → confirm
       const expired = await callWith('run_resolve', { confirmId: oldStage.data.confirmId });
       expect(expired.isError).toBe(true);
       expect(expired.text).toContain('expired (12 hours)');
+      const expiredReplay = await callWith('run_resolve', { confirmId: oldStage.data.confirmId });
+      expect(expiredReplay.text).toContain('confirmation not found');
 
       // ---- Fresh stage → CONFIRM: the move commits through the real verbs.
       const freezeSummariesBefore = (

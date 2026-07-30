@@ -4860,15 +4860,17 @@ async function dispatch(
             'what landed and what did not. Re-running the freeze is safe: placed visits leave ' +
             'the queues.'
           : 'Committed. Tell the manager what was placed (count + the placements), anything ' +
-            'skipped at commit, and that technicians were notified of their new visits. ' +
-            'None of the placed visits are pinned — OFFER to pin them so future freeze/' +
-            're-plan runs leave them alone: on the manager\'s yes call set_visit_locks ' +
-            'with exactly the assignmentIds listed in placements.') +
+            'skipped at commit, and that technicians were notified of their new visits.') +
           (commitWarnings.length > 0
             ? ' RELAY every entry in warnings — each flags a placement that landed on time ' +
               'off or outside a working pattern (the schedule may have changed after the ' +
               'plan was solved); the manager may want to move those.'
-            : ''),
+            : '') +
+          // Unconditional (review finding: a PARTIAL commit still has real
+          // committed placements worth protecting): none are pinned — offer.
+          ' OFFER to pin the committed placements so future freeze/re-plan runs leave ' +
+          "them alone: on the manager's yes call set_visit_locks with exactly the " +
+          'assignmentIds listed in placements.',
       };
     }
     case 'run_resolve': {
@@ -4885,10 +4887,12 @@ async function dispatch(
         ...(deps.roiMintToken ? { mintToken: deps.roiMintToken } : {}),
       };
       if (!confirmId) {
-        // STAGE. Reject non-string args (the find_slots rule).
+        // STAGE. Reject non-string AND empty-string args (the run_freeze
+        // rule): '' must never silently take the default horizon or — worse —
+        // stage an UNSCOPED movable plan when the caller meant to narrow.
         for (const k of ['throughDate', 'technicianRef', 'onDate']) {
-          if (args[k] !== undefined && typeof args[k] !== 'string') {
-            throw new Error(`${k} must be a string`);
+          if (args[k] !== undefined && (typeof args[k] !== 'string' || !str(k))) {
+            throw new Error(`${k} must be a non-empty string`);
           }
         }
         const tenant = await getTenant(tenantId);

@@ -198,8 +198,8 @@ assembly; no writes.
   section all misreport cross-tech moves). Returns `ResolvePlan`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] New tests (`freezeSolve.test.ts` idiom, injected `RoiTransport` fake): partition
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass (855 + 5 key-gated skips)
+- [x] New tests (`freezeSolve.test.ts` idiom, injected `RoiTransport` fake): partition
       matrix (pinned / time-promised / day-0-past / scope args / coord-less → fixed+skip);
       movable shipment shape (soft window at current start, hard window per promise,
       costsPerVehicle on other techs only, penalty 1M); parse: changed row → move,
@@ -271,11 +271,11 @@ walker. Stop-on-failure; `resolveRun` stamps; `resolve_committed` summary event.
   `` `Re-solve ran (by ${actor}): moved M, placed P, kept K — see the board.` ``
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] `orderMoves` unit tests: chain orders correctly; 2-cycle parks exactly one;
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass (868 + 5 key-gated skips)
+- [x] `orderMoves` unit tests: chain orders correctly; 2-cycle parks exactly one;
       **same-tech overlapping shift (09:00→09:30) yields NO park and no self-edge**;
       disjoint moves keep input order; cross-tech moves need no edges.
-- [ ] Commit integration tests (local stack, real verbs): chain (A into B's vacated slot)
+- [x] Commit integration tests (local stack, real verbs): chain (A into B's vacated slot)
       commits in-order with zero overlap errors; swap commits via park (read back: both rows
       at targets, ledger shows park+attach **on the reminted id**, nothing stranded);
       promiseBroken fixture skips + reports; mid-batch failure stops run, prior rows booked
@@ -342,14 +342,14 @@ Stage/confirm handler + tool definition + token kind, mirroring `run_freeze`
   param — one open proposal, one board view).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] server.test.ts (freeze suite idiom, fake transport): stage returns moves+placements+
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass (873 + 5 key-gated skips)
+- [x] server.test.ts (freeze suite idiom, fake transport): stage returns moves+placements+
       kept + confirmId; bad `technicianRef`/`onDate` rejected; confirm books moves (read
       back real rows); stale/expired/malformed dismiss with freeze-parity copy; version pin
       pinned BEFORE solve (test races a booking); stage result carries `proposalLink` +
       fused `boardNote`; resolve_review dismissed cancels the token; BOTH commit notes pin
       the offer copy ("set_visit_locks with exactly those ids" pinned verbatim).
-- [ ] freezeProposal.test.ts: kernel parity matrix for resolve details incl. moves-less
+- [x] freezeProposal.test.ts: kernel parity matrix for resolve details incl. moves-less
       detail → malformed; freeze assessments unchanged.
 
 ### Live verification (agent-executable)
@@ -419,6 +419,10 @@ re-solve) from its ledger trail, commit on yes through the normal verbs. No solv
 - `UnscheduleVisitInput` gains `eventDetailExtra?: Json` (spread into the `'cancelled'`
   event detail at `:886-892`, computed keys win) — without it the undo's unschedule steps
   cannot stamp `{ undoRun }` and the run's forensics/tests are unsatisfiable.
+- `moveVisit`'s `move_failed` event detail also spreads `input.eventDetailExtra`
+  (`:797-803` builds `{ toDay, reason }` only today) — a resolve/undo-run stranding's
+  ledger row must carry the run stamp or `listEventsByRunStamp` misses it (Phase-2 review
+  flag-forward).
 
 **`src/schedule/undoRun.ts`** (new)
 - `planUndo(tenantId, run)`: **collapse first** — group the run's `moved` events per visit
@@ -506,6 +510,11 @@ K — see the board.` ``
   paragraph and the pin-offer sentence.
 - **`docs/engineering-memory.md`** — feature status + the ordering/park + undo-restore
   design notes.
+- **Tool-surface count pins (Phase-3 review flag-forward):** the manager surface is now
+  **38 tools** (was 37) — update `docs/nemoclaw-tech-agent.md:102` ("24 seat/lifecycle+
+  scheduling tools, for a 37-tool manager surface" → 26/39 after Phase 5 adds undo_run;
+  recount at close-out) and the engineering-memory surface line; the Box_Setup_Stuff
+  verification steps cite the same count.
 
 ### Automated verification
 - [ ] Full gates green on merged main; `npm run build`.

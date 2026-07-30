@@ -22,14 +22,25 @@ import { moveVisit, previewMoveVisit, type MoveVisitInput } from './booking.js';
 import { commitFreezePlan, type FreezeCommittedRow } from './freezeCommit.js';
 import { skipLabel, type FreezeSkip, type ResolveMove, type ResolvePlan } from './freezeSolve.js';
 
+// The executor's row shape: a solver move, except the TARGET may be nobody
+// (undo_run restores a pre-run person-less park with toTechnicianRef null —
+// plan 2026-07-30 Phase 5). ResolveMove is assignable, so the resolve path
+// changes not at all. A null-target move claims no technician slot (the DB
+// guard ignores NULL rows), so it never grows edges and never lands on a
+// cycle — orderMoves needs no null handling beyond the === below.
+export type BatchMove = Omit<ResolveMove, 'toTechnicianRef'> & {
+  toTechnicianRef: string | null;
+};
+
 export interface OrderedMoves {
-  ordered: ResolveMove[]; // dependency order; disjoint moves keep input order
-  parked: ResolveMove[]; // cycle members — park first, re-attach after `ordered`
+  ordered: BatchMove[]; // dependency order; disjoint moves keep input order
+  parked: BatchMove[]; // cycle members — park first, re-attach after `ordered`
 }
 
 // HH:MM strings compare lexicographically (fixed width) — interval overlap
 // needs no date math.
-const targetHitsCurrent = (m: ResolveMove, n: ResolveMove): boolean =>
+const targetHitsCurrent = (m: BatchMove, n: BatchMove): boolean =>
+  m.toTechnicianRef !== null &&
   m.toTechnicianRef === n.fromTechnicianRef &&
   m.toDate === n.fromDate &&
   m.toStartTime < n.fromEnd &&
@@ -41,15 +52,15 @@ const targetHitsCurrent = (m: ResolveMove, n: ResolveMove): boolean =>
 // verb's own pre-check already excludes the moved row (booking.ts excludeId);
 // treating M==N as a cycle would pointlessly park it. Target-vs-target
 // conflicts cannot exist (the solver never double-books) — no handling.
-export function orderMoves(moves: ResolveMove[]): OrderedMoves {
-  const waitsOn = new Map<ResolveMove, Set<ResolveMove>>(moves.map((m) => [m, new Set()]));
+export function orderMoves(moves: BatchMove[]): OrderedMoves {
+  const waitsOn = new Map<BatchMove, Set<BatchMove>>(moves.map((m) => [m, new Set()]));
   for (const m of moves) {
     for (const n of moves) {
       if (m !== n && targetHitsCurrent(m, n)) waitsOn.get(m)?.add(n);
     }
   }
-  const ordered: ResolveMove[] = [];
-  const parked: ResolveMove[] = [];
+  const ordered: BatchMove[] = [];
+  const parked: BatchMove[] = [];
   let remaining = [...moves];
   while (remaining.length > 0) {
     const ready = remaining.filter((m) => (waitsOn.get(m)?.size ?? 0) === 0);
@@ -68,11 +79,11 @@ export function orderMoves(moves: ResolveMove[]): OrderedMoves {
     // spurious moved-off/landed push pair (review finding). Parking vacates
     // the member's CURRENT slot before any ordered move runs, so every edge
     // through it dissolves.
-    const onCycle = (start: ResolveMove): boolean => {
-      const seen = new Set<ResolveMove>();
+    const onCycle = (start: BatchMove): boolean => {
+      const seen = new Set<BatchMove>();
       const stack = [...(waitsOn.get(start) ?? [])].filter((n) => remaining.includes(n));
       while (stack.length > 0) {
-        const n = stack.pop() as ResolveMove;
+        const n = stack.pop() as BatchMove;
         if (n === start) return true;
         if (seen.has(n)) continue;
         seen.add(n);
@@ -93,7 +104,7 @@ export function orderMoves(moves: ResolveMove[]): OrderedMoves {
 }
 
 export interface ExecutedMove {
-  move: ResolveMove;
+  move: BatchMove;
   assignmentId: string; // the resulting row's id (moves remint)
   warning?: string; // the verb's advisory — relayed, never swallowed
 }
@@ -106,7 +117,7 @@ export interface BatchMoveResult {
   // at its original times. Surfaced by id so the caller's report can name
   // them — a strand must never hide inside a routine skip list (review
   // finding). assignmentId = the LIVE (post-park) row.
-  strandedParks: { move: ResolveMove; assignmentId: string }[];
+  strandedParks: { move: BatchMove; assignmentId: string }[];
   // Non-null = the run STOPPED here: everything in `moved` IS moved, this row
   // and everything after it are untouched (except a stranding — see header).
   failed: { ref: string; label: string; error: string } | null;
@@ -121,7 +132,7 @@ export interface BatchMoveResult {
 // its pre-check — the run then stops there, honestly.
 export async function executeOrderedMoves(
   tenantId: string,
-  moves: ResolveMove[],
+  moves: BatchMove[],
   actorRef: string,
   reason: string,
   eventDetailExtra: Json,
@@ -129,10 +140,10 @@ export async function executeOrderedMoves(
   const { ordered, parked } = orderMoves(moves);
   const moved: ExecutedMove[] = [];
   const skippedAtCommit: FreezeSkip[] = [];
-  const parkedIds = new Map<ResolveMove, string>();
-  const reattached = new Set<ResolveMove>();
+  const parkedIds = new Map<BatchMove, string>();
+  const reattached = new Set<BatchMove>();
 
-  const fail = (m: ResolveMove, err: unknown): BatchMoveResult['failed'] => ({
+  const fail = (m: BatchMove, err: unknown): BatchMoveResult['failed'] => ({
     ref: m.assignmentId,
     label: skipLabel(m.customer, m.jobTitle),
     error: err instanceof Error ? err.message : String(err),
@@ -167,7 +178,7 @@ export async function executeOrderedMoves(
 
   // Ordered moves, then the parked rows' re-attaches (their targets are free
   // once everything else has landed) — against the REMINTED post-park ids.
-  const sequence: { move: ResolveMove; rowId: string; isParked: boolean }[] = [
+  const sequence: { move: BatchMove; rowId: string; isParked: boolean }[] = [
     ...ordered.map((move) => ({ move, rowId: move.assignmentId, isParked: false })),
     ...parked.map((move) => ({ move, rowId: parkedIds.get(move) as string, isParked: true })),
   ];
@@ -178,7 +189,11 @@ export async function executeOrderedMoves(
       date: move.toDate,
       startTime: move.toStartTime,
       endTime: move.toEndTime,
-      technicianRef: move.toTechnicianRef,
+      // A null target (undo restoring a pre-run person-less row) is a PARK,
+      // not a reassignment — the verb's unassign arm, guard-exempt.
+      ...(move.toTechnicianRef === null
+        ? { unassign: true }
+        : { technicianRef: move.toTechnicianRef }),
       reason,
       eventDetailExtra,
       actorRef,
@@ -217,7 +232,7 @@ export interface ResolveCommitResult {
   movedRows: ExecutedMove[];
   committed: FreezeCommittedRow[]; // queue placements (freeze walker)
   skippedAtCommit: FreezeSkip[];
-  strandedParks: { move: ResolveMove; assignmentId: string }[]; // see BatchMoveResult
+  strandedParks: { move: BatchMove; assignmentId: string }[]; // see BatchMoveResult
   failed: { ref: string; label: string; error: string } | null;
 }
 

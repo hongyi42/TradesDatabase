@@ -369,6 +369,37 @@ describe('pollOnce', () => {
     await pg.query("update technicians set state = 'offboarded' where ref = 'notify-mgr8'");
   });
 
+  test('undo_committed pushes the restore summary to bound MANAGERS only (plan 2026-07-30 Phase 5)', async () => {
+    const mgr = await insertTechnician({
+      tenantId,
+      ref: 'notify-mgr10',
+      displayName: 'Manager Ten',
+      tier: 'manager',
+    });
+    await updateTechnician(mgr.id, { telegram_user_id: '910000010', state: 'active' });
+    await appendScheduleEvent({
+      tenantId,
+      kind: 'undo_committed',
+      actorRef: 'notify-mgr10',
+      detail: {
+        undoRun: '2026-11-02T09:00:00.000Z',
+        undid: '2026-11-02T08:00:00.000Z',
+        undidKind: 'resolve',
+        restored: 3,
+        skipped: 1,
+      },
+    });
+    expect(await pollOnce(lastSeen)).toBe(1);
+    expect(sentTo()).toEqual([
+      {
+        userId: '910000010',
+        text: 'Undo ran (by notify-mgr10): restored 3, skipped 1 — see the board.',
+      },
+    ]);
+    // Same single-manager hygiene as the resolve test above.
+    await pg.query("update technicians set state = 'offboarded' where ref = 'notify-mgr10'");
+  });
+
   test('a mixed burst (freeze rows + a manual edit that raced in) keeps the generic header', async () => {
     await burst('notify-n1', '2026-11-05', 3, { freezeRun: '2026-11-01T09:00:00.000Z' });
     await book({ technicianRef: 'notify-n1', date: '2026-11-05', startTime: '10:00', endTime: '11:00' });

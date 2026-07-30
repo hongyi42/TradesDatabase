@@ -799,7 +799,10 @@ export async function moveVisit(input: MoveVisitInput): Promise<MoveVisitResult>
         assignmentId: r.old.id,
         kind: 'move_failed',
         actorRef: input.actorRef,
-        detail: { toDay: input.date, reason: why },
+        // The run stamp rides along (Phase-2 review flag-forward): a
+        // resolve/undo-run stranding's ledger row must be findable by
+        // listEventsByRunStamp like every other row the run wrote.
+        detail: { ...extraDetail(input.eventDetailExtra), toDay: input.date, reason: why },
       });
     } catch {
       /* advisory */
@@ -835,6 +838,10 @@ export interface UnscheduleVisitInput {
   tenantId: string;
   assignmentId: string;
   reason: string;
+  // Extra ledger-event detail — same contract as Book/MoveVisitInput's. The
+  // undo (plan 2026-07-30 Phase 5) stamps { undoRun } here; without it the
+  // run's unschedule steps would be invisible to listEventsByRunStamp.
+  eventDetailExtra?: Json;
   actorRef: string;
 }
 
@@ -888,7 +895,11 @@ export async function unscheduleVisit(input: UnscheduleVisitInput): Promise<Assi
     assignmentId: cancelled.id,
     kind: 'cancelled',
     actorRef: input.actorRef,
-    detail: { day: visitDay(cancelled), reason: input.reason },
+    detail: {
+      ...extraDetail(input.eventDetailExtra), // computed keys below win clashes
+      day: visitDay(cancelled),
+      reason: input.reason,
+    },
   });
   return cancelled;
 }

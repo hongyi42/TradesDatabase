@@ -49,6 +49,55 @@ export async function latestScheduleVersion(tenantId: string): Promise<number> {
   return data ? Number(data.id) : 0;
 }
 
+// The newest committed batch run — undo_run's subject (plan 2026-07-30
+// Phase 5). Keys on the run SUMMARY event; recorded limitation: a run whose
+// best-effort summary append failed is invisible here (not undoable via the
+// verb — manual ledger recovery). A newest summary whose detail lost its
+// stamp returns null rather than silently falling back to an OLDER run:
+// undo targets only the latest run, and reaching past a broken summary
+// would undo the wrong one.
+export type CommittedRunKind = 'freeze' | 'resolve';
+export interface CommittedRun {
+  stamp: string; // detail.freezeRun / detail.resolveRun — the run's identity
+  kind: CommittedRunKind;
+  eventId: number; // the summary event's id (the confirm-time equality pin)
+}
+
+export async function latestCommittedRun(tenantId: string): Promise<CommittedRun | null> {
+  const { data, error } = await getClient()
+    .from('schedule_events')
+    .select()
+    .eq('tenant_id', tenantId)
+    .in('kind', ['freeze_committed', 'resolve_committed'])
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`latestCommittedRun failed: ${error.message}`);
+  if (!data) return null;
+  const kind: CommittedRunKind = data.kind === 'freeze_committed' ? 'freeze' : 'resolve';
+  const detail = (data.detail ?? {}) as Record<string, unknown>;
+  const stamp = detail[kind === 'freeze' ? 'freezeRun' : 'resolveRun'];
+  if (typeof stamp !== 'string' || !stamp) return null; // stamp-less summary — not undoable
+  return { stamp, kind, eventId: Number(data.id) };
+}
+
+// Every event a batch run stamped, oldest first (callers reverse for undo
+// order). PostgREST JSON filter on the detail key the run's commit wrote.
+export async function listEventsByRunStamp(
+  tenantId: string,
+  key: 'freezeRun' | 'resolveRun',
+  stamp: string,
+): Promise<ScheduleEvent[]> {
+  const { data, error } = await getClient()
+    .from('schedule_events')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq(`detail->>${key}`, stamp)
+    .order('id', { ascending: true });
+  if (error) throw new Error(`listEventsByRunStamp failed: ${error.message}`);
+  return data ?? [];
+}
+
 // Events after a known version, oldest first — the "what changed since you
 // looked" feed (Plan 2 board notifications; Plan 3 version-pinned questions).
 export async function listScheduleEventsSince(

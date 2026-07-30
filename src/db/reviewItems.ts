@@ -29,6 +29,11 @@ export type ReviewKind =
   // rule; no cross-kind supersede with pending_freeze — committing either
   // bumps the schedule version, which stales the other at confirm.
   | 'pending_resolve'
+  // The staged undo of the latest committed run (plan 2026-07-30 Phase 5):
+  // one per tenant kind-wide; 15-MINUTE TTL (the send_email fresh-mistake
+  // idiom, NOT the 12h proposal kernel) — an undo is reached for right after
+  // the run, never rediscovered the next morning.
+  | 'pending_undo'
   // Onboarding task-reminder (NOT a staged token): opened when a seat is
   // confirmed, auto-resolved by set_availability, dismissable as the explicit
   // "no availability yet" acknowledgment (user decision 2026-07-20).

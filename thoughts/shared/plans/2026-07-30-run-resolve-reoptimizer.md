@@ -485,8 +485,8 @@ header); `undo_committed` → manager push: `` `Undo ran (by ${actor}): restored
 K — see the board.` ``
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] undoRun tests (local stack, real verbs): full-cycle — commit a resolve fixture, undo,
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass (890 + 5 key-gated skips)
+- [x] undoRun tests (local stack, real verbs): full-cycle — commit a resolve fixture, undo,
       read back EVERY row at its original slot/person/fence and queue jobs re-open;
       **swap/park fixture — a run that parked collapses to ONE restore per visit (no bogus
       drift skips, nothing left person-less)**; placements-in-freed-gaps fixture — undo
@@ -495,9 +495,13 @@ K — see the board.` ``
       row skipped + reported; post-run promise on a minted row → belt skips it; deactivated
       predecessor tech → skip, run completes**; placed→timeTbd restore reproduces the
       fence + technician; a newer commit AND a plain version bump each dismiss the staged
-      undo at confirm; `undo_committed` summary + manager push; every event (incl.
-      unschedules) carries `undoRun`; freeze-run undo returns placements to the loose
-      bucket (bucket counts match pre-freeze read).
+      undo at confirm (version-bump wired live; the newer-run belt proven via a doctored
+      runEventId — a real newer run always trips the version pin first); `undo_committed`
+      summary + manager push; every event (incl. unschedules) carries `undoRun`; freeze-run
+      undo returns placements to the loose bucket (bucket counts match pre-freeze read).
+      Plus verb-level: nothing_to_undo / nothing_to_restore (no token minted), 15-min
+      expiry + malformed dismissals with replay closure, list_pending_reviews summarizer
+      (counts only, plan internals withheld), resolve_review dismiss-only, surface 39..
 
 ### Live verification (agent-executable)
 - Prerequisites: none (all local-stack).

@@ -197,6 +197,21 @@ async function pushesFor(tenantId: string, ev: ScheduleEvent): Promise<Push[]> {
       }
       break;
     }
+    case 'undo_committed': {
+      // The undo's manager summary (plan 2026-07-30 Phase 5). Its per-row
+      // events stay unkinded on purpose (no undoRun header), so technicians
+      // see them under the generic digest header.
+      const restored = typeof detail.restored === 'number' ? detail.restored : '?';
+      const skipped = typeof detail.skipped === 'number' ? detail.skipped : '?';
+      for (const m of await listManagersWithTelegram(tenantId)) {
+        if (!m.telegram_user_id) continue;
+        out.push({
+          userId: m.telegram_user_id,
+          text: `Undo ran (by ${ev.actor_ref ?? 'a manager'}): restored ${restored}, skipped ${skipped} — see the board.`,
+        });
+      }
+      break;
+    }
     // completed/backfilled and future kinds: no push.
   }
   const freezeRun = detailStr(detail, 'freezeRun');

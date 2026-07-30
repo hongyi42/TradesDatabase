@@ -589,8 +589,12 @@ re-stage after a successful undo now says "ALREADY undone", not "changed since t
 committed rows (no offer against empty lists); (8) NONE_MESSAGE verb-neutral; (9)
 `assessStagedResolve` returns verdicts explicitly (cast removed — a future kernel verdict
 degrades to malformed, never falls through post-consume); (10) `planUndo` reads identity
-once per row (liveOrSkip returns it). Recorded follow-ups, deliberately NOT done here:
-batch planUndo's reads into ~4 queries (listJobsWithCustomerByIds precedent); merge the
+once per row (liveOrSkip returns it). (11, user-requested same day) planUndo reads BATCHED:
+chains collapse first (pure), then FOUR queries total regardless of run size — events, one
+`listAssignmentsByIds` .in() over live rows + cancelled predecessors, `listTeam`, one
+`listJobsWithCustomerByIds` — replacing 5-6 sequential point reads per row (~600 round-trips
+to stage a 121-visit undo → 4); all nine undo integration arms pass unchanged. Recorded
+follow-ups, deliberately NOT done here: merge the
 board endpoint's two kind reads into one `.in()`; factor the run_freeze/run_resolve
 stage/confirm skeleton + single-source horizon constants; TTL-parameterize the staleness
 kernel so undo_run's inline trio joins it; board.js per-day-section helper; shared

@@ -29,19 +29,17 @@
 
 import {
   appendScheduleEvent,
-  getAssignmentForTenant,
-  getCustomer,
-  getJob,
-  getTechnicianById,
   isInactiveState,
   isPlaced,
+  listAssignmentsByIds,
   listEventsByRunStamp,
+  listJobsWithCustomerByIds,
+  listTeam,
   type Assignment,
   type CommittedRun,
   type Json,
   type PromiseLevel,
   type ScheduleEvent,
-  type Technician,
 } from '../db/index.js';
 import { bookVisit, unscheduleVisit, visitDay } from './booking.js';
 import {
@@ -90,24 +88,59 @@ export async function planUndo(tenantId: string, run: CommittedRun): Promise<Und
     return typeof d.previousAssignmentId === 'string' ? d.previousAssignmentId : null;
   };
 
-  // Per-call memo for TECHNICIAN reads (the same tech repeats across
-  // chains); job/customer identity is read exactly once per row — liveOrSkip
-  // fetches it and hands it back so callers never re-read (review finding:
-  // the label fetch and the caller's fetch were duplicating 2 queries/row).
-  const techByIdCache = new Map<string, Technician | null>();
-  const techById = async (id: string): Promise<Technician | null> => {
-    const hit = techByIdCache.get(id);
-    if (hit !== undefined) return hit;
-    const tech = await getTechnicianById(id, tenantId);
-    techByIdCache.set(id, tech);
-    return tech;
-  };
-  const identityFor = async (
-    row: Assignment,
-  ): Promise<{ customer: string | null; jobTitle: string | null }> => {
-    const job = await getJob(row.job_id);
-    const customer = job ? await getCustomer(job.customer_id) : null;
-    return { customer: customer?.name ?? null, jobTitle: job?.title ?? null };
+  // ---- Collapse chains FIRST (pure, in-memory): every row id the plan will
+  // ever need is known before a single row is read.
+  const createdIds = new Set(movedEvents.map((e) => e.assignment_id as string));
+  const byPrev = new Map<string, ScheduleEvent>();
+  for (const ev of movedEvents) {
+    const prev = prevOf(ev);
+    if (prev) byPrev.set(prev, ev);
+  }
+  const heads = movedEvents.filter((ev) => {
+    const prev = prevOf(ev);
+    return prev !== null && !createdIds.has(prev);
+  });
+  const chains: { liveId: string; predecessorId: string }[] = [];
+  for (const head of heads) {
+    let tail = head;
+    while (byPrev.has(tail.assignment_id as string)) {
+      tail = byPrev.get(tail.assignment_id as string) as ScheduleEvent;
+    }
+    chains.push({
+      liveId: tail.assignment_id as string,
+      predecessorId: prevOf(head) as string,
+    });
+  }
+  const bookedIds = bookedEvents.map((e) => e.assignment_id as string);
+
+  // ---- Batched reads (final-review follow-up): FOUR queries total,
+  // regardless of run size — the events (above), one .in() over live rows AND
+  // cancelled predecessors, the roster (small, any state — inactive detection
+  // needs the row), then jobs+customers for the rows that came back. The old
+  // shape was 5-6 sequential point reads PER ROW (~600 round-trips to stage
+  // a 121-visit undo, inside a tool call the manager is waiting on).
+  const rowIds = [
+    ...new Set([...chains.flatMap((c) => [c.liveId, c.predecessorId]), ...bookedIds]),
+  ];
+  const [rows, team] = await Promise.all([
+    listAssignmentsByIds(tenantId, rowIds),
+    listTeam(tenantId),
+  ]);
+  const rowById = new Map(rows.map((r) => [r.id, r]));
+  const techById = new Map(team.map((t) => [t.id, t]));
+  const jobIds = [
+    ...new Set(
+      [...chains.map((c) => c.liveId), ...bookedIds]
+        .map((id) => rowById.get(id)?.job_id)
+        .filter((j): j is string => typeof j === 'string'),
+    ),
+  ];
+  const jobById = new Map(
+    (await listJobsWithCustomerByIds(tenantId, jobIds)).map((j) => [j.id, j]),
+  );
+  const identityOf = (row: Assignment): { customer: string | null; jobTitle: string | null } => {
+    const job = jobById.get(row.job_id);
+    return { customer: job?.customers?.name ?? null, jobTitle: job?.title ?? null };
   };
 
   const unschedules: UndoUnschedule[] = [];
@@ -115,22 +148,21 @@ export async function planUndo(tenantId: string, run: CommittedRun): Promise<Und
   const tbdRestores: UndoTbdRestore[] = [];
   const skipped: FreezeSkip[] = [];
 
-  // The shared drift/pin gate on a chain's LIVE row. Returns the row PLUS
-  // its identity (already fetched for the skip label — callers must not
-  // re-read it) when the restore may proceed; pushes the skip and returns
-  // null otherwise.
+  // The shared drift/pin gate on a chain's LIVE row — pure over the maps.
+  // Returns the row plus its identity (needed for every label) when the
+  // restore may proceed; pushes the skip and returns null otherwise.
   interface GatedRow {
     live: Assignment;
     customer: string | null;
     jobTitle: string | null;
   }
-  const liveOrSkip = async (liveId: string): Promise<GatedRow | null> => {
-    const live = await getAssignmentForTenant(liveId, tenantId);
+  const liveOrSkip = (liveId: string): GatedRow | null => {
+    const live = rowById.get(liveId);
     if (!live) {
       skipped.push({ ref: liveId, label: liveId, reason: 'row not found — left alone' });
       return null;
     }
-    const { customer, jobTitle } = await identityFor(live);
+    const { customer, jobTitle } = identityOf(live);
     const label = skipLabel(customer, jobTitle);
     if (live.status !== 'confirmed' && live.status !== 'proposed') {
       // A hand-move since the run reminted the row (this id is now cancelled);
@@ -157,28 +189,12 @@ export async function planUndo(tenantId: string, run: CommittedRun): Promise<Und
   };
 
   // ---- moved chains → inverse moves / tbd restores
-  const createdIds = new Set(movedEvents.map((e) => e.assignment_id as string));
-  const byPrev = new Map<string, ScheduleEvent>();
-  for (const ev of movedEvents) {
-    const prev = prevOf(ev);
-    if (prev) byPrev.set(prev, ev);
-  }
-  const heads = movedEvents.filter((ev) => {
-    const prev = prevOf(ev);
-    return prev !== null && !createdIds.has(prev);
-  });
-  for (const head of heads) {
-    let tail = head;
-    while (byPrev.has(tail.assignment_id as string)) {
-      tail = byPrev.get(tail.assignment_id as string) as ScheduleEvent;
-    }
-    const liveId = tail.assignment_id as string;
-    const predecessorId = prevOf(head) as string;
-    const gated = await liveOrSkip(liveId);
+  for (const { liveId, predecessorId } of chains) {
+    const gated = liveOrSkip(liveId);
     if (!gated) continue;
     const { live, customer, jobTitle } = gated;
     const label = skipLabel(customer, jobTitle);
-    const prior = await getAssignmentForTenant(predecessorId, tenantId);
+    const prior = rowById.get(predecessorId);
     if (!prior) {
       skipped.push({ ref: liveId, label, reason: 'its pre-run state cannot be read — left alone' });
       continue;
@@ -194,7 +210,7 @@ export async function planUndo(tenantId: string, run: CommittedRun): Promise<Und
     // commit-time resolveTechnician throw stop the whole undo.
     let toRef: string | null = null;
     if (prior.technician_id) {
-      const tech = await techById(prior.technician_id);
+      const tech = techById.get(prior.technician_id) ?? null;
       if (!tech || isInactiveState(tech.state)) {
         skipped.push({
           ref: liveId,
@@ -208,7 +224,7 @@ export async function planUndo(tenantId: string, run: CommittedRun): Promise<Und
       toRef = tech.ref;
     }
     if (isPlaced(prior)) {
-      const fromTech = live.technician_id ? await techById(live.technician_id) : null;
+      const fromTech = live.technician_id ? (techById.get(live.technician_id) ?? null) : null;
       moves.push({
         assignmentId: liveId,
         jobId: live.job_id,
@@ -245,8 +261,8 @@ export async function planUndo(tenantId: string, run: CommittedRun): Promise<Und
   }
 
   // ---- booked rows (queue placements) → back to the loose bucket
-  for (const ev of bookedEvents) {
-    const gated = await liveOrSkip(ev.assignment_id as string);
+  for (const id of bookedIds) {
+    const gated = liveOrSkip(id);
     if (!gated) continue;
     unschedules.push({
       assignmentId: gated.live.id,

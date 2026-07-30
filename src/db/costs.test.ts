@@ -12,6 +12,7 @@ import {
   readTenantCostDetail,
   rollupCosts,
   upsertInfraCost,
+  recordVendorInvoiceAmount,
   type CostEventInput,
 } from './costs.js';
 
@@ -277,6 +278,68 @@ describe('infra_costs', () => {
       ),
     );
     expect(code).toBe(CHECK_VIOLATION);
+  });
+});
+
+// The automated collector's writer. Its whole reason for existing is the
+// allocation-preservation rule below, which cannot be proved with a stub — it is
+// a property of the SQL, so it is tested against the real stack.
+describe('recordVendorInvoiceAmount', () => {
+  const base = {
+    vendor: P,
+    item: 'agent inference',
+    periodStart: '2026-07-01',
+    periodEnd: '2026-07-31',
+    defaultAllocation: 'per_sandbox' as const,
+  };
+
+  test('creates the row with the default allocation when none exists', async () => {
+    const r = await recordVendorInvoiceAmount({
+      ...base,
+      amountUsd: 37.31,
+      source: 'estimate',
+    });
+    expect(r).toEqual({ created: true, allocation: 'per_sandbox' });
+    const { rows } = await pg.query(
+      'select amount_usd, allocation, source from infra_costs where vendor = $1 and item = $2',
+      [P, base.item],
+    );
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0].amount_usd)).toBeCloseTo(37.31, 2);
+    expect(rows[0].source).toBe('estimate');
+  });
+
+  // THE point of this accessor. A plain upsert re-sends `allocation` on every
+  // write, so a collector running every 15 minutes would silently undo an
+  // operator who chose a different split — and the per-tenant figures would move
+  // under them with no error anywhere.
+  test('PRESERVES an operator-chosen allocation across collector runs', async () => {
+    await recordVendorInvoiceAmount({ ...base, amountUsd: 30, source: 'estimate' });
+    // The operator decides this month should split by seat instead.
+    await pg.query(
+      "update infra_costs set allocation = 'per_active_seat' where vendor = $1 and item = $2",
+      [P, base.item],
+    );
+    // ...and the collector ticks again with a refreshed figure.
+    const r = await recordVendorInvoiceAmount({ ...base, amountUsd: 37.31, source: 'estimate' });
+    expect(r).toEqual({ created: false, allocation: 'per_active_seat' });
+    const { rows } = await pg.query(
+      'select amount_usd, allocation from infra_costs where vendor = $1 and item = $2',
+      [P, base.item],
+    );
+    expect(rows[0].allocation).toBe('per_active_seat');
+    expect(Number(rows[0].amount_usd)).toBeCloseTo(37.31, 2);
+  });
+
+  test('flips source estimate -> invoice when the month settles, without duplicating', async () => {
+    await recordVendorInvoiceAmount({ ...base, amountUsd: 37.31, source: 'estimate' });
+    await recordVendorInvoiceAmount({ ...base, amountUsd: 37.5, source: 'invoice' });
+    const { rows } = await pg.query(
+      'select count(*)::int as n, max(source) as source from infra_costs where vendor = $1 and item = $2',
+      [P, base.item],
+    );
+    expect(rows[0].n).toBe(1);
+    expect(rows[0].source).toBe('invoice');
   });
 });
 

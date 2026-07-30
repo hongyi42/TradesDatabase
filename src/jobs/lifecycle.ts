@@ -10,6 +10,11 @@ import { checkPairing } from '../composio/pairing.js';
 import { expireOffboarding, type ExpireResult } from '../composio/offboarding.js';
 import { ensurePersonSession } from '../composio/sessions.js';
 import { runLogIngestion, type LogIngestSummary } from '../composio/logIngest.js';
+import {
+  billingApiKey,
+  collectDeepinfraUsage,
+  type CollectResult,
+} from '../model/deepinfraUsage.js';
 
 // The lifecycle heartbeat — the ONE scheduled entrypoint (Render Cron Job,
 // */15 * * * *; Render guarantees at most one concurrent run). Everything
@@ -22,9 +27,16 @@ import { runLogIngestion, type LogIngestSummary } from '../composio/logIngest.js
 // (4) ingest Composio execution logs into L1 (the manager-action audit; same
 //     key gate, overlapping 60-min window so a missed tick loses nothing);
 // (5) replay Brave searches from web_requests into the cost ledger;
-// (6) recompute the current month's per-tenant cost rollup (idempotent).
-// Steps 5-6 report `skipped` — not an error — when the cost tables are absent,
-// so a deploy that lands before the migration does not turn the cron red.
+// (6) pull the DeepInfra bill from DeepInfra's billing API into infra_costs, so
+//     the largest (allocated) cost line does not depend on someone remembering
+//     to retype an invoice — an omission that renders as $0, i.e. "no spend";
+// (7) recompute the current month's per-tenant cost rollup (idempotent).
+// Steps 5-7 report `skipped` — not an error — when the cost tables are absent,
+// so a deploy that lands before the migration does not turn the cron red. Step 6
+// also skips when no DeepInfra billing key is resolvable (e.g. after a failover
+// to NVIDIA), which is a normal state and not a fault.
+// ORDER MATTERS: 6 runs BEFORE 7, so a freshly collected invoice is allocated on
+// the same tick rather than a quarter-hour later.
 // (The schedule-sheet mirror step retired with the Telegram-schedule series
 // Plan 1 — the DB owns the schedule; the sheet is no longer an input.)
 // Each step is isolated: one failing step is REPORTED (ok:false → exit 1 →
@@ -39,6 +51,10 @@ export interface LifecycleDeps {
   backfillBrave?: typeof backfillBraveCostEvents;
   latestBrave?: typeof latestBraveCostEventAt;
   rollup?: typeof rollupCosts;
+  collectDeepinfra?: typeof collectDeepinfraUsage;
+  // Separate seam from collectDeepinfra: tests must be able to exercise the
+  // skip-when-unconfigured branch without setting real env vars.
+  hasBillingKey?: () => boolean;
 }
 
 export interface LifecycleSummary {
@@ -50,6 +66,7 @@ export interface LifecycleSummary {
     | { stepError: string };
   logIngest: LogIngestSummary | { skipped: string } | { stepError: string };
   braveBackfill: { scanned: number; since: string } | { skipped: string } | { stepError: string };
+  deepinfraUsage: CollectResult | { skipped: string } | { stepError: string };
   costRollup:
     | { months: string[]; rowsWritten: number; tenantsTouched: number; unpricedEvents: number }
     | { skipped: string }
@@ -207,7 +224,28 @@ export async function runLifecycle(
     if (!isMissingCostLedger(err)) ok = false;
   }
 
-  // 6. Cost rollup — units x rates, plus the monthly-bill allocation, for the
+  // 6. DeepInfra bill — collected from the vendor, not retyped by a human.
+  // Runs BEFORE the rollup so a newly collected figure is allocated on this same
+  // tick. Writes only the amount and source; an operator's allocation choice on
+  // an existing row is preserved (see recordVendorInvoiceAmount).
+  let deepinfraUsage: LifecycleSummary['deepinfraUsage'];
+  try {
+    // No resolvable billing key is a NORMAL state, not a fault: the fallback to
+    // INFERENCE_API_KEY deliberately declines after a failover to NVIDIA, since
+    // that key cannot read a DeepInfra account and would 401 every 15 minutes.
+    if (!(deps.hasBillingKey ?? (() => !!billingApiKey()))()) {
+      deepinfraUsage = { skipped: 'no DeepInfra billing key configured' };
+    } else {
+      deepinfraUsage = await (deps.collectDeepinfra ?? collectDeepinfraUsage)(nowIso);
+    }
+  } catch (err) {
+    deepinfraUsage = isMissingCostLedger(err)
+      ? { skipped: 'cost ledger not migrated here yet' }
+      : { stepError: msg(err) };
+    if (!isMissingCostLedger(err)) ok = false;
+  }
+
+  // 7. Cost rollup — units x rates, plus the monthly-bill allocation, for the
   // CURRENT month. Idempotent (it recomputes the period), so every tick simply
   // refreshes what the dashboard reads.
   let costRollup: LifecycleSummary['costRollup'];
@@ -234,7 +272,16 @@ export async function runLifecycle(
     if (!isMissingCostLedger(err)) ok = false;
   }
 
-  return { pairing, offboarding, sessions, logIngest, braveBackfill, costRollup, ok };
+  return {
+    pairing,
+    offboarding,
+    sessions,
+    logIngest,
+    braveBackfill,
+    deepinfraUsage,
+    costRollup,
+    ok,
+  };
 }
 
 async function main(): Promise<void> {

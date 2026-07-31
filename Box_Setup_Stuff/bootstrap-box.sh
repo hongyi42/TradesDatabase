@@ -876,6 +876,32 @@ EOF
     echo "    WARN: no running container for ${agent} — set agents.defaults.heartbeat.every=0m manually"
   fi
 
+  log "cron_job plugin (flat-schema cron wrapper — added 2026-07-31)"
+  if [ -n "$cid" ]; then
+    # Replaces OpenClaw's built-in \`cron\` tool, whose schema nests 4 deep and
+    # carries the whole job tree TWICE (\`job\` + \`patch\`). Same actions, same
+    # Gateway RPCs, but a flat object of scalars so the decoding grammar is cheap
+    # — and no gatewayUrl/gatewayToken params, which the model kept hallucinating
+    # and getting rejected for. Source of truth: plugins/trades-cron/ in this repo,
+    # behaviour locked by src/control/tradesCronPlugin.test.ts.
+    pl_src="$SCRIPT_DIR/plugins/trades-cron"
+    pl_dst=/sandbox/.openclaw/extensions/trades-cron
+    if [ -d "$pl_src" ]; then
+      nemoclaw "$agent" exec --no-tty -- mkdir -p "$pl_dst" </dev/null >/dev/null 2>&1 || true
+      for pl_f in index.js package.json openclaw.plugin.json; do
+        nemoclaw "$agent" upload "$pl_src/$pl_f" "$pl_dst/$pl_f" </dev/null
+      done
+      nemoclaw "$agent" exec --no-tty -- sh -c "chmod 660 $pl_dst/*" </dev/null >/dev/null 2>&1 || true
+      # Plugins are discovered from a persisted cold-metadata registry, not by
+      # scanning on boot — without this refresh the tool never reaches the model.
+      docker exec -u sandbox -e HOME=/sandbox -e OPENCLAW_HOME=/sandbox "$cid" \
+        openclaw plugins registry --refresh >/dev/null 2>&1 || true
+      ok "installed trades-cron plugin (cron_job)"
+    else
+      echo "    WARN: $pl_src missing — cron_job not installed; do NOT deny \`cron\` on this box"
+    fi
+  fi
+
   log "tool-surface trim + thinking (turn latency 67s -> 3s — added 2026-07-30)"
   if [ -n "$cid" ]; then
     # WHY: every request compiles each tool's \`parameters\` schema into a
@@ -883,9 +909,13 @@ EOF
     # (2026-07-30): 73 tools = 67s/turn, 0 tools = 1.4s. The cost is one tool —
     # OpenClaw's built-in \`message\` (113 params, 13 levels deep) at ~51s on its
     # own; \`browser\` adds ~7.7s. Neither was called ONCE across 160 sessions
-    # (the agents use trades-spine__read_webpage for web content). \`cron\` IS
-    # used (41 calls) and only costs ~2.7s, so it STAYS.
+    # (the agents use trades-spine__read_webpage for web content).
     # Dropping the two: 67s -> 3s cold, and ~3,900 fewer tokens per turn.
+    #
+    # \`cron\` IS used (41 calls across 160 sessions) so it is REPLACED, not just
+    # dropped: the block above installs the trades-cron plugin, which exposes the
+    # same actions as \`cron_job\` with a flat schema. Deny \`cron\` only when that
+    # plugin is present, or the agents lose scheduling entirely.
     #
     # \`reasoning: true\` on the model entry is the GATE for thinking levels:
     # with it false, agents.defaults.thinkingDefault is ignored and every
@@ -894,28 +924,37 @@ EOF
     # Same gateway-mediated recipe as the heartbeat block above — NEVER
     # \`openclaw config patch\`, which trips GATEWAY_UNSAFE_CONFIG_PATH and
     # leaves the gateway refusing to start (three bots went down learning this).
-    ts_cur=$(docker exec -u sandbox -e HOME=/sandbox "$cid" openclaw config get models.providers.inference.models 2>/dev/null | grep -c '"reasoning": true' || true)
-    if [ "$ts_cur" = "1" ]; then
+    # Deny cron only when the replacement actually landed, so a failed plugin
+    # upload degrades to "cron still works" rather than "no scheduling at all".
+    ts_deny='["message","browser"]'
+    if nemoclaw "$agent" exec --no-tty -- test -f "$pl_dst/index.js" </dev/null >/dev/null 2>&1; then
+      ts_deny='["message","browser","cron"]'
+    fi
+    ts_tmp=$(mktemp -d)
+    nemoclaw "$agent" download /sandbox/.openclaw/openclaw.json "$ts_tmp/oc.json" </dev/null
+    jq --argjson deny "$ts_deny" '
+      (.agents.defaults.thinkingDefault) = "adaptive"
+      | (.agents.list) = ((.agents.list // [{id:"main",default:true}]) | map(
+          .tools = ((.tools // {}) | .deny = (((.deny // []) + $deny) | unique))
+        ))
+      | (.models.providers) = ((.models.providers // {}) | with_entries(
+          .value.models = ((.value.models // []) | map(.reasoning = true))
+        ))
+    ' "$ts_tmp/oc.json" > "$ts_tmp/oc.new"
+    # Compare against what is already there rather than probing one field: the
+    # settings applied here have grown over time, and a single-field guard would
+    # skip a box that has some of them but not the rest.
+    if cmp -s "$ts_tmp/oc.json" "$ts_tmp/oc.new"; then
       ok "tool trim + reasoning already applied"
+      rm -rf "$ts_tmp"
     else
-      ts_tmp=$(mktemp -d)
-      nemoclaw "$agent" download /sandbox/.openclaw/openclaw.json "$ts_tmp/oc.json" </dev/null
-      jq '
-        (.agents.defaults.thinkingDefault) = "adaptive"
-        | (.agents.list) = ((.agents.list // [{id:"main",default:true}]) | map(
-            .tools = ((.tools // {}) | .deny = (((.deny // []) + ["message","browser"]) | unique))
-          ))
-        | (.models.providers) = ((.models.providers // {}) | with_entries(
-            .value.models = ((.value.models // []) | map(.reasoning = true))
-          ))
-      ' "$ts_tmp/oc.json" > "$ts_tmp/oc.new"
       ts_h=$(sha256sum "$ts_tmp/oc.new" | awk '{print $1}')
       nemoclaw "$agent" upload "$ts_tmp/oc.new" /sandbox/.openclaw/openclaw.json </dev/null
       nemoclaw "$agent" exec --no-tty -- sh -c "printf '%s  openclaw.json\n' '$ts_h' > /sandbox/.openclaw/.config-hash" </dev/null
       nemoclaw "$agent" exec --no-tty -- chmod 660 /sandbox/.openclaw/openclaw.json /sandbox/.openclaw/.config-hash </dev/null
       nemoclaw "$agent" gateway restart </dev/null >/dev/null 2>&1 || true
       rm -rf "$ts_tmp"
-      ok "denied message+browser tools; thinking=adaptive; reasoning=true (67s -> 3s per turn)"
+      ok "denied ${ts_deny}; thinking=adaptive; reasoning=true (67s -> 3s per turn)"
     fi
   else
     echo "    WARN: no running container for ${agent} — apply the tool deny + reasoning flags manually"

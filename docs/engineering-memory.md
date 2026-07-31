@@ -567,6 +567,37 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   What it is NOT (each disproven with measurements): prompt size (cold 38k prefill = 2.5s),
   prompt-cache misses (a turn with `cacheRead=38,016` still took 74.6s), streaming,
   `prompt_cache_key`, `max_tokens`, tool COUNT, or provider health.
+- **2026-07-31 — `cron` REPLACED rather than denied: the `trades-cron` plugin (`cron_job`).**
+  `cron` is the one expensive built-in the agents actually use (41 calls / 160 sessions — the
+  freeze-reminder path), so it could not just be dropped. `Box_Setup_Stuff/plugins/trades-cron/`
+  is a plain-JS OpenClaw tool plugin exposing the same nine actions
+  (status/list/get/add/update/remove/run/runs/wake) through a **flat object of scalars**, and
+  rebuilds the nested job in `execute` before calling the identical Gateway RPCs
+  (`cron.add`, `cron.update`, …) via `callGatewayTool` — the same function the built-in uses.
+  Schema shape: **6,835 B / 108 props / depth 5 → 1,899 B / 21 props / depth 2** (the built-in
+  carries the whole job tree TWICE, as `job` and `patch`, each with
+  `schedule`/`payload`/`delivery`→`failureDestination`/`failureAlert`). Guidance that would have
+  cost grammar time lives in the tool description instead — descriptions are not compiled.
+  It also removes a live bug: the built-in exposes `gatewayUrl`/`gatewayToken`, which GLM-5.2
+  hallucinated on most calls (it even invented a token) and got rejected for — `gatewayUrl
+  override rejected` / `pairing required`, burning turns. The wrapper omits them and sets
+  `additionalProperties: false`, so constrained decoding cannot emit them at all.
+  Session/delivery binding (`agentId`, `sessionKey`, and the announce target inherited from the
+  live chat, i.e. what makes "remind me later" come back to the right conversation) is
+  reproduced from the built-in's execute path using the plugin tool-factory context
+  (`registerTool((ctx) => …)` → `ctx.sessionKey` / `ctx.agentId` / `ctx.deliveryContext`).
+  Behaviour is locked by `src/control/tradesCronPlugin.test.ts` (schema stays flat; job/patch
+  construction; the sessionTarget↔payload rules).
+  **Latency win NOT yet confirmed.** The structural change is certain and the mechanism is the
+  one proven above, but a same-night A/B against the live endpoint was unusable: identical
+  payloads ranged 5.9s–45s and the run ended in HTTP 429s. Do not quote a number for this
+  change until it is re-measured on a quiet endpoint.
+  Install notes: plugins are discovered from a **persisted cold-metadata registry**, so a new
+  extension needs `openclaw plugins registry --refresh` — dropping files in
+  `/sandbox/.openclaw/extensions/` alone leaves the tool invisible. `openclaw plugins inspect`
+  showing `Tools: (anonymous)` is normal for the factory form (the bundled `browser` plugin
+  registers the same way); `contracts.tools` in the manifest is what cold discovery reads.
+  Beware `tar` from macOS: it ships `._*` AppleDouble files into the plugin dir.
 - **Dated debts:** GRANT/default-privileges migration to replace
   `auto_expose_new_tables = true` — **due before 2026-10-30** (Supabase removes the flag;
   fresh local stacks then break with `permission denied`). Old revoked NVIDIA key may still

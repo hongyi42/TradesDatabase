@@ -547,6 +547,26 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   if the trial wins, mirror the flag into the render source + all sandboxes. Full mechanics,
   revert recipe, and citations:
   [thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md](../thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md).
+- **FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema.** Every request
+  compiles each tool's `parameters` JSON-Schema into a constrained-decoding grammar *before the
+  first token* (the router converts tools to `response_format: structural_tag`, not native
+  tool-calls). Measured on s2 with the grammar forced cold: **0 tools = 1.4s, 73 tools = 67s**.
+  Isolating it: `message` (an OpenClaw built-in, 113 params, 13 levels deep) costs **~51s alone**;
+  `browser` ~7.7s; `cron` only ~2.7s. Neither `message` nor `browser` was called ONCE in 160
+  stored sessions (web content goes through `trades-spine__read_webpage`); `cron` IS used (41
+  calls) so it stays. Denying the two: **67s → 3s cold**, ~3,900 fewer tokens/turn. Our own 39
+  spine tools are innocent (avg schema-complexity score 8 vs `message`'s 317).
+  Proof it is the schemas and not tokens: same 73 tools with `parameters` emptied and the schema
+  text moved into descriptions ran **2.7s median with MORE tokens** (41.3k vs 38.6k), replicated
+  3× interleaved. Applied to s2/s5/s6/s7/s8 via `agents.list[].tools.deny` (the `agents` section
+  survives rebuilds; top-level `tools.deny` does NOT — see `openclaw-config-merge.ts`
+  `backupDurableSections`). **s3 (Judy) deliberately NOT touched** — hands-off rule.
+  Also flipped `models…models[].reasoning: true`: while false, `agents.defaults.thinkingDefault`
+  is IGNORED and every session resolves to `thinkingLevel: off`. With it true, `adaptive`
+  (ranks equal to `medium`, both 30) takes effect at no measurable cost on cheap turns.
+  What it is NOT (each disproven with measurements): prompt size (cold 38k prefill = 2.5s),
+  prompt-cache misses (a turn with `cacheRead=38,016` still took 74.6s), streaming,
+  `prompt_cache_key`, `max_tokens`, tool COUNT, or provider health.
 - **Dated debts:** GRANT/default-privileges migration to replace
   `auto_expose_new_tables = true` — **due before 2026-10-30** (Supabase removes the flag;
   fresh local stacks then break with `permission denied`). Old revoked NVIDIA key may still
@@ -569,6 +589,18 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   credential write (badge install/rotation, token change) needs a container restart to take
   effect. This exact mechanism silently killed Judy's spine MCP for 4 days (badge in store,
   absent from env).
+- **NEVER change a sandbox's `openclaw.json` with `openclaw config patch`.** It writes the file
+  but does NOT update nemoclaw's `.config-hash`, so the next `gateway restart` fails
+  `GATEWAY_UNSAFE_CONFIG_PATH` and leaves the gateway DOWN (3 bots went down learning this on
+  2026-07-30). Two extra teeth: run as root via `docker exec` and the file ends up `root:root`,
+  which the gateway also refuses (`chown sandbox:sandbox` + `chmod 660` to fix); and without a
+  login shell `OPENCLAW_HOME` is unset, so the patch silently lands in `/root/.openclaw/` and
+  changes NOTHING — it still prints "Applied N config update(s)". **Always verify by reading
+  `/sandbox/.openclaw/openclaw.json` back, never trust the success message.**
+  Use the gateway-mediated recipe instead (already in `bootstrap-box.sh`, heartbeat + tool-trim
+  blocks): `nemoclaw <s> download` → edit with `jq` → `upload` → write `.config-hash` →
+  `chmod 660` → `gateway restart`. If a gateway is already stuck this way,
+  `nemoclaw <s> doctor --fix` then restart clears it.
 - **`nemoclaw rebuild` can destroy the sandbox's device private key** (vendor bug: the
   state-snapshot sanitizer replaces `privateKeyPem` with `[STRIPPED_BY_MIGRATION]` in the
   LIVE identity). Symptom: endless device-pairing loop, no Telegram polling, no MCP. Detect:

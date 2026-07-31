@@ -536,7 +536,10 @@ export interface MeasureDriveDeltasInput {
 //   0–1 neither route measurable (optimizeStopOrder short-circuits <3 stops)
 //       → driveMeasured false, NO API call, no route reason.
 // Any Google failure degrades that candidate to driveMeasured:false — a
-// routing outage must never eat the scheduling answer (get_schedule precedent).
+// routing outage must never eat the scheduling answer: find_slots still ranks
+// and returns its candidates, just without a drive figure. (This is now the
+// only Google-routing call on a chat path; get_schedule stopped optimizing on
+// 2026-07-31 — reads render the booked order, they never re-derive it.)
 export async function measureDriveDeltas(
   input: MeasureDriveDeltasInput,
   deps: { computeRoutes?: ComputeRoutes } = {},

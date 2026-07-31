@@ -1,9 +1,14 @@
 // Google Maps deep-link builder — pure string assembly, zero I/O.
 //
-// A "deep link" is a plain https://www.google.com/maps/dir/ URL carrying the
-// day's stops in driving order; tapping it opens the Google Maps app (or web)
-// with the whole route loaded. The link carries ORDER ONLY — ETAs, durations,
+// A "deep link" is a plain https://www.google.com/maps/dir/ URL; tapping it
+// opens the Google Maps app (or web) with directions loaded. ETAs, durations,
 // and job metadata live in the tool response, not the URL.
+//
+// Callers pass ONE stop (since 2026-07-31): the schedule reads emit a
+// destination-only link per stop rather than one multi-waypoint day route, so
+// there is no waypoint cap to truncate at and no re-ordering to misstate. The
+// multi-stop form below still works and is kept — it is what makes the ordering
+// contract explicit — but nothing calls it with >1 stop today.
 // Format reference: https://developers.google.com/maps/documentation/urls/get-started
 
 // One stop on a technician's day. `address` is the free-text single-line

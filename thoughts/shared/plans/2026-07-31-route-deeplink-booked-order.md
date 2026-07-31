@@ -336,9 +336,17 @@ verifies on both tiers.
    on a manager sandbox — `get_schedule` is not in a manager's list.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` / `npm run build` pass
-- [ ] `node scripts/smoke-http.mjs` against the deployed server returns 14 tools for a technician
-      badge (surface-regression check; it does not inspect descriptions)
+- [x] `npm run typecheck` / `npm run lint` / `npm test` / `npm run build` pass — 897 passed | 5 skipped
+- [ ] `node scripts/smoke-http.mjs` against the **deployed** server returns 14 tools for a
+      technician badge — BLOCKED until deploy (runs against a live URL, not local)
+
+**Correction applied after final review:** the rollout originally said a *box wire re-run* was
+required. It is not. Nothing bakes `get_schedule`'s wording into AGENTS.md (verified against
+`bootstrap-box.sh` and the bake-in script), and the tool COUNT is unchanged, so a description-only
+change needs **`gateway restart` on technician sandboxes and nothing more**. Steps 2/3 below
+collapse into one. Also corrected: `doorman-nemoclaw-setup-guide.md:24` carried the same
+"day-route with Google Maps link" behavior claim as architecture-memory — the plan had listed only
+the latter; both are Box_Setup_Stuff files under the standing sync rule.
 
 ### Live verification (agent-executable)
 - Prerequisites: `nemoclaw` access to trades-box-1; Telegram access to **s2** (manager-sam) and
@@ -349,6 +357,21 @@ verifies on both tiers.
   order with no API call ([googleRoutes.ts:71-73](src/routes/googleRoutes.ts#L71-L73)), so a 1- or
   2-stop day already returns booked order *today* — a smaller fixture would pass identically
   before and after Phase 1 and prove nothing.
+**PREFLIGHT RUN 2026-07-31 — capabilities MISSING, so these are not agent-executable from the
+implementing session.** `claude mcp list` shows only `supabase-prod` (read-only) and
+`supabase-test`; there is no `nemoclaw`/`openshell` CLI, no SSH host entry for trades-box-1, and
+no Telegram MCP. Per the `verifying-behavior` skill these are NOT downgraded to a manual
+checklist — they need an operator, after deploy.
+
+**Fixture precondition CHECKED via read-only pilot query (the one thing that was verifiable):**
+- ✅ **manager-sam (s2) is ready** — 2026-07-31 holds exactly **3 confirmed visits, all with
+  addresses**. Also manager-joy (4–5/day) and yutao (4–5/day) if a bigger day is wanted.
+- ❌ **s5 (Ben) is NOT ready** — `ben-shelton` has **0 upcoming confirmed visits**. Book him ≥3
+  addressed visits on one day first. (His `state` is `invited`, which does **not** block tool
+  calls — only `offboarding`/`offboarded` do, per `isInactiveState` — and he is Telegram-bound.)
+- ⚠ **`hman` cannot substitute** despite holding 32 upcoming visits: seat-exempt, so
+  `bind_telegram`/`get_connect_link` refuse them by design — no Telegram, ever.
+
 - [ ] s5 (technician): ask **"what's my schedule today?"** → stops come back in booked time order,
       each with its own link. Capture the message.
 - [ ] s2 (manager): ask **"what's my schedule today?"** → the manager's own stops carry links
@@ -363,6 +386,11 @@ verifies on both tiers.
 - [ ] On a phone, tap a relayed link from each bot — Google Maps opens with directions to that
       stop. Confirm on a day with **4+ stops** that every stop has a working link (the old 10-stop
       link cap is gone; this is the behavior the per-stop design buys).
+- [ ] **Added after final review — multi-day message volume.** The relay instruction has no count
+      cap and the tool accepts a 14-day range. At ~130 chars per markdown link plus its stop line,
+      ~20 stops approaches Telegram's 4096-char message limit; the old day-level link bounded this
+      at one per day. Ask s5 for a **5-day range** and check the reply is not truncated or
+      unreadable. If it is, cap the relay in `routeNote`/the description rather than in the payload.
 
 ---
 *Pause after this phase — the phone check is required before calling it done.*

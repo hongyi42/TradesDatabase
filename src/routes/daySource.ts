@@ -16,7 +16,7 @@ import { listJobsWithCustomerByIds } from '../db/jobs.js';
 
 export interface DayStops {
   date: string; // YYYY-MM-DD (UTC day)
-  stops: RouteStop[]; // in scheduled order (not yet drive-optimized)
+  stops: RouteStop[]; // in booked (time) order — callers render this, never reorder it
 }
 
 // Group (startISO, stop) pairs into sorted DayStops, stops sorted by time.

@@ -763,35 +763,45 @@ EOF
     echo "    WARN: no running container for ${agent} — append the §0f block manually once it's up"
   fi
 
-  log "cron/scheduling block (§0g — scheduled work uses cron: on-demand/targeted/finite; wiped by rebuild, re-run after one)"
+  # Cron block — REFRESHED on every run (delete-then-append, same idiom as the
+  # freeze ritual below): this text now carries the isolated-vs-main rule, and an
+  # append-once grep would pin already-wired boxes to the version that lacks it
+  # (template-drift trap).
+  log "cron/scheduling block (§0g — cron for scheduled work; ISOLATED jobs only, main-session needs the heartbeat we disable; refreshed per run)"
   if [ -n "$cid" ]; then
     if docker exec "$cid" grep -q "Scheduled / recurring work — use cron" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
-      ok "cron/scheduling block already present"
-    else
-      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+      docker exec -u sandbox "$cid" sh -c 'awk '\''/^## Scheduled \/ recurring work/{skip=1; next} skip && /^## /{skip=0} !skip'\'' /sandbox/.openclaw/workspace/AGENTS.md > /tmp/agents-md.tmp && cat /tmp/agents-md.tmp > /sandbox/.openclaw/workspace/AGENTS.md && rm -f /tmp/agents-md.tmp'
+    fi
+    docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Scheduled / recurring work — use cron, not a background loop (host-managed; on-demand · targeted · finite)
+## Scheduled / recurring work — use cron, not a background loop (host-managed; refreshed; updated 2026-07-31)
 
 The blind background heartbeat is OFF by design. When someone asks for something to happen later or
-on a repeat, create a **cron job** — never assume a loop is watching in the background. Three rules,
-every time:
+on a repeat, create a **cron job** — never assume a loop is watching. Four rules, every time.
+(Rule 1 is one line on purpose: AGENTS.md is truncated in context and only whole lines under 240
+chars survive into the injected policy digest.)
 
-1. **On-demand only.** Schedule ONLY when a person explicitly asks for future or recurring work
+1. **MUST use `sessionTarget: "isolated"` + `payload.kind: "agentTurn"`; NEVER `sessionTarget: "main"` or a `systemEvent` payload — a main job wakes the heartbeat, which is OFF here, so it is skipped and disabled, never firing.**
+   Put the work in `message` as an instruction to your future self (CLI: `--session isolated
+   --message "..."`). Delivery announces the result back to the chat that asked, by default.
+2. **On-demand only.** Schedule ONLY when a person explicitly asks for future or recurring work
    ("remind me…", "every Friday…", "check X at 3pm"). Never stand up an open-ended "keep watching
    everything" job on your own.
-2. **Prefer one-shot.** For a single future action, use a self-deleting one-shot
+3. **Prefer one-shot.** For a single future action, use a self-deleting one-shot
    (`--at <time> --delete-after-run`). Most "remind me" requests are one-shots, not recurring.
-3. **Finite · targeted · sane cadence** for anything recurring: name ONE specific task, use the
+4. **Finite · targeted · sane cadence** for anything recurring: name ONE specific task, use the
    LONGEST acceptable interval (hourly or slower — never sub-hourly), and give it an end when the
    need is bounded ("every Friday until <date>"). Sub-hourly or open-ended recurring jobs need
    explicit human approval. Delete a job once its purpose is done.
+
+Never pass `gatewayUrl` or `gatewayToken` to the cron tool — they are resolved for you, and
+supplying them is rejected and wastes a turn.
 
 Why: every scheduled run wakes the full agent (a real model turn that pays the whole system prompt +
 tools). A frequent or never-ending job silently becomes an always-on poll — the exact cost the
 heartbeat-off change removed. Keep scheduled work on-demand, targeted, and finite.
 EOF
-      ok "cron/scheduling block appended to ${agent}'s AGENTS.md"
-    fi
+    ok "cron/scheduling block refreshed on ${agent}'s AGENTS.md"
   else
     echo "    WARN: no running container for ${agent} — append the §0g block manually once it's up"
   fi

@@ -627,6 +627,44 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
 - **Pending human tests:** Ben's phone board test (read-only day view, no tab bar, push on
   move); promised-visit confirm dialog via board drag; Judy items above.
 
+- **2026-07-31 — cron was dead fleet-wide, for TWO stacked reasons. Both now fixed on s2.**
+  1. **Device pairing.** Every tool routed through `callGatewayTool` (`cron`, `nodes`, `gateway`,
+     `wake`) reconnects to the Gateway as a *client* (`clientId=gateway-client`,
+     `clientMode=backend`). OpenClaw waives pairing only for shared-secret clients on a **loopback**
+     address, but NemoClaw points `OPENCLAW_GATEWAY_URL` at the bridge IP — so every call was
+     refused with `pairing required`. NemoClaw's auto-approval allowlist
+     (`openclaw_device_approval_policy.py`) covers `openclaw-control-ui` + `webchat`/`cli` only, so
+     the agent's own client is *never* auto-approved; and `doctor --fix` deadlocks because its first
+     step is a gateway-pinned `devices list`, which needs the approval it is trying to grant.
+     Contributing: `openclaw.json` `gateway.port` had drifted (18790/18793) from the real port
+     (**18789**), so OpenClaw's local loopback fallback — the documented escape hatch — dialled a
+     dead port. **Fix per sandbox:** correct `gateway.port` (gateway-mediated recipe), then
+     `nemoclaw <s> exec --no-tty -- bash -lc "openclaw cron status"` to mint the request and
+     `... "openclaw devices approve <id>"` to approve it (prints *"using local fallback"*), twice —
+     once for read, once for the cron-mutation scope. Verify with `doctor` → `[ok] Tool-call device
+     scope`. Must be `nemoclaw exec` (gateway netns); `docker exec` lands elsewhere and loopback
+     fails. Full write-up: `thoughts/shared/research/2026-07-31-nemoclaw-device-scope-deadlock.md`.
+     **Note `cron.add/update/remove/run` require `operator.admin`, not `operator.write`** — and
+     `operator.admin` is a universal allow (`if (scopes.includes("operator.admin")) return
+     {allowed:true}`), so scheduling costs config-write/agent-delete/channel-control too.
+  2. **Main-session cron cannot fire here.** A `sessionTarget: "main"` + `systemEvent` job does not
+     run itself — it wakes the heartbeat, and we set `agents.defaults.heartbeat.every: "0m"` on
+     purpose. `heartbeat-runner` returns `{status:"skipped", reason:"disabled"}`, so cron records
+     `status: skipped, error: "disabled"` **and flips the job to `enabled:false`** — it looks
+     healthy at creation and silently never fires. **Isolated `agentTurn` jobs are unaffected** and
+     were verified end-to-end: fired on time, ran a real turn, `delivered: true` to Telegram.
+     The §0g AGENTS.md block now mandates `sessionTarget:"isolated"` + `payload.kind:"agentTurn"`
+     and is REFRESHED per wire run (delete-then-append) instead of append-once.
+- **AGENTS.md is ~26.6k chars against a 12k injected-context budget, so most of it never reaches
+  the model.** Truncation keeps head 45% + a policy digest 35% + tail 15%
+  (`trimAgentsBootstrapContent`). The digest scans the whole file but caps lines at **240 chars**
+  and fills its 4,200-char budget in **file order**: s2 has 56 high-priority (`must`/`never`/`do
+  not`) lines totalling 4,900 chars, so **135 policy lines are dropped** and anything late in the
+  file loses. The new cron rule survives only because its block is currently last (tail) and its
+  imperative is a single ≤240-char line — deliberately written that way. **Any operator guidance
+  added late in AGENTS.md is probably invisible; verify with the head/digest/tail model before
+  trusting it.** Trimming AGENTS.md is the real fix and is still owed.
+
 ## 5. The walls — traps by the time you'd hit them
 
 The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, architecture-memory

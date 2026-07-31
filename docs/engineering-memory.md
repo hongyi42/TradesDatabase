@@ -552,10 +552,15 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   first token* (the router converts tools to `response_format: structural_tag`, not native
   tool-calls). Measured on s2 with the grammar forced cold: **0 tools = 1.4s, 73 tools = 67s**.
   Isolating it: `message` (an OpenClaw built-in, 113 params, 13 levels deep) costs **~51s alone**;
-  `browser` ~7.7s; `cron` only ~2.7s. Neither `message` nor `browser` was called ONCE in 160
-  stored sessions (web content goes through `trades-spine__read_webpage`); `cron` IS used (41
-  calls) so it stays. Denying the two: **67s → 3s cold**, ~3,900 fewer tokens/turn. Our own 39
-  spine tools are innocent (avg schema-complexity score 8 vs `message`'s 317).
+  `browser` ~7.7s. Neither was called ONCE in 160 stored sessions (web content goes through
+  `trades-spine__read_webpage`); `cron` IS used (41 calls) so it stays. Denying the two:
+  **67s → 3s cold**, ~3,900 fewer tokens/turn. Our own 39 spine tools are innocent (avg
+  schema-complexity score 8 vs `message`'s 317).
+  **CORRECTION 2026-07-31: the "`cron` ≈ 2.7s" figure first recorded here was WRONG** — it came
+  from an n=1 bisect pair taken under the variance documented below. Re-measured properly
+  (streaming TTFT, 6 rounds, ×5 amplifier, DeepInfra route verified before *and* after):
+  **`cron` ≈ 180–200 ms/turn.** The 67s → 3s headline is unaffected — that was replicated 3×
+  and `message` still dominates — only the per-tool cron attribution was bad.
   Proof it is the schemas and not tokens: same 73 tools with `parameters` emptied and the schema
   text moved into descriptions ran **2.7s median with MORE tokens** (41.3k vs 38.6k), replicated
   3× interleaved. Applied to s2/s5/s6/s7/s8 via `agents.list[].tools.deny` (the `agents` section
@@ -588,10 +593,22 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   (`registerTool((ctx) => …)` → `ctx.sessionKey` / `ctx.agentId` / `ctx.deliveryContext`).
   Behaviour is locked by `src/control/tradesCronPlugin.test.ts` (schema stays flat; job/patch
   construction; the sessionTarget↔payload rules).
-  **Latency win NOT yet confirmed.** The structural change is certain and the mechanism is the
-  one proven above, but a same-night A/B against the live endpoint was unusable: identical
-  payloads ranged 5.9s–45s and the run ended in HTTP 429s. Do not quote a number for this
-  change until it is re-measured on a quiet endpoint.
+  **Measured 2026-07-31 (after the balance top-up, on DeepInfra, route verified before *and*
+  after, 0 failovers):** streaming TTFT, 6 interleaved rounds, min estimator, plus a ×5 amplifier
+  as a sensitivity control because the ~200 ms effect sits below the per-request noise floor at
+  ×1. Per copy of the tool:
+
+  | background | built-in `cron` | flat `cron_job` | saving/turn |
+  |---|---|---|---|
+  | 37 tools | 204 ms | 46 ms | ~158 ms |
+  | 64 tools | 183 ms | ~0 ms (−29, i.e. unmeasurable) | ~180 ms |
+
+  Sensitivity control passed both times (5 copies of `cron` cost +1022 ms / +913 ms over
+  baseline). So the win is **real, consistent, and small: ~0.2s off a ~3s turn (~5–7%)** — NOT
+  the multi-second win the original 2.7s figure implied. It also barely grows with background
+  size, so the superlinearity seen between 1 tool (~76 ms) and 70 tools does not keep compounding
+  in this range. **The stronger justification for shipping this is the correctness fix**
+  (`gatewayUrl`/`gatewayToken` hallucination), not the latency.
   Install notes: plugins are discovered from a **persisted cold-metadata registry**, so a new
   extension needs `openclaw plugins registry --refresh` — dropping files in
   `/sandbox/.openclaw/extensions/` alone leaves the tool invisible. `openclaw plugins inspect`

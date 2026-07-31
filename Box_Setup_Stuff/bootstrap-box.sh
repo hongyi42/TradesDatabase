@@ -916,6 +916,11 @@ EOF
     # dropped: the block above installs the trades-cron plugin, which exposes the
     # same actions as \`cron_job\` with a flat schema. Deny \`cron\` only when that
     # plugin is present, or the agents lose scheduling entirely.
+    # Measured 2026-07-31 (TTFT, 6 rounds, x5 amplifier, DeepInfra verified before+after):
+    # built-in cron ~183-204ms/turn vs ~0-46ms for cron_job => ~0.2s saved, about 5-7% of a
+    # 3s turn. An earlier "cron ~2.7s" note here was an n=1 artefact and is withdrawn. The
+    # stronger reason to swap is correctness: the built-in exposes gatewayUrl/gatewayToken,
+    # which the model hallucinated on most calls and was rejected for.
     #
     # \`reasoning: true\` on the model entry is the GATE for thinking levels:
     # with it false, agents.defaults.thinkingDefault is ignored and every

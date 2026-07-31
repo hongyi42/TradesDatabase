@@ -876,32 +876,6 @@ EOF
     echo "    WARN: no running container for ${agent} — set agents.defaults.heartbeat.every=0m manually"
   fi
 
-  log "cron_job plugin (flat-schema cron wrapper — added 2026-07-31)"
-  if [ -n "$cid" ]; then
-    # Replaces OpenClaw's built-in \`cron\` tool, whose schema nests 4 deep and
-    # carries the whole job tree TWICE (\`job\` + \`patch\`). Same actions, same
-    # Gateway RPCs, but a flat object of scalars so the decoding grammar is cheap
-    # — and no gatewayUrl/gatewayToken params, which the model kept hallucinating
-    # and getting rejected for. Source of truth: plugins/trades-cron/ in this repo,
-    # behaviour locked by src/control/tradesCronPlugin.test.ts.
-    pl_src="$SCRIPT_DIR/plugins/trades-cron"
-    pl_dst=/sandbox/.openclaw/extensions/trades-cron
-    if [ -d "$pl_src" ]; then
-      nemoclaw "$agent" exec --no-tty -- mkdir -p "$pl_dst" </dev/null >/dev/null 2>&1 || true
-      for pl_f in index.js package.json openclaw.plugin.json; do
-        nemoclaw "$agent" upload "$pl_src/$pl_f" "$pl_dst/$pl_f" </dev/null
-      done
-      nemoclaw "$agent" exec --no-tty -- sh -c "chmod 660 $pl_dst/*" </dev/null >/dev/null 2>&1 || true
-      # Plugins are discovered from a persisted cold-metadata registry, not by
-      # scanning on boot — without this refresh the tool never reaches the model.
-      docker exec -u sandbox -e HOME=/sandbox -e OPENCLAW_HOME=/sandbox "$cid" \
-        openclaw plugins registry --refresh >/dev/null 2>&1 || true
-      ok "installed trades-cron plugin (cron_job)"
-    else
-      echo "    WARN: $pl_src missing — cron_job not installed; do NOT deny \`cron\` on this box"
-    fi
-  fi
-
   log "tool-surface trim + thinking (turn latency 67s -> 3s — added 2026-07-30)"
   if [ -n "$cid" ]; then
     # WHY: every request compiles each tool's \`parameters\` schema into a
@@ -912,29 +886,17 @@ EOF
     # (the agents use trades-spine__read_webpage for web content).
     # Dropping the two: 67s -> 3s cold, and ~3,900 fewer tokens per turn.
     #
-    # \`cron\` IS used (41 calls across 160 sessions) so it is REPLACED, not just
-    # dropped: the block above installs the trades-cron plugin, which exposes the
-    # same actions as \`cron_job\` with a flat schema. Deny \`cron\` only when that
-    # plugin is present, or the agents lose scheduling entirely.
-    # Measured 2026-07-31 (TTFT, 6 rounds, x5 amplifier, DeepInfra verified before+after):
-    # built-in cron ~183-204ms/turn vs ~0-46ms for cron_job => ~0.2s saved, about 5-7% of a
-    # 3s turn. An earlier "cron ~2.7s" note here was an n=1 artefact and is withdrawn. The
-    # stronger reason to swap is correctness: the built-in exposes gatewayUrl/gatewayToken,
-    # which the model hallucinated on most calls and was rejected for.
-    #
-    # \`reasoning: true\` on the model entry is the GATE for thinking levels:
-    # with it false, agents.defaults.thinkingDefault is ignored and every
-    # session resolves to "off". adaptive ranks equal to medium (both 30).
+    # \`cron\` IS used (41 calls across 160 sessions) and STAYS. A flat-schema
+    # replacement was built and measured on 2026-07-31 (TTFT, 6 rounds, x5
+    # amplifier, DeepInfra route verified before+after): the built-in costs only
+    # ~183-204ms/turn, so swapping it saved ~0.2s — not worth a per-sandbox plugin
+    # to carry across OpenClaw upgrades. An earlier "cron ~2.7s" note was an n=1
+    # artefact and is withdrawn. See docs/engineering-memory.md §4.
     #
     # Same gateway-mediated recipe as the heartbeat block above — NEVER
     # \`openclaw config patch\`, which trips GATEWAY_UNSAFE_CONFIG_PATH and
     # leaves the gateway refusing to start (three bots went down learning this).
-    # Deny cron only when the replacement actually landed, so a failed plugin
-    # upload degrades to "cron still works" rather than "no scheduling at all".
     ts_deny='["message","browser"]'
-    if nemoclaw "$agent" exec --no-tty -- test -f "$pl_dst/index.js" </dev/null >/dev/null 2>&1; then
-      ts_deny='["message","browser","cron"]'
-    fi
     ts_tmp=$(mktemp -d)
     nemoclaw "$agent" download /sandbox/.openclaw/openclaw.json "$ts_tmp/oc.json" </dev/null
     jq --argjson deny "$ts_deny" '

@@ -572,48 +572,48 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   What it is NOT (each disproven with measurements): prompt size (cold 38k prefill = 2.5s),
   prompt-cache misses (a turn with `cacheRead=38,016` still took 74.6s), streaming,
   `prompt_cache_key`, `max_tokens`, tool COUNT, or provider health.
-- **2026-07-31 — `cron` REPLACED rather than denied: the `trades-cron` plugin (`cron_job`).**
-  `cron` is the one expensive built-in the agents actually use (41 calls / 160 sessions — the
-  freeze-reminder path), so it could not just be dropped. `Box_Setup_Stuff/plugins/trades-cron/`
-  is a plain-JS OpenClaw tool plugin exposing the same nine actions
-  (status/list/get/add/update/remove/run/runs/wake) through a **flat object of scalars**, and
-  rebuilds the nested job in `execute` before calling the identical Gateway RPCs
-  (`cron.add`, `cron.update`, …) via `callGatewayTool` — the same function the built-in uses.
-  Schema shape: **6,835 B / 108 props / depth 5 → 1,899 B / 21 props / depth 2** (the built-in
-  carries the whole job tree TWICE, as `job` and `patch`, each with
-  `schedule`/`payload`/`delivery`→`failureDestination`/`failureAlert`). Guidance that would have
-  cost grammar time lives in the tool description instead — descriptions are not compiled.
-  It also removes a live bug: the built-in exposes `gatewayUrl`/`gatewayToken`, which GLM-5.2
-  hallucinated on most calls (it even invented a token) and got rejected for — `gatewayUrl
-  override rejected` / `pairing required`, burning turns. The wrapper omits them and sets
-  `additionalProperties: false`, so constrained decoding cannot emit them at all.
-  Session/delivery binding (`agentId`, `sessionKey`, and the announce target inherited from the
-  live chat, i.e. what makes "remind me later" come back to the right conversation) is
-  reproduced from the built-in's execute path using the plugin tool-factory context
-  (`registerTool((ctx) => …)` → `ctx.sessionKey` / `ctx.agentId` / `ctx.deliveryContext`).
-  Behaviour is locked by `src/control/tradesCronPlugin.test.ts` (schema stays flat; job/patch
-  construction; the sessionTarget↔payload rules).
-  **Measured 2026-07-31 (after the balance top-up, on DeepInfra, route verified before *and*
-  after, 0 failovers):** streaming TTFT, 6 interleaved rounds, min estimator, plus a ×5 amplifier
-  as a sensitivity control because the ~200 ms effect sits below the per-request noise floor at
-  ×1. Per copy of the tool:
+- **2026-07-31 — a flat-schema `cron` replacement was BUILT, MEASURED, and REJECTED. Do not
+  rebuild it.** `cron` is the one costly built-in the agents actually use (41 calls / 160
+  sessions — the freeze-reminder path), so the plan was to replace rather than deny it: a
+  plain-JS OpenClaw tool plugin (`trades-cron`, tool `cron_job`) exposing the same nine actions
+  through a flat object of scalars, rebuilding the nested job in `execute` and calling the
+  identical Gateway RPCs via `callGatewayTool`. Schema shape
+  **6,835 B / 108 props / depth 5 → 1,899 B / 21 props / depth 2**.
+  It worked — plugin loaded, tool reached the model, 12 unit tests green — but the measurement
+  killed the case for it (TTFT, 6 interleaved rounds, min estimator, ×5 amplifier as a
+  sensitivity control, DeepInfra route verified before *and* after, 0 failovers):
 
   | background | built-in `cron` | flat `cron_job` | saving/turn |
   |---|---|---|---|
   | 37 tools | 204 ms | 46 ms | ~158 ms |
-  | 64 tools | 183 ms | ~0 ms (−29, i.e. unmeasurable) | ~180 ms |
+  | 64 tools | 183 ms | ~0 ms (−29, unmeasurable) | ~180 ms |
 
   Sensitivity control passed both times (5 copies of `cron` cost +1022 ms / +913 ms over
-  baseline). So the win is **real, consistent, and small: ~0.2s off a ~3s turn (~5–7%)** — NOT
-  the multi-second win the original 2.7s figure implied. It also barely grows with background
-  size, so the superlinearity seen between 1 tool (~76 ms) and 70 tools does not keep compounding
-  in this range. **The stronger justification for shipping this is the correctness fix**
-  (`gatewayUrl`/`gatewayToken` hallucination), not the latency.
-  Install notes: plugins are discovered from a **persisted cold-metadata registry**, so a new
-  extension needs `openclaw plugins registry --refresh` — dropping files in
-  `/sandbox/.openclaw/extensions/` alone leaves the tool invisible. `openclaw plugins inspect`
-  showing `Tools: (anonymous)` is normal for the factory form (the bundled `browser` plugin
-  registers the same way); `contracts.tools` in the manifest is what cold discovery reads.
+  baseline), so the ~zero for `cron_job` is a real null, not a missing signal. **~0.2s off a ~3s
+  turn did not justify a per-sandbox plugin to carry across OpenClaw upgrades** — owner decision,
+  2026-07-31. Removed from s2 and from this repo; `cron` stays enabled everywhere.
+  Two findings from the work are worth keeping even though the plugin is gone:
+  - The built-in `cron` exposes `gatewayUrl`/`gatewayToken`, and GLM-5.2 **hallucinates them on
+    most calls** (it invents a token), getting `gatewayUrl override rejected` / `pairing
+    required` and burning a turn before retrying without them. Still live. A cheaper fix than a
+    whole plugin, if it ever becomes worth fixing, is a line in AGENTS.md telling the agent never
+    to pass them.
+  - `cron` already accepts **flat params**: `recoverCronObjectFromFlatParams` in
+    `dist/openclaw-tools-*.js` reconstructs `job`/`patch` from top-level keys, and the schema is
+    `additionalProperties: true`. So the nested `job`/`patch` sub-schemas are redundant for the
+    common cases — which is why a flat wrapper was possible at all.
+
+  Plugin mechanics learned, if a future plugin IS warranted: OpenClaw discovers plugins from a
+  **persisted cold-metadata registry**, so a new extension needs
+  `openclaw plugins registry --refresh` — dropping files in `/sandbox/.openclaw/extensions/`
+  alone leaves the tool invisible. `openclaw plugins inspect` showing `Tools: (anonymous)` is
+  normal for the factory form (`registerTool((ctx) => …)`, which is how the bundled `browser`
+  plugin gets `ctx.sessionKey` / `ctx.agentId` / `ctx.deliveryContext`); `contracts.tools` in the
+  manifest is what cold discovery reads. Plugins should import nothing from `openclaw` at load
+  time (the bundled `nemoclaw` extension is the working reference). Gateway RPC from a plugin
+  goes through `callGatewayTool` (exported via `openclaw/plugin-sdk/agent-harness-runtime`);
+  it cannot be exercised from the CLI at all — device pairing blocks it, and the built-in
+  `openclaw cron` CLI hits the identical wall, so plugin RPC needs a real Telegram turn to test.
   Beware `tar` from macOS: it ships `._*` AppleDouble files into the plugin dir.
 - **Dated debts:** GRANT/default-privileges migration to replace
   `auto_expose_new_tables = true` — **due before 2026-10-30** (Supabase removes the flag;

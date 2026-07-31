@@ -196,6 +196,67 @@ was never paired cannot be repaired from the CLI at all.** Not by `doctor --fix`
 `devices approve` (this issue), and not by loopback (above). On our box that is 25-day-old
 sandboxes with no `paired.json`, so every gateway-backed agent tool has been dead since creation.
 
+## The only remaining repair for a cold sandbox: seed both halves of the token pair
+
+Established by reading `dist/device-pairing-3ziNdlg5.js` on the box (OpenClaw 2026.5.27).
+A paired device is authenticated by **plain token comparison** — there is no signature path:
+
+```js
+const entry = device.tokens?.[role];
+if (!entry)                                       return { ok:false, reason:"token-missing" };
+if (entry.revokedAtMs)                            return { ok:false, reason:"token-revoked" };
+if (!verifyPairingToken(params.token, entry.token)) return { ok:false, reason:"token-mismatch" };
+```
+
+`verifyPairingToken` is `safeEqualSecret(provided, expected)`. The stored `publicKey` is
+**never** used to verify a connection — it is identity metadata only (its one functional use is
+`existing.publicKey !== incoming.publicKey` when deciding whether a pending request can be
+refreshed in place).
+
+The same secret therefore lives in two plain files, and a genuine approval writes **both**:
+
+| side | file | field |
+|---|---|---|
+| server (gateway) | `devices/paired.json` | `<deviceId>.tokens.operator.token` |
+| client (CLI/agent) | `identity/device-auth.json` | `tokens.operator.token` |
+
+Verified byte-identical on s2, the one sandbox that pairs correctly.
+
+**Consequence:** a cold sandbox can be repaired by hand, but only by writing *both* files with the
+same freshly generated token (`randomBytes(32).toString("base64url")`, 43 chars). Seeding
+`paired.json` alone — the obvious move — fails closed with `token-mismatch`, because the client
+has no way to learn a token it never received.
+
+Constraints the seeded entry must satisfy, all confirmed against the source:
+
+- `getPairedDeviceFromState` keys off `normalizeDeviceId` = `trim()` only — so `deviceId` must
+  match `identity/device.json` exactly.
+- `scopesWithinApprovedDeviceBaseline` requires the token's scopes to sit inside
+  `approvedScopes ?? scopes`; `operator.admin` in the baseline satisfies everything via
+  `operatorScopeSatisfied`'s universal allow.
+- The `legacy-browser-token` rejection only fires for `isBrowserRelatedPairedDevice` —
+  `clientMode === "webchat"` or `clientId ∈ {openclaw-control-ui, webchat-ui}`. A `cli`/`cli`
+  device with no `issuer` is accepted, which is why s2 works with `issuer: undefined`.
+
+This is a workaround, not a fix — it hand-writes state that only the approval flow should
+produce. It is recorded here because issues 1, 2 and 5 leave no supported alternative.
+
+**No gateway restart is required.** `verifyDeviceAuth` calls `loadState(params.baseDir)` on every
+authentication attempt, so a seeded `paired.json` takes effect on the next connection. Confirmed on
+s3: seeded and `cron add` succeeded with no restart — which makes this a zero-downtime repair for
+sandboxes with live users.
+
+Two operational notes:
+
+- **Clear `devices/pending.json` to `{}` after seeding.** A leftover pending request keeps
+  `doctor` reporting `[fail] Tool-call device scope` even though the device authenticates fine.
+  The stale entry is inert — the gateway answered `unknown requestId` when asked to approve it,
+  and its `ts` stopped advancing — but it makes the health check lie.
+- Applied 2026-07-31 to s3, s5, s6, s8 (s2 was already paired the supported way; **s7 deliberately
+  skipped** — in use for testing). All five now report
+  `[ok] Tool-call device scope: no pending tool-scope approvals`, and `cron add` (operator.admin)
+  succeeds on each.
+
 ## Reproduction
 
 1. Provision a sandbox with nemoclaw v0.0.73; let the startup auto-pair watcher's window expire.

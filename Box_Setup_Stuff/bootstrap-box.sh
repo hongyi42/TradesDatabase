@@ -876,6 +876,57 @@ EOF
     echo "    WARN: no running container for ${agent} — set agents.defaults.heartbeat.every=0m manually"
   fi
 
+  log "tool-surface trim + thinking (turn latency 67s -> 3s — added 2026-07-30)"
+  if [ -n "$cid" ]; then
+    # WHY: every request compiles each tool's \`parameters\` schema into a
+    # constrained-decoding grammar BEFORE the first token. Measured on s2
+    # (2026-07-30): 73 tools = 67s/turn, 0 tools = 1.4s. The cost is one tool —
+    # OpenClaw's built-in \`message\` (113 params, 13 levels deep) at ~51s on its
+    # own; \`browser\` adds ~7.7s. Neither was called ONCE across 160 sessions
+    # (the agents use trades-spine__read_webpage for web content).
+    # Dropping the two: 67s -> 3s cold, and ~3,900 fewer tokens per turn.
+    #
+    # \`cron\` IS used (41 calls across 160 sessions) and STAYS. A flat-schema
+    # replacement was built and measured on 2026-07-31 (TTFT, 6 rounds, x5
+    # amplifier, DeepInfra route verified before+after): the built-in costs only
+    # ~183-204ms/turn, so swapping it saved ~0.2s — not worth a per-sandbox plugin
+    # to carry across OpenClaw upgrades. An earlier "cron ~2.7s" note was an n=1
+    # artefact and is withdrawn. See docs/engineering-memory.md §4.
+    #
+    # Same gateway-mediated recipe as the heartbeat block above — NEVER
+    # \`openclaw config patch\`, which trips GATEWAY_UNSAFE_CONFIG_PATH and
+    # leaves the gateway refusing to start (three bots went down learning this).
+    ts_deny='["message","browser"]'
+    ts_tmp=$(mktemp -d)
+    nemoclaw "$agent" download /sandbox/.openclaw/openclaw.json "$ts_tmp/oc.json" </dev/null
+    jq --argjson deny "$ts_deny" '
+      (.agents.defaults.thinkingDefault) = "adaptive"
+      | (.agents.list) = ((.agents.list // [{id:"main",default:true}]) | map(
+          .tools = ((.tools // {}) | .deny = (((.deny // []) + $deny) | unique))
+        ))
+      | (.models.providers) = ((.models.providers // {}) | with_entries(
+          .value.models = ((.value.models // []) | map(.reasoning = true))
+        ))
+    ' "$ts_tmp/oc.json" > "$ts_tmp/oc.new"
+    # Compare against what is already there rather than probing one field: the
+    # settings applied here have grown over time, and a single-field guard would
+    # skip a box that has some of them but not the rest.
+    if cmp -s "$ts_tmp/oc.json" "$ts_tmp/oc.new"; then
+      ok "tool trim + reasoning already applied"
+      rm -rf "$ts_tmp"
+    else
+      ts_h=$(sha256sum "$ts_tmp/oc.new" | awk '{print $1}')
+      nemoclaw "$agent" upload "$ts_tmp/oc.new" /sandbox/.openclaw/openclaw.json </dev/null
+      nemoclaw "$agent" exec --no-tty -- sh -c "printf '%s  openclaw.json\n' '$ts_h' > /sandbox/.openclaw/.config-hash" </dev/null
+      nemoclaw "$agent" exec --no-tty -- chmod 660 /sandbox/.openclaw/openclaw.json /sandbox/.openclaw/.config-hash </dev/null
+      nemoclaw "$agent" gateway restart </dev/null >/dev/null 2>&1 || true
+      rm -rf "$ts_tmp"
+      ok "denied ${ts_deny}; thinking=adaptive; reasoning=true (67s -> 3s per turn)"
+    fi
+  else
+    echo "    WARN: no running container for ${agent} — apply the tool deny + reasoning flags manually"
+  fi
+
   cat <<EOF
 
 MANUAL — badge install (§5b; plaintext stays between the pending file and the provider store):

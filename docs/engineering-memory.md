@@ -547,6 +547,74 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   if the trial wins, mirror the flag into the render source + all sandboxes. Full mechanics,
   revert recipe, and citations:
   [thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md](../thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md).
+- **FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema.** Every request
+  compiles each tool's `parameters` JSON-Schema into a constrained-decoding grammar *before the
+  first token* (the router converts tools to `response_format: structural_tag`, not native
+  tool-calls). Measured on s2 with the grammar forced cold: **0 tools = 1.4s, 73 tools = 67s**.
+  Isolating it: `message` (an OpenClaw built-in, 113 params, 13 levels deep) costs **~51s alone**;
+  `browser` ~7.7s. Neither was called ONCE in 160 stored sessions (web content goes through
+  `trades-spine__read_webpage`); `cron` IS used (41 calls) so it stays. Denying the two:
+  **67s → 3s cold**, ~3,900 fewer tokens/turn. Our own 39 spine tools are innocent (avg
+  schema-complexity score 8 vs `message`'s 317).
+  **CORRECTION 2026-07-31: the "`cron` ≈ 2.7s" figure first recorded here was WRONG** — it came
+  from an n=1 bisect pair taken under the variance documented below. Re-measured properly
+  (streaming TTFT, 6 rounds, ×5 amplifier, DeepInfra route verified before *and* after):
+  **`cron` ≈ 180–200 ms/turn.** The 67s → 3s headline is unaffected — that was replicated 3×
+  and `message` still dominates — only the per-tool cron attribution was bad.
+  Proof it is the schemas and not tokens: same 73 tools with `parameters` emptied and the schema
+  text moved into descriptions ran **2.7s median with MORE tokens** (41.3k vs 38.6k), replicated
+  3× interleaved. Applied to s2/s5/s6/s7/s8 via `agents.list[].tools.deny` (the `agents` section
+  survives rebuilds; top-level `tools.deny` does NOT — see `openclaw-config-merge.ts`
+  `backupDurableSections`). **s3 (Judy) deliberately NOT touched** — hands-off rule.
+  Also flipped `models…models[].reasoning: true`: while false, `agents.defaults.thinkingDefault`
+  is IGNORED and every session resolves to `thinkingLevel: off`. With it true, `adaptive`
+  (ranks equal to `medium`, both 30) takes effect at no measurable cost on cheap turns.
+  What it is NOT (each disproven with measurements): prompt size (cold 38k prefill = 2.5s),
+  prompt-cache misses (a turn with `cacheRead=38,016` still took 74.6s), streaming,
+  `prompt_cache_key`, `max_tokens`, tool COUNT, or provider health.
+- **2026-07-31 — a flat-schema `cron` replacement was BUILT, MEASURED, and REJECTED. Do not
+  rebuild it.** `cron` is the one costly built-in the agents actually use (41 calls / 160
+  sessions — the freeze-reminder path), so the plan was to replace rather than deny it: a
+  plain-JS OpenClaw tool plugin (`trades-cron`, tool `cron_job`) exposing the same nine actions
+  through a flat object of scalars, rebuilding the nested job in `execute` and calling the
+  identical Gateway RPCs via `callGatewayTool`. Schema shape
+  **6,835 B / 108 props / depth 5 → 1,899 B / 21 props / depth 2**.
+  It worked — plugin loaded, tool reached the model, 12 unit tests green — but the measurement
+  killed the case for it (TTFT, 6 interleaved rounds, min estimator, ×5 amplifier as a
+  sensitivity control, DeepInfra route verified before *and* after, 0 failovers):
+
+  | background | built-in `cron` | flat `cron_job` | saving/turn |
+  |---|---|---|---|
+  | 37 tools | 204 ms | 46 ms | ~158 ms |
+  | 64 tools | 183 ms | ~0 ms (−29, unmeasurable) | ~180 ms |
+
+  Sensitivity control passed both times (5 copies of `cron` cost +1022 ms / +913 ms over
+  baseline), so the ~zero for `cron_job` is a real null, not a missing signal. **~0.2s off a ~3s
+  turn did not justify a per-sandbox plugin to carry across OpenClaw upgrades** — owner decision,
+  2026-07-31. Removed from s2 and from this repo; `cron` stays enabled everywhere.
+  Two findings from the work are worth keeping even though the plugin is gone:
+  - The built-in `cron` exposes `gatewayUrl`/`gatewayToken`, and GLM-5.2 **hallucinates them on
+    most calls** (it invents a token), getting `gatewayUrl override rejected` / `pairing
+    required` and burning a turn before retrying without them. Still live. A cheaper fix than a
+    whole plugin, if it ever becomes worth fixing, is a line in AGENTS.md telling the agent never
+    to pass them.
+  - `cron` already accepts **flat params**: `recoverCronObjectFromFlatParams` in
+    `dist/openclaw-tools-*.js` reconstructs `job`/`patch` from top-level keys, and the schema is
+    `additionalProperties: true`. So the nested `job`/`patch` sub-schemas are redundant for the
+    common cases — which is why a flat wrapper was possible at all.
+
+  Plugin mechanics learned, if a future plugin IS warranted: OpenClaw discovers plugins from a
+  **persisted cold-metadata registry**, so a new extension needs
+  `openclaw plugins registry --refresh` — dropping files in `/sandbox/.openclaw/extensions/`
+  alone leaves the tool invisible. `openclaw plugins inspect` showing `Tools: (anonymous)` is
+  normal for the factory form (`registerTool((ctx) => …)`, which is how the bundled `browser`
+  plugin gets `ctx.sessionKey` / `ctx.agentId` / `ctx.deliveryContext`); `contracts.tools` in the
+  manifest is what cold discovery reads. Plugins should import nothing from `openclaw` at load
+  time (the bundled `nemoclaw` extension is the working reference). Gateway RPC from a plugin
+  goes through `callGatewayTool` (exported via `openclaw/plugin-sdk/agent-harness-runtime`);
+  it cannot be exercised from the CLI at all — device pairing blocks it, and the built-in
+  `openclaw cron` CLI hits the identical wall, so plugin RPC needs a real Telegram turn to test.
+  Beware `tar` from macOS: it ships `._*` AppleDouble files into the plugin dir.
 - **Dated debts:** GRANT/default-privileges migration to replace
   `auto_expose_new_tables = true` — **due before 2026-10-30** (Supabase removes the flag;
   fresh local stacks then break with `permission denied`). Old revoked NVIDIA key may still
@@ -569,6 +637,18 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   credential write (badge install/rotation, token change) needs a container restart to take
   effect. This exact mechanism silently killed Judy's spine MCP for 4 days (badge in store,
   absent from env).
+- **NEVER change a sandbox's `openclaw.json` with `openclaw config patch`.** It writes the file
+  but does NOT update nemoclaw's `.config-hash`, so the next `gateway restart` fails
+  `GATEWAY_UNSAFE_CONFIG_PATH` and leaves the gateway DOWN (3 bots went down learning this on
+  2026-07-30). Two extra teeth: run as root via `docker exec` and the file ends up `root:root`,
+  which the gateway also refuses (`chown sandbox:sandbox` + `chmod 660` to fix); and without a
+  login shell `OPENCLAW_HOME` is unset, so the patch silently lands in `/root/.openclaw/` and
+  changes NOTHING — it still prints "Applied N config update(s)". **Always verify by reading
+  `/sandbox/.openclaw/openclaw.json` back, never trust the success message.**
+  Use the gateway-mediated recipe instead (already in `bootstrap-box.sh`, heartbeat + tool-trim
+  blocks): `nemoclaw <s> download` → edit with `jq` → `upload` → write `.config-hash` →
+  `chmod 660` → `gateway restart`. If a gateway is already stuck this way,
+  `nemoclaw <s> doctor --fix` then restart clears it.
 - **`nemoclaw rebuild` can destroy the sandbox's device private key** (vendor bug: the
   state-snapshot sanitizer replaces `privateKeyPem` with `[STRIPPED_BY_MIGRATION]` in the
   LIVE identity). Symptom: endless device-pairing loop, no Telegram polling, no MCP. Detect:
@@ -594,6 +674,19 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   authorized phone.
 - **Trust box evidence over vendor status pages** (DeepInfra stayed green through two real
   outages). Both-providers-dead alarm → check the DeepInfra balance (HTTP 402) first.
+- **DeepInfra balance runs out roughly monthly and NOTHING alerts on it** — 2026-07-11,
+  2026-07-20, and again **2026-07-31** (last healthy probe 07:15:53Z, failover 07:20:57Z, still
+  failed over 8h24m later). Each time medic v2 failed the fleet to `nvidia-prod` within one tick
+  and the bots kept working (0 model errors on s2 across 9h), which is exactly why it goes
+  unnoticed. Surface it with the medic's own probe run LOUD:
+  `openshell inference set -g nemoclaw --provider deepinfra-prod --model zai-org/GLM-5.2` —
+  the 402 body names the cause. Auto-top-up / a balance alarm is still not configured.
+- **`inference.local` silently follows the failover, so a provider flip INVALIDATES any latency
+  measurement taken across it.** A `cron_job` A/B on 2026-07-31 was ruined this way: samples
+  before 07:20 hit DeepInfra (~1.5–10s), samples after hit NVIDIA (5.9–45s, then HTTP 429s on
+  the measurement traffic itself). Run `openshell inference get` **before and after** any timing
+  run and discard the run if it changed. NVIDIA rate-limits ad-hoc measurement traffic well
+  before it affects the bots — a 429 on your own probe is not evidence the agents are degraded.
 - **A deactivated seat's bot goes silent but alive** — deactivation revokes the *badge*
   (instantly — doorman re-reads badges.json per request), not the container or Telegram bot.
   A "zombie chat" answers small talk but every spine call 403s, until recycled. Related mask:

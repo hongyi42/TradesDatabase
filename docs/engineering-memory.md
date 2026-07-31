@@ -565,7 +565,10 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   text moved into descriptions ran **2.7s median with MORE tokens** (41.3k vs 38.6k), replicated
   3× interleaved. Applied to s2/s5/s6/s7/s8 via `agents.list[].tools.deny` (the `agents` section
   survives rebuilds; top-level `tools.deny` does NOT — see `openclaw-config-merge.ts`
-  `backupDurableSections`). **s3 (Judy) deliberately NOT touched** — hands-off rule.
+  `backupDurableSections`). **s3 (Judy) deliberately NOT touched** — originally under a hands-off
+  rule, which the owner lifted 2026-07-31; asked the same day whether to apply the deny there, the
+  owner declined ("she doesn't need the latency fix"). So s3 stays on the untrimmed tool surface by
+  DECISION, not oversight — don't re-raise it.
   Also flipped `models…models[].reasoning: true`: while false, `agents.defaults.thinkingDefault`
   is IGNORED and every session resolves to `thinkingLevel: off`. With it true, `adaptive`
   (ranks equal to `medium`, both 30) takes effect at no measurable cost on cheap turns.

@@ -58,9 +58,29 @@ no error and changes no state.
 
 **The recovery requires the approval it is supposed to grant.**
 
-Suggested fix: run the `devices list` step through the same env-stripped local fallback the
-approve step already uses (`unset OPENCLAW_GATEWAY_URL/PORT/TOKEN`), and surface a diagnostic
-instead of `sys.exit(0)` when listing fails.
+**The in-sandbox auto-pair watcher has the identical defect** (`scripts/nemoclaw-start.sh`), which
+is why restarting the container does not help:
+
+```python
+rc, out, err = run(OPENCLAW, 'devices', 'list', '--json')      # gateway-pinned
+if rc != 0:
+    continue                                                   # silent, forever
+...
+rc, out, err = run(OPENCLAW, 'devices', 'approve', request_id,
+                   '--json', strip_gateway_env=True)           # ← stripped HERE, but not above
+```
+
+The `approve` call already knows it must strip the gateway env to reach the local pairing
+fallback; the `list` call two lines earlier does not. So on an unpaired sandbox the watcher starts,
+logs `[auto-pair] watcher started`, and then loops for its full 8h deadline without ever listing a
+request. Verified: restarted a cold sandbox (s6), watcher came up, an allowlisted
+`cli`/`operator.pairing` request sat pending, and after 15+ seconds of 1s-cadence fast polling the
+watcher log still contained exactly one line and no `paired.json` was created.
+
+Suggested fix: pass `strip_gateway_env=True` to the `devices list` call in **both** the watcher and
+`auto-pair-approval.ts`, and surface a diagnostic instead of `continue`/`sys.exit(0)` when listing
+fails. As written, a sandbox that misses pairing during its very first window can never be paired
+by any supported path.
 
 ## Issue 2 — the allowlist cannot grant the scope cron requires
 

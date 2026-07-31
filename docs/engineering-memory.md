@@ -44,6 +44,21 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   `src/schedule/booking.ts` verbs as chat — one write path, one promise-ladder gate, never a
   parallel editing logic. Operators (us) appear only at initial setup and breakage; anything
   else operator-side is debt to automate.
+- **A schedule READ renders the booked order; it never re-derives one** (2026-07-31, user
+  decision). `get_schedule` used to ask Google Routes for the "best driving order" and return
+  the technician's day re-sequenced — contradicting the times the customers were promised and
+  the order the board shows, from a tool that changes nothing and cannot move anything.
+  Removed. Both schedule reads now return stops in booked (time) order, and **each stop carries
+  its own destination-only `mapsUrl`** instead of one multi-waypoint day link (no 10-stop cap,
+  no truncation, and it matches how a day is actually driven — navigate to the next stop, not
+  the whole day at once). `get_team_schedule` gained the same links on the caller's OWN placed
+  stops, so a manager who works in the field is served inside the one schedule read they have —
+  **additive, never a filter**, which is what keeps PR #54's "your week is completely clear"
+  miss structurally impossible. The dividing line to keep: **deciding order means MOVING
+  visits** (promises, confirmation, a DB write) — that is `run_freeze`/`run_resolve`'s job, and
+  a read must never do it quietly. Upstream fact this rests on: *"Waypoints are displayed on
+  the map in the same order they are listed in the URL"*
+  (https://developers.google.com/maps/documentation/urls/get-started).
 - **Vocabulary must track what actually gates** (2026-07-23, PR #74). `assignments.locked`
   marks a manual placement for the *future* auto-scheduler (Plan 4b) to route around — every
   manual book/move stamps it true, so a "locked" badge appeared on every visit and read as
@@ -630,12 +645,74 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
 - **Pending human tests:** Ben's phone board test (read-only day view, no tab bar, push on
   move); promised-visit confirm dialog via board drag; Judy items above.
 
+- **2026-07-31 — cron was dead fleet-wide, for TWO stacked reasons. Both now fixed on s2, s3, s5,
+  s6, s8 (s7 held back — in use for testing).**
+  1. **Device pairing.** Every tool routed through `callGatewayTool` (`cron`, `nodes`, `gateway`,
+     `wake`) reconnects to the Gateway as a *client* (`clientId=gateway-client`,
+     `clientMode=backend`). OpenClaw waives pairing only for shared-secret clients on a **loopback**
+     address, but NemoClaw points `OPENCLAW_GATEWAY_URL` at the bridge IP — so every call was
+     refused with `pairing required`. NemoClaw's auto-approval allowlist
+     (`openclaw_device_approval_policy.py`) covers `openclaw-control-ui` + `webchat`/`cli` only, so
+     the agent's own client is *never* auto-approved; and `doctor --fix` deadlocks because its first
+     step is a gateway-pinned `devices list`, which needs the approval it is trying to grant.
+     Contributing: `openclaw.json` `gateway.port` had drifted (18790/18793) from the real port
+     (**18789**), so OpenClaw's local loopback fallback — the documented escape hatch — dialled a
+     dead port. **Fix per sandbox:** correct `gateway.port` (gateway-mediated recipe), then
+     `nemoclaw <s> exec --no-tty -- bash -lc "openclaw cron status"` to mint the request and
+     `... "openclaw devices approve <id>"` to approve it (prints *"using local fallback"*), twice —
+     once for read, once for the cron-mutation scope. Verify with `doctor` → `[ok] Tool-call device
+     scope`. Must be `nemoclaw exec` (gateway netns); `docker exec` lands elsewhere and loopback
+     fails. Full write-up: `thoughts/shared/research/2026-07-31-nemoclaw-device-scope-deadlock.md`.
+     **Note `cron.add/update/remove/run` require `operator.admin`, not `operator.write`** — and
+     `operator.admin` is a universal allow (`if (scopes.includes("operator.admin")) return
+     {allowed:true}`), so scheduling costs config-write/agent-delete/channel-control too.
+     **That approve-based recipe only works on a sandbox that was part-paired during its startup
+     window (s2). A COLD sandbox cannot be repaired that way** — every `nemoclaw exec` mints a new
+     pending request that supersedes the one being approved, so it never converges. What works
+     there: **seed both halves of the token pair by hand.** OpenClaw authenticates a paired device
+     by *plain token comparison* (`verifyPairingToken` → `safeEqualSecret`); the stored `publicKey`
+     is never used to verify a connection. The same secret lives in two files and a real approval
+     writes both — `devices/paired.json` (server) and `identity/device-auth.json` (client).
+     **Seeding only `paired.json` fails closed with `token-mismatch`** — the client can't present a
+     token it never received. No gateway restart needed (`loadState` re-reads per auth attempt), so
+     it's zero-downtime on live boxes; clear `devices/pending.json` to `{}` afterwards or `doctor`
+     keeps reporting `[fail]` on an inert stale request. Script + full derivation in the research
+     doc. Used on s3/s5/s6/s8 on 2026-07-31.
+  2. **Main-session cron cannot fire here.** A `sessionTarget: "main"` + `systemEvent` job does not
+     run itself — it wakes the heartbeat, and we set `agents.defaults.heartbeat.every: "0m"` on
+     purpose. `heartbeat-runner` returns `{status:"skipped", reason:"disabled"}`, so cron records
+     `status: skipped, error: "disabled"` **and flips the job to `enabled:false`** — it looks
+     healthy at creation and silently never fires. **Isolated `agentTurn` jobs are unaffected** and
+     were verified end-to-end: fired on time, ran a real turn, `delivered: true` to Telegram.
+     The §0g AGENTS.md block now mandates `sessionTarget:"isolated"` + `payload.kind:"agentTurn"`
+     and is REFRESHED per wire run (delete-then-append) instead of append-once.
+- **AGENTS.md is ~26.6k chars against a 12k injected-context budget, so most of it never reaches
+  the model.** Truncation keeps head 45% + a policy digest 35% + tail 15%
+  (`trimAgentsBootstrapContent`). The digest scans the whole file but caps lines at **240 chars**
+  and fills its 4,200-char budget in **file order**: s2 has 56 high-priority (`must`/`never`/`do
+  not`) lines totalling 4,900 chars, so **135 policy lines are dropped** and anything late in the
+  file loses. The new cron rule survives only because its block is currently last (tail) and its
+  imperative is a single ≤240-char line — deliberately written that way. **Any operator guidance
+  added late in AGENTS.md is probably invisible; verify with the head/digest/tail model before
+  trusting it.** Trimming AGENTS.md is the real fix and is still owed.
+
 ## 5. The walls — traps by the time you'd hit them
 
 The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, architecture-memory
 "Gotchas") — this is the index of what exists, so you know to go look.
 
 **Working on the agent boxes:**
+- **A tool DESCRIPTION change is not deploy-only; a result-side field is.** Gateways cache
+  `tools/list` per process, and descriptions are part of that payload — so editing one needs
+  `nemoclaw <s> gateway restart` before any agent sees it, while adding a field to a tool's
+  *result* (PR #83's grounding riders; the 2026-07-31 per-stop `mapsUrl`) goes live on deploy
+  alone. A full box wire re-run is only needed when the change also touches AGENTS.md contract
+  text or the pinned tool NAMES — a pure description edit touches neither. **And the restart is per TIER, not fleet-wide:** a tool filtered off one
+  surface only forces restarts on the tier that carries it. Worked example (2026-07-31) — the
+  `get_schedule` rewrite changed that tool's description, but `get_schedule` is filtered out of
+  `MANAGER_TOOLS`, so *technician* sandboxes needed the wire+restart and the manager side, whose
+  change was result-only, was live the moment Render deployed. Getting this backwards costs
+  either a stale fleet or three needless restarts.
 - **Credentials inject into a sandbox's process env at container launch ONLY.** Any provider
   credential write (badge install/rotation, token change) needs a container restart to take
   effect. This exact mechanism silently killed Judy's spine MCP for 4 days (badge in store,

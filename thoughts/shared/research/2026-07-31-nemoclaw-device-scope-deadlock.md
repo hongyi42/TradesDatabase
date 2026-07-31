@@ -113,9 +113,11 @@ drifted from the port the gateway actually listens on (`OPENCLAW_GATEWAY_PORT`):
 | s7 | 18793 | **18789** |
 
 so the fallback dialed a dead port and failed with `1006 abnormal closure`. Correcting
-`gateway.port` to 18789 (and `controlUi.allowedOrigins` to match) made `devices approve` work
-first try. OpenClaw's own tool-level validator already expects 18789 — it rejects overrides with
-*"Allowed: ws(s) loopback on port 18789"* — so the config value is the outlier.
+`gateway.port` to 18789 (and `controlUi.allowedOrigins` to match) is necessary but **not
+sufficient** — it removes one failure mode, and on an already-part-paired sandbox it let
+`devices approve` complete, but on a cold sandbox the deadlock in issue 5 still applies.
+OpenClaw's own tool-level validator expects 18789 (*"Allowed: ws(s) loopback on port 18789"*),
+so the config value is the outlier either way.
 
 ## Issue 4 — the agent's own client is outside the allowlist by design
 
@@ -134,20 +136,45 @@ This is survivable only because approval is keyed by **deviceId**, and the CLI a
 `/sandbox/.openclaw/identity/device.json` — approving a `cli`-mode request grants the scope to the
 device, which the agent then inherits. That is an accident, not a mechanism.
 
-## Why loopback matters
+## Why loopback cannot be the answer (correction)
 
-OpenClaw waives device pairing only for shared-secret clients arriving on a **loopback** address
-(`isSharedSecretLoopbackLocalEquivalent` in `dist/message-handler-*.js`). Because
-`OPENCLAW_GATEWAY_URL` points at the bridge IP, the waiver never applies. Demonstrated in one
-agent turn (s2, 2026-07-27), all three paths in sequence:
+An earlier draft of this report suggested pointing `OPENCLAW_GATEWAY_URL` at loopback so OpenClaw's
+shared-secret loopback waiver (`isSharedSecretLoopbackLocalEquivalent`) would apply. **That is
+wrong, and the bridge address is deliberate.** `nemoclaw-blueprint/policies/openclaw-sandbox.yaml`:
 
-| call | result |
-|---|---|
-| default (env → `10.200.0.2`) | ❌ pairing required |
-| explicit `ws://10.200.0.2:18789` | ❌ *"override rejected — Allowed: ws(s) loopback on port 18789"* |
-| explicit `ws://127.0.0.1:18789` | ✅ job created |
+> The L7 proxy intercepts traffic from the enforced process tree even on the sandbox's own
+> interfaces, and **loopback destinations are always-blocked regardless of policy** — so the dial
+> must target the sandbox's eth0 address (the gateway listens on 0.0.0.0; nemoclaw-start.sh derives
+> the URL host accordingly).
 
-Note the middle row: OpenClaw refuses the very address NemoClaw configures.
+So for the enforced process tree the loopback waiver can *never* apply, and **device pairing is
+mandatory by design in this architecture**. That makes the auto-approval path the only way a
+sandbox's own device can ever be approved — which is precisely what is broken.
+
+Observed consequence: a raw TCP connect to `127.0.0.1:18789` succeeds (the gateway binds 0.0.0.0),
+but the WebSocket is blocked by the L7 proxy, surfacing as `Direct scope access failed` before the
+CLI drops to its local fallback.
+
+## Issue 5 — on a cold sandbox the deadlock is total: the repair tool consumes the thing it repairs
+
+`nemoclaw <s> exec` is itself a Gateway client. On an unpaired sandbox **every exec call mints a new
+pending device request and replaces the previous one**, so any "read the pending id, then approve
+it" sequence approves an id the gateway has already superseded:
+
+```
+approving 8225637d…  → pairing required … (requestId: 446b7afb…)
+approving 446b7afb…  → pairing required … (requestId: 64cbca26…)
+approving 64cbca26…  → pairing required … (requestId: 1aa8a022…)
+```
+
+Six consecutive attempts, never converging; `devices/paired.json` was never created. Confirmed on a
+cold sandbox (s3) while an already-half-paired sandbox (s2) completed fine — the difference is
+whether the device was paired during the startup watcher's window.
+
+Practical consequence: **once the in-sandbox auto-pair watcher's window has expired, a sandbox that
+was never paired cannot be repaired from the CLI at all.** Not by `doctor --fix` (issue 1), not by
+`devices approve` (this issue), and not by loopback (above). On our box that is 25-day-old
+sandboxes with no `paired.json`, so every gateway-backed agent tool has been dead since creation.
 
 ## Reproduction
 

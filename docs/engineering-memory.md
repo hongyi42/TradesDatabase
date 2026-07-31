@@ -657,6 +657,19 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   authorized phone.
 - **Trust box evidence over vendor status pages** (DeepInfra stayed green through two real
   outages). Both-providers-dead alarm → check the DeepInfra balance (HTTP 402) first.
+- **DeepInfra balance runs out roughly monthly and NOTHING alerts on it** — 2026-07-11,
+  2026-07-20, and again **2026-07-31** (last healthy probe 07:15:53Z, failover 07:20:57Z, still
+  failed over 8h24m later). Each time medic v2 failed the fleet to `nvidia-prod` within one tick
+  and the bots kept working (0 model errors on s2 across 9h), which is exactly why it goes
+  unnoticed. Surface it with the medic's own probe run LOUD:
+  `openshell inference set -g nemoclaw --provider deepinfra-prod --model zai-org/GLM-5.2` —
+  the 402 body names the cause. Auto-top-up / a balance alarm is still not configured.
+- **`inference.local` silently follows the failover, so a provider flip INVALIDATES any latency
+  measurement taken across it.** A `cron_job` A/B on 2026-07-31 was ruined this way: samples
+  before 07:20 hit DeepInfra (~1.5–10s), samples after hit NVIDIA (5.9–45s, then HTTP 429s on
+  the measurement traffic itself). Run `openshell inference get` **before and after** any timing
+  run and discard the run if it changed. NVIDIA rate-limits ad-hoc measurement traffic well
+  before it affects the bots — a 429 on your own probe is not evidence the agents are degraded.
 - **A deactivated seat's bot goes silent but alive** — deactivation revokes the *badge*
   (instantly — doorman re-reads badges.json per request), not the container or Telegram bot.
   A "zombie chat" answers small talk but every spine call 403s, until recycled. Related mask:

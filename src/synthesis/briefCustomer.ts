@@ -69,7 +69,17 @@ export const defaultBriefer: Briefer = async (context, focus, ctx) => {
   const args = await runForcedTool(BRIEFING_TOOL, {
     system: BRIEFING_SYSTEM,
     user: `Focus: ${focus}\n\n${serializeContextForPrompt(context)}`,
-    maxTokens: 1024,
+    // 1024 was too small and failed SILENTLY. Measured on GLM-5.2 (2026-07-30):
+    // a 6-capture customer used 831-892 tokens (87% of the old ceiling), and 12+
+    // captures hit finish_reason='length' every time — truncating `citations`
+    // away while still returning parseable JSON, so the briefing rendered
+    // complete and cited nothing. A 20-capture history needs ~1432.
+    //
+    // Raising the ceiling does NOT raise the bill for calls that already fit:
+    // completion_tokens bills what was emitted, not what was allowed. It only
+    // costs more where the call was previously truncated — and those were paying
+    // the full 1024 for an unusable result.
+    maxTokens: 2048,
     label: 'defaultBriefer',
   }, ctx);
   const { briefing, citations } = args as unknown as {

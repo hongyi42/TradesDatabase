@@ -1,5 +1,11 @@
-import { describe, expect, test } from 'vitest';
-import { coerceBySchema, parseOpenAiToolArgs, type JsonSchemaObject } from './forcedTool.js';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import {
+  coerceBySchema,
+  parseOpenAiToolArgs,
+  runForcedTool,
+  type ForcedToolSpec,
+  type JsonSchemaObject,
+} from './forcedTool.js';
 
 // Pure tests — no network. These cover the two things that differ between the
 // Anthropic and OpenAI-compatible wire formats and can therefore break silently:
@@ -68,6 +74,112 @@ describe('parseOpenAiToolArgs', () => {
     expect(() => parseOpenAiToolArgs({}, 'classify_email', 'defaultClassifier')).toThrow(
       'no classify_email tool call',
     );
+  });
+});
+
+// The truncation guard lives in the fetch path, so these drive runForcedTool with
+// a stubbed fetch rather than re-implementing the check — the thing that must not
+// regress is the PRODUCTION path, including the order the errors fire in.
+describe('truncated output is rejected, not silently accepted', () => {
+  const TOOL: ForcedToolSpec = {
+    name: 'record_briefing',
+    description: 'test',
+    inputSchema: {
+      type: 'object',
+      properties: { briefing: { type: 'string' }, citations: { type: 'array' } },
+      required: ['briefing', 'citations'],
+    },
+  };
+  const req = { system: 's', user: 'u', maxTokens: 1024, label: 'defaultBriefer' };
+  const saved = { key: process.env.INFERENCE_API_KEY, provider: process.env.MODEL_PROVIDER };
+  const realFetch = globalThis.fetch;
+
+  const stub = (body: unknown) => {
+    globalThis.fetch = (async () =>
+      ({ ok: true, status: 200, json: async () => body }) as Response) as typeof fetch;
+  };
+
+  beforeEach(() => {
+    process.env.INFERENCE_API_KEY = 'test-key';
+    delete process.env.MODEL_PROVIDER; // default 'openai'
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (saved.key === undefined) delete process.env.INFERENCE_API_KEY;
+    else process.env.INFERENCE_API_KEY = saved.key;
+    if (saved.provider === undefined) delete process.env.MODEL_PROVIDER;
+    else process.env.MODEL_PROVIDER = saved.provider;
+  });
+
+  // THE REGRESSION THIS EXISTS FOR. Reproduced live on GLM-5.2 (2026-07-30): a
+  // briefing that exceeded maxTokens returned finish_reason 'length' with a
+  // well-formed tool_call whose arguments still parsed — but with the required
+  // `citations` field truncated away. Every existing guard passed, and the caller
+  // turned the missing field into an empty array: a briefing that read complete
+  // and cited nothing, with no error anywhere.
+  test('a truncated reply whose arguments still parse is REJECTED', async () => {
+    stub({
+      choices: [
+        {
+          finish_reason: 'length',
+          message: {
+            tool_calls: [
+              { function: { name: 'record_briefing', arguments: '{"briefing":"Customer reports a leak."}' } },
+            ],
+          },
+        },
+      ],
+      usage: { prompt_tokens: 500, completion_tokens: 1024 },
+    });
+    await expect(runForcedTool(TOOL, req)).rejects.toThrow(/truncated at maxTokens=1024/);
+  });
+
+  // Message quality: when a reply is BOTH truncated and missing the tool call,
+  // "truncated" is the actionable diagnosis — "no tool call" would send the
+  // reader looking for a prompt bug instead of a budget one.
+  test('truncation is reported ahead of the generic no-tool-call error', async () => {
+    stub({
+      choices: [{ finish_reason: 'length', message: { content: '', tool_calls: [] } }],
+      usage: { completion_tokens: 1024 },
+    });
+    await expect(runForcedTool(TOOL, req)).rejects.toThrow(/truncated/);
+  });
+
+  // The guard must not fire on healthy replies — a false positive would turn
+  // working calls into 503s.
+  test('a complete reply is unaffected', async () => {
+    stub({
+      choices: [
+        {
+          finish_reason: 'tool_calls',
+          message: {
+            tool_calls: [
+              { function: { name: 'record_briefing', arguments: '{"briefing":"ok","citations":[]}' } },
+            ],
+          },
+        },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 20 },
+    });
+    await expect(runForcedTool(TOOL, req)).resolves.toEqual({ briefing: 'ok', citations: [] });
+  });
+
+  // 'stop' is the other healthy terminal reason some gateways return for a forced
+  // tool call; it must not be mistaken for truncation.
+  test("finish_reason 'stop' is not treated as truncation", async () => {
+    stub({
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: {
+            tool_calls: [
+              { function: { name: 'record_briefing', arguments: '{"briefing":"ok","citations":[]}' } },
+            ],
+          },
+        },
+      ],
+    });
+    await expect(runForcedTool(TOOL, req)).resolves.toMatchObject({ briefing: 'ok' });
   });
 });
 

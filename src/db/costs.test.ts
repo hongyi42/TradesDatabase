@@ -215,8 +215,6 @@ describe('cost_rates versioning', () => {
     ).toEqual([
       'anthropic/claude-sonnet-4-6-input 0.000003/token',
       'anthropic/claude-sonnet-4-6-output 0.000015/token',
-      'brave/search 0.005/request',
-      'composio/tool_call 0.000299/call',
       'deepinfra/glm-5.2-cached-input 1.8e-7/token',
       'deepinfra/glm-5.2-input 9.3e-7/token',
       'deepinfra/glm-5.2-output 0.000003/token',
@@ -224,8 +222,15 @@ describe('cost_rates versioning', () => {
     // Every rate must cite its vendor doc — CLAUDE.md's rule, and the only way a
     // future reader can re-verify a price that has gone stale.
     expect(seeded.every((r) => (r.source_url ?? '').startsWith('https://'))).toBe(true);
-    // 'spine' is a counter, not a vendor; 'google' has no collector in v1.
-    expect(seeded.some((r) => r.provider === 'spine' || r.provider === 'google')).toBe(false);
+    // COUNTERS, deliberately absent from the price book: 'spine' always was;
+    // 'brave' and 'composio' joined it (migration 20260730120000) because neither
+    // bills per unit from the first one — Brave grants $5/month of credit and
+    // Composio's $0.299/1K is an OVERAGE rate past 20,000 included calls. Their
+    // units are still recorded for attribution; their dollars come from a bill.
+    // 'google' never had a collector in v1.
+    expect(
+      seeded.some((r) => ['spine', 'google', 'brave', 'composio'].includes(r.provider)),
+    ).toBe(false);
     expect(current.some((r) => r.sku === 'closed')).toBe(false);
   });
 });
@@ -508,8 +513,8 @@ describe('rollupCosts', () => {
       { tenantId: tenantA, provider: 'anthropic', sku: 'claude-sonnet-4-6-input', quantity: 1_000_000, unit: 'token', method: 'measured', occurredAt: at('05'), sourceRef: 'r1' },
       // Sonnet output is $15.00 per 1M -> 100,000 x 0.000015 = $1.50
       { tenantId: tenantA, provider: 'anthropic', sku: 'claude-sonnet-4-6-output', quantity: 100_000, unit: 'token', method: 'measured', occurredAt: at('06'), sourceRef: 'r2' },
-      // Brave is $5 per 1,000 requests -> 200 x 0.005 = $1.00
-      { tenantId: tenantB, provider: 'brave', sku: 'search', quantity: 200, unit: 'request', method: 'measured', occurredAt: at('07'), sourceRef: 'r3' },
+      // DeepInfra GLM input is $0.93 per 1M tokens -> 1,000,000 x 0.00000093 = $0.93
+      { tenantId: tenantB, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 1_000_000, unit: 'token', method: 'measured', occurredAt: at('07'), sourceRef: 'r3' },
     ]);
     await rollupCosts(JULY);
 
@@ -518,18 +523,18 @@ describe('rollupCosts', () => {
     expect(Number(a[0].cost_usd)).toBeCloseTo(3.0 + 1.5, 6);
     expect(Number(a[0].quantity)).toBe(1_100_000);
     const b = await rollupFor(tenantB);
-    expect(Number(b[0].cost_usd)).toBeCloseTo(1.0, 6);
+    expect(Number(b[0].cost_usd)).toBeCloseTo(0.93, 6);
   });
 
   test('is idempotent — a second run recomputes rather than doubling', async () => {
     await appendCostEvents([
-      { tenantId: tenantA, provider: 'brave', sku: 'search', quantity: 100, unit: 'request', method: 'measured', occurredAt: at('05'), sourceRef: 'idem' },
+      { tenantId: tenantA, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 1_000_000, unit: 'token', method: 'measured', occurredAt: at('05'), sourceRef: 'idem' },
     ]);
     await rollupCosts(JULY);
     await rollupCosts(JULY);
     const a = await rollupFor(tenantA);
     expect(a).toHaveLength(1);
-    expect(Number(a[0].cost_usd)).toBeCloseTo(0.5, 6);
+    expect(Number(a[0].cost_usd)).toBeCloseTo(0.93, 6);
   });
 
   // A rate closed on exactly its successor's opening date must price that day
@@ -538,24 +543,24 @@ describe('rollupCosts', () => {
   // half-open form.
   test('a rate boundary day is priced once, by the incoming rate', async () => {
     await pg.query(
-      `update cost_rates set effective_to = '2026-07-10' where provider = 'brave' and sku = 'search'`,
+      `update cost_rates set effective_to = '2026-07-10' where provider = 'deepinfra' and sku = 'glm-5.2-input'`,
     );
     await pg.query(
       `insert into cost_rates (provider, sku, unit, unit_cost_usd, effective_from)
-       values ('brave', 'search', 'request', 0.01, '2026-07-10')`,
+       values ('deepinfra', 'glm-5.2-input', 'token', 0.000002, '2026-07-10')`,
     );
     await appendCostEvents([
-      // ON the boundary: belongs to the NEW rate only. 10 x $0.01 = $0.10
-      { tenantId: tenantA, provider: 'brave', sku: 'search', quantity: 10, unit: 'request', method: 'measured', occurredAt: at('10'), sourceRef: 'b1' },
-      // Before it: old rate. 10 x $0.005 = $0.05
-      { tenantId: tenantA, provider: 'brave', sku: 'search', quantity: 10, unit: 'request', method: 'measured', occurredAt: at('09'), sourceRef: 'b2' },
+      // ON the boundary: belongs to the NEW rate only. 1,000,000 x 0.000002 = $2.00
+      { tenantId: tenantA, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 1_000_000, unit: 'token', method: 'measured', occurredAt: at('10'), sourceRef: 'b1' },
+      // Before it: old rate. 1,000,000 x 0.00000093 = $0.93
+      { tenantId: tenantA, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 1_000_000, unit: 'token', method: 'measured', occurredAt: at('09'), sourceRef: 'b2' },
     ]);
     await rollupCosts(JULY);
     const a = await rollupFor(tenantA);
-    expect(Number(a[0].cost_usd)).toBeCloseTo(0.15, 6);
+    expect(Number(a[0].cost_usd)).toBeCloseTo(2.93, 6);
     // Restore the seeded book for the other tests in this file.
-    await pg.query(`delete from cost_rates where provider = 'brave' and effective_from = '2026-07-10'`);
-    await pg.query(`update cost_rates set effective_to = null where provider = 'brave' and sku = 'search'`);
+    await pg.query(`delete from cost_rates where provider = 'deepinfra' and effective_from = '2026-07-10'`);
+    await pg.query(`update cost_rates set effective_to = null where provider = 'deepinfra' and sku = 'glm-5.2-input'`);
   });
 
   // 'spine' is a COUNTER, not a billed vendor: it has no rate, so the measured
@@ -674,8 +679,9 @@ describe('rollupCosts', () => {
   // exactly this. The count is the operator's only signal.
   test('reports events that fell out of the join unpriced', async () => {
     await appendCostEvents([
-      { tenantId: tenantA, provider: 'brave', sku: 'search', quantity: 10, unit: 'request', method: 'measured', occurredAt: at('05'), sourceRef: 'p1' },
-      // No rate was ever seeded for this sku.
+      { tenantId: tenantA, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 1_000, unit: 'token', method: 'measured', occurredAt: at('05'), sourceRef: 'p1' },
+      // A GAP: 'anthropic' IS a priced provider, but no rate was ever seeded for
+      // this sku. Exactly what the signal exists to catch.
       { tenantId: tenantA, provider: 'anthropic', sku: 'claude-sonnet-9-input', quantity: 500, unit: 'token', method: 'measured', occurredAt: at('05'), sourceRef: 'p2' },
       // spine is unpriced BY DESIGN and must never be counted as a gap.
       { tenantId: tenantA, provider: 'spine', sku: 'tool_call', quantity: 4, unit: 'call', method: 'measured', occurredAt: at('05'), sourceRef: 'p3' },
@@ -684,19 +690,66 @@ describe('rollupCosts', () => {
     expect(result.unpricedEvents).toBe(1);
   });
 
+  // The predicate is derived from the price book, not a hardcoded name list: a
+  // provider with NO rate rows at all is a counter by design. Without this,
+  // unpricing Brave and Composio would report every one of their events as a
+  // price-book gap on every 15-minute tick — training operators to ignore the
+  // one signal that catches a real hole (migration 20260730120000).
+  test('a provider with NO rates is a counter, not a gap', async () => {
+    await appendCostEvents([
+      { tenantId: tenantA, provider: 'brave', sku: 'search', quantity: 10, unit: 'request', method: 'measured', occurredAt: at('05'), sourceRef: 'c1' },
+      { tenantId: tenantA, provider: 'composio', sku: 'tool_call', quantity: 5, unit: 'call', method: 'measured', occurredAt: at('05'), sourceRef: 'c2' },
+      { tenantId: tenantA, provider: 'spine', sku: 'tool_call', quantity: 3, unit: 'call', method: 'measured', occurredAt: at('05'), sourceRef: 'c3' },
+    ]);
+    const result = await rollupCosts(JULY);
+    expect(result.unpricedEvents).toBe(0);
+  });
+
+  // The other half of the same predicate: having SOME rate is what makes a
+  // missing one a fault. An event outside every window for a priced provider is
+  // a real gap and must still fire.
+  test('a priced provider with an event outside every rate window IS a gap', async () => {
+    await pg.query(
+      `update cost_rates set effective_to = '2026-07-15' where provider = 'deepinfra' and sku = 'glm-5.2-output'`,
+    );
+    await appendCostEvents([
+      { tenantId: tenantA, provider: 'deepinfra', sku: 'glm-5.2-output', quantity: 100, unit: 'token', method: 'measured', occurredAt: at('20'), sourceRef: 'g1' },
+    ]);
+    const result = await rollupCosts(JULY);
+    expect(result.unpricedEvents).toBe(1);
+    await pg.query(
+      `update cost_rates set effective_to = null where provider = 'deepinfra' and sku = 'glm-5.2-output'`,
+    );
+  });
+
+  // Unpricing removes a vendor from the DOLLAR surface but not from the ledger:
+  // the measured pass INNER joins cost_rates, so brave produces no rollup row —
+  // while its cost_events rows survive as the per-tenant attribution basis.
+  test('an unpriced vendor keeps its units but produces no rollup row', async () => {
+    await appendCostEvents([
+      { tenantId: tenantA, provider: 'brave', sku: 'search', quantity: 12, unit: 'request', method: 'measured', occurredAt: at('05'), sourceRef: 'u1' },
+    ]);
+    await rollupCosts(JULY);
+    expect((await rollupFor(tenantA)).filter((r) => r.provider === 'brave')).toHaveLength(0);
+    const detail = await readTenantCostDetail(tenantA, JULY);
+    const line = detail.find((d) => d.provider === 'brave' && d.sku === 'search');
+    expect(line?.quantity).toBe(12);  // units survive
+    expect(line?.costUsd).toBeNull(); // rendered as '—' on the tenant page
+  });
+
   // A rate covering PART of the month must not render as a priced fact that is
   // silently low: the unmatched events would each contribute quantity * 0.
   test('a partially-priced sku reports as NOT PRICED, not as a low number', async () => {
-    await pg.query(`update cost_rates set effective_to = '2026-07-15' where provider = 'brave' and sku = 'search'`);
+    await pg.query(`update cost_rates set effective_to = '2026-07-15' where provider = 'deepinfra' and sku = 'glm-5.2-input'`);
     await appendCostEvents([
-      { tenantId: tenantA, provider: 'brave', sku: 'search', quantity: 1, unit: 'request', method: 'measured', occurredAt: at('10'), sourceRef: 'pp1' },
-      { tenantId: tenantA, provider: 'brave', sku: 'search', quantity: 1, unit: 'request', method: 'measured', occurredAt: at('20'), sourceRef: 'pp2' },
+      { tenantId: tenantA, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 1, unit: 'token', method: 'measured', occurredAt: at('10'), sourceRef: 'pp1' },
+      { tenantId: tenantA, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 1, unit: 'token', method: 'measured', occurredAt: at('20'), sourceRef: 'pp2' },
     ]);
     const detail = await readTenantCostDetail(tenantA, JULY);
-    const line = detail.find((d) => d.sku === 'search');
+    const line = detail.find((d) => d.sku === 'glm-5.2-input');
     expect(line?.quantity).toBe(2);   // both events counted
     expect(line?.costUsd).toBeNull(); // but NOT priced — half the month has no rate
-    await pg.query(`update cost_rates set effective_to = null where provider = 'brave' and sku = 'search'`);
+    await pg.query(`update cost_rates set effective_to = null where provider = 'deepinfra' and sku = 'glm-5.2-input'`);
   });
 
   test('a mid-month period_start is refused, not silently double-counted', async () => {
@@ -722,12 +775,12 @@ describe('rollupCosts', () => {
 
   test('events outside the month are excluded', async () => {
     await appendCostEvents([
-      { tenantId: tenantA, provider: 'brave', sku: 'search', quantity: 100, unit: 'request', method: 'measured', occurredAt: '2026-06-30T23:00:00.000Z', sourceRef: 'out1' },
-      { tenantId: tenantA, provider: 'brave', sku: 'search', quantity: 100, unit: 'request', method: 'measured', occurredAt: '2026-08-01T00:00:00.000Z', sourceRef: 'out2' },
-      { tenantId: tenantA, provider: 'brave', sku: 'search', quantity: 100, unit: 'request', method: 'measured', occurredAt: at('31'), sourceRef: 'in1' },
+      { tenantId: tenantA, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 1_000_000, unit: 'token', method: 'measured', occurredAt: '2026-06-30T23:00:00.000Z', sourceRef: 'out1' },
+      { tenantId: tenantA, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 1_000_000, unit: 'token', method: 'measured', occurredAt: '2026-08-01T00:00:00.000Z', sourceRef: 'out2' },
+      { tenantId: tenantA, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 1_000_000, unit: 'token', method: 'measured', occurredAt: at('31'), sourceRef: 'in1' },
     ]);
     await rollupCosts(JULY);
-    expect(Number((await rollupFor(tenantA))[0].cost_usd)).toBeCloseTo(0.5, 6);
+    expect(Number((await rollupFor(tenantA))[0].cost_usd)).toBeCloseTo(0.93, 6);
   });
 });
 

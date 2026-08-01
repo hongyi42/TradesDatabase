@@ -225,9 +225,16 @@ function renderTenantPage(r) {
     }
     useBody.append(tr);
   }
+  // These lines are COUNTERS: units are recorded per tenant for attribution, but
+  // no price is applied. The wording deliberately no longer says "anything other
+  // than spine means a gap" — that was true when spine was the only counter, and
+  // became false when brave and composio joined it (migration 20260730120000).
+  // A genuine price-book gap now surfaces through the cron's unpricedEvents
+  // count, which the rollup derives from the price book itself rather than from a
+  // hardcoded provider name.
   const unpriced = r.usage.filter((u) => u.costUsd === null).map((u) => `${u.provider}/${u.sku}`);
   $('t-usage-note').textContent = unpriced.length
-    ? `Not priced: ${unpriced.join(', ')} — spine is a counter (it drives the inference split), anything else means a gap in the price book.`
+    ? `Not priced: ${unpriced.join(', ')} — counted for attribution only. These vendors either bill from a monthly invoice or sit inside a free allowance, so the units are shown without a price.`
     : '';
 
   paintTrend($('t-trend'), r.trend);

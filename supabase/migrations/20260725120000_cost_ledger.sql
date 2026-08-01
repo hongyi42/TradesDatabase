@@ -165,8 +165,16 @@ insert into cost_rates (provider, sku, unit, unit_cost_usd, effective_from, sour
   -- Anthropic Sonnet 4.6: $3.00 / $15.00 per 1M tokens.
   ('anthropic', 'claude-sonnet-4-6-input',  'token', 0.00000300, '2026-07-01', 'https://docs.claude.com/en/docs/about-claude/pricing'),
   ('anthropic', 'claude-sonnet-4-6-output', 'token', 0.00001500, '2026-07-01', 'https://docs.claude.com/en/docs/about-claude/pricing'),
-  -- Brave Search: $5 per 1,000 requests (Search plan; free tier removed Feb 2026).
+  -- ⚠ BOTH ROWS BELOW WERE DELETED by 20260730120000_unprice_brave_composio.sql.
+  -- They are left here because a historical migration must never be rewritten —
+  -- but do NOT re-seed them, and do not trust the two claims they rest on:
+  --   * "free tier removed Feb 2026" is WRONG. Brave's pricing page documents $5
+  --     of credit renewing MONTHLY (~1,000 searches), verified 2026-07-30. This
+  --     stale comment is what justified the rate in the first place.
+  --   * $0.299/1,000 is Composio's OVERAGE rate, charged only past the included
+  --     allowance (20,000 calls/month on Free, 200,000 on the $29 tier). Billing
+  --     it from call #1 reported spend Composio does not charge.
+  -- Both vendors are now COUNTERS: units measured for attribution, dollars from
+  -- a monthly bill. See the plan for the full reasoning.
   ('brave', 'search', 'request', 0.00500000, '2026-07-01', 'https://brave.com/search/api/'),
-  -- Composio: $0.299 per 1,000 calls (overage rate, $29 tier). Premium tools
-  -- bill at 3x — not modelled in v1; the call sites cannot tell them apart.
   ('composio', 'tool_call', 'call', 0.00029900, '2026-07-01', 'https://composio.dev/pricing');

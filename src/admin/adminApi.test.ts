@@ -203,10 +203,14 @@ describe('tenant detail page', () => {
     await pg.query("delete from cost_events where source_ref like 'adm-%'");
     await pg.query('delete from cost_rollup_monthly');
     await appendCostEvents([
-      { tenantId, provider: 'brave', sku: 'search', quantity: 200, unit: 'request', method: 'measured', occurredAt: '2026-07-10T10:00:00.000Z', sourceRef: 'adm-t1' },
+      { tenantId, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 1_000_000, unit: 'token', method: 'measured', occurredAt: '2026-07-10T10:00:00.000Z', sourceRef: 'adm-t1' },
       // spine has no rate BY DESIGN — the detail page must still show the count,
       // because it is what the inference allocation is divided by.
       { tenantId, provider: 'spine', sku: 'tool_call', quantity: 42, unit: 'call', method: 'measured', occurredAt: '2026-07-10T10:00:00.000Z', sourceRef: 'adm-t2' },
+      // brave joined spine as a COUNTER (migration 20260730120000): units shown,
+      // no price, because Brave's $5/month credit means list-rate pricing would
+      // report spend it does not charge.
+      { tenantId, provider: 'brave', sku: 'search', quantity: 7, unit: 'request', method: 'measured', occurredAt: '2026-07-10T10:00:00.000Z', sourceRef: 'adm-t3' },
     ]);
     await rollupCosts('2026-07-01');
 
@@ -220,16 +224,18 @@ describe('tenant detail page', () => {
     };
     expect(r.tenantName).toBe('Default Tenant');
     expect(typeof r.managerSeats).toBe('number');
-    expect(r.totalUsd).toBeCloseTo(1.0, 6); // 200 x $0.005
-    expect(r.measuredUsd).toBeCloseTo(1.0, 6);
+    expect(r.totalUsd).toBeCloseTo(0.93, 6); // 1,000,000 x $0.00000093
+    expect(r.measuredUsd).toBeCloseTo(0.93, 6);
     expect(r.allocatedUsd).toBe(0);
 
     const spine = r.usage.find((u) => u.provider === 'spine');
     expect(spine?.quantity).toBe(42);
     // null, not 0 — "not priced" is a different claim from "free".
     expect(spine?.costUsd).toBeNull();
+    // Two unpriced counters now, not one: the page must show both as units-only.
     const brave = r.usage.find((u) => u.provider === 'brave');
-    expect(brave?.costUsd).toBeCloseTo(1.0, 6);
+    expect(brave?.quantity).toBe(7);
+    expect(brave?.costUsd).toBeNull();
     expect(r.trend).toHaveLength(6);
   });
 
@@ -285,7 +291,7 @@ describe('RLS on the cost tables', () => {
   // cron or this endpoint would be worse than the exposure it closes.
   test('the service-role path still reads its own writes', async () => {
     await appendCostEvents([
-      { tenantId, provider: 'brave', sku: 'search', quantity: 100, unit: 'request', method: 'measured', occurredAt: '2026-07-14T10:00:00.000Z', sourceRef: 'adm-rls' },
+      { tenantId, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 1_000_000, unit: 'token', method: 'measured', occurredAt: '2026-07-14T10:00:00.000Z', sourceRef: 'adm-rls' },
     ]);
     await rollupCosts('2026-07-01');
     const res = await fetch(`${base}/admin/api/costs?period=2026-07`, { headers: auth() });
@@ -302,8 +308,8 @@ describe('cost report', () => {
     await pg.query("delete from cost_events where source_ref like 'adm-%'");
     await pg.query('delete from cost_rollup_monthly');
     await appendCostEvents([
-      // 400 searches x $0.005 = $2.00
-      { tenantId, provider: 'brave', sku: 'search', quantity: 400, unit: 'request', method: 'measured', occurredAt: '2026-07-08T10:00:00.000Z', sourceRef: 'adm-1' },
+      // 2,000,000 tokens x $0.00000093 = $1.86
+      { tenantId, provider: 'deepinfra', sku: 'glm-5.2-input', quantity: 2_000_000, unit: 'token', method: 'measured', occurredAt: '2026-07-08T10:00:00.000Z', sourceRef: 'adm-1' },
     ]);
     await rollupCosts(`${period}-01`);
 
@@ -320,12 +326,12 @@ describe('cost report', () => {
       trend: Array<{ period: string }>;
     };
     expect(body.period).toBe(period);
-    expect(body.totalUsd).toBeCloseTo(2.0, 6);
+    expect(body.totalUsd).toBeCloseTo(1.86, 6);
     // Measured and allocated are reported APART, never merged behind one flag.
-    expect(body.byProvider[0]).toMatchObject({ provider: 'brave', measuredUsd: 2.0, allocatedUsd: 0 });
+    expect(body.byProvider[0]).toMatchObject({ provider: 'deepinfra', measuredUsd: 1.86, allocatedUsd: 0 });
 
     const t = body.tenants.find((x) => x.tenantName === 'Default Tenant');
-    expect(t?.costUsd).toBeCloseTo(2.0, 6);
+    expect(t?.costUsd).toBeCloseTo(1.86, 6);
     expect(t?.lines.every((l) => l.method === 'measured' || l.method === 'allocated')).toBe(true);
     // Seat tiers stay separate — no blended total, and no $/seat at all.
     expect(typeof t?.managerSeats).toBe('number');

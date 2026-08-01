@@ -103,10 +103,7 @@ import {
 } from '../synthesis/index.js';
 import { identityFromEnv, type RequestIdentity } from './identity.js';
 import { listDayStops } from '../routes/daySource.js';
-import {
-  optimizeStopOrder as liveOptimizeStopOrder,
-  type ComputeRoutes,
-} from '../routes/googleRoutes.js';
+import { type ComputeRoutes } from '../routes/googleRoutes.js';
 import { buildMapsDeepLink, formatAddress, type RouteStop } from '../routes/deepLink.js';
 import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
 import { clampToTechnicianHorizon, horizonDaysFor } from '../schedule/policy.js';
@@ -204,8 +201,7 @@ export interface ServerDeps {
   enablePairing?: typeof liveEnablePairing;
   sendEmail?: typeof liveSendGmailEmail;
   teardownSession?: typeof liveTeardownSession;
-  optimizeStopOrder?: typeof liveOptimizeStopOrder; // Google Routes seam — tests never need the key
-  computeRoutes?: ComputeRoutes; // find_slots drive-delta seam (same reason)
+  computeRoutes?: ComputeRoutes; // find_slots drive-delta seam — tests never need the key
   // Sandbox recycling seams (same reason as the pairing seams above).
   requestRetirement?: typeof liveRequestRetirement;
   cancelRetirement?: typeof liveCancelRetirement;
@@ -374,17 +370,16 @@ const TOOLS = [
   {
     name: 'get_schedule',
     description:
-      "Your schedule as a day-by-day route: for each day in [from,to] (YYYY-MM-DD; both " +
+      'Your schedule day by day: for each day in [from,to] (YYYY-MM-DD; both ' +
       "optional — default is today in the firm's timezone; range is capped at 14 days) returns " +
-      'your stops in best driving order, total drive minutes, and a Google Maps link (mapsUrl) ' +
-      "that opens the whole day's route for navigation. Relay each day's mapsUrl to the person " +
-      'VERBATIM as a tappable link. days:[] means no stops in the range — UNLESS the result ' +
+      'your stops IN THE ORDER THEY ARE BOOKED — the schedule is already set, so this never ' +
+      'reorders it. Each stop carries mapsUrl, a Google Maps link that opens directions to THAT ' +
+      'stop; relay it VERBATIM as a tappable link. mapsUrl null = that stop has no usable ' +
+      'address on file — say so rather than guessing. ' +
+      'days:[] means no stops in the range — UNLESS the result ' +
       'carries horizonNote: then days beyond the horizonEnd date are not published yet; relay ' +
-      'the note, and NEVER tell the person they are free on unpublished days. driveMinutes null = ' +
-      'not measured; optimizeFailed true = stops are in scheduled (not drive-optimized) order; ' +
-      'a day may also carry unroutableStops (time-ordered, no usable address, not in the ' +
-      'link) — mention them to the person alongside the driving list. When the result carries ' +
-      "boardNote, ALWAYS end your reply with its exact [See it on the board](…) line — it " +
+      'the note, and NEVER tell the person they are free on unpublished days. When the result ' +
+      "carries boardNote, ALWAYS end your reply with its exact [See it on the board](…) line — it " +
       'renders as a tappable link; no boardNote → say nothing about the board.',
     inputSchema: {
       type: 'object',
@@ -2055,45 +2050,25 @@ async function dispatch(
         };
       }
       to = clamp.to;
-      const optimize = deps.optimizeStopOrder ?? liveOptimizeStopOrder;
       const dayStops = await listDayStops(tenantId, identity.technicianRef, from, to);
-      // Days are independent — optimize them concurrently (a 14-day ask is one
-      // round-trip's latency, not fourteen). Promise.all preserves input order.
-      const days = await Promise.all(
-        dayStops.map(async (day) => {
-          // `order` from the optimizer indexes the ROUTABLE list only.
-          // Unroutable stops (no usable address) go in their own time-ordered
-          // field: splicing them into the drive-ordered list would misstate
-          // the driving sequence, and appending them at the end would misstate
-          // the day's chronology.
-          const routable = day.stops.filter(
-            (s): s is RouteStop & { address: string } => s.address !== null,
-          );
-          const unroutableStops = day.stops.filter((s) => s.address === null);
-          let ordered: RouteStop[] = routable;
-          let driveMinutes: number | null = null;
-          let optimizeFailed = false;
-          try {
-            const result = await optimize(routable);
-            ordered = result.order.map((i) => routable[i]);
-            driveMinutes = result.totalMinutes;
-          } catch {
-            // Google failure must not eat the schedule: deliver the day in
-            // scheduled order with no drive estimate.
-            optimizeFailed = true;
-          }
-          const link = buildMapsDeepLink(ordered);
-          return {
-            date: day.date,
-            stops: ordered,
-            ...(unroutableStops.length > 0 ? { unroutableStops } : {}),
-            driveMinutes,
-            mapsUrl: link.url,
-            linkTruncated: link.linkTruncated,
-            ...(optimizeFailed ? { optimizeFailed: true } : {}),
-          };
-        }),
-      );
+      // listDayStops already sorts by time, and that IS the answer: the schedule
+      // is set, so a read renders it. NEVER reordered here — deciding the order
+      // means MOVING visits (promises, confirmation, a DB write), which is
+      // run_freeze/run_resolve's job, not a read's.
+      //
+      // Each stop carries its own single-destination link rather than one
+      // multi-waypoint day link: no waypoint cap (so no truncation at 10 stops),
+      // and it matches how the day is actually driven — navigate to the next
+      // stop, not the whole day at once. Address-less stops therefore stay in
+      // the one chronological list with a null link; the old routable/unroutable
+      // split existed only to protect a DRIVE-ordered sequence, which is gone.
+      const days = dayStops.map((day) => ({
+        date: day.date,
+        stops: day.stops.map((s) => ({
+          ...s,
+          mapsUrl: s.address === null ? null : buildMapsDeepLink([s]).url,
+        })),
+      }));
       return {
         status: 'ok',
         from,
@@ -2948,6 +2923,12 @@ async function dispatch(
       const jobById = new Map(jobs.map((j) => [j.id, j]));
       const techById = new Map((await listTeam(tenantId)).map((t) => [t.id, t]));
       const byDay = new Map<string, unknown[]>();
+      // Who "I" am, for the own-stop navigation links below. `caller` is the
+      // one roster read every dispatch does; get_team_schedule is an ADMIN_TOOLS
+      // entry so the tier gate guarantees an active manager row, but TS does not
+      // narrow it from the boolean.
+      const myTechnicianId = caller?.id ?? null;
+      let anyRoute = false;
       for (const row of rows) {
         // Overlap semantics can pull in a row starting before `from` — clamp
         // to the requested days by start-day, the daySource precedent (the
@@ -2971,6 +2952,28 @@ async function dispatch(
         // technician_id may be NULL (unassigned booking) — the ?? null echoes
         // below render that as a person-less stop in both modes.
         const technician = row.technician_id ? techById.get(row.technician_id) : undefined;
+        const address = customer
+          ? formatAddress({
+              address_line1: customer.address_line1,
+              address_line2: customer.address_line2,
+              city: customer.city,
+              state: customer.state,
+              postal_code: customer.postal_code,
+            })
+          : null;
+        // The caller's OWN placed stops get a tap-to-navigate link — the manager
+        // who also works in the field. Scoped to the caller rather than every
+        // team stop: a URL per visit per day would grow every manager read, and
+        // token cost on this surface is a live concern. Excluded on purpose:
+        // the recall view (unassignedOnly has no window and no times) and
+        // time-TBD rows (no time, so no place in a day's sequence).
+        const isMyStop =
+          !unassignedOnly &&
+          myTechnicianId !== null &&
+          row.technician_id === myTechnicianId &&
+          row.starts_at !== null &&
+          address !== null;
+        if (isMyStop) anyRoute = true;
         const bucket = byDay.get(day) ?? [];
         bucket.push({
           assignmentId: row.id,
@@ -2978,15 +2981,14 @@ async function dispatch(
           technicianName: technician?.display_name ?? null,
           unassigned: row.technician_id === null,
           customer: customer?.name ?? null,
-          address: customer
-            ? formatAddress({
-                address_line1: customer.address_line1,
-                address_line2: customer.address_line2,
-                city: customer.city,
-                state: customer.state,
-                postal_code: customer.postal_code,
-              })
-            : null,
+          address,
+          ...(isMyStop
+            ? {
+                mapsUrl: buildMapsDeepLink([
+                  { label: customer?.name ?? 'Customer', address: address as string },
+                ]).url,
+              }
+            : {}),
           // Wall-clock HH:MM slices, never the raw timestamptz: times are
           // stored naive-local, so the wire's '+00:00' marker is a LIE the
           // agent will act on (live 2026-07-22: it relabeled a 4 PM visit
@@ -3038,7 +3040,27 @@ async function dispatch(
             'this list. days hold parked visits (booked, nobody attached).',
         };
       }
-      return { status: 'ok', from, to: toDay, scheduleVersion, technicianHorizonDays, days };
+      return {
+        status: 'ok',
+        from,
+        to: toDay,
+        scheduleVersion,
+        technicianHorizonDays,
+        days,
+        // FUSED into the result, not left to the tool description: on this
+        // codebase description-only wording has failed three times (endTime
+        // PR #53, boardNote PR #59, resolve_date "next X"). Deliberately
+        // POSITIONAL ("beside that stop"), never "end your reply with…", so it
+        // does not compete with boardNote's terminal instruction. The key is
+        // routeNote — never `note`, which the recall return above already uses.
+        ...(anyRoute
+          ? {
+              routeNote:
+                'Stops carrying mapsUrl are YOUR OWN. Relay each one VERBATIM as a tappable ' +
+                '[Directions](url) link beside that stop.',
+            }
+          : {}),
+      };
     }
     case 'book_visit': {
       const subjectRef = identity.technicianRef;

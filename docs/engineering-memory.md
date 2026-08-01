@@ -707,12 +707,12 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   `nemoclaw <s> gateway restart` before any agent sees it, while adding a field to a tool's
   *result* (PR #83's grounding riders; the 2026-07-31 per-stop `mapsUrl`) goes live on deploy
   alone. A full box wire re-run is only needed when the change also touches AGENTS.md contract
-  text or the pinned tool NAMES — a pure description edit touches neither. **And the restart is per TIER, not fleet-wide:** a tool filtered off one
-  surface only forces restarts on the tier that carries it. Worked example (2026-07-31) — the
-  `get_schedule` rewrite changed that tool's description, but `get_schedule` is filtered out of
-  `MANAGER_TOOLS`, so *technician* sandboxes needed the wire+restart and the manager side, whose
-  change was result-only, was live the moment Render deployed. Getting this backwards costs
-  either a stale fleet or three needless restarts.
+  text or the pinned tool NAMES — a pure description edit touches neither. **And the restart is
+  per TIER, not fleet-wide:** a tool filtered off one surface only forces restarts on the tier
+  that carries it. Worked example (2026-07-31) — the `get_schedule` rewrite changed that tool's
+  description, but `get_schedule` is filtered out of `MANAGER_TOOLS`, so *technician* sandboxes
+  needed the restart and the manager side, whose change was result-only, was live the moment
+  Render deployed. Getting this backwards costs either a stale fleet or needless restarts.
 - **Credentials inject into a sandbox's process env at container launch ONLY.** Any provider
   credential write (badge install/rotation, token change) needs a container restart to take
   effect. This exact mechanism silently killed Judy's spine MCP for 4 days (badge in store,

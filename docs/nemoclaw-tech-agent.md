@@ -95,11 +95,31 @@ Allowlist only the spine tools for the technician profile (`tools.profile` / all
 `web_search`, `read_webpage`, `send_email`, `retract_capture`, `record_standing_fact`,
 `get_schedule`. Outbound network policy should allow only the gateway + our server's host.
 
+**Route links: booked order, one per stop (2026-07-31).** `get_schedule` no longer asks Google
+Routes for a "best driving order" and no longer returns `driveMinutes`, `optimizeFailed`,
+`linkTruncated`, or a day-level `mapsUrl`/`unroutableStops`. The schedule is already set, so the
+read RENDERS it: stops come back in booked (time) order — the same order the board shows — and
+**each stop carries its own `mapsUrl`**, a destination-only Google Maps link. Consequences: no
+10-stop link cap (a single-destination URL has no waypoints to truncate), and a stop with no
+usable address simply has `mapsUrl: null` while staying in the one chronological list. Deciding
+order means MOVING visits — that is `run_freeze`/`run_resolve`, never a read.
+⚠ **This changed `get_schedule`'s DESCRIPTION, so the technician `tools/list` payload moved.**
+Gateways cache `tools/list` per process, so technician sandboxes need `nemoclaw <s> gateway
+restart` or the agent keeps describing drive minutes that no longer exist. A full box wire re-run
+is NOT required: nothing bakes this tool's wording into AGENTS.md (verified against
+`bootstrap-box.sh`), and the tool COUNT is unchanged (14), so no allowlist edit either.
+
 **Manager profile (2026-07-02):** an ACTIVE `tier='manager'` roster row (the `technicians`
 table, not the badge, is the tier source of truth) gets the technician surface MINUS
 `get_schedule` (removed for managers 2026-07-19 — it is the technician route view; a manager's
 only schedule read is `get_team_schedule`, which includes visits the manager holds; do NOT pin
-get_schedule in the MANAGER profile) plus the 26 seat/lifecycle+scheduling tools, for a 39-tool
+get_schedule in the MANAGER profile — and because it is filtered off this surface, the
+2026-07-31 description change above does NOT move the manager `tools/list`: that side is
+deploy-only, no restart. Since 2026-07-31 `get_team_schedule` adds `mapsUrl` to the caller's OWN
+placed stops — the manager who also works in the field — plus a fused `routeNote` telling the
+agent to relay each one. Teammates' and unassigned stops are returned exactly as before and carry
+no link: the route is ADDITIVE, never a filter, so the 2026-07-18 "your week is completely clear"
+miss cannot recur. No new parameter, so the surface is byte-identical) plus the 26 seat/lifecycle+scheduling tools, for a 39-tool
 manager surface (send_email since 2026-07-04, retract_capture since 2026-07-06, web_search and
 read_webpage since 2026-07-13, record_standing_fact since 2026-07-14, resolve_date since
 2026-07-17; the 4 scheduling tools

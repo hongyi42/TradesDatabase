@@ -37,6 +37,7 @@ const relDay = (n: number): string =>
   new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
 let tenantId: string;
 let techMcpId: string; // tech-mcp's roster UUID — assignment fixtures need it
+let mgrTestId: string; // mgr-test's roster UUID — the own-stop link fixtures need it
 let client: Client;
 
 beforeAll(async () => {
@@ -67,6 +68,7 @@ beforeAll(async () => {
     tier: 'manager',
   });
   await setTechnicianState(mgr.id, 'active');
+  mgrTestId = mgr.id;
   const tech = await insertTechnician({ tenantId, ref: 'tech-mcp', displayName: 'Tech MCP' });
   await setTechnicianState(tech.id, 'active');
   techMcpId = tech.id;
@@ -2261,12 +2263,10 @@ describe('get_schedule', () => {
   // identity tech-mcp.
   const G1 = relDay(7);
   const G2 = relDay(8);
-  const stubOptimize: ServerDeps['optimizeStopOrder'] = async (stops) => ({
-    order: stops.map((_, i) => stops.length - 1 - i), // reverse, so reordering is observable
-    legMinutes: [7, 8],
-    totalMinutes: 15,
-  });
+  const G3 = relDay(9); // the >10-stop day: the old link cap no longer applies
   const gAssignmentIds: string[] = [];
+  const gJobIds: string[] = [];
+  const gCustomerIds: string[] = [];
 
   beforeAll(async () => {
     // Confirmed assignments for tech-mcp (the DB-owned schedule — the mirror
@@ -2290,11 +2290,18 @@ describe('get_schedule', () => {
         status: 'confirmed',
       });
       gAssignmentIds.push(row.id);
+      gJobIds.push(job.id);
+      gCustomerIds.push(customer.id);
     };
     await mk('g1-a', `${G1}T15:00:00.000Z`);
     await mk('g1-b', `${G1}T17:00:00.000Z`);
     await mk('g2-a', `${G2}T16:00:00.000Z`);
     await mk('g2-noaddr', `${G2}T18:00:00.000Z`, false);
+    // 12 stops on one day: more than the 10-stop MAX_LINK_STOPS that capped the
+    // old single day-route link. Per-stop links have no such ceiling.
+    for (let i = 0; i < 12; i++) {
+      await mk(`g3-${String(i).padStart(2, '0')}`, `${G3}T${String(8 + i).padStart(2, '0')}:00:00.000Z`);
+    }
   });
 
   afterAll(async () => {
@@ -2303,17 +2310,21 @@ describe('get_schedule', () => {
     // them as the calendar advances — leaked rows would break their exact
     // reads deterministically weeks from now (final-review finding; the same
     // hazard boardApi.test.ts solves with all-relative distinct offsets).
+    //
+    // Jobs and customers go too, in FK order. Deleting only the assignments
+    // would leave 16 OPEN jobs with no visit in the tenant — exactly what
+    // readUnscheduledJobs (no LIMIT) reports as the loose bucket, so they would
+    // surface in every later unassignedOnly / board-tray read in this file.
     await pg.query('delete from assignments where id = any($1::uuid[])', [gAssignmentIds]);
+    await pg.query('delete from jobs where id = any($1::uuid[])', [gJobIds]);
+    await pg.query('delete from customers where id = any($1::uuid[])', [gCustomerIds]);
   });
 
   async function scheduleClient(extra: Partial<ServerDeps> = {}) {
-    return clientFor(
-      { tenantId, technicianRef: 'tech-mcp' },
-      { optimizeStopOrder: stubOptimize, ...extra },
-    );
+    return clientFor({ tenantId, technicianRef: 'tech-mcp' }, extra);
   }
 
-  test('multi-day response: reordered stops, drive minutes, maps link per day', async () => {
+  test('multi-day response: stops in BOOKED order, each with its own maps link', async () => {
     const { client: c, callWith } = await scheduleClient();
     try {
       const r = await callWith('get_schedule', { from: G1, to: G2 });
@@ -2321,29 +2332,59 @@ describe('get_schedule', () => {
       expect(r.data.status).toBe('ok');
       expect(r.data.days.map((d: { date: string }) => d.date)).toEqual([G1, G2]);
       const d1 = r.data.days[0];
-      // stub reverses: g1-b before g1-a
-      expect(d1.stops.map((s: { label: string }) => s.label)).toEqual(['G g1-b', 'G g1-a']);
-      expect(d1.driveMinutes).toBe(15);
-      expect(d1.mapsUrl).toContain('https://www.google.com/maps/dir/?api=1');
-      expect(d1.mapsUrl).toContain(encodeURIComponent('g1-b Rd, Fresno, CA, 93701'));
-      expect(d1.linkTruncated).toBe(false);
+      // Booked (time) order — 15:00 before 17:00. The schedule is already set,
+      // so the read renders it; nothing re-derives a "better" sequence.
+      expect(d1.stops.map((s: { label: string }) => s.label)).toEqual(['G g1-a', 'G g1-b']);
+      // Each stop links to ITSELF as the destination, not to a day-long route.
+      expect(d1.stops[0].mapsUrl).toContain('https://www.google.com/maps/dir/?api=1');
+      expect(d1.stops[0].mapsUrl).toContain(
+        `destination=${encodeURIComponent('g1-a Rd, Fresno, CA, 93701')}`,
+      );
+      expect(d1.stops[1].mapsUrl).toContain(
+        `destination=${encodeURIComponent('g1-b Rd, Fresno, CA, 93701')}`,
+      );
+      // No waypoints: a single-destination link is what removes the stop cap.
+      expect(d1.stops[0].mapsUrl).not.toContain('waypoints=');
+      // The Google-routing fields are gone with the optimization.
+      expect(d1.driveMinutes).toBeUndefined();
+      expect(d1.optimizeFailed).toBeUndefined();
+      expect(d1.linkTruncated).toBeUndefined();
+      expect(d1.mapsUrl).toBeUndefined(); // the link moved onto each stop
     } finally {
       await c.close();
     }
   });
 
-  test('null-address stop is listed unroutable and kept out of the link', async () => {
+  test('null-address stop stays in the day, chronologically, with a null link', async () => {
     const { client: c, callWith } = await scheduleClient();
     try {
       const r = await callWith('get_schedule', { from: G2, to: G2 });
       const day = r.data.days[0];
-      // No-address stops live in their own time-ordered field — mixing them
-      // into the drive-ordered list would misstate one sequence or the other.
-      expect(day.stops.map((s: { label: string }) => s.label)).not.toContain('G g2-noaddr');
-      expect(day.unroutableStops).toEqual([
-        expect.objectContaining({ label: 'G g2-noaddr', address: null }),
-      ]);
-      expect(day.mapsUrl).not.toContain('g2-noaddr');
+      // One chronological list. The routable/unroutable split existed only to
+      // protect a DRIVE-ordered sequence; in booked order there is none.
+      expect(day.stops.map((s: { label: string }) => s.label)).toEqual(['G g2-a', 'G g2-noaddr']);
+      expect(day.unroutableStops).toBeUndefined();
+      expect(day.stops[0].mapsUrl).toContain('maps/dir');
+      expect(day.stops[1].mapsUrl).toBeNull();
+      expect(day.stops[1].address).toBeNull();
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('a 12-stop day links every stop — the old 10-stop link cap is gone', async () => {
+    const { client: c, callWith } = await scheduleClient();
+    try {
+      const r = await callWith('get_schedule', { from: G3, to: G3 });
+      const day = r.data.days[0];
+      expect(day.stops).toHaveLength(12);
+      // Every one navigable: MAX_LINK_STOPS (10) bounded the single day-route
+      // link, and per-stop links have no equivalent ceiling.
+      expect(day.stops.every((s: { mapsUrl: string | null }) => s.mapsUrl !== null)).toBe(true);
+      expect(day.stops.map((s: { label: string }) => s.label)).toEqual(
+        Array.from({ length: 12 }, (_, i) => `G g3-${String(i).padStart(2, '0')}`),
+      );
+      expect(day.linkTruncated).toBeUndefined();
     } finally {
       await c.close();
     }
@@ -2409,10 +2450,10 @@ describe('get_schedule', () => {
     // A valid badge with NO roster row keeps the plain-technician surface;
     // its schedule is simply empty (daySource returns []). G1/G2 are
     // within-horizon so this is the empty-roster case, not the clamp.
-    const { client: c, callWith } = await clientFor(
-      { tenantId, technicianRef: 'badge-no-roster-row' },
-      { optimizeStopOrder: stubOptimize },
-    );
+    const { client: c, callWith } = await clientFor({
+      tenantId,
+      technicianRef: 'badge-no-roster-row',
+    });
     try {
       const r = await callWith('get_schedule', { from: G1, to: G2 });
       expect(r.isError).toBe(false);
@@ -2442,23 +2483,197 @@ describe('get_schedule', () => {
       await c.close();
     }
   });
+});
 
-  test('optimizer failure degrades the day, never eats the schedule', async () => {
-    const { client: c, callWith } = await scheduleClient({
-      optimizeStopOrder: async () => {
-        throw new Error('quota');
-      },
+// Plan 2026-07-31: a manager who also works in the field gets a tap-to-navigate
+// link on THEIR OWN stops, inside the one schedule read they have. The whole
+// point is that it is ADDITIVE — the team's stops and the unassigned ones must
+// still be there, or this recreates the PR #54 blind spot it is built to avoid.
+describe('get_team_schedule own-stop maps links', () => {
+  // Fixed far-future dates (2027-10 is unused elsewhere in this file) — managers
+  // are never horizon-clamped, so a date well past today+28 is a valid read and
+  // doubles as proof of that.
+  const D1 = '2027-10-04';
+  const D2 = '2027-10-05';
+  const ids: { assignments: string[]; jobs: string[]; customers: string[] } = {
+    assignments: [],
+    jobs: [],
+    customers: [],
+  };
+
+  const mk = async (opts: {
+    key: string;
+    startISO: string | null;
+    technicianId: string | null;
+    withAddress?: boolean;
+  }) => {
+    const customer = await createCustomer({
+      tenantId,
+      name: `TS ${opts.key}`,
+      ...(opts.withAddress === false
+        ? {}
+        : { addressLine1: `${opts.key} Way`, city: 'Clovis', state: 'CA', postalCode: '93611' }),
     });
+    const job = await createJob({ tenantId, customerId: customer.id, title: opts.key });
+    // Times XOR range, and BOTH times must be explicitly null on the unplaced
+    // shape — an absent key reads as "placed" to createAssignment's guard.
+    const row = await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: opts.technicianId,
+      startsAt: opts.startISO,
+      endsAt: opts.startISO
+        ? new Date(Date.parse(opts.startISO) + 60 * 60_000).toISOString()
+        : null,
+      ...(opts.startISO ? {} : { earliestDate: D1, latestDate: D1 }),
+      status: 'confirmed',
+    });
+    ids.assignments.push(row.id);
+    ids.jobs.push(job.id);
+    ids.customers.push(customer.id);
+    return row.id;
+  };
+
+  let mineId: string;
+  let theirsId: string;
+  let unassignedId: string;
+  let mineNoAddrId: string;
+  let mineTbdId: string;
+
+  beforeAll(async () => {
+    mineId = await mk({ key: 'mine', startISO: `${D1}T09:00:00.000Z`, technicianId: mgrTestId });
+    theirsId = await mk({ key: 'theirs', startISO: `${D1}T11:00:00.000Z`, technicianId: techMcpId });
+    unassignedId = await mk({ key: 'nobody', startISO: `${D1}T13:00:00.000Z`, technicianId: null });
+    mineNoAddrId = await mk({
+      key: 'mine-noaddr',
+      startISO: `${D1}T15:00:00.000Z`,
+      technicianId: mgrTestId,
+      withAddress: false,
+    });
+    mineTbdId = await mk({ key: 'mine-tbd', startISO: null, technicianId: mgrTestId });
+    // D2 holds a TEAMMATE's stop and none of the manager's. Without a stop here
+    // the "no own visits" test below would assert over an empty array and pass
+    // no matter what the server did (caught by mutation in plan review).
+    await mk({ key: 'theirs-d2', startISO: `${D2}T09:00:00.000Z`, technicianId: techMcpId });
+  });
+
+  afterAll(async () => {
+    await pg.query('delete from assignments where id = any($1::uuid[])', [ids.assignments]);
+    await pg.query('delete from jobs where id = any($1::uuid[])', [ids.jobs]);
+    await pg.query('delete from customers where id = any($1::uuid[])', [ids.customers]);
+  });
+
+  const mgrClient = async () => clientFor({ tenantId, technicianRef: 'mgr-test' });
+  type Stop = { assignmentId: string; mapsUrl?: string | null; unassigned?: boolean };
+  const stopsOf = (data: { days: Array<{ stops: Stop[] }> }) => data.days.flatMap((d) => d.stops);
+
+  test("own stop carries mapsUrl to its own address; teammates' and unassigned stops do NOT", async () => {
+    const { client: c, callWith } = await mgrClient();
     try {
-      const r = await callWith('get_schedule', { from: G1, to: G1 });
-      const day = r.data.days[0];
-      expect(day.optimizeFailed).toBe(true);
-      expect(day.driveMinutes).toBeNull();
-      // scheduled order preserved, link still built
-      expect(day.stops.map((s: { label: string }) => s.label)).toEqual(['G g1-a', 'G g1-b']);
-      expect(day.mapsUrl).toContain('maps/dir');
+      const r = await callWith('get_team_schedule', { from: D1, to: D1 });
+      expect(r.isError).toBe(false);
+      const stops = stopsOf(r.data);
+      const mine = stops.find((s) => s.assignmentId === mineId);
+      expect(mine?.mapsUrl).toContain(
+        `destination=${encodeURIComponent('mine Way, Clovis, CA, 93611')}`,
+      );
+      expect(mine?.mapsUrl).not.toContain('waypoints=');
+
+      // THE TRAP TEST (PR #54, live 2026-07-18: a self-only view answered "your
+      // week is completely clear" while an unassigned visit existed). The link
+      // must never narrow the payload — everyone else is still here, just
+      // without a link, because it is not the manager's to drive.
+      const theirs = stops.find((s) => s.assignmentId === theirsId);
+      const nobody = stops.find((s) => s.assignmentId === unassignedId);
+      expect(theirs).toBeDefined();
+      expect(nobody).toBeDefined();
+      expect(nobody?.unassigned).toBe(true);
+      expect(theirs?.mapsUrl).toBeUndefined();
+      expect(nobody?.mapsUrl).toBeUndefined();
+
+      expect(r.data.routeNote).toContain('YOUR OWN');
     } finally {
       await c.close();
+    }
+  });
+
+  test('own stop with no address, and own time-TBD stop, get no link but stay in the day', async () => {
+    const { client: c, callWith } = await mgrClient();
+    try {
+      const r = await callWith('get_team_schedule', { from: D1, to: D1 });
+      const stops = stopsOf(r.data);
+      const noAddr = stops.find((s) => s.assignmentId === mineNoAddrId);
+      const tbd = stops.find((s) => s.assignmentId === mineTbdId);
+      expect(noAddr).toBeDefined();
+      expect(noAddr?.mapsUrl).toBeUndefined();
+      expect(tbd).toBeDefined(); // time-TBD rows ride the windowed view too
+      expect(tbd?.mapsUrl).toBeUndefined();
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('a day WITH stops but none of the manager\'s own carries no link and no routeNote', async () => {
+    const { client: c, callWith } = await mgrClient();
+    try {
+      const r = await callWith('get_team_schedule', { from: D2, to: D2 });
+      expect(r.data.status).toBe('ok');
+      // The day is NOT empty — a teammate's stop is here. That is what makes
+      // this a real assertion: routeNote tells the agent to "relay each one
+      // VERBATIM as a tappable link", and this codebase has a live incident of
+      // the agent FABRICATING a URL when told to produce a link its payload
+      // lacked (2026-07-21, find_slots). It must not fire on a link-less day.
+      const stops = stopsOf(r.data);
+      expect(stops.length).toBeGreaterThan(0);
+      expect(stops.every((s) => s.mapsUrl === undefined)).toBe(true);
+      expect(r.data.routeNote).toBeUndefined();
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('the recall view (unassignedOnly) carries no links, no routeNote, and keeps its note', async () => {
+    const { client: c, callWith } = await mgrClient();
+    try {
+      const r = await callWith('get_team_schedule', { unassignedOnly: true });
+      expect(r.data.status).toBe('ok');
+      // Today nothing can leak here even without the !unassignedOnly term:
+      // listUnassignedAssignments hard-filters technician_id IS NULL, so the
+      // ownership test already excludes every recall row. The term is kept as
+      // defence in depth for the day that query widens — this asserts the
+      // OUTCOME, not the mechanism (noted in plan review).
+      expect(stopsOf(r.data).every((s) => s.mapsUrl === undefined)).toBe(true);
+      expect(r.data.routeNote).toBeUndefined();
+      expect(r.data.note).toContain('unscheduledJobs');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('routeNote coexists with boardNote and never clobbers note', async () => {
+    // boardNote only attaches when boardMiniAppLink() is non-null — without
+    // setting the handle this assertion would pass vacuously and catch nothing.
+    const prev = process.env.BOARD_BOT_HANDLE;
+    const { client: c, callWith } = await mgrClient();
+    try {
+      // Set INSIDE the try so a construction throw cannot leak it to the rest
+      // of the file (boardMiniAppLink reads it per call, not at wire-up).
+      process.env.BOARD_BOT_HANDLE = '@DashboardMan_bot';
+      const windowed = await callWith('get_team_schedule', { from: D1, to: D1 });
+      expect(windowed.data.boardNote).toContain('See it on the board');
+      expect(windowed.data.routeNote).toContain('Directions');
+      expect(windowed.data.boardLink).toBeDefined();
+      // Distinct keys, all three intact — routeNote must not overwrite either.
+      expect(windowed.data.note).toBeUndefined(); // windowed mode has no `note`
+
+      const recall = await callWith('get_team_schedule', { unassignedOnly: true });
+      expect(recall.data.note).toContain('unscheduledJobs'); // survives boardNote
+      expect(recall.data.boardNote).toContain('See it on the board');
+      expect(recall.data.routeNote).toBeUndefined();
+    } finally {
+      await c.close();
+      if (prev === undefined) delete process.env.BOARD_BOT_HANDLE;
+      else process.env.BOARD_BOT_HANDLE = prev;
     }
   });
 });

@@ -56,7 +56,11 @@ export const defaultAnswerer: Answerer = async (context, question, ctx) => {
   const args = await runForcedTool(ANSWER_TOOL, {
     system: ANSWER_SYSTEM,
     user: `Question: ${question}\n\n${serializeContextForPrompt(context)}`,
-    maxTokens: 1024,
+    // Raised with defaultBriefer's for the same measured reason: this caller has
+    // the same prose+citations output shape over the same serialized context, so
+    // it truncates the same way — dropping `citations` while still returning
+    // parseable JSON. See the note in briefCustomer.ts for the measurements.
+    maxTokens: 2048,
     label: 'defaultAnswerer',
   }, ctx);
   const { answer, citations } = args as unknown as { answer: string; citations?: Citation[] };

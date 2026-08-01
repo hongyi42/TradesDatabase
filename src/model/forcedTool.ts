@@ -193,6 +193,17 @@ async function callAnthropic(
     tool_choice: { type: 'tool', name: tool.name },
     messages: [{ role: 'user', content: req.user }],
   });
+  // Same truncation guard as the OpenAI path, kept in step deliberately: this
+  // transport is the documented env-var rollback, so a bug fixed on one side and
+  // not the other would reappear the moment MODEL_PROVIDER flips. Anthropic
+  // spells it stop_reason='max_tokens'.
+  if (message.stop_reason === 'max_tokens') {
+    throw new Error(
+      `${req.label}: model output was truncated at maxTokens=${req.maxTokens} ` +
+        `(stop_reason=max_tokens) — the tool arguments are incomplete, so the result is not usable. ` +
+        `Raise maxTokens for this caller.`,
+    );
+  }
   const toolUse = message.content.find(
     (block): block is Anthropic.ToolUseBlock =>
       block.type === 'tool_use' && block.name === tool.name,
@@ -249,12 +260,37 @@ async function callOpenAiCompatible(
   // Read the body ONCE: parse the tool args and the usage block from the same
   // object (res.json() cannot be called twice).
   const body = (await res.json()) as {
+    choices?: Array<{ finish_reason?: string }>;
     usage?: {
       prompt_tokens?: number;
       completion_tokens?: number;
       prompt_tokens_details?: { cached_tokens?: number } | null;
     };
   };
+  // TRUNCATION IS NOT A PARSE ERROR — check it before parsing, or it degrades
+  // SILENTLY. Measured on GLM-5.2 (2026-07-30): a briefing whose output exceeded
+  // maxTokens came back with finish_reason 'length', a well-formed tool_call, and
+  // arguments that still parsed as valid JSON — but with the required `citations`
+  // field simply absent. parseOpenAiToolArgs validates SHAPE (a call exists, the
+  // JSON parses), never COMPLETENESS, so that response sailed through and
+  // validateCitations turned the missing field into an empty array. The result was
+  // a briefing that read complete and cited nothing, with no error anywhere.
+  //
+  // finish_reason is the provider's own ground truth: 'length' means the
+  // generation was cut at the budget, whether or not the fragment happens to
+  // parse. Trusting it costs one comparison and closes the whole class for all
+  // four callers at any budget — the alternative is hoping every maxTokens stays
+  // ahead of every future prompt, which is what failed here.
+  //
+  // A truncated reply is a caller-fixable fault, so the message names the budget.
+  const finish = body.choices?.[0]?.finish_reason;
+  if (finish === 'length') {
+    throw new Error(
+      `${req.label}: model output was truncated at maxTokens=${req.maxTokens} ` +
+        `(finish_reason=length) — the tool arguments are incomplete, so the result is not usable. ` +
+        `Raise maxTokens for this caller.`,
+    );
+  }
   return {
     args: parseOpenAiToolArgs(body, tool.name, req.label),
     // OpenAI-compatible naming differs from Anthropic's. prompt_tokens is the

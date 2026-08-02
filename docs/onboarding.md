@@ -123,13 +123,15 @@ it is what turns a pile of captures into a coherent longitudinal record.
       ▼
    doorman (host process, OUTSIDE the sandboxes; badge → identity)
       │  HTTPS + HMAC identity headers (x-tenant-id / x-technician-ref / x-identity-signature)
+      │  badges themselves flow on a SEPARATE path: each host polls GET /control/badges
       ▼
  Render (tradesdatabase.onrender.com)
    ├─ spine MCP server (src/mcp/server.ts)  ──►  Supabase "test" project = THE PILOT LIVE DB
    ├─ /composio relay                       ──►  per-person Composio session (Gmail, Sheets, …)
    ├─ board web + background worker (global bot @DashboardMan_bot)
    ├─ /admin operator cost dashboard
-   └─ cron heartbeat every 15 min (badge lifecycle, pairing sweep, grace expiry, cost rollup)
+   └─ cron heartbeat every 15 min — six sweeps: pairing, grace expiry, Composio session
+      provisioning, execution-log ingestion, cost backfill, cost rollup
  Inference: sandbox gateway ──► DeepInfra GLM-5.2 (automatic failover: NVIDIA)
 ```
 

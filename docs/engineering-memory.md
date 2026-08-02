@@ -5,7 +5,8 @@ the repo. Until 2026-07-20 most of this lived only in the operator's private Cla
 memory; a new engineer would hit these walls blind. Facts are stamped with dates — treat every
 "current state" claim as a snapshot, and update this file when reality changes.
 
-**Reading order for a new engineer:**
+**Reading order for a new engineer:** start with [onboarding.md](onboarding.md) (the map — what
+the project is, how the pieces fit, day-1 setup), then
 [Three-Layer-Context-Spine-Overview.md](Three-Layer-Context-Spine-Overview.md) (what we're
 building) → `CLAUDE.md` at the repo root (hard rules) → this file (everything in between) →
 the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](control-plane.md),

@@ -12,6 +12,9 @@ catalog of operational traps) lives in [docs/engineering-memory.md](docs/enginee
 read it before touching the agent stack, the pilot DB, or deploys, and keep it updated when those
 facts change.
 
+New to the repo? [docs/onboarding.md](docs/onboarding.md) is the map — what the project is, how the
+pieces fit, day-1 local setup, and the rules that cost us incidents.
+
 ## Conventions
 - TypeScript, ESM (`"type":"module"`, `NodeNext`) — use explicit `.js` extensions on relative imports.
 - All database access goes through the typed layer in `src/db/`; don't hand-write Supabase queries elsewhere.

@@ -47,12 +47,15 @@ Two things make us unusual and you should internalize both early:
    planned. Managers and technicians talk to an AI agent in a Telegram DM. The one deliberate
    exception is a Telegram **Mini App** ("the board") for dispatch. (There *is* an internal
    `/admin` cost page — that's for us, the operators, not for them.)
-2. **We are a pilot, not a launched product.** One real external beta tenant, a handful of test
-   tenants, running on one Lightsail box. Much of what looks like over-engineering in this repo is
-   scar tissue from a specific incident — the incidents are all written down.
+2. **We are a pilot, not a launched product.** The pilot database carries exactly **two** tenants:
+   a shared "Default Tenant" holding demo/seed data, and one real external beta customer onboarded
+   2026-07-07. It all runs on one Lightsail box. Much of what looks like over-engineering in this
+   repo is scar tissue from a specific incident — the incidents are all written down.
 
-**Timeline for context:** first commit 2026-06-19. ~82 merged PRs, 59 test files, ~891 tests as of
-the last recorded full run (2026-07-30). Four contributors.
+**Timeline for context:** first commit 2026-06-19; 82 merged PRs on `origin/main`; 4 contributors;
+59 test files carrying ~870 test declarations. (The last full-suite figure *recorded* in
+engineering-memory is 891 passing, 2026-07-30 — I did not re-run the suite to confirm it, since
+that needs a local stack.)
 
 ---
 
@@ -192,8 +195,9 @@ retract the evidence, the fact disappears from default reads).
 
 `brief_customer` (pre-visit cheat sheet, or full relationship history), `answer_customer_question`,
 `get_customer_context`. All grounded: every claim carries a **citation** back to an L1 capture, and
-citations are validated ([src/synthesis/grounding.ts](../src/synthesis/grounding.ts)) — the model
-cannot cite evidence that doesn't exist.
+`validateCitations` ([src/synthesis/grounding.ts](../src/synthesis/grounding.ts)) drops any citation
+whose capture id isn't actually in the context it was given — so a hallucinated citation never
+reaches the reader.
 
 ### 4d. Scheduling — the biggest subsystem
 
@@ -288,14 +292,23 @@ The other rule: `method` (`measured` = we counted the units, `allocated` = we sp
 proxy metric) must stay visible on every read surface, so an estimate never renders like a metered
 fact.
 
+A distinction that confuses people early: **not every provider we count is a provider we price.**
+Some are pure **counters** — we record their units for per-tenant attribution, but they have no
+rows in `cost_rates`, so they contribute no dollars and render as `—` rather than `$0.00`. That is
+by design, not a gap. `cost_rates` is the authority on which vendors are billed, and that set
+changes as we learn how a vendor actually charges — **read the table, don't trust a list in a doc**
+(including this one).
+
 > **Owned by** [HANDOFF.md](../HANDOFF.md) (the shipped shape, what's still open, the traps it
 > shipped with) and `thoughts/shared/plans/2026-07-24-per-tenant-cost-dashboard.md` (the design
 > rationale).
 
 ### 4h. Web tools
 
-`web_search` (Brave, metered) and `read_webpage` — hardened fetch, and the requests are logged to
-`web_requests` which the cost backfill replays into the ledger.
+`web_search` (Brave) and `read_webpage` — hardened fetch. Requests are logged to `web_requests`,
+which a cron sweep replays into `cost_events` from a watermark, so the units are attributed
+per-tenant without any live instrumentation on the call path. Whether those units carry a *price*
+is a separate question — see the counter-vs-billed note in §4g.
 
 ---
 
@@ -317,8 +330,10 @@ src/
                   execution-log ingestion, offboarding
   inbound/      ← webhook receipt + per-source normalizers (Gmail)
   email/        ← work-vs-personal classifier, ingest, formatting
-  routes/       ← Google Routes / Geocoding clients, Maps deep links, day source
-  control/      ← badge minting, the badge file, the host pull script
+  routes/       ← Google clients: Routes, Geocoding, Route Optimization (roiClient), Maps deep
+                  links, day source
+  control/      ← badge minting + the badges file the host pulls. (The pull script itself lives
+                  in Box_Setup_Stuff/; what's here is the test that guards it.)
   model/        ← forcedTool.ts: ONE transport for all four model calls; usage metering
   jobs/         ← lifecycle.ts, the Render cron heartbeat
 web/            ← static assets for the board Mini App and the /admin dashboard
@@ -405,18 +420,25 @@ spelling out once here:
 npm install
 ```
 
-Start the local database (needs Docker running). This applies every migration:
+Start the local database (needs Docker running):
 
 ```bash
 npx supabase start
 ```
 
-⚠️ **Use `--include-all` on a fresh stack.** The `cost_*` migrations are timestamped *before* the
-geocoding migration, so a plain `npx supabase migration up` refuses the out-of-order insert:
+⚠️ **If a `migration up` refuses with an out-of-order complaint, add `--include-all`:**
 
 ```bash
 npx supabase migration up --include-all
 ```
+
+This is expected, not a broken checkout: the `cost_*` migrations carry timestamps *earlier* than
+the geocoding migration that was applied before them, and plain `migration up` refuses to insert a
+version older than one already recorded. Production is unaffected — those rows were applied and
+recorded explicitly. Recorded in engineering-memory §4; it has already bitten one teammate.
+
+One more expectation to set: the first suite run right after applying migrations can flake on state
+left behind by the pre-migration failures. **Re-run before diagnosing.**
 
 Copy the env templates and fill them from what `supabase start` printed:
 
@@ -444,8 +466,15 @@ Run the gates. **All four before any commit** — and show the real output, neve
 npm run typecheck && npm run lint && npm test && npm run build
 ```
 
-To see the board or the admin dashboard locally, seed some data, start `createHttpServer()` on a
-port, and open `/board` or `/admin` (the admin page wants the token from `.env`).
+To see the **admin dashboard** locally: seed some `cost_events` plus an `infra_costs` row, run
+`rollupCosts('YYYY-MM-01')`, start `createHttpServer()` ([src/mcp/httpServer.ts](../src/mcp/httpServer.ts))
+on a port, open `/admin`, and paste the `ADMIN_DASHBOARD_TOKEN` from `.env`.
+
+The **board** is harder to exercise locally, and it's worth knowing why before you try. Its page
+shell and static assets serve unauthenticated, so `/board` will load — but every data call needs a
+Telegram Mini App `initData` slip signed by the real bot token, so the page comes up empty in an
+ordinary browser. Drive it from Telegram, or test the handlers through
+[src/telegram/boardApi.test.ts](../src/telegram/boardApi.test.ts).
 
 **Concurrent work:** if you take a second `git worktree` for a parallel feature, give it its own
 Supabase stack with `scripts/second-stack.sh [N]` from inside that worktree — it shifts the ports

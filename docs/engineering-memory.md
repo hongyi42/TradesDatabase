@@ -140,12 +140,15 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
       ▼
    doorman (host process, outside the sandboxes; badge → identity)
       │  HTTPS + HMAC identity headers (x-tenant-id / x-technician-ref)
-      ▼
+      │  badges arrive on a SEPARATE path — the host polls GET /control/badges
+      ▼                                        on its own 5-min timer, NOT the cron
  Render (tradesdatabase.onrender.com)
    ├─ spine MCP server (src/mcp/server.ts) ──► Supabase "test" = PILOT LIVE DB
    ├─ /composio relay ──► per-person Composio session (Gmail, Sheets, …)
    ├─ board web + background worker (global bot @DashboardMan_bot)
-   └─ cron heartbeat (badge lifecycle, pairing sweep, grace expiry)
+   ├─ /admin operator cost dashboard (the ONE cross-tenant read surface)
+   └─ cron heartbeat, */15 — six sweeps: pairing · grace expiry · Composio session
+      provisioning · execution-log ingestion · cost backfill · cost rollup
  Inference: sandbox gateway ──► DeepInfra GLM-5.2 (failover: NVIDIA)
 ```
 

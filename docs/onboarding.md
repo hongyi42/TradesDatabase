@@ -2,8 +2,10 @@
 
 **Who this is for:** a new engineer joining this repo, on day one, with no prior context.
 **How long:** ~2 hours to read, ~1 hour to get a local stack running.
-**What it is not:** the source of truth. It is the *map*. Every section points at the file that
-owns the detail, and those files win when they disagree with this one.
+**What it is not:** the source of truth. It is the *map*. Each section gives you enough to orient,
+then points at the file that **owns** that fact — and the owning file wins whenever it disagrees
+with this one. If you find yourself wanting to add a paragraph of detail here, add it to the owning
+file and link instead; a guide that restates other docs goes stale silently.
 
 > **Heads-up about `README.md`:** the file at the repo root is **not** a project README — it
 > documents a portable export of our Research→Plan→Implement workflow for *other* repos. Don't
@@ -56,6 +58,9 @@ the last recorded full run (2026-07-30). Four contributors.
 
 ## 2. The core idea: the three-layer context spine
 
+> **Owned by** [Three-Layer-Context-Spine-Overview.md](Three-Layer-Context-Spine-Overview.md).
+> Read it in full — it is short, and it is the one doc you cannot skip.
+
 This is the concept the whole repo is organized around. Learn it first; everything else is
 downstream.
 
@@ -83,31 +88,23 @@ raw_captures (L1) ────┘   every capture links back to the customer/job
 > (L1). Capture the in-between in flexible attributes (L3). And **link every structured field back
 > to the raw evidence it came from.**
 
-Why this split earns its keep:
-
-- **L1 is a safety net.** Because the original is preserved, a bad AI extraction can be re-run
-  later with a better prompt or a better model, with zero data loss. You are never locked into
-  your first interpretation.
-- **L1 is queryable ground truth.** A tech on site can ask "what did the last guy actually say?"
-  and get the verbatim note, not a lossy summary.
-- **L2 stays clean.** Only fields that business logic, pricing, and scheduling truly depend on
-  become columns.
-- **L3 absorbs the long tail** without a schema change per customer quirk.
-
-A fact graduates from L3 to a real L2 column only when someone needs to **query across** it.
+The payoff, in one line each: **L1** is a safety net (a bad extraction can be re-run later against
+the preserved original, with zero data loss) *and* queryable ground truth; **L2** stays clean
+because only fields the business logic depends on become columns; **L3** absorbs the long tail
+without a schema change per customer quirk. A fact graduates from L3 to a real column only when
+someone needs to **query across** it. The overview doc argues each of these properly.
 
 ### Hardcode vs. let-the-model-decide
 
-A rule of thumb that runs through the entire codebase:
+One rule of thumb runs through the whole codebase: **hardcode what must be correct and auditable**
+(schema, identity matching, permission boundaries, pricing math, scheduling guards); **let the
+model interpret** (extract fields from a transcript, summarize, draft, answer). Overview §5 has the
+reasoning.
 
-- **Hardcode what must be correct and auditable:** the schema, **identity matching** (which
-  existing customer/job does this capture belong to?), permission boundaries, pricing math,
-  scheduling guards.
-- **Let the model interpret:** extracting fields from a transcript, summarizing history, drafting
-  a narrative, answering a question.
-
-Identity matching in particular is deterministic code ([src/writePath/identityMatch.ts](../src/writePath/identityMatch.ts)),
-never a model guess — it is what turns a pile of captures into a coherent longitudinal record.
+The case that matters most in practice is **identity matching** — deciding which existing
+customer/job an incoming capture belongs to. It is deterministic code
+([src/writePath/identityMatch.ts](../src/writePath/identityMatch.ts)), never a model guess, because
+it is what turns a pile of captures into a coherent longitudinal record.
 
 ---
 
@@ -149,13 +146,12 @@ Read that top to bottom as the path of one message:
 ### Why the doorman exists (the one piece that confuses everyone)
 
 The MCP server demands a *computed, signed* identity per request. OpenClaw (the agent runtime) can
-only send *static strings baked into a config file*. Bridging that directly is unsafe both ways:
-bake signed headers into the sandbox and you've put a permanent forgeable credential in untrusted
-space; put the master secret in the sandbox and any tenant can be impersonated.
+only send *static strings baked into a config file*. Bridging that directly is unsafe in both
+directions. The doorman is the translator: **static badge in → signed identity out**, with the
+badge individually revocable and useless if stolen.
 
-The doorman is the translator: **static badge in → signed identity out.** The badge is
-individually revocable and useless if stolen (only the doorman accepts it). Full detail and the
-load-bearing invariants: [doorman-runbook.md](doorman-runbook.md).
+> **Owned by** [doorman-runbook.md](doorman-runbook.md) — the gap it closes, the exact HMAC scheme,
+> and four load-bearing invariants. Read it before touching anything identity-shaped.
 
 ### MCP, briefly
 
@@ -222,6 +218,11 @@ Over-confirming is treated as a *safety* problem, because it trains people to ru
 rule is single-sourced as `requiresConfirmation` on tool previews in
 [src/schedule/booking.ts](../src/schedule/booking.ts) — new surfaces inherit it, never re-derive it.
 
+> The doctrine and its corollaries are **owned by** [engineering-memory.md](engineering-memory.md)
+> §2, alongside the other standing product decisions — including one **rejected** direction that is
+> explicitly not to be re-proposed. Skim §2 before proposing anything that changes how the agent
+> talks; several obvious-seeming ideas have already been decided against, with reasons.
+
 The scheduling verbs, in rough order of depth:
 
 - `book_visit` / `move_visit` / `unschedule_visit` / `cancel_job` — the deterministic one-visit
@@ -259,26 +260,20 @@ Tenant isolation comes from the roster lookup, not from which bot you talked to.
 
 ### 4f. Control plane — people lifecycle
 
-The `technicians` roster drives the real world: badges to hosts, Composio Gmail pairings, grace
--period offboarding.
-
-```
-add_technician_seat        get_connect_link           resolve_review
-      ▼                          ▼                          ▼
-   INVITED ──────────▶ PENDING_VERIFICATION ──────────▶ ACTIVE
-                                                          │ deactivate_technician_seat
-                                                          ▼
-                          grace period (7d default)   OFFBOARDING ──▶ reactivate (the undo)
-                                                          │
-                                                          ▼
-                                                     OFFBOARDED (permanent; ref NEVER reused)
-```
+The `technicians` roster drives the real world: badges to hosts, Composio Gmail pairings,
+grace-period offboarding. A person walks
+`invited → pending_verification → active → offboarding → offboarded`, driven partly by manager chat
+verbs and partly by a 15-minute Render cron. Two facts to carry with you: **offboarding is
+permanent and a ref is never reused across humans** (L1 is append-only), and deactivation cuts
+access instantly regardless of the cron.
 
 Two access tiers: **manager** (39 tools; full Composio catalog; self-serve pairing) and
 **technician** (14 tools; curated Composio list; email sends must go through the spine's two-step
 `send_email`, never `GMAIL_SEND_EMAIL`). Seat-based licensing: a firm buys N seats and adding a
-person needs a free one — enforced server-side, never trusted to the agent. Details:
-[control-plane.md](control-plane.md).
+person needs a free one — enforced server-side, never trusted to the agent.
+
+> **Owned by** [control-plane.md](control-plane.md) — the full state diagram, the six cron sweeps,
+> Render setup, and badge rollout per host.
 
 ### 4g. Cost tracking (operator-only)
 
@@ -286,20 +281,16 @@ Records what every tenant costs us in vendor spend, shown at `/admin`.
 
 **The load-bearing rule: `cost_events` stores UNITS, never dollars.** Prices live in `cost_rates`,
 versioned by effective date, joined at read time — so history re-prices when a vendor moves its
-rates (DeepInfra changed $0.95 → $0.93 *during the three days this feature was being planned*).
+rates (DeepInfra changed $0.95 → $0.93 *during the three days this feature was being planned*). Do
+not "simplify" by storing a dollar figure on the event.
 
-```
-cost_events (units, never $)         cost_rates (prices, versioned by date)
- tenant · provider · sku · qty  ──join at READ time──►  dollars
- method: measured | allocated                              │
-infra_costs (monthly bills + allocation rule) ─────────────┘
-                       │
-                       ▼
-              cost_rollup_monthly   ← the ONLY thing /admin reads
-```
+The other rule: `method` (`measured` = we counted the units, `allocated` = we split a bill by a
+proxy metric) must stay visible on every read surface, so an estimate never renders like a metered
+fact.
 
-`method` (`measured` vs `allocated`) must be visible on every read surface, so an estimate never
-renders like a metered fact.
+> **Owned by** [HANDOFF.md](../HANDOFF.md) (the shipped shape, what's still open, the traps it
+> shipped with) and `thoughts/shared/plans/2026-07-24-per-tenant-cost-dashboard.md` (the design
+> rationale).
 
 ### 4h. Web tools
 
@@ -351,6 +342,10 @@ one thing that will bite you.
 
 ## 6. Environments — read this before you touch anything
 
+> **Owned by** [engineering-memory.md](engineering-memory.md) §3 and [`CLAUDE.md`](../CLAUDE.md).
+> This table is the one thing in this guide I've deliberately duplicated rather than linked —
+> getting it wrong writes to a live customer database, and one click away is too far.
+
 There are **three** Supabase environments and their names are actively misleading:
 
 | Env | Ref | What it actually is |
@@ -365,42 +360,42 @@ test run truncated the pilot's roster and locked a technician out of their job. 
 do not work around it, and don't run a loopback tunnel to a remote DB on 127.0.0.1.
 
 Also: `npm run gen:types` uses `--linked`, which points at **the pilot**. Locally you almost always
-want `npm run gen:types:local`.
+want `npm run gen:types:local`. Seeding follows the same shape — `npm run seed:local` is safe,
+seeding the pilot requires an explicit `--hosted` flag.
 
 ---
 
 ## 7. The rules you must not break
 
-These are non-negotiable. Each one is either in `CLAUDE.md` or was written in blood.
+> **Owned by** [`CLAUDE.md`](../CLAUDE.md) (rules 1–4, 9) and
+> [engineering-memory.md](engineering-memory.md) §1 (rules 5–8). Both are short. **Read them
+> yourself on day one** — this is a checklist of what exists, not a substitute.
 
-1. **L1 is append-only.** Insert only — never update, never delete (a DB trigger enforces it too).
-   Because there is no delete path, **any filtering or classification must gate the L1 insert — run
-   it *before* writing, never after.** Two recorded exceptions, both deliberate: mail arriving
-   during a `pending_verification` window is ingested (and stamped for forensics), and
-   **outbound/agent-action captures are classifier-free** — the audit record matters most exactly
-   when the action was inappropriate. Non-send captures store argument **key names only**, never
-   values.
-2. **All database access goes through `src/db/`.** No hand-written Supabase queries anywhere else.
-3. **Tests only ever run against the local stack.** See §6.
-4. **Every code change goes through a PR before `main`.** "You may commit" authorizes a commit, not
-   a push. Doc-only carve-out: markdown-only diffs (`docs/`, `thoughts/`, READMEs) may commit and
-   push on `main` directly.
-5. **Verify vendor claims against live docs and cite the URL.** Never answer from memory or from
-   this repo's own summaries — repo docs record point-in-time findings and go stale. Read
-   deprecation notices precisely: which method, which mode, which dates, what is explicitly
-   unaffected. (We once concluded "Composio managed OAuth is dead" when only one *method* was being
-   retired. An uncited one-liner in a design doc propagated the error for weeks.)
-6. **Never paste badge plaintext anywhere** — chat, docs, commits. A 2026-07-03 leak forced
-   rotating every badge in the fleet. Fingerprints (sha256) only.
-7. **The Composio master API key never enters a sandbox.** It can act as anyone. Sandbox access is
-   doorman-relayed through Render with per-person session pinning. Same custody rule for
-   `GATEWAY_IDENTITY_SECRET`.
-8. **`Box_Setup_Stuff/` is not documentation — it's the only context a host-side Claude gets** when
-   bootstrapping trades-box-1, and it cannot see this repo. So (a) any architectural change to the
-   agent stack must update it in the same change, and (b) those files must be **self-contained** —
-   never "see docs/X §N", always inline the fact.
-9. **If a gate fails, fix the root cause.** Never suppress the error or loosen the gate.
-10. **Prod remains read-only.**
+| # | Rule | Owner |
+|---|---|---|
+| 1 | **L1 is append-only** — insert only, never update or delete | CLAUDE.md |
+| 2 | **All DB access goes through `src/db/`** — no hand-written Supabase queries elsewhere | CLAUDE.md |
+| 3 | **Tests run only against the local stack**; prod stays read-only | CLAUDE.md, §6 above |
+| 4 | **Verify vendor claims against live docs, cite the URL** — never from memory or our own summaries | CLAUDE.md |
+| 5 | **Every code change goes through a PR before `main`** (doc-only diffs are carved out) | eng-memory §1 |
+| 6 | **Never paste badge plaintext anywhere** — fingerprints (sha256) only | eng-memory §1 |
+| 7 | **The Composio master key never enters a sandbox** (same custody rule as `GATEWAY_IDENTITY_SECRET`) | eng-memory §1 |
+| 8 | **`Box_Setup_Stuff/` must stay self-contained** — it's the only context a host-side Claude gets | eng-memory §1 |
+| 9 | **If a gate fails, fix the root cause** — never suppress it or loosen the gate | CLAUDE.md |
+
+Three of these have a consequence that isn't obvious from the one-line statement, so they're worth
+spelling out once here:
+
+- **Rule 1 has a corollary that catches people.** Because there is no delete path, **any filtering
+  or classification must gate the L1 insert — run it *before* writing, never after.** A misrouted
+  row is retained permanently. There are two recorded exceptions, both deliberate decisions with
+  written reasoning; `CLAUDE.md` states them precisely and you should not extend them by analogy.
+- **Rule 5's "you may commit" does not mean "you may push."** That distinction is explicit and
+  enforced socially, not by tooling.
+- **Rule 4 exists because of a specific failure**: we briefly concluded "Composio managed OAuth is
+  dead" when only one *method* was being retired, and an uncited one-liner in a design doc
+  propagated the error. Read deprecation notices precisely — which method, which mode, which dates,
+  and what is explicitly unaffected.
 
 ---
 
@@ -499,18 +494,20 @@ The project owner is a **hands-on learner, not a career engineer**. When you exp
 
 ## 10. Deploy topology (and why it surprises people)
 
+> **Owned by** [engineering-memory.md](engineering-memory.md) §3 ("Deploy/migration gotchas") and
+> §5. Check it before your first deploy — the list there is longer and dated.
+
+Two things break the mental model you arrive with:
+
 - **Render deploys a *separate repo*, not this one.** Merging to `main` here does **not** move
-  production. Someone must sync that repo first, *then* Render → **"deploy latest commit"**.
-- **Never click "Redeploy"** — it re-runs the *old* commit. This once put an 18-commit-stale build
-  live. Confirm the live commit hash in the dashboard.
+  production. And **"Redeploy" re-runs the old commit** — use "deploy latest commit" and confirm
+  the live commit hash. Missing this once put an 18-commit-stale build live.
 - **Nothing auto-applies DB migrations to the pilot.** Render only builds and starts. Pilot DDL
-  goes through the Supabase MCP's `apply_migration`. The pilot's migration ledger has drifted from
-  the repo (the MCP stamps its own apply-time version), so **trust schema read-backs, not the
-  version ledger**.
-- Deploy-before-migration fails safe but noisily (PostgREST "unknown column"); fix by applying the
-  migration and `NOTIFY pgrst, 'reload schema'`.
-- **Rollout classes** — know which one your change is, or you'll either ship a stale fleet or force
-  needless restarts:
+  goes through the Supabase MCP, which stamps its own apply-time version — so the version ledger
+  under-reports and **you trust schema read-backs, not the ledger**.
+
+**Rollout classes** — know which one your change is, or you'll either ship a stale fleet or force
+needless restarts:
 
   | Change | What it needs |
   |---|---|
@@ -522,50 +519,38 @@ The project owner is a **hands-on learner, not a career engineer**. When you exp
 
 ---
 
-## 11. Traps — the short list
+## 11. Traps
 
-The full catalog is [engineering-memory.md](engineering-memory.md) §5. These are the ones most
-likely to catch you in your first month.
+> **Owned by** [engineering-memory.md](engineering-memory.md) §5, which is organized as "traps by
+> the time you'd hit them" and is dated throughout. Box-side traps additionally live in
+> `Box_Setup_Stuff/`. **Go read §5 before your first task on the agent stack or the pilot DB** —
+> it is the highest-value hour in this repo.
 
-**Database / API**
-- PostgREST silently caps result sets at **1000 rows**. Any scan that can exceed it must paginate —
-  see [src/db/foldImpact.ts](../src/db/foldImpact.ts) for the pattern.
-- Schedule times are stored **naive-local**: the firm's wall-clock time written as if it were UTC.
-  Availability checks pass timezone `'UTC'`. This is deliberate; revisit only if a tenant spans
-  timezones.
-- `rescheduleAssignment` creates the new row as `'proposed'` while every reader filters
-  `['confirmed']` — moves **must** pass `status:'confirmed'`.
-- Terminal (cancelled) assignment rows retain a stale `locked=true`. Always filter by status when
-  counting pins.
+I'm not going to re-list that catalog here; it would rot. Instead, the three *classes* of trap, so
+you recognize one when you're standing in it:
 
-**The agent fleet**
-- **Credentials inject into a sandbox's env at container launch only.** Any badge or token write
-  needs a container restart. This silently killed a real beta customer's spine access for four days.
-- **Never change a sandbox's `openclaw.json` with `openclaw config patch`** — it doesn't update the
-  config hash, and the next gateway restart fails and leaves the gateway **down**. Three bots went
-  down learning this. Use the gateway-mediated download → `jq` → upload → hash → restart recipe.
-- **Never health-check with `nemoclaw <s> agent`** — it injects into that person's live Telegram
-  conversation. Use `doctor`, `channels status`, or logs.
-- **Enumerate live sandboxes from the box, never from a written-down map.** `nemoclaw list`, then
-  `channels status` per sandbox. A rollout once missed a live manager sandbox added since the map
-  was written.
-- **DeepInfra's balance runs out roughly monthly and nothing alerts on it.** It goes unnoticed
-  precisely because the failover works — the bots keep running on NVIDIA. Both-providers-dead alarm
-  → check the balance (HTTP 402) first. Trust box evidence over vendor status pages.
+- **Things that fail silently rather than loudly.** Credentials only inject into a sandbox's env at
+  container launch, so a badge write with no restart looks fine and isn't — this silently killed a
+  real beta customer's spine access for four days. Same class: a config patch that reports success
+  while writing to the wrong home directory; DeepInfra's balance running out monthly with nothing
+  alerting, unnoticed precisely *because* the failover works.
+- **Things where the written-down map is wrong.** Enumerate live sandboxes from the box
+  (`nemoclaw list`), never from a remembered map. Trust schema read-backs over the migration
+  ledger. Trust box evidence over vendor status pages. If this guide and a live probe disagree,
+  the probe wins.
+- **Places the model won't do what it's told.** GLM-5.2 does not reliably obey standing
+  instructions — proven repeatedly. **When a behavior matters, move it into the mechanism**: a
+  required parameter, a result-embedded directive, server-side resolution like the `resolve_date`
+  tool. Prompt rules are steering, not enforcement. This is the single most transferable lesson in
+  the repo, and it's why several tools look more rigid than they "need" to be.
 
-**Working with the model**
-- **GLM-5.2 does not reliably obey standing instructions.** Proven repeatedly: it skipped a required
-  field despite a rule, skipped a link despite "always offer it", resolved an ambiguity it was told
-  to ask about. **When a behavior matters, move it into the mechanism** — a required parameter, a
-  result-embedded directive, server-side resolution like the `resolve_date` tool. Prompt rules are
-  steering, not enforcement.
-- **A tool's `parameters` schema costs real latency.** Every request compiles each tool's JSON
-  Schema into a decoding grammar before the first token. One bloated built-in tool (113 params, 13
-  levels deep) cost ~51 seconds per turn by itself; denying it took turns from 67s to 3s. Our own 39
-  spine tools are cheap by comparison — keep them that way.
-- **AGENTS.md is ~26.6k chars against a 12k injected-context budget**, so most of it never reaches
-  the model (head 45% + a policy digest + tail 15%). Guidance added late in that file is probably
-  invisible. Verify against the truncation model before trusting it.
+Two purely mechanical ones worth knowing before you write your first query, because neither is
+discoverable from the code:
+
+- PostgREST silently caps result sets at **1000 rows** — any scan that can exceed it must paginate
+  ([src/db/foldImpact.ts](../src/db/foldImpact.ts) is the pattern).
+- Schedule times are stored **naive-local** (the firm's wall-clock time written as if UTC), and
+  availability checks pass timezone `'UTC'`. Deliberate; revisit only if a tenant spans timezones.
 
 ---
 

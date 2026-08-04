@@ -873,6 +873,33 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   description, but `get_schedule` is filtered out of `MANAGER_TOOLS`, so *technician* sandboxes
   needed the restart and the manager side, whose change was result-only, was live the moment
   Render deployed. Getting this backwards costs either a stale fleet or needless restarts.
+  **Amended 2026-08-04, after the tool-search rollout (PR #99):** under `tools.toolSearch` a
+  description is no longer only the parameter surface — it is the **discovery surface**. The
+  model's loaded tool list is just `tool_search`/`tool_describe`/`tool_call`; every spine tool is
+  a catalog entry it has to *find*, by matching against that description text. So a description
+  edit now changes both what the agent can learn about a tool and whether it locates it at all,
+  and the gateway's per-process `tools/list` cache still gates when either takes effect. The
+  matching failure is silent and total — that is exactly how `resolve_date` stopped being called
+  (§0j in `bootstrap-box.sh` teaches the route explicitly as the fix). **Any tool whose
+  description you rewrite inherits that exposure**; `get_schedule` was rewritten on 2026-07-31
+  and has no §0-style block of its own, so "the agent never called it" is a live failure mode to
+  rule out before blaming the tool.
+- **A sandbox can hold a badge the doorman no longer knows — and nothing says so.** Found on s5
+  2026-08-04: every spine call returned the doorman's flat `badge not authorized`, while
+  `badges.json` held a live, non-revoked entry for that very person (`ben-shelton`). The sandbox
+  was simply carrying an OLDER badge — the pull regenerates `badges.json` wholesale from the
+  roster, so a rotation orphans whatever the sandbox still has. There is no error surfaced to the
+  operator, no unhealthy status, and the container/gateway both report healthy; the bot just
+  cannot reach any tool. **Diagnostic (verified, fingerprints only — never print plaintext):**
+  fingerprint the badge from BOTH `/sandbox/.openclaw/openclaw.json`
+  (`.mcp.servers["trades-spine"].headers.Authorization`, strip the `Bearer ` prefix) and the
+  running gateway's `/proc/<pid>/environ` `TRADES_SPINE_BADGE`, then test
+  `jq --arg f "$FP" 'has($f)' /etc/doorman/badges.json`. Both fingerprints matching each other but
+  absent from `badges.json` = orphaned badge, and it also proves a gateway restart did not cause
+  it (the file and the live process agree). Fix is server-side `rotate-badge` → next pull mints
+  into `/root/pending-badges.jsonl` → install as the provider credential → **container** restart
+  (a gateway restart is not enough; creds inject at container launch). Check this BEFORE
+  debugging any "the agent isn't using tool X" report on a specific sandbox.
 - **Credentials inject into a sandbox's process env at container launch ONLY.** Any provider
   credential write (badge install/rotation, token change) needs a container restart to take
   effect. This exact mechanism silently killed Judy's spine MCP for 4 days (badge in store,

@@ -121,10 +121,11 @@ asking "what's on the schedule this week" is dispatching, not driving — a dire
 their own couple of stops answered a question nobody asked and was the only noise in an otherwise
 clean report. Per-stop links live on `get_schedule`, which IS a personal route view; a manager's
 own driving day is the board's job. A briefly-shipped `mapsUrl`/`routeNote` on this tool was
-removed before merge) plus the 26 seat/lifecycle+scheduling tools, for a 39-tool
+removed before merge) plus the 27 seat/lifecycle+scheduling tools, for a 40-tool
 manager surface (send_email since 2026-07-04, retract_capture since 2026-07-06, web_search and
 read_webpage since 2026-07-13, record_standing_fact since 2026-07-14, resolve_date since
-2026-07-17; the 4 scheduling tools
+2026-07-17; get_availability since 2026-08-04, the read half of set_availability — the
+pattern had been write-only, so "what is X's availability?" had no answer; the 4 scheduling tools
 `get_team_schedule`/`book_visit`/`move_visit`/`unschedule_visit` since 2026-07-14; the 5
 schedule-input tools `set_availability`/`add_time_off`/`remove_time_off`/`set_job_duration`/
 `set_technician_skills` since 2026-07-20 — all one-shot, no confirm; `set_availability` is the

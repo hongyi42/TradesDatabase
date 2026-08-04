@@ -120,12 +120,24 @@ const PROVIDER = process.env.EVAL_PROVIDER || (process.env.EVAL_INFERENCE_API_KE
 const MODEL = process.env.EVAL_MODEL || (PROVIDER === 'openai' ? 'z-ai/glm-5.2' : 'claude-haiku-4-5-20251001');
 const OPENAI_BASE = process.env.EVAL_INFERENCE_BASE_URL || 'https://integrate.api.nvidia.com/v1';
 
+// Reasoning is ON BY DEFAULT for GLM-5.2 on DeepInfra — a bare request (no
+// reasoning field) returns a thinking trace and ~255 output tokens on a trivial
+// date question. Probed 2026-08-04; `reasoning_effort: "none"` drops that to 7.
+// That matters historically: the 2026-07 runs of this eval sent no reasoning
+// field and capped max_tokens at 300, so the thinking trace was eating the
+// answer budget. Set EVAL_REASONING_EFFORT to none|low|medium|high to control
+// it, and EVAL_MAX_TOKENS to give thinking room (300 kept as the default so old
+// invocations reproduce exactly).
+const REASONING_EFFORT = process.env.EVAL_REASONING_EFFORT || null;
+const MAX_TOKENS = Number(process.env.EVAL_MAX_TOKENS || 300);
+
 async function callOpenAI({ system, user, tools }) {
   const body = {
     model: MODEL,
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     temperature: 0,
-    max_tokens: 300,
+    max_tokens: MAX_TOKENS,
+    ...(REASONING_EFFORT ? { reasoning_effort: REASONING_EFFORT } : {}),
     ...(tools ? { tools: [{ type: 'function', function: { name: 'resolve_date', description: RESOLVE_TOOL_DESC, parameters: RESOLVE_PARAMS } }] } : {}),
   };
   const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
@@ -135,9 +147,18 @@ async function callOpenAI({ system, user, tools }) {
   });
   if (!res.ok) throw new Error(`openai ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const j = await res.json();
-  const msg = j.choices?.[0]?.message ?? {};
+  const choice = j.choices?.[0] ?? {};
+  const msg = choice.message ?? {};
   const tc = msg.tool_calls?.[0];
-  return { text: msg.content ?? '', toolCall: tc ? { name: tc.function.name, args: safeJSON(tc.function.arguments) } : null };
+  return {
+    text: msg.content ?? '',
+    toolCall: tc ? { name: tc.function.name, args: safeJSON(tc.function.arguments) } : null,
+    // finish_reason "length" means the cap was hit — with thinking on, that is
+    // the answer being cut off by the trace rather than a reasoning failure.
+    truncated: choice.finish_reason === 'length',
+    outTokens: j.usage?.completion_tokens ?? null,
+    reasoningChars: (msg.reasoning_content ?? msg.reasoning ?? '').length || 0,
+  };
 }
 async function callAnthropic({ system, user, tools }) {
   const body = {
@@ -172,8 +193,10 @@ async function runCase(condition, c) {
   const user = userFor(c.phrase);
   let answer = null;
   let usedTool = false;
+  let meta = {};
   try {
     const r = await callModel({ system, user, tools: condition === 'C' });
+    meta = { truncated: !!r.truncated, outTokens: r.outTokens ?? null, reasoningChars: r.reasoningChars ?? 0 };
     if (condition === 'C' && r.toolCall?.name === 'resolve_date') {
       usedTool = true;
       answer = runResolve(c.refDate, r.toolCall.args); // the tool does the math
@@ -182,7 +205,7 @@ async function runCase(condition, c) {
   } catch (e) {
     return { ...c, condition, answer: null, correct: false, usedTool, error: String(e.message || e) };
   }
-  return { ...c, condition, answer, correct: answer === c.expected, usedTool };
+  return { ...c, condition, answer, correct: answer === c.expected, usedTool, ...meta };
 }
 
 // simple concurrency pool
@@ -201,6 +224,7 @@ const jobs = [];
 for (const cond of Object.keys(CONDITIONS)) for (const c of CASES) jobs.push({ cond, c });
 
 console.log(`Provider: ${PROVIDER}  Model: ${MODEL}`);
+console.log(`reasoning_effort: ${REASONING_EFFORT ?? '(unset — GLM-5.2 on DeepInfra thinks by DEFAULT)'}   max_tokens: ${MAX_TOKENS}`);
 console.log(`${CASES.length} cases × ${Object.keys(CONDITIONS).length} conditions = ${jobs.length} model calls\n`);
 
 const results = await pool(jobs, 6, ({ cond, c }) => runCase(cond, c));
@@ -220,6 +244,18 @@ for (const [cond, label] of Object.entries(CONDITIONS)) {
 }
 const toolUse = byCond.C.results.filter((r) => r.usedTool).length;
 console.log(`\n  Condition C called resolve_date on ${toolUse}/${byCond.C.n} cases.`);
+
+// Truncation is the confound to watch: with thinking on, a hit cap means the
+// answer was cut off by the trace, which reads as a wrong answer but isn't one.
+console.log('\n=== TRUNCATION / OUTPUT SIZE (hit max_tokens = answer cut off) ===');
+for (const cond of Object.keys(CONDITIONS)) {
+  const rs = byCond[cond].results.filter((r) => !r.error);
+  const trunc = rs.filter((r) => r.truncated).length;
+  const outs = rs.map((r) => r.outTokens).filter((n) => typeof n === 'number').sort((a, b) => a - b);
+  const med = outs.length ? outs[Math.floor(outs.length / 2)] : null;
+  const reas = rs.filter((r) => (r.reasoningChars ?? 0) > 0).length;
+  console.log(`  ${cond}  truncated ${trunc}/${rs.length}   median out=${med ?? '-'} tok   with-reasoning-trace ${reas}/${rs.length}`);
+}
 
 console.log('\n=== PER-TEMPLATE (condition A → B → C correct counts) ===');
 for (const t of [...new Set(CASES.map((c) => c.template))]) {

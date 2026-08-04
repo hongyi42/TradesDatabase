@@ -121,3 +121,56 @@ condition-B `now` line (grep evidence, 1–2 hits per session) → PR #83 verifi
   money-at-risk path *with* that confirmation.
 - DeepInfra returned 402 (no balance) on the first attempt — re-runs need a funded account or the
   NVIDIA key (`EVAL_INFERENCE_BASE_URL=https://integrate.api.nvidia.com/v1 EVAL_MODEL=z-ai/glm-5.2`).
+
+---
+
+## Re-run 2026-08-04 — reasoning effort, and a correction to the numbers above
+
+**Why:** the harness never set a reasoning parameter, and it capped `max_tokens` at 300. Probing
+the live endpoint (`zai-org/GLM-5.2` on DeepInfra, 2026-08-04) showed **reasoning is ON BY DEFAULT** —
+a bare request to a trivial date question returns a 777-char thinking trace and ~255 output tokens.
+`reasoning_effort` *is* supported (`none|low|medium|high`), despite DeepInfra's reasoning page
+listing only DeepSeek-R1. So every run above was made **with thinking on and a 300-token ceiling**,
+i.e. the trace was competing with the answer for the budget.
+
+Harness now takes `EVAL_REASONING_EFFORT` and `EVAL_MAX_TOKENS`, and records `finish_reason`,
+output tokens, and reasoning-trace size per case. Defaults unchanged, so old invocations reproduce.
+
+| Run | reasoning_effort | max_tokens | A | B | C | total out tokens |
+|---|---|---|---|---|---|---|
+| `thinking-off` | `none` | 2000 | **82.7%** | **84.7%** | **100.0%** | 2,975 |
+| `thinking-high` | `high` | 2000 | 81.6% | 80.6% | 100.0% | 23,470 |
+| `original-repro` | *(unset → on)* | 300 | 57.1% | 76.5% | 98.0% | 38,372 |
+
+**1. Thinking effort does not improve date accuracy — at ~8× the output tokens.** `high` scores
+81.6/80.6/100 against `none`'s 82.7/84.7/100. With n=98 the standard error is ~3.9pp, so every
+difference here is inside the noise; the honest reading is *no measurable effect*. It is pure cost
+on this task. (Date-specific — this says nothing about thinking on other work.)
+
+**2. The condition-A numbers above were a token-budget artifact, not date arithmetic.** In the
+reproduced original config, **39 of the 42 condition-A failures (93%) hit `finish_reason: "length"`** —
+the answer was cut off by the thinking trace. Condition A truncated 39/98 with median output 216
+tokens against a 300 cap. Give the model room and A goes 57.1% → 82.7%. **This retires the
+"GLM is weaker than Haiku at date math" reading of the A/B rows** — that comparison was measuring
+who fits inside 300 tokens, not who counts days correctly. (Haiku's numbers were produced by the
+Anthropic adapter, which had its own 300 cap but no default thinking, so it was not truncated the
+same way — the two columns were never like-for-like.)
+
+**3. What survives unchanged, and is the load-bearing result:** condition C — grounding plus the
+`resolve_date` tool — scores **100.0% (98/98) in both fair-budget runs**, with the tool called on
+98/98 cases. It is the only condition that is insensitive to thinking, to budget, and to the
+model's own arithmetic. Every mechanical template (`today`, `tomorrow`, `in 3 days`, `a week from
+today`, `explicit`) is 7/7 even in condition A; the residual A/B failures are concentrated in the
+genuinely ambiguous phrasings (`next monday` 2/7, `two weeks from this monday` 4/7, and `this
+friday` when today *is* Friday) — the same ambiguity §0f already handles by resolving both
+candidates and asking.
+
+**4. Run-to-run variance is larger than it looks.** `original-repro` scored A 57.1% where the
+2026-07-25 run of the same configuration scored 66.3% — a 9-point spread at temperature 0. Treat
+single-run deltas under ~10 points on this corpus as noise unless truncation counts are also shown.
+
+**Production relevance:** since 2026-07-30 the fleet runs `reasoning: true` +
+`thinkingDefault: adaptive` (before that, `reasoning: false` silently forced `thinkingLevel: off`,
+so the July numbers happened to match production). On date work that setting buys nothing
+measurable and costs ~8× output tokens — but the fleet does more than dates, so this is an argument
+for measuring thinking per task type, not for switching it off wholesale.

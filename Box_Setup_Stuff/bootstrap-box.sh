@@ -763,6 +763,79 @@ EOF
     echo "    WARN: no running container for ${agent} — append the §0f block manually once it's up"
   fi
 
+  log "tool-search block (§0i — describe before you call; only meaningful with tools.toolSearch on; wiped by rebuild, re-run after one)"
+  if [ -n "$cid" ]; then
+    if docker exec "$cid" grep -q "describe before you call" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+      ok "tool-search block already present"
+    else
+      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+
+## Tool search — describe before you call (host-managed; added 2026-08-04)
+
+Your tools are not all loaded up front. `tool_search` finds a tool by what it does,
+`tool_describe` returns that tool's exact parameters, and `tool_call` runs it. A
+search result tells you a tool EXISTS — it does not tell you what its arguments are
+called.
+
+1. Before your FIRST `tool_call` to a tool you have not already called in this
+   session, call `tool_describe` on it. Do this even when the tool name looks
+   obvious and even when you feel confident about the arguments.
+2. Never invent an argument name. If a call fails on its arguments, do NOT retry
+   with a reworded guess — call `tool_describe` and use the parameter names it
+   returns, exactly as spelled.
+3. Once you have described a tool in this session, call it directly from then on;
+   there is no need to describe it again.
+
+Two guesses at an argument name cost more than one describe, and a call that fails
+on a bad argument name is a wasted turn the person is waiting through.
+EOF
+      ok "tool-search block appended to ${agent}'s AGENTS.md"
+    fi
+  else
+    echo "    WARN: no running container for ${agent} — append the §0i block manually once it's up"
+  fi
+
+  # §0j amends §0f for the tool-search surface. §0f says "call resolve_date", but
+  # under tools.toolSearch the model's tool list is only tool_search/tool_describe/
+  # tool_call — resolve_date is a catalog entry it has to go find. OpenClaw offers
+  # NO way to pin a tool past the catalog (ToolSearchSchema is .strict(): enabled,
+  # mode, codeTimeoutMs, searchDefaultLimit, maxSearchLimit — nothing else; the
+  # shouldCatalogTool override has no config path), so the route has to be taught.
+  # Must come AFTER §0i, which introduces the search mechanics this block leans on.
+  log "dates-under-tool-search block (§0j — amends §0f for the catalog surface; wiped by rebuild, re-run after one)"
+  if [ -n "$cid" ]; then
+    if docker exec "$cid" grep -q "Dates under tool search" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+      ok "dates-under-tool-search block already present"
+    else
+      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+
+## Dates under tool search — how to reach resolve_date (host-managed; added 2026-08-04)
+
+This amends "Dates and times — never guess" above. Those rules say "call
+`resolve_date`" — but `resolve_date` is not one of the tools loaded up front. It
+lives in the catalog you reach with `tool_search`. The rule has not changed; only
+the route to it has.
+
+1. To resolve a date: `tool_search` for "resolve date", then `tool_call` it
+   (`tool_describe` it first if you have not already called it this session). The
+   extra hop is not a reason to skip it. You are no better at calendar arithmetic
+   than you were before the tools moved.
+2. Hard rule: every YYYY-MM-DD you say to a person, or pass to `book_visit`,
+   `move_visit` or any other tool, must have come out of a `resolve_date` result in
+   this conversation. If you do not have one, go and get one before you answer.
+3. The `timestamp` in the conversation-info block is **UTC**, not the firm's local
+   clock. From late afternoon local (5pm PDT / 4pm PST) until midnight it already
+   names TOMORROW's date and weekday. Never read today's date off it. The `now` line
+   that comes back on spine tool results IS firm-local and is safe to read.
+4. "What day is it?" counts. A bare question about today's date is still a date
+   question — resolve it. Do not answer from the metadata, or from memory.
+EOF
+      ok "dates-under-tool-search block appended to ${agent}'s AGENTS.md"
+    fi
+  else
+    echo "    WARN: no running container for ${agent} — append the §0j block manually once it's up"
+  fi
+
   # Cron block — REFRESHED on every run (delete-then-append, same idiom as the
   # freeze ritual below): this text now carries the isolated-vs-main rule, and an
   # append-once grep would pin already-wired boxes to the version that lacks it
@@ -906,11 +979,64 @@ EOF
     # Same gateway-mediated recipe as the heartbeat block above — NEVER
     # \`openclaw config patch\`, which trips GATEWAY_UNSAFE_CONFIG_PATH and
     # leaves the gateway refusing to start (three bots went down learning this).
-    ts_deny='["message","browser"]'
+    # Second wave (2026-08-03) — the same play, extended after a token census.
+    # Measured fixed cost of every cold call: ~19,460 tokens (min cold call is
+    # 19,460/19,467/19,466 on s2/s5/s7 — the same number +/-7, so it is the true
+    # floor). It splits ~12,000 tokens of tool JSON schemas (62%) and ~7,400 of
+    # system-prompt text (38%). Cross-check: s3 is untrimmed and floors at 23,477,
+    # a 4,017-token delta for \`message\`+\`browser\` alone, matching the ~3,900/turn
+    # recorded above. Schemas dominate; prose does not.
+    #
+    # A tool-call census over every stored session (counting distinct toolCallId
+    # per toolName) found these eight never used, and all irrelevant to a
+    # Telegram-only surface. \`dir_*\`/\`file_*\`/\`nodes\` are one family: paired-device
+    # file transfer, which additionally needs an operator opt-in
+    # (gateway.nodes.allowCommands + plugins.entries.file-transfer...) that was
+    # never granted, so they would fail if ever called. \`web_fetch\` is redundant
+    # with trades-spine__read_webpage (the one actually in use).
+    #
+    # NOT denied on zero-use grounds: all 39 trades-spine__* tools are shipped
+    # product surface (low use = early pilot, not a dead tool); \`process\` is named
+    # by the AGENTS.md batching block; \`edit\`; and the sessions_spawn/sessions_yield/
+    # agents_list subagent machinery (\`subagents\` and \`sessions_*\` are called).
+    #
+    # s3 (Judy) is excluded by owner decision — do not run this block against it.
+    ts_deny='["message","browser","canvas","nodes","dir_fetch","dir_list","file_fetch","file_write","tts","web_fetch"]'
     ts_tmp=$(mktemp -d)
     nemoclaw "$agent" download /sandbox/.openclaw/openclaw.json "$ts_tmp/oc.json" </dev/null
+    # BOTH placements, deliberately, because they do different things:
+    #   agents.list[].tools.deny -> drops the tool's SCHEMA (the ~12k-token payload
+    #     and its grammar-compile cost). Survives a rebuild (backupDurableSections).
+    #   tools.deny (top level)   -> ALSO drops the tool's line from the prompt's
+    #     "## Tooling" catalog. Wiped by a rebuild — which is exactly why it is
+    #     written here, so re-running bootstrap restores it.
+    # Verified on 2026-07-31: s2 carried the top-level list and its prompt catalog
+    # omitted \`browser\`; s5/s6/s7/s8 had only the agents-level list and still
+    # listed it. Same 31-byte line also cost s2 ~26,000 bytes of shared cache
+    # prefix with its siblings — keep the fleet's deny lists identical.
+    # Tool search (2026-08-04) — the big one. Without it every request carries the
+    # full JSON schema of every tool: ~28k of a ~36k-token cold turn. With it the
+    # model gets tool_search/tool_describe/tool_call plus a compact catalog, and
+    # pulls a schema only when it needs one. Measured on s2: first cold call
+    # 35,617 -> 10,085 tokens (-72%), same question, task still answered correctly.
+    # mode is set EXPLICITLY: resolveToolSearchConfig() defaults it to "code",
+    # which makes the model write CODE to invoke tools — a much larger behavior
+    # change than intended. Note the catalog moves INTO the system prompt (29,636
+    # -> 40,644 chars); the win is that the schemas leave the tools payload.
+    # Pairs with the §0i AGENTS.md block below — without the describe-before-call
+    # rule the model guesses argument names and burns turns retrying. §0j then
+    # re-points §0f's "call resolve_date" at the catalog surface, or the model
+    # quietly goes back to computing dates itself.
+    #
+    # skills.limits.maxSkillsInPrompt: 0 empties <available_skills>. Applied as
+    # skills.slice(0, max(0, n)), so 0 really is none (default 150). We ship 15
+    # stock plugin-skills — meme-maker, notion, python-debugpy, tmux, weather … —
+    # none of which relate to a trades business. Worth ~1,225 tokens per call.
     jq --argjson deny "$ts_deny" '
       (.agents.defaults.thinkingDefault) = "adaptive"
+      | (.tools) = ((.tools // {}) | .deny = (((.deny // []) + $deny) | unique))
+      | (.tools.toolSearch) = { enabled: true, mode: "tools" }
+      | (.skills) = ((.skills // {}) | .limits = ((.limits // {}) | .maxSkillsInPrompt = 0))
       | (.agents.list) = ((.agents.list // [{id:"main",default:true}]) | map(
           .tools = ((.tools // {}) | .deny = (((.deny // []) + $deny) | unique))
         ))
@@ -931,7 +1057,7 @@ EOF
       nemoclaw "$agent" exec --no-tty -- chmod 660 /sandbox/.openclaw/openclaw.json /sandbox/.openclaw/.config-hash </dev/null
       nemoclaw "$agent" gateway restart </dev/null >/dev/null 2>&1 || true
       rm -rf "$ts_tmp"
-      ok "denied ${ts_deny}; thinking=adaptive; reasoning=true (67s -> 3s per turn)"
+      ok "denied ${ts_deny} (both placements); thinking=adaptive; reasoning=true"
     fi
   else
     echo "    WARN: no running container for ${agent} — apply the tool deny + reasoning flags manually"

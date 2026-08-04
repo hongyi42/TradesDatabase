@@ -2923,12 +2923,12 @@ async function dispatch(
       const jobById = new Map(jobs.map((j) => [j.id, j]));
       const techById = new Map((await listTeam(tenantId)).map((t) => [t.id, t]));
       const byDay = new Map<string, unknown[]>();
-      // Who "I" am, for the own-stop navigation links below. `caller` is the
-      // one roster read every dispatch does; get_team_schedule is an ADMIN_TOOLS
-      // entry so the tier gate guarantees an active manager row, but TS does not
-      // narrow it from the boolean.
-      const myTechnicianId = caller?.id ?? null;
-      let anyRoute = false;
+      // NO navigation links here, deliberately (user decision 2026-08-03, from
+      // live evidence). This read is a TEAM view by construction — a manager
+      // asking "what's on the schedule this week" is dispatching, not driving,
+      // and a directions link on their own couple of stops answered a question
+      // nobody asked. Per-stop links live on get_schedule, which IS a personal
+      // route view. Schedule viewing for managers stays on the board.
       for (const row of rows) {
         // Overlap semantics can pull in a row starting before `from` — clamp
         // to the requested days by start-day, the daySource precedent (the
@@ -2952,28 +2952,6 @@ async function dispatch(
         // technician_id may be NULL (unassigned booking) — the ?? null echoes
         // below render that as a person-less stop in both modes.
         const technician = row.technician_id ? techById.get(row.technician_id) : undefined;
-        const address = customer
-          ? formatAddress({
-              address_line1: customer.address_line1,
-              address_line2: customer.address_line2,
-              city: customer.city,
-              state: customer.state,
-              postal_code: customer.postal_code,
-            })
-          : null;
-        // The caller's OWN placed stops get a tap-to-navigate link — the manager
-        // who also works in the field. Scoped to the caller rather than every
-        // team stop: a URL per visit per day would grow every manager read, and
-        // token cost on this surface is a live concern. Excluded on purpose:
-        // the recall view (unassignedOnly has no window and no times) and
-        // time-TBD rows (no time, so no place in a day's sequence).
-        const isMyStop =
-          !unassignedOnly &&
-          myTechnicianId !== null &&
-          row.technician_id === myTechnicianId &&
-          row.starts_at !== null &&
-          address !== null;
-        if (isMyStop) anyRoute = true;
         const bucket = byDay.get(day) ?? [];
         bucket.push({
           assignmentId: row.id,
@@ -2981,14 +2959,15 @@ async function dispatch(
           technicianName: technician?.display_name ?? null,
           unassigned: row.technician_id === null,
           customer: customer?.name ?? null,
-          address,
-          ...(isMyStop
-            ? {
-                mapsUrl: buildMapsDeepLink([
-                  { label: customer?.name ?? 'Customer', address: address as string },
-                ]).url,
-              }
-            : {}),
+          address: customer
+            ? formatAddress({
+                address_line1: customer.address_line1,
+                address_line2: customer.address_line2,
+                city: customer.city,
+                state: customer.state,
+                postal_code: customer.postal_code,
+              })
+            : null,
           // Wall-clock HH:MM slices, never the raw timestamptz: times are
           // stored naive-local, so the wire's '+00:00' marker is a LIE the
           // agent will act on (live 2026-07-22: it relabeled a 4 PM visit
@@ -3040,27 +3019,7 @@ async function dispatch(
             'this list. days hold parked visits (booked, nobody attached).',
         };
       }
-      return {
-        status: 'ok',
-        from,
-        to: toDay,
-        scheduleVersion,
-        technicianHorizonDays,
-        days,
-        // FUSED into the result, not left to the tool description: on this
-        // codebase description-only wording has failed three times (endTime
-        // PR #53, boardNote PR #59, resolve_date "next X"). Deliberately
-        // POSITIONAL ("beside that stop"), never "end your reply with…", so it
-        // does not compete with boardNote's terminal instruction. The key is
-        // routeNote — never `note`, which the recall return above already uses.
-        ...(anyRoute
-          ? {
-              routeNote:
-                'Stops carrying mapsUrl are YOUR OWN. Relay each one VERBATIM as a tappable ' +
-                '[Directions](url) link beside that stop.',
-            }
-          : {}),
-      };
+      return { status: 'ok', from, to: toDay, scheduleVersion, technicianHorizonDays, days };
     }
     case 'book_visit': {
       const subjectRef = identity.technicianRef;

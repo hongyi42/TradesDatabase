@@ -52,10 +52,14 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   Removed. Both schedule reads now return stops in booked (time) order, and **each stop carries
   its own destination-only `mapsUrl`** instead of one multi-waypoint day link (no 10-stop cap,
   no truncation, and it matches how a day is actually driven — navigate to the next stop, not
-  the whole day at once). `get_team_schedule` gained the same links on the caller's OWN placed
-  stops, so a manager who works in the field is served inside the one schedule read they have —
-  **additive, never a filter**, which is what keeps PR #54's "your week is completely clear"
-  miss structurally impossible. The dividing line to keep: **deciding order means MOVING
+  the whole day at once). **Links belong to a PERSONAL route view only** (user decision
+  2026-08-03, from live evidence): `get_team_schedule` briefly carried them on the caller's own
+  stops and they were removed before merge — that read is a TEAM view by construction, and a
+  manager asking "what's on the schedule this week" is dispatching, not driving, so directions
+  to their own couple of stops answered a question nobody asked. Corollary worth keeping: the
+  right question for a result field is not only *is it correct and correctly scoped* (it was
+  both) but *does it belong in the answer to what was actually asked*. A manager's own driving
+  day is the board's job. The dividing line to keep: **deciding order means MOVING
   visits** (promises, confirmation, a DB write) — that is `run_freeze`/`run_resolve`'s job, and
   a read must never do it quietly. Upstream fact this rests on: *"Waypoints are displayed on
   the map in the same order they are listed in the URL"*

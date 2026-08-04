@@ -114,12 +114,14 @@ table, not the badge, is the tier source of truth) gets the technician surface M
 `get_schedule` (removed for managers 2026-07-19 — it is the technician route view; a manager's
 only schedule read is `get_team_schedule`, which includes visits the manager holds; do NOT pin
 get_schedule in the MANAGER profile — and because it is filtered off this surface, the
-2026-07-31 description change above does NOT move the manager `tools/list`: that side is
-deploy-only, no restart. Since 2026-07-31 `get_team_schedule` adds `mapsUrl` to the caller's OWN
-placed stops — the manager who also works in the field — plus a fused `routeNote` telling the
-agent to relay each one. Teammates' and unassigned stops are returned exactly as before and carry
-no link: the route is ADDITIVE, never a filter, so the 2026-07-18 "your week is completely clear"
-miss cannot recur. No new parameter, so the surface is byte-identical) plus the 26 seat/lifecycle+scheduling tools, for a 39-tool
+2026-07-31 description change above does NOT move the manager `tools/list` at all: the manager
+side needs no deploy step and no restart. **`get_team_schedule` carries NO navigation links**
+(user decision 2026-08-03, from live evidence): it is a TEAM view by construction, and a manager
+asking "what's on the schedule this week" is dispatching, not driving — a directions link on
+their own couple of stops answered a question nobody asked and was the only noise in an otherwise
+clean report. Per-stop links live on `get_schedule`, which IS a personal route view; a manager's
+own driving day is the board's job. A briefly-shipped `mapsUrl`/`routeNote` on this tool was
+removed before merge) plus the 26 seat/lifecycle+scheduling tools, for a 39-tool
 manager surface (send_email since 2026-07-04, retract_capture since 2026-07-06, web_search and
 read_webpage since 2026-07-13, record_standing_fact since 2026-07-14, resolve_date since
 2026-07-17; the 4 scheduling tools

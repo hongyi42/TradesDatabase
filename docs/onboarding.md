@@ -161,7 +161,7 @@ badge individually revocable and useless if stolen.
 ### MCP, briefly
 
 **MCP** (Model Context Protocol) is the standard by which an AI agent discovers and calls tools.
-Our server exposes ~39 tools. Two deployment shapes exist in the repo:
+Our server exposes ~40 tools. Two deployment shapes exist in the repo:
 
 - **stdio** (`npm run mcp:serve`) — one server per sandbox, identity pinned by env var. Dev/local.
 - **HTTP** (`npm run mcp:serve:http`) — one shared, **stateless** server every bot calls; identity
@@ -273,7 +273,7 @@ verbs and partly by a 15-minute Render cron. Two facts to carry with you: **offb
 permanent and a ref is never reused across humans** (L1 is append-only), and deactivation cuts
 access instantly regardless of the cron.
 
-Two access tiers: **manager** (39 tools; full Composio catalog; self-serve pairing) and
+Two access tiers: **manager** (40 tools; full Composio catalog; self-serve pairing) and
 **technician** (14 tools; curated Composio list; email sends must go through the spine's two-step
 `send_email`, never `GMAIL_SEND_EMAIL`). Seat-based licensing: a firm buys N seats and adding a
 person needs a free one — enforced server-side, never trusted to the agent.

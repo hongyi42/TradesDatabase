@@ -105,7 +105,11 @@ import { identityFromEnv, type RequestIdentity } from './identity.js';
 import { listDayStops } from '../routes/daySource.js';
 import { type ComputeRoutes } from '../routes/googleRoutes.js';
 import { buildMapsDeepLink, formatAddress, type RouteStop } from '../routes/deepLink.js';
-import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
+import {
+  localDateISO,
+  localTimeHHMM,
+  summarizeWeeklyPattern,
+} from '../schedule/availability.js';
 import { clampToTechnicianHorizon, horizonDaysFor } from '../schedule/policy.js';
 import { readUnscheduledJobs } from '../schedule/boardRead.js';
 import {
@@ -973,6 +977,30 @@ const ADMIN_TOOLS = [
         },
       },
       required: ['ref', 'pattern'],
+    },
+  },
+  {
+    name: 'get_availability',
+    description:
+      "Read back a team member's CONFIGURED weekly working pattern — the counterpart to " +
+      'set_availability, and the tool for "when does X work?", "what is X\'s availability?", ' +
+      '"who works Saturdays?". Give ref for one person; omit it for the whole active roster. ' +
+      'Returns a ready-to-relay summary line per person ("Mon–Fri 08:00–17:00; Sat, Sun off") ' +
+      '— RELAY that line, do not re-render the pattern object yourself. Also returns any time ' +
+      'off in the next 30 days, which overrides the pattern on those dates. ' +
+      'configured:false means no pattern is set: that person is NOT schedulable and the fix is ' +
+      'set_availability — say so rather than reporting them as free. ' +
+      'IMPORTANT: this is what someone is set up to work, NOT what is actually bookable — it ' +
+      'does not know about visits already booked. For bookability ALWAYS use find_slots, ' +
+      'which remains the only source of scheduling truth.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: {
+          type: 'string',
+          description: 'The roster ref of one person. Omit to get the whole active roster.',
+        },
+      },
     },
   },
   {
@@ -4351,6 +4379,70 @@ async function dispatch(
         note:
           `${target.display_name}'s working pattern is set (${dayWords}). ` +
           'They are now visible to the scheduler on their working days. Tell the manager exactly this.',
+      };
+    }
+    case 'get_availability': {
+      // The read half of set_availability. Until 2026-08-04 the pattern was
+      // write-only: list_team exposed `availabilityConfigured` (a boolean) and
+      // nothing returned the pattern itself, so "what is Joy's availability?"
+      // had no answer — a live turn burned 106s and 14 calls failing to find one.
+      const ref = str('ref');
+      const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
+      const todayLocal = localDateISO(new Date().toISOString(), tz);
+      // A fixed 30-day window: time off matters here only as "what overrides the
+      // pattern soon". Anything longer is a schedule question, and that is
+      // find_slots' job, not this tool's.
+      const windowEnd = localDateISO(
+        new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        tz,
+      );
+
+      // One tenant-scoped roster read either way; ref only narrows it. Resolving
+      // through the roster (rather than trusting ref) keeps the tenant filter on
+      // the one query that has it — listTimeOffForTechnician takes no tenantId,
+      // so its technician_id MUST come from a tenant-scoped row.
+      const roster = await listTeam(tenantId);
+      const people = ref
+        ? roster.filter((t) => t.ref === ref)
+        : roster.filter((t) => t.state === 'active');
+      if (ref && people.length === 0) {
+        throw new Error(
+          `no team member with ref '${ref}' — call list_team to see the roster and use a ref exactly as spelled there`,
+        );
+      }
+
+      const rows = await Promise.all(
+        people.map(async (t) => {
+          const timeOff = await listTimeOffForTechnician(t.id, todayLocal, windowEnd);
+          const pattern = (t.availability as WeeklyPattern | null) ?? null;
+          return {
+            ref: t.ref,
+            displayName: t.display_name,
+            tier: t.tier,
+            state: t.state,
+            seatExempt: t.seat_exempt,
+            configured: pattern !== null,
+            summary: summarizeWeeklyPattern(pattern),
+            pattern,
+            timeOff: timeOff.map((o) => ({
+              startsOn: o.starts_on,
+              endsOn: o.ends_on,
+              reason: o.reason,
+            })),
+          };
+        }),
+      );
+
+      // Fused into the result, not left to the description: the live model reads
+      // a configured pattern as "free" unless told otherwise, and a manager
+      // acting on that double-books someone (the resolve_date lesson again).
+      return {
+        status: 'ok',
+        people: rows,
+        note:
+          'This is the CONFIGURED working pattern, not free/busy — it does not account for ' +
+          'visits already booked. Relay each summary line as written. For what is actually ' +
+          'bookable, use find_slots.',
       };
     }
     case 'add_time_off': {

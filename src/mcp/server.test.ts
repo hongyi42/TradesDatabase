@@ -1731,7 +1731,8 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('run_freeze'); // the freeze (plan 4b-3)
       expect(mgrTools).toContain('run_resolve'); // the re-solve (plan 2026-07-30)
       expect(mgrTools).toContain('undo_run'); // the safety net (plan 2026-07-30 Phase 5)
-      expect(mgrTools).toHaveLength(39);
+      expect(mgrTools).toContain('get_availability'); // the read half of set_availability (2026-08-04)
+      expect(mgrTools).toHaveLength(40);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2134,7 +2135,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(39); // base minus get_schedule + 26 admin
+        expect(mgrTools).toHaveLength(40); // base minus get_schedule + 27 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -4132,6 +4133,120 @@ describe('schedule-input verbs (Plan 3a)', () => {
       const denied = await call(name, {});
       expect(denied.isError).toBe(true);
       expect(denied.text).toContain('manager badge');
+    }
+  });
+
+  test('get_availability reads back the pattern set_availability writes, and stays tenant-scoped', { timeout: 30_000 }, async () => {
+    // The gap this closes: until 2026-08-04 the pattern was write-only —
+    // list_team exposed only `availabilityConfigured` (a boolean), so a manager
+    // could learn a pattern EXISTS and never what it was.
+    const configured = await insertTechnician({
+      tenantId,
+      ref: 'avail-set',
+      displayName: 'Avail Set',
+      seatExempt: true,
+    });
+    await setTechnicianAvailability(configured.id, PATTERN_MON_FRI as never);
+    await insertTechnician({
+      tenantId,
+      ref: 'avail-unset',
+      displayName: 'Avail Unset',
+      seatExempt: true,
+    });
+
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // One person by ref: the summary line is the deliverable — it is what the
+      // agent is told to relay verbatim.
+      const one = await callWith('get_availability', { ref: 'avail-set' });
+      expect(one.isError).toBe(false);
+      expect(one.data.people).toHaveLength(1);
+      expect(one.data.people[0].summary).toBe('Mon–Fri 08:00–17:00; Sat, Sun off');
+      expect(one.data.people[0].configured).toBe(true);
+      expect(one.data.people[0].pattern).toEqual(PATTERN_MON_FRI);
+      // The free/busy disclaimer is FUSED into the result, not left to the
+      // description — a configured pattern reads as "free" otherwise.
+      expect(one.data.note).toContain('find_slots');
+
+      // Never-configured is a normal pre-setup state, NOT an error: reporting it
+      // as an error would hide the person; reporting them as free would double-book.
+      const unset = await callWith('get_availability', { ref: 'avail-unset' });
+      expect(unset.isError).toBe(false);
+      expect(unset.data.people[0].configured).toBe(false);
+      expect(unset.data.people[0].summary).toBeNull();
+
+      // Omitted ref = the whole active roster, so "who works Saturdays?" is the
+      // same single read.
+      const all = await callWith('get_availability', {});
+      expect(all.isError).toBe(false);
+      const refs = all.data.people.map((p: { ref: string }) => p.ref);
+      expect(refs).toContain('avail-set');
+      expect(refs).toContain('avail-unset');
+
+      // Unknown ref: an actionable error, not a silent empty success.
+      const missing = await callWith('get_availability', { ref: 'no-such-person' });
+      expect(missing.isError).toBe(true);
+      expect(missing.text).toContain('no team member with ref');
+
+      // Time off overrides the pattern, so it rides along — but only the near
+      // window (30 days). A date beyond it is a schedule question, and that is
+      // find_slots' job, not this tool's.
+      const soon = localDateISO(new Date(Date.now() + 3 * 86400_000).toISOString(), 'America/Los_Angeles');
+      const farOff = localDateISO(new Date(Date.now() + 200 * 86400_000).toISOString(), 'America/Los_Angeles');
+      await callWith('add_time_off', { ref: 'avail-set', startsOn: soon, endsOn: soon, reason: 'dentist' });
+      await callWith('add_time_off', { ref: 'avail-set', startsOn: farOff, endsOn: farOff, reason: 'next year' });
+      const withOff = await callWith('get_availability', { ref: 'avail-set' });
+      expect(withOff.isError).toBe(false);
+      const dates = withOff.data.people[0].timeOff.map((o: { startsOn: string }) => o.startsOn);
+      expect(dates).toContain(soon);
+      expect(dates).not.toContain(farOff);
+
+      // Tenant isolation (checklist Tier 2): another tenant's manager sees only
+      // their own roster. listTimeOffForTechnician carries no tenant filter, so
+      // this read's safety rests on the roster query being the scoped one.
+      const otherTenantId = (await createTenant('avail-cross-tenant', { managerSeats: 1 })).id;
+      const otherMgr = await insertTechnician({
+        tenantId: otherTenantId,
+        ref: 'other-avail-mgr',
+        displayName: 'Other Avail Manager',
+        tier: 'manager',
+      });
+      await setTechnicianState(otherMgr.id, 'active');
+      const { client: otherClient, callWith: otherCall } = await clientFor({
+        tenantId: otherTenantId,
+        technicianRef: 'other-avail-mgr',
+      });
+      try {
+        const byRef = await otherCall('get_availability', { ref: 'avail-set' });
+        expect(byRef.isError).toBe(true);
+        expect(byRef.text).toContain('no team member with ref');
+        const roster = await otherCall('get_availability', {});
+        expect(roster.isError).toBe(false);
+        const otherRefs = roster.data.people.map((p: { ref: string }) => p.ref);
+        expect(otherRefs).not.toContain('avail-set');
+        expect(otherRefs).not.toContain('avail-unset');
+      } finally {
+        await otherClient.close();
+        await pg.query('delete from technicians where tenant_id = $1', [otherTenantId]);
+        await pg.query('delete from tenants where id = $1', [otherTenantId]);
+      }
+    } finally {
+      await mgrClient.close();
+      // Hermetic on purpose: `avail-set` is seat-exempt, so it starts ACTIVE, and
+      // giving it a pattern makes it a schedulable candidate. Left behind, it
+      // joins the roster every later scheduling test solves over (it broke
+      // run_freeze, offboarding and send_email on first run). Children first — FK.
+      const ids = await pg.query(
+        "select id from technicians where tenant_id = $1 and ref in ('avail-set','avail-unset')",
+        [tenantId],
+      );
+      for (const row of ids.rows) {
+        await pg.query('delete from technician_time_off where technician_id = $1', [row.id]);
+      }
+      await pg.query(
+        "delete from technicians where tenant_id = $1 and ref in ('avail-set','avail-unset')",
+        [tenantId],
+      );
     }
   });
 

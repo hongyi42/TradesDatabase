@@ -646,6 +646,24 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   thinking traces** — GLM thinks by default, so multiplying the CALLS multiplies the reasoning
   with it. It also burned 4 separate tool_searches discovering that no availability-READ tool
   existed (now fixed: `get_availability`).
+  **MEASURED END STATE (2026-08-04 20:48, s2, the same question as the 106.5s baseline):
+  17.0s / 2 tool calls / 288 output tokens / $0.0388**, against 106.5s / 14 calls / 2,966 tokens /
+  $0.0770. Credit does NOT split cleanly — the turn changed two things at once (tool search
+  reverted AND `get_availability` shipped) and continued a warm session: the 14→2 call drop is
+  mostly the new tool, the faster per-call time mostly the revert. The clean revert-only
+  comparison is the schedule question (89.2s under tool search).
+  The agent relayed the server-rendered summary VERBATIM ("Joy — Tue–Sat 09:00–17:00; Mon, Sun
+  off") and the fused free/busy note — both `get_availability` design bets, confirmed live.
+  Reverted fleet-wide 2026-08-04: s2/s5/s6/s7/s8 `toolSearch:false`, config hash matching, zero
+  stale blocks, ownership intact. **s3 was deliberately NOT wired** (the tool trim is declined
+  there by owner decision) so it still lacks §0f rule 5 — the UTC-timestamp trap is LIVE on Judy's
+  box; applying only the §0f block, without the trim, is the pending follow-up.
+  **PROCESS TRAP hit here: PR #99 was merged BEFORE the revert commit was pushed to its branch**,
+  so `main` briefly carried `toolSearch: true` and §0i/§0j while the live fleet was reverted —
+  i.e. re-running `wire` from main would have re-broken a box. A merged PR does not stop taking
+  commits; pushing to its branch afterwards silently leaves them unmerged. Check
+  `git merge-base --is-ancestor <commit> origin/main` after any post-merge push.
+
   **The lesson that survives: tool COUNT was never the problem.** The 67s -> 3s win came from
   denying ONE pathological 13-deep schema (`message`, ~51s alone) — that deny list STAYS. 39 flat
   schemas are fine; the whole 8-tool READ surface is only ~1,414 tokens (~4% of a cold turn), so

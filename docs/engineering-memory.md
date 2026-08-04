@@ -629,7 +629,33 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   built-ins), and **`## Skills` (1,225t) advertises 15 stock OpenClaw plugin-skills**
   (browser-automation — with `browser` denied — plus meme-maker, notion, python-debugpy, tmux,
   weather…), none relevant to a trades business: a free cut.
-  **TOOL SEARCH IS LIVE ON s2 AND IT IS THE WIN (2026-08-04).** `tools.toolSearch =
+  **TOOL SEARCH: TRIED AND REVERTED THE SAME DAY (2026-08-04) — it was slower AND more expensive.**
+  The justification below ("first cold call 35,617 -> 10,085, -72%") measured the FIRST CALL of a
+  turn and assumed a 3-call turn. Real turns run 10-14 calls, because the model must
+  tool_search -> tool_describe -> tool_call instead of just calling, and every extra call re-sends
+  the conversation. Measured at the TURN level on s2:
+
+  | | direct tools | tool search |
+  |---|---|---|
+  | wall-clock | 4-13s | **32-139s** |
+  | cost/turn | $0.025-0.035 | **$0.060-0.077** |
+  | output tokens | 72-324 | **989-2,981** |
+
+  Wall-clock on this stack is essentially **output tokens / ~34 tok/s** (held across 10 measured
+  turns). The 12:48 turn ("what are the availabilities of joy") took 106.5s, of which **70.4% was
+  thinking traces** — GLM thinks by default, so multiplying the CALLS multiplies the reasoning
+  with it. It also burned 4 separate tool_searches discovering that no availability-READ tool
+  existed (now fixed: `get_availability`).
+  **The lesson that survives: tool COUNT was never the problem.** The 67s -> 3s win came from
+  denying ONE pathological 13-deep schema (`message`, ~51s alone) — that deny list STAYS. 39 flat
+  schemas are fine; the whole 8-tool READ surface is only ~1,414 tokens (~4% of a cold turn), so
+  pruning tools is not where savings live. **Never re-enable without measuring whole turns
+  (seconds + total tokens), never a single call.** §0i/§0j were removed with it — they are not
+  merely inert without tool search, they are WRONG (they tell the agent to reach `resolve_date`
+  via `tool_search`). The UTC-timestamp rule from §0j survives as §0f rule 5, and §0f is now
+  REFRESHED per wire run so already-wired boxes actually receive it.
+  Original (now-retired) rationale follows.
+  **TOOL SEARCH WAS LIVE ON s2 (2026-08-04, since reverted).** `tools.toolSearch =
   {enabled:true, mode:"tools"}`, `skills.limits.maxSkillsInPrompt = 0`, and the extended tool deny
   are applied to s2 and codified in `Box_Setup_Stuff/bootstrap-box.sh` (the jq config block plus a
   new §0i AGENTS.md block). **Block numbering:** §0h was already taken by the freeze ritual, so the

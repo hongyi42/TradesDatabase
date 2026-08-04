@@ -1,6 +1,6 @@
 ---
 date: 2026-07-31
-task: Per-stop Google Maps links in booked order — drop route optimization from get_schedule, add links to the manager's read
+task: Per-stop Google Maps links in booked order — drop route optimization from get_schedule (the manager-read half was built, then withdrawn on live evidence 2026-08-03)
 research: thoughts/shared/research/2026-07-31-manager-self-route-view.md
 status: draft
 ---
@@ -13,8 +13,12 @@ navigation.
 
 Today `get_schedule` (the technician route view) asks Google Routes for the "best driving order"
 and returns the day re-sequenced — contradicting the times customers were promised and the order
-the board shows. This plan removes that, gives every stop **its own** Maps link, and extends the
-same to `get_team_schedule` so a manager who works in the field finally has one.
+the board shows. This plan removes that and gives every stop **its own** Maps link.
+
+It also extended the same links to `get_team_schedule` for a manager who works in the field —
+**built, shipped to s2, and then withdrawn on live evidence (2026-08-03)**: that read is a team
+view, and the links were noise on a dispatch question. See the withdrawal entry in Decisions.
+What ships is the `get_schedule` half.
 
 Deciding order means *moving* visits, which is `run_freeze`/`run_resolve`'s job: they write to the
 DB, grade promises, and confirm with the manager. A read must not quietly do it.
@@ -38,7 +42,20 @@ DB, grade promises, and confirm with the manager. A read must not quietly do it.
   one chronological list, `mapsUrl: null` where there is no usable address. **This is a visible
   response-shape change to an existing technician tool** — called out so it is a choice, not a
   side effect.
-- **`get_team_schedule` gains `mapsUrl` on the caller's own stops only.** Not every team stop —
+- **WITHDRAWN 2026-08-03 after live evidence — `get_team_schedule` carries NO links.** Phase 2
+  shipped to s2 and worked exactly as specified: only manager-sam's own 2 stops were linked, the
+  full team and the unassigned visit were still listed and unlinked (so the PR #54 trap test
+  passed *in production*). But the manager had asked *"what's on the schedule this week?"* — a
+  dispatch question — and directions to two of his own Monday stops were the only noise in an
+  otherwise clean seven-day report. User decision: **if the schedule retrieved is a team
+  schedule, no map link.** `get_team_schedule` is a team view by construction, so the links are
+  removed entirely rather than gated. Consequence, accepted: a manager has no directions link in
+  chat at all (`get_schedule` is filtered off their surface by PR #54) — their driving day is the
+  board's job, consistent with "chat = doing, board = seeing". The lesson worth carrying: correct
+  and correctly-scoped was not sufficient; the field also has to belong in the answer to the
+  question actually asked. A second defect the same evidence exposed — the agent relayed the
+  links inline *and* leaked a bare duplicate URL after the board line — dies with the feature.
+- ~~**`get_team_schedule` gains `mapsUrl` on the caller's own stops only.**~~ *(superseded above)* Not every team stop —
   that would add a URL per visit per day to every manager read, and token cost on this surface is
   already live concern. Additive: `days[].stops` keeps the whole team plus unassigned stops, so
   the PR #54 blind spot stays structurally impossible.
@@ -78,15 +95,16 @@ AFTER:   stops (booked order, one chronological list)
          no Google call, no cap, no truncation
 ```
 
-**Phase 2 — managers get the same.** The manager's schedule read already loads every visit for
-those days. This adds a link to the ones belonging to the manager. Everything else is untouched —
-the team's visits and the unassigned ones stay exactly where they are, so the link can never make
-the answer look emptier than it is.
+**Phase 2 — managers got the same, then didn't.** This added a link to the manager's own stops
+inside their team schedule read. It worked: on the live bot, only the manager's own two stops
+were linked and the whole team plus the unassigned visit were still listed. But the manager had
+asked what was on the schedule *this week* — a dispatch question — and directions to two of his
+own Monday stops were the only clutter in an otherwise clean report. Removed before merge. A
+manager's own driving day belongs on the board.
 
 **Phase 3 — docs and getting it live.** Because `get_schedule`'s published description changes,
-technician bots won't pick it up on deploy alone: the box wire must be re-run and those gateways
-restarted. The manager side goes live on deploy. Then a check on both bot tiers, and a human
-tapping a link on a phone.
+technician bots won't pick it up on deploy alone: those gateways need restarting. The manager
+surface is untouched. Then a check on the technician bot, and a human tapping a link on a phone.
 
 ## Secrets & env preflight
 
@@ -202,7 +220,13 @@ no caller passes more than one stop now.
 ---
 *No manual checks — continue to Phase 2.*
 
-## Phase 2: `mapsUrl` on the manager's own stops
+## Phase 2: `mapsUrl` on the manager's own stops — WITHDRAWN 2026-08-03
+
+> **Implemented, shipped to s2, then REMOVED before merge on live evidence.** It behaved
+> exactly as specified (own stops linked, team + unassigned still listed and unlinked —
+> the PR #54 trap held in production), but the links were noise on a team-overview
+> question. See the withdrawal entry in Decisions. Kept here for the record; nothing
+> from this phase is in the diff.
 
 ### What this phase does
 Adds a Maps link to the caller's own timed stops inside `get_team_schedule`. Pure in-memory work

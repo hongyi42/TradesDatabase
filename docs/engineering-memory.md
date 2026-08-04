@@ -1043,3 +1043,14 @@ mechanism in [long-running-task-batching.md](long-running-task-batching.md).
   `thoughts/shared/plans/` — dated artifacts for every feature; a plan's final-review section
   lists its known deferred nits.
 - **This file** replaces nothing above — it's the map plus the facts that had no home.
+
+**Sandbox → Telegram bot map (verified 2026-08-04 via `getMe` on each sandbox's own token):**
+s2 `@ragisan_bot` (the pilot owner, allowedIds 5801703167) · s3 no botToken in `sandboxes.json` ·
+s5 `@ragisan03_bot` (Ben Shelton) · s6 `@ragisan2_bot` (cold blank) · s7 `@yu_nemoclaw_bot`
+(Yutao) · s8 `@Trade329_bot`. **`sandboxes.json` carries no `botUsername` field** — only the
+token, buried at `messaging.plan.channels[].inputs[inputId=botToken].value` — so the handle has to
+be resolved, not read, and has been guessed wrong before. `@DashboardMan_bot` is not s2 and does
+not match s5's resolved handle either; treat that name as unverified.
+**Redaction trap:** because the token's key is literally `"value"`, a scrub that filters on key
+names containing "token"/"key"/"secret" prints it in full. One leaked into a session transcript
+this way on 2026-08-04 (rotate via BotFather). Print `getMe` output, never the config blob.

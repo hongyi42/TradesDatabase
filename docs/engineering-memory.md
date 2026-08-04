@@ -559,16 +559,168 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   closed unmerged — debug future 401s with the "mint-a-slip" probe: sign a fake initData slip
   with the real bot token from `.env` against the live API to discriminate server-token vs
   Telegram-side).
-- **In trial (2026-07-20, s2 ONLY):** inference cost — `compat.supportsPromptCacheKey: true`
-  set in s2's rendered `openclaw.json` (backup `openclaw.json.bak-cachekey-20260720` beside it;
-  `.config-hash` regenerated; gateway restarted, health passed). Makes OpenClaw forward a
-  session-scoped `prompt_cache_key` to DeepInfra to raise the prompt-cache hit rate (~25%
-  baseline: 9.9M cached tokens on $30 usage, input:output ≈230:1). Outcome measure = DeepInfra
-  dashboard cached-token share over the following days. GLM-5.2 stays (owner decision — Nemotron
-  quality experience rules out smaller/"flash"-tier models). **Trap:** any s2 rebuild/re-onboard
-  re-renders the config and silently drops the flag (same drift class the inference medic guards);
-  if the trial wins, mirror the flag into the render source + all sandboxes. Full mechanics,
-  revert recipe, and citations:
+- **CLOSED 2026-07-31 — DeepInfra prompt caching: there is nothing "explicit" to buy, and the
+  `prompt_cache_key` trial showed no measurable benefit.** Per
+  [docs.deepinfra.com/chat/prompt-caching](https://docs.deepinfra.com/chat/prompt-caching)
+  (re-read 2026-07-31) caching is **automatic KV-prefix reuse — "no extra parameters required"**;
+  there is **no `cache_control`, no cache breakpoints, and no cache-write charge** (unlike
+  Anthropic). Confirmed locally: `cacheWrite: 0` on **all 51,396 usage records across all six
+  sandboxes**. The discounted read rate is applied automatically; hits arrive as
+  `usage.prompt_tokens_details.cached_tokens` → OpenClaw's `cacheRead`.
+  The trial flag (`compat.supportsPromptCacheKey: true`, applied to s2 on 2026-07-20; backup
+  `openclaw.json.bak-cachekey-20260720`) is **still ON on s2 only** (0 occurrences on
+  s3/s5/s6/s7/s8). Measured from OpenClaw session logs — **dedup by message id and read only
+  `message.usage`; the `data.messages[]` / `data.messagesSnapshot[]` copies are
+  whole-conversation snapshots that multiply-count by ~10×**:
+
+  | sandbox | flag | before 07-21 | from 07-21 | 07-21 | 07-31 |
+  |---|---|---|---|---|---|
+  | s2 | **ON** | 20.4% (805 calls) | 63.6% (302) | 50.6% | 30.2% |
+  | s7 | off | 32.2% (5) | **60.2% (132)** | **72.7%** | **46.9%** |
+
+  s2's before/after triple reads as a win until the control is added: **flagless s7 beat flagged
+  s2 on both days both were busy.** Hit rate tracks **session continuity and turn density**, not
+  the key — either the OpenShell gateway strips the param or DeepInfra's automatic routing
+  already covers it. **Do not roll the flag out** (it is a rebuild-drift liability — `compat` is
+  re-rendered away — for zero measured gain); leaving it on s2 is harmless.
+  **Prices fell ~20% since the trial** ([model page](https://deepinfra.com/zai-org/GLM-5.2/api),
+  2026-07-31): GLM-5.2 is now **$0.75/1M input, $2.40/1M output, $0.14/1M cached** (was
+  $0.93/$3.00/$0.18). The `cost` object in session logs reads $0.0000 — the managed gateway route
+  reports no pricing, so dollars must be derived from token counts.
+  **MEASURED TTL (2026-07-31) — the cache is effectively dead after ~1–5 minutes.** DeepInfra
+  publishes only "cache entries expire after a period of inactivity". Measured from the session logs
+  by bucketing each call on the idle gap since the previous call in the same session:
+
+  | gap | <1 min | 1–5 min | 5–10 min | 10–20 min | 20–30 min | 30–60 min |
+  |---|---|---|---|---|---|---|
+  | hit rate | **68–85%** | 27–34% | 0–33% | 0–6% | **0.6–5%** (n=423) | **1.5–2.7%** (n=410) |
+
+  **Cold starts are therefore the normal case, not the exception** — which explains both the
+  48-calls/day idle poll (30-min spacing → 0.6–5%) and s2's dense testing sessions (85%).
+  `prompt_cache_key` cannot fix this: it is a lookup key, not a pin, and an evicted KV cache has
+  nothing to route to. **Nothing at DeepInfra lets you pin a prompt.** The comparison point is
+  Google Gemini's *explicit context caching*
+  ([docs](https://ai.google.dev/gemini-api/docs/generate-content/caching)) — `client.caches.create()`
+  builds a named cache with a **user-chosen TTL** (default 1 h, "no minimum or maximum bounds"),
+  billed on token count × storage duration; Anthropic's is weaker (`cache_control` 5-min or
+  `ttl:"1h"`, paid as a 1.25×/2× write premium, reads ~0.1×). DeepInfra has neither. Its only
+  native route to a persistent warm cache is a **dedicated deployment**
+  ([docs](https://docs.deepinfra.com/private-models/overview.md)) — your own GPU billed per GPU-hour
+  (their worked example uses $2/GPU-hour, illustrative), i.e. ~$1,400/mo for one GPU against a
+  ~$18/mo fleet bill. Not viable.
+  **Cache-warming pings are dead, with arithmetic:** a ~2-min TTL needs a ping every ~90 s (~960/day
+  per sandbox); each re-sends the ~7.5k-token system prompt at ~$0.001, so ~$1/day/sandbox ≈ **$6/day
+  fleet-wide against a $0.61/day bill**, to save at most ~$0.38/day. The 2026-07-20 research rejected
+  warming on intuition; this is the measurement.
+  **A real cold turn costs ~33–38k tokens** — of which **~79% is tool schemas + framing** and only
+  **~21% (~7,400) is system-prompt text**. *(Correction, 2026-08-04: an earlier revision of this
+  entry claimed a "19,460-token fixed floor". That was an artefact — the identical 19,460/19,467/
+  19,466 minima on s2/s5/s7 were the same `nemoclaw-onboard-warmup-*` session replayed on each box,
+  which loads a much smaller tool set. "Same number on three boxes ⇒ true floor" was backwards.)*
+  Like-for-like real cold turns on s2 (single call, cacheRead=0, output ≤40): **37,072 / 33,176 /
+  37,841** before the 2026-08-04 tool trim, **35,617** after — a spread of ±2,300, so a few-hundred-
+  token change is not measurable from one sample. Schemas dominate; prose does not.
+  **Do not size tool payloads from `context.compiled.tools`** — beyond being depth-limited, the trace
+  record is **size-capped**: after removing six tools worth 7,837 serialized bytes the total fell only
+  91,981 → 89,674, because the freed budget re-inflated other truncated schemas. Counts and names
+  from that record are reliable; byte sizes are not. System-prompt sections, largest first: `## Skills` 1,225t · `## Tooling`
+  943t · freeze ritual 654t · AGENTS.md header 506t · preamble 429t · dates 280t · Tool Call Style
+  267t · rest ~3,100t. Note **`## Tooling` is already a brief name + one-line catalog** (19
+  built-ins), and **`## Skills` (1,225t) advertises 15 stock OpenClaw plugin-skills**
+  (browser-automation — with `browser` denied — plus meme-maker, notion, python-debugpy, tmux,
+  weather…), none relevant to a trades business: a free cut.
+  **TOOL SEARCH IS LIVE ON s2 AND IT IS THE WIN (2026-08-04).** `tools.toolSearch =
+  {enabled:true, mode:"tools"}`, `skills.limits.maxSkillsInPrompt = 0`, and the extended tool deny
+  are applied to s2 and codified in `Box_Setup_Stuff/bootstrap-box.sh` (the jq config block plus a
+  new §0i AGENTS.md block). **Block numbering:** §0h was already taken by the freeze ritual, so the
+  tool-search pair is **§0i** (describe-before-call) and **§0j** (dates under tool search). The
+  appended AGENTS.md text carries NO § labels — they exist only in `bootstrap-box.sh` and these
+  docs — so renumbering never requires touching a live box.
+  Measured on one identical question, "what's on the schedule this week?":
+
+  | | before tool search | tool search | + describe-before-call rule |
+  |---|---|---|---|
+  | first cold call | 35,617 tok | 10,085 | **10,333** |
+  | model calls | ~3 (est.) | 7 | **3** |
+  | turn cost | ~$0.044 (est.) | $0.0560 | **$0.0207** |
+
+  **Tool search on its own was WORSE per turn** (7 calls, $0.056): GLM-5.2 guessed argument names and
+  *retried the same guess reworded* (`{"week":"this"}` → `{"week":"this week"}`) before calling
+  `tool_describe`. The §0i rule ("describe before you call; never re-guess") fixed it outright —
+  7 calls → 3, cost −63%. **Never enable tool search without that block.**
+  **Tool search made the agent skip a doctrine-mandated tool — DIAGNOSED, PATCHED AND
+  LIVE-VERIFIED ON s2 2026-08-04 (§0j).** In the clean run the agent went straight to
+  `get_team_schedule` with hand-computed dates (`2026-08-03`/`2026-08-09`) and **never called
+  `resolve_date`**, which §0f requires precisely because the model is unreliable at calendar
+  arithmetic (there is a real week-boundary incident behind that block).
+  Root cause is not reluctance — it is that **§0f named a tool that no longer exists from the
+  model's side.** Under tool search the tool list is exactly
+  `[tool_search, tool_describe, tool_call]` (`toolCount: 3` in the trajectory); `resolve_date` is a
+  catalog entry it has to go and find. The date eval is the control: with `resolve_date` directly
+  in the tool array, the *same blunt wording* got it called **98/98**. Instruction fine, surface
+  stale.
+  **There is no way to pin a tool past the catalog** — verified in the running build:
+  `ToolSearchSchema` is `.strict()` and accepts only `enabled`/`mode`/`codeTimeoutMs`/
+  `searchDefaultLimit`/`maxSearchLimit`, and the `shouldCatalogTool` override has exactly one
+  internal caller (code-mode control tools), no config path. So the fix has to be instructional.
+  **Fix = §0j AGENTS.md block** (`bootstrap-box.sh` `phase_wire`, appended AFTER §0i because it
+  builds on the search mechanics): names the route (`tool_search` "resolve date" → `tool_call`),
+  makes it a hard rule that every YYYY-MM-DD leaving the agent came out of a `resolve_date` result,
+  and closes the UTC trap below. Applied to s2/s5/s6/s7/s8 2026-08-04; **s3 excluded and unaffected
+  — it has `toolSearch:false`, so §0f still describes its real surface.**
+  **VERIFIED on s2 with the exact failing input** ("what's on the schedule this week?"): the turn now
+  runs `tool_search` ×2 → `tool_describe` ×2 → `tool_call resolve_date {week:0}` →
+  `tool_call get_team_schedule {from:2026-08-03,to:2026-08-09}`. Same two dates as the failing run,
+  but sourced from the tool; it also used **week-range mode (`week:0`) rather than composing the
+  Mon–Sun window itself**, which is the agent-composed-window root cause behind the 2026-07-25
+  week-boundary bite closing. Answer checked against `assignments` (Mon 7 stops, Tue 8) — correct.
+  **UTC trap (rule 3) VERIFIED SEPARATELY 2026-08-04 19:11 local** — that first question could not
+  test it (Aug 3 local and Aug 4 UTC fall in the same Mon–Sun week, so both paths give Aug 3–9). The
+  discriminating question is **"what's on tomorrow?" asked 5pm–midnight local**: UTC-derived gives
+  Wed Aug 5 (16 stops), correct gives Tue Aug 4 (8 stops). Asked in a **fresh session** (no earlier
+  `now` line to fall back on — the only date-shaped string in context was the wrong one), the agent
+  reasoned verbatim: *"The timestamp says 'Tue 2026-08-04 02:11 UTC'. But I need to use resolve_date
+  to get the correct date, as per the rules."* → `resolve_date {dayShift:1}` →
+  `{date:2026-08-04, today:2026-08-03}` → 8 stops. Correct.
+  **Remaining gap: s5/s6/s7/s8 carry the identical block but have not run a date-shaped turn.**
+  **Schema note for anyone verifying a schedule answer against the DB: the schedule lives in
+  `assignments` (`starts_at`, `status='confirmed'`), NOT in `visits`** — `visits.scheduled_at` is
+  effectively unused (7 rows, all NULL), so querying `visits` makes a full schedule look empty.
+  **UTC-TIMESTAMP TRAP (found while fixing the above).** Every inbound Telegram turn carries
+  `"timestamp": "Tue 2026-08-04 00:57 UTC"` in the conversation-info block — the ONLY date-shaped
+  string in a first-turn context, weekday included, and it is **UTC**. Both tenants are
+  `America/Los_Angeles`, so from 5pm PDT / 4pm PST to midnight it names **tomorrow**: ~7 hours in
+  every 24 where reading it gives a silent off-by-one. It is labelled "untrusted metadata", which
+  discourages use but never says it is *wrong*. The `now` rider (`src/mcp/server.ts` `groundingNow`)
+  IS firm-local — but it only arrives on a tool RESULT, so it cannot catch a first-turn date answer.
+  §0j rule 3 states the trap explicitly.
+  **Verification traps:** with tool search on, `context.compiled.tools` still lists all 65 tools —
+  that is the session-side CATALOG, not what is sent to the model; only usage tokens prove it works.
+  And the catalog moves INTO the system prompt (29,636 → 40,644 chars), so `systemPrompt` size
+  measures the skills cap and tool search together and cannot separate them.
+  **OpenClaw 2026.5.27 supports tool search.** Config is **top-level `tools.toolSearch`**:
+  `union([boolean, {enabled, mode:"code"|"tools", codeTimeoutMs, searchDefaultLimit,
+  maxSearchLimit}])`; `applyToolSearchCatalog()` swaps the tool array for
+  `tool_search`/`tool_describe`/`tool_call` and keeps the catalog session-side, which would cut the
+  ~12k schema payload to a few hundred tokens. **Traps:** `mode` defaults to **`"code"`** (the model
+  writes code to call tools — force `"tools"`); top-level `tools.*` is the section a rebuild WIPES
+  (only `agents.*` survives, see the tool-trim entry); and it inserts a retrieval step ahead of
+  live-customer bookings — the real risk is accuracy, not tokens. (Search for OpenClaw internals
+  **inside the container** at `/usr/local/lib/node_modules/openclaw` — it is not installed on the
+  host, and a host-side grep returns a false negative.)
+  **Where the spend actually is** (fleet 2026-07-21→07-31: 6.82M uncached + 10.50M cached input,
+  67k output ≈ **$6.74**, **98% of it input**, 60.6% blended hit rate):
+  (1) the **fixed prefix re-sent on every call** — AGENTS.md is ~26 kB (~6.5k tokens) fleet-wide
+  and `bootstrapMaxChars` is now 48000 so it is no longer truncated; cached tokens still cost
+  $0.14/1M, so trimming beats caching. (2) **Session hygiene** — long sessions re-buy a growing
+  history every turn (s2 late-session prefixes ~110k tokens); resetting between batches is free.
+  (3) **Idle polling** — s3/s5/s6 each ran **exactly 48 model calls/day from 07-14 to 07-21** in
+  one long-lived session, ~24k uncached input for ~6 output tokens each (≈$0.86/day/sandbox at
+  ~0% hit rate; 30-min spacing exceeds the undisclosed TTL). It stopped on its own and
+  `cron/jobs.json` is `[]` everywhere now — but watch for the shape returning. Even a perfect
+  100% hit rate would only save ~$4.16/11 days (62%) at today's volume. GLM-5.2 stays (owner
+  decision — Nemotron quality rules out flash-tier models). Original mechanics, revert recipe and
+  citations:
   [thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md](../thoughts/shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md).
 - **FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema.** Every request
   compiles each tool's `parameters` JSON-Schema into a constrained-decoding grammar *before the
@@ -737,6 +889,15 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   blocks): `nemoclaw <s> download` → edit with `jq` → `upload` → write `.config-hash` →
   `chmod 660` → `gateway restart`. If a gateway is already stuck this way,
   `nemoclaw <s> doctor --fix` then restart clears it.
+  **The ownership tooth bites specifically on ATOMIC REPLACE (learned 2026-08-03 — s5/s6/s7/s8 all
+  went down for ~2 min).** A root-side write *in place* (`open(path,"w")`) truncates the existing
+  inode and **keeps** `sandbox:sandbox`, so it works. Rewriting the same script to be "safer" —
+  write `path.tmp`, then `os.replace()` — creates a **new inode owned by root**, and
+  `shutil.copymode()` copies the mode but **not the owner**, so `ls` still shows `-rw-rw----` and
+  nothing looks wrong. `chmod` is not a substitute for `chown`: after ANY root-side write, run
+  `chown sandbox:sandbox` and check the **owner** column, not just the permission bits, before
+  restarting. The failure is at least loud and instant — every restart returns
+  `GATEWAY_UNSAFE_CONFIG_PATH`, and chown + restart is the whole recovery.
 - **`nemoclaw rebuild` can destroy the sandbox's device private key** (vendor bug: the
   state-snapshot sanitizer replaces `privateKeyPem` with `[STRIPPED_BY_MIGRATION]` in the
   LIVE identity). Symptom: endless device-pairing loop, no Telegram polling, no MCP. Detect:

@@ -121,6 +121,11 @@ stage→confirm rework.
 and `thoughts/shared/plans/2026-06-30-phone-call-input-short-two-tier.md`.
 **Trigger:** pilot demand for call capture; re-check the plan against the codebase before
 implementing (it predates the note-lifecycle stage→confirm rework of the write path).
+**Reconciled 2026-08-04:** both docs now carry a dated update block mapping the drift since
+2026-06-30 — GLM-5.2 (not Sonnet) extraction, per-person `user_id` attribution (no more
+`connector:`), the cost ledger (telephony/STT = counter + bill), and a 🛑 safety fix (the plan's
+`supabase-test` MCP migration steps hit the pilot's LIVE DB — use the local stack). Still a full
+`/research`→`/plan` before `/implement`.
 
 ---
 

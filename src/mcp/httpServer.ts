@@ -4,6 +4,11 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createServer } from './server.js';
 import { resolveIdentityFromHeaders } from './identity.js';
 import { handleInboundWebhook } from '../inbound/webhook.js';
+import {
+  handleRecordingWebhook,
+  handleVoiceWebhook,
+  type RecordingStatus,
+} from '../inbound/phoneWebhook.js';
 import { sha256hex } from '../control/badges.js';
 import { buildBadgeResponse } from '../control/badgeFile.js';
 import {
@@ -130,6 +135,102 @@ async function handleInbound(req: http.IncomingMessage, res: http.ServerResponse
   }
 }
 
+// SignalWire phone webhooks (LaML). Authenticated by validateRequest over
+// X-SignalWire-Signature (SignalWire posts from the public internet, not the
+// gateway), so like /inbound/ they route BEFORE the IP allowlist. Bodies are
+// small form-encoded payloads; capped like the board path (pre-auth, public URL).
+const PHONE_BODY_CAP = 64 * 1024;
+const PHONE_RECORDING_CODES: Record<RecordingStatus, number> = {
+  enqueued: 200,
+  duplicate: 200,
+  unknown_number: 200,
+  ignored_status: 200,
+  bad_signature: 403,
+  bad_payload: 400,
+  transient_error: 503,
+};
+
+function pickHeader(h: string | string[] | undefined): string | undefined {
+  return Array.isArray(h) ? h[0] : h;
+}
+// The exact URL SignalWire signed = the configured public base + the path/query it
+// posted to. Reconstructed here for validateRequest.
+function signalwireFullUrl(req: http.IncomingMessage): string {
+  return `${process.env.SIGNALWIRE_WEBHOOK_BASE_URL ?? ''}${req.url ?? ''}`;
+}
+
+async function handlePhoneVoice(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  try {
+    const raw = await readRawBody(req, PHONE_BODY_CAP);
+    const result = await handleVoiceWebhook({
+      fullUrl: signalwireFullUrl(req),
+      rawBody: raw,
+      signature: pickHeader(req.headers['x-signalwire-signature']),
+    });
+    if (result.status === 'bad_signature') {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+    if (result.status === 'bad_payload') {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+    // ok_forward / ok_voicemail / unknown_number all return cXML the caller executes.
+    res.writeHead(200, { 'content-type': 'application/xml' });
+    res.end(result.cxml);
+  } catch (err) {
+    if ((err as { code?: string }).code === 'BODY_TOO_LARGE') {
+      if (!res.headersSent) {
+        res.writeHead(413);
+        res.end();
+      }
+      return;
+    }
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+async function handlePhoneRecording(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  try {
+    const raw = await readRawBody(req, PHONE_BODY_CAP);
+    const url = new URL(req.url ?? '', 'http://internal'); // base only to parse the query
+    const result = await handleRecordingWebhook({
+      fullUrl: signalwireFullUrl(req),
+      rawBody: raw,
+      query: {
+        tenant: url.searchParams.get('tenant') ?? undefined,
+        from: url.searchParams.get('from') ?? undefined,
+        to: url.searchParams.get('to') ?? undefined,
+      },
+      signature: pickHeader(req.headers['x-signalwire-signature']),
+    });
+    res.writeHead(PHONE_RECORDING_CODES[result.status] ?? 200, {
+      'content-type': 'application/json',
+    });
+    res.end(JSON.stringify(result));
+  } catch (err) {
+    if ((err as { code?: string }).code === 'BODY_TOO_LARGE') {
+      if (!res.headersSent) {
+        res.writeHead(413);
+        res.end();
+      }
+      return;
+    }
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
 // Badge pull for host machines. Authenticated by the host's own bearer token
 // (stored server-side only as a sha256 fingerprint) — NOT the gateway identity
 // header and NOT the IP allowlist (hosts' egress IPs rotate), so like /inbound/
@@ -238,6 +339,16 @@ async function handleSandboxReport(
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     // Webhooks first — gated by HMAC, not by the gateway IP allowlist below.
+    // SignalWire phone webhooks (their own X-SignalWire-Signature) route ahead of
+    // the Composio /inbound/ handler.
+    if (req.url?.startsWith('/inbound/phone/voice')) {
+      await handlePhoneVoice(req, res);
+      return;
+    }
+    if (req.url?.startsWith('/inbound/phone/recording')) {
+      await handlePhoneRecording(req, res);
+      return;
+    }
     if (req.url?.startsWith('/inbound/')) {
       await handleInbound(req, res);
       return;

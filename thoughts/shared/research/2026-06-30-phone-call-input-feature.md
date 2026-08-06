@@ -5,6 +5,37 @@ commit: a82ec44
 topic: Phone-call input feature — recording inbound customer calls, transcribing, and landing them in the three-layer context spine (incl. store-audio-vs-transcript and recording-stack decisions)
 ---
 
+> ## ⚠ Reconciliation update — 2026-08-04
+> This research is a 2026-06-30 snapshot. The seam design below is still valid (the spine is
+> channel-agnostic; the phone path is unbuilt — no `src/calls/`, no `phone.ts`, no phone
+> migration exist). But four load-bearing facts drifted; verified against current code
+> 2026-08-04:
+>
+> 1. **Model is no longer Sonnet.** `extract()` and the inbound classifier now run through
+>    `src/model/forcedTool.ts`, whose default provider (`MODEL_PROVIDER` unset → `'openai'`) is
+>    **GLM-5.2 (`zai-org/GLM-5.2`) via DeepInfra** (`INFERENCE_API_KEY`). `claude-sonnet-4-6` is
+>    the `MODEL_PROVIDER=anthropic` rollback only (GLM swap PR #81, live ~2026-07-26). Every
+>    "Sonnet / `claude-sonnet-4-6` / `sonnetExtractor`" mention below (Key Files, External
+>    Dependencies) is stale — extraction is text-only either way, so the phone design is
+>    unaffected, but the vendor/key are different.
+> 2. **Webhook attribution changed.** `webhook.ts` no longer uses `technicianRef:
+>    connector:${toolkit}` — it derives a per-person composite `user_id` and now **rejects** any
+>    `connector:`-prefixed ref (`webhook.ts:176-179`). A phone webhook has no per-person user, so
+>    its attribution (the old `connector:phone` idea) must be re-decided, not copied.
+> 3. **Line anchors moved** (still same files, no renames): `recordFieldNote`'s `extract()` is at
+>    `recordFieldNote.ts:153` (was ~131); the L2-skip early-return at `:173-175`; the httpServer
+>    `/inbound/` route at `httpServer.ts:241` (which already catches `/inbound/phone`).
+> 4. **A cost ledger now exists** (didn't on 2026-06-30). Telephony (Vapi/Twilio) + STT
+>    (AssemblyAI) are per-minute metered with free tiers → they fit the **counter + bill-driven
+>    `infra_costs`** pattern (like Brave/Composio), NOT a `cost_rates` per-minute SKU. No dollar
+>    auto-collector is possible (no billing API); dollars are hand-entered monthly. A per-tenant
+>    minute split needs a new allocation branch. See the plan's updated cost note.
+>
+> Still TRUE and load-bearing: the inbound path is **synchronous** (classify+extract block the
+> ack) — the async-worker rationale holds; `fallbackPhone` is still absent from
+> `RecordFieldNoteInput`; caller-ID phone match is live (`identityMatch.ts:62`); inbound callers
+> bypass the stage→confirm gate and write L1-first.
+
 ## Summary
 
 This documents how an **inbound phone-call capture channel** would map onto the existing
@@ -48,13 +79,13 @@ The feature would attach to the system at these existing seams (no new architect
 
 ### Write-path (L1 → L2/L3)
 - **[src/writePath/recordFieldNote.ts](src/writePath/recordFieldNote.ts)** — orchestrates append (Phase 1, with external-id dedup at lines 91-123), `extract()` (Phase 2), `matchIdentity()` (Phase 3), and L2/L3 creation with `sourceCaptureId` provenance stamping (customer/job/visit at lines 164/182/193). Accepts `{tenantId, technicianRef, text, blobPath, channel, externalId, occurredAt, sourceMeta, ...}`.
-- **[src/writePath/extract.ts](src/writePath/extract.ts)** — `sonnetExtractor` (lines 73-91) calls **Claude `claude-sonnet-4-6`** with a forced extraction tool to pull customer/job/work fields + an L3 `attributes` catch-all from `rawText`. **Works on text only** — it consumes the transcript, never audio.
+- **[src/writePath/extract.ts](src/writePath/extract.ts)** — `sonnetExtractor` (lines 73-91) calls **Claude `claude-sonnet-4-6`** *(⚠ STALE 2026-08-04 — extraction now runs `runForcedTool` via `src/model/forcedTool.ts`, default GLM-5.2/DeepInfra; see top update)* with a forced extraction tool to pull customer/job/work fields + an L3 `attributes` catch-all from `rawText`. **Works on text only** — it consumes the transcript, never audio.
 - **[src/writePath/identityMatch.ts](src/writePath/identityMatch.ts)** — deterministic resolution (confirmed customer → phone → address → today's schedule → ask agent). Phone-number match (lines 56-58) is especially relevant: an inbound call's caller-ID number is a strong identity key.
 
 ### Inbound connector seam (the template to copy)
 - **[src/inbound/normalize.ts](src/inbound/normalize.ts)** — `InboundEnvelope` (lines 7-21): `{ channel, rawText?, blobRef?, externalId, occurredAt?, sourceMeta?, requiresWorkClassifier? }`. Registry keyed `${toolkit}:${triggerType}`.
 - **[src/inbound/gmail.ts](src/inbound/gmail.ts)** — the worked example a `phone.ts` normalizer would mirror. Maps a provider payload → envelope, self-registers on import.
-- **[src/inbound/webhook.ts](src/inbound/webhook.ts)** — verifies HMAC (Standard Webhooks), parses tenant + trigger, routes to normalizer, **classify-before-L1 gate** (lines 163-180), maps status → HTTP code with retry semantics (`transient_error → 503`). Uses `technicianRef: connector:${toolkit}`.
+- **[src/inbound/webhook.ts](src/inbound/webhook.ts)** — verifies HMAC (Standard Webhooks), parses tenant + trigger, routes to normalizer, **classify-before-L1 gate** (lines 163-180), maps status → HTTP code with retry semantics (`transient_error → 503`). Uses `technicianRef: connector:${toolkit}`. *(⚠ STALE 2026-08-04 — webhook now derives a per-person composite `user_id` and REJECTS `connector:`-prefixed refs at `webhook.ts:176-179`; see top update)*
 
 ### Identity / transport / auth
 - **[src/mcp/httpServer.ts](src/mcp/httpServer.ts)** — stateless Streamable HTTP MCP server (port `MCP_HTTP_PORT`, default 8080); `/inbound/*` webhook path is HMAC-authenticated (not the gateway identity header) and runs before the IP allowlist.
@@ -100,7 +131,7 @@ await appendRawCapture({
 
 ### Existing (already in repo)
 - **Supabase** (`raw_captures` + spine; service-role key). `blob_path` implies **Supabase Storage** is the natural home for audio, but **no Storage bucket / upload / URL-signing code exists yet** — `blob_path` is a reserved text pointer only.
-- **Anthropic `claude-sonnet-4-6`** — extraction/classification/synthesis (`ANTHROPIC_API_KEY`).
+- **Anthropic `claude-sonnet-4-6`** — extraction/classification/synthesis (`ANTHROPIC_API_KEY`). *(⚠ STALE 2026-08-04 — default is now GLM-5.2/DeepInfra via `INFERENCE_API_KEY`, selected by `MODEL_PROVIDER` in `src/model/forcedTool.ts`; Anthropic is the rollback path; see top update)*
 - **Composio** — inbound connector layer (Gmail today). **Not usable for telephony — see below.**
 
 ### New (would be introduced by this feature)
@@ -254,6 +285,11 @@ vendors as the leaderboard moves.
   at capture.
 - **Provider:** leaning Vapi (record-first, native Supabase) + AssemblyAI (batch STT) for the optionality
   path; Twilio ConversationRelay+Flex if the press-1/queue receptionist is needed sooner. Not decided.
+  *(⚠ SUPERSEDED 2026-08-04 — the actually-provisioned stack in `.env` is **SignalWire** (`SIGNALWIRE_*`)
+  + **AssemblyAI** (`ASSEMBLYAI_API_KEY`), no Vapi. SignalWire is a Twilio-API-compatible CPaaS, so the
+  live direction is the "assemble-it-yourself / Twilio" path — record via LaML → `RecordingStatusCallback`
+  → fetch media → copy to Supabase → AssemblyAI — NOT Vapi's native-bucket model. See the plan's provider
+  correction.)*
 - **Retention (updated):** leaning **short two-tier** — audio ~30d auto-delete (config knob, dial-to-zero
   = transcript-only), transcript long-term. Dual-channel (no voiceprints), redact only SAD (card/CVV/SSN),
   keep name/address/job details (that's the spine's purpose).

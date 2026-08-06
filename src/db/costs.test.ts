@@ -218,6 +218,11 @@ describe('cost_rates versioning', () => {
       'deepinfra/glm-5.2-cached-input 1.8e-7/token',
       'deepinfra/glm-5.2-input 9.3e-7/token',
       'deepinfra/glm-5.2-output 0.000003/token',
+      // The NVIDIA failover, $0 by tier not by omission (migration
+      // 20260806230000): the rows exist so failover traffic is attributed and
+      // counted — "zero dollars with a token count" is data, absence is not.
+      'nvidia/glm-5.2-input 0/token',
+      'nvidia/glm-5.2-output 0/token',
     ]);
     // Every rate must cite its vendor doc — CLAUDE.md's rule, and the only way a
     // future reader can re-verify a price that has gone stale.
@@ -417,6 +422,34 @@ describe('recordModelUsage', () => {
       'anthropic/claude-sonnet-4-6-input',
       'anthropic/claude-sonnet-4-6-output',
     ]);
+  });
+
+  test('bills an NVIDIA failover under provider nvidia — not dropped, not deepinfra', async () => {
+    // The gap found 2026-08-06: ledgerVendor() was BUILT to return 'nvidia' on
+    // a failover host, but MODEL_SKUS had no entry, so recordModelUsage threw
+    // into its swallowed catch and failover spend never existed anywhere.
+    // "Zero spend" was ambiguous between idle and failed-over.
+    const { seen, append } = capture();
+    await recordModelUsage('nvidia', { inputTokens: 10, outputTokens: 2 }, { tenantId: tenantA }, { append });
+    expect(seen[0].map((r) => `${r.provider}/${r.sku}`)).toEqual([
+      'nvidia/glm-5.2-input',
+      'nvidia/glm-5.2-output',
+    ]);
+  });
+
+  test('a cached-token split from a provider without a cachedInput SKU stays on the input line', async () => {
+    // NVIDIA's endpoint reports no cached split today; if it ever starts to,
+    // the honest fallback is billing everything as fresh input, never a guess
+    // against a SKU that does not exist.
+    const { seen, append } = capture();
+    await recordModelUsage(
+      'nvidia',
+      { inputTokens: 10, outputTokens: 2, cachedInputTokens: 4 },
+      { tenantId: tenantA },
+      { append },
+    );
+    const input = seen[0].find((r) => r.sku === 'glm-5.2-input');
+    expect(input?.quantity).toBe(10); // undivided — no cached SKU to split into
   });
 
   // The rollup INNER joins cost_rates, so an unmapped sku is dropped from the

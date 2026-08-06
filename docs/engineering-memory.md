@@ -223,6 +223,24 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   **Verification lesson:** a live turn that produces the right answer does not prove the fix fired.
   Check the mechanism — here, `query_audit` showed the SQL never selected the column. Right answer,
   wrong reason, and the next week it would have been the 2026-08-06 "Monday the 4th" bug again.
+- **A HOOK plugin is not installed until the GATEWAY's startup line says so (2026-08-06).** Three
+  progressively-lying status surfaces, all hit rolling out the weekday guard: `openclaw plugins
+  list` says "enabled" after a bare file-copy + `plugins registry --refresh`; `plugins info` even
+  says "Status: loaded" (true only of the CLI's own process, with a buried WARN: "loaded without
+  install/load-path provenance"); but the gateway's
+  `http server listening (N plugins: …)` line omits the id and the hook NEVER fires. Cause: tools
+  are served from the cold-metadata registry (which is why trades-cron "worked" with the copy
+  recipe), but hooks need the plugin loaded into the gateway process, and the gateway trust-gates
+  local code that has no install record ("plugins.allow is empty; discovered non-bundled plugins
+  may auto-load:" lists only provenanced extensions). Fix = `openclaw plugins install <dir>`
+  (creates the provenance). **Verification rule: only the startup plugin list counts.**
+- **`openclaw plugins install` — the VENDOR's own CLI — trips the config-hash trap (2026-08-06).**
+  It writes `plugins.entries` + `plugins.installs` into `openclaw.json` without updating
+  `.config-hash`, so the next `gateway restart` fails `GATEWAY_UNSAFE_CONFIG_PATH` and the
+  gateway stays DOWN — same class as `openclaw config patch` (2026-07-30, 3 bots), new entry
+  point. Caught on the s6 canary (cold sandbox, zero live impact — this is exactly why the canary
+  goes first). Sequence that works, now in bootstrap-box.sh: upload → `plugins install --force` →
+  `doctor --fix` (repairs the hash) → `gateway restart` → verify via the startup line.
 - **The weekday fabrication is ENDEMIC, not episodic — 23 mismatches in 419 historical texts
   (2026-08-06).** Built the outbound weekday guard (observe-only `message_sending` plugin,
   chrono-node, see nemoclaw-tech-agent.md §4c) and replayed it over every assistant text in the

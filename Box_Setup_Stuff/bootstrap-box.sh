@@ -732,14 +732,32 @@ EOF
     echo "    WARN: no running container for ${agent} — append the §0e block manually once it's up"
   fi
 
-  log "dates block (§0f — never compute dates; use resolve_date; wiped by rebuild, re-run after one)"
+  # One-time cleanup for boxes wired during the 2026-08-04 tool-search window.
+  # Idempotent and safe on a box that never had them. Kept in the script rather
+  # than run by hand because leaving them behind is WORSE than doing nothing: with
+  # toolSearch:false the agent would be told to reach resolve_date via tool_search,
+  # which no longer exists. Delete once every box has been re-wired.
+  if [ -n "$cid" ]; then
+    for stale in '## Tool search — describe before you call' '## Dates under tool search'; do
+      if docker exec "$cid" grep -qF "$stale" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+        docker exec -u sandbox -e STALE="$stale" "$cid" sh -c 'awk -v h="$STALE" '\''index($0,h)==1{skip=1; next} skip && /^## /{skip=0} !skip'\'' /sandbox/.openclaw/workspace/AGENTS.md > /tmp/agents-md.tmp && cat /tmp/agents-md.tmp > /sandbox/.openclaw/workspace/AGENTS.md && rm -f /tmp/agents-md.tmp'
+        ok "removed obsolete tool-search block: ${stale}"
+      fi
+    done
+  fi
+
+  # REFRESHED per run (delete-then-append, the cron idiom below), not append-once:
+  # rule 5 (the UTC conversation-timestamp trap) was added 2026-08-04 to boxes that
+  # already carried this block, and an append-once grep would have pinned every one
+  # of them to the version without it (template-drift trap).
+  log "dates block (§0f — never compute dates; use resolve_date; refreshed per run)"
   if [ -n "$cid" ]; then
     if docker exec "$cid" grep -q "Dates and times — never guess" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
-      ok "dates block already present"
-    else
-      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+      docker exec -u sandbox "$cid" sh -c 'awk '\''/^## Dates and times — never guess/{skip=1; next} skip && /^## /{skip=0} !skip'\'' /sandbox/.openclaw/workspace/AGENTS.md > /tmp/agents-md.tmp && cat /tmp/agents-md.tmp > /sandbox/.openclaw/workspace/AGENTS.md && rm -f /tmp/agents-md.tmp'
+    fi
+    docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Dates and times — never guess, always resolve (host-managed; added 2026-07-15)
+## Dates and times — never guess, always resolve (host-managed; refreshed; updated 2026-08-04)
 
 You are UNRELIABLE at calendar arithmetic — working out what date "this Friday" or "next
 Tuesday" falls on. Treat every date like a value you must copy, not compute.
@@ -756,86 +774,25 @@ Tuesday" falls on. Treat every date like a value you must copy, not compute.
    silently. Same for anything resolve_date returns as unresolvable.
 4. When you tell a person a date, include its weekday from resolve_date ("Friday, July 17") so a
    wrong day is obvious at a glance.
+5. The `timestamp` in the conversation-info block is **UTC**, not the firm's local clock. From late
+   afternoon local (5pm PDT / 4pm PST) until midnight it already names TOMORROW's date and weekday.
+   Never read today's date off it. The `now` line on any spine tool result IS firm-local and is safe
+   to read. "What day is it?" is itself a date question — resolve it, do not answer from metadata.
 EOF
-      ok "dates block appended to ${agent}'s AGENTS.md"
-    fi
+    ok "dates block written to ${agent}'s AGENTS.md"
   else
     echo "    WARN: no running container for ${agent} — append the §0f block manually once it's up"
   fi
 
-  log "tool-search block (§0i — describe before you call; only meaningful with tools.toolSearch on; wiped by rebuild, re-run after one)"
-  if [ -n "$cid" ]; then
-    if docker exec "$cid" grep -q "describe before you call" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
-      ok "tool-search block already present"
-    else
-      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
-
-## Tool search — describe before you call (host-managed; added 2026-08-04)
-
-Your tools are not all loaded up front. `tool_search` finds a tool by what it does,
-`tool_describe` returns that tool's exact parameters, and `tool_call` runs it. A
-search result tells you a tool EXISTS — it does not tell you what its arguments are
-called.
-
-1. Before your FIRST `tool_call` to a tool you have not already called in this
-   session, call `tool_describe` on it. Do this even when the tool name looks
-   obvious and even when you feel confident about the arguments.
-2. Never invent an argument name. If a call fails on its arguments, do NOT retry
-   with a reworded guess — call `tool_describe` and use the parameter names it
-   returns, exactly as spelled.
-3. Once you have described a tool in this session, call it directly from then on;
-   there is no need to describe it again.
-
-Two guesses at an argument name cost more than one describe, and a call that fails
-on a bad argument name is a wasted turn the person is waiting through.
-EOF
-      ok "tool-search block appended to ${agent}'s AGENTS.md"
-    fi
-  else
-    echo "    WARN: no running container for ${agent} — append the §0i block manually once it's up"
-  fi
-
-  # §0j amends §0f for the tool-search surface. §0f says "call resolve_date", but
-  # under tools.toolSearch the model's tool list is only tool_search/tool_describe/
-  # tool_call — resolve_date is a catalog entry it has to go find. OpenClaw offers
-  # NO way to pin a tool past the catalog (ToolSearchSchema is .strict(): enabled,
-  # mode, codeTimeoutMs, searchDefaultLimit, maxSearchLimit — nothing else; the
-  # shouldCatalogTool override has no config path), so the route has to be taught.
-  # Must come AFTER §0i, which introduces the search mechanics this block leans on.
-  log "dates-under-tool-search block (§0j — amends §0f for the catalog surface; wiped by rebuild, re-run after one)"
-  if [ -n "$cid" ]; then
-    if docker exec "$cid" grep -q "Dates under tool search" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
-      ok "dates-under-tool-search block already present"
-    else
-      docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
-
-## Dates under tool search — how to reach resolve_date (host-managed; added 2026-08-04)
-
-This amends "Dates and times — never guess" above. Those rules say "call
-`resolve_date`" — but `resolve_date` is not one of the tools loaded up front. It
-lives in the catalog you reach with `tool_search`. The rule has not changed; only
-the route to it has.
-
-1. To resolve a date: `tool_search` for "resolve date", then `tool_call` it
-   (`tool_describe` it first if you have not already called it this session). The
-   extra hop is not a reason to skip it. You are no better at calendar arithmetic
-   than you were before the tools moved.
-2. Hard rule: every YYYY-MM-DD you say to a person, or pass to `book_visit`,
-   `move_visit` or any other tool, must have come out of a `resolve_date` result in
-   this conversation. If you do not have one, go and get one before you answer.
-3. The `timestamp` in the conversation-info block is **UTC**, not the firm's local
-   clock. From late afternoon local (5pm PDT / 4pm PST) until midnight it already
-   names TOMORROW's date and weekday. Never read today's date off it. The `now` line
-   that comes back on spine tool results IS firm-local and is safe to read.
-4. "What day is it?" counts. A bare question about today's date is still a date
-   question — resolve it. Do not answer from the metadata, or from memory.
-EOF
-      ok "dates-under-tool-search block appended to ${agent}'s AGENTS.md"
-    fi
-  else
-    echo "    WARN: no running container for ${agent} — append the §0j block manually once it's up"
-  fi
-
+  # §0i (describe-before-call) and §0j (dates under tool search) lived here and
+  # were REMOVED 2026-08-04 with tool search itself. They are not merely inert
+  # without it — they are wrong: §0i describes tool_search/tool_describe/tool_call,
+  # which no longer exist on the model's surface, and §0j asserts "resolve_date is
+  # not one of the tools loaded up front", which is false once it is directly
+  # callable again. §0j rule 3 (the UTC conversation-timestamp trap) was the one
+  # piece worth keeping and now lives in §0f as rule 5, since that trap has nothing
+  # to do with tool search. If tool search is ever revisited, both blocks are in
+  # git history at the commit that reverted it.
   # Cron block — REFRESHED on every run (delete-then-append, same idiom as the
   # freeze ritual below): this text now carries the isolated-vs-main rule, and an
   # append-once grep would pin already-wired boxes to the version that lacks it
@@ -1014,19 +971,31 @@ EOF
     # omitted \`browser\`; s5/s6/s7/s8 had only the agents-level list and still
     # listed it. Same 31-byte line also cost s2 ~26,000 bytes of shared cache
     # prefix with its siblings — keep the fleet's deny lists identical.
-    # Tool search (2026-08-04) — the big one. Without it every request carries the
-    # full JSON schema of every tool: ~28k of a ~36k-token cold turn. With it the
-    # model gets tool_search/tool_describe/tool_call plus a compact catalog, and
-    # pulls a schema only when it needs one. Measured on s2: first cold call
-    # 35,617 -> 10,085 tokens (-72%), same question, task still answered correctly.
-    # mode is set EXPLICITLY: resolveToolSearchConfig() defaults it to "code",
-    # which makes the model write CODE to invoke tools — a much larger behavior
-    # change than intended. Note the catalog moves INTO the system prompt (29,636
-    # -> 40,644 chars); the win is that the schemas leave the tools payload.
-    # Pairs with the §0i AGENTS.md block below — without the describe-before-call
-    # rule the model guesses argument names and burns turns retrying. §0j then
-    # re-points §0f's "call resolve_date" at the catalog surface, or the model
-    # quietly goes back to computing dates itself.
+    # Tool search: TRIED 2026-08-04, REVERTED THE SAME DAY. Pinned to false
+    # explicitly (not just absent) so re-running this wire turns it back OFF on a
+    # box that still has it on.
+    #
+    # It looked like a large win and was not. The measurement that justified it
+    # ("first cold call 35,617 -> 10,085 tokens, -72%") counted the FIRST CALL of a
+    # turn and assumed a 3-call turn. Real turns run 10-14 calls, because the model
+    # must tool_search -> tool_describe -> tool_call instead of just calling, and
+    # every extra call re-sends the conversation. Measured at the TURN level on s2:
+    #
+    #   direct tools   4-13s    $0.025-0.035   72-324 output tokens
+    #   tool search    32-139s  $0.060-0.077   989-2,981 output tokens
+    #
+    # So it was slower AND more expensive. Wall-clock on this stack is essentially
+    # (output tokens / ~34 tok/s), and a 2026-08-04 12:48 turn ("what are the
+    # availabilities of joy") spent 106.5s of which 70.4% was thinking traces: GLM
+    # thinks by default, so multiplying the CALLS multiplies the reasoning too. It
+    # also flailed 4 separate tool_searches discovering that no availability-READ
+    # tool exists — something the full catalog would have shown at a glance.
+    #
+    # The lesson worth keeping: tool COUNT was never the problem. The 67s -> 3s win
+    # came from denying ONE pathological 13-deep schema (`message`, ~51s by itself),
+    # which is the ts_deny list above and STAYS. 39 flat-schema tools are fine.
+    # Do not re-enable without measuring whole turns (seconds + total tokens),
+    # never a single call.
     #
     # skills.limits.maxSkillsInPrompt: 0 empties <available_skills>. Applied as
     # skills.slice(0, max(0, n)), so 0 really is none (default 150). We ship 15
@@ -1035,7 +1004,7 @@ EOF
     jq --argjson deny "$ts_deny" '
       (.agents.defaults.thinkingDefault) = "adaptive"
       | (.tools) = ((.tools // {}) | .deny = (((.deny // []) + $deny) | unique))
-      | (.tools.toolSearch) = { enabled: true, mode: "tools" }
+      | (.tools.toolSearch) = false
       | (.skills) = ((.skills // {}) | .limits = ((.limits // {}) | .maxSkillsInPrompt = 0))
       | (.agents.list) = ((.agents.list // [{id:"main",default:true}]) | map(
           .tools = ((.tools // {}) | .deny = (((.deny // []) + $deny) | unique))

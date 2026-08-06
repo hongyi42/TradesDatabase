@@ -2,7 +2,7 @@
 date: 2026-08-04
 task: query_spine — a read-only, tenant-scoped fallback for the long tail of read questions
 research: (inline; read-surface audit + s2 latency measurements, 2026-08-04)
-status: design — NOT approved, NOT implemented
+status: design — open decisions RESOLVED 2026-08-04; ready to implement on approval
 ---
 
 ## What this is for, and what it is not for
@@ -97,33 +97,35 @@ right."* A view is enforced by the planner. Our string handling is not.
 `SELECT`. These are **belt**. Layers 1 and 2 are the braces: if the parser is fooled, the role
 still cannot write and the views still filter.
 
-## Open decisions — these need your call
+## Decisions — RESOLVED 2026-08-04 (owner)
 
-### A. How the model learns the schema
+### A. Schema exposure → **static, in the tool description**
 
-| option | cost | note |
-|---|---|---|
-| **compact schema in the tool description** | ~400-800 tokens **every turn** | no round trip |
-| a `describe` mode it calls first | ~7s **per use** | the tool-search failure mode again |
+A compact schema of the views ships in the description (~400-800 input tokens per turn) rather
+than behind a `describe` round trip.
 
-Given what we just measured — wall-clock ≈ output tokens ÷ 34, and round trips are what killed
-tool search — **I lean to the static description.** 800 tokens of input is cheap; a 7-second hop
-is not. But this is exactly the trade I got wrong last time, so it should be measured on a real
-turn before it is settled.
+Rationale: wall-clock on this stack is **output tokens ÷ ~34 tok/s**, so a ~7s discovery hop costs
+far more than 800 tokens of input, and search→describe→call is structurally the shape that made
+tool search slow. **Caveat carried forward:** input-vs-latency is the exact trade that was got
+wrong with tool search, so phase 3 must measure a real turn before this is treated as settled. If
+the description cost turns out to dominate, the fallback is the hybrid (hot views inline, rare
+ones on demand) — not a full round trip.
 
-### B. Does it see L1 (`raw_captures`)?
+### B. L1 (`raw_captures`) → **excluded**
 
-**Recommendation: no, not in v1.** `raw_captures` is verbatim customer email — the densest PII in
-the system, and undeletable. `list_recent_captures` already exposes a shaped view of it with its
-own rules. A general SQL surface over verbatim customer mail is a privacy surface we do not need
-in order to answer "when does Joy work". Excluded until there is a question that requires it.
+`raw_captures` is verbatim customer email: the densest PII in the system and append-only, so
+anything it leaks cannot be un-leaked. `list_recent_captures` already exposes a shaped view with
+its own rules. Not needed to answer "when does Joy work". Revisit only when a real question
+requires it, and treat that as its own decision.
 
-### C. Audit
+### C. Audit → **dedicated `query_audit` table**
 
-Every execution logged with the SQL, the resolved tenant, the caller ref, row count and duration.
-**Not into L1** — a read is not an agent action under the recorded classifier-free carve-out
-(which covers *state-changing* executions), and L1 is undeletable. A dedicated `query_audit` table
-or structured logs.
+Every execution records the SQL, the resolved tenant, the caller ref, row count and duration.
+
+A table, not logs: this is the one tool where the agent composes its own data access, so "did
+anyone query customer X?" must be answerable later, under our retention rather than the log
+provider's. **Explicitly NOT L1** — a read is not a state-changing agent action under the recorded
+classifier-free carve-out, and L1 is undeletable, so a query log there could never be pruned.
 
 ## The risk I would watch
 

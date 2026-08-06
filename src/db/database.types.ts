@@ -98,6 +98,20 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "assignments_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "assignments_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+          {
             foreignKeyName: "assignments_source_capture_id_fkey"
             columns: ["source_capture_id"]
             isOneToOne: false
@@ -629,6 +643,27 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "jobs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "jobs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "jobs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["customer_id"]
+          },
+          {
             foreignKeyName: "jobs_source_capture_fk"
             columns: ["source_capture_id"]
             isOneToOne: false
@@ -637,6 +672,47 @@ export type Database = {
           },
           {
             foreignKeyName: "jobs_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      query_audit: {
+        Row: {
+          created_at: string
+          duration_ms: number | null
+          error: string | null
+          id: string
+          row_count: number | null
+          sql: string
+          technician_ref: string | null
+          tenant_id: string
+        }
+        Insert: {
+          created_at?: string
+          duration_ms?: number | null
+          error?: string | null
+          id?: string
+          row_count?: number | null
+          sql: string
+          technician_ref?: string | null
+          tenant_id: string
+        }
+        Update: {
+          created_at?: string
+          duration_ms?: number | null
+          error?: string | null
+          id?: string
+          row_count?: number | null
+          sql?: string
+          technician_ref?: string | null
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "query_audit_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
             referencedRelation: "tenants"
@@ -705,11 +781,46 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "raw_captures_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raw_captures_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "raw_captures_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["customer_id"]
+          },
+          {
             foreignKeyName: "raw_captures_job_id_fkey"
             columns: ["job_id"]
             isOneToOne: false
             referencedRelation: "jobs"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raw_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raw_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
           },
           {
             foreignKeyName: "raw_captures_retracts_capture_id_fkey"
@@ -919,11 +1030,46 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "schedule_entries_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "schedule_entries_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "schedule_entries_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["customer_id"]
+          },
+          {
             foreignKeyName: "schedule_entries_job_id_fkey"
             columns: ["job_id"]
             isOneToOne: false
             referencedRelation: "jobs"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "schedule_entries_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "schedule_entries_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
           },
           {
             foreignKeyName: "schedule_entries_tenant_id_fkey"
@@ -969,6 +1115,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "assignments"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "schedule_events_assignment_id_fkey"
+            columns: ["assignment_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["assignment_id"]
           },
           {
             foreignKeyName: "schedule_events_tenant_id_fkey"
@@ -1196,6 +1349,20 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "visits_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visits_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+          {
             foreignKeyName: "visits_source_capture_fk"
             columns: ["source_capture_id"]
             isOneToOne: false
@@ -1248,7 +1415,129 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      v_customers: {
+        Row: {
+          address_line1: string | null
+          city: string | null
+          created_at: string | null
+          email: string | null
+          id: string | null
+          name: string | null
+          phone: string | null
+          postal_code: string | null
+          state: string | null
+        }
+        Insert: {
+          address_line1?: string | null
+          city?: string | null
+          created_at?: string | null
+          email?: string | null
+          id?: string | null
+          name?: string | null
+          phone?: string | null
+          postal_code?: string | null
+          state?: string | null
+        }
+        Update: {
+          address_line1?: string | null
+          city?: string | null
+          created_at?: string | null
+          email?: string | null
+          id?: string | null
+          name?: string | null
+          phone?: string | null
+          postal_code?: string | null
+          state?: string | null
+        }
+        Relationships: []
+      }
+      v_jobs: {
+        Row: {
+          created_at: string | null
+          customer_id: string | null
+          customer_name: string | null
+          duration_minutes: number | null
+          id: string | null
+          job_type: string | null
+          price_cents: number | null
+          priority: Database["public"]["Enums"]["job_priority"] | null
+          status: Database["public"]["Enums"]["job_status"] | null
+          title: string | null
+          updated_at: string | null
+        }
+        Relationships: []
+      }
+      v_schedule: {
+        Row: {
+          assignment_id: string | null
+          city: string | null
+          customer_id: string | null
+          customer_name: string | null
+          earliest_date: string | null
+          ends_at: string | null
+          job_id: string | null
+          job_status: Database["public"]["Enums"]["job_status"] | null
+          job_title: string | null
+          job_type: string | null
+          latest_date: string | null
+          local_day: string | null
+          locked: boolean | null
+          postal_code: string | null
+          promise_level: Database["public"]["Enums"]["promise_level"] | null
+          promised_day: string | null
+          starts_at: string | null
+          status: Database["public"]["Enums"]["assignment_status"] | null
+          technician_name: string | null
+          technician_ref: string | null
+        }
+        Relationships: []
+      }
+      v_team: {
+        Row: {
+          availability: Json | null
+          created_at: string | null
+          display_name: string | null
+          ref: string | null
+          seat_exempt: boolean | null
+          service_cities: string[] | null
+          skills: string[] | null
+          state: Database["public"]["Enums"]["technician_state"] | null
+          tier: Database["public"]["Enums"]["technician_tier"] | null
+        }
+        Insert: {
+          availability?: Json | null
+          created_at?: string | null
+          display_name?: string | null
+          ref?: string | null
+          seat_exempt?: boolean | null
+          service_cities?: string[] | null
+          skills?: string[] | null
+          state?: Database["public"]["Enums"]["technician_state"] | null
+          tier?: Database["public"]["Enums"]["technician_tier"] | null
+        }
+        Update: {
+          availability?: Json | null
+          created_at?: string | null
+          display_name?: string | null
+          ref?: string | null
+          seat_exempt?: boolean | null
+          service_cities?: string[] | null
+          skills?: string[] | null
+          state?: Database["public"]["Enums"]["technician_state"] | null
+          tier?: Database["public"]["Enums"]["technician_tier"] | null
+        }
+        Relationships: []
+      }
+      v_time_off: {
+        Row: {
+          ends_on: string | null
+          reason: string | null
+          starts_on: string | null
+          technician_name: string | null
+          technician_ref: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       claim_next_call: {
@@ -1280,6 +1569,10 @@ export type Database = {
           isOneToOne: true
           isSetofReturn: false
         }
+      }
+      query_spine: {
+        Args: { p_max_rows?: number; p_sql: string; p_tenant: string }
+        Returns: Json
       }
       rollup_costs: {
         Args: { p_period_start: string }

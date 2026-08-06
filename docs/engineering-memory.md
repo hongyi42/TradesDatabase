@@ -188,6 +188,23 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   same rule fused in, and `src/mcp/server.test.ts` asserts that text so it cannot be edited away.
   **When adding any tool that takes free-form input, re-read the doctrine blocks and ask which of
   them name tools rather than behaviours.**
+- **Bake derived values into the views; the agent computes anything you leave out, and gets it
+  wrong (2026-08-06).** `v_schedule` had `local_day` but no weekday. Asked "how many visits did Joy
+  do this week?" the agent did everything the previous fix required — `resolve_date {week:0}`
+  first, its boundaries pasted into the SQL, 22 visits, verified correct — then reported *"running
+  from Monday the 4th"*. **2026-08-04 is a Tuesday.** §0f requires stating the weekday whenever a
+  date is named, so with none to read it derived one. The count being right is what makes it
+  dangerous: nothing in the answer looks suspicious.
+  Fixed by adding `local_weekday` (`to_char(…, 'FMDay')`; FM suppresses Postgres's blank-padding)
+  beside `local_day`, plus a description line to select and relay it verbatim. Tests guard the
+  column and the description text.
+  **`CREATE OR REPLACE VIEW` may only APPEND columns** (42P16 "cannot change name of view column");
+  inserting one mid-list needs DROP + CREATE — atomic inside a migration, re-grant afterwards.
+  **The pattern, three for three in three days:** tool search hid `resolve_date`; `query_spine` let
+  dates be written straight into SQL; a view handed over a bare date. Each fix was correct and each
+  exposed the next gap. Generalisation worth carrying: **any value the model must derive in order to
+  answer well is a value it will eventually derive wrong — put it in the data, not in a rule telling
+  it not to.**
 - **The inference failover is broken — it turns a blip into an outage and reports success
   (2026-08-06).** A ~4-minute DeepInfra unhealthy window failed the fleet over to `nvidia-prod /
   z-ai/glm-5.2`; the medic logged "FAILOVER active; will fail back automatically", but NVIDIA

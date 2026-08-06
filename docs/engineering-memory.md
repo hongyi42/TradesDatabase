@@ -175,6 +175,19 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - **Deploy-before-migration** fails safe but noisily (PostgREST "unknown column" on the new
   code path; fix = apply migration + `NOTIFY pgrst, 'reload schema'`). Happened live
   2026-07-19 (seat-exempt); the two-step confirm flow protected the pilot.
+- **A new tool surface silently bypasses whatever doctrine rule did not name it — twice now.**
+  Tool search broke §0f by making `resolve_date` something the model had to *find* (fixed by §0j,
+  then reverted with it). `query_spine` broke the same rule a different way: on its first live turn
+  (2026-08-06) the agent wrote `local_day >= '2026-07-07'` straight into SQL with no `resolve_date`
+  call — correct by luck. Harmless for a count; the identical shape on "what's booked next week"
+  is the 2026-07-25 week-boundary incident, which missed a real visit.
+  **The durable fix is to stop enumerating tools in doctrine.** §0f rule 2 said "never hand a
+  YYYY-MM-DD you calculated to book_visit or move_visit" — a list, so anything not on the list was
+  implicitly fine. It now reads "to ANY tool … if a date reaches a tool, it came out of
+  resolve_date", with the SQL case named explicitly. The `query_spine` description carries the
+  same rule fused in, and `src/mcp/server.test.ts` asserts that text so it cannot be edited away.
+  **When adding any tool that takes free-form input, re-read the doctrine blocks and ask which of
+  them name tools rather than behaviours.**
 - **`revoke ... from public` does NOT revoke anon/authenticated on a new function.** Supabase's
   DEFAULT PRIVILEGES grant EXECUTE on a newly created function in `public` *directly* to `anon` and
   `authenticated`; those are separate grants, so revoking PUBLIC leaves them. Hit live on the pilot

@@ -167,9 +167,16 @@ can entrench the error; the measured rate decides whether a phase 2 (cancel-and-
 worth a round-trip.
 
 Source of truth `Box_Setup_Stuff/plugins/trades-weekday-guard/` (chrono bundled beside it —
-sandboxes install nothing); behaviour locked by `src/control/weekdayGuardPlugin.test.ts`;
-installed by the bootstrap wire step (upload → chmod 660 → `openclaw plugins registry
---refresh` → gateway restart; **no openclaw.json edit**). Plan:
+sandboxes fetch nothing); behaviour locked by `src/control/weekdayGuardPlugin.test.ts`;
+installed by the bootstrap wire step. **Install shape (corrected 2026-08-06 after the s6
+canary):** upload to a temp dir → `openclaw plugins install --force` → `nemoclaw <s> doctor
+--fix` → `gateway restart` → verify the id appears in the gateway's own
+`http server listening (N plugins: …)` line. Two traps, both hit on the canary: a bare
+file-copy + registry refresh makes `plugins list` say "enabled" while the gateway never loads
+the hook (tools flow through the cold registry; hooks need in-process load, which trust-gates
+unprovenanced local code) — and `plugins install` itself edits `openclaw.json` without
+updating `.config-hash`, so skipping `doctor --fix` leaves the next restart failing
+`GATEWAY_UNSAFE_CONFIG_PATH`. Plan:
 `thoughts/shared/plans/2026-08-06-weekday-guard-plugin.md`.
 
 ## 5. Conversation contract (stage→confirm since 2026-07-06)

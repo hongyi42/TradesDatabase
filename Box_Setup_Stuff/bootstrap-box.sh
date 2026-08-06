@@ -925,20 +925,38 @@ EOF
     # Corpus replay found 23 real mismatches in 419 historical texts (incl. a
     # customer-facing date change and a freeze proposal) with 0 false positives.
     # Source of truth: plugins/trades-weekday-guard/ in this repo; behaviour
-    # locked by src/control/weekdayGuardPlugin.test.ts. Re-uploaded every wire
-    # run (idempotent); registry refresh because plugins are discovered from a
-    # persisted registry, not a boot scan.
+    # locked by src/control/weekdayGuardPlugin.test.ts.
+    #
+    # INSTALL SHAPE (learned on the s6 canary, 2026-08-06 — BOTH halves matter):
+    #  1. A HOOK plugin must go through `openclaw plugins install`, never a bare
+    #     file copy + registry refresh. The refresh path serves TOOLS from the
+    #     cold-metadata registry, but hooks need the plugin loaded into the
+    #     gateway process, and the gateway trust-gates local code without
+    #     install provenance: `plugins list` says "enabled", `plugins info`
+    #     even says "loaded" (CLI context), yet the startup line
+    #     "http server listening (N plugins: ...)" omits it and the hook never
+    #     fires. The startup list is the only truth.
+    #  2. `openclaw plugins install` ITSELF writes plugins.entries/installs
+    #     into openclaw.json WITHOUT updating .config-hash — the vendor's own
+    #     CLI trips the same GATEWAY_UNSAFE_CONFIG_PATH trap as `config patch`,
+    #     and the next restart leaves the gateway DOWN. `doctor --fix` repairs
+    #     the hash; run it BEFORE the restart, every time.
     pl_src="$SCRIPT_DIR/plugins/trades-weekday-guard"
-    pl_dst=/sandbox/.openclaw/extensions/trades-weekday-guard
     if [ -d "$pl_src" ]; then
-      nemoclaw "$agent" exec --no-tty -- mkdir -p "$pl_dst" </dev/null >/dev/null 2>&1 || true
+      nemoclaw "$agent" exec --no-tty -- sh -c "rm -rf /tmp/twg-src && mkdir -p /tmp/twg-src" </dev/null >/dev/null 2>&1 || true
       for pl_f in index.js chrono.bundle.mjs package.json openclaw.plugin.json; do
-        nemoclaw "$agent" upload "$pl_src/$pl_f" "$pl_dst/$pl_f" </dev/null
+        nemoclaw "$agent" upload "$pl_src/$pl_f" "/tmp/twg-src/$pl_f" </dev/null
       done
-      nemoclaw "$agent" exec --no-tty -- sh -c "chmod 660 $pl_dst/*" </dev/null >/dev/null 2>&1 || true
       docker exec -u sandbox -e HOME=/sandbox -e OPENCLAW_HOME=/sandbox "$cid" \
-        openclaw plugins registry --refresh >/dev/null 2>&1 || true
-      ok "installed trades-weekday-guard plugin (message_sending observer)"
+        openclaw plugins install --force /tmp/twg-src >/dev/null 2>&1 || true
+      nemoclaw "$agent" doctor --fix </dev/null >/dev/null 2>&1 || true
+      nemoclaw "$agent" gateway restart </dev/null >/dev/null 2>&1 || true
+      # Verify by the gateway's own startup line — the registry lies (see above).
+      if nemoclaw "$agent" exec --no-tty -- sh -c "grep -a 'http server listening' /sandbox/.openclaw/logs/gateway-persistent.log | tail -1 | grep -q trades-weekday-guard" </dev/null >/dev/null 2>&1; then
+        ok "trades-weekday-guard installed AND loaded (in the gateway's plugin list)"
+      else
+        echo "    WARN: trades-weekday-guard not in the gateway's loaded-plugin list — hook is NOT active"
+      fi
     else
       echo "    WARN: $pl_src missing — weekday guard not installed"
     fi

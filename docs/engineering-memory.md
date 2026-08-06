@@ -188,6 +188,24 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   same rule fused in, and `src/mcp/server.test.ts` asserts that text so it cannot be edited away.
   **When adding any tool that takes free-form input, re-read the doctrine blocks and ask which of
   them name tools rather than behaviours.**
+- **The inference failover is broken — it turns a blip into an outage and reports success
+  (2026-08-06).** A ~4-minute DeepInfra unhealthy window failed the fleet over to `nvidia-prod /
+  z-ai/glm-5.2`; the medic logged "FAILOVER active; will fail back automatically", but NVIDIA
+  returns `400 (no body)` on a real completion, so turns died in 0.8s with
+  `terminalError: non_deliverable_terminal_turn`. **Failover therefore provides NO protection** —
+  it converts a recoverable provider blip into a hard outage while reporting success. Same blind
+  spot as the 2026-07-28 stall: `openshell inference set` doubles as probe and switch, and it
+  validates the **endpoint registration**, not a completion. The differing model ids
+  (`zai-org/GLM-5.2` deepinfra vs `z-ai/glm-5.2` nvidia) are deliberate and NOT the bug — NVIDIA
+  accepts the registration, then 400s the request. Suspect the rotated NVIDIA key (the old one
+  lingers in `/root/s4-nvidia.env`) or model entitlement. **medic v3 — a 1-token real-completion
+  probe, run against the FALLBACK before declaring failover successful — is now urgent rather than
+  a nice-to-have.**
+  Debugging path: `journalctl -u nemoclaw-inference-medic` gives the failover timestamp; the real
+  error is only in the sandbox's `/sandbox/.openclaw/logs/gateway-persistent.log`
+  (`embedded run agent end: isError=true … error=400`). The trajectory says only
+  `non_deliverable_terminal_turn`, which is useless alone. Route changes apply WITHOUT a container
+  restart (the 19:52:53 turn used the route set at 19:52:14) — unlike credentials, which need one.
 - **`revoke ... from public` does NOT revoke anon/authenticated on a new function.** Supabase's
   DEFAULT PRIVILEGES grant EXECUTE on a newly created function in `public` *directly* to `anon` and
   `authenticated`; those are separate grants, so revoking PUBLIC leaves them. Hit live on the pilot

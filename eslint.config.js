@@ -3,10 +3,18 @@ import tseslint from 'typescript-eslint';
 // Minimal flat config: typescript-eslint's recommended rules, scoped to source
 // TypeScript only. Generated types and build output are ignored.
 export default tseslint.config(
-  { ignores: ['dist/', 'node_modules/', 'src/db/database.types.ts'] },
+  // `.claude/` holds git worktrees for the concurrent-feature workflow
+  // (CLAUDE.md), i.e. whole extra checkouts of this repo carrying their own
+  // tsconfig.json. Without this ignore, typescript-eslint sees two candidate
+  // roots and refuses to parse ANYTHING — 289 errors on every file, none of
+  // them real, whenever a second feature session has a worktree open.
+  { ignores: ['dist/', 'node_modules/', '.claude/', 'src/db/database.types.ts'] },
   {
     files: ['src/**/*.ts'],
     extends: [...tseslint.configs.recommended],
+    // Pinned rather than inferred, so a stray tsconfig.json anywhere under the
+    // repo can never make the root ambiguous again.
+    languageOptions: { parserOptions: { tsconfigRootDir: import.meta.dirname } },
   },
   {
     // The board Mini App is plain browser JS served as a static file (no build

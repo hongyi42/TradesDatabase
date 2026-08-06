@@ -110,6 +110,7 @@ import {
   localTimeHHMM,
   summarizeWeeklyPattern,
 } from '../schedule/availability.js';
+import { runSpineQuery } from '../db/querySpine.js';
 import { clampToTechnicianHorizon, horizonDaysFor } from '../schedule/policy.js';
 import { readUnscheduledJobs } from '../schedule/boardRead.js';
 import {
@@ -977,6 +978,46 @@ const ADMIN_TOOLS = [
         },
       },
       required: ['ref', 'pattern'],
+    },
+  },
+  {
+    name: 'query_spine',
+    description:
+      "Answer a question about this firm's own records that no other tool covers, by writing ONE " +
+      'read-only SQL SELECT. Manager only. Use a purpose-built tool whenever one exists — ' +
+      'get_team_schedule, get_availability, find_customer, find_slots and the rest are faster, ' +
+      'tested, and carry rules this tool does not. Reach for query_spine only for questions they ' +
+      'cannot answer (counts, totals, "how many…since…", cross-cutting lists). ' +
+      'It CANNOT write, and it can only read these five views (nothing else exists to it): ' +
+      'v_schedule(assignment_id, local_day, starts_at, ends_at, status, promise_level, ' +
+      'promised_day, locked, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
+      'job_title, job_type, job_status, customer_id, customer_name, city, postal_code); ' +
+      'v_team(ref, display_name, tier, state, seat_exempt, skills, service_cities, availability, ' +
+      'created_at); ' +
+      'v_jobs(id, title, job_type, status, priority, duration_minutes, price_cents, created_at, ' +
+      'updated_at, customer_id, customer_name); ' +
+      'v_customers(id, name, phone, email, address_line1, city, state, postal_code, created_at); ' +
+      'v_time_off(technician_ref, technician_name, starts_on, ends_on, reason). ' +
+      'ALWAYS group or filter dates on v_schedule.local_day, which is already the firm-local day — ' +
+      'starts_at is a timestamp and bucketing it by its UTC date puts evening visits on the wrong ' +
+      'day. One statement, no semicolon. Results are capped; if truncated is true SAY SO rather ' +
+      'than presenting a partial list as complete. Every query is logged with the person who ' +
+      'asked.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sql: {
+          type: 'string',
+          description:
+            'One SELECT over the views above. No semicolon, no writes. Example: ' +
+            "select technician_name, count(*) as visits from v_schedule where local_day >= '2026-08-01' group by 1 order by 2 desc",
+        },
+        maxRows: {
+          type: 'number',
+          description: 'Row cap, default 200, hard ceiling 1000.',
+        },
+      },
+      required: ['sql'],
     },
   },
   {
@@ -4379,6 +4420,45 @@ async function dispatch(
         note:
           `${target.display_name}'s working pattern is set (${dayWords}). ` +
           'They are now visible to the scheduler on their working days. Tell the manager exactly this.',
+      };
+    }
+    case 'query_spine': {
+      // The tenant is NOT taken from args and never interpolated into the SQL:
+      // it goes to the function as a separate parameter, from the verified HMAC
+      // identity. Everything the model wrote stays inside p_sql, where it runs
+      // as spine_reader — a role with no write privilege and SELECT on five
+      // views only. See the migration header and
+      // thoughts/shared/plans/2026-08-04-query-spine-design.md.
+      const sql = str('sql');
+      if (!sql) throw new Error('sql is required');
+      const maxRows = typeof args.maxRows === 'number' ? args.maxRows : undefined;
+      let result;
+      try {
+        result = await runSpineQuery(tenantId, sql, {
+          technicianRef: identity.technicianRef,
+          maxRows,
+        });
+      } catch (e) {
+        // Relay the database's own message: "permission denied for table
+        // customers" tells the agent precisely what it may not do, and a
+        // generic failure would have it retry the same shape forever.
+        throw new Error(
+          `query_spine rejected that query: ${e instanceof Error ? e.message : String(e)}. ` +
+            'Only SELECT, one statement, and only the five v_* views listed in the tool description.',
+        );
+      }
+      return {
+        status: 'ok',
+        rowCount: result.rowCount,
+        truncated: result.truncated,
+        rows: result.rows,
+        ...(result.truncated
+          ? {
+              note:
+                `Only the first ${result.rowCount} rows were returned — the result was CAPPED. ` +
+                'Tell the person the list is partial; do not present it as complete.',
+            }
+          : {}),
       };
     }
     case 'get_availability': {

@@ -1732,7 +1732,8 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('run_resolve'); // the re-solve (plan 2026-07-30)
       expect(mgrTools).toContain('undo_run'); // the safety net (plan 2026-07-30 Phase 5)
       expect(mgrTools).toContain('get_availability'); // the read half of set_availability (2026-08-04)
-      expect(mgrTools).toHaveLength(40);
+      expect(mgrTools).toContain('query_spine'); // ad-hoc read fallback (2026-08-06)
+      expect(mgrTools).toHaveLength(41);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2135,7 +2136,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(40); // base minus get_schedule + 27 admin
+        expect(mgrTools).toHaveLength(41); // base minus get_schedule + 28 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -4133,6 +4134,52 @@ describe('schedule-input verbs (Plan 3a)', () => {
       const denied = await call(name, {});
       expect(denied.isError).toBe(true);
       expect(denied.text).toContain('manager badge');
+    }
+  });
+
+  test('query_spine answers an ad-hoc read, refuses writes, and flags truncation', { timeout: 30_000 }, async () => {
+    const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // The point of the tool: a question no purpose-built tool answers.
+      const counts = await callWith('query_spine', {
+        sql: 'select tier, count(*) as n from v_team group by 1 order by 1',
+      });
+      expect(counts.isError).toBe(false);
+      expect(Array.isArray(counts.data.rows)).toBe(true);
+
+      // Writes are refused, and the DB's own message is relayed so the agent
+      // learns what it may not do rather than retrying the same shape.
+      const write = await callWith('query_spine', {
+        sql: "with i as (insert into customers (tenant_id,name) values (gen_random_uuid(),'x') returning 1) select * from i",
+      });
+      expect(write.isError).toBe(true);
+      expect(write.text).toContain('query_spine rejected that query');
+
+      // A base table is invisible; only the five views exist to this role.
+      const base = await callWith('query_spine', { sql: 'select * from customers' });
+      expect(base.isError).toBe(true);
+      expect(base.text).toMatch(/permission denied/i);
+
+      // Truncation is REPORTED, never silent — a capped list presented as
+      // complete is the failure mode that makes a wrong answer look right.
+      const capped = await callWith('query_spine', {
+        sql: 'select * from generate_series(1, 50) as n',
+        maxRows: 3,
+      });
+      expect(capped.isError).toBe(false);
+      expect(capped.data.truncated).toBe(true);
+      expect(capped.data.rowCount).toBe(3);
+      expect(capped.data.note).toContain('CAPPED');
+
+      // Every call is audited, including the failures.
+      const audit = await pg.query(
+        'select count(*)::int as n from query_audit where tenant_id = $1',
+        [tenantId],
+      );
+      expect(audit.rows[0].n).toBeGreaterThanOrEqual(4);
+    } finally {
+      await mgrClient.close();
+      await pg.query('delete from query_audit where tenant_id = $1', [tenantId]);
     }
   });
 

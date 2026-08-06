@@ -2,7 +2,7 @@
 date: 2026-08-04
 task: query_spine — a read-only, tenant-scoped fallback for the long tail of read questions
 research: (inline; read-surface audit + s2 latency measurements, 2026-08-04)
-status: design — open decisions RESOLVED 2026-08-04; ready to implement on approval
+status: phases 1-2 IMPLEMENTED 2026-08-06 (role, views, function, tool, tests); phases 3-4 pending
 ---
 
 ## What this is for, and what it is not for
@@ -152,3 +152,49 @@ Mitigations: name views for questions rather than tables; route away in the desc
 3. Live measurement on s2: does one `query_spine` call answer a question that previously had none,
    and what does it cost in seconds and tokens?
 4. Census after two weeks → decide whether anything is genuinely unused before deleting a tool.
+
+## Implementation notes (2026-08-06)
+
+**Constraint found on contact with the code:** production talks to Postgres only through PostgREST
+(`src/db/client.ts`), which cannot execute arbitrary SQL and wraps each request in its own
+transaction. A direct `pg` connection as `spine_reader` would have meant promoting `pg` to a prod
+dependency, a new secret, pooling, and a second parallel DB path against CLAUDE.md's "all database
+access goes through `src/db/`". Instead `query_spine()` is **owned by `spine_reader` and marked
+SECURITY DEFINER**, so the dynamic SQL runs with that role's privileges — SECURITY DEFINER used to
+DROP privileges rather than grant them, which inverts the usual risk. The GUC works because
+PostgREST wraps the RPC in one transaction.
+
+**Verified against the live local stack** (`src/db/querySpine.test.ts`, 20 tests), not reasoned
+about:
+
+| property | result |
+|---|---|
+| function owner / definer flag | `spine_reader` / true |
+| base-table grants to `spine_reader` | **none** |
+| can call `tenant_cost_detail` / `rollup_costs` | **false** (they were already `service_role`-only) |
+| CREATE on schema public | **false** (granted only for the ownership transfer, then revoked) |
+| `raw_captures` readable | **false** (decision B) |
+| visible surface | exactly 5 views, SELECT only |
+
+**A test that passed for the wrong reason, corrected.** A bare `insert …` is refused by *syntax* —
+it sits inside the subquery wrapper, where a write statement cannot appear — which proves nothing
+about privileges. The real attempt is a data-modifying CTE, and that is refused too ("WITH clause
+containing a data-modifying statement must be at the top level"). Both are now asserted separately,
+plus a direct `has_table_privilege` check that survives any change to the wrapper.
+
+**Also blocked structurally, discovered while probing:** `set_config('role', …)` fails with "cannot
+set parameter role within security-definer function" — Postgres refuses role changes inside a
+definer function, so that escalation path is closed by the engine rather than by our checks.
+
+**Manager surface 40 → 41.**
+
+## Still to do
+
+- **Phase 3 — live measurement on s2.** Does one `query_spine` call answer a question that
+  previously had none, and what does it cost in seconds and tokens? This is also where decision A
+  (static schema in the description) gets tested rather than assumed — it is ~500 tokens on every
+  manager turn.
+- **Phase 4 — census after two weeks.** If `get_team_schedule` usage collapses into `query_spine`,
+  that is a regression, not adoption.
+- Rollout needs a deploy **plus** `gateway restart` per sandbox (tool descriptions are cached per
+  MCP process).

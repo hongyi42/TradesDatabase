@@ -175,6 +175,27 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - **Deploy-before-migration** fails safe but noisily (PostgREST "unknown column" on the new
   code path; fix = apply migration + `NOTIFY pgrst, 'reload schema'`). Happened live
   2026-07-19 (seat-exempt); the two-step confirm flow protected the pilot.
+- **`revoke ... from public` does NOT revoke anon/authenticated on a new function.** Supabase's
+  DEFAULT PRIVILEGES grant EXECUTE on a newly created function in `public` *directly* to `anon` and
+  `authenticated`; those are separate grants, so revoking PUBLIC leaves them. Hit live on the pilot
+  2026-08-06 with `query_spine`, whose ACL read
+  `spine_reader=X | anon=X | authenticated=X | service_role=X` after a migration that "revoked from
+  public". It mattered because query_spine takes the TENANT AS A PARAMETER — anyone with the
+  publishable anon key could have called it for ANY tenant. Fixed by
+  `revoke execute … from public, anon, authenticated`, and `src/db/querySpine.test.ts` now asserts
+  the ACL (verified to fail when the grant is restored). **Always name anon and authenticated
+  explicitly; compare `tenant_cost_detail`, which is correctly `postgres|service_role` only.**
+- **The `auto_expose_new_tables` debt is bigger than "latent" suggests — measured 2026-08-06.**
+  With RLS off AND `anon` granted SELECT, these are genuinely readable with the publishable key:
+  `customers`, `jobs`, `assignments`, `technicians`, `tenants`, `visits`, and **`raw_captures`**
+  (L1 — verbatim customer email, the densest PII in the system). `cost_events`, `call_ingest` and
+  `query_audit` are protected (RLS on). Mitigation remains that the anon key appears nowhere in
+  this project, so it is exposure-by-key-disclosure rather than open data. Same fix shape as
+  `20260725140000` (RLS on, no policy — service_role bypasses it, so nothing server-side changes).
+  Due before 2026-10-30.
+  *Not* affected: the `v_*` query_spine views. They are granted to anon but fail closed (SQLSTATE
+  42704, `unrecognized configuration parameter "spine.tenant_id"`) because anon cannot set the GUC —
+  verified by setting `role anon` on the pilot.
 - PostgREST silently caps result sets at **1000 rows** (`db-max-rows`) — any scan that can
   exceed it must paginate (see `src/db/foldImpact.ts` for the pattern).
 - `googleapis` stays in package.json even though the schedule sheet is retired —

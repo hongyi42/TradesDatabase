@@ -223,5 +223,26 @@ $$;
 grant create on schema public to spine_reader;
 alter function query_spine(uuid, text, integer) owner to spine_reader;
 revoke create on schema public from spine_reader;
-revoke execute on function query_spine(uuid, text, integer) from public;
+-- REVOKE FROM anon AND authenticated BY NAME, not just from PUBLIC.
+--
+-- Caught live on the pilot 2026-08-06, after this migration had already been
+-- applied there: the ACL read
+--   spine_reader=X | anon=X | authenticated=X | service_role=X
+-- Supabase's DEFAULT PRIVILEGES grant EXECUTE on a newly created function in
+-- public directly to anon and authenticated. Those are separate grants, so
+-- `revoke ... from public` does not remove them — it only drops the implicit
+-- PUBLIC grant, which was never the mechanism.
+--
+-- Why that mattered here more than for most functions: query_spine takes the
+-- tenant as a PARAMETER. Anyone holding the project's anon key (publishable by
+-- design) could have called it with ANY tenant id and read that tenant's
+-- customers, phones, emails, addresses and schedule straight through the REST
+-- API — the tenant filter is honoured, but the caller chooses the tenant.
+-- Latent rather than live (this project uses only the service-role key and the
+-- anon key appears nowhere in it), but the same class as the cost-table exposure
+-- closed in 20260725140000. Compare tenant_cost_detail, which is correctly
+-- postgres|service_role only.
+--
+-- src/db/querySpine.test.ts asserts this ACL so it cannot regress.
+revoke execute on function query_spine(uuid, text, integer) from public, anon, authenticated;
 grant execute on function query_spine(uuid, text, integer) to service_role;

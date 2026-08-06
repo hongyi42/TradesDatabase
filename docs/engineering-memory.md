@@ -223,6 +223,27 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   (`embedded run agent end: isError=true … error=400`). The trajectory says only
   `non_deliverable_terminal_turn`, which is useless alone. Route changes apply WITHOUT a container
   restart (the 19:52:53 turn used the route set at 19:52:14) — unlike credentials, which need one.
+- **`nemoclaw list` shows the ONBOARDING RECORD, not the live inference route (2026-08-06).** Read
+  off that list, s2/s5/s6/s7 all say `provider: nvidia-prod` — which reads exactly like "the fleet
+  has been stuck on the fallback for six days", and was reported as such before being checked. It
+  is wrong. `nemoclaw list` prints each sandbox's onboarded model/provider from `sandboxes.json`;
+  the medic switches the **global gateway route** (`openshell inference set -g nemoclaw`) and never
+  rewrites those per-sandbox fields. A failover stales them permanently and a failback never clears
+  them — the same cosmetic-drift class as s3's nemotron ref. s8 is the most misleading: it keeps its
+  true onboarded value (`deepinfra-prod`) and prints a "live OpenShell gateway differs" note that is
+  itself stale.
+  **Authoritative:** `openshell inference get` for the route, plus
+  `journalctl -u nemoclaw-inference-medic.service` for whether the 5-minute assertion is passing now.
+  **For proof the model actually SERVED** — which `inference set` can never give, see the blind-spot
+  entries above — query the pilot's `cost_events` for `provider='deepinfra'` rows with skus
+  `glm-5.2-{input,output,cached-input}`. Those are billed completions, and they need no API key.
+- **The cost tracker is blind to the failover provider (2026-08-06).** `cost_rates` holds
+  `deepinfra` and `anthropic` rows only — there is **no `nvidia` row**. So a failover does not
+  appear as a provider change in the cost data; it silently stops the meter. Two consequences:
+  absence of nvidia rows is NOT evidence the fleet wasn't on nvidia, and a stretch of "zero spend"
+  may mean *failed over*, not *idle* (07-31 and 08-04 each show 21 spine tool calls and zero model
+  cost events). Add an nvidia rate row — even at $0 — if failover spend or attribution ever has to
+  be answerable after the fact.
 - **`revoke ... from public` does NOT revoke anon/authenticated on a new function.** Supabase's
   DEFAULT PRIVILEGES grant EXECUTE on a newly created function in `public` *directly* to `anon` and
   `authenticated`; those are separate grants, so revoking PUBLIC leaves them. Hit live on the pilot

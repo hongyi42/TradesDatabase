@@ -917,6 +917,33 @@ EOF
     echo "    WARN: no running container for ${agent} — set agents.defaults.heartbeat.every=0m manually"
   fi
 
+  log "weekday-guard plugin (outbound weekday/date mismatch detector — added 2026-08-06)"
+  if [ -n "$cid" ]; then
+    # Observe-only message_sending hook: verifies every (weekday, date) pair the
+    # agent states in an outbound reply and logs mismatches to
+    # /sandbox/.openclaw/logs/weekday-guard.jsonl. Never rewrites, never cancels.
+    # Corpus replay found 23 real mismatches in 419 historical texts (incl. a
+    # customer-facing date change and a freeze proposal) with 0 false positives.
+    # Source of truth: plugins/trades-weekday-guard/ in this repo; behaviour
+    # locked by src/control/weekdayGuardPlugin.test.ts. Re-uploaded every wire
+    # run (idempotent); registry refresh because plugins are discovered from a
+    # persisted registry, not a boot scan.
+    pl_src="$SCRIPT_DIR/plugins/trades-weekday-guard"
+    pl_dst=/sandbox/.openclaw/extensions/trades-weekday-guard
+    if [ -d "$pl_src" ]; then
+      nemoclaw "$agent" exec --no-tty -- mkdir -p "$pl_dst" </dev/null >/dev/null 2>&1 || true
+      for pl_f in index.js chrono.bundle.mjs package.json openclaw.plugin.json; do
+        nemoclaw "$agent" upload "$pl_src/$pl_f" "$pl_dst/$pl_f" </dev/null
+      done
+      nemoclaw "$agent" exec --no-tty -- sh -c "chmod 660 $pl_dst/*" </dev/null >/dev/null 2>&1 || true
+      docker exec -u sandbox -e HOME=/sandbox -e OPENCLAW_HOME=/sandbox "$cid" \
+        openclaw plugins registry --refresh >/dev/null 2>&1 || true
+      ok "installed trades-weekday-guard plugin (message_sending observer)"
+    else
+      echo "    WARN: $pl_src missing — weekday guard not installed"
+    fi
+  fi
+
   log "tool-surface trim + thinking (turn latency 67s -> 3s — added 2026-07-30)"
   if [ -n "$cid" ]; then
     # WHY: every request compiles each tool's \`parameters\` schema into a

@@ -1,0 +1,14 @@
+{
+  "id": "trades-weekday-guard",
+  "name": "Trades Weekday Guard",
+  "version": "0.1.0",
+  "description": "Detects fabricated weekdays in outbound messages (weekday/date mismatch) and logs them; observe-only, never rewrites or cancels",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

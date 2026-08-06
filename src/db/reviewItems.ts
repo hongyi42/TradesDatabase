@@ -37,7 +37,13 @@ export type ReviewKind =
   // Onboarding task-reminder (NOT a staged token): opened when a seat is
   // confirmed, auto-resolved by set_availability, dismissable as the explicit
   // "no availability yet" acknowledgment (user decision 2026-07-20).
-  | 'availability_setup';
+  | 'availability_setup'
+  // A customer phone call whose caller-ID matched no customer (plan 2026-08-04).
+  // The agentless phone path can't ask "which customer?", so the unmatched call is
+  // flagged for the manager to link/create (resolve) or mark spam/wrong-number
+  // (dismiss). subject_ref = the parked L1 captureId → one open item per call,
+  // idempotent across worker retries.
+  | 'unlinked_call';
 
 export interface UpsertOpenReviewItemInput {
   tenantId: string;
@@ -110,6 +116,26 @@ export async function flagUnknownRefCapture(input: {
     kind: 'unknown_ref_capture',
     subjectRef: input.subjectRef,
     detail: { externalId },
+  });
+}
+
+// Flag a phone call whose caller-ID matched no customer, for the manager to link
+// or dismiss. subject_ref = the parked L1 captureId, so a worker retry on the same
+// capture returns the existing open item (via the partial unique index) rather
+// than stacking duplicates — no separate dedup needed. suggestion carries the
+// caller number so list_pending_reviews shows who to call back.
+export async function openUnlinkedCallReview(input: {
+  tenantId: string;
+  captureId: string;
+  callerPhone?: string | null;
+  snippet?: string | null;
+}): Promise<ReviewItem> {
+  return upsertOpenReviewItem({
+    tenantId: input.tenantId,
+    kind: 'unlinked_call',
+    subjectRef: input.captureId,
+    suggestion: input.callerPhone ?? null,
+    detail: { callerPhone: input.callerPhone ?? null, snippet: input.snippet ?? null },
   });
 }
 

@@ -49,6 +49,11 @@ export interface RecordFieldNoteInput {
   externalId?: string | null;
   occurredAt?: string | null;
   sourceMeta?: Json;
+  // Caller-ID fallback (phone channel): when the transcript yields no phone,
+  // use this as extracted.phone so a REPEAT caller auto-matches by their number.
+  // Inert when unset (email / tech notes pass nothing) — the only phone-specific
+  // hook in the shared write-path.
+  fallbackPhone?: string | null;
 }
 
 export interface RecordFieldNoteResult {
@@ -151,6 +156,13 @@ export async function recordFieldNote(
   // no deps.extract, so they fall through to the live model here — instrumenting
   // only the MCP staging call would have missed the highest-volume consumer.
   const extracted = await extract(rawText, { tenantId, technicianRef });
+
+  // Caller-ID fallback: the inbound call's `From` is a strong identity key the
+  // transcript often lacks. Apply it only when extraction found no phone, and
+  // BEFORE matchIdentity reads extracted.phone.
+  if (!extracted.phone && input.fallbackPhone) {
+    extracted.phone = input.fallbackPhone;
+  }
 
   // (4) identity: pre-resolved (staged-confirm path — preview == commit, no
   // re-match) or the deterministic matcher (inbound path).

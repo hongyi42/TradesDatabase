@@ -120,6 +120,119 @@ export type Database = {
           },
         ]
       }
+      call_ingest: {
+        Row: {
+          attempts: number
+          audio_delete_after: string | null
+          audio_deleted_at: string | null
+          audio_ref: string | null
+          call_sid: string | null
+          caller_phone: string | null
+          capture_id: string | null
+          consent_announced: boolean
+          created_at: string
+          external_id: string
+          id: string
+          last_error: string | null
+          legal_hold: boolean
+          match_status: string | null
+          occurred_at: string | null
+          payload: Json
+          status: string
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          attempts?: number
+          audio_delete_after?: string | null
+          audio_deleted_at?: string | null
+          audio_ref?: string | null
+          call_sid?: string | null
+          caller_phone?: string | null
+          capture_id?: string | null
+          consent_announced?: boolean
+          created_at?: string
+          external_id: string
+          id?: string
+          last_error?: string | null
+          legal_hold?: boolean
+          match_status?: string | null
+          occurred_at?: string | null
+          payload?: Json
+          status?: string
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          attempts?: number
+          audio_delete_after?: string | null
+          audio_deleted_at?: string | null
+          audio_ref?: string | null
+          call_sid?: string | null
+          caller_phone?: string | null
+          capture_id?: string | null
+          consent_announced?: boolean
+          created_at?: string
+          external_id?: string
+          id?: string
+          last_error?: string | null
+          legal_hold?: boolean
+          match_status?: string | null
+          occurred_at?: string | null
+          payload?: Json
+          status?: string
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "call_ingest_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "raw_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "call_ingest_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      call_numbers: {
+        Row: {
+          created_at: string
+          forward_to: string | null
+          id: string
+          phone_number: string
+          tenant_id: string
+        }
+        Insert: {
+          created_at?: string
+          forward_to?: string | null
+          id?: string
+          phone_number: string
+          tenant_id: string
+        }
+        Update: {
+          created_at?: string
+          forward_to?: string | null
+          id?: string
+          phone_number?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "call_numbers_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cost_events: {
         Row: {
           created_at: string
@@ -1138,6 +1251,36 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      claim_next_call: {
+        Args: never
+        Returns: {
+          attempts: number
+          audio_delete_after: string | null
+          audio_deleted_at: string | null
+          audio_ref: string | null
+          call_sid: string | null
+          caller_phone: string | null
+          capture_id: string | null
+          consent_announced: boolean
+          created_at: string
+          external_id: string
+          id: string
+          last_error: string | null
+          legal_hold: boolean
+          match_status: string | null
+          occurred_at: string | null
+          payload: Json
+          status: string
+          tenant_id: string
+          updated_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "call_ingest"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       rollup_costs: {
         Args: { p_period_start: string }
         Returns: {

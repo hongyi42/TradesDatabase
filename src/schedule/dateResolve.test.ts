@@ -20,6 +20,33 @@ function resolvedWeek(p: ResolveDateParams) {
   return r;
 }
 
+describe('resolveDate — every resolution is quotable', () => {
+  // A single date already returned its weekday, but LOWERCASE and separate from
+  // the date, so the agent still assembled the sentence. `phrase` removes the
+  // assembly step for every mode, not just the week ranges that caused this.
+  test('each single-date mode returns a title-cased "Weekday YYYY-MM-DD" phrase', () => {
+    const cases: Array<[ResolveDateParams, string]> = [
+      [{ todayLocal: WED_2026_07_15, weekday: 'friday' }, 'Friday 2026-07-17'],
+      [{ todayLocal: WED_2026_07_15, dayShift: 0 }, 'Wednesday 2026-07-15'],
+      [{ todayLocal: WED_2026_07_15, dayShift: 1 }, 'Thursday 2026-07-16'],
+      [{ todayLocal: WED_2026_07_15, explicitDate: '2026-08-04' }, 'Tuesday 2026-08-04'],
+    ];
+    for (const [params, phrase] of cases) {
+      const r = resolveDate(params);
+      if (r.status !== 'resolved') throw new Error(`expected resolved: ${JSON.stringify(r)}`);
+      expect(r.phrase).toBe(phrase);
+      // The phrase must agree with the fields, never drift from them.
+      expect(r.phrase.toLowerCase()).toBe(`${r.weekday} ${r.date}`);
+    }
+  });
+
+  test('2026-08-04 is a Tuesday — the date the live agent called Monday', () => {
+    const r = resolveDate({ todayLocal: '2026-08-06', explicitDate: '2026-08-04' });
+    if (r.status !== 'resolved') throw new Error('expected resolved');
+    expect(r.phrase).toBe('Tuesday 2026-08-04');
+  });
+});
+
 describe('resolveDate — weekday mode (this/next/further weeks)', () => {
   // From Wednesday 2026-07-15, weeksAhead 0 = the COMING occurrence.
   const comingFromWed: Array<[ResolveDateParams['weekday'], string, string]> = [
@@ -147,7 +174,13 @@ describe('resolveDate — week mode (calendar-anchored Mon–Sun ranges)', () =>
     expect(r.weekStart).toBe('2026-07-27');
     expect(r.weekEnd).toBe('2026-08-02');
     expect(r.boundaryAmbiguous).toBe(true);
-    expect(r.alternate).toEqual({ weekStart: '2026-08-03', weekEnd: '2026-08-09' });
+    expect(r.alternate).toEqual({
+      weekStart: '2026-08-03',
+      weekEnd: '2026-08-09',
+      weekStartWeekday: 'monday',
+      weekEndWeekday: 'sunday',
+      phrase: 'Monday 2026-08-03 through Sunday 2026-08-09',
+    });
     expect(r.note).toMatch(/ask/i);
   });
 
@@ -163,7 +196,13 @@ describe('resolveDate — week mode (calendar-anchored Mon–Sun ranges)', () =>
     expect(r.weekStart).toBe('2026-07-20');
     expect(r.weekEnd).toBe('2026-07-26');
     expect(r.boundaryAmbiguous).toBe(true);
-    expect(r.alternate).toEqual({ weekStart: '2026-07-27', weekEnd: '2026-08-02' });
+    expect(r.alternate).toEqual({
+      weekStart: '2026-07-27',
+      weekEnd: '2026-08-02',
+      weekStartWeekday: 'monday',
+      weekEndWeekday: 'sunday',
+      phrase: 'Monday 2026-07-27 through Sunday 2026-08-02',
+    });
   });
 
   test('weekEnd is always weekStart+6 and a Sunday, across a year boundary too', () => {
@@ -173,6 +212,41 @@ describe('resolveDate — week mode (calendar-anchored Mon–Sun ranges)', () =>
     expect(r.weekEnd).toBe('2027-01-10');
     expect(new Date(`${r.weekEnd}T00:00:00.000Z`).getUTCDay()).toBe(0);
     expect(new Date(`${r.weekStart}T00:00:00.000Z`).getUTCDay()).toBe(1);
+  });
+
+  // THE reason this file gained `phrase`. On 2026-08-06 the agent asked for
+  // week 0 on a Thursday, got back two bare dates, and had to build the sentence
+  // itself — once wrongly ("Monday the 4th through Saturday the 8th": Aug 4 is a
+  // Tuesday and both boundaries were off), then again correctly but still by
+  // derivation ("Mon Aug 3 – Sun Aug 9", from a query that counted rows and
+  // selected no weekday at all). v_schedule.local_weekday cannot cover this:
+  // the dates being named are the WINDOW's, and they come from here.
+  test('a week range hands over its weekday labels and a ready-to-say phrase', () => {
+    const r = resolvedWeek({ todayLocal: '2026-08-06', week: 0 });
+    expect(r.weekStart).toBe('2026-08-03');
+    expect(r.weekEnd).toBe('2026-08-09');
+    expect(r.weekStartWeekday).toBe('monday');
+    expect(r.weekEndWeekday).toBe('sunday');
+    // Title-cased and quotable as-is: anything the model has to reformat is
+    // something it can reformat wrongly.
+    expect(r.phrase).toBe('Monday 2026-08-03 through Sunday 2026-08-09');
+  });
+
+  test('the boundaries are ALWAYS labelled Monday/Sunday, whatever the week', () => {
+    // Not a lookup — weekStart is a Monday by construction. Asserted across a
+    // year boundary and far out, so a future change to the anchoring cannot
+    // silently start emitting a mislabelled range.
+    for (const [today, week] of [
+      ['2026-08-06', 0],
+      ['2026-12-31', 1],
+      ['2026-07-25', 0],
+      ['2027-03-01', 20],
+    ] as const) {
+      const r = resolvedWeek({ todayLocal: today, week });
+      expect(r.weekStartWeekday).toBe('monday');
+      expect(r.weekEndWeekday).toBe('sunday');
+      expect(r.phrase).toBe(`Monday ${r.weekStart} through Sunday ${r.weekEnd}`);
+    }
   });
 
   test('week combined with another mode is unresolvable (exactly-one rule)', () => {

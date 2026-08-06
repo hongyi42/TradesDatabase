@@ -290,13 +290,16 @@ const TOOLS = [
       'out the date yourself; you are unreliable at calendar math. Pass the parts you understood: ' +
       'a weekday with weeksAhead (0 = this coming one, 1 = next week\'s, 2 = the week after that), ' +
       'OR dayShift (0 = today, 1 = tomorrow, 3 = in three days), OR explicitDate if they gave an ' +
-      'actual date. You get back {date, weekday, today, timezone}; USE the returned date. If it ' +
-      'comes back unresolvable, ask the person which exact date they mean — never guess. NOTE: ' +
-      '"next <weekday>" is genuinely ambiguous (this coming one vs the following week\'s) — ' +
+      'actual date. You get back {date, weekday, phrase, today, timezone}; USE the returned date. ' +
+      'If it comes back unresolvable, ask the person which exact date they mean — never guess. ' +
+      'NOTE: "next <weekday>" is genuinely ambiguous (this coming one vs the following week\'s) — ' +
       'resolve BOTH weeksAhead 0 and 1 and ask the person which date they mean; do not assume. ' +
       'For week RANGES ("this week", "next week") pass week alone — you get back ' +
-      '{weekStart, weekEnd}; on weekends the result is flagged ambiguous with an alternate ' +
-      'range — relay both and ask, never pick.',
+      '{weekStart, weekEnd, weekStartWeekday, weekEndWeekday, phrase}; on weekends the result is ' +
+      'flagged ambiguous with an alternate range (which carries its own phrase) — relay both and ' +
+      'ask, never pick. WHEN YOU NAME ANY OF THESE DATES TO A PERSON, SAY THE `phrase` VERBATIM ' +
+      '("Monday 2026-08-03 through Sunday 2026-08-09"). Never work out for yourself which day of ' +
+      'the week a date falls on — that is the arithmetic this tool exists to do for you.',
     inputSchema: {
       type: 'object',
       properties: {

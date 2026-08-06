@@ -230,6 +230,13 @@ describe('MCP server', () => {
     expect(wk.data.weekStart > today).toBe(true);
     expect(new Date(`${wk.data.weekStart}T00:00:00.000Z`).getUTCDay()).toBe(1);
     expect(new Date(`${wk.data.weekEnd}T00:00:00.000Z`).getUTCDay()).toBe(0);
+    // The boundaries arrive LABELLED, and with a sentence the agent can quote.
+    // Without this the model composes "Mon Aug 3 – Sun Aug 9" itself, which is
+    // the calendar arithmetic this tool exists to remove (live, 2026-08-06).
+    expect(wk.data.weekStartWeekday).toBe('monday');
+    expect(wk.data.weekEndWeekday).toBe('sunday');
+    expect(wk.data.phrase).toBe(`Monday ${wk.data.weekStart} through Sunday ${wk.data.weekEnd}`);
+    expect(def?.description).toContain('phrase');
     // The weekend ambiguity contract, keyed on the SERVER's firm-local day so
     // the assertion is exact on any day the suite runs.
     const dow = new Date(`${today}T00:00:00.000Z`).getUTCDay();
@@ -237,6 +244,11 @@ describe('MCP server', () => {
       expect(wk.data.boundaryAmbiguous).toBe(true);
       expect(wk.data.alternate).toBeDefined();
       expect(wk.data.note).toMatch(/ask/i);
+      // The alternate is the range the agent is told to read out ALONGSIDE the
+      // primary, so it needs its own quotable phrase most of all.
+      expect(wk.data.alternate.phrase).toBe(
+        `Monday ${wk.data.alternate.weekStart} through Sunday ${wk.data.alternate.weekEnd}`,
+      );
     } else {
       expect(wk.data.boundaryAmbiguous).toBeUndefined();
       expect(wk.data.alternate).toBeUndefined();
@@ -4144,7 +4156,7 @@ describe('schedule-input verbs (Plan 3a)', () => {
     // surface silently bypassing a doctrine rule the rule never anticipated.
     // Harmless for a count; the same shape on "what's booked next week" is the
     // 2026-07-25 week-boundary incident, which missed a real visit.
-    const { client, callWith: _c } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    const { client } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
       const listed = await client.listTools();
       const spine = listed.tools.find((t) => t.name === 'query_spine');

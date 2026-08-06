@@ -69,6 +69,56 @@ function weekdayNameOf(dateISO: string): Weekday {
   return WEEKDAYS[new Date(`${dateISO}T00:00:00.000Z`).getUTCDay()];
 }
 
+// "monday" → "Monday". The model is told to state the weekday whenever it names
+// a date, so what it copies has to be already in the form a person reads.
+function titleCase(w: Weekday): string {
+  return w[0].toUpperCase() + w.slice(1);
+}
+
+// A ready-to-say phrase for every resolution.
+//
+// WHY THIS EXISTS. Every date this resolver hands back used to leave as a bare
+// YYYY-MM-DD (week ranges) or a lowercase weekday sitting beside one, and §0f
+// requires the agent to state the weekday whenever it names a date to a person.
+// Given nothing quotable, it composed the sentence itself — i.e. did calendar
+// arithmetic, which is the one thing this file exists to take away from it.
+// Caught live twice: "Monday the 4th through Saturday the 8th" for the Aug 3–9
+// week (2026-08-06, both boundaries wrong), and again on 2026-08-06 after the
+// v_schedule.local_weekday fix, where the reply said "Mon Aug 3 – Sun Aug 9"
+// — correct, but still DERIVED, because the query counted rows and never
+// selected a weekday column. local_weekday can only help when the agent names a
+// date it SELECTED; the boundaries of a window come from here instead.
+//
+// So the phrase is the fix at the right layer: the agent restates rather than
+// composes. Same remedy as v_schedule.local_weekday and, before it, local_day —
+// put the derived value in the data, not in a rule telling the model not to
+// derive it.
+function dayPhrase(dateISO: string, weekday: Weekday): string {
+  return `${titleCase(weekday)} ${dateISO}`;
+}
+
+function rangePhrase(startISO: string, endISO: string): string {
+  // weekStart is a Monday and weekEnd a Sunday BY CONSTRUCTION, so these labels
+  // are not a lookup — they are what the arithmetic above already guarantees.
+  return `${dayPhrase(startISO, weekdayNameOf(startISO))} through ${dayPhrase(endISO, weekdayNameOf(endISO))}`;
+}
+
+// Built in ONE place so a future return site cannot ship a date without its
+// weekday — the omission that caused this in the first place.
+function resolvedDay(date: string, weekday: Weekday): ResolveDateResult {
+  return { status: 'resolved', date, weekday, phrase: dayPhrase(date, weekday) };
+}
+
+function weekRange(weekStart: string, weekEnd: string) {
+  return {
+    weekStart,
+    weekEnd,
+    weekStartWeekday: weekdayNameOf(weekStart),
+    weekEndWeekday: weekdayNameOf(weekEnd),
+    phrase: rangePhrase(weekStart, weekEnd),
+  };
+}
+
 export interface ResolveDateParams {
   todayLocal: string; // YYYY-MM-DD in the firm's timezone — SERVER-supplied
   weekday?: Weekday; // a named day
@@ -79,16 +129,36 @@ export interface ResolveDateParams {
 }
 
 export type ResolveDateResult =
-  | { status: 'resolved'; date: string; weekday: Weekday }
+  | {
+      status: 'resolved';
+      date: string;
+      weekday: Weekday;
+      phrase: string; // "Tuesday 2026-08-04" — say this, don't build it
+    }
   | {
       status: 'resolved_week';
       weekStart: string; // Monday, YYYY-MM-DD
       weekEnd: string; // Sunday, YYYY-MM-DD
+      // Named so the agent never has to work out which day a boundary falls on.
+      // Constants by construction, and that is the point: the value it would
+      // otherwise derive is handed over instead.
+      weekStartWeekday: Weekday;
+      weekEndWeekday: Weekday;
+      phrase: string; // "Monday 2026-08-03 through Sunday 2026-08-09"
       // Present only when today is Saturday or Sunday: "this/next week" said on
       // a weekend honestly means different weeks to different people, so the
       // caller gets BOTH readings and an instruction to ask — never a silent pick.
       boundaryAmbiguous?: true;
-      alternate?: { weekStart: string; weekEnd: string };
+      // The alternate carries its own phrase for the same reason the primary
+      // does — and more urgently, since this is the branch that asks the agent
+      // to read BOTH ranges out to a person.
+      alternate?: {
+        weekStart: string;
+        weekEnd: string;
+        weekStartWeekday: Weekday;
+        weekEndWeekday: Weekday;
+        phrase: string;
+      };
       note?: string;
     }
   | { status: 'unresolvable'; reason: string };
@@ -137,7 +207,7 @@ export function resolveDate(p: ResolveDateParams): ResolveDateResult {
     if (!isRealDateISO(p.explicitDate)) {
       return { status: 'unresolvable', reason: `'${p.explicitDate}' is not a real calendar date (use YYYY-MM-DD)` };
     }
-    return { status: 'resolved', date: p.explicitDate, weekday: weekdayNameOf(p.explicitDate) };
+    return resolvedDay(p.explicitDate, weekdayNameOf(p.explicitDate));
   }
 
   // Week-RANGE mode: CALENDAR-anchored (the Monday on/before today, plus
@@ -162,16 +232,15 @@ export function resolveDate(p: ResolveDateParams): ResolveDateResult {
       const altStart = addDays(weekStart, 7);
       return {
         status: 'resolved_week',
-        weekStart,
-        weekEnd,
+        ...weekRange(weekStart, weekEnd),
         boundaryAmbiguous: true,
-        alternate: { weekStart: altStart, weekEnd: addDays(altStart, 6) },
+        alternate: weekRange(altStart, addDays(altStart, 6)),
         note:
-          'On a weekend, "this/next week" is ambiguous. Present BOTH ranges (with dates) ' +
-          'and ask which the person means before acting.',
+          'On a weekend, "this/next week" is ambiguous. Present BOTH ranges (using each ' +
+          'phrase verbatim) and ask which the person means before acting.',
       };
     }
-    return { status: 'resolved_week', weekStart, weekEnd };
+    return { status: 'resolved_week', ...weekRange(weekStart, weekEnd) };
   }
 
   if (p.weekday !== undefined) {
@@ -185,7 +254,7 @@ export function resolveDate(p: ResolveDateParams): ResolveDateResult {
     const todayDow = new Date(`${p.todayLocal}T00:00:00.000Z`).getUTCDay();
     const daysUntil = (WEEKDAY_INDEX[p.weekday] - todayDow + 7) % 7;
     const date = addDays(p.todayLocal, daysUntil + weeksAhead * 7);
-    return { status: 'resolved', date, weekday: p.weekday };
+    return resolvedDay(date, p.weekday);
   }
 
   // dayShift mode.
@@ -197,5 +266,5 @@ export function resolveDate(p: ResolveDateParams): ResolveDateResult {
     };
   }
   const date = addDays(p.todayLocal, shift);
-  return { status: 'resolved', date, weekday: weekdayNameOf(date) };
+  return resolvedDay(date, weekdayNameOf(date));
 }

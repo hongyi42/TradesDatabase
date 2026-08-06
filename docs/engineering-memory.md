@@ -200,11 +200,36 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   column and the description text.
   **`CREATE OR REPLACE VIEW` may only APPEND columns** (42P16 "cannot change name of view column");
   inserting one mid-list needs DROP + CREATE — atomic inside a migration, re-grant afterwards.
-  **The pattern, three for three in three days:** tool search hid `resolve_date`; `query_spine` let
-  dates be written straight into SQL; a view handed over a bare date. Each fix was correct and each
-  exposed the next gap. Generalisation worth carrying: **any value the model must derive in order to
-  answer well is a value it will eventually derive wrong — put it in the data, not in a rule telling
-  it not to.**
+  **The pattern, four for four in three days:** tool search hid `resolve_date`; `query_spine` let
+  dates be written straight into SQL; a view handed over a bare date; and then `resolve_date` itself
+  turned out to hand over bare dates for week RANGES. Each fix was correct and each exposed the next
+  gap. Generalisation worth carrying: **any value the model must derive in order to answer well is a
+  value it will eventually derive wrong — put it in the data, not in a rule telling it not to.**
+- **`local_weekday` did not close it — `resolve_date` week ranges were the real hole (2026-08-06).**
+  The re-test after shipping `local_weekday` looked like a pass: "Joy has 22 visits this week
+  (Mon Aug 3 – Sun Aug 9)" is entirely correct. It was still derived. The agent's SQL was
+  `select count(*) … where local_day between …` — it selected no weekday column at all, so
+  `local_weekday` never entered the answer. **A view column can only help when the agent names a
+  date it SELECTED; the dates in that sentence were the WINDOW's boundaries, and those come from
+  `resolve_date`.** Naming the window is by far the commoner shape, so the fix was aimed one layer
+  off. `ResolveDateResult.resolved` had carried a `weekday` since day one; `resolved_week` returned
+  `{weekStart, weekEnd}` and nothing else.
+  Fix: `weekStartWeekday`/`weekEndWeekday` plus a ready-to-say `phrase`
+  ("Monday 2026-08-03 through Sunday 2026-08-09") on every resolution, single dates included, and
+  the same on the weekend-ambiguous `alternate` — the branch that asks the agent to read BOTH ranges
+  to a person. Built through one helper each so a future return site cannot ship a date without its
+  weekday. The labels are constants by construction (weekStart IS a Monday), which is the point:
+  handing over a value the model could in principle derive is precisely how you stop it deriving.
+  **Verification lesson:** a live turn that produces the right answer does not prove the fix fired.
+  Check the mechanism — here, `query_audit` showed the SQL never selected the column. Right answer,
+  wrong reason, and the next week it would have been the 2026-08-06 "Monday the 4th" bug again.
+- **A worktree under `.claude/` breaks `npm run lint` entirely (2026-08-06).** The concurrent-feature
+  workflow puts whole extra checkouts at `.claude/worktrees/<name>`, each with its own
+  `tsconfig.json`. typescript-eslint then finds multiple candidate `tsconfigRootDir`s and refuses to
+  parse ANY file: 289 errors, none real, on files the worktree has nothing to do with. Fixed by
+  ignoring `.claude/` and pinning `tsconfigRootDir: import.meta.dirname` in `eslint.config.js`.
+  Worth knowing because the failure looks catastrophic and is purely environmental — and because it
+  was masking a genuine `no-unused-vars` error in the suite.
 - **The inference failover is broken — it turns a blip into an outage and reports success
   (2026-08-06).** A ~4-minute DeepInfra unhealthy window failed the fleet over to `nvidia-prod /
   z-ai/glm-5.2`; the medic logged "FAILOVER active; will fail back automatically", but NVIDIA

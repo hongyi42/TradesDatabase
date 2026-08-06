@@ -165,6 +165,26 @@ describe('query_spine — bounds', () => {
     expect(huge.rows[0].result.length).toBeLessThanOrEqual(1000);
   });
 
+  test('v_schedule exposes local_weekday, and it matches local_day', async () => {
+    // Added after a live turn on 2026-08-06 where the agent got the count right
+    // (22 visits, verified) and then said "Monday the 4th" — 2026-08-04 is a
+    // TUESDAY. local_day comes back as a bare date and the view carried no
+    // weekday, so §0f's "always state the weekday" left it computing one. Same
+    // remedy as local_day: the database answers, nothing is derived.
+    const r = await run(
+      tenantA,
+      "select to_char(date '2026-08-04','FMDay') as computed",
+    );
+    // Postgres is the authority both ways; FMDay must not pad.
+    expect(r.rows[0].result[0].computed).toBe('Tuesday');
+
+    const cols = await pg.query(`
+      select column_name from information_schema.columns
+       where table_name = 'v_schedule' and column_name in ('local_day','local_weekday')
+       order by column_name`);
+    expect(cols.rows.map((c) => c.column_name)).toEqual(['local_day', 'local_weekday']);
+  });
+
   test('an empty result is [] rather than null', async () => {
     // The tool relays this to the agent; null would read as an error.
     const r = await run(tenantA, "select * from v_customers where name = 'nobody'");

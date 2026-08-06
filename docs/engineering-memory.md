@@ -188,6 +188,41 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   same rule fused in, and `src/mcp/server.test.ts` asserts that text so it cannot be edited away.
   **When adding any tool that takes free-form input, re-read the doctrine blocks and ask which of
   them name tools rather than behaviours.**
+- **Bake derived values into the views; the agent computes anything you leave out, and gets it
+  wrong (2026-08-06).** `v_schedule` had `local_day` but no weekday. Asked "how many visits did Joy
+  do this week?" the agent did everything the previous fix required — `resolve_date {week:0}`
+  first, its boundaries pasted into the SQL, 22 visits, verified correct — then reported *"running
+  from Monday the 4th"*. **2026-08-04 is a Tuesday.** §0f requires stating the weekday whenever a
+  date is named, so with none to read it derived one. The count being right is what makes it
+  dangerous: nothing in the answer looks suspicious.
+  Fixed by adding `local_weekday` (`to_char(…, 'FMDay')`; FM suppresses Postgres's blank-padding)
+  beside `local_day`, plus a description line to select and relay it verbatim. Tests guard the
+  column and the description text.
+  **`CREATE OR REPLACE VIEW` may only APPEND columns** (42P16 "cannot change name of view column");
+  inserting one mid-list needs DROP + CREATE — atomic inside a migration, re-grant afterwards.
+  **The pattern, three for three in three days:** tool search hid `resolve_date`; `query_spine` let
+  dates be written straight into SQL; a view handed over a bare date. Each fix was correct and each
+  exposed the next gap. Generalisation worth carrying: **any value the model must derive in order to
+  answer well is a value it will eventually derive wrong — put it in the data, not in a rule telling
+  it not to.**
+- **The inference failover is broken — it turns a blip into an outage and reports success
+  (2026-08-06).** A ~4-minute DeepInfra unhealthy window failed the fleet over to `nvidia-prod /
+  z-ai/glm-5.2`; the medic logged "FAILOVER active; will fail back automatically", but NVIDIA
+  returns `400 (no body)` on a real completion, so turns died in 0.8s with
+  `terminalError: non_deliverable_terminal_turn`. **Failover therefore provides NO protection** —
+  it converts a recoverable provider blip into a hard outage while reporting success. Same blind
+  spot as the 2026-07-28 stall: `openshell inference set` doubles as probe and switch, and it
+  validates the **endpoint registration**, not a completion. The differing model ids
+  (`zai-org/GLM-5.2` deepinfra vs `z-ai/glm-5.2` nvidia) are deliberate and NOT the bug — NVIDIA
+  accepts the registration, then 400s the request. Suspect the rotated NVIDIA key (the old one
+  lingers in `/root/s4-nvidia.env`) or model entitlement. **medic v3 — a 1-token real-completion
+  probe, run against the FALLBACK before declaring failover successful — is now urgent rather than
+  a nice-to-have.**
+  Debugging path: `journalctl -u nemoclaw-inference-medic` gives the failover timestamp; the real
+  error is only in the sandbox's `/sandbox/.openclaw/logs/gateway-persistent.log`
+  (`embedded run agent end: isError=true … error=400`). The trajectory says only
+  `non_deliverable_terminal_turn`, which is useless alone. Route changes apply WITHOUT a container
+  restart (the 19:52:53 turn used the route set at 19:52:14) — unlike credentials, which need one.
 - **`revoke ... from public` does NOT revoke anon/authenticated on a new function.** Supabase's
   DEFAULT PRIVILEGES grant EXECUTE on a newly created function in `public` *directly* to `anon` and
   `authenticated`; those are separate grants, so revoking PUBLIC leaves them. Hit live on the pilot

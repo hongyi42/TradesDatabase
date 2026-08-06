@@ -989,7 +989,7 @@ const ADMIN_TOOLS = [
       'tested, and carry rules this tool does not. Reach for query_spine only for questions they ' +
       'cannot answer (counts, totals, "how many…since…", cross-cutting lists). ' +
       'It CANNOT write, and it can only read these five views (nothing else exists to it): ' +
-      'v_schedule(assignment_id, local_day, starts_at, ends_at, status, promise_level, ' +
+      'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, promise_level, ' +
       'promised_day, locked, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
       'job_title, job_type, job_status, customer_id, customer_name, city, postal_code); ' +
       'v_team(ref, display_name, tier, state, seat_exempt, skills, service_cities, availability, ' +
@@ -1000,7 +1000,8 @@ const ADMIN_TOOLS = [
       'v_time_off(technician_ref, technician_name, starts_on, ends_on, reason). ' +
       'ALWAYS group or filter dates on v_schedule.local_day, which is already the firm-local day — ' +
       'starts_at is a timestamp and bucketing it by its UTC date puts evening visits on the wrong ' +
-      'day. ' +
+      'day. When you name one of those dates to a person, SELECT local_weekday and use it verbatim ' +
+      '("Tuesday the 4th") — never work out which day of the week a date falls on yourself. ' +
       'NEVER write a date into the SQL that you worked out yourself. If the question names a ' +
       'period relative to now — "the last 30 days", "this week", "since May", "so far this month" ' +
       '— call resolve_date FIRST and paste the dates it returns. The dates rule applies inside SQL ' +

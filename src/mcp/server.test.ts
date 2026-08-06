@@ -4151,6 +4151,10 @@ describe('schedule-input verbs (Plan 3a)', () => {
       expect(spine).toBeDefined();
       expect(spine?.description).toContain('resolve_date FIRST');
       expect(spine?.description).toContain('NEVER write a date into the SQL');
+      // The weekday half of the same rule — added after the agent invented
+      // "Monday the 4th" for a Tuesday on 2026-08-06.
+      expect(spine?.description).toContain('local_weekday');
+      expect(spine?.description).toContain('never work out which day of the week');
     } finally {
       await client.close();
     }

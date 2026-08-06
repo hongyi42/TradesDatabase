@@ -1,0 +1,16 @@
+{
+  "name": "trades-weekday-guard",
+  "version": "0.1.0",
+  "description": "Detects fabricated weekdays in outbound messages; observe-only message_sending hook",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.5.17"
+  }
+}

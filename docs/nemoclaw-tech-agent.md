@@ -147,6 +147,31 @@ by tier and re-gates every admin call at dispatch — a technician badge structu
 admin surface. Seat caps (`tenants.manager_seats`/`technician_seats`) are DB-enforced; the
 agent cannot talk past them.
 
+## 4c. Outbound weekday guard (sandbox plugin, 2026-08-06)
+
+Every sandbox carries `trades-weekday-guard`, an observe-only OpenClaw plugin on the
+`message_sending` hook: before a reply leaves for Telegram, it verifies every
+(weekday, date) pair the text **states** — chrono-node's `isCertain` distinguishes stated
+from inferred, so a bare "Friday" or a bare date is never flagged — and appends one JSONL
+line per message (flagged or clean, so a *rate* is computable) to
+`/sandbox/.openclaw/logs/weekday-guard.jsonl`. It never rewrites and never cancels; every
+error path fails open (a detector must not break delivery).
+
+Why it exists: the agent fabricates weekdays when composing sentences — five upstream fixes
+in three days (resolve_date, §0f, `local_weekday`, the phrase fields) each moved the failure
+instead of stopping it, and a corpus replay over 419 historical assistant texts found **23
+real mismatches (0 false positives)**, including a customer-facing date change
+("Friday August 17" — a Monday) and a freeze proposal ("Sat Aug 9" — a Sunday). Detect-only
+by decision: in "today, Thursday 2026-08-09" the wrong half is ambiguous, so auto-correcting
+can entrench the error; the measured rate decides whether a phase 2 (cancel-and-retry) is
+worth a round-trip.
+
+Source of truth `Box_Setup_Stuff/plugins/trades-weekday-guard/` (chrono bundled beside it —
+sandboxes install nothing); behaviour locked by `src/control/weekdayGuardPlugin.test.ts`;
+installed by the bootstrap wire step (upload → chmod 660 → `openclaw plugins registry
+--refresh` → gateway restart; **no openclaw.json edit**). Plan:
+`thoughts/shared/plans/2026-08-06-weekday-guard-plugin.md`.
+
 ## 5. Conversation contract (stage→confirm since 2026-07-06)
 
 **Confirmation doctrine (2026-07-17, user decision):** confirm only what is **irreversible or

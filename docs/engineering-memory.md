@@ -223,7 +223,22 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   **Verification lesson:** a live turn that produces the right answer does not prove the fix fired.
   Check the mechanism — here, `query_audit` showed the SQL never selected the column. Right answer,
   wrong reason, and the next week it would have been the 2026-08-06 "Monday the 4th" bug again.
-- **A worktree under `.claude/` breaks `npm run lint` entirely (2026-08-06).** The concurrent-feature
+- **The weekday fabrication is ENDEMIC, not episodic — 23 mismatches in 419 historical texts
+  (2026-08-06).** Built the outbound weekday guard (observe-only `message_sending` plugin,
+  chrono-node, see nemoclaw-tech-agent.md §4c) and replayed it over every assistant text in the
+  fleet's transcripts before deploying. Expected to confirm the 3 failures found by hand; found
+  23, **all verified true positives, 0 false positives** — ~4% of assistant texts state a
+  (weekday, date) pair that is internally inconsistent. Reach: a slot-proposal list with FIVE
+  consecutive wrong labels (one wrong anchor, derived down the list), a freeze proposal
+  ("Sat Aug 9" — a Sunday), a customer-facing date change ("Friday August 17" — a Monday), and
+  the ORIGINAL July 17/18 "this Friday" booking incident, rediscovered in the transcripts by the
+  detector. Two conclusions worth carrying: (a) "resolve_date worked fine before query_spine" was
+  survivorship bias — the derivation failures were always there, in lists and confirmations nobody
+  re-checked; a detector, not more instructions, is what made them visible. (b) A GitHub survey
+  first (Guardrails hub's 40 validators, NeMo-Guardrails, code search) found NO existing
+  temporal-consistency validator — the primitive that makes ours cheap is chrono-node's
+  stated-vs-inferred (`isCertain`) distinction, which is what holds false positives at zero:
+  flag only when the text states BOTH halves of the pair. The concurrent-feature
   workflow puts whole extra checkouts at `.claude/worktrees/<name>`, each with its own
   `tsconfig.json`. typescript-eslint then finds multiple candidate `tsconfigRootDir`s and refuses to
   parse ANY file: 289 errors, none real, on files the worktree has nothing to do with. Fixed by

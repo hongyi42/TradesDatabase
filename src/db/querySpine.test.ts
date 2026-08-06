@@ -196,6 +196,28 @@ describe('query_spine — the view surface is closed', () => {
     ]);
   });
 
+  test('only service_role may execute query_spine — NOT anon or authenticated', async () => {
+    // Regression guard for a hole that reached the pilot on 2026-08-06.
+    // Supabase DEFAULT PRIVILEGES grant EXECUTE on a new public function
+    // directly to anon and authenticated, so `revoke ... from public` does not
+    // remove them — it only drops the implicit PUBLIC grant, which was never the
+    // mechanism. It matters more here than for most functions because
+    // query_spine takes the TENANT AS A PARAMETER: anyone with the project's
+    // publishable anon key could have called it for ANY tenant and read that
+    // firm's customers, phones, addresses and schedule through the REST API.
+    const { rows } = await pg.query(`
+      select has_function_privilege('anon', p.oid, 'EXECUTE')          as anon,
+             has_function_privilege('authenticated', p.oid, 'EXECUTE') as authenticated,
+             has_function_privilege('service_role', p.oid, 'EXECUTE')  as service_role
+        from pg_proc p
+        join pg_namespace n on n.oid = p.pronamespace
+       where n.nspname = 'public' and p.proname = 'query_spine'`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].anon).toBe(false);
+    expect(rows[0].authenticated).toBe(false);
+    expect(rows[0].service_role).toBe(true);
+  });
+
   test('v_team does not expose credentials or Composio ids', async () => {
     // technicians carries badge_hash, composio_* ids, connected_email and
     // telegram_user_id. list_team keeps them server-side; so must this.

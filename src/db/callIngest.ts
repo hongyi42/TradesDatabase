@@ -58,7 +58,14 @@ export async function claimNextPendingCall(): Promise<CallIngest | null> {
   // A `returns call_ingest` function yields the row (or nothing); normalize the
   // set-vs-single shape defensively.
   const row = Array.isArray(data) ? (data[0] ?? null) : (data ?? null);
-  return (row as CallIngest | null) ?? null;
+  // Empty queue: the LOCAL stack returns JSON null, but the HOSTED PostgREST
+  // returns the NULL composite as an all-null ROW ({id:null, …}) — a truthy
+  // object. Without this guard the worker treats "empty" as a phantom row and
+  // crashes in markCallError with a null id (observed live on the pilot
+  // 2026-08-06, where an idle worker would error-spin). A real claimed row always
+  // has a non-null id, so key off that.
+  if (!row || (row as CallIngest).id == null) return null;
+  return row as CallIngest;
 }
 
 // Success: record the resulting capture, the match outcome, and when the audio

@@ -185,17 +185,20 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   `revoke execute … from public, anon, authenticated`, and `src/db/querySpine.test.ts` now asserts
   the ACL (verified to fail when the grant is restored). **Always name anon and authenticated
   explicitly; compare `tenant_cost_detail`, which is correctly `postgres|service_role` only.**
-- **The `auto_expose_new_tables` debt is bigger than "latent" suggests — measured 2026-08-06.**
-  With RLS off AND `anon` granted SELECT, these are genuinely readable with the publishable key:
-  `customers`, `jobs`, `assignments`, `technicians`, `tenants`, `visits`, and **`raw_captures`**
-  (L1 — verbatim customer email, the densest PII in the system). `cost_events`, `call_ingest` and
-  `query_audit` are protected (RLS on). Mitigation remains that the anon key appears nowhere in
-  this project, so it is exposure-by-key-disclosure rather than open data. Same fix shape as
-  `20260725140000` (RLS on, no policy — service_role bypasses it, so nothing server-side changes).
-  Due before 2026-10-30.
-  *Not* affected: the `v_*` query_spine views. They are granted to anon but fail closed (SQLSTATE
-  42704, `unrecognized configuration parameter "spine.tenant_id"`) because anon cannot set the GUC —
-  verified by setting `role anon` on the pilot.
+- **anon-readable tables on the pilot are a DELIBERATE posture (owner, 2026-08-06) — do not
+  "fix" them.** Measured that day: with RLS off and `anon` granted SELECT, `customers`, `jobs`,
+  `assignments`, `technicians`, `tenants`, `visits` and `raw_captures` are readable with the
+  publishable key; `cost_events`, `call_ingest` and `query_audit` are not (RLS on). The owner
+  confirms RLS-off is intentional here, and the mitigation is that the anon key appears nowhere in
+  this project — so this is exposure-by-key-disclosure, not open data. **Treat the anon key as a
+  secret on this project**, because it is load-bearing in a way it is not on a typical Supabase
+  app. Raise it again only if the key is ever published (a web front end, a client bundle, a doc).
+  What the **2026-10-30** date actually means: Supabase removes the `api.auto_expose_new_tables`
+  option, after which NEW entities stop being auto-granted to anon. **Existing grants are
+  unaffected** — it is a change in the default for future tables, not a remediation deadline.
+  Not affected either way: the `v_*` query_spine views. They are granted to anon but fail closed
+  (SQLSTATE 42704, `unrecognized configuration parameter "spine.tenant_id"`) because anon cannot
+  set the GUC — verified by setting `role anon` on the pilot.
 - PostgREST silently caps result sets at **1000 rows** (`db-max-rows`) — any scan that can
   exceed it must paginate (see `src/db/foldImpact.ts` for the pattern).
 - `googleapis` stays in package.json even though the schedule sheet is retired —

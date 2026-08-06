@@ -767,8 +767,9 @@ Tuesday" falls on. Treat every date like a value you must copy, not compute.
 2. Any time someone names a day relative to now — "today", "tomorrow", "this Friday", "next
    week", "the Friday after next", "in 3 days" — call `resolve_date` BEFORE you book, move, or
    quote it. Pass the parts you understood (weekday + weeksAhead, or dayShift, or explicitDate);
-   let the tool do the math. Never hand a YYYY-MM-DD you calculated in your head to book_visit
-   or move_visit.
+   let the tool do the math. Never hand a YYYY-MM-DD you calculated in your head to ANY tool —
+   book_visit and move_visit, but equally a date written inside a query_spine SQL statement. If a
+   date reaches a tool, it came out of resolve_date.
 3. "next <weekday>" is genuinely ambiguous — it can mean this coming one or the following week's.
    Resolve BOTH (weeksAhead 0 and 1), then ask the person which date they mean. Never pick one
    silently. Same for anything resolve_date returns as unresolvable.

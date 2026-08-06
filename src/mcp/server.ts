@@ -1000,7 +1000,12 @@ const ADMIN_TOOLS = [
       'v_time_off(technician_ref, technician_name, starts_on, ends_on, reason). ' +
       'ALWAYS group or filter dates on v_schedule.local_day, which is already the firm-local day — ' +
       'starts_at is a timestamp and bucketing it by its UTC date puts evening visits on the wrong ' +
-      'day. One statement, no semicolon. Results are capped; if truncated is true SAY SO rather ' +
+      'day. ' +
+      'NEVER write a date into the SQL that you worked out yourself. If the question names a ' +
+      'period relative to now — "the last 30 days", "this week", "since May", "so far this month" ' +
+      '— call resolve_date FIRST and paste the dates it returns. The dates rule applies inside SQL ' +
+      'exactly as it does when you book a visit; you are no better at calendar arithmetic here. ' +
+      'One statement, no semicolon. Results are capped; if truncated is true SAY SO rather ' +
       'than presenting a partial list as complete. Every query is logged with the person who ' +
       'asked.',
     inputSchema: {

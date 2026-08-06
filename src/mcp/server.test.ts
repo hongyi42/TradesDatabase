@@ -4137,6 +4137,25 @@ describe('schedule-input verbs (Plan 3a)', () => {
     }
   });
 
+  test('query_spine\'s description carries the resolve_date rule', async () => {
+    // Load-bearing text, not decoration. On the first live turn (2026-08-06) the
+    // agent wrote local_day >= '2026-07-07' with no resolve_date call — correct
+    // by luck, and structurally the same failure as the tool-search skip: a new
+    // surface silently bypassing a doctrine rule the rule never anticipated.
+    // Harmless for a count; the same shape on "what's booked next week" is the
+    // 2026-07-25 week-boundary incident, which missed a real visit.
+    const { client, callWith: _c } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const listed = await client.listTools();
+      const spine = listed.tools.find((t) => t.name === 'query_spine');
+      expect(spine).toBeDefined();
+      expect(spine?.description).toContain('resolve_date FIRST');
+      expect(spine?.description).toContain('NEVER write a date into the SQL');
+    } finally {
+      await client.close();
+    }
+  });
+
   test('query_spine answers an ad-hoc read, refuses writes, and flags truncation', { timeout: 30_000 }, async () => {
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {

@@ -60,6 +60,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export async function processNextCall(deps: WorkerDeps = liveDeps): Promise<'idle' | 'ingested' | 'error'> {
   const row = await deps.claimNextPendingCall();
   if (!row) return 'idle';
+  const startedAt = Date.now();
 
   try {
     if (!row.audio_ref) throw new Error('call_ingest row has no audio_ref');
@@ -112,6 +113,15 @@ export async function processNextCall(deps: WorkerDeps = liveDeps): Promise<'idl
       matchStatus: result.status,
       audioDeleteAfter,
     });
+    // Operational heartbeat — ONE line per processed call (a business event, not a
+    // machine tick), so a live worker is visible in the logs without the idle-poll
+    // spam (see runWorker's backoff). PII-FREE BY DESIGN: the call_ingest UUID +
+    // match status + timing only — NEVER the caller phone or transcript, which would
+    // leak customer PII to the log surface (wider + retained vs the tenant-scoped DB).
+    // The UUID is opaque; resolving who it is still requires a DB read.
+    console.error(
+      `[calls:worker] ingested ${row.id} match=${result.status} in ${Date.now() - startedAt}ms`,
+    );
     return 'ingested';
   } catch (err) {
     await deps.markCallError(row.id, err instanceof Error ? err.message : String(err));

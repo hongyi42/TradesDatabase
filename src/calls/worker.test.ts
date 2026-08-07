@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { processNextCall, type WorkerDeps } from './worker.js';
 import { redactSensitive } from './redact.js';
 import type { CallIngest } from '../db/index.js';
@@ -6,15 +6,20 @@ import type { RecordFieldNoteInput, RecordFieldNoteResult } from '../writePath/r
 
 let savedRetention: string | undefined;
 let savedBucket: string | undefined;
+// Capture the worker's stderr heartbeat so (a) the success line does not spam the
+// test output and (b) the PII-free test below can assert on exactly what was logged.
+let errSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   savedRetention = process.env.CALL_AUDIO_RETENTION_DAYS;
   savedBucket = process.env.CALL_AUDIO_BUCKET;
   process.env.CALL_AUDIO_RETENTION_DAYS = '30';
   process.env.CALL_AUDIO_BUCKET = 'call-audio';
+  errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 afterEach(() => {
   process.env.CALL_AUDIO_RETENTION_DAYS = savedRetention;
   process.env.CALL_AUDIO_BUCKET = savedBucket;
+  errSpy.mockRestore();
 });
 
 function makeRow(over: Partial<CallIngest> = {}): CallIngest {
@@ -130,6 +135,24 @@ describe('processNextCall', () => {
       { tenantId: 'T1', captureId: 'cap9', callerPhone: '+15551234567', snippet: expect.any(String) },
     ]);
     expect(calls.ingested[0]).toMatchObject({ captureId: 'cap9', matchStatus: 'needs_confirmation' });
+  });
+
+  test('successful ingest logs a heartbeat line — identifiers only, NO PII', async () => {
+    const { deps } = makeDeps(); // caller +15551234567, transcript has card 4242…
+    expect(await processNextCall(deps)).toBe('ingested');
+
+    const line = errSpy.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .find((l: string) => l.includes('[calls:worker] ingested'));
+    expect(line).toBeDefined();
+    // identifiers the operator needs
+    expect(line).toContain('ci1'); // the call_ingest UUID (opaque)
+    expect(line).toContain('match=matched');
+    expect(line).toMatch(/in \d+ms/);
+    // the privacy line: the log must carry NO customer PII
+    expect(line).not.toContain('+15551234567'); // caller phone
+    expect(line).not.toContain('4242'); // transcript content
+    expect(line).not.toMatch(/Speaker/i);
   });
 
   test('transcriber throws → error, markCallError set, not ingested', async () => {

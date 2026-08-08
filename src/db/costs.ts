@@ -128,6 +128,18 @@ export const MODEL_SKUS: Record<string, { provider: string; input: string; outpu
     output: 'glm-5.2-output',
     cachedInput: 'glm-5.2-cached-input',
   },
+  // The documented failover (ledgerVendor derives 'nvidia' from the resolved
+  // INFERENCE_BASE_URL host). Missing until 2026-08-06, which made failover
+  // spend INVISIBLE: recordModelUsage threw on the unmapped vendor (swallowed),
+  // and the rollup's INNER join on cost_rates would have dropped any event
+  // anyway. Rates are seeded at $0 (free evaluation tier) — the point is the
+  // token counts and the provider attribution, not the dollars. No cachedInput:
+  // NVIDIA's OpenAI-compatible endpoint does not report a cached-token split.
+  nvidia: {
+    provider: 'nvidia',
+    input: 'glm-5.2-input',
+    output: 'glm-5.2-output',
+  },
   // Kept whole as an env-var rollback, so its prices stay in the book too.
   anthropic: {
     provider: 'anthropic',

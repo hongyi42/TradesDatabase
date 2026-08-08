@@ -275,12 +275,30 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   accepts the registration, then 400s the request. Suspect the rotated NVIDIA key (the old one
   lingers in `/root/s4-nvidia.env`) or model entitlement. **medic v3 — a 1-token real-completion
   probe, run against the FALLBACK before declaring failover successful — is now urgent rather than
-  a nice-to-have.**
+  a nice-to-have.** *(Built 2026-08-07 — see the medic v3 entry below.)*
   Debugging path: `journalctl -u nemoclaw-inference-medic` gives the failover timestamp; the real
   error is only in the sandbox's `/sandbox/.openclaw/logs/gateway-persistent.log`
   (`embedded run agent end: isError=true … error=400`). The trajectory says only
   `non_deliverable_terminal_turn`, which is useless alone. Route changes apply WITHOUT a container
   restart (the 19:52:53 turn used the route set at 19:52:14) — unlike credentials, which need one.
+- **medic v3 SHIPPED (2026-08-07): no route is healthy, and no failover is successful, without a
+  completion actually coming back.** v2's probe (`openshell inference set`) validates endpoint
+  REGISTRATION only — the blind spot behind both the 07-28 "route OK" mid-stall and the 08-06
+  "FAILOVER active" onto a 400-ing NVIDIA. v3 keeps the registration gate and adds a **1-token
+  completion through the managed route** (`https://inference.local/v1/chat/completions`, curl'd
+  from inside a running sandbox container): the exact path agent turns take, gateway-injected
+  credentials, so **no provider key ever leaves the store**. The gateway forces the model id per
+  request, so the probe follows whatever route was just set — which is how the FALLBACK gets
+  completion-verified before failover is declared. Decision table locked by
+  `src/control/inferenceMedicScript.test.ts` (PATH shims for openshell/docker; both live
+  incidents are named test cases). Accepted trade-offs, documented in the script: a ~30s flap
+  window per tick during a registration-ok/completions-dead deepinfra stall (v2 parked on the
+  dead primary permanently, so strictly better); and with NO sandbox container running the
+  completion gate degrades to v2 semantics with a loud WARN (a box mid-maintenance must not mark
+  healthy providers dead). Bash traps hit while building, worth remembering: `$?` after a bare
+  `if cmd; then …; fi` with no else is the IF's status (0), not cmd's; and re-enabling `set -e`
+  inside a function overrides the caller's `set +e` wrapper, turning `return 1` into a script
+  exit — use `cmd && rc=0 || rc=$?`.
 - **`nemoclaw list` shows the ONBOARDING RECORD, not the live inference route (2026-08-06).** Read
   off that list, s2/s5/s6/s7 all say `provider: nvidia-prod` — which reads exactly like "the fleet
   has been stuck on the fallback for six days", and was reported as such before being checked. It
@@ -295,13 +313,24 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   **For proof the model actually SERVED** — which `inference set` can never give, see the blind-spot
   entries above — query the pilot's `cost_events` for `provider='deepinfra'` rows with skus
   `glm-5.2-{input,output,cached-input}`. Those are billed completions, and they need no API key.
-- **The cost tracker is blind to the failover provider (2026-08-06).** `cost_rates` holds
-  `deepinfra` and `anthropic` rows only — there is **no `nvidia` row**. So a failover does not
-  appear as a provider change in the cost data; it silently stops the meter. Two consequences:
-  absence of nvidia rows is NOT evidence the fleet wasn't on nvidia, and a stretch of "zero spend"
-  may mean *failed over*, not *idle* (07-31 and 08-04 each show 21 spine tool calls and zero model
-  cost events). Add an nvidia rate row — even at $0 — if failover spend or attribution ever has to
-  be answerable after the fact.
+- **The cost tracker was blind to the failover provider — FIXED 2026-08-07, with one claim
+  corrected.** `cost_rates` held `deepinfra` and `anthropic` rows only, and `MODEL_SKUS` had no
+  `nvidia` entry — two layers deep: `recordModelUsage` throws on an unmapped vendor (into a
+  swallowed catch, so events were never written), and the Phase-3 rollup INNER joins `cost_rates`,
+  so even a written event would have vanished from the dashboard. The `ledgerVendor()` seam was
+  BUILT for this (it derives `nvidia` from the resolved `INFERENCE_BASE_URL` host, precisely so a
+  failover is not priced against a DeepInfra invoice that never arrives) — but the vocabulary was
+  never seeded, so its loud path was a silent one. Fixed: `MODEL_SKUS.nvidia` + $0 rate rows
+  (free evaluation tier; the value is token counts and provider attribution, not dollars —
+  migration 20260806230000).
+  **Correction to the 2026-08-06 entry above-dated claims:** "a stretch of zero spend may mean
+  failed over" OVERSTATED the mechanism. Spine model billing is keyed off the SPINE's own
+  `INFERENCE_BASE_URL` on Render, which the box medic's gateway failover never touches — the
+  07-31/08-04 zero-model-event days were tool calls that simply don't invoke models
+  (`tool_call` events exist; most spine tools are pure reads/writes). The blindness was REAL but
+  latent: it would have bitten when the *spine* fails over (the provider-readiness path), not
+  when the *box* does. Box-agent NVIDIA usage is a separate story — it is invoice-allocated, and
+  NVIDIA's free tier produces no invoice, so it remains unmetered by design.
 - **`revoke ... from public` does NOT revoke anon/authenticated on a new function.** Supabase's
   DEFAULT PRIVILEGES grant EXECUTE on a newly created function in `public` *directly* to `anon` and
   `authenticated`; those are separate grants, so revoking PUBLIC leaves them. Hit live on the pilot

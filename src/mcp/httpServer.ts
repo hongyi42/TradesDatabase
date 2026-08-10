@@ -19,6 +19,7 @@ import {
 import { handleComposioRelay, isRelayPath } from '../composio/relayHandler.js';
 import { handleBoardRequest, isBoardPath } from '../telegram/boardApi.js';
 import { handleAdminRequest, isAdminPath } from '../admin/adminApi.js';
+import { handlePortalRequest, isPortalPath } from '../portal/portalApi.js';
 
 // Central HTTP entrypoint (Architecture A). Every NemoClaw bot reaches this one
 // server through the gateway. It runs STATELESS (sessionIdGenerator: undefined):
@@ -407,6 +408,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // GET-only, so no body to read or cap.
     if (isAdminPath(req.url)) {
       await handleAdminRequest(req, res);
+      return;
+    }
+    // Customer account portal — same placement and reasoning as /admin above:
+    // it loads in a customer's ordinary browser rather than through the
+    // gateway, so the IP allowlist must not gate it. Static assets only today
+    // (the app runs on mock data); its data endpoints will authenticate per
+    // request and scope every read to one tenant.
+    if (isPortalPath(req.url)) {
+      await handlePortalRequest(req, res);
       return;
     }
     if (!allowed(req)) {

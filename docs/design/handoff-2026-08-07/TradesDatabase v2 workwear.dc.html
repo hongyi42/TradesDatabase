@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:oklch(0.975 0.01 250);color:oklch(0.27 0.02 250);font-family:'Inter Tight',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+a{color:oklch(0.5 0.12 68);text-decoration:none}
+a:hover{color:oklch(0.4 0.1 68)}
+input,select,button,textarea{font-family:inherit}
+@keyframes tdspin{to{transform:rotate(360deg)}}
+</style>
+</helmet>
+
+<div style="min-height:100vh;display:flex;flex-direction:column">
+
+<div style="display:flex;align-items:center;gap:2px;padding:7px 14px;background:oklch(0.27 0.02 250);color:oklch(0.86 0.01 250);font-family:'JetBrains Mono',monospace;font-size:11px;position:sticky;top:0;z-index:60">
+  <span style="opacity:.5;margin-right:10px;letter-spacing:.06em">MOCKUP</span>
+  <button onClick="{{ goLanding }}" style="background:none;border:0;color:inherit;font:inherit;padding:4px 9px;border-radius:4px;cursor:pointer">Landing</button>
+  <button onClick="{{ goLogin }}" style="background:none;border:0;color:inherit;font:inherit;padding:4px 9px;border-radius:4px;cursor:pointer">Sign in</button>
+  <button onClick="{{ goBilling }}" style="background:none;border:0;color:inherit;font:inherit;padding:4px 9px;border-radius:4px;cursor:pointer">Billing</button>
+  <button onClick="{{ goSeats }}" style="background:none;border:0;color:inherit;font:inherit;padding:4px 9px;border-radius:4px;cursor:pointer">Seats</button>
+  <button onClick="{{ goDetail }}" style="background:none;border:0;color:inherit;font:inherit;padding:4px 9px;border-radius:4px;cursor:pointer">Seat detail</button>
+  <button onClick="{{ goAdmin }}" style="background:none;border:0;color:inherit;font:inherit;padding:4px 9px;border-radius:4px;cursor:pointer">Admin</button>
+  <span style="flex:1"></span>
+  <span style="opacity:.45">{{ screenLabel }}</span>
+</div>
+
+<sc-if value="{{ isLanding }}" hint-placeholder-val="{{ true }}">
+<div style="flex:1">
+  <header style="display:flex;align-items:center;justify-content:space-between;padding:22px 56px;border-bottom:1px solid oklch(0.9 0.008 250);background:oklch(0.99 0.006 250)">
+    <div style="display:flex;align-items:center;gap:11px">
+      <div style="width:26px;height:26px;border-radius:5px;background:oklch(0.72 0.16 70)"></div>
+      <span style="font-weight:600;font-size:16px;letter-spacing:-0.01em">TradesDatabase</span>
+    </div>
+    <nav style="display:flex;align-items:center;gap:30px;font-size:14px;color:oklch(0.45 0.02 250)">
+      <span>Product</span><span>Pricing</span><span>Docs</span>
+      <button onClick="{{ goLogin }}" style="padding:9px 18px;border-radius:7px;border:1px solid oklch(0.88 0.008 250);background:oklch(1 0 0);font-size:14px;font-weight:500;color:oklch(0.27 0.02 250);cursor:pointer">Sign in</button>
+    </nav>
+  </header>
+
+  <section style="display:grid;grid-template-columns:1.05fr 0.95fr;gap:64px;align-items:center;padding:88px 56px 76px;max-width:1360px;margin:0 auto">
+    <div>
+      <div style="display:inline-block;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:oklch(0.5 0.12 68);border:1px solid oklch(0.85 0.07 78);background:oklch(0.96 0.035 78);padding:5px 10px;border-radius:5px">Telegram-native</div>
+      <h1 style="margin:22px 0 0;font-size:56px;line-height:1.03;letter-spacing:-0.03em;font-weight:600;text-wrap:balance">One database for every trade on your books.</h1>
+      <p style="margin:22px 0 0;font-size:18px;line-height:1.6;color:oklch(0.45 0.02 250);max-width:30em;text-wrap:pretty">Your team logs jobs, certs and callouts through a Telegram bot. You get a clean, searchable record — one seat per person, provisioned in about a minute.</p>
+      <div style="display:flex;gap:12px;margin-top:32px">
+        <button onClick="{{ goLogin }}" style="padding:13px 24px;border-radius:8px;border:0;background:oklch(0.72 0.16 70);color:oklch(0.25 0.04 70);font-size:15px;font-weight:500;cursor:pointer">Sign in to your account</button>
+        <button style="padding:13px 24px;border-radius:8px;border:1px solid oklch(0.88 0.008 250);background:oklch(1 0 0);font-size:15px;font-weight:500;cursor:pointer">Book a walkthrough</button>
+      </div>
+      <p style="margin:20px 0 0;font-family:'JetBrains Mono',monospace;font-size:12px;color:oklch(0.6 0.02 250)">{{ priceLine }} · cancel a seat any time, billed prorated</p>
+    </div>
+    <div style="background:oklch(1 0 0);border:1px solid oklch(0.9 0.008 250);border-radius:12px;box-shadow:0 18px 40px -24px oklch(0.22 0.02 250 / 0.28);overflow:hidden">
+      <div style="display:flex;align-items:center;gap:7px;padding:11px 14px;border-bottom:1px solid oklch(0.92 0.008 250);background:oklch(0.98 0.006 250)">
+        <div style="width:9px;height:9px;border-radius:50%;background:oklch(0.86 0.02 250)"></div>
+        <div style="width:9px;height:9px;border-radius:50%;background:oklch(0.86 0.02 250)"></div>
+        <div style="width:9px;height:9px;border-radius:50%;background:oklch(0.86 0.02 250)"></div>
+        <span style="margin-left:8px;font-family:'JetBrains Mono',monospace;font-size:11px;color:oklch(0.6 0.02 250)">app.tradesdatabase.io/seats</span>
+      </div>
+      <div style="padding:18px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px">
+          <span style="font-size:13px;font-weight:600">Seats</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:oklch(0.6 0.02 250)">{{ seatCount }} active</span>
+        </div>
+        <sc-for list="{{ heroRows }}" as="row" hint-placeholder-count="4">
+          <div style="display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:center;padding:10px 0;border-top:1px solid oklch(0.94 0.008 250)">
+            <div>
+              <div style="font-size:13px;font-weight:500">{{ row.name }}</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:oklch(0.62 0.02 250)">{{ row.bot }}</div>
+            </div>
+            <div style="font-size:12px;color:oklch(0.5 0.02 250)">{{ row.trade }}</div>
+            <div style="width:8px;height:8px;border-radius:50%;background:oklch(0.55 0.09 200)"></div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </section>
+
+  <section style="border-top:1px solid oklch(0.9 0.008 250);background:oklch(0.99 0.006 250);padding:64px 56px">
+    <div style="max-width:1360px;margin:0 auto;display:grid;grid-template-columns:repeat(3,1fr);gap:40px">
+      <div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:oklch(0.5 0.12 68);letter-spacing:.08em">01</div>
+        <h3 style="margin:10px 0 8px;font-size:19px;font-weight:600;letter-spacing:-0.01em">Add a seat</h3>
+        <p style="margin:0;font-size:15px;line-height:1.6;color:oklch(0.45 0.02 250)">Paste the bot token from BotFather and the person's Telegram user ID. Two fields, nothing else.</p>
+      </div>
+      <div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:oklch(0.5 0.12 68);letter-spacing:.08em">02</div>
+        <h3 style="margin:10px 0 8px;font-size:19px;font-weight:600;letter-spacing:-0.01em">We provision the sandbox</h3>
+        <p style="margin:0;font-size:15px;line-height:1.6;color:oklch(0.45 0.02 250)">An isolated container spins up on our Lightsail host and binds to that token. Typically under 90 seconds.</p>
+      </div>
+      <div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:oklch(0.5 0.12 68);letter-spacing:.08em">03</div>
+        <h3 style="margin:10px 0 8px;font-size:19px;font-weight:600;letter-spacing:-0.01em">Billing follows the seat</h3>
+        <p style="margin:0;font-size:15px;line-height:1.6;color:oklch(0.45 0.02 250)">Add or delete seats mid-cycle and the next invoice is prorated to the day. No support ticket.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer style="padding:28px 56px;border-top:1px solid oklch(0.9 0.008 250);font-size:13px;color:oklch(0.6 0.02 250);display:flex;justify-content:space-between">
+    <span>© 2026 TradesDatabase</span>
+    <span style="display:flex;gap:22px"><span>Status</span><span>Terms</span><span>Privacy</span></span>
+  </footer>
+</div>
+</sc-if>
+
+<sc-if value="{{ isLogin }}">
+<div style="flex:1;display:grid;grid-template-columns:1fr 1fr;min-height:calc(100vh - 33px)">
+  <div style="display:flex;flex-direction:column;justify-content:center;padding:0 clamp(48px,8vw,120px)">
+    <div style="display:flex;align-items:center;gap:11px;margin-bottom:44px">
+      <div style="width:26px;height:26px;border-radius:5px;background:oklch(0.72 0.16 70)"></div>
+      <span style="font-weight:600;font-size:16px;letter-spacing:-0.01em">TradesDatabase</span>
+    </div>
+    <h2 style="margin:0;font-size:30px;font-weight:600;letter-spacing:-0.02em">Sign in</h2>
+    <p style="margin:10px 0 32px;font-size:15px;color:oklch(0.45 0.02 250)">Account owners and billing admins only. Field staff use the bot.</p>
+    <label style="display:block;font-size:13px;font-weight:500;margin-bottom:7px">Work email</label>
+    <input value="ops@harrowbrothers.co.uk" style="width:100%;max-width:420px;padding:12px 14px;border:1px solid oklch(0.87 0.008 250);border-radius:8px;font-size:15px;background:oklch(1 0 0)" />
+    <label style="display:block;font-size:13px;font-weight:500;margin:20px 0 7px">Password</label>
+    <input type="password" value="passwordvalue" style="width:100%;max-width:420px;padding:12px 14px;border:1px solid oklch(0.87 0.008 250);border-radius:8px;font-size:15px;background:oklch(1 0 0)" />
+    <button onClick="{{ goBilling }}" style="margin-top:26px;width:100%;max-width:420px;padding:13px;border-radius:8px;border:0;background:oklch(0.72 0.16 70);color:oklch(0.25 0.04 70);font-size:15px;font-weight:500;cursor:pointer">Continue</button>
+    <div style="display:flex;align-items:center;gap:14px;max-width:420px;margin:22px 0">
+      <div style="flex:1;height:1px;background:oklch(0.9 0.008 250)"></div>
+      <span style="font-size:12px;color:oklch(0.62 0.02 250)">or</span>
+      <div style="flex:1;height:1px;background:oklch(0.9 0.008 250)"></div>
+    </div>
+    <button onClick="{{ goBilling }}" style="width:100%;max-width:420px;padding:13px;border-radius:8px;border:1px solid oklch(0.87 0.008 250);background:oklch(1 0 0);font-size:15px;font-weight:500;cursor:pointer">Send me a magic link</button>
+    <p style="margin:26px 0 0;font-size:13px;color:oklch(0.6 0.02 250)">Locked out? <a href="#">Contact your account owner</a></p>
+  </div>
+  <div style="background:oklch(0.27 0.02 250);color:oklch(0.9 0.01 250);display:flex;flex-direction:column;justify-content:center;padding:0 clamp(48px,6vw,88px)">
+    <p style="font-size:24px;line-height:1.45;font-weight:400;letter-spacing:-0.01em;margin:0;max-width:20em;text-wrap:pretty">Twelve vans, one record. We stopped chasing certificates over WhatsApp the week we switched.</p>
+    <div style="margin-top:28px;font-family:'JetBrains Mono',monospace;font-size:12px;color:oklch(0.65 0.02 250)">Dean Harrow · Harrow Brothers Electrical · Leeds</div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isApp }}">
+<div style="flex:1;display:grid;grid-template-columns:236px 1fr;min-height:calc(100vh - 33px)">
+
+  <aside style="border-right:1px solid oklch(0.9 0.008 250);background:oklch(0.99 0.006 250);padding:22px 14px;display:flex;flex-direction:column;gap:26px">
+    <div style="display:flex;align-items:center;gap:10px;padding:0 8px">
+      <div style="width:22px;height:22px;border-radius:4px;background:oklch(0.72 0.16 70)"></div>
+      <span style="font-weight:600;font-size:14px;letter-spacing:-0.01em">TradesDatabase</span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:2px">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;color:oklch(0.66 0.02 250);padding:0 8px 8px">ACCOUNT</div>
+      <button onClick="{{ goBilling }}" style="text-align:left;padding:9px 10px;border-radius:7px;border:0;background:{{ navBillingBg }};font-size:14px;font-weight:500;color:oklch(0.27 0.02 250);cursor:pointer">Billing</button>
+      <button onClick="{{ goSeats }}" style="text-align:left;padding:9px 10px;border-radius:7px;border:0;background:{{ navSeatsBg }};font-size:14px;font-weight:500;color:oklch(0.27 0.02 250);cursor:pointer">Seats</button>
+      <button onClick="{{ goAdmin }}" style="text-align:left;padding:9px 10px;border-radius:7px;border:0;background:{{ navAdminBg }};font-size:14px;font-weight:500;color:oklch(0.27 0.02 250);cursor:pointer">Admin queue</button>
+    </div>
+    <div style="flex:1"></div>
+    <div style="border:1px solid oklch(0.91 0.008 250);border-radius:9px;padding:12px;background:oklch(1 0 0)">
+      <div style="font-size:12px;color:oklch(0.55 0.02 250);margin-bottom:4px">This cycle</div>
+      <div style="font-size:21px;font-weight:600;letter-spacing:-0.02em">{{ cycleTotal }}</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:oklch(0.62 0.02 250);margin-top:4px">due 1 Sep 2026</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:9px;padding:8px;border-top:1px solid oklch(0.92 0.008 250)">
+      <div style="width:26px;height:26px;border-radius:50%;background:oklch(0.86 0.02 250)"></div>
+      <div>
+        <div style="font-size:13px;font-weight:500">Dean Harrow</div>
+        <div style="font-size:11px;color:oklch(0.62 0.02 250)">Owner</div>
+      </div>
+    </div>
+  </aside>
+
+  <main style="padding:30px 38px 60px;max-width:1280px">
+
+    <sc-if value="{{ isBilling }}">
+    <div>
+      <h1 style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.02em">Billing</h1>
+      <p style="margin:7px 0 26px;font-size:14px;color:oklch(0.5 0.02 250)">Harrow Brothers Electrical · Team plan · billed monthly</p>
+
+      <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:18px">
+        <div style="border:1px solid oklch(0.9 0.008 250);border-radius:11px;background:oklch(1 0 0);padding:22px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start">
+            <div>
+              <div style="font-size:13px;color:oklch(0.55 0.02 250)">Estimated for August</div>
+              <div style="font-size:38px;font-weight:600;letter-spacing:-0.03em;margin-top:4px">{{ cycleTotal }}</div>
+            </div>
+            <button style="padding:9px 16px;border-radius:7px;border:1px solid oklch(0.88 0.008 250);background:oklch(0.99 0.006 250);font-size:13px;font-weight:500;cursor:pointer">Pay now</button>
+          </div>
+          <div style="height:1px;background:oklch(0.93 0.008 250);margin:20px 0"></div>
+          <div style="display:flex;flex-direction:column;gap:11px">
+            <div style="display:flex;justify-content:space-between;font-size:14px">
+              <span style="color:oklch(0.42 0.02 250)">{{ seatCount }} seats × {{ priceEach }}</span>
+              <span style="font-family:'JetBrains Mono',monospace">{{ seatSubtotal }}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:14px">
+              <span style="color:oklch(0.42 0.02 250)">Prorated additions (2 seats, 11 days)</span>
+              <span style="font-family:'JetBrains Mono',monospace">{{ proration }}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:14px">
+              <span style="color:oklch(0.42 0.02 250)">Sandbox overage</span>
+              <span style="font-family:'JetBrains Mono',monospace;color:oklch(0.62 0.02 250)">{{ zero }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="border:1px solid oklch(0.9 0.008 250);border-radius:11px;background:oklch(1 0 0);padding:22px;display:flex;flex-direction:column">
+          <div style="font-size:13px;color:oklch(0.55 0.02 250);margin-bottom:14px">Payment method</div>
+          <div style="display:flex;align-items:center;gap:12px;padding:13px;border:1px solid oklch(0.92 0.008 250);border-radius:8px">
+            <div style="width:38px;height:25px;border-radius:4px;background:oklch(0.27 0.02 250)"></div>
+            <div>
+              <div style="font-size:14px;font-weight:500">Visa ending 4417</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:oklch(0.62 0.02 250)">expires 04/29</div>
+            </div>
+          </div>
+          <button style="margin-top:12px;padding:10px;border-radius:7px;border:1px dashed oklch(0.85 0.008 250);background:none;font-size:13px;color:oklch(0.45 0.02 250);cursor:pointer">Add another card</button>
+          <div style="flex:1"></div>
+          <div style="margin-top:18px;padding-top:16px;border-top:1px solid oklch(0.93 0.008 250);font-size:13px;color:oklch(0.5 0.02 250);line-height:1.55">Billing contact <strong style="color:oklch(0.28 0.02 250);font-weight:500">accounts@harrowbrothers.co.uk</strong></div>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin:34px 0 12px">
+        <h2 style="margin:0;font-size:16px;font-weight:600">Invoices</h2>
+        <button style="padding:7px 13px;border-radius:6px;border:1px solid oklch(0.88 0.008 250);background:oklch(1 0 0);font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer">Export CSV</button>
+      </div>
+      <div style="border:1px solid oklch(0.9 0.008 250);border-radius:11px;background:oklch(1 0 0);overflow:hidden">
+        <div style="display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr auto;gap:16px;padding:11px 18px;background:oklch(0.98 0.006 250);border-bottom:1px solid oklch(0.92 0.008 250);font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.07em;color:oklch(0.55 0.02 250)">
+          <span>INVOICE</span><span>PERIOD</span><span>SEATS</span><span>AMOUNT</span><span>STATUS</span>
+        </div>
+        <sc-for list="{{ invoices }}" as="inv" hint-placeholder-count="5">
+          <div style="display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr auto;gap:16px;padding:14px 18px;border-bottom:1px solid oklch(0.95 0.008 250);align-items:center;font-size:13.5px">
+            <span style="font-family:'JetBrains Mono',monospace;font-size:12.5px">{{ inv.id }}</span>
+            <span style="color:oklch(0.45 0.02 250)">{{ inv.period }}</span>
+            <span style="color:oklch(0.45 0.02 250)">{{ inv.seats }}</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:12.5px">{{ inv.amount }}</span>
+            <span style="font-size:11.5px;font-weight:500;padding:3px 9px;border-radius:4px;background:oklch(0.93 0.04 200);color:oklch(0.4 0.09 200)">{{ inv.status }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ isSeats }}">
+    <div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <h1 style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.02em">Seats</h1>
+          <p style="margin:7px 0 0;font-size:14px;color:oklch(0.5 0.02 250)">{{ seatSummary }}</p>
+        </div>
+        <div style="display:flex;gap:9px">
+          <button style="padding:9px 15px;border-radius:7px;border:1px solid oklch(0.88 0.008 250);background:oklch(1 0 0);font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer">Export CSV</button>
+          <button onClick="{{ openAdd }}" style="padding:9px 17px;border-radius:7px;border:0;background:oklch(0.72 0.16 70);color:oklch(0.25 0.04 70);font-size:13.5px;font-weight:500;cursor:pointer">Add seat</button>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;margin:22px 0 14px;align-items:center">
+        <input placeholder="Search name, trade or Telegram ID" style="flex:1;max-width:340px;padding:9px 13px;border:1px solid oklch(0.88 0.008 250);border-radius:7px;font-size:13.5px;background:oklch(1 0 0)" />
+        <select style="padding:9px 11px;border:1px solid oklch(0.88 0.008 250);border-radius:7px;font-size:13.5px;background:oklch(1 0 0)"><option>All statuses</option><option>Active</option><option>Provisioning</option><option>Suspended</option></select>
+        <select style="padding:9px 11px;border:1px solid oklch(0.88 0.008 250);border-radius:7px;font-size:13.5px;background:oklch(1 0 0)"><option>All regions</option><option>eu-west-2</option><option>eu-west-1</option></select>
+      </div>
+
+      <div style="border:1px solid oklch(0.9 0.008 250);border-radius:11px;background:oklch(1 0 0);overflow:hidden">
+        <div style="display:grid;grid-template-columns:1.5fr 1fr 1.1fr 1.3fr 0.9fr 1fr 34px;gap:14px;padding:11px 18px;background:oklch(0.98 0.006 250);border-bottom:1px solid oklch(0.92 0.008 250);font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.07em;color:oklch(0.55 0.02 250)">
+          <button onClick="{{ sortName }}" style="text-align:left;background:none;border:0;font:inherit;color:inherit;cursor:pointer;padding:0">NAME {{ arrowName }}</button>
+          <button onClick="{{ sortTrade }}" style="text-align:left;background:none;border:0;font:inherit;color:inherit;cursor:pointer;padding:0">TRADE {{ arrowTrade }}</button>
+          <span>TELEGRAM ID</span>
+          <span>BOT</span>
+          <span>SANDBOX</span>
+          <button onClick="{{ sortStatus }}" style="text-align:left;background:none;border:0;font:inherit;color:inherit;cursor:pointer;padding:0">STATUS {{ arrowStatus }}</button>
+          <span></span>
+        </div>
+        <sc-for list="{{ seatRows }}" as="s" hint-placeholder-count="8">
+          <div style="display:grid;grid-template-columns:1.5fr 1fr 1.1fr 1.3fr 0.9fr 1fr 34px;gap:14px;padding:13px 18px;border-bottom:1px solid oklch(0.95 0.008 250);align-items:center;font-size:13.5px">
+            <button onClick="{{ s.open }}" style="text-align:left;background:none;border:0;padding:0;font:inherit;cursor:pointer;color:oklch(0.27 0.02 250);font-weight:500">{{ s.name }}</button>
+            <span style="color:oklch(0.45 0.02 250)">{{ s.trade }}</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:oklch(0.5 0.02 250)">{{ s.tgId }}</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:oklch(0.5 0.02 250)">{{ s.bot }}</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:oklch(0.5 0.02 250)">{{ s.region }}</span>
+            <span>
+              <sc-if value="{{ s.isActive }}"><span style="font-size:11.5px;font-weight:500;padding:3px 9px;border-radius:4px;background:oklch(0.93 0.04 200);color:oklch(0.4 0.09 200)">Active</span></sc-if>
+              <sc-if value="{{ s.isProv }}"><span style="font-size:11.5px;font-weight:500;padding:3px 9px;border-radius:4px;background:oklch(0.72 0.16 70);color:oklch(0.25 0.04 70)">Provisioning</span></sc-if>
+              <sc-if value="{{ s.isSusp }}"><span style="font-size:11.5px;font-weight:500;padding:3px 9px;border-radius:4px;background:oklch(0.94 0.008 250);color:oklch(0.5 0.02 250)">Suspended</span></sc-if>
+            </span>
+            <button onClick="{{ s.remove }}" style="background:none;border:0;cursor:pointer;color:oklch(0.62 0.02 250);font-size:16px;padding:0;line-height:1">×</button>
+          </div>
+        </sc-for>
+      </div>
+      <p style="margin:14px 0 0;font-size:12.5px;color:oklch(0.58 0.02 250)">Deleting a seat destroys its sandbox and revokes the bot token. Credit is prorated to the next invoice.</p>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ isDetail }}">
+    <div>
+      <button onClick="{{ goSeats }}" style="background:none;border:0;padding:0;font-size:13px;color:oklch(0.55 0.02 250);cursor:pointer;margin-bottom:16px">← Seats</button>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div style="display:flex;gap:16px;align-items:center">
+          <div style="width:52px;height:52px;border-radius:11px;background:oklch(0.88 0.02 250)"></div>
+          <div>
+            <h1 style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.02em">{{ detailName }}</h1>
+            <p style="margin:5px 0 0;font-size:14px;color:oklch(0.5 0.02 250)">{{ detailSub }}</p>
+          </div>
+        </div>
+        <div style="display:flex;gap:9px">
+          <button style="padding:9px 15px;border-radius:7px;border:1px solid oklch(0.88 0.008 250);background:oklch(1 0 0);font-size:13.5px;cursor:pointer">Suspend</button>
+          <button style="padding:9px 15px;border-radius:7px;border:1px solid oklch(0.85 0.04 25);background:oklch(1 0 0);font-size:13.5px;color:oklch(0.5 0.14 25);cursor:pointer">Delete seat</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1.25fr 1fr;gap:18px;margin-top:26px">
+        <div style="border:1px solid oklch(0.9 0.008 250);border-radius:11px;background:oklch(1 0 0);padding:22px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:16px">Bot binding</div>
+          <div style="display:grid;grid-template-columns:130px 1fr;gap:13px 18px;font-size:13.5px;align-items:baseline">
+            <span style="color:oklch(0.55 0.02 250)">Bot handle</span><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px">@harrow_jm_bot</span>
+            <span style="color:oklch(0.55 0.02 250)">Token</span><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;color:oklch(0.55 0.02 250)">7642••••••••••••••••••••••••fA1c</span>
+            <span style="color:oklch(0.55 0.02 250)">Telegram user ID</span><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px">418 902 733</span>
+            <span style="color:oklch(0.55 0.02 250)">Webhook</span><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px">/hook/s_4f21a9</span>
+            <span style="color:oklch(0.55 0.02 250)">Last message</span><span>7 Aug 2026, 16:42</span>
+          </div>
+          <div style="display:flex;gap:9px;margin-top:20px">
+            <button style="padding:8px 14px;border-radius:7px;border:1px solid oklch(0.88 0.008 250);background:oklch(0.99 0.006 250);font-size:13px;cursor:pointer">Rotate token</button>
+            <button style="padding:8px 14px;border-radius:7px;border:1px solid oklch(0.88 0.008 250);background:oklch(0.99 0.006 250);font-size:13px;cursor:pointer">Send test message</button>
+          </div>
+        </div>
+
+        <div style="border:1px solid oklch(0.9 0.008 250);border-radius:11px;background:oklch(1 0 0);padding:22px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:16px">Lightsail sandbox</div>
+          <div style="display:grid;grid-template-columns:110px 1fr;gap:13px 18px;font-size:13.5px;align-items:baseline">
+            <span style="color:oklch(0.55 0.02 250)">Instance</span><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px">td-sbx-04</span>
+            <span style="color:oklch(0.55 0.02 250)">Region</span><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px">eu-west-2</span>
+            <span style="color:oklch(0.55 0.02 250)">Plan</span><span style="font-family:'JetBrains Mono',monospace;font-size:12.5px">1 GB / 2 vCPU</span>
+            <span style="color:oklch(0.55 0.02 250)">Uptime</span><span>26 days</span>
+            <span style="color:oklch(0.55 0.02 250)">Health</span><span style="display:inline-flex;align-items:center;gap:7px"><span style="width:7px;height:7px;border-radius:50%;background:oklch(0.55 0.09 200);display:inline-block"></span>Healthy</span>
+          </div>
+          <div style="margin-top:18px;padding-top:16px;border-top:1px solid oklch(0.93 0.008 250);font-family:'JetBrains Mono',monospace;font-size:11.5px;color:oklch(0.55 0.02 250);line-height:1.8">
+            <div>12:02:11 container up</div>
+            <div>12:02:14 webhook registered</div>
+            <div>16:42:07 msg in · job #8841 logged</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="border:1px solid oklch(0.9 0.008 250);border-radius:11px;background:oklch(1 0 0);padding:22px;margin-top:18px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:14px">Recent records logged</div>
+        <sc-for list="{{ records }}" as="r" hint-placeholder-count="4">
+          <div style="display:grid;grid-template-columns:110px 1fr 1fr 90px;gap:16px;padding:11px 0;border-top:1px solid oklch(0.95 0.008 250);font-size:13.5px;align-items:center">
+            <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:oklch(0.55 0.02 250)">{{ r.id }}</span>
+            <span>{{ r.job }}</span>
+            <span style="color:oklch(0.5 0.02 250)">{{ r.site }}</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:oklch(0.55 0.02 250)">{{ r.date }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ isAdmin }}">
+    <div>
+      <h1 style="margin:0;font-size:26px;font-weight:600;letter-spacing:-0.02em">Admin queue</h1>
+      <p style="margin:7px 0 26px;font-size:14px;color:oklch(0.5 0.02 250)">Internal only. Provisioning failures and records held for review.</p>
+
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:26px">
+        <div style="border:1px solid oklch(0.9 0.008 250);border-radius:10px;background:oklch(1 0 0);padding:16px">
+          <div style="font-size:12.5px;color:oklch(0.55 0.02 250)">Provisioning now</div>
+          <div style="font-size:27px;font-weight:600;letter-spacing:-0.02em;margin-top:4px">3</div>
+        </div>
+        <div style="border:1px solid oklch(0.9 0.008 250);border-radius:10px;background:oklch(1 0 0);padding:16px">
+          <div style="font-size:12.5px;color:oklch(0.55 0.02 250)">Failed in 24h</div>
+          <div style="font-size:27px;font-weight:600;letter-spacing:-0.02em;margin-top:4px;color:oklch(0.5 0.14 25)">1</div>
+        </div>
+        <div style="border:1px solid oklch(0.9 0.008 250);border-radius:10px;background:oklch(1 0 0);padding:16px">
+          <div style="font-size:12.5px;color:oklch(0.55 0.02 250)">Lightsail capacity used</div>
+          <div style="font-size:27px;font-weight:600;letter-spacing:-0.02em;margin-top:4px">62%</div>
+        </div>
+      </div>
+
+      <div style="border:1px solid oklch(0.9 0.008 250);border-radius:11px;background:oklch(1 0 0);overflow:hidden">
+        <div style="display:grid;grid-template-columns:1fr 1.3fr 1.4fr 190px;gap:16px;padding:11px 18px;background:oklch(0.98 0.006 250);border-bottom:1px solid oklch(0.92 0.008 250);font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.07em;color:oklch(0.55 0.02 250)">
+          <span>ACCOUNT</span><span>ITEM</span><span>REASON</span><span></span>
+        </div>
+        <sc-for list="{{ queue }}" as="q" hint-placeholder-count="4">
+          <div style="display:grid;grid-template-columns:1fr 1.3fr 1.4fr 190px;gap:16px;padding:14px 18px;border-bottom:1px solid oklch(0.95 0.008 250);align-items:center;font-size:13.5px">
+            <span style="font-weight:500">{{ q.account }}</span>
+            <span style="color:oklch(0.45 0.02 250)">{{ q.item }}</span>
+            <span style="color:oklch(0.5 0.02 250);font-size:13px">{{ q.reason }}</span>
+            <span style="display:flex;gap:8px;justify-content:flex-end">
+              <button style="padding:6px 12px;border-radius:6px;border:1px solid oklch(0.88 0.008 250);background:oklch(0.99 0.006 250);font-size:12.5px;cursor:pointer">Dismiss</button>
+              <button style="padding:6px 12px;border-radius:6px;border:0;background:oklch(0.72 0.16 70);color:oklch(0.25 0.04 70);font-size:12.5px;cursor:pointer">{{ q.action }}</button>
+            </span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+    </sc-if>
+
+  </main>
+</div>
+</sc-if>
+
+<sc-if value="{{ addOpen }}">
+<div style="position:fixed;inset:0;background:oklch(0.22 0.02 250 / 0.42);display:flex;align-items:center;justify-content:center;z-index:80;padding:40px">
+  <div style="width:560px;max-width:100%;background:oklch(1 0 0);border-radius:13px;box-shadow:0 30px 70px -30px oklch(0.22 0.02 250 / 0.5);overflow:hidden">
+    <div style="padding:20px 24px;border-bottom:1px solid oklch(0.93 0.008 250);display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-size:16px;font-weight:600;letter-spacing:-0.01em">Add a seat</div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:oklch(0.6 0.02 250);margin-top:3px">{{ stepLabel }}</div>
+      </div>
+      <button onClick="{{ closeAdd }}" style="background:none;border:0;font-size:20px;color:oklch(0.6 0.02 250);cursor:pointer;line-height:1">×</button>
+    </div>
+
+    <div style="padding:24px">
+      <sc-if value="{{ step1 }}">
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div>
+          <label style="display:block;font-size:13px;font-weight:500;margin-bottom:6px">Name</label>
+          <input placeholder="e.g. Priya Raman" style="width:100%;padding:11px 13px;border:1px solid oklch(0.88 0.008 250);border-radius:8px;font-size:14px" />
+        </div>
+        <div>
+          <label style="display:block;font-size:13px;font-weight:500;margin-bottom:6px">Trade</label>
+          <select style="width:100%;padding:11px 13px;border:1px solid oklch(0.88 0.008 250);border-radius:8px;font-size:14px;background:oklch(1 0 0)"><option>Electrician</option><option>Plumber</option><option>Roofer</option><option>HVAC</option><option>Carpenter</option></select>
+        </div>
+        <div>
+          <label style="display:block;font-size:13px;font-weight:500;margin-bottom:6px">Telegram user ID</label>
+          <input placeholder="418902733" style="width:100%;padding:11px 13px;border:1px solid oklch(0.88 0.008 250);border-radius:8px;font-size:14px;font-family:'JetBrains Mono',monospace" />
+          <div style="font-size:12px;color:oklch(0.58 0.02 250);margin-top:6px">Ask them to message @userinfobot — it replies with the number.</div>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ step2 }}">
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div style="background:oklch(0.97 0.006 250);border:1px solid oklch(0.92 0.008 250);border-radius:9px;padding:14px;font-size:13px;line-height:1.6;color:oklch(0.42 0.02 250)">
+          In Telegram, open <strong style="font-weight:600">@BotFather</strong> → <strong style="font-weight:600">/newbot</strong>. Name it after the person, then paste the token it gives you below.
+        </div>
+        <div>
+          <label style="display:block;font-size:13px;font-weight:500;margin-bottom:6px">Bot token</label>
+          <input placeholder="7642119284:AAH...fA1c" style="width:100%;padding:11px 13px;border:1px solid oklch(0.88 0.008 250);border-radius:8px;font-size:13px;font-family:'JetBrains Mono',monospace" />
+        </div>
+        <div style="display:flex;align-items:center;gap:9px;font-size:13px;color:oklch(0.4 0.09 200)">
+          <span style="width:7px;height:7px;border-radius:50%;background:oklch(0.55 0.09 200)"></span>
+          Token valid · bot resolves to @harrow_pr_bot
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ step3 }}">
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+          <div>
+            <label style="display:block;font-size:13px;font-weight:500;margin-bottom:6px">Lightsail region</label>
+            <select style="width:100%;padding:11px 13px;border:1px solid oklch(0.88 0.008 250);border-radius:8px;font-size:14px;background:oklch(1 0 0)"><option>eu-west-2 (London)</option><option>eu-west-1 (Dublin)</option></select>
+          </div>
+          <div>
+            <label style="display:block;font-size:13px;font-weight:500;margin-bottom:6px">Sandbox size</label>
+            <select style="width:100%;padding:11px 13px;border:1px solid oklch(0.88 0.008 250);border-radius:8px;font-size:14px;background:oklch(1 0 0)"><option>1 GB / 2 vCPU — standard</option><option>2 GB / 2 vCPU — heavy media</option></select>
+          </div>
+        </div>
+        <div style="border:1px solid oklch(0.92 0.008 250);border-radius:9px;overflow:hidden">
+          <div style="padding:10px 14px;background:oklch(0.98 0.006 250);border-bottom:1px solid oklch(0.93 0.008 250);font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.07em;color:oklch(0.55 0.02 250)">WHAT HAPPENS ON CONFIRM</div>
+          <div style="padding:14px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:2;color:oklch(0.45 0.02 250)">
+            <div>1 · create container td-sbx-09 on host td-prod-1</div>
+            <div>2 · write token to sandbox secret store</div>
+            <div>3 · register webhook /hook/s_9c04e2</div>
+            <div>4 · whitelist Telegram ID 418902733</div>
+            <div>5 · add seat to invoice, prorated 11 days</div>
+          </div>
+        </div>
+        <div style="font-size:13px;color:oklch(0.5 0.02 250)">Adds {{ proratedAdd }} to this month's invoice, then {{ priceEach }}/mo.</div>
+      </div>
+      </sc-if>
+    </div>
+
+    <div style="padding:16px 24px;border-top:1px solid oklch(0.93 0.008 250);display:flex;justify-content:space-between;background:oklch(0.99 0.006 250)">
+      <button onClick="{{ back }}" style="padding:10px 16px;border-radius:7px;border:1px solid oklch(0.88 0.008 250);background:oklch(1 0 0);font-size:13.5px;cursor:pointer">{{ backLabel }}</button>
+      <button onClick="{{ next }}" style="padding:10px 20px;border-radius:7px;border:0;background:oklch(0.72 0.16 70);color:oklch(0.25 0.04 70);font-size:13.5px;font-weight:500;cursor:pointer">{{ nextLabel }}</button>
+    </div>
+  </div>
+</div>
+</sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;seatPrice&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:18,&quot;tsType&quot;:&quot;number&quot;,&quot;min&quot;:5,&quot;max&quot;:80,&quot;section&quot;:&quot;Billing&quot;},&quot;currency&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;GBP&quot;,&quot;options&quot;:[&quot;GBP&quot;,&quot;USD&quot;,&quot;EUR&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Billing&quot;}}">
+class Component extends DCLogic {
+  state = {
+    screen: 'landing', sortKey: 'name', sortDir: 'asc',
+    addOpen: false, step: 1,
+    seats: [
+      { id: 1, name: 'Dean Harrow', trade: 'Electrician', tgId: '418 902 733', bot: '@harrow_dh_bot', region: 'eu-west-2', status: 'Active' },
+      { id: 2, name: 'Marcus Idowu', trade: 'Electrician', tgId: '502 118 664', bot: '@harrow_mi_bot', region: 'eu-west-2', status: 'Active' },
+      { id: 3, name: 'Jamie Mullan', trade: 'Plumber', tgId: '399 774 201', bot: '@harrow_jm_bot', region: 'eu-west-2', status: 'Active' },
+      { id: 4, name: 'Priya Raman', trade: 'HVAC', tgId: '640 331 985', bot: '@harrow_pr_bot', region: 'eu-west-1', status: 'Provisioning' },
+      { id: 5, name: 'Tom Bexley', trade: 'Roofer', tgId: '271 405 118', bot: '@harrow_tb_bot', region: 'eu-west-2', status: 'Active' },
+      { id: 6, name: 'Ade Fashola', trade: 'Carpenter', tgId: '883 620 447', bot: '@harrow_af_bot', region: 'eu-west-2', status: 'Suspended' },
+      { id: 7, name: 'Liam Croft', trade: 'Plumber', tgId: '145 998 320', bot: '@harrow_lc_bot', region: 'eu-west-2', status: 'Active' },
+      { id: 8, name: 'Nadia Okonjo', trade: 'Electrician', tgId: '706 214 559', bot: '@harrow_no_bot', region: 'eu-west-1', status: 'Active' }
+    ]
+  };
+
+  go = (s) => this.setState({ screen: s });
+
+  money(n) {
+    const sym = { GBP: '£', USD: '$', EUR: '€' }[this.props.currency ?? 'GBP'];
+    return sym + n.toFixed(2).replace(/\.00$/, '');
+  }
+
+  renderVals() {
+    const st = this.state;
+    const price = this.props.seatPrice ?? 18;
+    const seats = st.seats;
+    const active = seats.filter(s => s.status === 'Active').length;
+    const dir = st.sortDir === 'asc' ? 1 : -1;
+    const rows = [...seats].sort((a, b) => (a[st.sortKey] > b[st.sortKey] ? dir : -dir)).map(s => ({
+      ...s,
+      isActive: s.status === 'Active',
+      isProv: s.status === 'Provisioning',
+      isSusp: s.status === 'Suspended',
+      open: () => this.setState({ screen: 'detail', detailId: s.id }),
+      remove: () => this.setState(p => ({ seats: p.seats.filter(x => x.id !== s.id) }))
+    }));
+    const arrow = k => (st.sortKey === k ? (st.sortDir === 'asc' ? '↑' : '↓') : '');
+    const sub = seats.length * price;
+    const prorate = price * 2 * 11 / 31;
+    const detail = seats.find(s => s.id === (st.detailId ?? 3)) || seats[0] || {};
+    const sel = { billing: 'oklch(0.94 0.008 250)', seats: 'oklch(0.94 0.008 250)', admin: 'oklch(0.94 0.008 250)' };
+
+    return {
+      screenLabel: { landing: 'landing / marketing home', login: 'sign in', billing: 'billing & payments', seats: 'seats — data table', detail: 'seat detail', admin: 'admin moderation' }[st.screen],
+      isLanding: st.screen === 'landing', isLogin: st.screen === 'login',
+      isApp: ['billing', 'seats', 'detail', 'admin'].includes(st.screen),
+      isBilling: st.screen === 'billing', isSeats: st.screen === 'seats',
+      isDetail: st.screen === 'detail', isAdmin: st.screen === 'admin',
+      navBillingBg: st.screen === 'billing' ? sel.billing : 'transparent',
+      navSeatsBg: ['seats', 'detail'].includes(st.screen) ? sel.seats : 'transparent',
+      navAdminBg: st.screen === 'admin' ? sel.admin : 'transparent',
+      goLanding: () => this.go('landing'), goLogin: () => this.go('login'),
+      goBilling: () => this.go('billing'), goSeats: () => this.go('seats'),
+      goDetail: () => this.go('detail'), goAdmin: () => this.go('admin'),
+
+      seatRows: rows, seatCount: seats.length,
+      seatSummary: seats.length + ' seats · ' + active + ' active · ' + this.money(price) + ' each per month',
+      sortName: () => this.setState(p => ({ sortKey: 'name', sortDir: p.sortKey === 'name' && p.sortDir === 'asc' ? 'desc' : 'asc' })),
+      sortTrade: () => this.setState(p => ({ sortKey: 'trade', sortDir: p.sortKey === 'trade' && p.sortDir === 'asc' ? 'desc' : 'asc' })),
+      sortStatus: () => this.setState(p => ({ sortKey: 'status', sortDir: p.sortKey === 'status' && p.sortDir === 'asc' ? 'desc' : 'asc' })),
+      arrowName: arrow('name'), arrowTrade: arrow('trade'), arrowStatus: arrow('status'),
+
+      priceEach: this.money(price), priceLine: this.money(price) + ' per seat, per month',
+      seatSubtotal: this.money(sub), proration: this.money(prorate), zero: this.money(0),
+      cycleTotal: this.money(sub + prorate), proratedAdd: this.money(price * 11 / 31),
+
+      heroRows: seats.slice(0, 4).map(s => ({ name: s.name, bot: s.bot, trade: s.trade })),
+      detailName: detail.name, detailSub: (detail.trade || '') + ' · seat since Mar 2026 · ' + this.money(price) + '/mo',
+
+      invoices: [
+        { id: 'INV-2026-07', period: 'Jul 2026', seats: '8 seats', amount: this.money(144), status: 'Paid' },
+        { id: 'INV-2026-06', period: 'Jun 2026', seats: '7 seats', amount: this.money(126), status: 'Paid' },
+        { id: 'INV-2026-05', period: 'May 2026', seats: '7 seats', amount: this.money(126), status: 'Paid' },
+        { id: 'INV-2026-04', period: 'Apr 2026', seats: '6 seats', amount: this.money(108), status: 'Paid' },
+        { id: 'INV-2026-03', period: 'Mar 2026', seats: '6 seats', amount: this.money(108), status: 'Paid' }
+      ],
+      records: [
+        { id: 'JOB-8841', job: 'Consumer unit replacement', site: '14 Bramley Rd, LS6', date: '07 Aug' },
+        { id: 'JOB-8830', job: 'EICR periodic inspection', site: 'Unit 3 Kirkstall Est.', date: '05 Aug' },
+        { id: 'JOB-8811', job: 'Emergency callout — no power', site: '221 Otley Rd, LS16', date: '02 Aug' },
+        { id: 'JOB-8796', job: 'EV charger install', site: '9 Weetwood Ln, LS16', date: '29 Jul' }
+      ],
+      queue: [
+        { account: 'Harrow Brothers', item: 'Seat · Priya Raman', reason: 'Sandbox stuck provisioning 14 min', action: 'Retry' },
+        { account: 'Kestrel Plumbing', item: 'Bot token', reason: 'Token rejected by Telegram — 401', action: 'Notify' },
+        { account: 'Vale Roofing', item: 'Seat · Owen Pryce', reason: 'Duplicate Telegram ID across accounts', action: 'Review' },
+        { account: 'Harrow Brothers', item: 'Record JOB-8802', reason: 'Photo flagged by moderation filter', action: 'Approve' }
+      ],
+
+      addOpen: st.addOpen, step1: st.step === 1, step2: st.step === 2, step3: st.step === 3,
+      stepLabel: 'Step ' + st.step + ' of 3 · ' + ['Person', 'BotFather token', 'Sandbox & billing'][st.step - 1],
+      openAdd: () => this.setState({ addOpen: true, step: 1 }),
+      closeAdd: () => this.setState({ addOpen: false }),
+      backLabel: st.step === 1 ? 'Cancel' : 'Back',
+      nextLabel: st.step === 3 ? 'Confirm & provision' : 'Continue',
+      back: () => (st.step === 1 ? this.setState({ addOpen: false }) : this.setState(p => ({ step: p.step - 1 }))),
+      next: () => {
+        if (st.step < 3) return this.setState(p => ({ step: p.step + 1 }));
+        this.setState(p => ({
+          addOpen: false,
+          seats: [...p.seats, { id: Date.now(), name: 'Priya Raman', trade: 'HVAC', tgId: '418 902 733', bot: '@harrow_pr_bot', region: 'eu-west-2', status: 'Provisioning' }]
+        }));
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>

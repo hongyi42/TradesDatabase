@@ -1,0 +1,160 @@
+/* Design tokens — transcribed from the 2026-08-07 handoff README
+   ("TradesDatabase v2 workwear", direction 1b). Authored in oklch exactly as
+   the handoff specifies; the hex equivalents in that document are approximate
+   sRGB conveniences and are NOT used here.
+
+   Status semantics, quoting the handoff: amber is reserved for ATTENTION
+   REQUIRED. Anything provisioning, failing or pending is amber; healthy or
+   settled states are teal. There is deliberately no green in this system. */
+
+:root {
+  /* Neutrals — cool steel, hue 250 */
+  --bg: oklch(0.975 0.01 250);
+  --surface: oklch(1 0 0);
+  --surface-alt: oklch(0.99 0.006 250);
+  --surface-alt-2: oklch(0.98 0.006 250);
+  --nav-selected: oklch(0.94 0.008 250);
+  --line: oklch(0.9 0.008 250);
+  --line-soft: oklch(0.95 0.008 250);
+  --input-border: oklch(0.88 0.008 250);
+  --ink: oklch(0.27 0.02 250);
+  --ink-2: oklch(0.45 0.02 250);
+  --ink-3: oklch(0.5 0.02 250);
+  /* DEVIATION from the handoff (was 0.55 / 0.62), measured not guessed.
+     ink-5 at L=0.62 renders 3.65:1 on white — under the 4.5:1 minimum for body
+     text — and it carries the captions people actually need to read: "expires
+     13 Aug", the sandbox log lines, row dates, and the table's × delete control.
+     Darkening ink-5 alone to 0.56 (4.62:1) would have collapsed it onto ink-4,
+     so ink-4 moves too. The muted scale is now an even 0.03 step, all passing:
+       ink-3 0.50 → 6.00:1   ink-4 0.53 → 5.27:1   ink-5 0.56 → 4.62:1 */
+  --ink-4: oklch(0.53 0.02 250);
+  --ink-5: oklch(0.56 0.02 250);
+
+  /* Shell — theme 2d "Slate shell" (2d-slate-shell.md), which supersedes the
+     neutral background tokens above. The app SHELL goes dark; content
+     containers (cards, tables, inputs, modals) stay white and keep every light
+     token inside them unchanged. Data pops off a dark frame. */
+  --shell-bg: oklch(0.26 0.012 250);
+  --shell-sidebar: oklch(0.2 0.012 250);
+  --shell-line: oklch(0.32 0.012 250);
+  --shell-line-soft: oklch(0.3 0.012 250);
+  --shell-nav-selected: oklch(0.3 0.015 250);
+  --shell-ink: oklch(0.96 0.006 250);
+  --shell-ink-2: oklch(0.7 0.012 250);
+
+  /* Two additions the theme note implies but does not name. Both exist only
+     because a colour tuned for white fails on the dark shell:
+       amber-on-shell — the spec itself asks for the landing step numerals to be
+         "lifted to oklch(0.78 0.13 70) so amber holds up on dark"; the same
+         value is the right one for any amber TEXT on the shell.
+       danger-on-shell — `danger` (L=0.5) on `shell-bg` (L=0.26) is ~1.9:1 and
+         unreadable. The "Delete seat" button sits on the shell, so its label
+         needs a lifted variant. Pills and figures inside white cards keep the
+         original `danger`. */
+  --amber-on-shell: oklch(0.78 0.13 70);
+  --danger-on-shell: oklch(0.72 0.14 25);
+
+  /* Accent & status */
+  --amber: oklch(0.72 0.16 70);
+  --amber-on: oklch(0.25 0.04 70);
+  --amber-deep: oklch(0.5 0.12 68);
+  --amber-deep-hover: oklch(0.4 0.1 68);
+  --amber-tint-bg: oklch(0.96 0.035 78);
+  --amber-tint-line: oklch(0.85 0.07 78);
+  --teal: oklch(0.55 0.09 200);
+  --teal-bg: oklch(0.93 0.04 200);
+  --teal-fg: oklch(0.4 0.09 200);
+  --danger: oklch(0.5 0.14 25);
+  --danger-line: oklch(0.85 0.04 25);
+  --suspended-bg: oklch(0.94 0.008 250);
+
+  /* Typography */
+  --sans: 'Inter Tight', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', monospace;
+
+  /* Radius — square-ish on purpose; part of the workwear look */
+  --r-pill: 4px;
+  --r-btn: 5px;
+  --r-input: 8px;
+  --r-btn-sm: 6px;
+  --r-nav: 7px;
+  --r-card: 11px;
+  --r-modal: 13px;
+
+  /* Shadows */
+  --shadow-mock: 0 18px 40px -24px oklch(0.27 0.02 250 / 0.28);
+  --shadow-modal: 0 30px 70px -30px oklch(0.27 0.02 250 / 0.5);
+  --scrim: oklch(0.27 0.02 250 / 0.42);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  /* Slate shell: the page background is dark; cards paint white over it. */
+  background: var(--shell-bg);
+  color: var(--shell-ink);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+input,
+select,
+button,
+textarea {
+  font-family: inherit;
+}
+
+a {
+  color: var(--amber-deep);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--amber-deep-hover);
+}
+
+/* Links inside a dark region. `amber-deep` is tuned for white and drops to
+   ~2.5:1 on the shell, so any container painted with a shell colour opts its
+   links into the lifted amber instead. Applied to the landing header and
+   footer, which the slate theme moves onto dark. */
+.on-shell a {
+  color: var(--amber-on-shell);
+}
+
+.on-shell a:hover {
+  color: var(--amber);
+}
+
+/* The handoff leaves focus at browser default and explicitly asks for a
+   visible ring in production: "amber at 2px offset is the natural choice". */
+:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Mono is for anything machine-generated: IDs, bot handles, tokens, regions,
+   instance names, amounts in tables, column headers, timestamps, log lines. */
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes tdspin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

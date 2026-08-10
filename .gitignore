@@ -20,3 +20,6 @@ supabase/.temp/
 
 # Inbound webhook debug capture (INBOUND_DEBUG=1) — holds real email content
 inbound-last.json
+
+# macOS Finder metadata (arrives with any drag/copy into the repo)
+.DS_Store

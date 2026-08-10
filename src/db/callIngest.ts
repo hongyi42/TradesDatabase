@@ -89,17 +89,25 @@ export async function markCallIngested(
 // Failure: bump attempts and either re-queue (< cap) or park in 'error'. Safe as
 // a read-modify-write because the worker exclusively holds this claimed row.
 // The retry cap (5) is mirrored in claim_next_call's WHERE so a parked row is
-// never re-served.
-export async function markCallError(id: string, message: string): Promise<void> {
+// never re-served. Returns the resulting status + attempt count so the caller can
+// tell a TERMINAL failure (parked in 'error') from a retryable one and alert only
+// once the row is truly dead — otherwise the "only when exhausted" push is
+// unwritable.
+export async function markCallError(
+  id: string,
+  message: string,
+): Promise<{ status: 'error' | 'pending'; attempts: number }> {
   const client = getClient();
   const current = await client.from('call_ingest').select('attempts').eq('id', id).maybeSingle();
   if (current.error) throw new Error(`markCallError read failed: ${current.error.message}`);
   const attempts = (current.data?.attempts ?? 0) + 1;
+  const status: 'error' | 'pending' = attempts >= 5 ? 'error' : 'pending';
   const { error } = await client
     .from('call_ingest')
-    .update({ attempts, last_error: message, status: attempts >= 5 ? 'error' : 'pending' })
+    .update({ attempts, last_error: message, status })
     .eq('id', id);
   if (error) throw new Error(`markCallError failed: ${error.message}`);
+  return { status, attempts };
 }
 
 // Rewrite audio_ref from the remote SignalWire URL to the Supabase object path,

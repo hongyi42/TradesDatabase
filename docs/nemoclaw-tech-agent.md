@@ -296,6 +296,27 @@ same write-path (`channel: 'email'`). This does **not** require NemoClaw — `in
   default fetcher uses an overlapping `newer_than:7d` window, so repeated runs would create duplicate
   L1/L2 rows. Advance a watermark or skip already-seen message ids first.
 
+## 6b. Inbound phone calls (intent router — separate from the chat channel)
+A third input channel captures inbound phone calls. The line forwards to a **receptionist** (a human,
+via `call_numbers.forward_to`) who has **no scheduling tools**, so the async call worker
+([src/calls/worker.ts](../src/calls/worker.ts)) is the **only systematic intake** for the phone
+channel: recording → STT → redact → **GLM-5.2 intent router** ([src/calls/classifyCall.ts](../src/calls/classifyCall.ts)).
+The router is **multi-label** — one call can be `[new_job, cancel]` and each is handled:
+
+- **`new_job`** → structures L2 (a job that surfaces in the board's unscheduled bucket); a new/unknown
+  caller still opens the `unlinked_call` review to link/create.
+- **`reschedule` / `cancel` / `question` / `complaint`** → **L1 only** (the transcript is always kept as
+  the call log), plus a `call_action` review that is **pushed to the tenant's managers** — these are
+  **NEVER auto-executed** (a receptionist can't act, the worker's read is unverified, and move/cancel are
+  irreversible + need stage→confirm). `complaint` and an unclassifiable call are **high-priority**.
+- **`other`** → L1 only.
+- **classifier failure** (throws after its retries / empty / all-invalid labels) → `unclassified` → a
+  pushed high-priority review — the fail-safe never lets an important call fall to silence.
+
+**No new MCP tool** — the router is entirely worker-side (the agent's tool counts are unchanged). Managers
+act on the pushed reviews through the existing review verbs. Preflight: `BOARD_BOT_TOKEN` must be set on
+the `calls:worker` service for the push to send.
+
 ## 7. Third-party app connectors (Composio — Option B, decided 2026-06-25)
 The agent reaches third-party apps (Gmail, Google Sheets, Microsoft Excel, calendar, …) through
 **Composio** as a per-tenant connector layer. **Decision: Option B — Composio manages *all* OAuth tokens

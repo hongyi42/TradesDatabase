@@ -53,10 +53,25 @@ interface Recorded {
   errors: Array<{ id: string; message: string }>;
   record: RecordFieldNoteInput[];
   flagged: Array<{ tenantId: string; captureId: string; callerPhone?: string | null }>;
+  actionReviews: Array<{
+    tenantId: string;
+    captureId: string;
+    intents: string[];
+    priority?: 'normal' | 'high';
+  }>;
+  notifications: Array<{ tenantId: string; text: string }>;
 }
 
 function makeDeps(over: Partial<WorkerDeps> = {}): { deps: WorkerDeps; calls: Recorded } {
-  const calls: Recorded = { setAudioRef: [], ingested: [], errors: [], record: [], flagged: [] };
+  const calls: Recorded = {
+    setAudioRef: [],
+    ingested: [],
+    errors: [],
+    record: [],
+    flagged: [],
+    actionReviews: [],
+    notifications: [],
+  };
   const deps: WorkerDeps = {
     claimNextPendingCall: async () => makeRow(),
     setAudioRef: async (id, path) => {
@@ -65,8 +80,10 @@ function makeDeps(over: Partial<WorkerDeps> = {}): { deps: WorkerDeps; calls: Re
     markCallIngested: async (id, f) => {
       calls.ingested.push({ id, ...f });
     },
+    // Default: a retryable failure (not yet exhausted) → no dead-letter push.
     markCallError: async (id, message) => {
       calls.errors.push({ id, message });
+      return { status: 'pending', attempts: 1 };
     },
     download: async () => 'audio/T1/RE1.wav',
     sign: async () => 'https://signed/url',
@@ -74,10 +91,19 @@ function makeDeps(over: Partial<WorkerDeps> = {}): { deps: WorkerDeps; calls: Re
     redact: redactSensitive, // real redaction so the pipeline is exercised end-to-end
     recordFieldNote: async (input): Promise<RecordFieldNoteResult> => {
       calls.record.push(input);
-      return { status: 'matched', captureId: 'cap1' };
+      // Mirror the real gate: L1-only mode returns 'captured', otherwise 'matched'.
+      return { status: input.structure === false ? 'captured' : 'matched', captureId: 'cap1' };
     },
+    // Default: a plain new-work call, so existing tests keep structuring L2.
+    classifyCall: async () => ({ intents: ['new_job'], reason: '' }),
     openUnlinkedCallReview: async (input) => {
       calls.flagged.push(input);
+    },
+    openCallActionReview: async (input) => {
+      calls.actionReviews.push(input);
+    },
+    notifyManagers: async (tenantId, text) => {
+      calls.notifications.push({ tenantId, text });
     },
     ...over,
   };
@@ -164,5 +190,145 @@ describe('processNextCall', () => {
     expect(await processNextCall(deps)).toBe('error');
     expect(calls.errors).toEqual([{ id: 'ci1', message: 'stt down' }]);
     expect(calls.ingested).toHaveLength(0);
+  });
+
+  test('new_job intent → structures L2; no action review, no push', async () => {
+    const { deps, calls } = makeDeps({
+      classifyCall: async () => ({ intents: ['new_job'], reason: 'new work' }),
+    });
+    expect(await processNextCall(deps)).toBe('ingested');
+    expect(calls.record[0].structure).toBe(true);
+    expect(calls.record[0].sourceMeta).toMatchObject({ callIntents: ['new_job'], reason: 'new work' });
+    expect(calls.actionReviews).toHaveLength(0);
+    expect(calls.flagged).toHaveLength(0); // matched → no unlinked review
+    expect(calls.notifications).toHaveLength(0);
+  });
+
+  test('cancel intent → L1 only (structure false) + a pushed call_action review', async () => {
+    const { deps, calls } = makeDeps({
+      classifyCall: async () => ({ intents: ['cancel'], reason: 'wants to cancel' }),
+    });
+    expect(await processNextCall(deps)).toBe('ingested');
+    expect(calls.record[0].structure).toBe(false);
+    expect(calls.actionReviews).toEqual([
+      {
+        tenantId: 'T1',
+        captureId: 'cap1',
+        intents: ['cancel'],
+        priority: 'normal',
+        callerPhone: '+15551234567',
+        snippet: expect.any(String),
+      },
+    ]);
+    expect(calls.notifications).toHaveLength(1);
+    expect(calls.notifications[0].text).toContain('cancel');
+  });
+
+  test('mixed [new_job, cancel] → BOTH structures L2 AND opens a call_action review', async () => {
+    const { deps, calls } = makeDeps({
+      classifyCall: async () => ({ intents: ['new_job', 'cancel'], reason: 'new job and a cancel' }),
+    });
+    expect(await processNextCall(deps)).toBe('ingested');
+    expect(calls.record[0].structure).toBe(true); // new_job present → structure on
+    expect(calls.actionReviews).toHaveLength(1);
+    expect(calls.actionReviews[0].intents).toEqual(['cancel']); // new_job routed to L2, not the review
+    expect(calls.notifications).toHaveLength(1);
+  });
+
+  test('mixed [new_job, cancel] on an UNMATCHED caller → BOTH branches fire (unlinked + call_action, two pushes)', async () => {
+    const { deps, calls } = makeDeps({
+      classifyCall: async () => ({ intents: ['new_job', 'cancel'], reason: 'new job and a cancel' }),
+      // new_job structures, but the caller matches nothing → needs_confirmation,
+      // which drives the unlinked-review branch alongside the call_action branch.
+      recordFieldNote: async () => ({ status: 'needs_confirmation', captureId: 'capBoth' }),
+    });
+    expect(await processNextCall(deps)).toBe('ingested');
+    // Branch (a): unlinked-call review for the unmatched new_job.
+    expect(calls.flagged).toEqual([
+      { tenantId: 'T1', captureId: 'capBoth', callerPhone: '+15551234567', snippet: expect.any(String) },
+    ]);
+    // Branch (b): call_action review for the cancel (new_job excluded).
+    expect(calls.actionReviews).toHaveLength(1);
+    expect(calls.actionReviews[0]).toMatchObject({ captureId: 'capBoth', intents: ['cancel'] });
+    // Both branches pushed the manager.
+    expect(calls.notifications).toHaveLength(2);
+  });
+
+  test('complaint intent → HIGH-priority call_action review', async () => {
+    const { deps, calls } = makeDeps({
+      classifyCall: async () => ({ intents: ['complaint'], reason: 'angry customer' }),
+    });
+    expect(await processNextCall(deps)).toBe('ingested');
+    expect(calls.actionReviews[0]).toMatchObject({ intents: ['complaint'], priority: 'high' });
+    expect(calls.notifications[0].text).toContain('🔴');
+  });
+
+  test('classifier throws → unclassified: structure false, HIGH review, still ingested', async () => {
+    const { deps, calls } = makeDeps({
+      classifyCall: async () => {
+        throw new Error('glm down after retries');
+      },
+    });
+    expect(await processNextCall(deps)).toBe('ingested'); // fail-safe, never silence
+    expect(calls.record[0].structure).toBe(false);
+    expect(calls.record[0].sourceMeta).toMatchObject({ callIntents: ['unclassified'] });
+    expect(calls.actionReviews[0]).toMatchObject({ intents: ['unclassified'], priority: 'high' });
+    expect(calls.notifications).toHaveLength(1);
+  });
+
+  test('an out-of-vocabulary label alone → treated as unclassified (fail-safe)', async () => {
+    const { deps, calls } = makeDeps({
+      // isCallIntent filters the garbage → empty → unclassified.
+      classifyCall: async () => ({ intents: ['made_up' as never], reason: 'garbage label' }),
+    });
+    expect(await processNextCall(deps)).toBe('ingested');
+    expect(calls.actionReviews[0]).toMatchObject({ intents: ['unclassified'], priority: 'high' });
+  });
+
+  test("'other' only → L1 kept, NO review, NO push", async () => {
+    const { deps, calls } = makeDeps({
+      classifyCall: async () => ({ intents: ['other'], reason: 'wrong number' }),
+    });
+    expect(await processNextCall(deps)).toBe('ingested');
+    expect(calls.record[0].structure).toBe(false);
+    expect(calls.actionReviews).toHaveLength(0);
+    expect(calls.flagged).toHaveLength(0);
+    expect(calls.notifications).toHaveLength(0);
+  });
+
+  test('duplicate redelivery → no action review even with a review-worthy intent', async () => {
+    const { deps, calls } = makeDeps({
+      classifyCall: async () => ({ intents: ['cancel'], reason: 'wants to cancel' }),
+      recordFieldNote: async () => ({ status: 'duplicate', captureId: 'capDup' }),
+    });
+    expect(await processNextCall(deps)).toBe('ingested');
+    expect(calls.actionReviews).toHaveLength(0); // already processed — do not re-open/re-push
+    expect(calls.notifications).toHaveLength(0);
+  });
+
+  test('terminal failure (markCallError → error) → dead-letter push to managers', async () => {
+    const { deps, calls } = makeDeps({
+      transcribe: async () => {
+        throw new Error('stt down');
+      },
+      markCallError: async (id, message) => {
+        calls.errors.push({ id, message });
+        return { status: 'error', attempts: 5 }; // retries exhausted → parked
+      },
+    });
+    expect(await processNextCall(deps)).toBe('error');
+    expect(calls.notifications).toHaveLength(1);
+    expect(calls.notifications[0].text).toContain('failed to process');
+  });
+
+  test('retryable failure (markCallError → pending) → NO dead-letter push', async () => {
+    const { deps, calls } = makeDeps({
+      transcribe: async () => {
+        throw new Error('stt blip');
+      },
+      // default markCallError returns { status: 'pending' }
+    });
+    expect(await processNextCall(deps)).toBe('error');
+    expect(calls.notifications).toHaveLength(0); // not yet exhausted — stays silent, will retry
   });
 });

@@ -358,4 +358,48 @@ describe('recordFieldNote', () => {
     expect(third.status).toBe('duplicate');
     expect((await listJobsForCustomer(customer.id)).length).toBe(1);
   });
+
+  test('structure:false stores L1 only — no extract, no job/visit, status captured', async () => {
+    const before = await rawCaptureCount();
+    const visitsBefore = await visitCount();
+    let extractCalls = 0;
+    const spyExtract: Extractor = async () => {
+      extractCalls++;
+      return { workPerformed: 'should never run' };
+    };
+
+    const r = await recordFieldNote(
+      {
+        tenantId,
+        technicianRef: 'phone-line',
+        channel: 'phone_call',
+        text: 'just calling to say thanks',
+        structure: false,
+      },
+      { extract: spyExtract },
+    );
+    expect(r.status).toBe('captured');
+    expect(r.captureId).toBeDefined();
+    expect(extractCalls).toBe(0); // extract must NOT run in L1-only mode
+
+    // Exactly one L1 row appended, and no L2.
+    expect(await rawCaptureCount()).toBe(before + 1);
+    expect(await visitCount()).toBe(visitsBefore);
+    const l2 = await pg.query<{ n: string }>(
+      'select count(*)::int as n from visits where source_capture_id = $1',
+      [r.captureId],
+    );
+    expect(Number(l2.rows[0].n)).toBe(0);
+  });
+
+  test('structure omitted → still structures (default true unchanged)', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Default Structures', phone: '555-9090' });
+    const r = await recordFieldNote(
+      { tenantId, technicianRef: 'phone-line', channel: 'phone_call', text: 'furnace down' },
+      stub({ phone: '555-9090', workPerformed: 'furnace repair' }),
+    );
+    expect(r.status).toBe('matched');
+    expect(r.customerId).toBe(customer.id);
+    expect(r.visitId).toBeDefined(); // L2 built when structure is left default
+  });
 });

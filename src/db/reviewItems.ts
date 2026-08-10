@@ -43,7 +43,14 @@ export type ReviewKind =
   // flagged for the manager to link/create (resolve) or mark spam/wrong-number
   // (dismiss). subject_ref = the parked L1 captureId → one open item per call,
   // idempotent across worker retries.
-  | 'unlinked_call';
+  | 'unlinked_call'
+  // A classified inbound call that needs a HUMAN to act (reschedule/cancel/
+  // question/complaint) or one the router couldn't classify at all (plan
+  // 2026-08-06). The agentless worker NEVER auto-executes these — it opens ONE
+  // review per call (subject_ref = the L1 captureId → deduped by the partial
+  // unique index, retry-safe) with the intent list carried in `detail`, and
+  // pushes the tenant's managers. Free-text kind → no migration.
+  | 'call_action';
 
 export interface UpsertOpenReviewItemInput {
   tenantId: string;
@@ -136,6 +143,36 @@ export async function openUnlinkedCallReview(input: {
     subjectRef: input.captureId,
     suggestion: input.callerPhone ?? null,
     detail: { callerPhone: input.callerPhone ?? null, snippet: input.snippet ?? null },
+  });
+}
+
+// Open a review for a classified call that needs a human to ACT — a reschedule,
+// cancel, question, or complaint the agentless worker must never auto-execute,
+// or an `['unclassified']` fail-safe when the router gave up. subject_ref = the
+// L1 captureId, so a worker retry on the same capture returns the existing open
+// item (partial unique index) instead of stacking duplicates — the intent list
+// travels in `detail` rather than the kind, so ONE `call_action` row covers a
+// mixed call and re-classification never forks a second review. suggestion
+// carries the caller number so the pull queue shows who to call back.
+export async function openCallActionReview(input: {
+  tenantId: string;
+  captureId: string;
+  intents: string[];
+  priority?: 'normal' | 'high';
+  callerPhone?: string | null;
+  snippet?: string | null;
+}): Promise<ReviewItem> {
+  return upsertOpenReviewItem({
+    tenantId: input.tenantId,
+    kind: 'call_action',
+    subjectRef: input.captureId,
+    suggestion: input.callerPhone ?? null,
+    detail: {
+      intents: input.intents,
+      priority: input.priority ?? 'normal',
+      callerPhone: input.callerPhone ?? null,
+      snippet: input.snippet ?? null,
+    },
   });
 }
 

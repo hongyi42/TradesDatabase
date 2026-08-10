@@ -54,10 +54,16 @@ export interface RecordFieldNoteInput {
   // Inert when unset (email / tech notes pass nothing) — the only phone-specific
   // hook in the shared write-path.
   fallbackPhone?: string | null;
+  // L1-only switch (default true = structure). When explicitly false, append the
+  // verbatim capture to L1 and STOP — no extract, no match, no L2/L3. The phone
+  // router uses this for a non-`new_job` call: the transcript is always kept as
+  // the call log, but a cancel/complaint/question must NOT auto-build a job (it
+  // routes to a pushed human review instead). Gate before-L2, never before-L1.
+  structure?: boolean;
 }
 
 export interface RecordFieldNoteResult {
-  status: 'matched' | 'needs_confirmation' | 'needs_disambiguation' | 'duplicate';
+  status: 'matched' | 'needs_confirmation' | 'needs_disambiguation' | 'duplicate' | 'captured';
   captureId: string;
   customerId?: string;
   jobId?: string;
@@ -149,6 +155,13 @@ export async function recordFieldNote(
     rawText = landed.raw_text ?? input.text ?? '';
     capturedAt = landed.captured_at;
   }
+
+  // L1-only mode: the verbatim capture is stored (and any orphan healed / dup
+  // detected above), but no L2 is built. Placed AFTER the dedup/heal block so a
+  // redelivered captured call re-returns 'captured' rather than re-running an
+  // extract that would never link L2 anyway. The phone router's non-`new_job`
+  // path lands here — the call log is kept, the human review carries the action.
+  if (input.structure === false) return { status: 'captured', captureId };
 
   // (2-3) AI extraction of candidate fields.
   // Pass the cost context: this is the extractor's PRODUCTION billing path.

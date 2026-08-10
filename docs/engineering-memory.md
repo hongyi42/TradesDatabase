@@ -1161,6 +1161,14 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
 - **`nemoclaw onboard`/rebuild resets the gateway inference route** to the NVIDIA free-tier
   default (rate-limited, wrong model). The medic timer re-asserts DeepInfra within 5 min; if
   agents act "dumb"/throttled right after an onboard, that's why.
+- **Tool VOCABULARY lives in three places, and one of them self-reapplies.** Renaming or
+  adding an agent-facing tool means: (1) the MCP tool defs (gateway-cached `tools/list` →
+  fleet restarts), (2) the living docs (`docs/nemoclaw-tech-agent.md` + the Box Setup Stuff
+  sync rule), and (3) **the heredoc template blocks in `Box_Setup_Stuff/bootstrap-box.sh`**
+  (doctrine + boardLink blocks, ~:594/:619), which are delete-then-appended into every
+  agent's AGENTS.md **on every wire run** — miss (3) and the fleet's instructions re-acquire
+  the dead name forever, and no code gate notices. Grep gates must include
+  `Box_Setup_Stuff`. (Caught in the 2026-07-25 cancel-vocabulary plan review.)
 - **There is NO per-tool allowlist file** in the sandbox configs, whatever older docs imply.
   "Pinning" = the gateway's cached MCP `tools/list` (refresh: `nemoclaw <s> gateway restart`;
   MCP starts lazily, so verify behaviorally — logs stay quiet) + the AGENTS.md contract

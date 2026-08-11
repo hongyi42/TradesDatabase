@@ -1215,6 +1215,18 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   into `/root/pending-badges.jsonl` → install as the provider credential → **container** restart
   (a gateway restart is not enough; creds inject at container launch). Check this BEFORE
   debugging any "the agent isn't using tool X" report on a specific sandbox.
+- **The doorman is ONE shared process — an unhandled stream `error` anywhere in its request
+  flow kills every sandbox's in-flight MCP call at once.** Bitten 2026-08-04: an upstream TLS
+  reset mid-SSE fired `upReq`'s error handler *after* the response head had been relayed; its
+  unconditional `res.writeHead(502)` threw `ERR_HTTP_HEADERS_SENT` and the whole process exited.
+  `Restart=always` brings it back in ~5s, so the only visible symptom is a climbing
+  `restart counter` in `journalctl -u doorman.service` — check that counter before trusting "the
+  doorman is fine". Fixed 2026-08-11 (headersSent guard, `stream.pipeline` instead of bare
+  `pipe`, client-disconnect teardown of the upstream leg); `src/control/doorman.test.ts` now runs
+  the REAL `Box_Setup_Stuff/doorman.mjs` against a stub upstream and replays every one of these
+  deaths. Two docs embed verbatim copies of the file (`doorman-runbook.md`,
+  `doorman-nemoclaw-setup-guide.md`) — they must stay byte-identical to it; the runbook's copy
+  drifted once (2026-07-06→08-11) and kept handing out the crash-prone pre-relay code.
 - **Credentials inject into a sandbox's process env at container launch ONLY.** Any provider
   credential write (badge install/rotation, token change) needs a container restart to take
   effect. This exact mechanism silently killed Judy's spine MCP for 4 days (badge in store,

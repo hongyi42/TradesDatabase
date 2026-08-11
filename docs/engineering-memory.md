@@ -241,6 +241,20 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   point. Caught on the s6 canary (cold sandbox, zero live impact — this is exactly why the canary
   goes first). Sequence that works, now in bootstrap-box.sh: upload → `plugins install --force` →
   `doctor --fix` (repairs the hash) → `gateway restart` → verify via the startup line.
+- **DOCTRINE — the manager is NEVER a verification layer for dates (owner decision, 2026-08-11).**
+  "The manager would trust that the AI agent is able to get the dates right, and people rarely
+  check when it comes to dates." Trust transference is immediate: a person who delegates
+  scheduling stops auditing the assistant's calendar math. The July 17/18 incident is the proof —
+  the booking confirm gate was passed with "Friday, July 18" (a Saturday) on screen. **A
+  confirmation dialog is consent to the ACTION, not verification of the arithmetic.** Never argue
+  "the preview / confirm step / manager will catch a wrong date" in any design or risk
+  assessment; date safety must be machine-side on both ends (deterministic generation upstream,
+  machine verification downstream). Corollaries: detect-only guarding is telemetry, not
+  protection — a flagged-but-delivered message is caught by no one in the moment; and the guard's
+  phase-2 posture should be cancel-and-retry on ANY flag once built (the measured rate decides
+  whether retry is *sufficient*, not whether intervention is *warranted* — a ~15s retry against a
+  technician at the wrong house is not a close call). Generalizes to anything people habitually
+  trust without checking: amounts, addresses, phone numbers.
 - **The weekday fabrication is ENDEMIC, not episodic — 23 mismatches in 419 historical texts
   (2026-08-06).** Built the outbound weekday guard (observe-only `message_sending` plugin,
   chrono-node, see nemoclaw-tech-agent.md §4c) and replayed it over every assistant text in the

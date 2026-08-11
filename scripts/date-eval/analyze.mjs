@@ -1,0 +1,384 @@
+// Date-eval STEP 3 of 3 — report. Costs nothing; re-runnable on a finished run.
+//
+// Turns the trajectories into a per-phase verdict, so a failure lands on the
+// thing that actually broke:
+//
+//   RESOLVE  did it get the right date, and did it get it from resolve_date?
+//            Split two ways, because they need opposite fixes:
+//              model     — asked the tool for the wrong thing (or asked nobody)
+//              machinery — asked correctly, tool answered wrongly  ← new-code signal
+//   USE      did that date reach the data tools intact — right window, no
+//            invented literals?
+//   SPEAK    does the reply state the right date, with a weekday, and do the
+//            weekday and date agree?
+//   GUARD    for every weekday↔date contradiction that DID reach the text,
+//            would the outbound guard have flagged it?
+//
+// Attribution is EARLIEST-FAILING-PHASE: a bad date resolved at step one makes
+// every later step wrong too, and counting those as three failures would say
+// "speak is broken" when speak faithfully repeated a number it was handed.
+// Later phases are marked `inherited` and excluded from their own denominators.
+//
+// GUARD IS REPLAYED OFFLINE, NOT OBSERVED. The message_sending hook does not
+// fire on the embedded-agent path (verified 2026-08-11: a deliberate "Monday
+// 2026-08-12" — a Wednesday — produced no log line), so a run cannot watch the
+// real hook. Replaying the plugin's own scanMessage over the collected replies
+// measures the DETECTOR's logic exactly; it cannot tell you the hook is wired
+// up in production. That wiring is a separate one-off Telegram check.
+//
+//   node scripts/date-eval/analyze.mjs --dir <run-dir>
+import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { scanMessage, firmLocalParts } from '../../Box_Setup_Stuff/plugins/trades-weekday-guard/index.js';
+import { expectedResolve, weekdayName, titleWeekday, addDays } from './corpus.mjs';
+
+const argOf = (name, dflt) => {
+  const i = process.argv.indexOf(`--${name}`);
+  return i > -1 && process.argv[i + 1] ? process.argv[i + 1] : dflt;
+};
+const DIR = argOf('dir', join(process.cwd(), 'date-eval-runs', 'pending'));
+const manifest = JSON.parse(readFileSync(join(DIR, 'manifest.json'), 'utf8'));
+const TODAY = manifest.today;
+const TZ = manifest.timezone || 'America/Los_Angeles';
+
+const results = readFileSync(join(DIR, 'results.jsonl'), 'utf8')
+  .split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+const byId = Object.fromEntries(manifest.questions.map((q) => [q.id, q]));
+const abort = results.find((r) => r.id === 'ABORT-FAILOVER');
+
+const ISO_RE = /\b(\d{4}-\d{2}-\d{2})\b/g;
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+const NUMWORD = { zero: 0, no: 0, none: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 };
+
+/** Every date the text names, in ISO form — "2026-08-14" and "August 14" both. */
+function datesNamed(text, year) {
+  const out = new Set();
+  for (const m of text.matchAll(ISO_RE)) out.add(m[1]);
+  const re = new RegExp(`\\b(${MONTHS.join('|')})\\s+(\\d{1,2})\\b`, 'gi');
+  for (const m of text.matchAll(re)) {
+    const mo = MONTHS.indexOf(m[1].toLowerCase()) + 1;
+    out.add(`${year}-${String(mo).padStart(2, '0')}-${String(Number(m[2])).padStart(2, '0')}`);
+  }
+  return [...out];
+}
+/** Weekday↔date contradictions the TEXT itself contains (our own check, independent of the guard). */
+function ownMismatches(text, year) {
+  const found = [];
+  const re = new RegExp(`\\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\\b[,\\s]+(?:the\\s+)?(?:(${MONTHS.join('|')})\\s+(\\d{1,2})|(\\d{4}-\\d{2}-\\d{2}))`, 'gi');
+  for (const m of text.matchAll(re)) {
+    const iso = m[4] ?? `${year}-${String(MONTHS.indexOf(m[2].toLowerCase()) + 1).padStart(2, '0')}-${String(Number(m[3])).padStart(2, '0')}`;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) continue;
+    const actual = weekdayName(iso);
+    if (actual !== m[1].toLowerCase()) found.push({ said: m[1].toLowerCase(), date: iso, actual });
+  }
+  return found;
+}
+const deepDates = (v, acc = new Set()) => {
+  if (typeof v === 'string') for (const m of v.matchAll(ISO_RE)) acc.add(m[1]);
+  else if (Array.isArray(v)) v.forEach((x) => deepDates(x, acc));
+  else if (v && typeof v === 'object') Object.values(v).forEach((x) => deepDates(x, acc));
+  return acc;
+};
+
+/** Flatten a trajectory into ordered steps with timings. */
+function parseTrajectory(path) {
+  if (!existsSync(path)) return null;
+  const evs = readFileSync(path, 'utf8').split('\n').filter((l) => l.trim()).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  const steps = [];
+  let models = new Set();
+  let firstUserTs = null, lastTs = null;
+  let tokens = { input: 0, output: 0, cacheRead: 0 };
+  for (const e of evs) {
+    if (e.type === 'model_change' && e.modelId) models.add(e.modelId);
+    if (e.type !== 'message') continue;
+    const ts = Date.parse(e.timestamp);
+    lastTs = ts;
+    const m = e.message;
+    if (m.role === 'user' && firstUserTs === null) firstUserTs = ts;
+    if (m.role === 'assistant') {
+      if (m.model) models.add(m.model);
+      if (m.usage) { tokens.input += m.usage.input ?? 0; tokens.output += m.usage.output ?? 0; tokens.cacheRead += m.usage.cacheRead ?? 0; }
+      const calls = (m.content ?? []).filter((c) => c.type === 'toolCall');
+      const text = (m.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('');
+      steps.push({ kind: 'assistant', ts, calls, text });
+    } else if (m.role === 'toolResult') {
+      const body = (m.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('');
+      let parsed = null; try { parsed = JSON.parse(body); } catch {}
+      steps.push({ kind: 'toolResult', ts, toolName: m.toolName ?? m.details?.mcpTool, body, parsed, isError: !!m.isError, callId: m.toolCallId });
+    }
+  }
+  return { steps, models: [...models], firstUserTs, lastTs, tokens };
+}
+
+const isResolve = (name = '') => /resolve_date/.test(name);
+const isWrite = (name = '') => /(book|move|cancel|create|update|set_|delete|commit|send_email|unschedule|attach)/i.test(name) && !/get_|list_|query_/.test(name);
+
+const rows = [];
+for (const r of results) {
+  if (r.id === 'ABORT-FAILOVER') continue;
+  const spec = byId[r.id];
+  if (!spec) continue;
+  const e = spec.expect ?? {};
+  const year = TODAY.slice(0, 4);
+  const traj = parseTrajectory(join(DIR, 'trajectories', `${r.id}.jsonl`));
+  const text = r.reply ?? '';
+
+  // ── gather what happened ──
+  const resolveCalls = [];   // {args, returned, expected, ok}
+  const dataCalls = [];      // {name, args, dates}
+  const writeCalls = [];
+  let resolvedDates = new Set();
+  const lat = { resolve: 0, use: 0, speak: 0, other: 0 };
+
+  if (traj) {
+    const pending = new Map();
+    let prevTs = traj.firstUserTs;
+    for (const s of traj.steps) {
+      if (s.kind === 'assistant') {
+        const genMs = Math.max(0, s.ts - prevTs);
+        const hasResolve = s.calls.some((c) => isResolve(c.name));
+        const hasData = s.calls.some((c) => !isResolve(c.name));
+        if (hasResolve) lat.resolve += genMs;
+        else if (hasData) lat.use += genMs;
+        else if (s.text.trim()) lat.speak += genMs;   // the final prose turn
+        else lat.other += genMs;
+        for (const c of s.calls) {
+          pending.set(c.id, { name: c.name, args: c.arguments ?? {}, ts: s.ts });
+          if (isWrite(c.name)) writeCalls.push({ name: c.name, args: c.arguments });
+        }
+        prevTs = s.ts;
+      } else {
+        const call = pending.get(s.callId);
+        const execMs = call ? Math.max(0, s.ts - call.ts) : 0;
+        if (call && isResolve(call.name)) {
+          lat.resolve += execMs;
+          const got = s.parsed ?? {};
+          const exp = expectedResolve(TODAY, call.args);
+          let ok = null, returned = null;
+          if (got.status === 'resolved') { returned = got.date; ok = exp?.kind === 'day' ? exp.date === got.date : null; if (got.date) resolvedDates.add(got.date); }
+          else if (got.status === 'resolved_week') {
+            returned = `${got.weekStart}..${got.weekEnd}`;
+            ok = exp?.kind === 'week' ? exp.weekStart === got.weekStart && exp.weekEnd === got.weekEnd : null;
+            if (got.weekStart) { resolvedDates.add(got.weekStart); resolvedDates.add(got.weekEnd); }
+          } else { returned = got.status ?? 'unparsed'; ok = exp === null ? true : false; }
+          resolveCalls.push({ args: call.args, returned, expected: exp, ok });
+        } else if (call) {
+          lat.use += execMs;
+          dataCalls.push({ name: call.name, args: call.args, dates: [...deepDates(call.args)] });
+        }
+        prevTs = s.ts;
+      }
+    }
+  }
+
+  // ── PHASE 1: RESOLVE ──
+  const required = e.dates ?? [];
+  const machineryBad = resolveCalls.filter((c) => c.ok === false);
+  let resolve = { verdict: 'n/a', flags: [] };
+  if (spec.phases.includes('resolve')) {
+    const landed = new Set([...resolvedDates]);
+    const missing = required.filter((d) => !landed.has(d));
+    if (machineryBad.length) {
+      resolve = { verdict: 'fail', reason: 'machinery', flags: ['tool returned a date its own arguments do not imply'], detail: machineryBad.map((c) => `${JSON.stringify(c.args)} → ${c.returned}, expected ${JSON.stringify(c.expected)}`) };
+    } else if (resolveCalls.length === 0) {
+      // No tool call. Not automatically an outcome failure — but the date was
+      // computed in the model's head, which is the thing the doctrine forbids.
+      const spokenOk = required.every((d) => datesNamed(text, year).includes(d));
+      resolve = { verdict: spokenOk ? 'pass' : 'fail', reason: spokenOk ? undefined : 'model', flags: ['BYPASSED resolve_date — date computed in-model'] };
+    } else if (missing.length) {
+      resolve = { verdict: 'fail', reason: 'model', flags: [`asked for the wrong day: never resolved ${missing.join(', ')}`], detail: resolveCalls.map((c) => `${JSON.stringify(c.args)} → ${c.returned}`) };
+    } else {
+      resolve = { verdict: 'pass', flags: [] };
+    }
+  }
+
+  // ── PHASE 2: USE ──
+  let use = { verdict: 'n/a', flags: [] };
+  if (spec.phases.includes('use')) {
+    if (resolve.verdict === 'fail') use = { verdict: 'inherited', flags: [] };
+    else if (dataCalls.length === 0) use = { verdict: 'fail', reason: 'no-data-read', flags: ['answered a data question without reading the schedule'] };
+    else {
+      const flags = [];
+      const allDates = new Set(dataCalls.flatMap((c) => c.dates));
+      const justified = new Set([...resolvedDates, ...required, ...(e.window ? [e.window.from, e.window.to] : [])]);
+      const fabricated = [...allDates].filter((d) => !justified.has(d));
+      if (e.window) {
+        const covers = dataCalls.some((c) => {
+          const ds = c.dates.filter(Boolean).sort();
+          return ds.length && ds[0] <= e.window.from && ds[ds.length - 1] >= e.window.to;
+        });
+        const exact = dataCalls.some((c) => c.dates.includes(e.window.from) && c.dates.includes(e.window.to));
+        if (!covers) flags.push(`window never covered ${e.window.from}..${e.window.to} (queried ${[...allDates].join(', ') || 'no dates'})`);
+        else if (!exact) flags.push(`window covered but not exact (queried ${[...allDates].join(', ')})`);
+      }
+      if (fabricated.length) flags.push(`date in tool args that no resolve produced: ${fabricated.join(', ')}`);
+      const hard = flags.some((f) => f.startsWith('window never') || f.startsWith('date in tool args'));
+      use = { verdict: hard ? 'fail' : 'pass', reason: hard ? 'model' : undefined, flags };
+    }
+  }
+
+  // ── PHASE 3: SPEAK ──
+  const named = datesNamed(text, year);
+  const mism = ownMismatches(text, year);
+  let speak = { verdict: 'n/a', flags: [] };
+  if (spec.phases.includes('speak')) {
+    if (resolve.verdict === 'fail' || use.verdict === 'fail') speak = { verdict: 'inherited', flags: [] };
+    else {
+      const flags = [];
+      if (mism.length) flags.push(...mism.map((m) => `says ${m.said} for ${m.date}, which is a ${m.actual}`));
+      const justified = new Set([...resolvedDates, ...required, ...dataCalls.flatMap((c) => c.dates)]);
+      const invented = named.filter((d) => !justified.has(d));
+      if (invented.length) flags.push(`names a date nothing produced: ${invented.join(', ')}`);
+      const missingNamed = required.filter((d) => !named.includes(d));
+      if (e.requireWeekday && named.length && !/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i.test(text)) flags.push('names a date with no weekday (doctrine rule 4)');
+      if (missingNamed.length && e.answer?.kind === 'date') flags.push(`never states the answer date ${missingNamed.join(', ')}`);
+      const hard = mism.length > 0 || invented.length > 0 || (missingNamed.length > 0 && e.answer?.kind === 'date');
+      speak = { verdict: hard ? 'fail' : 'pass', reason: hard ? 'model' : undefined, flags };
+    }
+  }
+
+  // ── PHASE 4: GUARD (offline replay of the real detector) ──
+  const guardFlags = (() => { try { return scanMessage(text, firmLocalParts(TZ, new Date(`${TODAY}T12:00:00Z`))); } catch { return []; } })();
+  const guard = mism.length === 0
+    ? (guardFlags.length ? { verdict: 'false-positive', flags: guardFlags } : { verdict: 'n/a', flags: [] })
+    : (guardFlags.length ? { verdict: 'caught', flags: guardFlags } : { verdict: 'missed', flags: [], detail: mism });
+
+  // ── outcome: is the ANSWER right? ──
+  let outcome = { verdict: 'needs-adjudication', why: '' };
+  const kind = e.answer?.kind;
+  if (kind === 'count') {
+    const want = e.answer.value;
+    const nums = new Set([...text.matchAll(/\b(\d{1,4})\b/g)].map((m) => Number(m[1])));
+    for (const [w, v] of Object.entries(NUMWORD)) if (new RegExp(`\\b${w}\\b`, 'i').test(text)) nums.add(v);
+    const alt = (e.altAnswers ?? []).some((a) => nums.has(a));
+    outcome = nums.has(want) ? { verdict: 'correct', why: `${want} present` }
+      : alt ? { verdict: 'needs-adjudication', why: `expected ${want}; an accepted alternative reading is present instead` }
+        : { verdict: 'wrong', why: `expected ${want}; text has ${[...nums].slice(0, 8).join(', ') || 'no number'}` };
+  } else if (kind === 'date') {
+    const ok = required.every((d) => named.includes(d));
+    outcome = ok ? { verdict: 'correct', why: 'date stated' } : { verdict: 'wrong', why: `expected ${required.join(', ')}; named ${named.join(', ') || 'none'}` };
+  } else if (kind === 'ambiguity') {
+    const both = required.every((d) => named.includes(d));
+    const asks = /\?|which one|which of|did you mean|do you mean/i.test(text);
+    outcome = both && asks ? { verdict: 'correct', why: 'both readings offered and asked' }
+      : { verdict: 'needs-adjudication', why: `must offer both ${required.join(' / ')} and ask; named ${named.join(', ') || 'none'}, asks=${asks}` };
+  } else if (kind === 'flag') {
+    const corrected = required.some((d) => named.includes(d) && new RegExp(titleWeekday(d), 'i').test(text));
+    const objects = /isn'?t|is not|actually|correction|mismatch|doesn'?t match|to confirm|did you mean/i.test(text);
+    outcome = corrected && objects ? { verdict: 'correct', why: 'mismatch flagged and corrected' }
+      : { verdict: 'needs-adjudication', why: `must flag the bad weekday↔date pair. ${e.note ?? ''}` };
+  } else {
+    outcome = { verdict: 'needs-adjudication', why: `expected: ${JSON.stringify(e.answer?.value ?? e.answer)}${e.note ? ` — ${e.note}` : ''}` };
+  }
+
+  const failingPhase = resolve.verdict === 'fail' ? 'resolve' : use.verdict === 'fail' ? 'use' : speak.verdict === 'fail' ? 'speak' : null;
+  rows.push({
+    id: r.id, cat: r.cat, q: r.q, reply: text, wallMs: r.wallMs, phases: spec.phases,
+    resolve, use, speak, guard, outcome, failingPhase,
+    resolveCalls, dataCalls, writeCalls, mismatches: mism,
+    lat, trajMs: traj ? traj.lastTs - traj.firstUserTs : null, models: traj?.models ?? [], tokens: traj?.tokens ?? null,
+    truncated: r.agentsMdTruncated,
+  });
+}
+
+// ─────────────────────────────────────────────────────────── report ──
+const pct = (a, b) => (b ? `${((a / b) * 100).toFixed(0)}%` : '—');
+const L = [];
+L.push(`# Date-machinery eval — ${manifest.today} (${titleWeekday(manifest.today)})\n`);
+if (abort) L.push(`> **RUN ABORTED — fleet failed over** from \`${abort.was.model}\` to \`${abort.now.model}\` after ${abort.afterQuestion}. Only questions before that point are reported.\n`);
+const models = [...new Set(rows.flatMap((r) => r.models))];
+L.push(`**Model:** ${models.join(', ') || 'unknown'} · **Questions:** ${rows.length} · **Tenant:** ${manifest.tenant}`);
+if (rows.some((r) => r.truncated)) L.push(`\n> ⚠ The embedded agent reported truncating AGENTS.md — the date doctrine may not have been in context. This measures a weaker prompt than production Telegram.`);
+
+const correct = rows.filter((r) => r.outcome.verdict === 'correct').length;
+const wrong = rows.filter((r) => r.outcome.verdict === 'wrong').length;
+const adj = rows.filter((r) => r.outcome.verdict === 'needs-adjudication').length;
+L.push(`\n## End result\n`);
+L.push(`| | n | share |`);
+L.push(`|---|---|---|`);
+L.push(`| Correct (auto-verified) | ${correct} | ${pct(correct, rows.length)} |`);
+L.push(`| Wrong (auto-verified) | ${wrong} | ${pct(wrong, rows.length)} |`);
+L.push(`| Needs adjudication | ${adj} | ${pct(adj, rows.length)} |`);
+
+L.push(`\n## Where it fails, by phase\n`);
+L.push(`Earliest failing phase only — a wrong date at RESOLVE is not also counted as a SPEAK failure.\n`);
+L.push(`| Phase | Exercised | Passed | Failed | Rate |`);
+L.push(`|---|---|---|---|---|`);
+for (const p of ['resolve', 'use', 'speak']) {
+  const ex = rows.filter((r) => r.phases.includes(p) && r[p].verdict !== 'inherited' && r[p].verdict !== 'n/a');
+  const f = ex.filter((r) => r[p].verdict === 'fail');
+  L.push(`| ${p} | ${ex.length} | ${ex.length - f.length} | ${f.length} | ${pct(ex.length - f.length, ex.length)} |`);
+}
+const mach = rows.filter((r) => r.resolve.reason === 'machinery');
+const modelR = rows.filter((r) => r.failingPhase === 'resolve' && r.resolve.reason === 'model');
+const bypass = rows.filter((r) => r.resolve.flags?.some((f) => f.includes('BYPASSED')));
+L.push(`\n- **resolve → machinery** (tool asked correctly, answered wrongly): **${mach.length}** ${mach.length ? '← the date code itself is wrong' : ''}`);
+L.push(`- **resolve → model** (asked the tool for the wrong day, or nobody): **${modelR.length}**`);
+L.push(`- **bypassed resolve_date entirely** (date computed in-model, right or wrong): **${bypass.length}** of ${rows.filter((r) => r.phases.includes('resolve')).length}`);
+
+const gCaught = rows.filter((r) => r.guard.verdict === 'caught').length;
+const gMissed = rows.filter((r) => r.guard.verdict === 'missed').length;
+const gFP = rows.filter((r) => r.guard.verdict === 'false-positive').length;
+L.push(`\n## Guard\n`);
+L.push(`Replayed offline over every reply (the hook does not fire on the probe path — see the header note).\n`);
+L.push(`- weekday↔date contradictions that reached the text: **${gCaught + gMissed}**`);
+L.push(`- guard would have caught: **${gCaught}** · missed: **${gMissed}** · false positives: **${gFP}**`);
+
+L.push(`\n## Latency, by phase\n`);
+const med = (xs) => (xs.length ? xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)] : 0);
+const medTraj = med(rows.map((r) => r.trajMs).filter(Boolean));
+// Each phase is timed only over the questions that actually run it, and its
+// share is taken per-question before the median. Averaging a phase's absolute
+// time against a whole-corpus median would compare a segment measured on one
+// subset with a total measured on another, and the columns would not add up.
+L.push(`| Segment | questions timed | median | median share of its own turn |`);
+L.push(`|---|---|---|---|`);
+for (const k of ['resolve', 'use', 'speak', 'other']) {
+  const ran = rows.filter((r) => r.lat[k] > 0 && r.trajMs);
+  const share = med(ran.map((r) => (r.lat[k] / r.trajMs) * 100));
+  L.push(`| ${k} | ${ran.length} | ${(med(ran.map((r) => r.lat[k])) / 1000).toFixed(1)}s | ${ran.length ? `${share.toFixed(0)}%` : '—'} |`);
+}
+L.push(`| **agent turn (total)** | ${rows.filter((r) => r.trajMs).length} | **${(medTraj / 1000).toFixed(1)}s** | 100% |`);
+L.push(`| CLI boot + ssh overhead | ${rows.length} | ${((med(rows.map((r) => r.wallMs)) - medTraj) / 1000).toFixed(1)}s | — |`);
+// The only apples-to-apples split: questions that run every phase.
+const full = rows.filter((r) => r.lat.resolve > 0 && r.lat.use > 0 && r.lat.speak > 0 && r.trajMs);
+if (full.length) {
+  const s = (k) => `${(med(full.map((r) => r.lat[k])) / 1000).toFixed(1)}s (${((med(full.map((r) => r.lat[k])) / med(full.map((r) => r.trajMs))) * 100).toFixed(0)}%)`;
+  L.push(`\n**Full-pipeline questions only** (${full.length} that resolve, query, and answer): resolve ${s('resolve')} · use ${s('use')} · speak ${s('speak')} · turn ${(med(full.map((r) => r.trajMs)) / 1000).toFixed(1)}s`);
+}
+L.push(`\nResolve = model deciding to call resolve_date + the call itself. Use = composing and running the data query. Speak = generating the final prose after the last tool result. Shares are per-question medians, so the column does not sum to 100% — not every question runs every phase.`);
+
+const fails = rows.filter((r) => r.failingPhase || r.outcome.verdict === 'wrong');
+if (fails.length) {
+  L.push(`\n## Failures\n`);
+  for (const r of fails) {
+    L.push(`### ${r.id} — ${r.failingPhase ? `${r.failingPhase.toUpperCase()} (${r[r.failingPhase].reason ?? ''})` : 'answer wrong'}`);
+    L.push(`> ${r.q}\n`);
+    L.push(`- **why:** ${r.outcome.why}`);
+    for (const p of ['resolve', 'use', 'speak']) for (const f of r[p].flags ?? []) L.push(`- ${p}: ${f}`);
+    if (r.resolveCalls.length) L.push(`- resolve_date calls: ${r.resolveCalls.map((c) => `\`${JSON.stringify(c.args)}\` → ${c.returned}`).join('; ')}`);
+    if (r.dataCalls.length) L.push(`- data calls: ${r.dataCalls.map((c) => `\`${c.name}(${c.dates.join(',') || '—'})\``).join('; ')}`);
+    L.push(`- reply: ${r.reply.slice(0, 300).replaceAll('\n', ' ')}\n`);
+  }
+}
+
+const needing = rows.filter((r) => r.outcome.verdict === 'needs-adjudication');
+if (needing.length) {
+  L.push(`\n## Needs adjudication (${needing.length})\n`);
+  L.push(`Deterministic checks can't settle these — judge the reply against the expectation.\n`);
+  for (const r of needing) {
+    L.push(`- **${r.id}** — ${r.q}`);
+    L.push(`  - expected: ${r.outcome.why}`);
+    L.push(`  - got: ${r.reply.slice(0, 240).replaceAll('\n', ' ')}`);
+  }
+}
+if (rows.some((r) => r.writeCalls.length)) {
+  L.push(`\n## ⚠ Write tools called during a read-only eval\n`);
+  for (const r of rows.filter((x) => x.writeCalls.length)) L.push(`- ${r.id}: ${r.writeCalls.map((w) => w.name).join(', ')}`);
+}
+
+const out = join(DIR, 'report.md');
+writeFileSync(out, L.join('\n'));
+writeFileSync(join(DIR, 'rows.json'), JSON.stringify(rows, null, 2));
+console.log(L.join('\n'));
+console.log(`\n\nreport → ${out}\nrows   → ${join(DIR, 'rows.json')}`);

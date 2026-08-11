@@ -277,6 +277,38 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   ignoring `.claude/` and pinning `tsconfigRootDir: import.meta.dirname` in `eslint.config.js`.
   Worth knowing because the failure looks catastrophic and is purely environmental — and because it
   was masking a genuine `no-unused-vars` error in the suite.
+- **The date eval is phase-attributed, and the four phases are the unit of diagnosis
+  (2026-08-11, `scripts/date-eval/`, README there).** "Is the agent good at dates?" is not
+  answerable as one number: a date passes through RESOLVE (call `resolve_date`, don't do the math
+  in-head) → USE (carry it into the query window intact) → SPEAK (state it back with its weekday,
+  the two agreeing) → GUARD (catch a bad pair on the way out), and each fails differently and
+  needs a different fix. The harness tags every question with the phases it exercises, reads the
+  session **trajectory** (tool calls, arguments, results, per-message timestamps — at
+  `/sandbox/.openclaw/agents/main/sessions/<sid>.jsonl` inside the container) rather than the
+  final text alone, and attributes each failure to the EARLIEST failing phase so an upstream bad
+  date is not also counted as three downstream failures. The load-bearing split: `resolve` is
+  reported as **machinery** (tool asked correctly, answered wrongly — the signal a new date
+  implementation is broken) vs **model** (asked for the wrong day, or called nobody), decided by
+  recomputing every call independently. That independent date math must never import
+  `dateResolve.ts` — sharing it makes the check agree with the machinery exactly when the
+  machinery is wrong. Truth is derived from the live DB at plan time, so a schedule shift moves
+  the answers with it. Same trajectory timestamps give the latency split (measured on 3 probes:
+  resolve ~4.6s, use ~2.9s, speak ~5.3s of a ~12.8s full-pipeline turn, plus ~10s of CLI boot
+  that is harness overhead, not the agent). Gates: `--yes` required to spend, model verified
+  before the first question, and the inference route re-read after EVERY question so a mid-run
+  failover **aborts** instead of silently mixing two models into one number.
+- **The weekday guard's `message_sending` hook does NOT fire on the embedded-agent CLI path
+  (verified 2026-08-11).** Made the agent emit "The meeting is Monday 2026-08-12" — Aug 12 is a
+  Wednesday, exactly the fabricated pair the guard exists to catch — and `weekday-guard.jsonl`
+  did not move. So **no CLI-driven test can measure the guard**; a run that tried would report a
+  0% catch rate that is an artifact of the harness. The eval instead replays the plugin's own
+  exported `scanMessage` over every collected reply, which measures the detector's LOGIC exactly
+  (it caught the planted mismatch) but proves nothing about the hook being wired up in
+  production — that stays a one-off Telegram check per install. **Open at time of writing:** the
+  guard log has three lines, all from 2026-08-06, despite a real Telegram session on s2 on
+  2026-08-11 — so the "~2 weeks of measured rate" the phase-2 cancel-retry decision waits on may
+  not be accumulating at all. The plugin IS loaded (gateway startup line lists it among 10).
+  Worth 30 seconds from a phone before trusting any rate derived from that log.
 - **The inference failover is broken — it turns a blip into an outage and reports success
   (2026-08-06).** A ~4-minute DeepInfra unhealthy window failed the fleet over to `nvidia-prod /
   z-ai/glm-5.2`; the medic logged "FAILOVER active; will fail back automatically", but NVIDIA

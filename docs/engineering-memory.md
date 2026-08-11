@@ -297,6 +297,26 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   that is harness overhead, not the agent). Gates: `--yes` required to spend, model verified
   before the first question, and the inference route re-read after EVERY question so a mid-run
   failover **aborts** instead of silently mixing two models into one number.
+- **`resolve_date` has NO month / quarter / year mode, and the doctrine tells the agent to use it
+  anyway (found 2026-08-11).** The tool takes `dayShift` (±366), `weekday`+`weeksAhead` (0–52,
+  FORWARD only), `explicitDate`, and `week` (0–52, FORWARD only — so "last week" has no path
+  either). Nothing expresses a calendar month, quarter or year. Yet `query_spine`'s own tool
+  description instructs: *for "the last 30 days", "since May", "so far this month" — call
+  resolve_date FIRST and paste the dates it returns.* For every period above a week that
+  instruction is **unsatisfiable**, and the agent does the only thing left: it invents the
+  boundary. Live probes on s2 — *"how many jobs did we complete last month?"* → **zero
+  resolve_date calls**, `'2026-07-01'`/`'2026-08-01'` written straight into the SQL; *"so far this
+  month"* → resolved today via `dayShift:0`, then hand-wrote `'2026-08-01'`. Both answers were
+  correct, which is the trap: August is an easy month. A February, a 31-day month, or a January
+  (where "last month" is December of the PREVIOUS year) are not, and **the weekday guard cannot
+  catch this class at all** — a wrong boundary yields a plausible number carrying no weekday claim
+  to contradict. Rolling windows are fine ("the last 30 days" is exactly `dayShift:-30`); it is
+  CALENDAR periods that have no path. Fix shape (not yet decided): period modes mirroring `week`,
+  with negatives allowed for past periods. Until then treat any month/quarter/year answer as
+  unverified, and see the `period` questions (M01–M11) in `scripts/date-eval/`, which mark these
+  `periodBoundary` so hand-written boundaries are counted as a machinery gap rather than charged
+  to the model — prompting cannot close it. Related testability limit: the pilot holds ~2 months
+  of visits, so six-month aggregation is only testable for range honesty until history is seeded.
 - **The weekday guard's `message_sending` hook does NOT fire on the embedded-agent CLI path
   (verified 2026-08-11).** Made the agent emit "The meeting is Monday 2026-08-12" — Aug 12 is a
   Wednesday, exactly the fabricated pair the guard exists to catch — and `weekday-guard.jsonl`

@@ -68,7 +68,12 @@ exit 0
     );
 
     // docker shim: `ps` lists a container (or none); `exec ... curl` answers
-    // for whichever provider the openshell shim recorded as current.
+    // for whichever provider the openshell shim recorded as current — but ONLY
+    // when invoked as `-u sandbox` with a LOGIN shell. On the real box the
+    // sandbox's egress env is assembled in the sandbox user's login profile;
+    // a bare root `docker exec curl` gets an empty reply from a healthy
+    // provider (medic v3's first live run declared a false BOTH-DEAD this way,
+    // 2026-08-11). The shim reproduces that so the invocation shape is pinned.
     await writeFile(
       join(dir, 'docker'),
       `#!/usr/bin/env bash
@@ -76,7 +81,17 @@ if [ "$1" = "ps" ]; then
   [ "\${HAVE_CONTAINER:-1}" = "1" ] && echo "openshell-s6-test"
   exit 0
 fi
-# docker exec <cid> curl ...
+# docker exec ... — refuse to answer unless run as the sandbox user with a
+# login shell, exactly like the real container's egress environment does.
+args="$*"
+case "$args" in
+  *"-u sandbox"*) : ;;
+  *) exit 0 ;;   # empty reply, like root's curl on the real box
+esac
+case "$args" in
+  *"sh -lc"*) : ;;
+  *) exit 0 ;;   # non-login shell: no egress env, empty reply
+esac
 current="$(cat "\${MEDIC_TEST_STATE}" 2>/dev/null)"
 case "$current" in
   deepinfra-prod) healthy="\${COMPLETION_DEEPINFRA:-1}" ;;

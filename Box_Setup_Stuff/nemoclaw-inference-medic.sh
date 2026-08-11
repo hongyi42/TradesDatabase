@@ -68,16 +68,26 @@ probe_container() {
 # advisory. Success = HTTP 200 AND a parseable "choices" field — the 08-06
 # NVIDIA failure was a 200-less `400 (no body)`, and a 402 balance-out has no
 # choices either. Anything else (timeout, stall, 4xx/5xx) is a miss.
+#
+# `-u sandbox` + LOGIN shell (`sh -lc`) are LOAD-BEARING, not style. The
+# sandbox's egress environment (proxy/DNS wiring for the container's policy
+# rig) is assembled in the sandbox user's login profile; a bare
+# `docker exec curl` runs as root with no profile and gets an EMPTY reply from
+# a perfectly healthy provider. Found on medic v3's FIRST live run
+# (2026-08-11): it declared BOTH providers dead while `nemoclaw exec` — which
+# logs in as sandbox — completed fine. The false both-dead did exactly what
+# the design said: restored the primary route, exited 1 loud, zero agent harm.
 probe_completion() { # model-id-hint
   local cid body
   cid="$(probe_container)"
   if [ -z "$cid" ]; then
     return 2  # no container to probe from — caller degrades to v2 semantics
   fi
-  body="$(docker exec "$cid" curl -sk -m "$PROBE_TIMEOUT" \
-    -X POST https://inference.local/v1/chat/completions \
-    -H 'Content-Type: application/json' \
-    -d "{\"model\":\"$1\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" \
+  body="$(docker exec -u sandbox "$cid" sh -lc \
+    "curl -sk -m $PROBE_TIMEOUT \
+      -X POST https://inference.local/v1/chat/completions \
+      -H 'Content-Type: application/json' \
+      -d '{\"model\":\"$1\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}'" \
     2>/dev/null)" || return 1
   grep -q '"choices"' <<<"$body"
 }

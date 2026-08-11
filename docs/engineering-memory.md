@@ -299,6 +299,16 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   `if cmd; then …; fi` with no else is the IF's status (0), not cmd's; and re-enabling `set -e`
   inside a function overrides the caller's `set +e` wrapper, turning `return 1` into a script
   exit — use `cmd && rc=0 || rc=$?`.
+  **Deploy postscript (2026-08-11): the probe MUST run `docker exec -u sandbox <cid> sh -lc`.**
+  The sandbox's egress environment (proxy/DNS for the container's policy rig) is assembled in the
+  sandbox user's LOGIN profile; a bare root `docker exec curl` gets an EMPTY reply from a healthy
+  provider. v3's first live run declared a false BOTH-DEAD exactly this way — pre-deploy testing
+  had used `nemoclaw exec` (which logs in as sandbox), so the script's bare `docker exec` was
+  never the tested path. The containment branch worked as designed (route restored to primary,
+  exit 1 loud, zero agent harm, and no timer tick ever ran the broken build). The test shim now
+  refuses to answer a probe not invoked as `-u sandbox` + `sh -lc`, so the invocation shape fails
+  the suite, not the fleet. General rule: `nemoclaw exec` ≠ `docker exec` — anything needing the
+  sandbox's network posture needs the sandbox user's login shell.
 - **`nemoclaw list` shows the ONBOARDING RECORD, not the live inference route (2026-08-06).** Read
   off that list, s2/s5/s6/s7 all say `provider: nvidia-prod` — which reads exactly like "the fleet
   has been stuck on the fallback for six days", and was reported as such before being checked. It

@@ -41,6 +41,31 @@ export const humanDate = (iso) => `${MONTHS[at(iso).getUTCMonth()]} ${at(iso).ge
 
 /** The COMING occurrence of a weekday — today itself when today is that day. */
 export const comingOcc = (ref, wd) => addDays(ref, (WIDX[wd] - dow(ref) + 7) % 7);
+// Calendar periods. resolve_date has NO mode for any of these (verified
+// 2026-08-11: dayShift ±366, week 0..52 forward-only, weekday, explicitDate —
+// and nothing else), so every month/quarter/year boundary the agent uses today
+// is one it worked out in its own head. That is exactly the act the whole
+// doctrine forbids, and these helpers are how the eval checks the result.
+const ymd = (y, m, d) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+export const monthStart = (ref, n = 0) => {
+  const d = at(ref);
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1, 12));
+  return ymd(t.getUTCFullYear(), t.getUTCMonth() + 1, 1);
+};
+export const monthEnd = (ref, n = 0) => {
+  const d = at(ref);
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n + 1, 0, 12));
+  return ymd(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate());
+};
+export const quarterStart = (ref, n = 0) => {
+  const d = at(ref);
+  const t = new Date(Date.UTC(d.getUTCFullYear(), Math.floor(d.getUTCMonth() / 3) * 3 + n * 3, 1, 12));
+  return ymd(t.getUTCFullYear(), t.getUTCMonth() + 1, 1);
+};
+export const quarterEnd = (ref, n = 0) => monthEnd(quarterStart(ref, n), 2);
+export const yearStart = (ref, n = 0) => `${at(ref).getUTCFullYear() + n}-01-01`;
+export const yearEnd = (ref, n = 0) => `${at(ref).getUTCFullYear() + n}-12-31`;
+export const monthLabel = (iso) => `${MONTHS[at(iso).getUTCMonth()]} ${at(iso).getUTCFullYear()}`;
 /** Monday of the calendar week `n` weeks from ref's week (product convention: Mon–Sun). */
 export const weekStart = (ref, n = 0) => addDays(ref, -((dow(ref) + 6) % 7) + 7 * n);
 export const weekEnd = (ref, n = 0) => addDays(weekStart(ref, n), 6);
@@ -343,6 +368,75 @@ export function buildCorpus(f) {
   out.push(q('T10', 'trap', ['resolve', 'speak'], `Sanity check: today is the ${at(T).getUTCDate()}th, right?`, {
     dates: [T], window: null, answer: { kind: 'text', value: `yes — ${titleWeekday(T)} ${T}` }, requireWeekday: true,
   }));
+
+  // ── PERIODS: month / quarter / year, and aggregation over them ─────────
+  // The granularity a firm asks about once it has history: "last month",
+  // "so far this year", "break it down by month". resolve_date has no mode for
+  // ANY of these, so the agent must invent the boundary — observed live
+  // 2026-08-11 writing '2026-07-01' straight into SQL with no resolve call at
+  // all. It is right in August and wrong the moment the month is hard (a
+  // 31-day month, a February, a year rollover), and no phase downstream can
+  // catch it: a wrong boundary yields a plausible number carrying no weekday
+  // to contradict. `periodBoundary: true` marks the questions where a
+  // hand-written boundary is EXPECTED given today's machinery, so the report
+  // can separate "the model was sloppy" from "the tool has no such mode".
+  const periodQ = (id, text, e) => out.push(q(id, 'period', ['resolve', 'use', 'speak'], text, { periodBoundary: true, requireWeekday: false, ...e }));
+  const lastMonth = { from: monthStart(T, -1), to: monthEnd(T, -1) };
+  const thisMonth = { from: monthStart(T), to: T };
+  periodQ('M01', `How many visits did we do last month?`, {
+    dates: [lastMonth.from, lastMonth.to], window: lastMonth, answer: { kind: 'count', value: rangeCount(lastMonth.from, lastMonth.to) },
+    note: `Calendar ${monthLabel(lastMonth.from)}: ${lastMonth.from}..${lastMonth.to}.`,
+  });
+  periodQ('M02', `How many visits have we done so far this month?`, {
+    dates: [thisMonth.from, T], window: thisMonth, answer: { kind: 'count', value: rangeCount(thisMonth.from, T) },
+    note: `${monthStart(T)} through today.`,
+  });
+  periodQ('M03', `How many visits are on the books for the whole of this month?`, {
+    dates: [monthStart(T), monthEnd(T)], window: { from: monthStart(T), to: monthEnd(T) },
+    answer: { kind: 'count', value: rangeCount(monthStart(T), monthEnd(T)) },
+  });
+  periodQ('M04', `How many visits did we have in ${monthLabel(monthStart(T, -1)).split(' ')[0]}?`, {
+    dates: [lastMonth.from, lastMonth.to], window: lastMonth, answer: { kind: 'count', value: rangeCount(lastMonth.from, lastMonth.to) },
+    note: 'Month named outright — the one period phrasing resolve_date CAN take, via explicitDate.',
+  });
+  periodQ('M05', `How many visits in the last 30 days?`, {
+    dates: [addDays(T, -30), T], window: { from: addDays(T, -30), to: T }, answer: { kind: 'count', value: rangeCount(addDays(T, -30), T) },
+    periodBoundary: false, // rolling window — dayShift:-30 expresses this exactly
+    note: 'Rolling, NOT a calendar month. dayShift:-30 resolves it; a hand-written date here is avoidable.',
+  });
+  periodQ('M06', `Compare this month with last month — which is busier?`, {
+    dates: [monthStart(T), lastMonth.from], window: null,
+    answer: { kind: 'text', value: `${monthLabel(monthStart(T))} ${rangeCount(monthStart(T), monthEnd(T))} vs ${monthLabel(lastMonth.from)} ${rangeCount(lastMonth.from, lastMonth.to)}` },
+    note: 'Two calendar buckets — both boundaries hand-made today.',
+  });
+  periodQ('M07', `How many visits so far this year?`, {
+    dates: [yearStart(T), T], window: { from: yearStart(T), to: T }, answer: { kind: 'count', value: rangeCount(yearStart(T), T) },
+  });
+  periodQ('M08', `How many visits this quarter?`, {
+    dates: [quarterStart(T), quarterEnd(T)], window: { from: quarterStart(T), to: quarterEnd(T) },
+    answer: { kind: 'count', value: rangeCount(quarterStart(T), quarterEnd(T)) },
+    note: `Q boundary ${quarterStart(T)}..${quarterEnd(T)} — no tool mode exists for this at all.`,
+  });
+  // Aggregation + honesty about how far the records actually go. A firm six
+  // months in will ask exactly this; a firm one month in must be TOLD it is
+  // one month in rather than shown five empty buckets as if they were real.
+  const months = [...new Set(Object.keys(f.dayCounts).map((d) => d.slice(0, 7)))].sort();
+  const monthTotals = Object.fromEntries(months.map((m) => [m, Object.entries(f.dayCounts).filter(([d]) => d.startsWith(m)).reduce((s, [, n]) => s + n, 0)]));
+  periodQ('M09', `Break our visits down by month for the last 6 months.`, {
+    dates: [], window: null,
+    answer: { kind: 'set', value: months.map((m) => `${m}: ${monthTotals[m]}`) },
+    note: `Records only span ${months[0]} to ${months[months.length - 1]}. The honest answer states that range rather than presenting empty months as real zeros.`,
+  });
+  periodQ('M10', `What's our busiest month on record?`, {
+    dates: [], window: null,
+    answer: { kind: 'text', value: Object.entries(monthTotals).sort((a, b) => b[1] - a[1]).map(([m, n]) => `${m} (${n})`)[0] ?? 'no data' },
+    note: `Month totals: ${JSON.stringify(monthTotals)}`,
+  });
+  periodQ('M11', `How far back do our records go?`, {
+    dates: [], window: null, answer: { kind: 'text', value: `earliest visit ${Object.keys(f.dayCounts).sort()[0] ?? 'none'}` },
+    periodBoundary: false,
+    note: 'A range question, no arithmetic — catches a model that invents history it does not have.',
+  });
 
   return out;
 }

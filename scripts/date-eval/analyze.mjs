@@ -211,9 +211,19 @@ for (const r of results) {
         if (!covers) flags.push(`window never covered ${e.window.from}..${e.window.to} (queried ${[...allDates].join(', ') || 'no dates'})`);
         else if (!exact) flags.push(`window covered but not exact (queried ${[...allDates].join(', ')})`);
       }
-      if (fabricated.length) flags.push(`date in tool args that no resolve produced: ${fabricated.join(', ')}`);
-      const hard = flags.some((f) => f.startsWith('window never') || f.startsWith('date in tool args'));
-      use = { verdict: hard ? 'fail' : 'pass', reason: hard ? 'model' : undefined, flags };
+      // A hand-written date is normally a model failure. On month/quarter/year
+      // questions it is FORCED — resolve_date has no mode for those periods —
+      // so it is counted as a machinery GAP instead of blamed on the model.
+      // Same observable, opposite fix: one needs better prompting, the other
+      // needs a tool that can express the period.
+      if (fabricated.length) {
+        flags.push(e.periodBoundary
+          ? `period boundary written by hand: ${fabricated.join(', ')} — no resolve_date mode exists for this period`
+          : `date in tool args that no resolve produced: ${fabricated.join(', ')}`);
+      }
+      const boundaryGap = !!(fabricated.length && e.periodBoundary);
+      const hard = flags.some((f) => f.startsWith('window never')) || (fabricated.length > 0 && !e.periodBoundary);
+      use = { verdict: hard ? 'fail' : 'pass', reason: hard ? 'model' : undefined, flags, boundaryGap, handWritten: fabricated };
     }
   }
 
@@ -315,6 +325,24 @@ const bypass = rows.filter((r) => r.resolve.flags?.some((f) => f.includes('BYPAS
 L.push(`\n- **resolve → machinery** (tool asked correctly, answered wrongly): **${mach.length}** ${mach.length ? '← the date code itself is wrong' : ''}`);
 L.push(`- **resolve → model** (asked the tool for the wrong day, or nobody): **${modelR.length}**`);
 L.push(`- **bypassed resolve_date entirely** (date computed in-model, right or wrong): **${bypass.length}** of ${rows.filter((r) => r.phases.includes('resolve')).length}`);
+
+// Period boundaries — the coverage gap, reported on its own because it is not
+// the model's fault and is not fixed by prompting.
+const periodRows = rows.filter((r) => byId[r.id]?.expect?.periodBoundary);
+if (periodRows.length) {
+  const handMade = periodRows.filter((r) => r.use.boundaryGap);
+  const noResolve = periodRows.filter((r) => r.resolveCalls.length === 0);
+  L.push(`\n## Period boundaries (month / quarter / year)\n`);
+  L.push(`\`resolve_date\` has no mode for these periods, so every boundary below was worked out by the model itself — the one act the doctrine forbids. Right answers here are luck, not safety.\n`);
+  L.push(`- questions needing a calendar-period boundary: **${periodRows.length}**`);
+  L.push(`- boundaries written by hand into tool args: **${handMade.length}**`);
+  L.push(`- of those, asked with NO resolve_date call at all: **${noResolve.length}**`);
+  if (handMade.length) {
+    L.push(`\n| Question | hand-written dates | answer |`);
+    L.push(`|---|---|---|`);
+    for (const r of handMade) L.push(`| ${r.id} — ${r.q.slice(0, 46)} | \`${(r.use.handWritten ?? []).join('`, `')}\` | ${r.outcome.verdict} |`);
+  }
+}
 
 const gCaught = rows.filter((r) => r.guard.verdict === 'caught').length;
 const gMissed = rows.filter((r) => r.guard.verdict === 'missed').length;

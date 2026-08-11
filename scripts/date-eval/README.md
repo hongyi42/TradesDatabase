@@ -104,6 +104,40 @@ when the machinery is wrong.
    doctrine-dependent behaviour (rule 3's "ask, never pick" especially) from
    Telegram, not from here.
 
+## Known coverage gap: month, quarter, year
+
+`resolve_date` can express **days** (`dayShift`, ±366), **named weekdays**, **explicit dates**,
+and **Mon–Sun weeks** (`week`, 0–52 — forward only). It has **no mode for a calendar month,
+quarter, or year**, and no mode for a past week.
+
+So when someone asks "how many did we do last month?", the agent has nowhere to get the boundary
+and works it out itself — the one act the whole doctrine forbids. Observed live (2026-08-11):
+
+| Asked | resolve_date | boundary |
+|---|---|---|
+| "How many jobs did we complete last month?" | **never called** | `'2026-07-01'`, `'2026-08-01'` written into SQL |
+| "How many visits so far this month?" | `{dayShift: 0}` — today only | `'2026-08-01'` written by hand |
+
+Both answers were right, because August is an easy month. The same code is a coin flip on a
+February, a 31-day month, or a year rollover ("last month" in January is *December of the previous
+year*). And nothing downstream catches it: a wrong boundary produces a plausible number carrying
+no weekday for the guard to contradict.
+
+The `period` questions (M01–M11) cover this deliberately. They are marked `periodBoundary: true`,
+and the report counts hand-written boundaries in their own section rather than blaming the model —
+same observable, opposite fix. **Prompting cannot close this one; only a tool that can express the
+period can.** Until then, expect the period section to show a hand-written boundary on nearly
+every question, and treat correct answers there as luck rather than safety.
+
+Two caveats when reading those results:
+
+- **Rolling ≠ calendar.** "The last 30 days" *is* expressible (`dayShift: -30`) and is marked
+  `periodBoundary: false` — a hand-written date there is avoidable, and is a real model failure.
+- **The pilot has ~2 months of history** (and July holds a single visit). Six-month aggregation
+  cannot be meaningfully tested against it; M09/M11 test whether the agent states the real range
+  instead of presenting empty months as real zeros. Testing true multi-month aggregation needs
+  seeded history first.
+
 ## Comparing models
 
 The inference route is **gateway-level**: `openshell inference set` changes the

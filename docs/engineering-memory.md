@@ -700,6 +700,21 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   retain stale `locked=true` — always filter status when counting pins. The seeding
   run doubled as the digest's first live burst (Joy + Yutao are Telegram-bound; hman is
   unbound and silent). Owner-court: their own freeze E2E on this data + digest verdict.
+  **SCHEDULE SHIFTED +14 DAYS 2026-08-11 (owner-run scratchpad shift-schedule.mjs; the
+  seeded window had fully expired):** the entire Default-Tenant schedule moved forward
+  exactly 2 weeks — main test window now **Aug 12–23** (span Jul 31–Aug 27; 194/243
+  assignments today-or-future, 12-16 confirmed visits per weekday). Recipe, re-usable
+  whenever the window expires again: shift by a MULTIPLE OF 7 (weekdays stay inside
+  availability patterns, per-day geo clusters survive); one tenant-scoped transaction
+  moving `starts_at`/`ends_at`, `promised_day`, `earliest_date`/`latest_date`, and
+  `technician_time_off` together; timed rows in TWO passes (+1000d, then back down for
+  the net shift) because `no_confirmed_overlap` is a NON-deferrable GiST exclusion
+  constraint — a single-pass uniform shift can transiently collide mid-statement. Leave
+  `schedule_events` (audit ledger), `raw_captures` (L1), and spine `visits` alone.
+  State drift since seed day: the 2 open pins are gone (unpinned by later testing —
+  open_pins was 0 at shift time). Operational note: the pilot write itself was
+  classifier-blocked for the assistant in auto mode (both MCP SQL and a node script) —
+  the working pattern is stage-the-script + dry-run, owner runs the write.
   Five phases: (1) pinning became a HUMAN privilege — `bookVisit`/
   `moveVisit` no longer auto-stamp `locked:true` (moves/attaches carry the flag);
   `setVisitLocks` core = ONE guarded bulk UPDATE (atomic, `status in (confirmed,proposed)`

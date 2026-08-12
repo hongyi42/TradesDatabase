@@ -1030,6 +1030,19 @@ EOF
       done
       docker exec -u sandbox -e HOME=/sandbox -e OPENCLAW_HOME=/sandbox "$cid" \
         openclaw plugins install --force /tmp/twg-src >/dev/null 2>&1 || true
+      # 3. EVERY openclaw config write (plugins install, config patch) creates a
+      #    fresh openclaw.json inode at 0o600 — vendor secure-default, visible in
+      #    config-audit.jsonl as previousMode 660 → nextMode 600 on every entry,
+      #    every box. nemoclaw's post-command cleanup normally restores 660/2770,
+      #    but it FAIL-CLOSES (UnsafeTree, by design) if any file in the tree
+      #    changes while it walks — a race a busy gateway loses. s7 lost it three
+      #    times (2026-08-06, 2026-08-12 ×2), each ending in
+      #    GATEWAY_UNSAFE_CONFIG_PATH with the gateway DOWN. Restore the perms
+      #    DETERMINISTICALLY here instead of betting on the race; root chmod on
+      #    two paths cannot lose it.
+      docker exec "$cid" sh -c \
+        "chmod 2770 /sandbox/.openclaw && chmod 660 /sandbox/.openclaw/openclaw.json && chown sandbox:sandbox /sandbox/.openclaw /sandbox/.openclaw/openclaw.json" \
+        >/dev/null 2>&1 || true
       nemoclaw "$agent" doctor --fix </dev/null >/dev/null 2>&1 || true
       nemoclaw "$agent" gateway restart </dev/null >/dev/null 2>&1 || true
       # Verify by the gateway's own startup line — the registry lies (see above).
@@ -1265,6 +1278,16 @@ phase_verify() {
   log "openclaw version pin (every running sandbox must be ${OPENCLAW_PIN})"
   for c in $(docker ps --format '{{.Names}}' | grep '^openshell-' || true); do
     a=$(printf '%s' "$c" | cut -d- -f2)
+    # Perms tripwire: every openclaw config write drops openclaw.json to 0o600
+    # (vendor secure-default) and nemoclaw's restore RACES a busy gateway and
+    # fail-closes when it loses (s7, three times). Stuck-tight perms mean the
+    # next restart is GATEWAY_UNSAFE_CONFIG_PATH — catch it while the bot is
+    # still up.
+    pm=$(docker exec "$c" sh -c 'stat -c %a /sandbox/.openclaw /sandbox/.openclaw/openclaw.json 2>/dev/null' | paste -sd/ -)
+    case "$pm" in
+      2770/660) ;;
+      *) echo "    ✗ $a perms are ${pm:-unreadable} (want 2770/660) — next restart will fail GATEWAY_UNSAFE_CONFIG_PATH; fix: docker exec <cid> sh -c 'chmod 2770 /sandbox/.openclaw && chmod 660 /sandbox/.openclaw/openclaw.json'"; warn=$((warn+1)) ;;
+    esac
     v=$(docker exec "$c" sh -lc 'openclaw --version 2>/dev/null' | grep -o '[0-9]\{4\}\.[0-9][0-9]*\.[0-9][0-9]*' | head -1)
     if [ "$v" = "$OPENCLAW_PIN" ]; then ok "$a on ${v}"; pass=$((pass+1));
     else

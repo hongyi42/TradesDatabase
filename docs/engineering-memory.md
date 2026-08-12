@@ -255,6 +255,20 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   whether retry is *sufficient*, not whether intervention is *warranted* — a ~15s retry against a
   technician at the wrong house is not a close call). Generalizes to anything people habitually
   trust without checking: amounts, addresses, phone numbers.
+- **A loaded hook is not a listening hook — the guard sat deaf for 5 days (found 2026-08-11,
+  fixed 2026-08-12, PR #120).** Four real Telegram turns on 2026-08-11 produced date-heavy replies
+  and ZERO guard lines while `trades-weekday-guard` sat in the gateway's startup plugin list. The
+  tell: `[telegram] sendMessage ok` log lines stop after 2026-08-06 22:17 — the delivery path
+  changed underneath `message_sending`, and the hook heard nothing. Same failure CLASS as the
+  medic's registration-only probe: a status surface (loaded plugin list) that proves presence, not
+  function. v0.2.0 registers BOTH documented outbound hooks (`reply_payload_sending` added), tags
+  every log line with `hook:` so production names the live path, extracts text defensively
+  (ReplyPayload fields are undocumented; a text-less payload logs KEY NAMES only), and dedupes by
+  content hash so a reply traversing both hooks cannot double-count the rate.
+  **Standing verification rule: after installing ANY hook plugin, send one real message and check
+  for the log line. Loading is not hearing.** Also: any flag-rate window must start from a
+  verified-live date — the "two weeks of data" planned for ~Aug 20 turned out to be 3 lines from
+  one evening.
 - **The weekday fabrication is ENDEMIC, not episodic — 23 mismatches in 419 historical texts
   (2026-08-06).** Built the outbound weekday guard (observe-only `message_sending` plugin,
   chrono-node, see nemoclaw-tech-agent.md §4c) and replayed it over every assistant text in the

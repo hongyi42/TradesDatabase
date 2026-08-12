@@ -306,6 +306,20 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   this verified-live line. Ops note from a false alarm during verification: a streamed reply
   writes its guard line at delivery END — after ~20+ `editMessageText` calls — so check the log
   file's mtime against the edit burst before declaring the hook dead.
+- **Guard v0.3.0 fixes both eval-found detector defects (2026-08-12, PR #124).** D17, the one
+  miss in 94 adversarial replies: "Saturday (August 16th)" — parentheses split chrono's parse so
+  the pair was never checked; a pre-pass unwraps `Weekday (DATE)` to the comma form ONLY when
+  the whole parenthetical looks like a date (month+day, ordinal, or "the N" — bare digits like
+  "Friday (2)" are counts and stay untouched). T02, the one act-mode false-fire: a wrong pair
+  QUOTED inside a correct correction («If we said "Friday August 20," that's a mistake — the
+  20th is Thursday») — cancel-and-retry would cancel correct behavior; when the same message
+  also states the CORRECT pair for the same date, its flags get `corrected: true` — logged for
+  the rate, but **act-mode must trigger only on flags without `corrected`** (and rate analysis
+  should track corrected flags as their own series: self-corrections, not fabrications).
+  Regression replay of all 94 eval replies old-vs-new: exactly two changed outcomes (D17 gains
+  its flag, T02's becomes corrected), the other 92 byte-identical. Deploy after merge: s2+s6
+  first (the 2026.6.34 boxes where the guard actually hears streamed replies); s3/s5/s7/s8 ride
+  the version rollout to avoid double gateway restarts.
 - **The weekday fabrication is ENDEMIC, not episodic — 23 mismatches in 419 historical texts
   (2026-08-06).** Built the outbound weekday guard (observe-only `message_sending` plugin,
   chrono-node, see nemoclaw-tech-agent.md §4c) and replayed it over every assistant text in the

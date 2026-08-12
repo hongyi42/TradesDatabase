@@ -88,16 +88,36 @@ when the machinery is wrong.
   appearing in a trajectory is reported as a finding.
 - **Fresh session per question** — `dateval-<date>-<id>`, never the live chat.
 
-## Two things this harness cannot see
+## Observing phase 4 for real — `--deliver`
 
-1. **The guard hook is replayed, not observed.** `message_sending` does not
-   fire on the embedded-agent path — verified 2026-08-11 by making the agent
-   emit "Monday 2026-08-12" (a Wednesday) and watching the guard log stay
-   empty. So the report replays the plugin's own `scanMessage` over every
-   reply, which measures the detector's *logic* exactly but says nothing about
-   whether the hook is *wired up* in production. Check that separately, from a
-   phone, once per install.
-2. **AGENTS.md may be truncated on this path.** The embedded agent has been
+By default the run sends no reply, so no outbound hook fires and the report
+**replays** the plugin's own `scanMessage` over each answer. That measures the
+detector's *logic* exactly, but it is our code calling our function: it can
+never tell you the hook is wired up.
+
+```bash
+npm run date-eval:run -- --dir <run-dir> --yes --deliver
+```
+
+fires the REAL `message_sending` hook inside the sandbox and records its verdict
+per question (`guardLive`), which the report then prefers — and it flags any
+REPLAY vs LIVE disagreement, since that means the deployed plugin differs from
+this repo's copy or the hook is seeing different text than we graded.
+
+It delivers to a **dead Telegram target (chat id 1)** on purpose. The hook runs
+*before* the send, so the guard scans the real reply and logs a real verdict,
+and the send then fails with `chat not found` — nobody is messaged. This matters:
+the default sandbox is `s2`, which is the operator's own Telegram, so a
+94-question corpus delivering for real would fire 94 messages at a person. Pass
+`--reply-to <chatId>` only if you genuinely want them sent somewhere; the run
+banner shouts when the target is live.
+
+A question that delivers but produces **no** hook record is scored
+`not-observed`, never as a pass — an unfired hook is a wiring symptom, not a
+clean bill of health.
+
+## One thing this harness cannot see
+**AGENTS.md may be truncated on this path.** The embedded agent has been
    observed truncating the file at 12,000 characters, and the dates doctrine
    sits at ~20,400. If the runner sees a truncation notice it flags the report:
    those numbers describe a weaker prompt than production Telegram. Judge

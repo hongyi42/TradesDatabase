@@ -347,6 +347,30 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   `periodBoundary` so hand-written boundaries are counted as a machinery gap rather than charged
   to the model — prompting cannot close it. Related testability limit: the pilot holds ~2 months
   of visits, so six-month aggregation is only testable for range honesty until history is seeded.
+  **CLOSED 2026-08-12 (PR #122):** `resolve_date` gained `month`/`quarter`/`year` modes
+  (calendar-anchored, 0 = current, negative = past — "last month" in January correctly lands in
+  December of the PREVIOUS year), plus negative `week` ("last week" = -1) and negative
+  `weeksAhead` ("last Friday" = -1, anchored one whole week before the coming occurrence). All
+  three periods return one `resolved_period` shape: `periodStart`/`periodEnd` with weekdays, a
+  human `label`, and a quotable `phrase`. The eval harness recomputes the new modes independently
+  (`corpus.mjs`, still importing nothing from `dateResolve.ts`), so the next run grades them
+  machinery-vs-model instead of tagging `periodBoundary`.
+- **v_schedule counted cancelled visits as booked work — every agent count was inflated by a
+  constant (found by the 2026-08-12 eval, fixed in PR #121).** The eval's count questions came
+  back August 234 vs truth 144 (+90), this-week 82 vs 57 (+25), last-30-days 57 vs 27 (+30) — and
+  the offsets are EXACTLY the cancelled rows in each window (verified per-status against the
+  pilot). Root cause: the view's only predicate was the tenant GUC; no status filter, so
+  `count(*)` counted every assignment ever made. The agent's SQL was clean — the VIEW lied, which
+  is the worst variant: `get_team_schedule` filters to confirmed, so two tools gave two different
+  answers to the same question. This class is guard-proof (a plausible number, no weekday claim)
+  and compounds forever — cancel-and-rebook creates cancelled rows continuously (94 on the pilot,
+  grown organically Jul 15–Aug 4). Fix: `v_schedule` now means the schedule
+  (`status in ('confirmed','completed')`); cancelled rows move to `v_cancelled_visits` (same
+  shape + `reason`, `updated_at`) so cancellation questions stay answerable explicitly;
+  `proposed` is visible in NO view (staged workflow state, not bookings). Lesson, same family as
+  local_day/local_weekday: when the agent must compose the query itself, the DEFAULT reading of
+  the surface has to be the correct one — semantics the agent needs must live in the view, not in
+  an instruction to remember a WHERE clause.
 - **The weekday guard's `message_sending` hook does NOT fire on the embedded-agent CLI path
   (verified 2026-08-11).** Made the agent emit "The meeting is Monday 2026-08-12" — Aug 12 is a
   Wednesday, exactly the fabricated pair the guard exists to catch — and `weekday-guard.jsonl`

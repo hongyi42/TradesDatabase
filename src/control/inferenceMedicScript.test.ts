@@ -98,10 +98,43 @@ case "$current" in
   nvidia-prod)    healthy="\${COMPLETION_NVIDIA:-1}" ;;
   *) healthy=0 ;;
 esac
+
+# "flaky" = miss once, then serve. Proves the v4 retry absorbs a single slow
+# probe instead of flapping the whole fleet to the fallback.
+if [ "$healthy" = "flaky" ]; then
+  n="\${MEDIC_TEST_STATE}.attempts-$current"
+  count="$(cat "$n" 2>/dev/null || echo 0)"
+  echo $((count + 1)) > "$n"
+  [ "$count" = "0" ] && { echo '400 (no body)'; exit 0; }
+  healthy=1
+fi
+
 if [ "$healthy" = "1" ]; then
-  echo '{"choices":[{"message":{"content":""}}]}'
+  # v4 shape: a streamed completion that ENDS IN A TOOL CALL. Anything less is
+  # not evidence the provider can serve an agent turn.
+  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}'
+  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"id":"c1","type":"function","function":{"name":"resolve_date","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}'
+  printf '%s\\n' 'data: [DONE]'
   exit 0
 fi
+
+# "prose" = a perfectly valid completion that never calls a tool. This is the
+# v3 blind spot: "choices" is present, so v3 called it healthy. A provider whose
+# model will not emit tool calls cannot serve this product.
+if [ "$healthy" = "prose" ]; then
+  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{"content":"This coming Friday is the 14th."},"finish_reason":null}]}'
+  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
+  printf '%s\\n' 'data: [DONE]'
+  exit 0
+fi
+
+# "truncated" = the stream dies mid-flight: tool call started, no [DONE].
+if [ "$healthy" = "truncated" ]; then
+  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}'
+  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}'
+  exit 0
+fi
+
 # The 2026-08-06 shape: a body with no "choices" (e.g. "400 (no body)").
 echo '400 (no body)'
 exit 0
@@ -126,6 +159,7 @@ exit 0
             PATH: `${dir}:${process.env.PATH ?? ''}`,
             MEDIC_TEST_STATE: join(dir, 'route-state'),
             MEDIC_PROBE_TIMEOUT: '2',
+            MEDIC_RETRY_SLEEP: '0', // the retry's real 2s pause would just slow the suite
             ...env,
           },
         },
@@ -151,7 +185,7 @@ exit 0
   it('THE 07-28 STALL: primary registers but completions fail -> fail over (v2 said "route OK")', async () => {
     const r = await run({ COMPLETION_DEEPINFRA: '0' });
     expect(r.code).toBe(0);
-    expect(r.stderr).toContain('failed the 1-token completion probe');
+    expect(r.stderr).toContain('failed the tool-call completion probe TWICE');
     expect(r.stderr).toContain('FAILOVER active');
     expect(r.stderr).toContain('COMPLETION-VERIFIED');
     expect(await activeRoute()).toBe('nvidia-prod');
@@ -178,6 +212,46 @@ exit 0
     const r = await run({ COMPLETION_DEEPINFRA: '0', COMPLETION_NVIDIA: '0' });
     expect(r.code).toBe(1);
     expect(r.stderr).toContain('route restored to deepinfra-prod');
+    expect(await activeRoute()).toBe('deepinfra-prod');
+  });
+
+  // ── v4: the probe has to look like a TURN ──────────────────────────────────
+  // v3 probed `"hi"` with max_tokens:1 and passed on any body containing
+  // "choices". nvidia-prod served that while 400-ing every real turn, so the
+  // medic logged "FAILOVER active — COMPLETION-VERIFIED" over a hard outage
+  // (six events on 2026-08-12). These pin the stronger gate.
+
+  it('THE v3 BLIND SPOT: provider returns prose and never emits a tool call -> unhealthy', async () => {
+    const r = await run({ COMPLETION_DEEPINFRA: 'prose' });
+    expect(r.code).toBe(0);
+    // v3's gate ("choices" present) would have called this a healthy primary.
+    expect(r.stdout).not.toContain('route OK on primary');
+    expect(r.stderr).toContain('failed the tool-call completion probe TWICE');
+    expect(r.stderr).toContain('FAILOVER active');
+    expect(await activeRoute()).toBe('nvidia-prod');
+  });
+
+  it('a provider that cannot emit tool calls is never a valid FAILOVER target', async () => {
+    const r = await run({ REG_DEEPINFRA: '0', COMPLETION_NVIDIA: 'prose' });
+    expect(r.code).toBe(1);
+    expect(r.stderr).not.toContain('COMPLETION-VERIFIED');
+    expect(r.stderr).toContain('BOTH providers failed');
+  });
+
+  it('stream dies mid-flight (tool call started, no [DONE]) -> unhealthy', async () => {
+    const r = await run({ COMPLETION_DEEPINFRA: 'truncated' });
+    expect(r.code).toBe(0);
+    expect(r.stdout).not.toContain('route OK on primary');
+    expect(r.stderr).toContain('FAILOVER active');
+    expect(await activeRoute()).toBe('nvidia-prod');
+  });
+
+  it('ONE slow probe does not flap the fleet: miss then pass -> stays on primary', async () => {
+    const r = await run({ COMPLETION_DEEPINFRA: 'flaky' });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('passed the completion probe on retry');
+    expect(r.stdout).toContain('route OK on primary');
+    expect(r.stderr).not.toContain('FAILOVER active');
     expect(await activeRoute()).toBe('deepinfra-prod');
   });
 

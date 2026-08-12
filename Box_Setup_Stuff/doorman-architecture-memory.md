@@ -131,7 +131,19 @@ Flip: `openshell inference set -g nemoclaw --provider deepinfra-prod --model zai
 (gateway-level → all sandboxes; the route forces the model per request). **`nvidia-prod` is
 rollback-only** and is ALSO the wizard default `onboard`/`rebuild` fall back to — that drift
 rate-limited Judy's s3 on 2026-07-08. Guard: `nemoclaw-inference-medic.timer` re-asserts the
-DeepInfra route on boot + every 15 min (units in this repo). Check with `openshell inference get`.
+DeepInfra route on boot + every 5 min (units in this repo). Check with `openshell inference get`.
+
+**The medic's health gate is a TOOL CALL, not a ping (v4, 2026-08-12).** It probes the routed
+provider through `https://inference.local/v1` from inside a sandbox container with real spine
+tool schemas attached, streaming on, and enough `max_tokens` to finish reasoning — and requires
+the stream to close with `finish_reason: "tool_calls"`. v3 probed `"hi"` with `max_tokens:1`,
+which nvidia-prod served happily while returning `400 (no body)` on every real turn: the medic
+logged "FAILOVER active — COMPLETION-VERIFIED" over a hard outage, six times on 2026-08-12 alone.
+A probe that does not look like a turn cannot tell you a provider can serve turns.
+**Consequence for provider swaps:** the gate assumes the routed model emits a tool call for the
+probe prompt. Before pointing `FALLBACK_PROVIDER` at a new provider, run the probe against it and
+confirm `finish_reason: "tool_calls"` — a model that answers in prose would be marked dead while
+healthy. That check is the swap's acceptance test.
 
 The standing model decision is the GLM line — Nemotron-3 Super 120B proved too weak; do NOT
 "restore" it when debugging model errors. GLM-5.1 was the first pick but NVIDIA retired it. (Note

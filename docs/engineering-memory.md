@@ -489,6 +489,41 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   refuses to answer a probe not invoked as `-u sandbox` + `sh -lc`, so the invocation shape fails
   the suite, not the fleet. General rule: `nemoclaw exec` ≠ `docker exec` — anything needing the
   sandbox's network posture needs the sandbox user's login shell.
+- **medic v4 (2026-08-12): a probe that doesn't look like a TURN can't tell you a provider serves
+  turns.** v3 closed "is it registered?" but its probe was `{"content":"hi"}, max_tokens:1` — no
+  tools, no streaming, one token. `nvidia-prod` served that happily while returning `400 (no body)`
+  on every real agent turn, so the medic logged **"FAILOVER active — COMPLETION-VERIFIED" over a
+  hard outage**: 10 failovers 08-10→08-12 and **6 events on 08-12 alone** (05:19, 05:24, 20:58
+  failover; 14:04, 16:48, 18:00 both-dead). Each is a ~4-min window where every user message
+  returns "LLM request failed" while the journal says success. The user hit one at 20:59/21:00 and
+  reasonably blamed `--deliver`; it was the route. **Silence is the damage — the one signal said
+  the opposite of the truth.** v4's probe carries real spine tool schemas (flat + nested +
+  enum-heavy, ~970 prompt tokens), a system prompt, streaming on, and `max_tokens:512`; the gate is
+  the stream closing (`data: [DONE]`) **with `finish_reason:"tool_calls"`** — an actual tool call,
+  the thing every real turn depends on. Measured before shipping on healthy deepinfra: **12/12
+  emitted a tool call, 1.9–9.9s, ~$0.0003/probe (~$2.80/mo at the 5-min cadence)** — so the strong
+  probe was affordable and there was no reason to settle for a weaker one.
+  Calibration results worth keeping:
+  - **`tool_choice:"required"` does NOT rescue a small token budget.** GLM-5.2 reasons by default
+    and spent all 32 tokens on `reasoning_content`, returning `tool_calls: []` +
+    `finish_reason:"length"`. Token *headroom* is what makes tool emission observable, not
+    `tool_choice`. (Consistent with the standing "GLM thinks by default" finding.)
+  - **Retry once before failing over.** The v4 probe is heavier, so one slow response on a HEALTHY
+    provider is plausible; flapping the fleet for that would be the same bug pointed the other way.
+    Two consecutive misses is evidence, one is noise. In-tick only — no state file, keeping v2's
+    "flaps are visible in the journal" rule.
+  - **Payload SIZE is the untested axis.** Three tools ≈ 970 prompt tokens vs the real ~39-tool
+    surface. That exercises schema *shape*, not size; if a provider ever fails on size, that's the
+    knob. Also: the NVIDIA-as-oracle test (route the fleet at it and confirm the new gate fails)
+    was **never run** — it needs a live outage window. The gate was proven instead against a
+    synthesized prose-no-tool-call response, which v3's gate passes and v4's rejects.
+  - **The tool-emission gate is an assumption about the MODEL, and it is the acceptance test for
+    swapping the fallback.** `nvidia-prod` was a testing stopgap, never a product decision, and is
+    due to be replaced. Point `FALLBACK_PROVIDER` at something new **only after** probing it
+    directly and confirming `finish_reason:"tool_calls"` — a model that answers the date in prose
+    would be marked dead while perfectly healthy.
+  Both stale "every 15 min" mentions in `doorman-architecture-memory.md` / the setup guide were
+  corrected to the real cadence (5 min) in the same change.
 - **`nemoclaw list` shows the ONBOARDING RECORD, not the live inference route (2026-08-06).** Read
   off that list, s2/s5/s6/s7 all say `provider: nvidia-prod` — which reads exactly like "the fleet
   has been stuck on the fallback for six days", and was reported as such before being checked. It

@@ -4,19 +4,27 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-// Locks in Box_Setup_Stuff/nemoclaw-inference-medic.sh v3's decision table.
+// Locks in Box_Setup_Stuff/nemoclaw-inference-medic.sh's decision table.
 //
-// v2's probe (`openshell inference set`) validates endpoint REGISTRATION, not a
-// completion — it reported "route OK" through a 12-minute stall (2026-07-28)
-// and "FAILOVER active" onto a provider 400-ing every real request
-// (2026-08-06). v3 adds a 1-token completion gate through the managed route;
-// these tests run the REAL script against PATH shims for `openshell` and
-// `docker`, so the table that distinguishes v3 from v2 cannot silently regress:
+// Three generations of blind spot, each pinned here so it cannot come back:
+//  - v2 probed with `openshell inference set`, which validates endpoint
+//    REGISTRATION, not a completion. It reported "route OK" through a 12-minute
+//    stall (2026-07-28).
+//  - v3 added a completion gate but asked for `"hi"` with max_tokens:1. A
+//    provider that 400s every real turn served that happily, so the medic logged
+//    "FAILOVER active — COMPLETION-VERIFIED" over a hard outage (2026-08-06,
+//    and six more times on 2026-08-12).
+//  - v5 removed the fallback entirely. It was never a product decision: nvidia
+//    was the ORIGINAL provider, kept as a manual rollback at the 07-06 DeepInfra
+//    swap, then wired up as an automatic failover target by v2 on 07-11 without
+//    anyone verifying it still served. An unverified fallback is worse than
+//    none — it fails exactly when depended on, and reports success doing it.
 //
-//   registration ok + completion ok       -> healthy (verified, exit 0)
-//   registration ok + completion FAIL     -> that provider is DEAD  <- v3's fix
-//   both providers dead                   -> exit 1 LOUD            <- v3's fix
-//   no container to probe from            -> degrade to v2, exit 0, loud WARN
+//   registration ok + completion ok       -> serving (exit 0)
+//   registration ok + completion FAIL     -> exit 1 LOUD, route HELD on primary
+//   registration FAIL                     -> exit 1 LOUD
+//   no container to probe from            -> registration only, exit 0 + WARN
+//   ...and the route is NEVER set to anything but the primary.
 //
 // The shims keep route state in a file: `openshell inference set` records the
 // provider (mirroring the real switch), and the fake `docker exec curl` answers
@@ -40,7 +48,7 @@ interface RunResult {
   stderr: string;
 }
 
-describe.skipIf(!haveBash)('nemoclaw-inference-medic.sh v3 decision table', () => {
+describe.skipIf(!haveBash)('nemoclaw-inference-medic.sh decision table', () => {
   let dir: string;
 
   beforeEach(async () => {
@@ -98,10 +106,43 @@ case "$current" in
   nvidia-prod)    healthy="\${COMPLETION_NVIDIA:-1}" ;;
   *) healthy=0 ;;
 esac
+
+# "flaky" = miss once, then serve. Proves the v4 retry absorbs a single slow
+# probe instead of flapping the whole fleet to the fallback.
+if [ "$healthy" = "flaky" ]; then
+  n="\${MEDIC_TEST_STATE}.attempts-$current"
+  count="$(cat "$n" 2>/dev/null || echo 0)"
+  echo $((count + 1)) > "$n"
+  [ "$count" = "0" ] && { echo '400 (no body)'; exit 0; }
+  healthy=1
+fi
+
 if [ "$healthy" = "1" ]; then
-  echo '{"choices":[{"message":{"content":""}}]}'
+  # v4 shape: a streamed completion that ENDS IN A TOOL CALL. Anything less is
+  # not evidence the provider can serve an agent turn.
+  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}'
+  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"id":"c1","type":"function","function":{"name":"resolve_date","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}'
+  printf '%s\\n' 'data: [DONE]'
   exit 0
 fi
+
+# "prose" = a perfectly valid completion that never calls a tool. This is the
+# v3 blind spot: "choices" is present, so v3 called it healthy. A provider whose
+# model will not emit tool calls cannot serve this product.
+if [ "$healthy" = "prose" ]; then
+  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{"content":"This coming Friday is the 14th."},"finish_reason":null}]}'
+  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
+  printf '%s\\n' 'data: [DONE]'
+  exit 0
+fi
+
+# "truncated" = the stream dies mid-flight: tool call started, no [DONE].
+if [ "$healthy" = "truncated" ]; then
+  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}'
+  printf '%s\\n' 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}'
+  exit 0
+fi
+
 # The 2026-08-06 shape: a body with no "choices" (e.g. "400 (no body)").
 echo '400 (no body)'
 exit 0
@@ -126,6 +167,7 @@ exit 0
             PATH: `${dir}:${process.env.PATH ?? ''}`,
             MEDIC_TEST_STATE: join(dir, 'route-state'),
             MEDIC_PROBE_TIMEOUT: '2',
+            MEDIC_RETRY_SLEEP: '0', // the retry's real 2s pause would just slow the suite
             ...env,
           },
         },
@@ -143,41 +185,80 @@ exit 0
   it('healthy primary: registration + completion both pass -> verified, exit 0', async () => {
     const r = await run({});
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain('route OK on primary');
-    expect(r.stdout).toContain('completion verified');
+    expect(r.stdout).toContain('route OK on deepinfra-prod');
+    expect(r.stdout).toContain('serving verified');
     expect(await activeRoute()).toBe('deepinfra-prod');
   });
 
-  it('THE 07-28 STALL: primary registers but completions fail -> fail over (v2 said "route OK")', async () => {
+  it('THE 07-28 STALL: registers but completions fail -> exit 1 LOUD (v2 said "route OK")', async () => {
     const r = await run({ COMPLETION_DEEPINFRA: '0' });
-    expect(r.code).toBe(0);
-    expect(r.stderr).toContain('failed the 1-token completion probe');
-    expect(r.stderr).toContain('FAILOVER active');
-    expect(r.stderr).toContain('COMPLETION-VERIFIED');
-    expect(await activeRoute()).toBe('nvidia-prod');
-  });
-
-  it('THE 08-06 BROKEN FAILOVER: primary dead, fallback registers but 400s -> exit 1 LOUD (v2 claimed success)', async () => {
-    const r = await run({ REG_DEEPINFRA: '0', COMPLETION_NVIDIA: '0' });
     expect(r.code).toBe(1);
-    // Must NOT claim a working failover — that is the exact lie v3 exists to stop.
-    expect(r.stderr).not.toContain('COMPLETION-VERIFIED');
-    expect(r.stderr).toContain('BOTH providers failed');
-    expect(r.stderr).toContain('DOWN');
+    expect(r.stderr).toContain('failed the tool-call completion probe TWICE');
+    expect(r.stderr).toContain('IS NOT SERVING');
+    expect(r.stderr).toContain('AGENTS ARE DOWN');
+    // The route is HELD, not moved — a recovery is then picked up immediately.
+    expect(await activeRoute()).toBe('deepinfra-prod');
   });
 
-  it('402/outage class: primary fails registration, fallback fully healthy -> verified failover', async () => {
+  it('402/outage class: registration itself fails -> exit 1 LOUD', async () => {
     const r = await run({ REG_DEEPINFRA: '0' });
-    expect(r.code).toBe(0);
-    expect(r.stderr).toContain('FAILOVER active');
-    expect(r.stderr).toContain('COMPLETION-VERIFIED');
-    expect(await activeRoute()).toBe('nvidia-prod');
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('failed REGISTRATION');
+    expect(r.stderr).toContain('AGENTS ARE DOWN');
   });
 
-  it('both dead but primary still registers -> route parked on primary, exit 1', async () => {
-    const r = await run({ COMPLETION_DEEPINFRA: '0', COMPLETION_NVIDIA: '0' });
+  // The v5 invariant. nvidia-prod became a failover target by accident, not by
+  // decision, and 400'd every real turn for days while the medic logged success.
+  // If a fallback is ever added back it must be a deliberate change that also
+  // changes this test — never something that quietly reappears.
+  it('NEVER routes anywhere but the primary, whatever fails', async () => {
+    const cases: Record<string, string>[] = [
+      { COMPLETION_DEEPINFRA: '0' },
+      { COMPLETION_DEEPINFRA: 'prose' },
+      { COMPLETION_DEEPINFRA: 'truncated' },
+      {}, // healthy
+    ];
+    for (const env of cases) {
+      await run(env);
+      expect(await activeRoute()).toBe('deepinfra-prod');
+    }
+  });
+
+  it('never claims a failover happened, and never mentions a fallback provider', async () => {
+    const r = await run({ COMPLETION_DEEPINFRA: '0' });
+    expect(r.stderr).not.toContain('FAILOVER');
+    expect(r.stderr).not.toContain('COMPLETION-VERIFIED');
+    expect(`${r.stdout}${r.stderr}`).not.toContain('nvidia');
+  });
+
+  // ── v4: the probe has to look like a TURN ──────────────────────────────────
+  // v3 probed `"hi"` with max_tokens:1 and passed on any body containing
+  // "choices". nvidia-prod served that while 400-ing every real turn, so the
+  // medic logged "FAILOVER active — COMPLETION-VERIFIED" over a hard outage
+  // (six events on 2026-08-12). These pin the stronger gate.
+
+  it('THE v3 BLIND SPOT: returns prose and never emits a tool call -> NOT serving', async () => {
+    const r = await run({ COMPLETION_DEEPINFRA: 'prose' });
     expect(r.code).toBe(1);
-    expect(r.stderr).toContain('route restored to deepinfra-prod');
+    // v3's gate ("choices" present) would have called this healthy and green.
+    expect(r.stdout).not.toContain('serving verified');
+    expect(r.stderr).toContain('failed the tool-call completion probe TWICE');
+    expect(r.stderr).toContain('IS NOT SERVING');
+  });
+
+  it('stream dies mid-flight (tool call started, no [DONE]) -> NOT serving', async () => {
+    const r = await run({ COMPLETION_DEEPINFRA: 'truncated' });
+    expect(r.code).toBe(1);
+    expect(r.stdout).not.toContain('serving verified');
+    expect(r.stderr).toContain('IS NOT SERVING');
+  });
+
+  it('ONE slow probe does not raise a false alarm: miss then pass -> healthy', async () => {
+    const r = await run({ COMPLETION_DEEPINFRA: 'flaky' });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('passed the completion probe on retry');
+    expect(r.stdout).toContain('serving verified');
+    expect(r.stderr).not.toContain('AGENTS ARE DOWN');
     expect(await activeRoute()).toBe('deepinfra-prod');
   });
 

@@ -131,7 +131,29 @@ Flip: `openshell inference set -g nemoclaw --provider deepinfra-prod --model zai
 (gateway-level → all sandboxes; the route forces the model per request). **`nvidia-prod` is
 rollback-only** and is ALSO the wizard default `onboard`/`rebuild` fall back to — that drift
 rate-limited Judy's s3 on 2026-07-08. Guard: `nemoclaw-inference-medic.timer` re-asserts the
-DeepInfra route on boot + every 15 min (units in this repo). Check with `openshell inference get`.
+DeepInfra route on boot + every 5 min (units in this repo). Check with `openshell inference get`.
+
+**THERE IS NO FALLBACK, BY DESIGN (v5, 2026-08-12, user decision).** The medic asserts the
+DeepInfra route and reports honestly whether it is serving. It does **not** reroute traffic.
+How the trap got built, because it was never a decision: nvidia-prod was the ORIGINAL provider
+(2026-07-02); the 07-06 DeepInfra swap kept it as a **manual rollback**; medic v2 (07-11) wired
+that manual rollback up as an **automatic failover target**, and nobody verified it still served
+— the NVIDIA key was rotated the same day. By 08-06 it was 400-ing every real turn, so a 4-minute
+DeepInfra blip became a hard outage *while the medic logged success*. **An unverified fallback is
+worse than no fallback: it fails exactly when you depend on it and reports success doing so.**
+Adding one back is a deliberate two-line change, gated on probing the candidate first
+(`src/control/inferenceMedicScript.test.ts` pins "never routes anywhere but the primary").
+
+**The health gate is a TOOL CALL, not a ping (v4).** It probes the routed provider through
+`https://inference.local/v1` from inside a sandbox container with real spine tool schemas
+attached, streaming on, and enough `max_tokens` to finish reasoning — and requires the stream to
+close with `finish_reason: "tool_calls"`. v3 probed `"hi"` with `max_tokens:1`, which nvidia-prod
+served happily while 400-ing every real turn. A probe that does not look like a turn cannot tell
+you a provider can serve turns. The gate assumes the routed **model** emits a tool call for the
+probe prompt — if the model ever changes, re-validate the probe against it first, or a model that
+answers in prose gets reported dead while perfectly healthy.
+**Open gap: nothing watches this.** The medic now tells the truth, into a journal no one reads —
+which is why six outage windows on 2026-08-12 went unnoticed. Alerting is the next piece.
 
 The standing model decision is the GLM line — Nemotron-3 Super 120B proved too weak; do NOT
 "restore" it when debugging model errors. GLM-5.1 was the first pick but NVIDIA retired it. (Note

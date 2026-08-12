@@ -498,11 +498,15 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   returns "LLM request failed" while the journal says success. The user hit one at 20:59/21:00 and
   reasonably blamed `--deliver`; it was the route. **Silence is the damage — the one signal said
   the opposite of the truth.** v4's probe carries real spine tool schemas (flat + nested +
-  enum-heavy, ~970 prompt tokens), a system prompt, streaming on, and `max_tokens:512`; the gate is
+  enum-heavy, 864 prompt tokens), a system prompt, streaming on, and `max_tokens:512`; the gate is
   the stream closing (`data: [DONE]`) **with `finish_reason:"tool_calls"`** — an actual tool call,
   the thing every real turn depends on. Measured before shipping on healthy deepinfra: **12/12
-  emitted a tool call, 1.9–9.9s, ~$0.0003/probe (~$2.80/mo at the 5-min cadence)** — so the strong
-  probe was affordable and there was no reason to settle for a weaker one.
+  emitted a tool call, 1.9–9.9s, ~$0.0003/probe (~$2.70/mo at the 5-min cadence)** — so the strong
+  probe was affordable and there was no reason to settle for a weaker one. Per-run usage, measured:
+  **864 prompt + 43–66 completion ≈ 920 tokens** (768 of the prompt cache-hit), ~264k tokens/day at
+  288 runs; a FAILING tick costs up to 4 probes (retry + fallback) ≈ 3.7k. The DeepInfra prefix
+  cache was still hitting at a 150s gap, which does NOT match the "TTL ~1min" recorded in
+  [[glm-cache-key-trial]] — treat that TTL as unverified.
   Calibration results worth keeping:
   - **`tool_choice:"required"` does NOT rescue a small token budget.** GLM-5.2 reasons by default
     and spent all 32 tokens on `reasoning_content`, returning `tool_calls: []` +
@@ -512,7 +516,7 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
     provider is plausible; flapping the fleet for that would be the same bug pointed the other way.
     Two consecutive misses is evidence, one is noise. In-tick only — no state file, keeping v2's
     "flaps are visible in the journal" rule.
-  - **Payload SIZE is the untested axis.** Three tools ≈ 970 prompt tokens vs the real ~39-tool
+  - **Payload SIZE is the untested axis.** Three tools = 864 prompt tokens vs the real ~39-tool
     surface. That exercises schema *shape*, not size; if a provider ever fails on size, that's the
     knob. Also: the NVIDIA-as-oracle test (route the fleet at it and confirm the new gate fails)
     was **never run** — it needs a live outage window. The gate was proven instead against a

@@ -110,7 +110,7 @@ probe_container() {
 #
 # The three tools are real spine schemas (src/mcp/server.ts): a flat one, a
 # nested-object one, and a long enum-heavy one. Three is enough to exercise
-# schema validation and costs ~970 prompt tokens; the full 39-tool surface would
+# schema validation and costs 864 prompt tokens (measured); the 39-tool surface would
 # be ~10x that on every 5-min tick for no extra signal about whether the
 # provider can parse our schemas. If a provider ever fails on payload SIZE
 # rather than shape, that is the knob to turn.

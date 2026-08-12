@@ -317,9 +317,10 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   the rate, but **act-mode must trigger only on flags without `corrected`** (and rate analysis
   should track corrected flags as their own series: self-corrections, not fabrications).
   Regression replay of all 94 eval replies old-vs-new: exactly two changed outcomes (D17 gains
-  its flag, T02's becomes corrected), the other 92 byte-identical. Deploy after merge: s2+s6
-  first (the 2026.6.34 boxes where the guard actually hears streamed replies); s3/s5/s7/s8 ride
-  the version rollout to avoid double gateway restarts.
+  its flag, T02's becomes corrected), the other 92 byte-identical. **DEPLOYED s2+s6 2026-08-12
+  17:53Z and liveness-verified on a real streamed reply** (`v:0.3.0 hook:reply_payload_sending
+  chars:1148 flags:[]`, stub dedupe marking `dup:true` as designed); s3/s5/s7/s8 get v0.3.0
+  bundled with their 2026.6.34 upgrade so each box restarts once.
 - **The weekday fabrication is ENDEMIC, not episodic — 23 mismatches in 419 historical texts
   (2026-08-06).** Built the outbound weekday guard (observe-only `message_sending` plugin,
   chrono-node, see nemoclaw-tech-agent.md §4c) and replayed it over every assistant text in the

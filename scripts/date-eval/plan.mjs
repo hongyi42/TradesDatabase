@@ -122,7 +122,14 @@ try {
     tenant: TENANT,
     today,
     timezone: tz,
-    expectedModel: process.env.DATE_EVAL_EXPECT_MODEL || 'z-ai/glm-5.2',
+    // DeepInfra's id spelling, because that is what production routes to
+    // (since 2026-07-06). The old default here was `z-ai/glm-5.2` — NVIDIA's
+    // spelling of the SAME model — so run.mjs's expected-model gate refused
+    // every run until someone set DATE_EVAL_EXPECT_MODEL, and the refusal
+    // looked like a fleet problem rather than a stale default. nvidia-prod was
+    // retired as a fallback on 2026-08-12; its id spelling should not be the
+    // default anywhere.
+    expectedModel: process.env.DATE_EVAL_EXPECT_MODEL || 'zai-org/GLM-5.2',
     sandbox: process.env.DATE_EVAL_SANDBOX || 's2',
     facts: { dayCounts, techDayCounts, timeOff, windowJobs },
     questions: corpus,

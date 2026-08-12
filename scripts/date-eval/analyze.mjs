@@ -19,12 +19,15 @@
 // "speak is broken" when speak faithfully repeated a number it was handed.
 // Later phases are marked `inherited` and excluded from their own denominators.
 //
-// GUARD IS REPLAYED OFFLINE, NOT OBSERVED. The message_sending hook does not
-// fire on the embedded-agent path (verified 2026-08-11: a deliberate "Monday
-// 2026-08-12" — a Wednesday — produced no log line), so a run cannot watch the
-// real hook. Replaying the plugin's own scanMessage over the collected replies
-// measures the DETECTOR's logic exactly; it cannot tell you the hook is wired
-// up in production. That wiring is a separate one-off Telegram check.
+// GUARD IS REPLAYED OFFLINE UNLESS THE RUN USED --deliver. Replaying the
+// plugin's own scanMessage over the collected replies measures the DETECTOR's
+// logic exactly, but it cannot tell you the hook is wired up — it is our code
+// calling our function. A run started with `--deliver` fires the REAL
+// message_sending hook inside the sandbox and records its verdict per question
+// as `guardLive`; this report then prefers that, and reports any REPLAY vs LIVE
+// disagreement as a finding of its own. A disagreement means one of two things,
+// both worth knowing: the deployed plugin is not the version in this repo, or
+// the text the hook sees is not the text we graded.
 //
 //   node scripts/date-eval/analyze.mjs --dir <run-dir>
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
@@ -253,11 +256,33 @@ for (const r of results) {
     }
   }
 
-  // ── PHASE 4: GUARD (offline replay of the real detector) ──
-  const guardFlags = (() => { try { return scanMessage(text, firmLocalParts(TZ, new Date(`${TODAY}T12:00:00Z`))); } catch { return []; } })();
+  // ── PHASE 4: GUARD ──
+  // Replay is always computed (it is the detector's logic under our control).
+  // When the run delivered, the REAL hook's flags are authoritative and any
+  // disagreement between the two is itself reported.
+  const replayFlags = (() => { try { return scanMessage(text, firmLocalParts(TZ, new Date(`${TODAY}T12:00:00Z`))); } catch { return []; } })();
+  const liveRecords = Array.isArray(r.guardLive) ? r.guardLive : null;
+  const liveFlags = liveRecords ? liveRecords.flatMap((g) => g.flags ?? []) : null;
+  // The hook not firing at all is NOT "no flags" — it means phase 4 was never
+  // observed for this question, and must never be scored as a clean pass.
+  const liveObserved = liveRecords !== null && liveRecords.length > 0;
+  const guardFlags = liveObserved ? liveFlags : replayFlags;
+
   const guard = mism.length === 0
     ? (guardFlags.length ? { verdict: 'false-positive', flags: guardFlags } : { verdict: 'n/a', flags: [] })
     : (guardFlags.length ? { verdict: 'caught', flags: guardFlags } : { verdict: 'missed', flags: [], detail: mism });
+  guard.source = liveObserved ? 'live-hook' : liveRecords ? 'live-hook-SILENT' : 'replay';
+  if (liveRecords && !liveObserved) {
+    // Delivered, but no hook record came back: the wiring, not the detector.
+    guard.verdict = 'not-observed';
+    guard.detail = 'run delivered but the guard hook wrote nothing for this question';
+  }
+  if (liveObserved) {
+    const norm = (fs) => JSON.stringify([...fs].sort());
+    if (norm(liveFlags) !== norm(replayFlags)) {
+      guard.disagreement = { live: liveFlags, replay: replayFlags };
+    }
+  }
 
   // ── outcome: is the ANSWER right? ──
   let outcome = { verdict: 'needs-adjudication', why: '' };
@@ -353,10 +378,28 @@ if (periodRows.length) {
 const gCaught = rows.filter((r) => r.guard.verdict === 'caught').length;
 const gMissed = rows.filter((r) => r.guard.verdict === 'missed').length;
 const gFP = rows.filter((r) => r.guard.verdict === 'false-positive').length;
+const gLive = rows.filter((r) => r.guard.source === 'live-hook').length;
+const gSilent = rows.filter((r) => r.guard.source === 'live-hook-SILENT').length;
+const gDisagree = rows.filter((r) => r.guard.disagreement);
 L.push(`\n## Guard\n`);
-L.push(`Replayed offline over every reply (the hook does not fire on the probe path — see the header note).\n`);
+if (gLive || gSilent) {
+  L.push(`**OBSERVED, not replayed** — the run used \`--deliver\`, so the real \`message_sending\` hook ran inside the sandbox. ${gLive}/${rows.length} questions produced a hook record.\n`);
+  if (gSilent) {
+    L.push(`> ⚠ **${gSilent} question(s) delivered but the hook wrote NOTHING** — phase 4 was not observed for those, and they are scored \`not-observed\`, never as a pass. That is a WIRING symptom (plugin not loaded, delivery failing before the hook, log not writable), not a detector one.\n`);
+  }
+} else {
+  L.push(`Replayed offline over every reply — this measures the detector's logic, not that the hook is wired up. Re-run with \`--deliver\` to observe the real hook.\n`);
+}
 L.push(`- weekday↔date contradictions that reached the text: **${gCaught + gMissed}**`);
-L.push(`- guard would have caught: **${gCaught}** · missed: **${gMissed}** · false positives: **${gFP}**`);
+L.push(`- guard caught: **${gCaught}** · missed: **${gMissed}** · false positives: **${gFP}**`);
+if (gDisagree.length) {
+  L.push(`\n> ⚠ **REPLAY vs LIVE DISAGREEMENT on ${gDisagree.length} question(s).** The deployed plugin and this repo's copy do not agree on the same text. Either the box is running a different build, or the hook sees different text than we graded. Resolve before trusting either number.\n`);
+  L.push(`| id | live flags | replay flags |`);
+  L.push(`|---|---|---|`);
+  for (const r of gDisagree.slice(0, 10)) {
+    L.push(`| ${r.id} | \`${(r.guard.disagreement.live ?? []).join('`, `') || '—'}\` | \`${(r.guard.disagreement.replay ?? []).join('`, `') || '—'}\` |`);
+  }
+}
 
 L.push(`\n## Latency, by phase\n`);
 const med = (xs) => (xs.length ? xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)] : 0);

@@ -261,17 +261,29 @@ describe('resolveDate — week mode (calendar-anchored Mon–Sun ranges)', () =>
     if (r.status === 'unresolvable') expect(r.reason).toMatch(/weeksAhead only applies/);
   });
 
-  test('negative, oversized, or fractional week is unresolvable', () => {
-    expect(resolveDate({ todayLocal: '2026-07-22', week: -1 }).status).toBe('unresolvable');
+  test('"last week" is week -1 — a real mode since 2026-08-12, not a refusal', () => {
+    // The eval caught W05 ("last week") hand-computing its boundaries because
+    // negatives were refused. 2026-07-22 is a Wednesday; its week starts
+    // Monday Jul 20, so last week is Jul 13–19.
+    const r = resolvedWeek({ todayLocal: '2026-07-22', week: -1 });
+    expect(r.weekStart).toBe('2026-07-13');
+    expect(r.weekEnd).toBe('2026-07-19');
+    expect(r.boundaryAmbiguous).toBeUndefined();
+  });
+
+  test('oversized or fractional week is unresolvable', () => {
+    expect(resolveDate({ todayLocal: '2026-07-22', week: -53 }).status).toBe('unresolvable');
     expect(resolveDate({ todayLocal: '2026-07-22', week: 53 }).status).toBe('unresolvable');
     expect(resolveDate({ todayLocal: '2026-07-22', week: 1.5 }).status).toBe('unresolvable');
   });
 
   test('the mode-refusal strings name week (result text is agent steering)', () => {
+    // \bweek, not "or week": week sits mid-list since the period modes joined
+    // the refusal strings — the property under test is that it is NAMED.
     const none = resolveDate({ todayLocal: '2026-07-22' });
-    if (none.status === 'unresolvable') expect(none.reason).toMatch(/or week/);
+    if (none.status === 'unresolvable') expect(none.reason).toMatch(/, week,/);
     const many = resolveDate({ todayLocal: '2026-07-22', weekday: 'friday', dayShift: 1 });
-    if (many.status === 'unresolvable') expect(many.reason).toMatch(/or week/);
+    if (many.status === 'unresolvable') expect(many.reason).toMatch(/, week,/);
   });
 });
 
@@ -293,10 +305,30 @@ describe('resolveDate — validation and refusals (the clarify path)', () => {
     if (r.status === 'unresolvable') expect(r.reason).toMatch(/weeksAhead only applies/);
   });
 
-  test('negative or oversized weeksAhead is unresolvable (no past weekday refs)', () => {
-    expect(resolveDate({ todayLocal: WED_2026_07_15, weekday: 'friday', weeksAhead: -1 }).status).toBe('unresolvable');
+  test('oversized or fractional weeksAhead is unresolvable', () => {
+    expect(resolveDate({ todayLocal: WED_2026_07_15, weekday: 'friday', weeksAhead: -53 }).status).toBe('unresolvable');
     expect(resolveDate({ todayLocal: WED_2026_07_15, weekday: 'friday', weeksAhead: 53 }).status).toBe('unresolvable');
     expect(resolveDate({ todayLocal: WED_2026_07_15, weekday: 'friday', weeksAhead: 1.5 }).status).toBe('unresolvable');
+  });
+
+  test('"last <weekday>" is weeksAhead -1 — anchored a whole week before the coming occurrence', () => {
+    // From Wednesday Jul 15: coming Friday is the 17th, so last Friday is the
+    // 10th — 5 days back, not 7. The anchor-minus-a-week rule matches speech.
+    expect(resolved({ todayLocal: WED_2026_07_15, weekday: 'friday', weeksAhead: -1 })).toEqual({
+      date: '2026-07-10',
+      weekday: 'friday',
+    });
+    // Said ON the named day: "last Wednesday" on a Wednesday means a week ago.
+    expect(resolved({ todayLocal: WED_2026_07_15, weekday: 'wednesday', weeksAhead: -1 })).toEqual({
+      date: '2026-07-08',
+      weekday: 'wednesday',
+    });
+    // From Saturday Jul 18, "last Friday" is yesterday — the coming Friday is
+    // 6 days out, minus 7 lands on the 17th.
+    expect(resolved({ todayLocal: '2026-07-18', weekday: 'friday', weeksAhead: -1 })).toEqual({
+      date: '2026-07-17',
+      weekday: 'friday',
+    });
   });
 
   test('non-integer or out-of-range dayShift is unresolvable', () => {
@@ -306,6 +338,120 @@ describe('resolveDate — validation and refusals (the clarify path)', () => {
 
   test('a bad reference date (server bug) refuses rather than guessing', () => {
     expect(resolveDate({ todayLocal: 'not-a-date', dayShift: 0 }).status).toBe('unresolvable');
+  });
+});
+
+describe('resolveDate — calendar-period modes (month / quarter / year, 2026-08-12)', () => {
+  // The date eval's finding: every calendar period above a week had NO path
+  // through this tool, so the model invented the boundaries — correct in an
+  // easy August, wrong the first February or year wrap. These anchors are
+  // hand-computed like the rest of the file.
+  function resolvedPeriod(p: ResolveDateParams) {
+    const r = resolveDate(p);
+    if (r.status !== 'resolved_period') throw new Error(`expected resolved_period, got: ${JSON.stringify(r)}`);
+    return r;
+  }
+
+  test('month 0 / -1 / +1 from mid-July 2026', () => {
+    const july = resolvedPeriod({ todayLocal: WED_2026_07_15, month: 0 });
+    expect(july.periodStart).toBe('2026-07-01');
+    expect(july.periodEnd).toBe('2026-07-31');
+    expect(july.label).toBe('July 2026');
+    // Jul 1 2026 is a Wednesday, Jul 31 a Friday — hand-checked.
+    expect(july.phrase).toBe('Wednesday 2026-07-01 through Friday 2026-07-31 (July 2026)');
+
+    const june = resolvedPeriod({ todayLocal: WED_2026_07_15, month: -1 });
+    expect(june.periodStart).toBe('2026-06-01');
+    expect(june.periodEnd).toBe('2026-06-30');
+    expect(june.label).toBe('June 2026');
+
+    const august = resolvedPeriod({ todayLocal: WED_2026_07_15, month: 1 });
+    expect(august.periodStart).toBe('2026-08-01');
+    expect(august.periodEnd).toBe('2026-08-31');
+  });
+
+  test('THE year-wrap trap: "last month" in January is December of the PREVIOUS year', () => {
+    const r = resolvedPeriod({ todayLocal: '2026-01-15', month: -1 });
+    expect(r.periodStart).toBe('2025-12-01');
+    expect(r.periodEnd).toBe('2025-12-31');
+    expect(r.label).toBe('December 2025');
+  });
+
+  test('February length comes from arithmetic, not a table — leap and non-leap', () => {
+    expect(resolvedPeriod({ todayLocal: '2028-02-10', month: 0 }).periodEnd).toBe('2028-02-29');
+    expect(resolvedPeriod({ todayLocal: '2026-02-10', month: 0 }).periodEnd).toBe('2026-02-28');
+    // Reaching February from another month, both directions.
+    expect(resolvedPeriod({ todayLocal: '2028-03-15', month: -1 }).periodEnd).toBe('2028-02-29');
+    expect(resolvedPeriod({ todayLocal: '2027-12-05', month: 2 }).periodEnd).toBe('2028-02-29');
+  });
+
+  test('quarter 0 / -1 and the Q1→Q4 year wrap', () => {
+    const q3 = resolvedPeriod({ todayLocal: WED_2026_07_15, quarter: 0 });
+    expect(q3.periodStart).toBe('2026-07-01');
+    expect(q3.periodEnd).toBe('2026-09-30');
+    expect(q3.label).toBe('Q3 2026');
+
+    const q2 = resolvedPeriod({ todayLocal: WED_2026_07_15, quarter: -1 });
+    expect(q2.periodStart).toBe('2026-04-01');
+    expect(q2.periodEnd).toBe('2026-06-30');
+    expect(q2.label).toBe('Q2 2026');
+
+    // "last quarter" asked in February = Q4 of the previous year.
+    const q4prev = resolvedPeriod({ todayLocal: '2026-02-10', quarter: -1 });
+    expect(q4prev.periodStart).toBe('2025-10-01');
+    expect(q4prev.periodEnd).toBe('2025-12-31');
+    expect(q4prev.label).toBe('Q4 2025');
+  });
+
+  test('year 0 / -1', () => {
+    const thisYear = resolvedPeriod({ todayLocal: WED_2026_07_15, year: 0 });
+    expect(thisYear.periodStart).toBe('2026-01-01');
+    expect(thisYear.periodEnd).toBe('2026-12-31');
+    expect(thisYear.label).toBe('2026');
+
+    const lastYear = resolvedPeriod({ todayLocal: WED_2026_07_15, year: -1 });
+    expect(lastYear.periodStart).toBe('2025-01-01');
+    expect(lastYear.periodEnd).toBe('2025-12-31');
+    expect(lastYear.label).toBe('2025');
+  });
+
+  test('every period phrase restates its own fields — nothing left to derive', () => {
+    const cases: ResolveDateParams[] = [
+      { todayLocal: WED_2026_07_15, month: -1 },
+      { todayLocal: '2026-02-10', quarter: -1 },
+      { todayLocal: WED_2026_07_15, year: 0 },
+    ];
+    for (const p of cases) {
+      const r = resolvedPeriod(p);
+      const cap = (w: string) => w[0].toUpperCase() + w.slice(1);
+      expect(r.phrase).toBe(
+        `${cap(r.periodStartWeekday)} ${r.periodStart} through ${cap(r.periodEndWeekday)} ${r.periodEnd} (${r.label})`,
+      );
+    }
+  });
+
+  test('bounds refuse with steering text, like every other mode', () => {
+    for (const [params, re] of [
+      [{ todayLocal: WED_2026_07_15, month: 25 }, /month must be/],
+      [{ todayLocal: WED_2026_07_15, month: -25 }, /month must be/],
+      [{ todayLocal: WED_2026_07_15, quarter: 9 }, /quarter must be/],
+      [{ todayLocal: WED_2026_07_15, year: -6 }, /year must be/],
+      [{ todayLocal: WED_2026_07_15, month: 1.5 }, /month must be/],
+    ] as Array<[ResolveDateParams, RegExp]>) {
+      const r = resolveDate(params);
+      expect(r.status).toBe('unresolvable');
+      if (r.status === 'unresolvable') expect(r.reason).toMatch(re);
+    }
+  });
+
+  test('period modes obey the exactly-one rule and are named in refusal strings', () => {
+    expect(resolveDate({ todayLocal: WED_2026_07_15, month: 0, week: 0 }).status).toBe('unresolvable');
+    expect(resolveDate({ todayLocal: WED_2026_07_15, quarter: 0, weekday: 'friday' }).status).toBe('unresolvable');
+    expect(resolveDate({ todayLocal: WED_2026_07_15, year: 0, month: 0 }).status).toBe('unresolvable');
+    const none = resolveDate({ todayLocal: WED_2026_07_15 });
+    if (none.status === 'unresolvable') expect(none.reason).toMatch(/month, quarter, or year/);
+    const many = resolveDate({ todayLocal: WED_2026_07_15, month: 0, week: 0 });
+    if (many.status === 'unresolvable') expect(many.reason).toMatch(/month, quarter, or year/);
   });
 });
 

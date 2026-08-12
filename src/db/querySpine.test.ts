@@ -4,6 +4,7 @@ import { createTenant } from './tenants.js';
 import { insertTechnician } from './technicians.js';
 import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
+import { createAssignment } from './assignments.js';
 
 // The security properties of the query_spine read surface, asserted against the
 // real database rather than reasoned about. Isolation here rests on a view
@@ -14,6 +15,15 @@ const pg = new Client({ connectionString: process.env.DATABASE_URL });
 
 let tenantA: string;
 let tenantB: string;
+// One assignment per status, tenant A — the v_schedule/v_cancelled_visits
+// membership fixtures. Ids captured so tests assert exact membership, not
+// counts that another fixture could drift.
+const ids: Record<'confirmed' | 'completed' | 'cancelled' | 'proposed', string> = {
+  confirmed: '',
+  completed: '',
+  cancelled: '',
+  proposed: '',
+};
 
 // Call the function the way the tool will: tenant passed as a PARAMETER from the
 // verified identity, never interpolated into the SQL the model wrote.
@@ -29,24 +39,64 @@ beforeAll(async () => {
   tenantA = (await createTenant('qs-tenant-a', { managerSeats: 2 })).id;
   tenantB = (await createTenant('qs-tenant-b', { managerSeats: 2 })).id;
 
+  const jobIds: Record<string, string> = {};
+  const techIds: Record<string, string> = {};
   for (const [tenantId, tag] of [
     [tenantA, 'a'],
     [tenantB, 'b'],
   ] as const) {
-    await insertTechnician({
+    const tech = await insertTechnician({
       tenantId,
       ref: `qs-tech-${tag}`,
       displayName: `QS Tech ${tag.toUpperCase()}`,
       seatExempt: true,
     });
     const customer = await createCustomer({ tenantId, name: `QS Customer ${tag.toUpperCase()}` });
-    await createJob({ tenantId, customerId: customer.id, title: `QS Job ${tag.toUpperCase()}` });
+    const job = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: `QS Job ${tag.toUpperCase()}`,
+    });
+    jobIds[tag] = job.id;
+    techIds[tag] = tech.id;
   }
+
+  // One assignment per status for tenant A, non-overlapping slots on a fixed
+  // far-future day. The membership fixtures for "v_schedule means the
+  // schedule": the 2026-08-12 date eval caught v_schedule counting cancelled
+  // rows as booked work (August +90), so which statuses each view returns is
+  // pinned here, not left to the view's WHERE staying unread.
+  const slot = async (
+    status: 'proposed' | 'confirmed' | 'completed' | 'cancelled',
+    hour: number,
+    tag: 'a' | 'b' = 'a',
+  ) => {
+    const row = await createAssignment({
+      tenantId: tag === 'a' ? tenantA : tenantB,
+      jobId: jobIds[tag],
+      technicianId: techIds[tag],
+      startsAt: `2027-03-02T${String(hour).padStart(2, '0')}:00:00Z`,
+      endsAt: `2027-03-02T${String(hour).padStart(2, '0')}:45:00Z`,
+      status,
+    });
+    return row.id;
+  };
+  ids.confirmed = await slot('confirmed', 9);
+  ids.completed = await slot('completed', 11);
+  ids.cancelled = await slot('cancelled', 13);
+  ids.proposed = await slot('proposed', 15);
+  // Tenant B gets a cancelled row too, so the isolation test.each has real
+  // cross-tenant data to leak on v_cancelled_visits, not a vacuous empty set.
+  await slot('cancelled', 9, 'b');
+  await pg.query(`update assignments set reason = 'QS customer away' where id = $1`, [
+    ids.cancelled,
+  ]);
 });
 
 afterAll(async () => {
   for (const t of [tenantA, tenantB]) {
     await pg.query('delete from query_audit where tenant_id = $1', [t]);
+    await pg.query('delete from assignments where tenant_id = $1', [t]);
     await pg.query(
       'delete from jobs where customer_id in (select id from customers where tenant_id = $1)',
       [t],
@@ -61,7 +111,7 @@ afterAll(async () => {
 describe('query_spine — tenant isolation', () => {
   // The whole design: the model never writes the tenant filter, so this is the
   // property that has to hold for every view, not just the one under test today.
-  test.each(['v_team', 'v_customers', 'v_jobs', 'v_schedule', 'v_time_off'])(
+  test.each(['v_team', 'v_customers', 'v_jobs', 'v_schedule', 'v_time_off', 'v_cancelled_visits'])(
     '%s only ever returns the calling tenant',
     async (view) => {
       const a = await run(tenantA, `select * from ${view}`);
@@ -94,6 +144,51 @@ describe('query_spine — tenant isolation', () => {
     const b = await run(tenantB, 'select * from v_team');
     expect(JSON.stringify(b.rows[0].result)).toContain('QS Tech B');
     expect(JSON.stringify(b.rows[0].result)).not.toContain('QS Tech A');
+  });
+});
+
+describe('query_spine — v_schedule means the schedule (2026-08-12 eval finding)', () => {
+  // The regression under pin: count(*) from v_schedule was every assignment
+  // ever made — cancelled included — so "how many visits this month?" came
+  // back +90. These tests assert exact id membership per status, so a future
+  // view rewrite that drops the filter fails here, not in a manager chat.
+  // query_spine returns a bare jsonb array of rows (the {status, rows} wrapper
+  // seen in agent trajectories is added by the MCP layer above it).
+  const rowsOf = (r: { rows: { result: unknown }[] }) =>
+    r.rows[0].result as { assignment_id: string; status?: string; reason?: string }[];
+
+  test('v_schedule returns confirmed and completed visits — and nothing else', async () => {
+    const r = await run(tenantA, "select assignment_id, status from v_schedule where local_day = '2027-03-02'");
+    const got = rowsOf(r);
+    expect(new Set(got.map((x) => x.assignment_id))).toEqual(
+      new Set([ids.confirmed, ids.completed]),
+    );
+    expect(new Set(got.map((x) => x.status))).toEqual(new Set(['confirmed', 'completed']));
+  });
+
+  test('count(*) over v_schedule counts real bookings only — the eval regression shape', async () => {
+    const r = await run(
+      tenantA,
+      "select count(*) as visit_count from v_schedule where local_day = '2027-03-02'",
+    );
+    expect((rowsOf(r)[0] as unknown as { visit_count: number }).visit_count).toBe(2);
+  });
+
+  test('cancelled visits live in v_cancelled_visits, with the reason', async () => {
+    const r = await run(
+      tenantA,
+      "select assignment_id, reason from v_cancelled_visits where local_day = '2027-03-02'",
+    );
+    const got = rowsOf(r);
+    expect(got.map((x) => x.assignment_id)).toEqual([ids.cancelled]);
+    expect(got[0].reason).toBe('QS customer away');
+  });
+
+  test('a proposed assignment is staged workflow state — visible in NEITHER view', async () => {
+    for (const view of ['v_schedule', 'v_cancelled_visits']) {
+      const r = await run(tenantA, `select assignment_id from ${view}`);
+      expect(rowsOf(r).map((x) => x.assignment_id)).not.toContain(ids.proposed);
+    }
   });
 });
 
@@ -200,7 +295,7 @@ describe('query_spine — bounds', () => {
 });
 
 describe('query_spine — the view surface is closed', () => {
-  test('spine_reader holds SELECT on exactly the five views and nothing else', async () => {
+  test('spine_reader holds SELECT on exactly the six views and nothing else', async () => {
     // A new table must not become readable by default. This is the test that
     // fails when someone adds a grant without thinking.
     const { rows } = await pg.query(
@@ -208,6 +303,7 @@ describe('query_spine — the view surface is closed', () => {
         where grantee = 'spine_reader' order by table_name`,
     );
     expect(rows.map((r) => r.table_name)).toEqual([
+      'v_cancelled_visits',
       'v_customers',
       'v_jobs',
       'v_schedule',

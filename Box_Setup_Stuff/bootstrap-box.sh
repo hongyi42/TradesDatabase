@@ -20,6 +20,9 @@
 #                                                     # re-provision cold blank → report to spine
 #                                                     # (needs /root/nemoclaw-provision.env w/ NVIDIA key)
 #        ./bootstrap-box.sh wire <AGENT>              # §5a egress policy + §5b instructions
+#        ./bootstrap-box.sh ocpin <AGENT>             # pin openclaw to $OPENCLAW_PIN (recycled
+#                                                     # containers revert to the image's 2026.5.27,
+#                                                     # which re-deafens the weekday guard)
 #   sudo ./bootstrap-box.sh boot <AGENT>              # §7: boot-revive oneshot
 #        ./bootstrap-box.sh backup-identity <AGENT>   # snapshot device key BEFORE any rebuild
 #   sudo ./bootstrap-box.sh verify                    # §3f/§7 gates + device-identity + credential freshness
@@ -36,6 +39,14 @@ NEMOCLAW_HOME="/home/${NEMOCLAW_USER}"
 MCP_UPSTREAM_URL="${MCP_UPSTREAM_URL:-https://tradesdatabase.onrender.com/}"
 PULL_URL="${PULL_URL:-https://tradesdatabase.onrender.com/control/badges}"
 DOORMAN_PORT=3001
+# The sandbox image ships OpenClaw 2026.5.27, whose outbound hooks cannot see
+# streamed Telegram replies — the weekday guard is DEAF on it (root-caused and
+# fixed 2026-08-12; engineering-memory.md §3). Every sandbox must run the pin
+# below. A recycled or re-provisioned container comes up on the IMAGE's
+# 2026.5.27 and silently re-deafens the guard until ensure_openclaw_pin runs —
+# which is why wire calls it and verify asserts it on every running sandbox.
+OPENCLAW_PIN="${OPENCLAW_PIN:-2026.6.34}"
+OPENCLAW_STAGE_DIR="${NEMOCLAW_HOME}/openclaw-versions"
 
 log()  { printf '\n==> %s\n' "$*"; }
 ok()   { printf '    ✓ %s\n' "$*"; }
@@ -475,6 +486,67 @@ phase_recycler() {
 }
 
 # ─────────────────────────────────────────────────────────── wire (§5a/5b) ──
+# Build the staged linux-x64 install tree for ${OPENCLAW_PIN} on the HOST.
+# Why this dance (all learned 2026-08-12): the sandbox egress policy blocks
+# registry.npmjs.org — even `npm i -g <local-tarball>` 403s inside the
+# container, because npm still resolves the dependency closure remotely — and
+# the host has node but no npm. So npm itself is bootstrapped from a tarball,
+# the full global tree is staged host-side, and docker cp ships it in. Host
+# and container are both linux-x64, so native deps stay correct.
+stage_openclaw() {
+  local stage="${OPENCLAW_STAGE_DIR}/${OPENCLAW_PIN}"
+  [ -d "$stage" ] && { skip "openclaw ${OPENCLAW_PIN} staged at ${stage}"; return 0; }
+  local tmp meta shasum tarball
+  tmp=$(mktemp -d); tarball="${tmp}/openclaw.tgz"
+  meta=$(curl -fsS "https://registry.npmjs.org/openclaw/${OPENCLAW_PIN}")
+  curl -fsSL -o "$tarball" "$(printf '%s' "$meta" | grep -o '"tarball":"[^"]*"' | cut -d'"' -f4)"
+  # Integrity gate: the registry's published shasum, not just a clean download.
+  shasum=$(printf '%s' "$meta" | grep -o '"shasum":"[^"]*"' | cut -d'"' -f4)
+  printf '%s  %s\n' "$shasum" "$tarball" | sha1sum -c - >/dev/null 2>&1 \
+    || fail "openclaw ${OPENCLAW_PIN} tarball shasum mismatch — refusing to stage"
+  curl -fsSL -o "${tmp}/npm.tgz" "https://registry.npmjs.org/npm/-/npm-11.6.1.tgz"
+  mkdir -p "${tmp}/npm-cli"
+  tar xzf "${tmp}/npm.tgz" -C "${tmp}/npm-cli" --strip-components=1
+  /usr/local/bin/node "${tmp}/npm-cli/bin/npm-cli.js" install -g --prefix "${tmp}/stage" "$tarball" >/dev/null 2>&1 \
+    || fail "host-side staged npm install failed (see ${tmp})"
+  mkdir -p "$OPENCLAW_STAGE_DIR"
+  mv "${tmp}/stage/lib/node_modules/openclaw" "$stage"
+  rm -rf "$tmp"
+  ok "staged openclaw ${OPENCLAW_PIN} at ${stage}"
+}
+
+# Pin one sandbox's openclaw to ${OPENCLAW_PIN}. Idempotent; keeps the old
+# install as openclaw-<oldver>.bak inside the container (instant rollback) and
+# a full /sandbox/.openclaw state tarball under ~/upgrade-backups/. The CALLER
+# owns the gateway restart — wire restarts after the guard install anyway, and
+# a standalone `ocpin` prints the restart reminder.
+ensure_openclaw_pin() {
+  local agent="$1" cid="$2" cur bdir
+  cur=$(docker exec "$cid" sh -lc 'openclaw --version 2>/dev/null' | grep -o '[0-9]\{4\}\.[0-9][0-9]*\.[0-9][0-9]*' | head -1)
+  if [ "$cur" = "$OPENCLAW_PIN" ]; then skip "openclaw already ${OPENCLAW_PIN} on ${agent}"; return 0; fi
+  stage_openclaw
+  bdir="${NEMOCLAW_HOME}/upgrade-backups/${agent}-$(date +%Y%m%d)"
+  mkdir -p "$bdir"
+  docker exec "$cid" sh -c 'cd /sandbox && tar czf - .openclaw' > "${bdir}/${agent}-openclaw-state.tgz"
+  docker exec "$cid" sh -c "rm -rf /usr/local/lib/node_modules/openclaw-${cur}.bak; mv /usr/local/lib/node_modules/openclaw /usr/local/lib/node_modules/openclaw-${cur}.bak"
+  docker cp "${OPENCLAW_STAGE_DIR}/${OPENCLAW_PIN}" "$cid":/usr/local/lib/node_modules/openclaw
+  cur=$(docker exec "$cid" sh -lc 'openclaw --version 2>/dev/null' | grep -o '[0-9]\{4\}\.[0-9][0-9]*\.[0-9][0-9]*' | head -1)
+  [ "$cur" = "$OPENCLAW_PIN" ] || fail "openclaw pin FAILED on ${agent}: container reports '${cur:-nothing}'"
+  ok "openclaw ${OPENCLAW_PIN} installed on ${agent} (old kept as .bak; gateway restart still required)"
+}
+
+phase_ocpin() {
+  need_not_root
+  local agent="${1:-}"; [ -n "$agent" ] || fail "usage: ./bootstrap-box.sh ocpin <AGENT>"
+  local cid
+  cid=$(docker ps -q --filter "name=openshell-${agent}-" | head -1)
+  [ -n "$cid" ] || fail "no running container for ${agent}"
+  log "openclaw version pin (${OPENCLAW_PIN})"
+  ensure_openclaw_pin "$agent" "$cid"
+  echo "    NOTE: load it with: nemoclaw ${agent} doctor --fix && nemoclaw ${agent} gateway restart"
+  echo "    then confirm the startup line lists trades-weekday-guard and has NO 'unknown typed hook' warning."
+}
+
 phase_wire() {
   need_not_root
   local agent="${1:-}"; [ -n "$agent" ] || fail "usage: ./bootstrap-box.sh wire <AGENT>"
@@ -917,6 +989,15 @@ EOF
     echo "    WARN: no running container for ${agent} — set agents.defaults.heartbeat.every=0m manually"
   fi
 
+  log "openclaw version pin (${OPENCLAW_PIN} — the guard is deaf below 2026.6.x)"
+  if [ -n "$cid" ]; then
+    # Before the guard install, so the plugin registers against the pinned
+    # runtime and wire's gateway restart below loads both in one go.
+    ensure_openclaw_pin "$agent" "$cid"
+  else
+    echo "    - no running container for ${agent}; pin skipped"
+  fi
+
   log "weekday-guard plugin (outbound weekday/date mismatch detector — added 2026-08-06)"
   if [ -n "$cid" ]; then
     # Observe-only message_sending hook: verifies every (weekday, date) pair the
@@ -1181,6 +1262,21 @@ phase_verify() {
     echo "    - recycler not installed (optional until the recycler feature is deployed): sudo ./bootstrap-box.sh recycler"
   fi
 
+  log "openclaw version pin (every running sandbox must be ${OPENCLAW_PIN})"
+  for c in $(docker ps --format '{{.Names}}' | grep '^openshell-' || true); do
+    a=$(printf '%s' "$c" | cut -d- -f2)
+    v=$(docker exec "$c" sh -lc 'openclaw --version 2>/dev/null' | grep -o '[0-9]\{4\}\.[0-9][0-9]*\.[0-9][0-9]*' | head -1)
+    if [ "$v" = "$OPENCLAW_PIN" ]; then ok "$a on ${v}"; pass=$((pass+1));
+    else
+      # The exact silent-regression this check exists for: a recycled container
+      # reverted to the image's 2026.5.27 and the weekday guard went deaf with
+      # no other symptom. Fix: ./bootstrap-box.sh ocpin <AGENT> (as ${NEMOCLAW_USER}),
+      # then doctor --fix + gateway restart.
+      echo "    ✗ $a on ${v:-unknown} (pin is ${OPENCLAW_PIN}) — guard is DEAF to streamed replies; run: ./bootstrap-box.sh ocpin $a"
+      warn=$((warn+1))
+    fi
+  done
+
   log "doorman auth gates (no real badge needed — §3f)"
   rc=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST "http://${gw}:${DOORMAN_PORT}/mcp" \
         -H 'Content-Type: application/json' -d '{}' || echo 000)
@@ -1304,6 +1400,7 @@ case "${1:-help}" in
   badgepull)       phase_badgepull ;;
   recycler)        phase_recycler ;;
   wire)            shift; phase_wire "$@" ;;
+  ocpin)           shift; phase_ocpin "$@" ;;
   boot)            shift; phase_boot "$@" ;;
   backup-identity) shift; phase_backup_identity "$@" ;;
   verify)          phase_verify ;;

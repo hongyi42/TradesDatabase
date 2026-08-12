@@ -309,7 +309,12 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   s7's perms is still unexplained. Remaining hole: the image still ships 2026.5.27, so a
   recycled container silently re-deafens — PR #125 (bootstrap ocpin/wire/verify pin) closes it;
   deploy the merged bootstrap to the box (incl. /usr/local/sbin copy) and run verify (expect
-  6× ok). The flag-rate clock runs from the 17:23Z verified-live line. Ops note from a false
+  6× ok). The flag-rate clock runs from the 17:23Z verified-live line — measure it with
+  `node scripts/guard-rate/report.mjs` (PR #127): dup-less lines only, `corrected` flags split
+  out (self-fixes never trigger act-mode), and a DEAF-GUARD alarm (exit 2) when a box has
+  outbound traffic but no guard lines in 24h, because a rate over a deaf window is no number.
+  Checkpoints: ~2026-08-19 (mid-window liveness) and ~2026-08-26 (the act-mode decision).
+  Ops note from a false
   alarm during verification: a streamed reply writes its guard line at delivery END — after
   ~20+ `editMessageText` calls — so check the log file's mtime against the edit burst before
   declaring the hook dead.

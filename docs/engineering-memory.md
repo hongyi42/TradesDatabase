@@ -1363,6 +1363,23 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   `chown sandbox:sandbox` and check the **owner** column, not just the permission bits, before
   restarting. The failure is at least loud and instant — every restart returns
   `GATEWAY_UNSAFE_CONFIG_PATH`, and chown + restart is the whole recovery.
+- **FOURTH tooth, SOLVED 2026-08-12 — the "something keeps resetting s7's perms" mystery was
+  our own deploys plus a silent lost race.** Evidence: s7's `config-audit.jsonl` shows EVERY
+  openclaw config write (`config patch`, `plugins install`) creating a fresh `openclaw.json`
+  inode at **0o600** — vendor secure-default, six for six entries (`previousMode 660 →
+  nextMode 600`; the 2026-07-31 one also left it `root:root`), and every one of those writes
+  was our own rollout tooling. nemoclaw anticipates this: `normalize_mutable_config_perms.py`
+  restores 660/2770 after each command — but it **fail-closes by design** (`UnsafeTree`; its
+  stability key includes `st_mtime_ns`) when ANY file in the tree changes mid-walk, and the
+  failure is a swallowed "cleanup exit 1" in stderr. A busy gateway loses that race; s7 (the
+  busiest test box) lost it three times (2026-08-06, 2026-08-12 ×2), each ending in
+  `GATEWAY_UNSAFE_CONFIG_PATH`. Fault-injection on s6 (set 700/600, run the normalizer) proved
+  the repair path itself sound — the failures were the race, not the script. Fix (PR #126):
+  the bootstrap's guard-install block now restores `chmod 2770` + `chmod 660` +
+  `chown sandbox:sandbox` DETERMINISTICALLY between `plugins install` and `doctor --fix` (a
+  root chmod on two named paths cannot lose a race), and `verify` gained a per-sandbox perms
+  tripwire so a lost race can never again be silent. Upstream-worthy: a fail-closed security
+  check whose failure is invisible is half a mechanism.
 - **`nemoclaw rebuild` can destroy the sandbox's device private key** (vendor bug: the
   state-snapshot sanitizer replaces `privateKeyPem` with `[STRIPPED_BY_MIGRATION]` in the
   LIVE identity). Symptom: endless device-pairing loop, no Telegram polling, no MCP. Detect:

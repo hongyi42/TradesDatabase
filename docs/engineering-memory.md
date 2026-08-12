@@ -299,13 +299,20 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   → `mv` the container's install to `openclaw-<old>.bak` (instant rollback) → `docker cp` the
   staged tree in → `nemoclaw <s> doctor --fix` → `gateway restart` → verify the startup plugins
   line has NO "unknown typed hook" warning. Pre-upgrade state tarballs live in
-  `~/upgrade-backups/` on the box. **Open ends:** s5/s7/s8 + s3 still on 2026.5.27 (roll after
-  soak; s3 = Judy, coordinate; s7 = Yutao, coordinate); **a container recycle reverts to the
-  image's 2026.5.27 and silently re-deafens the guard — bake the version into
-  bootstrap-box.sh/the image before relying on the rate**; the flag-rate clock restarts from
-  this verified-live line. Ops note from a false alarm during verification: a streamed reply
-  writes its guard line at delivery END — after ~20+ `editMessageText` calls — so check the log
-  file's mtime against the edit burst before declaring the hook dead.
+  `~/upgrade-backups/` on the box. **FLEET UNIFORM as of 2026-08-12 ~18:10Z (owner call: "just
+  roll out"):** all six sandboxes on 2026.6.34 + guard v0.3.0, verified per-box (version, guard
+  in the startup plugin list, polling, no unknown-hook warning since upgrade). s3 got the guard
+  for the FIRST time — it was skipped in the v0.1.0 deploy. s7 re-hit its known perms trap
+  during install (`/sandbox/.openclaw` 700 vs 2770, `openclaw.json` 600 vs 660 →
+  GATEWAY_UNSAFE_CONFIG_PATH, gateway briefly DOWN) — third occurrence on s7; the chmod
+  2770/660 + chown + doctor --fix + restart recipe cleared it, but whatever keeps resetting
+  s7's perms is still unexplained. Remaining hole: the image still ships 2026.5.27, so a
+  recycled container silently re-deafens — PR #125 (bootstrap ocpin/wire/verify pin) closes it;
+  deploy the merged bootstrap to the box (incl. /usr/local/sbin copy) and run verify (expect
+  6× ok). The flag-rate clock runs from the 17:23Z verified-live line. Ops note from a false
+  alarm during verification: a streamed reply writes its guard line at delivery END — after
+  ~20+ `editMessageText` calls — so check the log file's mtime against the edit burst before
+  declaring the hook dead.
 - **Guard v0.3.0 fixes both eval-found detector defects (2026-08-12, PR #124).** D17, the one
   miss in 94 adversarial replies: "Saturday (August 16th)" — parentheses split chrono's parse so
   the pair was never checked; a pre-pass unwraps `Weekday (DATE)` to the comma form ONLY when

@@ -27,9 +27,10 @@
  * positives at zero on real traffic (corpus replay in the PR).
  */
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { parse } from './chrono.bundle.mjs';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 
 const NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS = [
@@ -142,6 +143,65 @@ function appendLog(logPath, record) {
   }
 }
 
+// ── outbound-hook wiring (v0.2.0) ────────────────────────────────────────────
+//
+// v0.1.0 registered `message_sending` only, and on 2026-08-11 four REAL
+// Telegram turns produced replies the hook never saw (gateway log shows the
+// inbound messages and the reply text; guard log shows nothing; the
+// `sendMessage ok` log lines stopped after 2026-08-06 — the delivery path
+// changed underneath us). The vendor documents a second outbound hook,
+// `reply_payload_sending` ("after payload normalization, before channel
+// delivery, including replies routed back to the originating channel"), so
+// v0.2.0 registers BOTH and lets the log say which one actually fires.
+//
+// The docs do not pin ReplyPayload's field names, so extraction is defensive
+// (candidate fields in order), and a payload we can't extract text from logs
+// its KEY NAMES ONLY (`miss: true`) — never values — so the next real message
+// documents the true shape instead of us guessing it.
+
+// Where the reply text may live, by hook and by observation. First non-empty
+// string wins.
+function extractText(event) {
+  const candidates = [
+    event?.content,
+    event?.text,
+    event?.payload?.text,
+    event?.payload?.content,
+    event?.caption,
+    event?.payload?.caption,
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim().length > 0) return c;
+  }
+  return null;
+}
+
+function shapeKeys(event) {
+  const keys = Object.keys(event ?? {});
+  const payloadKeys = Object.keys(event?.payload ?? {}).map((k) => `payload.${k}`);
+  return [...keys, ...payloadKeys].slice(0, 32);
+}
+
+// A reply that traverses BOTH hooks must not count twice in the rate. Dedupe
+// by content hash within a short window: the duplicate line is still written
+// (it is the evidence of which hooks fire) but marked `dup: true`, and rate
+// analysis counts only dup-less lines.
+const DEDUPE_WINDOW_MS = 10_000;
+const recentHashes = new Map(); // hash -> last-seen ms
+function isDuplicate(hash, nowMs) {
+  const seen = recentHashes.get(hash);
+  recentHashes.set(hash, nowMs);
+  if (recentHashes.size > 32) {
+    const oldest = recentHashes.keys().next().value;
+    recentHashes.delete(oldest);
+  }
+  return typeof seen === 'number' && nowMs - seen < DEDUPE_WINDOW_MS;
+}
+
+function textHash(text) {
+  return createHash('sha256').update(text).digest('hex').slice(0, 12);
+}
+
 /**
  * OpenClaw plugin entry. Same plain `register(api)` shape as the (removed)
  * trades-cron plugin, which ran on this exact stack version. Env overrides
@@ -155,26 +215,58 @@ export default function register(api) {
     console.error('[weekday-guard] api.on unavailable — hook not registered, bot unaffected');
     return;
   }
-  api.on('message_sending', (event) => {
+  for (const hookName of ['message_sending', 'reply_payload_sending']) {
     try {
-      const text = typeof event?.content === 'string' ? event.content : null;
-      if (text === null) return undefined; // media-only or structured payload
-      const tz = process.env.TRADES_WEEKDAY_GUARD_TZ || 'America/Los_Angeles';
+      api.on(hookName, makeHandler(hookName));
+    } catch (err) {
+      // An unknown event name on some OpenClaw version must not take the
+      // other hook down with it.
+      console.error(`[weekday-guard] could not register ${hookName}: ${err?.message ?? err}`);
+    }
+  }
+}
+
+function makeHandler(hookName) {
+  return (event) => {
+    try {
       const logPath =
         process.env.TRADES_WEEKDAY_GUARD_LOG || '/sandbox/.openclaw/logs/weekday-guard.jsonl';
+      const text = extractText(event);
+      if (text === null) {
+        // Media-only is normal on message_sending; on reply_payload_sending an
+        // extraction miss most likely means ReplyPayload keeps its text under a
+        // field we did not anticipate — the keys tell the next reader where.
+        if (hookName === 'reply_payload_sending') {
+          appendLog(logPath, {
+            ts: new Date().toISOString(),
+            v: VERSION,
+            hook: hookName,
+            miss: true,
+            keys: shapeKeys(event),
+          });
+        }
+        return undefined;
+      }
+      const tz = process.env.TRADES_WEEKDAY_GUARD_TZ || 'America/Los_Angeles';
       const flags = scanMessage(text, firmLocalParts(tz));
-      // One line per scanned message, flagged or not — the CLEAN lines are the
-      // denominator that turns "I found three by hand" into a rate.
-      appendLog(logPath, {
+      const hash = textHash(text);
+      const record = {
         ts: new Date().toISOString(),
         v: VERSION,
-        channel: event?.channel,
+        hook: hookName,
+        sha: hash,
         chars: text.length,
         flags,
-      });
+      };
+      if (event?.channel) record.channel = event.channel;
+      // One line per scanned message, flagged or not — the CLEAN lines are the
+      // denominator that turns "I found three by hand" into a rate. `dup`
+      // marks the second hook seeing the same reply; count dup-less only.
+      if (isDuplicate(hash, Date.now())) record.dup = true;
+      appendLog(logPath, record);
     } catch (err) {
       console.error(`[weekday-guard] scan failed: ${err?.message ?? err}`);
     }
     return undefined; // observe only — never rewrite, never cancel
-  });
+  };
 }

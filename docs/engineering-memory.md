@@ -313,7 +313,19 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   `node scripts/guard-rate/report.mjs` (PR #127): dup-less lines only, `corrected` flags split
   out (self-fixes never trigger act-mode), and a DEAF-GUARD alarm (exit 2) when a box has
   outbound traffic but no guard lines in 24h, because a rate over a deaf window is no number.
-  Checkpoints: ~2026-08-19 (mid-window liveness) and ~2026-08-26 (the act-mode decision).
+  Checkpoints — the owner delegated remembering this playbook; whoever is here on these dates
+  executes it without asking them to re-explain:
+  - **~2026-08-19, mid-window liveness — protect the evidence, decide nothing.** Healthy →
+    the back half of the window is trustworthy, stop. DEAF → fix the wiring (startup plugins
+    line, perms 2770/660), restart the clock; one week lost instead of two — which is the whole
+    point of checking mid-window.
+  - **~2026-08-26, the act-mode decision — spend the evidence.** WHETHER is settled by the
+    never-a-human-verification-layer doctrine above: any uncorrected flag gets
+    cancelled-and-retried, not delivered. The rate decides HOW: low (a flag every few days) →
+    retry suffices, build phase-2 as designed; high (several/day) → retry would paper over an
+    upstream regression — find and fix that first; zero on healthy coverage → upstream holds,
+    ship act-mode anyway as cheap insurance. The corrected-flag count is its own series
+    (self-corrections) — reported, never acted on.
   Ops note from a false
   alarm during verification: a streamed reply writes its guard line at delivery END — after
   ~20+ `editMessageText` calls — so check the log file's mtime against the edit burst before

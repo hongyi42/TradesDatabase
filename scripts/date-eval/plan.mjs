@@ -45,8 +45,13 @@ try {
   const [{ id: tenantId, timezone: tz }] = await one('select id, timezone from tenants where name = $1', [TENANT]);
   const [{ today }] = await one(`select (now() at time zone $1)::date::text as today`, [tz]);
 
-  // Confirmed, timed visits only — the schedule a person means by "visits".
-  // Cancelled rows stay out (they retain stale flags, per the seeding note).
+  // Timed visits that stand or were done — the schedule a person means by
+  // "visits". Cancelled rows stay out (they retain stale flags, per the
+  // seeding note); 'completed' is included so past-tense questions stay true
+  // once completions start being recorded. Matches v_schedule's filter since
+  // the 2026-08-12 migration — the eval found v_schedule counting cancelled
+  // rows as scheduled work (+90 in August), and truth/view must mean the
+  // same thing or every count question grades wrong.
   const rows = await one(
     `select (a.starts_at at time zone $2)::date::text as day,
             coalesce(t.ref, 'UNASSIGNED') as tech,
@@ -56,7 +61,7 @@ try {
      join jobs j on j.id = a.job_id
      join customers c on c.id = j.customer_id
      left join technicians t on t.id = a.technician_id
-     where a.tenant_id = $1 and a.status = 'confirmed' and a.starts_at is not null
+     where a.tenant_id = $1 and a.status in ('confirmed', 'completed') and a.starts_at is not null
      order by a.starts_at`,
     [tenantId, tz],
   );

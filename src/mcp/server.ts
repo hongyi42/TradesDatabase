@@ -991,10 +991,16 @@ const ADMIN_TOOLS = [
       'get_team_schedule, get_availability, find_customer, find_slots and the rest are faster, ' +
       'tested, and carry rules this tool does not. Reach for query_spine only for questions they ' +
       'cannot answer (counts, totals, "how many…since…", cross-cutting lists). ' +
-      'It CANNOT write, and it can only read these five views (nothing else exists to it): ' +
+      'It CANNOT write, and it can only read these six views (nothing else exists to it): ' +
       'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, promise_level, ' +
       'promised_day, locked, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
-      'job_title, job_type, job_status, customer_id, customer_name, city, postal_code); ' +
+      'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
+      'schedule that STANDS: confirmed and completed visits only, so count(*) here is real ' +
+      'bookings; cancelled visits are NOT in it — they live in ' +
+      'v_cancelled_visits(assignment_id, local_day, local_weekday, starts_at, ends_at, reason, ' +
+      'updated_at, promise_level, promised_day, earliest_date, latest_date, technician_ref, ' +
+      'technician_name, job_id, job_title, job_type, customer_id, customer_name, city, ' +
+      'postal_code), which also says why (reason) and when (updated_at); ' +
       'v_team(ref, display_name, tier, state, seat_exempt, skills, service_cities, availability, ' +
       'created_at); ' +
       'v_jobs(id, title, job_type, status, priority, duration_minutes, price_cents, created_at, ' +

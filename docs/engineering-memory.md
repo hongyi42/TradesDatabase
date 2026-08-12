@@ -528,6 +528,33 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
     would be marked dead while perfectly healthy.
   Both stale "every 15 min" mentions in `doorman-architecture-memory.md` / the setup guide were
   corrected to the real cadence (5 min) in the same change.
+- **medic v5 (2026-08-12, user decision): the fallback is DELETED, and the real lesson is that
+  nobody ever decided to have one.** Asked why the probe needed tools at all if the medic's job is
+  just "is DeepInfra set", the honest answer was: a health probe only earns its cost if something
+  ACTS on the verdict, and the only actor was a failover to a provider being retired. Tracing it
+  back: nvidia-prod was the ORIGINAL provider (2026-07-02); the 07-06 DeepInfra swap kept it as a
+  **manual rollback**; medic v2 on 07-11 wired that manual rollback up as an **automatic failover
+  target** — no decision, no verification, and the NVIDIA key was rotated that same day. By 08-06
+  it 400'd every real turn. **A break-glass escape hatch was promoted to a live safety net by
+  accident, and an unverified fallback is worse than none: it fails exactly when you depend on it
+  and reports success while doing it.** v5 asserts the route and reports; it never reroutes.
+  - **Deleting the fallback gets most of v4's benefit for free.** v4's value was "stop steering
+    traffic onto a dead provider" — with no failover branch, that is structural rather than
+    probe-dependent. What v4 still buys is an honest signal.
+  - **The turn-shaped probe is KEPT anyway, and the reasoning inverts.** With nothing to reroute
+    to, the probe's worst case is crying wolf in a log, so the false-failover risk that would
+    argue for a gentler gate is gone. What remains is the signal — and that is the point, because
+    it is what an alert should fire on. The retry now exists to prevent false ALARMS (an alert
+    that cries wolf gets ignored), not false failovers.
+  - **On a probe failure the route is still ASSERTED, not abandoned** — DeepInfra outages have
+    self-healed every time, so holding the route means recovery is picked up by live turns
+    immediately instead of at the next tick.
+  - Pinned by a new invariant test: **"NEVER routes anywhere but the primary, whatever fails"**,
+    plus one asserting the output never says FAILOVER or names a fallback. Re-adding a fallback is
+    then a deliberate change that must also change those tests — it cannot quietly reappear.
+  - **The remaining gap is ALERTING, and it is now the top one.** The medic tells the truth into a
+    journal nobody reads; that is precisely why six outage windows on 08-12 went unnoticed. An
+    honest red light in an empty room is barely better than a green one.
 - **`nemoclaw list` shows the ONBOARDING RECORD, not the live inference route (2026-08-06).** Read
   off that list, s2/s5/s6/s7 all say `provider: nvidia-prod` — which reads exactly like "the fleet
   has been stuck on the fallback for six days", and was reported as such before being checked. It

@@ -1,7 +1,24 @@
 #!/usr/bin/env bash
-# nemoclaw-inference-medic.sh — keep the gateway inference route on the best
-# provider that is ACTUALLY SERVING COMPLETIONS: DeepInfra/GLM-5.2 (production)
-# with automatic failover to NVIDIA/GLM-5.2 and automatic failback.
+# nemoclaw-inference-medic.sh — hold the gateway inference route on
+# DeepInfra/GLM-5.2 and say honestly whether it is ACTUALLY SERVING.
+#
+# ┌─ THERE IS NO FALLBACK, AND THAT IS THE DESIGN (v5, 2026-08-12, user decision).
+# │  Do not add one back without deciding to. The medic exists to (a) re-assert
+# │  the route after onboard/rebuild drift and (b) tell the truth about whether
+# │  the provider is serving. It does NOT reroute traffic.
+# └─ History, because this is how the trap got built:
+#      2026-07-02  agents run GLM-5.2 on nvidia-prod. NVIDIA IS the provider.
+#      2026-07-06  swap to deepinfra-prod. nvidia-prod kept as a MANUAL rollback.
+#      2026-07-11  medic v2 wires that manual rollback up as an AUTOMATIC
+#                  failover target. Nobody decided this; nobody verified NVIDIA
+#                  still served. The NVIDIA key was rotated the same day.
+#      2026-08-06  a 4-min DeepInfra blip fails the fleet over to nvidia-prod,
+#                  which 400s every real turn. The failover converts a blip into
+#                  a hard outage while logging success. Repeats 6x on 08-12.
+#    A break-glass escape hatch was promoted to a live safety net by accident.
+#    An unverified fallback is worse than no fallback: it fails you exactly when
+#    you depend on it, and it reports success while doing so. Single-provider is
+#    now explicit — an outage is an outage, and the log says so.
 #
 # v3 (2026-08-06). v2's probe was `openshell inference set`, which validates the
 # ENDPOINT REGISTRATION, not a completion. That blind spot bit twice:
@@ -40,47 +57,45 @@
 #     default and spent all 32 tokens on reasoning_content, returning
 #     `tool_calls: []` + `finish_reason: "length"`. Token headroom is what makes
 #     tool emission observable, not tool_choice.
-#   - Requiring the tool call is deliberate. A provider whose model will not emit
-#     one for a prompt this tool-forcing cannot serve this product — every real
-#     turn is tools. See "SWAPPING THE FALLBACK" below: this is the assumption to
-#     re-validate when the provider changes.
+#   - Requiring the tool call is deliberate. A model that will not emit one for a
+#     prompt this tool-forcing cannot serve this product — every real turn is
+#     tools. NOTE this is an assumption about the MODEL, not the provider: if the
+#     routed model ever changes, re-validate the probe against it FIRST, or a
+#     model that answers the date in prose gets reported dead while healthy.
 #
-# Decision table (registration gate then completion gate, per provider):
-#   deepinfra reg ok + completion ok            -> primary, done
-#   deepinfra fails either gate                 -> try nvidia
-#   nvidia reg ok + completion ok               -> FAILOVER (completion-verified)
-#   nvidia fails a gate too                     -> restore whichever REGISTERS,
-#                                                  exit 1 LOUD (both dead)
+# Why keep a turn-shaped probe when there is no failover to drive? Because with
+# nothing to reroute to, the probe's worst case is crying wolf in a log — the
+# false-failover risk that would otherwise argue for a gentler gate is GONE. What
+# remains is the signal, and the signal is the whole point: this is what an alert
+# should fire on. (Alerting is the open gap — nothing watches this journal today,
+# which is why six outage windows on 2026-08-12 went unnoticed.)
 #
-# SWAPPING THE FALLBACK: nvidia-prod was a stopgap from testing, never a product
-# decision, and is due to be replaced. The probe is provider-agnostic, but the
-# tool-emission gate assumes the routed model emits a tool call for the probe
-# prompt. Before pointing FALLBACK_PROVIDER at anything new, run the probe
-# against it directly and confirm it comes back `finish_reason: "tool_calls"` —
-# a model that answers the date in prose instead would be marked dead while
-# healthy. That check IS the swap's acceptance test.
+# Decision table (registration gate, then completion gate):
+#   reg ok + completion ok     -> route asserted and SERVING, exit 0
+#   reg ok + completion fails  -> route stays asserted, exit 1 LOUD (agents down)
+#   reg fails                  -> exit 1 LOUD (agents down)
+#   no sandbox container       -> registration only, exit 0 with a WARN
 #
-# Known flap window, accepted: during a deepinfra stall (registration ok,
-# completions dead) each 5-min tick briefly sets the route to deepinfra, burns
-# up to two ~40s probes, and reverts to nvidia. Live turns in that window hit the
-# stalled primary — v2 would have parked on it PERMANENTLY, so this is strictly
-# better; a state-file cooldown was considered and rejected (v2 design decision:
-# no state files, flaps visible in the journal are the feature).
+# The route is asserted even when the probe fails: DeepInfra outages have
+# self-healed every time so far, so leaving the route correct means a recovery is
+# picked up by live turns immediately instead of waiting for the next tick.
 #
 # If NO sandbox container is running, the completion gate cannot run; the medic
-# degrades to v2 semantics (registration only) with a loud WARN rather than
-# failing the unit — a box mid-maintenance must not mark healthy providers dead.
+# degrades to registration-only with a loud WARN rather than failing the unit —
+# a box mid-maintenance must not report a healthy provider as dead.
 #
 # Runs as the gateway owner (ubuntu). Installed at /usr/local/sbin/, driven by
 # nemoclaw-inference-medic.{service,timer}. See doorman-nemoclaw-setup-guide.md
-# and docs/engineering-memory.md (medic v3 entry).
+# and docs/engineering-memory.md (medic v4/v5 entries).
 set -euo pipefail
 export PATH="/home/ubuntu/.local/bin:$PATH"
 
 WANT_PROVIDER="deepinfra-prod"
 WANT_MODEL="zai-org/GLM-5.2"     # NOTE: DeepInfra id spelling
-FALLBACK_PROVIDER="nvidia-prod"
-FALLBACK_MODEL="z-ai/glm-5.2"    # NOTE: NVIDIA id spelling (dashed differently)
+# No FALLBACK_* by design — see the header. nvidia-prod still exists in the
+# gateway's provider registry (harmless; nothing routes to it), so adding a
+# fallback back is a two-line change. Do it deliberately, and only after probing
+# the candidate: an unverified fallback is worse than none.
 # seconds; a stall reads as a miss. 40 not 30: the v4 probe waits for reasoning
 # + tool emission (measured 1.9–9.9s over n=12 on healthy deepinfra), so this is
 # ~4x the observed worst case. Worst-case tick = 2 providers x 2 attempts x 40s
@@ -180,12 +195,13 @@ try_provider() { # provider model label
   # re-enabling -e in here would override main's `set +e` wrapper and turn this
   # function's own `return 1` into a script exit.
   probe_completion "$model" && prc=0 || prc=$?
-  # ONE retry on a miss (v4). The probe is heavier than v3's — it waits for the
-  # model to finish reasoning and emit a tool call — so a single slow response
-  # under load is a plausible miss on a HEALTHY provider. Failing the fleet over
-  # for that would be the same class of bug as the one v4 fixes, pointed the
-  # other way. Two consecutive misses is evidence; one is noise. In-tick only,
-  # so it stays consistent with v2's no-state-files rule.
+  # ONE retry on a miss. The probe waits for the model to finish reasoning and
+  # emit a tool call, so a single slow response under load is a plausible miss on
+  # a HEALTHY provider. With no failover, a false miss costs no traffic — but it
+  # would cost a false ALARM, and an alert that cries wolf gets ignored, which is
+  # how you end up back where this started. Two consecutive misses is evidence;
+  # one is noise. In-tick only, so no state file (flaps stay visible in the
+  # journal — a v2 design decision worth keeping).
   if [ "$prc" -eq 1 ]; then
     sleep "$RETRY_SLEEP"
     probe_completion "$model" && prc=0 || prc=$?
@@ -206,32 +222,21 @@ main() {
   local rc
   set +e; try_provider "$WANT_PROVIDER" "$WANT_MODEL" "primary"; rc=$?; set -e
   if [ "$rc" -eq 0 ]; then
-    log "route OK on primary ($WANT_PROVIDER / $WANT_MODEL) — completion verified"
+    log "route OK on $WANT_PROVIDER / $WANT_MODEL — serving verified (tool call returned)"
     return 0
   elif [ "$rc" -eq 2 ]; then
-    log "route asserted on primary ($WANT_PROVIDER) — REGISTRATION ONLY, no container for completion probe"
+    log "route asserted on $WANT_PROVIDER — REGISTRATION ONLY, no container for the completion probe"
     return 0
   fi
 
-  warn "primary $WANT_PROVIDER UNHEALTHY — trying failover to $FALLBACK_PROVIDER / $FALLBACK_MODEL"
-  set +e; try_provider "$FALLBACK_PROVIDER" "$FALLBACK_MODEL" "fallback"; rc=$?; set -e
+  # No failover by design (see header). Re-assert the route anyway so that when
+  # the provider recovers — DeepInfra outages have self-healed every time so far
+  # — live turns pick it up immediately rather than waiting for the next tick.
+  set +e; set_route "$WANT_PROVIDER" "$WANT_MODEL"; rc=$?; set -e
   if [ "$rc" -eq 0 ]; then
-    warn "FAILOVER active ($FALLBACK_PROVIDER) — COMPLETION-VERIFIED; will fail back automatically when $WANT_PROVIDER recovers"
-    return 0
-  elif [ "$rc" -eq 2 ]; then
-    warn "FAILOVER active ($FALLBACK_PROVIDER) — REGISTRATION ONLY (no container); verify completions when a sandbox is up"
-    return 0
-  fi
-
-  # Both providers failed a gate. Leave the route on whichever still REGISTERS
-  # (prefer primary — its outages have self-healed every time so far), so a
-  # recovery is picked up by agents even before the next tick.
-  if set_route "$WANT_PROVIDER" "$WANT_MODEL"; then
-    warn "BOTH providers failed the completion gate — route restored to $WANT_PROVIDER (registration only). Agents are likely DOWN."
-  elif set_route "$FALLBACK_PROVIDER" "$FALLBACK_MODEL"; then
-    warn "BOTH providers failed the completion gate — route left on $FALLBACK_PROVIDER (registration only). Agents are likely DOWN."
+    warn "$WANT_PROVIDER IS NOT SERVING — route held (registration ok, completions failing). AGENTS ARE DOWN. There is no fallback by design; this will clear when the provider recovers. Check the DeepInfra balance (402) and status first."
   else
-    warn "BOTH providers failed registration AND completion — agents are DOWN. Check DeepInfra balance (402) first, then the NVIDIA key."
+    warn "$WANT_PROVIDER failed REGISTRATION as well — AGENTS ARE DOWN and the route could not be asserted. Check the DeepInfra key and balance (402)."
   fi
   return 1
 }

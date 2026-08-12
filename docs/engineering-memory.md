@@ -269,6 +269,22 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   for the log line. Loading is not hearing.** Also: any flag-rate window must start from a
   verified-live date — the "two weeks of data" planned for ~Aug 20 turned out to be 3 lines from
   one evening.
+- **WHY the guard was deaf, and proof the version upgrade fixes it (2026-08-12).** Root cause on
+  the box's OpenClaw 2026.5.27: long/streamed Telegram replies deliver as a short stub
+  `sendMessage` (hooked) followed by `editMessageText` carrying the actual content (unhooked,
+  unlogged) — so `message_sending` sampled only short single-shot sends, i.e. exactly the
+  messages least likely to contain dates; and `reply_payload_sending` is an unknown hook name on
+  2026.5.27 (silently ignored). Verified on a laptop rig — `openclaw@2026.6.34` under
+  `--profile octest`, s2's config adapted (Claude Haiku 4.5, the rotated s2 bot token, guard
+  v0.2.0 installed via `plugins install`): (1) **coverage** — `reply_payload_sending` fired with
+  the FULL 1060-char streamed reply; (2) **detection** — a planted "See you Monday, August 14,
+  2026." (a Friday) in a 1143-char reply yielded exactly one flag while the same reply's four
+  correct weekday/date pairs yielded zero false positives. Conclusion for the
+  upgrade-vs-sweeper decision: upgrading the box to ≥2026.6.x restores real guard coverage;
+  the log-sweeper idea remains only as a no-upgrade fallback. Rig torn down same day (profile
+  and token files deleted after a content sweep; token handed to s2 via
+  `openshell provider update s2-telegram-bridge` + container restart — which tripped the
+  ExpiredSignature trap recorded in §5).
 - **The weekday fabrication is ENDEMIC, not episodic — 23 mismatches in 419 historical texts
   (2026-08-06).** Built the outbound weekday guard (observe-only `message_sending` plugin,
   chrono-node, see nemoclaw-tech-agent.md §4c) and replayed it over every assistant text in the
@@ -1245,6 +1261,20 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   credential write (badge install/rotation, token change) needs a container restart to take
   effect. This exact mechanism silently killed Judy's spine MCP for 4 days (badge in store,
   absent from env).
+- **A manual `docker restart` of a long-running sandbox can crash-loop on
+  `invalid token: ExpiredSignature` (hit 2026-08-12, s2 token handover).** The gateway mints each
+  sandbox's JWT ONCE at create (`~/.local/state/openshell/docker-sandbox-tokens/…/sandbox.jwt`,
+  TTL ~30d from `openshell-gateway.toml`); the running supervisor refreshes it in memory only and
+  never rewrites the file. Restart the container after the on-disk token expires and it boots
+  into `Policy fetch failed … ExpiredSignature` with "static token sources cannot rebootstrap
+  automatically" — the revive unit then flaps in `activating auto-restart`. Fix:
+  `sudo systemctl restart sandbox-token-medic.service` (re-mints from the gateway's signing key
+  and restarts the container; script header at `/usr/local/sbin/sandbox-token-medic.mjs` has the
+  full story — it exists because a 2026-07-05 box reboot hit the same class). Side effect: run
+  without `NO_RESTART=1` and it also bounces every OTHER sandbox whose on-disk token is expired,
+  healthy or not (s3 and s5 took ~10s blips as bystanders on 2026-08-12). So: before any manual
+  container restart, run the medic (or check the token's `exp`) — the credential-restart rule
+  above still applies, it just needs a valid sandbox token to survive the restart.
 - **NEVER change a sandbox's `openclaw.json` with `openclaw config patch`.** It writes the file
   but does NOT update nemoclaw's `.config-hash`, so the next `gateway restart` fails
   `GATEWAY_UNSAFE_CONFIG_PATH` and leaves the gateway DOWN (3 bots went down learning this on

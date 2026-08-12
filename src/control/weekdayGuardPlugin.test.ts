@@ -188,44 +188,102 @@ describe('weekday guard — the hook contract', () => {
   });
 
   type Handler = (event: unknown) => unknown;
-  function registerAndGetHandler(): Handler {
-    let handler: Handler | undefined;
+  // v0.2.0 registers BOTH outbound hooks — on 2026-08-11 four real Telegram
+  // turns bypassed message_sending entirely (delivery path changed after
+  // 2026-08-06), so reply_payload_sending rides along and the log's `hook`
+  // field says which one production actually uses.
+  function registerAndGetHandlers(): Record<string, Handler> {
+    const handlers: Record<string, Handler> = {};
     const api = {
       on: (name: string, fn: Handler) => {
-        expect(name).toBe('message_sending');
-        handler = fn;
+        handlers[name] = fn;
       },
     };
     guard.default(api);
-    expect(handler).toBeDefined();
-    return handler as Handler;
+    expect(Object.keys(handlers).sort()).toEqual([
+      'message_sending',
+      'reply_payload_sending',
+    ]);
+    return handlers;
   }
 
-  test('observe-only: returns undefined for clean AND flagged content, logs both', () => {
+  test('observe-only: returns undefined for clean AND flagged content, logs both with hook tag', () => {
     const logPath = join(dir, 'guard.jsonl');
     process.env.TRADES_WEEKDAY_GUARD_LOG = logPath;
-    const handler = registerAndGetHandler();
+    const handlers = registerAndGetHandlers();
 
     // Flagged content: STILL undefined — never rewrite, never cancel.
     expect(
-      handler({ content: 'See you Monday the 4th.', channel: 'telegram' }),
+      handlers.message_sending({ content: 'See you Monday the 4th.', channel: 'telegram' }),
     ).toBeUndefined();
     // Clean content: logged as the denominator.
-    expect(handler({ content: 'On my way.', channel: 'telegram' })).toBeUndefined();
+    expect(handlers.message_sending({ content: 'On my way.', channel: 'telegram' })).toBeUndefined();
 
     const lines = readFileSync(logPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     expect(lines).toHaveLength(2);
     expect(lines[0].flags).toHaveLength(1);
     expect(lines[0].flags[0].claimed).toBe('Monday');
     expect(lines[0].channel).toBe('telegram');
+    expect(lines[0].hook).toBe('message_sending');
+    expect(lines[0].sha).toMatch(/^[0-9a-f]{12}$/);
     expect(lines[1].flags).toEqual([]);
     expect(lines[1].v).toBe(guard.VERSION);
   });
 
-  test('non-string content is skipped silently (no log line, no throw)', () => {
+  test('reply_payload_sending: extracts text from payload-shaped events', () => {
+    const logPath = join(dir, 'guard-payload.jsonl');
+    process.env.TRADES_WEEKDAY_GUARD_LOG = logPath;
+    const handlers = registerAndGetHandlers();
+    // The vendor docs do not pin ReplyPayload's fields; the extractor accepts
+    // the plausible shapes. Each unique text avoids the dedupe window.
+    expect(
+      handlers.reply_payload_sending({ payload: { text: 'Booked for Monday the 4th, Amy.' } }),
+    ).toBeUndefined();
+    expect(
+      handlers.reply_payload_sending({ text: 'Rescheduled to Tuesday the 4th ok?' }),
+    ).toBeUndefined();
+    const lines = readFileSync(logPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(2);
+    expect(lines[0].hook).toBe('reply_payload_sending');
+    expect(lines[0].flags).toHaveLength(1); // Aug 4 is a Tuesday
+    expect(lines[1].flags).toEqual([]); // Tuesday the 4th is correct
+  });
+
+  test('the same reply through BOTH hooks: second line is marked dup', () => {
+    const logPath = join(dir, 'guard-dup.jsonl');
+    process.env.TRADES_WEEKDAY_GUARD_LOG = logPath;
+    const handlers = registerAndGetHandlers();
+    const text = 'Crew arrives Wednesday, no date attached.';
+    handlers.message_sending({ content: text });
+    handlers.reply_payload_sending({ payload: { text } });
+    const lines = readFileSync(logPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(2);
+    expect(lines[0].dup).toBeUndefined();
+    expect(lines[1].dup).toBe(true);
+    expect(lines[0].sha).toBe(lines[1].sha); // rate analysis dedupes on this
+  });
+
+  test('a text-less ReplyPayload logs its KEY NAMES only — never values', () => {
+    const logPath = join(dir, 'guard-miss.jsonl');
+    process.env.TRADES_WEEKDAY_GUARD_LOG = logPath;
+    const handlers = registerAndGetHandlers();
+    handlers.reply_payload_sending({
+      payload: { blocks: [{ secret: 'do-not-log-me' }], delivery: 'x' },
+      runId: 'r-1',
+    });
+    const raw = readFileSync(logPath, 'utf8');
+    const line = JSON.parse(raw.trim());
+    expect(line.miss).toBe(true);
+    expect(line.keys).toContain('payload.blocks');
+    expect(line.keys).toContain('runId');
+    // Keys-only discipline: the VALUE must never reach the log.
+    expect(raw).not.toContain('do-not-log-me');
+  });
+
+  test('non-string content on message_sending is skipped silently (no log line, no throw)', () => {
     const logPath = join(dir, 'guard-nonstring.jsonl');
     process.env.TRADES_WEEKDAY_GUARD_LOG = logPath;
-    const handler = registerAndGetHandler();
+    const handlers = registerAndGetHandlers();
     for (const event of [
       {},
       { content: null },
@@ -234,19 +292,31 @@ describe('weekday guard — the hook contract', () => {
       null,
       undefined,
     ]) {
-      expect(handler(event)).toBeUndefined();
+      expect(handlers.message_sending(event)).toBeUndefined();
     }
     expect(() => readFileSync(logPath, 'utf8')).toThrow(); // nothing was written
   });
 
   test('an unwritable log path breaks nothing', () => {
     process.env.TRADES_WEEKDAY_GUARD_LOG = '/nonexistent-dir/guard.jsonl';
-    const handler = registerAndGetHandler();
-    expect(handler({ content: 'See you Monday the 4th.' })).toBeUndefined();
+    const handlers = registerAndGetHandlers();
+    expect(handlers.message_sending({ content: 'See you Monday the 4th, then.' })).toBeUndefined();
   });
 
   test('an api without .on registers nothing and does not throw', () => {
     expect(() => guard.default({})).not.toThrow();
     expect(() => guard.default(undefined)).not.toThrow();
+  });
+
+  test('an api that rejects one hook name still registers the other', () => {
+    const handlers: Record<string, Handler> = {};
+    const api = {
+      on: (name: string, fn: Handler) => {
+        if (name === 'reply_payload_sending') throw new Error('unknown event');
+        handlers[name] = fn;
+      },
+    };
+    expect(() => guard.default(api)).not.toThrow();
+    expect(Object.keys(handlers)).toEqual(['message_sending']);
   });
 });

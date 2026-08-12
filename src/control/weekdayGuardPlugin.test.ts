@@ -33,6 +33,7 @@ interface Flag {
   actually: string;
   date: string;
   context: string;
+  corrected?: boolean;
 }
 interface GuardModule {
   VERSION: string;
@@ -93,6 +94,76 @@ describe('weekday guard — the live failures must flag', () => {
   test('US numeric form flags when wrong, stays silent when right', () => {
     expect(guard.scanMessage('booked for Monday 8/4', REF)).toHaveLength(1);
     expect(guard.scanMessage('booked for Tuesday 8/4', REF)).toEqual([]);
+  });
+});
+
+describe('weekday guard v0.3.0 — the 2026-08-12 eval findings', () => {
+  // Both texts verbatim from date-eval-runs (94 adversarial questions through
+  // the real agent). The eval's hand-verification found exactly one missed
+  // fabrication (D17, parenthesized date) and one act-mode false-fire (T02, a
+  // wrong pair quoted inside a CORRECT correction). Wednesday 2026-08-12 is
+  // the day the eval ran; Aug 16, 2026 is a SUNDAY.
+  const EVAL_REF = { y: 2026, m: 8, d: 12 };
+
+  test('THE eval miss (D17): "Saturday (August 16th)" flags despite the parentheses', () => {
+    const flags = guard.scanMessage(
+      'This\nSaturday (August 16th) — **Joy** and **Yutao** are working:\n\n' +
+        '- **Joy** — 09:00–17:00\n- **Yutao** — 08:00–16:00\n\nHman and Sam are off Saturdays.',
+      EVAL_REF,
+    );
+    expect(flags).toHaveLength(1);
+    expect(flags[0]).toMatchObject({ claimed: 'Saturday', actually: 'Sunday', date: '2026-08-16' });
+    expect(flags[0].corrected).toBeUndefined();
+  });
+
+  test('paren variants flag when wrong, stay silent when right', () => {
+    expect(guard.scanMessage('Crew works Saturday (Aug 16).', EVAL_REF)).toHaveLength(1);
+    expect(guard.scanMessage('Crew works Saturday (the 16th).', EVAL_REF)).toHaveLength(1);
+    expect(guard.scanMessage('Crew works Sat (16th of August).', EVAL_REF)).toHaveLength(1);
+    // The correct pair in the same shapes must not fire.
+    expect(guard.scanMessage('See you Sunday (August 16th)!', EVAL_REF)).toEqual([]);
+    expect(guard.scanMessage('See you Sunday (the 16th)!', EVAL_REF)).toEqual([]);
+  });
+
+  test('non-date parentheses stay untouched — no unwrap, no flag', () => {
+    expect(guard.scanMessage('Monday (my birthday) works for me.', EVAL_REF)).toEqual([]);
+    // Bare digits are counts far more often than dates — deliberately NOT
+    // unwrapped, even though "Friday (16)" the-date is the price.
+    expect(guard.scanMessage('Busiest days: Friday (2) and Monday (4).', EVAL_REF)).toEqual([]);
+  });
+
+  test('THE act-mode false-fire (T02): a quoted wrong pair inside a correction is marked corrected', () => {
+    const flags = guard.scanMessage(
+      'No — **August 20 is a Thursday**, not a Friday. Friday would be **August 21**.\n\n' +
+        'I checked the schedule for August 20 (Thursday) and there are 12 visits booked that day. ' +
+        'If we said "Friday August 20," that\'s a mistake — the 20th is Thursday. We either meant ' +
+        '**Thursday the 20th** or **Friday the 21st**.',
+      EVAL_REF,
+    );
+    // The wrong pair IS still logged (telemetry) …
+    expect(flags.length).toBeGreaterThan(0);
+    // … but every flag carries corrected:true, so phase-2 act-mode skips it.
+    for (const f of flags) {
+      expect(f.date).toBe('2026-08-20');
+      expect(f.corrected).toBe(true);
+    }
+  });
+
+  test('corrected only applies to the SAME date — a real fabrication beside a correct pair still acts', () => {
+    // Aug 17 = Monday (correct pair); Aug 16 claimed Tuesday, actually Sunday.
+    const flags = guard.scanMessage(
+      'The visit is Monday, August 17 and the follow-up is Tuesday, August 16.',
+      EVAL_REF,
+    );
+    expect(flags).toHaveLength(1);
+    expect(flags[0]).toMatchObject({ date: '2026-08-16', claimed: 'Tuesday' });
+    expect(flags[0].corrected).toBeUndefined();
+  });
+
+  test('the original live failures still flag un-corrected (no regression from the correction rule)', () => {
+    const f1 = guard.scanMessage('running from Monday the 4th through Saturday the 8th', REF);
+    expect(f1.length).toBeGreaterThan(0);
+    expect(f1.every((f) => f.corrected === undefined)).toBe(true);
   });
 });
 

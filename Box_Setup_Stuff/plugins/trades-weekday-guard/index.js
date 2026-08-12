@@ -25,12 +25,23 @@
  * and a day-of-month and they disagree. A bare "Friday" or a bare date states
  * no pair — nothing to contradict, no flag. This is what keeps false
  * positives at zero on real traffic (corpus replay in the PR).
+ *
+ * CORRECTIONS ARE NOT FABRICATIONS (v0.3.0). A message can contain a wrong
+ * pair precisely because it is FIXING it — the 2026-08-12 eval's T02: «If we
+ * said "Friday August 20," that's a mistake — the 20th is Thursday». Cancel-
+ * and-retry on that reply would cancel correct behavior. Rule: when the same
+ * message ALSO states the CORRECT pair for the same date, every flag on that
+ * date is marked `corrected: true` — still logged (telemetry), but phase-2
+ * act-mode must trigger only on flags WITHOUT it. Deliberate trade-off: a
+ * fabricated pair whose date is also correctly stated elsewhere in the same
+ * message is suppressed from act-mode — self-consistent-and-half-right is a
+ * correction shape, not a fabrication shape, in every observed sample.
  */
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { parse } from './chrono.bundle.mjs';
 
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 
 const NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS = [
@@ -44,6 +55,32 @@ const MONTHS = [
 // leaves "the 4th of August" alone — chrono parses those itself.
 const ORDINAL =
   /\b(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sun|Mon|Tues|Tue|Weds|Wed|Thurs|Thur|Thu|Fri|Sat)\.?,?\s+the\s+(\d{1,2})(?:st|nd|rd|th)\b(?!\s+of\s+[A-Z])/g;
+
+// "Saturday (August 16th)" — the 2026-08-12 eval's ONE missed fabrication
+// (D17; Aug 16 was a Sunday). Parentheses split chrono's parse: weekday and
+// date come back as two separate references, neither with both halves
+// certain, so the pair is never checked — the comma form catches, the paren
+// form doesn't (verified against chrono 2.10.1). Unwrap the parens ONLY when
+// their whole content looks like a date: a month+day, an ordinal day, or a
+// "the N(th)" — so "Monday (my birthday)" and count-parens like "Friday (2)"
+// stay untouched (bare digits deliberately do NOT qualify; "(2)" is a count
+// far more often than a date).
+const WD =
+  'Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sun|Mon|Tues|Tue|Weds|Wed|Thurs|Thur|Thu|Fri|Sat';
+const MON =
+  'January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept|Sep|Oct|Nov|Dec';
+const PAREN_DATE = new RegExp(
+  `\\b(${WD})\\.?\\s*\\(\\s*(` +
+    `the\\s+\\d{1,2}(?:st|nd|rd|th)?` + // (the 16th) / (the 16)
+    `|(?:${MON})\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+\\d{4})?` + // (August 16th, 2026)
+    `|\\d{1,2}(?:st|nd|rd|th)(?:\\s+(?:of\\s+)?(?:${MON})\\.?(?:,?\\s+\\d{4})?)?` + // (16th of August)
+    `)\\s*\\)`,
+  'g',
+);
+
+function unwrapParenDates(text) {
+  return text.replace(PAREN_DATE, '$1, $2');
+}
 
 const utc = (y, m, d) => new Date(Date.UTC(y, m - 1, d, 12));
 const isRealDay = (y, m, d) => utc(y, m, d).getUTCDate() === d;
@@ -94,7 +131,10 @@ function resolveNearest(c, ref) {
 export function scanMessage(text, ref) {
   if (typeof text !== 'string' || text.length === 0) return [];
   const flags = [];
-  const expanded = expandOrdinals(text, ref);
+  // Dates for which this same message ALSO states the CORRECT pair — the
+  // correction signal (header: corrections are not fabrications).
+  const correctDates = new Set();
+  const expanded = expandOrdinals(unwrapParenDates(text), ref);
   for (const r of parse(expanded, utc(ref.y, ref.m, ref.d))) {
     for (const c of [r.start, r.end]) {
       if (!c) continue;
@@ -103,8 +143,11 @@ export function scanMessage(text, ref) {
       if (!resolved) continue;
       const claimedIdx = c.get('weekday');
       const actualIdx = utc(resolved.y, resolved.m, resolved.d).getUTCDay();
-      if (claimedIdx === actualIdx) continue;
       const date = `${resolved.y}-${String(resolved.m).padStart(2, '0')}-${String(resolved.d).padStart(2, '0')}`;
+      if (claimedIdx === actualIdx) {
+        correctDates.add(date);
+        continue;
+      }
       flags.push({
         said: r.text,
         claimed: NAMES[claimedIdx],
@@ -115,6 +158,9 @@ export function scanMessage(text, ref) {
         context: expanded.slice(Math.max(0, r.index - 40), r.index + r.text.length + 40),
       });
     }
+  }
+  for (const f of flags) {
+    if (correctDates.has(f.date)) f.corrected = true;
   }
   return flags;
 }

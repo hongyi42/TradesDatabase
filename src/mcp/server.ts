@@ -294,10 +294,18 @@ const TOOLS = [
       'If it comes back unresolvable, ask the person which exact date they mean — never guess. ' +
       'NOTE: "next <weekday>" is genuinely ambiguous (this coming one vs the following week\'s) — ' +
       'resolve BOTH weeksAhead 0 and 1 and ask the person which date they mean; do not assume. ' +
-      'For week RANGES ("this week", "next week") pass week alone — you get back ' +
+      'For week RANGES ("this week", "next week", "last week") pass week alone (0 = this week, ' +
+      '1 = next, -1 = last) — you get back ' +
       '{weekStart, weekEnd, weekStartWeekday, weekEndWeekday, phrase}; on weekends the result is ' +
       'flagged ambiguous with an alternate range (which carries its own phrase) — relay both and ' +
-      'ask, never pick. WHEN YOU NAME ANY OF THESE DATES TO A PERSON, SAY THE `phrase` VERBATIM ' +
+      'ask, never pick. For CALENDAR PERIODS pass exactly one of month ("this month" = 0, ' +
+      '"last month" = -1), quarter ("this quarter" = 0, "last quarter" = -1), or year ' +
+      '("this year" = 0, "last year" = -1) — you get back {periodStart, periodEnd, ' +
+      'periodStartWeekday, periodEndWeekday, label, phrase}; use periodStart/periodEnd as your ' +
+      'query window. Backward day references work too: "last Friday" = weekday:friday ' +
+      'weeksAhead:-1. NEVER write a period boundary yourself — a first-of-month or "last month" ' +
+      'across a year wrap is calendar math, and you are unreliable at it. ' +
+      'WHEN YOU NAME ANY OF THESE DATES TO A PERSON, SAY THE `phrase` VERBATIM ' +
       '("Monday 2026-08-03 through Sunday 2026-08-09"). Never work out for yourself which day of ' +
       'the week a date falls on — that is the arithmetic this tool exists to do for you.',
     inputSchema: {
@@ -310,16 +318,30 @@ const TOOLS = [
         },
         weeksAhead: {
           type: 'integer',
-          description: 'With weekday: 0 = this coming <day>, 1 = next week\'s, 2 = the week after. Default 0.',
+          description:
+            'With weekday: 0 = this coming <day>, 1 = next week\'s, -1 = last <day> (the most recent past one). Default 0.',
         },
         week: {
           type: 'integer',
           description:
-            '"this week" = 0, "next week" = 1, "the week after next" = 2. A week RANGE (Mon–Sun); use ALONE, without weekday/dayShift/explicitDate.',
+            '"this week" = 0, "next week" = 1, "last week" = -1. A week RANGE (Mon–Sun); use ALONE, without any other field.',
+        },
+        month: {
+          type: 'integer',
+          description:
+            '"this month" = 0, "last month" = -1, "next month" = 1. A calendar-month RANGE; use ALONE.',
+        },
+        quarter: {
+          type: 'integer',
+          description: '"this quarter" = 0, "last quarter" = -1. A calendar-quarter RANGE; use ALONE.',
+        },
+        year: {
+          type: 'integer',
+          description: '"this year" = 0, "last year" = -1. A calendar-year RANGE; use ALONE.',
         },
         dayShift: {
           type: 'integer',
-          description: 'Days from today when no weekday is named: 0 = today, 1 = tomorrow, 7 = a week out.',
+          description: 'Days from today when no weekday is named: 0 = today, 1 = tomorrow, -30 = thirty days ago.',
         },
         explicitDate: {
           type: 'string',
@@ -1988,6 +2010,9 @@ async function dispatch(
         ...(intArg('dayShift') !== undefined ? { dayShift: intArg('dayShift') } : {}),
         ...(str('explicitDate') ? { explicitDate: str('explicitDate') } : {}),
         ...(intArg('week') !== undefined ? { week: intArg('week') } : {}),
+        ...(intArg('month') !== undefined ? { month: intArg('month') } : {}),
+        ...(intArg('quarter') !== undefined ? { quarter: intArg('quarter') } : {}),
+        ...(intArg('year') !== undefined ? { year: intArg('year') } : {}),
       });
       return { ...result, today: todayLocal, timezone: tz };
     }

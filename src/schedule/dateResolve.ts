@@ -1,7 +1,8 @@
 // Deterministic relative-date resolver — no AI, no DB (overview §5: hardcode
 // what must be correct). Turns a STRUCTURED day reference (weekday + how many
-// weeks out, or a plain day shift, or an explicit date) into a canonical
-// YYYY-MM-DD plus its weekday name.
+// weeks out, a plain day shift, or an explicit date) into a canonical
+// YYYY-MM-DD plus its weekday name — or a STRUCTURED period reference (week /
+// month / quarter / year, negative for past) into its boundary dates.
 //
 // Division of labour (the whole point): the model reads the manager's messy
 // phrase and picks the fields ("this Friday" → {weekday:'friday'}); this code
@@ -43,10 +44,33 @@ const WEEKDAY_INDEX: Record<Weekday, number> = {
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Bounds keep a fat-fingered field from resolving to a nonsense century away
-// while still covering every realistic booking horizon.
-const MAX_WEEKS_AHEAD = 52;
+// while still covering every realistic booking horizon. Negatives are allowed
+// everywhere since 2026-08-12: the date eval proved that a mode the tool
+// lacks does not stop the question being asked — it just moves the arithmetic
+// into the model ("last week", "last month" were hand-computed in every
+// trajectory that needed them, because week/weeksAhead refused negatives and
+// no calendar-period mode existed at all).
+const MAX_WEEKS = 52;
 const MIN_DAY_SHIFT = -366;
 const MAX_DAY_SHIFT = 366;
+const MAX_MONTHS = 24;
+const MAX_QUARTERS = 8;
+const MAX_YEARS = 5;
+
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
 
 export function isWeekday(v: unknown): v is Weekday {
   return typeof v === 'string' && v in WEEKDAY_INDEX;
@@ -122,10 +146,13 @@ function weekRange(weekStart: string, weekEnd: string) {
 export interface ResolveDateParams {
   todayLocal: string; // YYYY-MM-DD in the firm's timezone — SERVER-supplied
   weekday?: Weekday; // a named day
-  weeksAhead?: number; // weeks beyond the coming occurrence (0 = "this <day>")
+  weeksAhead?: number; // weeks beyond the coming occurrence (0 = "this <day>", -1 = "last <day>")
   dayShift?: number; // today = 0, tomorrow = 1 (no weekday named)
   explicitDate?: string; // YYYY-MM-DD the manager stated outright
-  week?: number; // a week RANGE: 0 = the current calendar week (Mon–Sun), 1 = next, …
+  week?: number; // a week RANGE: 0 = the current calendar week (Mon–Sun), 1 = next, -1 = last, …
+  month?: number; // a calendar-month RANGE: 0 = this month, -1 = last month, 1 = next, …
+  quarter?: number; // a calendar-quarter RANGE: 0 = this quarter, -1 = last quarter, …
+  year?: number; // a calendar-year RANGE: 0 = this year, -1 = last year, …
 }
 
 export type ResolveDateResult =
@@ -161,7 +188,48 @@ export type ResolveDateResult =
       };
       note?: string;
     }
+  | {
+      // month / quarter / year — the calendar periods that used to have no
+      // path through this tool at all. One shape for all three: the agent
+      // reads periodStart/periodEnd for its query window and says `phrase`.
+      status: 'resolved_period';
+      periodStart: string; // YYYY-MM-DD, first day of the period
+      periodEnd: string; // YYYY-MM-DD, last day of the period
+      periodStartWeekday: Weekday;
+      periodEndWeekday: Weekday;
+      label: string; // "August 2026" | "Q3 2026" | "2026"
+      phrase: string; // "Saturday 2026-08-01 through Monday 2026-08-31 (August 2026)"
+    }
   | { status: 'unresolvable'; reason: string };
+
+function resolvedPeriod(startISO: string, endISO: string, label: string): ResolveDateResult {
+  return {
+    status: 'resolved_period',
+    periodStart: startISO,
+    periodEnd: endISO,
+    periodStartWeekday: weekdayNameOf(startISO),
+    periodEndWeekday: weekdayNameOf(endISO),
+    label,
+    phrase: `${rangePhrase(startISO, endISO)} (${label})`,
+  };
+}
+
+// First day of the month `offset` months from todayLocal's month. Pure
+// integer arithmetic on (year, month) — no Date rollover semantics to trust.
+function monthStartISO(todayLocal: string, offset: number): string {
+  const [y, m] = todayLocal.split('-').map(Number);
+  const total = y * 12 + (m - 1) + offset;
+  const ty = Math.floor(total / 12);
+  const tm = (total % 12) + 12; // JS % is signed; normalize…
+  const monthIndex = tm % 12; // …to 0..11
+  return `${String(ty).padStart(4, '0')}-${String(monthIndex + 1).padStart(2, '0')}-01`;
+}
+
+// Last day of the month that ISO's first-of-month belongs to: the day before
+// the NEXT month's first — leap years fall out of addDays, not a table.
+function monthEndISO(firstOfMonth: string): string {
+  return addDays(monthStartISO(firstOfMonth, 1), -1);
+}
 
 // The "this vs next" convention, pinned here (not in the model):
 //   weeksAhead 0 = the COMING occurrence of the weekday (today, if today is
@@ -178,6 +246,9 @@ export function resolveDate(p: ResolveDateParams): ResolveDateResult {
     p.weekday !== undefined,
     p.dayShift !== undefined,
     p.week !== undefined,
+    p.month !== undefined,
+    p.quarter !== undefined,
+    p.year !== undefined,
   ].filter(Boolean).length;
 
   // weeksAhead only means anything alongside a weekday. These refusal strings
@@ -193,14 +264,57 @@ export function resolveDate(p: ResolveDateParams): ResolveDateResult {
   if (modes === 0) {
     return {
       status: 'unresolvable',
-      reason: 'no day reference given — provide weekday, dayShift, explicitDate, or week',
+      reason:
+        'no day reference given — provide weekday, dayShift, explicitDate, week, month, quarter, or year',
     };
   }
   if (modes > 1) {
     return {
       status: 'unresolvable',
-      reason: 'provide exactly one of explicitDate, weekday, dayShift, or week',
+      reason: 'provide exactly one of explicitDate, weekday, dayShift, week, month, quarter, or year',
     };
+  }
+
+  // Calendar-period modes (month / quarter / year). All three are
+  // calendar-anchored ranges like `week` — 0 = the period containing today,
+  // negative = past periods ("last month" = month:-1, and from a January that
+  // is December of the PREVIOUS year, which is exactly the wrap a model gets
+  // wrong in its head). No weekend-style ambiguity exists here: which month
+  // "this month" names does not depend on the day of the week.
+  if (p.month !== undefined) {
+    if (!Number.isInteger(p.month) || Math.abs(p.month) > MAX_MONTHS) {
+      return {
+        status: 'unresolvable',
+        reason: `month must be a whole number between ${-MAX_MONTHS} and ${MAX_MONTHS} (0 = this month, -1 = last month)`,
+      };
+    }
+    const start = monthStartISO(p.todayLocal, p.month);
+    const [sy, sm] = start.split('-').map(Number);
+    return resolvedPeriod(start, monthEndISO(start), `${MONTH_NAMES[sm - 1]} ${sy}`);
+  }
+  if (p.quarter !== undefined) {
+    if (!Number.isInteger(p.quarter) || Math.abs(p.quarter) > MAX_QUARTERS) {
+      return {
+        status: 'unresolvable',
+        reason: `quarter must be a whole number between ${-MAX_QUARTERS} and ${MAX_QUARTERS} (0 = this quarter, -1 = last quarter)`,
+      };
+    }
+    const m = Number(p.todayLocal.split('-')[1]);
+    const quarterFirstMonthOffset = -((m - 1) % 3) + p.quarter * 3;
+    const start = monthStartISO(p.todayLocal, quarterFirstMonthOffset);
+    const [sy, sm] = start.split('-').map(Number);
+    const end = monthEndISO(monthStartISO(start, 2));
+    return resolvedPeriod(start, end, `Q${Math.floor((sm - 1) / 3) + 1} ${sy}`);
+  }
+  if (p.year !== undefined) {
+    if (!Number.isInteger(p.year) || Math.abs(p.year) > MAX_YEARS) {
+      return {
+        status: 'unresolvable',
+        reason: `year must be a whole number between ${-MAX_YEARS} and ${MAX_YEARS} (0 = this year, -1 = last year)`,
+      };
+    }
+    const y = Number(p.todayLocal.slice(0, 4)) + p.year;
+    return resolvedPeriod(`${y}-01-01`, `${y}-12-31`, String(y));
   }
 
   if (p.explicitDate !== undefined) {
@@ -218,10 +332,10 @@ export function resolveDate(p: ResolveDateParams): ResolveDateResult {
   // divergence is exactly how a real Monday visit went unfound (2026-07-25),
   // so weekend resolutions carry both readings instead of picking one.
   if (p.week !== undefined) {
-    if (!Number.isInteger(p.week) || p.week < 0 || p.week > MAX_WEEKS_AHEAD) {
+    if (!Number.isInteger(p.week) || Math.abs(p.week) > MAX_WEEKS) {
       return {
         status: 'unresolvable',
-        reason: `week must be a whole number between 0 and ${MAX_WEEKS_AHEAD} (0 = the current week); past references need an explicit date`,
+        reason: `week must be a whole number between ${-MAX_WEEKS} and ${MAX_WEEKS} (0 = the current week, -1 = last week)`,
       };
     }
     const todayDow = new Date(`${p.todayLocal}T00:00:00.000Z`).getUTCDay();
@@ -245,14 +359,19 @@ export function resolveDate(p: ResolveDateParams): ResolveDateResult {
 
   if (p.weekday !== undefined) {
     const weeksAhead = p.weeksAhead ?? 0;
-    if (!Number.isInteger(weeksAhead) || weeksAhead < 0 || weeksAhead > MAX_WEEKS_AHEAD) {
+    if (!Number.isInteger(weeksAhead) || Math.abs(weeksAhead) > MAX_WEEKS) {
       return {
         status: 'unresolvable',
-        reason: `weeksAhead must be a whole number between 0 and ${MAX_WEEKS_AHEAD} (0 = this coming ${p.weekday}); past references need an explicit date`,
+        reason: `weeksAhead must be a whole number between ${-MAX_WEEKS} and ${MAX_WEEKS} (0 = this coming ${p.weekday}, -1 = last ${p.weekday})`,
       };
     }
     const todayDow = new Date(`${p.todayLocal}T00:00:00.000Z`).getUTCDay();
     const daysUntil = (WEEKDAY_INDEX[p.weekday] - todayDow + 7) % 7;
+    // Anchor = the COMING occurrence, so negatives step back from it a whole
+    // week at a time: weeksAhead -1 is the most recent PAST <weekday> — 5 days
+    // ago from a Wednesday asking about Friday, 7 days ago when today IS the
+    // named day. That matches what "last Friday" means in speech, including
+    // said on a Friday.
     const date = addDays(p.todayLocal, daysUntil + weeksAhead * 7);
     return resolvedDay(date, p.weekday);
   }

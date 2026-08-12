@@ -285,6 +285,27 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   and token files deleted after a content sweep; token handed to s2 via
   `openshell provider update s2-telegram-bridge` + container restart — which tripped the
   ExpiredSignature trap recorded in §5).
+- **PRODUCTION guard coverage restored — s2 + s6 upgraded to OpenClaw 2026.6.34 (2026-08-12
+  ~17:23Z).** The live proof on s2: a real manager question produced a streamed reply and the
+  guard logged `hook:reply_payload_sending, chars:3296, flags:[]` — full content on the exact
+  path 2026.5.27 was deaf to (the previous lines in the same log are 22-char stubs). The canary
+  cleared all three risks the 6.x changelog named for our topology: `inference.local` model
+  calls (real GLM turn), doorman MCP over `host.openshell.internal` (badge-authenticated
+  spine round-trip), and `openshell:resolve:env` secret resolution (Telegram polling resumed);
+  deny lists intact both layers, all 10 plugins load, `doctor --fix` clean. **Upgrade recipe**
+  (sandbox egress blocks npm registry; the HOST has node but no npm): curl the tarball on the
+  host and verify the registry shasum → bootstrap npm-cli itself from a tarball → stage
+  `npm i -g --prefix /tmp/oc-stage` on the host (linux-x64 = correct platform for native deps)
+  → `mv` the container's install to `openclaw-<old>.bak` (instant rollback) → `docker cp` the
+  staged tree in → `nemoclaw <s> doctor --fix` → `gateway restart` → verify the startup plugins
+  line has NO "unknown typed hook" warning. Pre-upgrade state tarballs live in
+  `~/upgrade-backups/` on the box. **Open ends:** s5/s7/s8 + s3 still on 2026.5.27 (roll after
+  soak; s3 = Judy, coordinate; s7 = Yutao, coordinate); **a container recycle reverts to the
+  image's 2026.5.27 and silently re-deafens the guard — bake the version into
+  bootstrap-box.sh/the image before relying on the rate**; the flag-rate clock restarts from
+  this verified-live line. Ops note from a false alarm during verification: a streamed reply
+  writes its guard line at delivery END — after ~20+ `editMessageText` calls — so check the log
+  file's mtime against the edit burst before declaring the hook dead.
 - **The weekday fabrication is ENDEMIC, not episodic — 23 mismatches in 419 historical texts
   (2026-08-06).** Built the outbound weekday guard (observe-only `message_sending` plugin,
   chrono-node, see nemoclaw-tech-agent.md §4c) and replayed it over every assistant text in the

@@ -41,11 +41,13 @@ export const humanDate = (iso) => `${MONTHS[at(iso).getUTCMonth()]} ${at(iso).ge
 
 /** The COMING occurrence of a weekday — today itself when today is that day. */
 export const comingOcc = (ref, wd) => addDays(ref, (WIDX[wd] - dow(ref) + 7) % 7);
-// Calendar periods. resolve_date has NO mode for any of these (verified
-// 2026-08-11: dayShift ±366, week 0..52 forward-only, weekday, explicitDate —
-// and nothing else), so every month/quarter/year boundary the agent uses today
-// is one it worked out in its own head. That is exactly the act the whole
-// doctrine forbids, and these helpers are how the eval checks the result.
+// Calendar periods. Until 2026-08-12 resolve_date had NO mode for any of
+// these (dayShift ±366, week 0..52 forward-only, weekday, explicitDate — and
+// nothing else), so every month/quarter/year boundary the agent used was one
+// it worked out in its own head — exactly the act the doctrine forbids, and
+// these helpers are how the eval checked the result. The tool now has
+// month/quarter/year modes (and negative week/weeksAhead); these helpers stay
+// as the eval's INDEPENDENT recompute of them — see expectedResolve below.
 const ymd = (y, m, d) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 export const monthStart = (ref, n = 0) => {
   const d = at(ref);
@@ -83,20 +85,43 @@ export const daysBetween = (a, b) => Math.round((at(b) - at(a)) / 86_400_000);
 export function expectedResolve(todayLocal, args) {
   const a = { ...args };
   // The live tool coerces stringified integers ("0") — GLM emits them often.
-  for (const k of ['weeksAhead', 'dayShift', 'week']) {
+  for (const k of ['weeksAhead', 'dayShift', 'week', 'month', 'quarter', 'year']) {
     if (typeof a[k] === 'string' && /^-?\d+$/.test(a[k].trim())) a[k] = Number(a[k]);
   }
-  const modes = [a.explicitDate !== undefined, a.weekday !== undefined, a.dayShift !== undefined, a.week !== undefined].filter(Boolean).length;
+  const modes = [
+    a.explicitDate !== undefined,
+    a.weekday !== undefined,
+    a.dayShift !== undefined,
+    a.week !== undefined,
+    a.month !== undefined,
+    a.quarter !== undefined,
+    a.year !== undefined,
+  ].filter(Boolean).length;
   if (modes !== 1) return null;
   if (a.week !== undefined) {
-    if (!Number.isInteger(a.week)) return null;
+    if (!Number.isInteger(a.week) || Math.abs(a.week) > 52) return null;
     return { kind: 'week', weekStart: weekStart(todayLocal, a.week), weekEnd: weekEnd(todayLocal, a.week) };
+  }
+  // Calendar periods (tool modes since 2026-08-12); one shape for all three.
+  if (a.month !== undefined) {
+    if (!Number.isInteger(a.month) || Math.abs(a.month) > 24) return null;
+    return { kind: 'period', periodStart: monthStart(todayLocal, a.month), periodEnd: monthEnd(todayLocal, a.month) };
+  }
+  if (a.quarter !== undefined) {
+    if (!Number.isInteger(a.quarter) || Math.abs(a.quarter) > 8) return null;
+    return { kind: 'period', periodStart: quarterStart(todayLocal, a.quarter), periodEnd: quarterEnd(todayLocal, a.quarter) };
+  }
+  if (a.year !== undefined) {
+    if (!Number.isInteger(a.year) || Math.abs(a.year) > 5) return null;
+    return { kind: 'period', periodStart: yearStart(todayLocal, a.year), periodEnd: yearEnd(todayLocal, a.year) };
   }
   if (a.explicitDate !== undefined) return /^\d{4}-\d{2}-\d{2}$/.test(a.explicitDate) ? { kind: 'day', date: a.explicitDate } : null;
   if (a.weekday !== undefined) {
     if (!WIDX[a.weekday]) return null;
     const w = a.weeksAhead ?? 0;
-    if (!Number.isInteger(w) || w < 0) return null;
+    // Negatives are legal since 2026-08-12 ("last Friday" = -1) — the anchor
+    // stays the coming occurrence, stepped back whole weeks.
+    if (!Number.isInteger(w) || Math.abs(w) > 52) return null;
     return { kind: 'day', date: addDays(comingOcc(todayLocal, a.weekday), w * 7) };
   }
   if (!Number.isInteger(a.dayShift)) return null;

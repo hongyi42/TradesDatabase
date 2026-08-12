@@ -255,6 +255,48 @@ describe('MCP server', () => {
     }
   });
 
+  test('resolve_date period modes: "last month" is a tool answer now, taught in the description', async () => {
+    // The 2026-08-12 eval finding: no month/quarter/year mode existed, so the
+    // model hand-wrote every calendar boundary ("last month" → '2026-07-01'
+    // straight into SQL). The modes + their discoverability are the fix — pin
+    // both, the same contract style as the week test above.
+    const { tools } = await client.listTools();
+    const def = tools.find((t) => t.name === 'resolve_date');
+    for (const needle of ['month', 'quarter', 'year', 'periodStart', 'last Friday']) {
+      expect(def?.description).toContain(needle);
+    }
+    const props = (def?.inputSchema as { properties?: Record<string, unknown> })?.properties;
+    expect(props?.month).toBeDefined();
+    expect(props?.quarter).toBeDefined();
+    expect(props?.year).toBeDefined();
+
+    // Quoted negative integer — the intArg coercion contract extends to the
+    // new fields ("-1" is exactly how a model asks for "last month").
+    const lastMonth = await call('resolve_date', { month: '-1' });
+    expect(lastMonth.data.status).toBe('resolved_period');
+    const today = localDateISO(new Date().toISOString(), 'America/Los_Angeles');
+    expect(lastMonth.data.today).toBe(today);
+    expect(lastMonth.data.timezone).toBe('America/Los_Angeles');
+    // Boundary shape: first and last of a month, strictly before today, and
+    // labelled + quotable like every other resolution.
+    expect(lastMonth.data.periodStart.endsWith('-01')).toBe(true);
+    expect(lastMonth.data.periodEnd < today).toBe(true);
+    expect(lastMonth.data.periodStart < lastMonth.data.periodEnd).toBe(true);
+    expect(lastMonth.data.label).toMatch(/^[A-Z][a-z]+ \d{4}$/);
+    expect(lastMonth.data.phrase).toContain(`(${lastMonth.data.label})`);
+
+    const q = await call('resolve_date', { quarter: 0 });
+    expect(q.data.status).toBe('resolved_period');
+    expect(q.data.label).toMatch(/^Q[1-4] \d{4}$/);
+    expect(q.data.periodStart <= today && today <= q.data.periodEnd).toBe(true);
+
+    // "last Friday": a single past date, weekday guaranteed by the tool.
+    const lastFriday = await call('resolve_date', { weekday: 'friday', weeksAhead: -1 });
+    expect(lastFriday.data.status).toBe('resolved');
+    expect(lastFriday.data.weekday).toBe('friday');
+    expect(lastFriday.data.date < today).toBe(true);
+  });
+
   test('every object tool result carries the temporal grounding rider `now`; arrays keep their shape', async () => {
     // The rider is the eval's condition-B line, firm-local (seed tenant tz =
     // America/Los_Angeles) — computed here with the same Intl formatting so a

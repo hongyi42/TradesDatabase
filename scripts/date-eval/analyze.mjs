@@ -160,6 +160,12 @@ for (const r of results) {
             returned = `${got.weekStart}..${got.weekEnd}`;
             ok = exp?.kind === 'week' ? exp.weekStart === got.weekStart && exp.weekEnd === got.weekEnd : null;
             if (got.weekStart) { resolvedDates.add(got.weekStart); resolvedDates.add(got.weekEnd); }
+          } else if (got.status === 'resolved_period') {
+            // month/quarter/year modes (tool since 2026-08-12) — same
+            // machinery-vs-model split as weeks, via the independent recompute.
+            returned = `${got.periodStart}..${got.periodEnd}`;
+            ok = exp?.kind === 'period' ? exp.periodStart === got.periodStart && exp.periodEnd === got.periodEnd : null;
+            if (got.periodStart) { resolvedDates.add(got.periodStart); resolvedDates.add(got.periodEnd); }
           } else { returned = got.status ?? 'unparsed'; ok = exp === null ? true : false; }
           resolveCalls.push({ args: call.args, returned, expected: exp, ok });
         } else if (call) {

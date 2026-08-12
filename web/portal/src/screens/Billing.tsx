@@ -40,9 +40,10 @@ export function Billing({
               <p
                 style={{
                   margin: '8px 0 0',
-                  fontSize: 38,
-                  fontWeight: 600,
-                  letterSpacing: '-0.03em',
+                  fontFamily: 'var(--display)',
+                  fontSize: 40,
+                  fontWeight: 800,
+                  letterSpacing: '-0.04em',
                 }}
               >
                 {money(totalCents)}

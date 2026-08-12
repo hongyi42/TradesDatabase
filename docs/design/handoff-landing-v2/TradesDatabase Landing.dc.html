@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chivo:wght@600;700;900&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="./image-slot.js"></script>
+<style>
+html,body{margin:0;padding:0;background:#0e1217;-webkit-font-smoothing:antialiased}
+a{color:#efa831;text-decoration:none}
+a:hover{color:#f3f5f8}
+::placeholder{color:#7c8590;opacity:1}
+::selection{background:#ea9602;color:#261704}
+</style>
+</helmet>
+<div style="background:#0e1217;color:#f3f5f8;font-family:'IBM Plex Sans',system-ui,sans-serif;overflow-x:hidden">
+
+<header style="position:sticky;top:0;z-index:50;background:rgba(14,18,23,0.9);backdrop-filter:blur(10px);border-bottom:1px solid #33393e">
+<div style="max-width:1240px;margin:0 auto;padding:14px clamp(18px,4vw,44px);display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap">
+<div style="display:flex;align-items:center;gap:10px">
+<div style="width:26px;height:26px;background:#ea9602;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#261704">TD</div>
+<span style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:21px;letter-spacing:-0.02em">TradesDatabase</span>
+</div>
+<nav style="display:flex;align-items:center;gap:clamp(14px,2vw,28px);font-size:14px">
+<a href="#product" style="color:#b8bec5">Product</a>
+<a href="#pricing" style="color:#b8bec5">Pricing</a>
+<a href="#contact" style="color:#b8bec5">Contact</a>
+<a href="#signin" style="color:#f3f5f8;border:1px solid #33393e;padding:7px 15px;border-radius:5px;font-weight:500">Sign in</a>
+</nav>
+</div>
+</header>
+
+<section style="background-image:linear-gradient(#171c22 1px,transparent 1px),linear-gradient(90deg,#171c22 1px,transparent 1px);background-size:64px 64px">
+<div style="max-width:1240px;margin:0 auto;padding:clamp(40px,6vw,80px) clamp(18px,4vw,44px) clamp(40px,5vw,72px);display:flex;flex-wrap:wrap;gap:clamp(28px,4vw,56px);align-items:center">
+<div style="flex:1 1 420px;min-width:min(100%,320px)">
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+<span style="width:8px;height:8px;background:#ea9602"></span>
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:0.14em;color:#efa831;text-transform:uppercase">Runs inside Telegram</span>
+</div>
+<h1 style="font-family:'Chivo',system-ui,sans-serif;font-weight:900;font-size:clamp(38px,5.2vw,74px);line-height:1.0;letter-spacing:-0.035em;margin:0 0 22px;text-wrap:balance">They already<br>text you.<br><span style="color:#efa831">Now it's a record.</span></h1>
+<p style="font-size:clamp(17px,1.6vw,20px);line-height:1.5;color:#b8bec5;max-width:32ch;margin:0 0 28px">One bot each. They text it like they text you. Nobody installs anything.</p>
+<div style="display:flex;flex-wrap:wrap;gap:12px">
+<a href="#contact" style="background:#ea9602;color:#261704;font-weight:600;font-size:15px;padding:14px 24px;border-radius:5px">Book a walkthrough</a>
+<a href="#product" style="border:1px solid #33393e;color:#f3f5f8;font-weight:500;font-size:15px;padding:14px 24px;border-radius:5px">See how it works</a>
+</div>
+</div>
+<div style="flex:1 1 440px;min-width:min(100%,300px)">
+<div style="border:1px solid #33393e;background:#171c22;border-radius:6px;overflow:hidden">
+<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 14px;border-bottom:1px solid #33393e;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;color:#9299a1;text-transform:uppercase">
+<span style="display:flex;align-items:center;gap:8px"><span style="width:7px;height:7px;border-radius:50%;background:#ea9602"></span>Product film</span>
+<span>90 sec</span>
+</div>
+<div style="position:relative;aspect-ratio:16/10;background:#0e1217;background-image:repeating-linear-gradient(135deg,rgba(234,150,2,0.05) 0 12px,transparent 12px 24px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px">
+<div style="width:64px;height:64px;border-radius:50%;border:2px solid #ea9602;display:flex;align-items:center;justify-content:center">
+<span style="width:0;height:0;border-left:18px solid #ea9602;border-top:11px solid transparent;border-bottom:11px solid transparent;margin-left:5px"></span>
+</div>
+<div style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:clamp(19px,2vw,24px);letter-spacing:-0.02em">One job, start to finish</div>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#9299a1;text-transform:uppercase;margin-top:-8px">Film not shot yet</div>
+<div style="position:absolute;left:14px;top:14px;width:16px;height:16px;border-left:1px solid #33393e;border-top:1px solid #33393e"></div>
+<div style="position:absolute;right:14px;bottom:14px;width:16px;height:16px;border-right:1px solid #33393e;border-bottom:1px solid #33393e"></div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;padding:11px 14px;border-top:1px solid #33393e;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9299a1">
+<span>00:00</span>
+<span style="flex:1;height:3px;background:#21272d;border-radius:2px"></span>
+<span>01:30</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+
+<section style="position:relative;height:clamp(280px,34vw,460px)">
+<image-slot id="td-hero-photo" shape="rect" fit="cover" placeholder="Drop the hero shot — sparky on site, phone in hand"></image-slot>
+<div style="position:absolute;left:0;right:0;bottom:0;pointer-events:none;background:linear-gradient(transparent,rgba(14,18,23,0.85));padding:clamp(18px,3vw,32px)">
+<div style="max-width:1240px;margin:0 auto;padding:0 clamp(0px,1vw,20px);display:flex;flex-wrap:wrap;gap:0;font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:0.12em;color:#f3f5f8;text-transform:uppercase">
+<span style="padding:4px 14px 4px 0;color:#efa831">Built for</span>
+<span style="padding:4px 14px;border-left:1px solid rgba(243,245,248,0.3)">Electrical</span>
+<span style="padding:4px 14px;border-left:1px solid rgba(243,245,248,0.3)">Plumbing</span>
+<span style="padding:4px 14px;border-left:1px solid rgba(243,245,248,0.3)">Roofing</span>
+<span style="padding:4px 14px;border-left:1px solid rgba(243,245,248,0.3)">HVAC</span>
+<span style="padding:4px 14px;border-left:1px solid rgba(243,245,248,0.3)">Carpentry</span>
+</div>
+</div>
+</section>
+
+<section style="background:#171c22">
+<div style="max-width:1240px;margin:0 auto;padding:clamp(44px,5vw,80px) clamp(18px,4vw,44px)">
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:0.14em;color:#efa831;text-transform:uppercase;margin-bottom:clamp(22px,3vw,36px)">01 / What we heard</div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:1px;background:#33393e;border:1px solid #33393e">
+<div style="background:#171c22;padding:clamp(22px,3vw,34px)">
+<p style="font-family:'Chivo',system-ui,sans-serif;font-weight:600;font-size:clamp(22px,2.3vw,30px);line-height:1.2;letter-spacing:-0.02em;margin:0 0 14px">“It's all in the group chat somewhere.”</p>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#60bfc4;text-transform:uppercase">Owner · 11 vans</div>
+</div>
+<div style="background:#171c22;padding:clamp(22px,3vw,34px)">
+<p style="font-family:'Chivo',system-ui,sans-serif;font-weight:600;font-size:clamp(22px,2.3vw,30px);line-height:1.2;letter-spacing:-0.02em;margin:0 0 14px">“They won't use another app.”</p>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#60bfc4;text-transform:uppercase">Owner · 6 vans</div>
+</div>
+<div style="background:#171c22;padding:clamp(22px,3vw,34px)">
+<p style="font-family:'Chivo',system-ui,sans-serif;font-weight:600;font-size:clamp(22px,2.3vw,30px);line-height:1.2;letter-spacing:-0.02em;margin:0 0 14px">“What did we do at this address?”</p>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#60bfc4;text-transform:uppercase">Office manager</div>
+</div>
+<div style="background:#171c22;padding:clamp(22px,3vw,34px)">
+<p style="font-family:'Chivo',system-ui,sans-serif;font-weight:600;font-size:clamp(22px,2.3vw,30px);line-height:1.2;letter-spacing:-0.02em;margin:0 0 14px">“I do the paperwork on Sunday.”</p>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#60bfc4;text-transform:uppercase">Owner · 4 vans</div>
+</div>
+</div>
+</div>
+</section>
+
+<section id="product" style="background:#f1eee9;color:#1f2730">
+<div style="max-width:1240px;margin:0 auto;padding:clamp(44px,5vw,80px) clamp(18px,4vw,44px)">
+<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:clamp(24px,3vw,40px)">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:0.14em;color:#4d5660">02 /</span>
+<h2 style="font-family:'Chivo',system-ui,sans-serif;font-weight:900;font-size:clamp(27px,3.1vw,44px);margin:0;line-height:1.05;letter-spacing:-0.03em">One text in. One record out.</h2>
+</div>
+
+<div style="display:flex;flex-wrap:wrap;gap:clamp(16px,2.5vw,28px);align-items:stretch">
+<div style="flex:1 1 320px;min-width:min(100%,280px);background:#ffffff;border:1px solid #cfcbc3;border-radius:4px;padding:16px;display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;align-items:center;gap:10px;padding-bottom:12px;border-bottom:1px solid #e6e3dd">
+<div style="width:30px;height:30px;border-radius:50%;background:#e1ded7;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#1f2730">TD</div>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#4d5660">@harrowbros_pete_bot</div>
+</div>
+<div style="align-self:flex-end;max-width:88%;background:#e8e5df;border-radius:10px 10px 3px 10px;padding:10px 13px">
+<p style="font-size:14.5px;line-height:1.5;margin:0">Done at 14 Bell Lane. Replaced the consumer unit, tested and signed off. Cert attached.</p>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#4d5660;text-align:right;margin-top:5px">14:52</div>
+</div>
+<div style="align-self:flex-end;max-width:88%;background:#e8e5df;border-radius:10px 10px 3px 10px;padding:9px 13px;display:flex;align-items:center;gap:9px">
+<span style="width:22px;height:22px;background:#ffffff;border:1px solid #cfcbc3;border-radius:3px"></span>
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px">EICR_14BellLane.pdf</span>
+</div>
+<div style="align-self:flex-start;max-width:92%;background:#1f2730;color:#f3f5f8;border-radius:10px 10px 10px 3px;padding:11px 13px">
+<p style="font-size:14.5px;line-height:1.5;margin:0 0 9px">Filed. Bell Lane, consumer unit.</p>
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#261704;background:#efa831;padding:3px 7px;border-radius:4px">JOB-4471</span>
+</div>
+</div>
+
+<div style="flex:0 0 auto;align-self:center;font-family:'IBM Plex Mono',monospace;font-size:26px;color:#ea9602;padding:0 4px">→</div>
+
+<div style="flex:1 1 380px;min-width:min(100%,280px);background:#ffffff;border:1px solid #cfcbc3;border-radius:4px;overflow:hidden;box-shadow:0 14px 40px rgba(15,20,26,0.12)">
+<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;background:#e1ded7;border-bottom:1px solid #cfcbc3;padding:11px 18px;font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:0.1em;text-transform:uppercase">
+<span>Job sheet</span><span>JOB-4471</span>
+</div>
+<div style="padding:4px 18px 16px">
+<div style="display:flex;gap:16px;padding:12px 0;border-bottom:1px solid #e6e3dd">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.08em;color:#4d5660;text-transform:uppercase;flex:0 0 78px;padding-top:2px">Customer</span>
+<span style="font-size:15px;font-weight:500">M. Okonjo · 14 Bell Lane, N4</span>
+</div>
+<div style="display:flex;gap:16px;padding:12px 0;border-bottom:1px solid #e6e3dd">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.08em;color:#4d5660;text-transform:uppercase;flex:0 0 78px;padding-top:2px">Work</span>
+<span style="font-size:15px;font-weight:500">Consumer unit replacement</span>
+</div>
+<div style="display:flex;gap:16px;padding:12px 0;border-bottom:1px solid #e6e3dd">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.08em;color:#4d5660;text-transform:uppercase;flex:0 0 78px;padding-top:2px">Visit</span>
+<span style="font-size:15px;font-weight:500">06 Aug · Pete Rowan</span>
+</div>
+<div style="display:flex;gap:16px;padding:12px 0">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.08em;color:#4d5660;text-transform:uppercase;flex:0 0 78px;padding-top:2px">Attached</span>
+<span style="font-family:'IBM Plex Mono',monospace;font-size:13px">EICR_14BellLane.pdf</span>
+</div>
+<div style="background:#f1eee9;border-left:3px solid #ea9602;padding:11px 14px">
+<div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:0.1em;color:#4d5660;text-transform:uppercase;margin-bottom:5px">Source · Telegram 14:52</div>
+<p style="font-size:13.5px;line-height:1.5;margin:0">“Done at 14 Bell Lane…”</p>
+</div>
+</div>
+</div>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:clamp(14px,2vw,24px);margin-top:clamp(26px,3vw,40px);border-top:1px solid #cfcbc3;padding-top:clamp(22px,2.5vw,30px)">
+<div>
+<div style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:21px;line-height:1.15;letter-spacing:-0.02em">No new app</div>
+<p style="font-size:14.5px;line-height:1.5;color:#4d5660;margin:6px 0 0">They already have Telegram.</p>
+</div>
+<div>
+<div style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:21px;line-height:1.15;letter-spacing:-0.02em">Search the address</div>
+<p style="font-size:14.5px;line-height:1.5;color:#4d5660;margin:6px 0 0">Every visit, photo and cert for it.</p>
+</div>
+<div>
+<div style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:21px;line-height:1.15;letter-spacing:-0.02em">Evidence kept</div>
+<p style="font-size:14.5px;line-height:1.5;color:#4d5660;margin:6px 0 0">Every field shows its message.</p>
+</div>
+<div>
+<div style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:21px;line-height:1.15;letter-spacing:-0.02em">Yours to take</div>
+<p style="font-size:14.5px;line-height:1.5;color:#4d5660;margin:6px 0 0">CSV export, any time.</p>
+</div>
+</div>
+</div>
+</section>
+
+<section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:2px;background:#0e1217">
+<div style="position:relative;height:clamp(200px,22vw,320px)">
+<image-slot id="td-photo-van" shape="rect" fit="cover" placeholder="Van doors open, first light"></image-slot>
+</div>
+<div style="position:relative;height:clamp(200px,22vw,320px)">
+<image-slot id="td-photo-hands" shape="rect" fit="cover" placeholder="Hands, scuffed phone, finished board"></image-slot>
+</div>
+<div style="position:relative;height:clamp(200px,22vw,320px)">
+<image-slot id="td-photo-kitchen" shape="rect" fit="cover" placeholder="Kitchen table, 9pm, paperwork"></image-slot>
+</div>
+</section>
+
+<section style="background:#0e1217">
+<div style="max-width:1240px;margin:0 auto;padding:clamp(44px,5vw,80px) clamp(18px,4vw,44px)">
+<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:clamp(22px,3vw,36px)">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:0.14em;color:#efa831">03 /</span>
+<h2 style="font-family:'Chivo',system-ui,sans-serif;font-weight:900;font-size:clamp(27px,3.1vw,44px);margin:0;line-height:1.05;letter-spacing:-0.03em">Adding someone takes one tap</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1px;background:#33393e;border:1px solid #33393e">
+<div style="background:#171c22;padding:24px">
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#60bfc4;text-transform:uppercase;margin-bottom:12px">10 seconds</div>
+<div style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:23px;line-height:1.15;letter-spacing:-0.02em">You add the name</div>
+</div>
+<div style="background:#171c22;padding:24px">
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#60bfc4;text-transform:uppercase;margin-bottom:12px">Automatic</div>
+<div style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:23px;line-height:1.15;letter-spacing:-0.02em">Their bot is created</div>
+<p style="font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.5;color:#9299a1;margin:8px 0 0">No token to copy.</p>
+</div>
+<div style="background:#171c22;padding:24px">
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#60bfc4;text-transform:uppercase;margin-bottom:12px">~10 minutes</div>
+<div style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:23px;line-height:1.15;letter-spacing:-0.02em">Sandbox ready</div>
+<p style="font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.5;color:#9299a1;margin:8px 0 0">They reply. That's the training.</p>
+</div>
+</div>
+</div>
+</section>
+
+<section id="pricing" style="background:#f1eee9;color:#1f2730">
+<div style="max-width:1240px;margin:0 auto;padding:clamp(44px,5vw,80px) clamp(18px,4vw,44px)">
+<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:clamp(24px,3vw,36px)">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:0.14em;color:#4d5660">04 /</span>
+<h2 style="font-family:'Chivo',system-ui,sans-serif;font-weight:900;font-size:clamp(27px,3.1vw,44px);margin:0;line-height:1.05;letter-spacing:-0.03em">Two kinds of seat</h2>
+</div>
+<div style="display:flex;flex-wrap:wrap;gap:14px;align-items:stretch">
+
+<div style="flex:1 1 280px;min-width:min(100%,250px);background:#ffffff;border:1px solid #cfcbc3;border-radius:5px;padding:clamp(22px,2.5vw,30px);display:flex;flex-direction:column">
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#4d5660;text-transform:uppercase">On the tools</div>
+<h3 style="font-family:'Chivo',system-ui,sans-serif;font-weight:900;font-size:clamp(28px,3vw,38px);margin:6px 0 18px;line-height:1.05;letter-spacing:-0.03em">Technician</h3>
+<div style="display:flex;align-items:baseline;gap:8px;border-top:1px solid #e6e3dd;padding-top:18px;margin-bottom:18px">
+<span style="font-family:'Chivo',system-ui,sans-serif;font-weight:900;font-size:46px;line-height:1;letter-spacing:-0.03em">{{ techPrice }}</span>
+<span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#4d5660">/ person / month</span>
+</div>
+<div style="display:flex;flex-direction:column;gap:9px;font-size:15px;color:#4d5660">
+<div style="display:flex;gap:10px"><span style="color:#1f2730">—</span>Own Telegram bot</div>
+<div style="display:flex;gap:10px"><span style="color:#1f2730">—</span>Jobs, certs, photos</div>
+<div style="display:flex;gap:10px"><span style="color:#1f2730">—</span>Sees their own day</div>
+</div>
+</div>
+
+<div style="flex:1 1 280px;min-width:min(100%,250px);background:#1f2730;color:#f3f5f8;border-radius:5px;padding:clamp(22px,2.5vw,30px);display:flex;flex-direction:column;position:relative;overflow:hidden">
+<div style="position:absolute;top:0;right:0;background:#ea9602;color:#261704;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:0.12em;text-transform:uppercase;padding:5px 10px">At least one</div>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#60bfc4;text-transform:uppercase">Runs the day</div>
+<h3 style="font-family:'Chivo',system-ui,sans-serif;font-weight:900;font-size:clamp(28px,3vw,38px);margin:6px 0 18px;line-height:1.05;letter-spacing:-0.03em">Manager</h3>
+<div style="display:flex;align-items:baseline;gap:8px;border-top:1px solid #3a424c;padding-top:18px;margin-bottom:18px">
+<span style="font-family:'Chivo',system-ui,sans-serif;font-weight:900;font-size:46px;line-height:1;letter-spacing:-0.03em;color:#efa831">{{ mgrPrice }}</span>
+<span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">/ person / month</span>
+</div>
+<div style="display:flex;flex-direction:column;gap:9px;font-size:15px;color:#b8bec5">
+<div style="display:flex;gap:10px"><span style="color:#60bfc4">—</span>Everything opposite</div>
+<div style="display:flex;gap:10px"><span style="color:#60bfc4">—</span>Books the crew's work</div>
+<div style="display:flex;gap:10px"><span style="color:#60bfc4">—</span>Dispatch board</div>
+<div style="display:flex;gap:10px"><span style="color:#60bfc4">—</span>Adds and drops seats</div>
+</div>
+</div>
+
+<div style="flex:1 1 280px;min-width:min(100%,250px);background:#e1ded7;border-radius:5px;padding:clamp(22px,2.5vw,30px);display:flex;flex-direction:column">
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#4d5660;text-transform:uppercase;margin-bottom:14px">Your month</div>
+<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #cfcbc3">
+<span style="font-size:15px;font-weight:600">Managers</span>
+<div style="display:flex;align-items:center;gap:4px">
+<button onClick="{{ decMgr }}" style="width:44px;height:44px;border:1px solid #b9b4ab;background:#ffffff;color:#1f2730;border-radius:4px;font-size:18px;cursor:pointer;font-family:'IBM Plex Mono',monospace">–</button>
+<span style="font-family:'IBM Plex Mono',monospace;font-size:16px;min-width:28px;text-align:center">{{ mgr }}</span>
+<button onClick="{{ incMgr }}" style="width:44px;height:44px;border:1px solid #b9b4ab;background:#ffffff;color:#1f2730;border-radius:4px;font-size:18px;cursor:pointer;font-family:'IBM Plex Mono',monospace">+</button>
+</div>
+</div>
+<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #cfcbc3">
+<span style="font-size:15px;font-weight:600">Technicians</span>
+<div style="display:flex;align-items:center;gap:4px">
+<button onClick="{{ decTech }}" style="width:44px;height:44px;border:1px solid #b9b4ab;background:#ffffff;color:#1f2730;border-radius:4px;font-size:18px;cursor:pointer;font-family:'IBM Plex Mono',monospace">–</button>
+<span style="font-family:'IBM Plex Mono',monospace;font-size:16px;min-width:28px;text-align:center">{{ tech }}</span>
+<button onClick="{{ incTech }}" style="width:44px;height:44px;border:1px solid #b9b4ab;background:#ffffff;color:#1f2730;border-radius:4px;font-size:18px;cursor:pointer;font-family:'IBM Plex Mono',monospace">+</button>
+</div>
+</div>
+<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding-top:18px;margin-top:auto">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:0.1em;text-transform:uppercase;color:#4d5660">Per month</span>
+<span style="font-family:'Chivo',system-ui,sans-serif;font-weight:900;font-size:38px;line-height:1;letter-spacing:-0.03em">{{ total }}</span>
+</div>
+</div>
+</div>
+<p style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#4d5660;margin:16px 0 0">Placeholder pricing. No setup fee, no contract.</p>
+</div>
+</section>
+
+<section id="contact" style="background:#0e1217">
+<div style="max-width:1240px;margin:0 auto;padding:clamp(44px,5vw,80px) clamp(18px,4vw,44px);display:flex;flex-wrap:wrap;gap:clamp(28px,4vw,60px);align-items:flex-start">
+<div style="flex:1 1 300px;min-width:min(100%,280px)">
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:0.14em;color:#efa831;text-transform:uppercase;margin-bottom:14px">05 / Get in touch</div>
+<h2 style="font-family:'Chivo',system-ui,sans-serif;font-weight:900;font-size:clamp(30px,3.8vw,50px);line-height:1.02;letter-spacing:-0.03em;margin:0 0 18px">Fifteen minutes,<br>no slide deck.</h2>
+<p style="font-size:16px;line-height:1.55;color:#b8bec5;max-width:34ch;margin:0">We set firms up one at a time, by hand. Same working day reply.</p>
+</div>
+
+<form style="flex:1 1 420px;min-width:min(100%,280px);background:#171c22;border:1px solid #33393e;border-radius:5px;padding:clamp(20px,2.5vw,30px);display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;flex-wrap:wrap;gap:16px">
+<label style="flex:1 1 180px;display:flex;flex-direction:column;gap:6px">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#9299a1">Your name</span>
+<input type="text" placeholder="Ray Harrow" style="font-family:'IBM Plex Sans',sans-serif;font-size:15px;color:#f3f5f8;background:transparent;border:0;border-bottom:1px solid #4a525a;padding:9px 0;outline:none">
+</label>
+<label style="flex:1 1 180px;display:flex;flex-direction:column;gap:6px">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#9299a1">Business</span>
+<input type="text" placeholder="Harrow Brothers Electrical" style="font-family:'IBM Plex Sans',sans-serif;font-size:15px;color:#f3f5f8;background:transparent;border:0;border-bottom:1px solid #4a525a;padding:9px 0;outline:none">
+</label>
+</div>
+<div style="display:flex;flex-wrap:wrap;gap:16px">
+<label style="flex:1 1 180px;display:flex;flex-direction:column;gap:6px">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#9299a1">Email</span>
+<input type="email" placeholder="ray@harrowbros.co.uk" style="font-family:'IBM Plex Sans',sans-serif;font-size:15px;color:#f3f5f8;background:transparent;border:0;border-bottom:1px solid #4a525a;padding:9px 0;outline:none">
+</label>
+<label style="flex:1 1 180px;display:flex;flex-direction:column;gap:6px">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#9299a1">Phone (optional)</span>
+<input type="tel" placeholder="07700 900123" style="font-family:'IBM Plex Sans',sans-serif;font-size:15px;color:#f3f5f8;background:transparent;border:0;border-bottom:1px solid #4a525a;padding:9px 0;outline:none">
+</label>
+</div>
+<label style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#9299a1">How many on the tools</span>
+<select value="{{ teamSize }}" onChange="{{ onTeamSize }}" style="font-family:'IBM Plex Sans',sans-serif;font-size:15px;color:#f3f5f8;background:#171c22;border:0;border-bottom:1px solid #4a525a;padding:9px 0;outline:none">
+<option>Just me</option>
+<option>2–3 people</option>
+<option>4–10 people</option>
+<option>11–20 people</option>
+<option>More than 20</option>
+</select>
+</label>
+<label style="display:flex;flex-direction:column;gap:6px">
+<span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#9299a1">What's driving you mad</span>
+<textarea rows="3" placeholder="Chasing job sheets, certs going missing…" style="font-family:'IBM Plex Sans',sans-serif;font-size:15px;line-height:1.5;color:#f3f5f8;background:#0e1217;border:1px solid #33393e;border-radius:3px;padding:10px 12px;outline:none;resize:vertical"></textarea>
+</label>
+<button type="button" style="align-self:flex-start;background:#ea9602;color:#261704;font-family:'IBM Plex Sans',sans-serif;font-weight:600;font-size:15px;padding:14px 24px;border:0;border-radius:5px;cursor:pointer">Ask us to get in touch</button>
+</form>
+</div>
+</section>
+
+<footer style="background:#0e1217;border-top:1px solid #33393e">
+<div style="max-width:1240px;margin:0 auto;padding:24px clamp(18px,4vw,44px);display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between">
+<div style="display:flex;align-items:center;gap:10px">
+<div style="width:20px;height:20px;background:#ea9602"></div>
+<span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#9299a1">© 2026 TradesDatabase</span>
+</div>
+<div style="display:flex;flex-wrap:wrap;gap:20px;font-family:'IBM Plex Mono',monospace;font-size:12px">
+<a href="#status" style="color:#9299a1">Status</a>
+<a href="#terms" style="color:#9299a1">Terms</a>
+<a href="#privacy" style="color:#9299a1">Privacy</a>
+</div>
+</div>
+</footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;currency&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;£&quot;,&quot;$&quot;,&quot;€&quot;],&quot;default&quot;:&quot;£&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Pricing&quot;},&quot;managerPrice&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:80,&quot;min&quot;:0,&quot;max&quot;:500,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Pricing&quot;},&quot;technicianPrice&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:50,&quot;min&quot;:0,&quot;max&quot;:500,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Pricing&quot;}}">
+class Component extends DCLogic {
+  state = { mgr: 1, tech: 4, teamSize: '4–10 people' };
+  renderVals() {
+    const cur = this.props.currency ?? '£';
+    const mp = Number(this.props.managerPrice ?? 80);
+    const tp = Number(this.props.technicianPrice ?? 50);
+    const { mgr, tech } = this.state;
+    const fmt = n => cur + n.toLocaleString('en-GB');
+    const clamp = (n, lo) => Math.max(lo, Math.min(60, n));
+    return {
+      teamSize: this.state.teamSize,
+      onTeamSize: e => { const v = e.target.value; this.setState({ teamSize: v }); },
+      mgrPrice: fmt(mp), techPrice: fmt(tp),
+      mgr, tech,
+      total: fmt(mgr * mp + tech * tp),
+      incMgr: () => this.setState(s => ({ mgr: clamp(s.mgr + 1, 1) })),
+      decMgr: () => this.setState(s => ({ mgr: clamp(s.mgr - 1, 1) })),
+      incTech: () => this.setState(s => ({ tech: clamp(s.tech + 1, 0) })),
+      decTech: () => this.setState(s => ({ tech: clamp(s.tech - 1, 0) })),
+    };
+  }
+}
+</script>
+</body>
+</html>

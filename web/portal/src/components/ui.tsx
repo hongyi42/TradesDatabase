@@ -23,11 +23,14 @@ export const S = {
   } as CSSProperties,
   mono: { fontFamily: 'var(--mono)', fontVariantNumeric: 'tabular-nums' } as CSSProperties,
   // Headings and sub-lines sit directly on the shell, so they take shell ink.
+  // Display face, not the UI face. Everything used to be Inter Tight 600,
+  // which is what flattened the whole app -- see the type note in tokens.css.
   h1: {
     margin: 0,
-    fontSize: 26,
-    fontWeight: 600,
-    letterSpacing: '-0.02em',
+    fontFamily: 'var(--display)',
+    fontSize: 27,
+    fontWeight: 700,
+    letterSpacing: '-0.025em',
     color: 'var(--shell-ink)',
   } as CSSProperties,
   sub: { margin: '6px 0 0', fontSize: 14, color: 'var(--shell-ink-2)' } as CSSProperties,
@@ -267,7 +270,7 @@ export function SectionHeading({ title, right }: { title: string; right?: ReactN
         margin: '30px 0 12px',
       }}
     >
-      <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: 'var(--shell-ink)' }}>{title}</h2>
+      <h2 style={{ margin: 0, fontFamily: 'var(--display)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.015em', color: 'var(--shell-ink)' }}>{title}</h2>
       {right}
     </div>
   );

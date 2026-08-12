@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;600;700;900&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Courier+Prime:wght@400;700&family=Anton&display=swap" rel="stylesheet">
+<script src="./image-slot.js"></script>
+<style>
+body{margin:0;background:#e8e6e1;font-family:'IBM Plex Sans',system-ui,sans-serif}
+a{color:#1a1a1a}
+.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(0,0,0,.08);scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 20px}
+.dv-tid{font:600 10px 'IBM Plex Mono',monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 13px/1.2 'IBM Plex Sans',sans-serif;color:#1a1a1a}
+.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px 'IBM Plex Mono',monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 11.5px/1.3 'IBM Plex Sans',sans-serif;color:rgba(0,0,0,.6);max-width:880px}
+.dv-card{max-width:100%;border:1px solid rgba(0,0,0,.12);box-shadow:0 2px 10px rgba(0,0,0,.08);overflow:hidden}
+.dv-opt:target .dv-oid{background:#ea9602;color:#261704}
+.dv-next{margin:22px 0 0;font:12px/1.6 'IBM Plex Sans',sans-serif;color:rgba(0,0,0,.55)}
+</style>
+</helmet>
+
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Four directions — each one commits to something the current page doesn't</span></div>
+<div class="dv-opts">
+
+<div class="dv-opt" id="1a">
+<div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>The job sheet — the page is the paperwork. Cream stock, ruled rows, typewriter values, a rubber stamp. Dark only where it earns it.</div>
+<div class="dv-card" style="width:880px;background:#efe9dc">
+<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:10px 24px;background:#1c1a17;color:#efe9dc;font-family:'Courier Prime',monospace;font-size:12px;letter-spacing:0.08em">
+<span>TRADESDATABASE</span>
+<span style="display:flex;gap:22px"><span>PRODUCT</span><span>PRICING</span><span>CONTACT</span><span style="color:#e0a020">SIGN IN</span></span>
+</div>
+<div style="padding:34px 40px 26px;background-image:repeating-linear-gradient(#efe9dc 0 31px,#ddd5c4 31px 32px)">
+<div style="display:flex;justify-content:space-between;font-family:'Courier Prime',monospace;font-size:12px;color:#6b6353;letter-spacing:0.06em;margin-bottom:22px">
+<span>JOB SHEET No. 4471</span><span>THU 06 AUG · 14:52</span>
+</div>
+<h1 style="font-family:'Chivo',sans-serif;font-weight:900;font-size:60px;line-height:1.06;letter-spacing:-0.035em;color:#1c1a17;margin:0 0 20px;max-width:15ch">They already text you. Now it's a record.</h1>
+<div style="display:flex;gap:34px;align-items:flex-end">
+<div style="flex:1">
+<div style="display:flex;gap:14px;padding:6px 0 5px;border-bottom:1px solid #b9ae97"><span style="font-family:'Courier Prime',monospace;font-size:12px;color:#6b6353;width:82px;letter-spacing:0.06em">CUSTOMER</span><span style="font-family:'Courier Prime',monospace;font-size:15px;color:#1c1a17">M. Okonjo, 14 Bell Lane N4</span></div>
+<div style="display:flex;gap:14px;padding:6px 0 5px;border-bottom:1px solid #b9ae97"><span style="font-family:'Courier Prime',monospace;font-size:12px;color:#6b6353;width:82px;letter-spacing:0.06em">WORK</span><span style="font-family:'Courier Prime',monospace;font-size:15px;color:#1c1a17">Consumer unit replacement</span></div>
+<div style="display:flex;gap:14px;padding:6px 0 5px;border-bottom:1px solid #b9ae97"><span style="font-family:'Courier Prime',monospace;font-size:12px;color:#6b6353;width:82px;letter-spacing:0.06em">SOURCE</span><span style="font-family:'Courier Prime',monospace;font-size:15px;color:#1c1a17">Telegram — Pete, 14:52</span></div>
+</div>
+<div style="flex:0 0 168px;transform:rotate(-7deg);border:3px solid #b4432c;color:#b4432c;padding:8px 12px;text-align:center;font-family:'Courier Prime',monospace;font-weight:700;font-size:17px;letter-spacing:0.1em;margin-bottom:14px">FILED<div style="font-size:11px;letter-spacing:0.14em;font-weight:400">NO APP · NO LOGIN</div></div>
+</div>
+</div>
+<div style="display:flex;align-items:center;justify-content:space-between;gap:20px;padding:20px 40px;background:#1c1a17">
+<div style="font-family:'Chivo',sans-serif;font-weight:700;font-size:22px;color:#efe9dc;letter-spacing:-0.02em">Fifteen minutes, no slide deck.</div>
+<span style="background:#e0a020;color:#241802;font-weight:600;font-size:14px;padding:12px 20px">Book a walkthrough</span>
+</div>
+</div>
+</div>
+
+<div class="dv-opt" id="1b">
+<div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Van livery — flat blocks, signwriter type, a diagonal cut. Reads like the side of a vehicle, not a website.</div>
+<div class="dv-card" style="width:880px;background:#141414">
+<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 24px;background:#141414;color:#fff;font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:0.12em">
+<span style="font-family:'Anton',sans-serif;font-size:20px;letter-spacing:0.02em">TRADESDATABASE</span>
+<span style="display:flex;gap:20px"><span>PRODUCT</span><span>PRICING</span><span>CONTACT</span><span style="color:#f5b301">SIGN IN</span></span>
+</div>
+<div style="position:relative;background:#f5b301;padding:44px 40px 60px;clip-path:polygon(0 0,100% 0,100% 88%,0 100%)">
+<h1 style="font-family:'Anton',sans-serif;font-size:78px;line-height:0.94;letter-spacing:0.005em;color:#141414;margin:0 0 18px;max-width:13ch;text-transform:uppercase">They already text you</h1>
+<p style="font-family:'IBM Plex Sans',sans-serif;font-size:19px;line-height:1.4;color:#241802;max-width:36ch;margin:0 0 24px;font-weight:500">We turn it into the record. One bot each, inside Telegram. Nobody installs anything.</p>
+<span style="display:inline-block;background:#141414;color:#f5b301;font-weight:600;font-size:15px;padding:14px 24px">Book a walkthrough</span>
+</div>
+<div style="background:#141414;color:#f5b301;font-family:'Anton',sans-serif;font-size:19px;letter-spacing:0.06em;padding:12px 0;overflow:hidden;white-space:nowrap;text-transform:uppercase">&nbsp;NO NEW APP&nbsp; ★ &nbsp;NO LOGINS&nbsp; ★ &nbsp;NO TRAINING&nbsp; ★ &nbsp;NO PAPERWORK ON SUNDAY&nbsp; ★ &nbsp;NO NEW APP&nbsp; ★ &nbsp;NO LOGINS&nbsp; ★</div>
+<div style="display:flex">
+<div style="flex:1 1 50%;position:relative;height:230px"><image-slot id="dir-1b-photo" shape="rect" fit="cover" placeholder="Van, side on"></image-slot></div>
+<div style="flex:1 1 50%;padding:26px 30px;background:#141414;color:#fff">
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.14em;color:#f5b301;margin-bottom:12px">ELECTRICAL · PLUMBING · ROOFING · HVAC</div>
+<div style="font-family:'Anton',sans-serif;font-size:34px;line-height:1;text-transform:uppercase;margin-bottom:10px">It's all in the group chat somewhere</div>
+<p style="font-size:14.5px;line-height:1.5;color:#b5b5b5;margin:0">Not any more.</p>
+</div>
+</div>
+</div>
+</div>
+
+<div class="dv-opt" id="1c">
+<div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>The thread — the page is a Telegram conversation. It explains itself in the medium it lives in, and the CTA is a message box.</div>
+<div class="dv-card" style="width:880px;background:#12161b">
+<div style="display:flex;align-items:center;gap:12px;padding:12px 22px;background:#1b2028;border-bottom:1px solid #2b323b">
+<div style="width:34px;height:34px;border-radius:50%;background:#ea9602;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:13px;color:#261704">TD</div>
+<div style="flex:1"><div style="font-size:15px;font-weight:600;color:#f3f5f8">TradesDatabase</div><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7f8791">bot · online</div></div>
+<div style="display:flex;gap:18px;font-size:13px;color:#9aa2ab"><span>Product</span><span>Pricing</span><span>Contact</span><span style="color:#f3f5f8">Sign in</span></div>
+</div>
+<div style="padding:26px 22px 0;display:flex;flex-direction:column;gap:10px">
+<div style="align-self:flex-start;max-width:74%;background:#1f262e;border-radius:14px 14px 14px 4px;padding:16px 18px">
+<div style="font-family:'Chivo',sans-serif;font-weight:900;font-size:34px;line-height:1.08;letter-spacing:-0.03em;color:#f3f5f8">They already text you.<br>Now it's a record.</div>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#7f8791;margin-top:10px">09:41</div>
+</div>
+<div style="align-self:flex-start;max-width:74%;background:#1f262e;border-radius:14px;padding:14px 18px;color:#c3cad2;font-size:15px;line-height:1.5">Every person gets their own bot. They text it the way they text you.</div>
+<div style="align-self:flex-end;max-width:70%;background:#2b6b57;border-radius:14px 14px 4px 14px;padding:12px 16px;color:#eaf3ee;font-size:15px;line-height:1.5">Done at 14 Bell Lane. Consumer unit replaced, cert attached.</div>
+<div style="align-self:flex-start;max-width:78%;background:#1f262e;border-radius:14px;padding:14px 16px">
+<div style="border-left:3px solid #ea9602;padding-left:12px">
+<div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:0.1em;color:#ea9602;margin-bottom:6px">JOB-4471 FILED</div>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:#c3cad2;line-height:1.7">Customer &nbsp;M. Okonjo, 14 Bell Lane<br>Cert &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;EICR_14BellLane.pdf</div>
+</div>
+</div>
+<div style="align-self:flex-start;max-width:74%;background:#1f262e;border-radius:14px;padding:14px 18px;color:#c3cad2;font-size:15px;line-height:1.5">£50 a technician, £80 a manager. Add or drop a seat whenever.</div>
+<div style="align-self:flex-start;display:flex;gap:8px;margin-bottom:6px">
+<span style="background:#1f262e;border:1px solid #2b323b;color:#ea9602;font-size:13.5px;padding:9px 14px;border-radius:8px">See the pricing</span>
+<span style="background:#1f262e;border:1px solid #2b323b;color:#ea9602;font-size:13.5px;padding:9px 14px;border-radius:8px">Watch the 90 sec film</span>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;padding:14px 22px;background:#1b2028;border-top:1px solid #2b323b;margin-top:18px">
+<span style="flex:1;color:#7f8791;font-size:15px">Tell us what's driving you mad…</span>
+<span style="background:#ea9602;color:#261704;font-weight:600;font-size:14px;padding:11px 18px;border-radius:8px">Send</span>
+</div>
+</div>
+</div>
+
+<div class="dv-opt" id="1d">
+<div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>Night shift — dark, but committed. Photograph does the work, type sits on it, no cards anywhere. One amber mark per screen.</div>
+<div class="dv-card" style="width:880px;background:#0b0d10">
+<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 30px;color:#f3f5f8;font-size:13.5px">
+<span style="font-family:'Chivo',sans-serif;font-weight:700;font-size:18px;letter-spacing:-0.02em">TradesDatabase</span>
+<span style="display:flex;gap:22px;color:#8f979f"><span>Product</span><span>Pricing</span><span>Contact</span><span style="color:#f3f5f8">Sign in</span></span>
+</div>
+<div style="position:relative;height:400px">
+<image-slot id="dir-1d-photo" shape="rect" fit="cover" placeholder="Full-bleed: sparky on site, phone in hand"></image-slot>
+<div style="position:absolute;inset:0;pointer-events:none;background:linear-gradient(105deg,rgba(11,13,16,0.92) 34%,rgba(11,13,16,0.1) 76%)"></div>
+<div style="position:absolute;left:30px;bottom:34px;right:40%;pointer-events:none">
+<div style="width:34px;height:3px;background:#ea9602;margin-bottom:18px"></div>
+<h1 style="font-family:'Chivo',sans-serif;font-weight:900;font-size:52px;line-height:1.04;letter-spacing:-0.035em;color:#fff;margin:0 0 14px">They already text you. Now it's a record.</h1>
+<p style="font-size:16.5px;line-height:1.5;color:#c8ced4;margin:0;max-width:34ch">One bot each, inside Telegram. Nobody installs anything.</p>
+</div>
+</div>
+<div style="padding:34px 30px 30px;display:flex;gap:40px;align-items:flex-start;border-top:1px solid #232a31">
+<div style="flex:0 0 200px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.14em;color:#8f979f;padding-top:6px">01 — WHAT WE HEARD</div>
+<div style="flex:1">
+<div style="font-family:'Chivo',sans-serif;font-weight:600;font-size:29px;line-height:1.2;letter-spacing:-0.025em;color:#f3f5f8;padding-bottom:18px;border-bottom:1px solid #232a31">“It's all in the group chat somewhere.”</div>
+<div style="font-family:'Chivo',sans-serif;font-weight:600;font-size:29px;line-height:1.2;letter-spacing:-0.025em;color:#5d666f;padding:18px 0;border-bottom:1px solid #232a31">“They won't use another app.”</div>
+<div style="font-family:'Chivo',sans-serif;font-weight:600;font-size:29px;line-height:1.2;letter-spacing:-0.025em;color:#5d666f;padding:18px 0 0">“I do the paperwork on Sunday.”</div>
+</div>
+</div>
+</div>
+</div>
+
+</div>
+<p class="dv-next">Try next: "build out <a class="dv-oid" href="#1c">1c</a> as the full page" · "<a class="dv-oid" href="#1b">1b</a> but darker, less yellow" · "mix <a class="dv-oid" href="#1d">1d</a>'s hero with <a class="dv-oid" href="#1a">1a</a>'s job sheet"</p>
+</section>
+</x-dc>
+</body>
+</html>

@@ -152,7 +152,7 @@ export function DataExports() {
           >
             <div style={{ minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{o.title}</h2>
+                <h2 style={{ margin: 0, fontFamily: 'var(--display)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.015em' }}>{o.title}</h2>
                 {o.sensitive && <Pill tone="amber">Sensitive</Pill>}
               </div>
               <p style={{ margin: '7px 0 0', fontSize: 13.5, color: 'var(--ink-2)', maxWidth: '46em' }}>
@@ -173,7 +173,7 @@ export function DataExports() {
         ))}
       </div>
 
-      <h2 style={{ margin: '30px 0 12px', fontSize: 16, fontWeight: 600, color: 'var(--shell-ink)' }}>
+      <h2 style={{ margin: '30px 0 12px', fontFamily: 'var(--display)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.015em', color: 'var(--shell-ink)' }}>
         Past exports
       </h2>
 

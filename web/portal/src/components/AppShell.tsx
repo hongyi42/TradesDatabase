@@ -100,9 +100,10 @@ export function AppShell({
           <p
             style={{
               margin: '5px 0 0',
-              fontSize: 21,
-              fontWeight: 600,
-              letterSpacing: '-0.02em',
+              fontFamily: 'var(--display)',
+              fontSize: 22,
+              fontWeight: 700,
+              letterSpacing: '-0.03em',
               color: 'var(--shell-ink)',
             }}
           >

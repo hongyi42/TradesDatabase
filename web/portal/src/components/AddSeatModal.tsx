@@ -105,7 +105,7 @@ export function AddSeatModal({
           }}
         >
           <div>
-            <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Add a seat</h2>
+            <h2 style={{ margin: 0, fontFamily: 'var(--display)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.015em' }}>Add a seat</h2>
             <p style={{ margin: '4px 0 0', ...S.mono, fontSize: 11.5, color: 'var(--ink-5)' }}>
               Step {step} of 3 · {STEP_NAMES[step - 1]}
             </p>

@@ -68,7 +68,22 @@
   --danger-line: oklch(0.85 0.04 25);
   --suspended-bg: oklch(0.94 0.008 250);
 
-  /* Typography */
+  /* Typography
+     Three roles, not one. The handoff specified Inter Tight + JetBrains Mono,
+     and both stay — but everything was being set in Inter Tight at weight 600,
+     which is why the page read as flat and generic. Looking at what this
+     category actually ships: Jobber runs a custom display face at weight 900
+     over an Inter body; Linear runs Inter at 510 with tight tracking. The
+     common factor is DISPLAY/BODY CONTRAST, so a heavy display face is the
+     addition rather than a replacement of the workhorse.
+
+     --display  Archivo 700-900. Headlines, section titles, big figures.
+                A grotesque with enough weight to feel like van livery and
+                equipment plates rather than a settings screen.
+     --sans     Inter Tight. All UI and body copy — unchanged, it is genuinely
+                the right face at 13-15px.
+     --mono     JetBrains Mono. Machine-generated values — unchanged. */
+  --display: 'Archivo', 'Inter Tight', system-ui, sans-serif;
   --sans: 'Inter Tight', system-ui, sans-serif;
   --mono: 'JetBrains Mono', monospace;
 

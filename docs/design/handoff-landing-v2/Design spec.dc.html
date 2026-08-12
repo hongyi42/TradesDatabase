@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chivo:wght@600;700;900&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;padding:0;background:#0e1217;-webkit-font-smoothing:antialiased}
+a{color:#efa831;text-decoration:none}
+a:hover{color:#f3f5f8}
+</style>
+</helmet>
+<div style="background:#0e1217;color:#f3f5f8;font-family:'IBM Plex Sans',system-ui,sans-serif;min-height:100vh">
+<div style="max-width:900px;margin:0 auto;padding:clamp(32px,5vw,72px) clamp(18px,4vw,44px) 90px">
+
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;letter-spacing:0.14em;color:#efa831;text-transform:uppercase;margin-bottom:14px">Spec · landing page · 2026-08-11</div>
+<h1 style="font-family:'Chivo',system-ui,sans-serif;font-weight:900;font-size:clamp(34px,4.4vw,58px);line-height:1.02;letter-spacing:-0.03em;margin:0 0 22px">Dark shell,<br>paper records</h1>
+<p style="font-size:17px;line-height:1.6;color:#b8bec5;max-width:60ch;margin:0 0 40px">The page is dark because the work is: vans before light, lofts, plant rooms, a phone screen at 14:52. The only things that go light are the things that are records — the job sheet and the contact form. That split is the whole idea, and it's what stops it reading as a template.</p>
+
+<h2 style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:32px;margin:0 0 8px;letter-spacing:-0.03em;border-top:1px solid #33393e;padding-top:26px">Type</h2>
+<p style="font-size:15.5px;line-height:1.65;color:#b8bec5;max-width:64ch;margin:0 0 20px">Archivo and Inter Tight were correct and characterless. The replacement is a heavy grotesk over an engineered workhorse. Chivo carries weight without shouting, and reads at a glance on a phone in daylight — the earlier condensed signage face looked the part but was hard work to read.</p>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1px;background:#33393e;border:1px solid #33393e;margin-bottom:16px">
+<div style="background:#171c22;padding:22px">
+<div style="font-family:'Chivo',system-ui,sans-serif;font-weight:900;font-size:44px;line-height:1;letter-spacing:-0.03em">Chivo</div>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#60bfc4;margin-top:10px">Display · 600 / 700 / 900</div>
+<p style="font-size:14px;line-height:1.6;color:#b8bec5;margin:8px 0 0">A sturdy grotesk with weight and slightly squared terminals. Headlines, section heads, prices, quotes. Sentence case, tracking −0.02 to −0.035em, leading 1.0–1.2.</p>
+</div>
+<div style="background:#171c22;padding:22px">
+<div style="font-size:40px;line-height:1.1;font-weight:500">IBM Plex Sans</div>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#60bfc4;margin-top:10px">Body · 400 / 500 / 600</div>
+<p style="font-size:14px;line-height:1.6;color:#b8bec5;margin:8px 0 0">Engineered, slightly mechanical, holds up small. All running copy, form fields, list items.</p>
+</div>
+<div style="background:#171c22;padding:22px">
+<div style="font-family:'IBM Plex Mono',monospace;font-size:32px;line-height:1.15">IBM Plex Mono</div>
+<div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#60bfc4;margin-top:10px">Data · 400 / 500</div>
+<p style="font-size:14px;line-height:1.6;color:#b8bec5;margin:8px 0 0">Machine values and margin notes: job refs, bot handles, timestamps, section numbers, field labels. Never used for sentences that a person wrote to another person.</p>
+</div>
+</div>
+<p style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.7;color:#9299a1;margin:0 0 16px">All three are SIL OFL and self-hostable. Ship woff2 subsets from your own origin — the CDN links in these prototypes are for preview only and must not survive into the build. Weights needed: Chivo 600/700/900, Plex Sans 400/500/600, Plex Mono 400/500. Roughly 180 KB total subset to Latin.</p>
+<div style="border:1px solid #33393e;overflow-x:auto;margin-bottom:44px">
+<div style="display:grid;grid-template-columns:1.1fr 1.4fr 1fr 1fr;gap:1px;background:#33393e;min-width:560px">
+<div style="background:#21272d;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;color:#f3f5f8;text-transform:uppercase">Role</div>
+<div style="background:#21272d;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;color:#f3f5f8;text-transform:uppercase">Size (mobile → desktop)</div>
+<div style="background:#21272d;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;color:#f3f5f8;text-transform:uppercase">Face</div>
+<div style="background:#21272d;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;color:#f3f5f8;text-transform:uppercase">Line height</div>
+<div style="background:#171c22;padding:11px 14px;font-size:14px">Hero</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">clamp(38, 5.2vw, 74)</div><div style="background:#171c22;padding:11px 14px;font-size:14px;color:#b8bec5">Chivo 900</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">1.0</div>
+<div style="background:#171c22;padding:11px 14px;font-size:14px">Section head</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">clamp(27, 3.1vw, 44)</div><div style="background:#171c22;padding:11px 14px;font-size:14px;color:#b8bec5">Chivo 700</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">1.0</div>
+<div style="background:#171c22;padding:11px 14px;font-size:14px">Quote / price</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">clamp(22, 2.3vw, 30) · 46</div><div style="background:#171c22;padding:11px 14px;font-size:14px;color:#b8bec5">Chivo 600/900</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">1.2 / 1.0</div>
+<div style="background:#171c22;padding:11px 14px;font-size:14px">Sub-head</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">21–23</div><div style="background:#171c22;padding:11px 14px;font-size:14px;color:#b8bec5">Chivo 700</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">1.02</div>
+<div style="background:#171c22;padding:11px 14px;font-size:14px">Lead paragraph</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">16 → 19</div><div style="background:#171c22;padding:11px 14px;font-size:14px;color:#b8bec5">Plex Sans 400</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">1.55</div>
+<div style="background:#171c22;padding:11px 14px;font-size:14px">Body</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">14.5 → 15.5</div><div style="background:#171c22;padding:11px 14px;font-size:14px;color:#b8bec5">Plex Sans 400</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">1.6</div>
+<div style="background:#171c22;padding:11px 14px;font-size:14px">Label / meta</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">10.5–12.5, tracking 0.1–0.14em</div><div style="background:#171c22;padding:11px 14px;font-size:14px;color:#b8bec5">Plex Mono 400/500</div><div style="background:#171c22;padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:#b8bec5">1.5</div>
+</div>
+</div>
+
+<h2 style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:32px;margin:0 0 8px;letter-spacing:-0.03em;border-top:1px solid #33393e;padding-top:26px">Colour</h2>
+<p style="font-size:15.5px;line-height:1.65;color:#b8bec5;max-width:64ch;margin:0 0 20px">Same hue-250 steel and same amber as the app, pulled darker so the landing reads as its own place. Ratios below are measured against the surface each colour is actually used on, not estimated.</p>
+<div style="border:1px solid #33393e;overflow-x:auto;margin-bottom:14px">
+<div style="display:grid;grid-template-columns:56px 1.1fr 1.5fr 1fr 1.5fr;gap:1px;background:#33393e;min-width:640px">
+<div style="background:#21272d;padding:10px 12px"></div>
+<div style="background:#21272d;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase">Token</div>
+<div style="background:#21272d;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase">oklch</div>
+<div style="background:#21272d;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase">hex</div>
+<div style="background:#21272d;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase">Measured</div>
+
+<div style="background:#0e1217"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--bg</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.18 0.012 250</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#0e1217</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#9299a1">page base</div>
+
+<div style="background:#171c22"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--surface</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.225 0.014 250</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#171c22</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#9299a1">alternate bands</div>
+
+<div style="background:#21272d"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--raised</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.27 0.014 250</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#21272d</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#9299a1">chat bubbles</div>
+
+<div style="background:#33393e"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--line</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.34 0.012 250</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#33393e</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#9299a1">1.6:1 — non-text only</div>
+
+<div style="background:#f3f5f8"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--text</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.97 0.004 250</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#f3f5f8</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#60bfc4">17.2 : 1</div>
+
+<div style="background:#b8bec5"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--text-2</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.80 0.012 250</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#b8bec5</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#60bfc4">10.0 : 1</div>
+
+<div style="background:#9299a1"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--text-3</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.68 0.014 250</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#9299a1</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#60bfc4">6.5 : 1 · 5.2 on raised</div>
+
+<div style="background:#efa831"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--amber</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.78 0.15 75</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#efa831</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#60bfc4">9.2 : 1 — text on dark only</div>
+
+<div style="background:#ea9602"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--amber-fill</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.74 0.16 70</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#ea9602</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#60bfc4">7.3 : 1 with --on-amber</div>
+
+<div style="background:#261704"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--on-amber</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.22 0.04 70</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#261704</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#9299a1">button label</div>
+
+<div style="background:#60bfc4"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--teal</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.75 0.09 200</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#60bfc4</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#60bfc4">8.7 : 1 — settled / done</div>
+
+<div style="background:#f1eee9"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--paper</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.95 0.008 85</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#f1eee9</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#9299a1">record sections</div>
+
+<div style="background:#1f2730"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--paper-ink</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.27 0.02 250</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#1f2730</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#60bfc4">13.0 : 1 on paper</div>
+
+<div style="background:#4d5660"></div><div style="background:#171c22;padding:10px 12px;font-size:13.5px">--paper-ink-2</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">0.45 0.02 250</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#b8bec5">#4d5660</div><div style="background:#171c22;padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#60bfc4">6.5 : 1 on paper</div>
+</div>
+</div>
+<p style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.7;color:#9299a1;margin:0 0 8px">Measured with WCAG 2.1 relative luminance on the rendered sRGB values. Lowest text pair on the page is 5.2:1 (--text-3 on --raised); everything else clears 6:1. Nothing on the page relies on --line or --amber-fill for text contrast.</p>
+<p style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.7;color:#efa831;margin:0 0 44px">One rule to hold: amber never carries text on paper (2.1:1). On light surfaces amber is a fill or a 3px rule only, with --on-amber or --paper-ink sitting on it.</p>
+
+<h2 style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:32px;margin:0 0 8px;letter-spacing:-0.03em;border-top:1px solid #33393e;padding-top:26px">Imagery</h2>
+<p style="font-size:15.5px;line-height:1.65;color:#b8bec5;max-width:64ch;margin:0 0 18px">Four photographs, one half-day with a pilot firm. Shoot on a real job, available light, no releases-signing models and no white studio backdrops. What we want to see is workwear, weather, and a phone being used with one hand.</p>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1px;background:#33393e;border:1px solid #33393e;margin-bottom:16px">
+<div style="background:#171c22;padding:20px"><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#efa831;text-transform:uppercase;margin-bottom:8px">01 · hero, landscape</div><p style="font-size:14px;line-height:1.6;color:#b8bec5;margin:0">Sparky mid-job, phone in hand, consumer unit open behind. Shot from the side, he isn't performing for the camera.</p></div>
+<div style="background:#171c22;padding:20px"><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#efa831;text-transform:uppercase;margin-bottom:8px">02 · portrait</div><p style="font-size:14px;line-height:1.6;color:#b8bec5;margin:0">Van doors open at first light, kit going in. Establishes the hour these people start.</p></div>
+<div style="background:#171c22;padding:20px"><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#efa831;text-transform:uppercase;margin-bottom:8px">03 · detail</div><p style="font-size:14px;line-height:1.6;color:#b8bec5;margin:0">Hands and a scuffed phone screen. Close enough to read that the phone is not new.</p></div>
+<div style="background:#171c22;padding:20px"><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#efa831;text-transform:uppercase;margin-bottom:8px">04 · reserve</div><p style="font-size:14px;line-height:1.6;color:#b8bec5;margin:0">Kitchen table, laptop, 9pm. The moment the paperwork used to happen. Holds the contact section if we want it.</p></div>
+</div>
+<p style="font-size:15.5px;line-height:1.65;color:#b8bec5;max-width:64ch;margin:0 0 44px">Until then: the hatched amber plates in the prototype ship as-is. They are obviously placeholders, and an obvious placeholder is more honest than a stock photo of a smiling man in a clean hi-vis — this audience can spot that instantly, and it costs trust. Do not buy stock as an interim.</p>
+
+<h2 style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:32px;margin:0 0 8px;letter-spacing:-0.03em;border-top:1px solid #33393e;padding-top:26px">Layout &amp; mobile</h2>
+<div style="display:flex;flex-direction:column;gap:12px;margin-bottom:44px">
+<p style="font-size:15.5px;line-height:1.65;color:#b8bec5;max-width:64ch;margin:0">Every section is a numbered docket row: mono index, then a signage headline, then content. Rules are hairlines, corners are 4–6px. Nothing is centred except by accident — the page reads down the left edge like a form.</p>
+<p style="font-size:15.5px;line-height:1.65;color:#b8bec5;max-width:64ch;margin:0">The prototype is fluid rather than breakpoint-driven: type is clamped and columns are <span style="font-family:'IBM Plex Mono',monospace;font-size:13.5px;color:#f3f5f8">flex 1 1 [min]</span> pairs, so it reflows continuously from 360 to 1440 with no media queries. Drag the preview narrow to see the mobile layout. Two things to check in build: the nav collapses to logo + Sign in under about 520px, and the hero video sits above the fold on a phone — headline, one line of sub, then the film.</p>
+<p style="font-size:15.5px;line-height:1.65;color:#b8bec5;max-width:64ch;margin:0">Tap targets in the form and the seat steppers are 44px minimum. Radii stay square-ish (4–6px) — that was the right instinct in the original system, it just needed the type and the hairlines to carry it.</p>
+</div>
+
+<h2 style="font-family:'Chivo',system-ui,sans-serif;font-weight:700;font-size:32px;margin:0 0 8px;letter-spacing:-0.03em;border-top:1px solid #33393e;padding-top:26px">Flags</h2>
+<div style="display:flex;flex-direction:column;gap:1px;background:#33393e;border:1px solid #33393e">
+<div style="background:#171c22;padding:18px 20px"><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#efa831;text-transform:uppercase;margin-bottom:7px">Currency</div><p style="font-size:14.5px;line-height:1.6;color:#b8bec5;margin:0">The prototype shows £ — a UK owner reading $80 per person will assume this is an American product and price it wrong in his head. Prices are a tweak on the page if you need to switch back.</p></div>
+<div style="background:#171c22;padding:18px 20px"><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#efa831;text-transform:uppercase;margin-bottom:7px">Fonts</div><p style="font-size:14.5px;line-height:1.6;color:#b8bec5;margin:0">Preview loads them from Google. Self-host woff2 before this goes anywhere near the CSP.</p></div>
+<div style="background:#171c22;padding:18px 20px"><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#efa831;text-transform:uppercase;margin-bottom:7px">Amber's second job</div><p style="font-size:14.5px;line-height:1.6;color:#b8bec5;margin:0">In the app amber means attention required. On the landing it is the brand. Anyone crossing from one to the other twice a day will feel the collision — worth deciding whether the app keeps amber for alerts or moves to teal.</p></div>
+<div style="background:#171c22;padding:18px 20px"><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#efa831;text-transform:uppercase;margin-bottom:7px">No social proof</div><p style="font-size:14.5px;line-height:1.6;color:#b8bec5;margin:0">Nothing faked. The three lines under the contact heading do the reassuring instead, and they say two pilot firms out loud.</p></div>
+<div style="background:#171c22;padding:18px 20px"><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;color:#efa831;text-transform:uppercase;margin-bottom:7px">Copy still open</div><p style="font-size:14.5px;line-height:1.6;color:#b8bec5;margin:0">“They already text you. Now it's a record.” is the four-second version. The quotes in section 01 are your validated pains, verbatim — the surrounding lines are mine and should be checked against what the firms actually said.</p></div>
+</div>
+
+</div>
+</div>
+</x-dc>
+</body>
+</html>

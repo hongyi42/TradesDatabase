@@ -64,7 +64,7 @@ export function ConfirmDialog({
           padding: 24,
         }}
       >
-        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{title}</h2>
+        <h2 style={{ margin: 0, fontFamily: 'var(--display)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.015em' }}>{title}</h2>
         <div style={{ marginTop: 10, fontSize: 13.5, lineHeight: 1.6, color: 'var(--ink-2)' }}>
           {children}
         </div>

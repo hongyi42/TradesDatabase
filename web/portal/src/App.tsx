@@ -60,11 +60,9 @@ export function App() {
   }
 
   if (screen === 'landing') {
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-        <Landing onSignIn={() => setScreen('login')} />
-      </div>
-    );
+    // No wrapper: the landing owns its own background and full-height layout,
+    // and an outer flex column would fight its sticky header.
+    return <Landing onSignIn={() => setScreen('login')} />;
   }
 
   if (screen === 'login') {

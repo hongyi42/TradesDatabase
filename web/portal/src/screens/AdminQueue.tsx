@@ -15,9 +15,10 @@ function Metric({ label, value, danger }: { label: string; value: string; danger
       <p
         style={{
           margin: '8px 0 0',
-          fontSize: 27,
-          fontWeight: 600,
-          letterSpacing: '-0.02em',
+          fontFamily: 'var(--display)',
+          fontSize: 28,
+          fontWeight: 700,
+          letterSpacing: '-0.03em',
           color: danger ? 'var(--danger)' : 'var(--ink)',
         }}
       >

@@ -27,7 +27,7 @@ export function SignIn({ onContinue }: { onContinue: () => void }) {
           <Logo />
         </div>
 
-        <h2 style={{ margin: 0, fontSize: 30, fontWeight: 600, letterSpacing: '-0.02em' }}>Sign in</h2>
+        <h2 style={{ margin: 0, fontFamily: 'var(--display)', fontSize: 32, fontWeight: 800, letterSpacing: '-0.03em' }}>Sign in</h2>
         <p style={{ margin: '10px 0 0', fontSize: 15, color: 'var(--ink-2)', maxWidth: 420 }}>
           Account owners and billing admins only. Field staff use the bot.
         </p>

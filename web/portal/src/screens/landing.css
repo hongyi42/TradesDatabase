@@ -1,0 +1,1122 @@
+/* Landing page — "dark shell, records on paper"
+   Implements docs/design/handoff-landing-v2/. Every value here is transcribed
+   from that bundle's token table; oklch is the authoring form, matching the
+   rest of the repo, and the hexes in the handoff are sRGB conveniences.
+
+   WHY THESE TOKENS ARE SCOPED, NOT IN :root
+   The landing's palette collides by NAME with the app's — --bg, --surface,
+   --line, --text, --amber and --teal all exist in tokens.css with completely
+   different values, because the app is white cards on a slate shell and this
+   page is a dark marketing page with two paper bands. The signed-in app is
+   approved and shipped, so its tokens must not move. Declaring the landing's
+   set on `.landing` shadows them for this subtree only; nothing outside the
+   landing sees them, and the design's own names survive into the code so the
+   handoff can be read against this file line for line.
+
+   Amber is the brand here and teal marks the settled/healthy states, same as
+   the app. There is no green anywhere, by design. */
+
+.landing {
+  /* Dark side */
+  --bg: oklch(0.18 0.012 250); /* #0e1217 page base */
+  --surface: oklch(0.225 0.014 250); /* #171c22 bands, cards, form */
+  --raised: oklch(0.27 0.014 250); /* #21272d raised fills */
+  --line: oklch(0.34 0.012 250); /* #33393e hairlines — 1.6:1, NON-TEXT ONLY */
+  --text: oklch(0.97 0.004 250); /* 17.2:1 on --bg */
+  --text-2: oklch(0.8 0.012 250); /* 10.0:1 */
+  --text-3: oklch(0.68 0.014 250); /* 6.5:1 on --bg, 5.2:1 on --raised */
+
+  /* Brand. Two ambers on purpose: --amber is the only one that may carry text
+     (9.2:1 on --bg), --amber-fill is for fills with --on-amber on top (7.3:1).
+     HARD RULE from the handoff: amber never carries text on paper — #ea9602 on
+     #f1eee9 is 2.05:1. On the paper bands amber is a fill or a 3px rule only. */
+  --amber: oklch(0.78 0.15 75);
+  --amber-fill: oklch(0.74 0.16 70);
+  --amber-hover: oklch(0.78 0.16 70); /* the spec's "lighten ~4% on hover" */
+  --on-amber: oklch(0.22 0.04 70);
+  --teal: oklch(0.75 0.09 200); /* 8.7:1 — settled/done marks, sub-labels */
+
+  /* Paper side */
+  --paper: oklch(0.95 0.008 85); /* #f1eee9 */
+  --paper-2: oklch(0.9 0.01 85); /* #e1ded7 card headers, calculator panel */
+  /* The handoff gives these four as hex only — no oklch authoring value was
+     specified, so they are transcribed literally rather than round-tripped. */
+  --paper-line: #cfcbc3;
+  --paper-line-2: #e6e3dd;
+  --chat-grey: #e8e5df;
+  --field-line: #4a525a;
+  --paper-ink: oklch(0.27 0.02 250); /* 13.0:1 on --paper */
+  --paper-ink-2: oklch(0.45 0.02 250); /* 6.5:1 */
+  --card: #ffffff;
+  --invert-line: #3a424c; /* rule inside the inverted manager card */
+
+  /* Type. The app runs Archivo / Inter Tight / JetBrains Mono; this page runs
+     the handoff's three. Rebinding the same three role variables inside the
+     landing means the shared `.mono` utility keeps working. */
+  --display: 'Chivo', system-ui, sans-serif;
+  --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* tokens.css paints every anchor --amber-deep, which is tuned for white and
+   drops to ~2.2:1 on this page's background. Every link here sets its own
+   colour, so the inherited rule is switched off at the root. */
+.landing a {
+  color: inherit;
+  text-decoration: none;
+  transition: color 120ms ease-out, border-color 120ms ease-out,
+    background-color 120ms ease-out;
+}
+
+.landing button {
+  transition: color 120ms ease-out, border-color 120ms ease-out,
+    background-color 120ms ease-out;
+}
+
+/* ---- shared layout ---------------------------------------------------- */
+
+/* Padding sits on the section and the max-width on the inner wrap, so the
+   content column is a true 1240px. (tokens.css sets box-sizing: border-box
+   globally; putting both on one element would eat 88px off the column.) */
+.ld-section {
+  padding: clamp(44px, 5vw, 80px) clamp(18px, 4vw, 44px);
+}
+
+.ld-wrap {
+  max-width: 1240px;
+  margin: 0 auto;
+}
+
+.ld-paper {
+  background: var(--paper);
+  color: var(--paper-ink);
+}
+
+.ld-dark {
+  background: var(--bg);
+}
+
+.ld-surface {
+  background: var(--surface);
+}
+
+/* Section marks — "01 /" … "05 /" running down the left edge like a form. */
+.ld-mark {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.ld-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: clamp(22px, 3vw, 36px);
+}
+
+.ld-h2 {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: clamp(27px, 3.1vw, 44px);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  margin: 0;
+}
+
+/* ---- gap grids -------------------------------------------------------- */
+
+/* The handoff draws grid dividers "as 1px gaps over a --line background, not
+   per-cell borders". Done literally, any row that does not fill leaves an
+   empty cell painted --line — a blank grey panel, which the handoff itself
+   flags as the failure to avoid. So the container stays --surface and each
+   cell casts a 1px --line box-shadow instead: identical hairlines (adjacent
+   shadows meet exactly in the 1px gap), but an unfilled cell reads as surface.
+   box-shadow takes no layout space, so the 1px padding gives the outer ring. */
+.ld-grid {
+  display: grid;
+  gap: 1px;
+  padding: 1px;
+  background: var(--surface);
+}
+
+.ld-grid > * {
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+/* DIVERGENCE, documented in docs/design/README.md: the handoff asks for
+   repeat(auto-fit, minmax(340px, 1fr)) here AND for "4 → 2 → 1, never 3".
+   auto-fit cannot honour both — at the 1240px column, minmax(340px,1fr)
+   resolves to exactly 3 tracks and orphans the fourth quote. Fixed counts are
+   the only way to get the stated behaviour, so this is the one grid on the
+   page driven by breakpoints. */
+.ld-quotes {
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 660px) {
+  .ld-quotes {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1180px) {
+  .ld-quotes {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.ld-quote-cell {
+  padding: clamp(22px, 3vw, 34px);
+}
+
+.ld-quote {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: clamp(22px, 2.3vw, 30px);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  margin: 0 0 14px;
+}
+
+.ld-attrib {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--teal);
+}
+
+/* ---- nav -------------------------------------------------------------- */
+
+.ld-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  /* oklch(0.18 0.012 250) at 90% — the blur needs the alpha, so it cannot be
+     var(--bg). */
+  background: oklch(0.18 0.012 250 / 0.9);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+
+.ld-header-inner {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 14px clamp(18px, 4vw, 44px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.ld-mark-td {
+  width: 26px;
+  height: 26px;
+  background: var(--amber-fill);
+  color: var(--on-amber);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.ld-wordmark {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 21px;
+  letter-spacing: -0.02em;
+}
+
+.ld-nav {
+  display: flex;
+  align-items: center;
+  gap: clamp(14px, 2vw, 28px);
+  font-size: 14px;
+}
+
+.ld-nav-link {
+  color: var(--text-2);
+}
+
+.ld-nav-link:hover {
+  color: var(--text);
+}
+
+/* The handoff: "Under ~520px the nav should collapse to wordmark + Sign in."
+   The three anchors are in-page jumps to sections the reader reaches by
+   scrolling anyway, so they are dropped rather than folded into a menu. */
+@media (max-width: 520px) {
+  .ld-nav-link {
+    display: none;
+  }
+}
+
+/* ---- buttons ---------------------------------------------------------- */
+
+.ld-btn {
+  display: inline-block;
+  font-family: var(--sans);
+  font-weight: 600;
+  font-size: 15px;
+  padding: 14px 24px;
+  border-radius: 5px;
+  border: 0;
+  cursor: pointer;
+}
+
+.ld-btn-primary {
+  background: var(--amber-fill);
+  color: var(--on-amber);
+}
+
+.ld-btn-primary:hover {
+  background: var(--amber-hover);
+}
+
+.ld-btn-outline {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.ld-btn-outline:hover {
+  border-color: var(--text-3);
+}
+
+/* `background: transparent` is load-bearing, not tidiness: this one is a
+   <button> rather than an <a>, so without it the UA paints `buttonface` — a
+   near-white fill that put --text at roughly 1:1 against its own background. */
+.ld-btn-sm {
+  padding: 7px 15px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: var(--sans);
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  display: inline-block;
+  cursor: pointer;
+}
+
+.ld-btn-sm:hover {
+  border-color: var(--text-3);
+  color: var(--text);
+}
+
+/* ---- hero ------------------------------------------------------------- */
+
+.ld-hero {
+  /* 64px blueprint grid: two 1px --surface lines over --bg. */
+  background-color: var(--bg);
+  background-image: linear-gradient(var(--surface) 1px, transparent 1px),
+    linear-gradient(90deg, var(--surface) 1px, transparent 1px);
+  background-size: 64px 64px;
+}
+
+.ld-hero-inner {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: clamp(40px, 6vw, 80px) clamp(18px, 4vw, 44px) clamp(40px, 5vw, 72px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: clamp(28px, 4vw, 56px);
+  align-items: center;
+}
+
+.ld-hero-copy {
+  flex: 1 1 420px;
+  min-width: min(100%, 320px);
+}
+
+.ld-hero-film {
+  flex: 1 1 440px;
+  min-width: min(100%, 300px);
+}
+
+.ld-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+
+.ld-eyebrow span[aria-hidden] {
+  width: 8px;
+  height: 8px;
+  background: var(--amber-fill);
+  flex: 0 0 auto;
+}
+
+.ld-h1 {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: clamp(38px, 5.2vw, 74px);
+  line-height: 1;
+  letter-spacing: -0.035em;
+  margin: 0 0 22px;
+  text-wrap: balance;
+}
+
+.ld-lead {
+  font-size: clamp(17px, 1.6vw, 20px);
+  line-height: 1.5;
+  color: var(--text-2);
+  max-width: 32ch;
+  margin: 0 0 28px;
+}
+
+.ld-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* ---- product film placeholder ----------------------------------------- */
+
+.ld-film {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.ld-film-head,
+.ld-film-scrub {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.ld-film-head {
+  justify-content: space-between;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.ld-film-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber-fill);
+  flex: 0 0 auto;
+}
+
+.ld-film-well {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  width: 100%;
+  background-color: var(--bg);
+  background-image: repeating-linear-gradient(
+    135deg,
+    oklch(0.74 0.16 70 / 0.05) 0 12px,
+    transparent 12px 24px
+  );
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  border: 0;
+  color: var(--text);
+  cursor: pointer;
+  padding: 24px;
+}
+
+.ld-film-ring {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 2px solid var(--amber-fill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--amber-fill);
+  flex: 0 0 auto;
+}
+
+/* Play mark drawn with the border trick — there are no icons on this page. */
+.ld-film-ring > span {
+  width: 0;
+  height: 0;
+  border-left: 18px solid currentColor;
+  border-top: 11px solid transparent;
+  border-bottom: 11px solid transparent;
+  margin-left: 5px;
+}
+
+.ld-film-well:hover .ld-film-ring {
+  background: var(--amber-fill);
+  color: var(--on-amber);
+}
+
+.ld-film-title {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(19px, 2vw, 24px);
+  letter-spacing: -0.02em;
+  text-align: center;
+}
+
+.ld-film-note {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-top: -8px;
+}
+
+.ld-film-scrub {
+  padding: 11px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.ld-film-track {
+  flex: 1;
+  height: 3px;
+  background: var(--raised);
+  border-radius: 2px;
+}
+
+/* ---- photo plates ----------------------------------------------------- */
+
+/* The four photographs have not been shot. The handoff is explicit that an
+   obvious placeholder is more honest than stock, so these plates are drawn to
+   look unfinished on purpose and carry the brief for the shot they are
+   holding. Swapping one for a real image is `<img>` in place of the plate. */
+.ld-plate {
+  position: relative;
+  background-color: var(--surface);
+  background-image: repeating-linear-gradient(
+    135deg,
+    oklch(0.74 0.16 70 / 0.05) 0 12px,
+    transparent 12px 24px
+  );
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+}
+
+.ld-plate-note {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  text-align: center;
+  max-width: 34ch;
+}
+
+.ld-tick {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+}
+
+.ld-tick-tl {
+  left: 14px;
+  top: 14px;
+  border-left: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+}
+
+.ld-tick-br {
+  right: 14px;
+  bottom: 14px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.ld-photoband {
+  position: relative;
+  height: clamp(280px, 34vw, 460px);
+}
+
+.ld-photoband .ld-plate {
+  position: absolute;
+  inset: 0;
+}
+
+.ld-photoband-plate {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: linear-gradient(transparent, oklch(0.18 0.012 250 / 0.85));
+  padding: clamp(18px, 3vw, 32px);
+}
+
+.ld-trades {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 0 clamp(0px, 1vw, 20px);
+  display: flex;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.ld-trades > span {
+  padding: 4px 14px;
+  border-left: 1px solid oklch(0.97 0.004 250 / 0.3);
+}
+
+.ld-trades > span:first-child {
+  padding: 4px 14px 4px 0;
+  border-left: 0;
+  color: var(--amber);
+}
+
+.ld-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 2px;
+  background: var(--bg);
+}
+
+.ld-strip .ld-plate {
+  height: clamp(200px, 22vw, 320px);
+}
+
+/* ---- product / paper -------------------------------------------------- */
+
+.ld-proof {
+  display: flex;
+  flex-wrap: wrap;
+  gap: clamp(16px, 2.5vw, 28px);
+  align-items: stretch;
+}
+
+.ld-chat {
+  flex: 1 1 320px;
+  min-width: min(100%, 280px);
+  background: var(--card);
+  border: 1px solid var(--paper-line);
+  border-radius: 4px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ld-chat-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--paper-line-2);
+}
+
+.ld-chat-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--paper-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--paper-ink);
+  flex: 0 0 auto;
+}
+
+.ld-bubble-tech {
+  align-self: flex-end;
+  max-width: 88%;
+  background: var(--chat-grey);
+  border-radius: 10px 10px 3px 10px;
+  padding: 10px 13px;
+}
+
+.ld-bubble-bot {
+  align-self: flex-start;
+  max-width: 92%;
+  background: var(--paper-ink);
+  color: var(--text);
+  border-radius: 10px 10px 10px 3px;
+  padding: 11px 13px;
+}
+
+.ld-bubble-text {
+  font-size: 14.5px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.ld-arrow {
+  flex: 0 0 auto;
+  align-self: center;
+  font-family: var(--mono);
+  font-size: 26px;
+  color: var(--amber-fill);
+  padding: 0 4px;
+}
+
+/* Stacked, the arrow points down the column rather than across it. */
+@media (max-width: 760px) {
+  .ld-arrow {
+    transform: rotate(90deg);
+    align-self: center;
+    margin: 0 auto;
+  }
+}
+
+.ld-sheet {
+  flex: 1 1 380px;
+  min-width: min(100%, 280px);
+  background: var(--card);
+  border: 1px solid var(--paper-line);
+  border-radius: 4px;
+  overflow: hidden;
+  /* The only shadow on the page. */
+  box-shadow: 0 14px 40px rgba(15, 20, 26, 0.12);
+}
+
+.ld-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--paper-line);
+  padding: 11px 18px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--paper-ink);
+}
+
+.ld-row {
+  display: flex;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--paper-line-2);
+}
+
+.ld-row:last-of-type {
+  border-bottom: 0;
+}
+
+.ld-row-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-ink-2);
+  flex: 0 0 78px;
+  padding-top: 2px;
+}
+
+.ld-row-value {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+/* Evidence behind every field — the product's core claim. */
+.ld-source {
+  background: var(--paper);
+  border-left: 3px solid var(--amber-fill);
+  padding: 11px 14px;
+}
+
+.ld-claims {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: clamp(14px, 2vw, 24px);
+  margin-top: clamp(26px, 3vw, 40px);
+  border-top: 1px solid var(--paper-line);
+  padding-top: clamp(22px, 2.5vw, 30px);
+}
+
+.ld-claim-title {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 21px;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.ld-claim-body {
+  font-size: 14.5px;
+  line-height: 1.5;
+  color: var(--paper-ink-2);
+  margin: 6px 0 0;
+}
+
+/* ---- provisioning ----------------------------------------------------- */
+
+.ld-steps {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.ld-step {
+  padding: 24px;
+}
+
+.ld-step-when {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--teal);
+  margin-bottom: 12px;
+}
+
+.ld-step-title {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 23px;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.ld-step-note {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-3);
+  margin: 8px 0 0;
+}
+
+/* ---- pricing ---------------------------------------------------------- */
+
+.ld-seats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: stretch;
+}
+
+.ld-seat {
+  flex: 1 1 280px;
+  min-width: min(100%, 250px);
+  border-radius: 5px;
+  padding: clamp(22px, 2.5vw, 30px);
+  display: flex;
+  flex-direction: column;
+}
+
+.ld-seat-tech {
+  background: var(--card);
+  border: 1px solid var(--paper-line);
+}
+
+.ld-seat-mgr {
+  background: var(--paper-ink);
+  color: var(--text);
+  position: relative;
+  overflow: hidden;
+}
+
+.ld-seat-tab {
+  position: absolute;
+  top: 0;
+  right: 0;
+  background: var(--amber-fill);
+  color: var(--on-amber);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 5px 10px;
+}
+
+.ld-seat-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.ld-seat-name {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: clamp(28px, 3vw, 38px);
+  margin: 6px 0 18px;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+
+.ld-price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-top: 18px;
+  margin-bottom: 18px;
+}
+
+.ld-price {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: 46px;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+
+.ld-per {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.ld-seat-items {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  font-size: 15px;
+}
+
+.ld-seat-items > div {
+  display: flex;
+  gap: 10px;
+}
+
+.ld-calc {
+  background: var(--paper-2);
+  color: var(--paper-ink);
+}
+
+.ld-calc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--paper-line);
+}
+
+.ld-calc-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ld-stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 44px is the tap target minimum — the handoff says keep them exactly this. */
+.ld-step-btn {
+  width: 44px;
+  height: 44px;
+  border: 1px solid #b9b4ab;
+  background: var(--card);
+  color: var(--paper-ink);
+  border-radius: 4px;
+  font-size: 18px;
+  cursor: pointer;
+  font-family: var(--mono);
+}
+
+.ld-step-btn:hover:not(:disabled) {
+  background: var(--paper);
+}
+
+.ld-step-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ld-count {
+  font-family: var(--mono);
+  font-size: 16px;
+  min-width: 28px;
+  text-align: center;
+}
+
+.ld-total-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 18px;
+  margin-top: auto;
+}
+
+.ld-total {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: 38px;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+
+.ld-foot-note {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--paper-ink-2);
+  margin: 16px 0 0;
+}
+
+/* ---- contact ---------------------------------------------------------- */
+
+.ld-contact-inner {
+  max-width: 1240px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: clamp(28px, 4vw, 60px);
+  align-items: flex-start;
+}
+
+.ld-contact-copy {
+  flex: 1 1 300px;
+  min-width: min(100%, 280px);
+}
+
+.ld-h2-contact {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: clamp(30px, 3.8vw, 50px);
+  line-height: 1.02;
+  letter-spacing: -0.03em;
+  margin: 0 0 18px;
+}
+
+.ld-form {
+  flex: 1 1 420px;
+  min-width: min(100%, 280px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: clamp(20px, 2.5vw, 30px);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.ld-field-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.ld-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ld-field-half {
+  flex: 1 1 180px;
+}
+
+.ld-field-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.ld-input,
+.ld-select {
+  font-family: var(--sans);
+  font-size: 15px;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--field-line);
+  padding: 9px 0;
+  outline: none;
+  width: 100%;
+}
+
+.ld-select {
+  background: var(--surface);
+}
+
+.ld-input:focus-visible,
+.ld-select:focus-visible,
+.ld-textarea:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+/* The one boxed field. */
+.ld-textarea {
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 10px 12px;
+  outline: none;
+  resize: vertical;
+  width: 100%;
+}
+
+.landing ::placeholder {
+  /* 4.6:1 on --surface. Placeholders are read as instructions here, so they
+     are held to the body minimum rather than the usual faint grey. */
+  color: oklch(0.66 0.014 250);
+  opacity: 1;
+}
+
+/* ---- footer ----------------------------------------------------------- */
+
+.ld-footer {
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+
+.ld-footer-inner {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 24px clamp(18px, 4vw, 44px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ld-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.ld-footer-links a {
+  color: var(--text-3);
+}
+
+.ld-footer-links a:hover {
+  color: var(--text);
+}

@@ -79,7 +79,7 @@ export function SeatDetail({
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr', gap: 18, marginTop: 22 }}>
         <section style={{ ...S.card, padding: 22 }}>
-          <h2 style={{ margin: '0 0 16px', fontSize: 13, fontWeight: 600 }}>Bot binding</h2>
+          <h2 style={{ margin: '0 0 16px', fontFamily: 'var(--display)', fontSize: 14, fontWeight: 700 }}>Bot binding</h2>
           <Defs
             cols="130px 1fr"
             rows={[
@@ -106,7 +106,7 @@ export function SeatDetail({
         </section>
 
         <section style={{ ...S.card, padding: 22 }}>
-          <h2 style={{ margin: '0 0 16px', fontSize: 13, fontWeight: 600 }}>Lightsail sandbox</h2>
+          <h2 style={{ margin: '0 0 16px', fontFamily: 'var(--display)', fontSize: 14, fontWeight: 700 }}>Lightsail sandbox</h2>
           <Defs
             cols="110px 1fr"
             rows={[
@@ -156,7 +156,7 @@ export function SeatDetail({
         </section>
       </div>
 
-      <h2 style={{ margin: '30px 0 12px', fontSize: 16, fontWeight: 600, color: 'var(--shell-ink)' }}>
+      <h2 style={{ margin: '30px 0 12px', fontFamily: 'var(--display)', fontSize: 17, fontWeight: 700, letterSpacing: '-0.015em', color: 'var(--shell-ink)' }}>
         Recent records logged
       </h2>
       <div style={{ ...S.card, padding: '4px 22px 18px' }}>

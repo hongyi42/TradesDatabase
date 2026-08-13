@@ -63,7 +63,9 @@ commit. Show the actual command output — never assert success without it.
 npm run typecheck    # tsc --noEmit
 npm run lint         # eslint
 npm test             # vitest
-npm run build        # before opening a PR
+npm run build        # before opening a PR — server (tsc) AND portal (vite).
+                     # This is what the deploy runs; keep it producing the
+                     # complete artifact. `build:server` is tsc alone.
 ```
 
 If a gate fails, fix the root cause — never suppress the error or loosen the gate to get past it.

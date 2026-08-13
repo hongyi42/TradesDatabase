@@ -168,6 +168,15 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - Render's **"Redeploy" button re-runs the OLD commit** — use "deploy latest commit" and
   confirm the **live commit hash** in the dashboard. Two E2E attempts once failed on stale
   server code this way.
+- **`npm run build` must stay the single command that produces a deployable artifact.**
+  There is zero IaC — no `render.yaml`, Dockerfile or Procfile anywhere — so the build command
+  lives only in the Render dashboard and cannot be fixed from a commit. The customer portal
+  added a second build step (`vite build` → `web/portal/dist`, which is gitignored and so must
+  be built on the box), and a dashboard build command that only ran `tsc` would serve a
+  **404 on `/portal`** with everything else healthy. `build` is therefore
+  `build:server && portal:build`; use `build:server` if you want tsc alone. **Anything that
+  becomes a required deploy artifact goes into `build`, never into a new top-level script** —
+  a script Render's build command does not name will never run in production.
 - **Nothing auto-applies DB migrations to the pilot.** Render only builds+starts.
   `npm run db:push` is unreliable here — the pilot's migration ledger has drifted from the
   repo (versions applied that no repo file carries). Use the Supabase MCP `apply_migration`

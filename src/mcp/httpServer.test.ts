@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { Client } from 'pg';
 import type { AddressInfo } from 'node:net';
@@ -279,6 +279,115 @@ describe('POST /control/sandboxes (recycle-completion report)', () => {
     expect(await retry.json()).toEqual({ retired: false, registered: false, rosterCleared: true });
     const blanks = await pg.query("select count(*)::int as n from sandbox_pool where sandbox_ref = 'rep-s5'");
     expect(blanks.rows[0].n).toBe(1);
+  });
+});
+
+describe('POST /control/ops', () => {
+  const post = (body: unknown, token = hostToken) =>
+    fetch(`${base}/control/ops`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  beforeEach(async () => {
+    await pg.query('delete from ops_events where host_id = $1', [await getHostId()]);
+  });
+
+  test('bad or missing token → bare 401, no detail', async () => {
+    const noAuth = await fetch(`${base}/control/ops`, { method: 'POST', body: '{}' });
+    expect(noAuth.status).toBe(401);
+    expect(await noAuth.text()).toBe('');
+    expect((await post({ service: 'inference-medic', status: 'down' }, 'deadbeef')).status).toBe(401);
+  });
+
+  test('rejects a malformed service or status instead of forking a silent stream', async () => {
+    expect((await post({ service: 'Inference Medic', status: 'down' })).status).toBe(400);
+    expect((await post({ status: 'down' })).status).toBe(400);
+    expect((await post({ service: 'inference-medic', status: 'broken' })).status).toBe(400);
+  });
+
+  test('down → open, repeats → suppressed, ok → closed', async () => {
+    const opened = (await post({
+      service: 'inference-medic',
+      status: 'down',
+      detail: { message: 'deepinfra-prod IS NOT SERVING' },
+    }).then((r) => r.json())) as { action: string; incidentId: string };
+    expect(opened.action).toBe('opened');
+
+    // The 5-minute ticks during the outage.
+    for (let i = 0; i < 3; i++) {
+      const again = (await post({ service: 'inference-medic', status: 'down' }).then((r) => r.json())) as {
+        action: string;
+        incidentId: string;
+      };
+      expect(again.action).toBe('suppressed');
+      expect(again.incidentId).toBe(opened.incidentId);
+    }
+
+    const closed = (await post({ service: 'inference-medic', status: 'ok' }).then((r) => r.json())) as {
+      action: string;
+      incidentId: string;
+    };
+    expect(closed.action).toBe('closed');
+    expect(closed.incidentId).toBe(opened.incidentId);
+
+    // Four bad reports and a recovery = ONE incident row.
+    const { rows } = await pg.query('select count(*)::int as n from ops_events where host_id = $1', [
+      await getHostId(),
+    ]);
+    expect(rows[0].n).toBe(1);
+  });
+
+  test('healthy reports on a healthy service write nothing at all', async () => {
+    for (let i = 0; i < 3; i++) {
+      expect(
+        ((await post({ service: 'inference-medic', status: 'ok' }).then((r) => r.json())) as { action: string })
+          .action,
+      ).toBe('noop');
+    }
+    const { rows } = await pg.query('select count(*)::int as n from ops_events where host_id = $1', [
+      await getHostId(),
+    ]);
+    expect(rows[0].n).toBe(0);
+  });
+
+  test('an oversized body is refused, not read into the shared process', async () => {
+    // The cap destroys the socket mid-read (readRawBody's behaviour, shared
+    // with the phone webhook paths), so the client observes a reset rather than
+    // a 413 — the point is that the shared process never buffers it, and no
+    // incident is filed from a body it refused to finish reading.
+    const oversized = fetch(`${base}/control/ops`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${hostToken}`, 'content-type': 'application/json' },
+      // A runaway journal tail: the reporter sends ~4 KiB, the cap is 64 KiB.
+      body: JSON.stringify({
+        service: 'inference-medic',
+        status: 'down',
+        detail: { journal: 'x'.repeat(200_000) },
+      }),
+    }).then(
+      (r) => ({ rejected: r.status === 413 }),
+      () => ({ rejected: true }), // connection reset
+    );
+    expect((await oversized).rejected).toBe(true);
+    const { rows } = await pg.query('select count(*)::int as n from ops_events where host_id = $1', [
+      await getHostId(),
+    ]);
+    expect(rows[0].n).toBe(0);
+
+    // ...and the server is still serving afterwards.
+    const after = await post({ service: 'inference-medic', status: 'ok' });
+    expect(after.status).toBe(200);
+  });
+
+  test('host_id comes from the TOKEN, so a body cannot file against another host', async () => {
+    const other = await createHost('test-host-ops-other', mintBadge().hash);
+    await post({ service: 'inference-medic', status: 'down', hostId: other.id, host_id: other.id });
+    const { rows } = await pg.query('select count(*)::int as n from ops_events where host_id = $1', [other.id]);
+    expect(rows[0].n).toBe(0);
+    await pg.query('delete from ops_events where host_id = $1', [await getHostId()]);
+    await pg.query('delete from hosts where id = $1', [other.id]);
   });
 });
 

@@ -16,6 +16,7 @@ import {
   completeSandboxRecycle,
   getHostByTokenHash,
 } from '../db/index.js';
+import { isValidService, recordOpsEvent } from '../db/opsEvents.js';
 import { handleComposioRelay, isRelayPath } from '../composio/relayHandler.js';
 import { handleBoardRequest, isBoardPath } from '../telegram/boardApi.js';
 import { handleAdminRequest, isAdminPath } from '../admin/adminApi.js';
@@ -336,6 +337,75 @@ async function handleSandboxReport(
   }
 }
 
+// The box's health report: "service X on this host is ok / down right now".
+// Same host-token auth and bare-401 posture as the pull and the recycle report.
+//
+// The reporter is STATELESS — it sends its current status every tick and this
+// folds those observations into incidents (see recordOpsEvent). That is why the
+// common responses are `suppressed` and `noop`: during a 30-minute outage the
+// medic reports six times and exactly one row exists.
+//
+// Anything that goes wrong here answers 5xx and the reporter simply moves on.
+// Alerting must never be able to break the thing it monitors, and the reporter
+// is deliberately fire-and-forget for the same reason.
+async function handleOpsReport(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
+    const host = m ? await getHostByTokenHash(sha256hex(m[1].trim())) : null;
+    if (!host) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    // CAPPED, unlike the sibling control routes: this body carries a journal
+    // tail from a machine, so its size is set by however much a failing unit
+    // logged. `readBody` is uncapped, and an unbounded read lets one reporter
+    // balloon the shared process that serves every tenant. 64 KiB is ~16x the
+    // 4 KiB tail ops-report.sh sends.
+    let body: unknown;
+    try {
+      const raw = await readRawBody(req, 64 * 1024);
+      body = raw.length ? JSON.parse(raw) : undefined;
+    } catch (err) {
+      if ((err as { code?: string }).code === 'BODY_TOO_LARGE') {
+        json(413, { error: 'body too large' });
+        return;
+      }
+      json(400, { error: 'malformed JSON body' });
+      return;
+    }
+    const b = (body ?? {}) as Record<string, unknown>;
+    const service = typeof b.service === 'string' ? b.service.trim() : '';
+    const status = b.status;
+    if (!isValidService(service)) {
+      json(400, { error: 'service must be lowercase kebab-case, 1-64 chars' });
+      return;
+    }
+    if (status !== 'ok' && status !== 'down') {
+      json(400, { error: "status must be 'ok' or 'down'" });
+      return;
+    }
+    // detail is evidence, not instructions — stored verbatim as jsonb and never
+    // interpreted here. host_id comes from the TOKEN, never the body, so a host
+    // cannot file incidents against another host.
+    const detail =
+      b.detail && typeof b.detail === 'object' && !Array.isArray(b.detail)
+        ? (b.detail as Record<string, unknown>)
+        : undefined;
+    const outcome = await recordOpsEvent({ hostId: host.id, service, status, detail });
+    json(200, outcome);
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     // Webhooks first — gated by HMAC, not by the gateway IP allowlist below.
@@ -361,6 +431,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // Host recycle-completion report — same host-token gate + placement.
     if (req.url === '/control/sandboxes' && req.method === 'POST') {
       await handleSandboxReport(req, res);
+      return;
+    }
+    // Host health report (ops alerting) — same host-token gate + placement.
+    // It must route BEFORE the IP allowlist for the same reason the pull does:
+    // this is the box calling in, and an alerting path that only works while
+    // everything else is healthy is not an alerting path.
+    if (req.url === '/control/ops' && req.method === 'POST') {
+      await handleOpsReport(req, res);
       return;
     }
     // Dispatch-board Mini App — self-authenticated by Telegram initData (board

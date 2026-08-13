@@ -1,0 +1,31 @@
+# /etc/systemd/system/ops-report-medic-down.service
+#
+# Fired by nemoclaw-inference-medic.service's OnFailure= — i.e. the medic
+# concluded the provider is not serving (or could not even register it).
+#
+# A SEPARATE UNIT ON PURPOSE, not a call inside the medic script. Alerting must
+# never be able to break the thing it monitors: a reporter that hangs, crashes,
+# or exits non-zero here cannot mark the medic failed or hold its 5-minute tick
+# open. ops-report.sh also always exits 0 — belt and braces, both deliberate.
+#
+# Adding another producer is a copy of this pair with a different service name;
+# a systemd template was considered and rejected because encoding
+# service+status+unit into an instance name needs escaping we cannot test
+# without deploying, and an untested alerting path is the thing we are fixing.
+[Unit]
+Description=Report inference-medic DOWN to the ops collector
+# A monitoring unit must never contribute to a boot or dependency failure.
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+Environment=HOME=/home/ubuntu
+# systemd reads this as ROOT and injects HOST_PULL_TOKEN/PULL_URL into a process
+# that then drops to `ubuntu` — the file is 0600 root:root and must stay that way.
+EnvironmentFile=/etc/doorman/badge-pull.env
+ExecStart=/usr/local/sbin/ops-report.sh inference-medic down nemoclaw-inference-medic.service
+# A wedged collector must cost seconds, not a hung unit. The script's own curl
+# timeout is 5s; this is the outer backstop.
+TimeoutStartSec=30

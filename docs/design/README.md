@@ -4,11 +4,28 @@ The approved design for the customer-facing portal (`/portal`, source in `web/po
 kept here so the implementation can be checked against its brief without hunting for a
 Downloads folder.
 
+**There are two handoffs, covering two different surfaces.** They do not agree with each
+other, and they are not meant to:
+
+- **`handoff-2026-08-07/`** — the **signed-in app** (Billing, Seats, Seat detail, Data &
+  exports, Admin queue, Sign in). White cards on a dark slate shell. Approved and built.
+- **`handoff-landing-v2/`** — the **public marketing landing** only, a full redesign that
+  replaced a landing rejected twice. Dark page with two warm-paper bands. Its palette
+  collides *by name* with the app's and it runs a different type stack. This is deliberate;
+  see "The landing is a separate design system" below.
+
 ## What's in this directory
 
 | Path | What it is |
 |---|---|
-| [handoff-2026-08-07/README.md](handoff-2026-08-07/README.md) | The handoff. Design tokens, type scale, all six screens, the interaction table, and the designer's own open questions. **Start here.** |
+| [handoff-landing-v2/README.md](handoff-landing-v2/README.md) | **The landing handoff.** Tokens with measured contrast, type scale, all ten bands, interaction and responsive rules, photography brief. **Start here for the landing.** |
+| `handoff-landing-v2/TradesDatabase Landing.dc.html` | The landing prototype. Open in a browser with its sibling files present. |
+| `handoff-landing-v2/Design spec.dc.html` | Token table with measured contrast, type scale, photography brief. |
+| `handoff-landing-v2/Directions.dc.html` | Four earlier exploratory directions. Context only — the landing file is the spec. |
+| `handoff-landing-v2/support.js`, `image-slot.js` | Generated runtime the `.dc.html` files need. Not ours, don't edit, not for production. |
+| [landing-redesign-brief.md](landing-redesign-brief.md) | The brief that was sent out and produced `handoff-landing-v2/`. Historical. |
+| `current-state/` | Screenshots + a captured HTML snapshot of the landing *before* the v2 rebuild. Historical. |
+| [handoff-2026-08-07/README.md](handoff-2026-08-07/README.md) | The app handoff. Design tokens, type scale, all six screens, the interaction table, and the designer's own open questions. **Start here for the app.** |
 | [handoff-2026-08-07/2d-slate-shell.md](handoff-2026-08-07/2d-slate-shell.md) | Theme amendment "2d Slate shell" — the dark app shell. **Supersedes the neutral tokens in the README**; read it second. |
 | `handoff-2026-08-07/TradesDatabase v2 workwear.dc.html` | The interactive prototype, all six screens. Open in a browser; the dark bar at the top switches screens. Needs `support.js` beside it. |
 | `handoff-2026-08-07/Palette options.dc.html` | The four colour directions considered. Reference only — 1b (workwear) was chosen, then amended by the slate-shell note. |
@@ -21,13 +38,40 @@ the code is right and the divergence is listed below with its reason.
 
 | Design concern | File |
 |---|---|
-| Every colour token, type stack, radius, shadow, focus ring | [web/portal/src/tokens.css](../../web/portal/src/tokens.css) |
-| Buttons, pills, cards, inputs, section headings | [web/portal/src/components/ui.tsx](../../web/portal/src/components/ui.tsx) |
+| **App** colour tokens, type stack, radius, shadow, focus ring | [web/portal/src/tokens.css](../../web/portal/src/tokens.css) |
+| **Landing** colour tokens and every landing component class | [web/portal/src/screens/landing.css](../../web/portal/src/screens/landing.css) |
+| Buttons, pills, cards, inputs, section headings (app only) | [web/portal/src/components/ui.tsx](../../web/portal/src/components/ui.tsx) |
 | Sidebar and app frame | [web/portal/src/components/AppShell.tsx](../../web/portal/src/components/AppShell.tsx) |
 | One screen per file | `web/portal/src/screens/` |
-| Fonts (Inter Tight, JetBrains Mono) | self-hosted via `@fontsource`, imported in `src/main.tsx` — no CDN at runtime |
+| The landing's ten bands | [web/portal/src/screens/Landing.tsx](../../web/portal/src/screens/Landing.tsx) |
+| Landing contact form, product-film placeholder | `src/components/ContactForm.tsx`, `VideoPlaceholder.tsx` |
+| Fonts — app (Archivo, Inter Tight, JetBrains Mono) and landing (Chivo, IBM Plex Sans, IBM Plex Mono) | self-hosted via `@fontsource`, imported in `src/main.tsx` — no CDN at runtime |
 
-## Deviations from the handoff, and why
+## The landing is a separate design system
+
+This is the thing most likely to trip someone up, so it is spelled out.
+
+**The landing's tokens are declared on `.landing`, not `:root`.** `--bg`, `--surface`,
+`--line`, `--text`, `--amber` and `--teal` all exist in both `tokens.css` and `landing.css`
+with completely different values — the app is white cards on a slate shell, the landing is a
+dark page with two paper bands. Scoping the landing's set to `.landing` shadows the app's for
+that subtree only. **Do not lift landing tokens into `:root` and do not "unify" the two
+palettes** — it would repaint every app screen.
+
+**Two type stacks on one origin, on purpose.** The app runs Archivo / Inter Tight / JetBrains
+Mono; the landing runs Chivo / IBM Plex Sans / IBM Plex Mono, rebound onto the same three role
+variables (`--display`, `--sans`, `--mono`) inside `.landing` so the shared `.mono` utility
+keeps working. The landing does not have to match the app and deliberately doesn't.
+
+**Both handoffs ban third-party requests.** Fonts are self-hosted `@fontsource` (Latin subsets
+for the landing's three), the product film will be a self-hosted `<video>` and never a YouTube
+iframe, and there are no trackers. Keep it that way.
+
+**Amber does two jobs and the designer flagged it.** In the app amber means *attention
+required*; on the landing it is the brand. Anyone crossing between the two daily will feel the
+collision. Still undecided — see the landing handoff's open questions.
+
+## Deviations from the app handoff (`handoff-2026-08-07`), and why
 
 Each is also commented at the point it occurs in the code. Listed here because the reasons
 are the kind of thing that gets lost.
@@ -81,13 +125,81 @@ are the kind of thing that gets lost.
 10. **Sign-in leads with the magic link**, password behind a secondary control — a password
     field is credential custody this system does not otherwise have.
 
+## Deviations from the landing handoff (`handoff-landing-v2`), and why
+
+The landing handoff is high fidelity and was followed literally almost everywhere. Four places
+it wasn't, all commented at the point they occur in `landing.css` / `Landing.tsx`.
+
+1. **The quote grid uses fixed column counts, not `auto-fit`.** The handoff asks for
+   `repeat(auto-fit, minmax(340px, 1fr))` **and** for "4 → 2 → 1, never 3". Those contradict
+   each other: at the 1240px content column that minimum resolves to exactly three tracks and
+   orphans the fourth quote as the blank grey panel the handoff itself warns about. Fixed
+   counts at two breakpoints (`≥1180px` → 4, `≥660px` → 2, else 1) are the only way to get the
+   stated behaviour. This is the **only** media-query-driven grid on the page; everything else
+   is fluid as specified.
+2. **Grid dividers are cell box-shadows, not a `--line` container background.** The handoff
+   draws dividers as 1px gaps over a `--line` background. Done literally, any row that does not
+   fill leaves an *empty cell* painted `--line`. The container stays `--surface` and each cell
+   casts a `0 0 0 1px var(--line)` shadow instead: adjacent shadows meet exactly in the 1px
+   gap, so the hairlines are identical, but an unfilled cell reads as surface.
+3. **Prices render in `$`, not the handoff's `£`.** The handoff's own open question #1 flags
+   the split — the design prices in £ because the customers are UK, the app shows $. Owner call
+   2026-08-11 was `$` so the landing cannot disagree with Billing. The landing reads
+   `PRICE_CENTS` out of `data/model.ts` rather than carrying its own numbers, so the two cannot
+   drift; moving to £ is that constant plus `CURRENCY`.
+4. **The landing root uses `overflow-x: clip`, never `overflow-x: hidden`.** `hidden` makes
+   `.landing` a scroll container, and a sticky descendant then anchors to *that* instead of the
+   viewport — so the nav silently stopped sticking and scrolled away with the page while still
+   computing `position: sticky`. `clip` gives the same guard against horizontal overflow without
+   establishing a scroll container. **Consequence for testing:** `clip` also hides overflow from
+   `document.scrollWidth`, so horizontal-overflow checks must compare element bounding rects
+   against `clientWidth`, not read `scrollWidth`.
+5. **The link reset is `.landing :where(a)`, not `.landing a`.** Written without `:where()` the
+   rule scores (0,1,1) and outranks every single-class component rule below it — which silently
+   repainted the amber CTA's label `--text` instead of `--on-amber` (**2.17:1**, caught by the
+   contrast audit) and the nav links `--text` instead of `--text-2`. `:where()` contributes no
+   specificity, so the rule still beats `tokens.css`'s bare `a` but loses to the component
+   classes. **Keep that rule above them in the file.**
+
+### Landing values that are below 3:1 and are meant to be
+
+Measured, reported, and left alone because the handoff specifies them. Do not "fix" these
+without a design decision:
+
+| Value | Measured | Why it stands |
+|---|---|---|
+| `--line` hairline on `--bg` | 1.61:1 | The handoff's token table marks `--line` **non-text only** at 1.6:1 |
+| Stepper border `#b9b4ab` on `--paper-2` | 1.54:1 | Handoff-specified; the `–`/`+` glyphs carry the control's perceivability |
+| Disabled stepper label (45% opacity) | 2.70:1 | WCAG exempts inactive controls |
+
+Every actual **text** pair on the landing clears AA with margin — 122 text nodes, 0 failures,
+lowest pair 5.53:1 against a 4.5 requirement.
+
 ## Still not designed
 
-Carried over from the handoff and still true: loading state during provisioning, error states
-(token rejected, capacity, payment declined), form validation, empty states, hover states, and
-**responsive behaviour** — the design is desktop-first and fixed-width (236px sidebar, 1280px
-main, 560px modal). Below ~1100px it degrades. The repo's other two web surfaces are
-phone-first, so this is worth settling before a customer sees it.
+**The app** (not the landing): loading state during provisioning, error states (token rejected,
+capacity, payment declined), form validation, empty states, hover states, and **responsive
+behaviour** — the app design is desktop-first and fixed-width (236px sidebar, 1280px main,
+560px modal). Below ~1100px it degrades. The repo's other two web surfaces are phone-first, so
+this is worth settling before a customer sees it.
+
+**The landing is done on both counts** — the v2 handoff specifies hover, focus and responsive
+behaviour, and all three are built. It reflows continuously from 360px to 1440px, verified with
+no horizontal overflow at any width.
+
+**Two things on the landing ship as deliberate placeholders**, and the handoff is emphatic that
+they stay visible rather than being filled with something fake:
+
+- **The product film does not exist.** The designed placeholder is the approved state. Dropping
+  the real film in is `<VideoPlaceholder src="…" poster="…" />` — the header strip, 16:10 well
+  and scrub row stay and the well becomes a self-hosted `<video>`.
+- **Four photographs have not been shot** (hero, van at first light, hands/scuffed phone,
+  kitchen table at 9pm). They render as hatched amber plates carrying the brief for the shot
+  each one holds. **Do not buy stock as an interim** — the handoff's reasoning is that this
+  audience spots it instantly and it costs trust.
+
+There are also no customer logos or testimonials anywhere, on purpose: pre-launch with two
+pilot firms, and a faked social-proof band would undo the page.
 
 ## Checking a change against the design
 
@@ -100,4 +212,15 @@ npm run portal:standalone # one self-contained HTML file, for sharing
 Contrast is a gate worth re-running by hand after any colour change — the audit that caught
 the faults above walks every text node, resolves the rendered colour through a canvas (needed:
 `getComputedStyle` returns `oklch()` here, which naive parsing gets wrong), finds the first
-opaque ancestor background, and checks against WCAG AA.
+opaque ancestor background, and checks against WCAG AA. It has now caught **five** separate
+real faults across the two surfaces, most recently the amber CTA at 2.17:1.
+
+Three things that audit does *not* catch on its own, and that need doing by hand:
+
+- **Text over a `background-image`.** The landing's blueprint grid, amber hatch plates and
+  photo-band gradient all sit between the text and its background colour. Compute the
+  worst-case composite (for light text on a dark page, the *lightest* pixel under the glyph).
+- **States with no DOM presence** — hover, focus, placeholder, disabled, and the contact form's
+  post-submit confirmation. Each has to be measured or triggered separately.
+- **Colours that are correct in CSS but lose a specificity fight.** The 2.17:1 CTA was a
+  correctly-authored rule being outranked. Audit the *rendered* colour, never the stylesheet.

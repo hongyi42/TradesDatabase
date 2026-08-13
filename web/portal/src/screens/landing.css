@@ -61,7 +61,13 @@
   color: var(--text);
   font-family: var(--sans);
   min-height: 100vh;
-  overflow-x: hidden;
+  /* `clip`, NOT `hidden`. overflow-x: hidden makes this element a scroll
+     container, which silently breaks `position: sticky` on the header — it
+     then anchors to .landing (which never scrolls) instead of the viewport, so
+     the nav scrolls away with the page. overflow-x: clip gives the same
+     belt-and-braces against horizontal overflow without establishing a scroll
+     container, and leaves the y axis `visible` so sticky keeps working. */
+  overflow-x: clip;
 }
 
 /* tokens.css paints every anchor --amber-deep, which is tuned for white and

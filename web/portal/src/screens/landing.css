@@ -66,8 +66,17 @@
 
 /* tokens.css paints every anchor --amber-deep, which is tuned for white and
    drops to ~2.2:1 on this page's background. Every link here sets its own
-   colour, so the inherited rule is switched off at the root. */
-.landing a {
+   colour, so the inherited rule is switched off at the root.
+
+   `:where()` is doing real work. Written as `.landing a` this rule scores
+   (0,1,1) and outranks every single-class component rule below it — which
+   silently repainted the amber CTA's label --text instead of --on-amber
+   (2.17:1, caught by the contrast audit) and the nav links --text instead of
+   --text-2. `:where()` contributes nothing, so the rule scores (0,1,0): still
+   enough to beat tokens.css's bare `a` (0,0,1), but a tie with the component
+   classes, which come later in this file and therefore win. Keep this rule
+   above them. */
+.landing :where(a) {
   color: inherit;
   text-decoration: none;
   transition: color 120ms ease-out, border-color 120ms ease-out,

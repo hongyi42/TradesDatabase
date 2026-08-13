@@ -248,3 +248,85 @@ This needs the `data-security` skill applied at implementation time.
    self-serve premise if it does. Probe needed.
 5. **Trial or no trial?** Affects Stripe config materially (portal modifications to a
    `trialing` subscription end the trial and invoice immediately).
+
+---
+
+# Phase 0 findings — box capacity (measured 2026-08-12)
+
+Read-only probe of `trades-box-1` (34.211.61.184, Lightsail, 4 vCPU / 15.4 GiB / 310 GB disk,
+up 36 days) plus SELECTs against the pilot DB. Nothing was written or restarted.
+
+## Headline: the box holds ~3 more sandboxes, not ~25
+
+`docker stats` reports each sandbox at **~450–580 MiB**, which suggests room for roughly 25 more.
+**That number is wrong and dangerous.** The cgroup peak counter tells the real story:
+
+| sandbox | current MiB | **peak MiB** | container up since |
+|---|---|---|---|
+| s2 | 1011 | **1565** | 2026-08-12 |
+| s3 | 990 | **1374** | 2026-08-12 |
+| s5 | 923 | **1351** | 2026-08-12 |
+| s6 | 535 | **1404** | 2026-08-12 |
+| s7 | 964 | **1447** | 2026-07-21 |
+| s8 | 943 | **1514** | 2026-07-24 |
+
+Peak is **~1.5 GiB per sandbox — 3× the `docker stats` figure.** Six sandboxes peaking together
+would want ~9.2 GiB. With the gateway (153 MiB) and the OS, worst-case simultaneous demand is
+already ~10 GiB of 15.4 GiB.
+
+Usable ≈ 15.4 GiB − ~1.5 GiB (OS + gateway + headroom) ≈ 13.9 GiB. At the 1.565 GiB observed
+peak that is **~9 sandboxes total, i.e. about 3 more than the 6 running now.**
+
+You can beat that by oversubscribing, since peaks across different customers are probably
+uncorrelated. Two facts make that a bad bet today:
+
+1. **There is no swap** (`swapon --show` is empty). Memory pressure does not degrade, it OOM-kills,
+   and the kernel picks the victim — plausibly a live customer's sandbox.
+2. **Five of six containers have NO memory limit.** Only s3 (Judy, the real beta) is capped, at
+   3947 MiB. One runaway sandbox can therefore consume the box and take the others with it.
+
+**Recommendation before selling any seat:** set a per-container memory limit on every sandbox
+(s3 already proves the mechanism works), and add swap as a shock absorber. Until both exist, treat
+**9 total** as the cap and note it is a worst-case-simultaneity figure, not a measured ceiling.
+
+Disk and CPU are not the constraint and are not close: 16 GB of 310 GB used, load average 0.05
+with six sandboxes idling at ~0.8% CPU each.
+
+## The pool table is not an inventory of the box
+
+Six containers run (`s2 s3 s5 s6 s7 s8`). `sandbox_pool` has **two** live rows (`s5` claimed,
+`s6` free). **`s2`, `s3`, `s7` and `s8` are running but have no live pool row at all.**
+
+Any capacity or admission-control logic reading `sandbox_pool` therefore undercounts reality by
+four, and the plan's invariant — *free blanks = purchased seats − active members* — cannot hold
+against this data.
+
+## s6 is double-booked, and it is the only "free" blank
+
+| Source | What it says about s6 |
+|---|---|
+| `sandbox_pool` | live, **unclaimed — a FREE BLANK**, tenant `Default Tenant` |
+| `technicians` | `sandbox_ref = s6` for `manager-sam` (Sam Rivera), state `active`, tenant **`spine-eval-main`** |
+| the box | `openshell-s6` up and healthy since 2026-08-12, 535 MiB current / 1404 MiB peak |
+
+The single blank the allocator would hand to the next paying customer is **already running a live
+sandbox belonging to a different tenant**. This is worse than the plan's "selling a seat we cannot
+provision": it is handing a new customer a container that is serving someone else.
+
+Note also that `manager-sam` exists in two tenants (`Default Tenant` → s2, `spine-eval-main` → s6),
+so a lookup by ref alone is ambiguous across tenants.
+
+**This needs reconciling before Phase 4/5, and it is a data fix, not a code change.**
+
+## `hosts` has no `max_sandboxes` column
+
+Actual columns: `id, name, token_hash, created_at`. The 2026-08-07 plan's Phase 1 specified
+`hosts.max_sandboxes integer` to be filled from this probe; it was never added, so there is
+nowhere to record the cap above and nothing for admission control to read.
+
+## Still unrun: the Telegram managed-bot cap
+
+The other half of Phase 0 is untouched. It needs a throwaway manager bot with Bot Management Mode
+on, three managed bots created via the deep link, and `getManagedBotToken` confirmed for each —
+real bots created from a real Telegram account, so it is the owner's to run. If the historic
+20-per-user limit applies to managed bots, D3 must switch to the vault fallback before Phase 4.

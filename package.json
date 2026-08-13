@@ -20,9 +20,15 @@
     "gen:types": "mkdir -p src/db && npx supabase gen types typescript --linked > src/db/database.types.ts",
     "gen:types:local": "mkdir -p src/db && npx supabase gen types typescript --local > src/db/database.types.ts",
     "job:lifecycle": "node dist/jobs/lifecycle.js",
+    "spine-eval:world": "npm run build && node scripts/spine-eval/world.mjs",
     "date-eval:plan": "node -r dotenv/config scripts/date-eval/plan.mjs",
     "date-eval:run": "node scripts/date-eval/run.mjs",
-    "date-eval:report": "node scripts/date-eval/analyze.mjs"
+    "date-eval:report": "node scripts/date-eval/analyze.mjs",
+    "spine-eval:verify": "node scripts/spine-eval/verify-world.mjs",
+    "spine-eval:tools": "npm run build && node scripts/spine-eval/run-tools.mjs",
+    "spine-eval:agent": "npm run build && node scripts/spine-eval/run-agent.mjs",
+    "spine-eval:gateway": "npm run build && node scripts/spine-eval/run-gateway.mjs",
+    "spine-eval:gate": "npm run build && node scripts/spine-eval/gate.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",

@@ -23,3 +23,6 @@ inbound-last.json
 
 # Date-eval run artifacts (manifests, trajectories, reports) — regenerate with npm run date-eval:plan
 date-eval-runs/
+
+# Spine-eval run artifacts (world manifest, trajectories, reports) — regenerate with npm run spine-eval:world
+spine-eval-runs/

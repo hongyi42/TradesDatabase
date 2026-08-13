@@ -1,0 +1,22 @@
+{
+  "recordedAt": "2026-08-12T19:09:54.697Z",
+  "seal": "0c7055be9d10",
+  "note": "Measured state, not a target. The gate fails a DROP from this; the hard safety rules fail regardless.",
+  "tier1": {
+    "casePassRate": 100,
+    "datePassRate": 100,
+    "worstToolP95Ms": 50.66425000000004
+  },
+  "tier2": {
+    "passRate": 82.4,
+    "scenarios": "14/17",
+    "model": "zai-org/GLM-5.2",
+    "doctrine": "335d29a5947b",
+    "findingKinds": {
+      "harness-or-provider-failure": 1,
+      "missing-content": 2,
+      "leaked-content": 1
+    },
+    "wallP95Ms": 301968
+  }
+}

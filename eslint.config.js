@@ -17,6 +17,38 @@ export default tseslint.config(
     languageOptions: { parserOptions: { tsconfigRootDir: import.meta.dirname } },
   },
   {
+    // The spine-eval drivers are plain Node ESM (they import the compiled
+    // dist/, so they cannot be TypeScript without a second build step). Same
+    // reasoning as the web/ block below: without this they would pass `eslint .`
+    // vacuously — zero rules matched — and sit outside EVERY gate, which is
+    // exactly wrong for code whose job is to GRADE other code. The load-bearing
+    // logic deliberately lives in src/eval/*.ts, inside typecheck and vitest;
+    // these files are the thin I/O shell around it.
+    files: ['scripts/spine-eval/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        URL: 'readonly',
+        Buffer: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        AbortController: 'readonly',
+        performance: 'readonly',
+        Date: 'readonly',
+        Math: 'readonly',
+        JSON: 'readonly',
+      },
+    },
+    rules: {
+      'no-undef': 'error',
+      'no-unused-vars': 'error',
+    },
+  },
+  {
     // The board Mini App is plain browser JS served as a static file (no build
     // step, so it can't be TypeScript without introducing one) — without this
     // block it would pass `eslint .` vacuously (zero rules matched) and sit

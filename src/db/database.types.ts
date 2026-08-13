@@ -101,6 +101,13 @@ export type Database = {
             foreignKeyName: "assignments_job_id_fkey"
             columns: ["job_id"]
             isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "assignments_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
             referencedRelation: "v_jobs"
             referencedColumns: ["id"]
           },
@@ -646,6 +653,13 @@ export type Database = {
             foreignKeyName: "jobs_customer_id_fkey"
             columns: ["customer_id"]
             isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "jobs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
             referencedRelation: "v_customers"
             referencedColumns: ["id"]
           },
@@ -675,6 +689,44 @@ export type Database = {
             columns: ["tenant_id"]
             isOneToOne: false
             referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ops_events: {
+        Row: {
+          closed_at: string | null
+          detail: Json
+          host_id: string
+          id: string
+          opened_at: string
+          resolved_detail: Json | null
+          service: string
+        }
+        Insert: {
+          closed_at?: string | null
+          detail?: Json
+          host_id: string
+          id?: string
+          opened_at?: string
+          resolved_detail?: Json | null
+          service: string
+        }
+        Update: {
+          closed_at?: string | null
+          detail?: Json
+          host_id?: string
+          id?: string
+          opened_at?: string
+          resolved_detail?: Json | null
+          service?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ops_events_host_id_fkey"
+            columns: ["host_id"]
+            isOneToOne: false
+            referencedRelation: "hosts"
             referencedColumns: ["id"]
           },
         ]
@@ -784,6 +836,13 @@ export type Database = {
             foreignKeyName: "raw_captures_customer_id_fkey"
             columns: ["customer_id"]
             isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "raw_captures_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
             referencedRelation: "v_customers"
             referencedColumns: ["id"]
           },
@@ -807,6 +866,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "jobs"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raw_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
           },
           {
             foreignKeyName: "raw_captures_job_id_fkey"
@@ -1033,6 +1099,13 @@ export type Database = {
             foreignKeyName: "schedule_entries_customer_id_fkey"
             columns: ["customer_id"]
             isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "schedule_entries_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
             referencedRelation: "v_customers"
             referencedColumns: ["id"]
           },
@@ -1056,6 +1129,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "jobs"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "schedule_entries_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
           },
           {
             foreignKeyName: "schedule_entries_job_id_fkey"
@@ -1115,6 +1195,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "assignments"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "schedule_events_assignment_id_fkey"
+            columns: ["assignment_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["assignment_id"]
           },
           {
             foreignKeyName: "schedule_events_assignment_id_fkey"
@@ -1352,6 +1439,13 @@ export type Database = {
             foreignKeyName: "visits_job_id_fkey"
             columns: ["job_id"]
             isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "visits_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
             referencedRelation: "v_jobs"
             referencedColumns: ["id"]
           },
@@ -1415,6 +1509,31 @@ export type Database = {
       }
     }
     Views: {
+      v_cancelled_visits: {
+        Row: {
+          assignment_id: string | null
+          city: string | null
+          customer_id: string | null
+          customer_name: string | null
+          earliest_date: string | null
+          ends_at: string | null
+          job_id: string | null
+          job_title: string | null
+          job_type: string | null
+          latest_date: string | null
+          local_day: string | null
+          local_weekday: string | null
+          postal_code: string | null
+          promise_level: Database["public"]["Enums"]["promise_level"] | null
+          promised_day: string | null
+          reason: string | null
+          starts_at: string | null
+          technician_name: string | null
+          technician_ref: string | null
+          updated_at: string | null
+        }
+        Relationships: []
+      }
       v_customers: {
         Row: {
           address_line1: string | null

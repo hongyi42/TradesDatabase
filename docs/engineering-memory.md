@@ -552,9 +552,44 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   - Pinned by a new invariant test: **"NEVER routes anywhere but the primary, whatever fails"**,
     plus one asserting the output never says FAILOVER or names a fallback. Re-adding a fallback is
     then a deliberate change that must also change those tests — it cannot quietly reappear.
-  - **The remaining gap is ALERTING, and it is now the top one.** The medic tells the truth into a
-    journal nobody reads; that is precisely why six outage windows on 08-12 went unnoticed. An
-    honest red light in an empty room is barely better than a green one.
+  - **The remaining gap was ALERTING** — the medic told the truth into a journal nobody reads,
+    which is precisely why six outage windows on 08-12 went unnoticed. An honest red light in an
+    empty room is barely better than a green one. Closed by the entry below.
+- **Ops alerting: the verdict now leaves the box (2026-08-12).** `POST /control/ops` on Render →
+  `ops_events`, fed by `ops-report.sh` wired to the medic unit's `OnFailure=`/`OnSuccess=`.
+  Design points that carry beyond this feature:
+  - **ONE ROW PER INCIDENT, NOT PER TICK.** The medic runs every 5 min, so a 30-minute outage is
+    six identical observations. The reporter is STATELESS — it says what is true now, every tick —
+    and the SERVER folds those into transitions (open on the first bad report, close on recovery).
+    Storing every observation would make it a log rather than an incident list, and any notifier
+    built on it would fire six times and get muted. **Suppression is the feature, not an
+    optimisation.**
+  - **The state lives on the server precisely BECAUSE the medic must stay stateless.** v2's
+    no-state-files rule exists so flaps stay visible in the journal; dedup needs state to compare
+    against; the database is where state belongs. Bonus: a dropped report is harmless and the box
+    needs no retry logic.
+  - **A partial unique index (`where closed_at is null`) is the real guarantee**, not the
+    read-then-insert. Two reports racing on a flapping provider would otherwise both see "nothing
+    open" and both insert — double-counting exactly during the noisiest moment. The insert catches
+    23505 and reports the existing incident rather than erroring.
+  - **Alerting must never break what it watches.** The reporter is a SEPARATE systemd unit (not a
+    call inside the medic), ALWAYS exits 0, and caps curl at 5s. Verified with the collector down:
+    fails in 0.13s, exit 0.
+  - **`host_id` comes from the authenticated TOKEN, never the body** — otherwise one host could
+    file incidents against another. Pinned by a test.
+  - **The body is CAPPED (64 KiB) where the sibling control routes are not**: it carries a journal
+    tail whose size is set by however much a failing unit logged, and `readBody` is uncapped. Note
+    the cap destroys the socket, so the client sees a reset rather than a 413 — that is
+    `readRawBody`'s existing behaviour, shared with the phone webhook paths.
+  - **Credential trap:** it reuses the badge pull's `HOST_PULL_TOKEN`/`PULL_URL` from
+    `/etc/doorman/badge-pull.env` (no new secret). That file is `0600 root:root` and the unit runs
+    as `ubuntu`, so systemd injects it via `EnvironmentFile=`. **Do NOT chmod the file, and do NOT
+    run the reporter as root** — `openshell` is ubuntu's install, so root would get a different
+    HOME/config and the route lookup would come back silently empty (same class as the medic's
+    `-u sandbox` login-shell requirement).
+  - **STILL A STORE, NOT AN ALARM.** Nothing notifies yet — deferred by user decision until a bot
+    is paired. It makes an outage reconstructable afterwards, not noticed as it happens. Do not
+    mistake the table existing for the problem being solved.
 - **`nemoclaw list` shows the ONBOARDING RECORD, not the live inference route (2026-08-06).** Read
   off that list, s2/s5/s6/s7 all say `provider: nvidia-prod` — which reads exactly like "the fleet
   has been stuck on the fallback for six days", and was reported as such before being checked. It

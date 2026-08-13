@@ -7,6 +7,12 @@
 Description=Assert DeepInfra/GLM-5.2 gateway inference route (self-heal onboard/reboot drift)
 After=docker.service nemoclaw-boot.service
 Wants=docker.service
+# Carry the verdict off the box. The medic reports honestly to the journal, and
+# nobody reads the journal — which is how six agent-outage windows on
+# 2026-08-12 went unnoticed. These fire in SEPARATE units so a broken reporter
+# can never mark the medic failed or hold its tick open.
+OnFailure=ops-report-medic-down.service
+OnSuccess=ops-report-medic-ok.service
 
 [Service]
 Type=oneshot

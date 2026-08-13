@@ -1,0 +1,27 @@
+# /etc/systemd/system/ops-report-medic-ok.service
+#
+# Fired by nemoclaw-inference-medic.service's OnSuccess= — the medic verified
+# the provider is serving.
+#
+# This runs on EVERY healthy tick (~288/day) and almost always results in the
+# collector doing nothing: `ok` with no open incident is a no-op, and no row is
+# written. That is the design — the reporter is stateless and says what is true
+# now; the server decides whether anything changed. The cost is one small HTTPS
+# POST every 5 minutes, and the benefit is that recovery closes an incident
+# without anyone touching the box.
+#
+# See ops-report-medic-down.service for why this is a separate unit.
+[Unit]
+Description=Report inference-medic OK to the ops collector
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+Environment=HOME=/home/ubuntu
+# systemd reads this as ROOT and injects HOST_PULL_TOKEN/PULL_URL into a process
+# that then drops to `ubuntu` — the file is 0600 root:root and must stay that way.
+EnvironmentFile=/etc/doorman/badge-pull.env
+ExecStart=/usr/local/sbin/ops-report.sh inference-medic ok nemoclaw-inference-medic.service
+TimeoutStartSec=30

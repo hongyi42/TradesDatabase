@@ -152,8 +152,26 @@ served happily while 400-ing every real turn. A probe that does not look like a 
 you a provider can serve turns. The gate assumes the routed **model** emits a tool call for the
 probe prompt — if the model ever changes, re-validate the probe against it first, or a model that
 answers in prose gets reported dead while perfectly healthy.
-**Open gap: nothing watches this.** The medic now tells the truth, into a journal no one reads —
-which is why six outage windows on 2026-08-12 went unnoticed. Alerting is the next piece.
+**The verdict now leaves the box (ops alerting, 2026-08-12).** `nemoclaw-inference-medic.service`
+carries `OnFailure=ops-report-medic-down.service` / `OnSuccess=ops-report-medic-ok.service`; those
+run `/usr/local/sbin/ops-report.sh`, which POSTs to `POST /control/ops` on Render and lands in
+`ops_events`. Three properties worth not breaking:
+- **The reporter can never break the medic.** It is a SEPARATE unit (not a call inside the medic
+  script), it ALWAYS exits 0, and its curl is capped at 5s. Verified: with the collector
+  unreachable it fails in 0.13s and exits 0.
+- **The reporter is stateless; the SERVER collapses repeats.** It says what is true now, every
+  tick; the server opens an incident on the first bad report and closes it on recovery, so a
+  30-minute outage is ONE row, not six. This keeps the medic's "no state files" rule intact.
+- **It reuses the badge pull's token** (`HOST_PULL_TOKEN`/`PULL_URL` in `/etc/doorman/badge-pull.env`)
+  — no new secret. That file is `0600 root:root` and the unit runs as `ubuntu`, so systemd hands it
+  in via `EnvironmentFile=` (it reads as root, then drops). **Do not chmod that file to fix a
+  permissions error, and do not run the reporter as root** — `openshell` is ubuntu's install and
+  root gets a different HOME/config, so the route lookup would silently come back empty (same class
+  as the medic's `-u sandbox` login-shell requirement).
+**Still open: nothing NOTIFIES.** `ops_events` is a store, not an alarm — it makes an outage
+reconstructable afterwards, not noticed as it happens. The notifier is deliberately deferred until
+a bot is paired (user decision 2026-08-12); the transition logic above is what will make it safe to
+switch on without creating a channel people mute.
 
 The standing model decision is the GLM line — Nemotron-3 Super 120B proved too weak; do NOT
 "restore" it when debugging model errors. GLM-5.1 was the first pick but NVIDIA retired it. (Note

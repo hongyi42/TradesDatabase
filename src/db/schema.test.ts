@@ -181,4 +181,55 @@ describe('context spine schema', () => {
       await client.query('rollback');
     }
   });
+
+  // portal_accounts decides which tenant a BROWSER SESSION may read, and the
+  // portal is the first surface in this system that outsiders use. If the
+  // publishable anon key could reach this table straight through PostgREST, an
+  // attacker could grant their own address a row against someone else's tenant
+  // and the session layer above would faithfully honour it. These three
+  // assertions are what stop that being toggled off without a test going red.
+  describe('portal_accounts is closed to the Data API', () => {
+    test('RLS is enabled', async () => {
+      const { rows } = await client.query<{ relrowsecurity: boolean }>(
+        `select relrowsecurity from pg_class where relname = 'portal_accounts'`,
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].relrowsecurity, 'RLS must be ON').toBe(true);
+    });
+
+    test('there is no policy — RLS with no policy means anon gets zero rows', async () => {
+      const { rows } = await client.query(
+        `select policyname from pg_policies where tablename = 'portal_accounts'`,
+      );
+      // A policy is a door. This table has no legitimate client-side reader, so
+      // adding one would be strictly worse (the cost-tables reasoning).
+      expect(rows).toHaveLength(0);
+    });
+
+    test('anon and authenticated hold no grants', async () => {
+      const { rows } = await client.query(
+        `select grantee, privilege_type from information_schema.role_table_grants
+          where table_name = 'portal_accounts' and grantee in ('anon','authenticated')`,
+      );
+      expect(rows).toHaveLength(0);
+    });
+
+    test('email is citext and globally unique — one email, at most one tenant', async () => {
+      const { rows: cols } = await client.query<{ udt_name: string }>(
+        `select udt_name from information_schema.columns
+          where table_name = 'portal_accounts' and column_name = 'email'`,
+      );
+      expect(cols[0]?.udt_name).toBe('citext');
+
+      // Unique on (email) ALONE. If this ever became (tenant_id, email), one
+      // address could resolve to two tenants and session resolution would have to
+      // guess — the exact bug class this feature exists to avoid.
+      const { rows: idx } = await client.query<{ indexdef: string }>(
+        `select indexdef from pg_indexes
+          where tablename = 'portal_accounts' and indexdef ilike '%unique%' and indexdef ilike '%email%'`,
+      );
+      expect(idx).toHaveLength(1);
+      expect(idx[0].indexdef).toMatch(/\(email\)/);
+    });
+  });
 });

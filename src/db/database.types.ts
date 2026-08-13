@@ -679,6 +679,47 @@ export type Database = {
           },
         ]
       }
+      portal_accounts: {
+        Row: {
+          auth_user_id: string | null
+          created_at: string
+          email: string
+          id: string
+          invited_at: string
+          last_seen_at: string | null
+          role: string
+          tenant_id: string
+        }
+        Insert: {
+          auth_user_id?: string | null
+          created_at?: string
+          email: string
+          id?: string
+          invited_at?: string
+          last_seen_at?: string | null
+          role?: string
+          tenant_id: string
+        }
+        Update: {
+          auth_user_id?: string | null
+          created_at?: string
+          email?: string
+          id?: string
+          invited_at?: string
+          last_seen_at?: string | null
+          role?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "portal_accounts_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       query_audit: {
         Row: {
           created_at: string

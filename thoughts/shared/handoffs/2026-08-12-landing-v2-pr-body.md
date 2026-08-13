@@ -32,6 +32,13 @@ Mono; the landing runs the handoff's Chivo / IBM Plex Sans / IBM Plex Mono, rebo
 three role variables inside `.landing`. All self-hosted via `@fontsource`, Latin subsets only —
 no CDN fonts, no video embed, no trackers.
 
+**`overflow-x: clip`, not `hidden`, on the landing root.** `hidden` makes `.landing` a scroll
+container, which silently breaks `position: sticky` on the nav — it anchors to `.landing`
+(which never scrolls) instead of the viewport. The property computed correctly the whole time,
+so this survived review; it only showed up when scroll position was actually measured. Note for
+future testing: `clip` also hides overflow from `document.scrollWidth`, so horizontal-overflow
+checks must compare element rects against `clientWidth`.
+
 **Divergence from the handoff — the quote grid.** The handoff asks for
 `repeat(auto-fit, minmax(340px, 1fr))` *and* for "4 → 2 → 1, never 3". `auto-fit` cannot honour
 both: at the 1240px column that minimum resolves to exactly 3 tracks and orphans the fourth
@@ -70,6 +77,25 @@ background, and computed WCAG ratios.
 It caught one real fault: `.landing a` scores (0,1,1) and outranked every single-class component
 rule, so the amber CTA's label inherited `--text` instead of `--on-amber` — **2.17:1**. Fixed
 with `:where()` in 67fbaf7.
+
+**Behaviour**, driven in a real browser rather than asserted from the source:
+
+- Every band checked against the handoff spec item by item (~90 assertions) — nav, hero, film
+  placeholder, photo band and its five trades, four quotes verbatim, the chat→job-sheet proof
+  including the SOURCE evidence block and the page's only shadow, three provisioning steps, both
+  seat cards, calculator, contact form, footer. Nothing missing.
+- **Calculator** swept across 8 states including both bounds: total always equals
+  `managers×80 + technicians×50`, zero mismatches. Clamps at 1 manager / 0 technicians / 60 max
+  with the bound buttons disabled; `$7,800` carries its thousands separator.
+- **Sticky nav** verified at scrollY 0 / 600 / 2000 / 3500 — and the header's translucent
+  background measured over all four backdrops it crosses (`--bg`, `--paper`, `--paper-2`, white
+  card): worst pair 7.78:1.
+- All three nav anchors and both hero CTAs land on the right band; the team-size select is
+  genuinely controlled; the form submits to an in-place confirmation and "Send another" returns.
+- **Focus** under real keyboard `Tab` navigation: 2px amber at 2px offset on every control,
+  including the fields that set `outline: none`.
+- No green anywhere, zero third-party requests, zero iframes, clean console. The landing
+  downloads exactly its own 7 font files — the app's three families never load on it.
 
 Three **non-text** values measured below 3:1, all designer-specified and reported rather than
 silently changed:

@@ -20,6 +20,23 @@ export default defineConfig({
   // Served under /portal/, so asset URLs must be absolute from that prefix.
   base: '/portal/',
   plugins: [react()],
+  // In production the API and the static app are the same origin (one Node
+  // server), which is what makes the session cookie work at all. `npm run
+  // portal:dev` serves the app from Vite instead, so /portal/api/* has to be
+  // proxied to the real server or every request 404s and the cookie is never
+  // set. Start that server alongside the dev server:
+  //
+  //   PORTAL_STATIC_DIR=web/portal/dist MCP_HTTP_PORT=8932 node dist/mcp/httpServer.js
+  //
+  // PORTAL_API_ORIGIN overrides the target if you run it on another port.
+  server: {
+    proxy: {
+      '/portal/api': {
+        target: process.env.PORTAL_API_ORIGIN ?? 'http://127.0.0.1:8932',
+        changeOrigin: false,
+      },
+    },
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

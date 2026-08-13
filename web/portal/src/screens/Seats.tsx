@@ -66,8 +66,12 @@ export function Seats({
   // exists to make impossible to miss.
   purchased: Record<Tier, number>;
   onOpenSeat: (ref: string) => void;
-  onAddSeat: () => void;
-  onDeleteSeat: (ref: string) => void;
+  // Both are OPTIONAL and currently undefined. Adding a seat spends money and
+  // releasing one credits it (Phases 3 and 6 of the 2026-08-07 plan); neither
+  // has a backend yet. Passing undefined disables the control, which is honest —
+  // a button that silently mutates local state would look like it worked.
+  onAddSeat?: () => void;
+  onDeleteSeat?: (ref: string) => void;
 }) {
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -121,7 +125,12 @@ export function Seats({
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <MonoButton>Export CSV</MonoButton>
-          <Button variant="primary" onClick={onAddSeat}>
+          <Button
+            variant="primary"
+            onClick={onAddSeat}
+            disabled={!onAddSeat}
+            title={onAddSeat ? undefined : 'Buying a seat is not switched on yet — talk to us and we’ll add it.'}
+          >
             Add seat
           </Button>
         </div>
@@ -232,6 +241,7 @@ export function Seats({
               <button
                 type="button"
                 onClick={() => setPendingDelete(s)}
+                disabled={!onDeleteSeat}
                 aria-label={`Delete seat for ${s.name}`}
                 title={`Delete seat for ${s.name}`}
                 style={{
@@ -275,7 +285,7 @@ export function Seats({
           destructive
           onCancel={() => setPendingDelete(null)}
           onConfirm={() => {
-            onDeleteSeat(pendingDelete.ref);
+            onDeleteSeat?.(pendingDelete.ref);
             setPendingDelete(null);
           }}
         >

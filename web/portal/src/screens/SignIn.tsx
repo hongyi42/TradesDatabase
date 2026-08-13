@@ -1,12 +1,42 @@
 import { useState } from 'react';
 import { Button, Field, Logo, inputStyle } from '../components/ui.js';
+import * as api from '../data/api.js';
 
-// The handoff draws email + password with a magic link underneath. The order is
-// swapped here: magic link is the primary path and password is the fallback,
-// because a password field is credential custody we do not otherwise have
-// anywhere in this system. Both still lead to Billing.
-export function SignIn({ onContinue }: { onContinue: () => void }) {
-  const [showPassword, setShowPassword] = useState(false);
+// Magic link only.
+//
+// The handoff drew email + password with a magic link underneath, and the
+// earlier prototype swapped the order but kept a password field. That field is
+// now GONE rather than reordered: there is no password authentication in the
+// system (plan D1 rejected it — a password is credential custody this system
+// does not otherwise have), so a "Use a password" control could only ever fake a
+// sign-in. A control that cannot do what it says is worse than no control.
+//
+// Plan: thoughts/shared/plans/2026-08-12-portal-real-data.md (D1, Phase 3).
+
+export function SignIn({ onBack }: { onBack: () => void }) {
+  const [email, setEmail] = useState('');
+  const [state, setState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  const [error, setError] = useState('');
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!email.trim() || state === 'sending') return;
+    setState('sending');
+    try {
+      await api.requestSignInLink(email.trim());
+      setState('sent');
+    } catch (err) {
+      // 503 is the only failure the customer can see, and it is ours, not
+      // theirs: sign-in mail is not configured. Everything else the server
+      // deliberately answers 204 to.
+      setError(
+        err instanceof api.ApiError && err.status === 503
+          ? 'Sign-in email is not available right now. Please contact us and we’ll sort it out.'
+          : 'Something went wrong. Please try again.',
+      );
+      setState('error');
+    }
+  }
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', minHeight: '100vh' }}>
@@ -27,54 +57,106 @@ export function SignIn({ onContinue }: { onContinue: () => void }) {
           <Logo />
         </div>
 
-        <h2 style={{ margin: 0, fontFamily: 'var(--display)', fontSize: 32, fontWeight: 800, letterSpacing: '-0.03em' }}>Sign in</h2>
-        <p style={{ margin: '10px 0 0', fontSize: 15, color: 'var(--ink-2)', maxWidth: 420 }}>
-          Account owners and billing admins only. Field staff use the bot.
-        </p>
-
-        <form
-          style={{ maxWidth: 420, marginTop: 30, display: 'flex', flexDirection: 'column', gap: 16 }}
-          onSubmit={(e) => {
-            e.preventDefault();
-            onContinue();
-          }}
-        >
-          <Field label="Work email">
-            <input type="email" autoComplete="email" placeholder="you@company.co.uk" style={inputStyle} />
-          </Field>
-
-          {showPassword && (
-            <Field label="Password">
-              <input type="password" autoComplete="current-password" style={inputStyle} />
-            </Field>
-          )}
-
-          <Button
-            variant="primary"
-            type="submit"
-            style={{ padding: '13px 24px', borderRadius: 8, fontSize: 15, width: '100%' }}
-          >
-            {showPassword ? 'Continue' : 'Email me a sign-in link'}
-          </Button>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            <span style={{ flex: 1, height: 1, background: 'var(--line)' }} />
-            <span style={{ fontSize: 12, color: 'var(--ink-5)' }}>or</span>
-            <span style={{ flex: 1, height: 1, background: 'var(--line)' }} />
+        {state === 'sent' ? (
+          // The confirmation NEVER says whether that address has an account —
+          // the server answers identically either way on purpose, and a message
+          // like "no such account" here would hand back the enumeration oracle
+          // the API is careful not to give.
+          <div role="status" style={{ maxWidth: 420 }}>
+            <h2
+              style={{
+                margin: 0,
+                fontFamily: 'var(--display)',
+                fontSize: 32,
+                fontWeight: 800,
+                letterSpacing: '-0.03em',
+              }}
+            >
+              Check your email
+            </h2>
+            <p style={{ margin: '10px 0 0', fontSize: 15, color: 'var(--ink-2)' }}>
+              If <strong>{email.trim()}</strong> has an account, a sign-in link is on its way. It
+              works once and expires shortly.
+            </p>
+            <Button
+              variant="outline"
+              onClick={() => setState('idle')}
+              style={{ marginTop: 24, padding: '13px 24px', borderRadius: 8, fontSize: 15 }}
+            >
+              Use a different email
+            </Button>
           </div>
+        ) : (
+          <>
+            <h2
+              style={{
+                margin: 0,
+                fontFamily: 'var(--display)',
+                fontSize: 32,
+                fontWeight: 800,
+                letterSpacing: '-0.03em',
+              }}
+            >
+              Sign in
+            </h2>
+            <p style={{ margin: '10px 0 0', fontSize: 15, color: 'var(--ink-2)', maxWidth: 420 }}>
+              Account owners and billing admins only. Field staff use the bot.
+            </p>
 
-          <Button
-            variant="outline"
-            onClick={() => (showPassword ? onContinue() : setShowPassword(true))}
-            style={{ padding: '13px 24px', borderRadius: 8, fontSize: 15, width: '100%' }}
-          >
-            {showPassword ? 'Send me a magic link instead' : 'Use a password'}
-          </Button>
-        </form>
+            <form
+              style={{ maxWidth: 420, marginTop: 30, display: 'flex', flexDirection: 'column', gap: 16 }}
+              onSubmit={(e) => void submit(e)}
+            >
+              <Field label="Work email">
+                <input
+                  type="email"
+                  required
+                  autoComplete="email"
+                  placeholder="you@company.co.uk"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  style={inputStyle}
+                />
+              </Field>
 
-        <p style={{ margin: '26px 0 0', fontSize: 13, color: 'var(--ink-4)' }}>
-          Locked out? <a href="#help">Contact your account owner</a>
-        </p>
+              {state === 'error' && (
+                <p role="alert" style={{ margin: 0, fontSize: 13.5, color: 'var(--danger)' }}>
+                  {error}
+                </p>
+              )}
+
+              <Button
+                variant="primary"
+                type="submit"
+                disabled={state === 'sending'}
+                style={{ padding: '13px 24px', borderRadius: 8, fontSize: 15, width: '100%' }}
+              >
+                {state === 'sending' ? 'Sending…' : 'Email me a sign-in link'}
+              </Button>
+            </form>
+
+            <p style={{ margin: '26px 0 0', fontSize: 13, color: 'var(--ink-4)' }}>
+              No account?{' '}
+              <button
+                type="button"
+                onClick={onBack}
+                style={{
+                  border: 0,
+                  background: 'transparent',
+                  padding: 0,
+                  color: 'var(--amber-deep)',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  fontFamily: 'var(--sans)',
+                  textDecoration: 'underline',
+                }}
+              >
+                Ask us for a walkthrough
+              </button>
+              {' '}— we set firms up one at a time.
+            </p>
+          </>
+        )}
       </div>
 
       {/* Pull-quote panel moves from `ink` to `shell-sidebar` so the two-column

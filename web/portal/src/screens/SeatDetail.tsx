@@ -23,7 +23,8 @@ export function SeatDetail({
 }: {
   seat: Seat;
   onBack: () => void;
-  onDelete: () => void;
+  /** Optional: releasing a seat credits money and has no backend yet (Phase 6). */
+  onDelete?: () => void;
 }) {
   const status = displayStatus(seat);
 
@@ -71,7 +72,7 @@ export function SeatDetail({
         {/* These two sit on the shell, not in a card. */}
         <div style={{ display: 'flex', gap: 10 }}>
           <Button variant="shell-outline">Suspend</Button>
-          <Button variant="shell-danger" onClick={onDelete}>
+          <Button variant="shell-danger" onClick={onDelete} disabled={!onDelete}>
             Delete seat
           </Button>
         </div>
@@ -86,13 +87,18 @@ export function SeatDetail({
               ['Bot handle', <span style={S.mono}>{seat.botUsername ?? '—'}</span>],
               [
                 'Token',
-                // Masked. The real token is fetched from Telegram via
-                // getManagedBotToken and is never rendered in full here.
-                <span style={S.mono}>7642••••••••••••••••••••••••fA1c</span>,
+                // Was a hardcoded masked string. On a REAL seat that reads as
+                // this person's actual token fingerprint, which it never was —
+                // the same "plausible wrong data" problem the Billing banner
+                // exists to avoid (plan D5). Bot tokens are not in the API at
+                // all: they arrive with Managed Bots in Phase 4, and are stored
+                // encrypted and never rendered. Until then this is honestly
+                // blank, like every other field we do not have.
+                <span style={S.mono}>—</span>,
               ],
               ['Telegram user ID', <span style={S.mono}>{seat.telegramUserId ?? '—'}</span>],
-              ['Webhook path', <span style={S.mono}>/hook/s_9c04e2</span>],
-              ['Last message', <span style={{ color: 'var(--ink-2)' }}>12 minutes ago</span>],
+              ['Webhook path', <span style={S.mono}>—</span>],
+              ['Last message', <span style={{ color: 'var(--ink-2)' }}>—</span>],
             ]}
           />
           <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
@@ -126,6 +132,12 @@ export function SeatDetail({
             ]}
           />
           <div style={{ borderTop: '1px solid var(--line)', marginTop: 18, paddingTop: 14 }}>
+            {/* Illustrative: there is no provisioning-log endpoint yet (Phase 5).
+                Labelled rather than removed so the shape of the screen survives,
+                but nobody mistakes these lines for this seat's real history. */}
+            <p style={{ margin: '0 0 8px', ...S.label, color: 'var(--ink-4)' }}>
+              Example log · not this seat&rsquo;s real history
+            </p>
             {SANDBOX_LOG.map((line) => (
               <p
                 key={line}

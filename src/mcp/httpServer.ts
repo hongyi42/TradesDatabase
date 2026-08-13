@@ -20,6 +20,7 @@ import { handleComposioRelay, isRelayPath } from '../composio/relayHandler.js';
 import { handleBoardRequest, isBoardPath } from '../telegram/boardApi.js';
 import { handleAdminRequest, isAdminPath } from '../admin/adminApi.js';
 import { handlePortalRequest, isPortalPath } from '../portal/portalApi.js';
+import { configureMailer } from '../portal/mailer.js';
 
 // Central HTTP entrypoint (Architecture A). Every NemoClaw bot reaches this one
 // server through the gateway. It runs STATELESS (sessionIdGenerator: undefined):
@@ -455,6 +456,11 @@ export function createHttpServer(): http.Server {
 }
 
 async function main(): Promise<void> {
+  // Sign-in mail is resolved once at boot, and fails CLOSED: with no sender
+  // configured, /portal/api/auth/request-link answers 503 rather than pretending
+  // to send. Done in main() rather than createHttpServer() so tests keep full
+  // control of the mailer via setMailer().
+  configureMailer();
   const port = Number(process.env.MCP_HTTP_PORT ?? 8080);
   createHttpServer().listen(port, () => {
     console.error(`trades-spine MCP HTTP server listening on :${port}`);

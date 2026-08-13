@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Logo } from './ui.js';
-import { ACCOUNT, USER } from '../data/mock.js';
+import { ACCOUNT } from '../data/mock.js';
 import { money } from '../data/model.js';
 
 export type AppScreen = 'billing' | 'seats' | 'detail' | 'exports' | 'admin';
@@ -10,24 +10,36 @@ export type AppScreen = 'billing' | 'seats' | 'detail' | 'exports' | 'admin';
 // narrow "Export CSV" for their own table, but downloading the customer's
 // records and logs is a different job with its own retention and audit rules,
 // and burying it under Billing would misfile it as a finance action.
-const NAV: Array<{ key: AppScreen; label: string }> = [
+//
+// `operatorOnly` marks the cross-tenant surfaces. Plan D4: the admin queue is
+// reached from the same shell customers use, so whether it appears is decided by
+// the role on the SERVER SESSION. This is a display convenience only — the real
+// gate is that a customer session has no operator endpoints to call.
+const NAV: Array<{ key: AppScreen; label: string; operatorOnly?: boolean }> = [
   { key: 'billing', label: 'Billing' },
   { key: 'seats', label: 'Seats' },
   { key: 'exports', label: 'Data & exports' },
-  { key: 'admin', label: 'Admin queue' },
+  { key: 'admin', label: 'Admin queue', operatorOnly: true },
 ];
 
 export function AppShell({
   screen,
   onNavigate,
   cycleTotalCents,
+  role,
+  accountEmail,
+  onSignOut,
   children,
 }: {
   screen: AppScreen;
   onNavigate: (s: AppScreen) => void;
   cycleTotalCents: number;
+  role: 'owner' | 'operator';
+  accountEmail: string;
+  onSignOut: () => void;
   children: ReactNode;
 }) {
+  const nav = NAV.filter((item) => !item.operatorOnly || role === 'operator');
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '236px 1fr', minHeight: '100vh' }}>
       <aside
@@ -56,7 +68,7 @@ export function AppShell({
           >
             ACCOUNT
           </p>
-          {NAV.map((item) => {
+          {nav.map((item) => {
             // "Seats" stays visually active on a seat detail page — the detail
             // screen is a child of Seats, not a peer of it.
             const active = screen === item.key || (item.key === 'seats' && screen === 'detail');
@@ -139,11 +151,39 @@ export function AppShell({
               flex: 'none',
             }}
           />
-          <div style={{ minWidth: 0 }}>
-            <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: 'var(--shell-ink)' }}>
-              {USER.name}
+          <div style={{ minWidth: 0, flex: 1 }}>
+            {/* The signed-in identity is the SESSION's, not a mock user. */}
+            <p
+              style={{
+                margin: 0,
+                fontSize: 13,
+                fontWeight: 500,
+                color: 'var(--shell-ink)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+              title={accountEmail}
+            >
+              {accountEmail}
             </p>
-            <p style={{ margin: 0, fontSize: 11, color: 'var(--shell-ink-2)' }}>{USER.role}</p>
+            <button
+              type="button"
+              onClick={onSignOut}
+              style={{
+                margin: 0,
+                padding: 0,
+                border: 0,
+                background: 'transparent',
+                color: 'var(--shell-ink-2)',
+                fontSize: 11,
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                fontFamily: 'var(--sans)',
+              }}
+            >
+              Sign out
+            </button>
           </div>
         </div>
       </aside>

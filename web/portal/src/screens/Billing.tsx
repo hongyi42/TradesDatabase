@@ -20,10 +20,20 @@ export function Billing({
   lines,
   prorationCents,
   totalCents,
+  notWired,
 }: {
   lines: TierLine[];
   prorationCents: number;
   totalCents: number;
+  /**
+   * Plan D5. There is no Stripe account (the owner descoped billing on
+   * 2026-08-12), so every figure on this screen is illustrative. The tempting
+   * shortcut is to derive one from seats × price — but that invents a number
+   * nobody will actually be charged, on the single screen whose whole purpose is
+   * telling someone what they owe. A visible "not connected" state is honest; a
+   * plausible wrong number is not. Remove this prop when Stripe lands.
+   */
+  notWired?: boolean;
 }) {
   return (
     <>
@@ -31,6 +41,28 @@ export function Billing({
       <p style={S.sub}>
         {ACCOUNT.name} · {ACCOUNT.plan} · {ACCOUNT.billingCycle}
       </p>
+
+      {notWired && (
+        <div
+          role="status"
+          style={{
+            marginTop: 16,
+            padding: '13px 16px',
+            borderRadius: 10,
+            background: 'var(--amber-tint-bg)',
+            border: '1px solid var(--amber-tint-line)',
+            color: 'var(--ink)',
+          }}
+        >
+          <p style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>
+            Not connected to billing yet
+          </p>
+          <p style={{ margin: '4px 0 0', fontSize: 13.5, color: 'var(--ink-2)' }}>
+            Every figure on this page is an example, not your bill. Seats and people are real —
+            invoices and payment are not switched on. We&rsquo;ll tell you before that changes.
+          </p>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 18, marginTop: 22 }}>
         <section style={{ ...S.card, padding: 22 }}>

@@ -720,6 +720,47 @@ export type Database = {
           },
         ]
       }
+      portal_sessions: {
+        Row: {
+          account_id: string
+          created_at: string
+          expires_at: string
+          id: string
+          last_seen_at: string
+          revoked_at: string | null
+          token_hash: string
+          user_agent: string | null
+        }
+        Insert: {
+          account_id: string
+          created_at?: string
+          expires_at: string
+          id?: string
+          last_seen_at?: string
+          revoked_at?: string | null
+          token_hash: string
+          user_agent?: string | null
+        }
+        Update: {
+          account_id?: string
+          created_at?: string
+          expires_at?: string
+          id?: string
+          last_seen_at?: string
+          revoked_at?: string | null
+          token_hash?: string
+          user_agent?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "portal_sessions_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "portal_accounts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       query_audit: {
         Row: {
           created_at: string

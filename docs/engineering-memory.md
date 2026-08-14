@@ -1749,6 +1749,17 @@ mechanism in [long-running-task-batching.md](long-running-task-batching.md).
   still documents as open — that README's "Known coverage gap: month, quarter, year" section
   and its `M01–M11` period questions predate the modes by one day and will grade differently
   now. The eval's 366-case date matrix covers all seven modes and passes 100%.
+- **"This job has no recorded type" from `find_slots` almost never means a data problem — it
+  means the agent went in by `customerId`.** Solved 2026-08-14 (spine-eval PR #136, args now
+  recorded per call): GLM's recurring habit is skipping the context read and calling
+  `find_slots`/`book_visit` with `customerId` — which describes a HYPOTHETICAL new job, hence
+  "no recorded type" — even when the manager's message names the job already on file. Seven of
+  nine failures in the first 59-scenario pass shared this one signature, and it mints DUPLICATE
+  jobs whose booking replies look perfect (only the job-scoped end-state checks catch it). B05
+  passes because its script forces the context read first; M08 shows the model self-corrects
+  after `get_customer_context`. Candidate product fix (a customerId-path guard that surfaces the
+  customer's matching open jobs) is a pending user decision — cite this entry rather than
+  re-deriving the diagnosis.
 - **"The model is 94% of a turn" is a HARNESS number, not a production one — don't quote it as
   the latter.** The spine-eval's tier 2 measured every spine tool's p95 under 51ms and concluded
   the model dominates. True of that path, misleading about production, because tier 2 hands the

@@ -108,6 +108,7 @@ const spine = makeCaller(server);
 let tokensIn = 0;
 let tokensOut = 0;
 let stallRetries = 0;
+let emptyRetries = 0;
 const ttftAll = []; // time-to-first-token per successful call — perceived latency
 
 // STREAMING with a liveness watchdog (2026-08-14, user decision), replacing a
@@ -234,6 +235,16 @@ async function chat(messages, tools) {
       if (firstChunkAt !== null) ttftAll.push(firstChunkAt - started);
       tokensIn += usage?.prompt_tokens ?? 0;
       tokensOut += usage?.completion_tokens ?? 0;
+      // A COMPLETELY empty completion — no text, no tool calls — at
+      // temperature 0 on a normal prompt is a provider anomaly (observed
+      // during the 2026-08-14 balance-flap degradation), not a decision.
+      // One counted retry; a second empty is the model's answer and the
+      // graders hear it as the empty-reply finding it is.
+      if (!content && toolCalls.length === 0 && attempt < 2 && performance.now() < overallDeadline) {
+        emptyRetries++;
+        stalledMs += elapsed;
+        continue;
+      }
       const message = {
         role: 'assistant',
         content: content || null,
@@ -534,6 +545,9 @@ if (steerTotal) {
 if (stallRetries) {
   console.log(`  provider stalls retried ${stallRetries} — silent streams killed by the liveness watchdog, answered on a fresh attempt`);
 }
+if (emptyRetries) {
+  console.log(`  empty completions retried ${emptyRetries} — zero-token answers at temperature 0, a provider anomaly`);
+}
 console.log(`  spend      $${cost.toFixed(3)} (${tokensIn.toLocaleString()} in / ${tokensOut.toLocaleString()} out)`);
 console.log(`\n  by family:`);
 for (const [family, f] of Object.entries(byFamily)) {
@@ -661,6 +675,7 @@ writeFileSync(
       enabled: [...enabled],
       spend: { usd: cost, tokensIn, tokensOut },
       stallRetries,
+      emptyRetries,
       results,
       skipped: skipped.map((x) => ({ id: x.id, title: x.title, requires: x.requires })),
     },

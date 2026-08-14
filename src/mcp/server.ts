@@ -156,7 +156,8 @@ import { commitResolvePlan } from '../schedule/resolveCommit.js';
 import { commitUndoRun, planUndo, type UndoPlan } from '../schedule/undoRun.js';
 import type { GeocodeTransport } from '../routes/geocode.js';
 import type { MintRoiToken, RoiTransport } from '../routes/roiClient.js';
-import { isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
+import {
+  servedDayPhrase, isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
   findUndoOfRun,
   latestCommittedRun,
@@ -774,6 +775,8 @@ const ADMIN_TOOLS = [
       'time. NEVER assume a promise was made. When talking to customers, offer DAYS, not times. ' +
       'A fresh booking is NOT pinned — if the manager wants automatic scheduling\'s hands off ' +
       'it ("pin it", "don\'t let the freeze move this"), follow up with set_visit_locks. ' +
+      'When the result carries dayPhrase, SAY IT VERBATIM whenever you name the day — never ' +
+      'work out the weekday yourself; you are unreliable at calendar math. ' +
       'When the result carries boardNote, ALWAYS end your report with its exact ' +
       '[See it on the board](…) line — it renders as a tappable link.',
     inputSchema: {
@@ -813,7 +816,8 @@ const ADMIN_TOOLS = [
       'date + startTime (+ optional endTime/technicianRef OR unassign) + reason. When the ' +
       'result carries ' +
       'boardNote, ALWAYS end your report with its exact [See it on the board](…) line — it ' +
-      'renders as a tappable link.',
+      'renders as a tappable link. When the result carries dayPhrase, SAY IT VERBATIM whenever ' +
+      'you name the new day — never work out the weekday yourself.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -3363,6 +3367,11 @@ async function dispatch(
             // assumption in the same breath it is made.
             jobTitle: booked.job.title,
             customer: booked.customer.name,
+            // Pre-composed weekday+date — SAY THIS VERBATIM when naming the
+            // day (weekday-mismatch class; see servedDayPhrase).
+            ...(booked.assignment.starts_at
+              ? { dayPhrase: servedDayPhrase(booked.assignment.starts_at.slice(0, 10)) }
+              : {}),
             technicianRef: technicianRef ?? null,
             unassigned: booked.assignment.technician_id === null,
             // Placed: the booked day. Unplaced: the range start (+ range echo
@@ -3559,6 +3568,9 @@ async function dispatch(
         jobId: booked.job.id,
         jobTitle: booked.job.title, // same job-identity echo as the one-shot path
         customer: booked.customer.name,
+        ...(booked.assignment.starts_at
+          ? { dayPhrase: servedDayPhrase(booked.assignment.starts_at.slice(0, 10)) }
+          : {}),
         technicianRef: d.technicianRef ?? null,
         unassigned: booked.assignment.technician_id === null,
         date: d.date ?? booked.assignment.earliest_date,
@@ -3626,6 +3638,7 @@ async function dispatch(
             assignmentId: moved.created.id,
             previousAssignmentId: moved.cancelled.id,
             date,
+            ...(date ? { dayPhrase: servedDayPhrase(date) } : {}),
             startTime,
             endTime: preview.endTime,
             ...(unassignArg ? { unassigned: true } : {}),
@@ -3749,6 +3762,7 @@ async function dispatch(
         assignmentId: moved.created.id,
         previousAssignmentId: moved.cancelled.id,
         date: d.date,
+        ...(d.date ? { dayPhrase: servedDayPhrase(d.date) } : {}),
         startTime: d.startTime,
         endTime: d.endTime,
         ...(d.unassign === true ? { unassigned: true } : {}),

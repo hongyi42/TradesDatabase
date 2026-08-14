@@ -60,7 +60,14 @@ export const defaultAnswerer: Answerer = async (context, question, ctx) => {
     // the same prose+citations output shape over the same serialized context, so
     // it truncates the same way — dropping `citations` while still returning
     // parseable JSON. See the note in briefCustomer.ts for the measurements.
-    maxTokens: 2048,
+    // 2048 was the same silent-truncation bug one size up (2026-08-14, spine-eval
+    // Q01/Q03): GLM-5.2 THINKS by default and its reasoning tokens spend from
+    // this same budget, so a long enough think starved the visible output and
+    // finish_reason='length' killed the tool intermittently — rich histories
+    // and chatty thinking days made it flaky, not rare. 8192 leaves the think
+    // plus the largest measured brief comfortable headroom; completion billing
+    // is still per token EMITTED, so calls that already fit cost the same.
+    maxTokens: 8192,
     label: 'defaultAnswerer',
   }, ctx);
   const { answer, citations } = args as unknown as { answer: string; citations?: Citation[] };

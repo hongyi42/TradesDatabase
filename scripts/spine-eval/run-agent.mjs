@@ -22,7 +22,7 @@ import pg from 'pg';
 import { requireLocalStack, modelConfig, productionLikeEnv, assertWorldPresent, argOf, hasFlag } from './lib/env.mjs';
 import { startSpineServer, makeCaller } from './lib/mcp.mjs';
 import { buildCorpus, BASELINE_GRADERS, calendarCoverageNote } from '../../dist/eval/corpus.js';
-import { runGraders } from '../../dist/eval/graders.js';
+import { runGraders, filterExpectedRefusals } from '../../dist/eval/graders.js';
 import { extractDoctrine, buildSystemPrompt, doctrineFingerprint } from '../../dist/eval/doctrine.js';
 import { tenantOf } from '../../dist/eval/worldManifest.js';
 import { ms, rate, summarise } from '../../dist/eval/metrics.js';
@@ -266,7 +266,10 @@ async function runScenario(scenario, repeatIndex) {
 
   const findings = fatal
     ? [{ kind: 'harness-or-provider-failure', detail: fatal }]
-    : runGraders(traj, [...BASELINE_GRADERS, ...(scenario.graders?.(ctx) ?? [])]);
+    : filterExpectedRefusals(
+        runGraders(traj, [...BASELINE_GRADERS, ...(scenario.graders?.(ctx) ?? [])]),
+        scenario.expectedRefusals,
+      );
 
   // End state last: a scenario's real verdict is what the database says, not what
   // the agent claimed.

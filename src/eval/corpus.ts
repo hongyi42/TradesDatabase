@@ -57,6 +57,16 @@ export interface Scenario {
   requires?: Requirement;
   /** Part of the small subset a /goal loop runs (cheap, high signal). */
   quick?: true;
+  /**
+   * Tool errors this scenario EXPECTS — designed fail-closed refusals whose
+   * arrival is the product working, not a failure of either layer. The seat
+   * cap saying "no free technician seats" and find_slots saying "this job has
+   * no recorded type" are the very behaviors T02 and B06 exist to elicit; the
+   * first full run counted both as tool-error findings and failed the
+   * scenarios for succeeding (the grader-accused-the-agent trap, again).
+   * Matched against the finding detail; everything unmatched still counts.
+   */
+  expectedRefusals?: readonly RegExp[];
 }
 
 /**
@@ -324,6 +334,11 @@ export function buildCorpus(): Scenario[] {
       `${customerName(ctx.tenant, 'fx-t2-bk-07')} has no heat and a baby in the house. Anything today or tomorrow?`,
     ],
     graders: () => [gradeToolChoice({ required: ['resolve_date'] })],
+    // fx-t2-bk-07's job is the planted no-duration edge: the first find_slots
+    // MUST fail closed with "no recorded type" — that refusal is the plant
+    // working. The agent recovering (assume a type, disclose the assumption,
+    // ask) is the behavior under test.
+    expectedRefusals: [/no recorded type/i],
   });
 
   // ── reschedule and cancel ─────────────────────────────────────────────────
@@ -462,7 +477,12 @@ export function buildCorpus(): Scenario[] {
     turns: (ctx) => [
       `take ${customerName(ctx.tenant, 'fx-t2-rs-03')} off the calendar for now, the part is late.`,
       'yes',
-      `the part arrived — put them back on with cfg-tech-09 on ${nextWorkday(addDays(ctx.anchor, 16))} at 9am.`,
+      // 9 TO 10am, not "at 9am": doctrine forbids default lengths, so a bare
+      // start time makes the agent (correctly) ask "30 or 60 minutes?" — a
+      // question the script's canned "yes" cannot answer, and the scenario
+      // starves without ever testing the rebook. The agent's refusal to
+      // invent an end time was the product behaving; the script was the bug.
+      `the part arrived — put them back on with cfg-tech-09 on ${nextWorkday(addDays(ctx.anchor, 16))}, 9 to 10am.`,
       'yes',
     ],
     endState: {
@@ -780,6 +800,9 @@ export function buildCorpus(): Scenario[] {
     tier: 'manager',
     turns: () => ['add Grover Pankhurst to the team', 'yes'],
     graders: () => [gradeContent({ mustMentionOneOf: [['seat', 'no room', 'capacity', 'full']] })],
+    // The refusal IS the pass condition — the cap message arrives as a tool
+    // error by design, and the endState confirms nobody was added.
+    expectedRefusals: [/no free technician seats/i],
     endState: {
       describe: 'nobody was added past the cap',
       query: (ctx) => ({

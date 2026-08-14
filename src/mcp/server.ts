@@ -276,7 +276,10 @@ const TOOLS = [
       'nothing is scheduled when a timeTbd entry exists, and never invent a time for one). ' +
       "When you NAME a visit's day, SAY the entry's `phrase` VERBATIM (\"Tuesday 2026-08-18\") — " +
       'never re-derive the weekday or restate the date yourself; you are unreliable at both. ' +
-      'recentVisits is past work evidence, not the schedule.',
+      'recentVisits is past work evidence, not the schedule. When the result carries an ' +
+      'openWorkNote, the customer has work with NO visit booked: "next opening / availability / ' +
+      'earliest you could come" questions are about THAT work — answer them with ' +
+      'find_slots(jobId), never from upcomingVisits.',
     inputSchema: {
       type: 'object',
       properties: { customerId: { type: 'string' } },
@@ -2001,7 +2004,28 @@ async function dispatch(
       if (!ctx.customer || ctx.customer.tenant_id !== tenantId) {
         return { customer: null, jobs: [], upcomingVisits: [], recentVisits: [], recentCaptures: [] };
       }
-      return { ...ctx, recentCaptures: dropSensitive(ctx.recentCaptures) };
+      // Served steering at the exact decision point (the B03 flake, 2026-08-14):
+      // asked "when is the next OPENING for X's work?", the model reads this
+      // context, sees the booked visits, and answers with the next VISIT —
+      // the queued job with no visit is the one the question was about. Name
+      // that work and the verb that answers for it, in the result itself.
+      const scheduledJobIds = new Set(ctx.upcomingVisits.map((v) => v.jobId));
+      const unscheduled = ctx.jobs.filter(
+        (j) => (j.status === 'open' || j.status === 'in_progress') && !scheduledJobIds.has(j.id),
+      );
+      return {
+        ...ctx,
+        recentCaptures: dropSensitive(ctx.recentCaptures),
+        ...(unscheduled.length
+          ? {
+              openWorkNote:
+                `UNSCHEDULED work on file: ${unscheduled.map((j) => `'${j.title}' (jobId ${j.id})`).join('; ')}. ` +
+                'upcomingVisits answers what IS booked; a question about when work COULD happen — an ' +
+                'opening, availability, the earliest someone could come — is a find_slots(jobId) ' +
+                'question about THESE jobs, never answered from the booked schedule.',
+            }
+          : {}),
+      };
     }
     case 'get_job': {
       const jobId = str('jobId');

@@ -108,6 +108,64 @@ const spine = makeCaller(server);
 let tokensIn = 0;
 let tokensOut = 0;
 let stallRetries = 0;
+const ttftAll = []; // time-to-first-token per successful call — perceived latency
+
+// STREAMING with a liveness watchdog (2026-08-14, user decision), replacing a
+// fixed 180s timeout. The old design could not tell a STALL from a slow answer
+// — silence looks identical either way in a non-streaming call, so it waited
+// the full budget before retrying (D01 burned 180s on a request that produced
+// nothing; the rerun answered in 10s). Streamed, a healthy call proves it is
+// alive with a chunk every few hundred ms even while thinking, so death is
+// detectable in seconds and NO ceiling is needed on calls that are visibly
+// working — a genuinely long-horizon turn streams for minutes untouched
+// (S06 legitimately ran 180.5s and nearly died to the old fixed timeout).
+const FIRST_CHUNK_MS = Number(argOf('first-token-timeout', '20000'));
+const IDLE_CHUNK_MS = Number(argOf('inter-token-timeout', '30000'));
+
+/** Read one streamed completion; resets the watchdog on EVERY received chunk. */
+async function readStream(res, controller, armWatchdog) {
+  const decoder = new TextDecoder();
+  let buf = '';
+  let content = '';
+  const toolCalls = []; // index → {id, name, arguments}
+  let usage = null;
+  let firstChunkAt = null;
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (firstChunkAt === null) firstChunkAt = performance.now();
+    armWatchdog(IDLE_CHUNK_MS); // ANY bytes count as liveness, comments included
+    buf += decoder.decode(value, { stream: true });
+    // SSE events are newline-delimited `data: {...}` lines; a partial line
+    // stays in the buffer until its terminator arrives.
+    let nl;
+    while ((nl = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith('data:')) continue; // comments/keep-alives = liveness only
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') continue;
+      let json;
+      try {
+        json = JSON.parse(payload);
+      } catch {
+        continue; // a torn frame is not worth killing the call over
+      }
+      if (json.usage) usage = json.usage;
+      const delta = json.choices?.[0]?.delta;
+      if (!delta) continue;
+      if (typeof delta.content === 'string') content += delta.content;
+      for (const tc of delta.tool_calls ?? []) {
+        const slot = (toolCalls[tc.index] ??= { id: '', name: '', arguments: '' });
+        if (tc.id) slot.id = tc.id;
+        if (tc.function?.name) slot.name += tc.function.name;
+        if (tc.function?.arguments) slot.arguments += tc.function.arguments;
+      }
+    }
+  }
+  return { content, toolCalls, usage, firstChunkAt };
+}
 
 async function chat(messages, tools) {
   const body = {
@@ -118,69 +176,99 @@ async function chat(messages, tools) {
     // Deterministic as the provider allows: a corpus that moves under you cannot
     // be regressed against.
     temperature: 0,
+    stream: true,
+    stream_options: { include_usage: true },
   };
-  // A TOTAL budget across attempts, not a per-attempt one.
-  //
-  // Learned the expensive way during a DeepInfra slow spell: a SLOW 5xx is
-  // retryable AND takes the full per-attempt timeout, so three retries spent 930
-  // seconds on one scenario and produced zero tool calls. Per-attempt timeouts
-  // bound each call; only a total budget bounds the call SITE, and a provider that
-  // cannot answer inside the budget is itself the finding — not something to keep
-  // paying to re-ask.
-  //
-  // ×2, not ×1.5: a STALL (DeepInfra hangs a request outright — D01 spent 180s
-  // producing nothing while the identical request succeeded in 10s on rerun)
-  // gets ONE fresh attempt with a real budget behind it. A slow ANSWER never
-  // trips this; only a request that timed out entirely does.
+  // The overall deadline is now a BACKSTOP against a stream that trickles
+  // forever, not the stall detector — liveness is judged per chunk. Kept
+  // generous on purpose: a call that is visibly producing tokens for three
+  // minutes is a latency finding, not a hang.
   const overallDeadline = performance.now() + MODEL_TIMEOUT * 2;
-  let stalledMs = 0; // provider time burned by stalled attempts, kept in the returned ms
+  let stalledMs = 0; // time burned by stalled attempts, kept in the returned ms
   for (let attempt = 1; attempt <= 4; attempt++) {
     const remaining = overallDeadline - performance.now();
-    if (remaining <= 0) return { error: `model gave up: no answer within ${Math.round(MODEL_TIMEOUT * 1.5)}ms across ${attempt - 1} attempt(s)`, ms: MODEL_TIMEOUT * 1.5 };
+    if (remaining <= 0) return { error: `model gave up: total budget (${Math.round(MODEL_TIMEOUT * 2)}ms) exhausted across ${attempt - 1} attempt(s)`, ms: MODEL_TIMEOUT * 2 };
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), Math.min(MODEL_TIMEOUT, remaining));
+    let watchdog = null;
+    let stalled = false;
+    let budgetExceeded = false;
+    // One timer, re-armed on every chunk. Firing = either the stream went
+    // SILENT (never started, or died mid-flight — the only shape that means
+    // dead) or the overall budget ran out under a stream that was still
+    // visibly alive. The two must not be conflated: a stall retries, a
+    // budget overrun is a latency finding.
+    const armWatchdog = (ms) => {
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        if (performance.now() >= overallDeadline - 50) budgetExceeded = true;
+        else stalled = true;
+        controller.abort();
+      }, Math.min(ms, Math.max(1, overallDeadline - performance.now())));
+    };
     const started = performance.now();
     try {
+      armWatchdog(FIRST_CHUNK_MS);
       const res = await fetch(`${model.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${model.key}` },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      const elapsed = performance.now() - started;
       if (res.status === 429 || res.status >= 500) {
         // Retry the transient classes only. A 402 (balance out) or 400 is not
         // transient and must surface immediately — the fleet's balance has run
         // out silently three times, and a retry loop would hide it.
         if (attempt < 4 && performance.now() < overallDeadline) {
+          clearTimeout(watchdog);
+          await res.body?.cancel?.().catch(() => {});
           await new Promise((r) => setTimeout(r, 500 * 2 ** attempt + Math.random() * 250));
           continue;
         }
       }
-      const text = await res.text();
-      if (!res.ok) return { error: `HTTP ${res.status}: ${text.slice(0, 300)}`, ms: elapsed + stalledMs };
-      const json = JSON.parse(text);
-      tokensIn += json.usage?.prompt_tokens ?? 0;
-      tokensOut += json.usage?.completion_tokens ?? 0;
-      return { message: json.choices?.[0]?.message ?? null, ms: elapsed + stalledMs, usage: json.usage ?? null };
+      if (!res.ok) {
+        const text = await res.text();
+        return { error: `HTTP ${res.status}: ${text.slice(0, 300)}`, ms: performance.now() - started + stalledMs };
+      }
+      const { content, toolCalls, usage, firstChunkAt } = await readStream(res, controller, armWatchdog);
+      const elapsed = performance.now() - started;
+      if (firstChunkAt !== null) ttftAll.push(firstChunkAt - started);
+      tokensIn += usage?.prompt_tokens ?? 0;
+      tokensOut += usage?.completion_tokens ?? 0;
+      const message = {
+        role: 'assistant',
+        content: content || null,
+        ...(toolCalls.length
+          ? {
+              tool_calls: toolCalls
+                .filter(Boolean)
+                .map((t) => ({ id: t.id, type: 'function', function: { name: t.name, arguments: t.arguments } })),
+            }
+          : {}),
+      };
+      return { message, ms: elapsed + stalledMs, usage };
     } catch (err) {
       const elapsed = performance.now() - started;
-      if (err.name === 'AbortError') {
-        // A STALL, not a slow answer: the request produced nothing for the whole
-        // per-attempt budget. One fresh attempt is honest — DeepInfra stalls are
-        // per-request, and the retry usually answers in seconds. A second stall
-        // is the provider's verdict, and the call site hears it.
+      if (err.name === 'AbortError' && stalled) {
+        // The stream went silent — a STALL, detected in seconds instead of a
+        // full timeout. One fresh attempt (DeepInfra stalls are per-request);
+        // a second stall is the provider's verdict, and the call site hears it.
         if (attempt < 2 && performance.now() < overallDeadline) {
           stallRetries++;
           stalledMs += elapsed;
           continue;
         }
-        return { error: `model timed out after ${Math.round(elapsed + stalledMs)}ms${stalledMs ? ' (incl. one stall retry)' : ''}`, ms: elapsed + stalledMs };
+        return { error: `model stream went silent after ${Math.round(elapsed + stalledMs)}ms${stalledMs ? ' (incl. one stall retry)' : ''}`, ms: elapsed + stalledMs };
+      }
+      if (err.name === 'AbortError' && budgetExceeded) {
+        return { error: `model exceeded the total budget (${Math.round(elapsed + stalledMs)}ms) while still streaming — a latency finding, not a hang`, ms: elapsed + stalledMs };
+      }
+      if (err.name === 'AbortError') {
+        return { error: `model call aborted after ${Math.round(elapsed + stalledMs)}ms`, ms: elapsed + stalledMs };
       }
       if (attempt === 4) return { error: String(err.message ?? err), ms: elapsed + stalledMs };
       await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
     } finally {
-      clearTimeout(timer);
+      clearTimeout(watchdog);
     }
   }
   return { error: 'exhausted retries', ms: 0 };
@@ -430,6 +518,11 @@ console.log(`\n  ── tier 2 ──`);
 console.log(`  scenarios  ${passed.length}/${results.length} passed (${rate(passed.length, results.length)}%)`);
 console.log(`  latency    wall p50 ${ms(summarise(wallAll).p50)}  p95 ${ms(summarise(wallAll).p95)}`);
 console.log(`             model p50 ${ms(summarise(modelMsAll).p50)}  tools p50 ${ms(summarise(toolMsAll).p50)}`);
+if (ttftAll.length) {
+  console.log(
+    `             first token p50 ${ms(summarise(ttftAll).p50)}  p95 ${ms(summarise(ttftAll).p95)} — when a streaming user first sees the reply begin`,
+  );
+}
 const modelShare = summarise(modelMsAll).mean / (summarise(modelMsAll).mean + summarise(toolMsAll).mean);
 console.log(`             the model is ${(modelShare * 100).toFixed(1)}% of a turn's time; the spine tools are the rest`);
 console.log(`  round trips p50 ${summarise(callsAll).p50} tool calls per scenario`);
@@ -439,7 +532,7 @@ if (steerTotal) {
   console.log(`  guard steers ${steerTotal} across ${steerScenarios} scenario(s) — the mint guard redirecting customerId habits (extra round trips, not failures)`);
 }
 if (stallRetries) {
-  console.log(`  provider stalls retried ${stallRetries} — each burned a full model timeout before the fresh attempt`);
+  console.log(`  provider stalls retried ${stallRetries} — silent streams killed by the liveness watchdog, answered on a fresh attempt`);
 }
 console.log(`  spend      $${cost.toFixed(3)} (${tokensIn.toLocaleString()} in / ${tokensOut.toLocaleString()} out)`);
 console.log(`\n  by family:`);
@@ -489,6 +582,17 @@ lines.push('| leg | p50 | p95 | max |', '|---|---|---|---|');
 for (const [label, values] of [['wall', wallAll], ['model', modelMsAll], ['tools', toolMsAll]]) {
   const s = summarise(values);
   lines.push(`| ${label} | ${ms(s.p50)} | ${ms(s.p95)} | ${ms(s.max)} |`);
+}
+if (ttftAll.length) {
+  const t = summarise(ttftAll);
+  lines.push(`| first token | ${ms(t.p50)} | ${ms(t.p95)} | ${ms(t.max)} |`);
+  lines.push(
+    '',
+    'First token = per MODEL CALL, the moment the stream starts — the closest measurable ' +
+      'proxy for when a Telegram user sees the reply begin (openclaw streams). Calls are ' +
+      'judged alive by chunk flow, not duration: a stall is detected in seconds, and a ' +
+      'legitimately long call is never killed while visibly streaming.',
+  );
 }
 lines.push('', `Round trips: p50 ${summarise(callsAll).p50}, p95 ${summarise(callsAll).p95} tool calls per scenario.`, '');
 if (steerTotal) {

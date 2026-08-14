@@ -381,18 +381,24 @@ export type FixtureTier = (typeof FIXTURE_TIERS)[number];
  *
  *   day 0  09:00        wf-04  the visit a customer calls off (slot handover)
  *   day 1  09:00/13:00  wf-05+06  the day a time-off booking collides with
- *   day 2  13:00/15:00  wf-07+08  the afternoon that gets cleared
- *   day 3  10:00        wf-09  the blocker a same-time booking must dodge
- *   day 4  11:00        wf-12  a TIME-promised visit (gate, then release)
+ *   day 2  10:00        wf-09  the blocker a same-time booking must dodge
+ *   day 3  11:00        wf-12  a TIME-promised visit (gate, then release)
+ *   day 4  13:00/15:00  wf-07+08  the afternoon that gets cleared — LAST on
+ *          purpose: M05's instruction is "push these to the next open slots
+ *          AFTER that day", and on an earlier day those rehomed visits landed
+ *          squarely on M06's blocker morning, turning "book the closest slot
+ *          Thursday" into a full Thursday and a defensible Friday booking
+ *          that failed the end-state. Unconstrained moves must only ever
+ *          spill PAST every other wf fixture.
  */
 export const WF_PLACED: Record<number, { day: number; start: string; promise: 'none' | 'time' }> = {
   4: { day: 0, start: '09:00', promise: 'none' },
   5: { day: 1, start: '09:00', promise: 'none' },
   6: { day: 1, start: '13:00', promise: 'none' },
-  7: { day: 2, start: '13:00', promise: 'none' },
-  8: { day: 2, start: '15:00', promise: 'none' },
-  9: { day: 3, start: '10:00', promise: 'none' },
-  12: { day: 4, start: '11:00', promise: 'time' },
+  7: { day: 4, start: '13:00', promise: 'none' },
+  8: { day: 4, start: '15:00', promise: 'none' },
+  9: { day: 2, start: '10:00', promise: 'none' },
+  12: { day: 3, start: '11:00', promise: 'time' },
 };
 
 // ─────────────────────────────────────────────────────────────── the builder ──

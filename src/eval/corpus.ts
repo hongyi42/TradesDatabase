@@ -283,7 +283,16 @@ export function buildCorpus(): Scenario[] {
     tenant: 'main',
     badge: 'manager-sam',
     tier: 'manager',
-    turns: (ctx) => [`when is the next opening for ${customerName(ctx.tenant, 'base-eastside-2')}'s work?`],
+    // TWO turns since 2026-08-14. This customer has a dense booked schedule
+    // AND a queued job, so "the next opening for her work" is genuinely
+    // ambiguous — a real run read the context, listed the booked visits, and
+    // fairly ASKED "she also has an unscheduled urgent job — want me to find
+    // a slot for it?", which a single-turn script starves (R06's lesson).
+    // The second turn answers; the scenario measures the COMPLETED flow.
+    turns: (ctx) => [
+      `when is the next opening for ${customerName(ctx.tenant, 'base-eastside-2')}'s work?`,
+      'yes — find a slot for the unscheduled one.',
+    ],
     graders: () => [gradeToolChoice({ required: ['find_slots'] })],
   });
 
@@ -1304,7 +1313,11 @@ export function buildCorpus(): Scenario[] {
       // 10–noon overlaps the planted 10:00 visit: the first attempt MUST be
       // refused by the overlap guard. The scenario is the recovery.
       `book ${customerName(ctx.tenant, 'fx-t2-wf-10')}'s ${jobTitle(ctx.tenant, 'job-t2-wf-10').toLowerCase()} with Theo Marsh on ${visitDate(ctx.tenant, 'visit-t2-wf-09')}, 10am to noon.`,
-      `whatever Theo has closest to that works — book it.`,
+      // "on the same day" is load-bearing: without it, "closest to that" has
+      // two defensible readings (closest datetime vs same time next day) and
+      // a real run booked the latter — the end-state must not grade an
+      // ambiguity the instruction created.
+      `whatever Theo has closest to that on the same day works — book it.`,
       'yes',
     ],
     graders: () => [gradeToolChoice({ required: ['book_visit'] })],

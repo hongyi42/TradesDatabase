@@ -704,8 +704,15 @@ export function buildToolCases(): ToolCase[] {
         args: (ctx) => ({
           assignmentId: visitId(ctx.tenant, 'visit-t1-rs-02'),
           date: nextWorkday(addDays(ctx.anchor, 11)),
-          startTime: '16:15',
-          endTime: '16:45',
+          // 06:00 — BEFORE every pattern's open (earliest 07:00) and every
+          // generated slot (earliest 07:30), so no anchor can ever place a
+          // colliding visit here. The first version used 16:15, inside working
+          // hours, and for anchor 2026-08-13 the generator happened to occupy
+          // that slot: the overlap pre-check fired before the promise gate and
+          // the case failed without ever testing what it exists to test. The
+          // scenario has to OWN its destination slot, same as its rows.
+          startTime: '06:00',
+          endTime: '06:30',
           reason: 'eval: promised move',
         }),
         check: (out) =>

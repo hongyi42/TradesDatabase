@@ -266,8 +266,13 @@ export function buildCorpus(): Scenario[] {
     tier: 'manager',
     quick: true,
     turns: (ctx) => [`when could we fit in the ${ctx.world.edges.durationlessJob}?`],
+    // Two honest shapes exist: ASK how long (no duration route at all), or
+    // proceed on the configured type's duration WITH the assumption disclosed
+    // (the 4b-1 ladder — "assuming 60 min for 'plumbing', say otherwise").
+    // What must never happen is a silently invented length; both honest
+    // shapes name a duration word, an invented one usually names none.
     graders: () => [
-      gradeContent({ mustMentionOneOf: [['how long', 'length', 'duration', 'minutes', 'hours']] }),
+      gradeContent({ mustMentionOneOf: [['how long', 'length', 'duration', 'minut', 'hour']] }),
     ],
   });
 
@@ -340,10 +345,14 @@ export function buildCorpus(): Scenario[] {
       `${customerName(ctx.tenant, 'fx-t2-bk-07')} has no heat and a baby in the house. Anything today or tomorrow?`,
     ],
     graders: () => [gradeToolChoice({ required: ['resolve_date'] })],
-    // fx-t2-bk-07's job is the planted no-duration edge: the first find_slots
-    // MUST fail closed with "no recorded type" — that refusal is the plant
-    // working. The agent recovering (assume a type, disclose the assumption,
-    // ask) is the behavior under test.
+    // CORRECTED 2026-08-14: this comment used to claim bk-07's job was a
+    // planted no-duration edge. No such plant exists — bk-07's job is typed
+    // with a length like every fixture. The "no recorded type" refusals seen
+    // in real runs were the agent calling find_slots by CUSTOMERID (a
+    // hypothetical new job has no type); the mint guard now steers that habit
+    // and its refusal is globally filtered (GUARD_STEERS). The no-type
+    // pattern stays expected for the residual path (forceNewJob without a
+    // duration route).
     expectedRefusals: [/no recorded type/i],
   });
 

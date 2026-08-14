@@ -83,6 +83,9 @@ const book = (args: {
     tenantId,
     customerId,
     title: 'Notify probe visit',
+    // Every probe visit is its own job by design; the shared title would
+    // otherwise trip the customerId mint guard on the second call.
+    forceNewJob: true,
     actorRef: 'notify-mgr',
     ...args,
   });

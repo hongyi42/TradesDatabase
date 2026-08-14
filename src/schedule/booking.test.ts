@@ -5,7 +5,7 @@ import { setTenantSeats } from '../db/tenants.js';
 import { insertTechnician, setTechnicianAvailability, type Technician, type WeeklyPattern } from '../db/technicians.js';
 import { addTimeOff } from '../db/timeOff.js';
 import { createCustomer } from '../db/customers.js';
-import { createJob, getJob, updateJobDetails } from '../db/jobs.js';
+import { createJob, getJob, updateJobDetails, updateJobStatus } from '../db/jobs.js';
 import {
   listAssignmentsForJob,
   listAssignmentsForTechnician,
@@ -120,7 +120,8 @@ describe('bookVisit', () => {
       actorRef: 'manager-test',
     });
     expect(twoHours.job.duration_minutes).toBe(120);
-    // Preview == commit: the preview disclosed the same value.
+    // Preview == commit: the preview disclosed the same value. (A distinct
+    // title, so the mint guard lets it through as declared-new work.)
     const preview = await previewBookVisit({
       tenantId,
       technicianRef: 'book-tech',
@@ -282,9 +283,62 @@ describe('bookVisit', () => {
       date: '2026-11-04',
       startTime: '09:00',
       endTime: '10:00',
+      forceNewJob: true, // the Sunday booking above left an open job on file
       actorRef: 'manager-test',
     });
     expect(dayOff.warning).toMatch(/time off .*dentist/);
+  });
+
+  test('the customerId MINT GUARD: ambiguous mints refused with the job list, distinct titles and forceNewJob mint', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Guarded Gwen' });
+    const onFile = await createJob({
+      tenantId,
+      customerId: customer.id,
+      title: 'furnace inspection',
+      jobType: 'hvac',
+      durationMinutes: 60,
+      status: 'open',
+    });
+    const attempt = {
+      tenantId,
+      technicianRef: 'book-tech',
+      customerId: customer.id,
+      title: 'Furnace Inspection', // case-insensitively NAMES the job on file
+      // Far-future dates: 'book-tech' is shared across this file, and these
+      // bookings must not overlap the November fixtures other tests place.
+      date: '2027-06-07',
+      startTime: '09:00',
+      endTime: '10:00',
+      actorRef: 'manager-test',
+    };
+    // A title naming on-file work is refused BEFORE any write, and the message
+    // carries everything the agent needs to self-correct: title, jobId, hatch.
+    await expect(bookVisit(attempt)).rejects.toThrow(/already has open work on file/);
+    await expect(bookVisit(attempt)).rejects.toThrow(onFile.id);
+    await expect(bookVisit(attempt)).rejects.toThrow(/forceNewJob/);
+    expect(await listAssignmentsForJob(onFile.id)).toHaveLength(0);
+    // NO title at all is the other ambiguous shape (which job did the manager
+    // mean?) — same refusal, on the preview path too (same front-half).
+    await expect(bookVisit({ ...attempt, title: null })).rejects.toThrow(/already has open work on file/);
+    await expect(previewBookVisit(attempt)).rejects.toThrow(/already has open work on file/);
+    // A DISTINCT title is itself the declaration of new work — mints freely…
+    const distinct = await bookVisit({ ...attempt, title: 'gutter clear' });
+    expect(distinct.job.id).not.toBe(onFile.id);
+    // …and forceNewJob overrides even an ambiguous shape.
+    const forced = await bookVisit({
+      ...attempt,
+      date: '2027-06-08',
+      forceNewJob: true,
+    });
+    expect(forced.job.id).not.toBe(onFile.id);
+    // A TERMINAL job never blocks: completed work is history, so once every
+    // open job is walked to done, even the title-match books normally.
+    for (const j of [onFile, distinct.job, forced.job]) {
+      await updateJobStatus(j.id, 'in_progress');
+      await updateJobStatus(j.id, 'completed');
+    }
+    const afterDone = await bookVisit({ ...attempt, date: '2027-06-09' });
+    expect(afterDone.assignment.status).toBe('confirmed');
   });
 
   test('jobId path reuses the job and its customer; unknown technician/customer rejected', async () => {
@@ -443,6 +497,7 @@ describe('moveVisit', () => {
       date: '2026-11-12',
       startTime: '13:00',
       endTime: '15:00',
+      forceNewJob: true, // titleless repeat on one customer — a distinct real job
       actorRef: 'manager-test',
     });
     await expect(
@@ -561,7 +616,8 @@ describe('unassigned bookings (technician-optional)', () => {
         date: '2026-11-24',
         startTime: '09:00',
         endTime: '11:00',
-        actorRef: 'manager-test',
+        forceNewJob: true, // titleless repeat on one customer — a distinct real job
+      actorRef: 'manager-test',
       }),
     ).rejects.toThrow(/identical unassigned visit .* likely a duplicate/);
   });
@@ -598,7 +654,8 @@ describe('unassigned bookings (technician-optional)', () => {
         date: '2026-11-25',
         startTime: '10:00',
         endTime: '11:00',
-        actorRef: 'manager-test',
+        forceNewJob: true, // titleless repeat on one customer — a distinct real job
+      actorRef: 'manager-test',
       }),
     ).rejects.toThrow(/already has a confirmed visit overlapping/);
     // An unassigned move WITHOUT a ref stays unassigned.
@@ -608,6 +665,7 @@ describe('unassigned bookings (technician-optional)', () => {
       date: '2026-11-26',
       startTime: '09:00',
       endTime: '10:00',
+      forceNewJob: true, // titleless repeat on one customer — a distinct real job
       actorRef: 'manager-test',
     });
     const reparked = await moveVisit({
@@ -640,6 +698,7 @@ describe('unassigned bookings (technician-optional)', () => {
       date: '2027-03-16',
       startTime: '09:00',
       endTime: '10:00',
+      forceNewJob: true, // titleless repeat on one customer — a distinct real job
       actorRef: 'manager-test',
     });
     // Cancelled unassigned visit — must NOT appear.
@@ -649,6 +708,7 @@ describe('unassigned bookings (technician-optional)', () => {
       date: '2027-03-17',
       startTime: '09:00',
       endTime: '10:00',
+      forceNewJob: true, // titleless repeat on one customer — a distinct real job
       actorRef: 'manager-test',
     });
     await unscheduleVisit({
@@ -776,6 +836,7 @@ describe('detach (unassign) + time_only promise — plan 4a.5', () => {
       date: '2026-12-03',
       startTime: '11:00',
       endTime: '12:00',
+      forceNewJob: true, // titleless repeat on one customer — a distinct real job
       actorRef: 'manager-test',
     });
     await expect(

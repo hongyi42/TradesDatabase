@@ -22,7 +22,7 @@ import pg from 'pg';
 import { requireLocalStack, modelConfig, productionLikeEnv, assertWorldPresent, argOf, hasFlag } from './lib/env.mjs';
 import { startSpineServer, makeCaller } from './lib/mcp.mjs';
 import { buildCorpus, BASELINE_GRADERS, calendarCoverageNote } from '../../dist/eval/corpus.js';
-import { runGraders, filterExpectedRefusals } from '../../dist/eval/graders.js';
+import { runGraders, filterExpectedRefusals, GUARD_STEERS } from '../../dist/eval/graders.js';
 import { extractDoctrine, buildSystemPrompt, doctrineFingerprint } from '../../dist/eval/doctrine.js';
 import { tenantOf } from '../../dist/eval/worldManifest.js';
 import { ms, rate, summarise } from '../../dist/eval/metrics.js';
@@ -107,6 +107,7 @@ const spine = makeCaller(server);
 // ── the model call ────────────────────────────────────────────────────────────
 let tokensIn = 0;
 let tokensOut = 0;
+let stallRetries = 0;
 
 async function chat(messages, tools) {
   const body = {
@@ -126,7 +127,13 @@ async function chat(messages, tools) {
   // bound each call; only a total budget bounds the call SITE, and a provider that
   // cannot answer inside the budget is itself the finding — not something to keep
   // paying to re-ask.
-  const overallDeadline = performance.now() + MODEL_TIMEOUT * 1.5;
+  //
+  // ×2, not ×1.5: a STALL (DeepInfra hangs a request outright — D01 spent 180s
+  // producing nothing while the identical request succeeded in 10s on rerun)
+  // gets ONE fresh attempt with a real budget behind it. A slow ANSWER never
+  // trips this; only a request that timed out entirely does.
+  const overallDeadline = performance.now() + MODEL_TIMEOUT * 2;
+  let stalledMs = 0; // provider time burned by stalled attempts, kept in the returned ms
   for (let attempt = 1; attempt <= 4; attempt++) {
     const remaining = overallDeadline - performance.now();
     if (remaining <= 0) return { error: `model gave up: no answer within ${Math.round(MODEL_TIMEOUT * 1.5)}ms across ${attempt - 1} attempt(s)`, ms: MODEL_TIMEOUT * 1.5 };
@@ -151,16 +158,26 @@ async function chat(messages, tools) {
         }
       }
       const text = await res.text();
-      if (!res.ok) return { error: `HTTP ${res.status}: ${text.slice(0, 300)}`, ms: elapsed };
+      if (!res.ok) return { error: `HTTP ${res.status}: ${text.slice(0, 300)}`, ms: elapsed + stalledMs };
       const json = JSON.parse(text);
       tokensIn += json.usage?.prompt_tokens ?? 0;
       tokensOut += json.usage?.completion_tokens ?? 0;
-      return { message: json.choices?.[0]?.message ?? null, ms: elapsed, usage: json.usage ?? null };
+      return { message: json.choices?.[0]?.message ?? null, ms: elapsed + stalledMs, usage: json.usage ?? null };
     } catch (err) {
       const elapsed = performance.now() - started;
-      // A timeout has already spent its whole budget; re-asking cannot be cheap.
-      if (err.name === 'AbortError') return { error: `model timed out after ${Math.round(elapsed)}ms`, ms: elapsed };
-      if (attempt === 4) return { error: String(err.message ?? err), ms: elapsed };
+      if (err.name === 'AbortError') {
+        // A STALL, not a slow answer: the request produced nothing for the whole
+        // per-attempt budget. One fresh attempt is honest — DeepInfra stalls are
+        // per-request, and the retry usually answers in seconds. A second stall
+        // is the provider's verdict, and the call site hears it.
+        if (attempt < 2 && performance.now() < overallDeadline) {
+          stallRetries++;
+          stalledMs += elapsed;
+          continue;
+        }
+        return { error: `model timed out after ${Math.round(elapsed + stalledMs)}ms${stalledMs ? ' (incl. one stall retry)' : ''}`, ms: elapsed + stalledMs };
+      }
+      if (attempt === 4) return { error: String(err.message ?? err), ms: elapsed + stalledMs };
       await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
     } finally {
       clearTimeout(timer);
@@ -305,6 +322,10 @@ async function runScenario(scenario, repeatIndex) {
       modelMs: traj.modelMs,
       toolMs: traj.toolMs,
       wallMs: traj.wallMs,
+      // Guard steers are filtered from findings (the mechanism working is not
+      // an agent failure) but never invisible: each one is a full extra round
+      // trip the person waits through.
+      steers: calls.filter((c) => c.isError && GUARD_STEERS.some((re) => re.test(c.resultText))).length,
     },
     // Args are first-class evidence: B03's "no recorded type" error was
     // undiagnosable for two days because only tool NAMES were kept — the
@@ -354,7 +375,8 @@ for (let repeat = 1; repeat <= REPEAT; repeat++) {
     console.log(
       `  ${tag.padEnd(7)} ${result.status === 'passed' ? 'ok  ' : 'FAIL'}  ` +
         `${ms(result.metrics.wallMs).padStart(7)} (model ${ms(result.metrics.modelMs)}, tools ${ms(result.metrics.toolMs)}, ` +
-        `${result.metrics.calls} call${result.metrics.calls === 1 ? '' : 's'})  ${result.title}`,
+        `${result.metrics.calls} call${result.metrics.calls === 1 ? '' : 's'})` +
+        `${result.metrics.steers ? ` [steered ${result.metrics.steers}×]` : ''}  ${result.title}`,
     );
     for (const f of result.findings) console.log(`          └─ ${f.kind}: ${f.detail.slice(0, 160)}`);
   }
@@ -411,6 +433,14 @@ console.log(`             model p50 ${ms(summarise(modelMsAll).p50)}  tools p50 
 const modelShare = summarise(modelMsAll).mean / (summarise(modelMsAll).mean + summarise(toolMsAll).mean);
 console.log(`             the model is ${(modelShare * 100).toFixed(1)}% of a turn's time; the spine tools are the rest`);
 console.log(`  round trips p50 ${summarise(callsAll).p50} tool calls per scenario`);
+const steerTotal = results.reduce((n, r) => n + (r.metrics.steers ?? 0), 0);
+const steerScenarios = results.filter((r) => (r.metrics.steers ?? 0) > 0).length;
+if (steerTotal) {
+  console.log(`  guard steers ${steerTotal} across ${steerScenarios} scenario(s) — the mint guard redirecting customerId habits (extra round trips, not failures)`);
+}
+if (stallRetries) {
+  console.log(`  provider stalls retried ${stallRetries} — each burned a full model timeout before the fresh attempt`);
+}
 console.log(`  spend      $${cost.toFixed(3)} (${tokensIn.toLocaleString()} in / ${tokensOut.toLocaleString()} out)`);
 console.log(`\n  by family:`);
 for (const [family, f] of Object.entries(byFamily)) {
@@ -461,6 +491,17 @@ for (const [label, values] of [['wall', wallAll], ['model', modelMsAll], ['tools
   lines.push(`| ${label} | ${ms(s.p50)} | ${ms(s.p95)} | ${ms(s.max)} |`);
 }
 lines.push('', `Round trips: p50 ${summarise(callsAll).p50}, p95 ${summarise(callsAll).p95} tool calls per scenario.`, '');
+if (steerTotal) {
+  lines.push(
+    `Guard steers: **${steerTotal}** across ${steerScenarios} scenario(s) — the customerId mint guard ` +
+      'redirecting the skip-the-context-read habit. Filtered from findings (the mechanism working), ' +
+      'counted here because each one is an extra round trip the person waits through.',
+    '',
+  );
+}
+if (stallRetries) {
+  lines.push(`Provider stalls retried: **${stallRetries}** — requests that produced nothing for a full model timeout, answered on a fresh attempt.`, '');
+}
 if (Object.keys(byKind).length) {
   lines.push('## Findings by kind', '', '| kind | count |', '|---|---|');
   for (const [kind, n] of Object.entries(byKind).sort((a, b) => b[1] - a[1])) lines.push(`| ${kind} | ${n} |`);
@@ -515,6 +556,7 @@ writeFileSync(
       repeats: REPEAT,
       enabled: [...enabled],
       spend: { usd: cost, tokensIn, tokensOut },
+      stallRetries,
       results,
       skipped: skipped.map((x) => ({ id: x.id, title: x.title, requires: x.requires })),
     },

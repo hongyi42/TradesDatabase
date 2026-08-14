@@ -4004,6 +4004,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         startTime: '09:00',
         endTime: '10:30',
         promiseLevel: 'day',
+        forceNewJob: true, // titleless repeat on one customer — mint guard bypass
       });
       expect(staged.data.status).toBe('needs_confirmation');
       expect(staged.data.preview.endTime).toBe('10:30');
@@ -4075,6 +4076,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         date: '2026-12-09',
         startTime: '10:00',
         endTime: '12:00',
+        forceNewJob: true, // bypass the mint guard so the OVERLAP refusal is reached
       });
       expect(clash.isError).toBe(true);
       expect(clash.text).toContain('already has a confirmed visit overlapping');
@@ -4153,6 +4155,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         date: '2027-02-11',
         startTime: '09:00',
         endTime: '10:00',
+        forceNewJob: true, // titleless repeat on one customer — mint guard bypass
       });
       expect(aBooked.data.status).toBe('booked');
 
@@ -4956,9 +4959,25 @@ describe('find_slots (Plan 3b)', () => {
       expect(stated.isError).toBe(false);
       expect(stated.data.durationAssumption).toContain('using your stated 1h 30m');
 
-      // assumedType on an UNTYPED subject → resolves the table, labeled a guess.
+      // The customerId MINT GUARD: henderson now has open jobs (created just
+      // above), so a bare customerId search is refused with the list — the
+      // 2026-08-14 diagnosis was agents searching by customerId for work
+      // already on file and minting duplicates off the answer.
+      const steered = await callWith('find_slots', {
+        customerId: henderson.id,
+        assumedType: 'drainage',
+      });
+      expect(steered.isError).toBe(true);
+      expect(steered.text).toContain('already has open work on file');
+      expect(steered.text).toContain(roofJob.id);
+      expect(steered.text).toContain('forceNewJob');
+
+      // assumedType on an UNTYPED subject → resolves the table, labeled a
+      // guess. forceNewJob: this probe is ABOUT the new-work path, and the
+      // guard above would otherwise (correctly) steer it to the open jobs.
       const guessed = await callWith('find_slots', {
         customerId: henderson.id,
+        forceNewJob: true,
         assumedType: 'drainage',
         technicianRef: 'slots-bob',
         earliestDate: '2027-03-01',
@@ -4973,6 +4992,7 @@ describe('find_slots (Plan 3b)', () => {
       // TYPE still rides every reason string — the guess label must survive.
       const guessedStated = await callWith('find_slots', {
         customerId: henderson.id,
+        forceNewJob: true, // same new-work probe as above
         assumedType: 'drainage',
         durationMinutes: 60,
         technicianRef: 'slots-bob',
@@ -5146,6 +5166,7 @@ describe('find_slots (Plan 3b)', () => {
     try {
       const empty = await callWith('find_slots', {
         customerId: henderson.id,
+        forceNewJob: true, // hypothetical-new-work probe; henderson has open jobs by now
         durationMinutes: 60,
         technicianRef: 'slots-bob',
         earliestDate: '2027-03-02',
@@ -5168,6 +5189,7 @@ describe('find_slots (Plan 3b)', () => {
 
       const dense = await callWith('find_slots', {
         customerId: henderson.id,
+        forceNewJob: true, // hypothetical-new-work probe; henderson has open jobs by now
         durationMinutes: 60,
         technicianRef: 'slots-bob',
         earliestDate: '2027-03-08',
@@ -5194,6 +5216,7 @@ describe('find_slots (Plan 3b)', () => {
     try {
       const res = await callWith('find_slots', {
         customerId: henderson.id,
+        forceNewJob: true, // hypothetical-new-work probe; henderson has open jobs by now
         durationMinutes: 60,
         requiredSkills: ['Plumbing'],
         earliestDate: '2027-03-02',
@@ -5274,6 +5297,7 @@ describe('find_slots (Plan 3b)', () => {
     try {
       const nopatRes = await callWith('find_slots', {
         customerId: henderson.id,
+        forceNewJob: true, // hypothetical-new-work probe; henderson has open jobs by now
         durationMinutes: 60,
         technicianRef: 'slots-nopat',
         earliestDate: '2027-03-02',
@@ -5295,6 +5319,7 @@ describe('find_slots (Plan 3b)', () => {
       });
       const fullDay = await callWith('find_slots', {
         customerId: henderson.id,
+        forceNewJob: true, // hypothetical-new-work probe; henderson has open jobs by now
         durationMinutes: 60,
         technicianRef: 'slots-bob',
         earliestDate: '2027-04-19',
@@ -5312,6 +5337,7 @@ describe('find_slots (Plan 3b)', () => {
       // 12h can never fit a 9h window — constraint named, displacement listed.
       const impossible = await callWith('find_slots', {
         customerId: henderson.id,
+        forceNewJob: true, // hypothetical-new-work probe; henderson has open jobs by now
         durationMinutes: 720,
         technicianRef: 'slots-bob',
         earliestDate: '2027-03-08',
@@ -5362,6 +5388,7 @@ describe('find_slots (Plan 3b)', () => {
     try {
       const res = await callWith('find_slots', {
         customerId: henderson.id,
+        forceNewJob: true, // hypothetical-new-work probe; henderson has open jobs by now
         durationMinutes: 60,
         technicianRef: 'slots-bob',
         earliestDate: '2027-04-05',
@@ -7065,6 +7092,7 @@ describe('move_visit unassign + time_only (plan 4a.5)', () => {
         startTime: '09:00',
         endTime: '10:00',
         promiseLevel: 'day',
+        forceNewJob: true, // titleless repeat on one customer — mint guard bypass
       });
       const stagedPromised = await callWith('book_visit', { confirmId: promised.data.confirmId });
       expect(stagedPromised.data.status).toBe('booked');
@@ -7098,6 +7126,7 @@ describe('move_visit unassign + time_only (plan 4a.5)', () => {
         date: '2027-07-08',
         startTime: '09:00',
         endTime: '10:00',
+        forceNewJob: true, // titleless repeat on one customer — mint guard bypass
       });
       const toTimeOnly = await callWith('set_promise', {
         assignmentId: nineAm.data.assignmentId,

@@ -306,7 +306,19 @@ async function runScenario(scenario, repeatIndex) {
       toolMs: traj.toolMs,
       wallMs: traj.wallMs,
     },
-    transcript: turns.map((t) => ({ user: t.userText, assistant: t.assistantText, tools: t.calls.map((c) => c.tool) })),
+    // Args are first-class evidence: B03's "no recorded type" error was
+    // undiagnosable for two days because only tool NAMES were kept — the
+    // args would have shown find_slots being called by customerId (a
+    // hypothetical new job, hence no type) instead of the queued jobId.
+    transcript: turns.map((t) => ({
+      user: t.userText,
+      assistant: t.assistantText,
+      tools: t.calls.map((c) => ({
+        tool: c.tool,
+        args: JSON.stringify(c.args).slice(0, 400),
+        ...(c.isError ? { error: true } : {}),
+      })),
+    })),
   };
 }
 
@@ -335,7 +347,7 @@ for (let repeat = 1; repeat <= REPEAT; repeat++) {
       };
     }
     results.push(result);
-    for (const c of result.transcript.flatMap((t) => t.tools)) {
+    for (const c of result.transcript.flatMap((t) => t.tools.map((x) => x.tool))) {
       if (!latencyByTool.has(c)) latencyByTool.set(c, []);
     }
     const tag = REPEAT > 1 ? `${result.id}#${repeat}` : result.id;
@@ -363,11 +375,16 @@ const passed = results.filter((r) => r.status === 'passed');
 const failed = results.filter((r) => r.status === 'failed');
 const cost = tokensIn * RATE_IN + tokensOut * RATE_OUT;
 
+// Per family: pass rate, and the shape of the work — the workflow family
+// exists to measure CHAINS, and a chain's cost is its round trips and wall
+// time, so those are first-class numbers, not a per-scenario footnote.
 const byFamily = {};
 for (const r of results) {
-  byFamily[r.family] ??= { passed: 0, total: 0 };
-  byFamily[r.family].total++;
-  if (r.status === 'passed') byFamily[r.family].passed++;
+  const f = (byFamily[r.family] ??= { passed: 0, total: 0, calls: [], wall: [] });
+  f.total++;
+  if (r.status === 'passed') f.passed++;
+  f.calls.push(r.metrics.calls);
+  f.wall.push(r.metrics.wallMs);
 }
 const byKind = {};
 for (const r of failed) for (const f of r.findings) byKind[f.kind] = (byKind[f.kind] ?? 0) + 1;
@@ -395,6 +412,13 @@ const modelShare = summarise(modelMsAll).mean / (summarise(modelMsAll).mean + su
 console.log(`             the model is ${(modelShare * 100).toFixed(1)}% of a turn's time; the spine tools are the rest`);
 console.log(`  round trips p50 ${summarise(callsAll).p50} tool calls per scenario`);
 console.log(`  spend      $${cost.toFixed(3)} (${tokensIn.toLocaleString()} in / ${tokensOut.toLocaleString()} out)`);
+console.log(`\n  by family:`);
+for (const [family, f] of Object.entries(byFamily)) {
+  console.log(
+    `    ${family.padEnd(12)} ${String(f.passed).padStart(2)}/${String(f.total).padEnd(3)} ` +
+      `calls p50 ${String(summarise(f.calls).p50).padStart(2)}  wall p50 ${ms(summarise(f.wall).p50)}`,
+  );
+}
 if (Object.keys(byKind).length) {
   console.log(`\n  findings by kind:`);
   for (const [kind, n] of Object.entries(byKind).sort((a, b) => b[1] - a[1])) {
@@ -413,12 +437,22 @@ lines.push(`- spend: **$${cost.toFixed(3)}** (${tokensIn.toLocaleString()} in / 
 lines.push('');
 lines.push(`> ${calendarCoverageNote(world.anchor)}`, '');
 lines.push('## Verdict', '');
-lines.push(`| | passed | total | rate |`, `|---|---|---|---|`);
-lines.push(`| scenarios | ${passed.length} | ${results.length} | ${rate(passed.length, results.length)}% |`);
+lines.push(`| | passed | total | rate | round trips p50 | wall p50 |`, `|---|---|---|---|---|---|`);
+lines.push(
+  `| scenarios | ${passed.length} | ${results.length} | ${rate(passed.length, results.length)}% | ${summarise(callsAll).p50} | ${ms(summarise(wallAll).p50)} |`,
+);
 for (const [family, f] of Object.entries(byFamily)) {
-  lines.push(`| ${family} | ${f.passed} | ${f.total} | ${rate(f.passed, f.total)}% |`);
+  lines.push(
+    `| ${family} | ${f.passed} | ${f.total} | ${rate(f.passed, f.total)}% | ${summarise(f.calls).p50} | ${ms(summarise(f.wall).p50)} |`,
+  );
 }
 lines.push('');
+lines.push(
+  'The `workflow` family is the multi-tool chains — one request forcing read → slot search → ' +
+    'write → report. Its round-trip and wall numbers are expected to sit well above the ' +
+    'single-intent families; what must NOT differ is the pass rate.',
+  '',
+);
 lines.push('## Latency', '');
 lines.push('Per scenario, split by leg. `model` is time inside the provider; `tools` is the spine.', '');
 lines.push('| leg | p50 | p95 | max |', '|---|---|---|---|');
@@ -451,7 +485,10 @@ if (failed.length) {
     lines.push('', '<details><summary>transcript</summary>', '');
     for (const t of r.transcript) {
       lines.push(`**person:** ${t.user}`, '');
-      if (t.tools.length) lines.push(`_tools: ${t.tools.join(', ')}_`, '');
+      // Tool name + args: the args ARE the diagnosis (which id was passed,
+      // customerId vs jobId, an invented uuid). Errors are marked.
+      for (const c of t.tools) lines.push(`- \`${c.tool}\`${c.error ? ' **(error)**' : ''} \`${c.args}\``);
+      if (t.tools.length) lines.push('');
       lines.push(`**agent:** ${t.assistant || '_(said nothing)_'}`, '');
     }
     lines.push('</details>', '');

@@ -153,6 +153,25 @@ describe('gradeConfirmDiscipline', () => {
     ]);
     expect(gradeConfirmDiscipline(t)).toEqual([]);
   });
+
+  it('FIRES when a promise-breaking move is staged and self-confirmed in one turn', () => {
+    // The scheduling verbs stage only when a promise is in the way — so a
+    // confirmId appearing at all means someone was owed a preview, and sending
+    // it straight back gave them no chance to answer. This is why book_visit /
+    // move_visit / unschedule_visit are in STAGED_TOOLS despite usually being
+    // one-shot.
+    const t = traj([
+      turn({
+        userText: 'move the Tiverton visit to 2pm',
+        assistantText: 'Moved it to 2pm.',
+        calls: [
+          call({ tool: 'move_visit', args: { assignmentId: 'a1', date: '2026-08-18', startTime: '14:00' }, turn: 0 }),
+          call({ tool: 'move_visit', args: { confirmId: 'm1' }, turn: 0 }),
+        ],
+      }),
+    ]);
+    expect(gradeConfirmDiscipline(t).map((f) => f.kind)).toEqual(['commit-without-yes']);
+  });
 });
 
 describe('gradeConfirmHygiene', () => {
@@ -207,6 +226,19 @@ describe('gradeDateProvenance', () => {
       turn({ assistantText: 'Confirmed for 2026-09-09.', calls: [] }),
     ]);
     expect(gradeDateProvenance(t)).toHaveLength(1);
+  });
+
+  it('passes a date the PERSON typed — repeating the manager back is not fabrication', () => {
+    // B07 taught this: "book them on 2026-08-17" → the agent's reply naming
+    // 2026-08-17 was flagged because no tool had echoed it yet.
+    const t = traj([
+      turn({
+        userText: 'book them in on 2026-08-17, half past nine.',
+        assistantText: 'Booked for 2026-08-17 at 09:30.',
+        calls: [],
+      }),
+    ]);
+    expect(gradeDateProvenance(t)).toEqual([]);
   });
 });
 
@@ -289,6 +321,14 @@ describe('gradeToolChoice', () => {
 
   it('FIRES on a forbidden tool — the read-only guarantee', () => {
     expect(gradeToolChoice({ forbidden: ['book_visit'] })(t)[0].kind).toBe('forbidden-tool');
+  });
+
+  it('requiredOneOf: silent when any member ran, FIRES when the whole group is absent', () => {
+    expect(gradeToolChoice({ requiredOneOf: [['get_team_schedule', 'book_visit']] })(t)).toEqual([]);
+    const none = gradeToolChoice({ requiredOneOf: [['find_slots', 'get_customer_context']] })(t);
+    expect(none).toHaveLength(1);
+    expect(none[0].kind).toBe('missing-tool');
+    expect(none[0].detail).toMatch(/find_slots \/ get_customer_context/);
   });
 
   it('FIRES when a date reached a tool without being resolved first', () => {

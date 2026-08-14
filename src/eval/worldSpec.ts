@@ -241,6 +241,15 @@ const FIXTURE_NAMES = [
   'Yasmina Bouchard', 'Zephyrine Toussaint', 'Alistair Penhaligon', 'Beatrix Nowakowski',
   'Cormac Sigurdsson', 'Delphine Ntambwe', 'Emeric Vandersteen', 'Fionnuala Brannigan',
   'Gustav Lindqvist-Roe', 'Hyacinth Adeyinka', 'Ignatz Vorobyov', 'Josephine Kalinowski',
+  // Extended for the wf (workflow) pool: two tiers × five pools must never
+  // exhaust this list — the cursor wraps silently (`% length`), and a wrapped
+  // name recreates the two-customers-one-name ambiguity uniqueness exists to
+  // prevent. 80 names ≥ 78 fixtures. A unit test pins this arithmetic.
+  'Araminta Vellacott', 'Benedikt Oyelowo', 'Cordelia Maskelyne', 'Dashiell Okwuosa',
+  'Eulalia Brandhorst', 'Ferdinand Quilliam', 'Guinevere Ostrowski', 'Heathcliff Vandermeer',
+  'Imogen Fairbairn', 'Jerome Castellane', 'Kerensa Middlemiss', 'Lysander Achebe',
+  'Morwenna Vasiliev', 'Nikolina Draycott', 'Oberon Silverthorne', 'Perpetua Winslade',
+  'Quillon Abramczyk', 'Rosamund Tiverton', 'Sylvester Nakagawa', 'Theodora Ellsworth',
 ];
 
 /** The work a trades firm actually books, with realistic lengths. */
@@ -339,6 +348,15 @@ export const FIXTURE_POOLS = {
   cap: 9,
   ext: 3,
   /**
+   * The workflow (multi-tool) family: scenarios where one manager request
+   * chains reads → slot search → writes. Each tier's wf rows live on that
+   * tier's DEDICATED technician (`wf-tech-t1`/`wf-tech-t2`, no base schedule),
+   * so a chain that cancels, rebooks and clears whole afternoons can never
+   * collide with another scenario's fixtures. Some indexes carry a planted
+   * visit (WF_PLACED below); the rest are queued jobs for slot-search chains.
+   */
+  wf: 12,
+  /**
    * Own technician: roster + config families mutate a roster row each.
    *
    * Twelve, split 01–06 for tier 1 and 07–12 for tier 2. Per-tier CUSTOMER pools
@@ -352,6 +370,30 @@ export const FIXTURE_POOLS = {
 /** The tiers that get their own fixture rows. */
 export const FIXTURE_TIERS = ['t1', 't2'] as const;
 export type FixtureTier = (typeof FIXTURE_TIERS)[number];
+
+/**
+ * Which wf fixtures carry a planted visit, and where it sits on the wf
+ * technician's book. Day numbers are WORKDAY steps from nextWorkday(anchor+3)
+ * — the same weekend-proof arithmetic as the rs cursor. Two pairs share a day
+ * ON PURPOSE (a time-off sweep and a clear-the-afternoon both need two visits
+ * on one day); everything else is distinct, and the pairs never overlap in
+ * time, so the GiST no_confirmed_overlap guard stays quiet at generation.
+ *
+ *   day 0  09:00        wf-04  the visit a customer calls off (slot handover)
+ *   day 1  09:00/13:00  wf-05+06  the day a time-off booking collides with
+ *   day 2  13:00/15:00  wf-07+08  the afternoon that gets cleared
+ *   day 3  10:00        wf-09  the blocker a same-time booking must dodge
+ *   day 4  11:00        wf-12  a TIME-promised visit (gate, then release)
+ */
+export const WF_PLACED: Record<number, { day: number; start: string; promise: 'none' | 'time' }> = {
+  4: { day: 0, start: '09:00', promise: 'none' },
+  5: { day: 1, start: '09:00', promise: 'none' },
+  6: { day: 1, start: '13:00', promise: 'none' },
+  7: { day: 2, start: '13:00', promise: 'none' },
+  8: { day: 2, start: '15:00', promise: 'none' },
+  9: { day: 3, start: '10:00', promise: 'none' },
+  12: { day: 4, start: '11:00', promise: 'time' },
+};
 
 // ─────────────────────────────────────────────────────────────── the builder ──
 
@@ -412,6 +454,20 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
       availability: MON_FRI('08:00', '17:00'),
       serviceCities: ['Seattle'],
       skills: ['hvac'],
+    });
+  }
+  // The workflow-family technicians: one per tier, NO base schedule. The
+  // multi-tool scenarios book, cancel and clear whole days on these two, so
+  // every row on their book is a wf fixture and nothing else can collide.
+  // Both trades, so any wf job's slot search lands on them.
+  for (const [tier, displayName] of [['t1', 'Wren Fielding'], ['t2', 'Theo Marsh']] as const) {
+    technicians.push({
+      ref: `wf-tech-${tier}`,
+      displayName,
+      tier: 'technician',
+      availability: MON_FRI('08:00', '17:00'),
+      serviceCities: ['Seattle'],
+      skills: ['hvac', 'plumbing'],
     });
   }
 
@@ -782,6 +838,22 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
         facts: [],
         sourceCapture: intake.key,
       });
+      // Workflow fixtures: some carry a planted visit on the tier's dedicated
+      // technician (see WF_PLACED); the rest stay queued for slot-search chains.
+      if (family === 'wf' && WF_PLACED[i]) {
+        const plant = WF_PLACED[i];
+        visits.push({
+          key: `visit-${id}`,
+          jobKey: `job-${id}`,
+          technicianRef: `wf-tech-${tier}`,
+          date: nextWorkday(addDays(anchor, 3), plant.day),
+          startTime: plant.start,
+          durationMinutes: 60,
+          status: 'confirmed',
+          promiseLevel: plant.promise,
+          locked: false,
+        });
+      }
       // Reschedule fixtures need something already on the calendar to move.
       if (family === 'rs') {
         visits.push({
@@ -813,7 +885,10 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
     name: 'Eval Main',
     purpose: 'fixture-scoped scenarios — every write scenario owns its own rows',
     managerSeats: 3,
-    technicianSeats: 20,
+    // Headroom over the spec's ~17 seated rows: roster scenarios in BOTH tiers
+    // add people at run time, and an accidental cap-hit would fail T01 with
+    // "no free seats" — the seats tenant tests the cap; main must never.
+    technicianSeats: 24,
     horizonDays: HORIZON_DAYS,
     technicians,
     captures,

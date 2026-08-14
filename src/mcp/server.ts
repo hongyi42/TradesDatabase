@@ -161,7 +161,7 @@ import {
   latestScheduleVersion,
   listAssignmentsForTenant,
   listUnassignedAssignments,
-  listUnplacedAssignedForRange,
+  listUnplacedForRange,
   listJobsWithCustomerByIds,
   type PromiseLevel,
 } from '../db/index.js';
@@ -265,7 +265,14 @@ const TOOLS = [
   },
   {
     name: 'get_customer_context',
-    description: "Brief on a customer: their jobs, recent visits, and recent raw captures.",
+    description:
+      "Brief on a customer: their jobs, UPCOMING scheduled visits, recent past visits, and recent " +
+      "raw captures. upcomingVisits is the schedule ahead — use it for \"when is X's next visit?\" " +
+      'and read each entry as-is: date + startTime are the visit as booked, and an entry with ' +
+      'timeTbd:true is a REAL booked visit whose exact day is not set yet — its earliestDate–' +
+      "latestDate range IS the answer to \"what's the scheduling window for X's job?\" (never say " +
+      'nothing is scheduled when a timeTbd entry exists, and never invent a time for one). ' +
+      'recentVisits is past work evidence, not the schedule.',
     inputSchema: {
       type: 'object',
       properties: { customerId: { type: 'string' } },
@@ -702,7 +709,10 @@ const ADMIN_TOOLS = [
       'out (no 14-day cap) — use it when the manager asks what still needs assigning. Stops ' +
       'with timeTbd:true hold a day (or an earliestDate–latestDate range) and NO time yet — ' +
       'say "time not set", never invent one; they appear in both views (windowed when a ' +
-      'person is attached, unassignedOnly when not). Also ' +
+      'person is attached, unassignedOnly when not). The windowed response carries counts ' +
+      '(counts.byDay + counts.total, server-computed for the requested range) — for ANY ' +
+      'how-many/busiest/lightest/compare question USE THOSE NUMBERS VERBATIM; you are ' +
+      'unreliable at counting rows, so never tally the stops yourself. Also ' +
       'returns scheduleVersion — quote it when discussing changes so staleness is detectable. ' +
       'When the result carries boardNote, ALWAYS end your reply with its exact ' +
       '[See it on the board](…) line — EVERY schedule answer ends with it, plain reads included; ' +
@@ -1962,7 +1972,7 @@ async function dispatch(
       const ctx = await getCustomerContext(customerId);
       // Tenant guard: a cross-tenant (or unknown) id reads as an empty record.
       if (!ctx.customer || ctx.customer.tenant_id !== tenantId) {
-        return { customer: null, jobs: [], recentVisits: [], recentCaptures: [] };
+        return { customer: null, jobs: [], upcomingVisits: [], recentVisits: [], recentCaptures: [] };
       }
       return { ...ctx, recentCaptures: dropSensitive(ctx.recentCaptures) };
     }
@@ -3013,19 +3023,26 @@ async function dispatch(
       // attached time-TBD visit was invisible to every chat surface — the
       // agent denied it existed and could never fetch its assignmentId to
       // place, move, or cancel it. Independent reads, so they run in parallel.
+      // The unplaced read is the WIDE one (assigned or not): the windowed view
+      // still LISTS only person-attached rows (unassigned ones live in the
+      // recall view, by design), but window COVERAGE below must see both — an
+      // unassigned windowed visit occupies the calendar all the same.
+      let allUnplaced: Awaited<ReturnType<typeof listUnplacedForRange>> = [];
       const rows = unassignedOnly
         ? await listUnassignedAssignments(tenantId, `${from}T00:00:00.000Z`)
-        : (
-            await Promise.all([
+        : await (async () => {
+            const [placed, unplaced] = await Promise.all([
               listAssignmentsForTenant(
                 tenantId,
                 `${from}T00:00:00.000Z`,
                 new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
                 ['confirmed'],
               ),
-              listUnplacedAssignedForRange(tenantId, from, toDay as string),
-            ])
-          ).flat();
+              listUnplacedForRange(tenantId, from, toDay as string),
+            ]);
+            allUnplaced = unplaced;
+            return [...placed, ...unplaced.filter((r) => r.technician_id !== null)];
+          })();
       const jobs = await listJobsWithCustomerByIds(tenantId, [
         ...new Set(rows.map((r) => r.job_id)),
       ]);
@@ -3128,7 +3145,68 @@ async function dispatch(
             'this list. days hold parked visits (booked, nobody attached).',
         };
       }
-      return { status: 'ok', from, to: toDay, scheduleVersion, technicianHorizonDays, days };
+      // Server-computed counts (date-eval 2026-08-13, W13): asked "this week
+      // vs next week", the model hand-counted the stop rows and got BOTH
+      // totals wrong (58/70 vs the served 57/71) — and gave a different count
+      // for the same Wednesday in two adjacent answers. Counting is
+      // arithmetic, and the model is unreliable at arithmetic; the server
+      // counts once so every count question reads a number instead of
+      // tallying rows. timeTbd stops sit OUTSIDE the day counts: a windowed
+      // visit is not ON a day until it is placed (it is listed under its
+      // earliest day only so it stays visible/actionable).
+      const inWindow = days.filter((d) => d.date >= from && (toDay === null || d.date <= toDay));
+      const dayCount = (stops: unknown[]) =>
+        stops.filter((s) => (s as { timeTbd?: boolean }).timeTbd !== true).length;
+      // Window coverage per day (date-eval T07): a timeTbd visit is listed
+      // once under its earliest day, but it COVERS every day of its range —
+      // "is Thursday free?" needs range-intersection the model reliably gets
+      // wrong (it read the listing day as the only occupied day and called a
+      // covered Thursday free). Computed here from the same rows.
+      const tbdRanges = allUnplaced.map((r) => ({
+        lo: r.earliest_date as string,
+        hi: r.latest_date as string,
+      }));
+      const windowsCovering = (date: string) =>
+        tbdRanges.filter((w) => w.lo <= date && date <= w.hi).length;
+      // Every day of the requested range, including days with no stops at all
+      // — "which days are free?" needs the zeros to be data, not absences.
+      const rangeDays: string[] = [];
+      if (toDay !== null) {
+        for (
+          let t = Date.parse(`${from}T00:00:00Z`);
+          t <= Date.parse(`${toDay}T00:00:00Z`);
+          t += 86_400_000
+        ) {
+          rangeDays.push(new Date(t).toISOString().slice(0, 10));
+        }
+      }
+      const stopsByDate = new Map(inWindow.map((d) => [d.date, dayCount(d.stops)]));
+      const counts = {
+        byDay: Object.fromEntries(rangeDays.map((d) => [d, stopsByDate.get(d) ?? 0])),
+        windowCoverByDay: Object.fromEntries(rangeDays.map((d) => [d, windowsCovering(d)])),
+        total: inWindow.reduce((n, d) => n + dayCount(d.stops), 0),
+        timeTbdListed: days.reduce(
+          (n, d) => n + d.stops.filter((s) => (s as { timeTbd?: boolean }).timeTbd === true).length,
+          0,
+        ),
+      };
+      return {
+        status: 'ok',
+        from,
+        to: toDay,
+        scheduleVersion,
+        technicianHorizonDays,
+        counts,
+        countsNote:
+          'counts.byDay/total are the visit counts for the requested range, computed here — ' +
+          'ALWAYS use these for how-many/busiest/compare questions, never count the stop rows ' +
+          'yourself. timeTbdListed visits are booked but not yet placed on a day, so they are ' +
+          'listed under their earliest possible day WITHOUT being counted; ' +
+          'counts.windowCoverByDay[date] is how many of those COULD still land on that date — ' +
+          'a day is only completely free when byDay AND windowCoverByDay are both 0. The range ' +
+          'is capped at 14 days: to scan further ahead, call again starting where this range ended.',
+        days,
+      };
     }
     case 'book_visit': {
       const subjectRef = identity.technicianRef;

@@ -524,6 +524,53 @@ export async function listUnassignedAssignments(
   return data ?? [];
 }
 
+// The customer brief's schedule half (date-eval finding, 2026-08-13): the
+// context aggregate read only the `visits` table — L2 evidence of PAST work —
+// so a customer with four confirmed bookings briefed as "no visits scheduled",
+// and the agent told the manager exactly that (eval S06–S08). Scheduling
+// windows sitting on unplaced rows were equally invisible (S09–S12). This is
+// their lister: every confirmed assignment for the customer that is still
+// upcoming — placed rows from `todayLocal` forward (day-granular, the
+// get_schedule precedent), plus unplaced (time-TBD) rows whose window has not
+// wholly passed.
+//
+// jobs is an INNER embed used as the customer filter; it carries tenant_id so
+// the caller can re-check the unenforced "job shares its customer's tenant"
+// invariant (the AssignmentDayRow precedent above). Top-level rows are
+// tenant-scoped directly — the embed never widens the read.
+export type CustomerUpcomingRow = Assignment & {
+  jobs: Pick<Job, 'id' | 'tenant_id' | 'customer_id' | 'title'> | null;
+  technicians: Pick<Technician, 'id' | 'ref' | 'display_name' | 'tenant_id'> | null;
+};
+
+// Single string literal — see the DETAIL_SELECT note above.
+const CUSTOMER_UPCOMING_SELECT =
+  '*, jobs!inner(id,tenant_id,customer_id,title), technicians(id,ref,display_name,tenant_id)';
+
+export async function listUpcomingAssignmentsForCustomer(
+  tenantId: string,
+  customerId: string,
+  todayLocal: string, // YYYY-MM-DD in the firm's timezone
+): Promise<CustomerUpcomingRow[]> {
+  // todayLocal is server-derived, but it rides inside a PostgREST .or()
+  // string — refuse anything that isn't a bare date rather than interpolate it.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(todayLocal)) {
+    throw new Error(`listUpcomingAssignmentsForCustomer: bad todayLocal ${todayLocal}`);
+  }
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select(CUSTOMER_UPCOMING_SELECT)
+    .eq('tenant_id', tenantId)
+    .eq('jobs.customer_id', customerId)
+    .eq('status', 'confirmed')
+    // Times are stored naive-local (the '+00' is a lie — see startTime in
+    // server.ts), so "upcoming" compares against local midnight, not real UTC.
+    .or(`starts_at.gte.${todayLocal}T00:00:00.000Z,and(starts_at.is.null,latest_date.gte.${todayLocal})`)
+    .order('starts_at', { ascending: true, nullsFirst: false });
+  if (error) throw new Error(`listUpcomingAssignmentsForCustomer failed: ${error.message}`);
+  return (data ?? []) as CustomerUpcomingRow[];
+}
+
 // Exact-window parked twins for the person-less duplicate guard (plan 4a.5
 // final review): ONE embedded query replaces the scan-plus-getJob-per-row
 // loops that previously lived as separate copies in resolveBooking and
@@ -595,6 +642,30 @@ export async function listUnplacedAssignedForRange(
     .gte('latest_date', fromDate)
     .order('earliest_date', { ascending: true });
   if (error) throw new Error(`listUnplacedAssignedForRange failed: ${error.message}`);
+  return (data ?? []) as UnplacedStripRow[];
+}
+
+// EVERY unplaced row intersecting the range — assigned or not. The strip
+// reader above deliberately shows only person-attached rows in the windowed
+// view (unassigned ones live in the unassignedOnly recall view), but window
+// COVERAGE ("is Thursday actually free?") must count both: an unassigned
+// windowed visit occupies the calendar exactly as much as an assigned one.
+// Same shape so the handler can reuse one row type.
+export async function listUnplacedForRange(
+  tenantId: string,
+  fromDate: string, // YYYY-MM-DD inclusive
+  toDate: string, // YYYY-MM-DD inclusive
+): Promise<UnplacedStripRow[]> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select(UNPLACED_STRIP_SELECT)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'confirmed')
+    .is('starts_at', null)
+    .lte('earliest_date', toDate)
+    .gte('latest_date', fromDate)
+    .order('earliest_date', { ascending: true });
+  if (error) throw new Error(`listUnplacedForRange failed: ${error.message}`);
   return (data ?? []) as UnplacedStripRow[];
 }
 

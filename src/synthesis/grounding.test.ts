@@ -8,6 +8,7 @@ import { serializeContextForPrompt, validateCitations } from './grounding.js';
 const fixture = (): CustomerContext => ({
   customer: customer(),
   jobs: [job()],
+  upcomingVisits: [],
   recentVisits: [visit()],
   recentCaptures: [
     capture(),

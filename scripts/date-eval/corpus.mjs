@@ -241,9 +241,14 @@ export function buildCorpus(f) {
   for (const [n, tech] of busyTechs.slice(0, 2).entries()) {
     const first = f.firstOfDay[tomorrow]?.[tech];
     if (first) {
+      // kind 'first-job' auto-grades on the two facts that matter — the
+      // customer and the wall-clock time — instead of demanding an exact
+      // string a prose reply never matches (08-13 run: the replies were
+      // exactly right and still landed in adjudication).
       out.push(q(`D${19 + n}`, 'day-read', ['resolve', 'use', 'speak'], `What's ${tech}'s first job tomorrow?`, {
         dates: [tomorrow], window: { from: tomorrow, to: tomorrow },
-        answer: { kind: 'text', value: `${first.customer} — ${first.title} at ${first.startLocal}` }, requireWeekday: true,
+        answer: { kind: 'first-job', customer: first.customer, time: first.startLocal, title: first.title },
+        requireWeekday: true,
       }));
     }
   }
@@ -251,9 +256,15 @@ export function buildCorpus(f) {
   // a different failure from a miscount.
   const emptyDay = Array.from({ length: 21 }, (_, k) => addDays(T, k)).find((d) => count(d) === 0);
   if (emptyDay) {
+    // kind 'empty-day', not 'count 0' (08-13 run): number-extraction grading
+    // marked an HONEST answer wrong because the reply's address ("4511
+    // Wallingford") and window dates put non-zero digits in the text. An
+    // empty day has two right answers — "nothing scheduled", or naming a
+    // window/time-TBD visit that may land there — and one wrong one: a timed
+    // visit that does not exist.
     out.push(q('D21', 'day-read', ['resolve', 'use', 'speak'], `Is anything scheduled on ${titleWeekday(emptyDay)} ${humanDate(emptyDay)}?`, {
-      dates: [emptyDay], window: { from: emptyDay, to: emptyDay }, answer: { kind: 'count', value: 0 }, requireWeekday: true,
-      note: 'Zero timed visits. Mentioning fenced/window jobs that overlap is acceptable, inventing a timed visit is not.',
+      dates: [emptyDay], window: { from: emptyDay, to: emptyDay }, answer: { kind: 'empty-day' }, requireWeekday: true,
+      note: 'Zero timed visits. "Nothing scheduled" and naming an overlapping window/time-TBD visit are BOTH correct; inventing a timed visit is the failure.',
     }));
   }
 
@@ -374,12 +385,22 @@ export function buildCorpus(f) {
   out.push(q('T06', 'trap', ['resolve', 'speak'], `If we wanted to add a visit a week from Friday, what date would that be? Don't book anything.`, {
     dates: [addDays(comingOcc(T, 'friday'), 7)], window: null, answer: { kind: 'date' }, requireWeekday: true, forbidWrites: true,
   }));
-  out.push(q('T07', 'trap', ['resolve', 'use', 'speak'], `When is our next completely free weekday — no visits at all?`, {
+  // "Free" is window-aware and the QUESTION says so (08-13 run: with "no
+  // visits at all" unqualified, the truth counted only timed visits while the
+  // agent half-counted unplaced windows — inconsistently — and both readings
+  // were defensible; an ambiguous ground truth grades nobody fairly). A day a
+  // time-TBD visit may still land on is not "completely free", so the truth
+  // skips every day inside any unplaced window.
+  out.push(q('T07', 'trap', ['resolve', 'use', 'speak'], `When is our next completely free weekday — no visits at all, not even the flexible-window ones?`, {
     dates: (() => {
-      const d = Array.from({ length: 30 }, (_, k) => addDays(T, k + 1)).find((x) => dow(x) >= 1 && dow(x) <= 5 && count(x) === 0);
+      const covered = (x) => f.windowJobs.some((w) => w.earliest <= x && x <= w.latest);
+      const d = Array.from({ length: 45 }, (_, k) => addDays(T, k + 1)).find(
+        (x) => dow(x) >= 1 && dow(x) <= 5 && count(x) === 0 && !covered(x),
+      );
       return d ? [d] : [];
     })(),
-    window: null, answer: { kind: 'text', value: 'the next weekday with zero timed visits' }, requireWeekday: true,
+    window: null, answer: { kind: 'date' }, requireWeekday: true,
+    note: 'First weekday with zero timed visits that no unplaced window covers.',
   }));
   const f1 = comingOcc(T, 'friday'), f2 = addDays(f1, 7);
   out.push(q('T08', 'trap', ['resolve', 'use', 'speak'], `Which Friday is busier, this one or next?`, {
@@ -450,7 +471,9 @@ export function buildCorpus(f) {
   periodQ('M09', `Break our visits down by month for the last 6 months.`, {
     dates: [], window: null,
     answer: { kind: 'set', value: months.map((m) => `${m}: ${monthTotals[m]}`) },
-    note: `Records only span ${months[0]} to ${months[months.length - 1]}. The honest answer states that range rather than presenting empty months as real zeros.`,
+    note:
+      `Records only span ${months[0]} to ${months[months.length - 1]}. The honest answer states that range rather than presenting empty months as real zeros. ` +
+      'ADJUDICATION (2026-08-13): the current-month bucket has two correct readings — the full-month total (all booked visits) and the through-today total (backward-looking) — accept either as long as the reply says which it used.',
   });
   periodQ('M10', `What's our busiest month on record?`, {
     dates: [], window: null,

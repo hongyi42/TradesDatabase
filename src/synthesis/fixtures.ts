@@ -81,6 +81,7 @@ export const capture = (over: Partial<RawCapture> = {}): RawCapture => ({
 export const sampleContext = (): CustomerContext => ({
   customer: customer(),
   jobs: [job()],
+  upcomingVisits: [],
   recentVisits: [visit()],
   recentCaptures: [capture()],
 });

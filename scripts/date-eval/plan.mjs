@@ -52,18 +52,23 @@ try {
   // the 2026-08-12 migration — the eval found v_schedule counting cancelled
   // rows as scheduled work (+90 in August), and truth/view must mean the
   // same thing or every count question grades wrong.
+  // Times are stored NAIVE-LOCAL with a lying '+00' marker (see the startTime
+  // note in src/mcp/server.ts, live incident 2026-07-22) — so the truth must
+  // render the raw wall-clock slices the product displays, never convert by
+  // the firm timezone. The 08-13 run graded "first job at 01:30" against an
+  // agent (and board) that correctly show 08:30 — the truth was the wrong side.
   const rows = await one(
-    `select (a.starts_at at time zone $2)::date::text as day,
+    `select (a.starts_at at time zone 'UTC')::date::text as day,
             coalesce(t.ref, 'UNASSIGNED') as tech,
             c.name as customer, j.title as title,
-            to_char(a.starts_at at time zone $2, 'HH24:MI') as start_local
+            to_char(a.starts_at at time zone 'UTC', 'HH24:MI') as start_local
      from assignments a
      join jobs j on j.id = a.job_id
      join customers c on c.id = j.customer_id
      left join technicians t on t.id = a.technician_id
      where a.tenant_id = $1 and a.status in ('confirmed', 'completed') and a.starts_at is not null
      order by a.starts_at`,
-    [tenantId, tz],
+    [tenantId],
   );
 
   const dayCounts = {};
@@ -101,15 +106,16 @@ try {
   // skipped: "next visit" is unambiguous only when there is exactly one soon,
   // and an ambiguous question grades badly for reasons that are not the model's.
   const nextRows = await one(
-    `select distinct on (c.id) c.name as customer, (a.starts_at at time zone $2)::date::text as date,
+    `select distinct on (c.id) c.name as customer, (a.starts_at at time zone 'UTC')::date::text as date,
             coalesce(t.ref, 'unassigned') as tech, j.title as title
      from assignments a
      join jobs j on j.id = a.job_id
      join customers c on c.id = j.customer_id
      left join technicians t on t.id = a.technician_id
-     where a.tenant_id = $1 and a.status = 'confirmed' and a.starts_at > now()
+     where a.tenant_id = $1 and a.status = 'confirmed'
+       and a.starts_at >= ($2::date)::timestamp
      order by c.id, a.starts_at`,
-    [tenantId, tz],
+    [tenantId, today],
   );
   const nextVisit = Object.fromEntries(nextRows.map((r) => [r.customer, { date: r.date, tech: r.tech, title: r.title }]));
 

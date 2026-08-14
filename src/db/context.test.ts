@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
+import { createAssignment } from './assignments.js';
 import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
+import { createTenant } from './tenants.js';
 import { createVisit } from './visits.js';
 import { appendRawCapture, listRawCapturesForCustomer } from './rawCaptures.js';
 import { getCustomerContext } from './context.js';
@@ -57,6 +59,104 @@ describe('getCustomerContext', () => {
     const captureIds = ctx.recentCaptures.map((c) => c.id);
     expect(captureIds).toContain(techNote.id); // via source_capture_id union
     expect(captureIds).toContain(call.id); // via customer_id column
+  });
+
+  // The date-eval 2026-08-13 regression class: a customer with confirmed
+  // BOOKINGS (assignments) but no past visits briefed as "no visits
+  // scheduled" — context read only the visits table. upcomingVisits is the
+  // schedule half.
+  test('upcomingVisits surfaces placed bookings, unplaced windows, and nothing stale', async () => {
+    const customer = await createCustomer({ tenantId, name: 'Upcoming Cust' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Radiator bleed' });
+
+    // Placed future visit (naive-local convention: display slices, no tz math).
+    const placed = await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: null,
+      startsAt: '2027-03-05T08:30:00Z',
+      endsAt: '2027-03-05T10:00:00Z',
+      status: 'confirmed',
+    });
+    // Unplaced (time-TBD) visit holding only a scheduling window.
+    const unplaced = await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: null,
+      startsAt: null,
+      endsAt: null,
+      earliestDate: '2027-03-08',
+      latestDate: '2027-03-12',
+      status: 'confirmed',
+    });
+    // Noise that must NOT surface: a cancelled row and a long-past visit.
+    await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: null,
+      startsAt: '2027-03-06T08:00:00Z',
+      endsAt: '2027-03-06T09:00:00Z',
+      status: 'cancelled',
+    });
+    await createAssignment({
+      tenantId,
+      jobId: job.id,
+      technicianId: null,
+      startsAt: '2020-01-01T08:00:00Z',
+      endsAt: '2020-01-01T09:00:00Z',
+      status: 'confirmed',
+    });
+
+    const ctx = await getCustomerContext(customer.id);
+    const ids = ctx.upcomingVisits.map((u) => u.assignmentId);
+    expect(ids).toContain(placed.id);
+    expect(ids).toContain(unplaced.id);
+    expect(ids).toHaveLength(2); // cancelled + past excluded
+
+    const placedRow = ctx.upcomingVisits.find((u) => u.assignmentId === placed.id);
+    // Display convention: raw wall-clock slices, never timezone-converted.
+    expect(placedRow).toMatchObject({ date: '2027-03-05', startTime: '08:30', endTime: '10:00' });
+
+    const windowRow = ctx.upcomingVisits.find((u) => u.assignmentId === unplaced.id);
+    // The scheduling window IS the answer to "when could this land?"
+    expect(windowRow).toMatchObject({
+      timeTbd: true,
+      earliestDate: '2027-03-08',
+      latestDate: '2027-03-12',
+      date: null,
+    });
+  });
+
+  test("upcomingVisits never leaks another tenant's bookings", async () => {
+    // Two tenants, same-shaped data: the leak test the data-security gate
+    // requires for a new accessor.
+    const other = await createTenant(`ctx-other-${Date.now()}`, { technicianSeats: 2 });
+    const mine = await createCustomer({ tenantId, name: 'Leak Cust A' });
+    const theirs = await createCustomer({ tenantId: other.id, name: 'Leak Cust B' });
+    const myJob = await createJob({ tenantId, customerId: mine.id, title: 'Mine' });
+    const theirJob = await createJob({ tenantId: other.id, customerId: theirs.id, title: 'Theirs' });
+    await createAssignment({
+      tenantId,
+      jobId: myJob.id,
+      technicianId: null,
+      startsAt: '2027-04-01T09:00:00Z',
+      endsAt: '2027-04-01T10:00:00Z',
+      status: 'confirmed',
+    });
+    const theirRow = await createAssignment({
+      tenantId: other.id,
+      jobId: theirJob.id,
+      technicianId: null,
+      startsAt: '2027-04-01T09:00:00Z',
+      endsAt: '2027-04-01T10:00:00Z',
+      status: 'confirmed',
+    });
+
+    const ctx = await getCustomerContext(mine.id);
+    expect(ctx.upcomingVisits.map((u) => u.assignmentId)).not.toContain(theirRow.id);
+    // And reading the OTHER tenant's customer directly never mixes mine in.
+    const otherCtx = await getCustomerContext(theirs.id);
+    expect(otherCtx.upcomingVisits.map((u) => u.assignmentId)).toEqual([theirRow.id]);
   });
 
   test('listRawCapturesForCustomer returns newest first', async () => {

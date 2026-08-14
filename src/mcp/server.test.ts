@@ -3718,6 +3718,50 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(mixed.data.status).toBe('booked');
       expect(mixed.data.date).toBe('2026-12-29');
       expect(mixed.data.earliestDate).toBe('2026-12-29');
+
+      // Server-computed counts (date-eval W13: the model hand-counted stop
+      // rows and got both week totals wrong). Timed stops count on their day;
+      // timeTbd stops are LISTED (visible/actionable) but never counted — a
+      // windowed visit is not ON a day until placed.
+      const timedA = await callWith('book_visit', {
+        customerId: customer.id, title: 'count me', technicianRef: 'tech-mcp',
+        date: '2026-12-21', startTime: '09:00', endTime: '10:00',
+      });
+      expect(timedA.data.status).toBe('booked');
+      const timedB = await callWith('book_visit', {
+        customerId: customer.id, title: 'count me too', technicianRef: 'tech-mcp',
+        date: '2026-12-22', startTime: '11:00', endTime: '12:00',
+      });
+      expect(timedB.data.status).toBe('booked');
+      const counted = await callWith('get_team_schedule', {
+        from: '2026-12-20', to: '2026-12-24',
+      });
+      const counts = counted.data.counts as {
+        byDay: Record<string, number>;
+        windowCoverByDay: Record<string, number>;
+        total: number;
+        timeTbdListed: number;
+      };
+      expect(counts.byDay['2026-12-21']).toBe(1); // the timed stop, NOT the tbd listed that day
+      expect(counts.byDay['2026-12-22']).toBe(1);
+      expect(counts.total).toBe(2);
+      expect(counts.timeTbdListed).toBeGreaterThanOrEqual(1); // 'assigned tbd' above
+      // Zero-days are DATA: every requested day appears, so "which days are
+      // free" is a read, not an inference from absence.
+      expect(counts.byDay['2026-12-24']).toBe(0);
+      // Window coverage: the tbd visit (Dec 21–23) covers each day of its
+      // range — not just the day it is LISTED under — and not Dec 24.
+      expect(counts.windowCoverByDay['2026-12-21']).toBeGreaterThanOrEqual(1);
+      expect(counts.windowCoverByDay['2026-12-22']).toBeGreaterThanOrEqual(1);
+      expect(counts.windowCoverByDay['2026-12-23']).toBeGreaterThanOrEqual(1);
+      expect(counts.windowCoverByDay['2026-12-24']).toBe(0);
+      // Counts cover the REQUESTED range only, even though out-of-window
+      // unplaced day groups may be listed for actionability.
+      const total = Object.values(counts.byDay).reduce((a, b) => a + b, 0);
+      expect(total).toBe(counts.total);
+      for (const d of Object.keys(counts.byDay)) {
+        expect(d >= '2026-12-20' && d <= '2026-12-24').toBe(true);
+      }
     } finally {
       await mgrClient.close();
     }

@@ -1,6 +1,9 @@
 import { getCustomer, type Customer } from './customers.js';
+import { getTenant } from './tenants.js';
 import { listJobsForCustomer, type Job } from './jobs.js';
 import { listVisitsForCustomer, type Visit } from './visits.js';
+import { listUpcomingAssignmentsForCustomer } from './assignments.js';
+import { localDateISO } from '../schedule/availability.js';
 import {
   findRetractionsFor,
   foldRetractions,
@@ -10,9 +13,40 @@ import {
 } from './rawCaptures.js';
 import { factSourceIds, foldRetractedFacts } from './standingFacts.js';
 
+// One upcoming stop, in the schedule's display conventions: date + HH:MM
+// slices of the naive-local timestamps (never timezone-converted — the wire's
+// '+00' is a lie, see get_team_schedule's startTime note), or timeTbd + the
+// scheduling window for unplaced rows.
+export interface UpcomingVisit {
+  assignmentId: string;
+  jobId: string;
+  jobTitle: string | null;
+  technicianRef: string | null;
+  technicianName: string | null;
+  unassigned: boolean;
+  date: string | null; // YYYY-MM-DD (null = time-TBD, see the window)
+  startTime: string | null; // HH:MM wall clock
+  endTime: string | null;
+  timeTbd?: true;
+  earliestDate?: string | null; // the scheduling window, unplaced rows only
+  latestDate?: string | null;
+  promiseLevel: string | null;
+  promisedDay: string | null;
+  locked: boolean;
+}
+
 export interface CustomerContext {
   customer: Customer | null;
   jobs: Job[];
+  /**
+   * Confirmed FUTURE work from the assignments table — placed visits from
+   * today forward plus unplaced (time-TBD) visits with a live scheduling
+   * window. Added 2026-08-13: this aggregate previously read only `visits`
+   * (L2 evidence of PAST work), so "when is X's next visit?" answered "none"
+   * for customers with four confirmed bookings, on every surface that briefs
+   * from this context.
+   */
+  upcomingVisits: UpcomingVisit[];
   recentVisits: Visit[];
   recentCaptures: RawCapture[];
 }
@@ -37,6 +71,39 @@ export async function getCustomerContext(
     listVisitsForCustomer(customerId),
     listRawCapturesForCustomer(customerId),
   ]);
+
+  // Upcoming schedule, tenant-scoped by the CUSTOMER's own tenant (the caller
+  // still rejects cross-tenant customers wholesale). "Today" is the firm's
+  // local date. Booked work stands regardless of note retractions — an
+  // assignment dies via its own status, never via retract_capture — so these
+  // rows deliberately do not join the retraction fold below.
+  let upcomingVisits: UpcomingVisit[] = [];
+  if (customer) {
+    const tz = (await getTenant(customer.tenant_id))?.timezone ?? 'UTC';
+    const todayLocal = localDateISO(new Date().toISOString(), tz);
+    const rows = await listUpcomingAssignmentsForCustomer(customer.tenant_id, customerId, todayLocal);
+    upcomingVisits = rows
+      // Re-check the embed's tenant: "a job shares its customer's tenant" is
+      // an unenforced invariant (id-only FK) — drop rows that violate it.
+      .filter((r) => r.jobs?.tenant_id === customer.tenant_id)
+      .map((r) => ({
+        assignmentId: r.id,
+        jobId: r.job_id,
+        jobTitle: r.jobs?.title ?? null,
+        technicianRef: r.technicians?.ref ?? null,
+        technicianName: r.technicians?.display_name ?? null,
+        unassigned: r.technician_id === null,
+        date: r.starts_at?.slice(0, 10) ?? null,
+        startTime: r.starts_at?.slice(11, 16) ?? null,
+        endTime: r.ends_at?.slice(11, 16) ?? null,
+        ...(r.starts_at === null
+          ? { timeTbd: true as const, earliestDate: r.earliest_date, latestDate: r.latest_date }
+          : {}),
+        promiseLevel: r.promise_level,
+        promisedDay: r.promised_day,
+        locked: r.locked,
+      }));
+  }
 
   const byId = new Map<string, RawCapture>();
   for (const capture of capturesByCustomer) byId.set(capture.id, capture);
@@ -91,5 +158,5 @@ export async function getCustomerContext(
     }));
   }
 
-  return { customer: customerOut, jobs: jobsOut, recentVisits: visits, recentCaptures };
+  return { customer: customerOut, jobs: jobsOut, upcomingVisits, recentVisits: visits, recentCaptures };
 }

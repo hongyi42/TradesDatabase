@@ -431,7 +431,43 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   local_day/local_weekday: when the agent must compose the query itself, the DEFAULT reading of
   the surface has to be the correct one — semantics the agent needs must live in the view, not in
   an instruction to remember a WHERE clause.
-- **The weekday guard's `message_sending` hook does NOT fire on the embedded-agent CLI path
+- **`get_customer_context` answered "no visits scheduled" over four confirmed bookings — the
+  2026-08-13 eval's whole `specifics` category, 8 of its 11 real failures, one blind spot.** The
+  context aggregate read only the `visits` table, which is L2 evidence of PAST work; bookings
+  live in `assignments`. So "when is X's next visit?" answered "none" for any customer whose next
+  work was booked but not yet done — wrong in the dangerous direction, and on every surface that
+  briefs from the shared context (`get_customer_context`, `brief_customer`,
+  `answer_customer_question`). Scheduling windows sitting on UNPLACED rows (plan 4b-2) were
+  equally invisible: four "what's the scheduling window?" questions answered "can't compute, no
+  duration" while the window sat in `assignments.earliest_date/latest_date` the whole time. The
+  trajectory pair that pinned it: S05 answered correctly ONLY because the model chose a third
+  call (`query_spine`); S06 stopped at `get_customer_context` and relayed the empty read —
+  whether a manager heard the truth was a coin flip on an optional tool call. Fix (same PR):
+  `CustomerContext.upcomingVisits` — placed rows from local-today forward plus live unplaced
+  windows, tenant-scoped via `listUpcomingAssignmentsForCustomer` with a two-tenant leak test,
+  rendered in the naive-local display convention (slices, never tz conversion). Lesson, the
+  v_schedule family again: **a read surface that silently omits a category the question is about
+  is worse than an error — the model relays the empty result with full confidence.**
+- **The model hand-counts rows and gets it wrong — `get_team_schedule` now returns
+  `counts.byDay`/`counts.total`, server-computed (2026-08-13 eval, W13).** Asked "more visits
+  this week or next?", the model tallied the stop rows by eye: 58/70 against the served 57/71 —
+  and gave the SAME Wednesday two different counts in two adjacent answers (16 in W10, 15 in
+  W13). Counting is arithmetic; the resolve_date doctrine ("you are unreliable at calendar math")
+  applies to tallying too. The response now carries counts computed from the same rows it lists,
+  the description orders the model to use them verbatim, and timeTbd stops are LISTED but never
+  COUNTED (a windowed visit is not ON a day until placed — the same distinction that made the
+  eval's T07 "free weekday" question ambiguous until its phrasing pinned it).
+- **Eval truth-set conventions (2026-08-13 adjudication, five grader bugs):** (1) stored times
+  are NAIVE-LOCAL with a lying '+00' (see the 2026-07-22 relabeling incident) — the truth now
+  renders raw wall-clock slices like every product surface; it had graded "first job at 01:30"
+  against an agent correctly showing 8:30. (2) A count-0 day question graded by number-extraction
+  marks HONEST answers wrong on the digits inside an address — D21 is now `kind:'empty-day'`
+  (says-nothing-scheduled OR relays a window visit = correct; naming a clock time = wrong).
+  (3) "Completely free day" must say whether unplaced windows count — the question now says
+  "not even the flexible-window ones" and the truth skips window-covered days. (4) M09's
+  current-month bucket accepts full-month AND through-today readings. (5) Two `LLM idle timeout`
+  turns had CLI chrome captured as their "reply" — a stalled turn's stdout is not an answer;
+  grade from the trajectory's prompt-error record instead.
   (verified 2026-08-11).** Made the agent emit "The meeting is Monday 2026-08-12" — Aug 12 is a
   Wednesday, exactly the fabricated pair the guard exists to catch — and `weekday-guard.jsonl`
   did not move. So **no CLI-driven test can measure the guard**; a run that tried would report a

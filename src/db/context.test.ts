@@ -114,8 +114,16 @@ describe('getCustomerContext', () => {
     expect(ids).toHaveLength(2); // cancelled + past excluded
 
     const placedRow = ctx.upcomingVisits.find((u) => u.assignmentId === placed.id);
-    // Display convention: raw wall-clock slices, never timezone-converted.
-    expect(placedRow).toMatchObject({ date: '2027-03-05', startTime: '08:30', endTime: '10:00' });
+    // Display convention: raw wall-clock slices, never timezone-converted —
+    // and the day label is SERVER-composed (the resolve_date phrase pattern:
+    // the eval caught the model writing "Tuesday, Aug 19" for a served
+    // 2026-08-18 when left to label dates itself).
+    expect(placedRow).toMatchObject({
+      date: '2027-03-05',
+      startTime: '08:30',
+      endTime: '10:00',
+      phrase: 'Friday 2027-03-05',
+    });
 
     const windowRow = ctx.upcomingVisits.find((u) => u.assignmentId === unplaced.id);
     // The scheduling window IS the answer to "when could this land?"
@@ -124,6 +132,7 @@ describe('getCustomerContext', () => {
       earliestDate: '2027-03-08',
       latestDate: '2027-03-12',
       date: null,
+      phrase: 'between Monday 2027-03-08 and Friday 2027-03-12',
     });
   });
 

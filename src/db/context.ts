@@ -4,6 +4,12 @@ import { listJobsForCustomer, type Job } from './jobs.js';
 import { listVisitsForCustomer, type Visit } from './visits.js';
 import { listUpcomingAssignmentsForCustomer } from './assignments.js';
 import { localDateISO } from '../schedule/availability.js';
+// Full weekday name, matching resolve_date's phrase convention ("Monday
+// 2026-08-03") — the label the agent is told to say verbatim. fit.ts's
+// weekdayLabel is the short form used by schedule grids; a phrase spoken to a
+// person gets the full word.
+const weekdayFull = (dateISO: string): string =>
+  new Date(`${dateISO}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
 import {
   findRetractionsFor,
   foldRetractions,
@@ -30,6 +36,15 @@ export interface UpcomingVisit {
   timeTbd?: true;
   earliestDate?: string | null; // the scheduling window, unplaced rows only
   latestDate?: string | null;
+  /**
+   * Server-composed day label — "Tuesday 2026-08-18", or for a window
+   * "between Monday 2026-08-24 and Friday 2026-08-28". The resolve_date
+   * pattern: the agent SAYS this verbatim instead of composing its own
+   * (2026-08-13 eval, S01: served the bare date 2026-08-18, the model wrote
+   * "Tuesday, Aug 19" — right weekday, wrong date, exactly the class a
+   * pre-composed phrase removes).
+   */
+  phrase: string;
   promiseLevel: string | null;
   promisedDay: string | null;
   locked: boolean;
@@ -86,23 +101,30 @@ export async function getCustomerContext(
       // Re-check the embed's tenant: "a job shares its customer's tenant" is
       // an unenforced invariant (id-only FK) — drop rows that violate it.
       .filter((r) => r.jobs?.tenant_id === customer.tenant_id)
-      .map((r) => ({
-        assignmentId: r.id,
-        jobId: r.job_id,
-        jobTitle: r.jobs?.title ?? null,
-        technicianRef: r.technicians?.ref ?? null,
-        technicianName: r.technicians?.display_name ?? null,
-        unassigned: r.technician_id === null,
-        date: r.starts_at?.slice(0, 10) ?? null,
-        startTime: r.starts_at?.slice(11, 16) ?? null,
-        endTime: r.ends_at?.slice(11, 16) ?? null,
-        ...(r.starts_at === null
-          ? { timeTbd: true as const, earliestDate: r.earliest_date, latestDate: r.latest_date }
-          : {}),
-        promiseLevel: r.promise_level,
-        promisedDay: r.promised_day,
-        locked: r.locked,
-      }));
+      .map((r) => {
+        const date = r.starts_at?.slice(0, 10) ?? null;
+        const phrase = date
+          ? `${weekdayFull(date)} ${date}`
+          : `between ${weekdayFull(r.earliest_date as string)} ${r.earliest_date} and ${weekdayFull(r.latest_date as string)} ${r.latest_date}`;
+        return {
+          assignmentId: r.id,
+          jobId: r.job_id,
+          jobTitle: r.jobs?.title ?? null,
+          technicianRef: r.technicians?.ref ?? null,
+          technicianName: r.technicians?.display_name ?? null,
+          unassigned: r.technician_id === null,
+          date,
+          startTime: r.starts_at?.slice(11, 16) ?? null,
+          endTime: r.ends_at?.slice(11, 16) ?? null,
+          ...(r.starts_at === null
+            ? { timeTbd: true as const, earliestDate: r.earliest_date, latestDate: r.latest_date }
+            : {}),
+          phrase,
+          promiseLevel: r.promise_level,
+          promisedDay: r.promised_day,
+          locked: r.locked,
+        };
+      });
   }
 
   const byId = new Map<string, RawCapture>();

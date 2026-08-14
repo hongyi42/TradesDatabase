@@ -272,6 +272,8 @@ const TOOLS = [
       'timeTbd:true is a REAL booked visit whose exact day is not set yet — its earliestDate–' +
       "latestDate range IS the answer to \"what's the scheduling window for X's job?\" (never say " +
       'nothing is scheduled when a timeTbd entry exists, and never invent a time for one). ' +
+      "When you NAME a visit's day, SAY the entry's `phrase` VERBATIM (\"Tuesday 2026-08-18\") — " +
+      'never re-derive the weekday or restate the date yourself; you are unreliable at both. ' +
       'recentVisits is past work evidence, not the schedule.',
     inputSchema: {
       type: 'object',
@@ -291,7 +293,11 @@ const TOOLS = [
   {
     name: 'resolve_date',
     description:
-      'Turn a spoken day into a real calendar date. Call this WHENEVER someone names a day ' +
+      'Turn a spoken day into a real calendar date. YOUR CLOCK IS WRONG: message timestamps you ' +
+      "see are UTC, which from late afternoon onward names TOMORROW in the firm's timezone — so " +
+      'NEVER state, count from, or filter by "today" without calling this first (the returned ' +
+      '`today` is the firm-local date; a query window like "so far this year"/"through today" ' +
+      'must end at THAT date, never at your clock\'s). Call this WHENEVER someone names a day ' +
       'relative to now — "today", "tomorrow", "this Friday", "next Tuesday", "the Friday after ' +
       'next week", "in 3 days" — BEFORE you book, move, or otherwise use the date. Do NOT work ' +
       'out the date yourself; you are unreliable at calendar math. Pass the parts you understood: ' +
@@ -1023,6 +1029,9 @@ const ADMIN_TOOLS = [
       'get_team_schedule, get_availability, find_customer, find_slots and the rest are faster, ' +
       'tested, and carry rules this tool does not. Reach for query_spine only for questions they ' +
       'cannot answer (counts, totals, "how many…since…", cross-cutting lists). ' +
+      'DATE BOUNDS: your clock is UTC and names TOMORROW from late afternoon on — before writing ' +
+      'any window that involves today ("so far this year", "through today", "last 30 days"), call ' +
+      "resolve_date and bound the SQL with ITS returned date, never your clock's. " +
       'It CANNOT write, and it can only read these six views (nothing else exists to it): ' +
       'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, promise_level, ' +
       'promised_day, locked, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +

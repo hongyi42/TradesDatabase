@@ -457,6 +457,19 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   the description orders the model to use them verbatim, and timeTbd stops are LISTED but never
   COUNTED (a windowed visit is not ON a day until placed — the same distinction that made the
   eval's T07 "free weekday" question ambiguous until its phrasing pinned it).
+- **GLM passed the date eval 100% (2026-08-13, v3 run): 94/94, zero stalls, zero delivered
+  weekday-date contradictions — the arc was 86% (morning) → 97% (post-#133) → 100% (post-#134),
+  and every point of it came from mechanism, not prompting.** What closed the last three: served
+  `phrase` labels on upcomingVisits (the model mislabeled a served date exactly once — never
+  again once it had a phrase to say verbatim), and the YOUR-CLOCK-IS-WRONG warning atop
+  resolve_date/query_spine — the ONLY server-side surface a turn sees before its first tool
+  call. Standing lessons: **the evening (post-5pm PDT) is the adversarial regime** — message
+  timestamps are UTC and name tomorrow, so mid-day eval runs structurally cannot see the
+  UTC-today failure class; run evals in the evening. **Same-day re-runs contaminate** unless the
+  session id carries a per-run nonce (run.mjs .runid — replies otherwise CONTINUE the earlier
+  conversation). `scripts/date-eval/adjudicate-db.mjs` makes the adjudication mechanical.
+  PARKED: the v2 run delivered three weekday-date mismatches with ZERO guard flags — real
+  weekday-guard misses, not yet investigated.
 - **Eval truth-set conventions (2026-08-13 adjudication, five grader bugs):** (1) stored times
   are NAIVE-LOCAL with a lying '+00' (see the 2026-07-22 relabeling incident) — the truth now
   renders raw wall-clock slices like every product surface; it had graded "first job at 01:30"

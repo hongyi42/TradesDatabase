@@ -15,7 +15,7 @@ export interface Citation {
 // backs it. raw_text is nullable (e.g. a technician_photo/blob-only capture), so
 // a placeholder keeps the capture id citeable rather than printing `null`.
 export function serializeContextForPrompt(context: CustomerContext): string {
-  const { customer, jobs, recentVisits, recentCaptures } = context;
+  const { customer, jobs, upcomingVisits, recentVisits, recentCaptures } = context;
 
   const attrs = (value: unknown): string => JSON.stringify(value ?? {});
 
@@ -54,6 +54,24 @@ export function serializeContextForPrompt(context: CustomerContext): string {
         .join('\n')
     : '- (none)';
 
+  // The schedule ahead — the half "next visit" questions are answered from
+  // (2026-08-13: briefs previously saw only past visits and answered "nothing
+  // scheduled" over four confirmed bookings). Unplaced rows say so explicitly:
+  // the model must relay the window, never invent a time.
+  const upcomingLines = (upcomingVisits ?? []).length
+    ? (upcomingVisits ?? [])
+        .map(
+          (u) =>
+            `- [upcoming ${u.assignmentId}] ${u.jobTitle ?? '(untitled)'} ` +
+            (u.timeTbd
+              ? `day not set yet — will land ${u.earliestDate ?? '?'} to ${u.latestDate ?? '?'}`
+              : `${u.date ?? '?'} ${u.startTime ?? ''}${u.endTime ? `–${u.endTime}` : ''}`) +
+            ` tech=${u.technicianRef ?? (u.unassigned ? 'UNASSIGNED' : '—')}` +
+            `${u.promiseLevel && u.promiseLevel !== 'none' ? ` promised=${u.promiseLevel}:${u.promisedDay ?? '?'}` : ''}`,
+        )
+        .join('\n')
+    : '- (none booked)';
+
   const visitLines = recentVisits.length
     ? recentVisits
         .map(
@@ -81,7 +99,10 @@ export function serializeContextForPrompt(context: CustomerContext): string {
     'JOBS:',
     jobLines,
     '',
-    'VISITS (newest first):',
+    'UPCOMING VISITS (the schedule ahead):',
+    upcomingLines,
+    '',
+    'PAST VISITS (newest first):',
     visitLines,
     '',
     'CAPTURES (evidence — cite these ids):',

@@ -431,7 +431,43 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   local_day/local_weekday: when the agent must compose the query itself, the DEFAULT reading of
   the surface has to be the correct one — semantics the agent needs must live in the view, not in
   an instruction to remember a WHERE clause.
-- **The weekday guard's `message_sending` hook does NOT fire on the embedded-agent CLI path
+- **`get_customer_context` answered "no visits scheduled" over four confirmed bookings — the
+  2026-08-13 eval's whole `specifics` category, 8 of its 11 real failures, one blind spot.** The
+  context aggregate read only the `visits` table, which is L2 evidence of PAST work; bookings
+  live in `assignments`. So "when is X's next visit?" answered "none" for any customer whose next
+  work was booked but not yet done — wrong in the dangerous direction, and on every surface that
+  briefs from the shared context (`get_customer_context`, `brief_customer`,
+  `answer_customer_question`). Scheduling windows sitting on UNPLACED rows (plan 4b-2) were
+  equally invisible: four "what's the scheduling window?" questions answered "can't compute, no
+  duration" while the window sat in `assignments.earliest_date/latest_date` the whole time. The
+  trajectory pair that pinned it: S05 answered correctly ONLY because the model chose a third
+  call (`query_spine`); S06 stopped at `get_customer_context` and relayed the empty read —
+  whether a manager heard the truth was a coin flip on an optional tool call. Fix (same PR):
+  `CustomerContext.upcomingVisits` — placed rows from local-today forward plus live unplaced
+  windows, tenant-scoped via `listUpcomingAssignmentsForCustomer` with a two-tenant leak test,
+  rendered in the naive-local display convention (slices, never tz conversion). Lesson, the
+  v_schedule family again: **a read surface that silently omits a category the question is about
+  is worse than an error — the model relays the empty result with full confidence.**
+- **The model hand-counts rows and gets it wrong — `get_team_schedule` now returns
+  `counts.byDay`/`counts.total`, server-computed (2026-08-13 eval, W13).** Asked "more visits
+  this week or next?", the model tallied the stop rows by eye: 58/70 against the served 57/71 —
+  and gave the SAME Wednesday two different counts in two adjacent answers (16 in W10, 15 in
+  W13). Counting is arithmetic; the resolve_date doctrine ("you are unreliable at calendar math")
+  applies to tallying too. The response now carries counts computed from the same rows it lists,
+  the description orders the model to use them verbatim, and timeTbd stops are LISTED but never
+  COUNTED (a windowed visit is not ON a day until placed — the same distinction that made the
+  eval's T07 "free weekday" question ambiguous until its phrasing pinned it).
+- **Eval truth-set conventions (2026-08-13 adjudication, five grader bugs):** (1) stored times
+  are NAIVE-LOCAL with a lying '+00' (see the 2026-07-22 relabeling incident) — the truth now
+  renders raw wall-clock slices like every product surface; it had graded "first job at 01:30"
+  against an agent correctly showing 8:30. (2) A count-0 day question graded by number-extraction
+  marks HONEST answers wrong on the digits inside an address — D21 is now `kind:'empty-day'`
+  (says-nothing-scheduled OR relays a window visit = correct; naming a clock time = wrong).
+  (3) "Completely free day" must say whether unplaced windows count — the question now says
+  "not even the flexible-window ones" and the truth skips window-covered days. (4) M09's
+  current-month bucket accepts full-month AND through-today readings. (5) Two `LLM idle timeout`
+  turns had CLI chrome captured as their "reply" — a stalled turn's stdout is not an answer;
+  grade from the trajectory's prompt-error record instead.
   (verified 2026-08-11).** Made the agent emit "The meeting is Monday 2026-08-12" — Aug 12 is a
   Wednesday, exactly the fabricated pair the guard exists to catch — and `weekday-guard.jsonl`
   did not move. So **no CLI-driven test can measure the guard**; a run that tried would report a
@@ -489,6 +525,19 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   refuses to answer a probe not invoked as `-u sandbox` + `sh -lc`, so the invocation shape fails
   the suite, not the fleet. General rule: `nemoclaw exec` ≠ `docker exec` — anything needing the
   sandbox's network posture needs the sandbox user's login shell.
+- **medic v4+v5 are DEPLOYED as of 2026-08-13 19:54:23Z — the NVIDIA failover can no longer fire.**
+  Verified the way this repo requires (md5 of the path the systemd unit actually runs, never a
+  sibling copy): `/usr/local/sbin/nemoclaw-inference-medic.sh` = `ae3787ed0ccf08485de26cde8f114b3f`,
+  244 lines, byte-identical to `Box_Setup_Stuff/`. Every surviving `FALLBACK`/`nvidia-prod` string is
+  a COMMENT; no executable line references either. The first tick 3s later identified the new build
+  by its wording — `route OK on deepinfra-prod / zai-org/GLM-5.2 — **serving verified (tool call
+  returned)**`, where v3 said "completion verified". **The last two windows the old failover ever
+  caused were 2026-08-13 09:11:56 and 11:48:12**, each routing the whole fleet to a provider that
+  400s real turns while logging "COMPLETION-VERIFIED". Worth noting how close this came to being
+  recorded wrongly: a check at 19:45 found the Aug-11 build and reported "not deployed", the deploy
+  landed at 19:54, and only re-checking on the user's say-so caught it — **a deploy claim is only
+  true at the moment it is measured.** **The one remaining gap is ALERTING**: the medic now tells the
+  truth into a journal nobody reads.
 - **medic v4 (2026-08-12): a probe that doesn't look like a TURN can't tell you a provider serves
   turns.** v3 closed "is it registered?" but its probe was `{"content":"hi"}, max_tokens:1` — no
   tools, no streaming, one token. `nvidia-prod` served that happily while returning `400 (no body)`
@@ -1572,6 +1621,49 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   truncating`) — never judge AGENTS.md-dependent behavior (board-link lines, batching,
   contract parentheticals) from a CLI probe; the Telegram path is the authority. Use a
   fresh `--session-id` so probes never pollute the user-facing chat context.
+  > **SUPERSEDED 2026-08-12 — that fallback was CONDITIONAL, and the condition is gone.**
+  > The embedded agent is opt-in: `openclaw agent --local` selects it. Without `--local` the
+  > CLI drives the **gateway** over its WebSocket, and once device pairing works that is what
+  > happens. Verified the same day on both s2 and s6: the gateway log shows
+  > `[ws] ⇄ res ✓ agent … runId=…` followed by `[agents/tool-policy] tool policy removed 4
+  > tool(s) via tools.deny`, **no** `[agent/embedded]` line and **no** truncation warning — so
+  > full AGENTS.md and the gateway's cached tools/list are both in play. The 2026-07-23
+  > observation was a *pairing failure* being described as CLI behaviour, and reading it as the
+  > latter cost this project several hours and three wrong conclusions.
+  > **How to tell which agent answered, every time:** look for `[ws] ⇄ res ✓ agent` in
+  > `/sandbox/.openclaw/logs/gateway-persistent.log` (gateway) versus `[agent/embedded]` +
+  > `truncating` in the CLI's own stdout (embedded). Never infer it from the command alone.
+  > **Consequence for date-eval:** if its runs fell back to embedded, they measured a doctrine
+  > short by ~6,477 chars — a different prompt than production. Re-check before trusting its
+  > phase attribution. **Useful flags** (`openclaw agent --help`): `--deliver` sends the reply
+  > out through a channel (this is what makes the outbound plugin hooks fire — the weekday guard
+  > logged a flagged mismatch on exactly such a run), `--channel/--reply-channel/--reply-to/
+  > --reply-account` steer delivery, `--session-id`/`--session-key` make the transcript
+  > addressable, `--message-file` avoids shell quoting entirely.
+- **`/hooks/agent` (the gateway's HTTP webhook) CANNOT drive an agent turn on this box.** It
+  admits the request (`200 {"ok":true,"runId":…}` in ~30-60ms) and then **skips the run**:
+  hook runs execute through the **cron** runner, which preflights any provider whose `baseUrl`
+  is loopback / private-network / `.local`
+  ([cron docs](https://docs.openclaw.ai/automation/cron-jobs)). OpenShell's endpoint is
+  `https://inference.local/v1`, so it is probed — and the probe does a **direct `getaddrinfo`**
+  in a namespace with **no public DNS at all** (`api.deepinfra.com` does not resolve either;
+  everything egresses via the proxy at `10.200.0.1:3128`, which does the resolving). Real model
+  calls work precisely because they go through that proxy, so the preflight is a **false
+  negative on a working provider**:
+  `Agent cron job uses inference/z-ai/glm-5.2 but the local provider endpoint is not reachable
+  at https://inference.local/v1. Skipping this cron run … getaddrinfo EAI_AGAIN inference.local`
+  Tested with `deliver:false` **and** `deliver:true` — identical skip, 16 minutes apart (so the
+  5-minute reachability cache had expired; `EAI_AGAIN` is nominally "temporary" but is permanent
+  here). `deliver` cannot help: the preflight is the entrance, `deliver` is the exit. The docs
+  state the preflight **cannot be disabled** (`--fallbacks ""` only narrows the walk to the
+  primary, which is the failing candidate). **Use the CLI gateway path instead.**
+  **Latent production risk from the same root cause:** any *isolated agent cron job* a manager
+  schedules would be silently skipped — and skipped runs do not increment execution-error
+  backoff by default, so nobody is told. Nothing is broken today (s2 has no cron jobs and zero
+  occurrences), but §0h doctrine actively invites recurring work ("run the freeze every Friday
+  morning" is named as the canonical legitimate recurring job). Mitigations:
+  `failureAlert.includeSkipped` to surface repeated skips, or give the inference provider a
+  `baseUrl` that is not loopback/private/`.local` so it stops being preflighted at all.
 
 **Working on the spine / Composio:**
 - **When inbound email "stops working", check the webhook subscription FIRST** — it's
@@ -1614,8 +1706,143 @@ append-once AGENTS.md block drifts stale as the product moves — refreshable bl
 (delete-then-append per `wire` run) fixed that class; and long/bulk tasks need the batching
 mechanism in [long-running-task-batching.md](long-running-task-batching.md).
 
+- **`npm test` truncates the local stack, and that wipes the spine-eval world.** The suite's
+  own cleanup (`src/test.setup.ts`) empties the spine tables but leaves `tenants` alone, so an
+  eval world built before a test run comes back as tenant rows with **zero** customers, jobs and
+  visits. Every read then returns `[]` and the tier-1 report showed 34 confident, meaningless
+  failures. Rebuild with `npm run spine-eval:world` after running the suite; both eval drivers
+  now check for this and refuse with one line instead of grading a ghost.
+- **An eval's own fixtures collide unless each scenario owns its rows AND its people.** Two
+  rounds of this in one afternoon (2026-08-12). First, tier 1 cancelled job `rs-04` and tier 2
+  then asked the agent to cancel the same visit — already gone — which reported as an agent
+  failure. Per-tier customer/job pools fixed that, and then both tiers booked onto
+  `cfg-tech-06` on the same day and the `no_confirmed_overlap` exclusion refused the second.
+  **Whatever a scenario writes to — a customer, a job, a visit, or a technician — it has to
+  own.** Pools are now split `t1`/`t2` for both.
+- **Fixture data must look like customer data.** The first fixture naming reused a shared name
+  pool and told rows apart with a `(rs-01)` suffix. That produced two customers called "Aisha
+  Nguyen" (the agent could not tell which it had been asked about) and taught the agent that
+  `rs-05` was an identifier — it duly passed the literal string `"rs-05"` to a tool expecting a
+  uuid. Unique realistic names, no harness markers.
+- **A missing `BOARD_BOT_HANDLE` makes the agent invent board links.** With the variable unset
+  no tool attaches a `boardNote`, and the tool descriptions say "no boardNote → say nothing
+  about the board". On the first tier-2 run the agent instead fabricated
+  `https://board.evalmain.com/schedule?date=…` from the tenant name. Same class as the
+  2026-07-22 live finding (`board.example.com/v=<scheduleVersion>`): **instructed to always
+  produce X, given no material for X, it produces one anyway.** Worth checking on Render, since
+  the failure is silent and people tap the links.
+- **`resolve_date` now has calendar-PERIOD modes** (`month`, `quarter`, `year`, all accepting
+  negatives, commit `84e5ba7`, 2026-08-12). This closes the gap `scripts/date-eval/README.md`
+  still documents as open — that README's "Known coverage gap: month, quarter, year" section
+  and its `M01–M11` period questions predate the modes by one day and will grade differently
+  now. The eval's 366-case date matrix covers all seven modes and passes 100%.
+- **"The model is 94% of a turn" is a HARNESS number, not a production one — don't quote it as
+  the latter.** The spine-eval's tier 2 measured every spine tool's p95 under 51ms and concluded
+  the model dominates. True of that path, misleading about production, because tier 2 hands the
+  model a **fresh** 42-tool list and **only** the spine's tools. Production gives it the gateway's
+  **cached** `tools/list`, openclaw's **native** tools (all but the 10 denied) and openclaw's own
+  system prompt on top, `thinkingDefault: adaptive`, the doorman round trip, and — **on manager
+  seats only** — a second `composio` MCP server whose per-request `sessions.use` costs +2.28s/turn
+  (§5 above). Tool-schema depth alone once moved a turn from 67s to 3s. Any latency claim has to
+  name which path *and which seat shape* it measured.
+- **`tools.toolSearch` is `false` on ALL SIX sandboxes (verified in-container 2026-08-12) — the
+  §0j doctrine block now describes a surface that no longer exists.** The 2026-08-04 finding
+  (tool search hid `resolve_date`, so a doctrine rule naming a tool silently broke) was fixed two
+  ways, and the *config* fix outlived the memory of it: every seat now shows the model its tools
+  directly. Consequences: (a) any claim that "tool search hides X" is stale — re-check
+  `tools.toolSearch` before repeating it; (b) the §0j block appended to s2/s5–s8 is now **dead
+  prompt text** describing a `tool_search → tool_describe → tool_call` route the model no longer
+  has, which costs tokens on every turn and could actively mislead — worth a deliberate decision
+  to keep or remove, not silent retention; (c) an eval that shows the model all tools directly is
+  therefore **faithful** on this axis, not optimistic. **Also verified: `tools.deny` is the same
+  10 native tools on s2/s5–s8 but `0` on s3** (Judy's seat is deliberately untrimmed), and the
+  `composio` MCP server exists **only** on the manager seats s2/s3 — s5–s8 are spine-only. Seat
+  shape is not uniform; never generalise one seat's timing to the fleet.
+- **The gateway HAS an authenticated HTTP entry — `POST /hooks/agent` — so a gateway-inclusive
+  test needs NO Telegram account.** Recorded because we nearly built the expensive thing: the
+  first draft of the tier-3 plan concluded "a real Telegram message is the only entry", which is
+  **wrong**, and the in-repo evidence genuinely looks like it isn't: ingest is `getUpdates`
+  **polling** (`bootstrap-box.sh:264`) so there is no *inbound Telegram* webhook to forge; the
+  gateway listens on **18789 in a nested network namespace**, so it is unreachable from the host
+  (reach it via ssh → `exec` inside the container); and the CLI path runs the **embedded** agent,
+  skipping the cached `tools/list` *and* truncating AGENTS.md at 12,000 chars (§5 above) — against
+  an 18,477-char doctrine that silently discards 6,477 characters including the board-link and
+  batching rules, so **a CLI-driven number looks gateway-inclusive and is false**. What closes the
+  gap is openclaw's own `hooks` config (`hooks.{enabled,token,path,mappings}`, `path` defaults to
+  `/hooks`, **header-only** auth via `Authorization: Bearer` or `x-openclaw-token`, dedicated token
+  — never a gateway auth secret):
+  [configuration](https://docs.openclaw.ai/gateway/configuration),
+  [reference#hooks](https://docs.openclaw.ai/gateway/configuration-reference#hooks).
+  `POST /hooks/agent` takes `message`/`agentId`/`sessionKey`/`sessionMode`/`deliver`/`channel`/`to`/
+  `timeoutSeconds`; **`sessionMode:"isolated"` (the default) gives a fresh session per request**,
+  which is how a gateway-path eval becomes repeatable at all — a real Telegram chat accumulates
+  context between scenarios. It returns on **admission, not completion** (15s deadline; `200`
+  admitted, `400` bad delivery coords, `409` session conflict, `502` prep failure, `503` deadline).
+  `deliver:true` sends the reply out through a channel; `deliver:false` completes silently.
+  **Unresolved and worth testing before relying on it:** whether the outbound plugin hooks fire on
+  a webhook-triggered run. `reply_payload_sending` is documented as running "after payload
+  normalization and before channel delivery, including replies routed back to the originating
+  channel" ([plugins/hooks](https://docs.openclaw.ai/plugins/hooks)), which makes it *likely* — but
+  hook behaviour varies by execution context (`agent_end` is fire-and-forget on gateway paths,
+  awaited on one-shot CLI), and upstream
+  [issue #29203](https://github.com/openclaw/openclaw/issues/29203) is exactly "internal hooks not
+  triggered in auto-reply path". Settle it with the **proven 2026-08-11 probe**: make the agent
+  emit a fabricated weekday pair and see whether `weekday-guard.jsonl` moves.
+  **Lesson, the CLAUDE.md case study again:** "the vendor has no HTTP entry" was inferred from our
+  own deployment configuring only `channelId:"telegram"`. Absence of a configured feature is not
+  absence of the feature — check the vendor docs before designing around a missing capability.
+- **Design consequence worth reusing: make the cheap tier the control group.** Tier 3 runs the
+  *same* corpus and graders over the Telegram transport, so `tier3 − tier2` per scenario **is**
+  the gateway's cost, attributed rather than guessed. Sharing the corpus is what makes the
+  subtraction meaningful — a second eval with its own scenarios could not produce this.
+- **The pilot DB is an accepted test-write target (user decision, 2026-08-12)** — *"You can touch
+  the pilot. The live DB is used for testing anyways."* This reverses the earlier same-day
+  "don't touch the pilot" constraint, and it is lifted **per path, not globally**: tiers 1/2 stay
+  local-only and `src/eval/targetGuard.ts` (which refuses the pilot by ref) is **not** weakened to
+  unlock a pilot path — a pilot path gets its own separate fail-closed gate. Never truncate the
+  pilot; write inside a dedicated tenant and clean up by tenant-scoped delete. And note
+  `raw_captures` still has **no delete path**, so every pilot test run appends **permanent** L1
+  rows — stamp them in source metadata and report the count rather than letting the growth be
+  discovered later. Prod stays read-only regardless.
+
+- **L1 PINS L2: a stamped capture makes its customer permanently undeletable.** Found 2026-08-12
+  building the eval world into the pilot. `raw_captures.customer_id/job_id/visit_id` are
+  `on delete set null`, so deleting a customer *updates* the referencing capture — and the
+  append-only trigger is `before update OR delete`. The delete therefore fails with the bare
+  string `raw_captures is append-only`, from a statement that never mentions raw_captures.
+  (The context_spine migration's own comment about "surviving the append-only trigger" refers to
+  the OTHER direction — `customers.source_capture_id` — which is on the mutable side and is fine.)
+  **Consequence: any world built in a database you cannot truncate is BUILD-ONCE.** Dropping the
+  stamps to regain deletability is not a fix — `src/db/context.ts` reads them as a customer's
+  evidence, so `get_customer_context` would go blind. To re-anchor an existing world, **shift it
+  rather than rebuild it**: visit dates are the only anchor-dependent part and `assignments` is
+  mutable. Whole-week shifts only (weekday alignment), in two passes (`no_confirmed_overlap` is a
+  non-deferrable GiST exclusion, so a single-pass uniform shift transiently collides).
+- **The pilot's migration LEDGER is incomplete — don't diagnose its schema from
+  `list_migrations`.** On 2026-08-12 the ledger was missing four migrations that exist locally
+  (`query_spine_reader`, `v_schedule_local_weekday`, `phone_call_ingest`,
+  `nvidia_failover_rates`), which reads as "the pilot is four behind" and nearly got reported as
+  broken production. Two of them were then found APPLIED — `v_customers`/`v_jobs`/`v_schedule`/
+  `v_team`/`v_time_off`/`v_cancelled_visits` all exist, and `v_schedule` has `local_day` and
+  `local_weekday`. They were applied out-of-band, so the ledger under-reports. **Check
+  `information_schema` for the actual object, not the migration list.**
+- **A new tenant in the pilot silently enlists in the lifecycle cron.** `src/jobs/lifecycle.ts`
+  step 3 ensures a tier-scoped Composio session for **every** technician whose state is `active`,
+  every 15 minutes — and eval technicians must be active or the schedule readers treat the roster
+  as empty. So a 20-person synthetic tenant would mint **20 real Composio sessions** on the
+  production Composio account within a quarter of an hour. Fix used: pre-fill
+  `technicians.composio_session_id` with a deliberately-invalid sentinel
+  (`eval-no-composio-session`), because `ensurePersonSession` short-circuits when the column is
+  set. Generalises: **before adding a tenant to a live database, read what the cron sweeps over
+  every tenant.** The other steps are safe by shape (pairing advancement, offboarding expiry and
+  log ingestion all need Composio state a synthetic tenant does not have).
+
 ## 6. Where the deep detail lives
 
+- **Evals:** [scripts/spine-eval/README.md](../scripts/spine-eval/README.md) — the spine-tool
+  eval (accuracy, per-leg latency, safety; local-only, two tiers, `/goal`-gated) and why its
+  seeded world cannot expire. [scripts/date-eval/README.md](../scripts/date-eval/README.md) —
+  the older live-box date-machinery eval and its four-phase attribution.
 - **Runbooks:** [doorman-runbook.md](doorman-runbook.md) (badge/doorman ops),
   [control-plane.md](control-plane.md) (lifecycle cron), [nemoclaw-tech-agent.md](nemoclaw-tech-agent.md)
   (agent stack + Composio §7), `Box_Setup_Stuff/` (host-side; self-contained for the box

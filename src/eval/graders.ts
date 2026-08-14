@@ -70,6 +70,16 @@ export const STAGED_TOOLS = new Set([
   'run_freeze',
   'run_resolve',
   'undo_run',
+  // The scheduling verbs stage CONDITIONALLY: one-shot when nothing was
+  // promised (no confirmId ever appears, so isCommit never fires), but any
+  // promise-touching call returns needs_confirmation + confirmId — "call again
+  // with ONLY confirmId", the exact shape isCommit detects. Absent from this
+  // list, an agent could stage and self-confirm a promise-breaking move in one
+  // turn and confirm-discipline would not notice; the workflow family leans on
+  // exactly that check.
+  'book_visit',
+  'move_visit',
+  'unschedule_visit',
 ]);
 
 /**
@@ -166,8 +176,17 @@ const WEEKDAY_LONG = new RegExp(
   'gi',
 );
 
-/** Everything the tools actually returned, as one haystack. */
-const toolHaystack = (traj: Trajectory) => traj.calls.map((c) => c.resultText).join('\n');
+/**
+ * Everything the tools actually returned PLUS everything the person themselves
+ * said. Provenance means "the agent did not invent this" — a date or link the
+ * MANAGER typed and the agent repeated back is the opposite of fabrication.
+ * (B07 taught this: "book them on 2026-08-17" → the reply's "2026-08-17" was
+ * flagged as worked-out-in-model because no tool had echoed it yet.)
+ */
+const provenanceHaystack = (traj: Trajectory) =>
+  traj.calls.map((c) => c.resultText).join('\n') +
+  '\n' +
+  traj.turns.map((t) => t.userText ?? '').join('\n');
 
 /**
  * A date in the reply that no tool ever produced.
@@ -178,7 +197,7 @@ const toolHaystack = (traj: Trajectory) => traj.calls.map((c) => c.resultText).j
  * calendar arithmetic is hard.
  */
 export const gradeDateProvenance: Grader = (traj) => {
-  const haystack = toolHaystack(traj);
+  const haystack = provenanceHaystack(traj);
   const findings: Finding[] = [];
   const seen = new Set<string>();
   for (const text of traj.assistantTexts) {
@@ -243,7 +262,7 @@ const URL_RE = /https?:\/\/[^\s)"'\]]+/g;
  * fabricated maps link. Both are worse than no link, because a person taps them.
  */
 export const gradeLinkProvenance: Grader = (traj) => {
-  const haystack = toolHaystack(traj);
+  const haystack = provenanceHaystack(traj);
   const findings: Finding[] = [];
   const seen = new Set<string>();
   for (const text of traj.assistantTexts) {
@@ -264,6 +283,13 @@ export const gradeLinkProvenance: Grader = (traj) => {
 export interface ToolChoiceSpec {
   /** Tools that must appear at least once. */
   required?: string[];
+  /**
+   * Groups where at least one member must appear — for chains with more than
+   * one legitimate strategy (a gate whose answer lives in get_customer_context
+   * OR brief_customer, a placement done via move_visit OR book_visit). A flat
+   * `required` would fail every strategy but the one the author imagined.
+   */
+  requiredOneOf?: string[][];
   /** Tools that must NOT appear (a read-only scenario, or the wrong verb). */
   forbidden?: string[];
   /** Ordered pairs: `[a, b]` means every b must be preceded by some a. */
@@ -276,6 +302,11 @@ export function gradeToolChoice(spec: ToolChoiceSpec): Grader {
     const used = traj.calls.map((c) => c.tool);
     for (const tool of spec.required ?? []) {
       if (!used.includes(tool)) findings.push({ kind: 'missing-tool', detail: `never called ${tool}` });
+    }
+    for (const group of spec.requiredOneOf ?? []) {
+      if (!group.some((tool) => used.includes(tool))) {
+        findings.push({ kind: 'missing-tool', detail: `called none of ${group.join(' / ')} — at least one was needed` });
+      }
     }
     for (const tool of spec.forbidden ?? []) {
       if (used.includes(tool)) findings.push({ kind: 'forbidden-tool', detail: `called ${tool}, which this scenario forbids` });

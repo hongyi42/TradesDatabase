@@ -64,6 +64,11 @@ scenarios are built not to need resetting:
 - each write scenario gets **its own customer, job and visit**, and
 - fixture pools are allocated **per tier** (`fx-t1-…` / `fx-t2-…`).
 
+The `workflow` (M) family goes one step further: its chains cancel, rebook and clear
+whole afternoons, so each tier's wf fixtures live on a **dedicated technician**
+(`wf-tech-t1` / `wf-tech-t2`) who carries no base schedule at all — every row on that
+book was planted by a wf fixture, and no other scenario can collide with it.
+
 Both halves were paid for. Tier 1 cancelled `rs-04`; tier 2 then asked the agent to
 cancel the same visit, found it already gone, and reported an agent failure that was
 really a shared-world collision.
@@ -207,7 +212,7 @@ Stated here rather than discovered later:
 | `src/eval/targetGuard.ts` | the local-only decision |
 | `src/eval/dateMatrix.ts` | 366 calendar cases + their grader |
 | `src/eval/toolCases.ts` | 54 tier-1 cases covering all 42 tools |
-| `src/eval/corpus.ts` | 43 tier-2 scenarios |
+| `src/eval/corpus.ts` | 59 tier-2 scenarios (incl. the multi-tool `workflow` family) |
 | `src/eval/graders.ts` | the deterministic graders |
 | `src/eval/doctrine.ts` | extracts AGENTS.md out of `bootstrap-box.sh` |
 | `src/eval/metrics.ts` | percentiles, the seal, formatting |

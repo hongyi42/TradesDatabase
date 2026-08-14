@@ -73,6 +73,13 @@ export function jobId(t: TenantManifest, key: string): string {
   return j.id;
 }
 
+/** The job's title, for turns that name work the way a manager would. */
+export function jobTitle(t: TenantManifest, key: string): string {
+  const j = t.jobs[key];
+  if (!j) throw new Error(`tenant ${t.key} has no job '${key}'`);
+  return j.title;
+}
+
 export function visitId(t: TenantManifest, key: string): string {
   const v = t.visits[key];
   if (!v) throw new Error(`tenant ${t.key} has no visit '${key}'`);

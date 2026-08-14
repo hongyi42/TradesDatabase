@@ -106,6 +106,17 @@ describe('buildWorldSpec — referential integrity', () => {
       }
     });
   });
+
+  it('never repeats a customer NAME — the fixture name cursor must not wrap', () => {
+    // FIXTURE_NAMES is consumed `% length`, so a pool expansion that outgrows
+    // the list would silently reuse names — recreating the two-customers-one-
+    // name ambiguity that broke a real run. Two tiers × the per-tier pools must
+    // stay within the list, and this pins it.
+    eachTenant((t, _w, anchor) => {
+      const names = t.customers.map((c) => c.name);
+      expect(new Set(names).size, `${t.name} @ ${anchor} customer names`).toBe(names.length);
+    });
+  });
 });
 
 describe('buildWorldSpec — every visit is a legal row', () => {

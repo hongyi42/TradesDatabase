@@ -7,11 +7,14 @@
 // committed without asking, the confirm-discipline grader has already recorded
 // that, and a stray "yes" cannot un-record it.
 //
-// COUNT: 43 scenarios, not the ~72 the plan sketched. Deliberate. Tier 1 already
-// touches all 42 tools mechanically, so tier 2's job is the JUDGEMENT calls —
-// dates, confirmations, verb choice, fabrication, honesty about what the record
-// does not say. Forty-three scenarios that each ask a real question beat
-// seventy-two that pad the count, and every one of them costs money per run.
+// COUNT: 59 scenarios. The original 46 are the JUDGEMENT calls — dates,
+// confirmations, verb choice, fabrication, honesty about what the record does
+// not say — kept lean because tier 1 already touches all 42 tools mechanically
+// and every scenario costs money per run. The M (workflow) family was added on
+// a user decision (2026-08-14): single-intent scenarios never measure the thing
+// managers actually do all day, which is one request that forces a CHAIN —
+// read the book, search slots, write, report — so those chains are scenarios
+// now, weighted toward scheduling because scheduling is the product.
 
 import {
   gradeConfirmDiscipline,
@@ -25,7 +28,7 @@ import {
   type Grader,
 } from './graders.js';
 import type { TenantKey, TenantManifest, WorldManifest } from './worldManifest.js';
-import { customerName, jobId, visitDate, visitId } from './worldManifest.js';
+import { customerName, jobId, jobTitle, visitDate, visitId } from './worldManifest.js';
 import { addDays, nextWorkday, titleWeekday, weekdayOf, isWeekend } from './clock.js';
 import type { Requirement } from './toolCases.js';
 
@@ -106,6 +109,9 @@ const READ_ONLY = gradeToolChoice({
 });
 
 const count = (rows: Record<string, unknown>[]) => Number(rows[0]?.n ?? 0);
+
+/** Surname of a generated fixture name — distinctive enough to grade a mention on. */
+const surname = (full: string) => full.split(' ').pop() as string;
 
 export function buildCorpus(): Scenario[] {
   const s: Scenario[] = [];
@@ -341,6 +347,54 @@ export function buildCorpus(): Scenario[] {
     expectedRefusals: [/no recorded type/i],
   });
 
+  add({
+    id: 'B07',
+    family: 'booking',
+    title: 'a time said in words — "half past nine to half past ten"',
+    tenant: 'main',
+    badge: 'manager-sam',
+    tier: 'manager',
+    turns: (ctx) => [
+      // The date is explicit and weekend-proof (nextWorkday), and the WORK is
+      // named: the thing under test is the TIME, said the way a person says
+      // it, not calendar maths and not job-reuse inference. The first run left
+      // the work unnamed and the agent (fairly) asked what the visit was for —
+      // a question the canned "yes" cannot answer, so the scenario starved
+      // without ever testing the time words. R06's lesson, relearned.
+      `book ${customerName(ctx.tenant, 'fx-t2-bk-01')}'s ${jobTitle(ctx.tenant, 'job-t2-bk-01').toLowerCase()} with cfg-tech-12 on ${nextWorkday(addDays(ctx.anchor, 2))}, half past nine to half past ten.`,
+      'yes',
+    ],
+    endState: {
+      describe: 'the visit sits at 09:30 on the named day with the named technician',
+      query: (ctx) => ({
+        text: `select count(*)::int n from assignments a
+                 join technicians t on t.id = a.technician_id
+                where a.job_id = $1 and a.status = 'confirmed'
+                  and (a.starts_at)::date = $2::date
+                  and (a.starts_at)::time = time '09:30'
+                  and t.ref = 'cfg-tech-12'`,
+        params: [jobId(ctx.tenant, 'job-t2-bk-01'), nextWorkday(addDays(ctx.anchor, 2))],
+      }),
+      predicate: (rows) => count(rows) === 1,
+    },
+  });
+
+  add({
+    id: 'B08',
+    family: 'booking',
+    title: '"the earliest we could get someone out" — availability, not the booked schedule',
+    tenant: 'main',
+    badge: 'manager-sam',
+    tier: 'manager',
+    // B03's sibling, in different words. B03 flaked ~50% on "next opening"
+    // being read as "next visit"; a second phrasing of the same intent turns
+    // one coin-flip observation into a measurable rate.
+    turns: (ctx) => [
+      `what's the earliest we could get someone out for ${customerName(ctx.tenant, 'fx-t2-bk-02')}'s ${jobTitle(ctx.tenant, 'job-t2-bk-02').toLowerCase()}?`,
+    ],
+    graders: () => [READ_ONLY, gradeToolChoice({ required: ['find_slots'] })],
+  });
+
   // ── reschedule and cancel ─────────────────────────────────────────────────
   add({
     id: 'R01',
@@ -495,6 +549,35 @@ export function buildCorpus(): Scenario[] {
     },
   });
 
+  add({
+    id: 'R07',
+    family: 'reschedule',
+    title: 'a TIME-promised move: gated first, completed after the release',
+    tenant: 'main',
+    badge: 'manager-sam',
+    tier: 'manager',
+    // R02 proves the gate HOLDS; this proves the gate RELEASES — the move must
+    // finish once the manager says the customer has been told. Uses a wf
+    // fixture (the rs pool is fully spoken for): visit-t2-wf-12 is planted
+    // with promiseLevel 'time' for exactly this scenario.
+    turns: (ctx) => [
+      `${customerName(ctx.tenant, 'fx-t2-wf-12')} rang and asked to shift their visit on ${visitDate(ctx.tenant, 'visit-t2-wf-12')} to 2pm the same day — can you sort that?`,
+      `yes — I told them 2pm myself just now, go ahead.`,
+    ],
+    graders: () => [gradeToolChoice({ required: ['move_visit'] })],
+    endState: {
+      describe: 'the visit ended up at 14:00 on its day, moved only after the yes',
+      // Job-scoped (a move is cancel + insert, the original row id dies).
+      query: (ctx) => ({
+        text: `select count(*)::int n from assignments
+                where job_id = $1 and status = 'confirmed'
+                  and (starts_at)::date = $2::date and (starts_at)::time = time '14:00'`,
+        params: [jobId(ctx.tenant, 'job-t2-wf-12'), visitDate(ctx.tenant, 'visit-t2-wf-12')],
+      }),
+      predicate: (rows) => count(rows) === 1,
+    },
+  });
+
   // ── schedule reads ────────────────────────────────────────────────────────
   add({
     id: 'S01',
@@ -614,6 +697,19 @@ export function buildCorpus(): Scenario[] {
         mustNotMention: ["doesn't have a visit", 'no visit booked', 'not been scheduled', 'no visit has been'],
       }),
     ],
+  });
+
+  add({
+    id: 'S08',
+    family: 'schedule',
+    title: 'load, not listings — "who has room and who is slammed"',
+    tenant: 'main',
+    badge: 'manager-sam',
+    tier: 'manager',
+    // A capacity question, not a listing question: the useful answer comes from
+    // the served counts (byDay / windowCoverByDay), not from reciting visits.
+    turns: () => ['how is the rest of this week looking — who has room and who is slammed?'],
+    graders: () => [READ_ONLY, gradeToolChoice({ required: ['resolve_date', 'get_team_schedule'] })],
   });
 
   // ── capture and standing facts ────────────────────────────────────────────
@@ -975,7 +1071,10 @@ export function buildCorpus(): Scenario[] {
     turns: () => ["what's the status of Thaddeus Villanueva-Krupp's job?"],
     graders: () => [
       READ_ONLY,
-      gradeContent({ mustMentionOneOf: [["don't", 'do not', 'no ', 'not find', "couldn't", 'no record']] }),
+      // "can't"/"cannot" belong here for the same reason X01 already records:
+      // a narrow phrasing list turns a good refusal into a failure. A real run
+      // failed a perfect "I can't find a customer named…" reply on this.
+      gradeContent({ mustMentionOneOf: [["can't", 'cannot', "don't", 'do not', 'no ', 'not find', "couldn't", 'no record']] }),
     ],
   });
 
@@ -1023,6 +1122,308 @@ export function buildCorpus(): Scenario[] {
     graders: () => [gradeContent({ mustMentionOneOf: [['nothing', 'no recent', 'no run', "haven't", 'not find']] })],
   });
 
+  // ── workflow: one request, several tools ──────────────────────────────────
+  //
+  // The single-intent families measure verbs in isolation; a manager's actual
+  // day is CHAINS — read the book, search slots, write, report — and chains
+  // fail in ways isolated calls cannot (wrong order, dropped context between
+  // calls, a mid-chain refusal never recovered from). Every scenario here
+  // lives on the tier's dedicated technician (wf-tech-t2, "Theo Marsh", who
+  // has NO base schedule), so a chain that clears whole afternoons collides
+  // with nothing. Runs LAST in the corpus on purpose: M04 books time off and
+  // M05 rewrites a day, and no read scenario should see that.
+  add({
+    id: 'M01',
+    family: 'workflow',
+    title: 'find the next opening, then book it — one request, two verbs',
+    tenant: 'main',
+    badge: 'manager-sam',
+    tier: 'manager',
+    turns: (ctx) => [
+      `get ${customerName(ctx.tenant, 'fx-t2-wf-01')}'s ${jobTitle(ctx.tenant, 'job-t2-wf-01').toLowerCase()} booked in — take Theo Marsh's next opening, whatever it is.`,
+      'yes, that works',
+    ],
+    graders: () => [gradeToolChoice({ required: ['find_slots', 'book_visit'], before: [['find_slots', 'book_visit']] })],
+    endState: {
+      describe: "a confirmed visit exists on Theo Marsh's book for this job",
+      query: (ctx) => ({
+        text: `select count(*)::int n from assignments a
+                 join technicians t on t.id = a.technician_id
+                where a.job_id = $1 and a.status = 'confirmed' and t.ref = 'wf-tech-t2'`,
+        params: [jobId(ctx.tenant, 'job-t2-wf-01')],
+      }),
+      predicate: (rows) => count(rows) >= 1,
+    },
+  });
+
+  add({
+    id: 'M02',
+    family: 'workflow',
+    title: 'plan against load — "pick a day that is light", then book it',
+    tenant: 'main',
+    badge: 'manager-sam',
+    tier: 'manager',
+    turns: (ctx) => [
+      `sometime next week, get ${customerName(ctx.tenant, 'fx-t2-wf-02')}'s ${jobTitle(ctx.tenant, 'job-t2-wf-02').toLowerCase()} on the calendar — pick a day that's light for the team. Any slot that fits is fine, you choose.`,
+      'yes, go ahead',
+    ],
+    // "Light" needs either the counted team schedule or a slot search; both
+    // are legitimate strategies, so neither alone is required.
+    graders: () => [
+      gradeToolChoice({
+        required: ['resolve_date', 'book_visit'],
+        requiredOneOf: [['get_team_schedule', 'find_slots']],
+      }),
+    ],
+    endState: {
+      // Loose on purpose: WHICH day is light is the agent's judgement; what
+      // must be true is that the work landed in the future at all.
+      describe: 'the job gained a confirmed future visit',
+      query: (ctx) => ({
+        text: `select count(*)::int n from assignments
+                where job_id = $1 and status = 'confirmed' and (starts_at)::date > $2::date`,
+        params: [jobId(ctx.tenant, 'job-t2-wf-02'), ctx.anchor],
+      }),
+      predicate: (rows) => count(rows) >= 1,
+    },
+  });
+
+  add({
+    id: 'M03',
+    family: 'workflow',
+    title: 'a cancellation frees a slot, and the slot is handed to other work',
+    tenant: 'main',
+    badge: 'manager-sam',
+    tier: 'manager',
+    turns: (ctx) => [
+      `${customerName(ctx.tenant, 'fx-t2-wf-04')} called off their visit on ${visitDate(ctx.tenant, 'visit-t2-wf-04')} — the work is still on, they'll rebook later. Free up the slot and give it to ${customerName(ctx.tenant, 'fx-t2-wf-03')}'s ${jobTitle(ctx.tenant, 'job-t2-wf-03').toLowerCase()} instead, same time with Theo.`,
+      'yes, do it',
+      'yes',
+    ],
+    graders: () => [gradeToolChoice({ required: ['unschedule_visit', 'book_visit'] })],
+    // Booking before freeing trips the overlap guard — that refusal is the
+    // mechanism steering the chain into the right order, not a failure.
+    expectedRefusals: [/already has a confirmed visit overlapping/i],
+    endState: {
+      describe: 'the called-off visit is gone from that day and the other job holds its 09:00 slot',
+      query: (ctx) => ({
+        text: `select
+                 (select count(*) from assignments where job_id = $1 and status = 'confirmed' and (starts_at)::date = $3::date)::int as still_there,
+                 (select count(*) from assignments where job_id = $2 and status = 'confirmed' and (starts_at)::date = $3::date and (starts_at)::time = time '09:00')::int as handed_over`,
+        params: [
+          jobId(ctx.tenant, 'job-t2-wf-04'),
+          jobId(ctx.tenant, 'job-t2-wf-03'),
+          visitDate(ctx.tenant, 'visit-t2-wf-04'),
+        ],
+      }),
+      predicate: (rows) => Number(rows[0]?.still_there) === 0 && Number(rows[0]?.handed_over) === 1,
+    },
+  });
+
+  add({
+    id: 'M04',
+    family: 'workflow',
+    title: 'time off collides with booked work — record it AND name the fallout',
+    tenant: 'main',
+    badge: 'manager-sam',
+    tier: 'manager',
+    // ONE turn on purpose: add_time_off is a one-call verb and reading the day
+    // is a read — an agent that stops to ask permission for either has failed
+    // the one-shot doctrine, and the endState will say so.
+    turns: (ctx) => [
+      `Theo Marsh can't work on ${visitDate(ctx.tenant, 'visit-t2-wf-05')} — book that day off for him, and tell me which of his visits that day will need rehoming.`,
+    ],
+    graders: (ctx) => [
+      gradeToolChoice({ required: ['add_time_off', 'get_team_schedule'] }),
+      // Both planted visits sit on that day; naming the customers IS the job.
+      gradeContent({
+        mustMention: [
+          surname(customerName(ctx.tenant, 'fx-t2-wf-05')),
+          surname(customerName(ctx.tenant, 'fx-t2-wf-06')),
+        ],
+      }),
+    ],
+    endState: {
+      describe: 'the day off is on the record for Theo Marsh',
+      query: (ctx) => ({
+        text: `select count(*)::int n from technician_time_off o
+                 join technicians t on t.id = o.technician_id
+                where t.tenant_id = $1 and t.ref = 'wf-tech-t2'
+                  and o.starts_on <= $2::date and o.ends_on >= $2::date`,
+        params: [ctx.tenant.id, visitDate(ctx.tenant, 'visit-t2-wf-05')],
+      }),
+      predicate: (rows) => count(rows) >= 1,
+    },
+  });
+
+  add({
+    id: 'M05',
+    family: 'workflow',
+    title: 'clear an afternoon — two visits rehomed in one request',
+    tenant: 'main',
+    badge: 'manager-sam',
+    tier: 'manager',
+    turns: (ctx) => [
+      `Theo Marsh's afternoon on ${visitDate(ctx.tenant, 'visit-t2-wf-07')} just fell through — both customers are flexible and nothing was promised. Push each of those visits to his next open slots after that day.`,
+      'yes, go ahead',
+    ],
+    // Finding the two assignmentIds requires reading the day first.
+    graders: () => [gradeToolChoice({ required: ['get_team_schedule', 'move_visit'] })],
+    endState: {
+      describe: 'both afternoon visits now sit on later days',
+      query: (ctx) => ({
+        text: `select count(*)::int n from assignments
+                where job_id in ($1, $2) and status = 'confirmed' and (starts_at)::date > $3::date`,
+        params: [
+          jobId(ctx.tenant, 'job-t2-wf-07'),
+          jobId(ctx.tenant, 'job-t2-wf-08'),
+          visitDate(ctx.tenant, 'visit-t2-wf-07'),
+        ],
+      }),
+      predicate: (rows) => count(rows) === 2,
+    },
+  });
+
+  add({
+    id: 'M06',
+    family: 'workflow',
+    title: 'the asked-for slot is taken — refuse, then land the nearest one',
+    tenant: 'main',
+    badge: 'manager-sam',
+    tier: 'manager',
+    turns: (ctx) => [
+      // 10–noon overlaps the planted 10:00 visit: the first attempt MUST be
+      // refused by the overlap guard. The scenario is the recovery.
+      `book ${customerName(ctx.tenant, 'fx-t2-wf-10')}'s ${jobTitle(ctx.tenant, 'job-t2-wf-10').toLowerCase()} with Theo Marsh on ${visitDate(ctx.tenant, 'visit-t2-wf-09')}, 10am to noon.`,
+      `whatever Theo has closest to that works — book it.`,
+      'yes',
+    ],
+    graders: () => [gradeToolChoice({ required: ['book_visit'] })],
+    expectedRefusals: [/already has a confirmed visit overlapping/i],
+    endState: {
+      describe: 'the new work landed that day clear of the 10:00 blocker, which is untouched',
+      query: (ctx) => ({
+        text: `select
+                 (select count(*) from assignments a
+                   where a.job_id = $1 and a.status = 'confirmed' and (a.starts_at)::date = $3::date
+                     and not ((a.starts_at)::time < time '11:00' and (a.ends_at)::time > time '10:00'))::int as booked_clear,
+                 (select count(*) from assignments a
+                   where a.job_id = $2 and a.status = 'confirmed' and (a.starts_at)::time = time '10:00')::int as blocker_intact`,
+        params: [
+          jobId(ctx.tenant, 'job-t2-wf-10'),
+          jobId(ctx.tenant, 'job-t2-wf-09'),
+          visitDate(ctx.tenant, 'visit-t2-wf-09'),
+        ],
+      }),
+      predicate: (rows) => Number(rows[0]?.booked_clear) >= 1 && Number(rows[0]?.blocker_intact) === 1,
+    },
+  });
+
+  add({
+    id: 'M07',
+    family: 'workflow',
+    title: "a technician's compound ask — tomorrow's day plus a fact from the record",
+    tenant: 'main',
+    badge: 'tech-jane',
+    tier: 'technician',
+    turns: (ctx) => [
+      `what's my day looking like tomorrow? and before I head out — what's the gate code at ${ctx.world.edges.richHistoryCustomer}'s?`,
+    ],
+    graders: () => [
+      READ_ONLY,
+      gradeToolChoice({
+        required: ['resolve_date', 'get_schedule'],
+        // find_customer returns the standing facts too — the first run got the
+        // gate code from it legitimately and was failed for using the "wrong"
+        // read. Any tool that truthfully answers from the record counts.
+        requiredOneOf: [
+          ['get_customer_context', 'brief_customer', 'answer_customer_question', 'find_customer', 'query_spine'],
+        ],
+      }),
+      gradeContent({ mustMention: ['4321'] }),
+    ],
+  });
+
+  add({
+    id: 'M08',
+    family: 'workflow',
+    title: 'book it and note it — a write chain across two subsystems',
+    tenant: 'main',
+    badge: 'manager-sam',
+    tier: 'manager',
+    turns: (ctx) => [
+      `${customerName(ctx.tenant, 'fx-t2-wf-11')}'s ${jobTitle(ctx.tenant, 'job-t2-wf-11').toLowerCase()} — find Theo Marsh's first opening tomorrow or later, book it in, and put a note on the file that the customer says the side gate is unlocked, go straight through.`,
+      'yes',
+      'yes',
+    ],
+    graders: () => [
+      // The note may legitimately land as either verb: a real run recorded
+      // "side gate unlocked" as a STANDING FACT (access_note) — the same shape
+      // C03 uses for gate codes — and was failed for not choosing field-note.
+      // Both write the capture the endState checks for.
+      gradeToolChoice({
+        required: ['find_slots', 'book_visit'],
+        requiredOneOf: [['record_field_note', 'record_standing_fact']],
+        before: [['find_slots', 'book_visit']],
+      }),
+    ],
+    endState: {
+      describe: 'the visit is booked AND the note is in the permanent record against this customer',
+      query: (ctx) => ({
+        text: `select
+                 (select count(*) from assignments where job_id = $1 and status = 'confirmed')::int as booked,
+                 (select count(*) from raw_captures
+                   where tenant_id = $2 and raw_text ilike '%side gate%'
+                     and customer_id = (select customer_id from jobs where id = $1))::int as noted`,
+        params: [jobId(ctx.tenant, 'job-t2-wf-11'), ctx.tenant.id],
+      }),
+      predicate: (rows) => Number(rows[0]?.booked) >= 1 && Number(rows[0]?.noted) >= 1,
+    },
+  });
+
+  add({
+    id: 'M09',
+    family: 'workflow',
+    title: 'a held window becomes a firm time',
+    tenant: 'main',
+    badge: 'manager-sam',
+    tier: 'manager',
+    turns: (ctx) => {
+      // Mirrors worldSpec's visit-tbd-1 window (i = 1: from anchor+3, 3 days).
+      const from = nextWorkday(addDays(ctx.anchor, 3));
+      return [
+        `${customerName(ctx.tenant, 'base-south-2')} called — we're holding their ${jobTitle(ctx.tenant, 'job-tbd-1').toLowerCase()} for sometime between ${from} and ${addDays(from, 2)}, and they want a firm time now. Lock one in with Dee, whatever fits her book.`,
+        'yes, go ahead',
+      ];
+    },
+    // Placement has two legitimate verb paths, and two legitimate ways to see
+    // Dee's book — require one of each, not one exact recipe.
+    graders: () => [
+      gradeToolChoice({
+        requiredOneOf: [
+          ['move_visit', 'book_visit'],
+          ['find_slots', 'get_team_schedule', 'get_customer_context'],
+        ],
+      }),
+    ],
+    endState: {
+      describe: 'exactly one confirmed visit, now placed, inside the promised window',
+      query: (ctx) => {
+        const from = nextWorkday(addDays(ctx.anchor, 3));
+        return {
+          text: `select
+                   count(*) filter (where starts_at is not null and (starts_at)::date between $2::date and $3::date)::int as placed,
+                   count(*)::int as total
+                  from assignments where job_id = $1 and status = 'confirmed'`,
+          params: [jobId(ctx.tenant, 'job-tbd-1'), from, addDays(from, 2)],
+        };
+      },
+      // total === placed === 1: a SECOND confirmed visit (booked fresh while
+      // the held row survives) would be a real double-visit defect.
+      predicate: (rows) => Number(rows[0]?.placed) === 1 && Number(rows[0]?.total) === 1,
+    },
+  });
+
   return s;
 }
 
@@ -1036,8 +1437,9 @@ export function weekdaySensitive(anchor: string): string[] {
   // "this week"/"next week" said on a weekend is genuinely ambiguous and the
   // agent is required to ASK rather than pick — so D04's expectation changes
   // shape on Saturday and Sunday. The report says which traps today exercised
-  // instead of implying full calendar coverage.
-  return isWeekend(anchor) ? ['D04', 'S04'] : [];
+  // instead of implying full calendar coverage. S08 ("rest of this week") and
+  // M02 ("next week") inherit the same weekend ambiguity.
+  return isWeekend(anchor) ? ['D04', 'S04', 'S08', 'M02'] : [];
 }
 
 /** A human-readable note for the report about what today could and could not test. */

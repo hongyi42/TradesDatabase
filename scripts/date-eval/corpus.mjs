@@ -241,9 +241,14 @@ export function buildCorpus(f) {
   for (const [n, tech] of busyTechs.slice(0, 2).entries()) {
     const first = f.firstOfDay[tomorrow]?.[tech];
     if (first) {
+      // kind 'first-job' auto-grades on the two facts that matter — the
+      // customer and the wall-clock time — instead of demanding an exact
+      // string a prose reply never matches (08-13 run: the replies were
+      // exactly right and still landed in adjudication).
       out.push(q(`D${19 + n}`, 'day-read', ['resolve', 'use', 'speak'], `What's ${tech}'s first job tomorrow?`, {
         dates: [tomorrow], window: { from: tomorrow, to: tomorrow },
-        answer: { kind: 'text', value: `${first.customer} — ${first.title} at ${first.startLocal}` }, requireWeekday: true,
+        answer: { kind: 'first-job', customer: first.customer, time: first.startLocal, title: first.title },
+        requireWeekday: true,
       }));
     }
   }

@@ -161,7 +161,7 @@ import {
   latestScheduleVersion,
   listAssignmentsForTenant,
   listUnassignedAssignments,
-  listUnplacedAssignedForRange,
+  listUnplacedForRange,
   listJobsWithCustomerByIds,
   type PromiseLevel,
 } from '../db/index.js';
@@ -3023,19 +3023,26 @@ async function dispatch(
       // attached time-TBD visit was invisible to every chat surface — the
       // agent denied it existed and could never fetch its assignmentId to
       // place, move, or cancel it. Independent reads, so they run in parallel.
+      // The unplaced read is the WIDE one (assigned or not): the windowed view
+      // still LISTS only person-attached rows (unassigned ones live in the
+      // recall view, by design), but window COVERAGE below must see both — an
+      // unassigned windowed visit occupies the calendar all the same.
+      let allUnplaced: Awaited<ReturnType<typeof listUnplacedForRange>> = [];
       const rows = unassignedOnly
         ? await listUnassignedAssignments(tenantId, `${from}T00:00:00.000Z`)
-        : (
-            await Promise.all([
+        : await (async () => {
+            const [placed, unplaced] = await Promise.all([
               listAssignmentsForTenant(
                 tenantId,
                 `${from}T00:00:00.000Z`,
                 new Date(Date.parse(`${toDay}T00:00:00.000Z`) + 86_400_000).toISOString(),
                 ['confirmed'],
               ),
-              listUnplacedAssignedForRange(tenantId, from, toDay as string),
-            ])
-          ).flat();
+              listUnplacedForRange(tenantId, from, toDay as string),
+            ]);
+            allUnplaced = unplaced;
+            return [...placed, ...unplaced.filter((r) => r.technician_id !== null)];
+          })();
       const jobs = await listJobsWithCustomerByIds(tenantId, [
         ...new Set(rows.map((r) => r.job_id)),
       ]);
@@ -3150,8 +3157,33 @@ async function dispatch(
       const inWindow = days.filter((d) => d.date >= from && (toDay === null || d.date <= toDay));
       const dayCount = (stops: unknown[]) =>
         stops.filter((s) => (s as { timeTbd?: boolean }).timeTbd !== true).length;
+      // Window coverage per day (date-eval T07): a timeTbd visit is listed
+      // once under its earliest day, but it COVERS every day of its range —
+      // "is Thursday free?" needs range-intersection the model reliably gets
+      // wrong (it read the listing day as the only occupied day and called a
+      // covered Thursday free). Computed here from the same rows.
+      const tbdRanges = allUnplaced.map((r) => ({
+        lo: r.earliest_date as string,
+        hi: r.latest_date as string,
+      }));
+      const windowsCovering = (date: string) =>
+        tbdRanges.filter((w) => w.lo <= date && date <= w.hi).length;
+      // Every day of the requested range, including days with no stops at all
+      // — "which days are free?" needs the zeros to be data, not absences.
+      const rangeDays: string[] = [];
+      if (toDay !== null) {
+        for (
+          let t = Date.parse(`${from}T00:00:00Z`);
+          t <= Date.parse(`${toDay}T00:00:00Z`);
+          t += 86_400_000
+        ) {
+          rangeDays.push(new Date(t).toISOString().slice(0, 10));
+        }
+      }
+      const stopsByDate = new Map(inWindow.map((d) => [d.date, dayCount(d.stops)]));
       const counts = {
-        byDay: Object.fromEntries(inWindow.map((d) => [d.date, dayCount(d.stops)])),
+        byDay: Object.fromEntries(rangeDays.map((d) => [d, stopsByDate.get(d) ?? 0])),
+        windowCoverByDay: Object.fromEntries(rangeDays.map((d) => [d, windowsCovering(d)])),
         total: inWindow.reduce((n, d) => n + dayCount(d.stops), 0),
         timeTbdListed: days.reduce(
           (n, d) => n + d.stops.filter((s) => (s as { timeTbd?: boolean }).timeTbd === true).length,
@@ -3169,7 +3201,10 @@ async function dispatch(
           'counts.byDay/total are the visit counts for the requested range, computed here — ' +
           'ALWAYS use these for how-many/busiest/compare questions, never count the stop rows ' +
           'yourself. timeTbdListed visits are booked but not yet placed on a day, so they are ' +
-          'listed under their earliest possible day WITHOUT being counted.',
+          'listed under their earliest possible day WITHOUT being counted; ' +
+          'counts.windowCoverByDay[date] is how many of those COULD still land on that date — ' +
+          'a day is only completely free when byDay AND windowCoverByDay are both 0. The range ' +
+          'is capped at 14 days: to scan further ahead, call again starting where this range ended.',
         days,
       };
     }

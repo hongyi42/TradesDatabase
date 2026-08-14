@@ -645,6 +645,30 @@ export async function listUnplacedAssignedForRange(
   return (data ?? []) as UnplacedStripRow[];
 }
 
+// EVERY unplaced row intersecting the range — assigned or not. The strip
+// reader above deliberately shows only person-attached rows in the windowed
+// view (unassigned ones live in the unassignedOnly recall view), but window
+// COVERAGE ("is Thursday actually free?") must count both: an unassigned
+// windowed visit occupies the calendar exactly as much as an assigned one.
+// Same shape so the handler can reuse one row type.
+export async function listUnplacedForRange(
+  tenantId: string,
+  fromDate: string, // YYYY-MM-DD inclusive
+  toDate: string, // YYYY-MM-DD inclusive
+): Promise<UnplacedStripRow[]> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select(UNPLACED_STRIP_SELECT)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'confirmed')
+    .is('starts_at', null)
+    .lte('earliest_date', toDate)
+    .gte('latest_date', fromDate)
+    .order('earliest_date', { ascending: true });
+  if (error) throw new Error(`listUnplacedForRange failed: ${error.message}`);
+  return (data ?? []) as UnplacedStripRow[];
+}
+
 // Range-keyed sibling of the guard above (plan 4b-2): unplaced rows are ALSO
 // exempt from the DB overlap guard, so a retried one-shot timeTbd booking
 // would silently duplicate without this exact-range check. Keyed on the

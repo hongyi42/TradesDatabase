@@ -298,6 +298,21 @@ for (const r of results) {
   } else if (kind === 'date') {
     const ok = required.every((d) => named.includes(d));
     outcome = ok ? { verdict: 'correct', why: 'date stated' } : { verdict: 'wrong', why: `expected ${required.join(', ')}; named ${named.join(', ') || 'none'}` };
+  } else if (kind === 'first-job') {
+    // Correct = names the right customer AND the right wall-clock time.
+    // Accept 08:00 / 8:00 / 8 AM shapes; a different customer or a different
+    // time is wrong (naming the second job of the day is the failure mode).
+    const cust = (e.answer.customer ?? '').toLowerCase();
+    const [hh, mm] = String(e.answer.time ?? '').split(':');
+    const h12 = String(((Number(hh) + 11) % 12) + 1);
+    const timeRe = new RegExp(`\\b(?:0?${Number(hh)}|${h12}):${mm}\\b|\\b${h12}\\s*(?:am|pm)\\b`, 'i');
+    const custOk = cust && text.toLowerCase().includes(cust);
+    const timeOk = timeRe.test(text);
+    outcome = custOk && timeOk
+      ? { verdict: 'correct', why: 'customer + time stated' }
+      : custOk || timeOk
+        ? { verdict: 'needs-adjudication', why: `half-match: customer=${custOk} time=${timeOk} (want ${e.answer.customer} at ${e.answer.time})` }
+        : { verdict: 'wrong', why: `expected ${e.answer.customer} at ${e.answer.time}` };
   } else if (kind === 'empty-day') {
     // A day with zero TIMED visits (corpus D21). Two honest answers — say
     // nothing is scheduled, or name an overlapping window/time-TBD visit —

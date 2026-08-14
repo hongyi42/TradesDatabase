@@ -3738,6 +3738,7 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       });
       const counts = counted.data.counts as {
         byDay: Record<string, number>;
+        windowCoverByDay: Record<string, number>;
         total: number;
         timeTbdListed: number;
       };
@@ -3745,6 +3746,15 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       expect(counts.byDay['2026-12-22']).toBe(1);
       expect(counts.total).toBe(2);
       expect(counts.timeTbdListed).toBeGreaterThanOrEqual(1); // 'assigned tbd' above
+      // Zero-days are DATA: every requested day appears, so "which days are
+      // free" is a read, not an inference from absence.
+      expect(counts.byDay['2026-12-24']).toBe(0);
+      // Window coverage: the tbd visit (Dec 21–23) covers each day of its
+      // range — not just the day it is LISTED under — and not Dec 24.
+      expect(counts.windowCoverByDay['2026-12-21']).toBeGreaterThanOrEqual(1);
+      expect(counts.windowCoverByDay['2026-12-22']).toBeGreaterThanOrEqual(1);
+      expect(counts.windowCoverByDay['2026-12-23']).toBeGreaterThanOrEqual(1);
+      expect(counts.windowCoverByDay['2026-12-24']).toBe(0);
       // Counts cover the REQUESTED range only, even though out-of-window
       // unplaced day groups may be listed for actionability.
       const total = Object.values(counts.byDay).reduce((a, b) => a + b, 0);

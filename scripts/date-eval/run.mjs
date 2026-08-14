@@ -76,6 +76,18 @@ const questions = LIMIT > 0 ? manifest.questions.slice(0, LIMIT) : manifest.ques
 const ssh = (cmd, timeout = 300_000) =>
   spawnSync('ssh', [HOST, cmd], { encoding: 'utf8', timeout, maxBuffer: 64 * 1024 * 1024 });
 
+// Session ids must be unique PER RUN, not per day (found 2026-08-13): with
+// sid = dateval-<today>-<qid>, a same-day re-run resumed the morning's
+// sessions and every reply came back "same answer as before" — a continuation
+// of the OLD conversation (old question phrasing included), not a fresh ask.
+// The nonce persists in the run dir so an aborted run RESUMES the same id
+// space while a new dir always gets fresh sessions.
+const RUNID_FILE = join(DIR, '.runid');
+if (!existsSync(RUNID_FILE)) {
+  writeFileSync(RUNID_FILE, Math.random().toString(16).slice(2, 8));
+}
+const RUNID = readFileSync(RUNID_FILE, 'utf8').trim();
+
 const RESULTS = join(DIR, 'results.jsonl');
 const TRAJ_DIR = join(DIR, 'trajectories');
 mkdirSync(TRAJ_DIR, { recursive: true });
@@ -202,7 +214,7 @@ writeFileSync(join(DIR, 'run-context.json'), JSON.stringify({ startedAt: new Dat
 
 let asked = 0;
 for (const item of remaining) {
-  const sid = `dateval-${manifest.today}-${item.id}`;
+  const sid = `dateval-${manifest.today}-${RUNID}-${item.id}`;
   const b64 = Buffer.from(item.q, 'utf8').toString('base64');
   // base64 in, so no question text can ever be mangled by two layers of shell
   // quoting; </dev/null because `nemoclaw exec` eats stdin in heredocs.

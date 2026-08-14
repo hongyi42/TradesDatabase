@@ -68,7 +68,7 @@ try {
      left join technicians t on t.id = a.technician_id
      where a.tenant_id = $1 and a.status in ('confirmed', 'completed') and a.starts_at is not null
      order by a.starts_at`,
-    [tenantId, tz],
+    [tenantId],
   );
 
   const dayCounts = {};

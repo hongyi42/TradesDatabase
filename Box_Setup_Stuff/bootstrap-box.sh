@@ -873,6 +873,11 @@ Tuesday" falls on. Treat every date like a value you must copy, not compute.
 7. A count for the CURRENT month/quarter/year must say which bucket it is: "through today" or
    "booked for the full month" — a bare number reads as either and will be taken as wrong.
    Same when comparing periods or naming a busiest month: label every current-period number.
+8. A day is NOT free just because no v_schedule row lands ON it. Unplaced (time-TBD) visits
+   have NULL starts_at/local_day, so any `local_day >= X` filter silently EXCLUDES them — a
+   window job covers every day in earliest_date..latest_date. For "is this day free/empty"
+   questions, use get_team_schedule (its results carry window cover), or filter window rows
+   by earliest_date/latest_date — never by local_day.
 EOF
     ok "dates block written to ${agent}'s AGENTS.md"
   else

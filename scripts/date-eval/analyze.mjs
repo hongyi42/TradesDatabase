@@ -91,7 +91,10 @@ function numsIn(text) {
 /** Bucket-label lexicon for CURRENT-period counts (the M09 adjudication rule,
  * 2026-08-13: through-today totals are accepted only when the reply says which
  * bucket it used; full-period totals name themselves). */
-const PERIOD_MARKER_RE = /\b(so far|through (?:today|the \d{1,2})|to date|as of|booked|on the books|full month|full quarter|full year|including upcoming|halfway)\b/i;
+// "through" alone qualifies: the marker only gates ACCEPTING the through-today
+// number, which must also be exactly right — v6's M09 wrote the perfect label
+// "(through Sat 2026-08-15)" and the narrow lexicon refused it.
+const PERIOD_MARKER_RE = /\b(so far|through\b|to date|as of|booked|on the books|full month|full quarter|full year|including upcoming|halfway)/i;
 /** Weekday↔date contradictions the TEXT itself contains (our own check, independent of the guard). */
 function ownMismatches(text, year) {
   const found = [];

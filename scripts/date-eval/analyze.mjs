@@ -53,17 +53,34 @@ const ISO_RE = /\b(\d{4}-\d{2}-\d{2})\b/g;
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 const NUMWORD = { zero: 0, no: 0, none: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 };
 
-/** Every date the text names, in ISO form — "2026-08-14" and "August 14" both. */
+/** Every date the text names, in ISO form — "2026-08-14", "August 14",
+ * "August 21st" (ordinals: the P15 miss on the 2026-08-15 run — the reply's
+ * correct "August 21st" was invisible to the grader), and "Aug 14"
+ * (abbreviations; 'may' is deliberately NOT an accepted abbreviation — it is
+ * a modal verb and "may 3 visits" would mint a phantom date). */
+const MONTH_ABBR = { jan: 1, feb: 2, mar: 3, apr: 4, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12 };
 function datesNamed(text, year) {
   const out = new Set();
   for (const m of text.matchAll(ISO_RE)) out.add(m[1]);
-  const re = new RegExp(`\\b(${MONTHS.join('|')})\\s+(\\d{1,2})\\b`, 'gi');
-  for (const m of text.matchAll(re)) {
-    const mo = MONTHS.indexOf(m[1].toLowerCase()) + 1;
-    out.add(`${year}-${String(mo).padStart(2, '0')}-${String(Number(m[2])).padStart(2, '0')}`);
-  }
+  const add = (moNum, day) => out.add(`${year}-${String(moNum).padStart(2, '0')}-${String(Number(day)).padStart(2, '0')}`);
+  const re = new RegExp(`\\b(${MONTHS.join('|')})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, 'gi');
+  for (const m of text.matchAll(re)) add(MONTHS.indexOf(m[1].toLowerCase()) + 1, m[2]);
+  const ab = new RegExp(`\\b(${Object.keys(MONTH_ABBR).join('|')})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, 'gi');
+  for (const m of text.matchAll(ab)) add(MONTH_ABBR[m[1].toLowerCase()], m[2]);
   return [...out];
 }
+
+/** Every count the text plausibly states: digits plus the number words. */
+function numsIn(text) {
+  const nums = new Set([...text.matchAll(/\b(\d{1,4})\b/g)].map((m) => Number(m[1])));
+  for (const [w, v] of Object.entries(NUMWORD)) if (new RegExp(`\\b${w}\\b`, 'i').test(text)) nums.add(v);
+  return nums;
+}
+
+/** Bucket-label lexicon for CURRENT-period counts (the M09 adjudication rule,
+ * 2026-08-13: through-today totals are accepted only when the reply says which
+ * bucket it used; full-period totals name themselves). */
+const PERIOD_MARKER_RE = /\b(so far|through (?:today|the \d{1,2})|to date|as of|booked|on the books|full month|full quarter|full year|including upcoming|halfway)\b/i;
 /** Weekday↔date contradictions the TEXT itself contains (our own check, independent of the guard). */
 function ownMismatches(text, year) {
   const found = [];
@@ -289,8 +306,7 @@ for (const r of results) {
   const kind = e.answer?.kind;
   if (kind === 'count') {
     const want = e.answer.value;
-    const nums = new Set([...text.matchAll(/\b(\d{1,4})\b/g)].map((m) => Number(m[1])));
-    for (const [w, v] of Object.entries(NUMWORD)) if (new RegExp(`\\b${w}\\b`, 'i').test(text)) nums.add(v);
+    const nums = numsIn(text);
     const alt = (e.altAnswers ?? []).some((a) => nums.has(a));
     outcome = nums.has(want) ? { verdict: 'correct', why: `${want} present` }
       : alt ? { verdict: 'needs-adjudication', why: `expected ${want}; an accepted alternative reading is present instead` }
@@ -333,9 +349,104 @@ for (const r of results) {
       : { verdict: 'needs-adjudication', why: `must offer both ${required.join(' / ')} and ask; named ${named.join(', ') || 'none'}, asks=${asks}` };
   } else if (kind === 'flag') {
     const corrected = required.some((d) => named.includes(d) && new RegExp(titleWeekday(d), 'i').test(text));
-    const objects = /isn'?t|is not|actually|correction|mismatch|doesn'?t match|to confirm|did you mean/i.test(text);
+    // "Nope — August 20th is a Thursday, not a Sunday" objects without any of
+    // the original verb forms; the 2026-08-15 run sent it to adjudication.
+    const objects = /isn'?t|is not|actually|correction|mismatch|doesn'?t match|to confirm|did you mean|\bnot an? \b|\bnope\b|\bno[,—-]/i.test(text);
     outcome = corrected && objects ? { verdict: 'correct', why: 'mismatch flagged and corrected' }
       : { verdict: 'needs-adjudication', why: `must flag the bad weekday↔date pair. ${e.note ?? ''}` };
+  } else if (kind === 'weekday') {
+    // P18/P19: the answer is a weekday word. ownMismatches separately guards a
+    // wrong weekday-date pairing, so presence of the expected word is the test.
+    const want = String(e.answer.value);
+    outcome = new RegExp(`\\b${want}\\b`, 'i').test(text)
+      ? { verdict: 'correct', why: `${want} stated` }
+      : { verdict: 'wrong', why: `expected ${want}; not stated` };
+  } else if (kind === 'confirm') {
+    // T10: a yes/no sanity check — affirm AND restate the date.
+    const yes = /\b(yes|yep|yeah|correct|right|exactly|indeed|it is|you(?:'re| are) (?:right|all there))\b/i.test(text);
+    const dateOk = required.every((d) => named.includes(d));
+    outcome = yes && dateOk
+      ? { verdict: 'correct', why: 'affirmed with the date restated' }
+      : { verdict: 'wrong', why: `expected an affirmation naming ${required.join(', ')}; affirmed=${yes} dateNamed=${dateOk}` };
+  } else if (kind === 'day-count') {
+    // W11-class: one specific day plus its visit count.
+    const dateOk = named.includes(e.answer.date);
+    const countOk = numsIn(text).has(e.answer.count);
+    outcome = dateOk && countOk
+      ? { verdict: 'correct', why: `${e.answer.date} with ${e.answer.count} present` }
+      : { verdict: 'wrong', why: `expected ${e.answer.date} (${e.answer.count}); dateNamed=${dateOk} countPresent=${countOk}` };
+  } else if (kind === 'pair-count') {
+    // W13/T08-class comparisons: every listed count must appear (zero accepts
+    // its word forms via numsIn). Winner wording is the model's own judgment
+    // once both numbers are right; a wrong pairing shows up in the numbers.
+    const nums = numsIn(text);
+    const missing = e.answer.counts.filter((c) => !nums.has(c));
+    outcome = missing.length === 0
+      ? { verdict: 'correct', why: `counts ${e.answer.counts.join(' & ')} all present` }
+      : { verdict: 'wrong', why: `missing count(s) ${missing.join(', ')} of ${e.answer.counts.join(' & ')}` };
+  } else if (kind === 'period-compare') {
+    // M06: both month words, the other month's count, and the current-month
+    // bucket — full total outright, or through-today total with a bucket label
+    // (the recorded 2026-08-13 adjudication rule).
+    const nums = numsIn(text);
+    const monthsOk = e.answer.months.every((w) => new RegExp(`\\b${w}\\b`, 'i').test(text));
+    const bucketOk = nums.has(e.answer.full) || (nums.has(e.answer.through) && PERIOD_MARKER_RE.test(text));
+    const otherOk = nums.has(e.answer.otherCount);
+    outcome = monthsOk && bucketOk && otherOk
+      ? { verdict: 'correct', why: 'both months with acceptable buckets' }
+      : { verdict: 'wrong', why: `months=${monthsOk} currentBucket=${bucketOk} otherCount(${e.answer.otherCount})=${otherOk}` };
+  } else if (kind === 'month-breakdown') {
+    // M09: each prior month's count on a line naming that month; the current
+    // month by either bucket (labeled if through-today — same recorded rule).
+    const lines = text.split('\n');
+    const badRows = e.answer.priorMonths.filter(
+      (pm) => !lines.some((ln) => new RegExp(`\\b(${pm.word}|${pm.abbr})\\b`, 'i').test(ln) && new RegExp(`\\b${pm.n}\\b`).test(ln)),
+    );
+    const nums = numsIn(text);
+    const bucketOk = nums.has(e.answer.current.full) || (nums.has(e.answer.current.through) && PERIOD_MARKER_RE.test(text));
+    outcome = badRows.length === 0 && bucketOk
+      ? { verdict: 'correct', why: 'every month bucket accounted for' }
+      : { verdict: 'wrong', why: `${badRows.length ? `missing month rows: ${badRows.map((b) => b.word).join(', ')}. ` : ''}currentBucket=${bucketOk}` };
+  } else if (kind === 'month-label') {
+    // M10: the right month named, with either bucket's total.
+    const nums = numsIn(text);
+    const monthOk = new RegExp(`\\b${e.answer.monthWord}\\b`, 'i').test(text);
+    const bucketOk = nums.has(e.answer.full) || nums.has(e.answer.through);
+    outcome = monthOk && bucketOk
+      ? { verdict: 'correct', why: `${e.answer.monthWord} with a real bucket total` }
+      : { verdict: 'wrong', why: `month=${monthOk} bucket(${e.answer.full}|${e.answer.through})=${bucketOk}` };
+  } else if (kind === 'earliest') {
+    // M11: the earliest-visit date must be named; richer per-record-type
+    // breakdowns are welcome as long as that date appears.
+    outcome = named.includes(e.answer.date)
+      ? { verdict: 'correct', why: `earliest ${e.answer.date} named` }
+      : { verdict: 'wrong', why: `expected earliest visit ${e.answer.date}; named ${named.join(', ') || 'none'}` };
+  } else if (kind === 'set') {
+    // D17/D18/W10: a set answer. Elements carrying an ISO date need that date
+    // named (plus its count when present); name elements match on any word
+    // part of the ref, so "manager-joy (5)" accepts "Joy". A TIE note relaxes
+    // day-phrase sets to any-one-member plus a stated tie.
+    const nums = numsIn(text);
+    const memberOk = (el) => {
+      const iso = el.match(/\d{4}-\d{2}-\d{2}/)?.[0];
+      if (iso) {
+        const cnt = Number(el.match(/\((\d+)\)/)?.[1]);
+        return named.includes(iso) && (!Number.isFinite(cnt) || nums.has(cnt));
+      }
+      const parts = el.replace(/\s*\(\d+\)\s*$/, '').toLowerCase().split(/[-_\s]+/).filter(Boolean);
+      return parts.some((pt) => new RegExp(`\\b${pt}\\b`, 'i').test(text));
+    };
+    const els = e.answer.value;
+    if (/TIE/.test(e.note ?? '') && els.length > 1) {
+      outcome = els.some(memberOk) && /\b(tie|tied|both|equal)\b/i.test(text)
+        ? { verdict: 'correct', why: 'tie stated with a tied member' }
+        : { verdict: 'needs-adjudication', why: `tie case: ${e.note}` };
+    } else {
+      const misses = els.filter((el) => !memberOk(el));
+      outcome = misses.length === 0
+        ? { verdict: 'correct', why: 'every set member present' }
+        : { verdict: 'wrong', why: `missing: ${misses.join('; ')}` };
+    }
   } else {
     outcome = { verdict: 'needs-adjudication', why: `expected: ${JSON.stringify(e.answer?.value ?? e.answer)}${e.note ? ` — ${e.note}` : ''}` };
   }

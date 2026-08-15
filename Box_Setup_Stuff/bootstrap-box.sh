@@ -837,7 +837,7 @@ EOF
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Dates and times — never guess, always resolve (host-managed; refreshed; updated 2026-08-04)
+## Dates and times — never guess, always resolve (host-managed; refreshed; updated 2026-08-15)
 
 You are UNRELIABLE at calendar arithmetic — working out what date "this Friday" or "next
 Tuesday" falls on. Treat every date like a value you must copy, not compute.
@@ -851,14 +851,26 @@ Tuesday" falls on. Treat every date like a value you must copy, not compute.
    book_visit and move_visit, but equally a date written inside a query_spine SQL statement. If a
    date reaches a tool, it came out of resolve_date.
 3. "next <weekday>" is genuinely ambiguous — it can mean this coming one or the following week's.
-   Resolve BOTH (weeksAhead 0 and 1), then ask the person which date they mean. Never pick one
-   silently. Same for anything resolve_date returns as unresolvable.
-4. When you tell a person a date, include its weekday from resolve_date ("Friday, July 17") so a
-   wrong day is obvious at a glance.
+   Resolve BOTH (weeksAhead 0 and 1). For a read-only answer, name the coming one first and
+   offer the other as the alternate; ask which they mean before booking or moving anything.
+   Never pick one silently. Same for anything resolve_date returns as unresolvable.
+4. When you tell a person a date, include its weekday by quoting resolve_date's `phrase`
+   verbatim ("Friday 2026-08-21") — full date, never a bare "the 21st" — so a wrong day is
+   obvious at a glance.
 5. The `timestamp` in the conversation-info block is **UTC**, not the firm's local clock. From late
    afternoon local (5pm PDT / 4pm PST) until midnight it already names TOMORROW's date and weekday.
    Never read today's date off it. The `now` line on any spine tool result IS firm-local and is safe
    to read. "What day is it?" is itself a date question — resolve it, do not answer from metadata.
+6. Weekend week ambiguity: when resolve_date flags a week range ambiguous and hands you an
+   alternate, ANSWER BOTH ranges with their data for any read-only question (counts, listings,
+   dates), labeling each with its phrase verbatim — never reply with only a clarifying
+   question. Ask which range they mean only BEFORE an action (booking, moving, canceling).
+   If the person's own words already pin the window ("Monday through Sunday" of the current
+   week, "starting tomorrow", explicit dates), it is NOT ambiguous — answer that window
+   directly, no question.
+7. A count for the CURRENT month/quarter/year must say which bucket it is: "through today" or
+   "booked for the full month" — a bare number reads as either and will be taken as wrong.
+   Same when comparing periods or naming a busiest month: label every current-period number.
 EOF
     ok "dates block written to ${agent}'s AGENTS.md"
   else

@@ -485,6 +485,17 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   conversation). `scripts/date-eval/adjudicate-db.mjs` makes the adjudication mechanical.
   PARKED: the v2 run delivered three weekday-date mismatches with ZERO guard flags — real
   weekday-guard misses, not yet investigated.
+  **Midnight-straddle trap (2026-08-15 Nebius run):** the stale-manifest guard checks only at
+  START — a run that CROSSES firm-local midnight grades its tail against yesterday's truth
+  (59/93 void; the agent's "Nope — it's Saturday the 15th" was scored wrong while being right
+  on the wall clock). Never start a run within ~1h of firm-local midnight; real fix =
+  per-question day check in run.mjs. Sibling gap, same run: run.mjs has NO per-question ssh
+  timeout — D11's ssh hung 71 min AFTER the agent answered in 9s (exit 255; reply salvaged
+  from trajectory as designed), and that hang is what pushed the run over midnight. Provider
+  comparison mechanics: custom-typed provider profiles CANNOT serve cluster inference — use
+  `--type openai --config OPENAI_BASE_URL=<url>`; pause/restore the medic around the window.
+  Nebius fleet numbers (valid): agent-turn median 7.8s vs 14.1s (v3 DeepInfra); the ~14s
+  CLI+ssh overhead is provider-independent.
 - **Eval truth-set conventions (2026-08-13 adjudication, five grader bugs):** (1) stored times
   are NAIVE-LOCAL with a lying '+00' (see the 2026-07-22 relabeling incident) — the truth now
   renders raw wall-clock slices like every product surface; it had graded "first job at 01:30"

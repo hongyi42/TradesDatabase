@@ -111,14 +111,23 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   `requiresConfirmation` on tool previews in `src/schedule/booking.ts` — new surfaces inherit
   it, never re-derive. Corollaries: never confirm a default the bot itself chose (apply, state
   it, let them change it); no unprompted permanence lectures; when a structural guard ships,
-  retire the prompt-layer duplicate in the same change.
+  retire the prompt-layer duplicate in the same change. Rule 6 (2026-08-14): assent after a
+  recommendation ("yes, go ahead" with a starred pick on the table) TAKES the recommendation —
+  never answer an assent with "which one?" (spine-eval M09 failed 2/5 exactly this way; 3/3
+  pass after the rule landed).
 - **REJECTED direction — do not propose again:** server-authored verbatim sentences for
   agent-facing wording (PRs #44/#45 closed unmerged, 2026-07-15). The user chose AI agents
   precisely because they navigate messy conversations; fix *input* paths with mechanisms
   (e.g. the `resolve_date` tool) instead of muzzling the agent's voice.
 - **Agent model:** the GLM line is a standing decision (Nemotron-3 was "too dumb" — never
-  restore it while debugging). Current: **GLM-5.2 via DeepInfra** (`zai-org/GLM-5.2`), NVIDIA
-  `nvidia-prod` (`z-ai/glm-5.2`) as automatic failover ("medic v2", 5-min timer on the box).
+  restore it while debugging). Current: **GLM-5.2 via DeepInfra** (`zai-org/GLM-5.2`);
+  single-provider by design since medic v5 (2026-08-13) — the NVIDIA fallback was deleted, the
+  medic asserts `deepinfra-prod` and reports, it does not reroute. Provider trial 2026-08-14:
+  Nebius Token Factory serves the identical `zai-org/GLM-5.2` ~2.8× faster wall-clock at ~2×
+  the price with comparable accuracy (thoughts/shared/research/2026-08-14-glm-5.2-inference-
+  provider-options.md); GLM-5.2 runaway reasoning (a call streaming thinking tokens for
+  minutes with an EMPTY visible reply) was observed on BOTH providers — the eval harness now
+  caps output tokens and retries empty completions; a gateway-level cap is an open follow-up.
   **Medic v2 blind spot, proven 2026-07-28 (~01:08–01:20Z stall):** DeepInfra completions hung
   (`LLM idle timeout (120s)` per turn; owner saw Telegram's generic "Something went wrong")
   while the API stayed reachable (keyless curl → instant 422) and the status page stayed
@@ -344,7 +353,13 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   its flag, T02's becomes corrected), the other 92 byte-identical. **DEPLOYED s2+s6 2026-08-12
   17:53Z and liveness-verified on a real streamed reply** (`v:0.3.0 hook:reply_payload_sending
   chars:1148 flags:[]`, stub dedupe marking `dup:true` as designed); s3/s5/s7/s8 get v0.3.0
-  bundled with their 2026.6.34 upgrade so each box restarts once.
+  bundled with their 2026.6.34 upgrade so each box restarts once. **v0.4.0 (2026-08-14) adds
+  the LINK guard**: `scanLinks` flags any absolute URL in an outbound reply whose host is
+  outside the tool-sourced allowlist (board host from `BOARD_PUBLIC_URL`, `t.me`, Google Maps
+  deep links; widen via `TRADES_LINK_GUARD_ALLOW`) — observe-only (`linkFlags` in the same
+  jsonl record), motivated by spine-eval S04 inventing `dispatch.evalmain.com`. NOT YET
+  DEPLOYED to any sandbox — code + mirror tests in-repo only; deploy = the standard
+  plugins-install → chmod → doctor → restart sequence, per sandbox.
 - **The weekday fabrication is ENDEMIC, not episodic — 23 mismatches in 419 historical texts
   (2026-08-06).** Built the outbound weekday guard (observe-only `message_sending` plugin,
   chrono-node, see nemoclaw-tech-agent.md §4c) and replayed it over every assistant text in the
@@ -470,6 +485,17 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   conversation). `scripts/date-eval/adjudicate-db.mjs` makes the adjudication mechanical.
   PARKED: the v2 run delivered three weekday-date mismatches with ZERO guard flags — real
   weekday-guard misses, not yet investigated.
+  **Midnight-straddle trap (2026-08-15 Nebius run):** the stale-manifest guard checks only at
+  START — a run that CROSSES firm-local midnight grades its tail against yesterday's truth
+  (59/93 void; the agent's "Nope — it's Saturday the 15th" was scored wrong while being right
+  on the wall clock). Never start a run within ~1h of firm-local midnight; real fix =
+  per-question day check in run.mjs. Sibling gap, same run: run.mjs has NO per-question ssh
+  timeout — D11's ssh hung 71 min AFTER the agent answered in 9s (exit 255; reply salvaged
+  from trajectory as designed), and that hang is what pushed the run over midnight. Provider
+  comparison mechanics: custom-typed provider profiles CANNOT serve cluster inference — use
+  `--type openai --config OPENAI_BASE_URL=<url>`; pause/restore the medic around the window.
+  Nebius fleet numbers (valid): agent-turn median 7.8s vs 14.1s (v3 DeepInfra); the ~14s
+  CLI+ssh overhead is provider-independent.
 - **Eval truth-set conventions (2026-08-13 adjudication, five grader bugs):** (1) stored times
   are NAIVE-LOCAL with a lying '+00' (see the 2026-07-22 relabeling incident) — the truth now
   renders raw wall-clock slices like every product surface; it had graded "first job at 01:30"
@@ -722,10 +748,11 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 **Tenants on the pilot DB:**
 - "Default Tenant" `82bbc6f8…` — demo/seed data; the user tests as `manager-sam`.
-- "Judy Testing" `ee65b342-24b3-4f26-bc23-0e2e30627e1d` — **first real external beta**
-  (onboarded 2026-07-07; a friend of the owner, manager tier, 1 manager + 3 tech seats).
-  Gmail paired (2026-07-19). Still owed: a phone E2E check-in and a heads-up about one-shot
-  bookings + the dispatch board. **Never hand-touch her sandbox (s3).**
+- "Judy Testing" `ee65b342-24b3-4f26-bc23-0e2e30627e1d` — was the first real external beta
+  (onboarded 2026-07-07; manager tier, 1 manager + 3 tech seats; Gmail paired 2026-07-19).
+  **Out of beta testing as of 2026-08-14 (owner decision):** no longer an active external
+  user, so fleet-wide operations (route flips, restarts) need no Judy quiet-window; the
+  formerly-owed phone E2E and heads-up are moot.
 
 **Sandbox map on trades-box-1** (pre-pool legacy sandboxes' bot handles are NOT in the DB —
 identify by which chat answers):

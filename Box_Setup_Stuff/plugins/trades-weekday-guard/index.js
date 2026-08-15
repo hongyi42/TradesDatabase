@@ -41,7 +41,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { parse } from './chrono.bundle.mjs';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 
 const NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS = [
@@ -161,6 +161,66 @@ export function scanMessage(text, ref) {
   }
   for (const f of flags) {
     if (correctDates.has(f.date)) f.corrected = true;
+  }
+  return flags;
+}
+
+// ── link guard (v0.4.0, observe-only) ───────────────────────────────────────
+//
+// S04 in the spine eval (2026-08-14): a schedule reply offered
+// https://dispatch.evalmain.com/board?... — a URL no tool returned. The
+// outbound hooks see only the reply text (no tool results), so the check is an
+// allowlist of the ONLY hosts the tools ever hand the agent: the dispatch
+// board (BOARD_PUBLIC_URL), Telegram bot links, and Google Maps deep links
+// (https://www.google.com/maps/dir/... — src/routes/deepLink.ts). Any other
+// absolute URL in an outgoing reply had no tool source and is flagged.
+// Observe-only, like scanMessage: the record is the evidence, nothing is
+// blocked. TRADES_LINK_GUARD_ALLOW (comma-separated hosts) widens the list
+// without a redeploy if the toolset ever grows a new legitimate host.
+
+const DEFAULT_ALLOWED_HOSTS = ['tradesdatabase.onrender.com', 't.me', 'maps.google.com', 'maps.app.goo.gl'];
+
+export function allowedLinkHosts(env = process.env) {
+  const hosts = new Set(DEFAULT_ALLOWED_HOSTS);
+  if (env.BOARD_PUBLIC_URL) {
+    try {
+      hosts.add(new URL(env.BOARD_PUBLIC_URL).host.toLowerCase());
+    } catch {
+      /* a malformed BOARD_PUBLIC_URL must not take the guard down */
+    }
+  }
+  for (const h of (env.TRADES_LINK_GUARD_ALLOW || '').split(',')) {
+    const t = h.trim().toLowerCase();
+    if (t) hosts.add(t);
+  }
+  return hosts;
+}
+
+/**
+ * Scan one outbound message for absolute URLs outside the allowlist. Returns
+ * [] for anything without a flaggable URL — including non-string input.
+ */
+export function scanLinks(text, allowed = allowedLinkHosts()) {
+  if (typeof text !== 'string' || text.length === 0) return [];
+  const flags = [];
+  for (const m of text.matchAll(/https?:\/\/[^\s<>"'()[\]]+/gi)) {
+    const raw = m[0].replace(/[.,;:!?]+$/, '');
+    let host;
+    let pathname;
+    try {
+      const u = new URL(raw);
+      host = u.host.toLowerCase();
+      pathname = u.pathname;
+    } catch {
+      continue;
+    }
+    const isMaps = (host === 'www.google.com' || host === 'google.com') && pathname.startsWith('/maps');
+    if (allowed.has(host) || isMaps) continue;
+    flags.push({
+      url: raw.slice(0, 200),
+      host,
+      context: text.slice(Math.max(0, m.index - 40), m.index + raw.length + 40),
+    });
   }
   return flags;
 }
@@ -295,6 +355,7 @@ function makeHandler(hookName) {
       }
       const tz = process.env.TRADES_WEEKDAY_GUARD_TZ || 'America/Los_Angeles';
       const flags = scanMessage(text, firmLocalParts(tz));
+      const linkFlags = scanLinks(text);
       const hash = textHash(text);
       const record = {
         ts: new Date().toISOString(),
@@ -303,6 +364,7 @@ function makeHandler(hookName) {
         sha: hash,
         chars: text.length,
         flags,
+        linkFlags,
       };
       if (event?.channel) record.channel = event.channel;
       // One line per scanned message, flagged or not — the CLEAN lines are the

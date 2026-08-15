@@ -35,9 +35,16 @@ interface Flag {
   context: string;
   corrected?: boolean;
 }
+interface LinkFlag {
+  url: string;
+  host: string;
+  context: string;
+}
 interface GuardModule {
   VERSION: string;
   scanMessage: (text: unknown, ref: { y: number; m: number; d: number }) => Flag[];
+  scanLinks: (text: unknown, allowed?: Set<string>) => LinkFlag[];
+  allowedLinkHosts: (env?: Record<string, string | undefined>) => Set<string>;
   expandOrdinals: (text: string, ref: { y: number; m: number; d: number }) => string;
   firmLocalParts: (tz: string, now?: Date) => { y: number; m: number; d: number };
   default: (api: unknown) => void;
@@ -389,5 +396,84 @@ describe('weekday guard — the hook contract', () => {
     };
     expect(() => guard.default(api)).not.toThrow();
     expect(Object.keys(handlers)).toEqual(['message_sending']);
+  });
+});
+
+describe('link guard v0.4.0 — the S04 fabricated link and the legitimate bank', () => {
+  test('the live failure: an invented board URL flags', () => {
+    // Verbatim from the 2026-08-14 Nebius tier-2 run (S04, fabricated-link).
+    const flags = guard.scanLinks(
+      'Here is the whole week: https://dispatch.evalmain.com/board?from=2026-08-17&to=2026-08-23 — 14 visits across the team.',
+    );
+    expect(flags).toHaveLength(1);
+    expect(flags[0].host).toBe('dispatch.evalmain.com');
+    expect(flags[0].url).toBe('https://dispatch.evalmain.com/board?from=2026-08-17&to=2026-08-23');
+  });
+
+  test('every host the tools actually emit stays silent', () => {
+    // Board (BOARD_PUBLIC_URL default), Telegram bot link, Maps deep link
+    // (src/routes/deepLink.ts builds www.google.com/maps/dir/ URLs).
+    expect(
+      guard.scanLinks(
+        'On the board: https://tradesdatabase.onrender.com/schedule?date=2026-08-17 or ' +
+          '[open it](https://t.me/DashboardMan_bot?startapp) — directions: ' +
+          'https://www.google.com/maps/dir/?api=1&destination=123+Main+St+Seattle',
+      ),
+    ).toEqual([]);
+  });
+
+  test('google.com outside /maps is NOT a free pass', () => {
+    const flags = guard.scanLinks('see https://www.google.com/search?q=trades');
+    expect(flags).toHaveLength(1);
+    expect(flags[0].host).toBe('www.google.com');
+  });
+
+  test('bare domains in prose are not URLs and never flag', () => {
+    expect(guard.scanLinks('the board lives at tradesdatabase.onrender.com, ask me for the link')).toEqual([]);
+  });
+
+  test('trailing punctuation is stripped from the flagged URL', () => {
+    const flags = guard.scanLinks('try https://evil.example.com/x.');
+    expect(flags).toHaveLength(1);
+    expect(flags[0].url).toBe('https://evil.example.com/x');
+  });
+
+  test('non-string and empty input return []', () => {
+    expect(guard.scanLinks(undefined)).toEqual([]);
+    expect(guard.scanLinks('')).toEqual([]);
+    expect(guard.scanLinks(42)).toEqual([]);
+  });
+
+  test('BOARD_PUBLIC_URL and TRADES_LINK_GUARD_ALLOW widen the allowlist', () => {
+    const hosts = guard.allowedLinkHosts({
+      BOARD_PUBLIC_URL: 'https://boards.example.com/x',
+      TRADES_LINK_GUARD_ALLOW: 'docs.example.com, Wiki.Example.COM',
+    });
+    expect(hosts.has('boards.example.com')).toBe(true);
+    expect(hosts.has('docs.example.com')).toBe(true);
+    expect(hosts.has('wiki.example.com')).toBe(true);
+    // A malformed BOARD_PUBLIC_URL is ignored, never fatal.
+    expect(() => guard.allowedLinkHosts({ BOARD_PUBLIC_URL: '::not a url::' })).not.toThrow();
+  });
+
+  test('the outbound hook record carries linkFlags', () => {
+    const handlers: Record<string, (event: unknown) => unknown> = {};
+    const api = { on: (name: string, fn: (event: unknown) => unknown) => (handlers[name] = fn) };
+    const dir = mkdtempSync(join(tmpdir(), 'linkguard-'));
+    const log = join(dir, 'guard.jsonl');
+    process.env.TRADES_WEEKDAY_GUARD_LOG = log;
+    try {
+      guard.default(api);
+      handlers.reply_payload_sending({ payload: { text: 'week view: https://dispatch.evalmain.com/board' } });
+      const lines = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      const rec = lines.at(-1);
+      expect(rec.v).toBe('0.4.0');
+      expect(rec.linkFlags).toHaveLength(1);
+      expect(rec.linkFlags[0].host).toBe('dispatch.evalmain.com');
+      expect(rec.flags).toEqual([]);
+    } finally {
+      delete process.env.TRADES_WEEKDAY_GUARD_LOG;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -1,7 +1,7 @@
 {
   "name": "trades-weekday-guard",
-  "version": "0.2.0",
-  "description": "Detects fabricated weekdays in outbound messages; observe-only message_sending hook",
+  "version": "0.4.0",
+  "description": "Detects fabricated weekdays and non-tool-sourced links in outbound messages; observe-only outbound hooks",
   "private": true,
   "type": "module",
   "main": "index.js",

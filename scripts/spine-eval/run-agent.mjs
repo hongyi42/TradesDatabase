@@ -36,7 +36,13 @@ const boardEnv = productionLikeEnv();
 const DIR = argOf('dir', join(process.cwd(), 'spine-eval-runs'));
 const ONLY = (argOf('only', '') || '').split(',').map((x) => x.trim()).filter(Boolean);
 const REPEAT = Math.max(1, Number(argOf('repeat', '1')));
-const MAX_STEPS = Number(argOf('max-steps', '8'));
+// 12, raised from 8 (2026-08-14): D05 did honest detective work on genuinely
+// contradictory data (the world's job timestamps are all build-time, so "jobs
+// completed last month" needed the pivot to v_schedule visit dates), reached
+// the right answer on call 8, and the ceiling cut it off with no step left to
+// SPEAK — graded as the agent's empty reply when it was the harness's budget.
+// A ceiling this tight blames legitimate long chains for the instrument.
+const MAX_STEPS = Number(argOf('max-steps', '12'));
 const TOOL_TIMEOUT = Number(argOf('tool-timeout', '30000'));
 const MODEL_TIMEOUT = Number(argOf('model-timeout', '180000'));
 

@@ -68,6 +68,10 @@ export const defaultAnswerer: Answerer = async (context, question, ctx) => {
     // plus the largest measured brief comfortable headroom; completion billing
     // is still per token EMITTED, so calls that already fit cost the same.
     maxTokens: 8192,
+    // Forced-JSON extraction: a long think adds nothing here (probed
+    // 2026-08-04) and an unbounded one blew the 90s tool timeout (Q03,
+    // 2026-08-14) once the raised ceiling stopped truncating it.
+    reasoningEffort: 'none',
     label: 'defaultAnswerer',
   }, ctx);
   const { answer, citations } = args as unknown as { answer: string; citations?: Citation[] };

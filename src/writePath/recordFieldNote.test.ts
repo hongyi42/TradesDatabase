@@ -247,6 +247,17 @@ describe('recordFieldNote', () => {
       [r.visitId],
     );
     expect(visit.rows[0].source_capture_id).toBe(r.captureId);
+
+    // The capture itself carries the customer STAMP (2026-08-14): on the
+    // staged path identity is known BEFORE the immutable L1 insert, and an
+    // unstamped note is invisible to every stamped-capture reader — a
+    // perfectly-executed staged note read as attributed to nobody until the
+    // eval's customer-scoped end-state caught it.
+    const cap = await pg.query<{ customer_id: string | null }>(
+      'select customer_id from raw_captures where id = $1',
+      [r.captureId],
+    );
+    expect(cap.rows[0].customer_id).toBe(confirmedCust.id);
   });
 
   test('an externalId capture persists external_id + occurredAt/sourceMeta in metadata JSONB', async () => {

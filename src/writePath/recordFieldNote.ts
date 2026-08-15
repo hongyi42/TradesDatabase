@@ -130,6 +130,15 @@ export async function recordFieldNote(
           blobPath: input.blobPath ?? null,
           externalId: input.externalId,
           metadata: buildCaptureMetadata(input.sourceMeta, input.occurredAt),
+          // Staged-confirm path (2026-08-14): the identity was resolved — and
+          // tenant-guarded — BEFORE this insert, so stamp it AT the append.
+          // L1 is immutable, and an unstamped note is invisible to every
+          // stamped-capture reader (listRecentCapturesForCustomer); relying
+          // on the L2 visit link alone made a perfectly-executed staged note
+          // read as attributed to nobody. The inbound path still appends
+          // unstamped: there identity genuinely resolves after L1.
+          ...(input.resolved?.customerId ? { customerId: input.resolved.customerId } : {}),
+          ...(input.resolved?.jobId ? { jobId: input.resolved.jobId } : {}),
         });
       } catch (err) {
         // TOCTOU backstop: a concurrent delivery of the same externalId won the race

@@ -485,9 +485,19 @@ export function buildCorpus(): Scenario[] {
     turns: (ctx) => [`cancel ${customerName(ctx.tenant, 'fx-t2-rs-04')}'s visit.`],
     // The 2026-07-25 device pass found this resolving silently to unschedule. The
     // agent should either ask which is meant, or disclose that the WORK survives.
+    // Phrase list broadened 2026-08-14 (X01's lesson, third occurrence): a
+    // textbook disambiguation — "do you mean: take the visit off the calendar
+    // (the job stays open), or cancel the job entirely?" — matched NONE of the
+    // original phrasings and failed a perfect reply.
     graders: () => [
       gradeContent({
-        mustMentionOneOf: [['still open', 'work itself', 'loose', 'unschedul', 'which', 'job as well', 'or the job']],
+        mustMentionOneOf: [
+          [
+            'still open', 'stays open', 'work itself', 'loose', 'unschedul',
+            'which', 'do you mean', 'job as well', 'or the job', 'job entirely',
+            'off the calendar',
+          ],
+        ],
       }),
     ],
     endState: {
@@ -744,11 +754,17 @@ export function buildCorpus(): Scenario[] {
       'yes, save it',
     ],
     endState: {
-      describe: 'the note is in the permanent record',
+      // CUSTOMER-SCOPED since 2026-08-14: the old check ("any stamped capture
+      // saying capacitor") passed VACUOUSLY on the world's planted rich-history
+      // note, which also says 'capacitor' — this scenario's own note was never
+      // actually verified, which is how the unstamped-staged-note bug hid for
+      // every prior run until M08's stricter check caught it.
+      describe: "the note is in the permanent record, stamped to THIS scenario's customer",
       query: (ctx) => ({
         text: `select count(*)::int n from raw_captures
-                where tenant_id = $1 and raw_text ilike '%capacitor%' and customer_id is not null`,
-        params: [ctx.tenant.id],
+                where tenant_id = $1 and raw_text ilike '%capacitor%'
+                  and customer_id = (select customer_id from jobs where id = $2)`,
+        params: [ctx.tenant.id, jobId(ctx.tenant, 'job-t2-cap-03')],
       }),
       predicate: (rows) => count(rows) >= 1,
     },

@@ -656,7 +656,7 @@ EOF
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-07-26)
+## Confirmations — what needs a yes and what doesn't (host-managed; added 2026-07-17, updated 2026-08-14)
 
 The rule, in general: confirm only what is irreversible or externally visible (a customer
 promise at stake). Everything reversible — just do it, then SAY WHAT YOU DID (day, time,
@@ -689,6 +689,13 @@ change.
    automatic scheduling never places, moves, or considers it (on a time-TBD visit it means
    "I'll place this myself"). NOTHING pins automatically: a fresh booking is NOT pinned,
    and you pin only when the manager says so ("pin it", "lock next week").
+6. Options with a recommendation: when you have laid out choices and marked one as your
+   pick, and the person assents without naming one ("yes", "go ahead", "sounds good"),
+   TAKE YOUR RECOMMENDATION and act on it — never answer an assent with "which one?".
+   Ask which only when you made no recommendation, or when the choice itself is
+   irreversible (rule 2). (Live finding 2026-08-14: five slots offered with a starred
+   pick, the manager said "yes, go ahead", and the agent asked "which slot?" — the
+   booking never happened.)
 EOF
     ok "confirmation-doctrine block refreshed in ${agent}'s AGENTS.md"
     # Board-link relay — REFRESHED on every run since 2026-07-19 (delete-then-

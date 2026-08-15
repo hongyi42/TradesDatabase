@@ -75,6 +75,13 @@ import {
   type Json,
   type TechnicianTier,
   type WeeklyPattern,
+  MONEY_EVENT_KINDS,
+  type MoneyEventKind,
+  appendMoneyEvent,
+  listMoneyEventsForJob,
+  listMoneyEventsForJobs,
+  summarizeMoney,
+  syncJobStatusForMoney,
 } from '../db/index.js';
 import { recordFieldNote, type ResolvedIdentity } from '../writePath/recordFieldNote.js';
 import { matchIdentity, type MatchResult } from '../writePath/identityMatch.js';
@@ -1050,7 +1057,12 @@ const ADMIN_TOOLS = [
       'DATE BOUNDS: your clock is UTC and names TOMORROW from late afternoon on — before writing ' +
       'any window that involves today ("so far this year", "through today", "last 30 days"), call ' +
       "resolve_date and bound the SQL with ITS returned date, never your clock's. " +
-      'It CANNOT write, and it can only read these six views (nothing else exists to it): ' +
+      'WINDOW ROWS: unplaced (time-TBD) visits have NULL starts_at/local_day, so a local_day or ' +
+      'starts_at range filter silently EXCLUDES them — a window job covers every day in ' +
+      'earliest_date..latest_date. A day is NOT free just because no row lands ON it; for ' +
+      'free/empty-day questions use get_team_schedule, or filter window rows by ' +
+      'earliest_date/latest_date. ' +
+      'It CANNOT write, and it can only read these seven views (nothing else exists to it): ' +
       'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, promise_level, ' +
       'promised_day, locked, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
       'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
@@ -1065,7 +1077,13 @@ const ADMIN_TOOLS = [
       'v_jobs(id, title, job_type, status, priority, duration_minutes, price_cents, created_at, ' +
       'updated_at, customer_id, customer_name); ' +
       'v_customers(id, name, phone, email, address_line1, city, state, postal_code, created_at); ' +
-      'v_time_off(technician_ref, technician_name, starts_on, ends_on, reason). ' +
+      'v_time_off(technician_ref, technician_name, starts_on, ends_on, reason); ' +
+      'v_money_events(id, job_id, job_title, customer_id, customer_name, kind, amount_cents, ' +
+      'currency, occurred_at, actor_ref, corrects_event_id, method, external_ref) — the money ' +
+      'ledger, one row per money fact (invoice_issued, payment_received, …), amounts in CENTS; ' +
+      'a correction/invoice_voided row CANCELS the row its corrects_event_id points at, so ' +
+      'exclude both sides of a cancelled pair when summing (or prefer the money summary that ' +
+      'get_job already returns — it folds this for you). ' +
       'ALWAYS group or filter dates on v_schedule.local_day, which is already the firm-local day — ' +
       'starts_at is a timestamp and bucketing it by its UTC date puts evening visits on the wrong ' +
       'day. When you name one of those dates to a person, SELECT local_weekday and use it verbatim ' +
@@ -1257,6 +1275,68 @@ const ADMIN_TOOLS = [
         },
       },
       required: ['jobId'],
+    },
+  },
+  {
+    name: 'record_money_event',
+    description:
+      "Record one money FACT on a job's ledger (manager only): a fee charged, an estimate " +
+      'presented/approved/declined, a change order, an invoice issued, a payment ' +
+      'received/refunded, a credit, a write-off, or a correction/void of an earlier entry. ' +
+      'ONE call — it commits immediately and replies with the updated money summary ' +
+      '(quoted / invoiced / paid / balance due) and any job-status change; ALWAYS relay ' +
+      'those back to the manager. Amounts are IN CENTS ($450 = 45000) and always positive — ' +
+      'the kind carries the direction. Mistakes are never edited, they are cancelled by a ' +
+      "NEW entry: kind 'correction' (with correctsEventId) cancels any entry; " +
+      "'invoice_voided' (with correctsEventId) cancels an invoice AND walks the job status " +
+      'back down. A deposit or mid-project milestone invoice must pass progress: true so it ' +
+      'records the money WITHOUT marking the job completed. Job status follows the ledger ' +
+      'automatically (a real invoice ⇒ completed → invoiced; balance cleared ⇒ paid) — ' +
+      'never ask the manager to update status separately.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: 'The job this money fact belongs to.' },
+        kind: {
+          type: 'string',
+          enum: [...MONEY_EVENT_KINDS],
+          description: 'Which money fact this is.',
+        },
+        amountCents: {
+          type: 'integer',
+          minimum: 0,
+          description:
+            'Amount in cents, positive ($450 = 45000). Required for every kind except ' +
+            'estimate_declined.',
+        },
+        occurredAt: {
+          type: 'string',
+          description: 'ISO timestamp when it actually happened, if the manager states one; omit = now.',
+        },
+        method: {
+          type: 'string',
+          description:
+            'How the money moved, as stated (check / card / cash / ach / financing) — payment kinds only.',
+        },
+        externalRef: {
+          type: 'string',
+          description: 'Outside reference if any: invoice number, check number, processor id.',
+        },
+        note: { type: 'string', description: 'Short free-text context, stored with the entry.' },
+        progress: {
+          type: 'boolean',
+          description:
+            'true = deposit / progress / milestone invoice — records the money without implying ' +
+            'the job is done.',
+        },
+        correctsEventId: {
+          type: 'integer',
+          description:
+            "REQUIRED for kinds 'correction' and 'invoice_voided': the ledger entry id being " +
+            'cancelled (ids appear in get_job money.recentEvents).',
+        },
+      },
+      required: ['jobId', 'kind'],
     },
   },
   {
@@ -2020,8 +2100,27 @@ async function dispatch(
       const unscheduled = ctx.jobs.filter(
         (j) => (j.status === 'open' || j.status === 'in_progress') && !scheduledJobIds.has(j.id),
       );
+      // Money position per job (money-ledger plan): summaries only — the entry
+      // list lives on get_job. Jobs with an empty ledger are OMITTED from the
+      // map (absence = "no money recorded"; a zero-summary would read as
+      // "fully paid"). Technicians get door numbers only.
+      const ledger = await listMoneyEventsForJobs(tenantId, ctx.jobs.map((j) => j.id));
+      const byJob = new Map<string, typeof ledger>();
+      for (const e of ledger) {
+        const list = byJob.get(e.job_id) ?? [];
+        list.push(e);
+        byJob.set(e.job_id, list);
+      }
+      const moneyByJob: Record<string, unknown> = {};
+      for (const [jobId, events] of byJob) {
+        const s = summarizeMoney(events);
+        moneyByJob[jobId] = activeManager
+          ? s
+          : { balanceDueCents: s.balanceDueCents, invoicedCents: s.invoicedCents };
+      }
       return {
         ...ctx,
+        ...(byJob.size > 0 ? { moneyByJob } : {}),
         recentCaptures: dropSensitive(ctx.recentCaptures),
         ...(unscheduled.length
           ? {
@@ -2040,17 +2139,47 @@ async function dispatch(
       const job = await getJob(jobId);
       // Tenant guard: a cross-tenant (or unknown) id reads as not found.
       if (!job || job.tenant_id !== tenantId) return null;
+      // Money position (money-ledger plan). Attached ONLY when the ledger has
+      // entries — a zero-summary on an untracked job would read as "fully
+      // paid", the exact misread the fold exists to prevent. Tier split:
+      // managers also get the recent entries (ids are what correction/void
+      // cite); technicians get the door numbers only — no methods, no refs,
+      // no history (payment detail is manager_only by standing policy).
+      const moneyEvents = await listMoneyEventsForJob(tenantId, jobId);
+      const moneySummary = summarizeMoney(moneyEvents);
+      const money =
+        moneyEvents.length === 0
+          ? {}
+          : {
+              money: activeManager
+                ? {
+                    ...moneySummary,
+                    recentEvents: moneyEvents.slice(-10).map((e) => ({
+                      id: e.id,
+                      kind: e.kind,
+                      amountCents: e.amount_cents,
+                      occurredAt: e.occurred_at,
+                      method: e.method,
+                      externalRef: e.external_ref,
+                      correctsEventId: e.corrects_event_id,
+                    })),
+                  }
+                : {
+                    balanceDueCents: moneySummary.balanceDueCents,
+                    invoicedCents: moneySummary.invoicedCents,
+                  },
+            };
       // Fold standing facts whose evidence was retracted — the raw-row tool
       // must agree with the folded context view.
       const ids = factSourceIds(job.attributes);
-      if (ids.length === 0) return job;
+      if (ids.length === 0) return { ...job, ...money };
       const retracted = new Set(
         (await findRetractionsFor(ids))
           .map((r) => r.retracts_capture_id)
           .filter((id): id is string => !!id),
       );
-      if (retracted.size === 0) return job;
-      return { ...job, attributes: foldRetractedFacts(job.attributes, retracted) };
+      if (retracted.size === 0) return { ...job, ...money };
+      return { ...job, attributes: foldRetractedFacts(job.attributes, retracted), ...money };
     }
     case 'resolve_date': {
       // "Now" is the SERVER's clock in the FIRM's timezone — never a model
@@ -4937,6 +5066,76 @@ async function dispatch(
         note:
           'Done in one step — correctable the same way (set a new value; jobType: null clears ' +
           'the type). Tell the manager exactly what changed, old → new.',
+      };
+    }
+    case 'record_money_event': {
+      // Non-string/number args rejected, never coerced-to-absent (find_slots
+      // rule) — EVERY arg, because this row is append-only: a numeric
+      // externalRef (check numbers are numbers) silently dropped by str()
+      // would be unfixable except by void-and-re-enter (review finding).
+      for (const k of ['jobId', 'kind', 'occurredAt', 'method', 'externalRef', 'note']) {
+        if (args[k] !== undefined && typeof args[k] !== 'string') {
+          throw new Error(`${k} must be a string`);
+        }
+      }
+      // progress must be a real boolean: a "true" STRING coerced-to-absent
+      // would record a milestone invoice as a real one and walk the job's
+      // status — the exact failure the progress guard exists to prevent.
+      if (args.progress !== undefined && typeof args.progress !== 'boolean') {
+        throw new Error('progress must be a boolean');
+      }
+      const jobId = str('jobId');
+      if (!jobId) throw new Error('jobId is required');
+      const kindArg = str('kind');
+      if (!kindArg || !MONEY_EVENT_KINDS.includes(kindArg as MoneyEventKind)) {
+        throw new Error(
+          `invalid kind: ${String(args.kind)} (allowed: ${MONEY_EVENT_KINDS.join(', ')})`,
+        );
+      }
+      if (args.amountCents !== undefined && typeof args.amountCents !== 'number') {
+        throw new Error('amountCents must be a number of cents');
+      }
+      if (args.correctsEventId !== undefined && typeof args.correctsEventId !== 'number') {
+        throw new Error('correctsEventId must be the numeric ledger entry id');
+      }
+      // Tenant guard here for a named error; appendMoneyEvent re-checks anyway.
+      const moneyJob = await getJob(jobId);
+      if (!moneyJob || moneyJob.tenant_id !== tenantId) throw new Error('job not found');
+      const detail: Record<string, Json> = {};
+      const noteArg = str('note');
+      if (noteArg) detail.note = noteArg;
+      if (args.progress === true) detail.progress = true;
+      // One-shot by doctrine: a ledger row is reversible via correction/void,
+      // so no staging. Amount/reference rules live in the typed layer (ONE
+      // write-side guard for every surface); its errors are instructive —
+      // surface them verbatim.
+      const event = await appendMoneyEvent({
+        tenantId,
+        jobId,
+        kind: kindArg as MoneyEventKind,
+        amountCents: (args.amountCents as number | undefined) ?? null,
+        occurredAt: str('occurredAt') ?? null,
+        actorRef: identity.technicianRef,
+        correctsEventId: (args.correctsEventId as number | undefined) ?? null,
+        method: str('method') ?? null,
+        externalRef: str('externalRef') ?? null,
+        detail,
+      });
+      // Ledger first, status second: the walk is best-effort and silent when
+      // the ledger has no opinion — recording NEVER fails because of status.
+      const statusMove = await syncJobStatusForMoney(tenantId, jobId);
+      const events = await listMoneyEventsForJob(tenantId, jobId);
+      return {
+        status: 'recorded',
+        eventId: event.id,
+        kind: event.kind,
+        amountCents: event.amount_cents,
+        money: summarizeMoney(events),
+        ...(statusMove ? { jobStatusChange: statusMove } : {}),
+        note:
+          'One-shot: recorded. Tell the manager what was recorded, the new balance due, and ' +
+          `any status change. A mistake is cancelled with kind 'correction' (or ` +
+          `'invoice_voided' for an invoice) citing eventId ${event.id}.`,
       };
     }
     case 'set_promise': {

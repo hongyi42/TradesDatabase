@@ -45,6 +45,13 @@ const REPEAT = Math.max(1, Number(argOf('repeat', '1')));
 const MAX_STEPS = Number(argOf('max-steps', '12'));
 const TOOL_TIMEOUT = Number(argOf('tool-timeout', '30000'));
 const MODEL_TIMEOUT = Number(argOf('model-timeout', '180000'));
+// Anti-runaway ceiling, not a length budget: GLM-5.2 can disappear into its
+// thinking channel and stream reasoning until the WALL budget kills it (530s
+// observed on Nebius, 260s on DeepInfra, 2026-08-14 — both with an EMPTY
+// visible reply). max_tokens makes such a call COMPLETE at the cap instead,
+// which routes it into the empty-completion retry below. 32768 sits far above
+// any legitimate turn measured to date; a legit cap-hit prints loudly.
+const MAX_OUTPUT_TOKENS = Number(argOf('max-output-tokens', '32768'));
 
 // DeepInfra GLM-5.2 rates, USD per million tokens. Overridable because vendor
 // pricing moves (it dropped ~20% once already) and a stale constant would quietly
@@ -115,6 +122,8 @@ let tokensIn = 0;
 let tokensOut = 0;
 let stallRetries = 0;
 let emptyRetries = 0;
+let cappedCompletions = 0; // finish_reason 'length' WITH content — cap too low, truncated reply
+let cappedRunaways = 0; // finish_reason 'length' with EMPTY reply — runaway reasoning stopped by the cap
 const ttftAll = []; // time-to-first-token per successful call — perceived latency
 
 // STREAMING with a liveness watchdog (2026-08-14, user decision), replacing a
@@ -137,6 +146,7 @@ async function readStream(res, controller, armWatchdog) {
   const toolCalls = []; // index → {id, name, arguments}
   let usage = null;
   let firstChunkAt = null;
+  let finishReason = null;
   const reader = res.body.getReader();
   for (;;) {
     const { done, value } = await reader.read();
@@ -160,6 +170,7 @@ async function readStream(res, controller, armWatchdog) {
         continue; // a torn frame is not worth killing the call over
       }
       if (json.usage) usage = json.usage;
+      if (json.choices?.[0]?.finish_reason) finishReason = json.choices[0].finish_reason;
       const delta = json.choices?.[0]?.delta;
       if (!delta) continue;
       if (typeof delta.content === 'string') content += delta.content;
@@ -171,7 +182,7 @@ async function readStream(res, controller, armWatchdog) {
       }
     }
   }
-  return { content, toolCalls, usage, firstChunkAt };
+  return { content, toolCalls, usage, firstChunkAt, finishReason };
 }
 
 async function chat(messages, tools) {
@@ -183,6 +194,7 @@ async function chat(messages, tools) {
     // Deterministic as the provider allows: a corpus that moves under you cannot
     // be regressed against.
     temperature: 0,
+    max_tokens: MAX_OUTPUT_TOKENS,
     stream: true,
     stream_options: { include_usage: true },
   };
@@ -236,18 +248,27 @@ async function chat(messages, tools) {
         const text = await res.text();
         return { error: `HTTP ${res.status}: ${text.slice(0, 300)}`, ms: performance.now() - started + stalledMs };
       }
-      const { content, toolCalls, usage, firstChunkAt } = await readStream(res, controller, armWatchdog);
+      const { content, toolCalls, usage, firstChunkAt, finishReason } = await readStream(res, controller, armWatchdog);
       const elapsed = performance.now() - started;
       if (firstChunkAt !== null) ttftAll.push(firstChunkAt - started);
       tokensIn += usage?.prompt_tokens ?? 0;
       tokensOut += usage?.completion_tokens ?? 0;
+      // A cap-hit with real content is a truncated legitimate reply — never
+      // silently: it means MAX_OUTPUT_TOKENS is set too low for this corpus.
+      if (finishReason === 'length' && (content || toolCalls.length)) {
+        cappedCompletions++;
+        console.log(`      note: output cap hit (${MAX_OUTPUT_TOKENS} tokens) with content present — reply truncated`);
+      }
       // A COMPLETELY empty completion — no text, no tool calls — at
       // temperature 0 on a normal prompt is a provider anomaly (observed
       // during the 2026-08-14 balance-flap degradation), not a decision.
-      // One counted retry; a second empty is the model's answer and the
-      // graders hear it as the empty-reply finding it is.
+      // finish_reason 'length' with an empty reply is its runaway-reasoning
+      // cousin: the model spent the whole cap in its thinking channel (530s
+      // uncapped, 2026-08-14). Both get ONE counted retry; a second empty is
+      // the model's answer and the graders hear it as the empty-reply finding.
       if (!content && toolCalls.length === 0 && attempt < 2 && performance.now() < overallDeadline) {
         emptyRetries++;
+        if (finishReason === 'length') cappedRunaways++;
         stalledMs += elapsed;
         continue;
       }
@@ -552,7 +573,8 @@ if (stallRetries) {
   console.log(`  provider stalls retried ${stallRetries} — silent streams killed by the liveness watchdog, answered on a fresh attempt`);
 }
 if (emptyRetries) {
-  console.log(`  empty completions retried ${emptyRetries} — zero-token answers at temperature 0, a provider anomaly`);
+  const runaway = cappedRunaways ? ` (${cappedRunaways} of them runaway reasoning stopped by the ${MAX_OUTPUT_TOKENS}-token cap)` : '';
+  console.log(`  empty completions retried ${emptyRetries} — zero-token answers at temperature 0, a provider anomaly${runaway}`);
 }
 console.log(`  spend      $${cost.toFixed(3)} (${tokensIn.toLocaleString()} in / ${tokensOut.toLocaleString()} out)`);
 console.log(`\n  by family:`);
@@ -682,6 +704,9 @@ writeFileSync(
       spend: { usd: cost, tokensIn, tokensOut },
       stallRetries,
       emptyRetries,
+      cappedCompletions,
+      cappedRunaways,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
       results,
       skipped: skipped.map((x) => ({ id: x.id, title: x.title, requires: x.requires })),
     },

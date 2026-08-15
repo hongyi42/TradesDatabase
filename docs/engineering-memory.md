@@ -130,7 +130,18 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   precisely because they navigate messy conversations; fix *input* paths with mechanisms
   (e.g. the `resolve_date` tool) instead of muzzling the agent's voice.
 - **Agent model:** the GLM line is a standing decision (Nemotron-3 was "too dumb" — never
-  restore it while debugging). Current: **GLM-5.2 via FIREWORKS FAST**
+  restore it while debugging).
+  **Fireworks suspension trap (2026-08-15, same day as the switch): Fireworks enforces a
+  MONTHLY SPENDING LIMIT at the account level — hitting it SUSPENDS the account with HTTP 412
+  `PRECONDITION_FAILED` ("Account … is suspended…"), on the models list and completions alike.
+  This is NOT DeepInfra's 402-with-balance shape. Switch-day traffic (~$10–15) tripped it;
+  agents were down ~35 min. The medic caught it inside 5 min ("failed REGISTRATION — AGENTS
+  ARE DOWN"). Rollback procedure that worked: STOP the medic timer FIRST (it re-asserts the
+  Fireworks route), then `openshell inference set … deepinfra-prod / zai-org/GLM-5.2`, then a
+  live-turn verify. Fix = raise the monthly limit at fireworks.ai/account/billing; prevention =
+  set the cap with real headroom and check it like a prepaid balance (the balance-out doctrine
+  applies to spend CAPS, not just prepaid credit).**
+  Current: **GLM-5.2 via FIREWORKS FAST**
   (`fireworks-prod / accounts/fireworks/routers/glm-5p2-fast`, switched 2026-08-15 — spine
   Render env + fleet route + medic all flipped and verified: fireworks `cost_events` rows with
   the cached split landed 18:13Z, medic tick "serving verified (tool call returned)" 18:17Z).

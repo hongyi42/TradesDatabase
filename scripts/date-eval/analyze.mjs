@@ -67,6 +67,17 @@ function datesNamed(text, year) {
   for (const m of text.matchAll(re)) add(MONTHS.indexOf(m[1].toLowerCase()) + 1, m[2]);
   const ab = new RegExp(`\\b(${Object.keys(MONTH_ABBR).join('|')})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, 'gi');
   for (const m of text.matchAll(ab)) add(MONTH_ABBR[m[1].toLowerCase()], m[2]);
+  // Numeric M/D ("8/19", "08/19") — the v2 run's W10 wrote its (correct)
+  // busiest-day table as "Wed 8/19" and the grader read it as no date at all.
+  // Bounded to real month/day pairs and no adjacent digits, so "24/7" coverage
+  // talk or "3/4 of the day" can still slip through only when they parse as a
+  // real date — acceptable: minted dates only ever ADD to `named`, and the
+  // invented-date check screens them against tool-produced dates anyway.
+  for (const m of text.matchAll(/(?<!\d|\/)(\d{1,2})\/(\d{1,2})(?!\d|\/)/g)) {
+    const mo = Number(m[1]);
+    const d = Number(m[2]);
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) add(mo, d);
+  }
   return [...out];
 }
 
@@ -80,7 +91,10 @@ function numsIn(text) {
 /** Bucket-label lexicon for CURRENT-period counts (the M09 adjudication rule,
  * 2026-08-13: through-today totals are accepted only when the reply says which
  * bucket it used; full-period totals name themselves). */
-const PERIOD_MARKER_RE = /\b(so far|through (?:today|the \d{1,2})|to date|as of|booked|on the books|full month|full quarter|full year|including upcoming|halfway)\b/i;
+// "through" alone qualifies: the marker only gates ACCEPTING the through-today
+// number, which must also be exactly right — v6's M09 wrote the perfect label
+// "(through Sat 2026-08-15)" and the narrow lexicon refused it.
+const PERIOD_MARKER_RE = /\b(so far|through\b|to date|as of|booked|on the books|full month|full quarter|full year|including upcoming|halfway)/i;
 /** Weekday↔date contradictions the TEXT itself contains (our own check, independent of the guard). */
 function ownMismatches(text, year) {
   const found = [];
@@ -431,7 +445,21 @@ for (const r of results) {
       const iso = el.match(/\d{4}-\d{2}-\d{2}/)?.[0];
       if (iso) {
         const cnt = Number(el.match(/\((\d+)\)/)?.[1]);
-        return named.includes(iso) && (!Number.isFinite(cnt) || nums.has(cnt));
+        if (named.includes(iso) && (!Number.isFinite(cnt) || nums.has(cnt))) return true;
+        // Day-list shorthand: "Wed — 16 visits" under an ISO week header
+        // (v3's W10 — correct content, no per-day date). Accept the weekday
+        // word on one line with the count, ANCHORED by some named date within
+        // 6 days of the expected one — the week header supplies that anchor,
+        // and a right-count-wrong-week reply would still need a date that
+        // close to slip through.
+        if (!Number.isFinite(cnt)) return false;
+        const wd = el.match(/^([A-Za-z]+)/)?.[1]?.toLowerCase();
+        if (!wd) return false;
+        const wdRe = new RegExp(`\\b${wd.slice(0, 3)}(?:${wd.slice(3)})?\\b`, 'i');
+        const lineOk = text.split('\n').some((ln) => wdRe.test(ln) && new RegExp(`\\b${cnt}\\b`).test(ln));
+        const t0 = Date.parse(`${iso}T00:00:00Z`);
+        const anchored = named.some((d) => Math.abs(Date.parse(`${d}T00:00:00Z`) - t0) <= 6 * 86_400_000);
+        return lineOk && anchored;
       }
       const parts = el.replace(/\s*\(\d+\)\s*$/, '').toLowerCase().split(/[-_\s]+/).filter(Boolean);
       return parts.some((pt) => new RegExp(`\\b${pt}\\b`, 'i').test(text));

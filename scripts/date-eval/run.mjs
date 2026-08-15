@@ -214,17 +214,33 @@ writeFileSync(join(DIR, 'run-context.json'), JSON.stringify({ startedAt: new Dat
 
 let asked = 0;
 for (const item of remaining) {
-  const sid = `dateval-${manifest.today}-${RUNID}-${item.id}`;
   const b64 = Buffer.from(item.q, 'utf8').toString('base64');
   // base64 in, so no question text can ever be mangled by two layers of shell
   // quoting; </dev/null because `nemoclaw exec` eats stdin in heredocs.
   const deliverFlags = DELIVER ? ` --deliver --reply-to ${REPLY_TO}` : '';
-  const cmd = `export PATH=$HOME/.local/bin:$PATH; MSG=$(echo '${b64}' | base64 -d); nemoclaw ${manifest.sandbox} agent --agent main --session-id ${sid} -m "$MSG"${deliverFlags} </dev/null 2>&1`;
   const guardBefore = DELIVER ? guardLogLines(cid) : 0;
-  const t0 = Date.now();
-  const r = ssh(cmd);
-  const wallMs = Date.now() - t0;
-  const raw = r.stdout ?? '';
+  // Dead-turn retry: ONE fresh attempt when a turn produces no assistant text
+  // (v6 T05, 2026-08-15: a mid-stream provider blip killed the reply mid-
+  // sentence and cost the run; the eval measures the agent, not one stream
+  // hiccup — the spine-eval harness retries empty completions for the same
+  // reason). Fresh session id so the retry can never resume a poisoned
+  // session. A retry that ALSO dies stands as the dead turn it is.
+  let sid, r, wallMs, raw, traj, trajReplyAttempt, retried = false;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    sid = `dateval-${manifest.today}-${RUNID}-${item.id}${attempt > 1 ? '-r2' : ''}`;
+    const cmd = `export PATH=$HOME/.local/bin:$PATH; MSG=$(echo '${b64}' | base64 -d); nemoclaw ${manifest.sandbox} agent --agent main --session-id ${sid} -m "$MSG"${deliverFlags} </dev/null 2>&1`;
+    const t0 = Date.now();
+    r = ssh(cmd);
+    wallMs = Date.now() - t0;
+    raw = r.stdout ?? '';
+    traj = ssh(`docker exec ${cid} sh -c "cat /sandbox/.openclaw/agents/main/sessions/${sid}.jsonl" 2>/dev/null`, 60_000).stdout ?? '';
+    trajReplyAttempt = traj.trim() ? replyFromTrajectory(traj) : null;
+    if (trajReplyAttempt) break;
+    if (attempt === 1) {
+      retried = true;
+      console.error(`    ! ${item.id}: dead turn (no assistant text) — retrying once with a fresh session`);
+    }
+  }
   const stdoutReply = raw
     .split('\n')
     .filter((l) => !/^\(node:|^\(Use `node|^\[plugins\]|UNDICI-EHPA|^\[agent\/embedded\]/.test(l))
@@ -235,22 +251,17 @@ for (const item of remaining) {
   // must say that rather than quietly compare the two.
   const truncated = /truncat/i.test(raw);
 
-  // Pull the trajectory — the evidence phase attribution is computed from.
-  const traj = ssh(`docker exec ${cid} sh -c "cat /sandbox/.openclaw/agents/main/sessions/${sid}.jsonl" 2>/dev/null`, 60_000).stdout ?? '';
-  if (traj.trim()) writeFileSync(join(TRAJ_DIR, `${item.id}.jsonl`), traj);
-
-  // THE TRAJECTORY IS THE ANSWER SOURCE, stdout only the fallback.
-  // Two independent reasons, both observed live on 2026-08-12:
+  // The trajectory (pulled inside the attempt loop above) is the ONLY answer
+  // source. Two independent reasons, both observed live on 2026-08-12:
   //  - with --deliver, a failed send makes the CLI print the DELIVERY ERROR
   //    instead of the reply, so stdout would be graded as the model's answer;
   //  - even without it, the sandboxes started emitting a `◇ Config warnings`
-  //    box that the stdout line-filter below does not strip, and it lands at
-  //    the FRONT of the reply. The 94-question corpus from earlier that day has
-  //    0 polluted replies, so this appeared in between — i.e. the stdout path
-  //    silently rots as the CLI's chrome changes, and a filter list can only
-  //    ever chase it.
+  //    box that the stdout line-filter above does not strip, and it lands at
+  //    the FRONT of the reply. The stdout path silently rots as the CLI's
+  //    chrome changes, and a filter list can only ever chase it.
   // The trajectory carries exactly the assistant's text and nothing else.
-  const trajReply = traj.trim() ? replyFromTrajectory(traj) : null;
+  if (traj.trim()) writeFileSync(join(TRAJ_DIR, `${item.id}.jsonl`), traj);
+  const trajReply = trajReplyAttempt;
   // NEVER grade stdout. The fallback existed for salvage, but v5 (2026-08-15,
   // provider suspension mid-run) proved its failure mode: 14 dead turns were
   // graded against the CLI's config-warning chrome — noise that can even
@@ -264,7 +275,7 @@ for (const item of remaining) {
     id: item.id, cat: item.cat, phases: item.phases, q: item.q,
     reply, wallMs, exit: r.status, sessionId: sid,
     agentsMdTruncated: truncated, hasTrajectory: !!traj.trim(),
-    replySource: trajReply ? 'trajectory' : 'dead-turn', stdoutReply,
+    replySource: trajReply ? 'trajectory' : 'dead-turn', stdoutReply, ...(retried ? { retried: true } : {}),
     ...(DELIVER ? { delivered: true, replyTo: REPLY_TO, guardLive } : {}),
     at: new Date().toISOString(),
   }) + '\n');

@@ -35,6 +35,16 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 ## 2. Product principles (user decisions — don't re-litigate, do cite when relevant)
 
+- **The money layer is workflow-agnostic — never pilot-fitted** (2026-08-15, user decision,
+  research stage; nothing built). Firms genuinely diverge in how price and payment flow
+  (estimate-first vs just-fix-it, deposits vs none, one invoice vs progress billing, on-site
+  vs back-office vs external/QuickBooks invoicing, single payment vs partial payments vs
+  financing vs write-off). The pricing/invoicing/payment design must be able to *represent
+  most of these chains*, not encode the pilot firm's practice or our guess at a canonical
+  flow. Pilot-firm answers are validation data points, not design inputs. Research +
+  consequences (including the conflict with the linear `job_status` tail
+  `completed → invoiced → paid`, which hard-codes exactly one chain):
+  `thoughts/shared/research/2026-08-15-pricing-invoicing-payment-loop.md` (see its addendum).
 - **Telegram is the entire UI** (2026-07-03). No web front end exists or is planned. Managers
   and technicians do everything through their Telegram agent chat; the Telegram **Mini App
   dispatch board** (2026-07-14) is the one recorded, deliberate extension. **Evolved
@@ -128,6 +138,25 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   provider-options.md); GLM-5.2 runaway reasoning (a call streaming thinking tokens for
   minutes with an EMPTY visible reply) was observed on BOTH providers — the eval harness now
   caps output tokens and retries empty completions; a gateway-level cap is an open follow-up.
+  **Nebius caching (probed 2026-08-15): engine-level prefix cache YES (repeat ~25k-token
+  prefix: 2.8s→1.1s), billing discount NO** (`prompt_cache_hit_tokens` stays 0 on identical
+  repeats; no cached-input price exists — public feature request open). On our cache-heavy
+  call shape (fat doctrine prefix every call) DeepInfra billed 95% of the same 9.3M-token
+  corpus at cache rates vs Nebius billing all of it fresh → effective cost gap ~10×, not the
+  2× list-price ratio. Latency comparisons are unaffected (Nebius numbers already include the
+  prefix-cache speedup). Console "prompt presets" = playground templates, not caching.
+  **Provider-trial verdict (2026-08-15, full record in the research doc): GLM-5.2 on
+  FIREWORKS FAST is the standing candidate** — 57/59 spine eval, wall p50 7.8s (2.4× DeepInfra),
+  billed cache $0.21/M but **per-replica: a stable `prompt_cache_key`+`user` is MANDATORY** or
+  hits are routing luck. **GPT-5.6 Luna is RULED OUT on this toolset**: none/medium/xhigh scored
+  71/51/20% (non-monotonic — thinking makes it worse), with hard-zero violations
+  (commit-without-yes ×2 at xhigh, fabricated-date ×2 at medium); mechanism = over-filled
+  mode-mixing tool args + perseveration; the tenant canary never leaked. Luna API traps for any
+  future OpenAI work: Chat Completions refuses tools+reasoning_effort (only 'none'); the
+  Responses API requires echoing reasoning items back verbatim, reports TPM exhaustion as
+  in-stream response.failed (not HTTP 429), and Tier-1 accounts (500k TPM) throttle eval-scale
+  workloads. The spine-eval harness speaks both dialects now (--openai-params /
+  --openai-responses / --reasoning-effort / --cache-key; rate-limit retries counted).
   **Medic v2 blind spot, proven 2026-07-28 (~01:08–01:20Z stall):** DeepInfra completions hung
   (`LLM idle timeout (120s)` per turn; owner saw Telegram's generic "Something went wrong")
   while the API stayed reachable (keyless curl → instant 422) and the status page stayed

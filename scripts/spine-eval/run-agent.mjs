@@ -52,6 +52,25 @@ const MODEL_TIMEOUT = Number(argOf('model-timeout', '180000'));
 // which routes it into the empty-completion retry below. 32768 sits far above
 // any legitimate turn measured to date; a legit cap-hit prints loudly.
 const MAX_OUTPUT_TOKENS = Number(argOf('max-output-tokens', '32768'));
+// Cache-affinity key, sent as BOTH prompt_cache_key and user when set. Fireworks
+// (probed 2026-08-15) caches per replica: without a stable key, prefix-cache
+// hits are routing luck (byte-identical repeats missed); with one, hits are
+// consistent (21,014/21,017 tokens cached across consecutive calls). Harmless
+// on providers that ignore it (DeepInfra's prompt_cache_key was a no-op).
+const CACHE_KEY = argOf('cache-key', '');
+// OpenAI reasoning models (GPT-5.x family) reject temperature and max_tokens on
+// chat completions — they take max_completion_tokens, and sampling is theirs to
+// control. --openai-params switches the dialect; --reasoning-effort passes the
+// model's effort knob (Luna: none/low/medium/high/xhigh/max). Determinism
+// caveat: no temperature 0 on this dialect, so repeat runs can drift.
+const OPENAI_PARAMS = hasFlag('openai-params');
+const REASONING_EFFORT = argOf('reasoning-effort', '');
+// --openai-responses speaks OpenAI's Responses API instead of chat completions.
+// Chat completions REFUSES function tools + reasoning_effort on gpt-5.6-luna
+// (probed 2026-08-15: only effort 'none' passes) — thinking + tools requires
+// this API. The transcript stays in chat format; translation happens at
+// request time, so the agent loop is untouched.
+const OPENAI_RESPONSES = hasFlag('openai-responses');
 
 // DeepInfra GLM-5.2 rates, USD per million tokens. Overridable because vendor
 // pricing moves (it dropped ~20% once already) and a stale constant would quietly
@@ -124,6 +143,7 @@ let stallRetries = 0;
 let emptyRetries = 0;
 let cappedCompletions = 0; // finish_reason 'length' WITH content — cap too low, truncated reply
 let cappedRunaways = 0; // finish_reason 'length' with EMPTY reply — runaway reasoning stopped by the cap
+let rateLimitRetries = 0; // 429/5xx retried with backoff — the backoff time lands in scenario wall, never in model ms
 const ttftAll = []; // time-to-first-token per successful call — perceived latency
 
 // STREAMING with a liveness watchdog (2026-08-14, user decision), replacing a
@@ -185,19 +205,140 @@ async function readStream(res, controller, armWatchdog) {
   return { content, toolCalls, usage, firstChunkAt, finishReason };
 }
 
+/** Chat-format transcript → Responses API input items. */
+function toResponsesInput(messages) {
+  const items = [];
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      items.push({ type: 'function_call_output', call_id: m.tool_call_id, output: m.content });
+    } else if (m.role === 'assistant' && m._rawItems) {
+      // Echo the model's own output items back VERBATIM — reasoning models
+      // require their reasoning items alongside each function_call, and a
+      // reconstruction that drops them leaves the model blind to its tool
+      // results (observed: the same resolve_date call repeated to MAX_STEPS).
+      items.push(...m._rawItems);
+    } else if (m.role === 'assistant' && m.tool_calls?.length) {
+      if (m.content) items.push({ role: 'assistant', content: m.content });
+      for (const tc of m.tool_calls) {
+        items.push({
+          type: 'function_call',
+          call_id: tc.id,
+          name: tc.function.name,
+          arguments: tc.function.arguments,
+        });
+      }
+    } else {
+      items.push({ role: m.role, content: m.content ?? '' });
+    }
+  }
+  return items;
+}
+
+/** Chat-format tool defs → Responses API flattened tool defs. */
+function toResponsesTools(tools) {
+  return (tools ?? []).map((t) => ({
+    type: 'function',
+    name: t.function.name,
+    description: t.function.description,
+    parameters: t.function.parameters,
+  }));
+}
+
+/** Read a Responses-API SSE stream into the same shape readStream returns. */
+async function readResponsesStream(res, controller, armWatchdog) {
+  const decoder = new TextDecoder();
+  let buf = '';
+  let firstChunkAt = null;
+  let final = null;
+  let streamError = null;
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    armWatchdog(IDLE_CHUNK_MS);
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') continue;
+      let json;
+      try {
+        json = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      // First streamed text or tool-argument delta = the TTFT moment.
+      if (
+        firstChunkAt === null &&
+        (json.type === 'response.output_text.delta' || json.type === 'response.function_call_arguments.delta')
+      ) {
+        firstChunkAt = performance.now();
+      }
+      if (json.type === 'response.completed' || json.type === 'response.incomplete') {
+        final = json.response;
+      }
+      if (json.type === 'error' || json.type === 'response.failed') {
+        streamError = JSON.stringify(json).slice(0, 300);
+      }
+    }
+  }
+  if (!final) {
+    return { content: '', toolCalls: [], usage: null, firstChunkAt, finishReason: null, streamError: streamError ?? 'stream ended without response.completed' };
+  }
+  let content = '';
+  const toolCalls = [];
+  for (const item of final.output ?? []) {
+    if (item.type === 'message') {
+      for (const part of item.content ?? []) {
+        if (part.type === 'output_text' && part.text) content += (content ? '\n' : '') + part.text;
+      }
+    } else if (item.type === 'function_call') {
+      toolCalls.push({ id: item.call_id, name: item.name, arguments: item.arguments ?? '' });
+    }
+  }
+  const usage = final.usage
+    ? {
+        prompt_tokens: final.usage.input_tokens ?? 0,
+        completion_tokens: final.usage.output_tokens ?? 0,
+        prompt_tokens_details: { cached_tokens: final.usage.input_tokens_details?.cached_tokens ?? 0 },
+      }
+    : null;
+  const finishReason =
+    final.status === 'incomplete' && final.incomplete_details?.reason === 'max_output_tokens' ? 'length' : 'stop';
+  return { content, toolCalls, usage, firstChunkAt, finishReason, streamError, rawOutput: final.output ?? null };
+}
+
 async function chat(messages, tools) {
-  const body = {
-    model: model.model,
-    messages,
-    tools,
-    tool_choice: 'auto',
-    // Deterministic as the provider allows: a corpus that moves under you cannot
-    // be regressed against.
-    temperature: 0,
-    max_tokens: MAX_OUTPUT_TOKENS,
-    stream: true,
-    stream_options: { include_usage: true },
-  };
+  const endpoint = OPENAI_RESPONSES ? '/responses' : '/chat/completions';
+  const body = OPENAI_RESPONSES
+    ? {
+        model: model.model,
+        input: toResponsesInput(messages),
+        tools: toResponsesTools(tools),
+        ...(REASONING_EFFORT ? { reasoning: { effort: REASONING_EFFORT } } : {}),
+        max_output_tokens: MAX_OUTPUT_TOKENS,
+        ...(CACHE_KEY ? { prompt_cache_key: CACHE_KEY, user: CACHE_KEY } : {}),
+        stream: true,
+      }
+    : {
+        model: model.model,
+        messages,
+        tools,
+        tool_choice: 'auto',
+        // Deterministic as the provider allows: a corpus that moves under you cannot
+        // be regressed against. (The OpenAI reasoning dialect refuses temperature —
+        // those runs trade determinism away; see --openai-params above.)
+        ...(OPENAI_PARAMS
+          ? { max_completion_tokens: MAX_OUTPUT_TOKENS }
+          : { temperature: 0, max_tokens: MAX_OUTPUT_TOKENS }),
+        ...(REASONING_EFFORT ? { reasoning_effort: REASONING_EFFORT } : {}),
+        ...(CACHE_KEY ? { prompt_cache_key: CACHE_KEY, user: CACHE_KEY } : {}),
+        stream: true,
+        stream_options: { include_usage: true },
+      };
   // The overall deadline is now a BACKSTOP against a stream that trickles
   // forever, not the stall detector — liveness is judged per chunk. Kept
   // generous on purpose: a call that is visibly producing tokens for three
@@ -227,7 +368,7 @@ async function chat(messages, tools) {
     const started = performance.now();
     try {
       armWatchdog(FIRST_CHUNK_MS);
-      const res = await fetch(`${model.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      const res = await fetch(`${model.baseUrl.replace(/\/+$/, '')}${endpoint}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${model.key}` },
         body: JSON.stringify(body),
@@ -238,6 +379,7 @@ async function chat(messages, tools) {
         // transient and must surface immediately — the fleet's balance has run
         // out silently three times, and a retry loop would hide it.
         if (attempt < 4 && performance.now() < overallDeadline) {
+          rateLimitRetries++;
           clearTimeout(watchdog);
           await res.body?.cancel?.().catch(() => {});
           await new Promise((r) => setTimeout(r, 500 * 2 ** attempt + Math.random() * 250));
@@ -248,8 +390,26 @@ async function chat(messages, tools) {
         const text = await res.text();
         return { error: `HTTP ${res.status}: ${text.slice(0, 300)}`, ms: performance.now() - started + stalledMs };
       }
-      const { content, toolCalls, usage, firstChunkAt, finishReason } = await readStream(res, controller, armWatchdog);
+      const { content, toolCalls, usage, firstChunkAt, finishReason, streamError, rawOutput } = OPENAI_RESPONSES
+        ? await readResponsesStream(res, controller, armWatchdog)
+        : await readStream(res, controller, armWatchdog);
       const elapsed = performance.now() - started;
+      if (streamError && !content && toolCalls.length === 0) {
+        // The Responses API reports TPM exhaustion as an in-stream
+        // response.failed event, NOT an HTTP 429 (observed 2026-08-15: 52/59
+        // scenarios insta-failed on a Tier-1 account at xhigh). Same remedy as
+        // a 429: back off and retry. These waits are deliberately NOT added to
+        // stalledMs — they are queueing, not provider latency, and belong only
+        // in scenario wall time. The overall deadline still bounds the loop;
+        // attempt is held level so the budget is time, not tries.
+        if (/rate_limit/i.test(streamError) && performance.now() < overallDeadline) {
+          rateLimitRetries++;
+          await new Promise((r) => setTimeout(r, 20_000 + Math.random() * 10_000));
+          attempt--;
+          continue;
+        }
+        return { error: `responses stream: ${streamError}`, ms: elapsed + stalledMs };
+      }
       if (firstChunkAt !== null) ttftAll.push(firstChunkAt - started);
       tokensIn += usage?.prompt_tokens ?? 0;
       tokensOut += usage?.completion_tokens ?? 0;
@@ -282,6 +442,7 @@ async function chat(messages, tools) {
                 .map((t) => ({ id: t.id, type: 'function', function: { name: t.name, arguments: t.arguments } })),
             }
           : {}),
+        ...(rawOutput ? { _rawItems: rawOutput } : {}),
       };
       return { message, ms: elapsed + stalledMs, usage };
     } catch (err) {
@@ -361,10 +522,13 @@ async function runScenario(scenario, repeatIndex) {
       const toolCalls = message.tool_calls ?? [];
       // Keep the assistant turn in the transcript exactly as sent back, or the
       // provider rejects the follow-up for having orphaned tool results.
+      // _rawItems carries the Responses API's verbatim output (incl. reasoning
+      // items) so toResponsesInput can echo it back — see that function.
       messages.push({
         role: 'assistant',
         content: message.content ?? '',
         ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+        ...(message._rawItems ? { _rawItems: message._rawItems } : {}),
       });
       if (message.content) assistantText += (assistantText ? '\n' : '') + message.content;
       if (toolCalls.length === 0) break;
@@ -571,6 +735,9 @@ if (steerTotal) {
 }
 if (stallRetries) {
   console.log(`  provider stalls retried ${stallRetries} — silent streams killed by the liveness watchdog, answered on a fresh attempt`);
+}
+if (rateLimitRetries) {
+  console.log(`  rate-limit/5xx retries ${rateLimitRetries} — backoff time sits in scenario wall, NOT in model ms; heavy counts mean wall percentiles overstate the provider`);
 }
 if (emptyRetries) {
   const runaway = cappedRunaways ? ` (${cappedRunaways} of them runaway reasoning stopped by the ${MAX_OUTPUT_TOKENS}-token cap)` : '';

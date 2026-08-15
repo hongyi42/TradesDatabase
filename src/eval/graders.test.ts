@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  filterExpectedRefusals,
   gradeConfirmDiscipline,
   gradeConfirmHygiene,
   gradeContent,
@@ -321,6 +322,27 @@ describe('gradeToolChoice', () => {
 
   it('FIRES on a forbidden tool — the read-only guarantee', () => {
     expect(gradeToolChoice({ forbidden: ['book_visit'] })(t)[0].kind).toBe('forbidden-tool');
+  });
+
+  it('always filters a GUARD-STEER refusal — the mint guard firing is the mechanism working', () => {
+    const t = traj([
+      turn({
+        assistantText: 'Searching against the furnace inspection already on file instead.',
+        calls: [
+          call({
+            tool: 'find_slots',
+            isError: true,
+            resultText:
+              "NOT searched: this customer already has open work on file — 'Furnace inspection' (jobId j1, hvac, 60m).",
+          }),
+        ],
+      }),
+    ]);
+    const findings = gradeReliability(t);
+    expect(findings).toHaveLength(1); // reliability still SEES it…
+    expect(findings[0].kind).toBe('agent-misused-tool');
+    // …but the filter drops it with NO per-scenario declaration needed.
+    expect(filterExpectedRefusals(findings, undefined)).toEqual([]);
   });
 
   it('requiredOneOf: silent when any member ran, FIRES when the whole group is absent', () => {

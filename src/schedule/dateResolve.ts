@@ -121,6 +121,18 @@ function dayPhrase(dateISO: string, weekday: Weekday): string {
   return `${titleCase(weekday)} ${dateISO}`;
 }
 
+/**
+ * The served day label for any tool result that names a date — "Friday
+ * 2026-08-28". Added 2026-08-14 after a spine-eval move confirmation said
+ * "Thursday 2026-08-28" (a Friday): the endemic weekday-mismatch class
+ * (23/419 live texts) keeps coming from replies that COMPUTE the weekday, so
+ * results serve it pre-composed and the descriptions say to repeat it
+ * verbatim — the same pattern as upcomingVisits.phrase and resolve_date.
+ */
+export function servedDayPhrase(dateISO: string): string {
+  return dayPhrase(dateISO, weekdayNameOf(dateISO));
+}
+
 function rangePhrase(startISO: string, endISO: string): string {
   // weekStart is a Monday and weekEnd a Sunday BY CONSTRUCTION, so these labels
   // are not a lookup — they are what the arithmetic above already guarantees.

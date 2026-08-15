@@ -37,6 +37,7 @@ export default tseslint.config(
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         AbortController: 'readonly',
+        TextDecoder: 'readonly',
         performance: 'readonly',
         Date: 'readonly',
         Math: 'readonly',

@@ -28,6 +28,7 @@ import {
   listAssignmentsForJob,
   listIdenticalUnassignedVisits,
   listIdenticalUnplacedVisits,
+  listOpenJobsForCustomer,
   rescheduleAssignment,
   updateAssignmentsLocked,
   updateAssignmentPromise,
@@ -169,6 +170,13 @@ export interface BookVisitInput {
   customerId?: string;
   jobId?: string;
   title?: string | null; // job-shell title on the customerId path
+  // The customerId MINT GUARD's escape hatch (2026-08-14): when the customer
+  // already has open/in_progress work on file, a customerId booking is REFUSED
+  // with the list — the recurring live failure is an agent skipping the
+  // context read and silently minting a DUPLICATE job for work the manager
+  // just named. Pass true ONLY when the work is genuinely new and different
+  // from everything listed.
+  forceNewJob?: boolean;
   date?: string; // YYYY-MM-DD, firm-local (required for a PLACED booking)
   // Both times are REQUIRED — the server assumes NO default length (user
   // decision 2026-07-18: a booking carries exactly the times the manager
@@ -227,6 +235,31 @@ interface ResolvedBooking {
   warning?: string;
 }
 
+/**
+ * The customerId mint guard's refusal text — shared by book_visit and
+ * find_slots (src/mcp/server.ts) so the steer reads identically wherever the
+ * agent hits it. Diagnosed 2026-08-14 from spine-eval args: the model's
+ * recurring habit is find_customer → book/search by customerId, never reading
+ * the work on file — seven of nine eval failures were this one signature, and
+ * every one minted a duplicate job whose booking reply looked perfect.
+ */
+export function openWorkSteer(verb: 'booked' | 'searched', jobs: Job[]): string {
+  const list = jobs
+    .map(
+      (j) =>
+        `'${j.title}' (jobId ${j.id}${j.job_type ? `, ${j.job_type}` : ''}${
+          j.duration_minutes ? `, ${j.duration_minutes}m` : ''
+        })`,
+    )
+    .join('; ');
+  return (
+    `NOT ${verb}: this customer already has open work on file — ${list}. ` +
+    'A customerId call describes a brand-NEW job (one job, many visits — a duplicate job ' +
+    'splits the record), so pass the matching jobId from that list instead. Pass ' +
+    'forceNewJob:true ONLY if this is genuinely different new work.'
+  );
+}
+
 // The shared front-half: guards, defaults, overlap PRE-check, availability
 // advisory. Throws on anything that would make the booking impossible; writes
 // NOTHING. Both previewBookVisit and bookVisit run exactly this.
@@ -256,6 +289,21 @@ async function resolveBooking(input: BookVisitInput): Promise<ResolvedBooking> {
     const byId = await getCustomer(input.customerId as string);
     if (!byId || byId.tenant_id !== tenantId) throw new Error('customer not found');
     customer = byId;
+    // The mint guard: fail closed BEFORE any shell is minted (Tier-1 rule —
+    // gate before the irreversible write). Fires on exactly the two shapes
+    // every recorded live failure had: NO title (the terse "book them in" —
+    // which of the open jobs did the manager mean?), or a title that NAMES a
+    // job already on file (the agent parroting the manager's words for work
+    // that exists). A DISTINCT new title is itself the declaration of new
+    // work and mints without ceremony — the guard adds no friction there.
+    if (!input.forceNewJob) {
+      const open = await listOpenJobsForCustomer(customer.id);
+      const stated = input.title?.trim().toLowerCase();
+      const ambiguous = stated
+        ? open.some((j) => (j.title ?? '').trim().toLowerCase() === stated)
+        : open.length > 0;
+      if (ambiguous) throw new Error(openWorkSteer('booked', open));
+    }
   }
 
   // ---- UNPLACED arm (plan 4b-2): the manager explicitly said the time is

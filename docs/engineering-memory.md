@@ -1749,6 +1749,15 @@ mechanism in [long-running-task-batching.md](long-running-task-batching.md).
   still documents as open — that README's "Known coverage gap: month, quarter, year" section
   and its `M01–M11` period questions predate the modes by one day and will grade differently
   now. The eval's 366-case date matrix covers all seven modes and passes 100%.
+- **The evals and the production fleet spend from ONE DeepInfra balance — a heavy eval day can
+  take the pilot's agents down.** Learned 2026-08-14 (the third balance-out): ~$10 of spine/date
+  eval runs accelerated a balance already near zero, completions went 402 mid-run, and the
+  medic correctly held the route ("AGENTS ARE DOWN") while ops_events recorded three outage
+  windows — silently, because the Phase-4 notifier doesn't exist yet. Before any multi-dollar
+  eval run: check the balance first (a 1-token completion probe answers in one call — 402 =
+  out), and treat auto-top-up as the structural fix. The 402 is instant and non-retryable by
+  design in every harness, so a balance-out mid-run poisons the tail of the run rather than
+  hanging it.
 - **"This job has no recorded type" from `find_slots` almost never means a data problem — it
   means the agent went in by `customerId`.** Solved 2026-08-14 (spine-eval PR #136, args now
   recorded per call): GLM's recurring habit is skipping the context read and calling

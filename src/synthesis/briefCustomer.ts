@@ -79,7 +79,18 @@ export const defaultBriefer: Briefer = async (context, focus, ctx) => {
     // completion_tokens bills what was emitted, not what was allowed. It only
     // costs more where the call was previously truncated — and those were paying
     // the full 1024 for an unusable result.
-    maxTokens: 2048,
+    // 2048 was the same silent-truncation bug one size up (2026-08-14, spine-eval
+    // Q01/Q03): GLM-5.2 THINKS by default and its reasoning tokens spend from
+    // this same budget, so a long enough think starved the visible output and
+    // finish_reason='length' killed the tool intermittently — rich histories
+    // and chatty thinking days made it flaky, not rare. 8192 leaves the think
+    // plus the largest measured brief comfortable headroom; completion billing
+    // is still per token EMITTED, so calls that already fit cost the same.
+    maxTokens: 8192,
+    // Forced-JSON extraction: a long think adds nothing here (probed
+    // 2026-08-04) and an unbounded one blew the 90s tool timeout (Q03,
+    // 2026-08-14) once the raised ceiling stopped truncating it.
+    reasoningEffort: 'none',
     label: 'defaultBriefer',
   }, ctx);
   const { briefing, citations } = args as unknown as {

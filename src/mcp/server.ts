@@ -12,6 +12,7 @@ import {
   getJob,
   getCustomer,
   getOpenReviewItem,
+  listOpenJobsForCustomer,
   getRawCapture,
   getRawCaptureByExternalId,
   searchCustomers,
@@ -132,6 +133,7 @@ import {
   unscheduleVisit,
   isPromiseLevel,
   moveVisit,
+  openWorkSteer,
   previewBookVisit,
   previewUnscheduleVisit,
   previewMoveVisit,
@@ -154,7 +156,8 @@ import { commitResolvePlan } from '../schedule/resolveCommit.js';
 import { commitUndoRun, planUndo, type UndoPlan } from '../schedule/undoRun.js';
 import type { GeocodeTransport } from '../routes/geocode.js';
 import type { MintRoiToken, RoiTransport } from '../routes/roiClient.js';
-import { isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
+import {
+  servedDayPhrase, isRealDateISO, isWeekday, resolveDate } from '../schedule/dateResolve.js';
 import {
   findUndoOfRun,
   latestCommittedRun,
@@ -274,7 +277,10 @@ const TOOLS = [
       'nothing is scheduled when a timeTbd entry exists, and never invent a time for one). ' +
       "When you NAME a visit's day, SAY the entry's `phrase` VERBATIM (\"Tuesday 2026-08-18\") — " +
       'never re-derive the weekday or restate the date yourself; you are unreliable at both. ' +
-      'recentVisits is past work evidence, not the schedule.',
+      'recentVisits is past work evidence, not the schedule. When the result carries an ' +
+      'openWorkNote, the customer has work with NO visit booked: "next opening / availability / ' +
+      'earliest you could come" questions are about THAT work — answer them with ' +
+      'find_slots(jobId), never from upcomingVisits.',
     inputSchema: {
       type: 'object',
       properties: { customerId: { type: 'string' } },
@@ -747,8 +753,13 @@ const ADMIN_TOOLS = [
       '{status:"needs_confirmation", confirmId} with a preview — show it, get an explicit ' +
       'yes, call again with ONLY confirmId. Call with date + startTime + endTime ' +
       '(+ customerId OR jobId; technicianRef optional). customerId MINTS A NEW JOB — when ' +
-      'booking another visit for work already on file (a multi-day split, a return visit), ' +
-      'pass that job\'s jobId instead: one job, many visits, never a duplicate job per day. ' +
+      'booking work already on file (a named job, a multi-day split, a return visit), pass ' +
+      'that job\'s jobId instead: one job, many visits, never a duplicate job per day. ' +
+      'GUARDED: when the customer has open work on file, a customerId booking with NO title ' +
+      '— or a title naming a job already on file — is REFUSED with the open-jobs list: ' +
+      're-call with the matching jobId. Genuinely NEW work books normally under its own ' +
+      'distinct title (forceNewJob:true also overrides). Best practice: read ' +
+      'get_customer_context FIRST and book by jobId, skipping the refusal round trip. ' +
       'startTime and endTime are REQUIRED ' +
       '— the server assumes NO default length. Pass exactly the times the manager stated ' +
       '(a range like "12-1pm" means startTime 12:00 AND endTime 13:00); if the manager did ' +
@@ -764,6 +775,8 @@ const ADMIN_TOOLS = [
       'time. NEVER assume a promise was made. When talking to customers, offer DAYS, not times. ' +
       'A fresh booking is NOT pinned — if the manager wants automatic scheduling\'s hands off ' +
       'it ("pin it", "don\'t let the freeze move this"), follow up with set_visit_locks. ' +
+      'When the result carries dayPhrase, SAY IT VERBATIM whenever you name the day — never ' +
+      'work out the weekday yourself; you are unreliable at calendar math. ' +
       'When the result carries boardNote, ALWAYS end your report with its exact ' +
       '[See it on the board](…) line — it renders as a tappable link.',
     inputSchema: {
@@ -781,6 +794,7 @@ const ADMIN_TOOLS = [
         latestDate: { type: 'string', description: 'With timeTbd: range end (YYYY-MM-DD), for "sometime that week". Defaults to earliestDate. First call only.' },
         promiseLevel: { type: 'string', enum: ['none', 'day', 'time', 'time_only'], description: 'What the customer was ACTUALLY told (default "none" = nothing promised). "day" = told the day; "time" = told the day AND time; "time_only" = told a time but NOT the day (the day may still move). Set a level only when the manager indicates a promise was made. First call only.' },
         priority: { type: 'string', enum: ['emergency', 'urgent', 'routine', 'maintenance'], description: 'Triage tier for the NEW job when booking by customerId (default "routine"). Rejected with jobId — an existing job keeps its recorded priority. First call only.' },
+        forceNewJob: { type: 'boolean', description: 'customerId path only: override the open-work guard and mint a new job even though the customer has open work on file. ONLY when the work is genuinely different from every listed job — never to skip the jobId lookup. First call only.' },
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call.' },
       },
       required: [],
@@ -802,7 +816,8 @@ const ADMIN_TOOLS = [
       'date + startTime (+ optional endTime/technicianRef OR unassign) + reason. When the ' +
       'result carries ' +
       'boardNote, ALWAYS end your report with its exact [See it on the board](…) line — it ' +
-      'renders as a tappable link.',
+      'renders as a tappable link. When the result carries dayPhrase, SAY IT VERBATIM whenever ' +
+      'you name the new day — never work out the weekday yourself.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1277,8 +1292,11 @@ const ADMIN_TOOLS = [
     description:
       'Find bookable schedule slots (manager only) — READ-ONLY, it books NOTHING. This tool ' +
       'is the ONLY source of scheduling truth: NEVER judge fit, availability, or drive time ' +
-      'yourself — call it and relay its verdict. Give exactly ONE subject: customerId (new ' +
-      'work), jobId (work on a recorded job), or assignmentId (re-placing or assigning an ' +
+      'yourself — call it and relay its verdict. Give exactly ONE subject: customerId ' +
+      '(genuinely NEW work only — GUARDED: refused with the open-jobs list when the customer ' +
+      'already has open work on file; re-call with the matching jobId, or forceNewJob:true ' +
+      'only for truly different new work), jobId (work on a recorded job — the usual case), ' +
+      'or assignmentId (re-placing or assigning an ' +
       "existing visit — its booked length is used). Returns up to 5 ranked candidates, each " +
       'with technician, date, times, and a human-ready reasons line — RELAY those reasons, ' +
       'do not invent your own. Every date comes WITH its weekday (the weekday field, also in ' +
@@ -1323,6 +1341,13 @@ const ADMIN_TOOLS = [
             'recorded length, and existing visits (their booked length applies).',
         },
         technicianRef: { type: 'string', description: 'Pin the search to one roster ref.' },
+        forceNewJob: {
+          type: 'boolean',
+          description:
+            'customerId subject only: override the open-work guard and search for a brand-new ' +
+            "job even though the customer has open work on file. ONLY when the work is " +
+            'genuinely different from every listed job.',
+        },
         requiredSkills: {
           type: 'array',
           items: { type: 'string' },
@@ -1983,7 +2008,28 @@ async function dispatch(
       if (!ctx.customer || ctx.customer.tenant_id !== tenantId) {
         return { customer: null, jobs: [], upcomingVisits: [], recentVisits: [], recentCaptures: [] };
       }
-      return { ...ctx, recentCaptures: dropSensitive(ctx.recentCaptures) };
+      // Served steering at the exact decision point (the B03 flake, 2026-08-14):
+      // asked "when is the next OPENING for X's work?", the model reads this
+      // context, sees the booked visits, and answers with the next VISIT —
+      // the queued job with no visit is the one the question was about. Name
+      // that work and the verb that answers for it, in the result itself.
+      const scheduledJobIds = new Set(ctx.upcomingVisits.map((v) => v.jobId));
+      const unscheduled = ctx.jobs.filter(
+        (j) => (j.status === 'open' || j.status === 'in_progress') && !scheduledJobIds.has(j.id),
+      );
+      return {
+        ...ctx,
+        recentCaptures: dropSensitive(ctx.recentCaptures),
+        ...(unscheduled.length
+          ? {
+              openWorkNote:
+                `UNSCHEDULED work on file: ${unscheduled.map((j) => `'${j.title}' (jobId ${j.id})`).join('; ')}. ` +
+                'upcomingVisits answers what IS booked; a question about when work COULD happen — an ' +
+                'opening, availability, the earliest someone could come — is a find_slots(jobId) ' +
+                'question about THESE jobs, never answered from the booked schedule.',
+            }
+          : {}),
+      };
     }
     case 'get_job': {
       const jobId = str('jobId');
@@ -3300,6 +3346,7 @@ async function dispatch(
             : {}),
           ...(promiseLevelArg ? { promiseLevel: promiseLevelArg as PromiseLevel } : {}),
           ...(priorityArg ? { priority: priorityArg as JobPriority } : {}),
+          ...(args.forceNewJob === true ? { forceNewJob: true } : {}),
           actorRef: subjectRef,
         };
         // Doctrine (user decision 2026-07-17, single-sourced in booking.ts):
@@ -3320,6 +3367,11 @@ async function dispatch(
             // assumption in the same breath it is made.
             jobTitle: booked.job.title,
             customer: booked.customer.name,
+            // Pre-composed weekday+date — SAY THIS VERBATIM when naming the
+            // day (weekday-mismatch class; see servedDayPhrase).
+            ...(booked.assignment.starts_at
+              ? { dayPhrase: servedDayPhrase(booked.assignment.starts_at.slice(0, 10)) }
+              : {}),
             technicianRef: technicianRef ?? null,
             unassigned: booked.assignment.technician_id === null,
             // Placed: the booked day. Unplaced: the range start (+ range echo
@@ -3477,6 +3529,11 @@ async function dispatch(
           ...(d.customerId ? { customerId: d.customerId } : {}),
           ...(d.jobId ? { jobId: d.jobId } : {}),
           title: d.title ?? null,
+          // The mint guard ran at STAGE time and the manager approved that
+          // preview — their yes IS the authorization for the previewed mint,
+          // so the commit never re-litigates it (a guard newly firing between
+          // stage and yes would strand the manager with a dead confirm).
+          forceNewJob: true,
           ...(stagedUnplaced
             ? {
                 timeTbd: true,
@@ -3511,6 +3568,9 @@ async function dispatch(
         jobId: booked.job.id,
         jobTitle: booked.job.title, // same job-identity echo as the one-shot path
         customer: booked.customer.name,
+        ...(booked.assignment.starts_at
+          ? { dayPhrase: servedDayPhrase(booked.assignment.starts_at.slice(0, 10)) }
+          : {}),
         technicianRef: d.technicianRef ?? null,
         unassigned: booked.assignment.technician_id === null,
         date: d.date ?? booked.assignment.earliest_date,
@@ -3578,6 +3638,7 @@ async function dispatch(
             assignmentId: moved.created.id,
             previousAssignmentId: moved.cancelled.id,
             date,
+            ...(date ? { dayPhrase: servedDayPhrase(date) } : {}),
             startTime,
             endTime: preview.endTime,
             ...(unassignArg ? { unassigned: true } : {}),
@@ -3701,6 +3762,7 @@ async function dispatch(
         assignmentId: moved.created.id,
         previousAssignmentId: moved.cancelled.id,
         date: d.date,
+        ...(d.date ? { dayPhrase: servedDayPhrase(d.date) } : {}),
         startTime: d.startTime,
         endTime: d.endTime,
         ...(d.unassign === true ? { unassigned: true } : {}),
@@ -5738,6 +5800,16 @@ async function dispatch(
       }
       const customer = await getCustomer(customerIdResolved);
       if (!customer || customer.tenant_id !== tenantId) throw new Error('customer not found');
+
+      // The customerId MINT GUARD (mirrors book_visit, message single-sourced
+      // in booking.ts): a customerId subject describes a hypothetical NEW job
+      // — the recurring live failure is searching (then booking) by customerId
+      // for work already on file, which is also where every baffling "no
+      // recorded type" error came from. Steer to the real jobId instead.
+      if (!jobIdArg && !assignmentIdArg && args.forceNewJob !== true) {
+        const openWork = await listOpenJobsForCustomer(customer.id);
+        if (openWork.length > 0) throw new Error(openWorkSteer('searched', openWork));
+      }
 
       // ------- duration: fail-closed, disclosed, never invented
       // The configured vocabulary rides in every no-duration error so the

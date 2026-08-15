@@ -126,6 +126,26 @@ export async function listJobsForCustomer(customerId: string): Promise<Job[]> {
   return data ?? [];
 }
 
+/**
+ * The customer's BOOKABLE work — what the customerId mint guard reads.
+ * open + in_progress only: completed/invoiced/paid/cancelled jobs are history
+ * and must never block booking genuinely new work.
+ *
+ * Tenant scoping: callers resolve and tenant-guard the customer row BEFORE
+ * calling this (same contract as listJobsForCustomer above) — the customer id
+ * itself is the proof of tenancy.
+ */
+export async function listOpenJobsForCustomer(customerId: string): Promise<Job[]> {
+  const { data, error } = await getClient()
+    .from('jobs')
+    .select()
+    .eq('customer_id', customerId)
+    .in('status', ['open', 'in_progress'])
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`listOpenJobsForCustomer failed: ${error.message}`);
+  return data ?? [];
+}
+
 // Jobs (with their customer's name + address embedded) for a set of ids —
 // the day-route reader's batch lookup. Tenant-scoped in the query itself:
 // this fans out to customer PII, so the guard lives here, not two files up

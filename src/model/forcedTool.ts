@@ -39,6 +39,16 @@ export interface ForcedToolRequest {
   maxTokens: number;
   // Prefixes the thrown error so a failure names the caller, not this module.
   label: string;
+  /**
+   * Cap or disable the model's thinking on the OpenAI-compatible path
+   * (GLM-5.2 thinks BY DEFAULT; probed 2026-08-04: reasoning_effort 'none'
+   * collapses it to ~7 tokens). Opt-in PER CALLER: the synthesis tools set
+   * 'none' — a forced-JSON extraction gains nothing from a long think, and an
+   * unbounded one ran brief/full_history past the 90s tool timeout the same
+   * day the token ceiling stopped truncating it (2026-08-14, Q03). Ignored on
+   * the Anthropic path.
+   */
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
 }
 
 const DEFAULT_OPENAI_BASE_URL = 'https://api.deepinfra.com/v1/openai';
@@ -235,6 +245,7 @@ async function callOpenAiCompatible(
       model: process.env.INFERENCE_MODEL || DEFAULT_OPENAI_MODEL,
       max_tokens: req.maxTokens,
       temperature: 0,
+      ...(req.reasoningEffort ? { reasoning_effort: req.reasoningEffort } : {}),
       // No top-level `system` in this format — it is the first message.
       messages: [
         { role: 'system', content: req.system },

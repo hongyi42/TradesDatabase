@@ -82,6 +82,9 @@ const book = (args: {
     tenantId,
     customerId,
     title: args.title ?? 'undo probe visit',
+    // Every probe visit is its own job by design; the shared title would
+    // otherwise trip the customerId mint guard on the second call.
+    forceNewJob: true,
     actorRef: 'un-mgr',
     ...args,
   });

@@ -266,8 +266,13 @@ export function buildCorpus(): Scenario[] {
     tier: 'manager',
     quick: true,
     turns: (ctx) => [`when could we fit in the ${ctx.world.edges.durationlessJob}?`],
+    // Two honest shapes exist: ASK how long (no duration route at all), or
+    // proceed on the configured type's duration WITH the assumption disclosed
+    // (the 4b-1 ladder — "assuming 60 min for 'plumbing', say otherwise").
+    // What must never happen is a silently invented length; both honest
+    // shapes name a duration word, an invented one usually names none.
     graders: () => [
-      gradeContent({ mustMentionOneOf: [['how long', 'length', 'duration', 'minutes', 'hours']] }),
+      gradeContent({ mustMentionOneOf: [['how long', 'length', 'duration', 'minut', 'hour']] }),
     ],
   });
 
@@ -278,7 +283,16 @@ export function buildCorpus(): Scenario[] {
     tenant: 'main',
     badge: 'manager-sam',
     tier: 'manager',
-    turns: (ctx) => [`when is the next opening for ${customerName(ctx.tenant, 'base-eastside-2')}'s work?`],
+    // TWO turns since 2026-08-14. This customer has a dense booked schedule
+    // AND a queued job, so "the next opening for her work" is genuinely
+    // ambiguous — a real run read the context, listed the booked visits, and
+    // fairly ASKED "she also has an unscheduled urgent job — want me to find
+    // a slot for it?", which a single-turn script starves (R06's lesson).
+    // The second turn answers; the scenario measures the COMPLETED flow.
+    turns: (ctx) => [
+      `when is the next opening for ${customerName(ctx.tenant, 'base-eastside-2')}'s work?`,
+      'yes — find a slot for the unscheduled one.',
+    ],
     graders: () => [gradeToolChoice({ required: ['find_slots'] })],
   });
 
@@ -340,10 +354,14 @@ export function buildCorpus(): Scenario[] {
       `${customerName(ctx.tenant, 'fx-t2-bk-07')} has no heat and a baby in the house. Anything today or tomorrow?`,
     ],
     graders: () => [gradeToolChoice({ required: ['resolve_date'] })],
-    // fx-t2-bk-07's job is the planted no-duration edge: the first find_slots
-    // MUST fail closed with "no recorded type" — that refusal is the plant
-    // working. The agent recovering (assume a type, disclose the assumption,
-    // ask) is the behavior under test.
+    // CORRECTED 2026-08-14: this comment used to claim bk-07's job was a
+    // planted no-duration edge. No such plant exists — bk-07's job is typed
+    // with a length like every fixture. The "no recorded type" refusals seen
+    // in real runs were the agent calling find_slots by CUSTOMERID (a
+    // hypothetical new job has no type); the mint guard now steers that habit
+    // and its refusal is globally filtered (GUARD_STEERS). The no-type
+    // pattern stays expected for the residual path (forceNewJob without a
+    // duration route).
     expectedRefusals: [/no recorded type/i],
   });
 
@@ -467,9 +485,19 @@ export function buildCorpus(): Scenario[] {
     turns: (ctx) => [`cancel ${customerName(ctx.tenant, 'fx-t2-rs-04')}'s visit.`],
     // The 2026-07-25 device pass found this resolving silently to unschedule. The
     // agent should either ask which is meant, or disclose that the WORK survives.
+    // Phrase list broadened 2026-08-14 (X01's lesson, third occurrence): a
+    // textbook disambiguation — "do you mean: take the visit off the calendar
+    // (the job stays open), or cancel the job entirely?" — matched NONE of the
+    // original phrasings and failed a perfect reply.
     graders: () => [
       gradeContent({
-        mustMentionOneOf: [['still open', 'work itself', 'loose', 'unschedul', 'which', 'job as well', 'or the job']],
+        mustMentionOneOf: [
+          [
+            'still open', 'stays open', 'work itself', 'loose', 'unschedul',
+            'which', 'do you mean', 'job as well', 'or the job', 'job entirely',
+            'off the calendar',
+          ],
+        ],
       }),
     ],
     endState: {
@@ -726,11 +754,17 @@ export function buildCorpus(): Scenario[] {
       'yes, save it',
     ],
     endState: {
-      describe: 'the note is in the permanent record',
+      // CUSTOMER-SCOPED since 2026-08-14: the old check ("any stamped capture
+      // saying capacitor") passed VACUOUSLY on the world's planted rich-history
+      // note, which also says 'capacitor' — this scenario's own note was never
+      // actually verified, which is how the unstamped-staged-note bug hid for
+      // every prior run until M08's stricter check caught it.
+      describe: "the note is in the permanent record, stamped to THIS scenario's customer",
       query: (ctx) => ({
         text: `select count(*)::int n from raw_captures
-                where tenant_id = $1 and raw_text ilike '%capacitor%' and customer_id is not null`,
-        params: [ctx.tenant.id],
+                where tenant_id = $1 and raw_text ilike '%capacitor%'
+                  and customer_id = (select customer_id from jobs where id = $2)`,
+        params: [ctx.tenant.id, jobId(ctx.tenant, 'job-t2-cap-03')],
       }),
       predicate: (rows) => count(rows) >= 1,
     },
@@ -1295,7 +1329,11 @@ export function buildCorpus(): Scenario[] {
       // 10–noon overlaps the planted 10:00 visit: the first attempt MUST be
       // refused by the overlap guard. The scenario is the recovery.
       `book ${customerName(ctx.tenant, 'fx-t2-wf-10')}'s ${jobTitle(ctx.tenant, 'job-t2-wf-10').toLowerCase()} with Theo Marsh on ${visitDate(ctx.tenant, 'visit-t2-wf-09')}, 10am to noon.`,
-      `whatever Theo has closest to that works — book it.`,
+      // "on the same day" is load-bearing: without it, "closest to that" has
+      // two defensible readings (closest datetime vs same time next day) and
+      // a real run booked the latter — the end-state must not grade an
+      // ambiguity the instruction created.
+      `whatever Theo has closest to that on the same day works — book it.`,
       'yes',
     ],
     graders: () => [gradeToolChoice({ required: ['book_visit'] })],

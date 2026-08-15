@@ -179,11 +179,11 @@ export function buildCorpus(f) {
   }
   // Weekday-of-a-date and span questions — the same phases, stated the other
   // way round (given a date, name the day).
-  out.push(q('P18', 'pure-date', ['resolve', 'speak'], `What day of the week is it today?`, { dates: [T], answer: { kind: 'text', value: titleWeekday(T) }, requireWeekday: false }));
+  out.push(q('P18', 'pure-date', ['resolve', 'speak'], `What day of the week is it today?`, { dates: [T], answer: { kind: 'weekday', value: titleWeekday(T) }, requireWeekday: false }));
   const probe = addDays(T, 8);
-  out.push(q('P19', 'pure-date', ['resolve', 'speak'], `What weekday does ${humanDate(probe)} fall on?`, { dates: [probe], answer: { kind: 'text', value: titleWeekday(probe) }, requireWeekday: false }));
-  out.push(q('P20', 'pure-date', ['resolve', 'speak'], `What are the dates of this week, Monday through Sunday?`, { dates: [weekStart(T), weekEnd(T)], window: { from: weekStart(T), to: weekEnd(T) }, answer: { kind: 'range' }, requireWeekday: true }));
-  out.push(q('P21', 'pure-date', ['resolve', 'speak'], `What are next week's Monday-to-Sunday dates?`, { dates: [weekStart(T, 1), weekEnd(T, 1)], window: { from: weekStart(T, 1), to: weekEnd(T, 1) }, answer: { kind: 'range' }, requireWeekday: true }));
+  out.push(q('P19', 'pure-date', ['resolve', 'speak'], `What weekday does ${humanDate(probe)} fall on?`, { dates: [probe], answer: { kind: 'weekday', value: titleWeekday(probe) }, requireWeekday: false }));
+  out.push(q('P20', 'pure-date', ['resolve', 'speak'], `What are the dates of this week, Monday through Sunday?`, { dates: [weekStart(T), weekEnd(T)], window: { from: weekStart(T), to: weekEnd(T) }, answer: { kind: 'date' }, requireWeekday: true }));
+  out.push(q('P21', 'pure-date', ['resolve', 'speak'], `What are next week's Monday-to-Sunday dates?`, { dates: [weekStart(T, 1), weekEnd(T, 1)], window: { from: weekStart(T, 1), to: weekEnd(T, 1) }, answer: { kind: 'date' }, requireWeekday: true }));
   out.push(q('P22', 'pure-date', ['resolve', 'speak'], `How many days from today until ${humanDate(addDays(T, 10))}?`, { dates: [addDays(T, 10)], answer: { kind: 'count', value: 10 }, requireWeekday: false }));
   const eom = (() => { const d = at(T); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate()}`; })();
   out.push(q('P23', 'pure-date', ['resolve', 'speak'], `What's the date of the last day of this month, and what weekday is it?`, { dates: [eom], answer: { kind: 'date' }, requireWeekday: true }));
@@ -310,7 +310,7 @@ export function buildCorpus(f) {
   const weekdaysNext = daysOf(1).slice(0, 5);
   const lightest = weekdaysNext.reduce((a, b) => (count(b) < count(a) ? b : a));
   out.push(q('W11', 'week-window', ['resolve', 'use', 'speak'], `What's the lightest weekday next week?`, {
-    dates: [lightest], window: wk(1), answer: { kind: 'text', value: `${titleWeekday(lightest)} ${lightest} (${count(lightest)})` }, requireWeekday: true,
+    dates: [lightest], window: wk(1), answer: { kind: 'day-count', date: lightest, count: count(lightest), value: `${titleWeekday(lightest)} ${lightest} (${count(lightest)})` }, requireWeekday: true,
   }));
   const satN = addDays(weekStart(T, 1), 5); // Saturday of next week
   out.push(q('W12', 'week-window', ['resolve', 'use', 'speak'], `How many weekend visits next week?`, {
@@ -318,7 +318,7 @@ export function buildCorpus(f) {
   }));
   out.push(q('W13', 'week-window', ['resolve', 'use', 'speak'], `Do we have more visits this week or next week?`, {
     dates: [weekStart(T), weekEnd(T, 1)], window: null,
-    answer: { kind: 'text', value: `${rangeCount(weekStart(T), weekEnd(T))} this week vs ${rangeCount(weekStart(T, 1), weekEnd(T, 1))} next week` }, requireWeekday: false,
+    answer: { kind: 'pair-count', counts: [rangeCount(weekStart(T), weekEnd(T)), rangeCount(weekStart(T, 1), weekEnd(T, 1))], value: `${rangeCount(weekStart(T), weekEnd(T))} this week vs ${rangeCount(weekStart(T, 1), weekEnd(T, 1))} next week` }, requireWeekday: false,
   }));
   const a1 = weekStart(T, 1), a3 = addDays(a1, 2);
   out.push(q('W14', 'week-window', ['resolve', 'use', 'speak'], `How many visits between ${humanDate(a1)} and ${humanDate(a3)}, inclusive?`, {
@@ -405,14 +405,14 @@ export function buildCorpus(f) {
   const f1 = comingOcc(T, 'friday'), f2 = addDays(f1, 7);
   out.push(q('T08', 'trap', ['resolve', 'use', 'speak'], `Which Friday is busier, this one or next?`, {
     dates: [f1, f2], window: null,
-    answer: { kind: 'text', value: `${f1}: ${count(f1)} vs ${f2}: ${count(f2)}${count(f1) === count(f2) ? ' (tie)' : ''}` }, requireWeekday: true,
+    answer: { kind: 'pair-count', counts: [count(f1), count(f2)], value: `${f1}: ${count(f1)} vs ${f2}: ${count(f2)}${count(f1) === count(f2) ? ' (tie)' : ''}` }, requireWeekday: true,
   }));
   out.push(q('T09', 'trap', ['resolve', 'speak'], `How many days is it from this Friday to the following Wednesday?`, {
     dates: [f1, comingOcc(addDays(f1, 1), 'wednesday')], window: null,
     answer: { kind: 'count', value: daysBetween(f1, comingOcc(addDays(f1, 1), 'wednesday')) }, requireWeekday: false,
   }));
   out.push(q('T10', 'trap', ['resolve', 'speak'], `Sanity check: today is the ${at(T).getUTCDate()}th, right?`, {
-    dates: [T], window: null, answer: { kind: 'text', value: `yes — ${titleWeekday(T)} ${T}` }, requireWeekday: true,
+    dates: [T], window: null, answer: { kind: 'confirm', value: `yes — ${titleWeekday(T)} ${T}` }, requireWeekday: true,
   }));
 
   // ── PERIODS: month / quarter / year, and aggregation over them ─────────
@@ -452,7 +452,7 @@ export function buildCorpus(f) {
   });
   periodQ('M06', `Compare this month with last month — which is busier?`, {
     dates: [monthStart(T), lastMonth.from], window: null,
-    answer: { kind: 'text', value: `${monthLabel(monthStart(T))} ${rangeCount(monthStart(T), monthEnd(T))} vs ${monthLabel(lastMonth.from)} ${rangeCount(lastMonth.from, lastMonth.to)}` },
+    answer: { kind: 'period-compare', months: [monthLabel(monthStart(T)).split(' ')[0], monthLabel(lastMonth.from).split(' ')[0]], full: rangeCount(monthStart(T), monthEnd(T)), through: rangeCount(monthStart(T), T), otherCount: rangeCount(lastMonth.from, lastMonth.to), value: `${monthLabel(monthStart(T))} ${rangeCount(monthStart(T), monthEnd(T))} vs ${monthLabel(lastMonth.from)} ${rangeCount(lastMonth.from, lastMonth.to)}` },
     note: 'Two calendar buckets — both boundaries hand-made today.',
   });
   periodQ('M07', `How many visits so far this year?`, {
@@ -470,18 +470,35 @@ export function buildCorpus(f) {
   const monthTotals = Object.fromEntries(months.map((m) => [m, Object.entries(f.dayCounts).filter(([d]) => d.startsWith(m)).reduce((s, [, n]) => s + n, 0)]));
   periodQ('M09', `Break our visits down by month for the last 6 months.`, {
     dates: [], window: null,
-    answer: { kind: 'set', value: months.map((m) => `${m}: ${monthTotals[m]}`) },
+    answer: {
+      kind: 'month-breakdown',
+      priorMonths: months.filter((m) => m !== T.slice(0, 7)).map((m) => {
+        const word = monthLabel(`${m}-01`).split(' ')[0];
+        return { word, abbr: word.slice(0, 3), n: monthTotals[m] };
+      }),
+      current: { full: monthTotals[T.slice(0, 7)] ?? 0, through: rangeCount(monthStart(T), T) },
+      value: months.map((m) => `${m}: ${monthTotals[m]}`),
+    },
     note:
       `Records only span ${months[0]} to ${months[months.length - 1]}. The honest answer states that range rather than presenting empty months as real zeros. ` +
       'ADJUDICATION (2026-08-13): the current-month bucket has two correct readings — the full-month total (all booked visits) and the through-today total (backward-looking) — accept either as long as the reply says which it used.',
   });
   periodQ('M10', `What's our busiest month on record?`, {
     dates: [], window: null,
-    answer: { kind: 'text', value: Object.entries(monthTotals).sort((a, b) => b[1] - a[1]).map(([m, n]) => `${m} (${n})`)[0] ?? 'no data' },
+    answer: (() => {
+      const [busiest, n] = Object.entries(monthTotals).sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
+      return {
+        kind: 'month-label',
+        monthWord: busiest ? monthLabel(`${busiest}-01`).split(' ')[0] : 'none',
+        full: n,
+        through: busiest === T.slice(0, 7) ? rangeCount(monthStart(T), T) : n,
+        value: busiest ? `${busiest} (${n})` : 'no data',
+      };
+    })(),
     note: `Month totals: ${JSON.stringify(monthTotals)}`,
   });
   periodQ('M11', `How far back do our records go?`, {
-    dates: [], window: null, answer: { kind: 'text', value: `earliest visit ${Object.keys(f.dayCounts).sort()[0] ?? 'none'}` },
+    dates: [], window: null, answer: { kind: 'earliest', date: Object.keys(f.dayCounts).sort()[0] ?? 'none', value: `earliest visit ${Object.keys(f.dayCounts).sort()[0] ?? 'none'}` },
     periodBoundary: false,
     note: 'A range question, no arithmetic — catches a model that invents history it does not have.',
   });

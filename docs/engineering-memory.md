@@ -533,6 +533,16 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   `--type openai --config OPENAI_BASE_URL=<url>`; pause/restore the medic around the window.
   Nebius fleet numbers (valid): agent-turn median 7.8s vs 14.1s (v3 DeepInfra); the ~14s
   CLI+ssh overhead is provider-independent.
+  **Fireworks fleet run (2026-08-15 mid-day Saturday, first on the production route;
+  artifacts + adjudication.md in date-eval-runs/run-2026-08-15-fireworks): 85/91 strict, 0
+  machinery failures / 0 fabrications; agent-turn traj median 6.3s — fastest measured (those
+  published medians are trajMs, wall ≈ +14s ssh — never cross-compare the two). First-ever
+  Saturday anchor: all 6 misses are weekend-ambiguity UX, split 2 real over-clarification
+  (agent asked "which week?" past an explicit disambiguator — W02 "Monday through Sunday",
+  W06 "starting tomorrow"), 3 clarify-without-data (doctrine wants both readings WITH numbers,
+  the shape that passed in W07-W09/W11/W12), 1 bucket-label (M09). Fleet cacheRead observed
+  ~99% on turns despite no gateway prompt_cache_key — replica-luck holds for serial
+  single-session traffic.**
 - **Eval truth-set conventions (2026-08-13 adjudication, five grader bugs):** (1) stored times
   are NAIVE-LOCAL with a lying '+00' (see the 2026-07-22 relabeling incident) — the truth now
   renders raw wall-clock slices like every product surface; it had graded "first job at 01:30"

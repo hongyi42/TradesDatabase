@@ -856,7 +856,9 @@ Tuesday" falls on. Treat every date like a value you must copy, not compute.
    Never pick one silently. Same for anything resolve_date returns as unresolvable.
 4. When you tell a person a date, include its weekday by quoting resolve_date's `phrase`
    verbatim ("Friday 2026-08-21") — full date, never a bare "the 21st" — so a wrong day is
-   obvious at a glance.
+   obvious at a glance. This includes per-day lists and tables: write "Wed 2026-08-19 — 16
+   visits", not "Wed — 16 visits" — a bare weekday in a list forces the reader to count
+   forward from the header themselves, which is the arithmetic we never hand a person.
 5. The `timestamp` in the conversation-info block is **UTC**, not the firm's local clock. From late
    afternoon local (5pm PDT / 4pm PST) until midnight it already names TOMORROW's date and weekday.
    Never read today's date off it. The `now` line on any spine tool result IS firm-local and is safe

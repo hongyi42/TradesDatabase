@@ -251,14 +251,20 @@ for (const item of remaining) {
   //    ever chase it.
   // The trajectory carries exactly the assistant's text and nothing else.
   const trajReply = traj.trim() ? replyFromTrajectory(traj) : null;
-  const reply = trajReply ?? stdoutReply;
+  // NEVER grade stdout. The fallback existed for salvage, but v5 (2026-08-15,
+  // provider suspension mid-run) proved its failure mode: 14 dead turns were
+  // graded against the CLI's config-warning chrome — noise that can even
+  // contain a passing number by luck. A turn with no assistant text in its
+  // trajectory produced NO reply; record that honestly (empty reply = the
+  // grader fails it loudly) and keep stdout in stdoutReply for diagnosis only.
+  const reply = trajReply ?? '';
   const guardLive = DELIVER ? guardLogSince(cid, guardBefore) : null;
 
   appendFileSync(RESULTS, JSON.stringify({
     id: item.id, cat: item.cat, phases: item.phases, q: item.q,
     reply, wallMs, exit: r.status, sessionId: sid,
     agentsMdTruncated: truncated, hasTrajectory: !!traj.trim(),
-    replySource: trajReply ? 'trajectory' : 'stdout', stdoutReply,
+    replySource: trajReply ? 'trajectory' : 'dead-turn', stdoutReply,
     ...(DELIVER ? { delivered: true, replyTo: REPLY_TO, guardLive } : {}),
     at: new Date().toISOString(),
   }) + '\n');
@@ -271,7 +277,7 @@ for (const item of remaining) {
     : '';
   console.log(`  ${item.id.padEnd(5)} ${String(wallMs).padStart(6)}ms  ${reply.slice(0, 60).replaceAll('\n', ' ')}${guardNote}`);
   if (!trajReply) {
-    console.error(`    ! ${item.id}: no assistant text in the trajectory — fell back to STDOUT, which carries the CLI's chrome. Check ${sid}.`);
+    console.error(`    ! ${item.id}: DEAD TURN — no assistant text in the trajectory. Recorded as an empty reply (grades as a fail); stdout kept in stdoutReply for diagnosis. Check ${sid}.`);
   }
 
   // ── failover watch: stop the moment the route moves ──

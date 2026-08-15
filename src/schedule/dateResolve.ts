@@ -173,6 +173,10 @@ export type ResolveDateResult =
       date: string;
       weekday: Weekday;
       phrase: string; // "Tuesday 2026-08-04" — say this, don't build it
+      // Weekend "X of next week" steering (see the weekday branch): present
+      // only when the resolved date is probably not the reading the speaker
+      // meant. The note carries both candidate phrases ready to quote.
+      note?: string;
     }
   | {
       status: 'resolved_week';
@@ -354,16 +358,29 @@ export function resolveDate(p: ResolveDateParams): ResolveDateResult {
     const daysSinceMonday = (todayDow + 6) % 7; // Mon=0 … Sun=6
     const weekStart = addDays(p.todayLocal, -daysSinceMonday + p.week * 7);
     const weekEnd = addDays(weekStart, 6);
-    if (todayDow === 6 || todayDow === 0) {
+    // Weekend ambiguity applies to FORWARD weeks only. "This week" and "last
+    // week" said on a Saturday mean the containing/previous calendar week to
+    // essentially everyone — the 2026-08-15 eval showed the old always-flag
+    // caused the agent to answer "this week, Monday through Sunday" with a
+    // clarifying question and no data (W02/W06/P20). The 2026-07-25 live bite
+    // that created this flag was a "next week", and that is where it stays.
+    if ((todayDow === 6 || todayDow === 0) && p.week >= 1) {
       const altStart = addDays(weekStart, 7);
       return {
         status: 'resolved_week',
         ...weekRange(weekStart, weekEnd),
         boundaryAmbiguous: true,
         alternate: weekRange(altStart, addDays(altStart, 6)),
+        // Steering, not trivia: the 2026-08-15 eval proved the old wording
+        // ("present both and ask before acting") reads as "reply with only a
+        // clarifying question" — half the weekend replies delivered zero data.
         note:
-          'On a weekend, "this/next week" is ambiguous. Present BOTH ranges (using each ' +
-          'phrase verbatim) and ask which the person means before acting.',
+          'On a weekend, "next week" is ambiguous — it can mean either range. For a READ-ONLY answer ' +
+          '(counts, listings, dates) answer BOTH ranges, labeling each with its phrase ' +
+          'verbatim — never reply with only a clarifying question. Ask which range the ' +
+          'person means BEFORE you book, move, or change anything. If their own words ' +
+          'already pin the window (explicit dates, "starting tomorrow"), use exactly ' +
+          'that window and skip the ambiguity.',
       };
     }
     return { status: 'resolved_week', ...weekRange(weekStart, weekEnd) };
@@ -385,6 +402,35 @@ export function resolveDate(p: ResolveDateParams): ResolveDateResult {
     // named day. That matches what "last Friday" means in speech, including
     // said on a Friday.
     const date = addDays(p.todayLocal, daysUntil + weeksAhead * 7);
+    // Weekend + weeksAhead>=1: "Friday of next week" said on a Saturday almost
+    // always means the Friday INSIDE the coming Mon–Sun week — which is
+    // weeksAhead 0's result, not 1's (2026-08-15 eval, P15: the agent led with
+    // the week-after date and was read as wrong). The primary reading is the
+    // occurrence inside the coming calendar week; when the resolved date isn't
+    // that one, say so with both phrases ready to quote. (For weekdays whose
+    // coming occurrence already falls in the next calendar week — e.g. asking
+    // about Sunday on a Saturday — weeksAhead 1 IS that reading and no note is
+    // needed.)
+    if ((todayDow === 6 || todayDow === 0) && weeksAhead >= 1) {
+      const daysSinceMonday = (todayDow + 6) % 7;
+      const nextWeekStart = addDays(p.todayLocal, -daysSinceMonday + 7);
+      const inComingWeek = addDays(nextWeekStart, (WEEKDAY_INDEX[p.weekday] + 6) % 7);
+      if (date !== inComingWeek) {
+        return {
+          status: 'resolved',
+          date,
+          weekday: p.weekday,
+          phrase: dayPhrase(date, p.weekday),
+          note:
+            `Said on a weekend, "${p.weekday} of next week" usually means ` +
+            `${dayPhrase(inComingWeek, p.weekday)} — the ${p.weekday} inside the coming ` +
+            `Mon–Sun week — not ${dayPhrase(date, p.weekday)}. For a read-only answer, ` +
+            `name ${dayPhrase(inComingWeek, p.weekday)} first and offer ` +
+            `${dayPhrase(date, p.weekday)} as the alternate; ask which they mean before ` +
+            `booking or moving anything.`,
+        };
+      }
+    }
     return resolvedDay(date, p.weekday);
   }
 

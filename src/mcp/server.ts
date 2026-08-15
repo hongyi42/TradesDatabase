@@ -312,12 +312,15 @@ const TOOLS = [
       'actual date. You get back {date, weekday, phrase, today, timezone}; USE the returned date. ' +
       'If it comes back unresolvable, ask the person which exact date they mean — never guess. ' +
       'NOTE: "next <weekday>" is genuinely ambiguous (this coming one vs the following week\'s) — ' +
-      'resolve BOTH weeksAhead 0 and 1 and ask the person which date they mean; do not assume. ' +
+      'resolve BOTH weeksAhead 0 and 1; for a read-only answer name the coming one first and ' +
+      'offer the other, and ask which they mean before booking or moving anything. ' +
       'For week RANGES ("this week", "next week", "last week") pass week alone (0 = this week, ' +
       '1 = next, -1 = last) — you get back ' +
-      '{weekStart, weekEnd, weekStartWeekday, weekEndWeekday, phrase}; on weekends the result is ' +
-      'flagged ambiguous with an alternate range (which carries its own phrase) — relay both and ' +
-      'ask, never pick. For CALENDAR PERIODS pass exactly one of month ("this month" = 0, ' +
+      '{weekStart, weekEnd, weekStartWeekday, weekEndWeekday, phrase}; on weekends "next week" ' +
+      'comes back flagged ambiguous with an alternate range (which carries its own phrase) — for ' +
+      'a read-only answer, answer BOTH ranges with their data, never with only a clarifying ' +
+      'question; ask which range they mean before you act on either. ' +
+      'For CALENDAR PERIODS pass exactly one of month ("this month" = 0, ' +
       '"last month" = -1), quarter ("this quarter" = 0, "last quarter" = -1), or year ' +
       '("this year" = 0, "last year" = -1) — you get back {periodStart, periodEnd, ' +
       'periodStartWeekday, periodEndWeekday, label, phrase}; use periodStart/periodEnd as your ' +

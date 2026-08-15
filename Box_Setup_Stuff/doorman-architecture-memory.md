@@ -123,18 +123,25 @@ directly) and any "Render ALLOWED_CLIENT_IPS / IP allowlist" reasoning. If you s
 - Note: OpenClaw's streamable-http MCP loader does NOT itself resolve placeholders (its `resolveEnvPlaceholder`
   with format `Bearer ${VAR}` only covers the codex/gemini path). The egress proxy is what resolves it.
 
-## The agent model: GLM-5.2 — production route is DeepInfra (`deepinfra-prod / zai-org/GLM-5.2`)
-**Current production route (since 2026-07-06, re-asserted 2026-07-08): `deepinfra-prod /
-zai-org/GLM-5.2`** — DeepInfra is metered (200 concurrent/model) where NVIDIA's free tier
-rate-limits busy agents (`ResourceExhausted: Worker local total request limit reached (N/32)`).
-Flip: `openshell inference set -g nemoclaw --provider deepinfra-prod --model zai-org/GLM-5.2`
-(gateway-level → all sandboxes; the route forces the model per request). **`nvidia-prod` is
-rollback-only** and is ALSO the wizard default `onboard`/`rebuild` fall back to — that drift
-rate-limited Judy's s3 on 2026-07-08. Guard: `nemoclaw-inference-medic.timer` re-asserts the
-DeepInfra route on boot + every 5 min (units in this repo). Check with `openshell inference get`.
+## The agent model: GLM-5.2 — production route is Fireworks Fast (`fireworks-prod / accounts/fireworks/routers/glm-5p2-fast`)
+**Current production route (since 2026-08-15): `fireworks-prod /
+accounts/fireworks/routers/glm-5p2-fast`** — Fireworks' fast router serves the same GLM-5.2
+weights ~2.4x faster wall-clock (provider trial:
+`thoughts/shared/research/2026-08-14-glm-5.2-inference-provider-options.md`). Created as
+`--type openai` + `OPENAI_BASE_URL=https://api.fireworks.ai/inference/v1` (cluster inference
+accepts no custom provider types). Flip: `openshell inference set -g nemoclaw --provider
+fireworks-prod --model accounts/fireworks/routers/glm-5p2-fast` (gateway-level → all sandboxes;
+the route forces the model per request). **`deepinfra-prod / zai-org/GLM-5.2` is the manual
+rollback** (metered, 200 concurrent/model; production route 2026-07-06 → 2026-08-15);
+`nvidia-prod` lingers unused BUT is ALSO the wizard default `onboard`/`rebuild` fall back to —
+that drift rate-limited Judy's s3 on 2026-07-08. Guard: `nemoclaw-inference-medic.timer`
+re-asserts the Fireworks route on boot + every 5 min (units in this repo). Check with
+`openshell inference get`. Note the gateway strips/limits what goes upstream and CANNOT inject
+body params — no `prompt_cache_key` fleet-side, so Fireworks billed-cache hits are replica-luck
+there (the spine on Render sends its own key via `INFERENCE_CACHE_KEY`).
 
 **THERE IS NO FALLBACK, BY DESIGN (v5, 2026-08-12, user decision).** The medic asserts the
-DeepInfra route and reports honestly whether it is serving. It does **not** reroute traffic.
+production route and reports honestly whether it is serving. It does **not** reroute traffic.
 How the trap got built, because it was never a decision: nvidia-prod was the ORIGINAL provider
 (2026-07-02); the 07-06 DeepInfra swap kept it as a **manual rollback**; medic v2 (07-11) wired
 that manual rollback up as an **automatic failover target**, and nobody verified it still served

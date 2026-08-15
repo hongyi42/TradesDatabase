@@ -173,8 +173,9 @@ nemoclaw onboard — answers (guide §4):
                         confirm the exact id first (from the HOST): curl -s https://integrate.api.nvidia.com/v1/models
   AFTER onboard (REQUIRED): flip to the metered production route — NVIDIA's free tier rate-limits
                         ("Worker local total request limit reached"):
-                          openshell inference set -g nemoclaw --provider deepinfra-prod --model zai-org/GLM-5.2
-                        (self-healed on boot + every 15 min by nemoclaw-inference-medic.timer; verify: openshell inference get)
+                          openshell inference set -g nemoclaw --provider fireworks-prod --model accounts/fireworks/routers/glm-5p2-fast
+                        (rollback = deepinfra-prod / zai-org/GLM-5.2; self-healed on boot + every 5 min by
+                        nemoclaw-inference-medic.timer; verify: openshell inference get)
   sandbox name          <AGENT>  (e.g. s1)
   apply config          Y
   Brave search          N
@@ -281,9 +282,9 @@ phase_provision() {
   [ "$found" = 1 ] || fail "no getUpdates polling within 180s — check docker logs $cid"
   ok "bridge polling"
 
-  log "route flip: onboard resets the gateway to NVIDIA free tier — re-assert DeepInfra (§4 note; medic also heals within 15 min)"
-  run_osh inference set -g nemoclaw --provider deepinfra-prod --model zai-org/GLM-5.2 \
-    && ok "deepinfra-prod / zai-org/GLM-5.2" \
+  log "route flip: onboard resets the gateway to NVIDIA free tier — re-assert Fireworks (§4 note; medic also heals within 5 min)"
+  run_osh inference set -g nemoclaw --provider fireworks-prod --model accounts/fireworks/routers/glm-5p2-fast \
+    && ok "fireworks-prod / accounts/fireworks/routers/glm-5p2-fast" \
     || echo "    ! route flip failed — nemoclaw-inference-medic will self-heal, or run it by hand"
 
   cat <<EOF

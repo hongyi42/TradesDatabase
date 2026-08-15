@@ -504,19 +504,27 @@ curl \-s \-o /dev/null \-w 'HTTP %{http\_code} in %{time\_total}s\\n' \\
 
 nemoclaw onboard      \# if port 8080 is blocked: sudo kill \<PID\>; sudo lsof \-i :8080; re-run
 
-> **Provider update 2026-07-06 — inference now routes to DeepInfra.** NVIDIA's free tier
-> rate-limited live conversations (40 req/min), so the gateway inference route was flipped to
-> metered DeepInfra: `openshell provider create -g nemoclaw --name deepinfra-prod --type
-> deepinfra --credential DEEPINFRA_API_KEY=…` then `openshell inference set -g nemoclaw
-> --provider deepinfra-prod --model zai-org/GLM-5.2` (NOTE the DeepInfra id spelling; NVIDIA's
-> was `z-ai/glm-5.2`). The route FORCES the model id per request, so sandbox configs need no
-> change — the sandbox banner still displaying "NVIDIA Endpoints" is cosmetic. `nvidia-prod`
-> stays configured as instant rollback (`openshell inference set … --provider nvidia-prod
-> --model z-ai/glm-5.2`). Gateway-level custom providers (e.g. OpenRouter) are NOT possible:
-> cluster inference accepts only openai/anthropic/nvidia/deepinfra/google-vertex-ai/aws-bedrock.
-> DeepInfra limit: 200 CONCURRENT requests per model (not per-minute); raiseable by contacting
-> them. The onboarding prompts below still describe the original NVIDIA setup — fine for a
-> fresh box; flip to DeepInfra afterwards with the two commands above.
+> **Provider update 2026-08-15 — inference now routes to Fireworks Fast.** The route was
+> flipped from DeepInfra to Fireworks' GLM-5.2 fast router (same weights, ~2.4x faster wall
+> clock; full trial in `thoughts/shared/research/2026-08-14-glm-5.2-inference-provider-options.md`):
+> `openshell provider create -g nemoclaw --name fireworks-prod --type openai --config
+> OPENAI_BASE_URL=https://api.fireworks.ai/inference/v1 --credential OPENAI_API_KEY` (bare
+> credential key = env lookup, keeps the key out of argv) then `openshell inference set -g
+> nemoclaw --provider fireworks-prod --model accounts/fireworks/routers/glm-5p2-fast` (NOTE the
+> Fireworks id spelling; DeepInfra's is `zai-org/GLM-5.2`, NVIDIA's `z-ai/glm-5.2` — every
+> provider spells the same model differently and exact-string gates have bitten twice). The
+> route FORCES the model id per request, so sandbox configs need no change — the sandbox banner
+> still displaying "NVIDIA Endpoints" is cosmetic. **`deepinfra-prod` stays fully configured as
+> the instant rollback** (`openshell inference set … --provider deepinfra-prod --model
+> zai-org/GLM-5.2`); `nvidia-prod` lingers unused. Gateway-level custom providers are NOT
+> possible: cluster inference accepts only
+> openai/anthropic/nvidia/deepinfra/google-vertex-ai/aws-bedrock — third-party OpenAI-compatible
+> hosts go through `--type openai` + `OPENAI_BASE_URL` as above. The gateway CANNOT inject body
+> params (`prompt_cache_key`), so fleet-side Fireworks caching is replica-luck; the spine sends
+> the key itself (`INFERENCE_CACHE_KEY` on Render). Provider update history 2026-07-06: NVIDIA
+> free tier → metered DeepInfra (free tier rate-limited live conversations at 40 req/min).
+> The onboarding prompts below still describe the original NVIDIA setup — fine for a fresh box;
+> flip to Fireworks afterwards with the two commands above.
 >
 > **⚠ REQUIRED after EVERY onboard/rebuild — and now enforced automatically.** `nemoclaw onboard`
 > and rebuilds reset the gateway route to the wizard's NVIDIA default (`nvidia-prod /
@@ -524,9 +532,10 @@ nemoclaw onboard      \# if port 8080 is blocked: sudo kill \<PID\>; sudo lsof \
 > cap (32) rate-limits any busy agent with `ResourceExhausted: Worker local total request limit
 > reached (N/32)`. This actually bit Judy's s3 on 2026-07-08 (re-onboard landed on the NVIDIA
 > default; the flip was skipped). Guard: `nemoclaw-inference-medic.{sh,service,timer}` (installed on
-> trades-box-1, copies in this repo) re-asserts `deepinfra-prod / zai-org/GLM-5.2` on boot + every
-> 5 min, so drift self-heals — but still run the flip by hand right after an onboard so you're not
-> waiting on the timer. Check the live route any time with `openshell inference get`.
+> trades-box-1, copies in this repo) re-asserts `fireworks-prod /
+> accounts/fireworks/routers/glm-5p2-fast` on boot + every 5 min, so drift self-heals — but still
+> run the flip by hand right after an onboard so you're not waiting on the timer. Check the live
+> route any time with `openshell inference get`.
 >
 > The medic only calls the provider healthy if a **real tool call** comes back (v4, 2026-08-12),
 > and it has **no fallback by design** (v5) — it asserts the route and reports, it does not

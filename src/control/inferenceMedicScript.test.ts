@@ -20,6 +20,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 //    anyone verifying it still served. An unverified fallback is worse than
 //    none — it fails exactly when depended on, and reports success doing it.
 //
+// 2026-08-15: the primary flipped to fireworks-prod (GLM-5.2 fast router);
+// deepinfra-prod is now the lingering MANUAL rollback, exactly the position
+// nvidia-prod held in July — so the no-fallback test below bans it from the
+// medic's output the same way.
+//
 //   registration ok + completion ok       -> serving (exit 0)
 //   registration ok + completion FAIL     -> exit 1 LOUD, route HELD on primary
 //   registration FAIL                     -> exit 1 LOUD
@@ -65,6 +70,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 case "$provider" in
+  fireworks-prod) ok="\${REG_FIREWORKS:-1}" ;;
   deepinfra-prod) ok="\${REG_DEEPINFRA:-1}" ;;
   nvidia-prod)    ok="\${REG_NVIDIA:-1}" ;;
   *) ok=1 ;;
@@ -102,6 +108,7 @@ case "$args" in
 esac
 current="$(cat "\${MEDIC_TEST_STATE}" 2>/dev/null)"
 case "$current" in
+  fireworks-prod) healthy="\${COMPLETION_FIREWORKS:-1}" ;;
   deepinfra-prod) healthy="\${COMPLETION_DEEPINFRA:-1}" ;;
   nvidia-prod)    healthy="\${COMPLETION_NVIDIA:-1}" ;;
   *) healthy=0 ;;
@@ -185,23 +192,23 @@ exit 0
   it('healthy primary: registration + completion both pass -> verified, exit 0', async () => {
     const r = await run({});
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain('route OK on deepinfra-prod');
+    expect(r.stdout).toContain('route OK on fireworks-prod');
     expect(r.stdout).toContain('serving verified');
-    expect(await activeRoute()).toBe('deepinfra-prod');
+    expect(await activeRoute()).toBe('fireworks-prod');
   });
 
   it('THE 07-28 STALL: registers but completions fail -> exit 1 LOUD (v2 said "route OK")', async () => {
-    const r = await run({ COMPLETION_DEEPINFRA: '0' });
+    const r = await run({ COMPLETION_FIREWORKS: '0' });
     expect(r.code).toBe(1);
     expect(r.stderr).toContain('failed the tool-call completion probe TWICE');
     expect(r.stderr).toContain('IS NOT SERVING');
     expect(r.stderr).toContain('AGENTS ARE DOWN');
     // The route is HELD, not moved — a recovery is then picked up immediately.
-    expect(await activeRoute()).toBe('deepinfra-prod');
+    expect(await activeRoute()).toBe('fireworks-prod');
   });
 
   it('402/outage class: registration itself fails -> exit 1 LOUD', async () => {
-    const r = await run({ REG_DEEPINFRA: '0' });
+    const r = await run({ REG_FIREWORKS: '0' });
     expect(r.code).toBe(1);
     expect(r.stderr).toContain('failed REGISTRATION');
     expect(r.stderr).toContain('AGENTS ARE DOWN');
@@ -213,22 +220,25 @@ exit 0
   // changes this test — never something that quietly reappears.
   it('NEVER routes anywhere but the primary, whatever fails', async () => {
     const cases: Record<string, string>[] = [
-      { COMPLETION_DEEPINFRA: '0' },
-      { COMPLETION_DEEPINFRA: 'prose' },
-      { COMPLETION_DEEPINFRA: 'truncated' },
+      { COMPLETION_FIREWORKS: '0' },
+      { COMPLETION_FIREWORKS: 'prose' },
+      { COMPLETION_FIREWORKS: 'truncated' },
       {}, // healthy
     ];
     for (const env of cases) {
       await run(env);
-      expect(await activeRoute()).toBe('deepinfra-prod');
+      expect(await activeRoute()).toBe('fireworks-prod');
     }
   });
 
   it('never claims a failover happened, and never mentions a fallback provider', async () => {
-    const r = await run({ COMPLETION_DEEPINFRA: '0' });
+    const r = await run({ COMPLETION_FIREWORKS: '0' });
     expect(r.stderr).not.toContain('FAILOVER');
     expect(r.stderr).not.toContain('COMPLETION-VERIFIED');
+    // Both lingering rollback providers: nvidia (July's trap) and now deepinfra
+    // (the 08-15 swap's manual rollback). Neither may appear in medic output.
     expect(`${r.stdout}${r.stderr}`).not.toContain('nvidia');
+    expect(`${r.stdout}${r.stderr}`).not.toContain('deepinfra');
   });
 
   // ── v4: the probe has to look like a TURN ──────────────────────────────────
@@ -238,7 +248,7 @@ exit 0
   // (six events on 2026-08-12). These pin the stronger gate.
 
   it('THE v3 BLIND SPOT: returns prose and never emits a tool call -> NOT serving', async () => {
-    const r = await run({ COMPLETION_DEEPINFRA: 'prose' });
+    const r = await run({ COMPLETION_FIREWORKS: 'prose' });
     expect(r.code).toBe(1);
     // v3's gate ("choices" present) would have called this healthy and green.
     expect(r.stdout).not.toContain('serving verified');
@@ -247,19 +257,19 @@ exit 0
   });
 
   it('stream dies mid-flight (tool call started, no [DONE]) -> NOT serving', async () => {
-    const r = await run({ COMPLETION_DEEPINFRA: 'truncated' });
+    const r = await run({ COMPLETION_FIREWORKS: 'truncated' });
     expect(r.code).toBe(1);
     expect(r.stdout).not.toContain('serving verified');
     expect(r.stderr).toContain('IS NOT SERVING');
   });
 
   it('ONE slow probe does not raise a false alarm: miss then pass -> healthy', async () => {
-    const r = await run({ COMPLETION_DEEPINFRA: 'flaky' });
+    const r = await run({ COMPLETION_FIREWORKS: 'flaky' });
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('passed the completion probe on retry');
     expect(r.stdout).toContain('serving verified');
     expect(r.stderr).not.toContain('AGENTS ARE DOWN');
-    expect(await activeRoute()).toBe('deepinfra-prod');
+    expect(await activeRoute()).toBe('fireworks-prod');
   });
 
   it('no sandbox container: degrades to v2 semantics (registration only), exit 0 with a WARN', async () => {
@@ -267,6 +277,6 @@ exit 0
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('REGISTRATION ONLY');
     expect(r.stderr).toContain('completion gate SKIPPED');
-    expect(await activeRoute()).toBe('deepinfra-prod');
+    expect(await activeRoute()).toBe('fireworks-prod');
   });
 });

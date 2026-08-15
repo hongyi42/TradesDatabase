@@ -275,3 +275,32 @@ describe('coerceBySchema', () => {
     expect(coerceBySchema({ answer: 'Unknown.' }, answerSchema)).toEqual({ answer: 'Unknown.' });
   });
 });
+
+describe('ledgerVendor host mapping', () => {
+  // WHO BILLS US derives from the resolved base-URL host. An unmapped host
+  // returns itself so recordModelUsage complains loudly (the NVIDIA gap of
+  // 2026-08-06: vendor existed, SKUs did not, spend vanished silently).
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    saved.MODEL_PROVIDER = process.env.MODEL_PROVIDER;
+    saved.INFERENCE_BASE_URL = process.env.INFERENCE_BASE_URL;
+    delete process.env.MODEL_PROVIDER;
+  });
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  test.each([
+    ['https://api.deepinfra.com/v1/openai', 'deepinfra'],
+    ['https://integrate.api.nvidia.com/v1', 'nvidia'],
+    ['https://api.fireworks.ai/inference/v1', 'fireworks'],
+    ['https://api.tokenfactory.nebius.com/v1', 'api.tokenfactory.nebius.com'],
+  ])('%s → %s', async (baseUrl, vendor) => {
+    process.env.INFERENCE_BASE_URL = baseUrl;
+    const { ledgerVendor } = await import('./forcedTool.js');
+    expect(ledgerVendor()).toBe(vendor);
+  });
+});

@@ -218,6 +218,13 @@ describe('cost_rates versioning', () => {
       'deepinfra/glm-5.2-cached-input 1.8e-7/token',
       'deepinfra/glm-5.2-input 9.3e-7/token',
       'deepinfra/glm-5.2-output 0.000003/token',
+      // The 2026-08-15 switch target (migration 20260815120000): Fireworks'
+      // fast router. The cached-input rate is 1/10th of fresh — real money at
+      // our ~90%+ prefix-cache hit rate, and the reason INFERENCE_CACHE_KEY
+      // must ride every call.
+      'fireworks/glm-5.2-fast-cached-input 2.1e-7/token',
+      'fireworks/glm-5.2-fast-input 0.0000021/token',
+      'fireworks/glm-5.2-fast-output 0.0000066/token',
       // The NVIDIA failover, $0 by tier not by omission (migration
       // 20260806230000): the rows exist so failover traffic is attributed and
       // counted — "zero dollars with a token count" is data, absence is not.
@@ -434,6 +441,25 @@ describe('recordModelUsage', () => {
     expect(seen[0].map((r) => `${r.provider}/${r.sku}`)).toEqual([
       'nvidia/glm-5.2-input',
       'nvidia/glm-5.2-output',
+    ]);
+  });
+
+  test('bills the fireworks switch target under fast-tier SKUs, with the cached split', async () => {
+    // The 2026-08-15 provider switch. The cached split is the load-bearing
+    // part: at ~90%+ prefix-hit rates the cached line carries most input
+    // tokens at 1/10th the fresh rate — billing them as fresh would overstate
+    // the Fireworks line ~5x.
+    const { seen, append } = capture();
+    await recordModelUsage(
+      'fireworks',
+      { inputTokens: 100, outputTokens: 7, cachedInputTokens: 90 },
+      { tenantId: tenantA },
+      { append },
+    );
+    expect(seen[0].map((r) => `${r.provider}/${r.sku}:${r.quantity}`)).toEqual([
+      'fireworks/glm-5.2-fast-input:10',
+      'fireworks/glm-5.2-fast-cached-input:90',
+      'fireworks/glm-5.2-fast-output:7',
     ]);
   });
 
@@ -701,7 +727,17 @@ describe('rollupCosts', () => {
     }
     await rollupCosts(JULY);
     const rows = (await readRollup(JULY)).filter((r) => r.provider === `${P}-render`);
-    const { rows: [{ n }] } = await pg.query('select count(*)::int n from tenants');
+    // Same served-tenant population the allocator uses (see the sibling test
+    // above) — an unfiltered count(*) sweeps in abandoned eval-world tenants,
+    // which accumulate on a long-lived local stack (world rebuilds recreate
+    // active technicians only for the NEWEST world) and made this assertion
+    // stack-age-dependent.
+    const { rows: [{ n }] } = await pg.query(`select case when q.n > 0 then q.n else (select count(*) from tenants) end::int n
+      from (select count(*) n from tenants t
+             where exists (select 1 from technicians x where x.tenant_id = t.id and x.state = 'active')
+                or exists (select 1 from cost_events e where e.tenant_id = t.id
+                             and (e.occurred_at at time zone 'utc')::date >= $1
+                             and (e.occurred_at at time zone 'utc')::date < ($1::date + interval '1 month')::date)) q`, [JULY]);
     expect(rows.reduce((s, r) => s + Number(r.cost_usd), 0)).toBeCloseTo(40, 6);
     expect(rows).toHaveLength(n);
   });

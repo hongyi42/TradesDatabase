@@ -76,6 +76,7 @@ export function ledgerVendor(): string {
   }
   if (host.endsWith('deepinfra.com')) return 'deepinfra';
   if (host.endsWith('nvidia.com')) return 'nvidia';
+  if (host.endsWith('fireworks.ai')) return 'fireworks';
   return host;
 }
 
@@ -246,6 +247,16 @@ async function callOpenAiCompatible(
       max_tokens: req.maxTokens,
       temperature: 0,
       ...(req.reasoningEffort ? { reasoning_effort: req.reasoningEffort } : {}),
+      // Cache-affinity key (set INFERENCE_CACHE_KEY to enable). Fireworks
+      // caches per replica: without a stable key, prefix-cache hits — and the
+      // $0.21/M cached-input billing — are routing luck (probed 2026-08-15:
+      // byte-identical repeats missed keyless; 21,014/21,017 tokens cached
+      // with a key). Sent as BOTH prompt_cache_key and user, matching what the
+      // provider's routing reads. DeepInfra ignores both (verified in the GLM
+      // cache-key trial) — leaving the var set is safe across a rollback.
+      ...(process.env.INFERENCE_CACHE_KEY
+        ? { prompt_cache_key: process.env.INFERENCE_CACHE_KEY, user: process.env.INFERENCE_CACHE_KEY }
+        : {}),
       // No top-level `system` in this format — it is the first message.
       messages: [
         { role: 'system', content: req.system },

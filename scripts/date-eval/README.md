@@ -76,7 +76,7 @@ when the machinery is wrong.
 
 - **Confirmation gate** — `run` exits without `--yes` after printing the cost.
 - **Model check** — refuses to start unless the fleet is on the expected model
-  (default `z-ai/glm-5.2`; override with `DATE_EVAL_EXPECT_MODEL`).
+  (default `accounts/fireworks/routers/glm-5p2-fast` since the 2026-08-15 provider switch; override with `DATE_EVAL_EXPECT_MODEL`).
 - **Failover abort** — the inference route is re-read after *every* question.
   If it moves, the run **stops immediately** and says so. Results already
   collected stay valid (they were all on one model); nothing after would be.

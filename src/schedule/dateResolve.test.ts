@@ -191,18 +191,60 @@ describe('resolveDate — week mode (calendar-anchored Mon–Sun ranges)', () =>
     expect(r.boundaryAmbiguous).toBe(true);
   });
 
-  test('Saturday "this week" is the mostly-past current week, ambiguous with the coming one', () => {
+  // Changed 2026-08-15: week 0 on a weekend is NOT flagged. "This week" said
+  // on a Saturday means the containing calendar week to essentially everyone
+  // (the eval corpus and common speech agree), and the always-flag caused the
+  // agent to answer "this week, Monday through Sunday" with a clarifying
+  // question and zero data (eval W02/W06/P20). Forward weeks keep the flag —
+  // the 2026-07-25 live bite was a "next week".
+  test('Saturday "this week" is the containing current week — NOT flagged ambiguous', () => {
     const r = resolvedWeek({ todayLocal: '2026-07-25', week: 0 });
     expect(r.weekStart).toBe('2026-07-20');
     expect(r.weekEnd).toBe('2026-07-26');
-    expect(r.boundaryAmbiguous).toBe(true);
-    expect(r.alternate).toEqual({
-      weekStart: '2026-07-27',
-      weekEnd: '2026-08-02',
-      weekStartWeekday: 'monday',
-      weekEndWeekday: 'sunday',
-      phrase: 'Monday 2026-07-27 through Sunday 2026-08-02',
-    });
+    expect(r.boundaryAmbiguous).toBeUndefined();
+    expect(r.alternate).toBeUndefined();
+  });
+
+  test('Saturday "last week" (week -1) is the previous calendar week — NOT flagged', () => {
+    const r = resolvedWeek({ todayLocal: '2026-07-25', week: -1 });
+    expect(r.weekStart).toBe('2026-07-13');
+    expect(r.weekEnd).toBe('2026-07-19');
+    expect(r.boundaryAmbiguous).toBeUndefined();
+  });
+
+  test('weekend "next week" note steers to answering both ranges with data, not clarify-only', () => {
+    const r = resolvedWeek({ todayLocal: '2026-07-25', week: 1 });
+    expect(r.note).toMatch(/answer BOTH ranges/i);
+    expect(r.note).toMatch(/never reply with only a clarifying question/i);
+    expect(r.note).toMatch(/before you book, move, or change/i);
+  });
+
+  // The P15 class (2026-08-15 eval): "Friday of next week" said on a Saturday.
+  // weeksAhead 1 resolves a week too far; the note names the coming-calendar-
+  // week reading first, with both phrases ready to quote.
+  test('weekend "weekday of next week": weeksAhead 1 past the coming-week reading carries a steering note', () => {
+    // 2026-07-25 = Saturday. Coming week = Jul 27–Aug 2; its Friday = Jul 31.
+    // weeksAhead 1 from the coming Friday (Jul 31) = Aug 7.
+    const r = resolveDate({ todayLocal: '2026-07-25', weekday: 'friday', weeksAhead: 1 });
+    if (r.status !== 'resolved') throw new Error(`expected resolved, got ${r.status}`);
+    expect(r.date).toBe('2026-08-07');
+    expect(r.note).toContain('Friday 2026-07-31');
+    expect(r.note).toMatch(/usually means/i);
+  });
+
+  test('weekend "sunday of next week": weeksAhead 1 IS the coming-week reading — no note', () => {
+    // From Sat 2026-07-25: coming Sunday = Jul 26 (this week); the Sunday of
+    // the coming Mon–Sun week = Aug 2 = weeksAhead 1. Already primary: silent.
+    const r = resolveDate({ todayLocal: '2026-07-25', weekday: 'sunday', weeksAhead: 1 });
+    if (r.status !== 'resolved') throw new Error(`expected resolved, got ${r.status}`);
+    expect(r.date).toBe('2026-08-02');
+    expect(r.note).toBeUndefined();
+  });
+
+  test('mid-week "weekday of next week" gets no weekend note', () => {
+    const r = resolveDate({ todayLocal: '2026-07-22', weekday: 'friday', weeksAhead: 1 });
+    if (r.status !== 'resolved') throw new Error(`expected resolved, got ${r.status}`);
+    expect(r.note).toBeUndefined();
   });
 
   test('weekEnd is always weekStart+6 and a Sunday, across a year boundary too', () => {

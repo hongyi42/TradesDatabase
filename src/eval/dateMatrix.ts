@@ -102,22 +102,27 @@ function casesFor(today: string): DateCase[] {
     push('weekday', `${wd}-bare`, `${wd}`, { weekday: wd }, day(comingWeekday(today, wd)));
   }
 
-  // ── week: CALENDAR-anchored Mon–Sun, ambiguous on weekends ──
+  // ── week: CALENDAR-anchored Mon–Sun, forward weeks ambiguous on weekends ──
   // A Saturday's "next week" starts in two days by calendar anchoring but a week
   // later by occurrence anchoring; that divergence lost a real Monday visit on
-  // 2026-07-25, so both readings must come back flagged.
+  // 2026-07-25, so both readings must come back flagged. FORWARD weeks only
+  // (2026-08-15): "this week"/"last week" said on a Saturday mean the
+  // containing/previous calendar week to essentially everyone, and flagging
+  // them made the agent answer pinned-window questions with a clarifying
+  // question and zero data (date-eval W02/W06/P20).
   for (const [w, phrase] of [
     [0, 'this week'],
     [1, 'next week'],
     [-1, 'last week'],
   ] as const) {
     const r = weekRange(today, w);
+    const flagged = isWeekend(today) && w >= 1;
     push('week', `week${w}`, phrase, { week: w }, {
       kind: 'week',
       start: r.start,
       end: r.end,
-      ambiguous: isWeekend(today),
-      ...(isWeekend(today) ? { altStart: addDays(r.start, 7) } : {}),
+      ambiguous: flagged,
+      ...(flagged ? { altStart: addDays(r.start, 7) } : {}),
     });
   }
 

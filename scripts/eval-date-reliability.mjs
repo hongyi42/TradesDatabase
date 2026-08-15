@@ -13,11 +13,11 @@
 // JS Date here), so condition C is a real cross-check, not a tautology.
 //
 // Providers: OpenAI-compatible (the live bot: NVIDIA integrate / DeepInfra,
-// model z-ai/glm-5.2) or Anthropic. Select with EVAL_PROVIDER.
+// model accounts/fireworks/routers/glm-5p2-fast) or Anthropic. Select with EVAL_PROVIDER.
 //
 //   node -r dotenv/config scripts/eval-date-reliability.mjs
-//   EVAL_PROVIDER=openai EVAL_INFERENCE_API_KEY=… EVAL_MODEL=z-ai/glm-5.2 \
-//     EVAL_INFERENCE_BASE_URL=https://integrate.api.nvidia.com/v1 \
+//   EVAL_PROVIDER=openai EVAL_INFERENCE_API_KEY=… EVAL_MODEL=accounts/fireworks/routers/glm-5p2-fast \
+//     EVAL_INFERENCE_BASE_URL=https://api.fireworks.ai/inference/v1 \
 //     node -r dotenv/config scripts/eval-date-reliability.mjs
 
 import { writeFileSync } from 'node:fs';
@@ -117,8 +117,8 @@ const userFor = (phrase) => `The customer wants their visit ${phrase}. What is t
 
 // ─────────────────────────────────────────────────── provider adapters ──
 const PROVIDER = process.env.EVAL_PROVIDER || (process.env.EVAL_INFERENCE_API_KEY ? 'openai' : 'anthropic');
-const MODEL = process.env.EVAL_MODEL || (PROVIDER === 'openai' ? 'z-ai/glm-5.2' : 'claude-haiku-4-5-20251001');
-const OPENAI_BASE = process.env.EVAL_INFERENCE_BASE_URL || 'https://integrate.api.nvidia.com/v1';
+const MODEL = process.env.EVAL_MODEL || (PROVIDER === 'openai' ? 'accounts/fireworks/routers/glm-5p2-fast' : 'claude-haiku-4-5-20251001');
+const OPENAI_BASE = process.env.EVAL_INFERENCE_BASE_URL || 'https://api.fireworks.ai/inference/v1';
 
 // Reasoning is ON BY DEFAULT for GLM-5.2 on DeepInfra — a bare request (no
 // reasoning field) returns a thinking trace and ~255 output tokens on a trivial

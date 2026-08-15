@@ -140,6 +140,16 @@ export const MODEL_SKUS: Record<string, { provider: string; input: string; outpu
     input: 'glm-5.2-input',
     output: 'glm-5.2-output',
   },
+  // The 2026-08-15 provider switch (Fireworks fast router — same GLM-5.2
+  // weights, distinct skus because the fast tier is the priced thing). The
+  // cached-input split matters: ~90%+ of spine input is the stable doctrine
+  // prefix, billed at 1/10th when the call carries INFERENCE_CACHE_KEY.
+  fireworks: {
+    provider: 'fireworks',
+    input: 'glm-5.2-fast-input',
+    output: 'glm-5.2-fast-output',
+    cachedInput: 'glm-5.2-fast-cached-input',
+  },
   // Kept whole as an env-var rollback, so its prices stay in the book too.
   anthropic: {
     provider: 'anthropic',

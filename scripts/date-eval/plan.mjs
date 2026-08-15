@@ -135,7 +135,12 @@ try {
     // looked like a fleet problem rather than a stale default. nvidia-prod was
     // retired as a fallback on 2026-08-12; its id spelling should not be the
     // default anywhere.
-    expectedModel: process.env.DATE_EVAL_EXPECT_MODEL || 'zai-org/GLM-5.2',
+    // The 2026-08-15 switch: Fireworks' fast router is the fleet's canonical
+    // route. Override with DATE_EVAL_EXPECT_MODEL for trial runs on other
+    // providers — the gate compares EXACT strings, and every provider spells
+    // the same model differently (DeepInfra 'zai-org/GLM-5.2', NVIDIA
+    // 'z-ai/glm-5.2' — both have bitten us).
+    expectedModel: process.env.DATE_EVAL_EXPECT_MODEL || 'accounts/fireworks/routers/glm-5p2-fast',
     sandbox: process.env.DATE_EVAL_SANDBOX || 's2',
     facts: { dayCounts, techDayCounts, timeOff, windowJobs },
     questions: corpus,

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # nemoclaw-inference-medic.sh — hold the gateway inference route on
-# DeepInfra/GLM-5.2 and say honestly whether it is ACTUALLY SERVING.
+# Fireworks/GLM-5.2-fast and say honestly whether it is ACTUALLY SERVING.
 #
 # ┌─ THERE IS NO FALLBACK, AND THAT IS THE DESIGN (v5, 2026-08-12, user decision).
 # │  Do not add one back without deciding to. The medic exists to (a) re-assert
@@ -15,6 +15,11 @@
 #      2026-08-06  a 4-min DeepInfra blip fails the fleet over to nvidia-prod,
 #                  which 400s every real turn. The failover converts a blip into
 #                  a hard outage while logging success. Repeats 6x on 08-12.
+#      2026-08-15  swap to fireworks-prod (GLM-5.2 fast router — same weights,
+#                  ~2.4x faster; provider trial in thoughts/shared/research/
+#                  2026-08-14-glm-5.2-inference-provider-options.md).
+#                  deepinfra-prod kept as the MANUAL rollback — manual, like
+#                  nvidia-prod was in July. Do not wire it up as failover.
 #    A break-glass escape hatch was promoted to a live safety net by accident.
 #    An unverified fallback is worse than no fallback: it fails you exactly when
 #    you depend on it, and it reports success while doing so. Single-provider is
@@ -76,9 +81,9 @@
 #   reg fails                  -> exit 1 LOUD (agents down)
 #   no sandbox container       -> registration only, exit 0 with a WARN
 #
-# The route is asserted even when the probe fails: DeepInfra outages have
-# self-healed every time so far, so leaving the route correct means a recovery is
-# picked up by live turns immediately instead of waiting for the next tick.
+# The route is asserted even when the probe fails: provider outages self-healed
+# every time in the DeepInfra era, so leaving the route correct means a recovery
+# is picked up by live turns immediately instead of waiting for the next tick.
 #
 # If NO sandbox container is running, the completion gate cannot run; the medic
 # degrades to registration-only with a loud WARN rather than failing the unit —
@@ -90,12 +95,14 @@
 set -euo pipefail
 export PATH="/home/ubuntu/.local/bin:$PATH"
 
-WANT_PROVIDER="deepinfra-prod"
-WANT_MODEL="zai-org/GLM-5.2"     # NOTE: DeepInfra id spelling
-# No FALLBACK_* by design — see the header. nvidia-prod still exists in the
-# gateway's provider registry (harmless; nothing routes to it), so adding a
-# fallback back is a two-line change. Do it deliberately, and only after probing
-# the candidate: an unverified fallback is worse than none.
+WANT_PROVIDER="fireworks-prod"
+WANT_MODEL="accounts/fireworks/routers/glm-5p2-fast"  # NOTE: Fireworks id spelling (DeepInfra: zai-org/GLM-5.2)
+# No FALLBACK_* by design — see the header. deepinfra-prod stays fully
+# configured in the gateway's provider registry as the deliberate ROLLBACK
+# (flip = inference set back to deepinfra-prod / zai-org/GLM-5.2 + revert these
+# two lines); nvidia-prod also lingers there (harmless; nothing routes to it).
+# Adding a fallback back is a two-line change. Do it deliberately, and only
+# after probing the candidate: an unverified fallback is worse than none.
 # seconds; a stall reads as a miss. 40 not 30: the v4 probe waits for reasoning
 # + tool emission (measured 1.9–9.9s over n=12 on healthy deepinfra), so this is
 # ~4x the observed worst case. Worst-case tick = 2 providers x 2 attempts x 40s
@@ -230,13 +237,14 @@ main() {
   fi
 
   # No failover by design (see header). Re-assert the route anyway so that when
-  # the provider recovers — DeepInfra outages have self-healed every time so far
-  # — live turns pick it up immediately rather than waiting for the next tick.
+  # the provider recovers — provider outages self-healed every time in the
+  # DeepInfra era — live turns pick it up immediately rather than waiting for
+  # the next tick.
   set +e; set_route "$WANT_PROVIDER" "$WANT_MODEL"; rc=$?; set -e
   if [ "$rc" -eq 0 ]; then
-    warn "$WANT_PROVIDER IS NOT SERVING — route held (registration ok, completions failing). AGENTS ARE DOWN. There is no fallback by design; this will clear when the provider recovers. Check the DeepInfra balance (402) and status first."
+    warn "$WANT_PROVIDER IS NOT SERVING — route held (registration ok, completions failing). AGENTS ARE DOWN. There is no fallback by design; this will clear when the provider recovers. Check the Fireworks account balance/credits (402) and status first."
   else
-    warn "$WANT_PROVIDER failed REGISTRATION as well — AGENTS ARE DOWN and the route could not be asserted. Check the DeepInfra key and balance (402)."
+    warn "$WANT_PROVIDER failed REGISTRATION as well — AGENTS ARE DOWN and the route could not be asserted. Check the Fireworks key and account balance (402)."
   fi
   return 1
 }

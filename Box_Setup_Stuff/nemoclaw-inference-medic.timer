@@ -1,11 +1,12 @@
 # /etc/systemd/system/nemoclaw-inference-medic.timer
 # Runs the inference-medic shortly after boot and every 5 min thereafter, so a
-# reboot revert, a post-onboard/rebuild drift, OR a provider outage (v2
-# failover) is corrected within ~5 min without anyone remembering a manual
-# flip. (Was 15 min when the medic only fixed drift; failover makes the
-# interval the worst-case dead-agent window, so it was tightened 2026-07-11.)
+# reboot revert or a post-onboard/rebuild drift is corrected within ~5 min
+# without anyone remembering a manual flip. (Was 15 min when the medic only
+# fixed drift; tightened 2026-07-11 when v2 added failover. Failover was
+# deleted in v5 — the interval stays, since it now bounds how long route drift
+# can hold agents on the wrong provider.)
 [Unit]
-Description=Assert healthy GLM-5.2 inference route (DeepInfra primary, NVIDIA failover)
+Description=Assert healthy GLM-5.2 inference route (Fireworks single-provider, no failover)
 
 [Timer]
 OnBootSec=3min

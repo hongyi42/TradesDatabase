@@ -130,9 +130,16 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   precisely because they navigate messy conversations; fix *input* paths with mechanisms
   (e.g. the `resolve_date` tool) instead of muzzling the agent's voice.
 - **Agent model:** the GLM line is a standing decision (Nemotron-3 was "too dumb" — never
-  restore it while debugging). Current: **GLM-5.2 via DeepInfra** (`zai-org/GLM-5.2`);
-  single-provider by design since medic v5 (2026-08-13) — the NVIDIA fallback was deleted, the
-  medic asserts `deepinfra-prod` and reports, it does not reroute. Provider trial 2026-08-14:
+  restore it while debugging). Current: **GLM-5.2 via FIREWORKS FAST**
+  (`fireworks-prod / accounts/fireworks/routers/glm-5p2-fast`, switched 2026-08-15 — spine
+  Render env + fleet route + medic all flipped and verified: fireworks `cost_events` rows with
+  the cached split landed 18:13Z, medic tick "serving verified (tool call returned)" 18:17Z).
+  **`deepinfra-prod / zai-org/GLM-5.2` = the manual rollback** (was production 07-06→08-15;
+  Render side = revert the four `INFERENCE_*` env vars). Fleet caching caveat: the gateway
+  cannot inject body params, so no `prompt_cache_key` fleet-side (replica-luck hits only;
+  docs-verified 2026-08-15) — the spine sends its own via `INFERENCE_CACHE_KEY`.
+  Single-provider by design since medic v5 (2026-08-13) — the NVIDIA fallback was deleted, the
+  medic asserts the production route and reports, it does not reroute. Provider trial 2026-08-14:
   Nebius Token Factory serves the identical `zai-org/GLM-5.2` ~2.8× faster wall-clock at ~2×
   the price with comparable accuracy (thoughts/shared/research/2026-08-14-glm-5.2-inference-
   provider-options.md); GLM-5.2 runaway reasoning (a call streaming thinking tokens for
@@ -146,9 +153,10 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   2× list-price ratio. Latency comparisons are unaffected (Nebius numbers already include the
   prefix-cache speedup). Console "prompt presets" = playground templates, not caching.
   **Provider-trial verdict (2026-08-15, full record in the research doc): GLM-5.2 on
-  FIREWORKS FAST is the standing candidate** — 57/59 spine eval, wall p50 7.8s (2.4× DeepInfra),
+  FIREWORKS FAST — now PRODUCTION (deployed 2026-08-15, see Current above)** — 57/59 spine
+  eval (≡ 59/59 anchor-adjusted), wall p50 7.8s (2.4× DeepInfra),
   billed cache $0.21/M but **per-replica: a stable `prompt_cache_key`+`user` is MANDATORY** or
-  hits are routing luck. **GPT-5.6 Luna is RULED OUT on this toolset**: none/medium/xhigh scored
+  hits are routing luck. **the GPT-5.6 FAMILY is RULED OUT on this toolset (Terra medium, unthrottled: 31/59 with the identical failure signature — 10× price, +1 scenario; console-verified caching is excellent (~96% hits, Luna 4 runs billed $0.88) but economics don't fix discipline)**. Luna detail: none/medium/xhigh scored
   71/51/20% (non-monotonic — thinking makes it worse), with hard-zero violations
   (commit-without-yes ×2 at xhigh, fabricated-date ×2 at medium); mechanism = over-filled
   mode-mixing tool args + perseveration; the tenant canary never leaked. Luna API traps for any
@@ -191,7 +199,7 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
    ├─ /admin operator cost dashboard (the ONE cross-tenant read surface)
    └─ cron heartbeat, */15 — six sweeps: pairing · grace expiry · Composio session
       provisioning · execution-log ingestion · cost backfill · cost rollup
- Inference: sandbox gateway ──► DeepInfra GLM-5.2 (failover: NVIDIA)
+ Inference: sandbox gateway ──► Fireworks GLM-5.2-fast (no failover; deepinfra = manual rollback)
 ```
 
 **Three Supabase environments** (full detail: the test rules in `CLAUDE.md`):

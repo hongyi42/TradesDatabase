@@ -813,7 +813,13 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   `shadow` = counts into the JSON summary only, `live` = review items (`overdue_visit_gap`,
   once per assignment EVER) + one batched count-only manager push (needs `BOARD_BOT_TOKEN` in
   the cron env; absent → `pushSkipped`, never red), any other value = LOUD stepError. ROLLOUT
-  STATE: **shadow until the volume is reviewed with the user** — the research measured the
+  STATE: **DEPLOYED IN SHADOW 2026-08-16** (PR #147 merged `a0a9fd0`; schedule `*/5` + cadence
+  gate + shadow mode all verified from a live off-cadence log line the same day; first reading:
+  `tenants:1, gapsFound:35, freshGaps:35` — tenant identity of those gaps unconfirmed, likely
+  the demo world's active WA-seed schedule; identify before any live flip). Note: in pure
+  shadow, `freshGaps` ALWAYS equals `gapsFound` (nothing is ever flagged, so nothing is ever
+  stale) — the shadow observables are the LEVEL and its daily churn, and freshGaps-at-flip is
+  the size of the first-hour burn. **Live stays a deliberate flip after volume review** — the
   archetype firing on 67/67 of the pilot's historical overdue visits, which is why the 72h
   look-back exists (the backlog must never surface) and why live is a deliberate flip, not a
   default. Escalation ladder (ratified 2026-08-16): today's manager review item is rung 2 of 2 —

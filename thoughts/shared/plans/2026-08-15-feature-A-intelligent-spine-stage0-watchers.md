@@ -349,9 +349,12 @@ the money-Phase-3 shared-loop note.
       steps 1-7 `{skipped:'off-cadence tick'}`, :30 tick → heavy steps run; watcher every tick)
 
 ### Manual verification
-- [ ] Read the suggestion + push copy as a manager would: does it read as a colleague's
-      question about the job, not an audit of the person? (direction constraint 5)
-- [ ] With the user: judge shadow-mode volume before flipping `live` (rollout step 3)
+- [x] Read the suggestion + push copy as a manager would: does it read as a colleague's
+      question about the job, not an audit of the person? (direction constraint 5) —
+      APPROVED by the user 2026-08-16 after one revision round (warm/self-explaining/no
+      jargon; the copy doctrine is recorded in Decisions above)
+- [ ] With the user: judge shadow-mode volume (`freshGaps`) before flipping `live`
+      (rollout step 3 — happens days after deploy, not a merge blocker)
 
 ---
 *Pause after this phase: Manual verification is non-empty (copy tone + the live-flip decision).*

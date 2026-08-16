@@ -289,21 +289,49 @@ The deployed watcher learns the ladder — zero model calls. All changes live in
   (loud, the typo rule).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] watchers.test.ts additions: nudgeable → nudge row, NO manager item, NO push;
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass (full suite 1769 passed / 0
+  failed on the worktree's dedicated stack)
+- [x] watchers.test.ts additions: nudgeable → nudge row, NO manager item, NO push;
   unbound/inactive tech → manager item (deployed behavior); person budget 2 then defer;
   deferred row re-noticed next tick; nudged gap absent from
   `fresh` next tick; shadow mode → `nudgesWouldCreate` counted + manager item still opened;
   `NUDGES_MODE` typo → stepError; capture-after-start → nudge `answered`; visit cancelled →
   nudge `cancelled`; 49-hour `asked` → ONE manager item with escalation copy + `escalated`
   status + push fired once; escalated assignment never re-flags (once-ever holds)
-- [ ] lifecycle.test.ts: `NUDGES_MODE` joins the env-clear list; summary shape pinned
+- [x] lifecycle.test.ts: `NUDGES_MODE` joins the env-clear list; summary shape pinned
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack, `npm run seed:local`.
-- [ ] `npm run job:lifecycle` locally with `WATCHERS_MODE=live NUDGES_MODE=live`: summary shows
-  nudge counts; rows read back via psql through pending → (stub-composed) → answered on a
-  seeded capture.
+- [x] `node dist/jobs/lifecycle.js` with `WATCHERS_MODE=live NUDGES_MODE=live` on the local
+  stack, four runs: nudge created for a staged overdue visit (`nudgesCreated:1`,
+  `itemsOpened:0`); 49h-old `asked` → `nudgesEscalated:1` + ONE manager item with the warm
+  escalation copy + `escalatedFromNudge` audit link; a visit row landing →
+  `nudgesResolved:1` AND the escalated manager item auto-resolved on the same activity;
+  `pushSkipped:true` honest without BOARD_BOT_TOKEN. All rows read back via pg.
+
+**Adversarial review (2026-08-16, commit fe41dcf) + fixes:**
+- **F1 (fixed):** the original code froze in-flight nudge sweeps when `NUDGES_MODE` ≠ live —
+  combined with the both-stores fresh filter, a rollback would have orphaned asked-but-silent
+  gaps on NEITHER surface forever. Now the sweep (auto-resolve + escalation) runs whenever
+  the WATCHER is live; only rung-1 creation and compose are nudgeMode-gated. A rollback
+  hands silent nudges to the manager — legal under the two-touch ceiling. Regression test
+  added ("rollback rescue").
+- **F2 (fixed):** the escalation's `escalated` mark is failure-isolated so a blip cannot
+  abort the tenant loop after the manager item exists (the push still fires; the mark
+  converges next tick on the once-ever dedup).
+- **F3 (fixed):** corrected the escalation-loop comment (the guard, not the collection,
+  drops malformed contexts). Known cosmetic gap: a malformed-context `asked` row re-collects
+  every tick, never escalates, closes only via status change — invisible; consider a zombie
+  counter when a second detector lands.
+- **F4 (fixed):** added the incremental-budget test (second same-tech gap in one tick sees
+  the first's pending row) + deferred-row-re-noticed test. Reviewer note stands:
+  `nudgesWouldCreate` ignores budget (documented — it measures reachability).
+- Reviewer independently verified: same-tick rung exclusivity, disjoint flag subject sets,
+  single batched push, floor clamping vs malformed context, exact 2-cap and 48h boundaries,
+  Stage-0 tests untouched, cadence gate untouched, tenant scoping on every new path.
+- *Recorded deviation:* budget/escalation tuning are exported code constants
+  (`NUDGE_BUDGET_PER_PERSON_DAY`, `NUDGE_ESCALATE_HOURS`), not env vars — the
+  OVERDUE_HOURS pattern (one tuning surface); the plan's env-override idea dropped.
 
 ### Manual verification
 - none
@@ -345,18 +373,31 @@ success → `markNudgeQueued`. Summary `teamLeadCompose: {composed, cancelled, f
 | {skipped} | {stepError}`.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] dispatch tests: with `spine:team-lead` identity, `query_spine` dispatches;
-  `record_field_note`, `send_email`, `book_visit`, an admin tool all throw the cap error;
-  ordinary refs unaffected; roster read tolerates the roster-less ref
-- [ ] compose (stubbed model): ask:true → queued with evidence line + footer; ask:false →
-  cancelled; model throw ×3 → failed
-- [ ] lifecycle: key unset → `{skipped}`; summary shape pinned
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass (1769/0)
+- [x] dispatch tests: with `spine:team-lead` identity, `resolve_date` dispatches;
+  `record_field_note`, `send_email`, `book_visit`, `list_pending_reviews`,
+  `add_team_member` all throw the cap error; an unknown `spine:*` ref gets the same
+  ceiling (namespace-wide, fails closed); roster read tolerates the roster-less ref
+- [x] compose (stubbed model): ask:true → queued with evidence line + footer; model sees
+  ONLY the code-built context; ask:false → cancelled with reason; incomplete context →
+  cancelled WITHOUT a model call; throw → rowError + attempts, cap → failed; unusable
+  question (empty/oversize) → rowError; kind-scoped (8/8)
+- [x] lifecycle step 9: NUDGES_MODE≠live → skipped; no key → skipped; passthrough; throw →
+  stepError + red
 
 ### Live verification (agent-executable)
-- Prerequisites: local stack + working inference key in `.env` (key-gated test, skip cleanly).
-- [ ] one real `composeNudge` on a seeded overdue nudge — evidence: composed text + `queued`
-  row.
+- Prerequisites: local stack + working inference key (key-gated, skip cleanly).
+- [x] three real GLM composes (eval inference endpoint — the production wire dialect) on
+  planted nudges: all queued, warm one-liners, zero invented facts, no dates in the model
+  sentence, evidence line + footer intact. One run also exercised the attempt ladder live
+  (attempt 1 failed on a missing key, attempt 2 composed and queued).
+
+**Implementation notes:** identity constants live in `src/teamLead/identity.ts` (not
+server.ts — compose must not import the whole MCP server for a constant; the gate in
+`dispatch` imports from there). `setNudgeAttempts` added to `src/db/nudges.ts`
+(pending/queued-guarded literal write — single-writer cron). Step 9 is additionally gated
+on `NUDGES_MODE='live'`: a rolled-back ladder must not keep composing leftovers (creation
+and compose are what a rollback turns off; the in-flight sweep keeps running in step 8).
 
 ### Manual verification
 - [ ] Read 2–3 composed questions: colleague tone, not audit tone (direction constraint 5 +

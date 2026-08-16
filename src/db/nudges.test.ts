@@ -9,6 +9,7 @@ import {
   markNudgeAsked,
   markNudgeOutcome,
   markNudgeQueued,
+  setNudgeAttempts,
 } from './nudges.js';
 import { createTenant } from './tenants.js';
 
@@ -111,6 +112,20 @@ describe('status-guarded transitions', () => {
 
     // Terminal is terminal: a racing escalation sweep must not overwrite.
     expect(await markNudgeOutcome(n!.id, tenantId, 'escalated')).toBeNull();
+  });
+
+  test('setNudgeAttempts writes only while the row is still in flight (pending/queued)', async () => {
+    const n = await createPendingNudge({
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef: 'asg-attempts-1',
+      technicianId: techId,
+    });
+    const bumped = await setNudgeAttempts(n!.id, tenantId, 1);
+    expect(bumped?.attempts).toBe(1);
+    await markNudgeOutcome(n!.id, tenantId, 'cancelled');
+    // Terminal rows never gain attempts — the write is dropped, not applied.
+    expect(await setNudgeAttempts(n!.id, tenantId, 2)).toBeNull();
   });
 
   test('cross-tenant ids resolve nothing', async () => {

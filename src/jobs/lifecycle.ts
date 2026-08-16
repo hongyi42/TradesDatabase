@@ -16,6 +16,8 @@ import {
   type CollectResult,
 } from '../model/deepinfraUsage.js';
 import { runWatchers, type WatchersSummary } from './watchers.js';
+import { runTeamLeadCompose, type ComposeSummary } from '../teamLead/compose.js';
+import { hasModelCredentials } from '../model/forcedTool.js';
 
 // The lifecycle heartbeat — the ONE scheduled entrypoint (Render Cron Job,
 // */5 * * * *; Render guarantees at most one concurrent run). CADENCE GATE
@@ -46,6 +48,11 @@ import { runWatchers, type WatchersSummary } from './watchers.js';
 //     (rung 1 is optional — the Stage-0 behavior needs no new env), 'shadow'
 //     counts would-be nudges, 'live' asks technicians first; any other value
 //     is the same LOUD stepError.
+// (9) the team-lead compose turn (feature B Phase 3): the ONE model call in
+//     the ladder — writes the question for each pending nudge (or declines).
+//     Every tick, but triple-gated: NUDGES_MODE='live' (a frozen ladder must
+//     not keep composing leftovers), model credentials present (the step-3/4
+//     key idiom), and per-row attempt caps inside the runner.
 // Steps 5-7 report `skipped` — not an error — when the cost tables are absent,
 // so a deploy that lands before the migration does not turn the cron red. Step 6
 // also skips when no DeepInfra billing key is resolvable (e.g. after a failover
@@ -71,6 +78,9 @@ export interface LifecycleDeps {
   // skip-when-unconfigured branch without setting real env vars.
   hasBillingKey?: () => boolean;
   runWatchers?: typeof runWatchers;
+  composeNudges?: typeof runTeamLeadCompose;
+  // Same seam idea as hasBillingKey: the skip branch must be testable keyless.
+  hasModelKey?: () => boolean;
 }
 
 export interface LifecycleSummary {
@@ -91,6 +101,7 @@ export interface LifecycleSummary {
     | { skipped: string }
     | { stepError: string };
   watchers: WatchersSummary | { skipped: string } | { stepError: string };
+  teamLeadCompose: ComposeSummary | { skipped: string } | { stepError: string };
   ok: boolean;
 }
 
@@ -344,6 +355,25 @@ export async function runLifecycle(
     }
   }
 
+  // 9. The team-lead compose turn — every tick, triple-gated (see header).
+  // Gated on NUDGES_MODE='live', not merely the key: only a live ladder mints
+  // pending rows, and a rolled-back ladder must not keep composing leftovers
+  // (the in-flight SWEEP keeps running inside step 8 — creation and compose
+  // are what a rollback turns off).
+  let teamLeadCompose: LifecycleSummary['teamLeadCompose'];
+  if (nudgeMode !== 'live') {
+    teamLeadCompose = { skipped: "NUDGES_MODE not 'live'" };
+  } else if (!(deps.hasModelKey ?? hasModelCredentials)()) {
+    teamLeadCompose = { skipped: 'no inference credentials' };
+  } else {
+    try {
+      teamLeadCompose = await (deps.composeNudges ?? runTeamLeadCompose)();
+    } catch (err) {
+      teamLeadCompose = { stepError: msg(err) };
+      ok = false;
+    }
+  }
+
   return {
     pairing,
     offboarding,
@@ -353,6 +383,7 @@ export async function runLifecycle(
     deepinfraUsage,
     costRollup,
     watchers,
+    teamLeadCompose,
     ok,
   };
 }

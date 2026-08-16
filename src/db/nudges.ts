@@ -157,6 +157,28 @@ export async function markNudgeOutcome(
   return data as Nudge | null;
 }
 
+// Write back a failed compose/delivery attempt count. A literal SET (not an
+// increment expression — PostgREST has none): the caller read the row this
+// tick and the cron is the only writer (Render guarantees one concurrent
+// run), so read-add-one-write is race-free in practice, and the pending/
+// queued guard drops the write if the row moved on anyway.
+export async function setNudgeAttempts(
+  id: string,
+  tenantId: string,
+  attempts: number,
+): Promise<Nudge | null> {
+  const { data, error } = await getClient()
+    .from('nudges')
+    .update({ attempts })
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .in('status', ['pending', 'queued'])
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`setNudgeAttempts failed: ${error.message}`);
+  return data as Nudge | null;
+}
+
 // The per-person budget read: nudges created since `sinceIso` that hold a
 // slot (see BUDGET_HOLDING_STATUSES). Rolling window — the caller derives
 // `sinceIso` as now minus 24h.

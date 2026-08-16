@@ -2,6 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { fileURLToPath } from 'node:url';
+import { TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
 import {
   annotateResolvedReviewItem,
   appendRawCapture,
@@ -1891,6 +1892,18 @@ async function dispatch(
       `cost: spine tool_call not recorded — ${err instanceof Error ? err.message : String(err)}`,
     );
   });
+  // The team-lead ceiling (plan 2026-08-15 feature B; direction constraint
+  // 2): the ENTIRE `spine:` namespace is capped to TEAM_LEAD_TOOL_NAMES —
+  // deny-by-default, so a tool this set forgot fails CLOSED (targetGuard
+  // doctrine). There is no human behind a spine: identity to confirm
+  // anything, so nothing irreversible or externally visible may dispatch for
+  // it; this gate is the mechanism, the prompt is merely steering. Placed
+  // after the cost event (a refused call still burned a decision — the
+  // admin-gate precedent) and before every tool body. tools/list is
+  // untouched: discovery is cosmetic, dispatch is the gate.
+  if (identity.technicianRef.startsWith('spine:') && !TEAM_LEAD_TOOL_NAMES.has(name)) {
+    throw new Error('the team-lead identity is capped to read/ask — tool not allowed');
+  }
   // The real tier gate (the tools/list filter is cosmetic): applied by tool
   // NAME so no admin case can be added without it.
   if (ADMIN_TOOL_NAMES.has(name) && !activeManager) {

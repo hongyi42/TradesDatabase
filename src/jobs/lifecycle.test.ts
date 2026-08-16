@@ -323,6 +323,61 @@ describe('runLifecycle', () => {
       expect(summary.ok).toBe(false);
     });
 
+    test('step 9 compose: gated on NUDGES_MODE=live, then on model credentials', async () => {
+      process.env.WATCHERS_MODE = 'live';
+      const composeSentinel = async () => {
+        throw new Error('compose must not run behind its gates');
+      };
+
+      // Ladder not live → skipped, regardless of key.
+      const off = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const }),
+        composeNudges: composeSentinel,
+        hasModelKey: () => true,
+      });
+      expect(off.teamLeadCompose).toEqual({ skipped: "NUDGES_MODE not 'live'" });
+      expect(off.ok).toBe(true);
+
+      // Live ladder, no key → skipped cleanly (the step-3/4 idiom).
+      process.env.NUDGES_MODE = 'live';
+      const keyless = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
+        composeNudges: composeSentinel,
+        hasModelKey: () => false,
+      });
+      expect(keyless.teamLeadCompose).toEqual({ skipped: 'no inference credentials' });
+      expect(keyless.ok).toBe(true);
+
+      // Both gates open → the summary passes through.
+      const live = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
+        composeNudges: async () => ({ composed: 2, cancelled: 1, failed: 0, rowErrors: 0 }),
+        hasModelKey: () => true,
+      });
+      expect(live.teamLeadCompose).toEqual({ composed: 2, cancelled: 1, failed: 0, rowErrors: 0 });
+      expect(live.ok).toBe(true);
+
+      // A throwing compose is a stepError, red — other steps unaffected.
+      const thrown = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
+        composeNudges: async () => {
+          throw new Error('inference down');
+        },
+        hasModelKey: () => true,
+      });
+      expect(thrown.teamLeadCompose).toEqual({ stepError: 'inference down' });
+      expect(thrown.ok).toBe(false);
+      expect(thrown.watchers).toMatchObject({ mode: 'live' });
+    });
+
     test('a throwing watcher is a stepError, red — the other steps still reported', async () => {
       process.env.WATCHERS_MODE = 'shadow';
       const summary = await runLifecycle(NOW, {

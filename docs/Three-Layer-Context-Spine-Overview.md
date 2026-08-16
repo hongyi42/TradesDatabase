@@ -1,7 +1,7 @@
 # The Three-Layer Context Spine — Engineering Overview
 
-**Purpose:** orient an engineer who is building the data foundation for a trades-business platform
-from scratch. It explains *why* we structure customer/job data this way, *how* the three layers are
+**Purpose:** orient an engineer who is building the context foundation for an agent-first
+trades-business platform from scratch. It explains *why* we structure customer/job data this way, *how* the three layers are
 separated, and *every channel* that data can flow in from. It is deliberately implementation-
 agnostic — pick your own database and storage; the shape of the model is what matters.
 
@@ -26,12 +26,21 @@ context is captured once and never re-typed or lost.
 
 ## 2. Goals
 
+The spine is built **agent-first**: it is the context-management engine for the fleet of AI agents
+that are the product's entire interface. The agents supply interpretation; the spine supplies
+memory; the harness around both supplies trust. Concretely:
+
+- Make the record **AI-ready** — rich enough that a model can summarize a customer's history, brief
+  a technician before a visit, or answer a question on site — and **evidence-linked**, so an
+  agent's claims always trace back to their source.
 - Reduce wasted coordination time and context loss across the relay.
 - Boost revenue by capturing what currently slips through the cracks: technician-spotted
   replacement opportunities, follow-ups on quotes a customer didn't accept immediately, and
   recurring-contract renewals.
-- Make the record **AI-ready** — rich enough that a model can summarize a customer's history, brief
-  a technician before a visit, or answer a question on site.
+
+*(Direction, 2026-08-15: the spine's next arc is to become intelligent itself — a spine-side
+"team leader" agent that watches the flow and proactively fills gaps rather than waiting to be
+read. See `thoughts/shared/plans/2026-08-15-intelligent-spine-direction.md`.)*
 
 ## 3. The core idea: one record, three layers
 

@@ -50,6 +50,26 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 ## 2. Product principles (user decisions — don't re-litigate, do cite when relevant)
 
+- **Agent-first framing + the intelligent-spine direction** (2026-08-15, user decision): the
+  product is the **harness and context-management engine for a fleet of AI agents** serving a
+  trades firm — agents are the entire interface, the spine is their shared memory, the harness is
+  what makes their output trustworthy. "One record every role reads and writes" is the same
+  system described data-first; the agent-first framing is now the front door (onboarding §1,
+  overview §2). DIRECTION (nothing built): make the spine itself intelligent — a spine-side
+  "team leader" agent that monitors the flow, detects gaps via deterministic watchers (e.g.
+  visit time passed, no status update), and proactively prompts the right person's agent to fill
+  them; passive intake → active gap-filling → eventually anticipation. Constraints ratified with
+  the direction: detection is deterministic (hardcode-vs-model rule), the team lead is a NEW
+  identity class that may only **read/ask/stage — never commit irreversible or externally
+  visible actions** (it has no human to confirm), nudges are budgeted (over-pinging = the
+  over-confirmation failure mode), and agent-to-agent communication stays spine-mediated.
+  **Transcript-harvest disclosure ratified** (2026-08-15): workers must be told up front that
+  chats with their company-provided agent can be recorded to the firm's record (extends the
+  2026-07-04 outbound-send disclosure); the work-relevance classifier gates HARD before anything
+  harvested reaches L1 — no contamination of the spine with non-work context, no new exception
+  to classify-before-insert. Direction doc:
+  `thoughts/shared/plans/2026-08-15-intelligent-spine-direction.md`.
+
 - **The spine is not the books** (2026-08-15): the money layer is an evidence-linked money
   MEMORY reconciled against the firm's real books, never presented as the books. Precision over
   recall — a missing number is an honest gap ("no payment on record"), a wrong number is a
@@ -764,6 +784,18 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   - **STILL A STORE, NOT AN ALARM.** Nothing notifies yet — deferred by user decision until a bot
     is paired. It makes an outage reconstructable afterwards, not noticed as it happens. Do not
     mistake the table existing for the problem being solved.
+- **Sandbox chat sessions NEVER auto-reset — and the verbatim memory is the transcript file, not
+  the model (verified 2026-08-15: vendor docs + live s2 probe).** Our sandboxes set no
+  `session.reset` (`openclaw config get session.reset` → path not found on s2) and the vendor
+  default is `none`, so a person's Telegram session persists until a manual `/new` or maintenance
+  pruning (stale sessions pruned after ~30 days). Long sessions **compact** in the live context —
+  past ~50k recent tokens older turns become summaries — but the on-disk transcript
+  (`/sandbox/.openclaw/agents/main/sessions/<sid>.jsonl`) stays verbatim and complete.
+  Consequences: an agent can "know" things that exist nowhere but its session (the
+  intelligent-spine direction's bonus class — harvest by reading transcripts, never by asking the
+  agent to remember), and anything un-harvested has a ~30-day shelf life. Docs:
+  https://docs.openclaw.ai/gateway/config-agents. Direction doc:
+  `thoughts/shared/plans/2026-08-15-intelligent-spine-direction.md`.
 - **`nemoclaw list` shows the ONBOARDING RECORD, not the live inference route (2026-08-06).** Read
   off that list, s2/s5/s6/s7 all say `provider: nvidia-prod` — which reads exactly like "the fleet
   has been stuck on the fallback for six days", and was reported as such before being checked. It

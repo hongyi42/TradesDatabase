@@ -36,10 +36,28 @@ At every handoff, information gets re-typed, summarized, or lost. Two costs fall
 - **Context loss** — facts degrade between people, between the two visits of one job, and across
   months for a repeat customer.
 
-**We build one customer/job record that every role reads from and writes to**, so context is
-captured once and never re-typed. On top of that record sit AI features that only become possible
+**We build an agent-first system: the harness and context engine for a fleet of AI agents that
+run a trades firm's office.** Each person — manager and technician — talks to their own agent, and
+every agent reads from and writes to one shared customer/job record (**the spine**), so context is
+captured once and never re-typed. The division of labor, which the rest of this guide keeps
+returning to:
+
+- the **spine** supplies memory — evidence-linked, append-only at the base;
+- the **agents** supply interpretation and conversation;
+- the **harness** — identity, guardrails, confirmation doctrine, date machinery, evals — supplies
+  the trust that makes an agent's output safe to act on.
+
+That combination is why an answer from this system beats a generic chatbot: it is grounded in the
+firm's actual history, it can cite where every claim came from, and it can act. What the agents do
 *because* the record exists: brief a technician before a visit, answer a question on site,
 schedule a whole week, re-optimize it when reality changes.
+
+> **Where this is heading** (direction, 2026-08-15): today the agents are freelancers — connected
+> only through the context they share. The next arc is making the spine itself intelligent: a
+> spine-side "team leader" agent that watches the flow, spots gaps (a visit's time passed with no
+> status update), and proactively prompts the right person's agent to fill them. Nothing is built
+> yet; the direction and its constraints live in
+> [2026-08-15-intelligent-spine-direction.md](../thoughts/shared/plans/2026-08-15-intelligent-spine-direction.md).
 
 Two things make us unusual and you should internalize both early:
 

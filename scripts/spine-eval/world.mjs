@@ -115,6 +115,10 @@ const RESET_TABLES = [
   // ACTION — left out, one C10 run would pin the Eval tenants forever and the
   // reset's `delete from tenants` below would die on 23503 (review finding).
   'tenant_profiles',
+  // Cascade-reachable via technicians, but named anyway (eng-memory §1: every
+  // new table gets registered BY NAME — incidental cascade coverage is how
+  // tenant_profiles got missed).
+  'nudges',
   // Infra, but the eval registers its own cold pool for bind_telegram, so stale
   // rows from a previous run would otherwise accumulate.
   'sandbox_pool',

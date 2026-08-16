@@ -100,7 +100,7 @@ afterAll(async () => {
     // call, so a suite run leaves hundreds behind. Left uncleaned they would
     // skew any later test that counts spine events per tenant — which is
     // exactly what the rollup's allocation split does.
-    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations, cost_events, money_events, tenant_profiles cascade',
+    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations, cost_events, money_events, tenant_profiles, nudges cascade',
   );
   // Restore the seed capacity (2/5) so post-suite live checks see known values.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });

@@ -92,6 +92,13 @@ export const MAX_NEW_ITEMS_PER_TENANT_TICK = 5;
 // Code constants, not env (the OVERDUE_HOURS pattern: one tuning surface).
 export const NUDGE_BUDGET_PER_PERSON_DAY = 2;
 export const NUDGE_ESCALATE_HOURS = 48;
+// A nudge still not ASKED this long after creation is stuck in some silent
+// way the serve path cannot see (Phase-4 review F1: an offboarded technician
+// is liveness-skipped forever; a recycled sandbox clears host_id, making the
+// row invisible to EVERY pull's inner join; a rollback freezes pending rows).
+// The ask is not happening — the manager takes the gap. Long enough for a
+// rebind to heal a recycle first.
+export const NUDGE_DELIVERY_DEADLINE_HOURS = 24;
 
 // UTC offsets span −12h..+14h; subtracting 14h from a wall-clock instant is a
 // floor no real timezone's UTC reading can undershoot.
@@ -123,6 +130,17 @@ export function wallClockLabel(naiveIso: string): string {
 // every tick's read back for months). No visit spans a week; anything older
 // can only be closed by the status-change path or a manual dismiss.
 const MAX_FLOOR_REACH_MS = 7 * 24 * 3_600_000;
+
+// The ONE manager-item copy for a plain unreported visit (user-approved
+// 2026-08-16). Used by the routing fallback AND the expired-nudge handoff —
+// deliberately NOT the escalation copy, which claims "their assistant asked":
+// an expired nudge's ask never landed, and the manager must never be told it
+// did (Phase-4 review F1/F3).
+const stage0Suggestion = (title: string, customer: string, endsAtLocal: string): string =>
+  `The visit for '${title}' (${customer}) was scheduled to wrap up by ` +
+  `${wallClockLabel(endsAtLocal)}, but nothing has been recorded about it yet — no ` +
+  `field note and no status change. Worth checking how it went so the job's record ` +
+  `stays complete. If nothing needed recording, just dismiss this.`;
 
 export interface WatcherDeps {
   listTenants?: typeof listTenantIdsWithTelegramBindings;
@@ -162,6 +180,7 @@ export interface WatchersSummary {
   nudgesCreated: number;
   nudgesResolved: number; // answered (activity) or cancelled (status change)
   nudgesEscalated: number; // 48h silence → handed to the manager (rung 2)
+  nudgesExpired: number; // never asked within the deadline → manager fallback
 }
 
 export async function runWatchers(
@@ -214,6 +233,7 @@ export async function runWatchers(
     nudgesCreated: 0,
     nudgesResolved: 0,
     nudgesEscalated: 0,
+    nudgesExpired: 0,
   };
 
   for (const tenantId of tenantIds) {
@@ -386,6 +406,7 @@ export async function runWatchers(
       // 2026-08-16) — only pure silence climbs the ladder.
       let opened = 0;
       const escalations: typeof openNudgeGaps = [];
+      const expired: typeof openNudgeGaps = [];
       for (const x of openNudgeGaps) {
         if (x.jobId && x.startsAtLocal && hasActivitySince(x.jobId, x.startsAtLocal)) {
           const closed = await resolveNudge(
@@ -414,6 +435,57 @@ export async function runWatchers(
           Date.parse(x.n.asked_at) <= nowMs - NUDGE_ESCALATE_HOURS * 3_600_000
         ) {
           escalations.push(x);
+          continue;
+        }
+        // Never ASKED within the deadline (Phase-4 review F1): the row is
+        // stuck in some way the serve path cannot see — liveness-skipped
+        // forever, host-unbound after a recycle (invisible to every pull),
+        // or rollback-frozen pending. The activity/status paths above still
+        // win; past the deadline, the manager takes the gap.
+        if (
+          (x.n.status === 'pending' || x.n.status === 'queued') &&
+          Date.parse(x.n.created_at) <= nowMs - NUDGE_DELIVERY_DEADLINE_HOURS * 3_600_000
+        ) {
+          expired.push(x);
+        }
+      }
+
+      // Expired handoff: the Stage-0 copy, NEVER the escalation copy — the
+      // ask never landed, and the manager must not be told it did. Flag
+      // first, close second (the F1 order); malformed contexts stay frozen
+      // (logged; the status-change path can still close them).
+      for (const x of expired) {
+        const c = (x.n.context ?? {}) as Record<string, unknown>;
+        const jobId = typeof c.jobId === 'string' ? c.jobId : null;
+        const startsAtLocal = typeof c.startsAtLocal === 'string' ? c.startsAtLocal : null;
+        const endsAtLocal = typeof c.endsAtLocal === 'string' ? c.endsAtLocal : null;
+        if (!jobId || !startsAtLocal || !endsAtLocal) {
+          console.error(`[watchers] expired nudge ${x.n.id} unfit for handoff (thin context)`);
+          continue;
+        }
+        const title = typeof c.jobTitle === 'string' ? c.jobTitle : 'a job';
+        const customer = typeof c.customerName === 'string' ? c.customerName : 'unknown customer';
+        const item = await flagGap({
+          tenantId,
+          assignmentId: x.n.subject_ref,
+          jobId,
+          technicianRef: typeof c.technicianRef === 'string' ? c.technicianRef : null,
+          startsAtLocal,
+          endsAtLocal,
+          escalatedFromNudge: x.n.id,
+          suggestion: stage0Suggestion(title, customer, endsAtLocal),
+        });
+        if (item) opened += 1;
+        try {
+          const moved = await resolveNudge(
+            x.n.id,
+            tenantId,
+            'failed',
+            'never delivered — handed to the manager',
+          );
+          if (moved) summary.nudgesExpired += 1;
+        } catch (err) {
+          console.error(`[watchers] nudge ${x.n.id} expiry mark failed`, err);
         }
       }
 
@@ -550,11 +622,7 @@ export async function runWatchers(
             // heard the word "spine". The purpose clause ("so the job's
             // record stays complete") is what makes this read as bookkeeping
             // help rather than an audit.
-            suggestion:
-              `The visit for '${title}' (${customer}) was scheduled to wrap up by ` +
-              `${wallClockLabel(g.ends_at)}, but nothing has been recorded about it yet — no ` +
-              `field note and no status change. Worth checking how it went so the job's record ` +
-              `stays complete. If nothing needed recording, just dismiss this.`,
+            suggestion: stage0Suggestion(title, customer, g.ends_at),
           });
           if (item) opened += 1; // null = flagged concurrently — not new
         }

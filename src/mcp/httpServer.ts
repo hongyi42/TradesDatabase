@@ -316,8 +316,11 @@ async function handleNudgeReport(
     const b = (body ?? {}) as Record<string, unknown>;
     const id = typeof b.id === 'string' ? b.id.trim() : '';
     const report = b.outcome;
-    if (!id) {
-      json(400, { error: 'id is required' });
+    // UUID-shaped or 400: a malformed id would hit PostgREST's 22P02 and 500
+    // (Phase-4 review F5) — noise from a token-holder, but a clean 400 beats
+    // a fake server error.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      json(400, { error: 'id must be a nudge id (uuid)' });
       return;
     }
     if (report !== 'delivered' && report !== 'failed') {

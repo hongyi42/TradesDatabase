@@ -67,6 +67,26 @@ report() { # $1 id, $2 outcome, $3 fixed detail string (NEVER interpolated outpu
     "$NUDGE_URL" >/dev/null 2>&1 || true
 }
 
+# Does this nudge's session hold ANY assistant TEXT? The verdict mirrors the
+# repo's canonical trajectory reader (scripts/date-eval/run.mjs
+# replyFromTrajectory): role must be assistant AND the joined type:"text"
+# content must be non-empty — a bare role marker is NOT success (an assistant
+# turn carrying only thinking/tool blocks occurs live, and with --deliver no
+# reply text means nothing was sent). Returns 1 when the session file does not
+# exist yet (first serve) or the read fails.
+traj_has_text() { # $1 sandboxRef, $2 sessionId
+  local out n
+  out=$(timeout 60 sudo -u "$NEMOCLAW_USER" -H "$NEMOCLAW_BIN" "$1" exec --no-tty -- \
+    cat "$TRAJ_DIR/$2.jsonl" </dev/null 2>/dev/null) || return 1
+  n=$(printf '%s\n' "$out" | jq -R '
+        try fromjson catch empty
+        | select(.message.role? == "assistant")
+        | ((.message.content // []) | map(select(.type? == "text") | (.text // "")) | join("")
+           | gsub("\\s+"; ""))
+        | select(length > 0)' 2>/dev/null | wc -l)
+  [ "${n:-0}" -gt 0 ] 2>/dev/null
+}
+
 printf '%s' "$resp" | jq -c '.nudges[]' | while IFS= read -r item; do
   id=$(printf '%s' "$item" | jq -r '.id // empty')
   sref=$(printf '%s' "$item" | jq -r '.sandboxRef // empty')
@@ -95,6 +115,18 @@ printf '%s' "$resp" | jq -c '.nudges[]' | while IFS= read -r item; do
   }
   [ -n "$msg" ] || { report "$id" failed "empty message"; continue; }
 
+  # Idempotence pre-check (Phase-4 review F4): the per-nudge session id is
+  # stable, so if a PREVIOUS tick already delivered here and only the ack was
+  # lost, the session already holds assistant text — re-ack it, never re-ping
+  # the technician (duplicate pings are the over-pinging failure mode the
+  # budget exists to prevent; without this, a broken report path re-delivers
+  # every tick until the serve cap). On the first serve the session file does
+  # not exist and this falls through to delivery.
+  if traj_has_text "$sref" "$sid"; then
+    report "$id" delivered ""
+    continue
+  fi
+
   # Deliver through the person's own agent. </dev/null: exec/agent eat stdin
   # and would swallow the while-loop's remaining items (recorded gotcha).
   if ! timeout 240 sudo -u "$NEMOCLAW_USER" -H "$NEMOCLAW_BIN" "$sref" agent \
@@ -106,17 +138,12 @@ printf '%s' "$resp" | jq -c '.nudges[]' | while IFS= read -r item; do
   fi
 
   # The CLI exiting 0 is NOT the verdict (stdout/chrome has rotted before) —
-  # the session trajectory is: a delivered turn leaves assistant output in the
-  # per-nudge session file.
-  traj=$(timeout 60 sudo -u "$NEMOCLAW_USER" -H "$NEMOCLAW_BIN" "$sref" exec --no-tty -- \
-      cat "$TRAJ_DIR/$sid.jsonl" </dev/null 2>/dev/null) || {
-    report "$id" failed "trajectory unreadable"
-    continue
-  }
-  if printf '%s' "$traj" | grep -q '"assistant"'; then
+  # assistant TEXT in the per-nudge session trajectory is. Since the
+  # pre-check above found none, text now means THIS turn produced it.
+  if traj_has_text "$sref" "$sid"; then
     report "$id" delivered ""
   else
-    report "$id" failed "no assistant turn in trajectory"
+    report "$id" failed "no assistant text in trajectory"
   fi
 done
 

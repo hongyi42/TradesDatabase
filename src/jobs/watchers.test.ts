@@ -754,6 +754,108 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     ]);
   });
 
+  test('delivery deadline (Phase-4 review F1): never-asked rows past 24h hand to the manager with STAGE-0 copy', async () => {
+    // A rollback-frozen pending row and a liveness-stuck queued row, both a
+    // day old; a young queued row waits. The manager copy must be the plain
+    // Stage-0 shape — NEVER "their assistant asked" (the ask never landed).
+    const flagged: Array<{ assignmentId: string; suggestion: string; escalatedFromNudge?: string }> = [];
+    const resolved: Array<[string, string, string | null | undefined]> = [];
+    const quietCtx = (jobId: string) => ({
+      customerName: 'Henderson',
+      jobTitle: 'Furnace tune-up',
+      technicianRef: 'ben-shelton',
+      technicianName: 'Ben Shelton',
+      jobId,
+      startsAtLocal: '2026-08-14T07:00:00.000Z',
+      endsAtLocal: '2026-08-14T08:00:00.000Z',
+    });
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({
+          id: 'n-frozen-pending',
+          subject_ref: 'a-frozen',
+          status: 'pending',
+          created_at: '2026-08-15T11:00:00.000Z', // 25h before NOW
+          context: quietCtx('j-quiet-1'),
+        }),
+        nudgeRow({
+          id: 'n-stuck-queued',
+          subject_ref: 'a-stuck',
+          status: 'queued',
+          created_at: '2026-08-15T11:00:00.000Z',
+          context: quietCtx('j-quiet-2'),
+        }),
+        nudgeRow({
+          id: 'n-young-queued',
+          subject_ref: 'a-young',
+          status: 'queued',
+          created_at: '2026-08-15T14:00:00.000Z', // 22h — still inside the deadline
+          context: quietCtx('j-quiet-3'),
+        }),
+      ],
+      flagGap: async (input) => {
+        flagged.push({
+          assignmentId: input.assignmentId,
+          suggestion: input.suggestion,
+          escalatedFromNudge: input.escalatedFromNudge,
+        });
+        return openItem({ subject_ref: input.assignmentId });
+      },
+      resolveNudge: async (id, _t, status, resolution) => {
+        resolved.push([id, status, resolution]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    expect(summary.tenantErrors).toBe(0);
+    expect(flagged.map((f) => f.assignmentId).sort()).toEqual(['a-frozen', 'a-stuck']);
+    for (const f of flagged) {
+      expect(f.suggestion).toContain('was scheduled to wrap up by');
+      expect(f.suggestion).not.toContain('assistant asked'); // the ask never landed
+      expect(f.escalatedFromNudge).toBeDefined();
+    }
+    expect(resolved).toEqual([
+      ['n-frozen-pending', 'failed', 'never delivered — handed to the manager'],
+      ['n-stuck-queued', 'failed', 'never delivered — handed to the manager'],
+    ]);
+    expect(summary.nudgesExpired).toBe(2);
+    expect(summary.itemsOpened).toBe(2);
+    expect(summary.pushed).toBe(1);
+  });
+
+  test('delivery deadline: arrived activity still wins over expiry; malformed context stays frozen', async () => {
+    const resolved: Array<[string, string]> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        // Old AND filled: activity answered it — expiry must not fire.
+        nudgeRow({
+          id: 'n-old-filled',
+          subject_ref: 'a-old-filled',
+          status: 'queued',
+          created_at: '2026-08-15T09:00:00.000Z',
+        }),
+        // Old and malformed: unfit for handoff — stays frozen, no counter.
+        nudgeRow({
+          id: 'n-old-thin',
+          subject_ref: 'a-old-thin',
+          status: 'queued',
+          created_at: '2026-08-15T09:00:00.000Z',
+          context: { jobTitle: 'only this' },
+        }),
+      ],
+      listCaptureTimes: async () => [{ job_id: 'j1', captured_at: '2026-08-14T07:30:00.000Z' }],
+      flagGap: async () => {
+        throw new Error('neither row may reach the manager here');
+      },
+      resolveNudge: async (id, _t, status) => {
+        resolved.push([id, status]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    expect(summary.tenantErrors).toBe(0);
+    expect(resolved).toEqual([['n-old-filled', 'answered']]);
+    expect(summary.nudgesExpired).toBe(0);
+  });
+
   test('rung 2 races: a null flag (assignment somehow already flagged) still marks the nudge escalated', async () => {
     const resolved: Array<[string, string]> = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({

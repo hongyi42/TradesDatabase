@@ -468,7 +468,7 @@ board's idiom).
 **`Box_Setup_Stuff/nudge-runner.sh` + `.service` + `.timer`** (new; 5-min timer; ops-report.sh
 discipline: separate unit, ALWAYS exits 0, hard `--max-time`/`timeout`): curl GET with
 `HOST_PULL_TOKEN` from `/etc/doorman/badge-pull.env`; per item: validate `sandboxRef` against
-`^[A-Za-z0-9_]+$`, `MSG=$(base64 -d)`, `timeout 180 nemoclaw $sref agent --agent main
+`^[A-Za-z0-9_]+$`, `MSG=$(base64 -d)`, `timeout 240 nemoclaw $sref agent --agent main
 --session-id $sid -m "$MSG" --deliver --reply-channel telegram --reply-to $replyTo
 </dev/null`. Success judged by assistant text in the session TRAJECTORY
 (`nemoclaw $sref exec --no-tty -- cat /sandbox/.openclaw/agents/main/sessions/$sid.jsonl`) —
@@ -502,6 +502,31 @@ host's technicians (late duplicates → 'ignored'); both terminal transport path
 delivery ×3) run the same `handToManager` flag-first handoff as compose. The runner derives
 its URL from the existing `PULL_URL` — no new env, no new secret.
 
+**Adversarial review (2026-08-16, commit 9ace2d2) + fixes (all landed same day):**
+- **F1 (HIGH, fixed):** never-ASKED rows were a new unbounded orphan class — a liveness-skip
+  never bumps serve_count (the cap can't fire), and a recycled sandbox clears host_id,
+  making the row invisible to EVERY pull's inner join; rollback-frozen `pending` rows were a
+  third member. Fix: `NUDGE_DELIVERY_DEADLINE_HOURS` (24) in the watcher sweep — any
+  pending/queued row still not asked a day after creation hands to the manager (STAGE-0
+  copy, never "their assistant asked" — the ask never landed) and goes `failed`. Runs at
+  every nudgeMode (the rollback-rescue posture). Summary gains `nudgesExpired`.
+- **F2 (HIGH, fixed):** the runner's trajectory verdict grepped a role marker — an assistant
+  turn with only thinking/tool blocks (a recorded live occurrence) would report `delivered`
+  while the technician got nothing. Now mirrors the repo's canonical reader
+  (run.mjs `replyFromTrajectory`): role assistant AND non-empty type:"text" content, via jq.
+- **F3 (HIGH, deferred to Phase 5 with a blocking checklist item):** "delivered" ≠ the
+  Telegram send succeeded — the date-eval record proves a dead chat still leaves CLI success
+  + trajectory text. Pinned as a MUST before `NUDGES_MODE=live` (see Phase 5's live list).
+- **F4 (fixed):** lost ack ⇒ duplicate pings, bounded only by the serve cap. Fix: the runner
+  pre-checks the stable per-nudge session for assistant text BEFORE delivering — a
+  delivered-but-unacked item is re-ACKED, never re-sent.
+- **F5 (fixed):** non-UUID report ids now 400 instead of a PostgREST-cast 500.
+- **F6 (fixed):** rollback wording corrected in Phase 5 (queued rows keep serving until the
+  box timer is pulled); plan's stale `timeout 180` aligned to the implemented 240.
+- Reviewer live-probed host-token authority with two real hosts (row-level `!inner`
+  isolation, cross-status movement impossible, foreign reports `ignored`), and verified the
+  shell's quoting/stdin/injection posture, serve-before-ship accounting, and the DoS caps.
+
 ### Manual verification
 - none
 ---
@@ -521,10 +546,13 @@ resolve the D6 open question, ship the ratified disclosure.
   'reload schema'` (backstop-index preflight first); (2) Render Manual-Deploy the LATEST
   commit, verify the live hash; (3) install runner + units on trades-box-1, `daemon-reload`,
   enable timer, verify a no-op pull; (4) set `NUDGES_MODE=shadow` on the cron service, read
-  `nudgesWouldCreate` for a day; (5) flip `NUDGES_MODE=live` with the user. Escape hatch:
-  `systemctl disable --now nudge-runner.timer` stops all delivery instantly; unsetting
-  `NUDGES_MODE` restores Stage-0 behavior exactly; the lifecycle steps alone only write DB
-  rows.
+  `nudgesWouldCreate` for a day; (5) flip `NUDGES_MODE=live` with the user. Escape hatch
+  (wording corrected — Phase-4 review F6): `systemctl disable --now nudge-runner.timer` on
+  the box stops ALL delivery instantly; unsetting `NUDGES_MODE` on the cron stops CREATION
+  and COMPOSE, but already-queued rows keep serving to the box (the outbox route is not
+  mode-gated) until the timer is pulled or the 24h delivery deadline hands them to the
+  manager — pull BOTH levers for a full stop. In-flight sweeps (resolve/escalate/expire)
+  deliberately keep running in every mode.
 - **Docs:** `docs/customer-onboarding-runbook.md` + `docs/getting-started-for-firms.md` —
   extend the recorded disclosures with the ratified 2026-08-15 one: the firm's assistant may
   proactively ask about work, and what you tell it can be recorded to the firm's record.
@@ -545,6 +573,15 @@ resolve the D6 open question, ship the ratified disclosure.
 - [ ] **resolve D6:** which session the reply landed in, was the question in context — record
   in engineering-memory; if context was absent and the flow failed, revisit session targeting
   before enabling any real recipient
+- [ ] **pin the send-failure signal (Phase-4 review F3 — MUST land before NUDGES_MODE=live):**
+  force a failed Telegram send (a sandbox whose bot the recipient never Started — the
+  recorded Ben-Shelton state) and observe what `nemoclaw agent --deliver` does: exit code,
+  and whether assistant text still lands in the trajectory (the date-eval record says it
+  does — 94 turns into a dead chat all left text). If both signals read "success" on a dead
+  chat, the runner's `delivered` verdict is unearned for never-Started recipients and needs
+  a stronger check (e.g. the gateway's send log) before any real technician is enrolled;
+  minimum bar: the E2E documents exactly which failure modes report `delivered` falsely and
+  the enrollment runbook requires a verified Start per recipient.
 - [ ] budget regression: second same-person overdue visit → row only if under budget; third →
   deferred
 - [ ] escalation regression: force an `asked_at` 49h back on the synthetic nudge → manager

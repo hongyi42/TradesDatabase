@@ -230,6 +230,7 @@ describe('runLifecycle', () => {
       nudgesCreated: 0,
       nudgesResolved: 0,
       nudgesEscalated: 0,
+      nudgesExpired: 0,
     };
     const BASE = {
       listInStates: async () => [],

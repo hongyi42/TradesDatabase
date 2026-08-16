@@ -67,7 +67,13 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   chats with their company-provided agent can be recorded to the firm's record (extends the
   2026-07-04 outbound-send disclosure); the work-relevance classifier gates HARD before anything
   harvested reaches L1 — no contamination of the spine with non-work context, no new exception
-  to classify-before-insert. Direction doc:
+  to classify-before-insert. **Plan-review decisions (user, 2026-08-16):** watchers land BEFORE
+  money-inference (its quiet-jobs nudge becomes the framework's second detector); watcher v1 =
+  overdue confirmed visits, 72h look-back confirmed; cron pulse → `*/5` minute-gated (steps 1–7
+  stay quarter-hourly, watcher every tick); **escalation ladder = at most TWO touches per gap —
+  technician's agent first, dismissed/unanswered → manager, never a third** — and the asking
+  agent follows up until the gap is VERIFIABLY filled (a capture lands — the deterministic
+  activity-after-end check, not model judgment). Direction doc:
   `thoughts/shared/plans/2026-08-15-intelligent-spine-direction.md`.
 
 - **The spine is not the books** (2026-08-15): the money layer is an evidence-linked money

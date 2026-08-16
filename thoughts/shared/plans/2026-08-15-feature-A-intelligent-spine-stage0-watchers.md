@@ -37,6 +37,30 @@ before anything speaks.
   dedup alone would re-open a resolved item forever — decision point 5). Plus **auto-resolve**:
   an open item whose job gains activity after the visit's end is resolved by the watcher, so the
   queue self-cleans.
+- **Escalation ladder RATIFIED (user, 2026-08-16): at most TWO touches per gap — technician
+  first, manager second.** End state (once Stage 1's voice exists): touch 1 = the technician's
+  own agent asks about the gap, and follows up in-conversation until the gap is *verifiably*
+  filled — "filled" means a capture/visit actually landed on the job, the same deterministic
+  activity-after-end check auto-resolve uses, never the model's judgment that the chat felt
+  sufficient. If the nudge is dismissed or goes unanswered, touch 2 opens the manager review
+  item. Never a third touch. **In this plan (pre-voice), only rung 2 exists** — the manager item
+  is the sole touch, so the once-per-assignment-ever dedup above is unchanged; Stage 1's rebase
+  inserts rung 1 in front of it and demotes this plan's surface to the escalation rung.
+  *Sub-question deferred to the Stage-1 rebase:* whether an explicit tech answer of "nothing to
+  report / visit didn't happen" counts as filled or still escalates (as stated, any dismissal
+  escalates).
+- **Cadence — cron pulse moves to `*/5`, watcher every tick, heavy sweeps stay quarter-hourly
+  (user, 2026-08-16).** The user wants ~5-minute detection. Rather than tripling all seven
+  existing sweeps (Composio API calls, cost backfill, …), the schedule changes to `*/5` and step
+  scheduling becomes minute-gated and stateless: steps 1–7 run only on quarter-hour ticks
+  (`new Date(nowIso).getUTCMinutes() % 15 < 5`, tolerant of small firing delays — exactly their
+  previous cadence), step 8 runs every tick. Off-cadence ticks report the skipped steps in the
+  summary. Freshness gain for detection is modest (OVERDUE_HOURS dominates), but auto-resolve
+  now clears a flagged item within ~5 minutes of the field note arriving, and 5 minutes is the
+  pulse Stage 1's outreach will want.
+- **Knobs approved at review (user, 2026-08-16):** archetype (overdue confirmed visits) and the
+  72h look-back confirmed as v1; `OVERDUE_HOURS = 3` and the 5-items/tick cap stand
+  unobjected — still tunable at the shadow-volume review.
 - **Tenant loop = `listTenantIdsWithTelegramBindings()`** — paginated, skips tenants with nobody
   reachable, and (unlike `listTenantSeats`) skips the eval tenants, whose build-once worlds must
   not accumulate watcher items. Trade-off: detection coupled to notification reachability. When
@@ -245,9 +269,13 @@ rollout, and verifies end-to-end on the local stack.
 
 ### Changes required
 
-**`src/jobs/lifecycle.ts`** — header comment gains step 8; `LifecycleDeps` gains
-`runWatchers?: typeof runWatchers`; `LifecycleSummary` gains
-`watchers: WatchersSummary | { skipped: string } | { stepError: string }`. Step 8 after step 7:
+**`src/jobs/lifecycle.ts`** — header comment gains step 8 + the cadence note; `LifecycleDeps`
+gains `runWatchers?: typeof runWatchers`; `LifecycleSummary` gains
+`watchers: WatchersSummary | { skipped: string } | { stepError: string }`. **Cadence gate
+(user decision 2026-08-16):** the cron schedule becomes `*/5`; steps 1–7 run only on
+quarter-hour ticks (`getUTCMinutes() % 15 < 5` on the run's `nowIso`), each reporting
+`{ skipped: 'off-cadence tick' }` otherwise — stateless, no new env. Step 8 runs every tick.
+Step 8 after step 7:
 read `process.env.WATCHERS_MODE` — unset → `{ skipped: 'WATCHERS_MODE unset (shadow|live)' }`
 (the `COMPOSIO_API_KEY` precedent: a cron deployed before the var is chosen never goes red);
 any value other than `shadow`/`live` → `{ stepError }` + `ok = false` (a config typo must be
@@ -260,7 +288,9 @@ tenant failing is systemic, the pairing-sweep detector.
 (same reason as `COMPOSIO_API_KEY`: `.env` may carry it, and the default dep would hit the DB).
 New tests: unset → `{ skipped }`, real deps never called; invalid value → stepError + `ok:false`;
 `shadow`/`live` passed through to an injected stub; stub throw → stepError + `ok:false`;
-all-tenants-failed summary → `ok:false`.
+all-tenants-failed summary → `ok:false`; **cadence gate**: a quarter-hour `nowIso` (:00/:15 and a
+delayed :16) runs steps 1–7, an off-cadence `nowIso` (:05) skips them all with
+`{ skipped: 'off-cadence tick' }` while step 8 still runs.
 
 **`docs/engineering-memory.md`** — live-state entry: step 8 exists, `WATCHERS_MODE` semantics,
 rollout state (shadow until volume reviewed), the 67/67-backlog rationale for the 72h window, and
@@ -268,8 +298,10 @@ the money-Phase-3 shared-loop note.
 
 ### Rollout order (a design artifact — deploy ≠ enable)
 1. Merge via PR (gates green). No migration to apply.
-2. Render cron: set `WATCHERS_MODE=shadow`, then **Manual Deploy → latest commit** (recorded
-   traps: "Redeploy" and env-save both run the OLD commit).
+2. Render cron: set `WATCHERS_MODE=shadow` AND change the schedule `*/15` → `*/5`, then
+   **Manual Deploy → latest commit** (recorded traps: "Redeploy" and env-save both run the OLD
+   commit). Verify from the next few log lines that quarter-hour ticks run steps 1–7 and
+   off-cadence ticks skip them.
 3. Observe days of JSON summaries (`watchers.gapsFound`) in Render logs; judge volume with the
    user. Then flip to `live` (+ `BOARD_BOT_TOKEN` in the cron env if pushes wanted). Escape
    hatch: unset `WATCHERS_MODE` — nothing to unwind beyond open items managers can dismiss.

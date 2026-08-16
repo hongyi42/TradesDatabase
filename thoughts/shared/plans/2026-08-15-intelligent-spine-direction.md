@@ -90,7 +90,11 @@ Two honest mechanics of that scenario:
    pings, exactly as over-confirming trains rubber-stamping. Nudges need a budget, deduplication
    (ask once, not every 15 minutes), and an escalation ladder: check the spine → ask the person's
    agent (session context) → agent asks the human → unanswered items surface in the manager's
-   digest. Never sideways-broadcast.
+   digest. Never sideways-broadcast. **Ladder ratified (user, 2026-08-16): at most TWO touches
+   per gap — the responsible technician's agent first; dismissed or unanswered → the manager;
+   never a third.** The asking agent follows up in-conversation until the gap is *verifiably*
+   filled — "filled" = a capture/visit actually landed (the deterministic activity-after-end
+   check), never the model's judgment that the chat felt sufficient.
 4. **Agent-to-agent stays spine-mediated.** Agents don't get a private channel to each other; the
    team leader is the hub, and everything it asks and learns lands in the spine like any other
    capture. Whether/how its outreach is itself L1-captured is a **new capture-policy entry**

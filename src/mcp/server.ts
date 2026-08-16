@@ -82,6 +82,14 @@ import {
   listMoneyEventsForJobs,
   summarizeMoney,
   syncJobStatusForMoney,
+  technicianMoneyView,
+  getTenantProfile,
+  upsertTenantProfile,
+  profileGaps,
+  profileEcho,
+  PROFILE_STRING_FIELDS,
+  type TenantProfilePatch,
+  type LicenseNumber,
 } from '../db/index.js';
 import { recordFieldNote, type ResolvedIdentity } from '../writePath/recordFieldNote.js';
 import { matchIdentity, type MatchResult } from '../writePath/identityMatch.js';
@@ -1062,7 +1070,7 @@ const ADMIN_TOOLS = [
       'earliest_date..latest_date. A day is NOT free just because no row lands ON it; for ' +
       'free/empty-day questions use get_team_schedule, or filter window rows by ' +
       'earliest_date/latest_date. ' +
-      'It CANNOT write, and it can only read these seven views (nothing else exists to it): ' +
+      'It CANNOT write, and it can only read these eight views (nothing else exists to it): ' +
       'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, promise_level, ' +
       'promised_day, locked, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
       'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
@@ -1083,7 +1091,10 @@ const ADMIN_TOOLS = [
       'ledger, one row per money fact (invoice_issued, payment_received, …), amounts in CENTS; ' +
       'a correction/invoice_voided row CANCELS the row its corrects_event_id points at, so ' +
       'exclude both sides of a cancelled pair when summing (or prefer the money summary that ' +
-      'get_job already returns — it folds this for you). ' +
+      'get_job already returns — it folds this for you); ' +
+      'v_firm_profile(display_name, legal_name, address_line1, address_line2, city, state, ' +
+      'postal_code, phone, email, license_numbers, disclosure_footer, updated_at) — the ' +
+      "firm's own letterhead identity, one row at most (set_firm_profile edits it). " +
       'ALWAYS group or filter dates on v_schedule.local_day, which is already the firm-local day — ' +
       'starts_at is a timestamp and bucketing it by its UTC date puts evening visits on the wrong ' +
       'day. When you name one of those dates to a person, SELECT local_weekday and use it verbatim ' +
@@ -1230,6 +1241,81 @@ const ADMIN_TOOLS = [
     },
   },
   {
+    name: 'set_firm_profile',
+    description:
+      "Set the firm's business-identity profile (manager only) — what customer-facing " +
+      'documents (invoices, estimates) will print: business/legal name, address, phone, ' +
+      'email, contractor license numbers, and a disclosure footer. ONE call, commits ' +
+      'immediately — pass any subset of fields and only those change (null clears a field); ' +
+      'call with NO fields to just see the current profile. The reply echoes the full saved ' +
+      'profile plus gaps (likely-required fields still missing) — relay BOTH to the manager. ' +
+      'Every field is optional: display rules are state-specific, so gaps warn, never block. ' +
+      'licenseNumbers is a LIST of {label, number} because firms hold several (e.g. ' +
+      "{label: 'TX TACL', number: 'TACLA12345E'}), and setting it REPLACES the whole list. " +
+      'State-mandated invoice wording goes in disclosureFooter — for Texas, TDLR requires ' +
+      'the license number AND its disclosure paragraph on invoices/proposals; offer this ' +
+      "template and have the manager verify current wording: 'Regulated by The Texas " +
+      'Department of Licensing and Regulation, P.O. Box 12157, Austin, TX 78711, ' +
+      "1-800-803-9202, www.tdlr.texas.gov'.",
+    inputSchema: {
+      type: 'object',
+      // Key-closed: unknown/misspelled fields are refused at dispatch, never
+      // silently dropped. minLength pins that '' is refused — null, not the
+      // empty string, is the clear.
+      additionalProperties: false,
+      properties: {
+        displayName: {
+          type: ['string', 'null'],
+          minLength: 1,
+          description: 'Trading/DBA name as it should print. Pass null to clear any field.',
+        },
+        legalName: {
+          type: ['string', 'null'],
+          minLength: 1,
+          description: 'Registered legal entity name, if it differs from displayName.',
+        },
+        addressLine1: { type: ['string', 'null'], minLength: 1, description: 'Street address.' },
+        addressLine2: { type: ['string', 'null'], minLength: 1, description: 'Suite/unit, if any.' },
+        city: { type: ['string', 'null'], minLength: 1 },
+        state: {
+          type: ['string', 'null'],
+          minLength: 1,
+          description: '2-letter state code, e.g. TX (stored uppercase; full names refused).',
+        },
+        postalCode: { type: ['string', 'null'], minLength: 1 },
+        phone: { type: ['string', 'null'], minLength: 1, description: 'Business phone as printed.' },
+        email: { type: ['string', 'null'], minLength: 1, description: 'Business email as printed.' },
+        licenseNumbers: {
+          type: ['array', 'null'],
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              label: { type: 'string', minLength: 1, description: "Which license, e.g. 'TX TACL'." },
+              number: {
+                type: 'string',
+                minLength: 1,
+                description: 'The license number exactly as issued.',
+              },
+            },
+            required: ['label', 'number'],
+          },
+          description:
+            'FULL replacement of the license list — include every license each time. ' +
+            'null (or []) clears the list.',
+        },
+        disclosureFooter: {
+          type: ['string', 'null'],
+          minLength: 1,
+          description:
+            'Free-text footer printed on customer documents — state-mandated disclosure ' +
+            'wording lives here. null clears.',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'update_job',
     description:
       "Correct an existing job's IDENTITY (manager only): title, jobType, priority, and/or " +
@@ -1286,10 +1372,13 @@ const ADMIN_TOOLS = [
       'ONE call — it commits immediately and replies with the updated money summary ' +
       '(quoted / invoiced / paid / balance due) and any job-status change; ALWAYS relay ' +
       'those back to the manager. Amounts are IN CENTS ($450 = 45000) and always positive — ' +
-      'the kind carries the direction. Mistakes are never edited, they are cancelled by a ' +
-      "NEW entry: kind 'correction' (with correctsEventId) cancels any entry; " +
+      'the kind carries the direction. Mistakes are never edited, they are cancelled WHOLE by ' +
+      "a NEW entry: kind 'correction' (with correctsEventId) cancels any entry; " +
       "'invoice_voided' (with correctsEventId) cancels an invoice AND walks the job status " +
-      'back down. A deposit or mid-project milestone invoice must pass progress: true so it ' +
+      'back down. A void/correction cancels the ENTIRE cited entry — for a partial adjustment ' +
+      '("knock $50 off"), cancel the entry and re-enter the right amount; a MISTAKEN ' +
+      'void/correction is fixed by re-issuing the cancelled entry, never by correcting the ' +
+      'correction. A deposit or mid-project milestone invoice must pass progress: true so it ' +
       'records the money WITHOUT marking the job completed. Job status follows the ledger ' +
       'automatically (a real invoice ⇒ completed → invoiced; balance cleared ⇒ paid) — ' +
       'never ask the manager to update status separately.',
@@ -1307,7 +1396,9 @@ const ADMIN_TOOLS = [
           minimum: 0,
           description:
             'Amount in cents, positive ($450 = 45000). Required for every kind except ' +
-            'estimate_declined.',
+            'estimate_declined and correction/invoice_voided (optional there — a ' +
+            'void/correction cancels its target WHOLE; if stated it must equal the ' +
+            "cancelled entry's amount).",
         },
         occurredAt: {
           type: 'string',
@@ -2114,9 +2205,7 @@ async function dispatch(
       const moneyByJob: Record<string, unknown> = {};
       for (const [jobId, events] of byJob) {
         const s = summarizeMoney(events);
-        moneyByJob[jobId] = activeManager
-          ? s
-          : { balanceDueCents: s.balanceDueCents, invoicedCents: s.invoicedCents };
+        moneyByJob[jobId] = activeManager ? s : technicianMoneyView(s);
       }
       return {
         ...ctx,
@@ -2139,13 +2228,21 @@ async function dispatch(
       const job = await getJob(jobId);
       // Tenant guard: a cross-tenant (or unknown) id reads as not found.
       if (!job || job.tenant_id !== tenantId) return null;
-      // Money position (money-ledger plan). Attached ONLY when the ledger has
-      // entries — a zero-summary on an untracked job would read as "fully
-      // paid", the exact misread the fold exists to prevent. Tier split:
+      // Money position + retraction fold are independent reads — parallel
+      // (one round-trip of latency instead of two on every get_job).
+      const factIds = factSourceIds(job.attributes);
+      const [moneyEvents, retractionRows] = await Promise.all([
+        listMoneyEventsForJob(tenantId, jobId),
+        factIds.length > 0 ? findRetractionsFor(factIds) : Promise.resolve([]),
+      ]);
+      // Money attached ONLY when the ledger has entries: absence = "money was
+      // never recorded here" (a zero-summary on an untracked job would read as
+      // "fully paid"). A fully-VOIDED ledger still attaches its zeros — that
+      // is truthful: money was discussed and nothing is owed. Tier split:
       // managers also get the recent entries (ids are what correction/void
       // cite); technicians get the door numbers only — no methods, no refs,
-      // no history (payment detail is manager_only by standing policy).
-      const moneyEvents = await listMoneyEventsForJob(tenantId, jobId);
+      // no history (payment detail is manager_only by standing policy;
+      // technicianMoneyView is the ONE definition of that boundary).
       const moneySummary = summarizeMoney(moneyEvents);
       const money =
         moneyEvents.length === 0
@@ -2164,22 +2261,18 @@ async function dispatch(
                       correctsEventId: e.corrects_event_id,
                     })),
                   }
-                : {
-                    balanceDueCents: moneySummary.balanceDueCents,
-                    invoicedCents: moneySummary.invoicedCents,
-                  },
+                : technicianMoneyView(moneySummary),
             };
       // Fold standing facts whose evidence was retracted — the raw-row tool
-      // must agree with the folded context view.
-      const ids = factSourceIds(job.attributes);
-      if (ids.length === 0) return { ...job, ...money };
+      // must agree with the folded context view. Single exit: every branch
+      // carries both the fold result and the money block (review finding: a
+      // future early return must not silently drop one of them).
       const retracted = new Set(
-        (await findRetractionsFor(ids))
-          .map((r) => r.retracts_capture_id)
-          .filter((id): id is string => !!id),
+        retractionRows.map((r) => r.retracts_capture_id).filter((id): id is string => !!id),
       );
-      if (retracted.size === 0) return { ...job, ...money };
-      return { ...job, attributes: foldRetractedFacts(job.attributes, retracted), ...money };
+      const attributes =
+        retracted.size > 0 ? foldRetractedFacts(job.attributes, retracted) : job.attributes;
+      return { ...job, attributes, ...money };
     }
     case 'resolve_date': {
       // "Now" is the SERVER's clock in the FIRM's timezone — never a model
@@ -4968,6 +5061,55 @@ async function dispatch(
           'what changed (old → new).',
       };
     }
+    case 'set_firm_profile': {
+      // KEY-closed surface: unknown/misspelled arg names are REFUSED, never
+      // silently dropped (review finding) — with required:[] and the no-field
+      // read mode below, a call made of unrecognized keys (snake_case, typos)
+      // would otherwise flip into a success-shaped read while the manager is
+      // told the profile was saved. The roster is imported from the typed
+      // layer, so it cannot drift from what the patch actually accepts. VALUE
+      // validation (string-ness, empty strings, state format, license entry
+      // shape) lives in that typed layer — the single write-side guard for
+      // every surface; its errors are instructive, surface them verbatim.
+      const knownKeys = [...PROFILE_STRING_FIELDS, 'licenseNumbers'];
+      const unknown = Object.keys(args).filter((k) => !knownKeys.includes(k as never));
+      if (unknown.length > 0) {
+        throw new Error(
+          `unknown field(s): ${unknown.join(', ')} — the profile fields are ` +
+            knownKeys.join(', '),
+        );
+      }
+      const patch: TenantProfilePatch = {};
+      for (const k of PROFILE_STRING_FIELDS) {
+        if (args[k] !== undefined) patch[k] = args[k] as string | null;
+      }
+      if (args.licenseNumbers !== undefined) {
+        patch.licenseNumbers = args.licenseNumbers as LicenseNumber[] | null;
+      }
+      // No fields = a READ: echo the current profile without writing (plan
+      // decision: the echo IS the get — no separate get tool).
+      const saved =
+        Object.keys(patch).length === 0
+          ? await getTenantProfile(tenantId)
+          : await upsertTenantProfile(tenantId, patch);
+      const gaps = profileGaps(saved);
+      return {
+        status: 'ok',
+        profile: saved ? profileEcho(saved) : null,
+        ...(gaps.length > 0 ? { gaps } : {}),
+        note:
+          (saved === null
+            ? 'No profile recorded yet — every field is still to be set. '
+            : Object.keys(patch).length === 0
+              ? 'Current profile, nothing changed. '
+              : 'One-shot: saved — correctable the same way (set a new value, or null to ' +
+                'clear). Read the profile back to the manager exactly as stored. ') +
+          (gaps.length > 0
+            ? 'Mention the gaps: these fields are commonly required on invoices and are ' +
+              'still missing.'
+            : 'No gaps — the common invoice-header fields are all present.'),
+      };
+    }
     case 'update_job': {
       // Non-string args rejected, never coerced-to-absent (find_slots rule).
       // jobType additionally accepts NULL = clear back to untyped (the undo
@@ -5087,28 +5229,23 @@ async function dispatch(
       const jobId = str('jobId');
       if (!jobId) throw new Error('jobId is required');
       const kindArg = str('kind');
-      if (!kindArg || !MONEY_EVENT_KINDS.includes(kindArg as MoneyEventKind)) {
-        throw new Error(
-          `invalid kind: ${String(args.kind)} (allowed: ${MONEY_EVENT_KINDS.join(', ')})`,
-        );
-      }
+      if (!kindArg) throw new Error('kind is required');
       if (args.amountCents !== undefined && typeof args.amountCents !== 'number') {
         throw new Error('amountCents must be a number of cents');
       }
       if (args.correctsEventId !== undefined && typeof args.correctsEventId !== 'number') {
         throw new Error('correctsEventId must be the numeric ledger entry id');
       }
-      // Tenant guard here for a named error; appendMoneyEvent re-checks anyway.
-      const moneyJob = await getJob(jobId);
-      if (!moneyJob || moneyJob.tenant_id !== tenantId) throw new Error('job not found');
       const detail: Record<string, Json> = {};
       const noteArg = str('note');
       if (noteArg) detail.note = noteArg;
       if (args.progress === true) detail.progress = true;
       // One-shot by doctrine: a ledger row is reversible via correction/void,
-      // so no staging. Amount/reference rules live in the typed layer (ONE
-      // write-side guard for every surface); its errors are instructive —
-      // surface them verbatim.
+      // so no staging. Kind vocabulary, amount rules, tenant/job coherence and
+      // reference rules all live in the typed layer — ONE write-side guard for
+      // every surface (review finding: pre-duplicating them here bought only a
+      // second error phrasing and a wasted job read); its errors are
+      // instructive — surface them verbatim.
       const event = await appendMoneyEvent({
         tenantId,
         jobId,
@@ -5121,21 +5258,36 @@ async function dispatch(
         externalRef: str('externalRef') ?? null,
         detail,
       });
-      // Ledger first, status second: the walk is best-effort and silent when
-      // the ledger has no opinion — recording NEVER fails because of status.
-      const statusMove = await syncJobStatusForMoney(tenantId, jobId);
-      const events = await listMoneyEventsForJob(tenantId, jobId);
+      // The entry is LANDED from here on. Any failure below must still report
+      // success: manual entries carry no dedupe key, so an isError reply would
+      // invite a retry that double-records into an append-only table (the
+      // standing "failed-turn writes may have LANDED" trap — review finding).
+      let statusMove: Awaited<ReturnType<typeof syncJobStatusForMoney>> = null;
+      let events: Awaited<ReturnType<typeof listMoneyEventsForJob>> | null = null;
+      let statusSyncWarning: string | undefined;
+      try {
+        statusMove = await syncJobStatusForMoney(tenantId, jobId);
+        events = await listMoneyEventsForJob(tenantId, jobId);
+      } catch (err) {
+        statusSyncWarning =
+          'the entry WAS recorded, but the follow-up status/summary step failed ' +
+          `(${err instanceof Error ? err.message : String(err)}) — do NOT re-record it; ` +
+          'call get_job to see the current position and status';
+      }
       return {
         status: 'recorded',
         eventId: event.id,
         kind: event.kind,
         amountCents: event.amount_cents,
-        money: summarizeMoney(events),
+        ...(events ? { money: summarizeMoney(events) } : {}),
         ...(statusMove ? { jobStatusChange: statusMove } : {}),
+        ...(statusSyncWarning ? { statusSyncWarning } : {}),
         note:
           'One-shot: recorded. Tell the manager what was recorded, the new balance due, and ' +
-          `any status change. A mistake is cancelled with kind 'correction' (or ` +
-          `'invoice_voided' for an invoice) citing eventId ${event.id}.`,
+          `any status change. A wrong ENTRY is cancelled whole with kind 'correction' (or ` +
+          `'invoice_voided' for an invoice) citing eventId ${event.id} — a partial adjustment ` +
+          'is cancel-then-re-enter. A mistaken void/correction is fixed by RE-ISSUING the ' +
+          'cancelled entry, never by correcting the correction.',
       };
     }
     case 'set_promise': {

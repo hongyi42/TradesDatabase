@@ -674,6 +674,13 @@ export type Database = {
             foreignKeyName: "jobs_customer_id_fkey"
             columns: ["customer_id"]
             isOneToOne: false
+            referencedRelation: "v_money_events"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "jobs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
             referencedRelation: "v_schedule"
             referencedColumns: ["customer_id"]
           },
@@ -686,6 +693,117 @@ export type Database = {
           },
           {
             foreignKeyName: "jobs_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      money_events: {
+        Row: {
+          actor_ref: string | null
+          amount_cents: number | null
+          corrects_event_id: number | null
+          created_at: string
+          currency: string
+          dedupe_key: string | null
+          detail: Json
+          external_ref: string | null
+          id: number
+          job_id: string
+          kind: Database["public"]["Enums"]["money_event_kind"]
+          method: string | null
+          occurred_at: string
+          source_capture_id: string | null
+          tenant_id: string
+        }
+        Insert: {
+          actor_ref?: string | null
+          amount_cents?: number | null
+          corrects_event_id?: number | null
+          created_at?: string
+          currency?: string
+          dedupe_key?: string | null
+          detail?: Json
+          external_ref?: string | null
+          id?: never
+          job_id: string
+          kind: Database["public"]["Enums"]["money_event_kind"]
+          method?: string | null
+          occurred_at?: string
+          source_capture_id?: string | null
+          tenant_id: string
+        }
+        Update: {
+          actor_ref?: string | null
+          amount_cents?: number | null
+          corrects_event_id?: number | null
+          created_at?: string
+          currency?: string
+          dedupe_key?: string | null
+          detail?: Json
+          external_ref?: string | null
+          id?: never
+          job_id?: string
+          kind?: Database["public"]["Enums"]["money_event_kind"]
+          method?: string | null
+          occurred_at?: string
+          source_capture_id?: string | null
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "money_events_corrects_event_id_fkey"
+            columns: ["corrects_event_id"]
+            isOneToOne: false
+            referencedRelation: "money_events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_events_corrects_event_id_fkey"
+            columns: ["corrects_event_id"]
+            isOneToOne: false
+            referencedRelation: "v_money_events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_events_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_events_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "money_events_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_events_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "money_events_source_capture_id_fkey"
+            columns: ["source_capture_id"]
+            isOneToOne: false
+            referencedRelation: "raw_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_events_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
             referencedRelation: "tenants"
@@ -851,6 +969,13 @@ export type Database = {
             columns: ["customer_id"]
             isOneToOne: false
             referencedRelation: "v_jobs"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "raw_captures_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_money_events"
             referencedColumns: ["customer_id"]
           },
           {
@@ -1120,6 +1245,13 @@ export type Database = {
             foreignKeyName: "schedule_entries_customer_id_fkey"
             columns: ["customer_id"]
             isOneToOne: false
+            referencedRelation: "v_money_events"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "schedule_entries_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
             referencedRelation: "v_schedule"
             referencedColumns: ["customer_id"]
           },
@@ -1354,6 +1486,65 @@ export type Database = {
           },
         ]
       }
+      tenant_profiles: {
+        Row: {
+          address_line1: string | null
+          address_line2: string | null
+          city: string | null
+          created_at: string
+          disclosure_footer: string | null
+          display_name: string | null
+          email: string | null
+          legal_name: string | null
+          license_numbers: Json
+          phone: string | null
+          postal_code: string | null
+          state: string | null
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          address_line1?: string | null
+          address_line2?: string | null
+          city?: string | null
+          created_at?: string
+          disclosure_footer?: string | null
+          display_name?: string | null
+          email?: string | null
+          legal_name?: string | null
+          license_numbers?: Json
+          phone?: string | null
+          postal_code?: string | null
+          state?: string | null
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          address_line1?: string | null
+          address_line2?: string | null
+          city?: string | null
+          created_at?: string
+          disclosure_footer?: string | null
+          display_name?: string | null
+          email?: string | null
+          legal_name?: string | null
+          license_numbers?: Json
+          phone?: string | null
+          postal_code?: string | null
+          state?: string | null
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tenant_profiles_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: true
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tenants: {
         Row: {
           created_at: string
@@ -1570,6 +1761,51 @@ export type Database = {
         }
         Relationships: []
       }
+      v_firm_profile: {
+        Row: {
+          address_line1: string | null
+          address_line2: string | null
+          city: string | null
+          disclosure_footer: string | null
+          display_name: string | null
+          email: string | null
+          legal_name: string | null
+          license_numbers: Json | null
+          phone: string | null
+          postal_code: string | null
+          state: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          address_line1?: string | null
+          address_line2?: string | null
+          city?: string | null
+          disclosure_footer?: string | null
+          display_name?: string | null
+          email?: string | null
+          legal_name?: string | null
+          license_numbers?: Json | null
+          phone?: string | null
+          postal_code?: string | null
+          state?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          address_line1?: string | null
+          address_line2?: string | null
+          city?: string | null
+          disclosure_footer?: string | null
+          display_name?: string | null
+          email?: string | null
+          legal_name?: string | null
+          license_numbers?: Json | null
+          phone?: string | null
+          postal_code?: string | null
+          state?: string | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
       v_jobs: {
         Row: {
           created_at: string | null
@@ -1585,6 +1821,67 @@ export type Database = {
           updated_at: string | null
         }
         Relationships: []
+      }
+      v_money_events: {
+        Row: {
+          actor_ref: string | null
+          amount_cents: number | null
+          corrects_event_id: number | null
+          currency: string | null
+          customer_id: string | null
+          customer_name: string | null
+          external_ref: string | null
+          id: number | null
+          job_id: string | null
+          job_title: string | null
+          kind: Database["public"]["Enums"]["money_event_kind"] | null
+          method: string | null
+          occurred_at: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "money_events_corrects_event_id_fkey"
+            columns: ["corrects_event_id"]
+            isOneToOne: false
+            referencedRelation: "money_events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_events_corrects_event_id_fkey"
+            columns: ["corrects_event_id"]
+            isOneToOne: false
+            referencedRelation: "v_money_events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_events_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_events_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "money_events_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "money_events_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+        ]
       }
       v_schedule: {
         Row: {
@@ -1744,6 +2041,19 @@ export type Database = {
         | "paid"
         | "cancelled"
         | "declined"
+      money_event_kind:
+        | "fee_charged"
+        | "estimate_presented"
+        | "estimate_approved"
+        | "estimate_declined"
+        | "change_order"
+        | "invoice_issued"
+        | "invoice_voided"
+        | "payment_received"
+        | "payment_refunded"
+        | "credit_applied"
+        | "write_off"
+        | "correction"
       promise_level: "none" | "day" | "time" | "time_only"
       review_status: "open" | "resolved" | "dismissed"
       technician_state:
@@ -1913,6 +2223,20 @@ export const Constants = {
         "paid",
         "cancelled",
         "declined",
+      ],
+      money_event_kind: [
+        "fee_charged",
+        "estimate_presented",
+        "estimate_approved",
+        "estimate_declined",
+        "change_order",
+        "invoice_issued",
+        "invoice_voided",
+        "payment_received",
+        "payment_refunded",
+        "credit_applied",
+        "write_off",
+        "correction",
       ],
       promise_level: ["none", "day", "time", "time_only"],
       review_status: ["open", "resolved", "dismissed"],

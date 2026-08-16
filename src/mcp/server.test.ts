@@ -21,6 +21,7 @@ import {
 import { createHost } from '../db/hosts.js';
 import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
+import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { logWebRequests } from '../db/webRequests.js';
 import { createServer, safeEnvInt, type ServerDeps } from './server.js';
@@ -99,7 +100,7 @@ afterAll(async () => {
     // call, so a suite run leaves hundreds behind. Left uncleaned they would
     // skew any later test that counts spine events per tenant — which is
     // exactly what the rollup's allocation split does.
-    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations, cost_events cascade',
+    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations, cost_events, money_events, tenant_profiles cascade',
   );
   // Restore the seed capacity (2/5) so post-suite live checks see known values.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
@@ -1787,7 +1788,9 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('undo_run'); // the safety net (plan 2026-07-30 Phase 5)
       expect(mgrTools).toContain('get_availability'); // the read half of set_availability (2026-08-04)
       expect(mgrTools).toContain('query_spine'); // ad-hoc read fallback (2026-08-06)
-      expect(mgrTools).toHaveLength(41);
+      expect(mgrTools).toContain('record_money_event'); // the money ledger (2026-08-15)
+      expect(mgrTools).toContain('set_firm_profile'); // firm identity (2026-08-15)
+      expect(mgrTools).toHaveLength(43);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2190,7 +2193,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(41); // base minus get_schedule + 28 admin
+        expect(mgrTools).toHaveLength(43); // base minus get_schedule + 30 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -7323,6 +7326,221 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
       expect(again.text).toContain('it already is');
     } finally {
       await mgrClient.close();
+    }
+  });
+});
+
+describe('record_money_event + money reads (money-ledger plan phase 2)', () => {
+  test('manager records events; ledger, status walk, and tier-filtered reads all verified', async () => {
+    const { client: mgrC, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const cust = await createCustomer({ tenantId, name: 'Money MCP Cust', phone: '555-8811' });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'boiler swap' });
+
+      // The admin gate: a technician badge is refused by NAME, before args.
+      const refused = await call('record_money_event', {
+        jobId: job.id, kind: 'invoice_issued', amountCents: 1000,
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('manager badge');
+
+      // Instructive rejections: unknown kind, missing amount, ghost job.
+      const badKind = await mgr('record_money_event', { jobId: job.id, kind: 'bribe', amountCents: 5 });
+      expect(badKind.isError).toBe(true);
+      expect(badKind.text).toContain('unknown kind'); // the typed layer's single guard
+      const noAmt = await mgr('record_money_event', { jobId: job.id, kind: 'invoice_issued' });
+      expect(noAmt.isError).toBe(true);
+      expect(noAmt.text).toContain('requires amountCents');
+      const ghost = await mgr('record_money_event', {
+        jobId: '00000000-0000-0000-0000-000000000000', kind: 'fee_charged', amountCents: 100,
+      });
+      expect(ghost.isError).toBe(true);
+      expect(ghost.text).toContain('not found for this tenant');
+      const negAmt = await mgr('record_money_event', {
+        jobId: job.id, kind: 'payment_received', amountCents: -500,
+      });
+      expect(negAmt.isError).toBe(true);
+      expect(negAmt.text).toContain('whole number of cents');
+      // A REAL cross-tenant job (not just a ghost id): same answer, no oracle.
+      const otherTenant = await createTenant('Money Other Tenant');
+      const foreignCust = await createCustomer({ tenantId: otherTenant.id, name: 'Foreign Cust' });
+      const foreignJob = await createJob({ tenantId: otherTenant.id, customerId: foreignCust.id });
+      const cross = await mgr('record_money_event', {
+        jobId: foreignJob.id, kind: 'fee_charged', amountCents: 100,
+      });
+      expect(cross.isError).toBe(true);
+      expect(cross.text).toContain('not found for this tenant');
+      // Coerced-to-absent guards: a numeric externalRef and a string progress
+      // are REJECTED, never silently dropped (append-only row — review finding).
+      const numRef = await mgr('record_money_event', {
+        jobId: job.id, kind: 'payment_received', amountCents: 100, externalRef: 4471,
+      });
+      expect(numRef.isError).toBe(true);
+      expect(numRef.text).toContain('externalRef must be a string');
+      const strProg = await mgr('record_money_event', {
+        jobId: job.id, kind: 'invoice_issued', amountCents: 100, progress: 'true',
+      });
+      expect(strProg.isError).toBe(true);
+      expect(strProg.text).toContain('progress must be a boolean');
+
+      // Record an invoice: reply carries the fold AND the derived status walk.
+      const inv = await mgr('record_money_event', {
+        jobId: job.id, kind: 'invoice_issued', amountCents: 45000, externalRef: 'INV-77',
+      });
+      expect(inv.data.status).toBe('recorded');
+      expect(inv.data.money.invoicedCents).toBe(45000);
+      expect(inv.data.jobStatusChange).toEqual({ from: 'open', to: 'invoiced' });
+
+      // A progress invoice records money but never drives status.
+      const cust2 = await createCustomer({ tenantId, name: 'Money MCP Cust 2', phone: '555-8812' });
+      const job2 = await createJob({ tenantId, customerId: cust2.id, title: 'big install' });
+      const prog = await mgr('record_money_event', {
+        jobId: job2.id, kind: 'invoice_issued', amountCents: 100000, progress: true,
+      });
+      expect(prog.data.status).toBe('recorded');
+      expect(prog.data.jobStatusChange).toBeUndefined();
+
+      // get_job tier split: manager sees summary + entries; technician sees
+      // door numbers only; an untracked job carries NO money key at all.
+      const mgrJob = await mgr('get_job', { jobId: job.id });
+      expect(mgrJob.data.money.balanceDueCents).toBe(45000);
+      expect(mgrJob.data.money.recentEvents).toHaveLength(1);
+      expect(mgrJob.data.money.recentEvents[0].externalRef).toBe('INV-77');
+      const techJob = await call('get_job', { jobId: job.id });
+      expect(techJob.data.money).toEqual({ balanceDueCents: 45000, invoicedCents: 45000 });
+      const cust3 = await createCustomer({ tenantId, name: 'No Money Cust', phone: '555-8813' });
+      const job3 = await createJob({ tenantId, customerId: cust3.id, title: 'untracked' });
+      const bare = await mgr('get_job', { jobId: job3.id });
+      expect(bare.data.money).toBeUndefined();
+
+      // get_customer_context: per-job summaries, tier-filtered, absent when empty.
+      const ctxMgr = await mgr('get_customer_context', { customerId: cust.id });
+      expect(ctxMgr.data.moneyByJob[job.id].invoicedCents).toBe(45000);
+      const ctxTech = await call('get_customer_context', { customerId: cust.id });
+      expect(ctxTech.data.moneyByJob[job.id]).toEqual({ balanceDueCents: 45000, invoicedCents: 45000 });
+      const ctxBare = await mgr('get_customer_context', { customerId: cust3.id });
+      expect(ctxBare.data.moneyByJob).toBeUndefined();
+
+      // Payment clears the balance → paid; an unreferenced void is refused.
+      const pay = await mgr('record_money_event', {
+        jobId: job.id, kind: 'payment_received', amountCents: 45000, method: 'check',
+      });
+      expect(pay.data.jobStatusChange).toEqual({ from: 'invoiced', to: 'paid' });
+      expect(pay.data.money.balanceDueCents).toBe(0);
+      const badVoid = await mgr('record_money_event', {
+        jobId: job.id, kind: 'invoice_voided', amountCents: 45000,
+      });
+      expect(badVoid.isError).toBe(true);
+      expect(badVoid.text).toContain('correctsEventId');
+    } finally {
+      await mgrC.close();
+    }
+  });
+});
+
+describe('set_firm_profile (firm-profile plan)', () => {
+  test('manager sets, patches, clears, reads; technician refused; echo carries gaps', async () => {
+    const { client: mgrC, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // Admin gate: a technician badge is refused by NAME, before args.
+      const refused = await call('set_firm_profile', { displayName: 'Nope Inc' });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('manager badge');
+
+      // Schema-roster closure: the advertised inputSchema properties ARE the
+      // typed layer's roster — the fourth copy of the field list is pinned to
+      // the single export, so schema/handler drift fails here (review finding).
+      const schema = (await mgrC.listTools()).tools.find((t) => t.name === 'set_firm_profile')!
+        .inputSchema as { properties: Record<string, unknown> };
+      expect(Object.keys(schema.properties).sort()).toEqual(
+        [...PROFILE_STRING_FIELDS, 'licenseNumbers'].sort(),
+      );
+
+      // Before any write, the no-arg call is a clean READ of nothing.
+      const empty = await mgr('set_firm_profile', {});
+      expect(empty.isError).toBe(false);
+      expect(empty.data.profile).toBeNull();
+      expect(empty.data.note).toContain('No profile recorded yet');
+      expect(empty.data.gaps.length).toBe(9); // everything is a gap
+
+      // First write: subset of fields; the echo is the FULL saved profile + gaps.
+      const first = await mgr('set_firm_profile', {
+        displayName: 'Hearth & Home Heating',
+        state: 'TX',
+        licenseNumbers: [{ label: 'TX TACL', number: 'TACLA12345E' }],
+      });
+      expect(first.isError).toBe(false);
+      expect(first.data.profile).toMatchObject({
+        displayName: 'Hearth & Home Heating',
+        state: 'TX',
+        licenseNumbers: [{ label: 'TX TACL', number: 'TACLA12345E' }],
+        phone: null,
+      });
+      expect(first.data.gaps.join(' ')).toContain('phone');
+      expect(first.data.gaps.join(' ')).toContain('disclosureFooter');
+
+      // Partial patch preserves the rest; explicit null clears; pg read-back
+      // is the independent channel.
+      const patched = await mgr('set_firm_profile', { phone: '512-555-0100', state: null });
+      expect(patched.data.profile.displayName).toBe('Hearth & Home Heating');
+      expect(patched.data.profile.phone).toBe('512-555-0100');
+      expect(patched.data.profile.state).toBeNull();
+      const row = await pg.query(
+        'select display_name, phone, state, license_numbers from tenant_profiles where tenant_id = $1',
+        [tenantId],
+      );
+      expect(row.rows[0]).toEqual({
+        display_name: 'Hearth & Home Heating',
+        phone: '512-555-0100',
+        state: null,
+        license_numbers: [{ label: 'TX TACL', number: 'TACLA12345E' }],
+      });
+
+      // No fields after a write = READ: echoes stored state, changes nothing.
+      const read = await mgr('set_firm_profile', {});
+      expect(read.isError).toBe(false);
+      expect(read.data.profile.phone).toBe('512-555-0100');
+      expect(read.data.note).toContain('nothing changed');
+
+      // Coerced-to-absent guards: wrong shapes refuse, never silently drop.
+      const numName = await mgr('set_firm_profile', { displayName: 42 });
+      expect(numName.isError).toBe(true);
+      expect(numName.text).toContain('displayName must be a string');
+      const objLic = await mgr('set_firm_profile', { licenseNumbers: { label: 'x', number: 'y' } });
+      expect(objLic.isError).toBe(true);
+      expect(objLic.text).toContain('licenseNumbers must be an array');
+      // Typed-layer entry validation surfaces verbatim.
+      const badEntry = await mgr('set_firm_profile', { licenseNumbers: [{ label: 'TX' }] });
+      expect(badEntry.isError).toBe(true);
+      expect(badEntry.text).toContain('non-empty string label and number');
+
+      // KEY-closed surface: unknown/misspelled arg NAMES refuse too — without
+      // this, an all-unknown-keys call (snake_case, typos) would flip into a
+      // success-shaped READ and the manager would be told "saved" while
+      // nothing was written (review finding).
+      const snake = await mgr('set_firm_profile', { disclosure_footer: 'Regulated by TDLR…' });
+      expect(snake.isError).toBe(true);
+      expect(snake.text).toContain('unknown field(s): disclosure_footer');
+      const mixed = await mgr('set_firm_profile', { displayName: 'Keep Me', zipCode: '78701' });
+      expect(mixed.isError).toBe(true); // the whole call refuses — nothing partial lands
+      expect(mixed.text).toContain('unknown field(s): zipCode');
+      const afterMixed = await mgr('set_firm_profile', {});
+      expect(afterMixed.data.profile.displayName).toBe('Hearth & Home Heating'); // not 'Keep Me'
+
+      // Completing every header field removes the gaps key entirely.
+      const full = await mgr('set_firm_profile', {
+        state: 'TX',
+        addressLine1: '100 Main St',
+        city: 'Austin',
+        postalCode: '78701',
+        email: 'office@hearth.example',
+        disclosureFooter: 'Regulated by TDLR…',
+      });
+      expect(full.isError).toBe(false);
+      expect(full.data.gaps).toBeUndefined();
+      expect(full.data.note).toContain('No gaps');
+    } finally {
+      await mgrC.close();
     }
   });
 });

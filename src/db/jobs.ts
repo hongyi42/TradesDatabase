@@ -16,11 +16,22 @@ export type JobWithCustomer = Job & { customers: JobCustomerAddress | null };
 // Hardcoded, auditable state machine (overview §5: identity/pricing/status are
 // code, not the model's guess). The authoritative "done" is a downstream event
 // (invoice paid), so paid/cancelled/declined are terminal here.
+//
+// Money-ledger edges (plan 2026-08-15-money-ledger-v1): the invoiced/paid tail
+// is DERIVED from money_events by syncJobStatusForMoney, walking these edges —
+// never hand-advanced. Two deliberate backward edges keep derivation undoable:
+//   completed → in_progress  (reopen: a new field note's 'in_progress'
+//                             statusSignal legally revives a wrongly-completed
+//                             job — no dedicated tool needed)
+//   invoiced  → completed    (walk-down when every real invoice is voided)
+// paid/cancelled/declined stay empty ⇒ the derived TERMINAL_STATUSES set
+// (recordFieldNote) is unchanged — note-attachment and mint-guard behavior
+// must not shift.
 export const ALLOWED_TRANSITIONS: Record<JobStatus, JobStatus[]> = {
   open: ['in_progress', 'cancelled', 'declined'],
   in_progress: ['completed', 'cancelled'],
-  completed: ['invoiced'],
-  invoiced: ['paid'],
+  completed: ['invoiced', 'in_progress'],
+  invoiced: ['paid', 'completed'],
   paid: [],
   cancelled: [],
   declined: [],

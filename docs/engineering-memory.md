@@ -32,8 +32,36 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   Composio case study).
 - **Never paste badge plaintext anywhere** (chat, docs, commits). A 2026-07-03 leak forced
   rotating every badge. Fingerprints (sha256) only.
+- **Concurrent sessions share a checkout at their peril** (2026-08-15): a `git commit -a` in one
+  session sweeps the OTHER session's in-flight working-tree changes into an unrelated commit
+  (live case: 8830e46 "query_spine window warning" silently included the money-ledger session's
+  half-edited `server.ts`). The CLAUDE.md worktree rule exists for parallel /implement runs —
+  apply it to ANY two sessions that might touch code on one branch, and prefer `git add <paths>`
+  over `-a` when another session may be active.
+- **A new table that references ONLY `tenants` escapes every cleanup cascade** (2026-08-15,
+  firm-profile review): the eval world reset, `seed.mjs`'s truncateSpine, and the test-suite
+  truncates all clear spine tables and let `cascade` catch dependents — but they deliberately
+  keep `tenants`, so a table whose only FK is `tenants(id)` (e.g. `tenant_profiles`) is reached
+  by nothing, silently survives every "clean rebuild", and (FK NO ACTION) makes
+  `delete from tenants` fail 23503 on the next eval-world rebuild. Adding such a table means
+  adding it BY NAME to `scripts/spine-eval/world.mjs` RESET_TABLES, `scripts/seed.mjs`
+  truncateSpine (existence-probed — hosted may lag on migrations), and the relevant test
+  truncate lists.
 
 ## 2. Product principles (user decisions — don't re-litigate, do cite when relevant)
+
+- **The spine is not the books** (2026-08-15): the money layer is an evidence-linked money
+  MEMORY reconciled against the firm's real books, never presented as the books. Precision over
+  recall — a missing number is an honest gap ("no payment on record"), a wrong number is a
+  trust incident. Writes are evidence-class-tiered: spine-performed actions record themselves
+  as fact; the manager's own outbound artifacts (an email THEY wrote) auto-record with
+  immediate disclosure and an auto-record cap; everything else (notes, inbound, transcripts)
+  only ever becomes a QUESTION — the ledger gains the entry when the manager confirms. Money
+  reads must attribute figures to their evidence ("from your email Tuesday"), never assert
+  balances as fact. Accounting-GRADE numbers come from ingesting the firm's own money system
+  (part D direction, thoughts/shared/plans/2026-08-15-accounting-ingestion-direction.md), after
+  which inference demotes to job-linkage; inference remains the bridge for unconnected firms
+  and the only path cash ever takes (field notes).
 
 - **The money layer is workflow-agnostic — never pilot-fitted** (2026-08-15, user decision,
   research stage; nothing built). Firms genuinely diverge in how price and payment flow

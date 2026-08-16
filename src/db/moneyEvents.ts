@@ -1,0 +1,404 @@
+import type { Database, Json } from './database.types.js';
+import { getClient } from './client.js';
+import { ALLOWED_TRANSITIONS, getJob, updateJobStatus, type JobStatus } from './jobs.js';
+import { wrapDbError } from './rawCaptures.js';
+
+export type MoneyEvent = Database['public']['Tables']['money_events']['Row'];
+export type MoneyEventKind = Database['public']['Enums']['money_event_kind'];
+
+// Runtime vocabulary (MCP handlers validate free strings against THIS list —
+// the JOB_PRIORITIES precedent: one exported list, every surface checks it).
+export const MONEY_EVENT_KINDS: MoneyEventKind[] = [
+  'fee_charged',
+  'estimate_presented',
+  'estimate_approved',
+  'estimate_declined',
+  'change_order',
+  'invoice_issued',
+  'invoice_voided',
+  'payment_received',
+  'payment_refunded',
+  'credit_applied',
+  'write_off',
+  'correction',
+];
+
+// Kinds that legitimately carry no amount: a declined estimate is an outcome,
+// not a number — and a void/correction cancels its TARGET whole, so its own
+// amount is decorative (review finding: requiring one taught callers that
+// "correction, amountCents: 5000" means a $50 adjustment; it never did). When
+// a void/correction DOES state an amount it must equal the target's, as a
+// checksum. Every other kind must state one — direction comes from `kind`,
+// never sign.
+const AMOUNTLESS_KINDS: ReadonlySet<MoneyEventKind> = new Set([
+  'estimate_declined',
+  'invoice_voided',
+  'correction',
+]);
+
+// Kinds whose meaning IS "negate that other row" — they must say which row.
+// An unreferenced void/correction would be a silent no-op the fold ignores
+// while the balance stays wrong (plan review finding). They may NOT target
+// another void/correction: negation is one-level by design, so "correcting a
+// void" would be accepted and change nothing — the remedy for a mistaken void
+// is RE-ISSUING the cancelled entry (review finding).
+const MUST_REFERENCE: ReadonlySet<MoneyEventKind> = new Set(['invoice_voided', 'correction']);
+const NEGATING_KINDS: ReadonlySet<MoneyEventKind> = MUST_REFERENCE;
+
+export interface AppendMoneyEventInput {
+  tenantId: string;
+  jobId: string;
+  kind: MoneyEventKind;
+  amountCents?: number | null;
+  currency?: string;
+  occurredAt?: string | null;
+  actorRef?: string | null;
+  sourceCaptureId?: string | null;
+  correctsEventId?: number | null;
+  method?: string | null;
+  externalRef?: string | null;
+  /**
+   * Idempotency key (partial unique per tenant). Inferred/spine-generated
+   * writers mint one so replays collide on 23505 and converge; manual entries
+   * pass null and are never blocked.
+   */
+  dedupeKey?: string | null;
+  detail?: Json;
+}
+
+const isWholeNonNegative = (n: unknown): n is number =>
+  typeof n === 'number' && Number.isInteger(n) && n >= 0;
+
+/**
+ * Append one money fact. Insert only — the table is trigger-enforced
+ * append-only; corrections are new rows. Validation here is the write-side
+ * guard for every surface (MCP tool, future inference), so it is strict:
+ * kind vocabulary, amount rules, tenant/job coherence, and reference rules
+ * for voids/corrections. SQLSTATE is preserved (rawCaptures precedent) so
+ * callers can detect dedupe collisions with isUniqueViolation.
+ */
+export async function appendMoneyEvent(input: AppendMoneyEventInput): Promise<MoneyEvent> {
+  if (!MONEY_EVENT_KINDS.includes(input.kind)) {
+    throw new Error(
+      `appendMoneyEvent: unknown kind '${String(input.kind)}' (allowed: ${MONEY_EVENT_KINDS.join(', ')})`,
+    );
+  }
+  const amount = input.amountCents ?? null;
+  if (AMOUNTLESS_KINDS.has(input.kind)) {
+    if (amount != null && !isWholeNonNegative(amount)) {
+      throw new Error('appendMoneyEvent: amountCents must be a whole number of cents >= 0');
+    }
+  } else if (!isWholeNonNegative(amount)) {
+    throw new Error(
+      `appendMoneyEvent: kind '${input.kind}' requires amountCents as a whole number of cents >= 0 ` +
+        '(direction comes from the kind, never a sign)',
+    );
+  }
+
+  const job = await getJob(input.jobId);
+  if (!job || job.tenant_id !== input.tenantId) {
+    // Cross-tenant ids get the same answer as unknown ids — no existence oracle.
+    throw new Error(`appendMoneyEvent: job ${input.jobId} not found for this tenant`);
+  }
+
+  if (MUST_REFERENCE.has(input.kind)) {
+    if (input.correctsEventId == null) {
+      throw new Error(
+        `appendMoneyEvent: kind '${input.kind}' requires correctsEventId — an unreferenced ` +
+          'void/correction would silently change nothing',
+      );
+    }
+  }
+  if (input.correctsEventId != null) {
+    const target = await getMoneyEvent(input.correctsEventId);
+    if (!target || target.tenant_id !== input.tenantId || target.job_id !== input.jobId) {
+      throw new Error(
+        `appendMoneyEvent: correctsEventId ${input.correctsEventId} is not an event on this job`,
+      );
+    }
+    if (input.kind === 'invoice_voided' && target.kind !== 'invoice_issued') {
+      throw new Error(
+        `appendMoneyEvent: invoice_voided must target an invoice_issued event (got '${target.kind}')`,
+      );
+    }
+    if (NEGATING_KINDS.has(input.kind) && NEGATING_KINDS.has(target.kind)) {
+      throw new Error(
+        `appendMoneyEvent: cannot ${input.kind} a '${target.kind}' entry — negation is ` +
+          'one-level; to undo a mistaken void/correction, RE-ISSUE the cancelled entry instead',
+      );
+    }
+    // Checksum: a stated amount on a void/correction must equal the target's —
+    // it cancels the WHOLE entry, never a part of it. A partial adjustment is
+    // void/correct-then-re-enter.
+    if (
+      NEGATING_KINDS.has(input.kind) &&
+      amount != null &&
+      amount !== (target.amount_cents ?? 0)
+    ) {
+      throw new Error(
+        `appendMoneyEvent: a ${input.kind} cancels the WHOLE entry (${target.amount_cents ?? 0} ` +
+          `cents), not a part of it — omit amountCents or state ${target.amount_cents ?? 0}; ` +
+          'for a partial adjustment, cancel the entry and re-enter the right amount',
+      );
+    }
+  }
+
+  const { data, error } = await getClient()
+    .from('money_events')
+    .insert({
+      tenant_id: input.tenantId,
+      job_id: input.jobId,
+      kind: input.kind,
+      amount_cents: amount,
+      currency: input.currency ?? 'USD',
+      ...(input.occurredAt ? { occurred_at: input.occurredAt } : {}),
+      actor_ref: input.actorRef ?? null,
+      source_capture_id: input.sourceCaptureId ?? null,
+      corrects_event_id: input.correctsEventId ?? null,
+      method: input.method ?? null,
+      external_ref: input.externalRef ?? null,
+      dedupe_key: input.dedupeKey ?? null,
+      detail: input.detail ?? {},
+    })
+    .select()
+    .single();
+  if (error || !data) {
+    // Preserve SQLSTATE so callers can detect a dedupe collision (23505).
+    throw wrapDbError('appendMoneyEvent failed', error);
+  }
+  return data;
+}
+
+export async function getMoneyEvent(id: number): Promise<MoneyEvent | null> {
+  const { data, error } = await getClient()
+    .from('money_events')
+    .select()
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw new Error(`getMoneyEvent failed: ${error.message}`);
+  return data;
+}
+
+/** All events for one job, in ledger (id) order — the fold's required input. */
+export async function listMoneyEventsForJob(tenantId: string, jobId: string): Promise<MoneyEvent[]> {
+  const { data, error } = await getClient()
+    .from('money_events')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('job_id', jobId)
+    .order('id', { ascending: true });
+  if (error) throw new Error(`listMoneyEventsForJob failed: ${error.message}`);
+  return data ?? [];
+}
+
+/** Batch variant for context reads. Empty input short-circuits (PostgREST `in.()` errors). */
+export async function listMoneyEventsForJobs(
+  tenantId: string,
+  jobIds: string[],
+): Promise<MoneyEvent[]> {
+  if (jobIds.length === 0) return [];
+  const { data, error } = await getClient()
+    .from('money_events')
+    .select()
+    .eq('tenant_id', tenantId)
+    .in('job_id', jobIds)
+    .order('id', { ascending: true });
+  if (error) throw new Error(`listMoneyEventsForJobs failed: ${error.message}`);
+  return data ?? [];
+}
+
+export interface MoneySummary {
+  /** Last approved estimate + change orders after that approval. */
+  quotedCents: number;
+  /** Σ invoices, minus voided/corrected ones. */
+  invoicedCents: number;
+  /** Σ payments − Σ refunds. */
+  paidCents: number;
+  creditsCents: number;
+  writtenOffCents: number;
+  /** invoiced − paid − credits − write-offs. Negative = customer credit. */
+  balanceDueCents: number;
+  lastEventAt: string | null;
+  hasProgressInvoice: boolean;
+}
+
+const isProgress = (e: MoneyEvent): boolean =>
+  !!e.detail && typeof e.detail === 'object' && !Array.isArray(e.detail) &&
+  (e.detail as Record<string, Json>).progress === true;
+
+// Ids negated by a later invoice_voided/correction row. "Negated" is derived,
+// never stored — the retraction-fold pattern applied to money.
+function negatedIds(events: MoneyEvent[]): Set<number> {
+  const out = new Set<number>();
+  for (const e of events) {
+    if ((e.kind === 'invoice_voided' || e.kind === 'correction') && e.corrects_event_id != null) {
+      out.add(e.corrects_event_id);
+    }
+  }
+  return out;
+}
+
+/**
+ * Fold the ledger into current money state. Pure — same list in, same summary
+ * out; all surfaces (tool replies, context reads, status derivation) call THIS
+ * so there is exactly one definition of "the balance".
+ */
+export function summarizeMoney(events: MoneyEvent[]): MoneySummary {
+  const negated = negatedIds(events);
+  const live = events.filter(
+    (e) => !negated.has(e.id) && e.kind !== 'invoice_voided' && e.kind !== 'correction',
+  );
+
+  // quoted: the LAST approved estimate wins; change orders only count after it
+  // (a re-approval supersedes earlier deltas — plan review finding).
+  let quoted = 0;
+  let lastApprovalIdx = -1;
+  live.forEach((e, i) => {
+    if (e.kind === 'estimate_approved') lastApprovalIdx = i;
+  });
+  if (lastApprovalIdx >= 0) {
+    quoted = live[lastApprovalIdx].amount_cents ?? 0;
+    for (let i = lastApprovalIdx + 1; i < live.length; i++) {
+      if (live[i].kind === 'change_order') quoted += live[i].amount_cents ?? 0;
+    }
+  }
+
+  const sum = (kind: MoneyEventKind): number =>
+    live.reduce((acc, e) => (e.kind === kind ? acc + (e.amount_cents ?? 0) : acc), 0);
+
+  const invoiced = sum('invoice_issued');
+  const paid = sum('payment_received') - sum('payment_refunded');
+  const credits = sum('credit_applied');
+  const writtenOff = sum('write_off');
+
+  let lastEventAt: string | null = null;
+  for (const e of events) {
+    if (lastEventAt === null || e.occurred_at > lastEventAt) lastEventAt = e.occurred_at;
+  }
+
+  return {
+    quotedCents: quoted,
+    invoicedCents: invoiced,
+    paidCents: paid,
+    creditsCents: credits,
+    writtenOffCents: writtenOff,
+    balanceDueCents: invoiced - paid - credits - writtenOff,
+    lastEventAt,
+    hasProgressInvoice: live.some((e) => e.kind === 'invoice_issued' && isProgress(e)),
+  };
+}
+
+/**
+ * What the ledger says the job's status SHOULD be — or null for "no opinion".
+ * Pure. Gate first: at least one live, NON-PROGRESS invoice must exist, else
+ * the ledger derives nothing (all-progress chains and deposit-only chains
+ * leave status entirely to the work signals — the workflow-agnostic guard).
+ * Downward: if the gate stops holding (every real invoice voided) and the job
+ * sits at 'invoiced', it walks back to 'completed'. 'paid' never walks back
+ * (no backward edge — keeping it terminal preserves TERMINAL_STATUSES and
+ * every reader built on it).
+ */
+export function deriveStatusTarget(
+  current: JobStatus,
+  summary: MoneySummary,
+  events: MoneyEvent[],
+): JobStatus | null {
+  if (current === 'cancelled' || current === 'declined') return null;
+
+  const negated = negatedIds(events);
+  const gate = events.some(
+    (e) => e.kind === 'invoice_issued' && !negated.has(e.id) && !isProgress(e),
+  );
+
+  if (!gate) {
+    // Downward only when the gate STOPPED holding — a real invoice existed and
+    // was voided. A job that reached 'invoiced' with no ledger invoice at all
+    // (pre-ledger data, hand-walked seeds) is none of the ledger's business:
+    // record the event, leave status alone (review finding). Accepted limit of
+    // this proxy: a pre-ledger invoiced job whose OFF-ledger invoice is still
+    // outstanding, if it later gains and then voids a ledger invoice, walks
+    // down to 'completed' — the ledger can't see paper it never held. The fix
+    // for that firm is recording the real invoice, not code.
+    const hadRealInvoice = events.some(
+      (e) => e.kind === 'invoice_issued' && negated.has(e.id) && !isProgress(e),
+    );
+    return current === 'invoiced' && hadRealInvoice ? 'completed' : null;
+  }
+  if (current === 'paid') return null;
+  // Past the gate, paid = nothing left to collect. No invoicedCents > 0 guard:
+  // a $0 comped/warranty invoice is legal end-to-end and must settle to 'paid',
+  // not strand at 'invoiced' forever (review finding — the gate already
+  // guarantees a real invoice exists).
+  const target: JobStatus = summary.balanceDueCents <= 0 ? 'paid' : 'invoiced';
+  return target === current ? null : target;
+}
+
+// Shortest legal path between two statuses over ALLOWED_TRANSITIONS (BFS with
+// the path carried in the queue — robust to edge additions and to the cycles
+// the backward edges introduce; the graph is 7 nodes, so the copying is free).
+function transitionPath(from: JobStatus, to: JobStatus): JobStatus[] | null {
+  if (from === to) return []; // total for any caller; the sole current caller pre-filters this
+  const seen = new Set<JobStatus>([from]);
+  const queue: Array<[JobStatus, JobStatus[]]> = [[from, []]];
+  while (queue.length > 0) {
+    const [at, path] = queue.shift() as [JobStatus, JobStatus[]];
+    for (const next of ALLOWED_TRANSITIONS[at]) {
+      if (seen.has(next)) continue;
+      seen.add(next);
+      const nextPath = [...path, next];
+      if (next === to) return nextPath;
+      queue.push([next, nextPath]);
+    }
+  }
+  return null;
+}
+
+const isConcurrentTransition = (err: unknown): boolean =>
+  err instanceof Error && err.message.includes('changed concurrently');
+
+/**
+ * Re-derive the job's money-target and walk the status there through LEGAL
+ * transitions only (one write path: updateJobStatus, CAS-guarded per hop).
+ * Both directions. Silent when the ledger has no opinion, the target is
+ * unreachable, or a concurrent writer wins after one retry — recording the
+ * event always succeeds independently of the walk (plan decision). Any OTHER
+ * failure (network, grants) is re-thrown: swallowing it as if it were a race
+ * would leave a mid-path job with no signal to anyone (review finding) — the
+ * caller decides how to report a landed event whose walk failed.
+ */
+export async function syncJobStatusForMoney(
+  tenantId: string,
+  jobId: string,
+): Promise<{ from: JobStatus; to: JobStatus } | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const job = await getJob(jobId);
+    if (!job || job.tenant_id !== tenantId) return null;
+    const events = await listMoneyEventsForJob(tenantId, jobId);
+    const target = deriveStatusTarget(job.status, summarizeMoney(events), events);
+    if (!target) return null;
+    const path = transitionPath(job.status, target);
+    if (!path || path.length === 0) return null;
+    try {
+      for (const hop of path) {
+        await updateJobStatus(jobId, hop);
+      }
+      return { from: job.status, to: target };
+    } catch (err) {
+      if (!isConcurrentTransition(err)) throw err;
+      // Concurrent transition — loop re-reads and re-derives once, then gives up.
+    }
+  }
+  return null;
+}
+
+/**
+ * The technician projection of a money summary — the "door numbers" only.
+ * ONE definition of the money tier boundary (review finding: it was inline in
+ * two read tools; policy encoded twice drifts): no methods, no references, no
+ * history — those are manager_only by standing policy.
+ */
+export function technicianMoneyView(
+  s: MoneySummary,
+): { balanceDueCents: number; invoicedCents: number } {
+  return { balanceDueCents: s.balanceDueCents, invoicedCents: s.invoicedCents };
+}

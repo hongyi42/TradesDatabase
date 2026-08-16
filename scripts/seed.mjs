@@ -143,6 +143,15 @@ async function truncateSpine(hasScheduling) {
   const client = new pg.Client({ connectionString: dbUrl });
   await client.connect();
   try {
+    // tenant_profiles references ONLY tenants, so no cascade above ever
+    // reaches it — without this, "rebuild the playground" would silently keep
+    // a stale firm profile (review finding). Existence-probed because hosted
+    // targets may lag on migrations (schedule_events probe precedent).
+    const tp = await client.query(
+      `select 1 from information_schema.tables
+        where table_schema = 'public' and table_name = 'tenant_profiles'`,
+    );
+    if (tp.rows.length > 0) tables += ', tenant_profiles';
     await client.query(`truncate table ${tables} cascade`);
   } finally {
     await client.end();

@@ -21,8 +21,8 @@ function spineToolNames(): string[] {
 describe('tool cases — the corpus covers the surface', () => {
   it('reads a plausible tool surface out of the server', () => {
     const names = spineToolNames();
-    // 14 technician + 28 admin. If this number moves, the surface moved.
-    expect(names.length).toBe(42);
+    // 14 technician + 30 admin. If this number moves, the surface moved.
+    expect(names.length).toBe(44); // +set_firm_profile (firm-profile plan, 2026-08-15)
     expect(new Set(names).size).toBe(names.length);
   });
 

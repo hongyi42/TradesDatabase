@@ -369,8 +369,8 @@ export function buildToolCases(): ToolCase[] {
         args: () => ({}),
         check: (out) => {
           const names = (out.json as string[]) ?? [];
-          if (names.length !== 41) return `manager sees ${names.length} tools, expected 41`;
-          for (const need of ['book_visit', 'run_freeze', 'query_spine', 'add_technician_seat']) {
+          if (names.length !== 43) return `manager sees ${names.length} tools, expected 43`;
+          for (const need of ['book_visit', 'run_freeze', 'query_spine', 'add_technician_seat', 'record_money_event', 'set_firm_profile']) {
             if (!names.includes(need)) return `manager surface is missing ${need}`;
           }
           // get_schedule is deliberately withheld from managers (PR #54).
@@ -900,6 +900,37 @@ export function buildToolCases(): ToolCase[] {
     ),
   });
 
+  one({
+    id: 'W13',
+    family: 'writes',
+    title: 'record_money_event lands a ledger fact',
+    tool: 'record_money_event',
+    tenant: 'main',
+    badge: 'manager-sam',
+    // fee_charged on purpose: it never holds the status gate, so the world
+    // job's status is untouched and no other case can be perturbed by this one
+    // (an invoice_issued here would walk the job to 'invoiced' world-wide).
+    args: (ctx) => ({
+      jobId: jobId(ctx.tenant, 'job-t1-bk-02'),
+      kind: 'fee_charged',
+      amountCents: 8900,
+      note: 'diagnostic fee (eval W13)',
+    }),
+    check: all(
+      ok,
+      dbCheck(
+        'the ledger row must land, amount intact, with the acting badge stamped',
+        (ctx) => ({
+          text:
+            `select amount_cents, actor_ref from money_events ` +
+            `where tenant_id = $1 and job_id = $2 and kind = 'fee_charged'`,
+          params: [ctx.tenant.id, jobId(ctx.tenant, 'job-t1-bk-02')],
+        }),
+        (rows) => Number(rows[0]?.amount_cents) === 8900 && rows[0]?.actor_ref === 'manager-sam',
+      ),
+    ),
+  });
+
   // ── roster and configuration (each owns its own technician) ─────────────────
   one({
     id: 'C01',
@@ -1138,6 +1169,35 @@ export function buildToolCases(): ToolCase[] {
         ),
       },
     ],
+  });
+
+  one({
+    id: 'C10',
+    family: 'config',
+    title: 'set_firm_profile stores the firm identity',
+    tool: 'set_firm_profile',
+    tenant: 'main',
+    badge: 'manager-sam',
+    // Upsert semantics make this idempotent across runs; no other case reads
+    // tenant_profiles, so the write perturbs nothing.
+    args: () => ({
+      displayName: 'Trades Eval Heating',
+      state: 'TX',
+      licenseNumbers: [{ label: 'TX TACL', number: 'TACLA99999E' }],
+    }),
+    check: all(
+      ok,
+      dbCheck(
+        'the profile row must land with the license list intact',
+        (ctx) => ({
+          text: 'select display_name, license_numbers from tenant_profiles where tenant_id = $1',
+          params: [ctx.tenant.id],
+        }),
+        (rows) =>
+          rows[0]?.display_name === 'Trades Eval Heating' &&
+          JSON.stringify(rows[0]?.license_numbers ?? []).includes('TACLA99999E'),
+      ),
+    ),
   });
 
   // ── graceful failure ────────────────────────────────────────────────────────

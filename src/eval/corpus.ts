@@ -9,7 +9,7 @@
 //
 // COUNT: 59 scenarios. The original 46 are the JUDGEMENT calls — dates,
 // confirmations, verb choice, fabrication, honesty about what the record does
-// not say — kept lean because tier 1 already touches all 42 tools mechanically
+// not say — kept lean because tier 1 already touches every spine tool mechanically (44 today)
 // and every scenario costs money per run. The M (workflow) family was added on
 // a user decision (2026-08-14): single-intent scenarios never measure the thing
 // managers actually do all day, which is one request that forces a CHAIN —

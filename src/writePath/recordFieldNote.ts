@@ -78,6 +78,22 @@ const TERMINAL_STATUSES: ReadonlySet<JobStatus> = new Set(
   ),
 );
 
+// Which statusSignal moves a NOTE may drive. Notes speak about the WORK
+// dimension only — start, finish, reopen. The money tail (invoiced/paid) is
+// derived from money_events by syncJobStatusForMoney, so a late "job done"
+// note on an already-invoiced job is stale news, not a reversal: without this
+// subset, the machine's invoiced→completed edge (added for void walk-downs)
+// would let that note quietly demote the job (money-ledger review finding).
+// Exported so a test pins the subset invariant (every edge here must exist in
+// ALLOWED_TRANSITIONS) — the runtime relies on updateJobStatus re-validating.
+export const NOTE_SIGNAL_TRANSITIONS: Partial<
+  Record<JobStatus, ReadonlyArray<'completed' | 'in_progress'>>
+> = {
+  open: ['in_progress'],
+  in_progress: ['completed'],
+  completed: ['in_progress'], // reopen — blessed by the money-ledger plan
+};
+
 // The channel-agnostic write-path: raw in first (L1), then extract → match →
 // structure (L2/L3), evidence always linked via source_capture_id. raw_captures
 // is append-only, so provenance is never written back onto the capture.
@@ -257,10 +273,18 @@ export async function recordFieldNote(
     sourceCaptureId: captureId,
   });
 
-  // Status transition only if legal (hardcoded state machine, overview §5). A new
-  // job is 'open', so a 'completed' signal is correctly skipped rather than thrown.
-  if (extracted.statusSignal && ALLOWED_TRANSITIONS[job.status].includes(extracted.statusSignal)) {
-    await updateJobStatus(job.id, extracted.statusSignal);
+  // Status transition only if note-blessed (subset of the hardcoded machine,
+  // pinned by test; updateJobStatus re-validates legality at the write). A new
+  // job is 'open', so a 'completed' signal is correctly skipped rather than
+  // thrown; an invoiced job ignores a late "done" note. Reopen staleness
+  // guard: completed→in_progress fires only for a note CAPTURED after the job
+  // last changed — a delayed delivery of a mid-job note (pull-window overlap,
+  // late transcript) must not resurrect finished work (review finding).
+  const signal = extracted.statusSignal;
+  if (signal && NOTE_SIGNAL_TRANSITIONS[job.status]?.includes(signal)) {
+    const staleReopen =
+      job.status === 'completed' && signal === 'in_progress' && capturedAt <= job.updated_at;
+    if (!staleReopen) await updateJobStatus(job.id, signal);
   }
 
   return { status: 'matched', captureId, customerId, jobId: job.id, visitId: visit.id };

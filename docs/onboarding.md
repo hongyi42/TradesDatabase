@@ -148,8 +148,9 @@ it is what turns a pile of captures into a coherent longitudinal record.
    ├─ /composio relay                       ──►  per-person Composio session (Gmail, Sheets, …)
    ├─ board web + background worker (global bot @DashboardMan_bot)
    ├─ /admin operator cost dashboard
-   └─ cron heartbeat every 15 min — six sweeps: pairing, grace expiry, Composio session
-      provisioning, execution-log ingestion, cost backfill, cost rollup
+   └─ cron heartbeat (*/5; heavy sweeps self-gate to quarter-hour ticks) — pairing, grace
+      expiry, Composio session provisioning, execution-log ingestion, cost backfill + bill
+      pull + rollup, and the Stage-0 overdue-visit watcher (every tick, WATCHERS_MODE-gated)
  Inference: sandbox gateway ──► DeepInfra GLM-5.2 (automatic failover: NVIDIA)
 ```
 

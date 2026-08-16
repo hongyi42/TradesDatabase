@@ -50,7 +50,12 @@ export type ReviewKind =
   // review per call (subject_ref = the L1 captureId → deduped by the partial
   // unique index, retry-safe) with the intent list carried in `detail`, and
   // pushes the tenant's managers. Free-text kind → no migration.
-  | 'call_action';
+  | 'call_action'
+  // Stage-0 watcher (plan 2026-08-15 feature A): a confirmed visit whose
+  // scheduled end passed with no field report or status change. NON-token —
+  // the manager resolves/dismisses freely via resolve_review; detail stays
+  // small, no summarizer needed. subject_ref = the assignment id.
+  | 'overdue_visit_gap';
 
 export interface UpsertOpenReviewItemInput {
   tenantId: string;
@@ -124,6 +129,68 @@ export async function flagUnknownRefCapture(input: {
     subjectRef: input.subjectRef,
     detail: { externalId },
   });
+}
+
+// Flag an overdue-visit gap, at most ONCE PER ASSIGNMENT — EVER: any-status
+// dedup (the flagUnknownRefCapture idiom minus the detail key — an
+// assignment's end never recurs, so a resolved/dismissed item must never
+// re-open; the open-only partial unique index alone would re-flag forever).
+// Returns null when this assignment was ever flagged before. The watcher's
+// auto-resolve sweep reads detail.endsAtLocal to decide whether the gap has
+// since been filled.
+export async function flagOverdueVisitGap(input: {
+  tenantId: string;
+  assignmentId: string;
+  jobId: string;
+  technicianRef: string | null; // routing data: whom the manager would ask
+  startsAtLocal: string; // the visit's naive-local start — auto-resolve's compare bound
+  endsAtLocal: string; // the visit's naive-local end, for display
+  suggestion: string;
+}): Promise<ReviewItem | null> {
+  const { data, error } = await getClient()
+    .from('review_items')
+    .select('id')
+    .eq('tenant_id', input.tenantId)
+    .eq('kind', 'overdue_visit_gap')
+    .eq('subject_ref', input.assignmentId)
+    .limit(1);
+  if (error) throw new Error(`flagOverdueVisitGap failed: ${error.message}`);
+  if (data && data.length > 0) return null; // this assignment was already flagged once
+  return upsertOpenReviewItem({
+    tenantId: input.tenantId,
+    kind: 'overdue_visit_gap',
+    subjectRef: input.assignmentId,
+    suggestion: input.suggestion,
+    detail: {
+      jobId: input.jobId,
+      technicianRef: input.technicianRef,
+      startsAtLocal: input.startsAtLocal,
+      endsAtLocal: input.endsAtLocal,
+    },
+  });
+}
+
+// The watcher's batched cap pre-filter (final-review finding): which of these
+// subjects were EVER flagged, any status? Without it, stale flagged-but-
+// unfilled gaps re-enter the 72h candidate window every tick and permanently
+// occupy the per-tick cap — flagOverdueVisitGap's per-item dedup would return
+// null, but only AFTER the cap already spent its slots on them, starving
+// genuinely new gaps for up to three days. Bounded: `in()` over the caller's
+// candidate ids, never a tenant-wide scan.
+export async function listEverFlaggedSubjectRefs(
+  tenantId: string,
+  kind: ReviewKind,
+  subjectRefs: string[],
+): Promise<string[]> {
+  if (subjectRefs.length === 0) return []; // PostgREST `in.()` with zero values errors
+  const { data, error } = await getClient()
+    .from('review_items')
+    .select('subject_ref')
+    .eq('tenant_id', tenantId)
+    .eq('kind', kind)
+    .in('subject_ref', subjectRefs);
+  if (error) throw new Error(`listEverFlaggedSubjectRefs failed: ${error.message}`);
+  return (data ?? []).map((r) => r.subject_ref);
 }
 
 // Flag a phone call whose caller-ID matched no customer, for the manager to link

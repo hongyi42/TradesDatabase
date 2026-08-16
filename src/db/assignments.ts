@@ -524,6 +524,30 @@ export async function listUnassignedAssignments(
   return data ?? [];
 }
 
+// The Stage-0 watcher's candidate read (plan 2026-08-15 feature A): confirmed
+// placed rows whose scheduled END falls in [endedFromNaive, endedToNaive),
+// oldest end first. Both bounds are FIRM WALL-CLOCK formatted as if UTC (the
+// naive-local storage convention — see listUpcomingAssignmentsForCustomer's
+// note below); callers derive BOTH from the same firm-local moment so the
+// window stays coherent across a DST edge.
+export async function listOverdueConfirmedAssignments(
+  tenantId: string,
+  endedFromNaive: string, // ISO, firm wall-clock as if UTC — inclusive
+  endedToNaive: string, // ISO, firm wall-clock as if UTC — exclusive
+): Promise<PlacedAssignment[]> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('status', 'confirmed')
+    .gte('ends_at', endedFromNaive)
+    .lt('ends_at', endedToNaive)
+    .order('ends_at', { ascending: true });
+  if (error) throw new Error(`listOverdueConfirmedAssignments failed: ${error.message}`);
+  // Placed by construction: the gte/lt time filters never match NULL.
+  return (data ?? []) as PlacedAssignment[];
+}
+
 // The customer brief's schedule half (date-eval finding, 2026-08-13): the
 // context aggregate read only the `visits` table — L2 evidence of PAST work —
 // so a customer with four confirmed bookings briefed as "no visits scheduled",

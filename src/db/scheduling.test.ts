@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
-import { setTenantSeats } from './tenants.js';
+import { createTenant, setTenantSeats } from './tenants.js';
 import {
   insertTechnician,
   setTechnicianAvailability,
@@ -27,6 +27,7 @@ import {
   listAssignmentsForJob,
   listAssignmentsForTechnician,
   listAssignmentsForTenant,
+  listOverdueConfirmedAssignments,
   listUnassignedAssignmentsWithRefs,
   listUnassignedOpenJobs,
   listUnscheduledOpenJobsWithCustomer,
@@ -902,5 +903,88 @@ describe('loose-bucket listers (Plan 4a)', () => {
     expect(jobs.some((j) => j.title === 'Parked work')).toBe(false);
     // The stripped embed key never leaks into the row shape.
     expect(bare && 'assignments' in bare).toBe(false);
+  });
+});
+
+// Stage-0 watcher candidate read (plan 2026-08-15 feature A). Times below are
+// naive-local ISO (firm wall-clock as if UTC — the storage convention).
+// Person-less confirmed rows on purpose: the lister filters status+times only,
+// and null-technician rows sidestep the no_confirmed_overlap constraint.
+// DEDICATED tenant, not the shared seed tenant: this file's loose-bucket
+// describe seeds confirmed rows at RELATIVE dates (rel(-10)), and on the one
+// calendar day where rel(-10) equals this window the exact-equality assertion
+// below would pick up its row (review finding — fixed fixtures + relative
+// fixtures must not share a tenant).
+describe('listOverdueConfirmedAssignments', () => {
+  const FROM = '2026-08-10T08:00:00.000Z';
+  const TO = '2026-08-10T12:00:00.000Z';
+  let tenantW: string;
+  let watchJobId: string;
+  let tenantB: string | undefined;
+
+  const mkVisit = async (jobId: string, startsAt: string, endsAt: string, tid?: string) =>
+    createAssignment({
+      tenantId: tid ?? tenantW,
+      jobId,
+      technicianId: null,
+      startsAt,
+      endsAt,
+      status: 'confirmed',
+    });
+
+  beforeAll(async () => {
+    tenantW = (await createTenant(`watch-tenant-a-${Date.now()}`)).id;
+    const customer = await createCustomer({ tenantId: tenantW, name: 'Watcher Casa' });
+    watchJobId = (await createJob({ tenantId: tenantW, customerId: customer.id, title: 'Watched work' })).id;
+  });
+
+  afterAll(async () => {
+    // This nested hook runs BEFORE the file-level TRUNCATE, so the extra
+    // tenants' children still exist and the tenants FK is NO ACTION — delete
+    // them explicitly first (querySpine.test.ts pattern).
+    for (const t of [tenantW, tenantB]) {
+      if (!t) continue;
+      await pg.query('delete from assignments where tenant_id = $1', [t]);
+      await pg.query('delete from jobs where tenant_id = $1', [t]);
+      await pg.query('delete from customers where tenant_id = $1', [t]);
+      await pg.query('delete from tenants where id = $1', [t]);
+    }
+  });
+
+  test('window bounds: from inclusive, to exclusive; oldest end first; non-confirmed and unplaced excluded', async () => {
+    const atFrom = await mkVisit(watchJobId, '2026-08-10T07:00:00.000Z', FROM); // ends exactly at from → IN
+    const mid = await mkVisit(watchJobId, '2026-08-10T09:00:00.000Z', '2026-08-10T10:00:00.000Z');
+    await mkVisit(watchJobId, '2026-08-10T11:00:00.000Z', TO); // ends exactly at to → OUT
+    const done = await mkVisit(watchJobId, '2026-08-10T08:30:00.000Z', '2026-08-10T09:30:00.000Z');
+    await updateAssignmentStatus(done.id, 'completed');
+    const gone = await mkVisit(watchJobId, '2026-08-10T10:15:00.000Z', '2026-08-10T10:45:00.000Z');
+    await updateAssignmentStatus(gone.id, 'cancelled', 'watcher test');
+    await createAssignment({
+      // unplaced (windowed) row — no times, can never match a time filter
+      tenantId: tenantW,
+      jobId: watchJobId,
+      technicianId: null,
+      startsAt: null,
+      endsAt: null,
+      earliestDate: '2026-08-10',
+      latestDate: '2026-08-10',
+      status: 'confirmed',
+    });
+
+    const rows = await listOverdueConfirmedAssignments(tenantW, FROM, TO);
+    expect(rows.map((r) => r.id)).toEqual([atFrom.id, mid.id]); // oldest ends_at first
+    expect(rows.every((r) => r.status === 'confirmed')).toBe(true);
+  });
+
+  test('tenant-B row with identical times never returned', async () => {
+    tenantB = (await createTenant(`watch-tenant-b-${Date.now()}`)).id;
+    const bCustomer = await createCustomer({ tenantId: tenantB, name: 'Other Firm Casa' });
+    const bJob = await createJob({ tenantId: tenantB, customerId: bCustomer.id, title: 'B work' });
+    const bRow = await mkVisit(bJob.id, '2026-08-10T09:00:00.000Z', '2026-08-10T10:00:00.000Z', tenantB);
+
+    const rowsA = await listOverdueConfirmedAssignments(tenantW, FROM, TO);
+    expect(rowsA.some((r) => r.id === bRow.id)).toBe(false);
+    const rowsB = await listOverdueConfirmedAssignments(tenantB, FROM, TO);
+    expect(rowsB.map((r) => r.id)).toEqual([bRow.id]);
   });
 });

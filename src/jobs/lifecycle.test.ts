@@ -10,7 +10,9 @@ import { runLifecycle } from './lifecycle.js';
 // after), or the sessions gate would sweep against LIVE Composio.
 const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
-  for (const k of ['DEFAULT_TENANT_ID', 'COMPOSIO_API_KEY'] as const) {
+  // WATCHERS_MODE cleared for the same reason as COMPOSIO_API_KEY: .env may
+  // carry it, and the default runWatchers dep would hit the real database.
+  for (const k of ['DEFAULT_TENANT_ID', 'COMPOSIO_API_KEY', 'WATCHERS_MODE'] as const) {
     if (!(k in saved)) saved[k] = process.env[k];
     delete process.env[k];
   }
@@ -209,6 +211,151 @@ describe('runLifecycle', () => {
       });
       expect(sinces).toEqual(['2026-07-02T08:00:00.000Z']); // 1h overlap
       expect(summary.braveBackfill).toEqual({ scanned: 2, since: '2026-07-02T08:00:00.000Z' });
+    });
+  });
+
+  describe('watchers (step 8) + the cadence gate', () => {
+    const WATCH_OK = {
+      mode: 'shadow' as const,
+      tenants: 1,
+      gapsFound: 2,
+      freshGaps: 1,
+      itemsOpened: 0,
+      itemsResolved: 0,
+      pushed: 0,
+      pushSkipped: false,
+      tenantErrors: 0,
+    };
+    const BASE = {
+      listInStates: async () => [],
+      expire: async () => EXPIRE_OK,
+    };
+
+    test('WATCHERS_MODE unset → skipped; the real dep is never called', async () => {
+      const summary = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => {
+          throw new Error('unit test must not reach the watcher when the mode is unset');
+        },
+      });
+      expect(summary.watchers).toEqual({ skipped: 'WATCHERS_MODE unset (shadow|live)' });
+      expect(summary.ok).toBe(true);
+    });
+
+    test('an invalid WATCHERS_MODE is a LOUD stepError — a typo must never read as off', async () => {
+      process.env.WATCHERS_MODE = 'shdaow';
+      let called = false;
+      const summary = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => {
+          called = true;
+          return WATCH_OK;
+        },
+      });
+      expect(called).toBe(false);
+      expect(summary.watchers).toEqual({
+        stepError: "WATCHERS_MODE must be 'shadow' or 'live', got 'shdaow'",
+      });
+      expect(summary.ok).toBe(false);
+    });
+
+    test('shadow and live pass through to the dep with the run nowIso', async () => {
+      const calls: Array<[string, string]> = [];
+      for (const mode of ['shadow', 'live'] as const) {
+        process.env.WATCHERS_MODE = mode;
+        const summary = await runLifecycle(NOW, {
+          ...COST_STUBS,
+          ...BASE,
+          runWatchers: async (nowIso, m) => {
+            calls.push([nowIso, m]);
+            return { ...WATCH_OK, mode };
+          },
+        });
+        expect(summary.watchers).toMatchObject({ mode, gapsFound: 2 });
+        expect(summary.ok).toBe(true);
+      }
+      expect(calls).toEqual([
+        [NOW, 'shadow'],
+        [NOW, 'live'],
+      ]);
+    });
+
+    test('a throwing watcher is a stepError, red — the other steps still reported', async () => {
+      process.env.WATCHERS_MODE = 'shadow';
+      const summary = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => {
+          throw new Error('watcher db unreachable');
+        },
+      });
+      expect(summary.watchers).toEqual({ stepError: 'watcher db unreachable' });
+      expect(summary.ok).toBe(false);
+      expect(summary.pairing).toEqual({ checked: 0, paired: 0, rowErrors: 0 });
+    });
+
+    test('EVERY tenant failing is systemic → red; a partial failure is not', async () => {
+      process.env.WATCHERS_MODE = 'live';
+      const all = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, tenants: 3, tenantErrors: 3 }),
+      });
+      expect(all.ok).toBe(false);
+      const some = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, tenants: 3, tenantErrors: 1 }),
+      });
+      expect(some.ok).toBe(true);
+    });
+
+    // The */5 schedule serves the WATCHER lane; steps 1-7 keep their
+    // quarter-hour cadence via the stateless minute gate (< 5 tolerates a
+    // delayed firing).
+    test('cadence gate: quarter-hour ticks (incl. a delayed one) run steps 1-7; off-cadence ticks skip them, step 8 still runs', async () => {
+      process.env.WATCHERS_MODE = 'shadow';
+      let watched = 0;
+      const deps = {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => {
+          watched += 1;
+          return WATCH_OK;
+        },
+      };
+
+      // :00 (NOW) and a delayed :15 tick firing at :16 → heavy steps run.
+      for (const iso of [NOW, '2026-07-02T12:16:00.000Z']) {
+        const summary = await runLifecycle(iso, deps);
+        expect(summary.pairing).toEqual({ checked: 0, paired: 0, rowErrors: 0 });
+        expect(summary.costRollup).toMatchObject({ rowsWritten: 0 });
+      }
+
+      // :05 → off-cadence: all seven heavy steps skip; the watcher still runs.
+      const off = await runLifecycle('2026-07-02T12:05:00.000Z', {
+        ...deps,
+        // Sentinels prove the gate short-circuits BEFORE the heavy deps.
+        listInStates: async () => {
+          throw new Error('off-cadence tick must not sweep the roster');
+        },
+        expire: async () => {
+          throw new Error('off-cadence tick must not run expiry');
+        },
+      });
+      const OFF = { skipped: 'off-cadence tick' };
+      expect(off.pairing).toEqual(OFF);
+      expect(off.offboarding).toEqual(OFF);
+      expect(off.sessions).toEqual(OFF);
+      expect(off.logIngest).toEqual(OFF);
+      expect(off.braveBackfill).toEqual(OFF);
+      expect(off.deepinfraUsage).toEqual(OFF);
+      expect(off.costRollup).toEqual(OFF);
+      expect(off.watchers).toEqual(WATCH_OK);
+      expect(off.ok).toBe(true);
+      expect(watched).toBe(3); // step 8 ran on every tick, heavy or not
     });
   });
 

@@ -160,6 +160,42 @@ export async function listRawCapturesForJob(jobId: string): Promise<RawCapture[]
   return data ?? [];
 }
 
+// The watcher's activity probe — one of TWO homes, always paired with visits'
+// listVisitTimesForJobs: job-stamped capture times since a UTC floor. The
+// floor keeps the read bounded (PostgREST silently caps result sets at 1000
+// rows); the precise naive-local comparison happens in the caller. Reading
+// only one home UNDER-COUNTS activity: a tech note's capture often carries no
+// job_id stamp (identity resolves after L1, which is immutable), but
+// recordFieldNote ALWAYS mints its visit row — so the visits lister catches
+// what this one misses, and vice versa for job-stamped email/call captures.
+export async function listJobStampedCaptureTimes(
+  tenantId: string,
+  jobIds: string[],
+  sinceUtcIso: string,
+): Promise<{ job_id: string | null; captured_at: string }[]> {
+  if (jobIds.length === 0) return []; // PostgREST `in.()` with zero values errors
+  // PAGED (final-review finding): the floor bounds RECENCY, not row count, and
+  // PostgREST's silent 1000-row cap on an UNORDERED read would drop arbitrary
+  // rows — possibly the one capture proving a visit was reported, turning a
+  // filled visit into a false gap flag (the listTenantIdsWithTelegramBindings
+  // precedent).
+  const PAGE = 1000;
+  const out: { job_id: string | null; captured_at: string }[] = [];
+  for (let fromRow = 0; ; fromRow += PAGE) {
+    const { data, error } = await getClient()
+      .from('raw_captures')
+      .select('job_id, captured_at')
+      .eq('tenant_id', tenantId)
+      .in('job_id', jobIds)
+      .gte('captured_at', sinceUtcIso)
+      .order('captured_at', { ascending: true })
+      .range(fromRow, fromRow + PAGE - 1);
+    if (error) throw new Error(`listJobStampedCaptureTimes failed: ${error.message}`);
+    out.push(...(data ?? []));
+    if (!data || data.length < PAGE) return out;
+  }
+}
+
 // True if a visit links back to this capture — the completeness marker for a
 // processed note (recordFieldNote always writes the visit LAST, so a linked
 // visit implies the whole L2 build ran). The staged-confirm duplicate path

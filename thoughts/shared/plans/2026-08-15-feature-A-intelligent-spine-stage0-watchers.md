@@ -3,7 +3,7 @@ date: 2026-08-15
 task: Feature A — Intelligent-spine Stage 0 ("the watchers"): deterministic gap detectors on the existing 15-minute cron, surfacing into existing channels only
 research: thoughts/shared/research/2026-08-15-feature-A-intelligent-spine-stage-0-watchers.md
 direction: thoughts/shared/plans/2026-08-15-intelligent-spine-direction.md
-status: draft
+status: implemented (awaiting copy-tone sign-off; ships shadow-first — live flip is a later joint decision)
 ---
 
 ## Overview
@@ -187,13 +187,17 @@ with `detail: { jobId, technicianRef, endsAtLocal }` (the `flagUnknownRefCapture
 the detail key — an assignment's end never recurs, so a closed item must never re-open).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass (local stack per `.env.test`)
-- [ ] `scheduling.test.ts`: ends_at exactly at each bound (∈ from, ∉ to), cancelled/completed/
-      unplaced rows excluded, **tenant-B row with identical times never returned**
-- [ ] `spine.test.ts`: both listers — empty `jobIds` → `[]`, `sinceUtcIso` floor respected,
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass (local stack per `.env.test`) —
+      1719 passed / 8 skipped, 2026-08-16
+- [x] `scheduling.test.ts`: ends_at exactly at each bound (∈ from, ∉ to), cancelled/completed/
+      unplaced rows excluded, **tenant-B row with identical times never returned** (run under a
+      DEDICATED tenant — review finding: the file's relative-date fixtures would collide with the
+      fixed window on exactly 2026-08-20)
+- [x] `spine.test.ts`: both listers — empty `jobIds` → `[]`, `sinceUtcIso` floor respected,
       **tenant-B rows on the same job ids never returned**
-- [ ] `reviewItems.test.ts`: first flag opens; second returns null; resolve then re-flag → null
-      (dedup across status); detail carries jobId/technicianRef/endsAtLocal
+- [x] `reviewItems.test.ts`: first flag opens; second returns null; resolve then re-flag → null
+      (dedup across status); detail carries jobId/technicianRef/endsAtLocal; + tenant-scoped
+      dedup test (review finding: tenant A's flag must never suppress tenant B's)
 
 ### Live verification (agent-executable)
 - Prerequisites: none beyond the local stack (covered by the codified tests above).
@@ -246,14 +250,17 @@ Per tenant (each in try/catch → `tenantErrors++`, siblings continue):
 **`src/jobs/watchers.test.ts`** (new) — pure unit tests, `lifecycle.test.ts` pattern.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test`
-- [ ] Unit tests: boundary in/out of both cutoffs; activity after end suppresses, before end
+- [x] `npm run typecheck` · `npm run lint` · `npm test` — 1730 passed / 8 skipped, 2026-08-16
+- [x] Unit tests: boundary in/out of both cutoffs; activity after end suppresses, before end
       does not; **UTC-straddle fixture** (America/Los_Angeles evening: 6pm PDT capture = next
       UTC day) detects/suppresses correctly; visits-only activity suppresses (note with no
       job-stamped capture); shadow mode calls no write dep and no notify; live opens ≤ cap,
-      oldest first; dedup null → not counted opened; push only when opened > 0, once per tenant;
+      oldest first; dedup null → not counted opened; push only when opened > 0, once per tenant
+      (review finding: + tenantErrors:0 so the throwing-notify sentinel actually bites);
       no token → pushSkipped, no throw; auto-resolve fires on arrived activity, skips malformed
-      detail; one tenant throwing → others still processed, tenantErrors counted
+      detail; one tenant throwing → others still processed, tenantErrors counted.
+      *Deviation for the copy-tone check:* the suggestion renders the end as `2026-08-15 01:00`
+      (wall-clock label), not the raw naive ISO — the `Z` suffix would falsely read as UTC.
 
 ### Live verification (agent-executable)
 - Prerequisites: none (module is unreferenced until Phase 3; unit coverage above).
@@ -307,21 +314,33 @@ the money-Phase-3 shared-loop note.
    hatch: unset `WATCHERS_MODE` — nothing to unwind beyond open items managers can dismiss.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` (PR gate)
-- [ ] New lifecycle tests above pass; existing lifecycle tests untouched-green (proves the
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` (PR gate) — 1736
+      passed / 8 skipped + clean build, 2026-08-16
+- [x] New lifecycle tests above pass; existing lifecycle tests untouched-green (proves the
       default path stays pure)
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack + `npm run seed:local` (LOCAL ONLY — never `--hosted`;
   `testEnvGuard` host rule) + a seeded confirmed assignment with a past `ends_at`.
-- [ ] `WATCHERS_MODE=shadow npm run job:lifecycle` (local-stack env, `COMPOSIO_API_KEY` unset)
+- [x] `WATCHERS_MODE=shadow npm run job:lifecycle` (local-stack env, `COMPOSIO_API_KEY` unset)
       → JSON line shows `watchers.mode:'shadow'`, `gapsFound ≥ 1`, `itemsOpened: 0`; psql
-      read-back (maker≠checker): zero `overdue_visit_gap` rows
-- [ ] `WATCHERS_MODE=live …` twice → psql read-back: exactly ONE open item for the assignment
+      read-back (maker≠checker): zero `overdue_visit_gap` rows — VERIFIED 2026-08-16 by a
+      fresh-context subagent: `{"mode":"shadow","tenants":1,"gapsFound":1,"itemsOpened":0}`,
+      pg count 0
+- [x] `WATCHERS_MODE=live …` twice → psql read-back: exactly ONE open item for the assignment
       after both runs (dedup); then insert a visit row for the job dated after `ends_at`, run
-      again → item auto-resolved with the arrival resolution text
-- [ ] Push path: with `BOARD_BOT_TOKEN` unset locally, summary reports `pushSkipped: true`,
-      exit code 0
+      again → item auto-resolved with the arrival resolution text — VERIFIED: run1
+      `itemsOpened:1`, run2 `itemsOpened:0`, pg = 1 row, suggestion carries job+customer; after
+      visit insert `itemsResolved:1`, row `resolved` with 'field report arrived after this was
+      flagged'
+- [x] Push path: with `BOARD_BOT_TOKEN` unset locally, summary reports `pushSkipped: true`,
+      exit code 0 — VERIFIED (`pushSkipped:true`, exit 0)
+- [x] **RE-VERIFIED after the final-review amendments** (fresh build, all 5 steps): shadow
+      reports `gapsFound:1, freshGaps:1`; a during-visit `visits` row SUPPRESSES its assignment;
+      live×2 opens exactly one item (run2 `freshGaps:0`), detail carries startsAtLocal +
+      endsAtLocal; cancelling the assignment auto-resolves the item with 'visit was cancelled
+      after this was flagged'; the cadence gate observed live in both directions (:29 tick →
+      steps 1-7 `{skipped:'off-cadence tick'}`, :30 tick → heavy steps run; watcher every tick)
 
 ### Manual verification
 - [ ] Read the suggestion + push copy as a manager would: does it read as a colleague's
@@ -330,6 +349,54 @@ the money-Phase-3 shared-loop note.
 
 ---
 *Pause after this phase: Manual verification is non-empty (copy tone + the live-flip decision).*
+
+## Final-review amendments (2026-08-16, multi-angle review round)
+
+The full-diff review (10 finder angles + verification) drove these deviations from the plan text
+above — each is a correctness fix, implemented and re-verified:
+
+1. **"Filled" = activity since the visit's START, not strictly after its end.** A field note
+   dictated mid-visit IS the report; the end-based predicate flagged exactly those punctual
+   reports and could never auto-resolve them (plausibly a contributor to the 67/67 research
+   rate). Compare is minute-floored `>=` (the naive-local conversion is minute-precision, so
+   same-minute activity counts as filling — the safe direction). Item detail now carries
+   `startsAtLocal` (+ `endsAtLocal` for display).
+2. **The cap meters FRESH gaps.** New `listEverFlaggedSubjectRefs` batch read filters
+   ever-flagged assignments out BEFORE the 5-slot cap — without it, stale flagged-but-unfilled
+   gaps occupied the slots and starved new gaps for up to 72h. The summary gained `freshGaps`
+   (computed in both modes): it is the number the shadow→live flip decision should read, since
+   it is exactly what live would open.
+3. **Activity listers paginate** past PostgREST's silent 1000-row cap (unordered truncation
+   could drop the one capture proving a visit was reported → false flag). Floor additionally
+   clamped: never more than 7 days before the window (one stuck open item must not drag every
+   tick's read back unboundedly).
+4. **Auto-resolve second path:** an open item whose assignment left `confirmed`
+   (cancelled/completed — the "status update" the item copy promises) resolves with
+   `visit was <status> after this was flagged`, via the existing `listAssignmentsByIds`.
+5. **One cadence gate, not seven** in lifecycle.ts (the seven copy-pasted gates invited a
+   future step that forgets its gate and silently runs a vendor sweep every 5 minutes).
+6. **naiveLocal composes booking.ts's canonical `naiveLocalISO`** (was a third silent copy of
+   the storage-form literal); doc contradictions fixed (control-plane/eng-memory §4 now say
+   the `*/5` schedule is a ROLLOUT TARGET flipped in the dashboard, and control-plane's step
+   list is flagged as predating the bill-pull/watcher steps).
+
+**Surfaced, deliberately NOT changed (decide at review / Stage-1 rebase):**
+- Should inbound customer traffic (a job-stamped complaint email/call) count as "activity" that
+  suppresses the flag? Today any job-stamped capture counts; the highest-signal case ("nobody
+  came" complaint) is thereby suppressed. Product call — narrowing the captures home to
+  technician/agent channels is a small filter if wanted.
+- `pushed` counts notifyManagers calls, not deliveries (it swallows errors and sends only to
+  managers, while the tenant enumerator accepts any bound technician) — a manager-less-binding
+  tenant reports pushes that reached nobody. Honest fix = notifyManagers returning a count.
+- The once-per-assignment-ever guarantee is app-level (select-then-insert); a one-line partial
+  unique index migration would give it a DB backstop before Stage 1 adds a second writer.
+- Flipping live→shadow (or unsetting the mode) freezes auto-resolve, so open items stop
+  self-cleaning on rollback — plan-consistent but worth knowing.
+- First-hour live-flip burst: the cap is per-tick, so the initial backlog burns at 5 items/5min
+  (bounded by the 72h window's fresh-gap count — read `freshGaps` in shadow before flipping).
+- A `*/15` schedule left un-flipped + persistent ≥5-min cron firing delay would silently skip
+  the heavy sweeps (all green) — flip the schedule in the SAME dashboard visit as
+  `WATCHERS_MODE` (rollout step 2, now also in control-plane.md).
 
 ## Parallel/stack verdict (plan-two)
 

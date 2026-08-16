@@ -157,11 +157,14 @@ export async function markNudgeOutcome(
   return data as Nudge | null;
 }
 
-// Write back a failed compose/delivery attempt count. A literal SET (not an
-// increment expression — PostgREST has none): the caller read the row this
-// tick and the cron is the only writer (Render guarantees one concurrent
-// run), so read-add-one-write is race-free in practice, and the pending/
-// queued guard drops the write if the row moved on anyway.
+// Write back a failed COMPOSE attempt count. A literal SET (not an increment
+// expression — PostgREST has none): the caller read the row this tick and the
+// cron is the only writer (Render guarantees one concurrent run). The guard
+// is PENDING-only (Phase-3 review F3): if markNudgeQueued's UPDATE committed
+// but its response was lost, the row is already 'queued' — this write must
+// then land nowhere, so the compose catch cannot destroy a successfully
+// queued deliverable by marking it failed. Phase 4's delivery attempts get
+// their own helper with their own guard.
 export async function setNudgeAttempts(
   id: string,
   tenantId: string,
@@ -172,7 +175,7 @@ export async function setNudgeAttempts(
     .update({ attempts })
     .eq('id', id)
     .eq('tenant_id', tenantId)
-    .in('status', ['pending', 'queued'])
+    .eq('status', 'pending')
     .select()
     .maybeSingle();
   if (error) throw new Error(`setNudgeAttempts failed: ${error.message}`);

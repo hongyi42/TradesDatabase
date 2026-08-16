@@ -399,6 +399,38 @@ server.ts — compose must not import the whole MCP server for a constant; the g
 on `NUDGES_MODE='live'`: a rolled-back ladder must not keep composing leftovers (creation
 and compose are what a rollback turns off; the in-flight sweep keeps running in step 8).
 
+**Adversarial review (2026-08-16, commit 8b8f452) + fixes (all landed same day):**
+- **F1 (HIGH, fixed):** a nudge dying terminal WITHOUT the ask ever landing (model declined /
+  context incomplete / compose failed 3x) orphaned its gap from every surface — the ever-
+  nudged pre-filter + once-ever index left no path back. Fix: `handToManager` — decline,
+  thin-context, and attempt-cap paths now flag the manager (Stage-0 copy +
+  `detail.escalatedFromNudge`) BEFORE closing the nudge; summary gains `handoffs`. The
+  reviewer's live scenario (Render's suspended Fireworks key failing every compose within 3
+  ticks of a live flip) now lands every gap in the manager queue instead of a void.
+- **F2 (fixed):** trust-boundary flattening — context strings (customer/title/name) and the
+  model's question are control-char-stripped, newline-collapsed, and length-capped before
+  entering the prompt or the deliverable, so nothing can forge the footer's
+  "Note for the assistant" register (which rides on newlines); a model question IN that
+  register is refused outright. Residual blast radius (reviewer-verified): the receiving
+  agent's irreversible verbs are human-confirmation-gated, so worst case is misdirection,
+  not action.
+- **F3 (fixed):** `setNudgeAttempts` is pending-only and the terminal path is gated on the
+  bump landing — a lost `markQueued` response can no longer destroy a successfully queued
+  deliverable.
+- **F4 (fixed):** the worktree scratch-stack `supabase/config.toml` leak reverted from the
+  branch (CLAUDE.md: leave uncommitted; second occurrence of this exact leak — watch it in
+  every worktree commit).
+- **F5 (fixed):** migration `20260817100000_reserve_spine_namespace.sql` — CHECK
+  (`ref not like 'spine:%'`) on technicians makes the namespace reservation structural: no
+  operator script can ever mint a `spine:*` roster row, which would have hollowed the
+  ceiling via the Composio relay (the one tool path that routes around dispatch and keys on
+  row existence). Wording note: the gate's error says "read/ask" (accurate for v1) where
+  the plan wrote "read/ask/stage" — code wins.
+- Reviewer attacked and found clean: dispatch order + all bypass routes (relay covered by
+  F5), allowlist read-only-ness (query_audit = by-design logging; dropSensitive applies to
+  the roster-less ref), attempts arithmetic, step-9 cost bounding and loud-typo behavior.
+  Full suite after fixes: 1772 passed / 0 failed.
+
 ### Manual verification
 - [ ] Read 2–3 composed questions: colleague tone, not audit tone (direction constraint 5 +
   copy doctrine)?

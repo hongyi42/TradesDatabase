@@ -1,4 +1,5 @@
 import {
+  flagOverdueVisitGap,
   listNudgesByStatus,
   listTenantIdsWithTelegramBindings,
   markNudgeOutcome,
@@ -6,6 +7,7 @@ import {
   setNudgeAttempts,
   type Nudge,
 } from '../db/index.js';
+import { wallClockLabel } from '../jobs/watchers.js';
 import { runForcedTool, type ForcedToolSpec } from '../model/forcedTool.js';
 import { TEAM_LEAD_REF } from './identity.js';
 
@@ -54,11 +56,31 @@ const COMPOSE_SYSTEM =
   'prints the date); one or two sentences at most. If the evidence is too thin or looks ' +
   'contradictory, decline with ask=false and explain in reason.';
 
+// Every string that crosses a trust boundary here — DB context into the model
+// prompt, model output into the deliverable — is flattened first (Phase-3
+// review F2): control characters and newlines collapse to single spaces so no
+// customer name, job title, or model sentence can forge the message's OWN
+// structure (the footer's "Note for the assistant" register rides on
+// newlines), and lengths are capped. Customer names and job titles ultimately
+// derive from external input (inbound mail, extracted notes) — code owns the
+// frame, so code must also own the frame's delimiters.
+const flatten = (s: string, max: number): string =>
+  s
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+
 export interface ComposeContext {
   customerName: string;
   jobTitle: string;
   technicianName: string;
   endsAtLocal: string;
+  // Present when the row can be handed to the manager (the rung-2 fallback
+  // for a nudge that dies without the ask ever landing — review F1).
+  jobId: string | null;
+  startsAtLocal: string | null;
+  technicianRef: string | null;
 }
 
 // Fail-closed context reader: compose runs a model on these fields, so a
@@ -72,7 +94,58 @@ export function readComposeContext(n: Nudge): ComposeContext | null {
   const technicianName = s('technicianName');
   const endsAtLocal = s('endsAtLocal');
   if (!customerName || !jobTitle || !technicianName || !endsAtLocal) return null;
-  return { customerName, jobTitle, technicianName, endsAtLocal };
+  if (Number.isNaN(Date.parse(endsAtLocal))) return null;
+  return {
+    customerName: flatten(customerName, 80),
+    jobTitle: flatten(jobTitle, 120),
+    technicianName: flatten(technicianName, 60),
+    endsAtLocal,
+    jobId: s('jobId'),
+    startsAtLocal: s('startsAtLocal'),
+    technicianRef: s('technicianRef'),
+  };
+}
+
+// The rung-2 fallback for a nudge that dies WITHOUT the ask ever landing
+// (model declined, compose gave up — review F1): the gap must still reach the
+// manager, because the fresh pre-filter excludes ever-nudged assignments in
+// every mode and the once-ever index blocks a second nudge — without this,
+// the gap would reach NEITHER surface, ever. Same copy the Stage-0 fallback
+// uses (the manager sees the familiar shape); the once-ever review dedup
+// makes retries converge. Flag FIRST, then close the nudge — the safe order
+// (a blip re-runs compose next tick; the reverse order orphans the gap).
+async function handToManager(
+  n: Nudge,
+  ctx: ComposeContext | null,
+  flagGap: typeof flagOverdueVisitGap,
+): Promise<boolean> {
+  const raw = (n.context ?? {}) as Record<string, unknown>;
+  const jobId = ctx?.jobId ?? (typeof raw.jobId === 'string' ? raw.jobId : null);
+  const startsAtLocal = ctx?.startsAtLocal ?? null;
+  const endsAtLocal = ctx?.endsAtLocal ?? null;
+  if (!jobId || !startsAtLocal || !endsAtLocal) {
+    // Not enough evidence even to flag coherently — the row is tampered
+    // beyond use. Loud log; the status-change sweep can still close it.
+    console.error(`[teamLeadCompose] nudge ${n.id} unfit for manager handoff (thin context)`);
+    return false;
+  }
+  const title = ctx?.jobTitle ?? 'a job';
+  const customer = ctx?.customerName ?? 'unknown customer';
+  const item = await flagGap({
+    tenantId: n.tenant_id,
+    assignmentId: n.subject_ref,
+    jobId,
+    technicianRef: ctx?.technicianRef ?? null,
+    startsAtLocal,
+    endsAtLocal,
+    escalatedFromNudge: n.id,
+    suggestion:
+      `The visit for '${title}' (${customer}) was scheduled to wrap up by ` +
+      `${wallClockLabel(endsAtLocal)}, but nothing has been recorded about it yet — no ` +
+      `field note and no status change. Worth checking how it went so the job's record ` +
+      `stays complete. If nothing needed recording, just dismiss this.`,
+  });
+  return item !== null;
 }
 
 // The full deliverable: model question + code-printed evidence + the standing
@@ -100,6 +173,7 @@ export interface ComposeDeps {
   markQueued?: typeof markNudgeQueued;
   markOutcome?: typeof markNudgeOutcome;
   setAttempts?: typeof setNudgeAttempts;
+  flagGap?: typeof flagOverdueVisitGap;
 }
 
 export interface ComposeSummary {
@@ -107,6 +181,7 @@ export interface ComposeSummary {
   cancelled: number;
   failed: number;
   rowErrors: number;
+  handoffs: number; // nudges that died unasked and became manager items (F1)
 }
 
 export async function runTeamLeadCompose(deps: ComposeDeps = {}): Promise<ComposeSummary> {
@@ -116,8 +191,15 @@ export async function runTeamLeadCompose(deps: ComposeDeps = {}): Promise<Compos
   const markQueued = deps.markQueued ?? markNudgeQueued;
   const markOutcome = deps.markOutcome ?? markNudgeOutcome;
   const setAttempts = deps.setAttempts ?? setNudgeAttempts;
+  const flagGap = deps.flagGap ?? flagOverdueVisitGap;
 
-  const summary: ComposeSummary = { composed: 0, cancelled: 0, failed: 0, rowErrors: 0 };
+  const summary: ComposeSummary = {
+    composed: 0,
+    cancelled: 0,
+    failed: 0,
+    rowErrors: 0,
+    handoffs: 0,
+  };
 
   for (const tenantId of await listTenants()) {
     // Kind-scoped on purpose: this prompt knows how to ask about ONE gap
@@ -130,7 +212,10 @@ export async function runTeamLeadCompose(deps: ComposeDeps = {}): Promise<Compos
       try {
         const ctx = readComposeContext(n);
         if (!ctx) {
-          // Thin/tampered evidence: never ask a model to guess around it.
+          // Thin/tampered evidence: never ask a model to guess around it —
+          // but the GAP still exists, so hand it to the manager first (F1;
+          // flag-then-close, see handToManager).
+          if (await handToManager(n, null, flagGap)) summary.handoffs += 1;
           const moved = await markOutcome(n.id, tenantId, 'cancelled', 'context incomplete');
           if (moved) summary.cancelled += 1;
           continue;
@@ -151,14 +236,22 @@ export async function runTeamLeadCompose(deps: ComposeDeps = {}): Promise<Compos
           { tenantId, technicianRef: TEAM_LEAD_REF },
         );
         if (args.ask !== true) {
+          // A decline is a judgment about ASKING, not about the gap — the
+          // manager still gets it (F1).
+          if (await handToManager(n, ctx, flagGap)) summary.handoffs += 1;
           const reason = typeof args.reason === 'string' ? args.reason : 'model declined';
           const moved = await markOutcome(n.id, tenantId, 'cancelled', `declined: ${reason}`);
           if (moved) summary.cancelled += 1;
           continue;
         }
-        const question = typeof args.question === 'string' ? args.question.trim() : '';
-        if (question.length === 0 || question.length > 500) {
-          throw new Error(`compose returned an unusable question (${question.length} chars)`);
+        const question = flatten(typeof args.question === 'string' ? args.question : '', 500);
+        if (question.length === 0) {
+          throw new Error('compose returned an empty question');
+        }
+        // A question that speaks in the footer's register is trying to steer
+        // the receiving agent — code owns that frame, never the model (F2).
+        if (/note for the assistant/i.test(question)) {
+          throw new Error('compose question tried to impersonate the assistant footer');
         }
         const queued = await markQueued(n.id, tenantId, assembleNudgeMessage(question, ctx));
         if (queued) summary.composed += 1; // null = the row moved under us — drop the write
@@ -168,8 +261,15 @@ export async function runTeamLeadCompose(deps: ComposeDeps = {}): Promise<Compos
         console.error(`[teamLeadCompose] nudge ${n.id} failed`, err);
         const attempts = n.attempts + 1;
         try {
-          await setAttempts(n.id, tenantId, attempts);
-          if (attempts >= MAX_COMPOSE_ATTEMPTS) {
+          // Gated on the bump LANDING (F3): setNudgeAttempts is pending-only,
+          // so if markQueued's UPDATE committed but its response was lost,
+          // the row is 'queued' → bump returns null → we must NOT destroy a
+          // successfully queued deliverable by failing it.
+          const bumped = await setAttempts(n.id, tenantId, attempts);
+          if (bumped && attempts >= MAX_COMPOSE_ATTEMPTS) {
+            // Terminal without the ask ever landing → the manager takes it
+            // (F1; flag first, then close).
+            if (await handToManager(n, readComposeContext(n), flagGap)) summary.handoffs += 1;
             const moved = await markOutcome(
               n.id,
               tenantId,

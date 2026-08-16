@@ -357,10 +357,10 @@ describe('runLifecycle', () => {
         ...COST_STUBS,
         ...BASE,
         runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
-        composeNudges: async () => ({ composed: 2, cancelled: 1, failed: 0, rowErrors: 0 }),
+        composeNudges: async () => ({ composed: 2, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 0 }),
         hasModelKey: () => true,
       });
-      expect(live.teamLeadCompose).toEqual({ composed: 2, cancelled: 1, failed: 0, rowErrors: 0 });
+      expect(live.teamLeadCompose).toEqual({ composed: 2, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 0 });
       expect(live.ok).toBe(true);
 
       // A throwing compose is a stepError, red — other steps unaffected.

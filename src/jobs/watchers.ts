@@ -102,7 +102,7 @@ const MAX_UTC_OFFSET_MS = 14 * 3_600_000;
 // it in UTC — no timezone math — and the weekday comes from Intl over the
 // same string, so the weekday-date pair can never disagree (the weekday-guard
 // doctrine: fused derivation, not model arithmetic).
-function wallClockLabel(naiveIso: string): string {
+export function wallClockLabel(naiveIso: string): string {
   const d = new Date(Date.parse(naiveIso));
   const day = new Intl.DateTimeFormat('en-US', {
     timeZone: 'UTC',

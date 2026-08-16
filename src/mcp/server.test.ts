@@ -99,7 +99,7 @@ afterAll(async () => {
     // call, so a suite run leaves hundreds behind. Left uncleaned they would
     // skew any later test that counts spine events per tenant — which is
     // exactly what the rollup's allocation split does.
-    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations, cost_events cascade',
+    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations, cost_events, money_events cascade',
   );
   // Restore the seed capacity (2/5) so post-suite live checks see known values.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
@@ -1787,7 +1787,8 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('undo_run'); // the safety net (plan 2026-07-30 Phase 5)
       expect(mgrTools).toContain('get_availability'); // the read half of set_availability (2026-08-04)
       expect(mgrTools).toContain('query_spine'); // ad-hoc read fallback (2026-08-06)
-      expect(mgrTools).toHaveLength(41);
+      expect(mgrTools).toContain('record_money_event'); // the money ledger (2026-08-15)
+      expect(mgrTools).toHaveLength(42);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2190,7 +2191,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(41); // base minus get_schedule + 28 admin
+        expect(mgrTools).toHaveLength(42); // base minus get_schedule + 29 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -7323,6 +7324,114 @@ describe('cancel_job (the terminal verb — cancel-vocabulary plan)', () => {
       expect(again.text).toContain('it already is');
     } finally {
       await mgrClient.close();
+    }
+  });
+});
+
+describe('record_money_event + money reads (money-ledger plan phase 2)', () => {
+  test('manager records events; ledger, status walk, and tier-filtered reads all verified', async () => {
+    const { client: mgrC, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const cust = await createCustomer({ tenantId, name: 'Money MCP Cust', phone: '555-8811' });
+      const job = await createJob({ tenantId, customerId: cust.id, title: 'boiler swap' });
+
+      // The admin gate: a technician badge is refused by NAME, before args.
+      const refused = await call('record_money_event', {
+        jobId: job.id, kind: 'invoice_issued', amountCents: 1000,
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('manager badge');
+
+      // Instructive rejections: unknown kind, missing amount, ghost job.
+      const badKind = await mgr('record_money_event', { jobId: job.id, kind: 'bribe', amountCents: 5 });
+      expect(badKind.isError).toBe(true);
+      expect(badKind.text).toContain('unknown kind'); // the typed layer's single guard
+      const noAmt = await mgr('record_money_event', { jobId: job.id, kind: 'invoice_issued' });
+      expect(noAmt.isError).toBe(true);
+      expect(noAmt.text).toContain('requires amountCents');
+      const ghost = await mgr('record_money_event', {
+        jobId: '00000000-0000-0000-0000-000000000000', kind: 'fee_charged', amountCents: 100,
+      });
+      expect(ghost.isError).toBe(true);
+      expect(ghost.text).toContain('not found for this tenant');
+      const negAmt = await mgr('record_money_event', {
+        jobId: job.id, kind: 'payment_received', amountCents: -500,
+      });
+      expect(negAmt.isError).toBe(true);
+      expect(negAmt.text).toContain('whole number of cents');
+      // A REAL cross-tenant job (not just a ghost id): same answer, no oracle.
+      const otherTenant = await createTenant('Money Other Tenant');
+      const foreignCust = await createCustomer({ tenantId: otherTenant.id, name: 'Foreign Cust' });
+      const foreignJob = await createJob({ tenantId: otherTenant.id, customerId: foreignCust.id });
+      const cross = await mgr('record_money_event', {
+        jobId: foreignJob.id, kind: 'fee_charged', amountCents: 100,
+      });
+      expect(cross.isError).toBe(true);
+      expect(cross.text).toContain('not found for this tenant');
+      // Coerced-to-absent guards: a numeric externalRef and a string progress
+      // are REJECTED, never silently dropped (append-only row — review finding).
+      const numRef = await mgr('record_money_event', {
+        jobId: job.id, kind: 'payment_received', amountCents: 100, externalRef: 4471,
+      });
+      expect(numRef.isError).toBe(true);
+      expect(numRef.text).toContain('externalRef must be a string');
+      const strProg = await mgr('record_money_event', {
+        jobId: job.id, kind: 'invoice_issued', amountCents: 100, progress: 'true',
+      });
+      expect(strProg.isError).toBe(true);
+      expect(strProg.text).toContain('progress must be a boolean');
+
+      // Record an invoice: reply carries the fold AND the derived status walk.
+      const inv = await mgr('record_money_event', {
+        jobId: job.id, kind: 'invoice_issued', amountCents: 45000, externalRef: 'INV-77',
+      });
+      expect(inv.data.status).toBe('recorded');
+      expect(inv.data.money.invoicedCents).toBe(45000);
+      expect(inv.data.jobStatusChange).toEqual({ from: 'open', to: 'invoiced' });
+
+      // A progress invoice records money but never drives status.
+      const cust2 = await createCustomer({ tenantId, name: 'Money MCP Cust 2', phone: '555-8812' });
+      const job2 = await createJob({ tenantId, customerId: cust2.id, title: 'big install' });
+      const prog = await mgr('record_money_event', {
+        jobId: job2.id, kind: 'invoice_issued', amountCents: 100000, progress: true,
+      });
+      expect(prog.data.status).toBe('recorded');
+      expect(prog.data.jobStatusChange).toBeUndefined();
+
+      // get_job tier split: manager sees summary + entries; technician sees
+      // door numbers only; an untracked job carries NO money key at all.
+      const mgrJob = await mgr('get_job', { jobId: job.id });
+      expect(mgrJob.data.money.balanceDueCents).toBe(45000);
+      expect(mgrJob.data.money.recentEvents).toHaveLength(1);
+      expect(mgrJob.data.money.recentEvents[0].externalRef).toBe('INV-77');
+      const techJob = await call('get_job', { jobId: job.id });
+      expect(techJob.data.money).toEqual({ balanceDueCents: 45000, invoicedCents: 45000 });
+      const cust3 = await createCustomer({ tenantId, name: 'No Money Cust', phone: '555-8813' });
+      const job3 = await createJob({ tenantId, customerId: cust3.id, title: 'untracked' });
+      const bare = await mgr('get_job', { jobId: job3.id });
+      expect(bare.data.money).toBeUndefined();
+
+      // get_customer_context: per-job summaries, tier-filtered, absent when empty.
+      const ctxMgr = await mgr('get_customer_context', { customerId: cust.id });
+      expect(ctxMgr.data.moneyByJob[job.id].invoicedCents).toBe(45000);
+      const ctxTech = await call('get_customer_context', { customerId: cust.id });
+      expect(ctxTech.data.moneyByJob[job.id]).toEqual({ balanceDueCents: 45000, invoicedCents: 45000 });
+      const ctxBare = await mgr('get_customer_context', { customerId: cust3.id });
+      expect(ctxBare.data.moneyByJob).toBeUndefined();
+
+      // Payment clears the balance → paid; an unreferenced void is refused.
+      const pay = await mgr('record_money_event', {
+        jobId: job.id, kind: 'payment_received', amountCents: 45000, method: 'check',
+      });
+      expect(pay.data.jobStatusChange).toEqual({ from: 'invoiced', to: 'paid' });
+      expect(pay.data.money.balanceDueCents).toBe(0);
+      const badVoid = await mgr('record_money_event', {
+        jobId: job.id, kind: 'invoice_voided', amountCents: 45000,
+      });
+      expect(badVoid.isError).toBe(true);
+      expect(badVoid.text).toContain('correctsEventId');
+    } finally {
+      await mgrC.close();
     }
   });
 });

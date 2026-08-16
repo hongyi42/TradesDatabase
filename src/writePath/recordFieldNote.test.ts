@@ -8,7 +8,8 @@ import { createAssignment } from '../db/assignments.js';
 import { insertTechnician } from '../db/technicians.js';
 import { setTenantSeats } from '../db/tenants.js';
 import { localDateISO } from '../schedule/availability.js';
-import { recordFieldNote } from './recordFieldNote.js';
+import { NOTE_SIGNAL_TRANSITIONS, recordFieldNote } from './recordFieldNote.js';
+import { ALLOWED_TRANSITIONS, type JobStatus } from '../db/jobs.js';
 import type { Extractor, ExtractedFields } from './extract.js';
 
 // Integration test against the TEST project with a STUBBED extractor (no live
@@ -81,6 +82,70 @@ describe('recordFieldNote', () => {
     expect(Number(visit.rows[0].labor_hours)).toBe(2.5);
     expect(visit.rows[0].source_capture_id).toBe(r.captureId);
     expect(visit.rows[0].technician_name).toBe('tech-jane');
+  });
+
+  test('note signals drive the WORK dimension only: invoiced ignores a late "done", completed reopens on "underway"', async () => {
+    const { updateJobStatus } = await import('../db/jobs.js');
+    // A job already in the money tail: a stale "job done" note must not demote it.
+    const invCust = await createCustomer({ tenantId, name: 'Invoiced Cust', phone: '555-0311' });
+    const invJob = await createJob({ tenantId, customerId: invCust.id, title: 'done and billed' });
+    await updateJobStatus(invJob.id, 'in_progress');
+    await updateJobStatus(invJob.id, 'completed');
+    await updateJobStatus(invJob.id, 'invoiced');
+    const r1 = await recordFieldNote(
+      { tenantId, technicianRef: 'tech-jane', channel: 'technician_note', text: 'all wrapped up' },
+      stub({ phone: '555-0311', statusSignal: 'completed' }),
+    );
+    expect(r1.jobId).toBe(invJob.id); // invoiced is non-terminal → reused for the note
+    const inv = await pg.query<{ status: string }>('select status from jobs where id = $1', [invJob.id]);
+    expect(inv.rows[0].status).toBe('invoiced'); // NOT demoted (money-ledger review finding)
+
+    // The blessed reopen: field activity on a completed job revives it.
+    const reCust = await createCustomer({ tenantId, name: 'Reopen Cust', phone: '555-0312' });
+    const reJob = await createJob({ tenantId, customerId: reCust.id, title: 'not quite done' });
+    await updateJobStatus(reJob.id, 'in_progress');
+    await updateJobStatus(reJob.id, 'completed');
+    const r2 = await recordFieldNote(
+      { tenantId, technicianRef: 'tech-jane', channel: 'technician_note', text: 'back out here, leak returned' },
+      stub({ phone: '555-0312', statusSignal: 'in_progress' }),
+    );
+    expect(r2.jobId).toBe(reJob.id);
+    const re = await pg.query<{ status: string }>('select status from jobs where id = $1', [reJob.id]);
+    expect(re.rows[0].status).toBe('in_progress'); // reopened via the new completed→in_progress edge
+  });
+
+  test('NOTE_SIGNAL_TRANSITIONS is a strict subset of the machine (pinned invariant)', () => {
+    for (const [from, signals] of Object.entries(NOTE_SIGNAL_TRANSITIONS)) {
+      for (const sig of signals ?? []) {
+        expect(ALLOWED_TRANSITIONS[from as JobStatus]).toContain(sig);
+      }
+    }
+  });
+
+  test('stale reopen guard: a note captured BEFORE completion cannot resurrect the job', async () => {
+    const { updateJobStatus } = await import('../db/jobs.js');
+    const { appendRawCapture: append } = await import('../db/rawCaptures.js');
+    const cust = await createCustomer({ tenantId, name: 'Stale Reopen Cust', phone: '555-0313' });
+    const job = await createJob({ tenantId, customerId: cust.id, title: 'late transcript' });
+    // The mid-job note lands in L1 first (delivery pending)…
+    const early = await append({
+      tenantId, channel: 'phone_call', technicianRef: 'tech-jane',
+      rawText: 'on site, starting the swap', externalId: 'stale-reopen-probe-1',
+    });
+    // …then the job completes…
+    await updateJobStatus(job.id, 'in_progress');
+    await updateJobStatus(job.id, 'completed');
+    // …then the delayed delivery re-arrives and heals the orphan capture.
+    const r = await recordFieldNote(
+      {
+        tenantId, technicianRef: 'tech-jane', channel: 'phone_call',
+        text: 'on site, starting the swap', externalId: 'stale-reopen-probe-1',
+      },
+      stub({ phone: '555-0313', statusSignal: 'in_progress' }),
+    );
+    expect(r.captureId).toBe(early.id); // healed the SAME capture (captured_at is the early time)
+    const row = await pg.query<{ status: string }>('select status from jobs where id = $1', [job.id]);
+    expect(row.rows[0].status).toBe('completed'); // stale signal skipped — no resurrection
   });
 
   test('inbound contract: an unmatched note proposes the scheduled address (L1 kept, no L2)', async () => {

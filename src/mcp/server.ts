@@ -82,6 +82,7 @@ import {
   listMoneyEventsForJobs,
   summarizeMoney,
   syncJobStatusForMoney,
+  technicianMoneyView,
 } from '../db/index.js';
 import { recordFieldNote, type ResolvedIdentity } from '../writePath/recordFieldNote.js';
 import { matchIdentity, type MatchResult } from '../writePath/identityMatch.js';
@@ -1286,10 +1287,13 @@ const ADMIN_TOOLS = [
       'ONE call — it commits immediately and replies with the updated money summary ' +
       '(quoted / invoiced / paid / balance due) and any job-status change; ALWAYS relay ' +
       'those back to the manager. Amounts are IN CENTS ($450 = 45000) and always positive — ' +
-      'the kind carries the direction. Mistakes are never edited, they are cancelled by a ' +
-      "NEW entry: kind 'correction' (with correctsEventId) cancels any entry; " +
+      'the kind carries the direction. Mistakes are never edited, they are cancelled WHOLE by ' +
+      "a NEW entry: kind 'correction' (with correctsEventId) cancels any entry; " +
       "'invoice_voided' (with correctsEventId) cancels an invoice AND walks the job status " +
-      'back down. A deposit or mid-project milestone invoice must pass progress: true so it ' +
+      'back down. A void/correction cancels the ENTIRE cited entry — for a partial adjustment ' +
+      '("knock $50 off"), cancel the entry and re-enter the right amount; a MISTAKEN ' +
+      'void/correction is fixed by re-issuing the cancelled entry, never by correcting the ' +
+      'correction. A deposit or mid-project milestone invoice must pass progress: true so it ' +
       'records the money WITHOUT marking the job completed. Job status follows the ledger ' +
       'automatically (a real invoice ⇒ completed → invoiced; balance cleared ⇒ paid) — ' +
       'never ask the manager to update status separately.',
@@ -1307,7 +1311,9 @@ const ADMIN_TOOLS = [
           minimum: 0,
           description:
             'Amount in cents, positive ($450 = 45000). Required for every kind except ' +
-            'estimate_declined.',
+            'estimate_declined and correction/invoice_voided (optional there — a ' +
+            'void/correction cancels its target WHOLE; if stated it must equal the ' +
+            "cancelled entry's amount).",
         },
         occurredAt: {
           type: 'string',
@@ -2114,9 +2120,7 @@ async function dispatch(
       const moneyByJob: Record<string, unknown> = {};
       for (const [jobId, events] of byJob) {
         const s = summarizeMoney(events);
-        moneyByJob[jobId] = activeManager
-          ? s
-          : { balanceDueCents: s.balanceDueCents, invoicedCents: s.invoicedCents };
+        moneyByJob[jobId] = activeManager ? s : technicianMoneyView(s);
       }
       return {
         ...ctx,
@@ -2139,13 +2143,21 @@ async function dispatch(
       const job = await getJob(jobId);
       // Tenant guard: a cross-tenant (or unknown) id reads as not found.
       if (!job || job.tenant_id !== tenantId) return null;
-      // Money position (money-ledger plan). Attached ONLY when the ledger has
-      // entries — a zero-summary on an untracked job would read as "fully
-      // paid", the exact misread the fold exists to prevent. Tier split:
+      // Money position + retraction fold are independent reads — parallel
+      // (one round-trip of latency instead of two on every get_job).
+      const factIds = factSourceIds(job.attributes);
+      const [moneyEvents, retractionRows] = await Promise.all([
+        listMoneyEventsForJob(tenantId, jobId),
+        factIds.length > 0 ? findRetractionsFor(factIds) : Promise.resolve([]),
+      ]);
+      // Money attached ONLY when the ledger has entries: absence = "money was
+      // never recorded here" (a zero-summary on an untracked job would read as
+      // "fully paid"). A fully-VOIDED ledger still attaches its zeros — that
+      // is truthful: money was discussed and nothing is owed. Tier split:
       // managers also get the recent entries (ids are what correction/void
       // cite); technicians get the door numbers only — no methods, no refs,
-      // no history (payment detail is manager_only by standing policy).
-      const moneyEvents = await listMoneyEventsForJob(tenantId, jobId);
+      // no history (payment detail is manager_only by standing policy;
+      // technicianMoneyView is the ONE definition of that boundary).
       const moneySummary = summarizeMoney(moneyEvents);
       const money =
         moneyEvents.length === 0
@@ -2164,22 +2176,18 @@ async function dispatch(
                       correctsEventId: e.corrects_event_id,
                     })),
                   }
-                : {
-                    balanceDueCents: moneySummary.balanceDueCents,
-                    invoicedCents: moneySummary.invoicedCents,
-                  },
+                : technicianMoneyView(moneySummary),
             };
       // Fold standing facts whose evidence was retracted — the raw-row tool
-      // must agree with the folded context view.
-      const ids = factSourceIds(job.attributes);
-      if (ids.length === 0) return { ...job, ...money };
+      // must agree with the folded context view. Single exit: every branch
+      // carries both the fold result and the money block (review finding: a
+      // future early return must not silently drop one of them).
       const retracted = new Set(
-        (await findRetractionsFor(ids))
-          .map((r) => r.retracts_capture_id)
-          .filter((id): id is string => !!id),
+        retractionRows.map((r) => r.retracts_capture_id).filter((id): id is string => !!id),
       );
-      if (retracted.size === 0) return { ...job, ...money };
-      return { ...job, attributes: foldRetractedFacts(job.attributes, retracted), ...money };
+      const attributes =
+        retracted.size > 0 ? foldRetractedFacts(job.attributes, retracted) : job.attributes;
+      return { ...job, attributes, ...money };
     }
     case 'resolve_date': {
       // "Now" is the SERVER's clock in the FIRM's timezone — never a model
@@ -5087,28 +5095,23 @@ async function dispatch(
       const jobId = str('jobId');
       if (!jobId) throw new Error('jobId is required');
       const kindArg = str('kind');
-      if (!kindArg || !MONEY_EVENT_KINDS.includes(kindArg as MoneyEventKind)) {
-        throw new Error(
-          `invalid kind: ${String(args.kind)} (allowed: ${MONEY_EVENT_KINDS.join(', ')})`,
-        );
-      }
+      if (!kindArg) throw new Error('kind is required');
       if (args.amountCents !== undefined && typeof args.amountCents !== 'number') {
         throw new Error('amountCents must be a number of cents');
       }
       if (args.correctsEventId !== undefined && typeof args.correctsEventId !== 'number') {
         throw new Error('correctsEventId must be the numeric ledger entry id');
       }
-      // Tenant guard here for a named error; appendMoneyEvent re-checks anyway.
-      const moneyJob = await getJob(jobId);
-      if (!moneyJob || moneyJob.tenant_id !== tenantId) throw new Error('job not found');
       const detail: Record<string, Json> = {};
       const noteArg = str('note');
       if (noteArg) detail.note = noteArg;
       if (args.progress === true) detail.progress = true;
       // One-shot by doctrine: a ledger row is reversible via correction/void,
-      // so no staging. Amount/reference rules live in the typed layer (ONE
-      // write-side guard for every surface); its errors are instructive —
-      // surface them verbatim.
+      // so no staging. Kind vocabulary, amount rules, tenant/job coherence and
+      // reference rules all live in the typed layer — ONE write-side guard for
+      // every surface (review finding: pre-duplicating them here bought only a
+      // second error phrasing and a wasted job read); its errors are
+      // instructive — surface them verbatim.
       const event = await appendMoneyEvent({
         tenantId,
         jobId,
@@ -5121,21 +5124,36 @@ async function dispatch(
         externalRef: str('externalRef') ?? null,
         detail,
       });
-      // Ledger first, status second: the walk is best-effort and silent when
-      // the ledger has no opinion — recording NEVER fails because of status.
-      const statusMove = await syncJobStatusForMoney(tenantId, jobId);
-      const events = await listMoneyEventsForJob(tenantId, jobId);
+      // The entry is LANDED from here on. Any failure below must still report
+      // success: manual entries carry no dedupe key, so an isError reply would
+      // invite a retry that double-records into an append-only table (the
+      // standing "failed-turn writes may have LANDED" trap — review finding).
+      let statusMove: Awaited<ReturnType<typeof syncJobStatusForMoney>> = null;
+      let events: Awaited<ReturnType<typeof listMoneyEventsForJob>> | null = null;
+      let statusSyncWarning: string | undefined;
+      try {
+        statusMove = await syncJobStatusForMoney(tenantId, jobId);
+        events = await listMoneyEventsForJob(tenantId, jobId);
+      } catch (err) {
+        statusSyncWarning =
+          'the entry WAS recorded, but the follow-up status/summary step failed ' +
+          `(${err instanceof Error ? err.message : String(err)}) — do NOT re-record it; ` +
+          'call get_job to see the current position and status';
+      }
       return {
         status: 'recorded',
         eventId: event.id,
         kind: event.kind,
         amountCents: event.amount_cents,
-        money: summarizeMoney(events),
+        ...(events ? { money: summarizeMoney(events) } : {}),
         ...(statusMove ? { jobStatusChange: statusMove } : {}),
+        ...(statusSyncWarning ? { statusSyncWarning } : {}),
         note:
           'One-shot: recorded. Tell the manager what was recorded, the new balance due, and ' +
-          `any status change. A mistake is cancelled with kind 'correction' (or ` +
-          `'invoice_voided' for an invoice) citing eventId ${event.id}.`,
+          `any status change. A wrong ENTRY is cancelled whole with kind 'correction' (or ` +
+          `'invoice_voided' for an invoice) citing eventId ${event.id} — a partial adjustment ` +
+          'is cancel-then-re-enter. A mistaken void/correction is fixed by RE-ISSUING the ' +
+          'cancelled entry, never by correcting the correction.',
       };
     }
     case 'set_promise': {

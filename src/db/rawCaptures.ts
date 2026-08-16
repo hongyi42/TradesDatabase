@@ -62,13 +62,24 @@ export async function appendRawCapture(input: AppendRawCaptureInput): Promise<Ra
     .select()
     .single();
   if (error || !data) {
-    // Preserve the SQLSTATE code so callers (recordFieldNote's dedup backstop) can
-    // detect a 23505 unique violation — a bare `new Error(message)` would drop it.
-    const err = new Error(`appendRawCapture failed: ${error?.message ?? 'no row returned'}`);
-    if (error && typeof error.code === 'string') (err as { code?: string }).code = error.code;
-    throw err;
+    throw wrapDbError('appendRawCapture failed', error);
   }
   return data;
+}
+
+// Wrap a supabase-js error into an Error while PRESERVING the SQLSTATE code,
+// so callers can still detect 23505/23503 via isUniqueViolation & co. — a bare
+// `new Error(message)` would drop it. ONE definition (review finding: a second
+// hand-rolled copy in moneyEvents.ts had already drifted from this one).
+export function wrapDbError(prefix: string, error: unknown): Error {
+  const message =
+    typeof error === 'object' && error !== null && 'message' in error
+      ? String((error as { message?: unknown }).message)
+      : 'no row returned';
+  const err = new Error(`${prefix}: ${message}`);
+  const code = pgErrorCode(error);
+  if (code !== undefined) (err as Error & { code?: string }).code = code;
+  return err;
 }
 
 // Read-only lookup (the append-only trigger only blocks UPDATE/DELETE). Used by

@@ -134,7 +134,7 @@ export function readComposeContext(n: Nudge): ComposeContext | null {
 // uses (the manager sees the familiar shape); the once-ever review dedup
 // makes retries converge. Flag FIRST, then close the nudge — the safe order
 // (a blip re-runs compose next tick; the reverse order orphans the gap).
-async function handToManager(
+export async function handToManager(
   n: Nudge,
   ctx: ComposeContext | null,
   flagGap: typeof flagOverdueVisitGap,

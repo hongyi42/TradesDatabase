@@ -2,6 +2,7 @@ import type { Database, Json } from './database.types.js';
 import { getClient } from './client.js';
 import { isUniqueViolation } from './rawCaptures.js';
 import type { ReviewKind } from './reviewItems.js';
+import type { Technician } from './technicians.js';
 
 export type Nudge = Database['public']['Tables']['nudges']['Row'];
 
@@ -104,6 +105,9 @@ export async function listNudgedSubjectRefs(
 // conditional UPDATE (the resolveOpenReviewItemFor shape): every predicate in
 // the WHERE clause, null when the row was not in the expected state — the
 // caller treats that as "someone else moved it" and drops the write.
+// attempts resets to 0: the column's ledger changes hands here (compose
+// attempts before, DELIVERY attempts after) and each stage gets its full
+// allowance.
 export async function markNudgeQueued(
   id: string,
   tenantId: string,
@@ -111,13 +115,93 @@ export async function markNudgeQueued(
 ): Promise<Nudge | null> {
   const { data, error } = await getClient()
     .from('nudges')
-    .update({ status: 'queued', question, queued_at: new Date().toISOString() })
+    .update({ status: 'queued', question, attempts: 0, queued_at: new Date().toISOString() })
     .eq('id', id)
     .eq('tenant_id', tenantId)
     .eq('status', 'pending')
     .select()
     .maybeSingle();
   if (error) throw new Error(`markNudgeQueued failed: ${error.message}`);
+  return data as Nudge | null;
+}
+
+// The transport's host-scoped reads (Phase 4). Cross-tenant BY DESIGN — a box
+// serves every tenant whose technicians live on it, exactly like the badge
+// pull — so these are keyed on host, and the embedded technician row carries
+// tenant_id for any per-row writes. `!inner` makes the host filter row-level.
+export type QueuedNudgeForHost = Nudge & {
+  technicians: Pick<
+    Technician,
+    'id' | 'ref' | 'state' | 'sandbox_ref' | 'telegram_user_id' | 'host_id' | 'tenant_id'
+  > | null;
+};
+
+const HOST_QUEUE_SELECT =
+  '*, technicians!inner(id,ref,state,sandbox_ref,telegram_user_id,host_id,tenant_id)';
+
+export async function listQueuedNudgesForHost(hostId: string): Promise<QueuedNudgeForHost[]> {
+  const { data, error } = await getClient()
+    .from('nudges')
+    .select(HOST_QUEUE_SELECT)
+    .eq('status', 'queued')
+    .eq('technicians.host_id', hostId)
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`listQueuedNudgesForHost failed: ${error.message}`);
+  return (data ?? []) as QueuedNudgeForHost[];
+}
+
+// Point-read for the box's delivery report: the id must be a QUEUED nudge
+// whose technician lives on THIS host — a host token can never ack or fail
+// another host's rows (host_id comes from the token, never the body).
+export async function getQueuedNudgeForHost(
+  id: string,
+  hostId: string,
+): Promise<QueuedNudgeForHost | null> {
+  const { data, error } = await getClient()
+    .from('nudges')
+    .select(HOST_QUEUE_SELECT)
+    .eq('id', id)
+    .eq('status', 'queued')
+    .eq('technicians.host_id', hostId)
+    .maybeSingle();
+  if (error) throw new Error(`getQueuedNudgeForHost failed: ${error.message}`);
+  return data as QueuedNudgeForHost | null;
+}
+
+// Literal SETs for the transport's two counters, queued-guarded (the
+// setNudgeAttempts pattern — the pull loop read the row this tick and is the
+// only writer of these columns).
+export async function setNudgeServeCount(
+  id: string,
+  tenantId: string,
+  serveCount: number,
+): Promise<Nudge | null> {
+  const { data, error } = await getClient()
+    .from('nudges')
+    .update({ serve_count: serveCount })
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'queued')
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`setNudgeServeCount failed: ${error.message}`);
+  return data as Nudge | null;
+}
+
+export async function setNudgeDeliveryAttempts(
+  id: string,
+  tenantId: string,
+  attempts: number,
+): Promise<Nudge | null> {
+  const { data, error } = await getClient()
+    .from('nudges')
+    .update({ attempts })
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'queued')
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`setNudgeDeliveryAttempts failed: ${error.message}`);
   return data as Nudge | null;
 }
 

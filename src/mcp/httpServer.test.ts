@@ -402,3 +402,104 @@ async function getHostId(): Promise<string> {
   if (error || !data) throw new Error(`host lookup failed: ${error?.message ?? 'none'}`);
   return data.id;
 }
+
+// The voice's outbox routes (plan 2026-08-15 feature B, Phase 4): same
+// host-token gate as the badge pull; serve/report semantics are unit-pinned
+// in nudgeQueue.test.ts — this suite pins the WIRE (auth, shapes, DB effects).
+describe('/control/nudges', () => {
+  const NUDGE_CTX = {
+    customerName: 'Henderson',
+    jobTitle: 'Furnace tune-up',
+    technicianRef: 'pull-probe',
+    technicianName: 'Pull Probe',
+    jobId: 'j-http',
+    startsAtLocal: '2026-08-14T07:00:00.000Z',
+    endsAtLocal: '2026-08-14T08:00:00.000Z',
+  };
+  let nudgeId: string;
+
+  beforeAll(async () => {
+    // The probe row needs a Telegram binding to be deliverable.
+    await pg.query(
+      "update technicians set telegram_user_id = '424242' where ref = 'pull-probe'",
+    );
+    const r = await pg.query<{ id: string }>(
+      `insert into nudges (tenant_id, kind, subject_ref, technician_id, status, question, queued_at, context)
+       select $1, 'overdue_visit_gap', 'asg-http-1', t.id, 'queued', 'How did it go?', now(), $2::jsonb
+         from technicians t where t.ref = 'pull-probe'
+       returning id`,
+      [tenantId, JSON.stringify(NUDGE_CTX)],
+    );
+    nudgeId = r.rows[0].id;
+  });
+
+  afterAll(async () => {
+    await pg.query('delete from nudges where subject_ref = $1', ['asg-http-1']);
+    await pg.query("delete from review_items where subject_ref = 'asg-http-1'");
+  });
+
+  test('bad or missing token → bare 401, both methods', async () => {
+    const noAuthGet = await fetch(`${base}/control/nudges`);
+    expect(noAuthGet.status).toBe(401);
+    expect(await noAuthGet.text()).toBe('');
+    const wrongPost = await fetch(`${base}/control/nudges`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer nope', 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'x', outcome: 'delivered' }),
+    });
+    expect(wrongPost.status).toBe(401);
+  });
+
+  test('GET serves the queued nudge with a fresh session id and counted serve; POST delivered → asked', async () => {
+    const pull = await fetch(`${base}/control/nudges`, {
+      headers: { authorization: `Bearer ${hostToken}` },
+    });
+    expect(pull.status).toBe(200);
+    const body = (await pull.json()) as {
+      nudges: Array<{ id: string; sandboxRef: string; replyTo: string; sessionId: string; messageB64: string }>;
+    };
+    const item = body.nudges.find((x) => x.id === nudgeId);
+    expect(item).toBeDefined();
+    expect(item!.sandboxRef).toBe('s1');
+    expect(item!.replyTo).toBe('424242');
+    expect(item!.sessionId).toBe(`nudge-${nudgeId}`);
+    expect(Buffer.from(item!.messageB64, 'base64').toString('utf8')).toBe('How did it go?');
+
+    const served = await pg.query<{ serve_count: number }>(
+      'select serve_count from nudges where id = $1',
+      [nudgeId],
+    );
+    expect(served.rows[0].serve_count).toBe(1);
+
+    // Malformed report bodies are 400s, not row movement.
+    const badOutcome = await fetch(`${base}/control/nudges`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ id: nudgeId, outcome: 'lost' }),
+    });
+    expect(badOutcome.status).toBe(400);
+
+    const ack = await fetch(`${base}/control/nudges`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ id: nudgeId, outcome: 'delivered' }),
+    });
+    expect(ack.status).toBe(200);
+    expect(((await ack.json()) as { result: string }).result).toBe('asked');
+
+    const row = await pg.query<{ status: string; asked_at: string | null }>(
+      'select status, asked_at from nudges where id = $1',
+      [nudgeId],
+    );
+    expect(row.rows[0].status).toBe('asked');
+    expect(row.rows[0].asked_at).not.toBeNull();
+
+    // A duplicate/late report lands on a row that already moved → ignored.
+    const dupe = await fetch(`${base}/control/nudges`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ id: nudgeId, outcome: 'failed' }),
+    });
+    expect(((await dupe.json()) as { result: string }).result).toBe('ignored');
+  });
+});

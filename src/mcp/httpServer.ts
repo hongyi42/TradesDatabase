@@ -11,6 +11,7 @@ import {
 } from '../inbound/phoneWebhook.js';
 import { sha256hex } from '../control/badges.js';
 import { buildBadgeResponse } from '../control/badgeFile.js';
+import { buildNudgeDelivery, completeNudgeDelivery } from '../control/nudgeQueue.js';
 import {
   clearSandboxAssignmentIfRef,
   completeSandboxRecycle,
@@ -257,6 +258,83 @@ async function handleBadgePull(req: http.IncomingMessage, res: http.ServerRespon
   }
 }
 
+// The voice's outbox pull (plan 2026-08-15 feature B, Phase 4): queued nudges
+// for this host's sandboxes, served until acked. Same host-token auth +
+// bare-401 posture as the badge pull.
+async function handleNudgePull(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  try {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
+    const host = m ? await getHostByTokenHash(sha256hex(m[1].trim())) : null;
+    if (!host) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    const body = await buildNudgeDelivery(host.id);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+// The box's per-item delivery report. hostId comes from the TOKEN, never the
+// body (the ops-report rule), so a host can only move its own rows. Body
+// capped (the board's idiom): this is a machine's one-line report, never a
+// payload.
+async function handleNudgeReport(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
+    const host = m ? await getHostByTokenHash(sha256hex(m[1].trim())) : null;
+    if (!host) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    let body: unknown;
+    try {
+      const raw = await readRawBody(req, 16 * 1024);
+      body = raw.length ? JSON.parse(raw) : undefined;
+    } catch (err) {
+      if ((err as { code?: string }).code === 'BODY_TOO_LARGE') {
+        json(413, { error: 'body too large' });
+        return;
+      }
+      json(400, { error: 'malformed JSON body' });
+      return;
+    }
+    const b = (body ?? {}) as Record<string, unknown>;
+    const id = typeof b.id === 'string' ? b.id.trim() : '';
+    const report = b.outcome;
+    if (!id) {
+      json(400, { error: 'id is required' });
+      return;
+    }
+    if (report !== 'delivered' && report !== 'failed') {
+      json(400, { error: "outcome must be 'delivered' or 'failed'" });
+      return;
+    }
+    const detail = typeof b.detail === 'string' ? b.detail : null;
+    const result = await completeNudgeDelivery(host.id, id, report, detail);
+    json(200, { result });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
 // The box's recycle-completion report: "retired sandbox X is destroyed, blank Y
 // is racked with bot Z". Same host-token auth + bare-401 posture as the pull.
 // The response's rosterCleared:false tells the box to RETRY the whole (idempotent)
@@ -431,6 +509,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // Host recycle-completion report — same host-token gate + placement.
     if (req.url === '/control/sandboxes' && req.method === 'POST') {
       await handleSandboxReport(req, res);
+      return;
+    }
+    // The voice's outbox: nudge pull + delivery report — same host-token gate
+    // + pre-allowlist placement (the box calling in).
+    if (req.url === '/control/nudges' && req.method === 'GET') {
+      await handleNudgePull(req, res);
+      return;
+    }
+    if (req.url === '/control/nudges' && req.method === 'POST') {
+      await handleNudgeReport(req, res);
       return;
     }
     // Host health report (ops alerting) — same host-token gate + placement.

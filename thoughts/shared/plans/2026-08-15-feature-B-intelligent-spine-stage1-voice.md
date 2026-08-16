@@ -479,17 +479,28 @@ then POST the outcome.
 section + `docs/nemoclaw-tech-agent.md` (the agent stack gained a component).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] `src/control/nudgeQueue.test.ts`: host isolation; inactive recipient filtered at serve
-  time; serve cap → failed; ack → asked; failure ×3 → failed
-- [ ] `src/mcp/httpServer.test.ts`: bad/missing host token → 401 both routes; GET shape; POST
-  ack
-- [ ] `bash -n Box_Setup_Stuff/nudge-runner.sh`
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [x] `src/control/nudgeQueue.test.ts`: liveness re-filter at serve time (skip, never fail);
+  serve counted BEFORE shipping; serve cap → manager handoff + failed (the F1 doctrine
+  extended to transport); moved/throwing rows isolated; delivered → asked; late/foreign
+  reports → ignored; failure below cap → retry, at cap → handoff + failed
+- [x] `src/mcp/httpServer.test.ts`: bad/missing host token → bare 401 both methods; GET
+  serves shape (fresh `nudge-<id>` session, base64 round-trip, serve_count=1 in DB);
+  invalid outcome → 400; POST delivered → asked (+asked_at); duplicate report → ignored
+- [x] `bash -n Box_Setup_Stuff/nudge-runner.sh`
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack; curl.
-- [ ] run the HTTP server locally, GET/POST with the test host token — shapes + row
-  transitions read back via psql.
+- [x] covered by the httpServer.test.ts integration suite: a REAL HTTP server on an
+  ephemeral port, real host-token auth (minted hash in the hosts table), real DB rows read
+  back through pg across the full queued → served → asked transition.
+
+**Implementation notes:** delivery attempts get a fresh ledger (`markNudgeQueued` resets
+`attempts` to 0 — compose and delivery each get their full allowance on one column);
+`completeNudgeDelivery` takes hostId from the TOKEN and only moves still-queued rows of that
+host's technicians (late duplicates → 'ignored'); both terminal transport paths (serve cap,
+delivery ×3) run the same `handToManager` flag-first handoff as compose. The runner derives
+its URL from the existing `PULL_URL` — no new env, no new secret.
 
 ### Manual verification
 - none

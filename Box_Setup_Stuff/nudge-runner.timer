@@ -1,0 +1,15 @@
+# /etc/systemd/system/nudge-runner.timer
+# Every 5 min, matching the badge pull: a queued nudge reaches the technician
+# within ~5 min of composing. Escape hatch: `systemctl disable --now
+# nudge-runner.timer` stops ALL delivery instantly (the spine keeps serving
+# the rows; nothing is lost).
+[Unit]
+Description=Run the nudge deliverer every 5 minutes
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

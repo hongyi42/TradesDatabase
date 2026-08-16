@@ -248,22 +248,29 @@ describe('runWatchers', () => {
     expect(flagged[0].technicianRef).toBe('ben-shelton');
     expect(flagged[1].technicianRef).toBeNull();
     expect(flagged[0].startsAtLocal).toBe('2026-08-15T00:00:00.000Z');
-    expect(flagged[0].suggestion).toContain("Visit for 'Furnace tune-up' (Henderson)");
-    expect(flagged[0].suggestion).toContain('2026-08-15 01:00'); // a0's ends_at, human label
+    expect(flagged[0].suggestion).toContain("The visit for 'Furnace tune-up' (Henderson)");
+    // a0's ends_at (2026-08-15T01:00 naive) as the warm wall-clock label —
+    // weekday and date come from one Intl derivation, so they can't disagree.
+    expect(flagged[0].suggestion).toContain('Saturday, Aug 15 at 1:00 AM');
+    expect(flagged[0].suggestion).not.toContain('Spine'); // operator jargon stays internal
   });
 
   test('live: a null from flagGap (concurrent flag) is not counted opened; no push when nothing opened', async () => {
-    let notified = 0;
+    const texts: string[] = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => [visit({ id: 'a1' }), visit({ id: 'a2', job_id: 'j2' })],
       flagGap: async (input) => (input.assignmentId === 'a1' ? openItem({ subject_ref: 'a1' }) : null),
-      notify: async () => {
-        notified += 1;
+      notify: async (_t, text) => {
+        texts.push(text);
       },
     }));
     expect(summary.itemsOpened).toBe(1);
     expect(summary.gapsFound).toBe(2);
-    expect(notified).toBe(1); // pushed for the ONE tenant, once — not per item
+    expect(texts).toHaveLength(1); // pushed for the ONE tenant, once — not per item
+    // One item → the singular phrasing, not "1 visits".
+    expect(texts[0]).toBe(
+      'Heads-up: a recent visit has nothing on record yet — it’s waiting in your pending reviews whenever you have a minute.',
+    );
 
     const quiet = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => [visit({ id: 'a1' })],
@@ -293,7 +300,10 @@ describe('runWatchers', () => {
       },
     }));
     expect(pushes).toEqual([
-      ['t1', 'Spine check: 2 recent visit(s) have nothing on record — see pending reviews.'],
+      [
+        't1',
+        'Heads-up: 2 recent visits have nothing on record yet — they’re waiting in your pending reviews whenever you have a minute.',
+      ],
     ]);
     expect(summary.pushed).toBe(1);
     expect(summary.pushSkipped).toBe(false);

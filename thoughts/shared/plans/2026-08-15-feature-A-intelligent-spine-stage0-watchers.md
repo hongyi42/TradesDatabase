@@ -80,6 +80,11 @@ before anything speaks.
   `MAX_NEW_ITEMS_PER_TENANT_TICK = 5`.
 - **Surveillance framing** — prose about the JOB/visit, never "this person is behind"; the
   scheduled tech's ref rides in `detail` as routing data (the manager must know whom to ask).
+  **Copy doctrine added at the tone review (user, 2026-08-16):** warm and professional, enough
+  context to be self-explaining (the purpose clause "so the job's record stays complete"), real
+  plurals, a human wall-clock label ("Saturday, Aug 15 at 4:00 PM" — weekday and date from ONE
+  Intl derivation so the pair can't disagree), and **no operator jargon — the word "spine" is
+  internal; managers have never heard it.**
 - **Sequencing vs money-inference Phase 3 — DECIDED (user, 2026-08-15): this plan lands
   first.** The user judged the watcher framework the more general piece; money-inference waits
   and, when approved, its quiet-open-jobs nudge becomes this framework's second detector (shared
@@ -259,8 +264,9 @@ Per tenant (each in try/catch → `tenantErrors++`, siblings continue):
       (review finding: + tenantErrors:0 so the throwing-notify sentinel actually bites);
       no token → pushSkipped, no throw; auto-resolve fires on arrived activity, skips malformed
       detail; one tenant throwing → others still processed, tenantErrors counted.
-      *Deviation for the copy-tone check:* the suggestion renders the end as `2026-08-15 01:00`
-      (wall-clock label), not the raw naive ISO — the `Z` suffix would falsely read as UTC.
+      *Deviation for the copy-tone check:* the suggestion renders the end as a human wall-clock
+      label ("Saturday, Aug 15 at 1:00 AM"), not the raw naive ISO — revised at the tone review
+      per the copy doctrine above.
 
 ### Live verification (agent-executable)
 - Prerequisites: none (module is unreferenced until Phase 3; unit coverage above).

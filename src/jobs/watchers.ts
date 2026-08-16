@@ -72,6 +72,28 @@ export const MAX_NEW_ITEMS_PER_TENANT_TICK = 5;
 // UTC offsets span −12h..+14h; subtracting 14h from a wall-clock instant is a
 // floor no real timezone's UTC reading can undershoot.
 const MAX_UTC_OFFSET_MS = 14 * 3_600_000;
+
+// Human label for a naive-local timestamp: "Saturday, Aug 15 at 4:00 PM".
+// The input already IS the firm's wall clock (stored as if UTC), so we format
+// it in UTC — no timezone math — and the weekday comes from Intl over the
+// same string, so the weekday-date pair can never disagree (the weekday-guard
+// doctrine: fused derivation, not model arithmetic).
+function wallClockLabel(naiveIso: string): string {
+  const d = new Date(Date.parse(naiveIso));
+  const day = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    weekday: 'long',
+    month: 'short',
+    day: 'numeric',
+  }).format(d);
+  const time = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).format(d);
+  return `${day} at ${time}`;
+}
 // The activity floor may reach back to candidates'/open items' visit STARTS,
 // but never unboundedly (final-review fix: one stuck open item must not drag
 // every tick's read back for months). No visit spans a week; anything older
@@ -288,7 +310,6 @@ export async function runWatchers(
           const job = jobById.get(g.job_id);
           const title = job?.title ?? 'a job';
           const customer = job?.customers?.name ?? 'unknown customer';
-          const endsLabel = `${g.ends_at.slice(0, 10)} ${g.ends_at.slice(11, 16)}`;
           const item = await flagGap({
             tenantId,
             assignmentId: g.id,
@@ -296,11 +317,17 @@ export async function runWatchers(
             technicianRef: (g.technician_id && refById.get(g.technician_id)) || null,
             startsAtLocal: g.starts_at,
             endsAtLocal: g.ends_at,
-            // Job-focused copy — a question about the visit, not an audit of
-            // the person (direction constraint 5; human tone check in Phase 3).
+            // Copy doctrine (user decision 2026-08-16): warm and professional,
+            // self-explaining, about the JOB never the person (direction
+            // constraint 5), and no operator jargon — managers have never
+            // heard the word "spine". The purpose clause ("so the job's
+            // record stays complete") is what makes this read as bookkeeping
+            // help rather than an audit.
             suggestion:
-              `Visit for '${title}' (${customer}) scheduled to end ${endsLabel} has no field ` +
-              `report or status update — ask how it went, or dismiss if nothing was needed.`,
+              `The visit for '${title}' (${customer}) was scheduled to wrap up by ` +
+              `${wallClockLabel(g.ends_at)}, but nothing has been recorded about it yet — no ` +
+              `field note and no status change. Worth checking how it went so the job's record ` +
+              `stays complete. If nothing needed recording, just dismiss this.`,
           });
           if (item) opened += 1; // null = flagged concurrently — not new
         }
@@ -310,11 +337,14 @@ export async function runWatchers(
       // ONE count-only line per tenant per tick, only when something NEW
       // opened (the ever-flagged filter means a quiet queue never re-pings on
       // any cadence). No names/PII in the push — the queue holds the detail.
+      // Same copy doctrine as the suggestion: warm, no jargon, real plurals.
       if (opened > 0) {
         if (hasPushToken()) {
           await notify(
             tenantId,
-            `Spine check: ${opened} recent visit(s) have nothing on record — see pending reviews.`,
+            opened === 1
+              ? 'Heads-up: a recent visit has nothing on record yet — it’s waiting in your pending reviews whenever you have a minute.'
+              : `Heads-up: ${opened} recent visits have nothing on record yet — they’re waiting in your pending reviews whenever you have a minute.`,
           );
           summary.pushed += 1;
         } else {

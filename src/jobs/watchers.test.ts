@@ -427,7 +427,7 @@ describe('runWatchers', () => {
 // technician through their own agent; the manager item becomes the fallback
 // (unreachable tech) and rung 2 (48h silence). Same pure-unit style.
 describe('runWatchers — the ladder (NUDGES_MODE)', () => {
-  test("default nudgeMode 'off' is byte-for-byte Stage-0: nudge deps never consulted", async () => {
+  test("default nudgeMode 'off': rung-1 creation never happens — a reachable tech still gets the manager fallback", async () => {
     const flagged: string[] = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => [visit({ technician_id: 'tech-1' })],
@@ -436,17 +436,94 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
         flagged.push(input.assignmentId);
         return openItem({});
       },
-      listNudges: async () => {
-        throw new Error('nudgeMode off must not read open nudges');
-      },
       createNudge: async () => {
         throw new Error('nudgeMode off must not create nudges');
       },
     }));
-    // A REACHABLE tech still gets the manager fallback when the ladder is off.
     expect(flagged).toEqual(['a1']);
-    expect(summary.tenantErrors).toBe(0); // the sentinels never fired
+    expect(summary.tenantErrors).toBe(0); // the creation sentinel never fired
     expect(summary).toMatchObject({ nudgeMode: 'off', nudgesCreated: 0, nudgesWouldCreate: 0 });
+  });
+
+  test("rollback rescue (review F1): in-flight nudges keep resolving AND escalating at nudgeMode 'off'", async () => {
+    // The ladder was live, three questions went out, then the operator unset
+    // NUDGES_MODE. Silence must STILL escalate and replies must still close —
+    // otherwise a nudged gap reaches neither surface, ever (its assignment is
+    // never fresh again in any mode).
+    const resolved: Array<[string, string]> = [];
+    const flagged: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({
+          id: 'n-rolled-silent',
+          subject_ref: 'a-silent',
+          status: 'asked',
+          asked_at: '2026-08-14T11:00:00.000Z', // 49h — escalation-ripe
+          context: {
+            customerName: 'Henderson',
+            jobTitle: 'Furnace tune-up',
+            technicianRef: 'ben-shelton',
+            technicianName: 'Ben Shelton',
+            jobId: 'j-quiet', // no activity on THIS job — genuinely silent
+            startsAtLocal: '2026-08-14T07:00:00.000Z',
+            endsAtLocal: '2026-08-14T08:00:00.000Z',
+          },
+        }),
+        nudgeRow({ id: 'n-rolled-filled', subject_ref: 'a-filled', status: 'queued' }),
+      ],
+      listCaptureTimes: async () => [{ job_id: 'j1', captured_at: '2026-08-14T07:30:00.000Z' }],
+      flagGap: async (input) => {
+        flagged.push(input.assignmentId);
+        return openItem({ subject_ref: input.assignmentId });
+      },
+      resolveNudge: async (id, _t, status) => {
+        resolved.push([id, status]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    })); // nudgeMode defaults to 'off'
+    expect(resolved).toEqual([
+      ['n-rolled-filled', 'answered'],
+      ['n-rolled-silent', 'escalated'],
+    ]);
+    expect(flagged).toEqual(['a-silent']);
+    expect(summary.nudgesResolved).toBe(1);
+    expect(summary.nudgesEscalated).toBe(1);
+    expect(summary.itemsOpened).toBe(1);
+  });
+
+  test('budget is incremental within a tick: the second same-tech gap sees the first ask (review F4)', async () => {
+    // Stateful stubs: countAsks reflects prior creations, the way the DB does
+    // (pending rows hold their slot at creation). Baseline 1 ask in the
+    // window → gap #1 fits (1 < 2), gap #2 defers (2 >= 2) — and is
+    // re-noticed on a later tick once the window frees a slot.
+    const created: string[] = [];
+    const deps = baseDeps({
+      listOverdue: async () => [
+        visit({ id: 'a1', job_id: 'j1', technician_id: 'tech-1', ends_at: '2026-08-15T01:00:00.000Z' }),
+        visit({ id: 'a2', job_id: 'j2', technician_id: 'tech-1', ends_at: '2026-08-15T02:00:00.000Z' }),
+      ],
+      listTeam: async () => [boundTech()],
+      listNudged: async (_t, _k, ids) => ids.filter((id) => created.includes(id)),
+      countAsks: async () => 1 + created.length,
+      createNudge: async (input) => {
+        created.push(input.subjectRef);
+        return nudgeRow({ subject_ref: input.subjectRef });
+      },
+      flagGap: async () => {
+        throw new Error('budget deferral must not fall back to the manager');
+      },
+    });
+    const first = await runWatchers(NOW, 'live', deps, 'live');
+    expect(created).toEqual(['a1']); // oldest first; a2 deferred
+    expect(first.nudgesCreated).toBe(1);
+    expect(first.tenantErrors).toBe(0);
+
+    // Next tick, a slot freed (baseline drops to 0): a2 is still fresh and
+    // gets its ask.
+    const laterDeps = { ...deps, countAsks: async () => created.length - 1 };
+    const second = await runWatchers(NOW, 'live', laterDeps, 'live');
+    expect(created).toEqual(['a1', 'a2']);
+    expect(second.nudgesCreated).toBe(1);
   });
 
   test('live: a reachable tech gets a NUDGE — no manager item, no push; context carries the whole story', async () => {

@@ -249,15 +249,21 @@ export async function runWatchers(
         return jobId && startsAtLocal ? [{ item, jobId, startsAtLocal }] : [];
       });
 
-      // Open nudges are swept ONLY when the ladder is live: 'off'/'shadow'
-      // deliberately freeze leftover in-flight nudges (the WATCHERS_MODE
-      // rollback precedent — a rolled-back mode must not keep writing).
+      // Open nudges are swept whenever the WATCHER is live — deliberately
+      // regardless of NUDGES_MODE (Phase-2 review finding F1): the fresh
+      // pre-filter below excludes ever-nudged assignments in every mode, so
+      // if a rollback (NUDGES_MODE unset/shadow) also froze this sweep, an
+      // in-flight asked nudge whose technician never replies would reach
+      // NEITHER surface, ever — silence must always escalate. Only rung-1
+      // CREATION is nudgeMode-gated; in-flight rows keep their lifecycle.
+      // (When Stage 1 has never run this read is empty and free.)
       // Malformed context rows are KEPT (unlike openGaps): the status-change
       // resolve needs only subject_ref; only the activity path needs context,
       // so a tampered row can still close when its visit is cancelled — it
-      // just never escalates (fail-closed, documented).
+      // just never escalates (fail-closed; the guard in the escalation loop
+      // below is what skips it).
       const openNudges =
-        mode === 'live' && nudgeMode === 'live'
+        mode === 'live'
           ? (await listNudges(tenantId, ['pending', 'queued', 'asked'])).filter(
               (n) => n.kind === 'overdue_visit_gap',
             )
@@ -415,8 +421,9 @@ export async function runWatchers(
       // once-per-assignment-ever dedup as the fallback flag — one assignment
       // can never carry both a fallback item and an escalation item. Copy
       // needs no extra reads: everything rides in the nudge's own context.
-      // A malformed context never reaches here (no escalation without the
-      // activity fields — see the openNudgeGaps note above).
+      // The guard just below drops malformed-context rows (they re-collect
+      // every tick and never escalate — fail-closed; they still close via
+      // the status-change path above).
       for (const x of escalations) {
         const c = (x.n.context ?? {}) as Record<string, unknown>;
         const jobId = typeof c.jobId === 'string' ? c.jobId : null;
@@ -447,13 +454,21 @@ export async function runWatchers(
         if (item) opened += 1;
         // Mark AFTER the flag: if the flag throws, the nudge stays 'asked'
         // and next tick retries (flagGap's dedup makes the retry converge).
-        const moved = await resolveNudge(
-          x.n.id,
-          tenantId,
-          'escalated',
-          'no reply — handed to the manager',
-        );
-        if (moved) summary.nudgesEscalated += 1;
+        // The mark itself is isolated (Phase-2 review F2): the item already
+        // exists, so its push must still go out this tick even if this write
+        // blips — the nudge simply re-escalates next tick and converges on
+        // the dedup.
+        try {
+          const moved = await resolveNudge(
+            x.n.id,
+            tenantId,
+            'escalated',
+            'no reply — handed to the manager',
+          );
+          if (moved) summary.nudgesEscalated += 1;
+        } catch (err) {
+          console.error(`[watchers] nudge ${x.n.id} escalation mark failed`, err);
+        }
       }
 
       // Route fresh gaps — capped, oldest scheduled end first (candidates

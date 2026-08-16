@@ -345,6 +345,21 @@ ask us to remove it. You are the one responsible for telling your customers you 
 own privacy notice — we provide the announcement and the deletion tooling, you own the customer
 relationship.
 
+### The assistant can check in on unfinished records
+
+If a scheduled visit comes and goes and nothing gets written down — no note, no status change — the
+system notices. First it asks the technician, through their own assistant: one short, friendly
+question like *"how did the Henderson visit go?"*. Their answer, even "nothing to report", is saved
+to the job's record and that's the end of it. If there's no answer for two days, the item quietly
+moves to the manager's review list instead. Nobody gets nagged: at most two such questions per
+person per day, and never a repeat about the same visit.
+
+**Tell your technicians this before they start** (it's one of the three written disclosures in
+onboarding): the assistant may proactively ask about work, and what they tell it can be recorded to
+the firm's job records. What it will never do: message customers on its own, change the schedule,
+or send anything anywhere — asking questions and saving answers is the entirety of what this
+feature can reach.
+
 ---
 
 ## Part 8 — Cheat sheet

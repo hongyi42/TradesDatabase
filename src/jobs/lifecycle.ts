@@ -367,7 +367,7 @@ export async function runLifecycle(
     teamLeadCompose = { skipped: 'no inference credentials' };
   } else {
     try {
-      teamLeadCompose = await (deps.composeNudges ?? runTeamLeadCompose)();
+      teamLeadCompose = await (deps.composeNudges ?? runTeamLeadCompose)(nowIso);
     } catch (err) {
       teamLeadCompose = { stepError: msg(err) };
       ok = false;

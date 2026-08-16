@@ -432,10 +432,17 @@ and compose are what a rollback turns off; the in-flight sweep keeps running in 
   Full suite after fixes: 1772 passed / 0 failed.
 
 ### Manual verification
-- [ ] Read 2–3 composed questions: colleague tone, not audit tone (direction constraint 5 +
-  copy doctrine)?
+- [x] Read 2–3 composed questions: colleague tone, not audit tone — **user 2026-08-16:
+  "Tone sounds fine."** Second ruling in the same review: the model may use time vocabulary
+  ("today"/"yesterday") ONLY with genuine clock awareness — never invented. Implemented as
+  `relativeDayPhrase`: code computes "earlier today" / "yesterday" / "a couple of days ago"
+  from the firm's clock (Intl, firm-local days — the date-eval served-phrases doctrine) and
+  serves it as the ONLY permitted time expression; the system prompt bans every other date,
+  day, or time word. Live-verified: a visit that ended Aug 15, composed Aug 16, produced
+  "…how did the water heater replacement for Maria Santos go yesterday?" — served, not
+  derived.
 ---
-*Pause after this phase — the manual tone check is non-empty.*
+*Pause after this phase — the manual tone check is non-empty.* ✔ cleared 2026-08-16.
 
 ## Phase 4: Transport — pull queue + box runner
 

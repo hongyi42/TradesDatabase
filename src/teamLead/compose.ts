@@ -1,5 +1,6 @@
 import {
   flagOverdueVisitGap,
+  getTenant,
   listNudgesByStatus,
   listTenantIdsWithTelegramBindings,
   markNudgeOutcome,
@@ -8,6 +9,7 @@ import {
   type Nudge,
 } from '../db/index.js';
 import { wallClockLabel } from '../jobs/watchers.js';
+import { localDateISO } from '../schedule/availability.js';
 import { runForcedTool, type ForcedToolSpec } from '../model/forcedTool.js';
 import { TEAM_LEAD_REF } from './identity.js';
 
@@ -52,9 +54,27 @@ const COMPOSE_SYSTEM =
   'everyday language; never the word "spine" or any internal jargon; ask about the JOB, ' +
   'never imply the person is behind or in trouble; "nothing to report" must feel like a ' +
   'perfectly fine answer; do NOT invent any fact, name, price, link, or detail beyond the ' +
-  'evidence given; do NOT mention any date or weekday (the message around your question ' +
-  'prints the date); one or two sentences at most. If the evidence is too thin or looks ' +
-  'contradictory, decline with ask=false and explain in reason.';
+  'evidence given; the ONLY time expression you may use is the exact phrase the evidence ' +
+  'gives (like "earlier today" or "yesterday") — never any other date, day, or time word ' +
+  '(the message around your question prints the exact date); one or two sentences at most. ' +
+  'If the evidence is too thin or looks contradictory, decline with ask=false and explain ' +
+  'in reason.';
+
+// The ONLY time vocabulary the model may use, SERVED not derived (user ruling
+// 2026-08-16: "today"/"yesterday" only with genuine clock awareness — so the
+// clock stays code-side and the model repeats a code-computed phrase; the
+// date-eval "served phrases" doctrine, and the same machine-side-both-ends
+// posture as the weekday guard). Dates compare as firm-local DAYS: endsAtLocal
+// is already the firm's wall clock, and `now` converts through Intl.
+export function relativeDayPhrase(nowIso: string, tz: string, endsAtLocal: string): string {
+  const endDate = endsAtLocal.slice(0, 10);
+  if (endDate === localDateISO(nowIso, tz)) return 'earlier today';
+  const yesterdayIso = new Date(Date.parse(nowIso) - 24 * 3_600_000).toISOString();
+  if (endDate === localDateISO(yesterdayIso, tz)) return 'yesterday';
+  // The detection window is 72h, so this is the whole remaining bucket —
+  // vague on purpose: vague-but-true beats precise-but-derived.
+  return 'a couple of days ago';
+}
 
 // Every string that crosses a trust boundary here — DB context into the model
 // prompt, model output into the deliverable — is flattened first (Phase-3
@@ -168,6 +188,7 @@ export function assembleNudgeMessage(question: string, ctx: ComposeContext): str
 
 export interface ComposeDeps {
   listTenants?: typeof listTenantIdsWithTelegramBindings;
+  getTenant?: typeof getTenant;
   listNudges?: typeof listNudgesByStatus;
   run?: typeof runForcedTool;
   markQueued?: typeof markNudgeQueued;
@@ -184,8 +205,12 @@ export interface ComposeSummary {
   handoffs: number; // nudges that died unasked and became manager items (F1)
 }
 
-export async function runTeamLeadCompose(deps: ComposeDeps = {}): Promise<ComposeSummary> {
+export async function runTeamLeadCompose(
+  nowIso: string,
+  deps: ComposeDeps = {},
+): Promise<ComposeSummary> {
   const listTenants = deps.listTenants ?? listTenantIdsWithTelegramBindings;
+  const get = deps.getTenant ?? getTenant;
   const listNudges = deps.listNudges ?? listNudgesByStatus;
   const run = deps.run ?? runForcedTool;
   const markQueued = deps.markQueued ?? markNudgeQueued;
@@ -208,6 +233,7 @@ export async function runTeamLeadCompose(deps: ComposeDeps = {}): Promise<Compos
     const pending = (await listNudges(tenantId, ['pending'])).filter(
       (n) => n.kind === 'overdue_visit_gap',
     );
+    const tz = pending.length > 0 ? ((await get(tenantId))?.timezone ?? 'UTC') : 'UTC';
     for (const n of pending) {
       try {
         const ctx = readComposeContext(n);
@@ -228,7 +254,8 @@ export async function runTeamLeadCompose(deps: ComposeDeps = {}): Promise<Compos
               `Customer: ${ctx.customerName}\n` +
               `Job: ${ctx.jobTitle}\n` +
               `Technician: ${ctx.technicianName}\n` +
-              `The scheduled visit ended hours ago; no field note and no status change since.`,
+              `The visit wrapped up ${relativeDayPhrase(nowIso, tz, ctx.endsAtLocal)}; ` +
+              `nothing has been recorded since — no field note and no status change.`,
             maxTokens: 300,
             label: 'teamLeadCompose',
             reasoningEffort: 'none',

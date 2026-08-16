@@ -162,6 +162,11 @@ const PILOT_TENANT_SCOPED = [
   'query_audit',
   'cost_events',
   'review_items',
+  // Before technicians: nudges.technician_id is a NO ACTION FK, so the roster
+  // delete below would 23503 and roll the whole rebuild back — and stale
+  // any-status rows would permanently suppress asks on the rebuilt schedule
+  // (the once-ever dedup). Phase-1 review finding (2026-08-16).
+  'nudges',
   'schedule_events',
   'dropped_audit',
   'schedule_entries',

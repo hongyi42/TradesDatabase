@@ -205,24 +205,40 @@ boilerplate mirrors `20260815160000_money_events.sql`)
   a budgeted slot is claimed at creation, not at delivery).
 
 **Registrations (eng-memory §1 rule — by name, this phase):** `scripts/spine-eval/world.mjs`
-`RESET_TABLES`; `scripts/seed.mjs` `truncateSpine`; `src/mcp/server.test.ts` truncate
-statement; grep `truncate table` across `src/` and add `nudges` wherever `review_items` is
-cleared (e.g. `src/mcp/httpServer.test.ts`).
+`RESET_TABLES` **and `PILOT_TENANT_SCOPED`** (adversarial-review finding: the second list is
+DELETE-based and ordered — `nudges` must precede `technicians` or the roster delete 23503s and
+rolls the pilot-world rebuild back); `scripts/seed.mjs` `truncateSpine` (existence-probed, the
+tenant_profiles pattern — nudges genuinely escapes the cascade there because technicians are
+preserved by default); `src/mcp/server.test.ts` full-spine truncate statement.
+*Recorded deviation:* the draft said "add `nudges` wherever `review_items` is cleared" — NOT
+done for the ~14 remaining test truncates, deliberately: every one of them truncates
+`technicians … cascade`, which pulls `nudges` in through its FK, and none of those files write
+nudges. Explicit registration is reserved for the sites cascade cannot reach.
 
 **`src/db/index.ts`** — export the module. **`src/db/database.types.ts`** — regen from the
 local stack after `npx supabase migration up` (pilot apply is Phase 5 rollout).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] new `src/db/nudges.test.ts`: repeat insert → null; queued→asked legal, asked→queued
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass (full suite 1744 passed / 0 failed)
+- [x] new `src/db/nudges.test.ts`: repeat insert → null; queued→asked legal, asked→queued
   refused; `countRecentAsks` window edges + pending-counts; `listNudgedSubjectRefs` batching +
-  empty input; cross-tenant id resolves nothing
-- [ ] review_items backstop: duplicate `overdue_visit_gap` insert for one subject now fails at
-  the DB even bypassing the app guard
+  empty input; cross-tenant id resolves nothing (6/6)
+- [x] review_items backstop: duplicate `overdue_visit_gap` insert for one subject now fails at
+  the DB even bypassing the app guard (23505 asserted; other kinds keep open-only semantics)
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack.
-- [ ] psql: columns + both unique indexes present; `world.mjs` present-tables log lists `nudges`.
+- [x] psql read-back: all columns/nullability, `uq_nudges_subject_ever` (non-partial),
+  `uq_review_items_overdue_gap_ever`, both secondary indexes, `nudges_set_updated_at` trigger;
+  `world.mjs` present-tables filter run non-destructively — 18 registered / 18 present /
+  nudges included.
+
+**Adversarial review (2026-08-16):** clean on schema/typed-layer/posture (reviewer re-ran the
+gates and introspected the live DB independently); F1 = the `PILOT_TENANT_SCOPED` miss above,
+fixed same day; F2 = the blanket-truncate instruction, resolved as the recorded deviation
+above. Reviewer also confirmed `idx_nudges_budget` serves `countRecentAsks` and that the
+backstop index's only residual race path fails loudly into the watcher's per-tenant catch and
+self-heals next tick.
 
 ### Manual verification
 - none

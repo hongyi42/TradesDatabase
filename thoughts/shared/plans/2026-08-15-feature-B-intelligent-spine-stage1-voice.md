@@ -3,6 +3,7 @@ date: 2026-08-15
 rebased: 2026-08-16 — onto landed Feature A (PR #147, a0a9fd0), per the plan-two STACK verdict
 task: "Feature B — Intelligent spine Stage 1 (the voice): team-leader outreach through the person's own agent, capped identity class, server-side nudge budget/dedup/escalation"
 research: thoughts/shared/research/2026-08-15-feature-B-intelligent-spine-stage-1-team-leader-voice.md
+approved: 2026-08-16 — decision brief ratified by the user with one amendment (no firm-wide budget cap)
 status: draft
 ---
 
@@ -52,7 +53,7 @@ fresh gap (A's detector, unchanged)
 Key consequences, stated so the review can veto them:
 - **A nudged gap never also flags the manager** in the same breath — one surface per gap at a
   time. The manager item appears only as fallback or escalation.
-- **"Nothing to report" counts as filled** (proposed answer to the deferred decision): if the
+- **"Nothing to report" counts as filled** (user-ratified 2026-08-16): if the
   technician replies "went fine, nothing notable", their agent records it via
   `record_field_note`, the capture lands, and the gap is mechanically filled — that IS the
   status update. Only *silence* escalates. No model ever judges whether an answer is good
@@ -85,8 +86,8 @@ Carried from the draft (reasoning unchanged, anchors re-verified against a0a9fd0
   `(tenant_id, kind, subject_ref)` = ask once per subject, ever. `subject_ref` = assignment id,
   `kind` = `'overdue_visit_gap'` — deliberately the SAME key A's review items use, so the two
   dedup stores speak one vocabulary.
-- **Capture policy (D4) → outreach NOT L1-captured** (product-facing — **needs explicit user
-  confirmation at this review**). L1 is undeletable and the 2026-07-04 outbound exception does
+- **Capture policy (D4) → outreach NOT L1-captured** (user-ratified 2026-08-16). L1 is
+  undeletable and the 2026-07-04 outbound exception does
   not extend by analogy; the `nudges` row (question, evidence, timestamps,
   `actor_ref='spine:team-lead'`) is the durable, prunable audit. The reply needs no new policy:
   person's agent → `record_field_note` → normal L1/L2, their ref.
@@ -94,8 +95,12 @@ Carried from the draft (reasoning unchanged, anchors re-verified against a0a9fd0
   id reuse resumes stale conversations). `OPEN — needs live evidence`: whether the human's
   Telegram reply lands in a session that still holds the question is unobserved. Phase 5
   resolves it; the copy names customer + date so the reply is recordable even context-less.
-- **Budgets (product-facing defaults):** 2 asks/person, 6 asks/tenant per rolling 24h; escalate
-  at 48h silence; compose/delivery attempts ≤3; serve cap 10. Env-overridable via `safeEnvInt`.
+- **Budgets (user-ratified 2026-08-16):** 2 asks/person per rolling 24h; **NO firm-wide cap**
+  (user amendment — volume should scale with the roster and the work; the watcher's per-tick
+  cap of 5 fresh gaps per tenant stays as the surge brake, so a systemic glitch still can't
+  blast a whole roster in one tick). Budget-exhausted DEFERS, never overflows to the manager.
+  Escalate at 48h silence; compose/delivery attempts ≤3; serve cap 10. Env-overridable via
+  `safeEnvInt`.
 - **Fabrication guard (constraint 8):** code assembles the evidence block + standing footer; the
   model writes ONLY the question sentence (or declines). Dates printed by code from the row —
   bare date, no weekday, so the weekday guard has nothing to mismatch.
@@ -157,7 +162,7 @@ real technician), plus the ratified worker disclosure in the firm-facing docs.
 - **Phase 3:** `MODEL_PROVIDER` + `INFERENCE_API_KEY` — `already required` (extractor). ⚠ Render
   currently holds the suspended Fireworks key (parked state 2026-08-15): compose reports
   per-row errors until rotated/billing-resumed; tests inject stubs. Optional:
-  `TEAM_LEAD_BUDGET_PERSON_DAY`, `TEAM_LEAD_BUDGET_TENANT_DAY`, `TEAM_LEAD_ESCALATE_HOURS`.
+  `TEAM_LEAD_BUDGET_PERSON_DAY`, `TEAM_LEAD_ESCALATE_HOURS`.
 - **Phase 4:** `HOST_PULL_TOKEN` — `already required`; the runner reuses
   `/etc/doorman/badge-pull.env`. No new secret is minted anywhere in this plan.
 - **Phase 5:** ssh to trades-box-1 + Render deploy + Supabase MCP (pilot) — operator-held
@@ -195,7 +200,7 @@ boilerplate mirrors `20260815160000_money_events.sql`)
   the exact `listEverFlaggedSubjectRefs` shape (chunked `.in()`, zero-input → `[]`);
 - `markNudgeQueued(id, tenantId, question)` / `markNudgeOutcome(id, tenantId, status,
   resolution?)` — status-guarded conditional UPDATEs (the `resolveOpenReviewItemFor` shape);
-- `countRecentAsks(tenantId, technicianId|null, sinceIso)` — budget read over
+- `countRecentAsks(tenantId, technicianId, sinceIso)` — per-person budget read over
   `created_at >= since`, statuses `pending|queued|asked|answered|escalated` (pending counts:
   a budgeted slot is claimed at creation, not at delivery).
 
@@ -242,7 +247,8 @@ The deployed watcher learns the ladder — zero model calls. All changes live in
   would open", which now includes rung-1 asks).
 - **Routing (live path, inside the existing capped `top` loop):** resolve the technician from
   the already-fetched `teamRows`; nudgeable = `NUDGES_MODE==='live'` AND state `active` AND
-  `telegram_user_id` AND `sandbox_ref` AND `host_id` AND person-budget AND tenant-budget.
+  `telegram_user_id` AND `sandbox_ref` AND `host_id` AND person-budget (no firm-wide budget —
+  user amendment).
   Nudgeable → `createPendingNudge` with code-built `context` `{customerName, jobTitle,
   visitDay, visitEndLabel, technicianRef, assignmentId, jobId, startsAtLocal}` (reuses the
   `wallClockLabel` derivation); NOT nudgeable for any reason except budget → fallback =
@@ -270,7 +276,7 @@ The deployed watcher learns the ladder — zero model calls. All changes live in
 - [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
 - [ ] watchers.test.ts additions: nudgeable → nudge row, NO manager item, NO push;
   unbound/inactive tech → manager item (deployed behavior); person budget 2 then defer;
-  tenant budget 6 then defer; deferred row re-noticed next tick; nudged gap absent from
+  deferred row re-noticed next tick; nudged gap absent from
   `fresh` next tick; shadow mode → `nudgesWouldCreate` counted + manager item still opened;
   `NUDGES_MODE` typo → stepError; capture-after-start → nudge `answered`; visit cancelled →
   nudge `cancelled`; 49-hour `asked` → ONE manager item with escalation copy + `escalated`
@@ -469,10 +475,10 @@ in the watcher framework). Stack, don't parallelize: whichever lands second reba
 
 ## Assumptions
 
-- Product-facing choices needing explicit user sign-off at this review: **D4** (outreach not
-  L1-captured), **"nothing to report" = filled / silence-only escalates**, **budget defaults
-  (2/person, 6/tenant, 48h escalation)**, **budget-exhausted defers rather than falling back
-  to the manager**. Each is flagged where it appears.
+- Product-facing choices **user-ratified 2026-08-16**: D4 (outreach not L1-captured);
+  "nothing to report" = filled / silence-only escalates; 2 asks/person per rolling 24h with NO
+  firm-wide cap (user amendment); budget-exhausted defers rather than falling back to the
+  manager; read-only v1 tool allowlist for the team-lead identity.
 - `runForcedTool` is assumed usable by a second consumer (it is the extractor's seam); if it
   proves extract-specific, compose adds a sibling helper in `src/model/` instead of widening
   it.

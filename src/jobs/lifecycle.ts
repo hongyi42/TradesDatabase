@@ -38,10 +38,14 @@ import { runWatchers, type WatchersSummary } from './watchers.js';
 //     the largest (allocated) cost line does not depend on someone remembering
 //     to retype an invoice — an omission that renders as $0, i.e. "no spend";
 // (7) recompute the current month's per-tenant cost rollup (idempotent);
-// (8) the Stage-0 watcher (plan 2026-08-15 feature A): deterministic
-//     overdue-visit gap detection — runs EVERY tick, gated on WATCHERS_MODE
-//     (unset = skipped; 'shadow' = count only; 'live' = review items + push;
-//     anything else = LOUD stepError — a config typo must never be silently off).
+// (8) the watcher (plan 2026-08-15 features A+B): deterministic overdue-visit
+//     gap detection + the Stage-1 ladder — runs EVERY tick, gated on
+//     WATCHERS_MODE (unset = skipped; 'shadow' = count only; 'live' = act;
+//     anything else = LOUD stepError — a config typo must never be silently
+//     off). NUDGES_MODE gates the ladder within live: unset = 'off' silently
+//     (rung 1 is optional — the Stage-0 behavior needs no new env), 'shadow'
+//     counts would-be nudges, 'live' asks technicians first; any other value
+//     is the same LOUD stepError.
 // Steps 5-7 report `skipped` — not an error — when the cost tables are absent,
 // so a deploy that lands before the migration does not turn the cron red. Step 6
 // also skips when no DeepInfra billing key is resolvable (e.g. after a failover
@@ -309,14 +313,27 @@ export async function runLifecycle(
   // never read as "watchers quietly off".
   let watchers: LifecycleSummary['watchers'];
   const watchersMode = process.env.WATCHERS_MODE;
+  // NUDGES_MODE: unset is a VALID state ('off' — rung 1 simply not enabled,
+  // unlike WATCHERS_MODE where unset means the whole step is dark), but a
+  // typo is the same loud failure. Checked only when the step actually runs.
+  const nudgesModeRaw = process.env.NUDGES_MODE;
+  const nudgeMode =
+    !nudgesModeRaw ? ('off' as const)
+    : nudgesModeRaw === 'shadow' || nudgesModeRaw === 'live' ? nudgesModeRaw
+    : null;
   if (!watchersMode) {
     watchers = { skipped: 'WATCHERS_MODE unset (shadow|live)' };
   } else if (watchersMode !== 'shadow' && watchersMode !== 'live') {
     watchers = { stepError: `WATCHERS_MODE must be 'shadow' or 'live', got '${watchersMode}'` };
     ok = false;
+  } else if (nudgeMode === null) {
+    watchers = {
+      stepError: `NUDGES_MODE must be 'shadow' or 'live' when set, got '${nudgesModeRaw}'`,
+    };
+    ok = false;
   } else {
     try {
-      const summary = await (deps.runWatchers ?? runWatchers)(nowIso, watchersMode);
+      const summary = await (deps.runWatchers ?? runWatchers)(nowIso, watchersMode, {}, nudgeMode);
       watchers = summary;
       // EVERY tenant failing is systemic (DB down, bad schema), not row blips —
       // the pairing-sweep detector shape.

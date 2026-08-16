@@ -12,7 +12,7 @@ const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
   // WATCHERS_MODE cleared for the same reason as COMPOSIO_API_KEY: .env may
   // carry it, and the default runWatchers dep would hit the real database.
-  for (const k of ['DEFAULT_TENANT_ID', 'COMPOSIO_API_KEY', 'WATCHERS_MODE'] as const) {
+  for (const k of ['DEFAULT_TENANT_ID', 'COMPOSIO_API_KEY', 'WATCHERS_MODE', 'NUDGES_MODE'] as const) {
     if (!(k in saved)) saved[k] = process.env[k];
     delete process.env[k];
   }
@@ -225,6 +225,11 @@ describe('runLifecycle', () => {
       pushed: 0,
       pushSkipped: false,
       tenantErrors: 0,
+      nudgeMode: 'off' as const,
+      nudgesWouldCreate: 0,
+      nudgesCreated: 0,
+      nudgesResolved: 0,
+      nudgesEscalated: 0,
     };
     const BASE = {
       listInStates: async () => [],
@@ -261,15 +266,15 @@ describe('runLifecycle', () => {
       expect(summary.ok).toBe(false);
     });
 
-    test('shadow and live pass through to the dep with the run nowIso', async () => {
-      const calls: Array<[string, string]> = [];
+    test('shadow and live pass through to the dep with the run nowIso; unset NUDGES_MODE rides as off', async () => {
+      const calls: Array<[string, string, string]> = [];
       for (const mode of ['shadow', 'live'] as const) {
         process.env.WATCHERS_MODE = mode;
         const summary = await runLifecycle(NOW, {
           ...COST_STUBS,
           ...BASE,
-          runWatchers: async (nowIso, m) => {
-            calls.push([nowIso, m]);
+          runWatchers: async (nowIso, m, _deps, nudgeMode) => {
+            calls.push([nowIso, m, nudgeMode ?? 'MISSING']);
             return { ...WATCH_OK, mode };
           },
         });
@@ -277,9 +282,45 @@ describe('runLifecycle', () => {
         expect(summary.ok).toBe(true);
       }
       expect(calls).toEqual([
-        [NOW, 'shadow'],
-        [NOW, 'live'],
+        [NOW, 'shadow', 'off'],
+        [NOW, 'live', 'off'],
       ]);
+    });
+
+    test('NUDGES_MODE gates the ladder: shadow/live pass through; a typo is a LOUD stepError', async () => {
+      process.env.WATCHERS_MODE = 'live';
+      const nudgeModes: string[] = [];
+      for (const nm of ['shadow', 'live'] as const) {
+        process.env.NUDGES_MODE = nm;
+        const summary = await runLifecycle(NOW, {
+          ...COST_STUBS,
+          ...BASE,
+          runWatchers: async (_nowIso, _m, _deps, nudgeMode) => {
+            nudgeModes.push(nudgeMode ?? 'MISSING');
+            return { ...WATCH_OK, mode: 'live' as const, nudgeMode: nm };
+          },
+        });
+        expect(summary.ok).toBe(true);
+      }
+      expect(nudgeModes).toEqual(['shadow', 'live']);
+
+      // The typo: watchers step errors, dep never called — a half-typed
+      // rollout must not silently run with the ladder off.
+      process.env.NUDGES_MODE = 'lvie';
+      let called = false;
+      const summary = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => {
+          called = true;
+          return WATCH_OK;
+        },
+      });
+      expect(called).toBe(false);
+      expect(summary.watchers).toEqual({
+        stepError: "NUDGES_MODE must be 'shadow' or 'live' when set, got 'lvie'",
+      });
+      expect(summary.ok).toBe(false);
     });
 
     test('a throwing watcher is a stepError, red — the other steps still reported', async () => {

@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'vitest';
 import type { PlacedAssignment } from '../db/assignments.js';
 import type { JobWithCustomer } from '../db/jobs.js';
+import type { Nudge } from '../db/nudges.js';
 import type { ReviewItem } from '../db/reviewItems.js';
 import type { Tenant } from '../db/tenants.js';
 import type { Technician } from '../db/technicians.js';
 import {
   MAX_NEW_ITEMS_PER_TENANT_TICK,
+  NUDGE_BUDGET_PER_PERSON_DAY,
   runWatchers,
   type WatcherDeps,
 } from './watchers.js';
@@ -76,8 +78,60 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     resolveGap: async () => null,
     notify: async () => {},
     hasPushToken: () => true,
+    createNudge: async () => null,
+    listNudged: async () => [],
+    listNudges: async () => [],
+    resolveNudge: async () => null,
+    countAsks: async () => 0,
     ...over,
   };
+}
+
+// A fully reachable technician — the rung-1 precondition.
+const boundTech = (over: Partial<Technician> = {}): Technician =>
+  ({
+    id: 'tech-1',
+    ref: 'ben-shelton',
+    display_name: 'Ben Shelton',
+    state: 'active',
+    telegram_user_id: '8991633730',
+    sandbox_ref: 's5',
+    host_id: 'host-1',
+    tenant_id: 't1',
+    ...over,
+  }) as unknown as Technician;
+
+function nudgeRow(over: Partial<Nudge>): Nudge {
+  return {
+    id: 'n1',
+    tenant_id: 't1',
+    kind: 'overdue_visit_gap',
+    subject_ref: 'a1',
+    technician_id: 'tech-1',
+    status: 'pending',
+    question: null,
+    context: {
+      customerName: 'Henderson',
+      jobTitle: 'Furnace tune-up',
+      technicianRef: 'ben-shelton',
+      technicianName: 'Ben Shelton',
+      assignmentId: 'a1',
+      jobId: 'j1',
+      startsAtLocal: '2026-08-14T07:00:00.000Z',
+      endsAtLocal: '2026-08-14T08:00:00.000Z',
+      visitEndLabel: 'Friday, Aug 14 at 8:00 AM',
+    },
+    attempts: 0,
+    serve_count: 0,
+    actor_ref: 'spine:team-lead',
+    resolution: null,
+    queued_at: null,
+    asked_at: null,
+    resolved_at: null,
+    created_at: '2026-08-14T11:05:00.000Z',
+    updated_at: '2026-08-14T11:05:00.000Z',
+    ...over,
+  } as unknown as Nudge;
 }
 
 describe('runWatchers', () => {
@@ -366,5 +420,283 @@ describe('runWatchers', () => {
     expect(seen).toEqual(['good']);
     expect(summary.tenants).toBe(2);
     expect(summary.tenantErrors).toBe(1);
+  });
+});
+
+// Stage 1 (plan 2026-08-15 feature B): the ladder. Rung 1 = ask the
+// technician through their own agent; the manager item becomes the fallback
+// (unreachable tech) and rung 2 (48h silence). Same pure-unit style.
+describe('runWatchers — the ladder (NUDGES_MODE)', () => {
+  test("default nudgeMode 'off' is byte-for-byte Stage-0: nudge deps never consulted", async () => {
+    const flagged: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listOverdue: async () => [visit({ technician_id: 'tech-1' })],
+      listTeam: async () => [boundTech()],
+      flagGap: async (input) => {
+        flagged.push(input.assignmentId);
+        return openItem({});
+      },
+      listNudges: async () => {
+        throw new Error('nudgeMode off must not read open nudges');
+      },
+      createNudge: async () => {
+        throw new Error('nudgeMode off must not create nudges');
+      },
+    }));
+    // A REACHABLE tech still gets the manager fallback when the ladder is off.
+    expect(flagged).toEqual(['a1']);
+    expect(summary.tenantErrors).toBe(0); // the sentinels never fired
+    expect(summary).toMatchObject({ nudgeMode: 'off', nudgesCreated: 0, nudgesWouldCreate: 0 });
+  });
+
+  test('live: a reachable tech gets a NUDGE — no manager item, no push; context carries the whole story', async () => {
+    const created: Array<Record<string, unknown>> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listOverdue: async () => [
+        visit({
+          technician_id: 'tech-1',
+          starts_at: '2026-08-16T07:00:00.000Z',
+          ends_at: '2026-08-16T08:00:00.000Z',
+        }),
+      ],
+      listTeam: async () => [boundTech()],
+      listJobs: async (_t, ids) =>
+        ids.map((id) => ({
+          id,
+          tenant_id: 't1',
+          title: 'Furnace tune-up',
+          customers: { name: 'Henderson' },
+        }) as unknown as JobWithCustomer),
+      createNudge: async (input) => {
+        created.push(input as unknown as Record<string, unknown>);
+        return nudgeRow({ subject_ref: input.subjectRef });
+      },
+      flagGap: async () => {
+        throw new Error('a nudged gap must not also flag the manager');
+      },
+      notify: async () => {
+        throw new Error('rung 1 must not push the manager');
+      },
+    }), 'live');
+    expect(summary.tenantErrors).toBe(0);
+    expect(summary.nudgesCreated).toBe(1);
+    expect(summary.itemsOpened).toBe(0);
+    expect(summary.pushed).toBe(0);
+    expect(created).toHaveLength(1);
+    expect(created[0].technicianId).toBe('tech-1');
+    expect(created[0].subjectRef).toBe('a1');
+    expect(created[0].context).toMatchObject({
+      customerName: 'Henderson',
+      jobTitle: 'Furnace tune-up',
+      technicianRef: 'ben-shelton',
+      technicianName: 'Ben Shelton',
+      jobId: 'j1',
+      startsAtLocal: '2026-08-16T07:00:00.000Z',
+      endsAtLocal: '2026-08-16T08:00:00.000Z',
+      visitEndLabel: 'Sunday, Aug 16 at 8:00 AM',
+    });
+  });
+
+  test('live: an UNREACHABLE tech falls back to the manager item (deployed behavior)', async () => {
+    const flagged: string[] = [];
+    for (const tech of [
+      boundTech({ sandbox_ref: null }),
+      boundTech({ telegram_user_id: null }),
+      boundTech({ state: 'offboarded' }),
+      boundTech({ host_id: null }),
+    ]) {
+      const summary = await runWatchers(NOW, 'live', baseDeps({
+        listOverdue: async () => [visit({ technician_id: 'tech-1' })],
+        listTeam: async () => [tech],
+        flagGap: async (input) => {
+          flagged.push(input.assignmentId);
+          return openItem({});
+        },
+        createNudge: async () => {
+          throw new Error('an unreachable tech must not be nudged');
+        },
+      }), 'live');
+      expect(summary.tenantErrors).toBe(0);
+      expect(summary.nudgesCreated).toBe(0);
+    }
+    expect(flagged).toEqual(['a1', 'a1', 'a1', 'a1']);
+  });
+
+  test('live: budget exhausted → the gap DEFERS (no nudge, no manager item); under budget → nudge', async () => {
+    const outcomes: string[] = [];
+    for (const asks of [NUDGE_BUDGET_PER_PERSON_DAY, NUDGE_BUDGET_PER_PERSON_DAY - 1]) {
+      const summary = await runWatchers(NOW, 'live', baseDeps({
+        listOverdue: async () => [visit({ technician_id: 'tech-1' })],
+        listTeam: async () => [boundTech()],
+        countAsks: async () => asks,
+        createNudge: async () => {
+          outcomes.push('nudged');
+          return nudgeRow({});
+        },
+        flagGap: async () => {
+          outcomes.push('flagged');
+          return openItem({});
+        },
+      }), 'live');
+      expect(summary.tenantErrors).toBe(0);
+      expect(summary.itemsOpened).toBe(0);
+    }
+    expect(outcomes).toEqual(['nudged']); // at-budget deferred silently; under-budget asked
+  });
+
+  test('a nudged gap is not fresh: the second dedup store feeds the pre-filter in both modes', async () => {
+    const summary = await runWatchers(NOW, 'shadow', baseDeps({
+      listOverdue: async () => [visit({ id: 'a1' }), visit({ id: 'a2', job_id: 'j2' })],
+      listNudged: async (_t, _k, ids) => ids.filter((id) => id === 'a1'),
+    }));
+    expect(summary.gapsFound).toBe(2);
+    expect(summary.freshGaps).toBe(1); // a1 was nudged once, ever — never fresh again
+  });
+
+  test("nudge-shadow: counts what live would ask, still flags the manager (safe observability)", async () => {
+    const flagged: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listOverdue: async () => [
+        visit({ id: 'a1', technician_id: 'tech-1' }),
+        visit({ id: 'a2', job_id: 'j2' }), // no tech — never countable
+      ],
+      listTeam: async () => [boundTech()],
+      flagGap: async (input) => {
+        flagged.push(input.assignmentId);
+        return openItem({ subject_ref: input.assignmentId });
+      },
+      createNudge: async () => {
+        throw new Error('nudge-shadow must not create nudges');
+      },
+      countAsks: async () => {
+        throw new Error('nudge-shadow must not read budgets');
+      },
+    }), 'shadow');
+    expect(summary.tenantErrors).toBe(0);
+    expect(summary.nudgeMode).toBe('shadow');
+    expect(summary.nudgesWouldCreate).toBe(1); // the reachable one
+    expect(flagged).toEqual(['a1', 'a2']); // BOTH still reach the manager
+    expect(summary.itemsOpened).toBe(2);
+  });
+
+  test('live ladder auto-resolve: arrived activity answers; a cancelled visit cancels; asked-and-recent waits', async () => {
+    const resolved: Array<[string, string, string | null | undefined]> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({ id: 'n-filled', subject_ref: 'a-filled', status: 'queued' }),
+        nudgeRow({
+          id: 'n-cancelled',
+          subject_ref: 'a-cancelled',
+          status: 'asked',
+          asked_at: '2026-08-16T11:00:00.000Z',
+          context: { jobId: 'j7', startsAtLocal: '2026-08-14T07:00:00.000Z' },
+        }),
+        nudgeRow({
+          id: 'n-waiting',
+          subject_ref: 'a-waiting',
+          status: 'asked',
+          asked_at: '2026-08-16T10:00:00.000Z', // 2h ago — nowhere near 48h
+          context: { jobId: 'j6', startsAtLocal: '2026-08-14T07:00:00.000Z' },
+        }),
+      ],
+      listCaptureTimes: async () => [{ job_id: 'j1', captured_at: '2026-08-14T07:30:00.000Z' }],
+      listAssignments: async () => [
+        visit({ id: 'a-cancelled', job_id: 'j7', status: 'cancelled' } as Partial<PlacedAssignment>),
+        visit({ id: 'a-waiting', job_id: 'j6' }),
+      ],
+      resolveNudge: async (id, _t, status, resolution) => {
+        resolved.push([id, status, resolution]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+      flagGap: async () => {
+        throw new Error('nothing here is escalation-ripe');
+      },
+    }), 'live');
+    expect(summary.tenantErrors).toBe(0);
+    expect(resolved).toEqual([
+      ['n-filled', 'answered', 'a field report arrived — the gap filled itself'],
+      ['n-cancelled', 'cancelled', 'the visit was cancelled — nothing left to ask'],
+    ]);
+    expect(summary.nudgesResolved).toBe(2);
+    expect(summary.nudgesEscalated).toBe(0);
+  });
+
+  test('rung 2: 48h of silence → ONE manager item with the escalation copy, nudge marked escalated, push fires', async () => {
+    const flagged: Array<{ suggestion: string; escalatedFromNudge?: string; technicianRef: string | null }> = [];
+    const resolved: Array<[string, string]> = [];
+    const pushes: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({
+          id: 'n-silent',
+          subject_ref: 'a-silent',
+          status: 'asked',
+          asked_at: '2026-08-14T11:00:00.000Z', // 49h before NOW
+          context: {
+            customerName: 'Henderson',
+            jobTitle: 'Furnace tune-up',
+            technicianRef: 'ben-shelton',
+            technicianName: 'Ben Shelton',
+            jobId: 'j1',
+            startsAtLocal: '2026-08-14T07:00:00.000Z',
+            endsAtLocal: '2026-08-14T08:00:00.000Z',
+          },
+        }),
+      ],
+      flagGap: async (input) => {
+        flagged.push({
+          suggestion: input.suggestion,
+          escalatedFromNudge: input.escalatedFromNudge,
+          technicianRef: input.technicianRef,
+        });
+        return openItem({ subject_ref: input.assignmentId });
+      },
+      resolveNudge: async (id, _t, status) => {
+        resolved.push([id, status]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+      notify: async (_t, text) => {
+        pushes.push(text);
+      },
+    }), 'live');
+    expect(summary.tenantErrors).toBe(0);
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0].suggestion).toContain(
+      "Ben Shelton's assistant asked about the 'Furnace tune-up' visit (Henderson)",
+    );
+    expect(flagged[0].suggestion).toContain('Friday, Aug 14 at 11:00 AM'); // the ask's wall-clock moment
+    expect(flagged[0].suggestion).toContain('just dismiss this');
+    expect(flagged[0].suggestion).not.toContain('Spine');
+    expect(flagged[0].escalatedFromNudge).toBe('n-silent');
+    expect(flagged[0].technicianRef).toBe('ben-shelton');
+    expect(resolved).toEqual([['n-silent', 'escalated']]);
+    expect(summary.nudgesEscalated).toBe(1);
+    expect(summary.itemsOpened).toBe(1);
+    expect(pushes).toEqual([
+      'Heads-up: a recent visit has nothing on record yet — it’s waiting in your pending reviews whenever you have a minute.',
+    ]);
+  });
+
+  test('rung 2 races: a null flag (assignment somehow already flagged) still marks the nudge escalated', async () => {
+    const resolved: Array<[string, string]> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({
+          id: 'n-raced',
+          subject_ref: 'a-raced',
+          status: 'asked',
+          asked_at: '2026-08-13T11:00:00.000Z',
+        }),
+      ],
+      flagGap: async () => null,
+      resolveNudge: async (id, _t, status) => {
+        resolved.push([id, status]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    expect(resolved).toEqual([['n-raced', 'escalated']]);
+    expect(summary.nudgesEscalated).toBe(1);
+    expect(summary.itemsOpened).toBe(0); // nothing NEW for the manager
+    expect(summary.pushed).toBe(0);
   });
 });

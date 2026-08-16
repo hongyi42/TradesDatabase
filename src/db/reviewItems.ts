@@ -146,6 +146,9 @@ export async function flagOverdueVisitGap(input: {
   startsAtLocal: string; // the visit's naive-local start — auto-resolve's compare bound
   endsAtLocal: string; // the visit's naive-local end, for display
   suggestion: string;
+  // Set when this item is the ladder's RUNG 2 (Stage 1): the silent nudge it
+  // grew out of — the audit thread from question to manager item.
+  escalatedFromNudge?: string;
 }): Promise<ReviewItem | null> {
   const { data, error } = await getClient()
     .from('review_items')
@@ -166,6 +169,7 @@ export async function flagOverdueVisitGap(input: {
       technicianRef: input.technicianRef,
       startsAtLocal: input.startsAtLocal,
       endsAtLocal: input.endsAtLocal,
+      ...(input.escalatedFromNudge ? { escalatedFromNudge: input.escalatedFromNudge } : {}),
     },
   });
 }

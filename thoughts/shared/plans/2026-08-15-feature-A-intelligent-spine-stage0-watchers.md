@@ -56,10 +56,11 @@ before anything speaks.
   `MAX_NEW_ITEMS_PER_TENANT_TICK = 5`.
 - **Surveillance framing** — prose about the JOB/visit, never "this person is behind"; the
   scheduled tech's ref rides in `detail` as routing data (the manager must know whom to ask).
-- **`OPEN — needs user input`: sequencing vs money-inference Phase 3.** Both touch
-  `lifecycle.ts`, `reviewItems.ts`, `assignments.ts`. This plan is the smaller, model-free half;
-  if money Phase 3 is approved, its nudge should become this framework's second detector, not a
-  parallel copy. Decide order before either `/implement`.
+- **Sequencing vs money-inference Phase 3 — DECIDED (user, 2026-08-15): this plan lands
+  first.** The user judged the watcher framework the more general piece; money-inference waits
+  and, when approved, its quiet-open-jobs nudge becomes this framework's second detector (shared
+  tenant loop + step), not a parallel copy. (Original concern: both touch `lifecycle.ts`,
+  `reviewItems.ts`, `assignments.ts`.)
 
 ## Plain-language walkthrough
 **Phase 1 — teach the database layer the questions.** Four small, tenant-scoped query helpers:

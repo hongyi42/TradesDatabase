@@ -114,8 +114,10 @@ Two honest mechanics of that scenario:
   cron pulse, surfacing into existing channels (digest / pending queue). Proves the gap inventory
   is real and calibrates volume before anything speaks.
 - **Stage 1 — the voice.** The team-leader turn composes outreach on a watcher trigger and
-  delivers it through the person's own agent via `/hooks/agent`; replies flow back as normal
-  captures. Needs: the identity class, the nudge budget, reply-hook mechanics resolved.
+  delivers it through the person's own agent via the CLI gateway path (`openclaw agent
+  --deliver` — see "the mouth" above; `/hooks/agent` is a dead end on this box); replies flow
+  back as normal captures. Needs: the identity class, the nudge budget, reply-session mechanics
+  resolved.
 - **Stage 2 — the brain.** Anticipation: pre-briefing the manager's morning, noticing patterns
   ("quotes to the Hendersons go unanswered ~a week"), predicting what will be asked. Only after
   stages 0–1 have earned trust — prediction from an entity that already pings too much or asks

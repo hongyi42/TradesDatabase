@@ -477,11 +477,16 @@ export async function runWatchers(
         });
         if (item) opened += 1;
         try {
+          // pending|queued-scoped (final-review #3): a delivery ack racing
+          // this sweep moves the row to 'asked' — the expiry must then LOSE
+          // (the 48h escalation owns an asked row's silence), or the audit
+          // would claim an ask that actually landed never did.
           const moved = await resolveNudge(
             x.n.id,
             tenantId,
             'failed',
             'never delivered — handed to the manager',
+            ['pending', 'queued'],
           );
           if (moved) summary.nudgesExpired += 1;
         } catch (err) {

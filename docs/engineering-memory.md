@@ -847,8 +847,12 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   recycled/host-unbound techs, invisible to every pull) — because an ever-nudged assignment is
   never fresh again and the once-ever index blocks re-asks; a silent death = gap on NEITHER
   surface forever. Never-asked handoffs use the STAGE-0 copy (never "their assistant asked").
-  Rollback reality: unsetting NUDGES_MODE stops creation+compose only — queued rows keep
-  serving until `systemctl disable --now nudge-runner.timer`; pull BOTH levers. DEPLOY
+  Corollary: a row too tampered even to FLAG is FROZEN (left open, logged), never closed —
+  closing it would be the orphan again. Rollback reality: unsetting NUDGES_MODE stops
+  creation+compose only — queued rows keep serving until `systemctl disable --now
+  nudge-runner.timer`; pull BOTH levers. And a WATCHERS_MODE rollback freezes ALL nudge
+  sweeps (they live in step 8) while the un-gated outbox keeps serving — rolling back the
+  watcher with nudges in flight requires pulling the box timer too. DEPLOY
   PREREQUISITES: watchers live-flip decision, pilot migrations (`20260817090000_nudges` +
   `20260817100000_reserve_spine_namespace`), Render deploy, runner install, and the Phase-5
   MUST-PIN: what `--deliver` reports on a FAILED Telegram send (dead chat leaves CLI success +

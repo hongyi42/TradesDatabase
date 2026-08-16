@@ -552,7 +552,10 @@ resolve the D6 open question, ship the ratified disclosure.
   and COMPOSE, but already-queued rows keep serving to the box (the outbox route is not
   mode-gated) until the timer is pulled or the 24h delivery deadline hands them to the
   manager — pull BOTH levers for a full stop. In-flight sweeps (resolve/escalate/expire)
-  deliberately keep running in every mode.
+  deliberately keep running in every NUDGES_MODE — but they live inside step 8, so a
+  **WATCHERS_MODE rollback freezes them ALL** while the un-gated outbox keeps serving
+  (final-review #4): if you ever roll WATCHERS_MODE back with nudges in flight, disable the
+  box timer in the same breath, or delivered asks sit silent with no sweep to escalate them.
 - **Docs:** `docs/customer-onboarding-runbook.md` + `docs/getting-started-for-firms.md` —
   extend the recorded disclosures with the ratified 2026-08-15 one: the firm's assistant may
   proactively ask about work, and what you tell it can be recorded to the firm's record.

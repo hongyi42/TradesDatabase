@@ -147,19 +147,61 @@ describe('runTeamLeadCompose', () => {
     expect(flagged[0].suggestion).toContain('just dismiss this');
   });
 
-  test('incomplete context → cancelled WITHOUT a model call; too thin even for a handoff', async () => {
-    const outcomes: string[] = [];
+  test('incomplete context, unfit even to flag → FROZEN (never cancelled), no model call', async () => {
+    // Final-review #1: a row too thin for a handoff must NOT be closed — a
+    // cancelled nudge with no manager item is a gap on neither surface,
+    // forever. Frozen means: no model, no flag, no outcome — the status-
+    // change sweep stays its only exit.
     const summary = await runTeamLeadCompose(NOW, baseDeps({
       listNudges: async () => [pendingNudge({ context: { jobTitle: 'only this' } })],
       run: async () => {
         throw new Error('the model must not see incomplete context');
+      },
+      flagGap: async () => {
+        throw new Error('a flag-incoherent row cannot be handed off');
+      },
+      markOutcome: async () => {
+        throw new Error('an unfit row must stay open, not be cancelled');
+      },
+    }));
+    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0 });
+  });
+
+  test('display-thin but FLAG-coherent context → manager handoff from raw fields, then cancelled', async () => {
+    // Final-review #1: an empty customer name fails the compose reader, but
+    // the raw context still carries everything the flag needs — the gap must
+    // reach the manager (with display defaults), then the nudge closes.
+    const flagged: Array<{ suggestion: string; jobId: string }> = [];
+    const outcomes: string[] = [];
+    const summary = await runTeamLeadCompose(NOW, baseDeps({
+      listNudges: async () => [
+        pendingNudge({
+          context: {
+            jobTitle: 'Furnace tune-up',
+            // customerName missing — display-thin
+            technicianRef: 'ben-shelton',
+            jobId: 'j1',
+            startsAtLocal: '2026-08-14T07:00:00.000Z',
+            endsAtLocal: '2026-08-14T08:00:00.000Z',
+          },
+        }),
+      ],
+      run: async () => {
+        throw new Error('the model must not see incomplete context');
+      },
+      flagGap: async (input) => {
+        flagged.push({ suggestion: input.suggestion, jobId: input.jobId });
+        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<ComposeDeps['flagGap']>>>;
       },
       markOutcome: async (_id, _t, status, resolution) => {
         outcomes.push(`${status}: ${resolution}`);
         return pendingNudge({ status: 'cancelled' });
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1 });
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0].jobId).toBe('j1');
+    expect(flagged[0].suggestion).toContain("The visit for 'Furnace tune-up' (unknown customer)");
     expect(outcomes).toEqual(['cancelled: context incomplete']);
   });
 

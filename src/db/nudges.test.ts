@@ -114,6 +114,24 @@ describe('status-guarded transitions', () => {
     expect(await markNudgeOutcome(n!.id, tenantId, 'escalated')).toBeNull();
   });
 
+  test('fromStatuses narrows the outcome guard: the expiry write loses to a racing delivery ack', async () => {
+    const n = await createPendingNudge({
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef: 'asg-race-1',
+      technicianId: techId,
+    });
+    await markNudgeQueued(n!.id, tenantId, 'q');
+    await markNudgeAsked(n!.id, tenantId); // the ack landed first
+    // The expiry sweep's "never delivered" close is pending|queued-scoped —
+    // on an asked row it must write NOTHING (the 48h escalation owns it now).
+    expect(
+      await markNudgeOutcome(n!.id, tenantId, 'failed', 'never delivered', ['pending', 'queued']),
+    ).toBeNull();
+    const still = await listNudgesByStatus(tenantId, ['asked']);
+    expect(still.some((row) => row.id === n!.id)).toBe(true);
+  });
+
   test('setNudgeAttempts writes only while the row is still in flight (pending/queued)', async () => {
     const n = await createPendingNudge({
       tenantId,

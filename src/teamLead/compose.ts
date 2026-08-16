@@ -139,18 +139,26 @@ export async function handToManager(
   ctx: ComposeContext | null,
   flagGap: typeof flagOverdueVisitGap,
 ): Promise<boolean> {
+  // Read the FLAG-coherent fields from the raw context even when the compose
+  // reader returned null (final-review #1: readComposeContext fails on any
+  // missing DISPLAY field — an empty customer name — but the flag needs only
+  // jobId + the two timestamps; without this fallback a display-thin row was
+  // cancelled with no surface, the exact orphan the doctrine forbids).
   const raw = (n.context ?? {}) as Record<string, unknown>;
-  const jobId = ctx?.jobId ?? (typeof raw.jobId === 'string' ? raw.jobId : null);
-  const startsAtLocal = ctx?.startsAtLocal ?? null;
-  const endsAtLocal = ctx?.endsAtLocal ?? null;
-  if (!jobId || !startsAtLocal || !endsAtLocal) {
+  const rs = (k: string): string | null =>
+    typeof raw[k] === 'string' && (raw[k] as string).length > 0 ? (raw[k] as string) : null;
+  const jobId = ctx?.jobId ?? rs('jobId');
+  const startsAtLocal = ctx?.startsAtLocal ?? rs('startsAtLocal');
+  const endsAtLocal = ctx?.endsAtLocal ?? rs('endsAtLocal');
+  if (!jobId || !startsAtLocal || !endsAtLocal || Number.isNaN(Date.parse(endsAtLocal))) {
     // Not enough evidence even to flag coherently — the row is tampered
-    // beyond use. Loud log; the status-change sweep can still close it.
+    // beyond use. Loud log; callers must FREEZE the row (never cancel it),
+    // so the status-change sweep remains its only exit.
     console.error(`[teamLeadCompose] nudge ${n.id} unfit for manager handoff (thin context)`);
     return false;
   }
-  const title = ctx?.jobTitle ?? 'a job';
-  const customer = ctx?.customerName ?? 'unknown customer';
+  const title = ctx?.jobTitle ?? flatten(rs('jobTitle') ?? 'a job', 120);
+  const customer = ctx?.customerName ?? flatten(rs('customerName') ?? 'unknown customer', 80);
   const item = await flagGap({
     tenantId: n.tenant_id,
     assignmentId: n.subject_ref,
@@ -239,11 +247,16 @@ export async function runTeamLeadCompose(
         const ctx = readComposeContext(n);
         if (!ctx) {
           // Thin/tampered evidence: never ask a model to guess around it —
-          // but the GAP still exists, so hand it to the manager first (F1;
-          // flag-then-close, see handToManager).
-          if (await handToManager(n, null, flagGap)) summary.handoffs += 1;
-          const moved = await markOutcome(n.id, tenantId, 'cancelled', 'context incomplete');
-          if (moved) summary.cancelled += 1;
+          // but the GAP still exists, so hand it to the manager first (F1).
+          // Close the nudge ONLY when the handoff landed (final-review #1):
+          // a row too thin even to flag is FROZEN here — logged loudly, left
+          // pending — so the status-change sweep stays its only exit; closing
+          // it would orphan the gap from every surface forever.
+          if (await handToManager(n, null, flagGap)) {
+            summary.handoffs += 1;
+            const moved = await markOutcome(n.id, tenantId, 'cancelled', 'context incomplete');
+            if (moved) summary.cancelled += 1;
+          }
           continue;
         }
         const args = await run(

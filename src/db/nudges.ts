@@ -222,19 +222,24 @@ export async function markNudgeAsked(id: string, tenantId: string): Promise<Nudg
 
 // Close an in-flight nudge with a terminal outcome. Only open rows move — a
 // terminal status never overwrites another (answered stays answered even if
-// an escalation sweep races the activity sweep).
+// an escalation sweep races the activity sweep). `fromStatuses` narrows the
+// guard further when the RESOLUTION TEXT is only true of specific states
+// (final-review #3: the 24h expiry says "never delivered" — a delivery ack
+// landing between the sweep's read and this write moves the row to 'asked',
+// and the expiry must then LOSE, or the durable audit lies about the ask).
 export async function markNudgeOutcome(
   id: string,
   tenantId: string,
   status: 'answered' | 'escalated' | 'cancelled' | 'failed',
   resolution?: string | null,
+  fromStatuses: NudgeStatus[] = OPEN_NUDGE_STATUSES,
 ): Promise<Nudge | null> {
   const { data, error } = await getClient()
     .from('nudges')
     .update({ status, resolution: resolution ?? null, resolved_at: new Date().toISOString() })
     .eq('id', id)
     .eq('tenant_id', tenantId)
-    .in('status', OPEN_NUDGE_STATUSES)
+    .in('status', fromStatuses)
     .select()
     .maybeSingle();
   if (error) throw new Error(`markNudgeOutcome failed: ${error.message}`);

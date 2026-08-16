@@ -262,8 +262,9 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
    ├─ /composio relay ──► per-person Composio session (Gmail, Sheets, …)
    ├─ board web + background worker (global bot @DashboardMan_bot)
    ├─ /admin operator cost dashboard (the ONE cross-tenant read surface)
-   └─ cron heartbeat, */15 — six sweeps: pairing · grace expiry · Composio session
-      provisioning · execution-log ingestion · cost backfill · cost rollup
+   └─ cron heartbeat (*/5 target; heavy sweeps self-gate to quarter-hour ticks) — pairing ·
+      grace expiry · Composio session provisioning · execution-log ingestion · cost backfill ·
+      bill pull · cost rollup · Stage-0 overdue-visit watcher (every tick, WATCHERS_MODE-gated)
  Inference: sandbox gateway ──► Fireworks GLM-5.2-fast (no failover; deepinfra = manual rollback)
 ```
 
@@ -802,6 +803,23 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   agent to remember), and anything un-harvested has a ~30-day shelf life. Docs:
   https://docs.openclaw.ai/gateway/config-agents. Direction doc:
   `thoughts/shared/plans/2026-08-15-intelligent-spine-direction.md`.
+- **The lifecycle cron has a step 8 — the Stage-0 watcher — and a cadence gate (2026-08-16,
+  plan `2026-08-15-feature-A-intelligent-spine-stage0-watchers.md`).** The Render schedule is
+  meant to run `*/5` (change it at rollout — the schedule setting, not code): steps 1–7 run only
+  on quarter-hour ticks (`getUTCMinutes() % 15 < 5`, stateless, tolerant of delayed firings —
+  off-cadence ticks report `{skipped:'off-cadence tick'}` per step), step 8 runs every tick.
+  Step 8 = `runWatchers` (src/jobs/watchers.ts): deterministic overdue-confirmed-visit gap
+  detection, gated on **`WATCHERS_MODE`** — unset = skipped clean (deploy-before-decide safe),
+  `shadow` = counts into the JSON summary only, `live` = review items (`overdue_visit_gap`,
+  once per assignment EVER) + one batched count-only manager push (needs `BOARD_BOT_TOKEN` in
+  the cron env; absent → `pushSkipped`, never red), any other value = LOUD stepError. ROLLOUT
+  STATE: **shadow until the volume is reviewed with the user** — the research measured the
+  archetype firing on 67/67 of the pilot's historical overdue visits, which is why the 72h
+  look-back exists (the backlog must never surface) and why live is a deliberate flip, not a
+  default. Escalation ladder (ratified 2026-08-16): today's manager review item is rung 2 of 2 —
+  Stage 1's voice inserts the technician-first rung when it lands. Money-inference Phase 3 note:
+  its quiet-open-jobs nudge must become this framework's SECOND detector (shared tenant loop,
+  same step) — never a parallel copy.
 - **`nemoclaw list` shows the ONBOARDING RECORD, not the live inference route (2026-08-06).** Read
   off that list, s2/s5/s6/s7 all say `provider: nvidia-prod` — which reads exactly like "the fleet
   has been stuck on the fallback for six days", and was reported as such before being checked. It

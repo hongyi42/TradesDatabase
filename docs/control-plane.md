@@ -34,8 +34,18 @@ which the host applies with no rebuild (see the rollout section below).
 
 ## The heartbeat: one Render Cron Job
 
-`src/jobs/lifecycle.ts` (`npm run job:lifecycle`) runs six isolated sweeps and prints one
-JSON summary line; a failed step exits 1 so Render marks the run failed:
+`src/jobs/lifecycle.ts` (`npm run job:lifecycle`) runs its isolated sweeps and prints one
+JSON summary line; a failed step exits 1 so Render marks the run failed. **The schedule TARGET
+is `*/5` (code merged 2026-08-16; the Render schedule itself is a dashboard setting flipped at
+the watcher rollout — until that flip the cron still fires `*/15` and every tick runs heavy).**
+The code carries a stateless cadence gate: the heavy sweeps below run only on quarter-hour ticks
+(`getUTCMinutes() % 15 < 5` — off-cadence ticks report `{skipped:'off-cadence tick'}` per step),
+while the Stage-0 **watcher** (summary field `watchers`, gated on `WATCHERS_MODE`: unset =
+skipped, `shadow` = count only, `live` = review items + one batched manager push; any other
+value fails LOUD) runs on every tick. Note the numbered list below predates two later steps —
+the DeepInfra bill pull sits between cost backfill and rollup, and the watcher runs last; the
+cron's JSON **field names** (`deepinfraUsage`, `watchers`, …), not list numbers, are the stable
+reference. Full watcher semantics + rollout state: engineering-memory §3.
 
 1. **Pairing sweep** — every `invited`/`pending_verification` row with a link issued gets
    `checkPairing` (detects completed OAuth consents; advances the row; opens the manager's
@@ -91,11 +101,17 @@ JSON summary line; a failed step exits 1 so Render marks the run failed:
 2. **New Cron Job service**, same repo/branch:
    - Build: `npm install && npm run build`
    - Command: `npm run job:lifecycle`
-   - Schedule: `*/15 * * * *` (UTC; Render guarantees at most one concurrent run)
+   - Schedule: `*/5 * * * *` (UTC; Render guarantees at most one concurrent run. `*/5` is the
+     watcher-rollout target — flip it in the SAME dashboard visit that sets `WATCHERS_MODE`;
+     the heavy sweeps self-gate to quarter-hour ticks, so do NOT "restore" `*/15`, which would
+     merely slow the watcher.)
    - Environment — required: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `COMPOSIO_API_KEY`
      (without it, steps 1-2 still need it per-row for Composio calls, and steps 3-4 skip
      cleanly — see the step notes above).
-     Optional: `GRACE_DAYS` (default 7). `SCHEDULE_SHEET_ID` / `GOOGLE_APPLICATION_CREDENTIALS`
+     Optional: `GRACE_DAYS` (default 7). `WATCHERS_MODE` (`shadow` | `live`; unset = watcher
+     step skipped — the shadow rollout REQUIRES setting this, see engineering-memory §3) and
+     `BOARD_BOT_TOKEN` (live-mode manager pushes; absent = `pushSkipped`, never red).
+     `SCHEDULE_SHEET_ID` / `GOOGLE_APPLICATION_CREDENTIALS`
      are no longer read (sheet sync retired 2026-07-15) and can be removed.
      It does NOT need `COMPOSIO_GMAIL_AUTH_CONFIG_ID` (only link *minting* on the web service
      reads it — the sweep never mints), `COMPOSIO_WEBHOOK_SECRET`, `GATEWAY_IDENTITY_SECRET`,

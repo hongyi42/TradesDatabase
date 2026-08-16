@@ -15,10 +15,17 @@ import {
   collectDeepinfraUsage,
   type CollectResult,
 } from '../model/deepinfraUsage.js';
+import { runWatchers, type WatchersSummary } from './watchers.js';
 
 // The lifecycle heartbeat — the ONE scheduled entrypoint (Render Cron Job,
-// */15 * * * *; Render guarantees at most one concurrent run). Everything
-// here is a sweep over durable state, so a missed or doubled tick is safe:
+// */5 * * * *; Render guarantees at most one concurrent run). CADENCE GATE
+// (user decision 2026-08-16): the schedule is 5-minutely for the WATCHER lane
+// only — steps 1-7 still run on quarter-hour ticks (getUTCMinutes() % 15 < 5,
+// tolerant of small firing delays; stateless, no new env), because 4 and 6
+// call outside vendors every time they run and gain nothing from frequency,
+// while step 8 is SQL-only and wants the faster pulse (auto-resolve clears a
+// flagged gap within ~5 min of the field note arriving). Everything here is a
+// sweep over durable state, so a missed or doubled tick is safe:
 // (1) notice completed OAuth consents and advance those rows;
 // (2) run the grace-period expiry (reminders + permanent teardown);
 // (3) ensure every ACTIVE person has their tier-scoped Composio session
@@ -30,7 +37,11 @@ import {
 // (6) pull the DeepInfra bill from DeepInfra's billing API into infra_costs, so
 //     the largest (allocated) cost line does not depend on someone remembering
 //     to retype an invoice — an omission that renders as $0, i.e. "no spend";
-// (7) recompute the current month's per-tenant cost rollup (idempotent).
+// (7) recompute the current month's per-tenant cost rollup (idempotent);
+// (8) the Stage-0 watcher (plan 2026-08-15 feature A): deterministic
+//     overdue-visit gap detection — runs EVERY tick, gated on WATCHERS_MODE
+//     (unset = skipped; 'shadow' = count only; 'live' = review items + push;
+//     anything else = LOUD stepError — a config typo must never be silently off).
 // Steps 5-7 report `skipped` — not an error — when the cost tables are absent,
 // so a deploy that lands before the migration does not turn the cron red. Step 6
 // also skips when no DeepInfra billing key is resolvable (e.g. after a failover
@@ -55,11 +66,15 @@ export interface LifecycleDeps {
   // Separate seam from collectDeepinfra: tests must be able to exercise the
   // skip-when-unconfigured branch without setting real env vars.
   hasBillingKey?: () => boolean;
+  runWatchers?: typeof runWatchers;
 }
 
 export interface LifecycleSummary {
-  pairing: { checked: number; paired: number; rowErrors: number } | { stepError: string };
-  offboarding: ExpireResult | { stepError: string };
+  pairing:
+    | { checked: number; paired: number; rowErrors: number }
+    | { skipped: string }
+    | { stepError: string };
+  offboarding: ExpireResult | { skipped: string } | { stepError: string };
   sessions:
     | { checked: number; created: number; rowErrors: number }
     | { skipped: string }
@@ -71,6 +86,7 @@ export interface LifecycleSummary {
     | { months: string[]; rowsWritten: number; tenantsTouched: number; unpricedEvents: number }
     | { skipped: string }
     | { stepError: string };
+  watchers: WatchersSummary | { skipped: string } | { stepError: string };
   ok: boolean;
 }
 
@@ -106,11 +122,30 @@ export async function runLifecycle(
   const rollup = deps.rollup ?? rollupCosts;
   let ok = true;
 
+  // CADENCE GATE (user decision 2026-08-16): on the */5 schedule, steps 1-7
+  // run only on quarter-hour ticks — `< 5` (not `=== 0`) tolerates a delayed
+  // firing (a :15 tick that starts at :16 still counts). Stateless: the minute
+  // itself is the state. Step 8 runs every tick.
+  const heavyTick = new Date(nowIso).getUTCMinutes() % 15 < 5;
+  const OFF_CADENCE = { skipped: 'off-cadence tick' };
+
+  // ONE gate for steps 1-7 (final-review finding: seven copy-pasted per-step
+  // gates invite a future step 9 that forgets its gate and silently runs a
+  // vendor-calling sweep every 5 minutes). All seven default to skipped; the
+  // heavy block below overwrites them on quarter-hour ticks.
+  let pairing: LifecycleSummary['pairing'] = OFF_CADENCE;
+  let offboarding: LifecycleSummary['offboarding'] = OFF_CADENCE;
+  let sessions: LifecycleSummary['sessions'] = OFF_CADENCE;
+  let logIngest: LifecycleSummary['logIngest'] = OFF_CADENCE;
+  let braveBackfill: LifecycleSummary['braveBackfill'] = OFF_CADENCE;
+  let deepinfraUsage: LifecycleSummary['deepinfraUsage'] = OFF_CADENCE;
+  let costRollup: LifecycleSummary['costRollup'] = OFF_CADENCE;
+
+  if (heavyTick) {
   // 1. Pairing sweep — only rows a link was ever issued for (checkPairing
   // itself no-ops on anything not 'invited', so the pending_verification rows
   // in the sweep are just cheap confirmations the item is still with the
   // manager). Per-row failures are retried next tick, not run failures.
-  let pairing: LifecycleSummary['pairing'];
   try {
     const rows = (await listInStates(['invited', 'pending_verification'])).filter(
       (r) => r.link_issued_at,
@@ -140,7 +175,6 @@ export async function runLifecycle(
   }
 
   // 2. Grace-period expiry (reminders, teardown, self-heal).
-  let offboarding: LifecycleSummary['offboarding'];
   try {
     offboarding = await expire(nowIso);
   } catch (err) {
@@ -152,7 +186,6 @@ export async function runLifecycle(
   // Composio session. GATED on the key: a cron deployed without
   // COMPOSIO_API_KEY skips cleanly (the sheet-sync pattern) instead of
   // failing every row and turning the heartbeat permanently red.
-  let sessions: LifecycleSummary['sessions'];
   if (!process.env.COMPOSIO_API_KEY) {
     sessions = { skipped: 'COMPOSIO_API_KEY unset' };
   } else {
@@ -188,7 +221,6 @@ export async function runLifecycle(
   // 4. Execution-log ingestion — the manager-action audit into L1. Same key
   // gate as step 3; per-row failures are inside the summary (the overlapping
   // window retries them next tick), a step-level throw goes red.
-  let logIngest: LifecycleSummary['logIngest'];
   if (!process.env.COMPOSIO_API_KEY) {
     logIngest = { skipped: 'COMPOSIO_API_KEY unset' };
   } else {
@@ -204,7 +236,6 @@ export async function runLifecycle(
   // tenant, so the ledger is replayed from it rather than instrumented live.
   // Returns rows SCANNED: the upsert ignores duplicates, so a steady tick
   // re-reads its window and inserts nothing.
-  let braveBackfill: LifecycleSummary['braveBackfill'];
   try {
     // Watermarked, not a fixed window: the first run after the migration must
     // sweep everything web_requests already holds, and a cron outage of any
@@ -228,7 +259,6 @@ export async function runLifecycle(
   // Runs BEFORE the rollup so a newly collected figure is allocated on this same
   // tick. Writes only the amount and source; an operator's allocation choice on
   // an existing row is preserved (see recordVendorInvoiceAmount).
-  let deepinfraUsage: LifecycleSummary['deepinfraUsage'];
   try {
     // No resolvable billing key is a NORMAL state, not a fault: the fallback to
     // INFERENCE_API_KEY deliberately declines after a failover to NVIDIA, since
@@ -248,7 +278,6 @@ export async function runLifecycle(
   // 7. Cost rollup — units x rates, plus the monthly-bill allocation, for the
   // CURRENT month. Idempotent (it recomputes the period), so every tick simply
   // refreshes what the dashboard reads.
-  let costRollup: LifecycleSummary['costRollup'];
   try {
     // BOTH the current month and the previous one. Invoices arrive after the
     // month they cover — the July DeepInfra bill is entered in August — so a
@@ -271,6 +300,32 @@ export async function runLifecycle(
       : { stepError: msg(err) };
     if (!isMissingCostLedger(err)) ok = false;
   }
+  } // end of the steps 1-7 heavy-tick block
+
+  // 8. The Stage-0 watcher — EVERY tick (SQL-only; the reason the schedule is
+  // */5 at all). Unset WATCHERS_MODE skips cleanly (the COMPOSIO_API_KEY
+  // precedent: a cron deployed before the var is chosen never goes red); any
+  // value other than shadow|live is a LOUD stepError — a config typo must
+  // never read as "watchers quietly off".
+  let watchers: LifecycleSummary['watchers'];
+  const watchersMode = process.env.WATCHERS_MODE;
+  if (!watchersMode) {
+    watchers = { skipped: 'WATCHERS_MODE unset (shadow|live)' };
+  } else if (watchersMode !== 'shadow' && watchersMode !== 'live') {
+    watchers = { stepError: `WATCHERS_MODE must be 'shadow' or 'live', got '${watchersMode}'` };
+    ok = false;
+  } else {
+    try {
+      const summary = await (deps.runWatchers ?? runWatchers)(nowIso, watchersMode);
+      watchers = summary;
+      // EVERY tenant failing is systemic (DB down, bad schema), not row blips —
+      // the pairing-sweep detector shape.
+      if (summary.tenants > 0 && summary.tenantErrors === summary.tenants) ok = false;
+    } catch (err) {
+      watchers = { stepError: msg(err) };
+      ok = false;
+    }
+  }
 
   return {
     pairing,
@@ -280,6 +335,7 @@ export async function runLifecycle(
     braveBackfill,
     deepinfraUsage,
     costRollup,
+    watchers,
     ok,
   };
 }

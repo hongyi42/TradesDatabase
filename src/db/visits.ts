@@ -35,6 +35,35 @@ export async function createVisit(input: CreateVisitInput): Promise<Visit> {
   return data;
 }
 
+// The watcher's OTHER activity home — always paired with rawCaptures'
+// listJobStampedCaptureTimes (see its two-homes note): visit rows minted on
+// these jobs since a UTC floor. created_at is real UTC; the precise
+// naive-local comparison happens in the caller.
+export async function listVisitTimesForJobs(
+  tenantId: string,
+  jobIds: string[],
+  sinceUtcIso: string,
+): Promise<{ job_id: string; created_at: string }[]> {
+  if (jobIds.length === 0) return []; // PostgREST `in.()` with zero values errors
+  // PAGED for the same reason as listJobStampedCaptureTimes (see its note):
+  // the silent 1000-row cap on an unordered read drops arbitrary rows.
+  const PAGE = 1000;
+  const out: { job_id: string; created_at: string }[] = [];
+  for (let fromRow = 0; ; fromRow += PAGE) {
+    const { data, error } = await getClient()
+      .from('visits')
+      .select('job_id, created_at')
+      .eq('tenant_id', tenantId)
+      .in('job_id', jobIds)
+      .gte('created_at', sinceUtcIso)
+      .order('created_at', { ascending: true })
+      .range(fromRow, fromRow + PAGE - 1);
+    if (error) throw new Error(`listVisitTimesForJobs failed: ${error.message}`);
+    out.push(...(data ?? []));
+    if (!data || data.length < PAGE) return out;
+  }
+}
+
 export async function listVisitsForJob(jobId: string): Promise<Visit[]> {
   const { data, error } = await getClient()
     .from('visits')

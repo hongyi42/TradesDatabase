@@ -3,14 +3,16 @@ import { Client } from 'pg';
 import { getClient } from './client.js';
 import { createCustomer, getCustomer } from './customers.js';
 import { createJob, getJob, listJobsForCustomer, updateJobStatus } from './jobs.js';
-import { createVisit, listVisitsForJob } from './visits.js';
-import { appendRawCapture } from './rawCaptures.js';
+import { createTenant } from './tenants.js';
+import { createVisit, listVisitTimesForJobs, listVisitsForJob } from './visits.js';
+import { appendRawCapture, listJobStampedCaptureTimes } from './rawCaptures.js';
 
 // Writes go through the app's own path (supabase-js / PostgREST). A direct pg
 // connection is used as an INDEPENDENT channel for cross-channel read-back
 // (verifying-behavior §2) and for cleanup.
 const pg = new Client({ connectionString: process.env.DATABASE_URL });
 let tenantId: string;
+let tenantB: string | undefined;
 
 beforeAll(async () => {
   await pg.connect();
@@ -25,6 +27,8 @@ afterAll(async () => {
   // rows the tests created (this is a dedicated fake-data test project) while
   // leaving the seeded tenant intact.
   await pg.query('truncate table customers, jobs, visits, raw_captures cascade');
+  // The truncate swept tenant B's children; the row itself is outside it.
+  if (tenantB) await pg.query('delete from tenants where id = $1', [tenantB]);
   await pg.end();
 });
 
@@ -120,5 +124,58 @@ describe('context spine data-access layer', () => {
     });
     const reloaded = await getCustomer(customer.id);
     expect(reloaded?.attributes).toEqual({ gateCode: '1234', prefersAfternoons: true });
+  });
+});
+
+// The Stage-0 watcher's two activity homes (plan 2026-08-15 feature A):
+// job-stamped capture times + visit rows minted on the jobs. captured_at /
+// created_at are DB-stamped real UTC, so the floors below are derived from
+// the wall clock around the inserts.
+describe('watcher activity listers', () => {
+  test('both homes: floor respected, empty jobIds short-circuits, two-tenant isolation', async () => {
+    const before = new Date(Date.now() - 60_000).toISOString();
+    const customer = await createCustomer({ tenantId, name: 'Activity Casa' });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Activity work' });
+    const note = await appendRawCapture({
+      tenantId,
+      channel: 'technician_voice',
+      rawText: 'Compressor swapped, running fine',
+      jobId: job.id,
+    });
+    const visit = await createVisit({ tenantId, jobId: job.id, technicianName: 'Ben' });
+
+    // Empty jobIds → [] without touching PostgREST (`in.()` would error).
+    expect(await listJobStampedCaptureTimes(tenantId, [], before)).toEqual([]);
+    expect(await listVisitTimesForJobs(tenantId, [], before)).toEqual([]);
+
+    // Floor respected: a past floor includes the rows, a future floor excludes.
+    const captures = await listJobStampedCaptureTimes(tenantId, [job.id], before);
+    expect(captures.map((c) => c.job_id)).toContain(job.id);
+    expect(captures.length).toBeGreaterThanOrEqual(1);
+    const visits = await listVisitTimesForJobs(tenantId, [job.id], before);
+    expect(visits.map((v) => v.job_id)).toContain(job.id);
+    const future = new Date(Date.now() + 60_000).toISOString();
+    expect(await listJobStampedCaptureTimes(tenantId, [job.id], future)).toEqual([]);
+    expect(await listVisitTimesForJobs(tenantId, [job.id], future)).toEqual([]);
+
+    // Two-tenant isolation: tenant-B rows stamped onto THE SAME job id (the
+    // FKs are id-only, so nothing in the schema prevents this shape) must
+    // never appear in tenant A's answer — the .eq tenant guard is the wall.
+    tenantB = (await createTenant(`spine-tenant-b-${Date.now()}`)).id;
+    await appendRawCapture({
+      tenantId: tenantB,
+      channel: 'technician_voice',
+      rawText: 'cross-tenant stamp',
+      jobId: job.id,
+    });
+    await createVisit({ tenantId: tenantB, jobId: job.id, technicianName: 'Mallory' });
+
+    const aCaptures = await listJobStampedCaptureTimes(tenantId, [job.id], before);
+    expect(aCaptures.map((c) => c.captured_at)).toEqual([note.captured_at]);
+    const aVisits = await listVisitTimesForJobs(tenantId, [job.id], before);
+    expect(aVisits.map((v) => v.created_at)).toEqual([visit.created_at]);
+    // …and tenant B sees only its own stamps on that job id.
+    expect((await listJobStampedCaptureTimes(tenantB, [job.id], before)).length).toBe(1);
+    expect((await listVisitTimesForJobs(tenantB, [job.id], before)).length).toBe(1);
   });
 });

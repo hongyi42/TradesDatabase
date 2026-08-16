@@ -19,6 +19,7 @@ export * from './context.js';
 export * from './webRequests.js';
 export * from './costs.js';
 export * from './moneyEvents.js';
+export * from './tenantProfiles.js';
 export * from './callNumbers.js';
 export * from './callIngest.js';
 export type { Database, Json } from './database.types.js';

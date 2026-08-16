@@ -111,6 +111,10 @@ const RESET_TABLES = [
   'review_items',
   'cost_events',
   'query_audit',
+  // References only tenants (no cascade path reaches it), and its FK is NO
+  // ACTION — left out, one C10 run would pin the Eval tenants forever and the
+  // reset's `delete from tenants` below would die on 23503 (review finding).
+  'tenant_profiles',
   // Infra, but the eval registers its own cold pool for bind_telegram, so stale
   // rows from a previous run would otherwise accumulate.
   'sandbox_pool',

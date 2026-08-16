@@ -83,6 +83,13 @@ import {
   summarizeMoney,
   syncJobStatusForMoney,
   technicianMoneyView,
+  getTenantProfile,
+  upsertTenantProfile,
+  profileGaps,
+  profileEcho,
+  PROFILE_STRING_FIELDS,
+  type TenantProfilePatch,
+  type LicenseNumber,
 } from '../db/index.js';
 import { recordFieldNote, type ResolvedIdentity } from '../writePath/recordFieldNote.js';
 import { matchIdentity, type MatchResult } from '../writePath/identityMatch.js';
@@ -1063,7 +1070,7 @@ const ADMIN_TOOLS = [
       'earliest_date..latest_date. A day is NOT free just because no row lands ON it; for ' +
       'free/empty-day questions use get_team_schedule, or filter window rows by ' +
       'earliest_date/latest_date. ' +
-      'It CANNOT write, and it can only read these seven views (nothing else exists to it): ' +
+      'It CANNOT write, and it can only read these eight views (nothing else exists to it): ' +
       'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, promise_level, ' +
       'promised_day, locked, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
       'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
@@ -1084,7 +1091,10 @@ const ADMIN_TOOLS = [
       'ledger, one row per money fact (invoice_issued, payment_received, …), amounts in CENTS; ' +
       'a correction/invoice_voided row CANCELS the row its corrects_event_id points at, so ' +
       'exclude both sides of a cancelled pair when summing (or prefer the money summary that ' +
-      'get_job already returns — it folds this for you). ' +
+      'get_job already returns — it folds this for you); ' +
+      'v_firm_profile(display_name, legal_name, address_line1, address_line2, city, state, ' +
+      'postal_code, phone, email, license_numbers, disclosure_footer, updated_at) — the ' +
+      "firm's own letterhead identity, one row at most (set_firm_profile edits it). " +
       'ALWAYS group or filter dates on v_schedule.local_day, which is already the firm-local day — ' +
       'starts_at is a timestamp and bucketing it by its UTC date puts evening visits on the wrong ' +
       'day. When you name one of those dates to a person, SELECT local_weekday and use it verbatim ' +
@@ -1228,6 +1238,81 @@ const ADMIN_TOOLS = [
         },
       },
       required: ['weeks'],
+    },
+  },
+  {
+    name: 'set_firm_profile',
+    description:
+      "Set the firm's business-identity profile (manager only) — what customer-facing " +
+      'documents (invoices, estimates) will print: business/legal name, address, phone, ' +
+      'email, contractor license numbers, and a disclosure footer. ONE call, commits ' +
+      'immediately — pass any subset of fields and only those change (null clears a field); ' +
+      'call with NO fields to just see the current profile. The reply echoes the full saved ' +
+      'profile plus gaps (likely-required fields still missing) — relay BOTH to the manager. ' +
+      'Every field is optional: display rules are state-specific, so gaps warn, never block. ' +
+      'licenseNumbers is a LIST of {label, number} because firms hold several (e.g. ' +
+      "{label: 'TX TACL', number: 'TACLA12345E'}), and setting it REPLACES the whole list. " +
+      'State-mandated invoice wording goes in disclosureFooter — for Texas, TDLR requires ' +
+      'the license number AND its disclosure paragraph on invoices/proposals; offer this ' +
+      "template and have the manager verify current wording: 'Regulated by The Texas " +
+      'Department of Licensing and Regulation, P.O. Box 12157, Austin, TX 78711, ' +
+      "1-800-803-9202, www.tdlr.texas.gov'.",
+    inputSchema: {
+      type: 'object',
+      // Key-closed: unknown/misspelled fields are refused at dispatch, never
+      // silently dropped. minLength pins that '' is refused — null, not the
+      // empty string, is the clear.
+      additionalProperties: false,
+      properties: {
+        displayName: {
+          type: ['string', 'null'],
+          minLength: 1,
+          description: 'Trading/DBA name as it should print. Pass null to clear any field.',
+        },
+        legalName: {
+          type: ['string', 'null'],
+          minLength: 1,
+          description: 'Registered legal entity name, if it differs from displayName.',
+        },
+        addressLine1: { type: ['string', 'null'], minLength: 1, description: 'Street address.' },
+        addressLine2: { type: ['string', 'null'], minLength: 1, description: 'Suite/unit, if any.' },
+        city: { type: ['string', 'null'], minLength: 1 },
+        state: {
+          type: ['string', 'null'],
+          minLength: 1,
+          description: '2-letter state code, e.g. TX (stored uppercase; full names refused).',
+        },
+        postalCode: { type: ['string', 'null'], minLength: 1 },
+        phone: { type: ['string', 'null'], minLength: 1, description: 'Business phone as printed.' },
+        email: { type: ['string', 'null'], minLength: 1, description: 'Business email as printed.' },
+        licenseNumbers: {
+          type: ['array', 'null'],
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              label: { type: 'string', minLength: 1, description: "Which license, e.g. 'TX TACL'." },
+              number: {
+                type: 'string',
+                minLength: 1,
+                description: 'The license number exactly as issued.',
+              },
+            },
+            required: ['label', 'number'],
+          },
+          description:
+            'FULL replacement of the license list — include every license each time. ' +
+            'null (or []) clears the list.',
+        },
+        disclosureFooter: {
+          type: ['string', 'null'],
+          minLength: 1,
+          description:
+            'Free-text footer printed on customer documents — state-mandated disclosure ' +
+            'wording lives here. null clears.',
+        },
+      },
+      required: [],
     },
   },
   {
@@ -4974,6 +5059,55 @@ async function dispatch(
           `${updatedTenant.technician_horizon_days} days — ahead (was ${beforeDays} days); ` +
           'schedule reads beyond that answer "not published yet". Tell the manager exactly ' +
           'what changed (old → new).',
+      };
+    }
+    case 'set_firm_profile': {
+      // KEY-closed surface: unknown/misspelled arg names are REFUSED, never
+      // silently dropped (review finding) — with required:[] and the no-field
+      // read mode below, a call made of unrecognized keys (snake_case, typos)
+      // would otherwise flip into a success-shaped read while the manager is
+      // told the profile was saved. The roster is imported from the typed
+      // layer, so it cannot drift from what the patch actually accepts. VALUE
+      // validation (string-ness, empty strings, state format, license entry
+      // shape) lives in that typed layer — the single write-side guard for
+      // every surface; its errors are instructive, surface them verbatim.
+      const knownKeys = [...PROFILE_STRING_FIELDS, 'licenseNumbers'];
+      const unknown = Object.keys(args).filter((k) => !knownKeys.includes(k as never));
+      if (unknown.length > 0) {
+        throw new Error(
+          `unknown field(s): ${unknown.join(', ')} — the profile fields are ` +
+            knownKeys.join(', '),
+        );
+      }
+      const patch: TenantProfilePatch = {};
+      for (const k of PROFILE_STRING_FIELDS) {
+        if (args[k] !== undefined) patch[k] = args[k] as string | null;
+      }
+      if (args.licenseNumbers !== undefined) {
+        patch.licenseNumbers = args.licenseNumbers as LicenseNumber[] | null;
+      }
+      // No fields = a READ: echo the current profile without writing (plan
+      // decision: the echo IS the get — no separate get tool).
+      const saved =
+        Object.keys(patch).length === 0
+          ? await getTenantProfile(tenantId)
+          : await upsertTenantProfile(tenantId, patch);
+      const gaps = profileGaps(saved);
+      return {
+        status: 'ok',
+        profile: saved ? profileEcho(saved) : null,
+        ...(gaps.length > 0 ? { gaps } : {}),
+        note:
+          (saved === null
+            ? 'No profile recorded yet — every field is still to be set. '
+            : Object.keys(patch).length === 0
+              ? 'Current profile, nothing changed. '
+              : 'One-shot: saved — correctable the same way (set a new value, or null to ' +
+                'clear). Read the profile back to the manager exactly as stored. ') +
+          (gaps.length > 0
+            ? 'Mention the gaps: these fields are commonly required on invoices and are ' +
+              'still missing.'
+            : 'No gaps — the common invoice-header fields are all present.'),
       };
     }
     case 'update_job': {

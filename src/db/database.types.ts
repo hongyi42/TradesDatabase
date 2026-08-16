@@ -1486,6 +1486,65 @@ export type Database = {
           },
         ]
       }
+      tenant_profiles: {
+        Row: {
+          address_line1: string | null
+          address_line2: string | null
+          city: string | null
+          created_at: string
+          disclosure_footer: string | null
+          display_name: string | null
+          email: string | null
+          legal_name: string | null
+          license_numbers: Json
+          phone: string | null
+          postal_code: string | null
+          state: string | null
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          address_line1?: string | null
+          address_line2?: string | null
+          city?: string | null
+          created_at?: string
+          disclosure_footer?: string | null
+          display_name?: string | null
+          email?: string | null
+          legal_name?: string | null
+          license_numbers?: Json
+          phone?: string | null
+          postal_code?: string | null
+          state?: string | null
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          address_line1?: string | null
+          address_line2?: string | null
+          city?: string | null
+          created_at?: string
+          disclosure_footer?: string | null
+          display_name?: string | null
+          email?: string | null
+          legal_name?: string | null
+          license_numbers?: Json
+          phone?: string | null
+          postal_code?: string | null
+          state?: string | null
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tenant_profiles_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: true
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tenants: {
         Row: {
           created_at: string
@@ -1699,6 +1758,51 @@ export type Database = {
           phone?: string | null
           postal_code?: string | null
           state?: string | null
+        }
+        Relationships: []
+      }
+      v_firm_profile: {
+        Row: {
+          address_line1: string | null
+          address_line2: string | null
+          city: string | null
+          disclosure_footer: string | null
+          display_name: string | null
+          email: string | null
+          legal_name: string | null
+          license_numbers: Json | null
+          phone: string | null
+          postal_code: string | null
+          state: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          address_line1?: string | null
+          address_line2?: string | null
+          city?: string | null
+          disclosure_footer?: string | null
+          display_name?: string | null
+          email?: string | null
+          legal_name?: string | null
+          license_numbers?: Json | null
+          phone?: string | null
+          postal_code?: string | null
+          state?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          address_line1?: string | null
+          address_line2?: string | null
+          city?: string | null
+          disclosure_footer?: string | null
+          display_name?: string | null
+          email?: string | null
+          legal_name?: string | null
+          license_numbers?: Json | null
+          phone?: string | null
+          postal_code?: string | null
+          state?: string | null
+          updated_at?: string | null
         }
         Relationships: []
       }

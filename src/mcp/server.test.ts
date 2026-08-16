@@ -21,6 +21,7 @@ import {
 import { createHost } from '../db/hosts.js';
 import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
+import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { logWebRequests } from '../db/webRequests.js';
 import { createServer, safeEnvInt, type ServerDeps } from './server.js';
@@ -99,7 +100,7 @@ afterAll(async () => {
     // call, so a suite run leaves hundreds behind. Left uncleaned they would
     // skew any later test that counts spine events per tenant — which is
     // exactly what the rollup's allocation split does.
-    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations, cost_events, money_events cascade',
+    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations, cost_events, money_events, tenant_profiles cascade',
   );
   // Restore the seed capacity (2/5) so post-suite live checks see known values.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
@@ -1788,7 +1789,8 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('get_availability'); // the read half of set_availability (2026-08-04)
       expect(mgrTools).toContain('query_spine'); // ad-hoc read fallback (2026-08-06)
       expect(mgrTools).toContain('record_money_event'); // the money ledger (2026-08-15)
-      expect(mgrTools).toHaveLength(42);
+      expect(mgrTools).toContain('set_firm_profile'); // firm identity (2026-08-15)
+      expect(mgrTools).toHaveLength(43);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2191,7 +2193,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(42); // base minus get_schedule + 29 admin
+        expect(mgrTools).toHaveLength(43); // base minus get_schedule + 30 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -7430,6 +7432,113 @@ describe('record_money_event + money reads (money-ledger plan phase 2)', () => {
       });
       expect(badVoid.isError).toBe(true);
       expect(badVoid.text).toContain('correctsEventId');
+    } finally {
+      await mgrC.close();
+    }
+  });
+});
+
+describe('set_firm_profile (firm-profile plan)', () => {
+  test('manager sets, patches, clears, reads; technician refused; echo carries gaps', async () => {
+    const { client: mgrC, callWith: mgr } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      // Admin gate: a technician badge is refused by NAME, before args.
+      const refused = await call('set_firm_profile', { displayName: 'Nope Inc' });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain('manager badge');
+
+      // Schema-roster closure: the advertised inputSchema properties ARE the
+      // typed layer's roster — the fourth copy of the field list is pinned to
+      // the single export, so schema/handler drift fails here (review finding).
+      const schema = (await mgrC.listTools()).tools.find((t) => t.name === 'set_firm_profile')!
+        .inputSchema as { properties: Record<string, unknown> };
+      expect(Object.keys(schema.properties).sort()).toEqual(
+        [...PROFILE_STRING_FIELDS, 'licenseNumbers'].sort(),
+      );
+
+      // Before any write, the no-arg call is a clean READ of nothing.
+      const empty = await mgr('set_firm_profile', {});
+      expect(empty.isError).toBe(false);
+      expect(empty.data.profile).toBeNull();
+      expect(empty.data.note).toContain('No profile recorded yet');
+      expect(empty.data.gaps.length).toBe(9); // everything is a gap
+
+      // First write: subset of fields; the echo is the FULL saved profile + gaps.
+      const first = await mgr('set_firm_profile', {
+        displayName: 'Hearth & Home Heating',
+        state: 'TX',
+        licenseNumbers: [{ label: 'TX TACL', number: 'TACLA12345E' }],
+      });
+      expect(first.isError).toBe(false);
+      expect(first.data.profile).toMatchObject({
+        displayName: 'Hearth & Home Heating',
+        state: 'TX',
+        licenseNumbers: [{ label: 'TX TACL', number: 'TACLA12345E' }],
+        phone: null,
+      });
+      expect(first.data.gaps.join(' ')).toContain('phone');
+      expect(first.data.gaps.join(' ')).toContain('disclosureFooter');
+
+      // Partial patch preserves the rest; explicit null clears; pg read-back
+      // is the independent channel.
+      const patched = await mgr('set_firm_profile', { phone: '512-555-0100', state: null });
+      expect(patched.data.profile.displayName).toBe('Hearth & Home Heating');
+      expect(patched.data.profile.phone).toBe('512-555-0100');
+      expect(patched.data.profile.state).toBeNull();
+      const row = await pg.query(
+        'select display_name, phone, state, license_numbers from tenant_profiles where tenant_id = $1',
+        [tenantId],
+      );
+      expect(row.rows[0]).toEqual({
+        display_name: 'Hearth & Home Heating',
+        phone: '512-555-0100',
+        state: null,
+        license_numbers: [{ label: 'TX TACL', number: 'TACLA12345E' }],
+      });
+
+      // No fields after a write = READ: echoes stored state, changes nothing.
+      const read = await mgr('set_firm_profile', {});
+      expect(read.isError).toBe(false);
+      expect(read.data.profile.phone).toBe('512-555-0100');
+      expect(read.data.note).toContain('nothing changed');
+
+      // Coerced-to-absent guards: wrong shapes refuse, never silently drop.
+      const numName = await mgr('set_firm_profile', { displayName: 42 });
+      expect(numName.isError).toBe(true);
+      expect(numName.text).toContain('displayName must be a string');
+      const objLic = await mgr('set_firm_profile', { licenseNumbers: { label: 'x', number: 'y' } });
+      expect(objLic.isError).toBe(true);
+      expect(objLic.text).toContain('licenseNumbers must be an array');
+      // Typed-layer entry validation surfaces verbatim.
+      const badEntry = await mgr('set_firm_profile', { licenseNumbers: [{ label: 'TX' }] });
+      expect(badEntry.isError).toBe(true);
+      expect(badEntry.text).toContain('non-empty string label and number');
+
+      // KEY-closed surface: unknown/misspelled arg NAMES refuse too — without
+      // this, an all-unknown-keys call (snake_case, typos) would flip into a
+      // success-shaped READ and the manager would be told "saved" while
+      // nothing was written (review finding).
+      const snake = await mgr('set_firm_profile', { disclosure_footer: 'Regulated by TDLR…' });
+      expect(snake.isError).toBe(true);
+      expect(snake.text).toContain('unknown field(s): disclosure_footer');
+      const mixed = await mgr('set_firm_profile', { displayName: 'Keep Me', zipCode: '78701' });
+      expect(mixed.isError).toBe(true); // the whole call refuses — nothing partial lands
+      expect(mixed.text).toContain('unknown field(s): zipCode');
+      const afterMixed = await mgr('set_firm_profile', {});
+      expect(afterMixed.data.profile.displayName).toBe('Hearth & Home Heating'); // not 'Keep Me'
+
+      // Completing every header field removes the gaps key entirely.
+      const full = await mgr('set_firm_profile', {
+        state: 'TX',
+        addressLine1: '100 Main St',
+        city: 'Austin',
+        postalCode: '78701',
+        email: 'office@hearth.example',
+        disclosureFooter: 'Regulated by TDLR…',
+      });
+      expect(full.isError).toBe(false);
+      expect(full.data.gaps).toBeUndefined();
+      expect(full.data.note).toContain('No gaps');
     } finally {
       await mgrC.close();
     }

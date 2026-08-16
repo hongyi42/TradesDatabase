@@ -5,6 +5,7 @@ import { insertTechnician } from './technicians.js';
 import { createCustomer } from './customers.js';
 import { createJob } from './jobs.js';
 import { createAssignment } from './assignments.js';
+import { upsertTenantProfile } from './tenantProfiles.js';
 
 // The security properties of the query_spine read surface, asserted against the
 // real database rather than reasoned about. Isolation here rests on a view
@@ -59,6 +60,9 @@ beforeAll(async () => {
     });
     jobIds[tag] = job.id;
     techIds[tag] = tech.id;
+    // Firm-profile fixture per tenant, so the v_firm_profile isolation case
+    // has real cross-tenant data to leak, not a vacuous empty set.
+    await upsertTenantProfile(tenantId, { displayName: `QS Firm ${tag.toUpperCase()}` });
   }
 
   // One assignment per status for tenant A, non-overlapping slots on a fixed
@@ -96,6 +100,8 @@ beforeAll(async () => {
 afterAll(async () => {
   for (const t of [tenantA, tenantB]) {
     await pg.query('delete from query_audit where tenant_id = $1', [t]);
+    // Before the tenants delete — tenant_profiles' FK is NO ACTION.
+    await pg.query('delete from tenant_profiles where tenant_id = $1', [t]);
     await pg.query('delete from assignments where tenant_id = $1', [t]);
     await pg.query(
       'delete from jobs where customer_id in (select id from customers where tenant_id = $1)',
@@ -111,7 +117,15 @@ afterAll(async () => {
 describe('query_spine — tenant isolation', () => {
   // The whole design: the model never writes the tenant filter, so this is the
   // property that has to hold for every view, not just the one under test today.
-  test.each(['v_team', 'v_customers', 'v_jobs', 'v_schedule', 'v_time_off', 'v_cancelled_visits'])(
+  test.each([
+    'v_team',
+    'v_customers',
+    'v_jobs',
+    'v_schedule',
+    'v_time_off',
+    'v_cancelled_visits',
+    'v_firm_profile',
+  ])(
     '%s only ever returns the calling tenant',
     async (view) => {
       const a = await run(tenantA, `select * from ${view}`);
@@ -121,10 +135,10 @@ describe('query_spine — tenant isolation', () => {
       // Explicit markers both ways. A bare not.toContain('B') would pass today and
       // break the day a customer lives in Bellevue — the assertion has to name
       // the other tenant's data, not a letter.
-      for (const marker of ['QS Tech B', 'QS Customer B', 'QS Job B']) {
+      for (const marker of ['QS Tech B', 'QS Customer B', 'QS Job B', 'QS Firm B']) {
         expect(textA).not.toContain(marker);
       }
-      for (const marker of ['QS Tech A', 'QS Customer A', 'QS Job A']) {
+      for (const marker of ['QS Tech A', 'QS Customer A', 'QS Job A', 'QS Firm A']) {
         expect(textB).not.toContain(marker);
       }
     },
@@ -295,9 +309,12 @@ describe('query_spine — bounds', () => {
 });
 
 describe('query_spine — the view surface is closed', () => {
-  test('spine_reader holds SELECT on exactly the six views and nothing else', async () => {
+  test('spine_reader holds SELECT on exactly the eight views and nothing else', async () => {
     // A new table must not become readable by default. This is the test that
     // fails when someone adds a grant without thinking.
+    // v_money_events added 2026-08-15 (money-ledger plan, manager-only money
+    // reads — query_spine is an admin tool, so the tier gate holds upstream).
+    // v_firm_profile added 2026-08-15 (firm-profile plan, same tier logic).
     const { rows } = await pg.query(
       `select table_name from information_schema.table_privileges
         where grantee = 'spine_reader' order by table_name`,
@@ -305,7 +322,9 @@ describe('query_spine — the view surface is closed', () => {
     expect(rows.map((r) => r.table_name)).toEqual([
       'v_cancelled_visits',
       'v_customers',
+      'v_firm_profile',
       'v_jobs',
+      'v_money_events',
       'v_schedule',
       'v_team',
       'v_time_off',

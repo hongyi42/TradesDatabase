@@ -71,6 +71,18 @@ const REASONING_EFFORT = argOf('reasoning-effort', '');
 // this API. The transcript stays in chat format; translation happens at
 // request time, so the agent loop is untouched.
 const OPENAI_RESPONSES = hasFlag('openai-responses');
+// --interactions speaks Gemini's Interactions API (v1/interactions) — the
+// STABLE serving path for Gemini models; the OpenAI-compat shim 503s
+// (2/10 probes, 2026-08-15) and must never be used. Full contract + probe
+// evidence: thoughts/shared/research/2026-08-16-gemini-interactions-port-spec.md.
+// Stateless full-history `input` array per call, so the agent loop and the
+// chat-format transcript stay untouched — translation happens at request time,
+// exactly like --openai-responses. Auth is x-goog-api-key, not Bearer.
+const INTERACTIONS = hasFlag('interactions');
+if (INTERACTIONS && (OPENAI_RESPONSES || OPENAI_PARAMS)) {
+  console.error('--interactions is its own dialect; drop --openai-responses/--openai-params.');
+  process.exit(1);
+}
 
 // DeepInfra GLM-5.2 rates, USD per million tokens. Overridable because vendor
 // pricing moves (it dropped ~20% once already) and a stale constant would quietly
@@ -205,6 +217,76 @@ async function readStream(res, controller, armWatchdog) {
   return { content, toolCalls, usage, firstChunkAt, finishReason };
 }
 
+/** Chat-format transcript → Interactions API input items (stateless full
+ * history; system messages are pulled out by the caller into
+ * system_instruction). Shapes per the port spec. */
+function toInteractionsInput(messages, callNames = new Map()) {
+  const items = [];
+  // function_result REQUIRES `name` (probed 2026-08-16: 200 with, 400 "Invalid
+  // input received" without — the reference's own example omits it). Chat-format
+  // tool messages carry only tool_call_id, so the names come from the
+  // assistant tool_calls seen here plus any map the caller carries across
+  // chained requests (where the assistant message is not in the slice).
+  for (const m of messages) {
+    if (m.role === 'assistant') for (const tc of m.tool_calls ?? []) callNames.set(tc.id, tc.function.name);
+  }
+  for (const m of messages) {
+    if (m.role === 'system') continue; // → system_instruction
+    if (m.role === 'tool') {
+      items.push({ type: 'function_result', call_id: m.tool_call_id, name: callNames.get(m.tool_call_id) ?? '', result: m.content ?? '' });
+    } else if (m.role === 'assistant' && m.tool_calls?.length) {
+      if (m.content) items.push({ type: 'model_output', content: [{ type: 'text', text: m.content }] });
+      for (const tc of m.tool_calls) {
+        let args = {};
+        try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* keep {} */ }
+        items.push({ type: 'function_call', id: tc.id, name: tc.function.name, arguments: args });
+      }
+    } else if (m.role === 'assistant') {
+      items.push({ type: 'model_output', content: [{ type: 'text', text: m.content ?? '' }] });
+    } else {
+      items.push({ type: 'user_input', content: [{ type: 'text', text: m.content ?? '' }] });
+    }
+  }
+  return items;
+}
+
+/** Chat-format tool declarations → Interactions' flat shape. */
+function toInteractionsTools(tools) {
+  return (tools ?? []).map((t) => ({
+    type: 'function',
+    name: t.function.name,
+    description: t.function.description,
+    parameters: t.function.parameters,
+  }));
+}
+
+/** One non-streaming Interactions response → the harness's stream-result shape. */
+function readInteractionsBody(body) {
+  const toolCalls = [];
+  let content = '';
+  for (const step of body.steps ?? []) {
+    if (step.type === 'function_call') {
+      toolCalls.push({ id: step.id, name: step.name, arguments: JSON.stringify(step.arguments ?? {}) });
+    } else if (Array.isArray(step.content)) {
+      content += step.content.filter((c) => c?.type === 'text').map((c) => c.text).join('');
+    }
+  }
+  const u = body.usage ?? {};
+  return {
+    content,
+    toolCalls,
+    interactionId: body.id,
+    usage: {
+      prompt_tokens: u.total_input_tokens,
+      completion_tokens: u.total_output_tokens,
+      prompt_tokens_details: { cached_tokens: u.total_cached_tokens ?? 0 },
+    },
+    firstChunkAt: null,
+    finishReason: body.status === 'requires_action' ? 'tool_calls' : 'stop',
+    streamError: body.status === 'failed' ? JSON.stringify(body.error ?? body.status).slice(0, 300) : null,
+  };
+}
+
 /** Chat-format transcript → Responses API input items. */
 function toResponsesInput(messages) {
   const items = [];
@@ -312,8 +394,35 @@ async function readResponsesStream(res, controller, armWatchdog) {
 }
 
 async function chat(messages, tools) {
-  const endpoint = OPENAI_RESPONSES ? '/responses' : '/chat/completions';
-  const body = OPENAI_RESPONSES
+  const endpoint = INTERACTIONS ? '/interactions' : OPENAI_RESPONSES ? '/responses' : '/chat/completions';
+  // Interactions: the documented tool-result flow is CHAINED — send
+  // previous_interaction_id plus only the items after the last responded
+  // message. A full-history resend with inline function_call/function_result
+  // echoes 400s ("Invalid input received", probed 2026-08-16); the first call
+  // of a scenario (no prior id) sends the full history, which contains no
+  // function items yet.
+  const lastRespondedIdx = INTERACTIONS
+    ? messages.reduce((acc, m, i) => (m.role === 'assistant' && m._interactionId ? i : acc), -1)
+    : -1;
+  const body = INTERACTIONS
+    ? {
+        model: model.model,
+        system_instruction: messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n'),
+        ...(lastRespondedIdx >= 0
+          ? { previous_interaction_id: messages[lastRespondedIdx]._interactionId }
+          : {}),
+        input: toInteractionsInput(
+          lastRespondedIdx >= 0 ? messages.slice(lastRespondedIdx + 1) : messages,
+          new Map(messages.flatMap((m) => (m.tool_calls ?? []).map((tc) => [tc.id, tc.function.name]))),
+        ),
+        tools: toInteractionsTools(tools),
+        // No tool_choice on v1/interactions ("Unknown parameter", probed) — auto is the default.
+        generation_config: { max_output_tokens: MAX_OUTPUT_TOKENS },
+        // No temperature and (probed) no seed either on v1/interactions —
+        // repeat runs on this dialect trade determinism away, like --openai-params.
+        stream: false,
+      }
+    : OPENAI_RESPONSES
     ? {
         model: model.model,
         input: toResponsesInput(messages),
@@ -370,7 +479,11 @@ async function chat(messages, tools) {
       armWatchdog(FIRST_CHUNK_MS);
       const res = await fetch(`${model.baseUrl.replace(/\/+$/, '')}${endpoint}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${model.key}` },
+        // Interactions auth is x-goog-api-key, not Bearer (spec doc).
+        headers: {
+          'content-type': 'application/json',
+          ...(INTERACTIONS ? { 'x-goog-api-key': model.key } : { authorization: `Bearer ${model.key}` }),
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
@@ -388,9 +501,14 @@ async function chat(messages, tools) {
       }
       if (!res.ok) {
         const text = await res.text();
+        if (INTERACTIONS && res.status === 400 && process.env.INTERACTIONS_DEBUG) {
+          console.error('[interactions 400] input was:', JSON.stringify(body.input).slice(0, 2500));
+        }
         return { error: `HTTP ${res.status}: ${text.slice(0, 300)}`, ms: performance.now() - started + stalledMs };
       }
-      const { content, toolCalls, usage, firstChunkAt, finishReason, streamError, rawOutput } = OPENAI_RESPONSES
+      const { content, toolCalls, usage, firstChunkAt, finishReason, streamError, rawOutput, interactionId } = INTERACTIONS
+        ? readInteractionsBody(await res.json())
+        : OPENAI_RESPONSES
         ? await readResponsesStream(res, controller, armWatchdog)
         : await readStream(res, controller, armWatchdog);
       const elapsed = performance.now() - started;
@@ -443,6 +561,7 @@ async function chat(messages, tools) {
             }
           : {}),
         ...(rawOutput ? { _rawItems: rawOutput } : {}),
+        ...(interactionId ? { _interactionId: interactionId } : {}),
       };
       return { message, ms: elapsed + stalledMs, usage };
     } catch (err) {
@@ -529,6 +648,7 @@ async function runScenario(scenario, repeatIndex) {
         content: message.content ?? '',
         ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
         ...(message._rawItems ? { _rawItems: message._rawItems } : {}),
+        ...(message._interactionId ? { _interactionId: message._interactionId } : {}),
       });
       if (message.content) assistantText += (assistantText ? '\n' : '') + message.content;
       if (toolCalls.length === 0) break;

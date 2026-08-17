@@ -1,68 +1,72 @@
 # TradesDatabase — product profile for growth work
 
-Distilled from the repo's front-door docs on **2026-08-17**. Every claim here traces to a doc; the
-citations are kept so you can re-check before putting a number in public copy. Re-derive this file
-if the product changes materially.
+**Rewritten 2026-08-17** from the founder's own positioning statements plus verification against
+code, the pilot database, and live competitor research. Doc citations are kept so claims can be
+re-checked.
 
-> **The single most important fact on this page:** this is **not a self-serve SaaS funnel**, and
-> most of the Demand Curve guide silently assumes one. See §6 before applying any chapter.
+> **Verify before you trust this file.** Where a claim decides whether something can be marketed,
+> check it against the repo or the database — not against another doc. A stale runbook line in this
+> file previously caused two wrong recommendations. See `docs/engineering-memory.md` §5, "Reading
+> our own docs."
 
 ---
 
-## 1. What it is
+## 1. The position
 
-**Plain (their own words, better than a rewrite):**
+> **An AI manager for your trades business. It knows your customers, your jobs, and your team — and
+> you run the whole thing by talking to it. No software to learn, in any language you speak.**
 
-> "This assistant builds **one record per customer and job** that everybody writes into and everybody
-> reads from. Nobody re-types anything, and nothing depends on Dave."
-> — `docs/getting-started-for-firms.md:28`
+**Do not market this as "memory."** That word is engineering vocabulary — the three-layer spine
+exists so the agent gets the right context, and it is *how* the product works, not *what the
+customer buys*. The customer buys a manager who already knows their business.
 
-> "**You talk to it in Telegram.** That's it — no new app to learn, no website to log into, no
-> passwords." — `docs/getting-started-for-firms.md:31`
+Everything else in this file serves that sentence.
+
+## 2. What it is
+
+**Plain:** one record per customer and job that everybody writes into and everybody reads from —
+run by an AI that answers the phone, reads the email, schedules the work, briefs the technician, and
+drafts the invoice. You talk to it in Telegram.
 
 **Technical:** the harness and context engine for a fleet of AI agents that run a trades firm's
-office. Each person — manager and technician — talks to their own agent; every agent reads and
-writes one shared customer/job record (**the spine**). `docs/onboarding.md:39`
+office. Each person talks to their own agent; every agent reads and writes one shared customer/job
+record (the spine). `docs/onboarding.md:39`
 
-Division of labor, stated repeatedly and worth borrowing for copy: *the spine supplies memory
-(evidence-linked, append-only); the agents supply interpretation and conversation; the harness —
-identity, guardrails, confirmation doctrine, date machinery, evals — supplies the trust that makes
-an agent's output safe to act on.* `docs/onboarding.md:44`
+**Maturity: pilot, not launched.** Two tenants in the pilot DB, one Lightsail box.
+`docs/onboarding.md:68`
 
-**Maturity: pilot, not launched.** Two tenants in the pilot DB (one demo, one real beta onboarded
-2026-07-07), running on one Lightsail box. `docs/onboarding.md:68`
+## 3. Who it's for — two segments, lead with the second
 
-## 2. Who it's for
+| | **A. The small firm** | **B. The newly-solo technician** ⭐ |
+|---|---|---|
+| Who | 5–50 people, HVAC / plumbing / electrical / pest control / roofing | A tech who was great at the trade, quit, and now runs a business |
+| Has | A manager or dispatcher already | Nobody. Themselves, a phone, a truck |
+| Pain | The manager's whole day is hand-routing information | Doesn't know how to *run a business* and is drowning in the admin half |
+| Wants | To stop losing context between people | To not have to become a manager |
 
-**Firm:** small trades firms — HVAC, plumbing, electrical, pest control, roofing — **~5–50 people**.
 `docs/Three-Layer-Context-Spine-Overview.md:12`, `docs/onboarding.md:25`
-(Adjacent research uses 1–15; treat **5–50 as the canonical line**, 2–50 as the outer band.)
 
-**The relay it targets:** customer → front desk (CSR) → manager/dispatcher → technician → back to
-the office → sales. `docs/onboarding.md:28`
+**Lead with B.** It's where the pain is sharpest, where the category leader structurally cannot
+follow, and where the product's real promise lands: *you shouldn't have to learn management to run
+your own shop.* The AI manager both **does** the management and **teaches** it — an experienced
+operator working alongside someone learning. **Nobody in this market sells apprenticeship.** That
+claim is unclaimed and it is the emotional core of the pitch.
 
-**Buyer:** the firm — in practice the owner-manager. Seats are sold by "Sales + the firm" and the
-runbook is explicitly for a firm "that has signed and paid."
-`docs/customer-onboarding-runbook.md:1,49`
+Segment A is the bigger contract and the easier sale once you have references. Don't lead with it.
 
 **Two user tiers (enforced in the DB, not marketing labels):**
 
 | Tier | Who | Can do | Tools |
 |---|---|---|---|
-| **manager** | buyer/admin; dispatcher or owner | full team + schedule authority, adds people, runs the weekly freeze, full connector catalog, self-serve pairing | 40 |
-| **technician** | broad non-manager catch-all — **field techs, office staff, sales** | own day only: notes, briefings, lookups, two-step `send_email`, retract. **Cannot change the schedule.** | 14 |
+| **manager** | buyer/admin; owner or dispatcher | full team + schedule authority, the weekly freeze, full connector catalog | 40 |
+| **technician** | field techs, office staff, sales | own day only: notes, briefings, lookups, two-step `send_email`, retract. **Cannot change the schedule** | 14 |
 
-`docs/engineering-memory.md:138`, `docs/nemoclaw-tech-agent.md:91,112`
+`docs/engineering-memory.md:138`, `docs/nemoclaw-tech-agent.md:91,112`. Schedule-only
+(`seatExempt`) people consume **no seat**. `docs/customer-onboarding-runbook.md:208`
 
-Customer-facing framing: "Technicians cannot change the schedule — that is on purpose, **so the
-schedule has exactly one author**." `docs/getting-started-for-firms.md:53`
+## 4. The pain — and the "before" state
 
-**Third seat class for packaging talk:** schedule-only / `seatExempt` people (e.g. a subcontractor
-you dispatch who gets no assistant) consume **no seat**. `docs/customer-onboarding-runbook.md:208`
-
-## 3. The pain — and the "before" state
-
-The best "bad alternative" paragraph in the repo; ch. 3's value-prop exercise is already done here:
+Still the best paragraph in the repo, and it does chapter 3's bad-alternative exercise for you:
 
 > "You already have a system for remembering customers. It is: a whiteboard, a phone, a shared
 > inbox, three group chats, and the fact that Dave has been here eleven years and just *knows* the
@@ -70,217 +74,274 @@ The best "bad alternative" paragraph in the repo; ch. 3's value-prop exercise is
 > everyone stays**, and it leaks a little at every handoff."
 > — `docs/getting-started-for-firms.md:14`
 
-**Two named costs:** *wasted time* — usually the manager's whole day hand-routing information
-between phone, calendar, email, sticky notes; *context loss* — facts degrade between people, between
-the two visits of one job, and across months for a repeat customer. `docs/onboarding.md:34`
+For segment B there is no Dave. The bad alternative is **the owner's own head, at 9pm, after a full
+day of actual work.**
 
-**Revenue angle (not just time saved):** captures what slips through cracks — technician-spotted
-replacement opportunities, follow-ups on unaccepted quotes, recurring-contract renewals. A
-technician becomes a lead source. `docs/Three-Layer-Context-Spine-Overview.md:37,112`
+**Named costs:** wasted time (the manager's whole day routing information) and context loss (facts
+degrade between people, between a job's two visits, across months). `docs/onboarding.md:34`
 
-**The compounding claim — the strongest long-form line available:**
+**Revenue angle:** captures what slips through the cracks — technician-spotted replacements,
+unaccepted quotes never chased, contract renewals. `docs/Three-Layer-Context-Spine-Overview.md:37`
+
+**The compounding claim** — the strongest long-form line available:
 
 > "**The compounding is the point.** A record with three months of notes in it is a different
-> product from an empty one — briefings get sharper, repeat customers stop needing to re-explain
-> their history, and **the things one technician knew become things everyone knows.**"
+> product from an empty one … **the things one technician knew become things everyone knows.**"
 > — `docs/getting-started-for-firms.md:446`
 
-**Why not a generic chatbot:** grounded in the firm's actual history, cites where every claim came
-from, and can act. `docs/onboarding.md:49`
+## 5. The core differentiation: one manager, no seams
 
-## 4. Delivery, activation, and the magical moment
+**This is the primary competitive frame. Use it.**
 
-**Telegram is the entire UI.** No web front end exists or is planned. The one deliberate extension
-is a Telegram **Mini App dispatch board** (drag-and-drop day grid; manager-only editing, technicians
-read-only on their own day). `docs/engineering-memory.md:102`, `docs/onboarding.md:63`
+Housecall Pro **cannot answer a phone call.** It pulls call logs from third-party VoIP into customer
+records, so *"most shops pair Housecall Pro with a dedicated AI voice answering service"* — Goodcall,
+Kickcall, AgentVoice, Avoca. That means a real customer's stack looks like:
 
-"**No mobile app to install** — which is a feature, not a gap: the firm's staff already have
-Telegram." `docs/customer-onboarding-runbook.md:279`. iMessage is impossible — Apple doesn't permit
-bots. `docs/nemoclaw-tech-agent.md:31`
+```
+  Housecall Pro          $59–189/mo    scheduling, dispatch, invoicing, payments
+  + AI voice agent       separate      phone intake
+  + email/inbox tool     separate      email intake
+  + QuickBooks           Essentials+   accounting
+  + the integrations     glue          ...that somebody maintains
 
-**Activation is high-touch:** ~**a week elapsed, ~4–6 hours of our hands-on work**, across 9 phases
-(legal/seats → tenant → first manager → sandbox+bot+badge → Gmail → phone → 60–90 min screen-shared
-firm setup → go-live verification → day-2 handoff + 30-day check-in).
-`docs/customer-onboarding-runbook.md:6,18`
+      ▲ every boundary is a login, a bill, and a place context dies
+```
 
-**The manager's own week-1 setup (~1 hour, order-dependent)** has a known trap worth naming in
-onboarding copy: set working hours — *"the step everyone forgets. Until you do this, the scheduler
-will never book that person."* `docs/getting-started-for-firms.md:108`
+**The seams are the argument, not the feature count.** When a voice agent books a job into HCP's
+calendar, a time slot and an address survive. What the customer *said* — the tone, the dog, the fact
+that this unit has failed three times — dies at the API boundary. The voice vendor has the
+conversation; the FSM has the appointment; **neither has the record.**
 
-**The first magical moment, explicitly named — use this everywhere:**
+> Everyone else sells you a tool and a list of other tools to connect to it. We're one manager who
+> does the whole job — and because it's one, nothing gets lost between the phone call and the invoice.
 
-> "**Send a voice note. This is the whole point of the system, and it takes eight seconds.** … That
-> one voice note becomes: the visit record, the diagnosis, the quote, and **two permanent facts
-> about the property that every future technician will see before they arrive. You typed nothing.**"
-> — `docs/getting-started-for-firms.md:199`
+Housecall Pro cannot make that claim without rebuilding its intake layer in-house.
 
-**The documented adoption ramp doubles as an activation funnel** (ch. 5's "path to value" is already
-mapped — use it, don't invent one):
+### What you automate across the job lifecycle
 
-| Week | Behavior | Note |
+| Stage | Status | Notes |
 |---|---|---|
-| 1 | everyone records voice notes after every job | "**That single habit is 80% of the value**", and the only real behavior change |
-| 2 | move scheduling onto the board | |
-| 3 | morning briefing on first two customers | "**This is where technicians usually get convinced.**" |
-| 4 | run the weekly freeze for real | manager's payoff: "where the system starts saving you your Sunday evening" |
+| **Phone intake** | ✅ **live** | Answered, transcribed, intent-classified, card/SSN redacted pre-transcript. Verified 2026-08-17: `7f59a54` on main + 2 follow-ups; 7 calls / 1 number, latest 2026-08-11. Say "it works," **not** "proven at volume" |
+| **Email intake** | ✅ live | Work/personal classification gates the L1 write |
+| **Scheduling** | ✅ live | Weekly freeze; promise ladder; human commits |
+| **Invoice drafting** | 🔜 planned | **Draft only, sent on manager review** — see §6 |
+| **Payments** | ❌ never | Not in scope. You are not a payments product |
 
-`docs/getting-started-for-firms.md:436,286`
+## 6. Invoicing — draft-only, and why that's a feature
 
-## 5. Differentiation — claims defensible because they're enforced in mechanism
+Scope: the AI drafts an invoice from what actually happened on the job; **a manager reviews and
+sends.** No payment processing, no reconciliation, no chargebacks.
 
-1. **Agent-first, not app-first** — agents are the interface, spine is shared memory, harness makes
-   output trustworthy. `docs/engineering-memory.md:53`
-2. **Telegram-only. No app, no login, no password.** `docs/engineering-memory.md:102`
-3. **Nothing can be deleted; everything is retractable.** Wrong things get retracted, the original
-   stays underneath, "so the record can always be re-checked against what was actually said."
+**It's the freeze pattern applied to money** — the manager does the work, stages it, nothing leaves
+the building without a human yes. That's what makes "AI manager" sellable rather than alarming.
+
+**QuickBooks is the destination and it's verified available**: Composio's QuickBooks toolkit
+(OAuth2, ~105–114 tools) exposes `QUICKBOOKS_CREATE_INVOICE`, plus `CREATE_CUSTOMER`,
+`CREATE_ESTIMATE`, `CREATE_PAYMENT`. Manager-catalog only — nobody but a manager touches the books.
+
+**Two gates, not one.** Writing to QuickBooks puts a real record in the firm's books; sending mails
+the customer. Both are externally-visible, so both belong behind confirmation per the doctrine. A
+manager finding unapproved invoices in their accounting is a trust-ending event.
+
+**The sales answer:**
+
+> It writes the invoice from what actually happened on the job — the technician's own words, with
+> each line traced to the note it came from — drops it in your QuickBooks as a draft, and you review
+> and send. You keep your accountant, your books, and your process.
+
+That answers "do you do invoicing?" without claiming to be an invoicing product, and turns the
+compounding record into money. A draft built from cited evidence is something Jobber cannot produce —
+theirs is assembled from line items a human typed.
+
+## 7. The language wedge — underused, and possibly your best one
+
+**The numbers:**
+- **~30% of US construction trades workers are Hispanic** — much higher in TX, CA, FL, and in
+  roofing, painting, landscaping, concrete
+- **42% of Hispanic business owners "only or mostly" speak Spanish on the job**; another **37%**
+  speak roughly equal amounts
+- 42% of consumers won't buy in a language that isn't their preferred one
+
+**Why it's structural, not a feature.** For an app-based competitor, another language is a
+localization project — every screen, every string, every release, forever. For a conversational
+product it's the same conversation in a different language, and you get *every* language, not just
+Spanish. A Polish plumber in Chicago and a Vietnamese electrician in Houston are the same build.
+
+**It compounds with segment B:** the person least served by a complex English-language SaaS UI is
+exactly the immigrant technician who just went solo.
+
+**One competitor in the lane:** [FieldSub](https://www.einpresswire.com/article/920575035/hispanic-contractor-launches-1st-fully-bilingual-app-built-for-subcontractors),
+billed as the first fully bilingual app for subcontractors, with an "AI-powered business companion."
+Bilingual and app-based — it has the localization ceiling you don't. Worth studying.
+
+⚠️ **Survey before this goes in a headline.** The market data is strong; there is no evidence yet
+about whether these owners *want* to run their business in Spanish or consider English part of the
+job. That's chapter 3's "ask, don't guess."
+
+## 8. "Nothing to learn" — not "easy to learn"
+
+**Do not compete on ease of use. You would lose.** Housecall Pro reviewers say *"most techs able to
+learn it in a day"*; Jobber teams *"reach operational competency within days."* Arguing days-vs-hours
+against incumbents with real onboarding teams is a bad fight.
+
+**Your claim is that there is no software** — no screens to navigate, no fields, no second app. A
+category difference, not a degree difference.
+
+Contrast that with the documented cost of the category leader: ServiceTitan needs **2–4 weeks of
+training and 4–6 weeks of onboarding minimum, plus a dedicated admin**, and reviewers say
+*"smaller teams without admin support often find the complexity more burden than benefit"* and
+*"many 5–10 technician companies report paying for features they never use."* At $8–15k/year.
+
+### The UI rule (as more UI ships)
+
+More UI is coming — job status views, a map of customer properties, options in the Telegram menu.
+This does **not** erode "nothing to learn," provided you hold one line:
+
+> **The agent is how you act. The UI is how you see.**
+
+| UI you **operate** (costs learning) | UI you **read** (free) |
+|---|---|
+| create job → pick customer → fill 12 fields → save | a map with pins; today's jobs colour-coded; a customer's history |
+
+The test for any new surface: **could a new user use this without being taught?** A map passes; a
+job-creation form doesn't. The architecture already enforces the write side — every board gesture
+calls the same `booking.ts` verbs as chat. Keep that invariant.
+
+Telegram Mini Apps support this fine: full web rendering, interactive maps, a `LocationManager` API,
+launchable from the menu button. Keep it a **thin view over the API** — cloud storage caps at 1,024
+items/user, device storage at 5MB, `sendData()` at 4,096 bytes.
+
+**A map is table stakes, not a differentiator** — HCP has GPS tracking, ServiceTitan and Jobber have
+route maps. Building it closes an objection. But build the version only you can: **tap a house and
+see what you know about that property** — the gate code, the dog, the unit installed in 2019, each
+line traced to the note it came from. Build views that display your moat, not views that match theirs.
+
+## 9. Mechanisms that make the claims defensible
+
+Enforced in code, so a competitor would have to change architecture to copy them:
+
+1. **Promise ladder** — what the customer was *told* (`none`/`day`/`time_only`/`time`), stored
+   separately from the calendar. *"Will never break a promise you made. That is the difference
+   between an optimizer you can trust with real customers and one you can't."*
+   `docs/getting-started-for-firms.md:254`. **Nobody else has this. Strongest single differentiator.**
+2. **Append-only L1, nothing deletable** — a liability-shaped choice most vendors avoid.
    `docs/getting-started-for-firms.md:63`
-4. **Every claim cited to its evidence; says "I don't know" rather than guessing.** Hallucinated
-   citations are dropped mechanically. `docs/getting-started-for-firms.md:88`, `docs/onboarding.md:216`
-5. **The confirmation doctrine — genuinely contrarian and ownable.** *Confirm only what's
-   irreversible or externally visible; everything reversible, just do — and say what you did.*
-   Because "if it asked about everything, you would start saying 'yes' without reading, and then the
-   one that mattered would slip through." **Over-confirming is a safety problem.**
-   `docs/engineering-memory.md:171`, `docs/getting-started-for-firms.md:76`
-6. **The promise ladder** — records *what the customer was told* (`none`/`day`/`time_only`/`time`)
-   separately from the calendar. "It will freely shuffle unpromised work and **will never break a
-   promise you made. That is the difference between an optimizer you can trust with real customers
-   and one you can't.**" `docs/getting-started-for-firms.md:254`
-7. **A human always commits.** The freeze "booked nothing until you said yes"; only a human ever
-   pins. `docs/getting-started-for-firms.md:302,274`
-8. **Hardcoded where it must be correct** — identity matching, permissions, scheduling guards are
+3. **Every claim cited to its evidence**, hallucinated citations dropped mechanically, says "I don't
+   know" rather than guessing. `docs/onboarding.md:216`
+4. **Confirmation doctrine** — confirm only the irreversible or externally-visible; over-confirming
+   is a *safety* problem because it trains rubber-stamping. `docs/engineering-memory.md:171`
+5. **A human always commits.** The freeze "booked nothing until you said yes."
+6. **Hardcoded where it must be correct** — identity, permissions, scheduling guards are
    deterministic code, never a model guess. `docs/onboarding.md:118`
-9. **Looks dates up instead of doing calendar math**, and asks when "next Tuesday" is ambiguous.
-   `docs/getting-started-for-firms.md:97`
+7. **Looks dates up instead of doing calendar math**; asks when "next Tuesday" is ambiguous.
 
-## 6. ⚠️ How this product breaks the guide's assumptions
+**Lead autonomy with the guardrail.** An AI that touches invoices is alarming; an AI that never
+breaks a promise and never commits without you is a manager you'd hire.
 
-The Growth Guide's ch. 2 rule is *match on audience **and business model***. On business model this
-product is **not** the self-serve freemium SaaS the guide's examples assume. Adjust accordingly:
+## 10. Competitors — tiered by evidence strength
 
-| Guide assumes | Reality here | Consequence |
+**Never cite a vendor's own comparison pages as market data.** Verify funding and legal entity
+before treating anything as a competitor.
+
+| Tier | Who | What they are |
 |---|---|---|
-| Self-serve signup | **No signup page exists.** Tenant creation is operator SQL; ~4–6 hrs internal work per firm. `docs/customer-onboarding-runbook.md:40` | **Never write a "Start free trial" CTA.** The conversion event is a booked call/demo, not a signup. CPA math is lead→sale, not visit→signup. |
-| Product-led onboarding inside an app | Onboarding is a **screen-shared 60–90 min session** plus a 4-week habit ramp | Ch. 5 still applies, but to a *human-assisted* flow — reduce the manager's friction, not a signup form's |
-| A/B testable traffic volume | Pilot-stage; traffic is nowhere near 1,000–10,000 visits | **Ch. 8: micros are off the table.** Only macro variants are worth running, and even those may not reach significance — say so rather than pretending |
-| Anyone can be a lookalike seed | Seed needs ≥1,000 people; there are **37 pilot customers** | Lookalikes are not available yet. Interest/job-title targeting only. `docs/engineering-memory.md:1246` |
-| Bots can start conversations | **Telegram bots cannot message first** — each person must press Start. `docs/customer-onboarding-runbook.md:155` | That's a real, mandatory activation step to design around |
-| Growth is unconstrained by ops | Every purchased seat needs a **pre-built cold sandbox**; empty pool blocks onboarding. `docs/customer-onboarding-runbook.md:224` | Demand gen has a hard supply ceiling — don't build a campaign that outruns it |
-| Sell anywhere | **Single timezone per tenant** by design. `docs/onboarding.md:602` | Don't target multi-timezone firms |
+| **Verified, major** | **Avoca** — $125M+, $1B valuation, 800+ customers, YC 2024, Kleiner Perkins/Meritech/General Catalyst | AI front office (phone intake) that writes into ServiceTitan. Defines the market's default: **agents on top, FSM as system of record.** Your counter-thesis |
+| **Verified, major** | **ServiceTitan** (Atlas / Titan Intelligence), public | Chat over a record they already own. 2–4wk training, $8–15k/yr |
+| **Verified, funded** | **Mura** — $6M seed, Level One Fund + Lerer Hippeau | Order-to-cash / AR / AP. Calls itself "dark software" operating **inside existing systems rather than replacing** — a funded validation of the layer-alongside play |
+| **Established** | Housecall Pro ($59–79 Basic — no QuickBooks sync, no GPS; $149–189 Essentials — both; $329+ MAX), Jobber ($25–249/mo), Simpro (Lightning), FieldPulse, BuildOps | Invoice-first FSM, AI features bolted on. **Your QuickBooks story competes with HCP's $149 tier, not their $59 one** |
+| **Bilingual lane** | FieldSub | First fully bilingual subcontractor app + "AI business companion" |
+| ⚠️ **Unfunded / SEO-heavy** | FieldCamp (founder "Jeel," Brampton ON, **no funding**), Fieldproxy, Quantra | Marketing sites. Their performance stats are vendor claims. Not threats today |
+| ⚠️ **Not a company** | **FieldServe** | Croatian dev shop (Netpoint Systems d.o.o., Zagreb), domain created 2026-04-29, no funding/team/customers. **Do not cite as a peer** |
 
-**Consequence for ch. 2 (competitive analysis):** the right companies to study are **high-touch,
-sales-assisted B2B tools sold to small non-technical businesses** — not self-serve SaaS. Study how
-they run demo-booking funnels, not signup funnels.
+**Category framing:** the repo never claims a category. Recommended stance — **"works alongside what
+you already have" in the sale** (kills the invoicing objection on call one, and Mura proves it funds),
+**"the AI manager" in the story.** Don't try to win a category argument before you have one reference
+customer.
 
-**LPA position (ch. 4):** trades firms mostly sit at **rung 4** — experiencing the problem (Dave
-leaves, facts get lost) but unaware software addresses it — or **rung 3**, aware FSM tools exist but
-unmotivated. Copy must carry the problem *and* the category, not just differentiation. Expect to do
-more educating than a rung-1/2 product would.
+## 11. Where the guide's assumptions break
 
-## 7. Proof points — what's real, and what you may not claim
+| Guide assumes | Reality | Consequence |
+|---|---|---|
+| Self-serve signup | No signup page; ~4–6 hrs operator work per firm. `docs/customer-onboarding-runbook.md:40` | **Never a "start free trial" CTA.** Conversion event is a booked demo |
+| A/B-testable traffic | Pilot-stage, nowhere near 1,000 visits | **Micros are off the table.** Macro variants only, and say when significance isn't reachable |
+| Lookalike seeds ≥1,000 | 37 pilot customers | Lookalikes unavailable. Interest/job-title targeting only |
+| Bots can start conversations | **Telegram bots cannot message first** — each person presses Start | A mandatory activation step to design around |
+| Growth unconstrained by ops | Every seat needs a pre-built cold sandbox | Demand gen has a hard supply ceiling |
+| Sell anywhere | Single timezone per tenant by design | Don't target multi-timezone firms |
 
-**Usable (internal, reproducible, verifiable):**
-- **Date reliability 100%** — 94/94 on the v3 date eval, zero stalls, zero weekday-date
-  contradictions; "every point of it came from mechanism, not prompting." `docs/engineering-memory.md:578`
-- **Tool layer 100%** — 45/45 cases; 366/366 date matrix. `spine-eval-runs/tier1-report.md:9`
-- **0 machinery failures / 0 fabrications** on the 2026-08-15 fleet run; agent-turn median 6.3s.
-  `docs/engineering-memory.md:602`
-- **Cross-tenant leak probe never fired** — the eval plants a canary customer in another tenant.
-  `docs/engineering-memory.md:227`
-- Engineering maturity: 82 merged PRs, 59 test files / ~870 test declarations. `docs/onboarding.md:73`
+**Companies worth studying** (chapter 2 matches on audience **and** business model): high-touch,
+sales-assisted B2B tools sold to small non-technical businesses. Study demo-booking funnels, not
+signup funnels.
 
-**Handle with care:** the 55/59 tier-2 report ran on `gemini-3.7-flash`, **not** the production
-model — don't cite it as the shipped product's score. `spine-eval-runs/tier2-report.md:5`
-Published latency medians are `trajMs`; wall time adds ~14s of ssh overhead — never cross-compare.
+**LPA position:** mostly **rung 4** (experiencing the problem, unaware software addresses it) or
+**rung 3** (aware FSM exists, unmotivated). Copy must carry the problem *and* the category. For
+segment B specifically, many don't know "field service software" is a category at all.
 
-**❌ You may NOT claim (nothing exists to support it):**
-- Any customer outcome — hours saved, revenue lift, jobs/day, quote conversion, NPS. **None recorded.**
-- Any testimonial, case study, or logo.
-- "Trusted by N firms." The one named external beta **exited beta 2026-08-14**, so as recorded there
-  are **zero active external customers**. `docs/engineering-memory.md:985`
+## 12. Proof — and what you may not claim
 
-Per ch. 3, the standard move when you lack social proof is to give the product free to recognizable
-firms in exchange for logo rights. That's a proposal to make, not a claim to write.
+**Usable:** date reliability 100% (94/94, "every point of it came from mechanism, not prompting")
+`docs/engineering-memory.md:578`; tool layer 100% (45/45 cases, 366/366 date matrix); 0 machinery
+failures / 0 fabrications on the 2026-08-15 fleet run; cross-tenant leak probe never fired; 82
+merged PRs, 59 test files / ~870 test declarations.
 
-## 8. Competitors
+**Careful:** the 55/59 tier-2 report ran on `gemini-3.7-flash`, **not** the production model. Latency
+medians are `trajMs`; wall adds ~14s ssh overhead — never cross-compare.
 
-No positioning doc exists; these are named only as research citations. Adjacent category is **Field
-Service Management (FSM)**, though the product never claims that category for itself.
+**❌ May not claim:** any customer outcome (hours saved, revenue lift, jobs/day, NPS), any
+testimonial, logo, or case study, or "trusted by N firms." The one named external beta exited beta
+2026-08-14, so **zero active external customers** as recorded. `docs/engineering-memory.md:985`
 
-**ServiceTitan** (most-cited; markets itself as "born in the trades, trained on the trades"),
-**Jobber**, **Housecall Pro**, **Service Fusion**, **BuildOps**, **Smart Service**, **Pricebookr**,
-**CompanyCam** (job-documentation adjacent), **QuickBooks** (the accounting system firms actually
-invoice with). `thoughts/shared/research/2026-08-15-pricing-invoicing-payment-loop.md:46,90-107`,
-`docs/Physical-Data-Exchange-Direction.md:836`
+**Internal doc claims:** descriptions of behavior are usable ("eight seconds," "cites the note it
+came from"); numbers that read as measured but aren't ("80% of the value") are not.
 
-Their shape: FSM tools are **invoice-first** — in ServiceTitan the invoice object exists from the
-moment the job is booked; Jobber's API is literally `Quote → Job → Invoice → PaymentRecord`. This
-product is **memory-first and deliberately has no money layer**, which is the sharpest available
-contrast — and also the sharpest objection.
+## 13. Hard constraints on what marketing may say
 
-## 9. Hard constraints on what marketing may say
+**What you are NOT** — say it in the sale, *"the gap between 'AI for trades' and this product is
+where disappointment lives"*: no payments or accounting (draft invoices only); **no customer-facing
+anything** — customers never talk to the assistant, it's a staff tool; no outbound calling or AI
+receptionist *persona*; no web app; **it doesn't replace your dispatcher** — it removes the typing
+and remembers everything, a human still decides. `docs/customer-onboarding-runbook.md:267`
 
-**The explicit "what we are NOT" list — say it in the sale** ("the gap between 'AI for trades' and
-this product is where disappointment lives"): `docs/customer-onboarding-runbook.md:267`
-- **No invoicing, payments, pricing, or accounting.** `quote`/`invoiced` are labels only; no money
-  moves through the system.
-- **No customer-facing anything.** Customers never talk to the assistant. It is a staff tool.
-- **No outbound calling, no AI receptionist, no phone-tree routing.**
-- **No web app.** Telegram + the board Mini App, full stop.
-- **It doesn't replace your dispatcher.** It removes the typing and remembers everything; a human
-  still decides. `docs/getting-started-for-firms.md:420`
+**Three disclosures owed in writing before access** — product foundations, not settings:
+1. Emails sent through the assistant are **permanently logged**, including personal ones
+2. **Nothing recorded can be deleted** — "if the firm cannot live with that, stop here"
+3. The assistant **may proactively ask about work**, and answers can be recorded to job records
 
-**Three disclosures owed in writing before access** — these are product foundations, not settings,
-and copy must never contradict them: `docs/customer-onboarding-runbook.md:65`
-1. Emails sent through the assistant are **permanently logged** — including personal ones.
-2. **Nothing recorded can be deleted.** "If the firm cannot live with that, stop here."
-3. The assistant **may proactively ask about work**, and answers can be recorded to job records.
+Nudges are bounded by mechanism: ≤2 questions/person/day, never a repeat for the same visit, 48h
+silence hands it to the manager, writes only 7am–7pm local. Never messages customers, changes the
+schedule, or sends anything on its own. `docs/getting-started-for-firms.md:348`
 
-Proactive nudges are bounded **by mechanism**: ≤2 questions per person per day, never a repeat for
-the same visit, 48h silence hands it to the manager, and it writes only 7 AM–7 PM local. It will
-never message customers on its own, change the schedule, or send anything anywhere.
-`docs/getting-started-for-firms.md:348`
+**Call recording:** the announcement is what makes it lawful — *"never ask us to remove it."* All-party
+consent assumed. No voiceprints. Card/CVV/SSN redacted pre-transcript. **Firm is controller, we are
+processor.** `docs/phone-call-runbook.md:46,50,52,57`
 
-**Call recording:** the recorded-call announcement is what makes recording lawful — "never ask us to
-remove it." Treat every call as all-party consent. No voiceprints/biometrics. Card/CVV/SSN/routing
-numbers redacted before the transcript is written. The **firm is the controller, we are the
-processor** — caller-facing privacy notice and CCPA duties sit with them.
-`docs/phone-call-runbook.md:46,50,52,57`, `docs/customer-onboarding-runbook.md:61`
-✅ **The phone channel is live and marketable** (verified 2026-08-17 against code + pilot DB, not
-docs): merged to `main` as `7f59a54` plus two follow-ups, migration applied, **7 calls ingested
-across 1 number, most recent 2026-08-11**. Inbound calls are answered, transcribed, intent-classified,
-and card/SSN-redacted before the transcript is written — landing on the same customer record as the
-technician's voice note and the manager's email.
-
-Say "it works," not "proven at volume" — 7 calls is live-verified, not load-tested.
-
-*An earlier version of this file said the phone channel was unmerged and undeployed, copied from a
-runbook status gate that had been stale for eleven days. It caused two wrong recommendations before
-anyone checked the code. When a claim here decides whether something can be marketed, verify it
-against the repo or the database, not against another doc.*
-
-**Tone constraint that should shape every nudge/proactivity message:**
+**Tone — this shapes every proactivity message:**
 
 > "A thing that notices you're behind schedule and asks about it is an ops manager **or a
 > surveillance system depending entirely on tone, disclosure, and defaults.** The nudge arrives as a
 > colleague's question, not an audit."
-> — `thoughts/shared/plans/2026-08-15-intelligent-spine-direction.md:104`
 
-**Off-limits sources:** `docs/Physical-Data-Exchange-Direction.md` is exploratory, lawyer-gated,
-nothing built — **nothing from it goes in external copy**, and its market valuations are
-self-flagged as unsourced. The "intelligent spine / team-leader agent" is **direction only**; if
-used, mark it roadmap. `thoughts/shared/plans/2026-08-15-intelligent-spine-direction.md:130`
+**Off-limits:** nothing from `docs/Physical-Data-Exchange-Direction.md` (exploratory, lawyer-gated).
+The intelligent-spine "team leader" is **direction only** — mark as roadmap if used.
 
-## 10. Open gaps — ask the user, never invent
+## 14. Known vulnerabilities
 
-1. **Price.** No dollar amount exists anywhere — per-seat price, billing period, minimum, setup fee
-   all unrecorded. (Model is seat-based; manager seats price higher than technician seats.)
-2. **Current customers.** Zero active external as recorded. Are there paying firms now? Nameable?
-3. **Outcome proof.** Nothing. Any pilot anecdote or quote we can use?
-4. **Category & competitive stance.** Alternative to FSM, layer on top of it, or new category? The
-   repo never picks.
+- **Offline.** Technicians work in basements, crawl spaces, rural areas. Telegram Mini Apps have no
+  documented offline mode and the product depends on connectivity, while HCP's native app queues
+  offline. No field users have hit this yet — they will.
+- **Four fronts at once.** Phone, email, scheduling, invoicing each have a funded specialist. The
+  bundle wins on coherence and total cost, never on any single axis — "good enough and connected,"
+  never "better at phones" (Avoca has $125M pointed at that one).
+- **Feature-parity framing.** "Housecall Pro but AI" invites a checklist comparison you lose. The
+  framing that survives: **what a solo tech hires instead of learning Housecall Pro.**
+
+## 15. Open gaps — ask, never invent
+
+1. **Price.** No dollar figure exists anywhere. Model is seat-based, manager seats higher.
+   Benchmarks to price against: HCP $59–189/mo, Jobber $25–249/mo, ServiceTitan $8–15k/yr.
+2. **Current customers.** Zero active external as recorded. Any paying firms now? Nameable?
+3. **Outcome proof.** Nothing. Any pilot anecdote or quote at all?
+4. **Language validation.** Do Spanish-speaking owners *want* to operate in Spanish? Unvalidated.
 5. **Geography.** US implied by CCPA/BIPA framing; no stated target market.
-6. **Phone channel** — live yet? Strong story if so.
-7. **Roadmap marketability** — may the intelligent-spine direction appear in public copy?
-
-When a task needs one of these, **ask** — don't fill the hole with a plausible number. Per this
-repo's standing rule, an uncited claim is an unverified claim.
+6. **Invoice draft destination.** QuickBooks confirmed possible — is it the shipped path?
+7. **Segment priority.** This file recommends leading with the newly-solo technician. Confirm.

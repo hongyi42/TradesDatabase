@@ -156,7 +156,7 @@ don't work — users are jaded.
 ## 6. Anti-patterns specific to this repo
 
 - **Don't assume a website funnel.** Much of the guide presumes visitor → landing page → self-serve
-  signup. This product has no signup page. See §6 of the product profile for the full list of
+  signup. This product has no signup page. See §11 of the product profile for the full list of
   broken assumptions before prescribing anything.
 - **Don't invent proof.** Social proof (ch. 3, ch. 4) is powerful and is the easiest thing to
   fabricate by accident. Use only customer counts, logos, quotes, and results recorded in the
@@ -172,14 +172,20 @@ don't work — users are jaded.
     they appear in our docs.
 
     Test: *would a reader assume someone measured this?* If yes and nobody did, don't ship it.
-- **Respect the disclosure and privacy constraints** in §9 of the product profile. Permanent
+- **Respect the disclosure and privacy constraints** in §13 of the product profile. Permanent
   logging, no deletion, and proactive questioning are product foundations that must be disclosed;
   copy may not contradict or soften them.
-- **Two open gaps block confident recommendations, not just details.** Until the user answers
-  "what's our category/competitive stance" and "do we have nameable customers," you can produce
-  good options but cannot rank them with confidence — the right hero may be one built on
-  "works alongside the tools you already have," which you can't know yet. Say this rather than
-  projecting false certainty.
+- **Category stance is decided; price and proof are not.** The stance (2026-08-17): *"works
+  alongside what you already have" in the sale, "the AI manager" in the story* — profile §10. Two
+  gaps still block confident ranking rather than mere detail: **no price exists anywhere**, and
+  **there are zero recorded active external customers**, so any option whose strength depends on
+  proof or price cannot be ranked honestly. Say so rather than projecting certainty.
+- **Verify a competitor is real before treating it as one.** Chapter 2 warns against over-analyzing
+  early-stage companies but assumes they *are* companies. Before citing anything as a peer, check
+  funding and legal entity — a landing page is not a competitor. Tier findings by evidence strength
+  (profile §10 shows the format) and never cite a vendor's own "alternatives" pages as market data.
+  *Ex:* FieldServe read as the closest architectural analog in this market until a check showed a
+  four-month-old domain belonging to a Croatian dev shop with no funding, team, or customers.
 - **Verify platform specifics live.** Per CLAUDE.md, never answer a third-party-service question
   from memory or from these files. `references/tool-status.md` records what's already been checked
   and when.

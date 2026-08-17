@@ -169,23 +169,36 @@ sends.** No payment processing, no reconciliation, no chargebacks.
 **It's the freeze pattern applied to money** — the manager does the work, stages it, nothing leaves
 the building without a human yes. That's what makes "AI manager" sellable rather than alarming.
 
-**QuickBooks is the destination and it's verified available**: Composio's QuickBooks toolkit
-(OAuth2, ~105–114 tools) exposes `QUICKBOOKS_CREATE_INVOICE`, plus `CREATE_CUSTOMER`,
-`CREATE_ESTIMATE`, `CREATE_PAYMENT`. Manager-catalog only — nobody but a manager touches the books.
+**Two destinations. QuickBooks is optional, not required.**
 
-**Two gates, not one.** Writing to QuickBooks puts a real record in the firm's books; sending mails
-the customer. Both are externally-visible, so both belong behind confirmation per the doctrine. A
-manager finding unapproved invoices in their accounting is a trust-ending event.
+| Path | For whom | What happens |
+|---|---|---|
+| **PDF** (default) | Anyone — **assume no QuickBooks** | The draft becomes a PDF the manager reviews and sends. No integration, no setup, no account to open |
+| **QuickBooks** (optional) | Firms that already run it | Drafts into their books instead. Composio's QuickBooks toolkit (OAuth2, ~105–114 tools) exposes `QUICKBOOKS_CREATE_INVOICE`, `CREATE_CUSTOMER`, `CREATE_ESTIMATE`, `CREATE_PAYMENT`. Manager-catalog only |
 
-**The sales answer:**
+**PDF-first is the right default and it fits segment B exactly.** A technician who left their job
+three months ago does not have QuickBooks — they have a phone and possibly a Word template. Requiring
+an accounting integration to produce an invoice would reintroduce the setup cost the whole product
+exists to remove. Never write copy that assumes the prospect has QuickBooks.
+
+**Gates.** Sending to the customer is externally-visible and irreversible — always behind
+confirmation. On the QuickBooks path there are **two** such moments, not one: writing to the books is
+itself externally-visible, and a manager discovering unapproved invoices in their accounting is a
+trust-ending event. The PDF path has only the send.
+
+**The sales answer** (note it works whether or not they have anything):
 
 > It writes the invoice from what actually happened on the job — the technician's own words, with
-> each line traced to the note it came from — drops it in your QuickBooks as a draft, and you review
-> and send. You keep your accountant, your books, and your process.
+> each line traced to the note it came from. You review it and send it. If you use QuickBooks it
+> drafts straight in there; if you don't, you get a PDF. Either way you keep your process.
 
 That answers "do you do invoicing?" without claiming to be an invoicing product, and turns the
 compounding record into money. A draft built from cited evidence is something Jobber cannot produce —
 theirs is assembled from line items a human typed.
+
+**Where it stops:** you don't track who paid, chase receivables, or reconcile. If a prospect asks
+"how do I know who's paid me," that's their existing process — say so plainly rather than implying
+coverage you don't have.
 
 ## 7. The language wedge — underused, and possibly your best one
 
@@ -379,5 +392,8 @@ The intelligent-spine "team leader" is **direction only** — mark as roadmap if
 3. **Outcome proof.** Nothing. Any pilot anecdote or quote at all?
 4. **Language validation.** Do Spanish-speaking owners *want* to operate in Spanish? Unvalidated.
 5. **Geography.** US implied by CCPA/BIPA framing; no stated target market.
-6. **Invoice draft destination.** QuickBooks confirmed possible — is it the shipped path?
+6. **Invoice delivery mechanics.** Destination is settled (§6): PDF by default, QuickBooks
+   optionally. Still open — does the assistant *email* the PDF to the customer, or hand it to the
+   manager to send themselves? That changes the disclosure story, since outbound sends are
+   classifier-free and permanently logged.
 7. **Segment priority.** This file recommends leading with the newly-solo technician. Confirm.

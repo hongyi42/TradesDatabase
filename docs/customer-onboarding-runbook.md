@@ -62,7 +62,7 @@ book it before taking the money.
   own callers and customers; we are the *processor*. The caller-facing privacy notice and CCPA
   "business" duties sit with them. ([phone-call-runbook.md](phone-call-runbook.md) argues this.)
 
-**Two disclosures we owe the firm in writing, because both are irreversible by design:**
+**Three disclosures we owe the firm in writing, because all are irreversible by design:**
 
 1. **"Emails sent through the assistant are permanently logged."** Outbound and agent-action captures
    are classifier-free by decision — every send is recorded, including personal ones. Managers and
@@ -70,6 +70,14 @@ book it before taking the money.
 2. **"Nothing recorded can be deleted."** L1 is append-only at the database level. A mistake is
    *retracted* — marked recorded-in-error and hidden from reads — never removed. If the firm cannot
    live with that, stop here; it is the product's foundation, not a setting.
+3. **"The assistant may proactively ask about work, and what you tell it can be recorded to the
+   firm's job records."** (Ratified 2026-08-15, ships with intelligent-spine Stage 1.) When a
+   scheduled visit passes with nothing recorded, the office assistant may message a technician's
+   assistant with one short question ("how did the Henderson visit go?"); the answer — even
+   "nothing to report" — is saved to the job's record. Bounded by mechanism, not promise: at most
+   2 such questions per person per day, never a repeat for the same visit, and 48 hours of silence
+   simply hands the item to the manager instead of re-asking. Technicians must be told this before
+   their assistant is enabled.
 
 ---
 

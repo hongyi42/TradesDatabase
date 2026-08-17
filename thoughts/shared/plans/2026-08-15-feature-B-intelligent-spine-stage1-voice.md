@@ -205,24 +205,40 @@ boilerplate mirrors `20260815160000_money_events.sql`)
   a budgeted slot is claimed at creation, not at delivery).
 
 **Registrations (eng-memory §1 rule — by name, this phase):** `scripts/spine-eval/world.mjs`
-`RESET_TABLES`; `scripts/seed.mjs` `truncateSpine`; `src/mcp/server.test.ts` truncate
-statement; grep `truncate table` across `src/` and add `nudges` wherever `review_items` is
-cleared (e.g. `src/mcp/httpServer.test.ts`).
+`RESET_TABLES` **and `PILOT_TENANT_SCOPED`** (adversarial-review finding: the second list is
+DELETE-based and ordered — `nudges` must precede `technicians` or the roster delete 23503s and
+rolls the pilot-world rebuild back); `scripts/seed.mjs` `truncateSpine` (existence-probed, the
+tenant_profiles pattern — nudges genuinely escapes the cascade there because technicians are
+preserved by default); `src/mcp/server.test.ts` full-spine truncate statement.
+*Recorded deviation:* the draft said "add `nudges` wherever `review_items` is cleared" — NOT
+done for the ~14 remaining test truncates, deliberately: every one of them truncates
+`technicians … cascade`, which pulls `nudges` in through its FK, and none of those files write
+nudges. Explicit registration is reserved for the sites cascade cannot reach.
 
 **`src/db/index.ts`** — export the module. **`src/db/database.types.ts`** — regen from the
 local stack after `npx supabase migration up` (pilot apply is Phase 5 rollout).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] new `src/db/nudges.test.ts`: repeat insert → null; queued→asked legal, asked→queued
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass (full suite 1744 passed / 0 failed)
+- [x] new `src/db/nudges.test.ts`: repeat insert → null; queued→asked legal, asked→queued
   refused; `countRecentAsks` window edges + pending-counts; `listNudgedSubjectRefs` batching +
-  empty input; cross-tenant id resolves nothing
-- [ ] review_items backstop: duplicate `overdue_visit_gap` insert for one subject now fails at
-  the DB even bypassing the app guard
+  empty input; cross-tenant id resolves nothing (6/6)
+- [x] review_items backstop: duplicate `overdue_visit_gap` insert for one subject now fails at
+  the DB even bypassing the app guard (23505 asserted; other kinds keep open-only semantics)
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack.
-- [ ] psql: columns + both unique indexes present; `world.mjs` present-tables log lists `nudges`.
+- [x] psql read-back: all columns/nullability, `uq_nudges_subject_ever` (non-partial),
+  `uq_review_items_overdue_gap_ever`, both secondary indexes, `nudges_set_updated_at` trigger;
+  `world.mjs` present-tables filter run non-destructively — 18 registered / 18 present /
+  nudges included.
+
+**Adversarial review (2026-08-16):** clean on schema/typed-layer/posture (reviewer re-ran the
+gates and introspected the live DB independently); F1 = the `PILOT_TENANT_SCOPED` miss above,
+fixed same day; F2 = the blanket-truncate instruction, resolved as the recorded deviation
+above. Reviewer also confirmed `idx_nudges_budget` serves `countRecentAsks` and that the
+backstop index's only residual race path fails loudly into the watcher's per-tenant catch and
+self-heals next tick.
 
 ### Manual verification
 - none
@@ -273,21 +289,49 @@ The deployed watcher learns the ladder — zero model calls. All changes live in
   (loud, the typo rule).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] watchers.test.ts additions: nudgeable → nudge row, NO manager item, NO push;
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass (full suite 1769 passed / 0
+  failed on the worktree's dedicated stack)
+- [x] watchers.test.ts additions: nudgeable → nudge row, NO manager item, NO push;
   unbound/inactive tech → manager item (deployed behavior); person budget 2 then defer;
   deferred row re-noticed next tick; nudged gap absent from
   `fresh` next tick; shadow mode → `nudgesWouldCreate` counted + manager item still opened;
   `NUDGES_MODE` typo → stepError; capture-after-start → nudge `answered`; visit cancelled →
   nudge `cancelled`; 49-hour `asked` → ONE manager item with escalation copy + `escalated`
   status + push fired once; escalated assignment never re-flags (once-ever holds)
-- [ ] lifecycle.test.ts: `NUDGES_MODE` joins the env-clear list; summary shape pinned
+- [x] lifecycle.test.ts: `NUDGES_MODE` joins the env-clear list; summary shape pinned
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack, `npm run seed:local`.
-- [ ] `npm run job:lifecycle` locally with `WATCHERS_MODE=live NUDGES_MODE=live`: summary shows
-  nudge counts; rows read back via psql through pending → (stub-composed) → answered on a
-  seeded capture.
+- [x] `node dist/jobs/lifecycle.js` with `WATCHERS_MODE=live NUDGES_MODE=live` on the local
+  stack, four runs: nudge created for a staged overdue visit (`nudgesCreated:1`,
+  `itemsOpened:0`); 49h-old `asked` → `nudgesEscalated:1` + ONE manager item with the warm
+  escalation copy + `escalatedFromNudge` audit link; a visit row landing →
+  `nudgesResolved:1` AND the escalated manager item auto-resolved on the same activity;
+  `pushSkipped:true` honest without BOARD_BOT_TOKEN. All rows read back via pg.
+
+**Adversarial review (2026-08-16, commit fe41dcf) + fixes:**
+- **F1 (fixed):** the original code froze in-flight nudge sweeps when `NUDGES_MODE` ≠ live —
+  combined with the both-stores fresh filter, a rollback would have orphaned asked-but-silent
+  gaps on NEITHER surface forever. Now the sweep (auto-resolve + escalation) runs whenever
+  the WATCHER is live; only rung-1 creation and compose are nudgeMode-gated. A rollback
+  hands silent nudges to the manager — legal under the two-touch ceiling. Regression test
+  added ("rollback rescue").
+- **F2 (fixed):** the escalation's `escalated` mark is failure-isolated so a blip cannot
+  abort the tenant loop after the manager item exists (the push still fires; the mark
+  converges next tick on the once-ever dedup).
+- **F3 (fixed):** corrected the escalation-loop comment (the guard, not the collection,
+  drops malformed contexts). Known cosmetic gap: a malformed-context `asked` row re-collects
+  every tick, never escalates, closes only via status change — invisible; consider a zombie
+  counter when a second detector lands.
+- **F4 (fixed):** added the incremental-budget test (second same-tech gap in one tick sees
+  the first's pending row) + deferred-row-re-noticed test. Reviewer note stands:
+  `nudgesWouldCreate` ignores budget (documented — it measures reachability).
+- Reviewer independently verified: same-tick rung exclusivity, disjoint flag subject sets,
+  single batched push, floor clamping vs malformed context, exact 2-cap and 48h boundaries,
+  Stage-0 tests untouched, cadence gate untouched, tenant scoping on every new path.
+- *Recorded deviation:* budget/escalation tuning are exported code constants
+  (`NUDGE_BUDGET_PER_PERSON_DAY`, `NUDGE_ESCALATE_HOURS`), not env vars — the
+  OVERDUE_HOURS pattern (one tuning surface); the plan's env-override idea dropped.
 
 ### Manual verification
 - none
@@ -329,24 +373,76 @@ success → `markNudgeQueued`. Summary `teamLeadCompose: {composed, cancelled, f
 | {skipped} | {stepError}`.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] dispatch tests: with `spine:team-lead` identity, `query_spine` dispatches;
-  `record_field_note`, `send_email`, `book_visit`, an admin tool all throw the cap error;
-  ordinary refs unaffected; roster read tolerates the roster-less ref
-- [ ] compose (stubbed model): ask:true → queued with evidence line + footer; ask:false →
-  cancelled; model throw ×3 → failed
-- [ ] lifecycle: key unset → `{skipped}`; summary shape pinned
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass (1769/0)
+- [x] dispatch tests: with `spine:team-lead` identity, `resolve_date` dispatches;
+  `record_field_note`, `send_email`, `book_visit`, `list_pending_reviews`,
+  `add_team_member` all throw the cap error; an unknown `spine:*` ref gets the same
+  ceiling (namespace-wide, fails closed); roster read tolerates the roster-less ref
+- [x] compose (stubbed model): ask:true → queued with evidence line + footer; model sees
+  ONLY the code-built context; ask:false → cancelled with reason; incomplete context →
+  cancelled WITHOUT a model call; throw → rowError + attempts, cap → failed; unusable
+  question (empty/oversize) → rowError; kind-scoped (8/8)
+- [x] lifecycle step 9: NUDGES_MODE≠live → skipped; no key → skipped; passthrough; throw →
+  stepError + red
 
 ### Live verification (agent-executable)
-- Prerequisites: local stack + working inference key in `.env` (key-gated test, skip cleanly).
-- [ ] one real `composeNudge` on a seeded overdue nudge — evidence: composed text + `queued`
-  row.
+- Prerequisites: local stack + working inference key (key-gated, skip cleanly).
+- [x] three real GLM composes (eval inference endpoint — the production wire dialect) on
+  planted nudges: all queued, warm one-liners, zero invented facts, no dates in the model
+  sentence, evidence line + footer intact. One run also exercised the attempt ladder live
+  (attempt 1 failed on a missing key, attempt 2 composed and queued).
+
+**Implementation notes:** identity constants live in `src/teamLead/identity.ts` (not
+server.ts — compose must not import the whole MCP server for a constant; the gate in
+`dispatch` imports from there). `setNudgeAttempts` added to `src/db/nudges.ts`
+(pending/queued-guarded literal write — single-writer cron). Step 9 is additionally gated
+on `NUDGES_MODE='live'`: a rolled-back ladder must not keep composing leftovers (creation
+and compose are what a rollback turns off; the in-flight sweep keeps running in step 8).
+
+**Adversarial review (2026-08-16, commit 8b8f452) + fixes (all landed same day):**
+- **F1 (HIGH, fixed):** a nudge dying terminal WITHOUT the ask ever landing (model declined /
+  context incomplete / compose failed 3x) orphaned its gap from every surface — the ever-
+  nudged pre-filter + once-ever index left no path back. Fix: `handToManager` — decline,
+  thin-context, and attempt-cap paths now flag the manager (Stage-0 copy +
+  `detail.escalatedFromNudge`) BEFORE closing the nudge; summary gains `handoffs`. The
+  reviewer's live scenario (Render's suspended Fireworks key failing every compose within 3
+  ticks of a live flip) now lands every gap in the manager queue instead of a void.
+- **F2 (fixed):** trust-boundary flattening — context strings (customer/title/name) and the
+  model's question are control-char-stripped, newline-collapsed, and length-capped before
+  entering the prompt or the deliverable, so nothing can forge the footer's
+  "Note for the assistant" register (which rides on newlines); a model question IN that
+  register is refused outright. Residual blast radius (reviewer-verified): the receiving
+  agent's irreversible verbs are human-confirmation-gated, so worst case is misdirection,
+  not action.
+- **F3 (fixed):** `setNudgeAttempts` is pending-only and the terminal path is gated on the
+  bump landing — a lost `markQueued` response can no longer destroy a successfully queued
+  deliverable.
+- **F4 (fixed):** the worktree scratch-stack `supabase/config.toml` leak reverted from the
+  branch (CLAUDE.md: leave uncommitted; second occurrence of this exact leak — watch it in
+  every worktree commit).
+- **F5 (fixed):** migration `20260817100000_reserve_spine_namespace.sql` — CHECK
+  (`ref not like 'spine:%'`) on technicians makes the namespace reservation structural: no
+  operator script can ever mint a `spine:*` roster row, which would have hollowed the
+  ceiling via the Composio relay (the one tool path that routes around dispatch and keys on
+  row existence). Wording note: the gate's error says "read/ask" (accurate for v1) where
+  the plan wrote "read/ask/stage" — code wins.
+- Reviewer attacked and found clean: dispatch order + all bypass routes (relay covered by
+  F5), allowlist read-only-ness (query_audit = by-design logging; dropSensitive applies to
+  the roster-less ref), attempts arithmetic, step-9 cost bounding and loud-typo behavior.
+  Full suite after fixes: 1772 passed / 0 failed.
 
 ### Manual verification
-- [ ] Read 2–3 composed questions: colleague tone, not audit tone (direction constraint 5 +
-  copy doctrine)?
+- [x] Read 2–3 composed questions: colleague tone, not audit tone — **user 2026-08-16:
+  "Tone sounds fine."** Second ruling in the same review: the model may use time vocabulary
+  ("today"/"yesterday") ONLY with genuine clock awareness — never invented. Implemented as
+  `relativeDayPhrase`: code computes "earlier today" / "yesterday" / "a couple of days ago"
+  from the firm's clock (Intl, firm-local days — the date-eval served-phrases doctrine) and
+  serves it as the ONLY permitted time expression; the system prompt bans every other date,
+  day, or time word. Live-verified: a visit that ended Aug 15, composed Aug 16, produced
+  "…how did the water heater replacement for Maria Santos go yesterday?" — served, not
+  derived.
 ---
-*Pause after this phase — the manual tone check is non-empty.*
+*Pause after this phase — the manual tone check is non-empty.* ✔ cleared 2026-08-16.
 
 ## Phase 4: Transport — pull queue + box runner
 
@@ -372,7 +468,7 @@ board's idiom).
 **`Box_Setup_Stuff/nudge-runner.sh` + `.service` + `.timer`** (new; 5-min timer; ops-report.sh
 discipline: separate unit, ALWAYS exits 0, hard `--max-time`/`timeout`): curl GET with
 `HOST_PULL_TOKEN` from `/etc/doorman/badge-pull.env`; per item: validate `sandboxRef` against
-`^[A-Za-z0-9_]+$`, `MSG=$(base64 -d)`, `timeout 180 nemoclaw $sref agent --agent main
+`^[A-Za-z0-9_]+$`, `MSG=$(base64 -d)`, `timeout 240 nemoclaw $sref agent --agent main
 --session-id $sid -m "$MSG" --deliver --reply-channel telegram --reply-to $replyTo
 </dev/null`. Success judged by assistant text in the session TRAJECTORY
 (`nemoclaw $sref exec --no-tty -- cat /sandbox/.openclaw/agents/main/sessions/$sid.jsonl`) —
@@ -383,17 +479,53 @@ then POST the outcome.
 section + `docs/nemoclaw-tech-agent.md` (the agent stack gained a component).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] `src/control/nudgeQueue.test.ts`: host isolation; inactive recipient filtered at serve
-  time; serve cap → failed; ack → asked; failure ×3 → failed
-- [ ] `src/mcp/httpServer.test.ts`: bad/missing host token → 401 both routes; GET shape; POST
-  ack
-- [ ] `bash -n Box_Setup_Stuff/nudge-runner.sh`
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [x] `src/control/nudgeQueue.test.ts`: liveness re-filter at serve time (skip, never fail);
+  serve counted BEFORE shipping; serve cap → manager handoff + failed (the F1 doctrine
+  extended to transport); moved/throwing rows isolated; delivered → asked; late/foreign
+  reports → ignored; failure below cap → retry, at cap → handoff + failed
+- [x] `src/mcp/httpServer.test.ts`: bad/missing host token → bare 401 both methods; GET
+  serves shape (fresh `nudge-<id>` session, base64 round-trip, serve_count=1 in DB);
+  invalid outcome → 400; POST delivered → asked (+asked_at); duplicate report → ignored
+- [x] `bash -n Box_Setup_Stuff/nudge-runner.sh`
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack; curl.
-- [ ] run the HTTP server locally, GET/POST with the test host token — shapes + row
-  transitions read back via psql.
+- [x] covered by the httpServer.test.ts integration suite: a REAL HTTP server on an
+  ephemeral port, real host-token auth (minted hash in the hosts table), real DB rows read
+  back through pg across the full queued → served → asked transition.
+
+**Implementation notes:** delivery attempts get a fresh ledger (`markNudgeQueued` resets
+`attempts` to 0 — compose and delivery each get their full allowance on one column);
+`completeNudgeDelivery` takes hostId from the TOKEN and only moves still-queued rows of that
+host's technicians (late duplicates → 'ignored'); both terminal transport paths (serve cap,
+delivery ×3) run the same `handToManager` flag-first handoff as compose. The runner derives
+its URL from the existing `PULL_URL` — no new env, no new secret.
+
+**Adversarial review (2026-08-16, commit 9ace2d2) + fixes (all landed same day):**
+- **F1 (HIGH, fixed):** never-ASKED rows were a new unbounded orphan class — a liveness-skip
+  never bumps serve_count (the cap can't fire), and a recycled sandbox clears host_id,
+  making the row invisible to EVERY pull's inner join; rollback-frozen `pending` rows were a
+  third member. Fix: `NUDGE_DELIVERY_DEADLINE_HOURS` (24) in the watcher sweep — any
+  pending/queued row still not asked a day after creation hands to the manager (STAGE-0
+  copy, never "their assistant asked" — the ask never landed) and goes `failed`. Runs at
+  every nudgeMode (the rollback-rescue posture). Summary gains `nudgesExpired`.
+- **F2 (HIGH, fixed):** the runner's trajectory verdict grepped a role marker — an assistant
+  turn with only thinking/tool blocks (a recorded live occurrence) would report `delivered`
+  while the technician got nothing. Now mirrors the repo's canonical reader
+  (run.mjs `replyFromTrajectory`): role assistant AND non-empty type:"text" content, via jq.
+- **F3 (HIGH, deferred to Phase 5 with a blocking checklist item):** "delivered" ≠ the
+  Telegram send succeeded — the date-eval record proves a dead chat still leaves CLI success
+  + trajectory text. Pinned as a MUST before `NUDGES_MODE=live` (see Phase 5's live list).
+- **F4 (fixed):** lost ack ⇒ duplicate pings, bounded only by the serve cap. Fix: the runner
+  pre-checks the stable per-nudge session for assistant text BEFORE delivering — a
+  delivered-but-unacked item is re-ACKED, never re-sent.
+- **F5 (fixed):** non-UUID report ids now 400 instead of a PostgREST-cast 500.
+- **F6 (fixed):** rollback wording corrected in Phase 5 (queued rows keep serving until the
+  box timer is pulled); plan's stale `timeout 180` aligned to the implemented 240.
+- Reviewer live-probed host-token authority with two real hosts (row-level `!inner`
+  isolation, cross-status movement impossible, foreign reports `ignored`), and verified the
+  shell's quoting/stdin/injection posture, serve-before-ship accounting, and the DoS caps.
 
 ### Manual verification
 - none
@@ -414,10 +546,16 @@ resolve the D6 open question, ship the ratified disclosure.
   'reload schema'` (backstop-index preflight first); (2) Render Manual-Deploy the LATEST
   commit, verify the live hash; (3) install runner + units on trades-box-1, `daemon-reload`,
   enable timer, verify a no-op pull; (4) set `NUDGES_MODE=shadow` on the cron service, read
-  `nudgesWouldCreate` for a day; (5) flip `NUDGES_MODE=live` with the user. Escape hatch:
-  `systemctl disable --now nudge-runner.timer` stops all delivery instantly; unsetting
-  `NUDGES_MODE` restores Stage-0 behavior exactly; the lifecycle steps alone only write DB
-  rows.
+  `nudgesWouldCreate` for a day; (5) flip `NUDGES_MODE=live` with the user. Escape hatch
+  (wording corrected — Phase-4 review F6): `systemctl disable --now nudge-runner.timer` on
+  the box stops ALL delivery instantly; unsetting `NUDGES_MODE` on the cron stops CREATION
+  and COMPOSE, but already-queued rows keep serving to the box (the outbox route is not
+  mode-gated) until the timer is pulled or the 24h delivery deadline hands them to the
+  manager — pull BOTH levers for a full stop. In-flight sweeps (resolve/escalate/expire)
+  deliberately keep running in every NUDGES_MODE — but they live inside step 8, so a
+  **WATCHERS_MODE rollback freezes them ALL** while the un-gated outbox keeps serving
+  (final-review #4): if you ever roll WATCHERS_MODE back with nudges in flight, disable the
+  box timer in the same breath, or delivered asks sit silent with no sweep to escalate them.
 - **Docs:** `docs/customer-onboarding-runbook.md` + `docs/getting-started-for-firms.md` —
   extend the recorded disclosures with the ratified 2026-08-15 one: the firm's assistant may
   proactively ask about work, and what you tell it can be recorded to the firm's record.
@@ -438,6 +576,15 @@ resolve the D6 open question, ship the ratified disclosure.
 - [ ] **resolve D6:** which session the reply landed in, was the question in context — record
   in engineering-memory; if context was absent and the flow failed, revisit session targeting
   before enabling any real recipient
+- [ ] **pin the send-failure signal (Phase-4 review F3 — MUST land before NUDGES_MODE=live):**
+  force a failed Telegram send (a sandbox whose bot the recipient never Started — the
+  recorded Ben-Shelton state) and observe what `nemoclaw agent --deliver` does: exit code,
+  and whether assistant text still lands in the trajectory (the date-eval record says it
+  does — 94 turns into a dead chat all left text). If both signals read "success" on a dead
+  chat, the runner's `delivered` verdict is unearned for never-Started recipients and needs
+  a stronger check (e.g. the gateway's send log) before any real technician is enrolled;
+  minimum bar: the E2E documents exactly which failure modes report `delivered` falsely and
+  the enrollment runbook requires a verified Start per recipient.
 - [ ] budget regression: second same-person overdue visit → row only if under budget; third →
   deferred
 - [ ] escalation regression: force an `asked_at` 49h back on the synthetic nudge → manager
@@ -486,3 +633,56 @@ in the watcher framework). Stack, don't parallelize: whichever lands second reba
   renumber on rebase.
 - The `dispatch` gate line anchor must be re-found at implement time (server.ts moved since
   the pre-landing draft).
+
+## Amendment (2026-08-17, user-ratified): the firm-local ask window
+
+**Ruling:** technicians are asked only during working hours — **7 AM–7 PM in the firm's
+timezone, seven days a week**. Raised by the user after reviewing the built ladder: a visit
+scheduled to end at 5 PM produced a ~8 PM ping, and off-hours messages are the likeliest to be
+missed.
+
+**Design — the gate sits on COMPOSE, not the outbox.** The question's day phrase
+("earlier today"/"yesterday") is baked in by `relativeDayPhrase` at compose time, so holding a
+*composed* message overnight would deliver a stale "earlier today" about yesterday's visit —
+the exact fabrication the served-phrase ruling (2026-08-16) forbids. Instead, out-of-window
+tenants' pending rows are left completely untouched (`held` count in `ComposeSummary`); the
+first in-window tick composes them fresh and the box delivers within minutes. Detection stays
+ungated (the watcher still notices at 9 PM), as do the escalation/expiry sweeps and delivery of
+already-composed rows.
+
+**Paired constraint:** the longest hold is one night (~12h, 7 PM→7 AM), safely inside the
+watcher's 24h never-asked deadline. A future window that excludes whole DAYS must lengthen
+`NUDGE_DELIVERY_DEADLINE_HOURS` with it, or weekend-held rows expire to the manager without the
+technician ever being asked (comment pinned on both constants).
+
+**Known v1 limit (accepted):** a multi-hour box outage can still deliver an already-composed
+question with a stale day phrase; bounded by the 24h expiry. Per-firm configurable hours are a
+later follow-up (firm profile), not v1.
+
+Changes: `insideAskWindow` + `ASK_WINDOW_START_HOUR`/`ASK_WINDOW_END_HOUR` (7/19) in
+`src/teamLead/compose.ts` (UTC fallback on an unknown zone so one bad tenant tz cannot block
+the fleet-wide sweep — the per-row day-phrase call still fails loudly for that tenant);
+`held` in `ComposeSummary` (flows into the lifecycle step-9 log line for shadow/live
+observability); deadline comment in `src/jobs/watchers.ts`; docs (control-plane env note,
+getting-started-for-firms working-hours sentence, engineering-memory Stage-1 entry).
+
+### Automated verification
+
+- [x] `npm run typecheck` / `npm run lint` / `npm test` / `npm run build` green with the new
+      tests: overnight hold touches NOTHING (every mutating dep throws), window is firm-local
+      not UTC (01:00 UTC = 6 PM LA composes), boundary hours (7:00 in / 19:00 out), unknown-zone
+      UTC fallback. *Evidence 2026-08-17 (worktree, 545xx stack): typecheck/lint/build clean,
+      vitest 1789 passed / 0 failed across 86 files (+4 new window tests over the 30db750
+      baseline of 1785).*
+
+### Review record (round 6, 2026-08-17)
+
+Adversarial review of the ask-window diff: **one finding, fixed** — the firm-facing doc promised
+"questions only go out 7 AM–7 PM" unqualified, while the outbox (by design) can deliver an
+already-composed row later if the box was down; wording softened to "writes and sends", with the
+recovery case named. Verified safe with computed arithmetic: worst hold = 13h (DST fall-back
+night), 11h slack before the 24h deadline (comments corrected from "~12h"); every compose-failure
+path during the morning still exits manager-first (orphan doctrine holds); the window makes
+`relativeDayPhrase` strictly safer through both DST transitions; a held `pending` row correctly
+holds its budget slot; unknown-tz fallback cannot cause repeated wrong-hour asks (the per-row
+day-phrase call fails loudly for that tenant → attempts cap → manager handoff).

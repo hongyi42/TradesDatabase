@@ -16,6 +16,8 @@ import {
   type CollectResult,
 } from '../model/deepinfraUsage.js';
 import { runWatchers, type WatchersSummary } from './watchers.js';
+import { runTeamLeadCompose, type ComposeSummary } from '../teamLead/compose.js';
+import { hasModelCredentials } from '../model/forcedTool.js';
 
 // The lifecycle heartbeat — the ONE scheduled entrypoint (Render Cron Job,
 // */5 * * * *; Render guarantees at most one concurrent run). CADENCE GATE
@@ -38,10 +40,19 @@ import { runWatchers, type WatchersSummary } from './watchers.js';
 //     the largest (allocated) cost line does not depend on someone remembering
 //     to retype an invoice — an omission that renders as $0, i.e. "no spend";
 // (7) recompute the current month's per-tenant cost rollup (idempotent);
-// (8) the Stage-0 watcher (plan 2026-08-15 feature A): deterministic
-//     overdue-visit gap detection — runs EVERY tick, gated on WATCHERS_MODE
-//     (unset = skipped; 'shadow' = count only; 'live' = review items + push;
-//     anything else = LOUD stepError — a config typo must never be silently off).
+// (8) the watcher (plan 2026-08-15 features A+B): deterministic overdue-visit
+//     gap detection + the Stage-1 ladder — runs EVERY tick, gated on
+//     WATCHERS_MODE (unset = skipped; 'shadow' = count only; 'live' = act;
+//     anything else = LOUD stepError — a config typo must never be silently
+//     off). NUDGES_MODE gates the ladder within live: unset = 'off' silently
+//     (rung 1 is optional — the Stage-0 behavior needs no new env), 'shadow'
+//     counts would-be nudges, 'live' asks technicians first; any other value
+//     is the same LOUD stepError.
+// (9) the team-lead compose turn (feature B Phase 3): the ONE model call in
+//     the ladder — writes the question for each pending nudge (or declines).
+//     Every tick, but triple-gated: NUDGES_MODE='live' (a frozen ladder must
+//     not keep composing leftovers), model credentials present (the step-3/4
+//     key idiom), and per-row attempt caps inside the runner.
 // Steps 5-7 report `skipped` — not an error — when the cost tables are absent,
 // so a deploy that lands before the migration does not turn the cron red. Step 6
 // also skips when no DeepInfra billing key is resolvable (e.g. after a failover
@@ -67,6 +78,9 @@ export interface LifecycleDeps {
   // skip-when-unconfigured branch without setting real env vars.
   hasBillingKey?: () => boolean;
   runWatchers?: typeof runWatchers;
+  composeNudges?: typeof runTeamLeadCompose;
+  // Same seam idea as hasBillingKey: the skip branch must be testable keyless.
+  hasModelKey?: () => boolean;
 }
 
 export interface LifecycleSummary {
@@ -87,6 +101,7 @@ export interface LifecycleSummary {
     | { skipped: string }
     | { stepError: string };
   watchers: WatchersSummary | { skipped: string } | { stepError: string };
+  teamLeadCompose: ComposeSummary | { skipped: string } | { stepError: string };
   ok: boolean;
 }
 
@@ -309,20 +324,52 @@ export async function runLifecycle(
   // never read as "watchers quietly off".
   let watchers: LifecycleSummary['watchers'];
   const watchersMode = process.env.WATCHERS_MODE;
+  // NUDGES_MODE: unset is a VALID state ('off' — rung 1 simply not enabled,
+  // unlike WATCHERS_MODE where unset means the whole step is dark), but a
+  // typo is the same loud failure. Checked only when the step actually runs.
+  const nudgesModeRaw = process.env.NUDGES_MODE;
+  const nudgeMode =
+    !nudgesModeRaw ? ('off' as const)
+    : nudgesModeRaw === 'shadow' || nudgesModeRaw === 'live' ? nudgesModeRaw
+    : null;
   if (!watchersMode) {
     watchers = { skipped: 'WATCHERS_MODE unset (shadow|live)' };
   } else if (watchersMode !== 'shadow' && watchersMode !== 'live') {
     watchers = { stepError: `WATCHERS_MODE must be 'shadow' or 'live', got '${watchersMode}'` };
     ok = false;
+  } else if (nudgeMode === null) {
+    watchers = {
+      stepError: `NUDGES_MODE must be 'shadow' or 'live' when set, got '${nudgesModeRaw}'`,
+    };
+    ok = false;
   } else {
     try {
-      const summary = await (deps.runWatchers ?? runWatchers)(nowIso, watchersMode);
+      const summary = await (deps.runWatchers ?? runWatchers)(nowIso, watchersMode, {}, nudgeMode);
       watchers = summary;
       // EVERY tenant failing is systemic (DB down, bad schema), not row blips —
       // the pairing-sweep detector shape.
       if (summary.tenants > 0 && summary.tenantErrors === summary.tenants) ok = false;
     } catch (err) {
       watchers = { stepError: msg(err) };
+      ok = false;
+    }
+  }
+
+  // 9. The team-lead compose turn — every tick, triple-gated (see header).
+  // Gated on NUDGES_MODE='live', not merely the key: only a live ladder mints
+  // pending rows, and a rolled-back ladder must not keep composing leftovers
+  // (the in-flight SWEEP keeps running inside step 8 — creation and compose
+  // are what a rollback turns off).
+  let teamLeadCompose: LifecycleSummary['teamLeadCompose'];
+  if (nudgeMode !== 'live') {
+    teamLeadCompose = { skipped: "NUDGES_MODE not 'live'" };
+  } else if (!(deps.hasModelKey ?? hasModelCredentials)()) {
+    teamLeadCompose = { skipped: 'no inference credentials' };
+  } else {
+    try {
+      teamLeadCompose = await (deps.composeNudges ?? runTeamLeadCompose)(nowIso);
+    } catch (err) {
+      teamLeadCompose = { stepError: msg(err) };
       ok = false;
     }
   }
@@ -336,6 +383,7 @@ export async function runLifecycle(
     deepinfraUsage,
     costRollup,
     watchers,
+    teamLeadCompose,
     ok,
   };
 }

@@ -826,6 +826,48 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   Stage 1's voice inserts the technician-first rung when it lands. Money-inference Phase 3 note:
   its quiet-open-jobs nudge must become this framework's SECOND detector (shared tenant loop,
   same step) — never a parallel copy.
+- **Stage 1 — the voice — is BUILT (2026-08-16, branch `feat/spine-voice`, plan
+  `2026-08-15-feature-B-intelligent-spine-stage1-voice.md`; NOT yet deployed).** The ladder lives
+  inside step 8: a fresh gap with a reachable technician (active + Telegram + sandbox + host,
+  under 2 asks/person/rolling-24h — NO firm-wide cap, per-tick cap 5 is the surge brake) becomes
+  a `nudges` row instead of a manager item; **`NUDGES_MODE`** gates it independently of
+  WATCHERS_MODE (unset='off' = Stage-0 byte-for-byte, `shadow` counts `nudgesWouldCreate`,
+  `live` runs the ladder; typo = LOUD stepError). Step 9 (`teamLeadCompose`) is the ONE model
+  call: writes the question from code-built context only — time words are SERVED
+  (`relativeDayPhrase`: "earlier today"/"yesterday"/"a couple of days ago"; user ruling: the
+  model may say "today" only when the code's clock said so). **Ask window (user ruling
+  2026-08-17): compose runs only 7 AM–7 PM firm-local, seven days** (`insideAskWindow`) — an
+  evening gap holds pending (`held` in the step summary) and composes fresh next morning. The
+  gate sits on COMPOSE, not the outbox, precisely because of the served phrases: a question
+  written at night and delivered at 7 AM would say "earlier today" about yesterday. Paired
+  constraint: the 24h never-asked deadline absorbs the ≤12h overnight hold — a window that
+  ever excludes whole DAYS must lengthen that deadline with it, or weekend-held rows expire
+  to the manager unasked. Known v1 limit: a multi-hour box outage can still deliver an
+  already-composed question with a stale day phrase (bounded by the 24h expiry; accepted).
+  Identity `spine:team-lead` is
+  dispatch-capped to read/ask (deny-by-default namespace gate + DB CHECK `ref not like
+  'spine:%'` — the Composio relay routes around dispatch and keys on roster-row existence).
+  Transport: `GET/POST /control/nudges` (host token) + `nudge-runner.timer` on the box (5-min,
+  reuses badge-pull.env, fresh session `nudge-<id>` per ask, delivery judged by assistant TEXT
+  in the trajectory, pre-check re-acks instead of re-pinging on a lost ack). **THE ORPHAN
+  DOCTRINE (four adversarial reviews converged on it): any path that kills a nudge before the
+  ask lands must hand the gap to the manager FIRST** — model decline, thin context, compose ×3,
+  serve cap 10, delivery ×3, and the watcher's 24h never-asked deadline (covers offboarded/
+  recycled/host-unbound techs, invisible to every pull) — because an ever-nudged assignment is
+  never fresh again and the once-ever index blocks re-asks; a silent death = gap on NEITHER
+  surface forever. Never-asked handoffs use the STAGE-0 copy (never "their assistant asked").
+  Corollary: a row too tampered even to FLAG is FROZEN (left open, logged), never closed —
+  closing it would be the orphan again. Rollback reality: unsetting NUDGES_MODE stops
+  creation+compose only — queued rows keep serving until `systemctl disable --now
+  nudge-runner.timer`; pull BOTH levers. And a WATCHERS_MODE rollback freezes ALL nudge
+  sweeps (they live in step 8) while the un-gated outbox keeps serving — rolling back the
+  watcher with nudges in flight requires pulling the box timer too. DEPLOY
+  PREREQUISITES: watchers live-flip decision, pilot migrations (`20260817090000_nudges` +
+  `20260817100000_reserve_spine_namespace`), Render deploy, runner install, and the Phase-5
+  MUST-PIN: what `--deliver` reports on a FAILED Telegram send (dead chat leaves CLI success +
+  trajectory text per the date-eval record — `delivered` is unearned for never-Started
+  recipients until probed). Replies take the ordinary record_field_note path — that capture is
+  what closes the loop.
 - **`nemoclaw list` shows the ONBOARDING RECORD, not the live inference route (2026-08-06).** Read
   off that list, s2/s5/s6/s7 all say `provider: nvidia-prod` — which reads exactly like "the fleet
   has been stuck on the fallback for six days", and was reported as such before being checked. It

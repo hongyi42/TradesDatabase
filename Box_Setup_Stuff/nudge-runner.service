@@ -1,0 +1,19 @@
+# /etc/systemd/system/nudge-runner.service
+# Deliver queued team-lead nudges through each technician's own agent (plan
+# 2026-08-15 feature B, Phase 4). Pulls the spine's /control/nudges outbox and
+# reports per-item outcomes; the spine owns retries. The script ALWAYS exits 0
+# (ops-report.sh discipline) — a delivery problem is the spine's row state,
+# never a red unit on the box.
+[Unit]
+Description=Deliver queued team-lead nudges (spine /control/nudges outbox)
+After=docker.service nemoclaw-boot.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/sbin/nudge-runner.sh
+
+[Install]
+WantedBy=multi-user.target

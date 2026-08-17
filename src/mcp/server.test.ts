@@ -100,7 +100,7 @@ afterAll(async () => {
     // call, so a suite run leaves hundreds behind. Left uncleaned they would
     // skew any later test that counts spine events per tenant — which is
     // exactly what the rollup's allocation split does.
-    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations, cost_events, money_events, tenant_profiles cascade',
+    'truncate table schedule_entries, customers, jobs, visits, raw_captures, technicians, review_items, web_requests, schedule_events, job_type_durations, cost_events, money_events, tenant_profiles, nudges cascade',
   );
   // Restore the seed capacity (2/5) so post-suite live checks see known values.
   await setTenantSeats(tenantId, { managerSeats: 2, technicianSeats: 5 });
@@ -7541,6 +7541,54 @@ describe('set_firm_profile (firm-profile plan)', () => {
       expect(full.data.note).toContain('No gaps');
     } finally {
       await mgrC.close();
+    }
+  });
+});
+
+// The team-lead ceiling (plan 2026-08-15 feature B, Phase 3): the whole
+// `spine:` namespace is deny-by-default in dispatch — only the read/ask
+// allowlist passes, everything else throws BEFORE any tool body runs. The
+// roster read tolerates the roster-less ref (getTechnician returns null; the
+// inactive-state guard only fires on a real row).
+describe('team-lead identity ceiling (spine: namespace)', () => {
+  test('allowed: resolve_date dispatches for spine:team-lead', async () => {
+    const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+    try {
+      const res = await callWith('resolve_date', { dayShift: 1 });
+      expect(res.isError).toBe(false);
+      expect(res.data.status).toBe('resolved');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('denied: writes, sends, staging, and admin tools all hit the cap error', async () => {
+    const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+    try {
+      for (const [name, args] of [
+        ['record_field_note', { rawText: 'x', channel: 'technician_note' }],
+        ['send_email', { to: 'a@b.c', subject: 'x', body: 'x' }],
+        ['book_visit', { customerId: '00000000-0000-0000-0000-000000000000', date: '2026-08-20', startTime: '09:00' }],
+        ['list_pending_reviews', {}],
+        ['add_team_member', { name: 'X', tier: 'technician' }],
+      ] as Array<[string, Record<string, unknown>]>) {
+        const res = await callWith(name, args);
+        expect(res.isError).toBe(true);
+        expect(res.text).toContain('the team-lead identity is capped to read/ask');
+      }
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('an unknown spine:* ref gets the same ceiling (namespace-wide, fails closed)', async () => {
+    const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:other' });
+    try {
+      const res = await callWith('record_field_note', { rawText: 'x' });
+      expect(res.isError).toBe(true);
+      expect(res.text).toContain('capped to read/ask');
+    } finally {
+      await c.close();
     }
   });
 });

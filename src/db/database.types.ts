@@ -811,6 +811,81 @@ export type Database = {
           },
         ]
       }
+      nudges: {
+        Row: {
+          actor_ref: string
+          asked_at: string | null
+          attempts: number
+          context: Json
+          created_at: string
+          id: string
+          kind: string
+          question: string | null
+          queued_at: string | null
+          resolution: string | null
+          resolved_at: string | null
+          serve_count: number
+          status: string
+          subject_ref: string
+          technician_id: string | null
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          actor_ref?: string
+          asked_at?: string | null
+          attempts?: number
+          context?: Json
+          created_at?: string
+          id?: string
+          kind: string
+          question?: string | null
+          queued_at?: string | null
+          resolution?: string | null
+          resolved_at?: string | null
+          serve_count?: number
+          status?: string
+          subject_ref: string
+          technician_id?: string | null
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          actor_ref?: string
+          asked_at?: string | null
+          attempts?: number
+          context?: Json
+          created_at?: string
+          id?: string
+          kind?: string
+          question?: string | null
+          queued_at?: string | null
+          resolution?: string | null
+          resolved_at?: string | null
+          serve_count?: number
+          status?: string
+          subject_ref?: string
+          technician_id?: string | null
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "nudges_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "nudges_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       ops_events: {
         Row: {
           closed_at: string | null

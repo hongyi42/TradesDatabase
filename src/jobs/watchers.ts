@@ -1,4 +1,6 @@
 import {
+  countRecentAsks,
+  createPendingNudge,
   findOpenReviewItemsByKind,
   flagOverdueVisitGap,
   getTenant,
@@ -6,10 +8,13 @@ import {
   listEverFlaggedSubjectRefs,
   listJobStampedCaptureTimes,
   listJobsWithCustomerByIds,
+  listNudgedSubjectRefs,
+  listNudgesByStatus,
   listOverdueConfirmedAssignments,
   listTeam,
   listTenantIdsWithTelegramBindings,
   listVisitTimesForJobs,
+  markNudgeOutcome,
   resolveOpenReviewItemFor,
 } from '../db/index.js';
 import { notifyManagers } from '../calls/notify.js';
@@ -64,10 +69,39 @@ import { naiveLocalISO } from '../schedule/booking.js';
 
 export type WatcherMode = 'shadow' | 'live';
 
+// Stage 1 (plan 2026-08-15 feature B): the ladder. When the technician is
+// reachable and their budget allows, a fresh gap becomes a NUDGE — a question
+// delivered through their own agent — INSTEAD of a manager review item; the
+// manager surface remains as the fallback (unreachable tech) and as rung 2
+// (48h of silence after the ask). NUDGES_MODE gates it independently of
+// WATCHERS_MODE: 'off' is byte-for-byte the deployed Stage-0 behavior,
+// 'shadow' counts would-be nudges while still flagging the manager, 'live'
+// runs the ladder. Watchers-live is a PREREQUISITE for any of it — in
+// watcher-shadow this function returns before every write path.
+export type NudgeMode = 'off' | 'shadow' | 'live';
+
 // Tune at the shadow-volume review (user decision 2026-08-16: 3h/72h/5 stand).
 export const OVERDUE_HOURS = 3;
 export const LOOKBACK_HOURS = 72;
 export const MAX_NEW_ITEMS_PER_TENANT_TICK = 5;
+
+// Ladder tuning (user-ratified 2026-08-16): 2 asks per person per rolling
+// 24h, NO firm-wide cap (volume scales with the roster; the per-tick cap
+// above is the surge brake); a budget-exhausted gap DEFERS to a later tick,
+// never overflows onto the manager. 48h of post-ask silence escalates.
+// Code constants, not env (the OVERDUE_HOURS pattern: one tuning surface).
+export const NUDGE_BUDGET_PER_PERSON_DAY = 2;
+export const NUDGE_ESCALATE_HOURS = 48;
+// A nudge still not ASKED this long after creation is stuck in some silent
+// way the serve path cannot see (Phase-4 review F1: an offboarded technician
+// is liveness-skipped forever; a recycled sandbox clears host_id, making the
+// row invisible to EVERY pull's inner join; a rollback freezes pending rows).
+// The ask is not happening — the manager takes the gap. Long enough for a
+// rebind to heal a recycle first, and for the compose ask window's longest
+// overnight hold (12h; 13h on a DST fall-back night) with room to spare — a window
+// that ever excludes whole DAYS must lengthen this deadline with it, or
+// weekend-held rows expire to the manager without the tech ever being asked.
+export const NUDGE_DELIVERY_DEADLINE_HOURS = 24;
 
 // UTC offsets span −12h..+14h; subtracting 14h from a wall-clock instant is a
 // floor no real timezone's UTC reading can undershoot.
@@ -78,7 +112,7 @@ const MAX_UTC_OFFSET_MS = 14 * 3_600_000;
 // it in UTC — no timezone math — and the weekday comes from Intl over the
 // same string, so the weekday-date pair can never disagree (the weekday-guard
 // doctrine: fused derivation, not model arithmetic).
-function wallClockLabel(naiveIso: string): string {
+export function wallClockLabel(naiveIso: string): string {
   const d = new Date(Date.parse(naiveIso));
   const day = new Intl.DateTimeFormat('en-US', {
     timeZone: 'UTC',
@@ -100,6 +134,17 @@ function wallClockLabel(naiveIso: string): string {
 // can only be closed by the status-change path or a manual dismiss.
 const MAX_FLOOR_REACH_MS = 7 * 24 * 3_600_000;
 
+// The ONE manager-item copy for a plain unreported visit (user-approved
+// 2026-08-16). Used by the routing fallback AND the expired-nudge handoff —
+// deliberately NOT the escalation copy, which claims "their assistant asked":
+// an expired nudge's ask never landed, and the manager must never be told it
+// did (Phase-4 review F1/F3).
+const stage0Suggestion = (title: string, customer: string, endsAtLocal: string): string =>
+  `The visit for '${title}' (${customer}) was scheduled to wrap up by ` +
+  `${wallClockLabel(endsAtLocal)}, but nothing has been recorded about it yet — no ` +
+  `field note and no status change. Worth checking how it went so the job's record ` +
+  `stays complete. If nothing needed recording, just dismiss this.`;
+
 export interface WatcherDeps {
   listTenants?: typeof listTenantIdsWithTelegramBindings;
   getTenant?: typeof getTenant;
@@ -115,24 +160,37 @@ export interface WatcherDeps {
   resolveGap?: typeof resolveOpenReviewItemFor;
   notify?: typeof notifyManagers;
   hasPushToken?: () => boolean;
+  // Stage-1 ladder seams
+  createNudge?: typeof createPendingNudge;
+  listNudged?: typeof listNudgedSubjectRefs;
+  listNudges?: typeof listNudgesByStatus;
+  resolveNudge?: typeof markNudgeOutcome;
+  countAsks?: typeof countRecentAsks;
 }
 
 export interface WatchersSummary {
   mode: WatcherMode;
   tenants: number;
   gapsFound: number; // standing snapshot: every current gap in the window
-  freshGaps: number; // gaps never flagged before — what live would open
+  freshGaps: number; // gaps never surfaced on EITHER rung — what live would act on
   itemsOpened: number;
   itemsResolved: number;
   pushed: number; // tenants that got the count-only line this tick
   pushSkipped: boolean; // true when items opened but no BOARD_BOT_TOKEN
   tenantErrors: number;
+  nudgeMode: NudgeMode;
+  nudgesWouldCreate: number; // nudge-shadow: gaps the live ladder would have asked about
+  nudgesCreated: number;
+  nudgesResolved: number; // answered (activity) or cancelled (status change)
+  nudgesEscalated: number; // 48h silence → handed to the manager (rung 2)
+  nudgesExpired: number; // never asked within the deadline → manager fallback
 }
 
 export async function runWatchers(
   nowIso: string,
   mode: WatcherMode,
   deps: WatcherDeps = {},
+  nudgeMode: NudgeMode = 'off',
 ): Promise<WatchersSummary> {
   const listTenants = deps.listTenants ?? listTenantIdsWithTelegramBindings;
   const get = deps.getTenant ?? getTenant;
@@ -148,6 +206,11 @@ export async function runWatchers(
   const resolveGap = deps.resolveGap ?? resolveOpenReviewItemFor;
   const notify = deps.notify ?? notifyManagers;
   const hasPushToken = deps.hasPushToken ?? (() => !!process.env.BOARD_BOT_TOKEN);
+  const createNudge = deps.createNudge ?? createPendingNudge;
+  const listNudged = deps.listNudged ?? listNudgedSubjectRefs;
+  const listNudges = deps.listNudges ?? listNudgesByStatus;
+  const resolveNudge = deps.resolveNudge ?? markNudgeOutcome;
+  const countAsks = deps.countAsks ?? countRecentAsks;
 
   // listTenantIdsWithTelegramBindings, not listTenantSeats: it skips tenants
   // with nobody Telegram-reachable. Today that ALSO excludes the eval tenants
@@ -168,6 +231,12 @@ export async function runWatchers(
     pushed: 0,
     pushSkipped: false,
     tenantErrors: 0,
+    nudgeMode,
+    nudgesWouldCreate: 0,
+    nudgesCreated: 0,
+    nudgesResolved: 0,
+    nudgesEscalated: 0,
+    nudgesExpired: 0,
   };
 
   for (const tenantId of tenantIds) {
@@ -203,9 +272,40 @@ export async function runWatchers(
         return jobId && startsAtLocal ? [{ item, jobId, startsAtLocal }] : [];
       });
 
-      // ONE batched activity fetch across candidates' AND open items' jobs.
+      // Open nudges are swept whenever the WATCHER is live — deliberately
+      // regardless of NUDGES_MODE (Phase-2 review finding F1): the fresh
+      // pre-filter below excludes ever-nudged assignments in every mode, so
+      // if a rollback (NUDGES_MODE unset/shadow) also froze this sweep, an
+      // in-flight asked nudge whose technician never replies would reach
+      // NEITHER surface, ever — silence must always escalate. Only rung-1
+      // CREATION is nudgeMode-gated; in-flight rows keep their lifecycle.
+      // (When Stage 1 has never run this read is empty and free.)
+      // Malformed context rows are KEPT (unlike openGaps): the status-change
+      // resolve needs only subject_ref; only the activity path needs context,
+      // so a tampered row can still close when its visit is cancelled — it
+      // just never escalates (fail-closed; the guard in the escalation loop
+      // below is what skips it).
+      const openNudges =
+        mode === 'live'
+          ? (await listNudges(tenantId, ['pending', 'queued', 'asked'])).filter(
+              (n) => n.kind === 'overdue_visit_gap',
+            )
+          : [];
+      const openNudgeGaps = openNudges.map((n) => {
+        const c = (n.context ?? {}) as Record<string, unknown>;
+        const jobId = typeof c.jobId === 'string' ? c.jobId : null;
+        const startsAtLocal =
+          typeof c.startsAtLocal === 'string' && !Number.isNaN(Date.parse(c.startsAtLocal))
+            ? c.startsAtLocal
+            : null;
+        return { n, jobId, startsAtLocal };
+      });
+
+      // ONE batched activity fetch across candidates', open items', AND open
+      // nudges' jobs.
       const jobIds = new Set<string>(candidates.map((c) => c.job_id));
       for (const g of openGaps) jobIds.add(g.jobId);
+      for (const x of openNudgeGaps) if (x.jobId && x.startsAtLocal) jobIds.add(x.jobId);
 
       // Per-job LATEST activity, as minute-precision naive-local epoch — only
       // the max ever matters, and one accumulator serves both homes.
@@ -218,6 +318,8 @@ export async function runWatchers(
         let minNaiveMs = Date.parse(from);
         for (const c of candidates) minNaiveMs = Math.min(minNaiveMs, Date.parse(c.starts_at));
         for (const g of openGaps) minNaiveMs = Math.min(minNaiveMs, Date.parse(g.startsAtLocal));
+        for (const x of openNudgeGaps)
+          if (x.startsAtLocal) minNaiveMs = Math.min(minNaiveMs, Date.parse(x.startsAtLocal));
         minNaiveMs = Math.max(minNaiveMs, Date.parse(from) - MAX_FLOOR_REACH_MS);
         const floorUtcIso = new Date(minNaiveMs - MAX_UTC_OFFSET_MS).toISOString();
         const ids = [...jobIds];
@@ -243,24 +345,34 @@ export async function runWatchers(
       const gaps = candidates.filter((c) => !hasActivitySince(c.job_id, c.starts_at));
       summary.gapsFound += gaps.length;
 
-      // FRESH = never flagged, any status (the batched cap pre-filter). Read
-      // in both modes: freshGaps is the number the shadow→live flip decision
-      // needs, since it is exactly what live would open.
-      const everFlagged = new Set(
-        await listEverFlagged(tenantId, 'overdue_visit_gap', gaps.map((g) => g.id)),
-      );
-      const fresh = gaps.filter((g) => !everFlagged.has(g.id));
+      // FRESH = never surfaced on EITHER rung, any status (the batched cap
+      // pre-filter, now over BOTH dedup stores — without the nudges read, a
+      // nudged gap would look fresh every tick and burn a cap slot
+      // re-discovering itself). Read in both modes: freshGaps is the number
+      // the shadow→live flip decision needs, since it is exactly what live
+      // would act on.
+      const gapIds = gaps.map((g) => g.id);
+      const [flaggedRefs, nudgedRefs] = await Promise.all([
+        listEverFlagged(tenantId, 'overdue_visit_gap', gapIds),
+        listNudged(tenantId, 'overdue_visit_gap', gapIds),
+      ]);
+      const everSurfaced = new Set([...flaggedRefs, ...nudgedRefs]);
+      const fresh = gaps.filter((g) => !everSurfaced.has(g.id));
       summary.freshGaps += fresh.length;
 
       if (mode === 'shadow') continue; // counts only — nothing written, nobody pushed
 
       // Auto-resolve, two paths. (1) The gap an open item describes has been
-      // filled by activity since the visit started.
-      const statusById = new Map(
-        (await listAssignments(tenantId, openGaps.map((g) => g.item.subject_ref))).map((a) => [
-          a.id,
-          a.status,
+      // filled by activity since the visit started. ONE status batch serves
+      // items and nudges alike (both key their subject on the assignment id).
+      const statusSubjects = [
+        ...new Set([
+          ...openGaps.map((g) => g.item.subject_ref),
+          ...openNudgeGaps.map((x) => x.n.subject_ref),
         ]),
+      ];
+      const statusById = new Map(
+        (await listAssignments(tenantId, statusSubjects)).map((a) => [a.id, a.status]),
       );
       for (const g of openGaps) {
         if (hasActivitySince(g.jobId, g.startsAtLocal)) {
@@ -291,16 +403,167 @@ export async function runWatchers(
         }
       }
 
-      // Flag fresh gaps — capped, oldest scheduled end first (candidates come
-      // ordered; the filters preserve it).
-      const top = fresh.slice(0, MAX_NEW_ITEMS_PER_TENANT_TICK);
+      // Sweep open nudges with the SAME two resolve paths, then collect the
+      // silent ones for escalation. A recorded reply lands as a capture, so
+      // "nothing to report" mechanically counts as filled (user-ratified
+      // 2026-08-16) — only pure silence climbs the ladder.
       let opened = 0;
+      const escalations: typeof openNudgeGaps = [];
+      const expired: typeof openNudgeGaps = [];
+      for (const x of openNudgeGaps) {
+        if (x.jobId && x.startsAtLocal && hasActivitySince(x.jobId, x.startsAtLocal)) {
+          const closed = await resolveNudge(
+            x.n.id,
+            tenantId,
+            'answered',
+            'a field report arrived — the gap filled itself',
+          );
+          if (closed) summary.nudgesResolved += 1;
+          continue;
+        }
+        const status = statusById.get(x.n.subject_ref);
+        if (status === 'cancelled' || status === 'completed') {
+          const closed = await resolveNudge(
+            x.n.id,
+            tenantId,
+            'cancelled',
+            `the visit was ${status} — nothing left to ask`,
+          );
+          if (closed) summary.nudgesResolved += 1;
+          continue;
+        }
+        if (
+          x.n.status === 'asked' &&
+          x.n.asked_at &&
+          Date.parse(x.n.asked_at) <= nowMs - NUDGE_ESCALATE_HOURS * 3_600_000
+        ) {
+          escalations.push(x);
+          continue;
+        }
+        // Never ASKED within the deadline (Phase-4 review F1): the row is
+        // stuck in some way the serve path cannot see — liveness-skipped
+        // forever, host-unbound after a recycle (invisible to every pull),
+        // or rollback-frozen pending. The activity/status paths above still
+        // win; past the deadline, the manager takes the gap.
+        if (
+          (x.n.status === 'pending' || x.n.status === 'queued') &&
+          Date.parse(x.n.created_at) <= nowMs - NUDGE_DELIVERY_DEADLINE_HOURS * 3_600_000
+        ) {
+          expired.push(x);
+        }
+      }
+
+      // Expired handoff: the Stage-0 copy, NEVER the escalation copy — the
+      // ask never landed, and the manager must not be told it did. Flag
+      // first, close second (the F1 order); malformed contexts stay frozen
+      // (logged; the status-change path can still close them).
+      for (const x of expired) {
+        const c = (x.n.context ?? {}) as Record<string, unknown>;
+        const jobId = typeof c.jobId === 'string' ? c.jobId : null;
+        const startsAtLocal = typeof c.startsAtLocal === 'string' ? c.startsAtLocal : null;
+        const endsAtLocal = typeof c.endsAtLocal === 'string' ? c.endsAtLocal : null;
+        if (!jobId || !startsAtLocal || !endsAtLocal) {
+          console.error(`[watchers] expired nudge ${x.n.id} unfit for handoff (thin context)`);
+          continue;
+        }
+        const title = typeof c.jobTitle === 'string' ? c.jobTitle : 'a job';
+        const customer = typeof c.customerName === 'string' ? c.customerName : 'unknown customer';
+        const item = await flagGap({
+          tenantId,
+          assignmentId: x.n.subject_ref,
+          jobId,
+          technicianRef: typeof c.technicianRef === 'string' ? c.technicianRef : null,
+          startsAtLocal,
+          endsAtLocal,
+          escalatedFromNudge: x.n.id,
+          suggestion: stage0Suggestion(title, customer, endsAtLocal),
+        });
+        if (item) opened += 1;
+        try {
+          // pending|queued-scoped (final-review #3): a delivery ack racing
+          // this sweep moves the row to 'asked' — the expiry must then LOSE
+          // (the 48h escalation owns an asked row's silence), or the audit
+          // would claim an ask that actually landed never did.
+          const moved = await resolveNudge(
+            x.n.id,
+            tenantId,
+            'failed',
+            'never delivered — handed to the manager',
+            ['pending', 'queued'],
+          );
+          if (moved) summary.nudgesExpired += 1;
+        } catch (err) {
+          console.error(`[watchers] nudge ${x.n.id} expiry mark failed`, err);
+        }
+      }
+
+      // RUNG 2: silence became the manager's item. Reuses the SAME kind and
+      // once-per-assignment-ever dedup as the fallback flag — one assignment
+      // can never carry both a fallback item and an escalation item. Copy
+      // needs no extra reads: everything rides in the nudge's own context.
+      // The guard just below drops malformed-context rows (they re-collect
+      // every tick and never escalate — fail-closed; they still close via
+      // the status-change path above).
+      for (const x of escalations) {
+        const c = (x.n.context ?? {}) as Record<string, unknown>;
+        const jobId = typeof c.jobId === 'string' ? c.jobId : null;
+        const startsAtLocal = typeof c.startsAtLocal === 'string' ? c.startsAtLocal : null;
+        const endsAtLocal = typeof c.endsAtLocal === 'string' ? c.endsAtLocal : null;
+        if (!jobId || !startsAtLocal || !endsAtLocal) continue;
+        const title = typeof c.jobTitle === 'string' ? c.jobTitle : 'a job';
+        const customer = typeof c.customerName === 'string' ? c.customerName : 'unknown customer';
+        const techName =
+          typeof c.technicianName === 'string' ? c.technicianName : 'The technician';
+        const item = await flagGap({
+          tenantId,
+          assignmentId: x.n.subject_ref,
+          jobId,
+          technicianRef: typeof c.technicianRef === 'string' ? c.technicianRef : null,
+          startsAtLocal,
+          endsAtLocal,
+          escalatedFromNudge: x.n.id,
+          // Same copy doctrine as the fallback suggestion below — and about
+          // the JOB, even here: the ask is "close the record out", never
+          // "your technician is unresponsive".
+          suggestion:
+            `${techName}'s assistant asked about the '${title}' visit (${customer}) on ` +
+            `${wallClockLabel(naiveLocal(x.n.asked_at as string))} and hasn't heard back — ` +
+            `nothing is on the job's record yet. Worth a direct word so it gets closed out. ` +
+            `If it's already handled, just dismiss this.`,
+        });
+        if (item) opened += 1;
+        // Mark AFTER the flag: if the flag throws, the nudge stays 'asked'
+        // and next tick retries (flagGap's dedup makes the retry converge).
+        // The mark itself is isolated (Phase-2 review F2): the item already
+        // exists, so its push must still go out this tick even if this write
+        // blips — the nudge simply re-escalates next tick and converges on
+        // the dedup.
+        try {
+          const moved = await resolveNudge(
+            x.n.id,
+            tenantId,
+            'escalated',
+            'no reply — handed to the manager',
+          );
+          if (moved) summary.nudgesEscalated += 1;
+        } catch (err) {
+          console.error(`[watchers] nudge ${x.n.id} escalation mark failed`, err);
+        }
+      }
+
+      // Route fresh gaps — capped, oldest scheduled end first (candidates
+      // come ordered; the filters preserve it). RUNG 1 when the ladder is
+      // live and the technician is reachable within budget; the manager item
+      // is the fallback. A budget-exhausted gap takes NEITHER path: it stays
+      // fresh and retries when the rolling window frees a slot (user-ratified
+      // — deferral, never manager overflow).
+      const top = fresh.slice(0, MAX_NEW_ITEMS_PER_TENANT_TICK);
       if (top.length > 0) {
         const [teamRows, jobRows] = await Promise.all([
           team(tenantId),
           listJobs(tenantId, [...new Set(top.map((g) => g.job_id))]),
         ]);
-        const refById = new Map(teamRows.map((t) => [t.id, t.ref]));
+        const techById = new Map(teamRows.map((t) => [t.id, t]));
         // The jobs read is tenant-scoped in the query; the re-check below is
         // the id-only-FK belt-and-suspenders (boardRead pattern). Its customer
         // embed carries no tenant_id to re-check — the job-level scope is the
@@ -310,11 +573,55 @@ export async function runWatchers(
           const job = jobById.get(g.job_id);
           const title = job?.title ?? 'a job';
           const customer = job?.customers?.name ?? 'unknown customer';
+          const tech = g.technician_id ? techById.get(g.technician_id) : undefined;
+          // Reachable = someone a bot can actually message first: active,
+          // Telegram-bound, with a live sandbox on a known host.
+          const reachable =
+            !!tech &&
+            tech.state === 'active' &&
+            !!tech.telegram_user_id &&
+            !!tech.sandbox_ref &&
+            !!tech.host_id;
+          if (reachable && nudgeMode === 'shadow') {
+            // Counted BEFORE budget (shadow creates nothing, so the budget
+            // read would always say 0 anyway): nudgesWouldCreate measures
+            // reachability, the flip decision's number.
+            summary.nudgesWouldCreate += 1;
+          }
+          if (reachable && nudgeMode === 'live') {
+            const asks = await countAsks(
+              tenantId,
+              tech.id,
+              new Date(nowMs - 24 * 3_600_000).toISOString(),
+            );
+            if (asks >= NUDGE_BUDGET_PER_PERSON_DAY) continue; // defer, don't overflow
+            const nudge = await createNudge({
+              tenantId,
+              kind: 'overdue_visit_gap',
+              subjectRef: g.id,
+              technicianId: tech.id,
+              // Everything compose and escalation will ever need — the model
+              // turn sees ONLY this, and rung 2's copy reads it back.
+              context: {
+                customerName: customer,
+                jobTitle: title,
+                technicianRef: tech.ref,
+                technicianName: tech.display_name,
+                assignmentId: g.id,
+                jobId: g.job_id,
+                startsAtLocal: g.starts_at,
+                endsAtLocal: g.ends_at,
+                visitEndLabel: wallClockLabel(g.ends_at),
+              },
+            });
+            if (nudge) summary.nudgesCreated += 1; // null = considered concurrently
+            continue; // rung 1 owns this gap — no manager item, no push
+          }
           const item = await flagGap({
             tenantId,
             assignmentId: g.id,
             jobId: g.job_id,
-            technicianRef: (g.technician_id && refById.get(g.technician_id)) || null,
+            technicianRef: tech?.ref ?? null,
             startsAtLocal: g.starts_at,
             endsAtLocal: g.ends_at,
             // Copy doctrine (user decision 2026-08-16): warm and professional,
@@ -323,11 +630,7 @@ export async function runWatchers(
             // heard the word "spine". The purpose clause ("so the job's
             // record stays complete") is what makes this read as bookkeeping
             // help rather than an audit.
-            suggestion:
-              `The visit for '${title}' (${customer}) was scheduled to wrap up by ` +
-              `${wallClockLabel(g.ends_at)}, but nothing has been recorded about it yet — no ` +
-              `field note and no status change. Worth checking how it went so the job's record ` +
-              `stays complete. If nothing needed recording, just dismiss this.`,
+            suggestion: stage0Suggestion(title, customer, g.ends_at),
           });
           if (item) opened += 1; // null = flagged concurrently — not new
         }

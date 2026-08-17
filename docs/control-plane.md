@@ -111,13 +111,38 @@ reference. Full watcher semantics + rollout state: engineering-memory §3.
      Optional: `GRACE_DAYS` (default 7). `WATCHERS_MODE` (`shadow` | `live`; unset = watcher
      step skipped — the shadow rollout REQUIRES setting this, see engineering-memory §3) and
      `BOARD_BOT_TOKEN` (live-mode manager pushes; absent = `pushSkipped`, never red).
+     `NUDGES_MODE` (`shadow` | `live`; unset = the Stage-1 ladder is off and the watcher
+     behaves exactly as Stage 0 — flip only per the Stage-1 rollout in the feature-B plan).
+     In live mode, questions are composed only inside the firm-local **ask window 7 AM–7 PM,
+     seven days a week** (`ASK_WINDOW_*` in `src/teamLead/compose.ts`): a gap detected in the
+     evening holds as a pending nudge (`held` in the step summary) and is composed fresh —
+     correct "yesterday" wording — on the first morning tick. Detection, escalation, and
+     delivery of already-composed rows are NOT window-gated.
+     **When `NUDGES_MODE=live`, the cron ALSO needs the model-provider key**
+     (`MODEL_PROVIDER` + `INFERENCE_API_KEY`, or `ANTHROPIC_API_KEY`): lifecycle step 9
+     composes each nudge's question on this job. Without the key the step reports
+     `{skipped: 'no inference credentials'}` — green, but NO question is ever written, so
+     every nudge dies at the 24h delivery deadline into the manager queue. Provision the key
+     in the SAME dashboard visit that sets `NUDGES_MODE=live`.
      `SCHEDULE_SHEET_ID` / `GOOGLE_APPLICATION_CREDENTIALS`
      are no longer read (sheet sync retired 2026-07-15) and can be removed.
      It does NOT need `COMPOSIO_GMAIL_AUTH_CONFIG_ID` (only link *minting* on the web service
-     reads it — the sweep never mints), `COMPOSIO_WEBHOOK_SECRET`, `GATEWAY_IDENTITY_SECRET`,
-     or any model-provider key (`INFERENCE_API_KEY` / `ANTHROPIC_API_KEY`) — the job never
-     receives webhooks, serves MCP, or classifies.
+     reads it — the sweep never mints), `COMPOSIO_WEBHOOK_SECRET`, or
+     `GATEWAY_IDENTITY_SECRET` — the job never receives webhooks or serves MCP.
 3. Local dry-run: `npm run build && node -r dotenv/config dist/jobs/lifecycle.js`.
+
+## The host's control routes (all host-pull-token bearer auth, bare 401)
+
+- `GET /control/badges` — the roster-driven badge file + retirements + bindings (below).
+- `POST /control/sandboxes` — recycle-completion report.
+- `POST /control/ops` — health/incident report.
+- `GET /control/nudges` + `POST /control/nudges` (Stage 1, 2026-08-16) — the voice's outbox:
+  queued team-lead nudges for this host's sandboxes, served until the box acks delivery;
+  the POST reports per-item `delivered`/`failed`. Box side: `nudge-runner.timer` (see
+  `Box_Setup_Stuff/nudge-runner.sh`); kill switch `systemctl disable --now
+  nudge-runner.timer`. Serving is NOT gated by `NUDGES_MODE` (that flag lives on the cron):
+  rolling back the mode stops new nudges, but queued rows keep serving until the box timer
+  is pulled or the 24h delivery deadline hands them to the manager.
 
 ## Badge rollout to a host (per host, one-time)
 

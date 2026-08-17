@@ -152,6 +152,16 @@ async function truncateSpine(hasScheduling) {
         where table_schema = 'public' and table_name = 'tenant_profiles'`,
     );
     if (tp.rows.length > 0) tables += ', tenant_profiles';
+    // nudges must clear even WITHOUT --with-roster: it hangs off technicians
+    // (preserved by default), so no cascade above reaches it — but its
+    // subject_ref names assignment ids the truncate just deleted, and stale
+    // any-status rows would suppress the watcher's asks on the fresh schedule
+    // (the once-ever dedup). Existence-probed like tenant_profiles.
+    const nd = await client.query(
+      `select 1 from information_schema.tables
+        where table_schema = 'public' and table_name = 'nudges'`,
+    );
+    if (nd.rows.length > 0) tables += ', nudges';
     await client.query(`truncate table ${tables} cascade`);
   } finally {
     await client.end();

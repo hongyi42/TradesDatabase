@@ -404,6 +404,19 @@ register side-by-side in the gateway's `mcp.servers`.
   recycle.** Failure surfaces: `/var/lib/sandbox-recycler/failed/` = parked entries needing an
   operator (dead bot token, server 409) — `bootstrap-box.sh verify` flags them. Details: setup
   guide §10.
+- **Nudge delivery (2026-08-16, intelligent-spine Stage 1 — the voice):** the spine's watcher can
+  queue ONE short work question for a technician (an unreported visit) after a hard-capped
+  team-lead identity composes it; the box's `nudge-runner.timer` (5-min, root, reuses
+  `/etc/doorman/badge-pull.env`) pulls `GET /control/nudges` and delivers each through the
+  person's OWN agent: `nemoclaw <sandbox> agent --deliver` into a fresh per-nudge session
+  (`nudge-<id>` — id reuse resumes stale conversations), success judged by assistant text in the
+  session TRAJECTORY (never CLI stdout), outcome reported via `POST /control/nudges` (host pull
+  token; the server serves an item until acked — lost ticks self-heal, ~10 unacked serves and
+  the server hands the gap to the manager instead). The technician's reply takes the ordinary
+  `record_field_note` path — that capture is what auto-closes the nudge. Budget: ≤2 asks/person
+  per rolling day, server-enforced; 48h silence escalates to the manager's review queue. Kill
+  switch on the box: `systemctl disable --now nudge-runner.timer`. Details: setup guide §3c
+  (roster-driven badges block) + `Box_Setup_Stuff/nudge-runner.sh` header.
 
 **Phase-5 live verification (2026-07-04, fresh-context probe against the live project):**
 - **Enforcement re-confirmed with the production configs**: technician session rejects

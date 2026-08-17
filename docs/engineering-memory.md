@@ -886,17 +886,28 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   auto-stamped and deliberately differ from the repo filenames (`fireworks_rates` = repo
   20260815120000 vs pilot 20260815175254) — this DB is not `db push`-managed; match the
   precedent, don't "fix" the version drift.
-- **The pilot is missing PR #146's migrations (`money_events`, `tenant_profiles`) as of
-  2026-08-17.** Not cron-breaking (no lifecycle step touches them), but `set_firm_profile` /
-  `v_firm_profile` / the money ledger tools fail for real managers until applied. Same class as
-  the trap above: a merged PR's migrations are not self-applying.
+- **PR #146's migrations (`money_events`, `tenant_profiles`) were missing from the pilot until
+  2026-08-17 — same class as the trap above: a merged PR's migrations are not self-applying.**
+  APPLIED 2026-08-17 (MCP `apply_migration` + pgrst reload), verified: both tables + both views
+  (`v_money_events`, `v_firm_profile`), RLS on, ZERO anon/authenticated grants, `spine_reader`
+  select on both views, append-only + updated-at triggers live, 12 enum values, `anon` has no
+  sequence usage, and both readable through PostgREST from the app path.
+- **TRAP — `supabase_migrations.schema_migrations` is NOT a reliable inventory of the pilot
+  (2026-08-17).** Comparing repo migration filenames against recorded names showed SEVEN
+  "missing"; checking actual OBJECTS showed only TWO were genuinely missing. Five
+  (`phone_call_ingest`, `query_spine_reader`, `v_schedule_local_weekday`,
+  `nvidia_failover_rates`, `ops_events`) had been applied directly via `execute_sql`, which
+  writes no migration record — their tables/roles/views exist fine. **Always audit the pilot by
+  object existence (`information_schema` / `pg_roles` / `pg_proc`), never by the migration
+  table**, or you will "re-apply" a migration that is already live and get a spurious failure.
+  Recorded versions are also MCP auto-stamped and differ from repo filenames by design.
 - **`npm audit fix` is a NO-OP in this repo (verified 2026-08-17); plain `npm update` is a
   124-package sweep including a MAJOR `@hono/node-server` 1→2 jump.** All 7 advisories are
   transitive under `@modelcontextprotocol/sdk` (hono + @hono/node-server, fast-uri via ajv,
   ip-address via express-rate-limit) plus dev-only nanoid/postcss; none of the vulnerable code
   paths are ones we invoke (no hono JSX/CORS/proxy middleware, Linux so no Windows static
   traversal, code-authored JSON schemas, rate-limit keying not access control). The clean fix is
-  a TARGETED lockfile bump — `npm update --package-lock-only hono @hono/node-server fast-uri
+  a TARGETED lockfile bump (LANDED as PR #149, 2026-08-17) — `npm update --package-lock-only hono @hono/node-server fast-uri
   ip-address nanoid postcss brace-expansion` → 8 patch/minor packages, `package.json` and the
   SDK version untouched, audit clean.
 - **`nemoclaw list` shows the ONBOARDING RECORD, not the live inference route (2026-08-06).** Read

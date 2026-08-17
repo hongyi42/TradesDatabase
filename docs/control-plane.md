@@ -108,6 +108,19 @@ reference. Full watcher semantics + rollout state: engineering-memory §3.
    - Environment — required: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `COMPOSIO_API_KEY`
      (without it, steps 1-2 still need it per-row for Composio calls, and steps 3-4 skip
      cleanly — see the step notes above).
+     **TRAP — an env change on a Render CRON does NOT reach scheduled runs until you DEPLOY
+     (hit live 2026-08-17, cost ~30 min of misdiagnosis).** Scheduled runs execute the last
+     *deployed* version, which carries the environment captured at deploy time; saving a
+     variable does not itself trigger a deploy, and a restart is not enough —
+     "if you've recently updated your service's environment variables but haven't redeployed
+     since then, restarting does _not_ incorporate those changes"
+     (https://render.com/docs/deploys). What makes it genuinely deceptive: the dashboard's
+     **Trigger Run** button DOES pick up the current env, so a manual test run behaves
+     correctly while every scheduled run keeps using the old value — the symptom is a
+     perfectly healthy log line reporting the WRONG mode. Diagnose by the scheduled run's log
+     (`"watchers":{"mode":…}`), never by the dashboard field or a Trigger Run. **After ANY env
+     change here — `WATCHERS_MODE`, `NUDGES_MODE`, the inference key — click Manual Deploy →
+     "Deploy latest commit", then verify the next SCHEDULED run's log.**
      Optional: `GRACE_DAYS` (default 7). `WATCHERS_MODE` (`shadow` | `live`; unset = watcher
      step skipped — the shadow rollout REQUIRES setting this, see engineering-memory §3) and
      `BOARD_BOT_TOKEN` (live-mode manager pushes; absent = `pushSkipped`, never red).

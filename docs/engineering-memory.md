@@ -868,6 +868,19 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   trajectory text per the date-eval record — `delivered` is unearned for never-Started
   recipients until probed). Replies take the ordinary record_field_note path — that capture is
   what closes the loop.
+- **TRAP — a Render CRON env change does NOT reach SCHEDULED runs until you DEPLOY
+  (2026-08-17, cost ~30 min of misdiagnosis during the watchers live-flip).** Scheduled runs
+  execute the last *deployed* version with the env captured at deploy time; saving the variable
+  does not itself deploy, and a restart is not enough (render.com/docs/deploys: "if you've
+  recently updated your service's environment variables but haven't redeployed since then,
+  restarting does _not_ incorporate those changes"). The deceptive part: the dashboard's
+  **Trigger Run** DOES use current env, so a manual test passes while every scheduled run keeps
+  the old value. Live symptom we chased: `WATCHERS_MODE=live` set correctly, a manual run at
+  20:49Z opened the expected 5 items, then every scheduled run logged a perfectly HEALTHY
+  `"watchers":{"mode":"shadow","freshGaps":19,"tenantErrors":0}` and wrote nothing. **Diagnose by
+  the SCHEDULED run's log line, never the dashboard field or a Trigger Run; after any cron env
+  change click Manual Deploy → "Deploy latest commit".** Applies to WATCHERS_MODE, NUDGES_MODE
+  and the inference key alike — the Stage-1 flip would have hit this exact wall.
 - **TRAP — MERGING Stage 1 makes its migrations MANDATORY IMMEDIATELY, not at flip time
   (hit live 2026-08-17, PR #148 merged as 8ef1e68 and deployed before the pilot had the
   tables).** The nudges pre-filter read (`listNudgedSubjectRefs`, watchers.ts) is deliberately

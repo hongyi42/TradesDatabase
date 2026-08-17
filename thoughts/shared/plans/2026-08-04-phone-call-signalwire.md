@@ -3,8 +3,13 @@ date: 2026-08-04
 task: Inbound phone-call capture via SignalWire (Compatibility/LaML) → AssemblyAI → spine. Supersedes the 2026-06-30 Vapi plan.
 research: thoughts/shared/research/2026-06-30-phone-call-input-feature.md (provider section superseded 2026-08-04)
 supersedes: thoughts/shared/plans/2026-06-30-phone-call-input-short-two-tier.md
-status: IMPLEMENTED (all 4 phases) — local + live verified 2026-08-06; NOT committed, NOT deployed
+status: SHIPPED — merged to `main` as `7f59a54`; live on the pilot (verified 2026-08-17)
 ---
+
+> **Merge/deploy resolved (2026-08-17).** The 2026-08-06 status below ("NOT committed, NOT deployed")
+> was superseded when the branch landed. `7f59a54` is an ancestor of `origin/main`; the migration is
+> applied to the pilot (`call_numbers`, `call_ingest`); 7 calls ingested across 1 number, most recent
+> 2026-08-11. The original note is kept below as the point-in-time record it was.
 
 > **Implementation status (2026-08-06).** All 4 phases built; project-wide gates green (typecheck / lint /
 > build; 67 phone tests). Verified **live** end-to-end on a SignalWire trial number via an ngrok tunnel →

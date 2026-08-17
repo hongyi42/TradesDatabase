@@ -8,10 +8,22 @@ at Phase 6.
 elapsed time is other people: Google OAuth consent, a phone-number port or forward, and legal
 signatures.
 
-> **Status gate (2026-08-06).** Phone-call capture — the last MVP feature — is implemented and
-> live-verified on branch `feat/phone-call-capture` (commit `7f59a54`) but **is not merged to `main`
-> and not deployed**. Until it lands, Phase 5 cannot run and the firm onboards without the phone
-> channel. Everything else in this runbook reflects shipped code on `main`.
+> **Status (verified 2026-08-17).** Phone-call capture is **merged to `main` and live** — Phase 5
+> runs. Commit `7f59a54` is an ancestor of `origin/main`, with two follow-ups on top of it
+> (`8eaee6b` PII-free heartbeat, `e112ebe` GLM-5.2 multi-label intent router). The migration is
+> applied to the pilot database (`call_numbers`, `call_ingest` both present), which has **1 number
+> provisioned and 7 calls ingested, most recent 2026-08-11**. Everything in this runbook reflects
+> shipped code on `main`.
+>
+> Scale caveat: 7 calls on 1 number is live-verified, not load-tested. Treat the channel as working,
+> not as proven at volume.
+>
+> *This block replaced a status gate written 2026-08-06 that said the feature was unmerged and
+> undeployed. It went stale the moment the branch landed and was wrong for eleven days — long enough
+> that an operator following it would have skipped provisioning a paying firm's number. If you
+> change a status gate here, date it and say how to re-verify; if you are reading one, re-verify
+> before trusting it. See the "stale status gate" entry in
+> [engineering-memory.md](engineering-memory.md).*
 
 ---
 

@@ -1965,6 +1965,25 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   `failureAlert.includeSkipped` to surface repeated skips, or give the inference provider a
   `baseUrl` that is not loopback/private/`.local` so it stops being preflighted at all.
 
+**Reading our own docs:**
+- **A status gate outlives its truth — date it, or delete it.** The onboarding runbook carried
+  "Phone-call capture … **is not merged to `main` and not deployed**. Until it lands, Phase 5
+  cannot run and the firm onboards without the phone channel" from 2026-08-06 until 2026-08-17.
+  It stopped being true the moment `7f59a54` landed, and for eleven days the runbook instructed
+  operators to skip provisioning a paying firm's phone number for a channel that was live. Nobody
+  updated it because merging the branch and updating the doc that *gates on* the branch are
+  different actions, and only one was in the PR. **When a doc asserts the state of the world,
+  stamp it with a date and how to re-verify; when you read one, re-verify before acting.** The
+  same day, a growth analysis repeated the stale claim twice to the founder because it trusted the
+  doc over the code.
+- **Resolve merge state with `merge-base`, never by eyeballing `git log` on a feature branch.**
+  The 2026-08-06 call-classifier research recorded a contradiction it could not settle — the
+  working tree was on `feat/phone-call-capture` and `git log` showed no merge commit, while
+  project memory said "merged to main + redeployed". Memory was right; the branch simply had not
+  fetched. `git merge-base --is-ancestor <sha> origin/main` after a fresh `git fetch` answers this
+  in one command. Pair it with a read-back for *deployed* (here: the pilot's `call_ingest` had 7
+  rows across 1 number) — merged and deployed remain separate questions.
+
 **Working on the spine / Composio:**
 - **When inbound email "stops working", check the webhook subscription FIRST** — it's
   SDK-only config (no dashboard page; `GET /api/v3/webhook_subscriptions`). It once pointed

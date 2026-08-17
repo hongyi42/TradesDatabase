@@ -307,10 +307,15 @@ selections are noted only as recorded state.
 
 ## Open Questions
 
-- **Merge/deploy state.** The working tree is on `feat/phone-call-capture` (HEAD `7f59a54`), and
-  `git log` shows no merge-to-main commit; the project memory records the feature as "merged to
-  main + redeployed on Render" on 2026-08-06. Confirm the actual deployed branch/commit before
-  planning where the change lands, since the phone pipeline is described as live.
+- **Merge/deploy state. — RESOLVED 2026-08-17: the memory was right, the local `git log` was
+  looking at a branch that had not fetched.** `git merge-base --is-ancestor 7f59a54 origin/main`
+  returns true, and two follow-ups sit on top of it (`8eaee6b`, `e112ebe`). The migration is applied
+  to the pilot (`call_numbers`, `call_ingest` both present) with 7 calls ingested across 1 number,
+  most recent 2026-08-11. *Original open question, kept for the record:* the working tree was on
+  `feat/phone-call-capture` (HEAD `7f59a54`) and `git log` showed no merge-to-main commit, while
+  project memory recorded the feature as "merged to main + redeployed on Render" on 2026-08-06.
+  The lesson: resolve merge state with `merge-base` against a freshly fetched `origin/main`, never
+  by eyeballing `git log` on a feature branch.
 - **Non-job audit trail.** Email records a content-free `upsertDroppedAudit` receipt for dropped
   mail (ingest.ts:96). For phone, the transcript is retained in L1 regardless, so a separate
   "classified not-a-job" marker is not required for recoverability — but whether the not-a-job

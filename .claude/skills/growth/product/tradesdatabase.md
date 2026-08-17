@@ -245,8 +245,18 @@ remove it." Treat every call as all-party consent. No voiceprints/biometrics. Ca
 numbers redacted before the transcript is written. The **firm is the controller, we are the
 processor** — caller-facing privacy notice and CCPA duties sit with them.
 `docs/phone-call-runbook.md:46,50,52,57`, `docs/customer-onboarding-runbook.md:61`
-⚠️ **Check before marketing the phone channel at all** — recorded as not merged to `main` and not
-deployed. `docs/customer-onboarding-runbook.md:11`
+✅ **The phone channel is live and marketable** (verified 2026-08-17 against code + pilot DB, not
+docs): merged to `main` as `7f59a54` plus two follow-ups, migration applied, **7 calls ingested
+across 1 number, most recent 2026-08-11**. Inbound calls are answered, transcribed, intent-classified,
+and card/SSN-redacted before the transcript is written — landing on the same customer record as the
+technician's voice note and the manager's email.
+
+Say "it works," not "proven at volume" — 7 calls is live-verified, not load-tested.
+
+*An earlier version of this file said the phone channel was unmerged and undeployed, copied from a
+runbook status gate that had been stale for eleven days. It caused two wrong recommendations before
+anyone checked the code. When a claim here decides whether something can be marketed, verify it
+against the repo or the database, not against another doc.*
 
 **Tone constraint that should shape every nudge/proactivity message:**
 

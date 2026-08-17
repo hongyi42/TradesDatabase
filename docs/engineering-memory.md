@@ -868,6 +868,21 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   trajectory text per the date-eval record — `delivered` is unearned for never-Started
   recipients until probed). Replies take the ordinary record_field_note path — that capture is
   what closes the loop.
+- **TRAP — RENDER DEPLOYS FROM A FORK, NOT FROM `origin` (root-caused 2026-08-17 after ~1h of
+  misdiagnosis).** The Render services are wired to **`Yu-C1/TradesDatabase`**, which
+  `gh api` confirms is a FORK whose `parent` is `hongyi42/TradesDatabase` — the repo we push to.
+  **Merging a PR on origin does NOT deploy anything.** The fork only advances when someone syncs
+  it, and Auto-Deploy ("On Commit", genuinely enabled) fires off the FORK's commits. Live proof:
+  fork `pushed_at` 20:25:34Z at `da1a7f2`, so the running cron image carried the env captured at
+  20:25 — before the 20:46 `WATCHERS_MODE=live` flip — and every scheduled run reported a healthy
+  `"mode":"shadow"`, while a dashboard Trigger Run (current env) reported `live`. Two pushes of
+  mine to origin at 20:30 and 21:21 triggered NOTHING. Syncing the fork to `8f01d34` at 21:42:58Z
+  deployed within ~3 min and the next scheduled tick opened items normally.
+  **Checks before believing a deploy happened:** `gh api repos/Yu-C1/TradesDatabase/commits/main`
+  vs `git log origin/main` — if they differ, production is running older code than `main`, and
+  the Render dashboard's repo line (`Yu-C1 / TradesDatabase`) is the authority on what deploys.
+  Corollary: the earlier note "the deploy log's Yu-C1 URL is presumably the same repo under a
+  rename" was WRONG — the SHAs matched only because the fork happened to be synced at that moment.
 - **TRAP — a Render CRON env change does NOT reach SCHEDULED runs until you DEPLOY
   (2026-08-17, cost ~30 min of misdiagnosis during the watchers live-flip).** Scheduled runs
   execute the last *deployed* version with the env captured at deploy time; saving the variable

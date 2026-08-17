@@ -868,6 +868,37 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   trajectory text per the date-eval record — `delivered` is unearned for never-Started
   recipients until probed). Replies take the ordinary record_field_note path — that capture is
   what closes the loop.
+- **TRAP — MERGING Stage 1 makes its migrations MANDATORY IMMEDIATELY, not at flip time
+  (hit live 2026-08-17, PR #148 merged as 8ef1e68 and deployed before the pilot had the
+  tables).** The nudges pre-filter read (`listNudgedSubjectRefs`, watchers.ts) is deliberately
+  NOT gated by `NUDGES_MODE` and sits ABOVE the `if (mode === 'shadow') continue` — that is by
+  design (it is how `freshGaps`, the number the flip decision needs, is computed in shadow).
+  So on a pilot without the `nudges` table it throws for every tenant with gaps → the tenant
+  loop catches → `tenantErrors` → lifecycle's systemic detector
+  (`tenantErrors === tenants` ⇒ `ok=false`) → **exit 1, every 5-minute cron run marked FAILED**,
+  while `freshGaps` silently stops being recorded (`gapsFound` still counts — it increments
+  BEFORE the throw, so the log looks half-alive). One bound tenant means one error is already
+  "all tenants". **Rule: land the migration on the pilot in the same change window as the merge,
+  never at rollout time.** RESOLVED 2026-08-17 — both migrations applied to the pilot via MCP
+  `apply_migration` + `notify pgrst, 'reload schema'`; verified by re-running the deployed
+  watcher against the pilot in shadow (write-free by construction): `tenantErrors: 0`,
+  gapsFound/freshGaps 22/22. Note the pilot's `supabase_migrations` versions are MCP
+  auto-stamped and deliberately differ from the repo filenames (`fireworks_rates` = repo
+  20260815120000 vs pilot 20260815175254) — this DB is not `db push`-managed; match the
+  precedent, don't "fix" the version drift.
+- **The pilot is missing PR #146's migrations (`money_events`, `tenant_profiles`) as of
+  2026-08-17.** Not cron-breaking (no lifecycle step touches them), but `set_firm_profile` /
+  `v_firm_profile` / the money ledger tools fail for real managers until applied. Same class as
+  the trap above: a merged PR's migrations are not self-applying.
+- **`npm audit fix` is a NO-OP in this repo (verified 2026-08-17); plain `npm update` is a
+  124-package sweep including a MAJOR `@hono/node-server` 1→2 jump.** All 7 advisories are
+  transitive under `@modelcontextprotocol/sdk` (hono + @hono/node-server, fast-uri via ajv,
+  ip-address via express-rate-limit) plus dev-only nanoid/postcss; none of the vulnerable code
+  paths are ones we invoke (no hono JSX/CORS/proxy middleware, Linux so no Windows static
+  traversal, code-authored JSON schemas, rate-limit keying not access control). The clean fix is
+  a TARGETED lockfile bump — `npm update --package-lock-only hono @hono/node-server fast-uri
+  ip-address nanoid postcss brace-expansion` → 8 patch/minor packages, `package.json` and the
+  SDK version untouched, audit clean.
 - **`nemoclaw list` shows the ONBOARDING RECORD, not the live inference route (2026-08-06).** Read
   off that list, s2/s5/s6/s7 all say `provider: nvidia-prod` — which reads exactly like "the fleet
   has been stuck on the fallback for six days", and was reported as such before being checked. It

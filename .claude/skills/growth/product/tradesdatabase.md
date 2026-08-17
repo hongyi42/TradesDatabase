@@ -16,9 +16,16 @@ re-checked.
 > **An AI manager for your trades business. It knows your customers, your jobs, and your team — and
 > you run the whole thing by talking to it. No software to learn, in any language you speak.**
 
-**Do not market this as "memory."** That word is engineering vocabulary — the three-layer spine
-exists so the agent gets the right context, and it is *how* the product works, not *what the
-customer buys*. The customer buys a manager who already knows their business.
+**"Memory" is supporting evidence, not the headline.** The word isn't banned — the product genuinely
+does keep every historical customer and build a profile on each one, and that's worth saying. But
+it's the *reason the claim is credible*, not the claim itself. Nobody buys memory; they buy a manager
+who already knows their business. So:
+
+- ❌ **Don't lead with:** "a shared memory layer for your firm" — abstract, and the category now
+  says this too (§10)
+- ✅ **Do lead with:** "an AI manager that knows your customers" — then *prove* it with the memory:
+  it remembers every customer, builds a profile on each, and can show you which note each fact
+  came from
 
 Everything else in this file serves that sentence.
 
@@ -127,6 +134,33 @@ Housecall Pro cannot make that claim without rebuilding its intake layer in-hous
 | **Invoice drafting** | 🔜 planned | **Draft only, sent on manager review** — see §6 |
 | **Payments** | ❌ never | Not in scope. You are not a payments product |
 
+### The customer profile — verified 2026-08-17, and sharper than the category's
+
+You do build a profile per customer, and it works in a way competitors' don't.
+
+**`record_standing_fact`** (live MCP tool, two-step confirmation) records durable facts onto a
+customer or job — the tool's own examples are *"prefers email"* and *"gate code 4321"* — and
+*"this sets facts every future briefing sees."* `src/mcp/server.ts:544`
+
+**`get_customer_context`** returns the brief: their jobs, upcoming scheduled visits, recent past
+visits, and recent raw captures. `src/mcp/server.ts:286`
+
+**The differentiated part:** every standing fact is stored *wrapped with the L1 capture that
+evidences it* — value + `sourceCaptureId` + `recordedAt` (`src/db/standingFacts.ts:9`). Two
+consequences worth selling:
+
+1. **Every fact can show you the note it came from.** Not "the system says the gate code is 4321"
+   but "Miguel said it on the 14th, here's the recording."
+2. **Retract the evidence and the fact disappears automatically** (`foldRetractedFacts`). Correcting
+   the record corrects everything downstream of it — no orphaned facts outliving the note that
+   created them.
+
+A CRM stores a field somebody typed. You store a fact *and its provenance*, and the two stay
+consistent by construction. That's the concrete, demonstrable version of "it knows your business."
+
+**Pilot usage: 5 of 115 customers carry attributes** — the capability is live, the corpus is
+demo-scale. Fine to demo, not evidence of adoption.
+
 ## 6. Invoicing — draft-only, and why that's a feature
 
 Scope: the AI drafts an invoice from what actually happened on the job; **a manager reviews and
@@ -227,7 +261,9 @@ Enforced in code, so a competitor would have to change architecture to copy them
 2. **Append-only L1, nothing deletable** — a liability-shaped choice most vendors avoid.
    `docs/getting-started-for-firms.md:63`
 3. **Every claim cited to its evidence**, hallucinated citations dropped mechanically, says "I don't
-   know" rather than guessing. `docs/onboarding.md:216`
+   know" rather than guessing. `docs/onboarding.md:216`. Extends to the customer profile: standing
+   facts carry their source capture, and retracting the evidence removes the fact
+   (`src/db/standingFacts.ts:42`) — see §5.
 4. **Confirmation doctrine** — confirm only the irreversible or externally-visible; over-confirming
    is a *safety* problem because it trains rubber-stamping. `docs/engineering-memory.md:171`
 5. **A human always commits.** The freeze "booked nothing until you said yes."

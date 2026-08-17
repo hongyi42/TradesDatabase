@@ -124,6 +124,14 @@ reference. Full watcher semantics + rollout state: engineering-memory §3.
      `{skipped: 'no inference credentials'}` — green, but NO question is ever written, so
      every nudge dies at the 24h delivery deadline into the manager queue. Provision the key
      in the SAME dashboard visit that sets `NUDGES_MODE=live`.
+     **And provision a key that WORKS, not merely one that exists:** `hasModelCredentials()`
+     is a presence check (`!!process.env.INFERENCE_API_KEY`), so a stale/suspended key does
+     NOT skip the step — it runs and every compose throws, burning all 3 attempts (~15 min)
+     before handing each gap to the manager with `failed: compose failed 3x`. Present-but-dead
+     is worse than absent: the ladder looks enabled and the voice never speaks. Check the
+     account is live (a suspended provider returns HTTP 412/402, not a credential error) and
+     that the CRON service's own Environment tab carries it — web and cron are separate
+     services with separate env, which has already cost one rollout.
      `SCHEDULE_SHEET_ID` / `GOOGLE_APPLICATION_CREDENTIALS`
      are no longer read (sheet sync retired 2026-07-15) and can be removed.
      It does NOT need `COMPOSIO_GMAIL_AUTH_CONFIG_ID` (only link *minting* on the web service

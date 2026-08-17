@@ -864,7 +864,7 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   watcher with nudges in flight requires pulling the box timer too. DEPLOY
   PREREQUISITES: watchers live-flip decision, pilot migrations (`20260817090000_nudges` +
   `20260817100000_reserve_spine_namespace`), Render deploy, runner install, and the Phase-5
-  MUST-PIN: what `--deliver` reports on a FAILED Telegram send (dead chat leaves CLI success +
+  a WORKING inference key on the CRON service (presence-only check — a suspended key runs and fails 3x per nudge instead of skipping; pilot shows NO model usage since 2026-08-15 18:13, consistent with the parked Fireworks suspension), and the Phase-5 MUST-PIN: what `--deliver` reports on a FAILED Telegram send (dead chat leaves CLI success +
   trajectory text per the date-eval record — `delivered` is unearned for never-Started
   recipients until probed). Replies take the ordinary record_field_note path — that capture is
   what closes the loop.

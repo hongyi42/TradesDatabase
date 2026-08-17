@@ -9,7 +9,7 @@ import {
   type Nudge,
 } from '../db/index.js';
 import { wallClockLabel } from '../jobs/watchers.js';
-import { localDateISO } from '../schedule/availability.js';
+import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
 import { runForcedTool, type ForcedToolSpec } from '../model/forcedTool.js';
 import { TEAM_LEAD_REF } from './identity.js';
 
@@ -74,6 +74,34 @@ export function relativeDayPhrase(nowIso: string, tz: string, endsAtLocal: strin
   // The detection window is 72h, so this is the whole remaining bucket —
   // vague on purpose: vague-but-true beats precise-but-derived.
   return 'a couple of days ago';
+}
+
+// The ask window (user ruling 2026-08-17): questions go out only between
+// 7 AM and 7 PM in the FIRM's timezone, seven days a week. The gate sits on
+// COMPOSE, not the outbox: the day phrase above is baked into the question
+// when it is written, so a message held overnight and sent at 7 AM would say
+// "earlier today" about yesterday's visit — the exact fabrication the served-
+// phrase rule exists to prevent. Out-of-window rows stay pending, untouched;
+// the first in-window tick composes them fresh. Detection is NOT gated (the
+// watcher still notices at 9 PM). The longest hold is one night (12h; 13h on
+// a DST fall-back night), safely inside the watcher's 24h never-asked
+// deadline — a window that ever excludes whole DAYS must move that deadline
+// with it.
+export const ASK_WINDOW_START_HOUR = 7; // inclusive, firm-local
+export const ASK_WINDOW_END_HOUR = 19; // exclusive, firm-local
+
+export function insideAskWindow(nowIso: string, tz: string): boolean {
+  let hour: number;
+  try {
+    hour = Number(localTimeHHMM(nowIso, tz).slice(0, 2));
+  } catch (err) {
+    // An unknown zone must not block every OTHER tenant's sweep (the tenant
+    // loop has no per-tenant isolation). Judge by UTC; the per-row day-phrase
+    // call fails loudly on the same zone, so this never hides quietly.
+    console.error(`[teamLeadCompose] bad timezone '${tz}', judging ask window by UTC`, err);
+    hour = new Date(nowIso).getUTCHours();
+  }
+  return hour >= ASK_WINDOW_START_HOUR && hour < ASK_WINDOW_END_HOUR;
 }
 
 // Every string that crosses a trust boundary here — DB context into the model
@@ -211,6 +239,7 @@ export interface ComposeSummary {
   failed: number;
   rowErrors: number;
   handoffs: number; // nudges that died unasked and became manager items (F1)
+  held: number; // pending rows left for the next in-window tick (ask window)
 }
 
 export async function runTeamLeadCompose(
@@ -232,6 +261,7 @@ export async function runTeamLeadCompose(
     failed: 0,
     rowErrors: 0,
     handoffs: 0,
+    held: 0,
   };
 
   for (const tenantId of await listTenants()) {
@@ -241,7 +271,14 @@ export async function runTeamLeadCompose(
     const pending = (await listNudges(tenantId, ['pending'])).filter(
       (n) => n.kind === 'overdue_visit_gap',
     );
-    const tz = pending.length > 0 ? ((await get(tenantId))?.timezone ?? 'UTC') : 'UTC';
+    if (pending.length === 0) continue;
+    const tz = (await get(tenantId))?.timezone ?? 'UTC';
+    if (!insideAskWindow(nowIso, tz)) {
+      // Overnight hold: no model call, no attempts, no state change — the
+      // rows must reach the morning tick EXACTLY as they are.
+      summary.held += pending.length;
+      continue;
+    }
     for (const n of pending) {
       try {
         const ctx = readComposeContext(n);

@@ -835,7 +835,16 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   `live` runs the ladder; typo = LOUD stepError). Step 9 (`teamLeadCompose`) is the ONE model
   call: writes the question from code-built context only — time words are SERVED
   (`relativeDayPhrase`: "earlier today"/"yesterday"/"a couple of days ago"; user ruling: the
-  model may say "today" only when the code's clock said so). Identity `spine:team-lead` is
+  model may say "today" only when the code's clock said so). **Ask window (user ruling
+  2026-08-17): compose runs only 7 AM–7 PM firm-local, seven days** (`insideAskWindow`) — an
+  evening gap holds pending (`held` in the step summary) and composes fresh next morning. The
+  gate sits on COMPOSE, not the outbox, precisely because of the served phrases: a question
+  written at night and delivered at 7 AM would say "earlier today" about yesterday. Paired
+  constraint: the 24h never-asked deadline absorbs the ≤12h overnight hold — a window that
+  ever excludes whole DAYS must lengthen that deadline with it, or weekend-held rows expire
+  to the manager unasked. Known v1 limit: a multi-hour box outage can still deliver an
+  already-composed question with a stale day phrase (bounded by the 24h expiry; accepted).
+  Identity `spine:team-lead` is
   dispatch-capped to read/ask (deny-by-default namespace gate + DB CHECK `ref not like
   'spine:%'` — the Composio relay routes around dispatch and keys on roster-row existence).
   Transport: `GET/POST /control/nudges` (host token) + `nudge-runner.timer` on the box (5-min,

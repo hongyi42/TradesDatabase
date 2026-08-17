@@ -633,3 +633,56 @@ in the watcher framework). Stack, don't parallelize: whichever lands second reba
   renumber on rebase.
 - The `dispatch` gate line anchor must be re-found at implement time (server.ts moved since
   the pre-landing draft).
+
+## Amendment (2026-08-17, user-ratified): the firm-local ask window
+
+**Ruling:** technicians are asked only during working hours — **7 AM–7 PM in the firm's
+timezone, seven days a week**. Raised by the user after reviewing the built ladder: a visit
+scheduled to end at 5 PM produced a ~8 PM ping, and off-hours messages are the likeliest to be
+missed.
+
+**Design — the gate sits on COMPOSE, not the outbox.** The question's day phrase
+("earlier today"/"yesterday") is baked in by `relativeDayPhrase` at compose time, so holding a
+*composed* message overnight would deliver a stale "earlier today" about yesterday's visit —
+the exact fabrication the served-phrase ruling (2026-08-16) forbids. Instead, out-of-window
+tenants' pending rows are left completely untouched (`held` count in `ComposeSummary`); the
+first in-window tick composes them fresh and the box delivers within minutes. Detection stays
+ungated (the watcher still notices at 9 PM), as do the escalation/expiry sweeps and delivery of
+already-composed rows.
+
+**Paired constraint:** the longest hold is one night (~12h, 7 PM→7 AM), safely inside the
+watcher's 24h never-asked deadline. A future window that excludes whole DAYS must lengthen
+`NUDGE_DELIVERY_DEADLINE_HOURS` with it, or weekend-held rows expire to the manager without the
+technician ever being asked (comment pinned on both constants).
+
+**Known v1 limit (accepted):** a multi-hour box outage can still deliver an already-composed
+question with a stale day phrase; bounded by the 24h expiry. Per-firm configurable hours are a
+later follow-up (firm profile), not v1.
+
+Changes: `insideAskWindow` + `ASK_WINDOW_START_HOUR`/`ASK_WINDOW_END_HOUR` (7/19) in
+`src/teamLead/compose.ts` (UTC fallback on an unknown zone so one bad tenant tz cannot block
+the fleet-wide sweep — the per-row day-phrase call still fails loudly for that tenant);
+`held` in `ComposeSummary` (flows into the lifecycle step-9 log line for shadow/live
+observability); deadline comment in `src/jobs/watchers.ts`; docs (control-plane env note,
+getting-started-for-firms working-hours sentence, engineering-memory Stage-1 entry).
+
+### Automated verification
+
+- [x] `npm run typecheck` / `npm run lint` / `npm test` / `npm run build` green with the new
+      tests: overnight hold touches NOTHING (every mutating dep throws), window is firm-local
+      not UTC (01:00 UTC = 6 PM LA composes), boundary hours (7:00 in / 19:00 out), unknown-zone
+      UTC fallback. *Evidence 2026-08-17 (worktree, 545xx stack): typecheck/lint/build clean,
+      vitest 1789 passed / 0 failed across 86 files (+4 new window tests over the 30db750
+      baseline of 1785).*
+
+### Review record (round 6, 2026-08-17)
+
+Adversarial review of the ask-window diff: **one finding, fixed** — the firm-facing doc promised
+"questions only go out 7 AM–7 PM" unqualified, while the outbox (by design) can deliver an
+already-composed row later if the box was down; wording softened to "writes and sends", with the
+recovery case named. Verified safe with computed arithmetic: worst hold = 13h (DST fall-back
+night), 11h slack before the 24h deadline (comments corrected from "~12h"); every compose-failure
+path during the morning still exits manager-first (orphan doctrine holds); the window makes
+`relativeDayPhrase` strictly safer through both DST transitions; a held `pending` row correctly
+holds its budget slot; unknown-tz fallback cannot cause repeated wrong-hour asks (the per-row
+day-phrase call fails loudly for that tenant → attempts cap → manager handoff).

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import type { Nudge, Tenant } from '../db/index.js';
 import {
   assembleNudgeMessage,
+  insideAskWindow,
   MAX_COMPOSE_ATTEMPTS,
   relativeDayPhrase,
   runTeamLeadCompose,
@@ -69,7 +70,7 @@ describe('runTeamLeadCompose', () => {
         return pendingNudge({ status: 'queued' });
       },
     }));
-    expect(summary).toEqual({ composed: 1, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0 });
+    expect(summary).toEqual({ composed: 1, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 0 });
     expect(queuedWith).toHaveLength(1);
     const msg = queuedWith[0];
     expect(msg).toContain('How did the Henderson visit go?');
@@ -138,7 +139,7 @@ describe('runTeamLeadCompose', () => {
         return pendingNudge({ status: 'cancelled' });
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1 });
+    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1, held: 0 });
     expect(outcomes).toEqual([['cancelled', 'declined: evidence too thin']]);
     expect(flagged).toHaveLength(1);
     expect(flagged[0].escalatedFromNudge).toBe('n1');
@@ -164,7 +165,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('an unfit row must stay open, not be cancelled');
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 0 });
   });
 
   test('display-thin but FLAG-coherent context → manager handoff from raw fields, then cancelled', async () => {
@@ -198,7 +199,7 @@ describe('runTeamLeadCompose', () => {
         return pendingNudge({ status: 'cancelled' });
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1 });
+    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1, held: 0 });
     expect(flagged).toHaveLength(1);
     expect(flagged[0].jobId).toBe('j1');
     expect(flagged[0].suggestion).toContain("The visit for 'Furnace tune-up' (unknown customer)");
@@ -220,7 +221,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('one failure must not be terminal');
       },
     }));
-    expect(first).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 1, handoffs: 0 });
+    expect(first).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 1, handoffs: 0, held: 0 });
     expect(writes).toEqual([['n1', 1]]);
 
     // The LAST allowed attempt failing goes terminal — and the manager takes
@@ -241,7 +242,7 @@ describe('runTeamLeadCompose', () => {
         return pendingNudge({ status: 'failed' });
       },
     }));
-    expect(last).toEqual({ composed: 0, cancelled: 0, failed: 1, rowErrors: 1, handoffs: 1 });
+    expect(last).toEqual({ composed: 0, cancelled: 0, failed: 1, rowErrors: 1, handoffs: 1, held: 0 });
     expect(outcomes).toEqual([`failed: compose failed ${MAX_COMPOSE_ATTEMPTS}x: inference 503`]);
     expect(flagged).toEqual(['a1']);
   });
@@ -263,7 +264,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('a queued deliverable must not be failed');
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 1, handoffs: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 1, handoffs: 0, held: 0 });
   });
 
   test('trust-boundary flattening (review F2): hostile context cannot forge the footer register', async () => {
@@ -343,6 +344,40 @@ describe('runTeamLeadCompose', () => {
     expect(queuedWith[0]).not.toContain('x'.repeat(501));
   });
 
+  test('the ask window HOLDS pending rows outside firm-local 7am-7pm: no model, no writes', async () => {
+    // 02:00 UTC on a UTC tenant = the middle of the night. The rows must
+    // reach the morning tick exactly as they are — every mutating dep throws
+    // if touched. Composing at night and delivering in the morning would
+    // bake a stale "earlier today" into the question (user ruling
+    // 2026-08-17), so the gate stops the WRITING, not the sending.
+    const summary = await runTeamLeadCompose('2026-08-16T02:00:00.000Z', baseDeps({
+      run: async () => {
+        throw new Error('out-of-window nudges must not reach the model');
+      },
+      markQueued: async () => {
+        throw new Error('out-of-window nudges must not queue');
+      },
+      markOutcome: async () => {
+        throw new Error('out-of-window nudges must not close');
+      },
+      setAttempts: async () => {
+        throw new Error('out-of-window nudges must not gain attempts');
+      },
+      flagGap: async () => {
+        throw new Error('out-of-window nudges must not reach the manager');
+      },
+    }));
+    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 1 });
+  });
+
+  test('the window is FIRM-local, not UTC: 01:00 UTC is 6 PM in Los Angeles — composes', async () => {
+    const summary = await runTeamLeadCompose('2026-08-16T01:00:00.000Z', baseDeps({
+      getTenant: async () => ({ id: 't1', timezone: 'America/Los_Angeles' }) as unknown as Tenant,
+    }));
+    expect(summary.composed).toBe(1);
+    expect(summary.held).toBe(0);
+  });
+
   test('kind-scoped: a pending nudge of another kind is left alone', async () => {
     const summary = await runTeamLeadCompose(NOW, baseDeps({
       listNudges: async () => [pendingNudge({ kind: 'call_action' } as Partial<Nudge>)],
@@ -350,7 +385,25 @@ describe('runTeamLeadCompose', () => {
         throw new Error('unknown kinds must not reach the model');
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 0 });
+  });
+});
+
+describe('insideAskWindow', () => {
+  test('boundaries: 7:00 opens it, 7 PM closes it; the clock is the FIRM zone', () => {
+    expect(insideAskWindow('2026-08-16T06:59:00.000Z', 'UTC')).toBe(false);
+    expect(insideAskWindow('2026-08-16T07:00:00.000Z', 'UTC')).toBe(true);
+    expect(insideAskWindow('2026-08-16T18:59:00.000Z', 'UTC')).toBe(true);
+    expect(insideAskWindow('2026-08-16T19:00:00.000Z', 'UTC')).toBe(false);
+    // 19:00 UTC = noon in LA — wide open there (h23 via Intl, so DST rides along).
+    expect(insideAskWindow('2026-08-16T19:00:00.000Z', 'America/Los_Angeles')).toBe(true);
+    // The evening regime: 02:00 UTC = 7 PM PDT the previous day — closed.
+    expect(insideAskWindow('2026-08-16T02:00:00.000Z', 'America/Los_Angeles')).toBe(false);
+  });
+
+  test('an unknown zone falls back to the UTC clock instead of blocking the sweep', () => {
+    expect(insideAskWindow('2026-08-16T12:00:00.000Z', 'Not/A_Zone')).toBe(true);
+    expect(insideAskWindow('2026-08-16T02:00:00.000Z', 'Not/A_Zone')).toBe(false);
   });
 });
 

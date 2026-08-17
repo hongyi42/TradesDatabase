@@ -97,7 +97,10 @@ export const NUDGE_ESCALATE_HOURS = 48;
 // is liveness-skipped forever; a recycled sandbox clears host_id, making the
 // row invisible to EVERY pull's inner join; a rollback freezes pending rows).
 // The ask is not happening — the manager takes the gap. Long enough for a
-// rebind to heal a recycle first.
+// rebind to heal a recycle first, and for the compose ask window's longest
+// overnight hold (12h; 13h on a DST fall-back night) with room to spare — a window
+// that ever excludes whole DAYS must lengthen this deadline with it, or
+// weekend-held rows expire to the manager without the tech ever being asked.
 export const NUDGE_DELIVERY_DEADLINE_HOURS = 24;
 
 // UTC offsets span −12h..+14h; subtracting 14h from a wall-clock instant is a

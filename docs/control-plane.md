@@ -113,6 +113,11 @@ reference. Full watcher semantics + rollout state: engineering-memory §3.
      `BOARD_BOT_TOKEN` (live-mode manager pushes; absent = `pushSkipped`, never red).
      `NUDGES_MODE` (`shadow` | `live`; unset = the Stage-1 ladder is off and the watcher
      behaves exactly as Stage 0 — flip only per the Stage-1 rollout in the feature-B plan).
+     In live mode, questions are composed only inside the firm-local **ask window 7 AM–7 PM,
+     seven days a week** (`ASK_WINDOW_*` in `src/teamLead/compose.ts`): a gap detected in the
+     evening holds as a pending nudge (`held` in the step summary) and is composed fresh —
+     correct "yesterday" wording — on the first morning tick. Detection, escalation, and
+     delivery of already-composed rows are NOT window-gated.
      **When `NUDGES_MODE=live`, the cron ALSO needs the model-provider key**
      (`MODEL_PROVIDER` + `INFERENCE_API_KEY`, or `ANTHROPIC_API_KEY`): lifecycle step 9
      composes each nudge's question on this job. Without the key the step reports

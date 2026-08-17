@@ -352,7 +352,10 @@ system notices. First it asks the technician, through their own assistant: one s
 question like *"how did the Henderson visit go?"*. Their answer, even "nothing to report", is saved
 to the job's record and that's the end of it. If there's no answer for two days, the item quietly
 moves to the manager's review list instead. Nobody gets nagged: at most two such questions per
-person per day, and never a repeat about the same visit.
+person per day, never a repeat about the same visit, and the assistant writes and sends its
+questions only between 7 AM and 7 PM in your local time — a visit that wraps up late is asked
+about the next morning, not at 10 PM. (If a technician's connection is down, a question written
+late in the day can arrive once it recovers, which may fall outside those hours.)
 
 **Tell your technicians this before they start** (it's one of the three written disclosures in
 onboarding): the assistant may proactively ask about work, and what they tell it can be recorded to

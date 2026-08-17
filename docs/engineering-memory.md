@@ -868,6 +868,15 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   trajectory text per the date-eval record — `delivered` is unearned for never-Started
   recipients until probed). Replies take the ordinary record_field_note path — that capture is
   what closes the loop.
+- **Stage-1 box runner is INSTALLED on trades-box-1 (2026-08-17).**
+  `/usr/local/sbin/nudge-runner.sh` (md5 `a429eea420342c3de2bc76bdaac99668`, byte-identical to
+  `Box_Setup_Stuff/nudge-runner.sh`), plus both units; `nudge-runner.timer` enabled + active on
+  the 5-min cadence. Verified end to end from the box: the derived URL
+  `https://tradesdatabase.onrender.com/control/nudges` returns **HTTP 200 `{"nudges":[]}`** with
+  the badge-pull token — which also proves the web service is serving the Stage-1 routes. It is
+  INERT until `NUDGES_MODE=live` queues something. Kill switch:
+  `systemctl disable --now nudge-runner.timer`. Note a silent, instant `systemctl start` is NOT
+  proof of a working pull (the script always exits 0) — curl the endpoint to actually confirm.
 - **TRAP — RENDER DEPLOYS FROM A FORK, NOT FROM `origin` (root-caused 2026-08-17 after ~1h of
   misdiagnosis).** The Render services are wired to **`Yu-C1/TradesDatabase`**, which
   `gh api` confirms is a FORK whose `parent` is `hongyi42/TradesDatabase` — the repo we push to.

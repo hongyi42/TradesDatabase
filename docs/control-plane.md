@@ -131,6 +131,14 @@ reference. Full watcher semantics + rollout state: engineering-memory §3.
      evening holds as a pending nudge (`held` in the step summary) and is composed fresh —
      correct "yesterday" wording — on the first morning tick. Detection, escalation, and
      delivery of already-composed rows are NOT window-gated.
+     **Inference vars on this cron (Fireworks, set 2026-08-17):** `INFERENCE_API_KEY`,
+     `INFERENCE_BASE_URL=https://api.fireworks.ai/inference/v1`,
+     `INFERENCE_MODEL=accounts/fireworks/routers/glm-5p2-fast`,
+     `INFERENCE_CACHE_KEY=tradesdb-spine`. Leave `MODEL_PROVIDER` UNSET — it is a SELECTOR
+     (only the literal `anthropic` changes anything), NOT a key field; an API key pasted there
+     does nothing. Without `INFERENCE_BASE_URL` the code defaults to DeepInfra's endpoint and a
+     Fireworks key fails auth there. `INFERENCE_CACHE_KEY` is what earns the $0.21/M cached
+     input instead of $2.10/M — Fireworks caches per replica, so keyless hits are routing luck.
      **When `NUDGES_MODE=live`, the cron ALSO needs the model-provider key**
      (`MODEL_PROVIDER` + `INFERENCE_API_KEY`, or `ANTHROPIC_API_KEY`): lifecycle step 9
      composes each nudge's question on this job. Without the key the step reports

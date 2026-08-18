@@ -925,6 +925,13 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   Timing arithmetic for anyone reproducing: end-to-end is TWO independent 5-min pulses (spine
   cron composes, box timer delivers) plus a ~40-120s agent turn, so worst case ~11 min from
   overdue to Telegram. A synthetic gap created seconds AFTER a cron tick waits for the next one.
+  RETURN PATH PROVEN in the same run: reply 23:18:56 -> `record_field_note` wrote L1 + L2 ->
+  nudge `answered` 23:20:33 ("a field report arrived - the gap filled itself"), no manager item
+  ever opened; it picked the RIGHT job of the customer's two. **Read the evidence on the VISIT,
+  not the capture**: `raw_captures.job_id` is NULL by design (L1 attaches to the CUSTOMER), the
+  job link lives on the L2 visit via `source_capture_id` + `attributes.workPerformed`. A
+  captures-per-job count reads 0 and looks like a failure; `hasActivitySince` is satisfied via
+  `listVisitTimesForJobs`, which is why auto-resolve fired correctly.
   STILL UNPINNED: a FAILED Telegram send (a technician who never pressed Start on the bot) —
   what `--deliver` reports in that case is unknown, and it is the silent-by-nature failure mode.
   Answer it before enrolling any real technician.

@@ -887,7 +887,8 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   `command argument N (229 characters spanning 5 lines) contains a newline or carriage return,
   which OpenShell exec does not accept` — **exit 2 in ~1 second**. Our deliverable is multi-line
   by construction (question / evidence line / footer), so the CLI never even started a turn.
-  **FIX (proven live, PR pending): stage the body INSIDE the sandbox over stdin
+  **FIX (PR #150, merged as `adac0d5`; deployed to the box 2026-08-18): stage the body
+  INSIDE the sandbox over stdin
   (`printf '%s' "$msg" | nemoclaw <ref> exec --no-tty -- bash -c "cat > /tmp/nudge-<sid>.txt"`)
   then pass `--message-file`** — exit 0 in 39s and the message landed in Telegram.
   **Why six review rounds and 1789 tests missed it:** nothing exercised the runner with a REAL
@@ -899,15 +900,34 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   `journalctl -u nudge-runner.service` is the tell that the CLI rejected the call rather than
   ran it. **The orphan doctrine held throughout: after 3 attempts the gap was handed to the
   manager rather than lost.**
-- **Stage-1 box runner is INSTALLED on trades-box-1 (2026-08-17).**
-  `/usr/local/sbin/nudge-runner.sh` (md5 `a429eea420342c3de2bc76bdaac99668`, byte-identical to
-  `Box_Setup_Stuff/nudge-runner.sh`), plus both units; `nudge-runner.timer` enabled + active on
-  the 5-min cadence. Verified end to end from the box: the derived URL
+- **Stage-1 box runner is INSTALLED on trades-box-1 (2026-08-17; FIXED BUILD REDEPLOYED
+  2026-08-18).** `/usr/local/sbin/nudge-runner.sh` — md5 **`a84f1a37c83caf06932ed4003d4de97c`**,
+  byte-identical to `Box_Setup_Stuff/nudge-runner.sh` at `adac0d5` (the superseded
+  `a429eea420342c3de2bc76bdaac99668` is the newline-bug build; see the `-m` trap above) — plus
+  both units; `nudge-runner.timer` enabled + active on the 5-min cadence. Install verification is
+  `sudo md5sum` of the path `ExecStart` NAMES: the file is mode 700 root, so a plain `md5sum` as
+  `ubuntu` fails silently-looking (permission denied), which reads like "not installed". Verified end to end from the box: the derived URL
   `https://tradesdatabase.onrender.com/control/nudges` returns **HTTP 200 `{"nudges":[]}`** with
   the badge-pull token — which also proves the web service is serving the Stage-1 routes. It is
   INERT until `NUDGES_MODE=live` queues something. Kill switch:
   `systemctl disable --now nudge-runner.timer`. Note a silent, instant `systemctl start` is NOT
   proof of a working pull (the script always exits 0) — curl the endpoint to actually confirm.
+- **Stage 1 is PROVEN END TO END IN PRODUCTION (2026-08-18 23:10-23:17Z, first clean run).**
+  One synthetic overdue visit for manager-sam walked the whole ladder unattended: cron tick
+  `watchers{mode:live, freshGaps:1, nudgesCreated:1, itemsOpened:0}` — the `itemsOpened:0` beside
+  `nudgesCreated:1` is the LADDER ASSERTION (the gap went to the technician INSTEAD of the
+  manager queue, not in addition to it) — then `teamLeadCompose{composed:1, held:0}` on
+  Fireworks, then the box runner at the next tick: trajectory pre-check (no prior text) →
+  stage-to-sandbox (1s) → `agent --message-file --deliver` (117s) → trajectory re-read finds
+  assistant text → `asked` at 23:17:12 with **serve_count 1, attempts 0** (first attempt, retry
+  machinery never engaged). Read the run in the DB, not the box journal: systemd prints an
+  identical clean "Finished" whether the send worked or not.
+  Timing arithmetic for anyone reproducing: end-to-end is TWO independent 5-min pulses (spine
+  cron composes, box timer delivers) plus a ~40-120s agent turn, so worst case ~11 min from
+  overdue to Telegram. A synthetic gap created seconds AFTER a cron tick waits for the next one.
+  STILL UNPINNED: a FAILED Telegram send (a technician who never pressed Start on the bot) —
+  what `--deliver` reports in that case is unknown, and it is the silent-by-nature failure mode.
+  Answer it before enrolling any real technician.
 - **TRAP — RENDER DEPLOYS FROM A FORK, NOT FROM `origin` (root-caused 2026-08-17 after ~1h of
   misdiagnosis).** The Render services are wired to **`Yu-C1/TradesDatabase`**, which
   `gh api` confirms is a FORK whose `parent` is `hongyi42/TradesDatabase` — the repo we push to.

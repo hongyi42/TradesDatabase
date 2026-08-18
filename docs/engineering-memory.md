@@ -881,6 +881,24 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   **ORDERING TRAP for any synthetic test gap: create it only AFTER `NUDGES_MODE=live`.** A gap
   created while shadow is on is consumed by the manager fallback on the next tick and, by the
   once-ever rule, can never become a nudge — the test visit is burned.
+- **TRAP — `nemoclaw <name> agent -m` CANNOT carry a multi-line message; every Stage-1 delivery
+  failed on it (found live 2026-08-18, first real end-to-end).** `nemoclaw ... agent` forwards
+  argv through `openshell sandbox exec`, which rejects any argument containing a newline:
+  `command argument N (229 characters spanning 5 lines) contains a newline or carriage return,
+  which OpenShell exec does not accept` — **exit 2 in ~1 second**. Our deliverable is multi-line
+  by construction (question / evidence line / footer), so the CLI never even started a turn.
+  **FIX (proven live, PR pending): stage the body INSIDE the sandbox over stdin
+  (`printf '%s' "$msg" | nemoclaw <ref> exec --no-tty -- bash -c "cat > /tmp/nudge-<sid>.txt"`)
+  then pass `--message-file`** — exit 0 in 39s and the message landed in Telegram.
+  **Why six review rounds and 1789 tests missed it:** nothing exercised the runner with a REAL
+  message; every probe (mine included) used a single-line ASCII string, which passes. When
+  testing a CLI path, reproduce the actual payload shape — newlines, unicode, length — not a
+  convenient stand-in. Diagnostic note: the failing branch is invisible in the box journal
+  (the script sends output to /dev/null); the reason surfaces in the nudge row's `resolution`
+  (`delivery failed 3x: agent CLI exited non-zero or timed out`), and a ~1s sudo session in
+  `journalctl -u nudge-runner.service` is the tell that the CLI rejected the call rather than
+  ran it. **The orphan doctrine held throughout: after 3 attempts the gap was handed to the
+  manager rather than lost.**
 - **Stage-1 box runner is INSTALLED on trades-box-1 (2026-08-17).**
   `/usr/local/sbin/nudge-runner.sh` (md5 `a429eea420342c3de2bc76bdaac99668`, byte-identical to
   `Box_Setup_Stuff/nudge-runner.sh`), plus both units; `nudge-runner.timer` enabled + active on

@@ -12,14 +12,16 @@
 #   1. validate sandboxRef/replyTo/sessionId (they become argv — never paths,
 #      never flags; the badge-pull retirement-ref rule),
 #   2. decode the message (base64 keeps the multi-line deliverable shell-safe),
-#   3. `nemoclaw <sandbox> agent --deliver` into a FRESH per-nudge session
+#   3. STAGE the body to a file inside the sandbox and pass --message-file
+#      (openshell exec rejects newlines in argv, so -m cannot carry it),
+#   4. `nemoclaw <sandbox> agent --deliver` into a FRESH per-nudge session
 #      (id reuse resumes stale conversations — decision D6); --deliver runs on
 #      the GATEWAY and fires the outbound plugin hooks (weekday guard
 #      included), so the agent's reply reaches the technician's Telegram,
-#   4. judge success by assistant text in the session TRAJECTORY — never CLI
+#   5. judge success by assistant text in the session TRAJECTORY — never CLI
 #      stdout (stdout is chrome and has rotted before), never `docker exec`
 #      (the gateway port lives in a nested netns; ssh→exec is the way),
-#   5. POST the outcome. One item's failure never aborts the loop.
+#   6. POST the outcome. One item's failure never aborts the loop.
 #
 # Setup (once, as root — see doorman-nemoclaw-setup-guide.md):
 #   install -o root -g root -m 700 nudge-runner.sh /usr/local/sbin/nudge-runner.sh
@@ -127,10 +129,29 @@ printf '%s' "$resp" | jq -c '.nudges[]' | while IFS= read -r item; do
     continue
   fi
 
+  # STAGE THE BODY INSIDE THE SANDBOX FIRST. `nemoclaw <name> agent` forwards
+  # argv through `openshell sandbox exec`, which REJECTS any argument
+  # containing a newline — and our deliverable is multi-line by construction
+  # (question / evidence line / footer). Passing it with -m exits 2 in ~1s:
+  #   "command argument N (... spanning 5 lines) contains a newline or
+  #    carriage return, which OpenShell exec does not accept."
+  # Live-proven 2026-08-18: every delivery failed this way until the message
+  # moved out of argv. `--message-file` reads the body from a path INSIDE the
+  # sandbox, so write it there over stdin first (the documented escape hatch).
+  # Single-line test messages hide this bug — always exercise a real one.
+  # $sid is validated above as [A-Za-z0-9-]+, so it is safe to interpolate.
+  msgfile="/tmp/nudge-$sid.txt"
+  if ! printf '%s' "$msg" | timeout 60 sudo -u "$NEMOCLAW_USER" -H \
+      "$NEMOCLAW_BIN" "$sref" exec --no-tty -- bash -c "cat > $msgfile" \
+      >/dev/null 2>&1; then
+    report "$id" failed "could not stage message in sandbox"
+    continue
+  fi
+
   # Deliver through the person's own agent. </dev/null: exec/agent eat stdin
   # and would swallow the while-loop's remaining items (recorded gotcha).
   if ! timeout 240 sudo -u "$NEMOCLAW_USER" -H "$NEMOCLAW_BIN" "$sref" agent \
-      --agent main --session-id "$sid" -m "$msg" \
+      --agent main --session-id "$sid" --message-file "$msgfile" \
       --deliver --reply-channel telegram --reply-to "$reply_to" \
       </dev/null >/dev/null 2>&1; then
     report "$id" failed "agent CLI exited non-zero or timed out"

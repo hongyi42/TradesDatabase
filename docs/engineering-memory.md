@@ -868,6 +868,19 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   trajectory text per the date-eval record — `delivered` is unearned for never-Started
   recipients until probed). Replies take the ordinary record_field_note path — that capture is
   what closes the loop.
+- **Stage-1 shadow CONFIRMED on the pilot (2026-08-18T00:05Z).** Scheduled-run log:
+  `"mode":"live","freshGaps":1,"itemsOpened":1,"nudgeMode":"shadow","nudgesWouldCreate":1,
+  "nudgesCreated":0`, `teamLeadCompose:{"skipped":"NUDGES_MODE not 'live'"}`, ok:true — the
+  ladder identified a reachable person, decided it would ask, wrote nothing, and still filed the
+  manager card.
+  **HOW TO READ SHADOW: `nudgesWouldCreate` is an EVENT counter, not a level.** A gap is
+  surfaced once EVER, so with ~1 gap/person/day the signal is ONE non-zero tick among ~288
+  zeros a day. Reading a random recent log and seeing 0 proves nothing (we nearly called it
+  broken). Either catch the tick, or reconstruct from the DB: flagged `overdue_visit_gap` items
+  whose `detail->>'technicianRef'` is a reachable roster row.
+  **ORDERING TRAP for any synthetic test gap: create it only AFTER `NUDGES_MODE=live`.** A gap
+  created while shadow is on is consumed by the manager fallback on the next tick and, by the
+  once-ever rule, can never become a nudge — the test visit is burned.
 - **Stage-1 box runner is INSTALLED on trades-box-1 (2026-08-17).**
   `/usr/local/sbin/nudge-runner.sh` (md5 `a429eea420342c3de2bc76bdaac99668`, byte-identical to
   `Box_Setup_Stuff/nudge-runner.sh`), plus both units; `nudge-runner.timer` enabled + active on

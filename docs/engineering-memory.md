@@ -900,6 +900,21 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   `journalctl -u nudge-runner.service` is the tell that the CLI rejected the call rather than
   ran it. **The orphan doctrine held throughout: after 3 attempts the gap was handed to the
   manager rather than lost.**
+- **USER DECISION 2026-08-18 — DeepInfra is being RETIRED; Fireworks replaces its inference key.**
+  NOT kept as a warm rollback, and no replacement lane (Nebius or otherwise) is being stood up:
+  the fleet becomes SINGLE-PROVIDER with no fallback. The user was told that the 2026-08-15
+  Fireworks spend-cap suspension (HTTP 412) was recovered in ~5 min precisely BY rolling back to
+  DeepInfra, and chose it anyway — do not re-litigate. The owed work is a written, TESTED recovery
+  procedure for "Fireworks is down and every technician's assistant is dead". Nothing executed yet.
+  State verified on the box the same day: route still `deepinfra-prod`/`zai-org/GLM-5.2`;
+  **`fireworks-prod` is ALREADY a registered provider** (`openshell provider list -g nemoclaw`,
+  type openai) so this is REPOINTING the fleet, not editing a key inside DeepInfra's registration;
+  the deployed medic and `Box_Setup_Stuff/nemoclaw-inference-medic.sh` differ in EXACTLY the two
+  `WANT_*` lines (diff-verified — installing the repo copy loses nothing); **Render's Fireworks key
+  and the box's `fireworks-prod` credential are SEPARATE**, and the box's has not been exercised
+  since the suspension, so its first use is a live test, not a formality. Reminder: the medic timer
+  re-asserts `WANT_*` every 5 min, so a hand-run `openshell inference set` is reverted before you
+  finish reading its output.
 - **Stage-1 box runner is INSTALLED on trades-box-1 (2026-08-17; FIXED BUILD REDEPLOYED
   2026-08-18).** `/usr/local/sbin/nudge-runner.sh` — md5 **`a84f1a37c83caf06932ed4003d4de97c`**,
   byte-identical to `Box_Setup_Stuff/nudge-runner.sh` at `adac0d5` (the superseded

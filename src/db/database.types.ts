@@ -2129,6 +2129,7 @@ export type Database = {
         | "credit_applied"
         | "write_off"
         | "correction"
+        | "material_cost"
       promise_level: "none" | "day" | "time" | "time_only"
       review_status: "open" | "resolved" | "dismissed"
       technician_state:
@@ -2312,6 +2313,7 @@ export const Constants = {
         "credit_applied",
         "write_off",
         "correction",
+        "material_cost",
       ],
       promise_level: ["none", "day", "time", "time_only"],
       review_status: ["open", "resolved", "dismissed"],

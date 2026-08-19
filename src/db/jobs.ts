@@ -176,6 +176,78 @@ export async function listJobsWithCustomerByIds(
   return (data ?? []) as JobWithCustomer[];
 }
 
+// Detector #2's candidates (plan 2026-08-19): jobs whose WORK is finished but
+// whose parts cost was never recorded.
+//
+// Anchored on the ASSIGNMENT's end, not on a job status change, for three
+// reasons: no job-status history exists (`jobs.updated_at` is bumped by any
+// write); `updated_at` is real-UTC while the watcher's window is the firm's
+// wall clock stored as if UTC, so filtering one with the other is silently off
+// by the firm's offset; and the assignment is what supplies the technician to
+// ask. It also bounds the first-run backfill to the same 72h window the visit
+// detector uses, instead of surfacing every historical job at once.
+//
+// Rows with no technician are DROPPED here: assignments.technician_id has been
+// nullable since 20260717120000, and createPendingNudge requires one — there is
+// nobody to ask.
+export type CostGapCandidate = {
+  jobId: string;
+  jobTitle: string | null;
+  customerName: string | null;
+  technicianId: string;
+  endsAtLocal: string;
+};
+
+export async function listCostGapCandidates(
+  tenantId: string,
+  endedFromNaive: string, // ISO, firm wall-clock as if UTC — inclusive
+  endedToNaive: string, // ISO, firm wall-clock as if UTC — exclusive
+): Promise<CostGapCandidate[]> {
+  const { data, error } = await getClient()
+    .from('assignments')
+    .select('technician_id, ends_at, job_id, jobs!inner(id, title, status, tenant_id, customers(name))')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'confirmed')
+    .gte('ends_at', endedFromNaive)
+    .lt('ends_at', endedToNaive)
+    .in('jobs.status', ['completed', 'invoiced'])
+    .not('technician_id', 'is', null)
+    // DESCENDING, deliberately: the dedup below keeps the FIRST row per job, so
+    // this makes that the job's MOST RECENT in-window visit. Ascending asked
+    // whoever happened to go first on a multi-visit job — the wrong person to
+    // ask what it ended up costing.
+    .order('ends_at', { ascending: false });
+  if (error) throw new Error(`listCostGapCandidates failed: ${error.message}`);
+  const rows = (data ?? []) as unknown as Array<{
+    technician_id: string | null;
+    ends_at: string | null;
+    job_id: string;
+    jobs: { id: string; title: string | null; tenant_id: string; customers: { name: string } | null } | null;
+  }>;
+  const seen = new Set<string>();
+  const out: CostGapCandidate[] = [];
+  for (const r of rows) {
+    // id-only-FK belt-and-suspenders (the boardRead pattern): the embed is
+    // filtered in the query, re-checked here.
+    if (!r.jobs || r.jobs.tenant_id !== tenantId) continue;
+    if (!r.technician_id || !r.ends_at) continue;
+    // ONE candidate per job — a job with three visits is still one cost
+    // question (subject_ref is the job). MOST RECENT visit wins (see the
+    // descending order above): the technician who was there last is the one who
+    // knows what the job ended up costing.
+    if (seen.has(r.job_id)) continue;
+    seen.add(r.job_id);
+    out.push({
+      jobId: r.job_id,
+      jobTitle: r.jobs.title,
+      customerName: r.jobs.customers?.name ?? null,
+      technicianId: r.technician_id,
+      endsAtLocal: r.ends_at,
+    });
+  }
+  return out;
+}
+
 export async function updateJobStatus(id: string, next: JobStatus): Promise<Job> {
   const current = await getJob(id);
   if (!current) throw new Error(`updateJobStatus: job ${id} not found`);

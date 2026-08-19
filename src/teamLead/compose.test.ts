@@ -8,6 +8,7 @@ import {
   runTeamLeadCompose,
   type ComposeDeps,
 } from './compose.js';
+import { OVERDUE_VISIT_GAP_SPEC, type NudgeKindSpec } from '../jobs/nudgeKinds.js';
 
 const NOW = '2026-08-16T12:00:00.000Z';
 
@@ -56,7 +57,7 @@ function baseDeps(over: Partial<ComposeDeps> = {}): ComposeDeps {
     markQueued: async () => pendingNudge({ status: 'queued' }),
     markOutcome: async () => pendingNudge({ status: 'cancelled' }),
     setAttempts: async () => pendingNudge(),
-    flagGap: async () => null,
+    flagNudge: async () => null,
     ...over,
   };
 }
@@ -130,9 +131,9 @@ describe('runTeamLeadCompose', () => {
       markQueued: async () => {
         throw new Error('declined nudges must not queue');
       },
-      flagGap: async (input) => {
+      flagNudge: async (input) => {
         flagged.push({ escalatedFromNudge: input.escalatedFromNudge, suggestion: input.suggestion });
-        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<ComposeDeps['flagGap']>>>;
+        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<ComposeDeps['flagNudge']>>>;
       },
       markOutcome: async (_id, _t, status, resolution) => {
         outcomes.push([status, resolution]);
@@ -158,7 +159,7 @@ describe('runTeamLeadCompose', () => {
       run: async () => {
         throw new Error('the model must not see incomplete context');
       },
-      flagGap: async () => {
+      flagNudge: async () => {
         throw new Error('a flag-incoherent row cannot be handed off');
       },
       markOutcome: async () => {
@@ -190,9 +191,9 @@ describe('runTeamLeadCompose', () => {
       run: async () => {
         throw new Error('the model must not see incomplete context');
       },
-      flagGap: async (input) => {
+      flagNudge: async (input) => {
         flagged.push({ suggestion: input.suggestion, jobId: input.jobId });
-        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<ComposeDeps['flagGap']>>>;
+        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<ComposeDeps['flagNudge']>>>;
       },
       markOutcome: async (_id, _t, status, resolution) => {
         outcomes.push(`${status}: ${resolution}`);
@@ -233,9 +234,9 @@ describe('runTeamLeadCompose', () => {
       run: async () => {
         throw new Error('inference 503');
       },
-      flagGap: async (input) => {
-        flagged.push(input.assignmentId);
-        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<ComposeDeps['flagGap']>>>;
+      flagNudge: async (input) => {
+        flagged.push(input.subjectRef);
+        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<ComposeDeps['flagNudge']>>>;
       },
       markOutcome: async (_id, _t, status, resolution) => {
         outcomes.push(`${status}: ${resolution}`);
@@ -257,7 +258,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('response lost after commit');
       },
       setAttempts: async () => null, // the pending-only guard found a queued row
-      flagGap: async () => {
+      flagNudge: async () => {
         throw new Error('a queued deliverable must not be handed off');
       },
       markOutcome: async () => {
@@ -363,7 +364,7 @@ describe('runTeamLeadCompose', () => {
       setAttempts: async () => {
         throw new Error('out-of-window nudges must not gain attempts');
       },
-      flagGap: async () => {
+      flagNudge: async () => {
         throw new Error('out-of-window nudges must not reach the manager');
       },
     }));
@@ -447,4 +448,56 @@ describe('assembleNudgeMessage', () => {
     // The relay reading came from this phrasing — it must not come back.
     expect(msg).not.toMatch(/pass the question on/i);
   });
+});
+
+describe('the kind registry drives compose (plan 2026-08-19 Phase 2)', () => {
+  test('each kind composes with its OWN system prompt', async () => {
+    // The whole point of the split: a second kind must be able to ask a
+    // different question, not a reworded version of the visit one.
+    const seen: Array<{ system: string; user: string }> = [];
+    const second: NudgeKindSpec = {
+      ...OVERDUE_VISIT_GAP_SPEC,
+      kind: 'unlinked_call', // any other ReviewKind
+      compose: {
+        system: 'SECOND KIND SYSTEM PROMPT',
+        tool: OVERDUE_VISIT_GAP_SPEC.compose.tool,
+        prepare: () => ({ user: 'SECOND KIND USER', assemble: (q) => `2:${q}` }),
+      },
+    };
+    const queued: string[] = [];
+    const summary = await runTeamLeadCompose(NOW, baseDeps({
+      specs: [OVERDUE_VISIT_GAP_SPEC, second],
+      listNudges: async () => [
+        pendingNudge({ id: 'n-visit' }),
+        pendingNudge({ id: 'n-second', kind: 'unlinked_call' }),
+      ],
+      run: async (_tool, req) => {
+        seen.push({ system: req.system as string, user: req.user as string });
+        return { ask: true, question: 'Q', reason: 'r' };
+      },
+      markQueued: async (_id, _t, question) => {
+        queued.push(question);
+        return pendingNudge({ status: 'queued' });
+      },
+    }));
+    expect(summary.composed).toBe(2);
+    expect(seen[0].system).toContain('office assistant'); // the visit prompt
+    expect(seen[1].system).toBe('SECOND KIND SYSTEM PROMPT');
+    expect(seen[1].user).toBe('SECOND KIND USER');
+    // Each kind assembles its OWN deliverable, too.
+    expect(queued[1]).toBe('2:Q');
+  });
+
+  test('a kind with NO spec is never composed', async () => {
+    const summary = await runTeamLeadCompose(NOW, baseDeps({
+      specs: [],
+      listNudges: async () => [pendingNudge({})],
+      run: async () => {
+        throw new Error('must not compose an unregistered kind');
+      },
+    }));
+    expect(summary.composed).toBe(0);
+    expect(summary.rowErrors).toBe(0);
+  });
+
 });

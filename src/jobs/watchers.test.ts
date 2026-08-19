@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import type { PlacedAssignment } from '../db/assignments.js';
 import type { JobWithCustomer } from '../db/jobs.js';
 import type { Nudge } from '../db/nudges.js';
@@ -10,6 +10,7 @@ import {
   runWatchers,
   type WatcherDeps,
 } from './watchers.js';
+import { JOB_COST_GAP_SPEC, OVERDUE_VISIT_GAP_SPEC, type NudgeKindSpec } from './nudgeKinds.js';
 
 // Pure unit tests — every collaborator injected (lifecycle.test.ts pattern).
 // hasPushToken is always injected too, so nothing here reads process.env.
@@ -73,6 +74,9 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     listEverFlagged: async () => [],
     listAssignments: async () => [],
     flagGap: async () => null,
+    flagNudge: async () => null,
+    listCostCandidates: async () => [],
+    listCostEvents: async () => [],
     findOpenGaps: async () => [],
     resolveGap: async () => null,
     notify: async () => {},
@@ -470,9 +474,9 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
         nudgeRow({ id: 'n-rolled-filled', subject_ref: 'a-filled', status: 'queued' }),
       ],
       listCaptureTimes: async () => [{ job_id: 'j1', captured_at: '2026-08-14T07:30:00.000Z' }],
-      flagGap: async (input) => {
-        flagged.push(input.assignmentId);
-        return openItem({ subject_ref: input.assignmentId });
+      flagNudge: async (input) => {
+        flagged.push(input.subjectRef);
+        return openItem({ subject_ref: input.subjectRef });
       },
       resolveNudge: async (id, _t, status) => {
         resolved.push([id, status]);
@@ -658,13 +662,13 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
           },
         }),
       ],
-      flagGap: async (input) => {
+      flagNudge: async (input) => {
         flagged.push({
           suggestion: input.suggestion,
           escalatedFromNudge: input.escalatedFromNudge,
           technicianRef: input.technicianRef,
         });
-        return openItem({ subject_ref: input.assignmentId });
+        return openItem({ subject_ref: input.subjectRef });
       },
       resolveNudge: async (id, _t, status) => {
         resolved.push([id, status]);
@@ -731,13 +735,13 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
           context: quietCtx('j-quiet-3'),
         }),
       ],
-      flagGap: async (input) => {
+      flagNudge: async (input) => {
         flagged.push({
-          assignmentId: input.assignmentId,
+          assignmentId: input.subjectRef,
           suggestion: input.suggestion,
           escalatedFromNudge: input.escalatedFromNudge,
         });
-        return openItem({ subject_ref: input.assignmentId });
+        return openItem({ subject_ref: input.subjectRef });
       },
       resolveNudge: async (id, _t, status, resolution) => {
         resolved.push([id, status, resolution]);
@@ -815,5 +819,380 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(summary.nudgesEscalated).toBe(1);
     expect(summary.itemsOpened).toBe(0); // nothing NEW for the manager
     expect(summary.pushed).toBe(0);
+  });
+});
+
+describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
+  // A second detector does not exist in production yet, so the brake and the
+  // stranded-kind behaviour are exercised through the injectable specs seam.
+  const secondSpec = (over: Partial<NudgeKindSpec> = {}): NudgeKindSpec => ({
+    kind: 'call_action' as NudgeKindSpec['kind'], // any registered ReviewKind
+    maxNewPerTenantTick: 2,
+    filled: () => null,
+    moot: () => null,
+    handoff: () => null,
+    compose: { system: 'second', tool: OVERDUE_VISIT_GAP_SPEC.compose.tool, prepare: () => null },
+    ...over,
+  });
+
+  test('an UNREGISTERED kind is never swept, never escalated, never expired — and says so', async () => {
+    // The silent-stranding failure this registry exists to make observable: an
+    // unregistered kind used to be filtered out by a literal, with nothing
+    // logged, and the row sat open forever.
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+      errors.push(a.map(String).join(' '));
+    });
+    try {
+      const summary = await runWatchers(NOW, 'live', baseDeps({
+        listNudges: async () => [
+          nudgeRow({
+            id: 'n-alien',
+            kind: 'unlinked_call', // real ReviewKind, no spec registered
+            status: 'asked',
+            asked_at: '2026-08-13T00:00:00.000Z', // 49h+ stale → would escalate if swept
+          }),
+        ],
+        resolveNudge: async () => {
+          throw new Error('an unregistered kind must never be resolved');
+        },
+        flagGap: async () => {
+          throw new Error('an unregistered kind must never reach the manager');
+        },
+      }), 'live');
+      expect(summary.tenantErrors).toBe(0);
+      expect(summary.nudgesResolved).toBe(0);
+      expect(summary.nudgesEscalated).toBe(0);
+      expect(summary.nudgesExpired).toBe(0);
+      expect(errors.some((e) => e.includes('UNREGISTERED') && e.includes('unlinked_call'))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('the per-kind brake caps creation below the tenant ceiling', async () => {
+    // Three fresh gaps, a kind brake of 1 → only one is routed, even though the
+    // tenant-wide ceiling (5) would have allowed all three. (Cross-KIND
+    // independence cannot be exercised until a second kind routes — Phase 4.)
+    const created: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      specs: [{ ...OVERDUE_VISIT_GAP_SPEC, maxNewPerTenantTick: 1 }, secondSpec()],
+      listOverdue: async () => [
+        visit({ id: 'a1', job_id: 'j1', technician_id: 'tech-1', ends_at: '2026-08-15T01:00:00.000Z' }),
+        visit({ id: 'a2', job_id: 'j2', technician_id: 'tech-1', ends_at: '2026-08-15T02:00:00.000Z' }),
+        visit({ id: 'a3', job_id: 'j3', technician_id: 'tech-1', ends_at: '2026-08-15T03:00:00.000Z' }),
+      ],
+      listTeam: async () => [boundTech()],
+      createNudge: async (input) => {
+        created.push(input.subjectRef);
+        return nudgeRow({ subject_ref: input.subjectRef });
+      },
+    }), 'live');
+    expect(created).toEqual(['a1']); // oldest first, brake at 1
+    expect(summary.nudgesCreated).toBe(1);
+    expect(summary.tenantErrors).toBe(0);
+  });
+
+
+  test('creation is REGISTRY-GATED: an unregistered kind is never minted', async () => {
+    // Stranding is possible from BOTH ends. Filtering only the sweep would let
+    // the watcher keep MINTING a kind the sweep then refuses to touch — open
+    // forever, unresolvable, unescalatable. Nothing may be created for a kind
+    // that has no spec.
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      specs: [], // no spec for overdue_visit_gap
+      listOverdue: async () => [visit({ id: 'a1', technician_id: 'tech-1' })],
+      listTeam: async () => [boundTech()],
+      createNudge: async () => {
+        throw new Error('must not create a nudge for an unregistered kind');
+      },
+      flagGap: async () => {
+        throw new Error('an unregistered kind must not route at all');
+      },
+    }), 'live');
+    expect(summary.tenantErrors).toBe(0);
+    expect(summary.nudgesCreated).toBe(0);
+    expect(summary.itemsOpened).toBe(0);
+  });
+
+  test('the tenant-wide ceiling still caps the tick even when a kind brake is higher', async () => {
+    // A detector may never raise a firm's per-tick volume above the surge brake.
+    const routed: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      specs: [{ ...OVERDUE_VISIT_GAP_SPEC, maxNewPerTenantTick: 99 }],
+      listOverdue: async () => Array.from({ length: 9 }, (_, i) =>
+        visit({ id: `a${i}`, job_id: `j${i}`, ends_at: `2026-08-15T0${i}:00:00.000Z` })),
+      flagGap: async (input) => {
+        routed.push(input.assignmentId);
+        return openItem({ subject_ref: input.assignmentId });
+      },
+    }), 'live');
+    expect(routed.length).toBe(MAX_NEW_ITEMS_PER_TENANT_TICK);
+    expect(summary.itemsOpened).toBe(MAX_NEW_ITEMS_PER_TENANT_TICK);
+  });
+
+  test('escalation copy is byte-identical to the pre-registry wording', async () => {
+    // The registry moved this copy; a human reads it, so lock the exact text.
+    let suggestion = '';
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({ status: 'asked', asked_at: '2026-08-13T00:00:00.000Z' }),
+      ],
+      listAssignments: async () => [],
+      flagNudge: async (input) => {
+        suggestion = input.suggestion;
+        return openItem({});
+      },
+    }), 'live');
+    expect(suggestion).toBe(
+      "Ben Shelton's assistant asked about the 'Furnace tune-up' visit (Henderson) on " +
+        "Thursday, Aug 13 at 12:00 AM and hasn't heard back — nothing is on the job's " +
+        'record yet. Worth a direct word so it gets closed out. If it\'s already handled, ' +
+        'just dismiss this.',
+    );
+  });
+});
+
+describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
+  const candidate = (over: Record<string, unknown> = {}) => ({
+    jobId: 'j-cost',
+    jobTitle: 'Boiler swap',
+    customerName: 'Henderson',
+    technicianId: 'tech-1',
+    endsAtLocal: '2026-08-15T11:00:00.000Z',
+    ...over,
+  });
+  const costNudge = (over: Partial<Nudge> = {}): Nudge =>
+    nudgeRow({
+      id: 'n-cost',
+      kind: 'job_cost_gap',
+      subject_ref: 'j-cost',
+      context: {
+        customerName: 'Henderson',
+        jobTitle: 'Boiler swap',
+        technicianRef: 'ben-shelton',
+        technicianName: 'Ben Shelton',
+        jobId: 'j-cost',
+        endsAtLocal: '2026-08-15T11:00:00.000Z',
+      },
+      ...over,
+    });
+
+  test('a finished job with no cost recorded becomes a cost NUDGE, subject = the JOB', async () => {
+    const created: Array<Record<string, unknown>> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listCostCandidates: async () => [candidate()],
+      listTeam: async () => [boundTech()],
+      createNudge: async (input) => {
+        created.push({ ...input });
+        return costNudge({});
+      },
+    }), 'live');
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ kind: 'job_cost_gap', subjectRef: 'j-cost', technicianId: 'tech-1' });
+    // Context carries everything compose and the handoff will ever need — and
+    // NO visit window, because the subject is a job.
+    expect(created[0].context).toMatchObject({ jobId: 'j-cost', jobTitle: 'Boiler swap', customerName: 'Henderson' });
+    expect(summary.byKind['job_cost_gap']).toEqual({ gapsFound: 1, nudgesCreated: 1 });
+    expect(summary.tenantErrors).toBe(0);
+  });
+
+  test('a job that ALREADY has a cost recorded is not a gap', async () => {
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listCostCandidates: async () => [candidate()],
+      listCostEvents: async () => ['j-cost'], // material_cost already exists
+      listTeam: async () => [boundTech()],
+      createNudge: async () => {
+        throw new Error('a job with a cost recorded must not be asked about');
+      },
+    }), 'live');
+    expect(summary.byKind['job_cost_gap']?.gapsFound ?? 0).toBe(0);
+    expect(summary.tenantErrors).toBe(0);
+  });
+
+  test('ONCE-EVER is real: a job already nudged for cost is never asked again', async () => {
+    // The accepted limitation (user decision 2026-08-19): subject_ref is the
+    // job and uq_nudges_subject_ever asks once per subject FOREVER, so a second
+    // material purchase on a multi-day job is never chased. Asserted so it
+    // reads as a DECISION, not an oversight.
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listCostCandidates: async () => [candidate()],
+      listNudged: async (_t, kind, ids) => (kind === 'job_cost_gap' ? ids : []),
+      listTeam: async () => [boundTech()],
+      createNudge: async () => {
+        throw new Error('once-ever: this job was already asked about');
+      },
+    }), 'live');
+    expect(summary.byKind['job_cost_gap']?.gapsFound ?? 0).toBe(0);
+    expect(summary.tenantErrors).toBe(0);
+  });
+
+  test('the answer closes it — activity AFTER the ask, not the visit', async () => {
+    // The bound is asked_at. A completed job usually already has a field note
+    // (that is what completed it), so comparing against the visit would mark
+    // every cost nudge answered the instant it was created.
+    const resolved: Array<[string, string, string | null | undefined]> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [costNudge({ status: 'asked', asked_at: '2026-08-15T12:00:00.000Z' })],
+      // A note landed AFTER the ask.
+      listCaptureTimes: async () => [{ job_id: 'j-cost', captured_at: '2026-08-15T13:00:00.000Z' }],
+      listJobs: async () => [{ id: 'j-cost', tenant_id: 't1', status: 'completed' } as never],
+      resolveNudge: async (id, _t, status, resolution) => {
+        resolved.push([id, status, resolution]);
+        return costNudge({});
+      },
+    }), 'live');
+    expect(resolved).toEqual([['n-cost', 'answered', 'the technician answered — a note landed on the job']]);
+    expect(summary.nudgesResolved).toBe(1);
+  });
+
+  test('activity BEFORE the ask does NOT close it (the trap this bound exists for)', async () => {
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [costNudge({ status: 'asked', asked_at: '2026-08-15T12:00:00.000Z' })],
+      // The note that completed the job, an hour BEFORE we asked about cost.
+      listCaptureTimes: async () => [{ job_id: 'j-cost', captured_at: '2026-08-15T11:00:00.000Z' }],
+      listJobs: async () => [{ id: 'j-cost', tenant_id: 't1', status: 'completed' } as never],
+      resolveNudge: async () => {
+        throw new Error('pre-ask activity must not count as an answer');
+      },
+    }), 'live');
+    expect(summary.nudgesResolved).toBe(0);
+    expect(summary.tenantErrors).toBe(0);
+  });
+
+  test('a cancelled JOB makes the cost question moot', async () => {
+    const resolved: Array<[string, string]> = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [costNudge({ status: 'asked', asked_at: NOW })],
+      listJobs: async () => [{ id: 'j-cost', tenant_id: 't1', status: 'cancelled' } as never],
+      resolveNudge: async (id, _t, status) => {
+        resolved.push([id, status]);
+        return costNudge({});
+      },
+    }), 'live');
+    expect(resolved).toEqual([['n-cost', 'cancelled']]);
+  });
+
+  test('48h of silence escalates a cost gap to the manager, with COST copy and no visit window', async () => {
+    const flagged: Array<Record<string, unknown>> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [costNudge({ status: 'asked', asked_at: '2026-08-13T00:00:00.000Z' })],
+      listJobs: async () => [{ id: 'j-cost', tenant_id: 't1', status: 'completed' } as never],
+      flagNudge: async (input) => {
+        flagged.push({ ...input });
+        return openItem({ subject_ref: input.subjectRef });
+      },
+      resolveNudge: async () => costNudge({ status: 'escalated' }),
+    }), 'live');
+    expect(summary.nudgesEscalated).toBe(1);
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0]).toMatchObject({
+      kind: 'job_cost_gap',
+      subjectRef: 'j-cost',
+      jobId: 'j-cost',
+      startsAtLocal: null, // job-scoped: NO visit window
+      endsAtLocal: null,
+      escalatedFromNudge: 'n-cost',
+    });
+    expect(String(flagged[0].suggestion)).toContain('cost in parts');
+    expect(String(flagged[0].suggestion)).not.toContain('visit');
+  });
+
+  test('a cost gap ALREADY on the manager queue is not re-raised as a nudge', async () => {
+    // The ever-flagged store is the third filter. Without it a gap the manager
+    // is already looking at would be asked about again as if it were new.
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listCostCandidates: async () => [candidate()],
+      listEverFlagged: async (_t, kind, ids) => (kind === 'job_cost_gap' ? ids : []),
+      listTeam: async () => [boundTech()],
+      createNudge: async () => {
+        throw new Error('a flagged cost gap must not also become a nudge');
+      },
+    }), 'live');
+    expect(summary.byKind['job_cost_gap']?.gapsFound ?? 0).toBe(0);
+    expect(summary.tenantErrors).toBe(0);
+  });
+
+  test('the per-kind cost brake BINDS — the runaway backstop is real', async () => {
+    // The backstop that justifies removing the per-person cap. It must actually
+    // stop a misfiring detector, so make it bind with nothing else in the tick.
+    const created: string[] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      listCostCandidates: async () =>
+        Array.from({ length: 9 }, (_, i) => candidate({ jobId: `j-cost-${i}` })),
+      listTeam: async () => [boundTech()],
+      createNudge: async (input) => {
+        created.push(input.subjectRef);
+        return costNudge({ subject_ref: input.subjectRef });
+      },
+    }), 'live');
+    expect(created).toHaveLength(JOB_COST_GAP_SPEC.maxNewPerTenantTick); // 3, not 9, not 5
+  });
+
+  test('KNOWN LIMIT: on the SAME job, answering either question closes both', async () => {
+    // hasActivitySince is keyed on the JOB, not on who answered — so a note
+    // landing after the ask satisfies both a visit gap and a cost gap on that
+    // job. Asserted so the behaviour is visible rather than discovered: it is
+    // the case Plan B's partial-answer batching has to reckon with.
+    const resolved: string[] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({ id: 'n-visit', subject_ref: 'a1', status: 'asked', asked_at: NOW }),
+        costNudge({ status: 'asked', asked_at: NOW, context: {
+          customerName: 'Henderson', jobTitle: 'Boiler swap', technicianRef: 'ben-shelton',
+          technicianName: 'Ben Shelton', jobId: 'j1', // the SAME job as the visit nudge
+        } }),
+      ],
+      listCaptureTimes: async () => [{ job_id: 'j1', captured_at: '2026-08-16T13:00:00.000Z' }],
+      listJobs: async () => [{ id: 'j1', tenant_id: 't1', status: 'completed' } as never],
+      resolveNudge: async (id) => {
+        resolved.push(id);
+        return costNudge({});
+      },
+    }), 'live');
+    expect(resolved.sort()).toEqual(['n-cost', 'n-visit']); // BOTH close on one note
+  });
+
+  test('both kinds run in one tick and each resolves on its OWN predicate', async () => {
+    // The partial-answer shape Plan B will build batching on: answering one
+    // question must not close the other.
+    const resolved: Array<[string, string]> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({ id: 'n-visit', subject_ref: 'a1', status: 'asked', asked_at: NOW }),
+        costNudge({ status: 'asked', asked_at: NOW }),
+      ],
+      // Activity on the VISIT's job only — j1, not j-cost.
+      listCaptureTimes: async () => [{ job_id: 'j1', captured_at: '2026-08-16T11:00:00.000Z' }],
+      listJobs: async () => [{ id: 'j-cost', tenant_id: 't1', status: 'completed' } as never],
+      resolveNudge: async (id, _t, status) => {
+        resolved.push([id, status]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    expect(resolved).toEqual([['n-visit', 'answered']]); // the cost one stays open
+    expect(summary.nudgesResolved).toBe(1);
+  });
+
+  test('the tenant ceiling is shared across kinds — a detector cannot raise per-tick volume', async () => {
+    const created: string[] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      listOverdue: async () => Array.from({ length: 5 }, (_, i) =>
+        visit({ id: `a${i}`, job_id: `j${i}`, technician_id: 'tech-1', ends_at: `2026-08-15T0${i}:00:00.000Z` })),
+      listCostCandidates: async () => [candidate(), candidate({ jobId: 'j-cost-2' })],
+      listTeam: async () => [boundTech()],
+      createNudge: async (input) => {
+        created.push(input.subjectRef);
+        return nudgeRow({ subject_ref: input.subjectRef });
+      },
+    }), 'live');
+    // The visit pass spends all 5; the cost pass gets none — total stays 5.
+    expect(created).toHaveLength(MAX_NEW_ITEMS_PER_TENANT_TICK);
+    expect(created.every((r) => r.startsWith('a'))).toBe(true);
+  });
+
+  test('the cost spec is registered in production, not just in tests', async () => {
+    expect(JOB_COST_GAP_SPEC.kind).toBe('job_cost_gap');
+    expect(JOB_COST_GAP_SPEC.maxNewPerTenantTick).toBe(3);
   });
 });

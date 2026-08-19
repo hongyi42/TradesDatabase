@@ -21,6 +21,11 @@ export const MONEY_EVENT_KINDS: MoneyEventKind[] = [
   'credit_applied',
   'write_off',
   'correction',
+  // What the job COST the firm in parts/materials (plan 2026-08-19). A COST
+  // row, not an AR row: it never touches balance due, and cannot advance or
+  // walk back job status. Direction comes from `kind` — the amount is still
+  // >= 0, like every other kind.
+  'material_cost',
 ];
 
 // Kinds that legitimately carry no amount: a declined estimate is an outcome,
@@ -207,6 +212,25 @@ export async function listMoneyEventsForJobs(
   return data ?? [];
 }
 
+// Which of these jobs already have a cost recorded? The batched, in()-bounded
+// shape the watcher's sweep needs (the listNudgedSubjectRefs pattern — never a
+// tenant-wide scan). Kind-scoped: only 'material_cost' counts as "cost
+// recorded", so a job with invoices but no cost is still a gap.
+export async function listJobIdsWithCostEvents(
+  tenantId: string,
+  jobIds: string[],
+): Promise<string[]> {
+  if (jobIds.length === 0) return []; // PostgREST `in.()` with zero values errors
+  const { data, error } = await getClient()
+    .from('money_events')
+    .select('job_id')
+    .eq('tenant_id', tenantId)
+    .eq('kind', 'material_cost')
+    .in('job_id', jobIds);
+  if (error) throw new Error(`listJobIdsWithCostEvents failed: ${error.message}`);
+  return [...new Set((data ?? []).map((r) => r.job_id))];
+}
+
 export interface MoneySummary {
   /** Last approved estimate + change orders after that approval. */
   quotedCents: number;
@@ -218,6 +242,12 @@ export interface MoneySummary {
   writtenOffCents: number;
   /** invoiced − paid − credits − write-offs. Negative = customer credit. */
   balanceDueCents: number;
+  /**
+   * Σ material_cost — what the job COST the firm in parts/materials.
+   * DELIBERATELY absent from balanceDueCents: cost is not receivable. This is
+   * also NOT margin — there is no labour rate, so revenue − this is not profit.
+   */
+  materialCostCents: number;
   lastEventAt: string | null;
   hasProgressInvoice: boolean;
 }
@@ -270,6 +300,10 @@ export function summarizeMoney(events: MoneyEvent[]): MoneySummary {
   const paid = sum('payment_received') - sum('payment_refunded');
   const credits = sum('credit_applied');
   const writtenOff = sum('write_off');
+  // Folded like every other kind — so `correction` negation works on it for
+  // free (negatedIds/live above are kind-agnostic) — but kept OUT of the AR
+  // arithmetic below.
+  const materialCost = sum('material_cost');
 
   let lastEventAt: string | null = null;
   for (const e of events) {
@@ -283,6 +317,7 @@ export function summarizeMoney(events: MoneyEvent[]): MoneySummary {
     creditsCents: credits,
     writtenOffCents: writtenOff,
     balanceDueCents: invoiced - paid - credits - writtenOff,
+    materialCostCents: materialCost,
     lastEventAt,
     hasProgressInvoice: live.some((e) => e.kind === 'invoice_issued' && isProgress(e)),
   };

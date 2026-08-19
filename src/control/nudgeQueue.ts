@@ -1,5 +1,6 @@
 import {
-  flagOverdueVisitGap,
+  flagNudgeGap,
+  reviewItemExistsFor,
   getQueuedNudgeForHost,
   isInactiveState,
   listQueuedNudgesForHost,
@@ -8,7 +9,7 @@ import {
   setNudgeDeliveryAttempts,
   setNudgeServeCount,
 } from '../db/index.js';
-import { handToManager, readComposeContext } from '../teamLead/compose.js';
+import { handToManager } from '../teamLead/compose.js';
 
 // The voice's transport, spine side (plan 2026-08-15 feature B, Phase 4).
 // The spine NEVER reaches into the agent box — the box already phones home
@@ -49,7 +50,8 @@ export interface NudgeQueueDeps {
   asked?: typeof markNudgeAsked;
   outcome?: typeof markNudgeOutcome;
   attempts?: typeof setNudgeDeliveryAttempts;
-  flagGap?: typeof flagOverdueVisitGap;
+  flagNudge?: typeof flagNudgeGap;
+  reviewItemExists?: typeof reviewItemExistsFor;
 }
 
 // Build one pull's worth of deliveries for a host. Liveness is RE-FILTERED at
@@ -65,7 +67,8 @@ export async function buildNudgeDelivery(
   const listQueued = deps.listQueued ?? listQueuedNudgesForHost;
   const serveCount = deps.serveCount ?? setNudgeServeCount;
   const outcome = deps.outcome ?? markNudgeOutcome;
-  const flagGap = deps.flagGap ?? flagOverdueVisitGap;
+  const flagNudge = deps.flagNudge ?? flagNudgeGap;
+  const reviewItemExists = deps.reviewItemExists ?? reviewItemExistsFor;
 
   const rows = await listQueued(hostId);
   const items: NudgeDeliveryItem[] = [];
@@ -77,7 +80,12 @@ export async function buildNudgeDelivery(
       }
       if (!row.question) continue; // queued implies composed; tampered row stays frozen
       if (row.serve_count >= MAX_SERVE_COUNT) {
-        await handToManager(row, readComposeContext(row), flagGap);
+        // NOT gated on the handoff landing — see the note in compose.ts's
+        // decline path. `false` here means the row's evidence cannot build a
+        // handoff at all, and freezing removes the only terminal exit a queued
+        // row has: never re-served (this branch never reaches `items`) but
+        // 'queued' forever, so every 5-minute pull re-reads and re-logs it.
+        await handToManager(row, flagNudge, reviewItemExists);
         await outcome(
           row.id,
           row.tenant_id,
@@ -122,7 +130,8 @@ export async function completeNudgeDelivery(
   const asked = deps.asked ?? markNudgeAsked;
   const outcome = deps.outcome ?? markNudgeOutcome;
   const attempts = deps.attempts ?? setNudgeDeliveryAttempts;
-  const flagGap = deps.flagGap ?? flagOverdueVisitGap;
+  const flagNudge = deps.flagNudge ?? flagNudgeGap;
+  const reviewItemExists = deps.reviewItemExists ?? reviewItemExistsFor;
 
   const row = await getQueued(id, hostId);
   if (!row) return 'ignored'; // unknown id, wrong host, or already moved
@@ -137,8 +146,10 @@ export async function completeNudgeDelivery(
   if (!bumped) return 'ignored';
   if (next < MAX_DELIVERY_ATTEMPTS) return 'retry'; // still served next pull
   // Delivery gave up: the manager takes the gap, then the row goes terminal
-  // (flag-first, the F1 order).
-  await handToManager(row, readComposeContext(row), flagGap);
+  // (flag-first, the F1 order). Ungated for the same reason as the serve cap
+  // above — and now the handoff is KIND-AWARE, so a job-scoped gap actually
+  // reaches the manager here instead of silently closing with no surface.
+  await handToManager(row, flagNudge, reviewItemExists);
   await outcome(
     row.id,
     row.tenant_id,

@@ -1,7 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
-import { flagOverdueVisitGap, openCallActionReview, resolveReviewItem } from './reviewItems.js';
+import {
+  flagNudgeGap,
+  flagOverdueVisitGap,
+  openCallActionReview,
+  reviewItemExistsFor,
+  resolveReviewItem,
+} from './reviewItems.js';
 import { createTenant } from './tenants.js';
 
 // Integration test against the LOCAL stack (testEnvGuard enforces local-only).
@@ -131,5 +137,78 @@ describe('flagOverdueVisitGap', () => {
     const item = await flagOverdueVisitGap({ tenantId: tenantB, assignmentId: 'asg-watch-1', ...GAP });
     expect(item).not.toBeNull();
     expect(item?.tenant_id).toBe(tenantB);
+  });
+});
+
+describe('flagNudgeGap — the kind-generic flagger (plan 2026-08-19 Phase 4)', () => {
+  test('a JOB-scoped gap flags with no visit window, and detail omits the keys entirely', async () => {
+    // A cost gap has no startsAtLocal/endsAtLocal. They must be ABSENT from
+    // detail, not stored as nulls — the open-gap reader fail-closes on
+    // malformed detail, and a null there would read as malformed.
+    const item = await flagNudgeGap({
+      tenantId,
+      kind: 'job_cost_gap',
+      subjectRef: 'job-cost-1',
+      jobId: 'job-cost-1',
+      technicianRef: 'ben-shelton',
+      suggestion: 'What did this job cost in parts?',
+    });
+    expect(item).not.toBeNull();
+    const row = await pg.query<{ detail: Record<string, unknown>; kind: string }>(
+      'select kind, detail from review_items where id = $1',
+      [item!.id],
+    );
+    expect(row.rows[0].kind).toBe('job_cost_gap');
+    expect(row.rows[0].detail).toEqual({ jobId: 'job-cost-1', technicianRef: 'ben-shelton' });
+    expect('startsAtLocal' in row.rows[0].detail).toBe(false);
+    expect('endsAtLocal' in row.rows[0].detail).toBe(false);
+  });
+
+  test('once-ever holds per KIND, and the DB index is the backstop', async () => {
+    // App-level dedup: a second flag on the same job returns null.
+    expect(
+      await flagNudgeGap({
+        tenantId,
+        kind: 'job_cost_gap',
+        subjectRef: 'job-cost-1',
+        jobId: 'job-cost-1',
+        technicianRef: null,
+        suggestion: 'again',
+      }),
+    ).toBeNull();
+    // And the DB refuses it even if the app guard is bypassed — the race loses
+    // loudly instead of double-flagging.
+    await expect(
+      pg.query(
+        `insert into review_items (tenant_id, kind, subject_ref, suggestion)
+         values ($1, 'job_cost_gap', 'job-cost-1', 'bypass')`,
+        [tenantId],
+      ),
+    ).rejects.toThrow(/uq_review_items_job_cost_gap_ever|duplicate key/);
+  });
+
+  test('the two kinds do not collide on the same subject id', async () => {
+    // Subject namespaces differ per kind (assignment vs job), so the same
+    // string under a different kind is a different gap.
+    const visit = await flagOverdueVisitGap({
+      tenantId,
+      assignmentId: 'job-cost-1',
+      jobId: 'job-watch-1',
+      technicianRef: 'ben-shelton',
+      startsAtLocal: '2026-08-10T15:00:00.000Z',
+      endsAtLocal: '2026-08-10T16:00:00.000Z',
+      suggestion: 'visit copy',
+    });
+    expect(visit).not.toBeNull();
+    expect(visit?.kind).toBe('overdue_visit_gap');
+  });
+
+  test('reviewItemExistsFor distinguishes "already flagged" from "nothing there"', async () => {
+    // This is what lets the terminal-failure doctrine tell a dedup-null from a
+    // failed handoff.
+    expect(await reviewItemExistsFor(tenantId, 'job_cost_gap', 'job-cost-1')).toBe(true);
+    expect(await reviewItemExistsFor(tenantId, 'job_cost_gap', 'job-never-seen')).toBe(false);
+    // Kind-scoped and tenant-scoped.
+    expect(await reviewItemExistsFor(tenantId, 'unlinked_call', 'job-cost-1')).toBe(false);
   });
 });

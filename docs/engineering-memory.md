@@ -1848,10 +1848,52 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   added late in AGENTS.md is probably invisible; verify with the head/digest/tail model before
   trusting it.** Trimming AGENTS.md is the real fix and is still owed.
 
+- **Money's structure in the spine is load-bearing for FUTURE BUSINESS ANALYTICS** (user
+  constraint 2026-08-19). `money_events` is not L1/L2/L3 — it is a ledger ALONGSIDE L2, FK'd into
+  it, with evidence links back to L1. **L2 = nouns (what exists now); the ledger = verbs (what
+  happened, in order)** — state is folded, never stored, and the `completed → invoiced → paid`
+  status hops are derived by `syncJobStatusForMoney`, never hand-advanced. The two are
+  conceptually separate but must be **read together**, and that coupling is already enforced
+  structurally, not by convention: `job_id not null references jobs(id) on delete restrict` (no
+  orphan either way); `v_money_events` joins job + customer onto every row so agent SQL cannot
+  select a bare amount; and every accessor is job-keyed (there is deliberately no "list all money
+  events"). **THE RULE for any analytics work: aggregate the SUMMARIES (`summarizeMoney` per job),
+  never the rows.** Hand-rolled SQL over `money_events` must re-implement four things the fold
+  already handles, and silently lies if it misses one: direction is by `kind` and never sign
+  (`amount_cents >= 0` is a DB check, so cross-kind `sum(amount_cents)` is nonsense — **cost kinds
+  newly enable this mistake**); negated rows (voids/corrections) stay in the table forever;
+  `currency` is a defaulted column, not a guarantee; and `lastEventAt` scans ALL events including
+  negated ones. Consequence: **costs belong as new KINDS inside `money_events`, never a separate
+  cost table** — new kinds are provably inert in existing revenue math (the fold is kind-additive)
+  and inherit the FK, the joined view, the accessors and negation semantics for free.
+
 ## 5. The walls — traps by the time you'd hit them
 
 The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, architecture-memory
 "Gotchas") — this is the index of what exists, so you know to go look.
+
+**Working in a second worktree (local Supabase stacks):**
+- **`npx supabase stop` targets the `project_id` in the CURRENT directory's
+  `supabase/config.toml` — so running it from a worktree that never had
+  `scripts/second-stack.sh` applied STOPS THE PRIMARY STACK, not that worktree's.**
+  `second-stack.sh` leaves the rewritten `project_id`/ports *uncommitted*, so any worktree where
+  that edit was reverted (or never made) reads `project_id = "TradesDatabase"` and the CLI
+  cheerfully stops the main checkout's stack out from under whoever is using it. Hit twice on
+  2026-08-19, once while a concurrent session was mid-`npm test`. **Always
+  `grep -m1 '^project_id' supabase/config.toml` before `supabase stop|start`**, and read the
+  CLI's closing line — it names the project it acted on
+  (`Local data are backed up to docker volume ... project=<id>`), which is the cheapest
+  confirmation you stopped what you meant to. Recovery is `npx supabase start` from the main
+  checkout; the volume-backed data survives a plain `stop` (only `--no-backup` discards it).
+- **Concurrent local stacks are the top cause of phantom test failures on this machine.** Four
+  stacks = 46 containers and the Docker VM pinned near 1200% CPU on a 14-core Mac; DB-backed
+  suites then blow their 10s `beforeAll` / `pg.connect()` hook timeouts and fail in a different
+  combination on every run. The tell is **failures that move between runs** and a suite time that
+  balloons (33s → 135s for the same tree). Before believing any red suite, check
+  `docker ps -q | wc -l` and per-stack CPU
+  (`docker stats --no-stream`); a comments-only diff cannot break 15 tests. Stop stacks belonging
+  to merged/abandoned worktrees — verify with
+  `git merge-base --is-ancestor $(git -C <wt> rev-parse HEAD) origin/main` first.
 
 **Working on the agent boxes:**
 - **A tool DESCRIPTION change is not deploy-only; a result-side field is.** Gateways cache

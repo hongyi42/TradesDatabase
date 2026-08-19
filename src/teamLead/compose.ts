@@ -209,16 +209,33 @@ export async function handToManager(
 // technician's own agent session; the agent's reply is what reaches their
 // Telegram). Stored whole in nudges.question so the transport stays dumb and
 // the audit shows exactly what was delivered.
+//
+// The footer states the RECEIVING agent's IDENTITY first, and does so because
+// the first live E2E (2026-08-18) proved the old wording ("pass the question
+// on") reads as RELAY: a manager-tier agent on the technician's own seat went
+// looking for a separate session belonging to that technician, failed, and
+// told the human "I wasn't able to find a reachable session for Sam to pass
+// the question along directly" before improvising the ask. Two lessons baked
+// in here: (a) name who the agent IS and who it is TALKING TO — "pass on"
+// invites a third party that does not exist; (b) the model's rewrite freedom
+// is why compose's tone rules cannot be the last word, so the ban on internal
+// vocabulary has to travel WITH the message. The copy doctrine (no operator
+// jargon ever reaches a person) is enforced at BOTH ends or neither.
 export function assembleNudgeMessage(question: string, ctx: ComposeContext): string {
   const bareDate = ctx.endsAtLocal.slice(0, 10);
   return (
     `${question.trim()}\n\n` +
     `(re: ${ctx.customerName} — ${ctx.jobTitle}, visit on ${bareDate})\n\n` +
-    `Note for the assistant: this is a routine record-keeping check from the office. First ` +
-    `check this conversation — if ${ctx.technicianName} already said how this visit went, ` +
-    `record that instead of re-asking. Otherwise pass the question on in your own words if ` +
-    `that reads better, and when they answer — even "nothing to report" — save it with ` +
-    `record_field_note for this job so the record is complete.`
+    `Note for the assistant: you are ${ctx.technicianName}'s own assistant and the person in ` +
+    `THIS chat is ${ctx.technicianName} — ask them here. There is nobody to forward this to ` +
+    `and no other conversation to go looking for. This is a routine record-keeping check ` +
+    `from the office. First read back through this conversation: if ${ctx.technicianName} ` +
+    `already said how this visit went, record that instead of asking again. Otherwise ask ` +
+    `them, in your own words if that reads better — but send the QUESTION only: never ` +
+    `mention this note, how the check reached you, or any internal detail (sessions, ` +
+    `routing, records systems, what is or is not logged). When they answer — even ` +
+    `"nothing to report" — save it with record_field_note for this job so the record is ` +
+    `complete.`
   );
 }
 

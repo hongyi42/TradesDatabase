@@ -65,16 +65,13 @@ const INGEST_OK = {
   rowErrors: 0,
 };
 
-// The three cost steps default to REAL database accessors — and the DeepInfra
-// one to a REAL network call — so every runLifecycle call here must inject them.
-// Otherwise this "pure unit tests" file quietly starts writing to the database,
-// and (once a billing key resolves from the environment) hitting DeepInfra's
-// billing API, on each of the calls below.
+// The cost steps default to REAL database accessors, so every runLifecycle call
+// here must inject them. Otherwise this "pure unit tests" file quietly starts
+// writing to the database on each of the calls below.
 const COST_STUBS = {
   backfillBrave: async () => ({ scanned: 0 }),
   latestBrave: async () => null,
   rollup: async () => ({ rowsWritten: 0, tenantsTouched: 0, unpricedEvents: 0 }),
-  hasBillingKey: () => false,
 };
 
 describe('runLifecycle', () => {
@@ -151,7 +148,7 @@ describe('runLifecycle', () => {
       expect(summary.braveBackfill).toMatchObject({ scanned: 0 });
     });
 
-    // Invoices arrive AFTER the month they cover: the July DeepInfra bill is
+    // Invoices arrive AFTER the month they cover: a July inference bill is
     // entered in August. A current-month-only rollup would therefore never
     // allocate a completed month's inference cost — the whole allocated-cost
     // mechanism would silently produce nothing for every settled month.
@@ -448,7 +445,6 @@ describe('runLifecycle', () => {
       expect(off.sessions).toEqual(OFF);
       expect(off.logIngest).toEqual(OFF);
       expect(off.braveBackfill).toEqual(OFF);
-      expect(off.deepinfraUsage).toEqual(OFF);
       expect(off.costRollup).toEqual(OFF);
       expect(off.watchers).toEqual(WATCH_OK);
       expect(off.ok).toBe(true);
@@ -631,105 +627,5 @@ describe('runLifecycle', () => {
     });
     expect(red.logIngest).toEqual({ stepError: 'logs API 500' });
     expect(red.ok).toBe(false);
-  });
-
-  describe('DeepInfra usage collection (step 6)', () => {
-    const BASE = {
-      listInStates: async () => [],
-      expire: async () => EXPIRE_OK,
-      ensureSession: async () => ({ status: 'skipped' as const, reason: 'state is invited' }),
-      ingestLogs: async () => INGEST_OK,
-    };
-
-    test('skips cleanly — not an error — when no billing key resolves', async () => {
-      // The normal state after a failover to NVIDIA: that key cannot read a
-      // DeepInfra account, so calling would 401 the cron every 15 minutes.
-      let called = false;
-      const summary = await runLifecycle(NOW, {
-        ...COST_STUBS,
-        ...BASE,
-        hasBillingKey: () => false,
-        collectDeepinfra: async () => {
-          called = true;
-          return { months: [], rejected: [] };
-        },
-      });
-      expect(called).toBe(false);
-      expect(summary.deepinfraUsage).toEqual({ skipped: 'no DeepInfra billing key configured' });
-      expect(summary.ok).toBe(true);
-    });
-
-    test('collects and reports the month when a key is present', async () => {
-      const summary = await runLifecycle(NOW, {
-        ...COST_STUBS,
-        ...BASE,
-        hasBillingKey: () => true,
-        collectDeepinfra: async () => ({
-          months: [
-            {
-              period: '2026.07',
-              amountUsd: 37.31,
-              source: 'estimate' as const,
-              created: true,
-              allocation: 'per_sandbox' as const,
-            },
-          ],
-          rejected: [],
-        }),
-      });
-      expect(summary.deepinfraUsage).toMatchObject({ months: [{ amountUsd: 37.31 }] });
-      expect(summary.ok).toBe(true);
-    });
-
-    test('runs BEFORE the rollup, so a fresh invoice allocates on the same tick', async () => {
-      const order: string[] = [];
-      await runLifecycle(NOW, {
-        ...COST_STUBS,
-        ...BASE,
-        hasBillingKey: () => true,
-        collectDeepinfra: async () => {
-          order.push('collect');
-          return { months: [], rejected: [] };
-        },
-        rollup: async () => {
-          order.push('rollup');
-          return { rowsWritten: 0, tenantsTouched: 0, unpricedEvents: 0 };
-        },
-      });
-      expect(order[0]).toBe('collect');
-      expect(order).toContain('rollup');
-    });
-
-    test('a vendor failure is reported red but never blocks the rollup', async () => {
-      let rolled = false;
-      const summary = await runLifecycle(NOW, {
-        ...COST_STUBS,
-        ...BASE,
-        hasBillingKey: () => true,
-        collectDeepinfra: async () => {
-          throw new Error('deepinfra usage 503: upstream');
-        },
-        rollup: async () => {
-          rolled = true;
-          return { rowsWritten: 0, tenantsTouched: 0, unpricedEvents: 0 };
-        },
-      });
-      expect(summary.deepinfraUsage).toEqual({ stepError: 'deepinfra usage 503: upstream' });
-      expect(rolled).toBe(true);
-      expect(summary.ok).toBe(false);
-    });
-
-    test('reports `skipped` when the cost ledger is not migrated here', async () => {
-      const summary = await runLifecycle(NOW, {
-        ...COST_STUBS,
-        ...BASE,
-        hasBillingKey: () => true,
-        collectDeepinfra: async () => {
-          throw Object.assign(new Error('relation "infra_costs" does not exist'), { code: '42P01' });
-        },
-      });
-      expect(summary.deepinfraUsage).toEqual({ skipped: 'cost ledger not migrated here yet' });
-      expect(summary.ok).toBe(true);
-    });
   });
 });

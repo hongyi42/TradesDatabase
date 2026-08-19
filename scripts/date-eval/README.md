@@ -81,8 +81,9 @@ when the machinery is wrong.
   If it moves, the run **stops immediately** and says so. Results already
   collected stay valid (they were all on one model); nothing after would be.
   Resume with the same command once the route is fixed — answered questions
-  are skipped. DeepInfra's balance runs out roughly monthly and nothing alerts
-  on it, so this is a when-not-if.
+  are skipped. A provider balance-out is a when-not-if; since 2026-08-19 the ops
+  notifier DOES alert on it (Telegram, via the inference medic) — see
+  docs/inference-recovery-runbook.md.
 - **Stale manifest** — refuses to run a manifest planned for a different day.
 - **Read-only** — every question is phrased as a question, and any write tool
   appearing in a trajectory is reported as a finding.

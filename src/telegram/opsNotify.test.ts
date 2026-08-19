@@ -45,7 +45,9 @@ describe('notifyOpsTransition', () => {
     expect(to).toBe('5801703167');
     expect(text).toContain('inference-medic');
     expect(text).toContain('trades-box-1');
-    expect(text).toContain('docs/inference-recovery-runbook.md');
+    expect(text).toContain('docs/inference-recovery-runbook');
+    // No '.md' — Telegram would linkify it into a dead link (2026-08-19 drill).
+    expect(text).not.toContain('runbook.md');
   });
 
   // The route is what makes the alert diagnosable without ssh-ing to the box.

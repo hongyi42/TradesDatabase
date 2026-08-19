@@ -294,7 +294,9 @@ describe('ledgerVendor host mapping', () => {
   });
 
   test.each([
-    ['https://api.deepinfra.com/v1/openai', 'deepinfra'],
+    // RETIRED 2026-08-19: no longer mapped, so it reports the raw host and
+    // recordModelUsage refuses the write loudly instead of mis-attributing it.
+    ['https://api.deepinfra.com/v1/openai', 'api.deepinfra.com'],
     ['https://integrate.api.nvidia.com/v1', 'nvidia'],
     ['https://api.fireworks.ai/inference/v1', 'fireworks'],
     ['https://api.tokenfactory.nebius.com/v1', 'api.tokenfactory.nebius.com'],

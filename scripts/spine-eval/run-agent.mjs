@@ -84,11 +84,18 @@ if (INTERACTIONS && (OPENAI_RESPONSES || OPENAI_PARAMS)) {
   process.exit(1);
 }
 
-// DeepInfra GLM-5.2 rates, USD per million tokens. Overridable because vendor
-// pricing moves (it dropped ~20% once already) and a stale constant would quietly
-// misreport spend.
-const RATE_IN = Number(argOf('rate-in', '0.75')) / 1e6;
-const RATE_OUT = Number(argOf('rate-out', '2.40')) / 1e6;
+// Fireworks GLM-5.2-fast rates, USD per million tokens (the provider that actually
+// bills us since 2026-08-19; seeded in cost_rates by migration 20260815120000).
+// Overridable because vendor pricing moves and a stale constant would quietly
+// misreport spend — which is why these were repointed off DeepInfra's $0.75/$2.40
+// rather than left to understate every eval by ~3x.
+const RATE_IN = Number(argOf('rate-in', '2.10')) / 1e6;
+const RATE_OUT = Number(argOf('rate-out', '6.60')) / 1e6;
+// Cached input is a TENTH of fresh on Fireworks, and our call shape is a fat
+// doctrine prefix on every turn — so billing all input at the fresh rate
+// over-reports by up to ~4.7x once a cache key is set. The token counts were
+// already collected and simply unused.
+const RATE_CACHED = Number(argOf('rate-cached', '0.21')) / 1e6;
 
 if (!model.available) {
   console.error(
@@ -151,6 +158,9 @@ const spine = makeCaller(server);
 // ── the model call ────────────────────────────────────────────────────────────
 let tokensIn = 0;
 let tokensOut = 0;
+// prompt_tokens INCLUDES the cached portion (same convention as src/db/costs.ts),
+// so the fresh count is the difference — never the sum.
+let tokensCached = 0;
 let stallRetries = 0;
 let emptyRetries = 0;
 let cappedCompletions = 0; // finish_reason 'length' WITH content — cap too low, truncated reply
@@ -531,6 +541,7 @@ async function chat(messages, tools) {
       if (firstChunkAt !== null) ttftAll.push(firstChunkAt - started);
       tokensIn += usage?.prompt_tokens ?? 0;
       tokensOut += usage?.completion_tokens ?? 0;
+      tokensCached += usage?.prompt_tokens_details?.cached_tokens ?? 0;
       // A cap-hit with real content is a truncated legitimate reply — never
       // silently: it means MAX_OUTPUT_TOKENS is set too low for this corpus.
       if (finishReason === 'length' && (content || toolCalls.length)) {
@@ -805,7 +816,8 @@ await client.end();
 // ── report ────────────────────────────────────────────────────────────────────
 const passed = results.filter((r) => r.status === 'passed');
 const failed = results.filter((r) => r.status === 'failed');
-const cost = tokensIn * RATE_IN + tokensOut * RATE_OUT;
+const tokensFresh = Math.max(tokensIn - tokensCached, 0);
+const cost = tokensFresh * RATE_IN + tokensCached * RATE_CACHED + tokensOut * RATE_OUT;
 
 // Per family: pass rate, and the shape of the work — the workflow family
 // exists to measure CHAINS, and a chain's cost is its round trips and wall
@@ -863,7 +875,7 @@ if (emptyRetries) {
   const runaway = cappedRunaways ? ` (${cappedRunaways} of them runaway reasoning stopped by the ${MAX_OUTPUT_TOKENS}-token cap)` : '';
   console.log(`  empty completions retried ${emptyRetries} — zero-token answers at temperature 0, a provider anomaly${runaway}`);
 }
-console.log(`  spend      $${cost.toFixed(3)} (${tokensIn.toLocaleString()} in / ${tokensOut.toLocaleString()} out)`);
+console.log(`  spend      $${cost.toFixed(3)} (${tokensIn.toLocaleString()} in, of which ${tokensCached.toLocaleString()} cached / ${tokensOut.toLocaleString()} out)`);
 console.log(`\n  by family:`);
 for (const [family, f] of Object.entries(byFamily)) {
   console.log(
@@ -885,7 +897,7 @@ lines.push(`- world anchor: **${titleWeekday(world.anchor)} ${world.anchor}** (s
 lines.push(`- model: **${model.model}** @ ${new URL(model.baseUrl).host}`);
 lines.push(`- doctrine: ${doctrine.length} sections, ${doctrineChars.toLocaleString()} chars, fingerprint \`${doctrineId}\``);
 lines.push(`- run at: ${new Date().toISOString()}${REPEAT > 1 ? `, ${REPEAT} repeats` : ''}`);
-lines.push(`- spend: **$${cost.toFixed(3)}** (${tokensIn.toLocaleString()} in / ${tokensOut.toLocaleString()} out)`);
+lines.push(`- spend: **$${cost.toFixed(3)}** (${tokensIn.toLocaleString()} in, ${tokensCached.toLocaleString()} cached / ${tokensOut.toLocaleString()} out)`);
 lines.push('');
 lines.push(`> ${calendarCoverageNote(world.anchor)}`, '');
 lines.push('## Verdict', '');
@@ -988,7 +1000,7 @@ writeFileSync(
       ranAt: new Date().toISOString(),
       repeats: REPEAT,
       enabled: [...enabled],
-      spend: { usd: cost, tokensIn, tokensOut },
+      spend: { usd: cost, tokensIn, tokensCached, tokensOut },
       stallRetries,
       emptyRetries,
       cappedCompletions,

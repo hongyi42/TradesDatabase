@@ -42,10 +42,13 @@ The code carries a stateless cadence gate: the heavy sweeps below run only on qu
 (`getUTCMinutes() % 15 < 5` — off-cadence ticks report `{skipped:'off-cadence tick'}` per step),
 while the Stage-0 **watcher** (summary field `watchers`, gated on `WATCHERS_MODE`: unset =
 skipped, `shadow` = count only, `live` = review items + one batched manager push; any other
-value fails LOUD) runs on every tick. Note the numbered list below predates two later steps —
-the DeepInfra bill pull sits between cost backfill and rollup, and the watcher runs last; the
-cron's JSON **field names** (`deepinfraUsage`, `watchers`, …), not list numbers, are the stable
-reference. Full watcher semantics + rollout state: engineering-memory §3.
+value fails LOUD) runs on every tick. **The list below numbers itself independently of the
+code** — the watcher runs last and is not in it — so the cron's JSON **field names**
+(`watchers`, `costRollup`, …), never list positions, are the stable reference.
+**The `deepinfraUsage` field was REMOVED 2026-08-19** with the provider. In `lifecycle.ts` the
+step comments keep `(6)` as a RETIRED SLOT rather than compacting the numbers, so a doc or
+runbook citing a step number does not silently come to mean a different step.
+Full watcher semantics + rollout state: engineering-memory §3.
 
 1. **Pairing sweep** — every `invited`/`pending_verification` row with a link issued gets
    `checkPairing` (detects completed OAuth consents; advances the row; opens the manager's
@@ -80,9 +83,11 @@ reference. Full watcher semantics + rollout state: engineering-memory §3.
    they cover, so a current-month-only rollup would never allocate a settled month): metered events priced at the rate in force *on the day each
    happened*, plus each `infra_costs` bill split by its own allocation rule
    (`per_spine_tool_call` divides the inference invoice by each tenant's spine tool-call count,
-   **after** netting out what was already metered for that vendor — one DeepInfra account means
+   **after** netting out what was already metered for that vendor — one inference account means
    the invoice already contains the spine's own tokens, and allocating it whole would count the
-   same dollars twice).
+   same dollars twice. ⚠ Since 2026-08-19 NOTHING collects a Fireworks invoice, so there is no
+   `infra_costs` row to allocate and the agent-inference line reads $0; the historical
+   `deepinfra` rows and their `cost_rates` entries remain and still price correctly).
    Idempotent — it recomputes the period, so every tick refreshes what `/admin` reads.
 
    **Both steps report `{skipped}` rather than failing** when the cost tables are absent, so a
@@ -142,8 +147,10 @@ reference. Full watcher semantics + rollout state: engineering-memory §3.
      `INFERENCE_MODEL=accounts/fireworks/routers/glm-5p2-fast`,
      `INFERENCE_CACHE_KEY=tradesdb-spine`. Leave `MODEL_PROVIDER` UNSET — it is a SELECTOR
      (only the literal `anthropic` changes anything), NOT a key field; an API key pasted there
-     does nothing. Without `INFERENCE_BASE_URL` the code defaults to DeepInfra's endpoint and a
-     Fireworks key fails auth there. `INFERENCE_CACHE_KEY` is what earns the $0.21/M cached
+     does nothing. (Until 2026-08-19 an unset `INFERENCE_BASE_URL` defaulted to DeepInfra's
+     endpoint, where a Fireworks key failed auth; the default is now Fireworks, so an unset var
+     is no longer a trap — but set it explicitly anyway, so the service does not silently follow
+     a code default that can change under it.) `INFERENCE_CACHE_KEY` is what earns the $0.21/M cached
      input instead of $2.10/M — Fireworks caches per replica, so keyless hits are routing luck.
      **When `NUDGES_MODE=live`, the cron ALSO needs the model-provider key**
      (`MODEL_PROVIDER` + `INFERENCE_API_KEY`, or `ANTHROPIC_API_KEY`): lifecycle step 9

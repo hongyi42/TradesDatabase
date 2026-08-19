@@ -13,7 +13,7 @@ import { recordModelUsage, type CostContext } from '../db/index.js';
 //   openai     → POST /chat/completions     reply: choices[0].message.tool_calls[0]
 //                                                  {function:{arguments: JSON STRING}}
 //
-// Active provider is MODEL_PROVIDER (default 'openai' → GLM-5.2 via DeepInfra).
+// Active provider is MODEL_PROVIDER (default 'openai' → GLM-5.2 via Fireworks).
 // The anthropic path is kept whole so reverting is an env var, not a code change.
 
 export type ModelProvider = 'anthropic' | 'openai';
@@ -51,8 +51,8 @@ export interface ForcedToolRequest {
   reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
 }
 
-const DEFAULT_OPENAI_BASE_URL = 'https://api.deepinfra.com/v1/openai';
-const DEFAULT_OPENAI_MODEL = 'zai-org/GLM-5.2';
+const DEFAULT_OPENAI_BASE_URL = 'https://api.fireworks.ai/inference/v1';
+const DEFAULT_OPENAI_MODEL = 'accounts/fireworks/routers/glm-5p2-fast';
 const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6';
 
 export function activeProvider(): ModelProvider {
@@ -60,11 +60,14 @@ export function activeProvider(): ModelProvider {
 }
 
 // WHO BILLS US — which is not the same question as which wire format we speak.
-// 'openai' is a protocol; INFERENCE_BASE_URL decides the company, and NVIDIA is
-// the documented failover. Deriving the ledger vendor from the resolved host
-// keeps a failover from being priced against a DeepInfra invoice that never
-// arrives. Unknown hosts return the host itself, so recordModelUsage reports an
-// unmapped vendor loudly instead of quietly billing the wrong one.
+// 'openai' is a protocol; INFERENCE_BASE_URL decides the company. Deriving the
+// ledger vendor from the resolved host keeps a repointed endpoint from being
+// priced against an invoice that never arrives. Unknown hosts return the host
+// itself, so recordModelUsage reports an unmapped vendor LOUDLY instead of
+// quietly billing the wrong one — which is exactly what a leftover DeepInfra
+// base URL now does (retired 2026-08-19: `api.deepinfra.com` no longer maps to
+// 'deepinfra', it returns the raw host and the write is refused with a logged
+// error rather than mis-attributed).
 export function ledgerVendor(): string {
   if (activeProvider() === 'anthropic') return 'anthropic';
   const raw = process.env.INFERENCE_BASE_URL || DEFAULT_OPENAI_BASE_URL;
@@ -74,7 +77,6 @@ export function ledgerVendor(): string {
   } catch {
     return 'unknown';
   }
-  if (host.endsWith('deepinfra.com')) return 'deepinfra';
   if (host.endsWith('nvidia.com')) return 'nvidia';
   if (host.endsWith('fireworks.ai')) return 'fireworks';
   return host;
@@ -252,8 +254,9 @@ async function callOpenAiCompatible(
       // $0.21/M cached-input billing — are routing luck (probed 2026-08-15:
       // byte-identical repeats missed keyless; 21,014/21,017 tokens cached
       // with a key). Sent as BOTH prompt_cache_key and user, matching what the
-      // provider's routing reads. DeepInfra ignores both (verified in the GLM
-      // cache-key trial) — leaving the var set is safe across a rollback.
+      // provider's routing reads. Harmless on providers that ignore both (DeepInfra
+      // did, verified in the GLM cache-key trial), so the var is safe to leave set
+      // if the endpoint is ever repointed.
       ...(process.env.INFERENCE_CACHE_KEY
         ? { prompt_cache_key: process.env.INFERENCE_CACHE_KEY, user: process.env.INFERENCE_CACHE_KEY }
         : {}),

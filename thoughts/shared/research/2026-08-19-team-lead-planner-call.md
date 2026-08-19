@@ -45,6 +45,9 @@ never made an agentic call.
 - **We do not encode best practices.** *"It genuinely depends on the context of the job and the
   firm… most of the judgement calls are genuinely not black and white."* Prompt engineering is
   therefore the intended tuning surface, not a workaround.
+- **The team lead gets its own read tool, not an exemption** (decided after the trace below).
+  It needs one broad reader, not the manager's surface — of the 29 admin tools, all but a
+  handful are write verbs the team-lead ceiling forbids outright.
 - **Direction, out of scope here:** the planner should learn how a firm operates, and read job and
   customer context to support its decisions.
 
@@ -65,6 +68,53 @@ deliberately untouched; discovery is cosmetic, dispatch is the gate.
 
 `identity.ts:9` records that "stage" verbs were deliberately left as a future, separate decision.
 
+## The allowlist has a dead entry — traced and verified 2026-08-19
+
+The team-lead ceiling is enforced by two gates that run in sequence and **disagree**:
+
+```
+server.ts:1920   spine: namespace → must be in TEAM_LEAD_TOOL_NAMES   ← query_spine passes
+server.ts:1925   ADMIN_TOOL_NAMES.has(name) && !activeManager → throw ← query_spine dies here
+```
+
+`query_spine` is defined at `server.ts:1065`, inside `ADMIN_TOOLS` (611–1556), so it is in
+`ADMIN_TOOL_NAMES`. `activeManager` requires a roster row with `tier === 'manager'`, and
+`spine:team-lead` deliberately has none — the `:` namespace exists so it can never collide with a
+roster row, and a DB CHECK forbids one. `activeManager` is therefore permanently `false` for the
+team lead, and every admin-tier tool is permanently closed to it.
+
+Verified by running dispatch as `spine:team-lead` against all three allowlisted tools:
+
+| tool | on the allowlist | dispatches | evidence |
+|---|---|---|---|
+| `resolve_date` | yes | **yes** | pre-existing test, `server.test.ts:7554` |
+| `get_customer_context` | yes | **yes** | probe: `isError=false`, returned a context object |
+| `query_spine` | yes | **NO** | probe: `isError=true`, `"admin tools require a manager badge"` |
+
+The rest of dispatch tolerates the roster-less ref exactly as documented (`getTechnician` returns
+null, the deactivation guard skips). **This gate has never run in production** — the team lead's
+only model call uses `runForcedTool` directly and never touches `dispatch` — so the contradiction
+has been latent since Feature B.
+
+### Resolution: a third tool list
+
+`query_spine` is read-only **at the database level**, not by convention: the reader migration
+grants a dedicated `spine_reader` role `select` on the views and nothing else
+(`20260806120000_query_spine_reader.sql:152`). That guarantee is independent of tool name or gate.
+
+```
+TOOLS            base/technician surface
+ADMIN_TOOLS      manager surface        → ADMIN_TOOL_NAMES → the manager gate
+TEAM_LEAD_TOOLS  ← new, one entry       → never in ADMIN_TOOL_NAMES
+```
+
+The single entry shares `query_spine`'s handler and view set under its own name, so there is no
+second implementation to drift. Rejected alternatives: exempting `spine:` from the admin gate
+(makes `TEAM_LEAD_TOOL_NAMES` the only barrier to 29 mostly-write tools — one careless addition
+grants a write verb); giving the team lead a real roster row (breaks the reserved-namespace
+invariant the DB CHECK exists to protect); moving `query_spine` out of `ADMIN_TOOLS` (touches the
+manager/technician boundary, the highest-stakes gate in the system).
+
 ## What is missing
 
 1. **A multi-turn loop.** No spine call site loops. The six are `classifyCall.ts:103`,
@@ -76,6 +126,8 @@ deliberately untouched; discovery is cosmetic, dispatch is the gate.
    needs it per turn, plus a turn cap and a wall-clock budget.
 4. **Deadline columns.** `nudges` has no `not_before` / `escalate_after`, and no grouping column.
 5. **A consumer for a confidence flag.** Nothing reads such a field today.
+6. **The `TEAM_LEAD_TOOLS` list and its one entry** — see the resolution above. Without it the
+   planner's only breadth-read is unreachable.
 
 ## The sweep, split by facts and judgment
 
@@ -164,9 +216,8 @@ prerequisite, not a follow-up.
    planner loop. The first is reusable by the other five call sites; the second is smaller.
 2. **How the loop reaches tools.** Export `dispatch` for in-process calls (no HTTP, no MCP
    framing, but couples the planner to the server module), or speak MCP to the spine's own server
-   (clean boundary, more moving parts). Note `dispatch` requires an `identity` and performs a
-   roster read per call — `spine:team-lead` is not a roster row, so that path's behaviour for a
-   `spine:` identity needs confirming before either option is costed.
+   (clean boundary, more moving parts). The identity question is SETTLED: dispatch tolerates the
+   roster-less `spine:` ref (traced + probed above), so either option works.
 3. **Cadence and budget.** Every 5 minutes is ~144 calls/tenant/day inside the ask window; hourly
    is ~12. With read tools each call is now several turns. This is the open cost question the user
    named, and it is unmeasured.
@@ -183,12 +234,13 @@ prerequisite, not a follow-up.
 
 ## Open Questions
 
-- **Does `dispatch` work at all for a `spine:` identity today?** The namespace gate at `:1920` runs
-  after a roster read (`server.ts:1875-1876` comment). Whether the read tolerates a non-roster ref
-  was not traced.
 - **Can GLM-5.2 plan reliably at `reasoningEffort: 'none'`?** Every spine call sets it. A planning
   task over N gaps with tool calls is a different class of work, and the repo has a counter-data
   point: thinking effort bought no accuracy on dates at ~8× tokens.
+- **Should the team lead see manager-only L1 rows?** Dispatch applies a sensitivity filter keyed
+  on `activeManager`, permanently `false` for the team lead — so it gets the narrower
+  `get_customer_context` view. Probably correct, but currently a side effect rather than a
+  decision.
 - **What is the token cost with read tools?** Unmeasured, and it now scales with what the planner
   chooses to read, not just the gap count.
 - **Does a grouped message survive delivery?** The box runner (`/usr/local/sbin/nudge-runner.sh`)

@@ -79,7 +79,7 @@ describe('runTeamLeadCompose', () => {
     expect(msg).toContain('(re: Henderson — Furnace tune-up, visit on 2026-08-14)');
     expect(msg).not.toContain('Friday');
     // The standing footer steers the receiving agent.
-    expect(msg).toContain('check this conversation');
+    expect(msg).toContain('read back through this conversation');
     expect(msg).toContain('record_field_note');
     expect(msg).toContain('Ben Shelton');
     expect(msg).not.toContain('spine');
@@ -420,5 +420,31 @@ describe('assembleNudgeMessage', () => {
     });
     expect(msg.startsWith('How did it go?')).toBe(true);
     expect(msg).toContain('(re: Acme — AC repair, visit on 2026-08-15)');
+  });
+
+  // Regression for the first live E2E (2026-08-18): the old footer said "pass
+  // the question on", which a manager-tier agent on the technician's OWN seat
+  // read as relay — it hunted for a separate session for the technician and
+  // told the human it could not find one. The footer must name who the agent
+  // is and who it is talking to, and must forbid the internal vocabulary that
+  // leak was made of (compose's tone rules do not survive the rewrite).
+  test('addresses the receiving agent as the technician\'s own, with nobody to relay to', () => {
+    const msg = assembleNudgeMessage('How did it go?', {
+      customerName: 'Acme',
+      jobTitle: 'AC repair',
+      technicianName: 'Jane Alvarez',
+      endsAtLocal: '2026-08-15T16:00:00.000Z',
+      jobId: null,
+      startsAtLocal: null,
+      technicianRef: null,
+    });
+    expect(msg).toContain("you are Jane Alvarez's own assistant");
+    expect(msg).toContain('THIS chat is Jane Alvarez');
+    expect(msg).toContain('nobody to forward this to');
+    expect(msg).toContain('no other conversation to go looking for');
+    expect(msg).toMatch(/never mention this note, how the check reached you/);
+    expect(msg).toMatch(/sessions, routing, records systems/);
+    // The relay reading came from this phrasing — it must not come back.
+    expect(msg).not.toMatch(/pass the question on/i);
   });
 });

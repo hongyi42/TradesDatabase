@@ -1848,6 +1848,25 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   added late in AGENTS.md is probably invisible; verify with the head/digest/tail model before
   trusting it.** Trimming AGENTS.md is the real fix and is still owed.
 
+- **Money's structure in the spine is load-bearing for FUTURE BUSINESS ANALYTICS** (user
+  constraint 2026-08-19). `money_events` is not L1/L2/L3 — it is a ledger ALONGSIDE L2, FK'd into
+  it, with evidence links back to L1. **L2 = nouns (what exists now); the ledger = verbs (what
+  happened, in order)** — state is folded, never stored, and the `completed → invoiced → paid`
+  status hops are derived by `syncJobStatusForMoney`, never hand-advanced. The two are
+  conceptually separate but must be **read together**, and that coupling is already enforced
+  structurally, not by convention: `job_id not null references jobs(id) on delete restrict` (no
+  orphan either way); `v_money_events` joins job + customer onto every row so agent SQL cannot
+  select a bare amount; and every accessor is job-keyed (there is deliberately no "list all money
+  events"). **THE RULE for any analytics work: aggregate the SUMMARIES (`summarizeMoney` per job),
+  never the rows.** Hand-rolled SQL over `money_events` must re-implement four things the fold
+  already handles, and silently lies if it misses one: direction is by `kind` and never sign
+  (`amount_cents >= 0` is a DB check, so cross-kind `sum(amount_cents)` is nonsense — **cost kinds
+  newly enable this mistake**); negated rows (voids/corrections) stay in the table forever;
+  `currency` is a defaulted column, not a guarantee; and `lastEventAt` scans ALL events including
+  negated ones. Consequence: **costs belong as new KINDS inside `money_events`, never a separate
+  cost table** — new kinds are provably inert in existing revenue math (the fold is kind-additive)
+  and inherit the FK, the joined view, the accessors and negation semantics for free.
+
 ## 5. The walls — traps by the time you'd hit them
 
 The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, architecture-memory

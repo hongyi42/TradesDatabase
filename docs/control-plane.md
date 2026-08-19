@@ -98,6 +98,12 @@ reference. Full watcher semantics + rollout state: engineering-memory §3.
    (`src/composio/relayHandler.ts`, since 2026-07-06) uses it for the Render→Composio leg,
    falling back to `COMPOSIO_API_KEY` when unset; with NEITHER set the relay answers a clean
    503 "not configured" (it never forwards keyless).
+   **`OPS_ALERT_CHAT_ID`** (2026-08-18) — the operator's Telegram user id, where
+   `POST /control/ops` incidents are pushed (`src/telegram/opsNotify.ts`, sent with the
+   existing `BOARD_BOT_TOKEN`). **Unset = alerting silently OFF**: incidents are still
+   recorded in `ops_events`, but nobody is told — which is precisely the gap that let eleven
+   inference outages between 2026-08-13 and 2026-08-19 pass unnoticed. The recipient must
+   have an existing 1:1 chat with the board bot or the send 403s.
 2. **New Cron Job service**, same repo/branch:
    - Build: `npm install && npm run build`
    - Command: `npm run job:lifecycle`
@@ -164,7 +170,11 @@ reference. Full watcher semantics + rollout state: engineering-memory §3.
 
 - `GET /control/badges` — the roster-driven badge file + retirements + bindings (below).
 - `POST /control/sandboxes` — recycle-completion report.
-- `POST /control/ops` — health/incident report.
+- `POST /control/ops` — health/incident report. The reporter is stateless (it sends its
+  current status every tick) and `recordOpsEvent` folds those into ONE incident, so a
+  transition to `opened`/`closed` — never a `suppressed` tick — pushes a Telegram alert to
+  `OPS_ALERT_CHAT_ID`. The alert is best-effort and fires AFTER the 200: monitoring must
+  never delay or break what it watches.
 - `GET /control/nudges` + `POST /control/nudges` (Stage 1, 2026-08-16) — the voice's outbox:
   queued team-lead nudges for this host's sandboxes, served until the box acks delivery;
   the POST reports per-item `delivered`/`failed`. Box side: `nudge-runner.timer` (see

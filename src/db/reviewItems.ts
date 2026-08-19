@@ -55,7 +55,11 @@ export type ReviewKind =
   // scheduled end passed with no field report or status change. NON-token —
   // the manager resolves/dismisses freely via resolve_review; detail stays
   // small, no summarizer needed. subject_ref = the assignment id.
-  | 'overdue_visit_gap';
+  | 'overdue_visit_gap'
+  // Detector #2 (plan 2026-08-19): a job whose work is done but whose parts
+  // cost was never recorded. subject_ref is the JOB id, not an assignment —
+  // the only kind so far whose subject is not a visit.
+  | 'job_cost_gap';
 
 export interface UpsertOpenReviewItemInput {
   tenantId: string;
@@ -203,6 +207,27 @@ export async function flagOverdueVisitGap(input: {
     suggestion: input.suggestion,
     ...(input.escalatedFromNudge ? { escalatedFromNudge: input.escalatedFromNudge } : {}),
   });
+}
+
+// Is this gap ALREADY on a manager surface? flagNudgeGap returns null for two
+// opposite reasons — the once-ever dedup found an existing item, or the insert
+// produced nothing — and the terminal-failure doctrine needs to tell them
+// apart: closing a nudge is only safe when the manager HAS the gap, and
+// "already flagged" means they do. Only read on the null path, which is rare.
+export async function reviewItemExistsFor(
+  tenantId: string,
+  kind: ReviewKind,
+  subjectRef: string,
+): Promise<boolean> {
+  const { data, error } = await getClient()
+    .from('review_items')
+    .select('id')
+    .eq('tenant_id', tenantId)
+    .eq('kind', kind)
+    .eq('subject_ref', subjectRef)
+    .limit(1);
+  if (error) throw new Error(`reviewItemExistsFor failed: ${error.message}`);
+  return (data ?? []).length > 0;
 }
 
 // The watcher's batched cap pre-filter (final-review finding): which of these

@@ -6,6 +6,7 @@ import { ALLOWED_TRANSITIONS, createJob, getJob, type JobStatus } from './jobs.j
 import { isUniqueViolation } from './rawCaptures.js';
 import {
   appendMoneyEvent,
+  listJobIdsWithCostEvents,
   technicianMoneyView,
   deriveStatusTarget,
   listMoneyEventsForJob,
@@ -388,5 +389,37 @@ describe('material_cost — a COST kind is inert in every revenue number (plan 2
     ).rejects.toThrow();
     // And it does not move the job off its status.
     expect((await getJob(jobId))?.status).toBe('open');
+  });
+});
+
+describe('listJobIdsWithCostEvents — the cost detector\'s "already recorded" filter', () => {
+  test('returns only jobs with a material_cost — an invoice is NOT a cost', async () => {
+    // The whole detector hangs on this being kind-scoped: without the kind
+    // filter, any job with an invoice would look like its cost was recorded and
+    // would never be asked about.
+    const withCost = await freshJob();
+    const withInvoiceOnly = await freshJob();
+    const withNothing = await freshJob();
+    await appendMoneyEvent({
+      tenantId, jobId: withCost.jobId, kind: 'material_cost', amountCents: 4000,
+    });
+    await appendMoneyEvent({
+      tenantId, jobId: withInvoiceOnly.jobId, kind: 'invoice_issued', amountCents: 90000,
+    });
+    const hit = await listJobIdsWithCostEvents(tenantId, [
+      withCost.jobId, withInvoiceOnly.jobId, withNothing.jobId,
+    ]);
+    expect(hit).toEqual([withCost.jobId]);
+  });
+
+  test('empty input returns empty (PostgREST in.() with zero values errors)', async () => {
+    expect(await listJobIdsWithCostEvents(tenantId, [])).toEqual([]);
+  });
+
+  test('de-duplicates a job with several cost rows', async () => {
+    const { jobId } = await freshJob();
+    await appendMoneyEvent({ tenantId, jobId, kind: 'material_cost', amountCents: 100 });
+    await appendMoneyEvent({ tenantId, jobId, kind: 'material_cost', amountCents: 200 });
+    expect(await listJobIdsWithCostEvents(tenantId, [jobId])).toEqual([jobId]);
   });
 });

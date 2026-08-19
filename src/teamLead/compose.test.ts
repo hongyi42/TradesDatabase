@@ -57,7 +57,7 @@ function baseDeps(over: Partial<ComposeDeps> = {}): ComposeDeps {
     markQueued: async () => pendingNudge({ status: 'queued' }),
     markOutcome: async () => pendingNudge({ status: 'cancelled' }),
     setAttempts: async () => pendingNudge(),
-    flagGap: async () => null,
+    flagNudge: async () => null,
     ...over,
   };
 }
@@ -131,9 +131,9 @@ describe('runTeamLeadCompose', () => {
       markQueued: async () => {
         throw new Error('declined nudges must not queue');
       },
-      flagGap: async (input) => {
+      flagNudge: async (input) => {
         flagged.push({ escalatedFromNudge: input.escalatedFromNudge, suggestion: input.suggestion });
-        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<ComposeDeps['flagGap']>>>;
+        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<ComposeDeps['flagNudge']>>>;
       },
       markOutcome: async (_id, _t, status, resolution) => {
         outcomes.push([status, resolution]);
@@ -159,7 +159,7 @@ describe('runTeamLeadCompose', () => {
       run: async () => {
         throw new Error('the model must not see incomplete context');
       },
-      flagGap: async () => {
+      flagNudge: async () => {
         throw new Error('a flag-incoherent row cannot be handed off');
       },
       markOutcome: async () => {
@@ -191,9 +191,9 @@ describe('runTeamLeadCompose', () => {
       run: async () => {
         throw new Error('the model must not see incomplete context');
       },
-      flagGap: async (input) => {
+      flagNudge: async (input) => {
         flagged.push({ suggestion: input.suggestion, jobId: input.jobId });
-        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<ComposeDeps['flagGap']>>>;
+        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<ComposeDeps['flagNudge']>>>;
       },
       markOutcome: async (_id, _t, status, resolution) => {
         outcomes.push(`${status}: ${resolution}`);
@@ -234,9 +234,9 @@ describe('runTeamLeadCompose', () => {
       run: async () => {
         throw new Error('inference 503');
       },
-      flagGap: async (input) => {
-        flagged.push(input.assignmentId);
-        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<ComposeDeps['flagGap']>>>;
+      flagNudge: async (input) => {
+        flagged.push(input.subjectRef);
+        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<ComposeDeps['flagNudge']>>>;
       },
       markOutcome: async (_id, _t, status, resolution) => {
         outcomes.push(`${status}: ${resolution}`);
@@ -258,7 +258,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('response lost after commit');
       },
       setAttempts: async () => null, // the pending-only guard found a queued row
-      flagGap: async () => {
+      flagNudge: async () => {
         throw new Error('a queued deliverable must not be handed off');
       },
       markOutcome: async () => {
@@ -364,7 +364,7 @@ describe('runTeamLeadCompose', () => {
       setAttempts: async () => {
         throw new Error('out-of-window nudges must not gain attempts');
       },
-      flagGap: async () => {
+      flagNudge: async () => {
         throw new Error('out-of-window nudges must not reach the manager');
       },
     }));

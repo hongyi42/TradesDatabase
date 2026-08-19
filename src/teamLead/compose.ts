@@ -1,5 +1,6 @@
 import {
-  flagOverdueVisitGap,
+  flagNudgeGap,
+  reviewItemExistsFor,
   getTenant,
   listNudgesByStatus,
   listTenantIdsWithTelegramBindings,
@@ -10,12 +11,8 @@ import {
 } from '../db/index.js';
 import { localTimeHHMM } from '../schedule/availability.js';
 import { runForcedTool } from '../model/forcedTool.js';
-import {
-  flatten,
-  readComposeContext,
-  type ComposeContext,
-} from './composeCopy.js';
-import { NUDGE_KIND_SPECS, specFor, stage0Suggestion, type NudgeKindSpec } from '../jobs/nudgeKinds.js';
+import { flatten } from './composeCopy.js';
+import { NUDGE_KIND_SPECS, specFor, type NudgeKindSpec } from '../jobs/nudgeKinds.js';
 import { TEAM_LEAD_REF } from './identity.js';
 
 // The compose turn (plan 2026-08-15 feature B, Phase 3): the ONLY model call
@@ -78,42 +75,50 @@ export function insideAskWindow(nowIso: string, tz: string): boolean {
 // (a blip re-runs compose next tick; the reverse order orphans the gap).
 export async function handToManager(
   n: Nudge,
-  ctx: ComposeContext | null,
-  flagGap: typeof flagOverdueVisitGap,
+  flagNudge: typeof flagNudgeGap,
+  exists: typeof reviewItemExistsFor = reviewItemExistsFor,
+  specs: NudgeKindSpec[] = NUDGE_KIND_SPECS,
 ): Promise<boolean> {
-  // Read the FLAG-coherent fields from the raw context even when the compose
-  // reader returned null (final-review #1: readComposeContext fails on any
-  // missing DISPLAY field — an empty customer name — but the flag needs only
-  // jobId + the two timestamps; without this fallback a display-thin row was
-  // cancelled with no surface, the exact orphan the doctrine forbids).
-  const raw = (n.context ?? {}) as Record<string, unknown>;
-  const rs = (k: string): string | null =>
-    typeof raw[k] === 'string' && (raw[k] as string).length > 0 ? (raw[k] as string) : null;
-  const jobId = ctx?.jobId ?? rs('jobId');
-  const startsAtLocal = ctx?.startsAtLocal ?? rs('startsAtLocal');
-  const endsAtLocal = ctx?.endsAtLocal ?? rs('endsAtLocal');
-  if (!jobId || !startsAtLocal || !endsAtLocal || Number.isNaN(Date.parse(endsAtLocal))) {
+  // KIND-AWARE (plan 2026-08-19, Phase 4). This used to read visit-shaped
+  // fields directly, which meant a job-scoped gap — no startsAtLocal, no
+  // endsAtLocal — could never be handed over, so it closed with NO manager
+  // surface at all: the exact orphan the terminal-failure doctrine forbids.
+  // The spec owns its own copy and its own required fields, and builds the
+  // plan from the RAW context (so a DISPLAY-thin row can still flag, the
+  // final-review #1 property).
+  //
+  // 'expired' mode is always right here: every caller reaches this because the
+  // ask never landed (compose declined/failed, or delivery gave up), and the
+  // manager must never be told a question was asked when it wasn't.
+  const spec = specFor(n.kind, specs);
+  if (!spec) {
+    console.error(`[teamLeadCompose] nudge ${n.id} has unregistered kind '${n.kind}' — cannot hand over`);
+    return false;
+  }
+  const plan = spec.handoff(n, 'expired');
+  if (!plan) {
     // Not enough evidence even to flag coherently — the row is tampered
     // beyond use. Loud log; callers must FREEZE the row (never cancel it),
     // so the status-change sweep remains its only exit.
     console.error(`[teamLeadCompose] nudge ${n.id} unfit for manager handoff (thin context)`);
     return false;
   }
-  const title = ctx?.jobTitle ?? flatten(rs('jobTitle') ?? 'a job', 120);
-  const customer = ctx?.customerName ?? flatten(rs('customerName') ?? 'unknown customer', 80);
-  const item = await flagGap({
+  const item = await flagNudge({
     tenantId: n.tenant_id,
-    assignmentId: n.subject_ref,
-    jobId,
-    technicianRef: ctx?.technicianRef ?? null,
-    startsAtLocal,
-    endsAtLocal,
+    kind: spec.kind,
+    subjectRef: plan.subjectRef,
+    jobId: plan.jobId,
+    technicianRef: plan.technicianRef,
+    startsAtLocal: plan.startsAtLocal,
+    endsAtLocal: plan.endsAtLocal,
     escalatedFromNudge: n.id,
-    // ONE definition of this copy (it was duplicated byte-for-byte here and in
-    // watchers.ts — copy that says the same thing in two places drifts).
-    suggestion: stage0Suggestion(title, customer, endsAtLocal),
+    suggestion: plan.suggestion,
   });
-  return item !== null;
+  if (item) return true;
+  // null has TWO opposite meanings and the doctrine needs them apart: the
+  // once-ever dedup found an existing item (the manager HAS this gap — safe to
+  // close the nudge), or nothing landed (not safe). Only read on this path.
+  return exists(n.tenant_id, spec.kind, plan.subjectRef);
 }
 
 export interface ComposeDeps {
@@ -124,7 +129,8 @@ export interface ComposeDeps {
   markQueued?: typeof markNudgeQueued;
   markOutcome?: typeof markNudgeOutcome;
   setAttempts?: typeof setNudgeAttempts;
-  flagGap?: typeof flagOverdueVisitGap;
+  flagNudge?: typeof flagNudgeGap;
+  reviewItemExists?: typeof reviewItemExistsFor;
   specs?: NudgeKindSpec[];
 }
 
@@ -148,7 +154,8 @@ export async function runTeamLeadCompose(
   const markQueued = deps.markQueued ?? markNudgeQueued;
   const markOutcome = deps.markOutcome ?? markNudgeOutcome;
   const setAttempts = deps.setAttempts ?? setNudgeAttempts;
-  const flagGap = deps.flagGap ?? flagOverdueVisitGap;
+  const flagNudge = deps.flagNudge ?? flagNudgeGap;
+  const reviewItemExists = deps.reviewItemExists ?? reviewItemExistsFor;
   const specs = deps.specs ?? NUDGE_KIND_SPECS;
 
   const summary: ComposeSummary = {
@@ -187,7 +194,7 @@ export async function runTeamLeadCompose(
           // a row too thin even to flag is FROZEN here — logged loudly, left
           // pending — so the status-change sweep stays its only exit; closing
           // it would orphan the gap from every surface forever.
-          if (await handToManager(n, null, flagGap)) {
+          if (await handToManager(n, flagNudge, reviewItemExists, specs)) {
             summary.handoffs += 1;
             const moved = await markOutcome(n.id, tenantId, 'cancelled', 'context incomplete');
             if (moved) summary.cancelled += 1;
@@ -209,15 +216,17 @@ export async function runTeamLeadCompose(
           // A decline is a judgment about ASKING, not about the gap — the
           // manager still gets it (F1).
           //
-          // NOT gated on the handoff landing, deliberately. Gating it here
-          // freezes the row AFTER the model call, so an unflaggable row would
-          // be re-composed — a fresh paid call — every tick forever, with no
-          // exit (the 24h expiry sweep refuses the same row for the same
-          // missing fields). Phase 4 owns the gate, together with the two
-          // things that make it safe: a flagger that distinguishes "already
-          // flagged" from "flag failed", and a bounded exit for a row no
-          // surface can accept.
-          if (await handToManager(n, readComposeContext(n), flagGap)) summary.handoffs += 1;
+          // Deliberately NOT gated on the handoff landing. With the
+          // kind-aware handToManager below, `false` now means only ONE thing:
+          // the spec could not build a plan at all, i.e. the row's evidence is
+          // incoherent (flagNudgeGap's null path is always "already flagged" —
+          // upsertOpenReviewItem throws rather than returning null — and the
+          // existence probe converts that to true). For such a row there is no
+          // surface to reach, ever; freezing it here would re-compose it — a
+          // fresh BILLED call — every tick forever, and the 24h expiry sweep
+          // refuses it for the same missing fields. Closing bounded beats
+          // looping unbounded.
+          if (await handToManager(n, flagNudge, reviewItemExists, specs)) summary.handoffs += 1;
           const reason = typeof args.reason === 'string' ? args.reason : 'model declined';
           const moved = await markOutcome(n.id, tenantId, 'cancelled', `declined: ${reason}`);
           if (moved) summary.cancelled += 1;
@@ -248,7 +257,7 @@ export async function runTeamLeadCompose(
           if (bumped && attempts >= MAX_COMPOSE_ATTEMPTS) {
             // Terminal without the ask ever landing → the manager takes it
             // (F1; flag first, then close).
-            if (await handToManager(n, readComposeContext(n), flagGap)) summary.handoffs += 1;
+            if (await handToManager(n, flagNudge, reviewItemExists, specs)) summary.handoffs += 1;
             const moved = await markOutcome(
               n.id,
               tenantId,

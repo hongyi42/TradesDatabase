@@ -4,8 +4,12 @@ import type { ForcedToolSpec } from '../model/forcedTool.js';
 import {
   COMPOSE_SYSTEM,
   COMPOSE_TOOL,
+  COST_COMPOSE_SYSTEM,
+  COST_COMPOSE_TOOL,
+  assembleCostNudgeMessage,
   assembleNudgeMessage,
   readComposeContext,
+  readCostComposeContext,
   relativeDayPhrase,
 } from '../teamLead/composeCopy.js';
 import { wallClockLabel } from './watchers.js';
@@ -38,6 +42,10 @@ export interface SweepFacts {
   // Unused by the overdue spec; the cost spec's `moot` needs it (a cancelled
   // job has nothing left to ask). Populated from the same batched pre-fetch.
   jobStatusById: Map<string, string>;
+  // Real-UTC instant → the firm's wall clock, the per-tenant closure. The cost
+  // spec compares activity against the ASK time (asked_at, real UTC) while the
+  // activity map is naive-local, so it cannot convert without this.
+  naiveLocal: (utcIso: string) => string;
 }
 
 // What a dying nudge hands the manager. The spec BUILDS this; the watcher
@@ -84,13 +92,15 @@ export interface NudgeKindSpec {
   filled(n: Nudge, f: SweepFacts): string | null;
   // Nothing left to ask → resolution text, or null.
   moot(n: Nudge, f: SweepFacts): string | null;
-  // `naiveLocal` is passed in because it is a PER-TENANT closure built from
-  // that tenant's timezone (watchers.ts) — the escalation copy prints the ask
-  // time through it, so a spec cannot build one itself.
+  // `naiveLocal` is a PER-TENANT closure built from that tenant's timezone
+  // (watchers.ts). OPTIONAL because compose and the delivery queue hand rows to
+  // the manager too and have no timezone to build one from — they only ever use
+  // 'expired', which prints no timestamp. A spec whose 'escalated' copy needs
+  // one must return null when it is absent (fail-closed, never a wrong time).
   handoff(
     n: Nudge,
     mode: 'escalated' | 'expired',
-    naiveLocal: (utcIso: string) => string,
+    naiveLocal?: (utcIso: string) => string,
   ): HandoffPlan | null;
   compose: ComposeBlock;
 }
@@ -183,8 +193,9 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
       // The ask never landed → the Stage-0 copy, never the escalation copy.
       return { ...base, suggestion: stage0Suggestion(title, customer, endsAtLocal) };
     }
-    // Escalation copy quotes the ask time, so it needs a real asked_at.
-    if (!n.asked_at) return null;
+    // Escalation copy quotes the ask time, so it needs both a real asked_at
+    // and a way to render it in the firm's clock.
+    if (!n.asked_at || !naiveLocal) return null;
     const techName = disp(c, 'technicianName', 'The technician');
     return {
       ...base,
@@ -200,9 +211,97 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
   },
 };
 
+// Detector #2 (plan 2026-08-19): the work is done, nothing says what it cost.
+//
+// Squarely `ask` class — a $40 condensate pump exists nowhere but the
+// technician's memory, so there is no derivation to attempt. Its urgency
+// profile is deliberately DIFFERENT from the visit question, which is why it
+// was chosen: a receipt amount does not decay, but it blocks the books.
+//
+// TWO limits, both accepted deliberately and both visible here rather than
+// buried:
+//  1. subject_ref is the JOB id, and uq_nudges_subject_ever asks once per
+//     subject FOREVER — so only the FIRST cost gap on a job is ever asked.
+//     Later purchases on a multi-day job are never chased (user decision
+//     2026-08-19, taken to keep "ask once, ever" a database guarantee).
+//  2. The answer closes the nudge but does NOT become a countable number: the
+//     technician's agent cannot write money (record_money_event is
+//     manager-only), so the amount lands as PROSE on the job and a manager must
+//     record it. Nothing chases the manager yet — that is the next plan.
+export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
+  kind: 'job_cost_gap',
+  // Tighter than the visit brake: cost gaps arrive in bursts when a batch of
+  // jobs completes, and this is a brand-new detector — the runaway backstop
+  // matters most before it has a track record.
+  maxNewPerTenantTick: 3,
+
+  filled(n, f) {
+    // The bound is the ASK time, NOT the visit end. A completed job almost
+    // always already has a field note (that is usually what completed it), so
+    // comparing against the visit would mark every cost nudge answered the
+    // instant it was created, without anyone answering anything.
+    if (!n.asked_at) return null; // not asked yet — nothing can have answered it
+    const jobId = str(ctxOf(n), 'jobId');
+    if (!jobId) return null;
+    return f.hasActivitySince(jobId, f.naiveLocal(n.asked_at))
+      ? 'the technician answered — a note landed on the job'
+      : null;
+  },
+
+  moot(n, f) {
+    const status = f.jobStatusById.get(str(ctxOf(n), 'jobId') ?? '');
+    return status === 'cancelled' ? 'the job was cancelled — nothing left to ask' : null;
+  },
+
+  handoff(n, mode) {
+    const c = ctxOf(n);
+    const jobId = str(c, 'jobId');
+    if (!jobId) return null;
+    const title = disp(c, 'jobTitle', 'a job');
+    const customer = disp(c, 'customerName', 'unknown customer');
+    const techName = disp(c, 'technicianName', 'The technician');
+    return {
+      subjectRef: n.subject_ref,
+      jobId,
+      technicianRef: disp(c, 'technicianRef', null),
+      // A job-scoped gap has NO visit window — the flagger takes these as
+      // optional and omits the keys rather than storing nulls.
+      startsAtLocal: null,
+      endsAtLocal: null,
+      // Neither copy prints a timestamp, so this kind never needs naiveLocal.
+      suggestion:
+        mode === 'expired'
+          ? `Nothing is recorded about what the '${title}' job (${customer}) cost in parts or ` +
+            `materials, so the job's costs are incomplete. Worth asking ${techName} what they ` +
+            `picked up for it. If there were no parts, just dismiss this.`
+          : `${techName}'s assistant asked what the '${title}' job (${customer}) cost in parts ` +
+            `and materials and hasn't heard back — the job's costs are still incomplete. Worth ` +
+            `a direct word so it can be recorded. If it's already handled, just dismiss this.`,
+    };
+  },
+
+  compose: {
+    system: COST_COMPOSE_SYSTEM,
+    tool: COST_COMPOSE_TOOL,
+    prepare(n) {
+      const ctx = readCostComposeContext(n);
+      if (!ctx) return null;
+      return {
+        user:
+          `Customer: ${ctx.customerName}\n` +
+          `Job: ${ctx.jobTitle}\n` +
+          `Technician: ${ctx.technicianName}\n` +
+          `The job is finished; nothing has been recorded about what it cost in parts or ` +
+          `materials.`,
+        assemble: (question) => assembleCostNudgeMessage(question, ctx),
+      };
+    },
+  },
+};
+
 // Every kind the ladder knows how to carry. Adding one here is what makes it
 // detected, swept, escalated and composed — there is no second place to edit.
-export const NUDGE_KIND_SPECS: NudgeKindSpec[] = [OVERDUE_VISIT_GAP_SPEC];
+export const NUDGE_KIND_SPECS: NudgeKindSpec[] = [OVERDUE_VISIT_GAP_SPEC, JOB_COST_GAP_SPEC];
 
 export function specFor(
   kind: string,

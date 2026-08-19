@@ -1,6 +1,9 @@
 import {
   createPendingNudge,
+  listCostGapCandidates,
+  listJobIdsWithCostEvents,
   findOpenReviewItemsByKind,
+  flagNudgeGap,
   flagOverdueVisitGap,
   getTenant,
   listAssignmentsByIds,
@@ -158,6 +161,8 @@ export interface WatcherDeps {
   listEverFlagged?: typeof listEverFlaggedSubjectRefs;
   listAssignments?: typeof listAssignmentsByIds;
   flagGap?: typeof flagOverdueVisitGap;
+  // The kind-generic flagger, for gaps whose subject is not a visit.
+  flagNudge?: typeof flagNudgeGap;
   findOpenGaps?: typeof findOpenReviewItemsByKind;
   resolveGap?: typeof resolveOpenReviewItemFor;
   notify?: typeof notifyManagers;
@@ -167,6 +172,9 @@ export interface WatcherDeps {
   listNudged?: typeof listNudgedSubjectRefs;
   listNudges?: typeof listNudgesByStatus;
   resolveNudge?: typeof markNudgeOutcome;
+  // Detector #2 seams
+  listCostCandidates?: typeof listCostGapCandidates;
+  listCostEvents?: typeof listJobIdsWithCostEvents;
   // The kind registry, injectable so a test can register a second detector
   // before one exists in production.
   specs?: NudgeKindSpec[];
@@ -188,6 +196,13 @@ export interface WatchersSummary {
   nudgesResolved: number; // answered (activity) or cancelled (status change)
   nudgesEscalated: number; // 48h silence → handed to the manager (rung 2)
   nudgesExpired: number; // never asked within the deadline → manager fallback
+  // Per-kind breakdown — the ONLY place a single detector's numbers are
+  // readable. The flat counters above are ALL-KIND TOTALS: nudgesCreated,
+  // nudgesWouldCreate, nudgesResolved/Escalated/Expired and itemsOpened all
+  // sum across detectors. (gapsFound/freshGaps remain visit-only, because the
+  // cost pass counts its own candidates into byKind instead.) Read byKind, not
+  // the totals, when judging one detector.
+  byKind: Record<string, { gapsFound: number; nudgesCreated: number }>;
 }
 
 export async function runWatchers(
@@ -206,6 +221,7 @@ export async function runWatchers(
   const listEverFlagged = deps.listEverFlagged ?? listEverFlaggedSubjectRefs;
   const listAssignments = deps.listAssignments ?? listAssignmentsByIds;
   const flagGap = deps.flagGap ?? flagOverdueVisitGap;
+  const flagNudge = deps.flagNudge ?? flagNudgeGap;
   const findOpenGaps = deps.findOpenGaps ?? findOpenReviewItemsByKind;
   const resolveGap = deps.resolveGap ?? resolveOpenReviewItemFor;
   const notify = deps.notify ?? notifyManagers;
@@ -215,6 +231,8 @@ export async function runWatchers(
   const listNudges = deps.listNudges ?? listNudgesByStatus;
   const resolveNudge = deps.resolveNudge ?? markNudgeOutcome;
   const specs = deps.specs ?? NUDGE_KIND_SPECS;
+  const listCostCandidates = deps.listCostCandidates ?? listCostGapCandidates;
+  const listCostEvents = deps.listCostEvents ?? listJobIdsWithCostEvents;
 
   // listTenantIdsWithTelegramBindings, not listTenantSeats: it skips tenants
   // with nobody Telegram-reachable. Today that ALSO excludes the eval tenants
@@ -241,6 +259,11 @@ export async function runWatchers(
     nudgesResolved: 0,
     nudgesEscalated: 0,
     nudgesExpired: 0,
+    byKind: {},
+  };
+  const bumpKind = (kind: string, field: 'gapsFound' | 'nudgesCreated', by = 1): void => {
+    const row = (summary.byKind[kind] ??= { gapsFound: 0, nudgesCreated: 0 });
+    row[field] += by;
   };
 
   for (const tenantId of tenantIds) {
@@ -312,14 +335,21 @@ export async function runWatchers(
           typeof c.startsAtLocal === 'string' && !Number.isNaN(Date.parse(c.startsAtLocal))
             ? c.startsAtLocal
             : null;
-        return { n, jobId, startsAtLocal };
+        const endsAtLocal =
+          typeof c.endsAtLocal === 'string' && !Number.isNaN(Date.parse(c.endsAtLocal))
+            ? c.endsAtLocal
+            : null;
+        return { n, jobId, startsAtLocal, endsAtLocal };
       });
 
       // ONE batched activity fetch across candidates', open items', AND open
       // nudges' jobs.
       const jobIds = new Set<string>(candidates.map((c) => c.job_id));
       for (const g of openGaps) jobIds.add(g.jobId);
-      for (const x of openNudgeGaps) if (x.jobId && x.startsAtLocal) jobIds.add(x.jobId);
+      // jobId ALONE is the gate — NOT jobId && startsAtLocal. A job-scoped gap
+      // (cost) has no visit window, and requiring one silently excluded its job
+      // from this fetch, so its `filled` predicate could never see the answer.
+      for (const x of openNudgeGaps) if (x.jobId) jobIds.add(x.jobId);
 
       // Per-job LATEST activity, as minute-precision naive-local epoch — only
       // the max ever matters, and one accumulator serves both homes.
@@ -332,8 +362,13 @@ export async function runWatchers(
         let minNaiveMs = Date.parse(from);
         for (const c of candidates) minNaiveMs = Math.min(minNaiveMs, Date.parse(c.starts_at));
         for (const g of openGaps) minNaiveMs = Math.min(minNaiveMs, Date.parse(g.startsAtLocal));
-        for (const x of openNudgeGaps)
-          if (x.startsAtLocal) minNaiveMs = Math.min(minNaiveMs, Date.parse(x.startsAtLocal));
+        for (const x of openNudgeGaps) {
+          // A job-scoped gap has no start; its context's visit END is the
+          // earliest thing its answer could follow, so it serves as the floor
+          // hint. Absent both, the window's own start already bounds it.
+          const hint = x.startsAtLocal ?? x.endsAtLocal;
+          if (hint) minNaiveMs = Math.min(minNaiveMs, Date.parse(hint));
+        }
         minNaiveMs = Math.max(minNaiveMs, Date.parse(from) - MAX_FLOOR_REACH_MS);
         const floorUtcIso = new Date(minNaiveMs - MAX_UTC_OFFSET_MS).toISOString();
         const ids = [...jobIds];
@@ -358,6 +393,7 @@ export async function runWatchers(
 
       const gaps = candidates.filter((c) => !hasActivitySince(c.job_id, c.starts_at));
       summary.gapsFound += gaps.length;
+      bumpKind('overdue_visit_gap', 'gapsFound', gaps.length);
 
       // FRESH = never surfaced on EITHER rung, any status (the batched cap
       // pre-filter, now over BOTH dedup stores — without the nudges read, a
@@ -387,6 +423,19 @@ export async function runWatchers(
       ];
       const statusById = new Map(
         (await listAssignments(tenantId, statusSubjects)).map((a) => [a.id, a.status]),
+      );
+      // Job statuses, for the sweep's JOB-scoped predicates (a cost gap is moot
+      // once its job is cancelled). Same batched discipline as everything else
+      // here — one read over ids already in hand, never per row.
+      const nudgeJobIds = [
+        ...new Set(openNudgeGaps.map((x) => x.jobId).filter((v): v is string => !!v)),
+      ];
+      const jobStatusById = new Map<string, string>(
+        nudgeJobIds.length === 0
+          ? []
+          : (await listJobs(tenantId, nudgeJobIds))
+              .filter((j) => j.tenant_id === tenantId)
+              .map((j) => [j.id, j.status]),
       );
       for (const g of openGaps) {
         if (hasActivitySince(g.jobId, g.startsAtLocal)) {
@@ -422,6 +471,9 @@ export async function runWatchers(
       // "nothing to report" mechanically counts as filled (user-ratified
       // 2026-08-16) — only pure silence climbs the ladder.
       let opened = 0;
+      // Which KIND each opened item belongs to — the push copy differs, and a
+      // cost item is not a visit.
+      const openedByKind = { overdue: 0, cost: 0 };
       const escalations: typeof openNudgeGaps = [];
       const expired: typeof openNudgeGaps = [];
       // Facts the specs judge against — fetched ONCE per tenant per tick, never
@@ -430,7 +482,8 @@ export async function runWatchers(
       const facts: SweepFacts = {
         hasActivitySince,
         visitStatusById: statusById,
-        jobStatusById: new Map<string, string>(),
+        jobStatusById,
+        naiveLocal,
       };
       for (const x of openNudgeGaps) {
         // Present by construction: openNudges was filtered to registered kinds.
@@ -479,17 +532,13 @@ export async function runWatchers(
           console.error(`[watchers] expired nudge ${x.n.id} unfit for handoff (thin context)`);
           continue;
         }
-        // Phase 1 carries only visit-shaped kinds, so the visit flagger's
-        // assignment-as-subject convention still holds. A kind whose plan has
-        // no visit window (a job-scoped cost gap) needs the generic
-        // flagNudgeGap instead — wired in when that kind lands.
-        if (!plan.startsAtLocal || !plan.endsAtLocal) {
-          console.error(`[watchers] nudge ${x.n.id} handoff has no visit window — skipped`);
-          continue;
-        }
-        const item = await flagGap({
+        // The KIND-GENERIC flagger: a job-scoped gap has no visit window, and
+        // the visit flagger's assignment-as-subject convention does not fit it.
+        // Both bounds are optional here and omitted from `detail` when absent.
+        const item = await flagNudge({
           tenantId,
-          assignmentId: plan.subjectRef,
+          kind: spec.kind,
+          subjectRef: plan.subjectRef,
           jobId: plan.jobId,
           technicianRef: plan.technicianRef,
           startsAtLocal: plan.startsAtLocal,
@@ -497,7 +546,11 @@ export async function runWatchers(
           escalatedFromNudge: x.n.id,
           suggestion: plan.suggestion,
         });
-        if (item) opened += 1;
+        if (item) {
+          opened += 1;
+          if (spec.kind === 'job_cost_gap') openedByKind.cost += 1;
+          else openedByKind.overdue += 1;
+        }
         try {
           // pending|queued-scoped (final-review #3): a delivery ack racing
           // this sweep moves the row to 'asked' — the expiry must then LOSE
@@ -527,17 +580,13 @@ export async function runWatchers(
         const spec = specFor(x.n.kind, specs)!;
         const plan = spec.handoff(x.n, 'escalated', naiveLocal);
         if (!plan) continue; // malformed context — fail-closed, never escalates
-        // Phase 1 carries only visit-shaped kinds, so the visit flagger's
-        // assignment-as-subject convention still holds. A kind whose plan has
-        // no visit window (a job-scoped cost gap) needs the generic
-        // flagNudgeGap instead — wired in when that kind lands.
-        if (!plan.startsAtLocal || !plan.endsAtLocal) {
-          console.error(`[watchers] nudge ${x.n.id} handoff has no visit window — skipped`);
-          continue;
-        }
-        const item = await flagGap({
+        // The KIND-GENERIC flagger: a job-scoped gap has no visit window, and
+        // the visit flagger's assignment-as-subject convention does not fit it.
+        // Both bounds are optional here and omitted from `detail` when absent.
+        const item = await flagNudge({
           tenantId,
-          assignmentId: plan.subjectRef,
+          kind: spec.kind,
+          subjectRef: plan.subjectRef,
           jobId: plan.jobId,
           technicianRef: plan.technicianRef,
           startsAtLocal: plan.startsAtLocal,
@@ -545,7 +594,11 @@ export async function runWatchers(
           escalatedFromNudge: x.n.id,
           suggestion: plan.suggestion,
         });
-        if (item) opened += 1;
+        if (item) {
+          opened += 1;
+          if (spec.kind === 'job_cost_gap') openedByKind.cost += 1;
+          else openedByKind.overdue += 1;
+        }
         // Mark AFTER the flag: if the flag throws, the nudge stays 'asked'
         // and next tick retries (flagGap's dedup makes the retry converge).
         // The mark itself is isolated (Phase-2 review F2): the item already
@@ -571,11 +624,18 @@ export async function runWatchers(
       // the manager item is the fallback. Every reachable fresh gap in `top`
       // is asked about — there is no per-person gate any more (user ruling
       // 2026-08-18); the per-tick slice is the only volume brake here.
-      // TWO brakes, deliberately both. The per-kind one is the runaway backstop
+      // TWO brakes, deliberately both. The per-kind one is the RUNAWAY BACKSTOP
       // the deleted per-person cap used to provide incidentally — a MISFIRING
-      // detector can now only flood its own kind. The tenant-wide ceiling then
-      // caps the combined routed count across kinds, so adding a detector can
-      // never raise a firm's per-tick volume (5 stays 5, never 5+N).
+      // detector can only flood its own kind. The tenant-wide ceiling then caps
+      // the combined routed count across kinds, so adding a detector can never
+      // raise a firm's per-tick volume (5 stays 5, never 5+N).
+      //
+      // NOT a fairness mechanism, and deliberately so: passes run in order, so
+      // a tick with 5 fresh visit gaps spends the whole ceiling and surfaces no
+      // cost gaps. They are picked up on a later tick (nothing is dropped — the
+      // once-ever stores keep them fresh until asked). Deciding WHICH gaps
+      // deserve a scarce slot is exactly the pacing planner's job, and it does
+      // not exist yet — see Plan B. Until then, first-come by pass order.
       // Creation is REGISTRY-GATED: a kind with no spec must not be minted at
       // all, because the sweep above cannot resolve, escalate or expire it —
       // creating one would strand it open forever, which is the very failure
@@ -647,7 +707,10 @@ export async function runWatchers(
                 visitEndLabel: wallClockLabel(g.ends_at),
               },
             });
-            if (nudge) summary.nudgesCreated += 1; // null = considered concurrently
+            if (nudge) {
+              summary.nudgesCreated += 1; // null = considered concurrently
+              bumpKind('overdue_visit_gap', 'nudgesCreated');
+            }
             continue; // rung 1 owns this gap — no manager item, no push
           }
           const item = await flagGap({
@@ -665,7 +728,99 @@ export async function runWatchers(
             // help rather than an audit.
             suggestion: stage0Suggestion(title, customer, g.ends_at),
           });
-          if (item) opened += 1; // null = flagged concurrently — not new
+          if (item) {
+            opened += 1; // null = flagged concurrently — not new
+            openedByKind.overdue += 1;
+          }
+        }
+      }
+
+      // ── DETECTOR #2: job cost (plan 2026-08-19) ──────────────────────────
+      // Deliberately a SEPARATE pass, not a widened visit query: its subject is
+      // the JOB, its window anchor is the assignment end only because that is
+      // what supplies a technician to ask, and its "fresh" test is a different
+      // question (does a cost exist?) than the visit one (did anything land?).
+      const costSpec = specFor('job_cost_gap', specs);
+      if (costSpec && nudgeMode !== 'off') {
+        const costCandidates = await listCostCandidates(tenantId, from, to);
+        if (costCandidates.length > 0) {
+          const costJobIds = costCandidates.map((c) => c.jobId);
+          // Three filters, all batched: already has a cost, ever flagged, ever
+          // nudged. The last two are the same once-ever stores the visit
+          // detector uses — they already take a kind.
+          const [withCost, flaggedCost, nudgedCost] = await Promise.all([
+            listCostEvents(tenantId, costJobIds),
+            listEverFlagged(tenantId, 'job_cost_gap', costJobIds),
+            listNudged(tenantId, 'job_cost_gap', costJobIds),
+          ]);
+          const surfaced = new Set([...withCost, ...flaggedCost, ...nudgedCost]);
+          const freshCost = costCandidates.filter((c) => !surfaced.has(c.jobId));
+          bumpKind('job_cost_gap', 'gapsFound', freshCost.length);
+
+          const costTop = freshCost.slice(0, Math.max(0, costSpec.maxNewPerTenantTick));
+          if (costTop.length > 0) {
+            const teamRows = await team(tenantId);
+            const techById = new Map(teamRows.map((t) => [t.id, t]));
+            for (const c of costTop) {
+              // The SAME tenant-wide ceiling the visit pass spends from — a
+              // second detector must not raise a firm's per-tick volume.
+              if (routedThisTick >= MAX_NEW_ITEMS_PER_TENANT_TICK) break;
+              routedThisTick += 1;
+              const tech = techById.get(c.technicianId);
+              const reachable =
+                !!tech &&
+                tech.state === 'active' &&
+                !!tech.telegram_user_id &&
+                !!tech.sandbox_ref &&
+                !!tech.host_id;
+              const title = c.jobTitle ?? 'a job';
+              const customer = c.customerName ?? 'unknown customer';
+              if (reachable && nudgeMode === 'shadow') {
+                summary.nudgesWouldCreate += 1;
+              }
+              if (reachable && nudgeMode === 'live') {
+                const nudge = await createNudge({
+                  tenantId,
+                  kind: costSpec.kind,
+                  // The JOB, not the assignment — the only kind whose subject
+                  // is not a visit. uq_nudges_subject_ever therefore asks once
+                  // per job FOREVER (accepted limitation, see the spec).
+                  subjectRef: c.jobId,
+                  technicianId: c.technicianId,
+                  context: {
+                    customerName: customer,
+                    jobTitle: title,
+                    technicianRef: tech.ref,
+                    technicianName: tech.display_name,
+                    jobId: c.jobId,
+                    endsAtLocal: c.endsAtLocal,
+                  },
+                });
+                if (nudge) {
+                  summary.nudgesCreated += 1;
+                  bumpKind('job_cost_gap', 'nudgesCreated');
+                }
+                continue; // rung 1 owns it
+              }
+              // Unreachable technician → the manager takes it, same as rung 1's
+              // fallback. Job-scoped, so no visit window.
+              const item = await flagNudge({
+                tenantId,
+                kind: costSpec.kind,
+                subjectRef: c.jobId,
+                jobId: c.jobId,
+                technicianRef: tech?.ref ?? null,
+                suggestion:
+                  `Nothing is recorded about what the '${title}' job (${customer}) cost in ` +
+                  `parts or materials, so the job's costs are incomplete. Worth checking what ` +
+                  `was picked up for it. If there were no parts, just dismiss this.`,
+              });
+              if (item) {
+                opened += 1;
+                openedByKind.cost += 1;
+              }
+            }
+          }
         }
       }
       summary.itemsOpened += opened;
@@ -676,12 +831,23 @@ export async function runWatchers(
       // Same copy doctrine as the suggestion: warm, no jargon, real plurals.
       if (opened > 0) {
         if (hasPushToken()) {
-          await notify(
-            tenantId,
-            opened === 1
-              ? 'Heads-up: a recent visit has nothing on record yet — it’s waiting in your pending reviews whenever you have a minute.'
-              : `Heads-up: ${opened} recent visits have nothing on record yet — they’re waiting in your pending reviews whenever you have a minute.`,
-          );
+          // Kind-aware copy: a cost item is not a visit, and telling a manager
+          // "a recent visit has nothing on record" when the item is actually
+          // about parts cost is simply false. Visit-only tenants keep the exact
+          // wording they have today.
+          const costOnly = openedByKind.overdue === 0 && openedByKind.cost > 0;
+          const mixed = openedByKind.overdue > 0 && openedByKind.cost > 0;
+          const line =
+            mixed ?
+              `Heads-up: ${opened} recent jobs have something missing from their record — they’re waiting in your pending reviews whenever you have a minute.`
+            : costOnly ?
+              opened === 1 ?
+                'Heads-up: a recent job has no parts cost on record yet — it’s waiting in your pending reviews whenever you have a minute.'
+              : `Heads-up: ${opened} recent jobs have no parts cost on record yet — they’re waiting in your pending reviews whenever you have a minute.`
+            : opened === 1 ?
+              'Heads-up: a recent visit has nothing on record yet — it’s waiting in your pending reviews whenever you have a minute.'
+            : `Heads-up: ${opened} recent visits have nothing on record yet — they’re waiting in your pending reviews whenever you have a minute.`;
+          await notify(tenantId, line);
           summary.pushed += 1;
         } else {
           summary.pushSkipped = true;

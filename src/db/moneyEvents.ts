@@ -212,6 +212,25 @@ export async function listMoneyEventsForJobs(
   return data ?? [];
 }
 
+// Which of these jobs already have a cost recorded? The batched, in()-bounded
+// shape the watcher's sweep needs (the listNudgedSubjectRefs pattern — never a
+// tenant-wide scan). Kind-scoped: only 'material_cost' counts as "cost
+// recorded", so a job with invoices but no cost is still a gap.
+export async function listJobIdsWithCostEvents(
+  tenantId: string,
+  jobIds: string[],
+): Promise<string[]> {
+  if (jobIds.length === 0) return []; // PostgREST `in.()` with zero values errors
+  const { data, error } = await getClient()
+    .from('money_events')
+    .select('job_id')
+    .eq('tenant_id', tenantId)
+    .eq('kind', 'material_cost')
+    .in('job_id', jobIds);
+  if (error) throw new Error(`listJobIdsWithCostEvents failed: ${error.message}`);
+  return [...new Set((data ?? []).map((r) => r.job_id))];
+}
+
 export interface MoneySummary {
   /** Last approved estimate + change orders after that approval. */
   quotedCents: number;

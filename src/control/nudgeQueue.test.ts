@@ -62,7 +62,7 @@ function baseDeps(over: Partial<NudgeQueueDeps> = {}): NudgeQueueDeps {
     asked: async () => queuedRow({ status: 'asked' }),
     outcome: async () => queuedRow({ status: 'failed' }),
     attempts: async (_id, _t, n) => queuedRow({ attempts: n }),
-    flagGap: async () => null,
+    flagNudge: async () => null,
     ...over,
   };
 }
@@ -112,9 +112,9 @@ describe('buildNudgeDelivery', () => {
     const outcomes: Array<[string, string, string | null | undefined]> = [];
     const { nudges } = await buildNudgeDelivery('host-1', baseDeps({
       listQueued: async () => [queuedRow({ serve_count: MAX_SERVE_COUNT })],
-      flagGap: async (input) => {
-        flagged.push(input.assignmentId);
-        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagGap']>>>;
+      flagNudge: async (input) => {
+        flagged.push(input.subjectRef);
+        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>>;
       },
       outcome: async (id, _t, status, resolution) => {
         outcomes.push([id, status, resolution]);
@@ -168,7 +168,7 @@ describe('completeNudgeDelivery', () => {
       outcome: async () => {
         throw new Error('below the cap must not be terminal');
       },
-      flagGap: async () => {
+      flagNudge: async () => {
         throw new Error('below the cap must not hand off');
       },
     }));
@@ -179,9 +179,9 @@ describe('completeNudgeDelivery', () => {
     const outcomes: string[] = [];
     const last = await completeNudgeDelivery('host-1', 'n1', 'failed', 'CLI timeout', baseDeps({
       getQueued: async () => queuedRow({ attempts: MAX_DELIVERY_ATTEMPTS - 1 }),
-      flagGap: async (input) => {
-        flagged.push(input.assignmentId);
-        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagGap']>>>;
+      flagNudge: async (input) => {
+        flagged.push(input.subjectRef);
+        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>>;
       },
       outcome: async (_id, _t, status, resolution) => {
         outcomes.push(`${status}: ${resolution}`);
@@ -202,8 +202,8 @@ describe('terminal-failure doctrine regressions (plan 2026-08-19 Phase 2)', () =
     const result = await completeNudgeDelivery('host-1', 'n1', 'failed', 'boom', {
       getQueued: async () => queuedRow({ attempts: MAX_DELIVERY_ATTEMPTS - 1 }),
       attempts: async () => queuedRow({ attempts: MAX_DELIVERY_ATTEMPTS }),
-      flagGap: async () =>
-        ({ id: 'ri1' }) as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagGap']>>>,
+      flagNudge: async () =>
+        ({ id: 'ri1' }) as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>>,
       outcome: async (_id, _t, status) => {
         outcomes.push(status);
         return null;
@@ -211,5 +211,73 @@ describe('terminal-failure doctrine regressions (plan 2026-08-19 Phase 2)', () =
     });
     expect(result).toBe('failed');
     expect(outcomes).toEqual(['failed']);
+  });
+});
+
+describe('a JOB-SCOPED gap reaches the manager (plan 2026-08-19 Phase 4)', () => {
+  // The orphan Phase 2 deferred. handToManager used to read visit-shaped fields
+  // straight off the context, so a cost row — no startsAtLocal, no endsAtLocal
+  // — could never be handed over, and the row closed with NO manager surface at
+  // all. Now the KIND's spec builds the handoff.
+  const costRow = (over: Partial<QueuedNudgeForHost> = {}) =>
+    queuedRow({
+      kind: 'job_cost_gap',
+      subject_ref: 'j-cost',
+      context: {
+        customerName: 'Henderson',
+        jobTitle: 'Boiler swap',
+        technicianRef: 'ben-shelton',
+        technicianName: 'Ben Shelton',
+        jobId: 'j-cost',
+      },
+      ...over,
+    });
+
+  test('delivery gives up on a cost nudge → the manager gets it, with cost copy', async () => {
+    const flagged: Array<Record<string, unknown>> = [];
+    const outcomes: string[] = [];
+    const result = await completeNudgeDelivery('host-1', 'n1', 'failed', 'boom', {
+      getQueued: async () => costRow({ attempts: MAX_DELIVERY_ATTEMPTS - 1 }),
+      attempts: async () => costRow({ attempts: MAX_DELIVERY_ATTEMPTS }),
+      flagNudge: async (input) => {
+        flagged.push({ ...input });
+        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>>;
+      },
+      outcome: async (_id, _t, status) => {
+        outcomes.push(status);
+        return null;
+      },
+    });
+    expect(result).toBe('failed');
+    expect(outcomes).toEqual(['failed']);
+    // The gap DID reach a manager surface, as the right kind, keyed on the job.
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0]).toMatchObject({
+      kind: 'job_cost_gap',
+      subjectRef: 'j-cost',
+      jobId: 'j-cost',
+      startsAtLocal: null,
+      endsAtLocal: null,
+    });
+    expect(String(flagged[0].suggestion)).toContain('cost in parts');
+  });
+
+  test('"already flagged" counts as ON A SURFACE, not as a failed handoff', async () => {
+    // flagNudgeGap returns null for two opposite reasons — the once-ever dedup
+    // found an existing item, or nothing landed. Conflating them would refuse
+    // to close rows the manager already has.
+    let probed: string[] = [];
+    const result = await completeNudgeDelivery('host-1', 'n1', 'failed', 'boom', {
+      getQueued: async () => costRow({ attempts: MAX_DELIVERY_ATTEMPTS - 1 }),
+      attempts: async () => costRow({ attempts: MAX_DELIVERY_ATTEMPTS }),
+      flagNudge: async () => null, // dedup: an item already exists
+      reviewItemExists: async (_t, kind, subjectRef) => {
+        probed = [kind, subjectRef];
+        return true;
+      },
+      outcome: async () => null,
+    });
+    expect(result).toBe('failed'); // safe to close — the manager HAS the gap
+    expect(probed).toEqual(['job_cost_gap', 'j-cost']);
   });
 });

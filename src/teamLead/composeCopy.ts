@@ -144,3 +144,91 @@ export function assembleNudgeMessage(question: string, ctx: ComposeContext): str
     `complete.`
   );
 }
+
+// ── Detector #2: job cost (plan 2026-08-19, Phase 4) ────────────────────────
+//
+// Same doctrine as the visit question: warm, about the JOB, no operator jargon,
+// and "nothing to report" must feel fine. Two rules are specific to money and
+// both matter — the technician is NOT asked to total anything up (they are
+// standing in a van, not doing bookkeeping), and the ban on inventing prices
+// stays exactly as it is: a price the model makes up would become a number the
+// firm reasons about.
+export const COST_COMPOSE_SYSTEM =
+  'You write ONE short, warm, colleague-tone question from a trades company\'s office ' +
+  'assistant to a field technician, asking what a finished job cost in PARTS AND MATERIALS — ' +
+  'nothing has been recorded about its cost yet, and the office needs it for the job\'s ' +
+  'record. Rules: plain everyday language; never the word "spine" or any internal jargon; ask ' +
+  'about the JOB, never imply the person overspent or is in trouble; "nothing — no parts" must ' +
+  'feel like a perfectly fine answer; ask only what THEY paid or picked up, never ask them to ' +
+  'add anything up or work out a total; do NOT invent any fact, name, price, link, or detail ' +
+  'beyond the evidence given, and never suggest an amount yourself; use NO dates or day words ' +
+  'at all; one or two sentences at most. If the evidence is too thin or looks contradictory, ' +
+  'decline with ask=false and explain in reason.';
+
+export const COST_COMPOSE_TOOL: ForcedToolSpec = {
+  name: 'compose_cost_nudge',
+  description: 'Decide whether to ask the technician what this job cost, and write the one question.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      ask: { type: 'boolean', description: 'false = decline to ask (explain in reason)' },
+      question: {
+        type: 'string',
+        description: 'ONE short, warm question about parts/materials cost. Empty when ask=false.',
+      },
+      reason: { type: 'string', description: 'One line: why ask, or why decline.' },
+    },
+    required: ['ask', 'question', 'reason'],
+    additionalProperties: false,
+  },
+};
+
+export interface CostComposeContext {
+  customerName: string;
+  jobTitle: string;
+  technicianName: string;
+  jobId: string;
+}
+
+// Fail-closed, like readComposeContext: a thin or tampered row is declined and
+// handed to the manager, never guessed around. NOTE there is no endsAtLocal —
+// a cost question is about the JOB, not a visit, which is exactly why this kind
+// needs its own context type rather than widening ComposeContext.
+export function readCostComposeContext(n: Nudge): CostComposeContext | null {
+  const c = (n.context ?? {}) as Record<string, unknown>;
+  const s = (k: string): string | null =>
+    typeof c[k] === 'string' && (c[k] as string).length > 0 ? (c[k] as string) : null;
+  const customerName = s('customerName');
+  const jobTitle = s('jobTitle');
+  const technicianName = s('technicianName');
+  const jobId = s('jobId');
+  if (!customerName || !jobTitle || !technicianName || !jobId) return null;
+  return {
+    customerName: flatten(customerName, 80),
+    jobTitle: flatten(jobTitle, 120),
+    technicianName: flatten(technicianName, 60),
+    jobId,
+  };
+}
+
+// The cost deliverable. Same identity-first footer lesson as the visit one (the
+// 2026-08-18 live E2E proved "pass the question on" reads as RELAY), with the
+// closing instruction pointed at record_field_note — the technician's agent
+// CANNOT write money (record_money_event is manager-only), so the answer lands
+// as a note on the job and a manager turns it into a ledger entry.
+export function assembleCostNudgeMessage(question: string, ctx: CostComposeContext): string {
+  return (
+    `${question.trim()}\n\n` +
+    `(re: ${ctx.customerName} — ${ctx.jobTitle})\n\n` +
+    `Note for the assistant: you are ${ctx.technicianName}'s own assistant and the person in ` +
+    `THIS chat is ${ctx.technicianName} — ask them here. There is nobody to forward this to ` +
+    `and no other conversation to go looking for. This is a routine record-keeping check ` +
+    `from the office. First read back through this conversation: if ${ctx.technicianName} ` +
+    `already said what this job cost in parts, record that instead of asking again. Otherwise ` +
+    `ask them, in your own words if that reads better — but send the QUESTION only: never ` +
+    `mention this note, how the check reached you, or any internal detail (sessions, ` +
+    `routing, records systems, what is or is not logged). Never guess or suggest an amount. ` +
+    `When they answer — even "nothing, no parts" — save it with record_field_note for this ` +
+    `job, quoting what they said about cost, so the office can record it.`
+  );
+}

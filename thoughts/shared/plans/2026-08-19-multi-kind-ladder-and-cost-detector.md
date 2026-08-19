@@ -359,14 +359,51 @@ deferred from Phase 2 (see that phase for why it could not ship alone). Required
   never per row.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm run build` pass; `npm test` passes
-- [ ] new test: a completed job with no cost event produces a `job_cost_gap`; a field note on that job closes it `answered` next tick
-- [ ] new test: **once-ever is real** — after the first cost nudge on a job resolves, a second cost gap on that job creates nothing
-- [ ] new test: both kinds open for one technician, each resolving independently on its own predicate
-- [ ] new test: a `job_cost_gap` asked 49h ago escalates with cost copy and an `escalatedFromNudge` link
-- [ ] new test: a candidate job whose assignment has a null `technician_id` creates no nudge and throws nothing
-- [ ] new test: a cost gap that fails delivery reaches the manager (the Phase-2 `nudgeQueue` fix, exercised with a real cost context)
+- [x] `npm run typecheck`, `npm run lint`, `npm run build` pass; `npm test` passes — 1800 → 1827
+- [x] a completed job with no cost event produces a `job_cost_gap` nudge, subject = the JOB
+- [x] a job that already has a `material_cost` is not a gap
+- [x] **once-ever is real** — a job already nudged for cost is never asked again (the accepted
+      limitation, asserted so it reads as a decision)
+- [x] the answer closes it on activity AFTER the ask — and activity BEFORE the ask does NOT
+      (the trap: a completed job usually already carries the note that completed it)
+- [x] a cancelled job makes the cost question moot
+- [x] a `job_cost_gap` asked 49h ago escalates with COST copy, no visit window, `escalatedFromNudge`
+- [x] a cost gap already on the manager queue is not re-raised as a nudge
+- [x] the per-kind cost brake BINDS (3, not 9) — the runaway backstop is real
+- [x] the tenant ceiling is shared across kinds
+- [x] a cost gap that fails delivery reaches the manager, and "already flagged" counts as
+      on-a-surface rather than as a failed handoff
+- [x] `listCostGapCandidates` (new DB test file): the embedded status filter really filters, the
+      MOST RECENT visit wins, unconfirmed/out-of-window/null-technician rows drop, tenant-scoped
+- [x] `listJobIdsWithCostEvents`: kind-scoped (an invoice is not a cost), de-dupes, empty-safe
+- [x] `flagNudgeGap` job-scoped: `detail` OMITS the visit keys; the DB index is the once-ever
+      backstop; `reviewItemExistsFor` distinguishes already-flagged from nothing-there
+- [x] mutation-proven: reverting the ordering fix, the cost brake, or the cost-kind filter each
+      kills exactly its own test
 
+**Review found three real defects, all fixed:**
+1. **The WRONG TECHNICIAN was asked.** The candidate query ordered ascending and kept the first
+   row per job, so a multi-visit job was attributed to whoever went FIRST. Now descending — the
+   technician who was there last is the one who knows what it cost.
+2. **The manager push said "a recent visit"** for a cost item. The copy is now kind-aware.
+3. **The flat counters and the brake comment overstated the code.** The flat counters are
+   all-kind totals (`byKind` is the per-detector split), and the per-kind brake is a runaway
+   backstop, NOT a fairness mechanism — a tick full of visit gaps surfaces no cost gaps, and
+   deciding which gap deserves a scarce slot is Plan B's whole job.
+
+**KNOWN LIMIT, asserted by test rather than left to be discovered:** `hasActivitySince` is keyed
+on the JOB, not on who answered. A note landing after the ask satisfies BOTH a visit gap and a
+cost gap on the same job, and any job activity (a manager's outbound mail, an inbound customer
+message) closes a cost nudge as "the technician answered". Plan B's partial-answer batching must
+reckon with this.
+
+**Terminal-write gating: NOT landed, deliberately.** Review established that
+`upsertOpenReviewItem` throws rather than returning null, so `flagNudgeGap`'s null path is always
+"already flagged" — which the existence probe now converts to *true*. `handToManager` therefore
+returns false ONLY when the spec cannot build a plan at all (incoherent evidence), and such a row
+has no surface to reach, ever. Gating would freeze it: re-composed (a fresh BILLED call) every
+tick forever, with the 24h expiry sweep refusing it for the same missing fields. Closing bounded
+beats looping unbounded. The code comments state this conclusion instead of promising a phase.
 ### Live verification (agent-executable)
 - Prerequisites: local stack; `npm run seed:local`.
 - [ ] Seed a completed job with no cost event, run `runWatchers` live, read back the `nudges` row —

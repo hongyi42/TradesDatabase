@@ -2,7 +2,20 @@
 date: 2026-08-19
 task: Make the nudge ladder multi-kind, add a minimal cost store, and land cost-chasing as detector #2
 research: thoughts/shared/research/2026-08-19-nudge-pacing-planner-and-cost-detector.md
-status: draft
+status: complete
+completed: 2026-08-19
+phase5_evidence: >-
+  Live on the pilot 2026-08-19: job_cost_gap detected 17:55:37Z, composed 17:55:40Z,
+  delivered via s5 17:59:15Z (serve_count 1, attempts 0), resolved 'answered' 18:05:42Z
+  off one technician reply. money_events on the job = 0 (the accepted limit this plan
+  ships with). One fixture fired BOTH detectors, sending two messages 27s apart —
+  evidence for the carrier/rider batching in the pacing plan.
+followups: >-
+  PR #156 fixed two final-review findings (paid jobs invisible; corrected costs
+  suppressing the gap). Still open, deferred by design because they share one root
+  cause (hasActivitySince ignores the money ledger): a nudge stays open when the answer
+  is recorded as money, and job_cost_gap review items never auto-resolve. See
+  thoughts/shared/research/2026-08-19-nudge-money-answer-blindspot.md.
 ---
 
 ## Overview

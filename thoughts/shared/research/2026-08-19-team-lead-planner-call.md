@@ -2,200 +2,197 @@
 date: 2026-08-19
 branch: fix/cost-detector-paid-and-corrections (src/ + migrations byte-identical to origin/main)
 commit: 16f0778
-topic: "The team-lead planner call — where centralized inference would attach, and how much per-detector decision code exists today"
+topic: "The team-lead planner: centralizing the ladder's judgment as an inference layer with read tools"
 ---
 
 ## Summary
 
-The spine has a "team lead": an identity (`spine:team-lead`) that notices gaps in the firm's
-record and asks technicians about them through their own chat agents. **Today that identity makes
-exactly one model call, and it writes a sentence.** `src/teamLead/compose.ts:18-19` states it
-directly — *"the ONLY model call in the ladder"* — 462 tokens in, 66 out, `reasoningEffort:
-'none'`, roughly $0.0014. Every other decision the team lead appears to make is hard-coded:
-which gaps exist, who to ask, when to ask, when a gap counts as answered, when to escalate, and
-what to tell the manager.
+The spine has a "team lead": an identity (`spine:team-lead`) that notices gaps in a firm's record
+and asks technicians about them through their own chat agents. **Today it makes one model call,
+and that call writes a sentence.** `src/teamLead/compose.ts:18-19` says so — *"the ONLY model
+call in the ladder"* — 462 tokens in, 66 out, `reasoningEffort: 'none'`, ~$0.0014. Every other
+decision the team lead appears to make is hard-coded: which gaps exist, who to ask, when to ask,
+when a gap counts as answered, when to escalate, and what to tell the manager.
 
-This document maps that decision surface for a proposed change of shape: **one planner model call
-per firm per tick, over all open gaps at once**, replacing per-detector decision code with
-centralized inference. The organizing constraint (user, 2026-08-19): detectors are the team
-lead's *eyes* and will keep multiplying; the *decisions* they feed must not multiply in code with
-them. Guard rails stay coded.
+This document maps the code for a change of shape ratified in conversation 2026-08-19: replace
+the per-gap sentence-writer with a **planner** — an inference layer that sees all of a firm's open
+gaps at once, can read the spine for context, and decides pacing, grouping, wording, closure and
+escalation. Code keeps only what must never vary.
 
-The measured finding that bears on that: **adding detector #2 cost about 370 lines of production
-code**, of which roughly 110 are decision/copy code a planner could absorb and about 260 are the
-eye itself — detection SQL and closure predicates — which are facts, not judgments, and would
-remain.
+**The headline finding: this direction is half-built already.** The team-lead identity exists, its
+read-tool allowlist exists, and the deny-by-default dispatch gate enforcing it exists and is
+live. What is missing is not permission or tools — it is a **multi-turn loop**. All six of the
+spine's model call sites are one-shot forced-tool calls; `forcedTool.ts:7` describes the contract
+as *"ONE system prompt, ONE tool schema, a forced tool_choice, one user turn."* The spine has
+never made an agentic call.
 
-## Entry Points
+## Ratified decisions (user, 2026-08-19)
 
-- `src/jobs/lifecycle.ts:319` — cron calls `runWatchers(nowIso, watchersMode, {}, nudgeMode)`.
-- `src/jobs/lifecycle.ts:342` — `runTeamLeadCompose(nowIso)` in the SAME tick, gated at `:336`.
-- `src/teamLead/compose.ts:146` — `runTeamLeadCompose`, the sweep containing the only model call.
-- `src/teamLead/compose.ts:204-214` — the call itself: `runForcedTool(spec.compose.tool, {...})`.
-- `src/model/forcedTool.ts:336` — `runForcedTool(tool, req, ctx)`, returns a schema-coerced object.
-- `src/jobs/nudgeKinds.ts:83-106` — `NudgeKindSpec`, the per-detector contract.
+- **Detectors are eyes and will multiply; the decisions they feed must not multiply in code.**
+  This is the organizing constraint. Measured: detector #2 cost ~370 lines of production code.
+- **The planner gets read tools.** Rationale: *"as the team lead that lives inside the spine,
+  organizing communication between the team, it should be able to traverse the entire spine for
+  context to make the best decisions."* Cost is acknowledged as a separate, still-open question.
+- **The planner decides closure**, tuned by prompt engineering: not answered → escalate; answered
+  with a proper figure → close; still unanswered after escalation → close. Escalate-then-close is
+  also the planner's call, not a code rule.
+- **Closure's irreversibility is accepted.** Once-ever dedup means the *nudge* cannot be re-asked,
+  but the job's artifacts remain amendable — a manager can still record the fact, a later note
+  can still land. A wrong close costs this ask, not the information.
+- **The planner may flag low-confidence gaps** rather than deciding blindly.
+- **Per-gap judgment on multi-gap jobs**: the planner decides which of a job's gaps a given reply
+  answered and which still need pursuing. An immediate follow-up question is out of scope.
+- **We do not encode best practices.** *"It genuinely depends on the context of the job and the
+  firm… most of the judgement calls are genuinely not black and white."* Prompt engineering is
+  therefore the intended tuning surface, not a workaround.
+- **Direction, out of scope here:** the planner should learn how a firm operates, and read job and
+  customer context to support its decisions.
 
-## Key Files
+## What already exists for this direction
 
-| path | role in the decision surface |
-|---|---|
-| `src/jobs/nudgeKinds.ts` | the per-detector contract: brake, `filled`, `moot`, `handoff`, `compose` |
-| `src/teamLead/compose.ts` | the ask window, the one model call, the manager-handoff doctrine |
-| `src/teamLead/composeCopy.ts` | per-kind prompts + message assembly (the copy burden) |
-| `src/jobs/watchers.ts` | detection passes, the sweep, escalation, rate brakes |
-| `src/model/forcedTool.ts` | the structured-output seam any planner call would use |
-| `src/control/nudgeQueue.ts` | host-scoped serve; one delivery item per row |
-
-## Data Flows
-
-### Where decisions are made today
-
-```
-runWatchers (per tenant)
- ├─ WHICH gaps exist ............ code   (SQL per detector)
- ├─ WHO to ask .................. code   (assignment's technician; reachability test)
- ├─ HOW MANY this tick .......... code   (spec.maxNewPerTenantTick + tenant ceiling 5)
- ├─ IS IT ANSWERED .............. code   (spec.filled over SweepFacts)
- ├─ IS IT MOOT .................. code   (spec.moot)
- ├─ ESCALATE? ................... code   (asked_at + 48h)
- └─ GIVE UP? .................... code   (created_at + 24h)
-
-runTeamLeadCompose (per tenant)
- ├─ MAY WE ASK NOW .............. code   (7am–7pm firm-local)
- ├─ WHAT TO SAY ................. MODEL  ◀── the only inference in the ladder
- └─ SHOULD WE ASK AT ALL ........ MODEL  ◀── the `ask:false` decline path
-```
-
-### Where a planner call would attach
-
-The seam between the two sweeps is the only point where all of a firm's open gaps are
-simultaneously visible and none has been acted on yet. `runWatchers` has just created `pending`
-rows; `runTeamLeadCompose` is about to compose every one of them.
-
-```
-runWatchers ──▶ pending rows (N gaps, all kinds)
-                      │
-                      ▼
-              [ PLANNER CALL — one per tenant per tick ]
-                 in : the open gaps + facts already fetched
-                 out: for each gap — send now / hold until / group with
-                      │
-                      ▼
-              code enforces the rails, then compose + deliver
-```
-
-`SweepFacts` (`nudgeKinds.ts:39-49`) is already assembled once per tenant per tick and already
-carries activity, visit status, job status and the timezone closure — so a planner's input is
-largely fetched today for other reasons.
-
-## External Dependencies
-
-- `runForcedTool` → OpenAI-compatible path, default `accounts/fireworks/routers/glm-5p2-fast`
-  (`forcedTool.ts:55`), or the Anthropic path when `MODEL_PROVIDER` says so. Output is coerced
-  against the tool's `inputSchema` (`forcedTool.ts:351`), and every call is billed through one
-  site (`recordModelUsage`, `:350`).
-- `reasoningEffort: 'none'` collapses GLM-5.2's default thinking to ~7 tokens (probed 2026-08-04,
-  documented at `forcedTool.ts:42-51`). All four spine model calls currently set it.
-
-## Constraints and Invariants
-
-1. **The only model call today is deliberately trivial.** `compose.ts:18-26` — the model sees
-   NOTHING but code-built context (fabrication guard), writes one sentence, and code assembles
-   the delivered message around it.
-2. **`ask:false` already exists as a model judgment.** `compose.ts:215-234` — the model may
-   decline to ask. A decline is treated as a judgment about *asking*, not about the gap: the
-   manager still gets it.
-3. **`SweepFacts` are pure facts, pre-fetched once per tenant per tick** (`nudgeKinds.ts:24-27`).
-   A spec receives facts, never a DB client — deliberately, so a spec cannot turn the batched
-   read into N queries.
-4. **The ask window gates compose, not detection** (`compose.ts:40-52`). Out-of-window rows stay
-   `pending`, untouched.
-5. **Rate brakes are per detector and per tenant** — `spec.maxNewPerTenantTick`
-   (`nudgeKinds.ts:90`, visit 5 / cost 3) inside `MAX_NEW_ITEMS_PER_TENANT_TICK = 5`
-   (`watchers.ts:95`, enforced `:668` and `:767`).
-6. **The orphan doctrine** (`compose.ts:68-75`, `watchers.ts:528-570`): any path that kills a
-   nudge before the ask lands must hand the gap to the manager FIRST, because once-ever dedup
-   blocks a second nudge.
-7. **Escalation is per row, from its own `asked_at`** (`watchers.ts:503-507`).
-8. **`nudges` has no grouping column** and `completeNudgeDelivery` moves exactly one row per
-   delivery report.
-9. **Dedup is `(tenant_id, kind, subject_ref)`, forever** (`nudges.sql:56`).
-
-## The per-detector burden, measured
-
-Detector #2 (`job_cost_gap`), landed in PR #155 + #156:
-
-| file | lines | category |
+| piece | where | state |
 |---|---|---|
-| `watchers.ts:738-825` — detection pass | 88 | eye |
-| `db/jobs.ts` — `listCostGapCandidates` | ~67 | eye |
-| `db/moneyEvents.ts` — `listJobIdsWithCostEvents` | ~60 | eye |
-| `nudgeKinds.ts:231-302` — the spec | 72 | mixed: `filled`/`moot` are facts; brake + handoff copy are decisions |
-| `composeCopy.ts:148-234` — prompts + assembly | 87 | decision/copy |
-| **total production code** | **~370** | |
+| the identity | `src/teamLead/identity.ts:7` — `spine:team-lead` | live; reserved namespace, cannot collide with a roster row |
+| its read-tool allowlist | `identity.ts:15-19` — `query_spine`, `get_customer_context`, `resolve_date` | live |
+| the enforcement gate | `src/mcp/server.ts:1920` | live, **deny-by-default** across the whole `spine:` namespace |
+| the tool bodies | `server.ts:1864` `dispatch(name, args, deps)` | exists, module-private |
+| structured output + billing | `src/model/forcedTool.ts:336`, `:350` | live, one billing site |
 
-Plus tests: PR #155 added 397 lines to `watchers.test.ts` alone.
+The gate's comment (`server.ts:1912-1919`) states the doctrine: there is no human behind a
+`spine:` identity to confirm anything, so nothing irreversible or externally visible may dispatch
+for it — *"this gate is the mechanism, the prompt is merely steering."* `tools/list` is
+deliberately untouched; discovery is cosmetic, dispatch is the gate.
 
-Splitting by the facts/judgment line:
+`identity.ts:9` records that "stage" verbs were deliberately left as a future, separate decision.
 
-- **~260 lines are the eye** — the detection query, the freshness filters, and the `filled`/`moot`
-  predicates. These answer questions with right answers.
-- **~110 lines are decision/copy** — the compose system prompt, the forced-tool spec, `prepare`,
-  the message assembly, the per-kind brake, and the handoff suggestion wording.
+## What is missing
 
-No urgency or batching code exists for either detector, so the future category the user names —
-per-detector pacing decisions — currently measures zero and would grow from here.
+1. **A multi-turn loop.** No spine call site loops. The six are `classifyCall.ts:103`,
+   `answerQuestion.ts:56`, `briefCustomer.ts:69`, `email/classify.ts:50`, `writePath/extract.ts:85`
+   and `compose.ts:204` — all one-shot, `messages: [{ role: 'user', … }]` with a forced
+   `tool_choice` (`forcedTool.ts:206-207,278`).
+2. **An in-process entry to the tool bodies.** `dispatch` is not exported.
+3. **Per-turn cost accounting.** `recordModelUsage` fires once inside `runForcedTool`; a loop
+   needs it per turn, plus a turn cap and a wall-clock budget.
+4. **Deadline columns.** `nudges` has no `not_before` / `escalate_after`, and no grouping column.
+5. **A consumer for a confidence flag.** Nothing reads such a field today.
+
+## The sweep, split by facts and judgment
+
+The sweep (`watchers.ts:488-522`) currently makes four decisions. They are not the same kind:
+
+| decision | today | under the planner |
+|---|---|---|
+| did anything land on this job? | `hasActivitySince`, a map lookup | **stays code** — nominates candidates |
+| does what landed *answer* what we asked? | does not exist; conflated with the above | **planner** |
+| is the subject cancelled/completed? | `spec.moot`, a status check | mostly fact; per-kind status lists would multiply |
+| how long before escalating? | `NUDGE_ESCALATE_HOURS = 48`, a constant | **planner**, written per row |
+| never delivered in 24h? | `NUDGE_DELIVERY_DEADLINE_HOURS` | **stays code** — failure detection, not judgment |
+
+The conflation in row two is the root of two known defects: a cost nudge closes on *any* activity
+after `asked_at` (an unrelated scheduling note closes it), and the activity map is built from
+`raw_captures` + `visits` only, so a money-recorded answer cannot close anything
+(`2026-08-19-nudge-money-answer-blindspot.md`). Adjudicating "was this answered?" as a judgment
+over evidence dissolves both rather than patching each.
+
+### Deadlines, not constants
+
+The proposed shape keeps the 5-minute sweep cheap and deterministic while making its thresholds
+per-row:
+
+```
+ SWEEP — every 5 min ────────────────────────────────────── CODE
+   evidence landed?           → candidate for adjudication
+   past its own escalate_after? → hand to the manager
+   past its own not_before?     → eligible to send
+   24h and never delivered?     → broken pipe, give up
+
+ PLANNER — coarser cadence ───────────────────────────────── INFERENCE
+   which open asks are answered, and by what evidence
+   when to ask the unasked      → writes not_before
+   how long to wait on each     → writes escalate_after
+   which ride together, and the wording
+```
+
+`48h` becomes the **default** a row carries when the planner has not said otherwise, so the system
+degrades safely: if the planner never runs again, every open nudge still escalates on its stored
+deadline instead of hanging. Note the trigger condition changes — compose fires today only when
+`pending` rows exist; a planner that owns escalation must run whenever nudges are **open**.
+
+## Failure scenarios for planner-decided closure
+
+Ranked by likelihood, each observed on the pilot or directly implied by code read here.
+
+1. **Stale evidence read as fresh.** A completed job almost always already has a note — usually
+   the note that completed it. This is exactly why `JOB_COST_GAP_SPEC.filled` bounds on `asked_at`
+   and not the visit (`nudgeKinds.ts:238-244`). Near-certain if the planner's evidence window is
+   not bounded in code.
+2. **Partial answers on multi-gap jobs.** The open specimen: *"The visit went well. The customer
+   paid 500 on the spot."* — answers the visit gap, says nothing about what the job cost the firm.
+3. **Non-committal replies.** *"Yeah, I'll check."* A model eager to be helpful reads engagement
+   as an answer.
+4. **Wrong gap on a multi-visit job.** A 3-visit job with nothing recorded yields 3 visit nudges +
+   1 cost nudge; a note about visit 1 can close the gap for visit 3.
+5. **Adjacent activity that is not a reply.** A scheduling note lands on the job. The code has this
+   bug today, so the planner inherits rather than introduces it.
+
+### Mitigations, mostly code-side
+
+- **Bound the evidence window in code** — the planner sees only what landed after `asked_at`.
+  Removes #1 structurally.
+- **Pass attribution.** Each nudge delivers into a session named `nudge-<id>`
+  (`nudgeQueue.ts:~105`), so a reply arriving through that session is directly attributable to the
+  ask. This signal exists today and is discarded. Blunts #4 and #5.
+- **Cite or don't close.** To mark a gap answered the planner must quote the evidence that answers
+  it — the `assert-only-cited` doctrine already ratified for money reads. Makes #3 hard.
+- **Ambiguity defaults to open.** A false-open is loud and cheap (one more ask, or an escalation a
+  manager dismisses); a false-close is quiet. The `precision over recall` posture already ratified
+  for money inference applies unchanged.
+
+## Prerequisite this design forces
+
+`job_cost_gap` review items **never auto-resolve**: the open-item sweep reads
+`findOpenGaps(tenantId, 'overdue_visit_gap')` only (`watchers.ts:287`), and the any-status
+backstop index is partial — `where kind = 'overdue_visit_gap'` (`nudges.sql:76-78`). Under
+escalate-then-close, the manager's queue is where a gap comes to rest, so it must be able to
+drain. This was previously deferred as review finding #3; the ratified design makes it a
+prerequisite, not a follow-up.
 
 ## Decision Points
 
-1. **Does the planner replace compose, or precede it?**
-   - *Precede:* planner decides timing/grouping; each kind keeps its own `ComposeBlock` and writes
-     its own sentence. Two model calls per gap-ish. The ~87 lines of per-kind copy stay, and every
-     new eye writes a new prompt.
-   - *Replace:* the planner also writes the outgoing message, so `ComposeBlock` leaves
-     `NudgeKindSpec` entirely and per-kind prompts disappear. One call. The four review rounds of
-     copy doctrine currently encoded in `COMPOSE_SYSTEM` / `COST_COMPOSE_SYSTEM` would have to be
-     re-expressed once, centrally, and the fabrication guard (`compose.ts:22`) would need to hold
-     over a larger, multi-gap context.
-
-2. **What the planner is allowed to decide.** Today's rails are code: ask window, 48h escalation,
-   24h delivery deadline, once-ever dedup, per-tenant/per-detector brakes, orphan doctrine.
-   Options range from "planner proposes, code vetoes each rail" to "planner sees only gaps the
-   rails already cleared."
-
-3. **What the planner's decision is recorded as.** `nudges` has `context jsonb`, `resolution`,
-   and timestamps, but no field for "held until X because Y" and no grouping column. Options: a
-   new column pair, a key inside `context`, or nothing persisted (decision recomputed per tick).
-
-4. **Per-tenant-per-tick versus per-firm-per-day.** The seam runs every 5 minutes. A planner call
-   at that cadence is 288 calls/tenant/day even when nothing changed; the ask window narrows it to
-   ~144. Alternatives: call only when the open-gap set changed, or on a coarser cadence with the
-   tick handling only rail enforcement.
-
-5. **Whether `maxNewPerTenantTick` survives.** It is a per-detector constant that exists as the
-   runaway backstop after the per-person cap was removed. If the planner decides volume, the
-   constant becomes either dead or a hard ceiling the planner cannot exceed.
-
-6. **What happens when the planner call fails.** Compose's failure path is per-row with an attempt
-   cap and a manager handoff. A planner failure is per-tenant and affects every gap that tick —
-   there is no existing precedent in this module for a whole-tenant model failure.
-
-7. **Whether the model can do it.** Unmeasured. The existing call is a one-sentence task at
-   `reasoningEffort: 'none'`; reasoning over N gaps and returning a defensible send plan is a
-   different class of task. The repo has two eval harnesses (`scripts/date-eval/`,
-   `scripts/spine-eval/`) built for exactly this kind of question.
+1. **Loop shape.** Build a general multi-turn runner beside `runForcedTool`, or a purpose-built
+   planner loop. The first is reusable by the other five call sites; the second is smaller.
+2. **How the loop reaches tools.** Export `dispatch` for in-process calls (no HTTP, no MCP
+   framing, but couples the planner to the server module), or speak MCP to the spine's own server
+   (clean boundary, more moving parts). Note `dispatch` requires an `identity` and performs a
+   roster read per call — `spine:team-lead` is not a roster row, so that path's behaviour for a
+   `spine:` identity needs confirming before either option is costed.
+3. **Cadence and budget.** Every 5 minutes is ~144 calls/tenant/day inside the ask window; hourly
+   is ~12. With read tools each call is now several turns. This is the open cost question the user
+   named, and it is unmeasured.
+4. **What consumes a low-confidence flag** — a manager review item, a softer question, or a hold
+   for the next pass.
+5. **Whether the planner writes the message or only the question sentence.** Code currently owns
+   the evidence line (bare date, no weekday — the weekday-guard property, `compose.ts:23-24`), the
+   served time phrase (`relativeDayPhrase`), and the footer. Per-kind guidance could become a
+   short data string on each spec instead of a full prompt (~3 lines per eye instead of ~87).
+6. **Whether `maxNewPerTenantTick` survives** as a hard ceiling the planner cannot exceed, or dies
+   with the pacing constants.
+7. **Whole-tenant failure handling.** Compose fails per row with an attempt cap and a manager
+   handoff. A planner failure affects every gap in that tenant's tick; no precedent exists.
 
 ## Open Questions
 
-- **What does the planner see about each gap?** The nudge `context` is written per detector and
-  its shape differs by kind (`readComposeContext` vs `readCostComposeContext`). A planner over
-  mixed kinds needs either a common projection or tolerance for heterogeneous blobs.
-- **Does one delivery carry a grouped message?** The box runner script
-  (`/usr/local/sbin/nudge-runner.sh`) was not read here; whether it can render one message per
-  several nudge ids is unknown.
+- **Does `dispatch` work at all for a `spine:` identity today?** The namespace gate at `:1920` runs
+  after a roster read (`server.ts:1875-1876` comment). Whether the read tolerates a non-roster ref
+  was not traced.
+- **Can GLM-5.2 plan reliably at `reasoningEffort: 'none'`?** Every spine call sets it. A planning
+  task over N gaps with tool calls is a different class of work, and the repo has a counter-data
+  point: thinking effort bought no accuracy on dates at ~8× tokens.
+- **What is the token cost with read tools?** Unmeasured, and it now scales with what the planner
+  chooses to read, not just the gap count.
+- **Does a grouped message survive delivery?** The box runner (`/usr/local/sbin/nudge-runner.sh`)
+  was not read; Stage 1's history includes a delivery bug that appeared only with a real
+  multi-line payload.
 - **How does a grouped message's footer work?** `assembleNudgeMessage` (`composeCopy.ts:130-146`)
-  names one technician and one job and instructs `record_field_note` **for this job**, singular.
-- **Is `reasoningEffort: 'none'` viable for a planner?** Every current spine call sets it; a
-  planning task may need more, which changes both latency and cost.
-- **What is the cost at fleet scale?** One compose call measured 462 in / 66 out ≈ $0.0014. A
-  planner's input grows with the open-gap count; no measurement exists.
+  names one technician and one job and says `record_field_note` **for this job**, singular.

@@ -422,4 +422,36 @@ describe('listJobIdsWithCostEvents — the cost detector\'s "already recorded" f
     await appendMoneyEvent({ tenantId, jobId, kind: 'material_cost', amountCents: 200 });
     expect(await listJobIdsWithCostEvents(tenantId, [jobId])).toEqual([jobId]);
   });
+
+  test('a CORRECTED cost does not count — fixing a typo must not gag the detector', async () => {
+    // REGRESSION (final-review finding): this probe used to select raw
+    // kind='material_cost' rows, so a cancelled cost still read as "recorded".
+    // Costs are never edited — a mistake is cancelled by a NEW row pointing at
+    // it — so a manager fixing a typo permanently suppressed the gap: the
+    // nudge's subject_ref is the JOB and uq_nudges_subject_ever is any-status,
+    // meaning the job could never be asked again. Doing the right thing buried
+    // it. summarizeMoney already folds this correctly; now the probe agrees.
+    const { jobId } = await freshJob();
+    const bad = await appendMoneyEvent({
+      tenantId, jobId, kind: 'material_cost', amountCents: 40_000, // meant 400
+    });
+    await appendMoneyEvent({
+      tenantId, jobId, kind: 'correction', correctsEventId: bad.id,
+    });
+    // the fold agrees there is no cost left…
+    expect(summarizeMoney(await listMoneyEventsForJob(tenantId, jobId)).materialCostCents).toBe(0);
+    // …so the detector must still consider this job un-costed.
+    expect(await listJobIdsWithCostEvents(tenantId, [jobId])).toEqual([]);
+  });
+
+  test('one live cost among corrected ones still counts', async () => {
+    // The inverse guard: "some cancelled" must not be read as "all cancelled".
+    const { jobId } = await freshJob();
+    const bad = await appendMoneyEvent({
+      tenantId, jobId, kind: 'material_cost', amountCents: 40_000,
+    });
+    await appendMoneyEvent({ tenantId, jobId, kind: 'correction', correctsEventId: bad.id });
+    await appendMoneyEvent({ tenantId, jobId, kind: 'material_cost', amountCents: 400 });
+    expect(await listJobIdsWithCostEvents(tenantId, [jobId])).toEqual([jobId]);
+  });
 });

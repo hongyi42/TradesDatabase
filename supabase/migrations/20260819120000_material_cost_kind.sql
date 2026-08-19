@@ -1,0 +1,27 @@
+-- Cost enters the money ledger as a KIND (plan 2026-08-19, Phase 3), not a
+-- separate table. Standing user constraint 2026-08-19: business analytics must
+-- stay possible, so money's structure is load-bearing — a cost row must carry
+-- the same not-null job FK, the same joined view, the same job-keyed accessors
+-- and the same negation semantics as revenue. A separate table would re-earn
+-- all four, and the first analytics query joining them is where someone gets
+-- it wrong (docs/engineering-memory.md §5).
+--
+-- Safe by construction, not by promise: summarizeMoney sums PER KIND
+-- (src/db/moneyEvents.ts), so a kind the fold has never heard of contributes to
+-- nothing — balance due, quoted, invoiced, paid and the invoice_issued-gated
+-- status walk are all structurally blind to it.
+--
+-- 'material_cost' records what the job COST the firm in parts/materials. It is
+-- NOT margin: there is no labour rate yet, so nothing here answers "did this
+-- job make money". Name chosen deliberately over 'job_cost', which collides
+-- with cost_events — our own VENDOR API SPEND, an unrelated table.
+--
+-- PERMANENT: Postgres cannot remove an enum value.
+--
+-- Alone in this file on purpose: a new enum value cannot be USED in the
+-- transaction that adds it ("since then it can, but the new value cannot be
+-- used until after the transaction commits" —
+-- https://www.postgresql.org/docs/current/sql-altertype.html, Notes), and each
+-- migration file runs in its own transaction. Dependent DDL goes in a
+-- companion file (the promise_level precedent, 20260723090000).
+alter type money_event_kind add value if not exists 'material_cost';

@@ -296,7 +296,10 @@ const TOOLS = [
       'recentVisits is past work evidence, not the schedule. When the result carries an ' +
       'openWorkNote, the customer has work with NO visit booked: "next opening / availability / ' +
       'earliest you could come" questions are about THAT work — answer them with ' +
-      'find_slots(jobId), never from upcomingVisits.',
+      'find_slots(jobId), never from upcomingVisits. moneyByJob is the money position per job; ' +
+      'within it, materialCostCents is what that job COST the firm in parts/materials — never ' +
+      'add it to invoiced/paid/balance due, and never call revenue minus it "margin" or ' +
+      '"profit" (it carries no labour).',
     inputSchema: {
       type: 'object',
       properties: { customerId: { type: 'string' } },
@@ -305,7 +308,10 @@ const TOOLS = [
   },
   {
     name: 'get_job',
-    description: 'Fetch one job by id.',
+    description:
+      'Fetch one job by id. If a money summary comes back, materialCostCents is what the job ' +
+      'COST the firm in parts/materials — never add it to invoiced/paid/balance due, and never ' +
+      'call revenue minus it "margin" or "profit" (there is no labour rate in it).',
     inputSchema: {
       type: 'object',
       properties: { jobId: { type: 'string' } },
@@ -1092,7 +1098,11 @@ const ADMIN_TOOLS = [
       'ledger, one row per money fact (invoice_issued, payment_received, …), amounts in CENTS; ' +
       'a correction/invoice_voided row CANCELS the row its corrects_event_id points at, so ' +
       'exclude both sides of a cancelled pair when summing (or prefer the money summary that ' +
-      'get_job already returns — it folds this for you); ' +
+      'get_job already returns — it folds this for you). DIRECTION COMES FROM kind, NEVER from ' +
+      'the sign: every amount_cents is positive, so summing across kinds is meaningless — ' +
+      "'material_cost' is what the job COST the firm (parts/materials), NOT money the customer " +
+      'owes, and adding it to invoices or payments produces a number that means nothing. Always ' +
+      'filter by the kinds you actually want, and group by currency; ' +
       'v_firm_profile(display_name, legal_name, address_line1, address_line2, city, state, ' +
       'postal_code, phone, email, license_numbers, disclosure_footer, updated_at) — the ' +
       "firm's own letterhead identity, one row at most (set_firm_profile edits it). " +
@@ -1369,10 +1379,16 @@ const ADMIN_TOOLS = [
     description:
       "Record one money FACT on a job's ledger (manager only): a fee charged, an estimate " +
       'presented/approved/declined, a change order, an invoice issued, a payment ' +
-      'received/refunded, a credit, a write-off, or a correction/void of an earlier entry. ' +
+      'received/refunded, a credit, a write-off, a material cost, or a correction/void of an ' +
+      "earlier entry. 'material_cost' is the ONE cost kind: what the job COST the firm in " +
+      'parts/materials. It never affects balance due and never moves job status — recording it ' +
+      'is bookkeeping for the firm, not something the customer owes. It is also not a profit ' +
+      'figure: there is no labour rate, so revenue minus this is NOT margin. ' +
       'ONE call — it commits immediately and replies with the updated money summary ' +
-      '(quoted / invoiced / paid / balance due) and any job-status change; ALWAYS relay ' +
-      'those back to the manager. Amounts are IN CENTS ($450 = 45000) and always positive — ' +
+      '(quoted / invoiced / paid / balance due, plus materialCost) and any job-status change; ' +
+      'ALWAYS relay those back to the manager — but report the number that actually MOVED: ' +
+      'recording a material cost does not change balance due, and saying it did is misleading. ' +
+      'Amounts are IN CENTS ($450 = 45000) and always positive — ' +
       'the kind carries the direction. Mistakes are never edited, they are cancelled WHOLE by ' +
       "a NEW entry: kind 'correction' (with correctsEventId) cancels any entry; " +
       "'invoice_voided' (with correctsEventId) cancels an invoice AND walks the job status " +
@@ -5296,7 +5312,9 @@ async function dispatch(
         ...(statusMove ? { jobStatusChange: statusMove } : {}),
         ...(statusSyncWarning ? { statusSyncWarning } : {}),
         note:
-          'One-shot: recorded. Tell the manager what was recorded, the new balance due, and ' +
+          'One-shot: recorded. Tell the manager what was recorded, the number that MOVED ' +
+          '(balance due for a receivable; the cost total for a material cost — a cost never ' +
+          'changes balance due), and ' +
           `any status change. A wrong ENTRY is cancelled whole with kind 'correction' (or ` +
           `'invoice_voided' for an invoice) citing eventId ${event.id} — a partial adjustment ` +
           'is cancel-then-re-enter. A mistaken void/correction is fixed by RE-ISSUING the ' +

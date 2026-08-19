@@ -6,6 +6,7 @@ import { ALLOWED_TRANSITIONS, createJob, getJob, type JobStatus } from './jobs.j
 import { isUniqueViolation } from './rawCaptures.js';
 import {
   appendMoneyEvent,
+  technicianMoneyView,
   deriveStatusTarget,
   listMoneyEventsForJob,
   summarizeMoney,
@@ -302,6 +303,90 @@ describe('money_events — append, validation, DB guards', () => {
       tenantId, jobId, kind: 'invoice_issued', amountCents: 25_000, detail: { progress: true },
     });
     expect(await syncJobStatusForMoney(tenantId, jobId)).toBeNull();
+    expect((await getJob(jobId))?.status).toBe('open');
+  });
+});
+
+describe('material_cost — a COST kind is inert in every revenue number (plan 2026-08-19 Phase 3)', () => {
+  // The whole safety argument for putting cost in the revenue ledger is that
+  // the fold sums PER KIND, so a new kind contributes to nothing that exists.
+  // That is structural, but it is load-bearing for the analytics direction, so
+  // prove it rather than trust it.
+  const revenue = (): MoneyEvent[] => [
+    mk('estimate_approved', 42000),
+    mk('invoice_issued', 50900),
+    mk('payment_received', 30000),
+    mk('credit_applied', 900),
+    mk('write_off', 100),
+  ];
+
+  test('every existing number is byte-identical with and without a cost row', () => {
+    const before = summarizeMoney(revenue());
+    const withCost = revenue();
+    withCost.push(mk('material_cost', 4000), mk('material_cost', 1500));
+    const after = summarizeMoney(withCost);
+
+    // Every revenue/AR number, named explicitly — a new summary field must not
+    // be able to shift any of them.
+    const revenueFields = (m: typeof before) => ({
+      quotedCents: m.quotedCents,
+      invoicedCents: m.invoicedCents,
+      paidCents: m.paidCents,
+      creditsCents: m.creditsCents,
+      writtenOffCents: m.writtenOffCents,
+      balanceDueCents: m.balanceDueCents,
+      hasProgressInvoice: m.hasProgressInvoice,
+    });
+    expect(revenueFields(after)).toEqual(revenueFields(before));
+    expect(before.materialCostCents).toBe(0);
+    expect(after.materialCostCents).toBe(5500);
+    // Cost is NOT receivable — the customer does not owe it.
+    expect(after.balanceDueCents).toBe(before.balanceDueCents);
+  });
+
+  test('a cost row can never advance or walk back job status', () => {
+    // deriveStatusTarget gates on invoice_issued only; a cost-only ledger must
+    // have NO opinion, and adding cost must not change an existing opinion.
+    expect(target('open', [mk('material_cost', 9900)])).toBeNull();
+    const ev = revenue();
+    const withoutCost = target('open', ev);
+    const withCost = target('open', [...ev, mk('material_cost', 9900)]);
+    expect(withCost).toBe(withoutCost);
+  });
+
+  test('correction negates a cost row out of the cost total — for free', () => {
+    // negatedIds/live are kind-agnostic, so correction semantics come free for
+    // any new kind. Prove it, and prove the correction does not leak into AR.
+    const cost = mk('material_cost', 4000);
+    const ev = [...revenue(), cost, mk('correction', null, { corrects_event_id: cost.id })];
+    const s = summarizeMoney(ev);
+    expect(s.materialCostCents).toBe(0);
+    expect(s.balanceDueCents).toBe(summarizeMoney(revenue()).balanceDueCents);
+  });
+
+  test('technicianMoneyView still withholds cost — it is manager-only', () => {
+    // The tier boundary has ONE definition; a new summary field must not widen
+    // it by accident (technicians are ASKED about cost, but never shown it).
+    const s = summarizeMoney([...revenue(), mk('material_cost', 4000)]);
+    expect(technicianMoneyView(s)).toEqual({
+      balanceDueCents: s.balanceDueCents,
+      invoicedCents: s.invoicedCents,
+    });
+  });
+
+  test('material_cost is a real enum value the DB accepts (and stays non-negative)', async () => {
+    const { jobId } = await freshJob();
+    const ev = await appendMoneyEvent({
+      tenantId,
+      jobId,
+      kind: 'material_cost',
+      amountCents: 4000,
+    });
+    expect(ev?.kind).toBe('material_cost');
+    await expect(
+      appendMoneyEvent({ tenantId, jobId, kind: 'material_cost', amountCents: -1 }),
+    ).rejects.toThrow();
+    // And it does not move the job off its status.
     expect((await getJob(jobId))?.status).toBe('open');
   });
 });

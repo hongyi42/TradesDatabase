@@ -262,19 +262,38 @@ Adds `material_cost` and proves it is inert everywhere revenue is computed.
   mistaken for revenue or margin (review finding 14).
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm run build` pass
-- [ ] `npm test` passes
-- [ ] new test: appending `material_cost` leaves `invoiced`, `paid`, `balanceDue`, `quoted` byte-identical and populates `materialCostCents`
-- [ ] new test: `deriveStatusTarget` returns the same target with and without a cost event
-- [ ] new test: `correction` targeting a `material_cost` row negates it out of `materialCostCents`
-- [ ] new test: `technicianMoneyView` output is unchanged by a cost event
-- [ ] `npx supabase db reset` applies the migration cleanly on a fresh local stack
+- [x] `npm run typecheck`, `npm run lint`, `npm run build` pass
+- [x] `npm test` passes — 1795 → 1800
+- [x] new test: appending `material_cost` leaves every revenue/AR field byte-identical and populates `materialCostCents`
+- [x] new test: `deriveStatusTarget` returns the same target with and without a cost event
+- [x] new test: `correction` targeting a `material_cost` row negates it out of `materialCostCents`
+- [x] new test: `technicianMoneyView` output is unchanged by a cost event
+- [x] new test: the DB accepts the kind and still rejects a negative amount
+- [x] `npx supabase db reset` applies the migration cleanly on a fresh local stack
+- [x] `database.types.ts` regenerated from the LOCAL stack; re-generating into scratch and diffing proved it byte-identical, so there is zero schema drift
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack only. **Never the hosted "test" project — that is the pilot's live
   database**, and `money_events` is append-only, so a stray row is permanent.
-- [ ] Record a `material_cost` locally via the MCP tool path; read back through `v_money_events`
-      and capture the row plus the unchanged balance.
+- [x] Recorded a `material_cost` through the real write path (`appendMoneyEvent` +
+      `syncJobStatusForMoney`, what the tool handler does) on a job carrying a live revenue chain.
+      Cost **78450 deliberately exceeded the 65000 balance due**, so a leak into paid/credits would
+      have flipped the job `invoiced → paid`. It did not. Cross-channel psql read-back confirmed
+      the row, and the `jobs` row's `updated_at` PREDATES every cost row — zero writes to `jobs`,
+      not a write that landed on the same value. `v_money_events` under the tenant GUC returned the
+      cost row with `job_title` + `customer_name` attached (money and the job record readable
+      together); a different tenant GUC returned 0 rows. A second cost accumulated correctly, a
+      `correction` negated one for free, and the append-only trigger rejected UPDATE and DELETE.
+
+### ⚠️ Owed at rollout (not this phase, but created by it)
+`MONEY_EVENT_KINDS` feeds `record_money_event`'s `kind` enum directly (`server.ts:1403`), so the
+moment this code deploys the kind is offerable to managers. **If the pilot has not had the
+migration applied, the insert passes app validation and fails at the DB (22P02).** Standing rule
+(`docs/engineering-memory.md`): land the migration on the pilot in the SAME change window as the
+merge, never at rollout time — MCP `apply_migration` then `notify pgrst, 'reload schema'`.
+Separately, the three description edits reach agents only after a **gateway restart per tier**
+(`tools/list` is cached per process): `get_job` is in the shared `TOOLS`, while `query_spine` and
+`record_money_event` are `ADMIN_TOOLS` — so both tiers need it.
 
 ### Manual verification
 - none

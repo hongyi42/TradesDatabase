@@ -4,7 +4,7 @@ rebased: 2026-08-16 — onto landed Feature A (PR #147, a0a9fd0), per the plan-t
 task: "Feature B — Intelligent spine Stage 1 (the voice): team-leader outreach through the person's own agent, capped identity class, server-side nudge budget/dedup/escalation"
 research: thoughts/shared/research/2026-08-15-feature-B-intelligent-spine-stage-1-team-leader-voice.md
 approved: 2026-08-16 — decision brief ratified by the user with one amendment (no firm-wide budget cap)
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -532,6 +532,21 @@ its URL from the existing `PULL_URL` — no new env, no new secret.
 ---
 *No manual items — continue.*
 
+## Closed 2026-08-19 — what is open anyway
+
+Stage 1 is live on the pilot and proven end to end in production. Three things outlive this plan;
+none blocks the feature, and each is recorded where the next person will trip over it:
+
+1. **Tone of the FIXED delivered copy is unread on a phone.** PR #151 is deployed; the next real
+   gap is its test. This is the only Phase-5 checkbox closing unchecked.
+2. **The per-person nudge budget is dead code.** `NUDGE_BUDGET_PER_PERSON_DAY = 2` still enforces
+   a cap the user removed on 2026-08-18. Removal PR owed; see [[nudge-pacing-by-urgency]].
+3. **Batching and urgency tiers are undesigned.** The replacement for the cap (earn the ask /
+   urgency sets latency / batch the unimportant) needs a PLANNER between watcher and compose —
+   compose is per-gap by construction and cannot see across gaps. D6's finding matters here: the
+   gateway's chat-context block is *selected*, not complete, so a terse answer to a batched ask
+   resolves per-subject through the database rather than conversationally.
+
 ## Phase 5: Rollout, live E2E, disclosure docs
 
 ### What this phase does
@@ -563,16 +578,27 @@ resolve the D6 open question, ship the ratified disclosure.
   component, NUDGES_MODE, D4/D5 decisions).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` / `npm run build` pass (pre-PR gate)
+- [x] `npm run typecheck` / `npm run lint` / `npm test` / `npm run build` pass (pre-PR gate)
 
 ### Live verification (agent-executable)
 - Prerequisites: ssh trades-box-1; Supabase MCP (pilot); a synthetic overdue visit under the
   demo tenant with a DEV seat as technician — target an operator-owned chat (e.g.
   s2/manager-sam), NEVER a real technician's.
-- [ ] full loop: nudge row pending→queued→asked; gateway log shows `[ws] ⇄ res ✓ agent`
-  (gateway, not embedded); message in the operator's Telegram; weekday-guard log checked
-- [ ] operator replies ("went fine, replaced the capacitor") → agent records via
-  `record_field_note` → capture read back; next tick marks the nudge `answered`
+- [x] full loop (2026-08-18): nudge `pending`->`queued`->`asked` on the real cron + box timer;
+  message landed in the operator's Telegram; `serve_count 1, attempts 0` (first attempt, retry
+  machinery never engaged). Cron line: `watchers{mode:live, freshGaps:1, nudgesCreated:1,
+  itemsOpened:0}` + `teamLeadCompose{composed:1, held:0}` — **`itemsOpened:0` beside
+  `nudgesCreated:1` IS the ladder assertion** (tech INSTEAD of manager, not in addition).
+  NOT checked: the `[ws] ⇄ res ✓ agent` gateway line and the weekday-guard log — the delivery
+  path is the CLI (`--deliver`), whose gateway-vs-embedded question was settled separately.
+  **This run found the delivery bug (PR #150) and the relay/jargon defect (PR #151), neither of
+  which six review rounds or 1789 tests caught — see both PRs.**
+- [x] operator replies (2026-08-18): a bare "all done" -> agent staged and recorded via
+  `record_field_note` -> L1 capture + L2 visit on the RIGHT job (the customer had two open) ->
+  next tick marked the nudge `answered` ("a field report arrived — the gap filled itself"), no
+  manager item ever opened. **Read-back trap: `raw_captures.job_id` is NULL by design** (L1
+  attaches to the CUSTOMER); the job link lives on the L2 visit via `source_capture_id` +
+  `attributes.workPerformed`, which is also what satisfies `hasActivitySince`.
 - [x] **resolve D6 (2026-08-18, live):** the ask and the reply land in DIFFERENT sessions — the
   question went out in the isolated `nudge-<id>` session, the reply arrived in the operator's
   main Telegram session, and that session's message log holds NO trace of the question. It works
@@ -588,23 +614,42 @@ resolve the D6 open question, ship the ratified disclosure.
   trajectory is a LOGGING cap — `reason: trajectory-field-size-limit` — not a model-input
   truncation. Read the reason field before raising an alarm; this project has had one false
   AGENTS.md-truncation scare already.
-- [ ] **pin the send-failure signal (Phase-4 review F3 — MUST land before NUDGES_MODE=live):**
-  force a failed Telegram send (a sandbox whose bot the recipient never Started — the
-  recorded Ben-Shelton state) and observe what `nemoclaw agent --deliver` does: exit code,
-  and whether assistant text still lands in the trajectory (the date-eval record says it
-  does — 94 turns into a dead chat all left text). If both signals read "success" on a dead
-  chat, the runner's `delivered` verdict is unearned for never-Started recipients and needs
-  a stronger check (e.g. the gateway's send log) before any real technician is enrolled;
-  minimum bar: the E2E documents exactly which failure modes report `delivered` falsely and
-  the enrollment runbook requires a verified Start per recipient.
-- [ ] budget regression: second same-person overdue visit → row only if under budget; third →
-  deferred
-- [ ] escalation regression: force an `asked_at` 49h back on the synthetic nudge → manager
-  item with escalation copy appears; assignment never double-flags
+- [~] **send-failure signal: NOT PINNED — user decision 2026-08-19 after review of the actual
+  consequence.** The concern was that a Telegram send can fail AFTER the agent writes its reply
+  (a recipient who never pressed Start), leaving assistant text in the trajectory, so the runner
+  reports `delivered` and the spine marks the nudge `asked` for an ask nobody saw. Traced through
+  the code, the blast radius is bounded: the 48h escalation still fires, so the gap reaches the
+  manager LATE (not lost) — the real harm is the escalation copy then asserting something false
+  about a person ("asked … hasn't heard back"). The user judged that acceptable: a technician who
+  never pressed Start never onboarded, so the manager item is the right outcome even if its stated
+  reason is wrong. RESIDUAL (accepted, not tested): an ONBOARDED technician whose send fails for
+  an ops reason — transient 429, blocked bot, stale chat id after a sandbox recycle — burns one
+  gap (48h late + misleading copy) and then self-heals, since the next gap delivers normally.
+  Revisit if it is ever observed in the wild.
+- [~] budget regression: NOT RUN, and deliberately so — the user reversed the per-person cap on
+  2026-08-18 ([[nudge-pacing-by-urgency]]: no cap at all, pace by urgency). Testing the behaviour
+  is pointless when the code enforcing it is slated for deletion; the removal PR owns this line.
+- [x] escalation regression (2026-08-19 05:35Z): a nudge planted `asked` with `asked_at` 49h
+  back escalated on the next tick — `nudgesEscalated:1, itemsOpened:1, freshGaps:0`; nudge closed
+  `escalated` / "no reply — handed to the manager"; the item carries `escalatedFromNudge` (the
+  audit thread from question to manager item) and EXACTLY ONE item exists for the assignment (no
+  double-flag). Copy verified verbatim, about the JOB, with a dismissal offer; weekday/date pair
+  fused correctly (Aug 16 2026 really was a Sunday). **LIMIT, stated plainly: this exercised the
+  BRANCH, not the 48h CLOCK** — the timestamp was moved rather than waited out, and the row was
+  built directly because the ask window (7am-7pm) had closed. The `9:34 PM` ask time in the copy
+  is the fingerprint of that plant: a real ask can never fall outside the window.
 
 ### Manual verification
 - [ ] The delivered message reads as a colleague's question on a real phone (constraint 5 tone)
-- [ ] Disclosure wording honest and plain (user review)
+  — **STILL OPEN, and the one thing this plan closes without.** The 2026-08-18 delivery FAILED
+  this: the receiving agent rewrote the question into "I wasn't able to find a reachable session
+  for Sam to pass the question along directly", leaking operator jargon to a human. Fixed in
+  PR #151 (footer states identity and bans internal vocabulary) and deployed — but the FIXED copy
+  has not yet been read on a phone, because the ask window closed. Next real gap tests it.
+- [x] Disclosure wording honest and plain: the ratified 2026-08-15 disclosure is present in BOTH
+  firm-facing docs — `customer-onboarding-runbook.md` (numbered disclosure list) and
+  `getting-started-for-firms.md` ("The assistant can check in on unfinished records"). Wording
+  reviewed and softened by the user during the ask-window work.
 ---
 *Pause: manual items + the D6 resolution are user-facing.*
 

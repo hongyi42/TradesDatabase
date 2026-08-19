@@ -69,7 +69,7 @@ import { naiveLocalISO } from '../schedule/booking.js';
 export type WatcherMode = 'shadow' | 'live';
 
 // Stage 1 (plan 2026-08-15 feature B): the ladder. When the technician is
-// reachable and their budget allows, a fresh gap becomes a NUDGE — a question
+// reachable, a fresh gap becomes a NUDGE — a question
 // delivered through their own agent — INSTEAD of a manager review item; the
 // manager surface remains as the fallback (unreachable tech) and as rung 2
 // (48h of silence after the ask). NUDGES_MODE gates it independently of
@@ -555,12 +555,12 @@ export async function runWatchers(
         }
       }
 
-      // Route fresh gaps — capped, oldest scheduled end first (candidates
-      // come ordered; the filters preserve it). RUNG 1 when the ladder is
-      // live and the technician is reachable within budget; the manager item
-      // is the fallback. A budget-exhausted gap takes NEITHER path: it stays
-      // fresh and retries when the rolling window frees a slot (user-ratified
-      // — deferral, never manager overflow).
+      // Route fresh gaps — capped at MAX_NEW_ITEMS_PER_TENANT_TICK, oldest
+      // scheduled end first (candidates come ordered; the filters preserve
+      // it). RUNG 1 when the ladder is live and the technician is reachable;
+      // the manager item is the fallback. Every reachable fresh gap in `top`
+      // is asked about — there is no per-person gate any more (user ruling
+      // 2026-08-18); the per-tick slice is the only volume brake here.
       const top = fresh.slice(0, MAX_NEW_ITEMS_PER_TENANT_TICK);
       if (top.length > 0) {
         const [teamRows, jobRows] = await Promise.all([
@@ -587,9 +587,9 @@ export async function runWatchers(
             !!tech.sandbox_ref &&
             !!tech.host_id;
           if (reachable && nudgeMode === 'shadow') {
-            // Counted BEFORE budget (shadow creates nothing, so the budget
-            // read would always say 0 anyway): nudgesWouldCreate measures
-            // reachability, the flip decision's number.
+            // nudgesWouldCreate measures REACHABILITY — the shadow→live flip
+            // decision's number, and (since the per-person gate is gone)
+            // exactly what live would create from this tick's `top`.
             summary.nudgesWouldCreate += 1;
           }
           if (reachable && nudgeMode === 'live') {

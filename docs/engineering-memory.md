@@ -62,7 +62,9 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   the direction: detection is deterministic (hardcode-vs-model rule), the team lead is a NEW
   identity class that may only **read/ask/stage — never commit irreversible or externally
   visible actions** (it has no human to confirm), nudges are budgeted (over-pinging = the
-  over-confirmation failure mode), and agent-to-agent communication stays spine-mediated.
+  over-confirmation failure mode — **the numeric budget was REVERSED 2026-08-18, see "Nudge
+  frequency is paced by urgency, never capped" below; the anti-spam GOAL stands, the counter
+  does not**), and agent-to-agent communication stays spine-mediated.
   **Transcript-harvest disclosure ratified** (2026-08-15): workers must be told up front that
   chats with their company-provided agent can be recorded to the firm's record (extends the
   2026-07-04 outbound-send disclosure); the work-relevance classifier gates HARD before anything
@@ -75,6 +77,50 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   agent follows up until the gap is VERIFIABLY filled (a capture lands — the deterministic
   activity-after-end check, not model judgment). Direction doc:
   `thoughts/shared/plans/2026-08-15-intelligent-spine-direction.md`.
+
+- **Nudge frequency is paced by URGENCY, never capped** (2026-08-18, user decision —
+  REVERSES the 2026-08-16 "2 asks/person per rolling 24h"). The product is an AI manager/
+  teammate, and an agent is only as good as the information it gets. Trades operators will not
+  reliably volunteer that information, and cannot be expected to know which information the
+  agent actually needs — so the agent must ASK, actively and often, and asking is also how user
+  behaviour gets trained. A per-person counter throttles good and bad questions identically and
+  "fundamentally puts a bottleneck on how efficient humans and AI can work together" (user).
+  Solo contractors — the target segment — should expect frequent daily contact. Replace the
+  counter with the way a good human teammate actually behaves:
+  - **Earn the ask — but derivability is DECLARED PER GAP KIND, never re-litigated per
+    question** (refined 2026-08-18, same session). A blanket "think before asking" burns tokens
+    on gaps that are structurally underivable, and once contact is frequent the human is a
+    CHEAP, high-accuracy oracle — asking is often the efficient choice, not the fallback. So
+    every detector declares one of three classes at design time:
+    **(a) `ask`** — the answer exists only in a human's head (what the parts cost, how the
+    visit went). Straight to the human, ZERO derivation, zero tokens. Expected to be the
+    common case.
+    **(b) `derive`** — a deterministic SQL/code predicate can resolve it; run that first and
+    ask nothing if it resolves. Costs ~0 tokens and is where the real value sits. Precedent
+    already shipped: the watcher's activity-after-start "filled" check suppresses asks with
+    pure SQL.
+    **(c) `attempt`** — a BOUNDED model attempt is worth it before asking (the money-inference
+    shape). Highest cost, least certain; use sparingly and cap the effort — an unbounded
+    derive-first is worse than the question it was avoiding.
+    A question is a last resort only within class (b)/(c); in class (a) it is the FIRST and
+    correct move. This is a precondition on each ask, not a limit on their number.
+  - **Urgency sets latency, not permission.** Every gap kind carries an urgency; urgent gaps
+    interrupt immediately, routine gaps trickle out across the day. Nothing is dropped for being
+    unimportant — it is merely slower.
+  - **Batch the unimportant.** Low-urgency gaps ride together in one message ("three quick
+    things"), which is what makes high volume feel like a colleague rather than a stream of
+    pings.
+  - Unchanged by this decision: the two-touch escalation ceiling, the 7am–7pm firm-local ask
+    window, once-ever-per-subject dedup, and the per-tenant per-tick surge brake. Note the
+    runaway-detector risk the old cap incidentally covered now needs a per-detector sanity
+    guard — a misfiring watcher is a bug, and a per-person counter was never the right place to
+    catch it. **Code state 2026-08-19:** the counter is GONE (PR #153 — `NUDGE_BUDGET_PER_PERSON_DAY`,
+    `countRecentAsks` and `BUDGET_HOLDING_STATUSES` all deleted; tests 1790 -> 1787, no behaviour
+    change since the cap was not the binding throttle). The per-detector runaway brake LANDED with
+    detector #2 (PR #155): every spec in `NUDGE_KIND_SPECS` declares its own `maxNewPerTenantTick`
+    (`overdue_visit_gap` 5, `job_cost_gap` 3), spent against the shared per-tenant per-tick ceiling
+    so a second detector cannot raise a firm's volume. The urgency/batching design (pacing by
+    urgency, carrier/rider batching) is still NOT built.
 
 - **The spine is not the books** (2026-08-15): the money layer is an evidence-linked money
   MEMORY reconciled against the firm's real books, never presented as the books. Precision over

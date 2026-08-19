@@ -1,5 +1,19 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
+
+// MANDATORY, not tidiness: src/test.setup.ts loads .env before .env.test, and
+// .env carries a REAL BOARD_BOT_TOKEN. The /control/ops block below posts
+// down/ok repeatedly, so without this stub — the moment OPS_ALERT_CHAT_ID is set
+// in a developer's .env — `npm test` would fire live Telegram messages at the
+// operator. Stubbed BEFORE createHttpServer is imported. (Precedent:
+// src/calls/notify.test.ts.) This file exercises no board route, so replacing
+// the module wholesale is safe.
+vi.mock('../telegram/boardBot.js', () => ({
+  sendBoardMessage: vi.fn(async () => {}),
+  setBoardMenuButton: vi.fn(async () => {}),
+}));
+
 import { createHmac } from 'node:crypto';
+import { sendBoardMessage } from '../telegram/boardBot.js';
 import { Client } from 'pg';
 import type { AddressInfo } from 'node:net';
 import type http from 'node:http';
@@ -290,8 +304,29 @@ describe('POST /control/ops', () => {
       body: JSON.stringify(body),
     });
 
+  const alerts = vi.mocked(sendBoardMessage);
+  const saved = { chat: process.env.OPS_ALERT_CHAT_ID, token: process.env.BOARD_BOT_TOKEN };
+
   beforeEach(async () => {
     await pg.query('delete from ops_events where host_id = $1', [await getHostId()]);
+    vi.clearAllMocks();
+    // Alerting is OFF unless configured, and notifyOpsTransition gates on BOTH
+    // vars — so both are set explicitly. Inheriting BOARD_BOT_TOKEN from .env
+    // would make these tests pass only on a machine that happens to have one:
+    // in a fresh worktree (which CLAUDE.md's parallel workflow creates with no
+    // .env) the notifier would skip and the assertions below would fail.
+    process.env.OPS_ALERT_CHAT_ID = '5801703167';
+    process.env.BOARD_BOT_TOKEN = 'test-token';
+  });
+
+  afterAll(() => {
+    for (const [k, v] of Object.entries({
+      OPS_ALERT_CHAT_ID: saved.chat,
+      BOARD_BOT_TOKEN: saved.token,
+    })) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
   });
 
   test('bad or missing token → bare 401, no detail', async () => {
@@ -337,6 +372,37 @@ describe('POST /control/ops', () => {
       await getHostId(),
     ]);
     expect(rows[0].n).toBe(1);
+
+    // ...and exactly TWO alerts: "it broke" and "it's back". The three
+    // suppressed ticks in between must stay silent, or a 30-minute outage pages
+    // six times and the operator mutes the channel — which would rebuild the
+    // alerting gap this notifier exists to close.
+    expect(alerts).toHaveBeenCalledTimes(2);
+    expect((alerts.mock.calls[0] as [string, string])[1]).toContain('is DOWN');
+    expect((alerts.mock.calls[1] as [string, string])[1]).toContain('recovered');
+  });
+
+  test('a failing alert never fails the report — the reporter still gets its 200', async () => {
+    alerts.mockRejectedValueOnce(new Error('telegram sendMessage failed: chat not found'));
+    const res = await post({ service: 'inference-medic', status: 'down' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { action: string }).action).toBe('opened');
+    // Assert the send was ATTEMPTED, or this test passes for the wrong reason
+    // whenever the notifier skips — and the queued rejection would survive into
+    // the next test (vi.clearAllMocks does not drain mockRejectedValueOnce).
+    expect(alerts).toHaveBeenCalledTimes(1);
+    // The incident is still recorded — alerting is downstream of the record.
+    const { rows } = await pg.query('select count(*)::int as n from ops_events where host_id = $1', [
+      await getHostId(),
+    ]);
+    expect(rows[0].n).toBe(1);
+  });
+
+  test('alerting off (no OPS_ALERT_CHAT_ID) changes nothing about the report', async () => {
+    delete process.env.OPS_ALERT_CHAT_ID;
+    const res = await post({ service: 'inference-medic', status: 'down' });
+    expect(res.status).toBe(200);
+    expect(alerts).not.toHaveBeenCalled();
   });
 
   test('healthy reports on a healthy service write nothing at all', async () => {

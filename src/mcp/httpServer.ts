@@ -18,6 +18,7 @@ import {
   getHostByTokenHash,
 } from '../db/index.js';
 import { isValidService, recordOpsEvent } from '../db/opsEvents.js';
+import { notifyOpsTransition } from '../telegram/opsNotify.js';
 import { handleComposioRelay, isRelayPath } from '../composio/relayHandler.js';
 import { handleBoardRequest, isBoardPath } from '../telegram/boardApi.js';
 import { handleAdminRequest, isAdminPath } from '../admin/adminApi.js';
@@ -479,6 +480,16 @@ async function handleOpsReport(req: http.IncomingMessage, res: http.ServerRespon
         : undefined;
     const outcome = await recordOpsEvent({ hostId: host.id, service, status, detail });
     json(200, outcome);
+    // The reporter already has its 200, so a slow or failing Telegram call costs
+    // it nothing. Alerting must never be able to break — or even delay — the
+    // thing it monitors; ops-report.sh keeps its side of that bargain by always
+    // exiting 0, and this is ours. Only `opened`/`closed` notify (see
+    // opsNotify.ts): the suppressed ticks during an outage stay silent.
+    try {
+      await notifyOpsTransition(outcome, service, host.name, detail);
+    } catch (err) {
+      console.error('[ops] alert push failed', err);
+    }
   } catch {
     if (!res.headersSent) {
       res.writeHead(500);

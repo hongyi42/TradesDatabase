@@ -195,3 +195,21 @@ describe('completeNudgeDelivery', () => {
     ].flat());
   });
 });
+
+describe('terminal-failure doctrine regressions (plan 2026-08-19 Phase 2)', () => {
+  test('delivery give-up + LANDED handoff → failed, as before', async () => {
+    const outcomes: string[] = [];
+    const result = await completeNudgeDelivery('host-1', 'n1', 'failed', 'boom', {
+      getQueued: async () => queuedRow({ attempts: MAX_DELIVERY_ATTEMPTS - 1 }),
+      attempts: async () => queuedRow({ attempts: MAX_DELIVERY_ATTEMPTS }),
+      flagGap: async () =>
+        ({ id: 'ri1' }) as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagGap']>>>,
+      outcome: async (_id, _t, status) => {
+        outcomes.push(status);
+        return null;
+      },
+    });
+    expect(result).toBe('failed');
+    expect(outcomes).toEqual(['failed']);
+  });
+});

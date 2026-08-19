@@ -77,6 +77,12 @@ export async function buildNudgeDelivery(
       }
       if (!row.question) continue; // queued implies composed; tampered row stays frozen
       if (row.serve_count >= MAX_SERVE_COUNT) {
+        // NOT gated on the handoff landing — see the note in compose.ts's
+        // decline path. Freezing here removes the only terminal exit a queued
+        // row has: it is never re-served (this branch never reaches `items`)
+        // but stays 'queued' forever, so every 5-minute pull re-reads it and
+        // logs. Phase 4 gates this once the flagger can tell "already flagged"
+        // from "flag failed".
         await handToManager(row, readComposeContext(row), flagGap);
         await outcome(
           row.id,
@@ -137,7 +143,8 @@ export async function completeNudgeDelivery(
   if (!bumped) return 'ignored';
   if (next < MAX_DELIVERY_ATTEMPTS) return 'retry'; // still served next pull
   // Delivery gave up: the manager takes the gap, then the row goes terminal
-  // (flag-first, the F1 order).
+  // (flag-first, the F1 order). Ungated for the same reason as the serve cap
+  // above — Phase 4 owns it.
   await handToManager(row, readComposeContext(row), flagGap);
   await outcome(
     row.id,

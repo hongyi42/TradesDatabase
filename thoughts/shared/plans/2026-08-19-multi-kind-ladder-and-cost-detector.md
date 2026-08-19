@@ -178,26 +178,39 @@ Gives each kind its own prompt, context reader and assembler.
   imports from here, never from `compose.ts` (review finding 3).
 
 **`src/jobs/nudgeKinds.ts`**
-- Extend `NudgeKindSpec` with `compose: { system; tool; buildUser(ctx, nowIso, tz); readContext(n); assemble(question, ctx) }`, wired to `composeCopy.ts` for the overdue kind.
-- Widen the per-kind context type: `readContext` returns `ComposeContext | CostComposeContext`. `ComposeContext` (`compose.ts:122-132`) mandates a non-null `endsAtLocal` consumed by `assembleNudgeMessage` and `relativeDayPhrase`; a cost context has none, so the union is declared here rather than widening `ComposeContext` and breaking its readers (review finding 12).
+- Extend `NudgeKindSpec` with `compose: { system; tool; prepare(n, nowIso, tz) }`, wired to `composeCopy.ts` for the overdue kind. **`prepare` returns a CLOSURE** — `{ user, assemble }` — so the row's context never escapes the block. This replaces the planned `{buildUser, readContext, assemble}` triple and the `ComposeContext | CostComposeContext` union: a second kind can carry a completely different context shape with no union and no generic leaking into the registry, which is what the union was working around.
 
 **`src/teamLead/compose.ts`**
 - `:288-290` — filter on `specFor(n.kind)`; resolve the spec inside the loop at `:299`.
-- `:301-350` — call the spec's compose block instead of module-level functions.
-- `handToManager` (`:165`) gains a `kind` parameter defaulting to `'overdue_visit_gap'` and calls `flagNudgeGap`.
-- **`:335-338` — gate the cancel on the handoff landing**, matching `:309-313`. Today a declined compose cancels the nudge whether or not the manager item was created (review finding 5).
-- Keep `readComposeContext`, `assembleNudgeMessage`, `relativeDayPhrase` exported — `nudgeQueue.ts:11` and `compose.test.ts` import them.
+- `:301-350` — call `spec.compose.prepare(...)` and `prepared.assemble(...)` instead of module-level functions.
+- Keep `readComposeContext`, `assembleNudgeMessage`, `relativeDayPhrase` exported — `nudgeQueue.ts:11` and `compose.test.ts` import them (re-exported from `composeCopy.ts`).
 
-**`src/control/nudgeQueue.ts`**
-- `:80-86` and `:141-147` — **only mark the row `failed` if `handToManager` returned true**; otherwise leave it queued and log, matching the freeze doctrine. Today the terminal write runs unconditionally, so a cost gap (which `readComposeContext` rejects for want of `endsAtLocal`) would close with no manager surface at all (review finding 5).
-- Pass the row's kind through to `handToManager`.
+**MOVED TO PHASE 4 — the terminal-write gating.** The plan originally put three gates here
+(compose's decline path, and `nudgeQueue.ts`'s serve-cap and delivery-give-up paths), so a row
+whose gap reached no manager surface would not be closed. They were implemented, reviewed, and
+**reverted**, because with a visit-shaped kind they are unreachable-but-harmful:
+- Gating the decline freezes the row **after** the model call, so an unflaggable row is
+  re-composed — a fresh paid call — every tick forever, with no exit (the 24h expiry sweep
+  refuses the same row for the same missing fields). ~144 billed calls/day.
+- Gating the serve cap removes the only terminal exit a queued row has: never re-served, but
+  never closed, so every 5-minute pull re-reads it and logs.
+- `handToManager` returns `false` for BOTH "flag failed" and "already flagged" — `flagNudgeGap`
+  returns null by design on the once-ever dedup — so the gates refuse to close rows the manager
+  already has.
+Phase 4 owns these gates, and must land them with the two things that make them safe: a flagger
+that distinguishes *created* from *already present*, and a bounded exit for a row no surface can
+accept.
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm run build` pass
-- [ ] `npm test` passes; no pre-existing test changed
-- [ ] new test: two injected specs compose with different `system` text (assert on the `run` stub)
-- [ ] new test: `completeNudgeDelivery` with a handoff that fails leaves the row **queued**, not failed
-- [ ] new test: a declined compose whose handoff fails leaves the row pending, not cancelled
+- [x] `npm run typecheck`, `npm run lint`, `npm run build` pass
+- [x] `npm test` passes; no pre-existing test changed — 1792 → 1795
+- [x] new test: two injected specs compose with different `system` text AND assemble their own deliverable
+- [x] new test: a kind with no spec is never composed
+- [x] new test: delivery give-up with a LANDED handoff still closes the row `failed` (regression lock)
+- [x] ESM cycle proven safe by importing each of `compose`, `composeCopy`, `nudgeKinds`, `watchers` FIRST against the built output — no TDZ error from any entry direction
+- [x] moved copy verified byte-identical against `git show HEAD:src/teamLead/compose.ts`
+- ~~new test: `completeNudgeDelivery` with a failing handoff leaves the row queued~~ — gating moved to Phase 4
+- ~~new test: a declined compose whose handoff fails leaves the row pending~~ — gating moved to Phase 4
 
 ### Live verification (agent-executable)
 - Prerequisites: none — behaviour-preserving.
@@ -304,7 +317,20 @@ rule — *not* the presence of a cost event); `moot` = `jobStatusById` says `can
 `startsAtLocal`/`endsAtLocal`. Its compose block asks what the job cost in parts/materials, keeps
 the ban on inventing prices, and does **not** ask the technician to compute a total.
 
+**`src/teamLead/compose.ts` + `src/control/nudgeQueue.ts`** — land the terminal-write gating
+deferred from Phase 2 (see that phase for why it could not ship alone). Required together:
+1. `handToManager` gains a `kind` parameter and calls `flagNudgeGap`, so a job-scoped gap reaches
+   the manager at all (Phase 1 deferred this: the handoff loops still use the visit-shaped
+   `flagGap` dep and log-and-skip a plan with no visit window, at `watchers.ts:487`/`:535`).
+2. The flagger must report *created* vs *already present* distinctly — `flagNudgeGap` returns null
+   for both today, and the once-ever dedup makes "already present" the common case.
+3. A bounded exit for a row no surface can accept, so gating cannot strand it or re-pay for model
+   calls every tick.
+
 **`src/jobs/watchers.ts`**
+- `WatchersSummary` — add the `byKind` breakdown deferred from Phase 1; the flat
+  `gapsFound`/`freshGaps`/`nudgesWouldCreate` counters are visit-shaped and a second detector
+  would otherwise pollute them.
 - `WatcherDeps` (`:154-174`) — add `listCostCandidates?` and `listCostEvents?`, defaulted in tests'
   `baseDeps` (`watchers.test.ts:64-86`), or the ~40 existing watcher tests start issuing real DB
   reads (review finding 10).

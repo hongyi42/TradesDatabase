@@ -8,6 +8,7 @@ import {
   runTeamLeadCompose,
   type ComposeDeps,
 } from './compose.js';
+import { OVERDUE_VISIT_GAP_SPEC, type NudgeKindSpec } from '../jobs/nudgeKinds.js';
 
 const NOW = '2026-08-16T12:00:00.000Z';
 
@@ -447,4 +448,56 @@ describe('assembleNudgeMessage', () => {
     // The relay reading came from this phrasing — it must not come back.
     expect(msg).not.toMatch(/pass the question on/i);
   });
+});
+
+describe('the kind registry drives compose (plan 2026-08-19 Phase 2)', () => {
+  test('each kind composes with its OWN system prompt', async () => {
+    // The whole point of the split: a second kind must be able to ask a
+    // different question, not a reworded version of the visit one.
+    const seen: Array<{ system: string; user: string }> = [];
+    const second: NudgeKindSpec = {
+      ...OVERDUE_VISIT_GAP_SPEC,
+      kind: 'unlinked_call', // any other ReviewKind
+      compose: {
+        system: 'SECOND KIND SYSTEM PROMPT',
+        tool: OVERDUE_VISIT_GAP_SPEC.compose.tool,
+        prepare: () => ({ user: 'SECOND KIND USER', assemble: (q) => `2:${q}` }),
+      },
+    };
+    const queued: string[] = [];
+    const summary = await runTeamLeadCompose(NOW, baseDeps({
+      specs: [OVERDUE_VISIT_GAP_SPEC, second],
+      listNudges: async () => [
+        pendingNudge({ id: 'n-visit' }),
+        pendingNudge({ id: 'n-second', kind: 'unlinked_call' }),
+      ],
+      run: async (_tool, req) => {
+        seen.push({ system: req.system as string, user: req.user as string });
+        return { ask: true, question: 'Q', reason: 'r' };
+      },
+      markQueued: async (_id, _t, question) => {
+        queued.push(question);
+        return pendingNudge({ status: 'queued' });
+      },
+    }));
+    expect(summary.composed).toBe(2);
+    expect(seen[0].system).toContain('office assistant'); // the visit prompt
+    expect(seen[1].system).toBe('SECOND KIND SYSTEM PROMPT');
+    expect(seen[1].user).toBe('SECOND KIND USER');
+    // Each kind assembles its OWN deliverable, too.
+    expect(queued[1]).toBe('2:Q');
+  });
+
+  test('a kind with NO spec is never composed', async () => {
+    const summary = await runTeamLeadCompose(NOW, baseDeps({
+      specs: [],
+      listNudges: async () => [pendingNudge({})],
+      run: async () => {
+        throw new Error('must not compose an unregistered kind');
+      },
+    }));
+    expect(summary.composed).toBe(0);
+    expect(summary.rowErrors).toBe(0);
+  });
+
 });

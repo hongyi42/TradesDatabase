@@ -828,6 +828,7 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
     filled: () => null,
     moot: () => null,
     handoff: () => null,
+    compose: { system: 'second', tool: OVERDUE_VISIT_GAP_SPEC.compose.tool, prepare: () => null },
     ...over,
   });
 

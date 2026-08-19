@@ -1,5 +1,13 @@
 import type { Nudge } from '../db/nudges.js';
 import type { ReviewKind } from '../db/reviewItems.js';
+import type { ForcedToolSpec } from '../model/forcedTool.js';
+import {
+  COMPOSE_SYSTEM,
+  COMPOSE_TOOL,
+  assembleNudgeMessage,
+  readComposeContext,
+  relativeDayPhrase,
+} from '../teamLead/composeCopy.js';
 import { wallClockLabel } from './watchers.js';
 
 // The ladder's kind registry (plan 2026-08-19, Phase 1). Before this, the one
@@ -46,6 +54,24 @@ export interface HandoffPlan {
   suggestion: string;
 }
 
+// How ONE kind turns a nudge row into a model call and a deliverable.
+//
+// The row's context never escapes this block: `prepare` reads it and returns a
+// closure that assembles the final message. That is what lets a second kind
+// carry a completely different context shape with no union type and no generic
+// leaking into the registry — compose.ts only ever sees {user, assemble}.
+export interface ComposeBlock {
+  system: string;
+  tool: ForcedToolSpec;
+  // null = the row's evidence is thin or tampered. NEVER ask a model to guess
+  // around it; the caller hands the gap to the manager instead.
+  prepare(
+    n: Nudge,
+    nowIso: string,
+    tz: string,
+  ): { user: string; assemble: (question: string) => string } | null;
+}
+
 export interface NudgeKindSpec {
   kind: ReviewKind;
   // The per-detector runaway brake. The deleted per-person cap was incidentally
@@ -66,6 +92,7 @@ export interface NudgeKindSpec {
     mode: 'escalated' | 'expired',
     naiveLocal: (utcIso: string) => string,
   ): HandoffPlan | null;
+  compose: ComposeBlock;
 }
 
 // The ONE manager-item copy for a plain unreported visit (user-approved
@@ -117,6 +144,24 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
     return status === 'cancelled' || status === 'completed'
       ? `the visit was ${status} — nothing left to ask`
       : null;
+  },
+
+  compose: {
+    system: COMPOSE_SYSTEM,
+    tool: COMPOSE_TOOL,
+    prepare(n, nowIso, tz) {
+      const ctx = readComposeContext(n);
+      if (!ctx) return null;
+      return {
+        user:
+          `Customer: ${ctx.customerName}\n` +
+          `Job: ${ctx.jobTitle}\n` +
+          `Technician: ${ctx.technicianName}\n` +
+          `The visit wrapped up ${relativeDayPhrase(nowIso, tz, ctx.endsAtLocal)}; ` +
+          `nothing has been recorded since — no field note and no status change.`,
+        assemble: (question) => assembleNudgeMessage(question, ctx),
+      };
+    },
   },
 
   handoff(n, mode, naiveLocal) {

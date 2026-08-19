@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
 import {
-  countRecentAsks,
   createPendingNudge,
   listNudgedSubjectRefs,
   listNudgesByStatus,
@@ -188,48 +187,6 @@ describe('listNudgedSubjectRefs — the fresh-gap pre-filter', () => {
     expect(hit.sort()).toEqual(['asg-filter-a', 'asg-filter-b']);
 
     expect(await listNudgedSubjectRefs(tenantId, 'overdue_visit_gap', [])).toEqual([]);
-  });
-});
-
-describe('countRecentAsks — the per-person budget read', () => {
-  test('counts slot-holding statuses inside the window; refunds cancelled/failed; gte edge', async () => {
-    // Earlier tests left slot-holding rows for this technician — start clean
-    // so the expected count is exact, not a drifting baseline.
-    await pg.query('truncate table nudges cascade');
-    const since = new Date(Date.now() - 24 * 3_600_000);
-
-    const mk = async (ref: string) =>
-      (await createPendingNudge({
-        tenantId,
-        kind: 'overdue_visit_gap',
-        subjectRef: ref,
-        technicianId: techId,
-      }))!;
-
-    const inWindow = await mk('asg-budget-1'); // pending — holds a slot
-    const askedRow = await mk('asg-budget-2');
-    await markNudgeQueued(askedRow.id, tenantId, 'q');
-    await markNudgeAsked(askedRow.id, tenantId); // asked — holds a slot
-    const refunded = await mk('asg-budget-3');
-    await markNudgeOutcome(refunded.id, tenantId, 'cancelled'); // refunded
-    const old = await mk('asg-budget-4');
-    // Age one row past the window (created_at is code-writable here — nudges
-    // carries no append-only trigger).
-    await pg.query('update nudges set created_at = $1 where id = $2', [
-      new Date(since.getTime() - 1000).toISOString(),
-      old.id,
-    ]);
-    const edge = await mk('asg-budget-5');
-    // Exactly AT the window bound: gte counts it (the safe direction — an
-    // exactly-24h-old ask still holds its slot).
-    await pg.query('update nudges set created_at = $1 where id = $2', [
-      since.toISOString(),
-      edge.id,
-    ]);
-
-    const n = await countRecentAsks(tenantId, techId, since.toISOString());
-    expect(n).toBe(3); // inWindow(pending) + askedRow(asked) + edge(at-bound)
-    expect(inWindow.status).toBe('pending'); // pending claimed its slot at creation
   });
 });
 

@@ -1,5 +1,4 @@
 import {
-  countRecentAsks,
   createPendingNudge,
   findOpenReviewItemsByKind,
   flagOverdueVisitGap,
@@ -85,12 +84,19 @@ export const OVERDUE_HOURS = 3;
 export const LOOKBACK_HOURS = 72;
 export const MAX_NEW_ITEMS_PER_TENANT_TICK = 5;
 
-// Ladder tuning (user-ratified 2026-08-16): 2 asks per person per rolling
-// 24h, NO firm-wide cap (volume scales with the roster; the per-tick cap
-// above is the surge brake); a budget-exhausted gap DEFERS to a later tick,
-// never overflows onto the manager. 48h of post-ask silence escalates.
+// Ladder tuning. There is NO per-person ask cap (user ruling 2026-08-18,
+// reversing the 2-asks/person/24h budget): pace by urgency, earn the ask by
+// self-serving first, batch the unimportant — none of which a counter can
+// express. Volume is bounded instead by uq_nudges_subject_ever (a subject is
+// asked about once, EVER) and by MAX_NEW_ITEMS_PER_TENANT_TICK above, which
+// stays as the per-tenant surge brake. 48h of post-ask silence escalates.
 // Code constants, not env (the OVERDUE_HOURS pattern: one tuning surface).
-export const NUDGE_BUDGET_PER_PERSON_DAY = 2;
+//
+// The deleted counter was ALSO, incidentally, the brake on a misfiring
+// detector. That backstop must return per-detector: today's margin comes from
+// having exactly ONE well-tested detector, not from the design, so detector #2
+// must land with its own brake. See
+// thoughts/shared/research/2026-08-19-nudge-pacing-replacement-design.md (§5).
 export const NUDGE_ESCALATE_HOURS = 48;
 // A nudge still not ASKED this long after creation is stuck in some silent
 // way the serve path cannot see (Phase-4 review F1: an offboarded technician
@@ -165,7 +171,6 @@ export interface WatcherDeps {
   listNudged?: typeof listNudgedSubjectRefs;
   listNudges?: typeof listNudgesByStatus;
   resolveNudge?: typeof markNudgeOutcome;
-  countAsks?: typeof countRecentAsks;
 }
 
 export interface WatchersSummary {
@@ -210,7 +215,6 @@ export async function runWatchers(
   const listNudged = deps.listNudged ?? listNudgedSubjectRefs;
   const listNudges = deps.listNudges ?? listNudgesByStatus;
   const resolveNudge = deps.resolveNudge ?? markNudgeOutcome;
-  const countAsks = deps.countAsks ?? countRecentAsks;
 
   // listTenantIdsWithTelegramBindings, not listTenantSeats: it skips tenants
   // with nobody Telegram-reachable. Today that ALSO excludes the eval tenants
@@ -589,12 +593,6 @@ export async function runWatchers(
             summary.nudgesWouldCreate += 1;
           }
           if (reachable && nudgeMode === 'live') {
-            const asks = await countAsks(
-              tenantId,
-              tech.id,
-              new Date(nowMs - 24 * 3_600_000).toISOString(),
-            );
-            if (asks >= NUDGE_BUDGET_PER_PERSON_DAY) continue; // defer, don't overflow
             const nudge = await createNudge({
               tenantId,
               kind: 'overdue_visit_gap',

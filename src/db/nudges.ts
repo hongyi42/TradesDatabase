@@ -22,19 +22,6 @@ export type NudgeStatus =
 // outcome may close.
 export const OPEN_NUDGE_STATUSES: NudgeStatus[] = ['pending', 'queued', 'asked'];
 
-// Statuses that HOLD a per-person budget slot (user-ratified 2026-08-16:
-// 2 asks/person per rolling 24h, NO firm-wide cap). A slot is claimed at
-// CREATION, not delivery — the point of the budget is how often we decide to
-// bother someone, and a pending row is that decision already made. cancelled
-// and failed refund the slot: the person was never actually asked.
-export const BUDGET_HOLDING_STATUSES: NudgeStatus[] = [
-  'pending',
-  'queued',
-  'asked',
-  'answered',
-  'escalated',
-];
-
 export interface CreatePendingNudgeInput {
   tenantId: string;
   kind: ReviewKind; // shared vocabulary with review_items — one gap, one name
@@ -269,23 +256,4 @@ export async function setNudgeAttempts(
     .maybeSingle();
   if (error) throw new Error(`setNudgeAttempts failed: ${error.message}`);
   return data as Nudge | null;
-}
-
-// The per-person budget read: nudges created since `sinceIso` that hold a
-// slot (see BUDGET_HOLDING_STATUSES). Rolling window — the caller derives
-// `sinceIso` as now minus 24h.
-export async function countRecentAsks(
-  tenantId: string,
-  technicianId: string,
-  sinceIso: string,
-): Promise<number> {
-  const { count, error } = await getClient()
-    .from('nudges')
-    .select('id', { count: 'exact', head: true })
-    .eq('tenant_id', tenantId)
-    .eq('technician_id', technicianId)
-    .gte('created_at', sinceIso)
-    .in('status', BUDGET_HOLDING_STATUSES);
-  if (error) throw new Error(`countRecentAsks failed: ${error.message}`);
-  return count ?? 0;
 }

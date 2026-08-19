@@ -2,7 +2,11 @@
 .DS_Store
 
 # Dependencies
-node_modules/
+# No trailing slash, deliberately: `node_modules/` matches a DIRECTORY only, so
+# a `node_modules` SYMLINK slipped past it and was committed (PR #154, 2026-08-19)
+# pointing at an absolute path on one developer's laptop — a dangling link on
+# every other machine, including Render builds and fresh clones.
+node_modules
 
 # Build output
 dist/

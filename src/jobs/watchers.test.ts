@@ -7,7 +7,6 @@ import type { Tenant } from '../db/tenants.js';
 import type { Technician } from '../db/technicians.js';
 import {
   MAX_NEW_ITEMS_PER_TENANT_TICK,
-  NUDGE_BUDGET_PER_PERSON_DAY,
   runWatchers,
   type WatcherDeps,
 } from './watchers.js';
@@ -82,7 +81,6 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     listNudged: async () => [],
     listNudges: async () => [],
     resolveNudge: async () => null,
-    countAsks: async () => 0,
     ...over,
   };
 }
@@ -491,41 +489,6 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(summary.itemsOpened).toBe(1);
   });
 
-  test('budget is incremental within a tick: the second same-tech gap sees the first ask (review F4)', async () => {
-    // Stateful stubs: countAsks reflects prior creations, the way the DB does
-    // (pending rows hold their slot at creation). Baseline 1 ask in the
-    // window → gap #1 fits (1 < 2), gap #2 defers (2 >= 2) — and is
-    // re-noticed on a later tick once the window frees a slot.
-    const created: string[] = [];
-    const deps = baseDeps({
-      listOverdue: async () => [
-        visit({ id: 'a1', job_id: 'j1', technician_id: 'tech-1', ends_at: '2026-08-15T01:00:00.000Z' }),
-        visit({ id: 'a2', job_id: 'j2', technician_id: 'tech-1', ends_at: '2026-08-15T02:00:00.000Z' }),
-      ],
-      listTeam: async () => [boundTech()],
-      listNudged: async (_t, _k, ids) => ids.filter((id) => created.includes(id)),
-      countAsks: async () => 1 + created.length,
-      createNudge: async (input) => {
-        created.push(input.subjectRef);
-        return nudgeRow({ subject_ref: input.subjectRef });
-      },
-      flagGap: async () => {
-        throw new Error('budget deferral must not fall back to the manager');
-      },
-    });
-    const first = await runWatchers(NOW, 'live', deps, 'live');
-    expect(created).toEqual(['a1']); // oldest first; a2 deferred
-    expect(first.nudgesCreated).toBe(1);
-    expect(first.tenantErrors).toBe(0);
-
-    // Next tick, a slot freed (baseline drops to 0): a2 is still fresh and
-    // gets its ask.
-    const laterDeps = { ...deps, countAsks: async () => created.length - 1 };
-    const second = await runWatchers(NOW, 'live', laterDeps, 'live');
-    expect(created).toEqual(['a1', 'a2']);
-    expect(second.nudgesCreated).toBe(1);
-  });
-
   test('live: a reachable tech gets a NUDGE — no manager item, no push; context carries the whole story', async () => {
     const created: Array<Record<string, unknown>> = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
@@ -599,28 +562,6 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(flagged).toEqual(['a1', 'a1', 'a1', 'a1']);
   });
 
-  test('live: budget exhausted → the gap DEFERS (no nudge, no manager item); under budget → nudge', async () => {
-    const outcomes: string[] = [];
-    for (const asks of [NUDGE_BUDGET_PER_PERSON_DAY, NUDGE_BUDGET_PER_PERSON_DAY - 1]) {
-      const summary = await runWatchers(NOW, 'live', baseDeps({
-        listOverdue: async () => [visit({ technician_id: 'tech-1' })],
-        listTeam: async () => [boundTech()],
-        countAsks: async () => asks,
-        createNudge: async () => {
-          outcomes.push('nudged');
-          return nudgeRow({});
-        },
-        flagGap: async () => {
-          outcomes.push('flagged');
-          return openItem({});
-        },
-      }), 'live');
-      expect(summary.tenantErrors).toBe(0);
-      expect(summary.itemsOpened).toBe(0);
-    }
-    expect(outcomes).toEqual(['nudged']); // at-budget deferred silently; under-budget asked
-  });
-
   test('a nudged gap is not fresh: the second dedup store feeds the pre-filter in both modes', async () => {
     const summary = await runWatchers(NOW, 'shadow', baseDeps({
       listOverdue: async () => [visit({ id: 'a1' }), visit({ id: 'a2', job_id: 'j2' })],
@@ -644,9 +585,6 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
       },
       createNudge: async () => {
         throw new Error('nudge-shadow must not create nudges');
-      },
-      countAsks: async () => {
-        throw new Error('nudge-shadow must not read budgets');
       },
     }), 'shadow');
     expect(summary.tenantErrors).toBe(0);

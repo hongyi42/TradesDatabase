@@ -409,6 +409,14 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   point. Caught on the s6 canary (cold sandbox, zero live impact — this is exactly why the canary
   goes first). Sequence that works, now in bootstrap-box.sh: upload → `plugins install --force` →
   `doctor --fix` (repairs the hash) → `gateway restart` → verify via the startup line.
+
+- **`gateway restart` does NOT re-render config from `sandboxes.json`** (proven 2026-08-19). s8
+  carries a long-standing discrepancy — onboarded record `fireworks-prod`/`glm-5p2-fast`, live
+  gateway `nvidia-prod`/`z-ai/glm-5.2` — and a full `nemoclaw s8 gateway restart` left BOTH sides
+  byte-identical. A restart therefore CANNOT flip a seat onto a stale or suspended provider; that
+  fear is unfounded. The stale row is only a trap for whatever genuinely re-renders (rebuild,
+  re-onboard). Restarts stay mandatory for a different reason: gateways cache `tools/list` per
+  process, so a tool DESCRIPTION edit reaches nobody until each seat restarts.
 - **DOCTRINE — the manager is NEVER a verification layer for dates (owner decision, 2026-08-11).**
   "The manager would trust that the AI agent is able to get the dates right, and people rarely
   check when it comes to dates." Trust transference is immediate: a person who delegates
@@ -882,6 +890,26 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   Stage 1's voice inserts the technician-first rung when it lands. Money-inference Phase 3 note:
   its quiet-open-jobs nudge must become this framework's SECOND detector (shared tenant loop,
   same step) — never a parallel copy.
+- **The ladder cannot see the MONEY LEDGER — and a money-only answer leaves the nudge open**
+  (defect found live 2026-08-19, NOT fixed). `hasActivitySince` builds its per-job activity map
+  from `raw_captures` + `visits` only. So when an operator answers a nudge with a fact the agent
+  records as MONEY (`payment_received`, `material_cost`), nothing lands in either table, the nudge
+  never closes, and at `asked_at + 48h` it escalates a manager item asserting the person "hasn't
+  heard back" — a FALSE statement about a named human. Same root cause in two more places: a
+  manager recording the cost does not close a `job_cost_gap` (its `filled` never re-reads the
+  ledger, though the DETECTOR checks it before creating), and `job_cost_gap` review items never
+  auto-resolve (the open-item sweep reads `findOpenGaps(tenantId, 'overdue_visit_gap')` only).
+  All three are one design problem — fix them together, not as three patches. Research:
+  `thoughts/shared/research/2026-08-19-nudge-money-answer-blindspot.md`. **A live specimen is
+  deliberately being kept OPEN on the pilot (user decision) as the rung-2 escalation test — it
+  fires a knowingly-false manager item ~2026-08-21 19:05Z. Do not clean it up and do not report
+  that item as a new bug.** Separately fixed in PR #156 (they did NOT share this root cause): the
+  cost detector skipped `paid` jobs entirely — `deriveStatusTarget` auto-walks a job to `paid`
+  once payment clears, and the detector only looks 3h after the visit ends, so a
+  paid-at-the-door job was past the filter before it ever ran — and a CORRECTED `material_cost`
+  still suppressed the gap forever, so fixing a typo buried that job (`subject_ref` is the job
+  and `uq_nudges_subject_ever` is any-status).
+
 - **Stage 1 — the voice — is BUILT (2026-08-16, branch `feat/spine-voice`, plan
   `2026-08-15-feature-B-intelligent-spine-stage1-voice.md`; NOT yet deployed).** The ladder lives
   inside step 8: a fresh gap with a reachable technician (active + Telegram + sandbox + host,

@@ -371,51 +371,51 @@ describe('recordModelUsage', () => {
     return { seen, append: async (rows: CostEventInput[]) => void seen.push(rows) };
   };
 
-  test('bills the DEFAULT vendor (GLM on DeepInfra) as two token events', async () => {
+  test('bills the DEFAULT vendor (GLM on Fireworks) as two token events', async () => {
     const { seen, append } = capture();
     await recordModelUsage(
-      'deepinfra',
+      'fireworks',
       { inputTokens: 4182, outputTokens: 97 },
       { tenantId: tenantA, technicianRef: 'tech-1' },
       { append },
     );
     expect(seen[0].map((r) => [r.provider, r.sku, r.quantity, r.unit, r.method])).toEqual([
-      ['deepinfra', 'glm-5.2-input', 4182, 'token', 'measured'],
-      ['deepinfra', 'glm-5.2-output', 97, 'token', 'measured'],
+      ['fireworks', 'glm-5.2-fast-input', 4182, 'token', 'measured'],
+      ['fireworks', 'glm-5.2-fast-output', 97, 'token', 'measured'],
     ]);
   });
 
   // MODEL_PROVIDER=anthropic is the documented env-var rollback, so its SKUs must
   // stay priced too — a flip that billed the wrong vendor would be invisible.
-  // prompt_tokens INCLUDES the cached portion, and DeepInfra prices cached input
-  // at $0.18/M against $0.93/M fresh. Billing the whole lot at the input rate
+  // prompt_tokens INCLUDES the cached portion, and Fireworks prices cached input
+  // at $0.21/M against $2.10/M fresh. Billing the whole lot at the input rate
   // would over-report the largest measured line by the cache-hit share (~25%).
   test('splits cached input onto its own cheaper SKU', async () => {
     const { seen, append } = capture();
     await recordModelUsage(
-      'deepinfra',
+      'fireworks',
       { inputTokens: 1000, cachedInputTokens: 400, outputTokens: 50 },
       { tenantId: tenantA },
       { append },
     );
     expect(seen[0].map((r) => [r.sku, r.quantity])).toEqual([
-      ['glm-5.2-input', 600], // 1000 total - 400 cached
-      ['glm-5.2-cached-input', 400],
-      ['glm-5.2-output', 50],
+      ['glm-5.2-fast-input', 600], // 1000 total - 400 cached
+      ['glm-5.2-fast-cached-input', 400],
+      ['glm-5.2-fast-output', 50],
     ]);
   });
 
   test('with no cache figure reported, everything stays on the input line', async () => {
     const { seen, append } = capture();
-    await recordModelUsage('deepinfra', { inputTokens: 1000, outputTokens: 50 }, { tenantId: tenantA }, { append });
+    await recordModelUsage('fireworks', { inputTokens: 1000, outputTokens: 50 }, { tenantId: tenantA }, { append });
     expect(seen[0].map((r) => [r.sku, r.quantity])).toEqual([
-      ['glm-5.2-input', 1000],
-      ['glm-5.2-output', 50],
+      ['glm-5.2-fast-input', 1000],
+      ['glm-5.2-fast-output', 50],
     ]);
   });
 
   // 'openai' is a WIRE FORMAT, not a company. Keying the ledger on it would bill
-  // an NVIDIA failover against a DeepInfra invoice that never arrives.
+  // one vendor's traffic against another vendor's invoice that never arrives.
   test('an unmapped vendor records nothing and says so', async () => {
     const { seen, append } = capture();
     await recordModelUsage('openai', { inputTokens: 1, outputTokens: 1 }, { tenantId: tenantA }, { append });
@@ -495,7 +495,7 @@ describe('recordModelUsage', () => {
     const spy = console.error;
     console.error = (m: unknown) => void errs.push(m);
     try {
-      await recordModelUsage('deepinfra', undefined, { tenantId: tenantA }, { append });
+      await recordModelUsage('fireworks', undefined, { tenantId: tenantA }, { append });
     } finally {
       console.error = spy;
     }
@@ -505,13 +505,13 @@ describe('recordModelUsage', () => {
 
   test('no context means no attribution and no write', async () => {
     const { seen, append } = capture();
-    await recordModelUsage('deepinfra', { inputTokens: 5, outputTokens: 5 }, undefined, { append });
+    await recordModelUsage('fireworks', { inputTokens: 5, outputTokens: 5 }, undefined, { append });
     expect(seen).toHaveLength(0);
   });
 
   test('a failing appender is swallowed, not propagated', async () => {
     await expect(
-      recordModelUsage('deepinfra', { inputTokens: 1, outputTokens: 1 }, { tenantId: tenantA }, {
+      recordModelUsage('fireworks', { inputTokens: 1, outputTokens: 1 }, { tenantId: tenantA }, {
         append: async () => { throw new Error('db down'); },
       }),
     ).resolves.toBeUndefined();

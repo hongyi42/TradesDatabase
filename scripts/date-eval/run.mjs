@@ -38,9 +38,9 @@
 //      against the pilot; it should never start because a command was
 //      pasted twice.
 //   2. The model is checked BEFORE the first question and again after EVERY
-//      question. If the fleet fails over mid-run (DeepInfra runs out of
-//      balance roughly monthly and NOTHING alerts on it), the run STOPS on the
-//      spot and says so. A run spanning two providers measures neither: the
+//      question. If the route changes mid-run (a balance-out or suspension —
+//      since 2026-08-19 the ops notifier DOES alert on this, see
+//      docs/inference-recovery-runbook.md), the run STOPS on the spot and says so. A run spanning two providers measures neither: the
 //      2026-07-31 latency A/B was ruined exactly this way.
 //
 // Resumable: answered ids are skipped, so an aborted run continues with
@@ -302,8 +302,10 @@ for (const item of remaining) {
     console.error(`  after ${asked} question(s); last completed: ${item.id}`);
     console.error(`\n  Results so far are kept and are still valid — they were all asked`);
     console.error(`  on ${startRoute.model}. Nothing after this point would be.`);
-    console.error(`\n  Most likely cause: the DeepInfra balance ran out (HTTP 402). Check it`);
-    console.error(`  first — the medic fails the fleet over silently and nothing alerts.`);
+    console.error(`\n  Most likely cause: the Fireworks balance ran out (HTTP 402) or the`);
+    console.error(`  account is suspended (412). Check billing FIRST — see`);
+    console.error(`  docs/inference-recovery-runbook.md. There is no failover: the medic`);
+    console.error(`  holds the route and reports, it does not reroute.`);
     console.error(`  Once the route is back, resume with the SAME command (answered`);
     console.error(`  questions are skipped):`);
     console.error(`    npm run date-eval:run -- --dir ${DIR} --yes\n`);

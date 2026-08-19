@@ -10,11 +10,6 @@ import { checkPairing } from '../composio/pairing.js';
 import { expireOffboarding, type ExpireResult } from '../composio/offboarding.js';
 import { ensurePersonSession } from '../composio/sessions.js';
 import { runLogIngestion, type LogIngestSummary } from '../composio/logIngest.js';
-import {
-  billingApiKey,
-  collectDeepinfraUsage,
-  type CollectResult,
-} from '../model/deepinfraUsage.js';
 import { runWatchers, type WatchersSummary } from './watchers.js';
 import { runTeamLeadCompose, type ComposeSummary } from '../teamLead/compose.js';
 import { hasModelCredentials } from '../model/forcedTool.js';
@@ -23,8 +18,8 @@ import { hasModelCredentials } from '../model/forcedTool.js';
 // */5 * * * *; Render guarantees at most one concurrent run). CADENCE GATE
 // (user decision 2026-08-16): the schedule is 5-minutely for the WATCHER lane
 // only — steps 1-7 still run on quarter-hour ticks (getUTCMinutes() % 15 < 5,
-// tolerant of small firing delays; stateless, no new env), because 4 and 6
-// call outside vendors every time they run and gain nothing from frequency,
+// tolerant of small firing delays; stateless, no new env), because step 4
+// calls an outside vendor every time it runs and gains nothing from frequency,
 // while step 8 is SQL-only and wants the faster pulse (auto-resolve clears a
 // flagged gap within ~5 min of the field note arriving). Everything here is a
 // sweep over durable state, so a missed or doubled tick is safe:
@@ -36,9 +31,9 @@ import { hasModelCredentials } from '../model/forcedTool.js';
 // (4) ingest Composio execution logs into L1 (the manager-action audit; same
 //     key gate, overlapping 60-min window so a missed tick loses nothing);
 // (5) replay Brave searches from web_requests into the cost ledger;
-// (6) pull the DeepInfra bill from DeepInfra's billing API into infra_costs, so
-//     the largest (allocated) cost line does not depend on someone remembering
-//     to retype an invoice — an omission that renders as $0, i.e. "no spend";
+// (6) RETIRED 2026-08-19 — was the DeepInfra bill pull. The step numbers below are kept
+//     as-is rather than renumbered: the cron's JSON FIELD NAMES are the stable reference,
+//     and renumbering would silently invalidate every runbook that cites a step number;
 // (7) recompute the current month's per-tenant cost rollup (idempotent);
 // (8) the watcher (plan 2026-08-15 features A+B): deterministic overdue-visit
 //     gap detection + the Stage-1 ladder — runs EVERY tick, gated on
@@ -53,12 +48,8 @@ import { hasModelCredentials } from '../model/forcedTool.js';
 //     Every tick, but triple-gated: NUDGES_MODE='live' (a frozen ladder must
 //     not keep composing leftovers), model credentials present (the step-3/4
 //     key idiom), and per-row attempt caps inside the runner.
-// Steps 5-7 report `skipped` — not an error — when the cost tables are absent,
-// so a deploy that lands before the migration does not turn the cron red. Step 6
-// also skips when no DeepInfra billing key is resolvable (e.g. after a failover
-// to NVIDIA), which is a normal state and not a fault.
-// ORDER MATTERS: 6 runs BEFORE 7, so a freshly collected invoice is allocated on
-// the same tick rather than a quarter-hour later.
+// Steps 5 and 7 report `skipped` — not an error — when the cost tables are absent,
+// so a deploy that lands before the migration does not turn the cron red.
 // (The schedule-sheet mirror step retired with the Telegram-schedule series
 // Plan 1 — the DB owns the schedule; the sheet is no longer an input.)
 // Each step is isolated: one failing step is REPORTED (ok:false → exit 1 →
@@ -73,13 +64,9 @@ export interface LifecycleDeps {
   backfillBrave?: typeof backfillBraveCostEvents;
   latestBrave?: typeof latestBraveCostEventAt;
   rollup?: typeof rollupCosts;
-  collectDeepinfra?: typeof collectDeepinfraUsage;
-  // Separate seam from collectDeepinfra: tests must be able to exercise the
-  // skip-when-unconfigured branch without setting real env vars.
-  hasBillingKey?: () => boolean;
   runWatchers?: typeof runWatchers;
   composeNudges?: typeof runTeamLeadCompose;
-  // Same seam idea as hasBillingKey: the skip branch must be testable keyless.
+  // Seam so the skip branch is testable without setting a real key.
   hasModelKey?: () => boolean;
 }
 
@@ -95,7 +82,6 @@ export interface LifecycleSummary {
     | { stepError: string };
   logIngest: LogIngestSummary | { skipped: string } | { stepError: string };
   braveBackfill: { scanned: number; since: string } | { skipped: string } | { stepError: string };
-  deepinfraUsage: CollectResult | { skipped: string } | { stepError: string };
   costRollup:
     | { months: string[]; rowsWritten: number; tenantsTouched: number; unpricedEvents: number }
     | { skipped: string }
@@ -153,7 +139,6 @@ export async function runLifecycle(
   let sessions: LifecycleSummary['sessions'] = OFF_CADENCE;
   let logIngest: LifecycleSummary['logIngest'] = OFF_CADENCE;
   let braveBackfill: LifecycleSummary['braveBackfill'] = OFF_CADENCE;
-  let deepinfraUsage: LifecycleSummary['deepinfraUsage'] = OFF_CADENCE;
   let costRollup: LifecycleSummary['costRollup'] = OFF_CADENCE;
 
   if (heavyTick) {
@@ -270,32 +255,19 @@ export async function runLifecycle(
     if (!isMissingCostLedger(err)) ok = false;
   }
 
-  // 6. DeepInfra bill — collected from the vendor, not retyped by a human.
-  // Runs BEFORE the rollup so a newly collected figure is allocated on this same
-  // tick. Writes only the amount and source; an operator's allocation choice on
-  // an existing row is preserved (see recordVendorInvoiceAmount).
-  try {
-    // No resolvable billing key is a NORMAL state, not a fault: the fallback to
-    // INFERENCE_API_KEY deliberately declines after a failover to NVIDIA, since
-    // that key cannot read a DeepInfra account and would 401 every 15 minutes.
-    if (!(deps.hasBillingKey ?? (() => !!billingApiKey()))()) {
-      deepinfraUsage = { skipped: 'no DeepInfra billing key configured' };
-    } else {
-      deepinfraUsage = await (deps.collectDeepinfra ?? collectDeepinfraUsage)(nowIso);
-    }
-  } catch (err) {
-    deepinfraUsage = isMissingCostLedger(err)
-      ? { skipped: 'cost ledger not migrated here yet' }
-      : { stepError: msg(err) };
-    if (!isMissingCostLedger(err)) ok = false;
-  }
+  // (The DeepInfra bill pull lived here until 2026-08-19. DeepInfra was retired as an
+  // inference provider, so there was no longer an invoice for it to collect. NOTE the gap it
+  // leaves: nothing collects the FIREWORKS invoice, so the allocated agent-inference line
+  // reads $0 until a collector exists — which is the exact silent-underreport the old
+  // collector was written to prevent. Its historical rows are untouched and still priced;
+  // `cost_rates` keeps its deepinfra entries for precisely that reason.)
 
   // 7. Cost rollup — units x rates, plus the monthly-bill allocation, for the
   // CURRENT month. Idempotent (it recomputes the period), so every tick simply
   // refreshes what the dashboard reads.
   try {
     // BOTH the current month and the previous one. Invoices arrive after the
-    // month they cover — the July DeepInfra bill is entered in August — so a
+    // month they cover — a July inference bill is entered in August — so a
     // current-month-only rollup would never allocate a completed month's
     // inference cost at all, which is the entire allocated-cost mechanism.
     // Rate corrections land late for the same reason. The recompute is
@@ -380,7 +352,6 @@ export async function runLifecycle(
     sessions,
     logIngest,
     braveBackfill,
-    deepinfraUsage,
     costRollup,
     watchers,
     teamLeadCompose,

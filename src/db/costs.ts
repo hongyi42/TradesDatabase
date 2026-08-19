@@ -100,11 +100,11 @@ export interface RecorderDeps {
 export interface ModelUsage {
   inputTokens?: number;
   outputTokens?: number;
-  // Cached prompt tokens, when the provider reports them. DeepInfra prices these
-  // at $0.18/M against $0.93/M fresh — a 5.2x difference on the line that
+  // Cached prompt tokens, when the provider reports them. Fireworks prices these
+  // at $0.21/M against $2.10/M fresh — a 10x difference on the line that
   // dominates the bill (recorded input:output ratio ~230:1). Billing them at the
   // full input rate would over-report the largest measured figure by roughly the
-  // cache-hit share, which engineering-memory puts at ~25%.
+  // cache-hit share, which on our doctrine-prefix call shape is most of it.
   cachedInputTokens?: number;
 }
 
@@ -117,18 +117,19 @@ export interface ModelUsage {
 //
 // Keyed on the LEDGER VENDOR, not the wire format. 'openai' is a protocol, not a
 // company: INFERENCE_BASE_URL decides who actually serves (and bills) the
-// request, and NVIDIA is the documented failover. Keying on activeProvider()
-// would keep stamping 'deepinfra' after a failover and price NVIDIA traffic
-// against a DeepInfra invoice that never arrives — precisely the switch the
-// sibling provider-readiness plan is built around.
+// request. Keying on activeProvider() instead would stamp one vendor's name on
+// another vendor's traffic the moment the endpoint is repointed — and the bill
+// it was priced against never arrives. (There is no failover lane as of
+// 2026-08-19; the map still matters because the ENDPOINT can be repointed.)
 export const MODEL_SKUS: Record<string, { provider: string; input: string; output: string; cachedInput?: string }> = {
-  deepinfra: {
-    provider: 'deepinfra',
-    input: 'glm-5.2-input',
-    output: 'glm-5.2-output',
-    cachedInput: 'glm-5.2-cached-input',
-  },
-  // The documented failover (ledgerVendor derives 'nvidia' from the resolved
+  // 'deepinfra' was removed here 2026-08-19 when the provider was retired. Its rows in
+  // cost_rates DELIBERATELY REMAIN: this map is the WRITE path (which SKU to stamp on a new
+  // event), while the rollup prices HISTORY by joining cost_events to cost_rates in SQL.
+  // Dropping the rates would make July/August un-priceable and, worse, break the netting
+  // below — the measured spend would stop cancelling against the DeepInfra invoice and the
+  // whole $43.13 would be allocated on top of tokens already counted.
+  //
+  // nvidia — a lingering registration nothing routes to (ledgerVendor derives it from the resolved
   // INFERENCE_BASE_URL host). Missing until 2026-08-06, which made failover
   // spend INVISIBLE: recordModelUsage threw on the unmapped vendor (swallowed),
   // and the rollup's INNER join on cost_rates would have dropped any event
@@ -324,7 +325,8 @@ export interface InfraCostInput {
   source?: 'invoice' | 'estimate';
 }
 
-// Flat monthly bills (Lightsail, Render, Supabase, and the DeepInfra invoice).
+// Flat monthly bills (Lightsail, Render, Supabase, and the agent-inference invoice
+// — DeepInfra's until 2026-08-19; no Fireworks collector exists yet, see lifecycle.ts).
 // Keyed on (vendor, item, period_start) so re-entering a month's bill corrects
 // it rather than double-counting — these are hand-entered, and a typo re-entered
 // as a second row would inflate every tenant's allocated share.

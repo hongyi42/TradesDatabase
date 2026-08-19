@@ -56,7 +56,10 @@ function openedText(service: string, host: string, detail?: Record<string, unkno
   const route = detail?.route;
   if (typeof route === 'string' && route.trim()) lines.push(`route: ${route.trim()}`);
   lines.push('Agents may be unable to answer.');
-  lines.push('Runbook: docs/inference-recovery-runbook.md');
+  // No `.md` — Telegram auto-linkifies "…runbook.md" into a tappable link, because .md is
+  // Moldova's TLD and the path parses as a domain. It resolves to nothing, and a dead link
+  // is the worst thing to hand someone mid-incident (seen live in the 2026-08-19 drill).
+  lines.push('Runbook: docs/inference-recovery-runbook');
   return lines.join('\n');
 }
 

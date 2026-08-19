@@ -128,8 +128,8 @@ try {
     tenant: TENANT,
     today,
     timezone: tz,
-    // DeepInfra's id spelling, because that is what production routes to
-    // (since 2026-07-06). The old default here was `z-ai/glm-5.2` — NVIDIA's
+    // Fireworks' id spelling, because that is what production routes to
+    // (since 2026-08-15). The old default here was `z-ai/glm-5.2` — NVIDIA's
     // spelling of the SAME model — so run.mjs's expected-model gate refused
     // every run until someone set DATE_EVAL_EXPECT_MODEL, and the refusal
     // looked like a fleet problem rather than a stale default. nvidia-prod was
@@ -163,7 +163,14 @@ try {
   console.log(`\n  ${n} questions   ${Object.entries(byCat).map(([k, v]) => `${k} ${v}`).join('   ')}`);
   console.log(`  phase coverage:  ${Object.entries(byPhase).map(([k, v]) => `${k} ${v}`).join('   ')}`);
   console.log(`\n  estimated wall clock: ~${mins} min   (~${secsEach}s per turn, run serially)`);
-  console.log(`  estimated spend:      ~${(n * 0.012).toFixed(2)} USD at GLM-5.2 DeepInfra rates (~35k cached-heavy tokens/turn)`);
+  // A RANGE, not a point estimate. At ~35k tokens/turn on Fireworks-fast
+  // ($2.10/M input, $0.21/M cached, $6.60/M output) the bill is dominated by how
+  // much of the doctrine prefix hits cache — and FLEET-side that is replica luck,
+  // because the gateway cannot inject prompt_cache_key. ~$0.013/turn at a 95% hit
+  // rate, ~$0.076 at zero. Quoting only the optimistic figure would understate a
+  // full run by 6x, which is how an eval quietly becomes expensive.
+  console.log(`  estimated spend:      ~${(n * 0.013).toFixed(2)}–${(n * 0.076).toFixed(2)} USD at GLM-5.2 Fireworks-fast rates`);
+  console.log(`                        (~35k tokens/turn; the spread is cache-hit luck — see engineering-memory)`);
   console.log(`\n  manifest → ${join(OUT_DIR, 'manifest.json')}`);
   console.log(`\n  TO RUN (this is the step that spends money):`);
   console.log(`    npm run date-eval:run -- --dir ${OUT_DIR} --yes\n`);

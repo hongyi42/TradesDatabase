@@ -287,7 +287,7 @@ for (const scenario of runnable) {
   const route = currentRoute();
   if (route.provider !== startRoute.provider || route.model !== startRoute.model) {
     console.error(`\n  STOPPED — the fleet failed over mid-run (${startRoute.provider}/${startRoute.model} → ${route.provider}/${route.model}).`);
-    console.error(`  Results so far are valid; nothing after this point would be. Check the DeepInfra balance first.\n`);
+    console.error(`  Results so far are valid; nothing after this point would be. Check the Fireworks balance first (docs/inference-recovery-runbook.md).\n`);
     break;
   }
 }

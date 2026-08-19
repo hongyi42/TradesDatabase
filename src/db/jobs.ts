@@ -176,8 +176,8 @@ export async function listJobsWithCustomerByIds(
   return (data ?? []) as JobWithCustomer[];
 }
 
-// Detector #2's candidates (plan 2026-08-19): jobs whose WORK is finished but
-// whose parts cost was never recorded.
+// Detector #2's candidates (plan 2026-08-19): jobs whose WORK is finished
+// ('completed', 'invoiced' or 'paid') but whose parts cost was never recorded.
 //
 // Anchored on the ASSIGNMENT's end, not on a job status change, for three
 // reasons: no job-status history exists (`jobs.updated_at` is bumped by any
@@ -210,7 +210,15 @@ export async function listCostGapCandidates(
     .eq('status', 'confirmed')
     .gte('ends_at', endedFromNaive)
     .lt('ends_at', endedToNaive)
-    .in('jobs.status', ['completed', 'invoiced'])
+    // 'paid' BELONGS here (final-review finding): deriveStatusTarget walks a job
+    // completed -> invoiced -> paid automatically the moment a payment clears the
+    // balance, and this window only opens 3h after the visit ends — so a job the
+    // customer settles on the spot is ALREADY 'paid' before the detector first
+    // looks, and the 72h window then closes on it unasked, forever. It is also the
+    // case where the gap costs most: revenue is known exactly, so the missing cost
+    // is the only thing between the firm and knowing what the job made.
+    // 'cancelled'/'declined' stay out — no work happened, so nothing was spent.
+    .in('jobs.status', ['completed', 'invoiced', 'paid'])
     .not('technician_id', 'is', null)
     // DESCENDING, deliberately: the dedup below keeps the FIRST row per job, so
     // this makes that the job's MOST RECENT in-window visit. Ascending asked

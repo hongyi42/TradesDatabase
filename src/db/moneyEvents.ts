@@ -48,7 +48,10 @@ const AMOUNTLESS_KINDS: ReadonlySet<MoneyEventKind> = new Set([
 // void" would be accepted and change nothing — the remedy for a mistaken void
 // is RE-ISSUING the cancelled entry (review finding).
 const MUST_REFERENCE: ReadonlySet<MoneyEventKind> = new Set(['invoice_voided', 'correction']);
-const NEGATING_KINDS: ReadonlySet<MoneyEventKind> = MUST_REFERENCE;
+// Exported so "is this row still live?" has exactly ONE definition — the fold
+// (negatedIds) and the cost probe (listJobIdsWithCostEvents) both read it, so a
+// new negating kind cannot land in one and be silently forgotten in the other.
+export const NEGATING_KINDS: ReadonlySet<MoneyEventKind> = MUST_REFERENCE;
 
 export interface AppendMoneyEventInput {
   tenantId: string;
@@ -212,23 +215,75 @@ export async function listMoneyEventsForJobs(
   return data ?? [];
 }
 
-// Which of these jobs already have a cost recorded? The batched, in()-bounded
-// shape the watcher's sweep needs (the listNudgedSubjectRefs pattern — never a
-// tenant-wide scan). Kind-scoped: only 'material_cost' counts as "cost
-// recorded", so a job with invoices but no cost is still a gap.
+// Which of these jobs already have a LIVE cost recorded? The batched,
+// in()-bounded shape the watcher's sweep needs (the listNudgedSubjectRefs
+// pattern — never a tenant-wide scan). Kind-scoped: only 'material_cost'
+// counts as "cost recorded", so a job with invoices but no cost is still a gap.
+//
+// LIVE is the load-bearing word (final-review finding). A mistaken cost is
+// never edited, it is CANCELLED by a new row pointing at it — the same fold
+// summarizeMoney applies. A raw kind='material_cost' probe counted a cancelled
+// row as real, so correcting a typo suppressed the gap FOREVER: subject_ref is
+// the job and uq_nudges_subject_ever is any-status, so that job could never be
+// asked again. Doing the right thing was what buried it.
 export async function listJobIdsWithCostEvents(
   tenantId: string,
   jobIds: string[],
 ): Promise<string[]> {
   if (jobIds.length === 0) return []; // PostgREST `in.()` with zero values errors
-  const { data, error } = await getClient()
-    .from('money_events')
-    .select('job_id')
-    .eq('tenant_id', tenantId)
-    .eq('kind', 'material_cost')
-    .in('job_id', jobIds);
-  if (error) throw new Error(`listJobIdsWithCostEvents failed: ${error.message}`);
-  return [...new Set((data ?? []).map((r) => r.job_id))];
+  const PAGE = 1000;
+  // Chunked: costIds feeds an `in.()` and a very large list would blow the URL,
+  // which PostgREST answers with an error rather than a truncation.
+  const CHUNK = 500;
+
+  // (1) Every material_cost row on these jobs — id AND job_id, because step 2
+  // needs the ids to ask what was cancelled.
+  const costRows: { id: number; job_id: string }[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await getClient()
+      .from('money_events')
+      .select('id, job_id')
+      .eq('tenant_id', tenantId)
+      .eq('kind', 'material_cost')
+      .in('job_id', jobIds)
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`listJobIdsWithCostEvents failed: ${error.message}`);
+    costRows.push(...((data ?? []) as { id: number; job_id: string }[]));
+    if (!data || data.length < PAGE) break;
+  }
+  if (costRows.length === 0) return [];
+
+  // (2) The rows that CANCEL any of them. Matched on corrects_event_id rather
+  // than job_id: appendMoneyEvent refuses a reference to another job's event
+  // ("not an event on this job"), but the COLUMN carries no such constraint —
+  // it is a bare FK to money_events.id — so matching the id directly is exact
+  // without depending on that application-layer invariant holding for every
+  // row ever written.
+  const costIds = costRows.map((r) => r.id);
+  const negated = new Set<number>();
+  for (let i = 0; i < costIds.length; i += CHUNK) {
+    const slice = costIds.slice(i, i + CHUNK);
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('money_events')
+        .select('corrects_event_id')
+        .eq('tenant_id', tenantId)
+        .in('kind', [...NEGATING_KINDS])
+        .in('corrects_event_id', slice)
+        .order('corrects_event_id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listJobIdsWithCostEvents failed: ${error.message}`);
+      for (const r of (data ?? []) as { corrects_event_id: number | null }[]) {
+        if (r.corrects_event_id != null) negated.add(r.corrects_event_id);
+      }
+      if (!data || data.length < PAGE) break;
+    }
+  }
+
+  // A job is "already costed" only if it still has a LIVE cost row. Two
+  // cancelled rows and one live one still counts; all cancelled does not.
+  return [...new Set(costRows.filter((r) => !negated.has(r.id)).map((r) => r.job_id))];
 }
 
 export interface MoneySummary {
@@ -261,7 +316,7 @@ const isProgress = (e: MoneyEvent): boolean =>
 function negatedIds(events: MoneyEvent[]): Set<number> {
   const out = new Set<number>();
   for (const e of events) {
-    if ((e.kind === 'invoice_voided' || e.kind === 'correction') && e.corrects_event_id != null) {
+    if (NEGATING_KINDS.has(e.kind) && e.corrects_event_id != null) {
       out.add(e.corrects_event_id);
     }
   }

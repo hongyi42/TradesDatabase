@@ -41,8 +41,11 @@ async function mkJob(status: JobStatus, tenant = tenantId, customer = customerId
     in_progress: ['in_progress'],
     completed: ['in_progress', 'completed'],
     invoiced: ['in_progress', 'completed', 'invoiced'],
+    paid: ['in_progress', 'completed', 'invoiced', 'paid'],
     cancelled: ['cancelled'],
+    declined: ['declined'],
   };
+  if (status !== 'open' && !(status in path)) throw new Error(`mkJob: no path for '${status}'`);
   for (const hop of path[status] ?? []) await updateJobStatus(job.id, hop);
   return job.id;
 }
@@ -85,7 +88,9 @@ describe('listCostGapCandidates — detector #2 candidates', () => {
   test('only FINISHED jobs qualify — the embedded status filter really filters', async () => {
     // If `.in('jobs.status', …)` were written wrong it would silently match
     // everything, and the detector would chase jobs still being worked on.
-    for (const status of ['open', 'in_progress', 'cancelled'] as JobStatus[]) {
+    // 'cancelled'/'declined' are excluded for the opposite reason: no work
+    // happened, so there is nothing to have been spent.
+    for (const status of ['open', 'in_progress', 'cancelled', 'declined'] as JobStatus[]) {
       const jobId = await mkJob(status);
       await mkAssignment(jobId, techA, nextSlot());
     }
@@ -96,6 +101,22 @@ describe('listCostGapCandidates — detector #2 candidates', () => {
 
     const rows = await listCostGapCandidates(tenantId, FROM, TO);
     expect(rows.map((r) => r.jobId).sort()).toEqual([completed, invoiced].sort());
+  });
+
+  test("a PAID job is still a candidate — the paid-on-the-spot job is the common case", async () => {
+    // REGRESSION (final-review finding): the filter used to be
+    // ('completed','invoiced') only. deriveStatusTarget walks a job to 'paid'
+    // AUTOMATICALLY once a payment clears the balance, and this detector only
+    // looks 3h after the visit ends — so a customer who taps a card at the door
+    // put the job beyond the detector's reach before it ever ran, and the 72h
+    // window then closed on it unasked, permanently. Paid jobs are also where
+    // the gap hurts most: revenue is known exactly, so the missing cost is the
+    // only thing between the firm and knowing what the job made.
+    const paid = await mkJob('paid');
+    await mkAssignment(paid, techA, nextSlot());
+
+    const ids = (await listCostGapCandidates(tenantId, FROM, TO)).map((r) => r.jobId);
+    expect(ids).toContain(paid);
   });
 
   test('the MOST RECENT visit wins — the right technician is asked', async () => {

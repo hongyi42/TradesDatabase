@@ -1853,6 +1853,29 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
 The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, architecture-memory
 "Gotchas") — this is the index of what exists, so you know to go look.
 
+**Working in a second worktree (local Supabase stacks):**
+- **`npx supabase stop` targets the `project_id` in the CURRENT directory's
+  `supabase/config.toml` — so running it from a worktree that never had
+  `scripts/second-stack.sh` applied STOPS THE PRIMARY STACK, not that worktree's.**
+  `second-stack.sh` leaves the rewritten `project_id`/ports *uncommitted*, so any worktree where
+  that edit was reverted (or never made) reads `project_id = "TradesDatabase"` and the CLI
+  cheerfully stops the main checkout's stack out from under whoever is using it. Hit twice on
+  2026-08-19, once while a concurrent session was mid-`npm test`. **Always
+  `grep -m1 '^project_id' supabase/config.toml` before `supabase stop|start`**, and read the
+  CLI's closing line — it names the project it acted on
+  (`Local data are backed up to docker volume ... project=<id>`), which is the cheapest
+  confirmation you stopped what you meant to. Recovery is `npx supabase start` from the main
+  checkout; the volume-backed data survives a plain `stop` (only `--no-backup` discards it).
+- **Concurrent local stacks are the top cause of phantom test failures on this machine.** Four
+  stacks = 46 containers and the Docker VM pinned near 1200% CPU on a 14-core Mac; DB-backed
+  suites then blow their 10s `beforeAll` / `pg.connect()` hook timeouts and fail in a different
+  combination on every run. The tell is **failures that move between runs** and a suite time that
+  balloons (33s → 135s for the same tree). Before believing any red suite, check
+  `docker ps -q | wc -l` and per-stack CPU
+  (`docker stats --no-stream`); a comments-only diff cannot break 15 tests. Stop stacks belonging
+  to merged/abandoned worktrees — verify with
+  `git merge-base --is-ancestor $(git -C <wt> rev-parse HEAD) origin/main` first.
+
 **Working on the agent boxes:**
 - **A tool DESCRIPTION change is not deploy-only; a result-side field is.** Gateways cache
   `tools/list` per process, and descriptions are part of that payload — so editing one needs

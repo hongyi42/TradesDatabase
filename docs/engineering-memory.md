@@ -195,6 +195,16 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   live-turn verify. Fix = raise the monthly limit at fireworks.ai/account/billing; prevention =
   set the cap with real headroom and check it like a prepaid balance (the balance-out doctrine
   applies to spend CAPS, not just prepaid credit).**
+  **↳ When the agents go dead, follow
+  [docs/inference-recovery-runbook.md](inference-recovery-runbook.md)** — the single-provider
+  recovery procedure (2026-08-19). It supersedes the ad-hoc steps in this section, and it
+  CORRECTS the 412 reading above against the vendor's own error-code page
+  (https://docs.fireworks.ai/guides/inference-error-codes, verified 2026-08-19): Fireworks
+  documents **402** as "not on a paid plan or has exceeded usage limits" and **412** as
+  "account is suspended or there's an issue with account status … also occurs when attempting
+  to invoke a LoRA model that failed to load". So 412 is an ACCOUNT-STATUS code, not
+  specifically a spend cap, and it has a non-billing cause — which matters because the fleet
+  routes through a *router* id. Check billing first either way.
   Current: **GLM-5.2 via FIREWORKS FAST**
   (`fireworks-prod / accounts/fireworks/routers/glm-5p2-fast`, switched 2026-08-15 — spine
   Render env + fleet route + medic all flipped and verified: fireworks `cost_events` rows with

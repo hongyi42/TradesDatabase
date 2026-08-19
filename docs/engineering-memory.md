@@ -947,6 +947,27 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   job link lives on the L2 visit via `source_capture_id` + `attributes.workPerformed`. A
   captures-per-job count reads 0 and looks like a failure; `hasActivitySince` is satisfied via
   `listVisitTimesForJobs`, which is why auto-resolve fired correctly.
+  **D6 RESOLVED 2026-08-18 — continuity is by CHAT, closure is by DATABASE.** The ask and the
+  reply land in DIFFERENT sessions: the question goes out in the isolated `nudge-<id>` session,
+  the reply arrives in the person's main Telegram session, and that session's message log holds
+  NO trace of the question. It works anyway because the gateway compiles a `Conversation context
+  (untrusted, chronological, selected for current message)` block of TELEGRAM CHAT HISTORY into
+  every turn's model input (proven in the reply turn's `context.compiled` + `prompt.submitted`
+  events, tagged by originating session) — a bare "all done" resolved to the right customer and
+  job unaided. Two INDEPENDENT mechanisms carry the loop and neither needs session threading.
+  The nudge footer appears NOWHERE in that context: it lives and dies inside the nudge session,
+  reaching neither the human nor the replying agent. Caveat for any future BATCHING: that block
+  is *selected*, not complete. **TRAP while reading trajectories: `systemPrompt.truncated:true`
+  (50344 -> 32768) is a LOGGING cap — `reason: trajectory-field-size-limit` — NOT a model-input
+  truncation. Read the reason field before raising an alarm** (this project has had one false
+  AGENTS.md-truncation scare already, and nearly had a second here).
+  **STAGE-1 PLAN CLOSED 2026-08-19** (`status: complete`, commit 3af90b3): escalation regression
+  passed (`asked_at` 49h back -> `nudgesEscalated:1, itemsOpened:1`, audit thread via
+  `escalatedFromNudge`, exactly one item = no double-flag) — but it moved a TIMESTAMP rather than
+  waiting out 48h, so it proves the BRANCH, not the CLOCK; the `9:34 PM` ask time in the copy is
+  the fingerprint of the plant (a real ask can never fall outside the 7am-7pm window). Note
+  `review_items.suggestion` is its OWN COLUMN, not a `detail` key — a `detail->>'suggestion'`
+  read returns null and looks like missing copy.
   STILL UNPINNED: a FAILED Telegram send (a technician who never pressed Start on the bot) —
   what `--deliver` reports in that case is unknown, and it is the silent-by-nature failure mode.
   Answer it before enrolling any real technician.

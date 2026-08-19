@@ -573,9 +573,21 @@ resolve the D6 open question, ship the ratified disclosure.
   (gateway, not embedded); message in the operator's Telegram; weekday-guard log checked
 - [ ] operator replies ("went fine, replaced the capacitor") → agent records via
   `record_field_note` → capture read back; next tick marks the nudge `answered`
-- [ ] **resolve D6:** which session the reply landed in, was the question in context — record
-  in engineering-memory; if context was absent and the flow failed, revisit session targeting
-  before enabling any real recipient
+- [x] **resolve D6 (2026-08-18, live):** the ask and the reply land in DIFFERENT sessions — the
+  question went out in the isolated `nudge-<id>` session, the reply arrived in the operator's
+  main Telegram session, and that session's message log holds NO trace of the question. It works
+  anyway: the gateway compiles a `Conversation context (untrusted, chronological, selected for
+  current message)` block of TELEGRAM CHAT HISTORY into every turn's model input (proven in the
+  reply turn's `context.compiled` + `prompt.submitted` events, tagged by originating session), so
+  a bare "all done" resolved to the right customer and job unaided. **Continuity is by CHAT, not
+  by session; closure is by DATABASE, not by conversation** — two independent mechanisms, neither
+  depending on session threading. The footer appears NOWHERE in that context (0 occurrences): it
+  lived and died inside the nudge session, reaching neither the human nor the replying agent. No
+  change to session targeting needed. Caveat for batching: the block is *selected*, not complete.
+  Trap avoided while investigating: `systemPrompt.truncated:true` (50344 -> 32768) in the
+  trajectory is a LOGGING cap — `reason: trajectory-field-size-limit` — not a model-input
+  truncation. Read the reason field before raising an alarm; this project has had one false
+  AGENTS.md-truncation scare already.
 - [ ] **pin the send-failure signal (Phase-4 review F3 — MUST land before NUDGES_MODE=live):**
   force a failed Telegram send (a sandbox whose bot the recipient never Started — the
   recorded Ben-Shelton state) and observe what `nemoclaw agent --deliver` does: exit code,

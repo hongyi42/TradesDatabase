@@ -17,6 +17,13 @@ import {
   resolveOpenReviewItemFor,
 } from '../db/index.js';
 import { notifyManagers } from '../calls/notify.js';
+import {
+  NUDGE_KIND_SPECS,
+  specFor,
+  stage0Suggestion,
+  type NudgeKindSpec,
+  type SweepFacts,
+} from './nudgeKinds.js';
 import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
 import { naiveLocalISO } from '../schedule/booking.js';
 
@@ -140,17 +147,6 @@ export function wallClockLabel(naiveIso: string): string {
 // can only be closed by the status-change path or a manual dismiss.
 const MAX_FLOOR_REACH_MS = 7 * 24 * 3_600_000;
 
-// The ONE manager-item copy for a plain unreported visit (user-approved
-// 2026-08-16). Used by the routing fallback AND the expired-nudge handoff —
-// deliberately NOT the escalation copy, which claims "their assistant asked":
-// an expired nudge's ask never landed, and the manager must never be told it
-// did (Phase-4 review F1/F3).
-const stage0Suggestion = (title: string, customer: string, endsAtLocal: string): string =>
-  `The visit for '${title}' (${customer}) was scheduled to wrap up by ` +
-  `${wallClockLabel(endsAtLocal)}, but nothing has been recorded about it yet — no ` +
-  `field note and no status change. Worth checking how it went so the job's record ` +
-  `stays complete. If nothing needed recording, just dismiss this.`;
-
 export interface WatcherDeps {
   listTenants?: typeof listTenantIdsWithTelegramBindings;
   getTenant?: typeof getTenant;
@@ -171,6 +167,9 @@ export interface WatcherDeps {
   listNudged?: typeof listNudgedSubjectRefs;
   listNudges?: typeof listNudgesByStatus;
   resolveNudge?: typeof markNudgeOutcome;
+  // The kind registry, injectable so a test can register a second detector
+  // before one exists in production.
+  specs?: NudgeKindSpec[];
 }
 
 export interface WatchersSummary {
@@ -215,6 +214,7 @@ export async function runWatchers(
   const listNudged = deps.listNudged ?? listNudgedSubjectRefs;
   const listNudges = deps.listNudges ?? listNudgesByStatus;
   const resolveNudge = deps.resolveNudge ?? markNudgeOutcome;
+  const specs = deps.specs ?? NUDGE_KIND_SPECS;
 
   // listTenantIdsWithTelegramBindings, not listTenantSeats: it skips tenants
   // with nobody Telegram-reachable. Today that ALSO excludes the eval tenants
@@ -289,12 +289,22 @@ export async function runWatchers(
       // so a tampered row can still close when its visit is cancelled — it
       // just never escalates (fail-closed; the guard in the escalation loop
       // below is what skips it).
-      const openNudges =
-        mode === 'live'
-          ? (await listNudges(tenantId, ['pending', 'queued', 'asked'])).filter(
-              (n) => n.kind === 'overdue_visit_gap',
-            )
-          : [];
+      const allOpenNudges =
+        mode === 'live' ? await listNudges(tenantId, ['pending', 'queued', 'asked']) : [];
+      // A kind with no spec is INVISIBLE to every path below — it can never be
+      // answered, escalated or expired, and would sit open forever. That used
+      // to be a silent hole (the kind was a literal here); now it is filtered
+      // in ONE place and shouted about, so the failure is observable.
+      const strandedKinds = [
+        ...new Set(allOpenNudges.filter((n) => !specFor(n.kind, specs)).map((n) => n.kind)),
+      ];
+      if (strandedKinds.length > 0) {
+        console.error(
+          `[watchers] tenant ${tenantId}: open nudges of UNREGISTERED kind(s) ` +
+            `${strandedKinds.join(', ')} — not swept, not escalated, not expired`,
+        );
+      }
+      const openNudges = allOpenNudges.filter((n) => !!specFor(n.kind, specs));
       const openNudgeGaps = openNudges.map((n) => {
         const c = (n.context ?? {}) as Record<string, unknown>;
         const jobId = typeof c.jobId === 'string' ? c.jobId : null;
@@ -414,25 +424,26 @@ export async function runWatchers(
       let opened = 0;
       const escalations: typeof openNudgeGaps = [];
       const expired: typeof openNudgeGaps = [];
+      // Facts the specs judge against — fetched ONCE per tenant per tick, never
+      // per row (a spec takes facts, never a DB client, so it cannot regress
+      // this into N queries).
+      const facts: SweepFacts = {
+        hasActivitySince,
+        visitStatusById: statusById,
+        jobStatusById: new Map<string, string>(),
+      };
       for (const x of openNudgeGaps) {
-        if (x.jobId && x.startsAtLocal && hasActivitySince(x.jobId, x.startsAtLocal)) {
-          const closed = await resolveNudge(
-            x.n.id,
-            tenantId,
-            'answered',
-            'a field report arrived — the gap filled itself',
-          );
+        // Present by construction: openNudges was filtered to registered kinds.
+        const spec = specFor(x.n.kind, specs)!;
+        const filled = spec.filled(x.n, facts);
+        if (filled) {
+          const closed = await resolveNudge(x.n.id, tenantId, 'answered', filled);
           if (closed) summary.nudgesResolved += 1;
           continue;
         }
-        const status = statusById.get(x.n.subject_ref);
-        if (status === 'cancelled' || status === 'completed') {
-          const closed = await resolveNudge(
-            x.n.id,
-            tenantId,
-            'cancelled',
-            `the visit was ${status} — nothing left to ask`,
-          );
+        const moot = spec.moot(x.n, facts);
+        if (moot) {
+          const closed = await resolveNudge(x.n.id, tenantId, 'cancelled', moot);
           if (closed) summary.nudgesResolved += 1;
           continue;
         }
@@ -462,25 +473,29 @@ export async function runWatchers(
       // first, close second (the F1 order); malformed contexts stay frozen
       // (logged; the status-change path can still close them).
       for (const x of expired) {
-        const c = (x.n.context ?? {}) as Record<string, unknown>;
-        const jobId = typeof c.jobId === 'string' ? c.jobId : null;
-        const startsAtLocal = typeof c.startsAtLocal === 'string' ? c.startsAtLocal : null;
-        const endsAtLocal = typeof c.endsAtLocal === 'string' ? c.endsAtLocal : null;
-        if (!jobId || !startsAtLocal || !endsAtLocal) {
+        const spec = specFor(x.n.kind, specs)!;
+        const plan = spec.handoff(x.n, 'expired', naiveLocal);
+        if (!plan) {
           console.error(`[watchers] expired nudge ${x.n.id} unfit for handoff (thin context)`);
           continue;
         }
-        const title = typeof c.jobTitle === 'string' ? c.jobTitle : 'a job';
-        const customer = typeof c.customerName === 'string' ? c.customerName : 'unknown customer';
+        // Phase 1 carries only visit-shaped kinds, so the visit flagger's
+        // assignment-as-subject convention still holds. A kind whose plan has
+        // no visit window (a job-scoped cost gap) needs the generic
+        // flagNudgeGap instead — wired in when that kind lands.
+        if (!plan.startsAtLocal || !plan.endsAtLocal) {
+          console.error(`[watchers] nudge ${x.n.id} handoff has no visit window — skipped`);
+          continue;
+        }
         const item = await flagGap({
           tenantId,
-          assignmentId: x.n.subject_ref,
-          jobId,
-          technicianRef: typeof c.technicianRef === 'string' ? c.technicianRef : null,
-          startsAtLocal,
-          endsAtLocal,
+          assignmentId: plan.subjectRef,
+          jobId: plan.jobId,
+          technicianRef: plan.technicianRef,
+          startsAtLocal: plan.startsAtLocal,
+          endsAtLocal: plan.endsAtLocal,
           escalatedFromNudge: x.n.id,
-          suggestion: stage0Suggestion(title, customer, endsAtLocal),
+          suggestion: plan.suggestion,
         });
         if (item) opened += 1;
         try {
@@ -509,31 +524,26 @@ export async function runWatchers(
       // every tick and never escalate — fail-closed; they still close via
       // the status-change path above).
       for (const x of escalations) {
-        const c = (x.n.context ?? {}) as Record<string, unknown>;
-        const jobId = typeof c.jobId === 'string' ? c.jobId : null;
-        const startsAtLocal = typeof c.startsAtLocal === 'string' ? c.startsAtLocal : null;
-        const endsAtLocal = typeof c.endsAtLocal === 'string' ? c.endsAtLocal : null;
-        if (!jobId || !startsAtLocal || !endsAtLocal) continue;
-        const title = typeof c.jobTitle === 'string' ? c.jobTitle : 'a job';
-        const customer = typeof c.customerName === 'string' ? c.customerName : 'unknown customer';
-        const techName =
-          typeof c.technicianName === 'string' ? c.technicianName : 'The technician';
+        const spec = specFor(x.n.kind, specs)!;
+        const plan = spec.handoff(x.n, 'escalated', naiveLocal);
+        if (!plan) continue; // malformed context — fail-closed, never escalates
+        // Phase 1 carries only visit-shaped kinds, so the visit flagger's
+        // assignment-as-subject convention still holds. A kind whose plan has
+        // no visit window (a job-scoped cost gap) needs the generic
+        // flagNudgeGap instead — wired in when that kind lands.
+        if (!plan.startsAtLocal || !plan.endsAtLocal) {
+          console.error(`[watchers] nudge ${x.n.id} handoff has no visit window — skipped`);
+          continue;
+        }
         const item = await flagGap({
           tenantId,
-          assignmentId: x.n.subject_ref,
-          jobId,
-          technicianRef: typeof c.technicianRef === 'string' ? c.technicianRef : null,
-          startsAtLocal,
-          endsAtLocal,
+          assignmentId: plan.subjectRef,
+          jobId: plan.jobId,
+          technicianRef: plan.technicianRef,
+          startsAtLocal: plan.startsAtLocal,
+          endsAtLocal: plan.endsAtLocal,
           escalatedFromNudge: x.n.id,
-          // Same copy doctrine as the fallback suggestion below — and about
-          // the JOB, even here: the ask is "close the record out", never
-          // "your technician is unresponsive".
-          suggestion:
-            `${techName}'s assistant asked about the '${title}' visit (${customer}) on ` +
-            `${wallClockLabel(naiveLocal(x.n.asked_at as string))} and hasn't heard back — ` +
-            `nothing is on the job's record yet. Worth a direct word so it gets closed out. ` +
-            `If it's already handled, just dismiss this.`,
+          suggestion: plan.suggestion,
         });
         if (item) opened += 1;
         // Mark AFTER the flag: if the flag throws, the nudge stays 'asked'
@@ -561,8 +571,24 @@ export async function runWatchers(
       // the manager item is the fallback. Every reachable fresh gap in `top`
       // is asked about — there is no per-person gate any more (user ruling
       // 2026-08-18); the per-tick slice is the only volume brake here.
-      const top = fresh.slice(0, MAX_NEW_ITEMS_PER_TENANT_TICK);
-      if (top.length > 0) {
+      // TWO brakes, deliberately both. The per-kind one is the runaway backstop
+      // the deleted per-person cap used to provide incidentally — a MISFIRING
+      // detector can now only flood its own kind. The tenant-wide ceiling then
+      // caps the combined routed count across kinds, so adding a detector can
+      // never raise a firm's per-tick volume (5 stays 5, never 5+N).
+      // Creation is REGISTRY-GATED: a kind with no spec must not be minted at
+      // all, because the sweep above cannot resolve, escalate or expire it —
+      // creating one would strand it open forever, which is the very failure
+      // this registry exists to prevent. Stranding is possible from BOTH ends;
+      // filtering the sweep alone would only close one of them.
+      const overdueSpec = specFor('overdue_visit_gap', specs);
+      let routedThisTick = 0;
+      // Sliced by the PER-KIND brake only — the tenant-wide ceiling is enforced
+      // inside the loop, so it stays load-bearing when a second kind routes
+      // alongside this one (and so a kind brake above the ceiling cannot raise
+      // a firm's per-tick volume).
+      const top = overdueSpec ? fresh.slice(0, Math.max(0, overdueSpec.maxNewPerTenantTick)) : [];
+      if (overdueSpec && top.length > 0) {
         const [teamRows, jobRows] = await Promise.all([
           team(tenantId),
           listJobs(tenantId, [...new Set(top.map((g) => g.job_id))]),
@@ -574,6 +600,13 @@ export async function runWatchers(
         // enforced guard for the name (noted at final review).
         const jobById = new Map(jobRows.filter((j) => j.tenant_id === tenantId).map((j) => [j.id, j]));
         for (const g of top) {
+          // Counts gaps ROUTED (attempted), not writes that landed — a gap
+          // whose create/flag returns null (someone else got there first) still
+          // spends its slot. That is exactly what the pre-registry
+          // `slice(0, MAX_NEW_ITEMS_PER_TENANT_TICK)` metered; counting only
+          // successful writes would quietly raise a firm's per-tick volume.
+          if (routedThisTick >= MAX_NEW_ITEMS_PER_TENANT_TICK) break;
+          routedThisTick += 1;
           const job = jobById.get(g.job_id);
           const title = job?.title ?? 'a job';
           const customer = job?.customers?.name ?? 'unknown customer';
@@ -595,7 +628,9 @@ export async function runWatchers(
           if (reachable && nudgeMode === 'live') {
             const nudge = await createNudge({
               tenantId,
-              kind: 'overdue_visit_gap',
+              // From the SPEC, never a literal — this is the forget-spot the
+              // registry exists to remove.
+              kind: overdueSpec.kind,
               subjectRef: g.id,
               technicianId: tech.id,
               // Everything compose and escalation will ever need — the model

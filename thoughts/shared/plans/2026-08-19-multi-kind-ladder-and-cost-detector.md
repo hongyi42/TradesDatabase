@@ -138,12 +138,23 @@ the manager-handoff flagger kind-generic. One kind registered; behaviour unchang
 - `:176-197` `WatchersSummary` — `gapsFound`/`freshGaps`/`nudgesWouldCreate` are visit-shaped. Add `byKind: Record<string, { gapsFound: number; nudgesCreated: number }>` and leave the existing fields meaning what they mean today (review finding 7).
 
 ### Automated verification
-- [ ] `npm run typecheck`, `npm run lint`, `npm run build` pass
-- [ ] `npm test` passes with **no pre-existing test changed** — the count rises only by the new tests below
-- [ ] new test: a nudge whose kind has no spec is neither resolved, escalated, nor expired, and logs
-- [ ] new test: with two specs injected via `deps.specs`, each kind's brake binds independently
-- [ ] new test: the combined tenant ceiling stays at `MAX_NEW_ITEMS_PER_TENANT_TICK` across kinds
-- [ ] new test: escalation copy is byte-identical to today's for `overdue_visit_gap`
+- [x] `npm run typecheck`, `npm run lint`, `npm run build` pass
+- [x] `npm test` passes with **no pre-existing test changed** — 1787 → 1792, the five new tests only
+- [x] new test: a nudge whose kind has no spec is neither resolved, escalated, nor expired, and logs
+- [x] new test: the per-kind brake caps creation below the tenant ceiling
+- [x] new test: **creation is registry-gated** — an unregistered kind is never minted (added after review finding B: stranding was possible from the CREATE end too)
+- [x] new test: the tenant ceiling still caps the tick when a kind brake is higher
+- [x] new test: escalation copy is byte-identical to today's for `overdue_visit_gap`
+
+**Deliberate deferrals, recorded so Phase 4 does not rediscover them:**
+- `WatchersSummary.byKind` — deferred to Phase 4. With one kind it adds nothing and forced churn in
+  `lifecycle.test.ts` stubs that build a full summary literal.
+- Handoffs still route through the existing `flagGap` dep, not `flagNudgeGap`. `flagNudgeGap` exists
+  and `flagOverdueVisitGap` wraps it, but switching the injected dep re-types ~25 stub sites that
+  read `input.assignmentId`. **Phase 4 must wire it** — a cost handoff has no visit window and is
+  currently logged-and-skipped at `watchers.ts:487`/`:535`.
+- `deps.specs` cannot exercise cross-KIND brake independence until a second kind routes (Phase 4);
+  the brake test asserts what it can actually prove today.
 
 ### Live verification (agent-executable)
 - Prerequisites: none — behaviour-preserving, fully covered by unit tests.

@@ -138,13 +138,17 @@ export async function flagUnknownRefCapture(input: {
 // Returns null when this assignment was ever flagged before. The watcher's
 // auto-resolve sweep reads detail.endsAtLocal to decide whether the gap has
 // since been filled.
-export async function flagOverdueVisitGap(input: {
+export async function flagNudgeGap(input: {
   tenantId: string;
-  assignmentId: string;
+  kind: ReviewKind; // which gap archetype — the registry's spec.kind
+  subjectRef: string; // assignment id for a visit gap; job id for a job-scoped one
   jobId: string;
   technicianRef: string | null; // routing data: whom the manager would ask
-  startsAtLocal: string; // the visit's naive-local start — auto-resolve's compare bound
-  endsAtLocal: string; // the visit's naive-local end, for display
+  // Null for kinds whose subject is not a visit — a job-scoped gap has no
+  // visit window. The visit-gap auto-resolve reads startsAtLocal as its
+  // compare bound, so a kind that omits it must not rely on that path.
+  startsAtLocal?: string | null;
+  endsAtLocal?: string | null;
   suggestion: string;
   // Set when this item is the ladder's RUNG 2 (Stage 1): the silent nudge it
   // grew out of — the audit thread from question to manager item.
@@ -154,23 +158,50 @@ export async function flagOverdueVisitGap(input: {
     .from('review_items')
     .select('id')
     .eq('tenant_id', input.tenantId)
-    .eq('kind', 'overdue_visit_gap')
-    .eq('subject_ref', input.assignmentId)
+    .eq('kind', input.kind)
+    .eq('subject_ref', input.subjectRef)
     .limit(1);
-  if (error) throw new Error(`flagOverdueVisitGap failed: ${error.message}`);
-  if (data && data.length > 0) return null; // this assignment was already flagged once
+  if (error) throw new Error(`flagNudgeGap failed: ${error.message}`);
+  if (data && data.length > 0) return null; // this subject was already flagged once
   return upsertOpenReviewItem({
     tenantId: input.tenantId,
-    kind: 'overdue_visit_gap',
-    subjectRef: input.assignmentId,
+    kind: input.kind,
+    subjectRef: input.subjectRef,
     suggestion: input.suggestion,
     detail: {
       jobId: input.jobId,
       technicianRef: input.technicianRef,
-      startsAtLocal: input.startsAtLocal,
-      endsAtLocal: input.endsAtLocal,
+      // Omitted entirely when absent, so a job-scoped item carries no null
+      // visit bounds for the open-gap reader to trip over.
+      ...(input.startsAtLocal ? { startsAtLocal: input.startsAtLocal } : {}),
+      ...(input.endsAtLocal ? { endsAtLocal: input.endsAtLocal } : {}),
       ...(input.escalatedFromNudge ? { escalatedFromNudge: input.escalatedFromNudge } : {}),
     },
+  });
+}
+
+// The visit-gap flagger, unchanged for every existing caller: a thin wrapper
+// that pins the kind and the assignment-as-subject convention.
+export async function flagOverdueVisitGap(input: {
+  tenantId: string;
+  assignmentId: string;
+  jobId: string;
+  technicianRef: string | null;
+  startsAtLocal: string;
+  endsAtLocal: string;
+  suggestion: string;
+  escalatedFromNudge?: string;
+}): Promise<ReviewItem | null> {
+  return flagNudgeGap({
+    tenantId: input.tenantId,
+    kind: 'overdue_visit_gap',
+    subjectRef: input.assignmentId,
+    jobId: input.jobId,
+    technicianRef: input.technicianRef,
+    startsAtLocal: input.startsAtLocal,
+    endsAtLocal: input.endsAtLocal,
+    suggestion: input.suggestion,
+    ...(input.escalatedFromNudge ? { escalatedFromNudge: input.escalatedFromNudge } : {}),
   });
 }
 

@@ -8,7 +8,7 @@ import {
   setNudgeAttempts,
   type Nudge,
 } from '../db/index.js';
-import { wallClockLabel } from '../jobs/watchers.js';
+import { stage0Suggestion } from '../jobs/nudgeKinds.js';
 import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
 import { runForcedTool, type ForcedToolSpec } from '../model/forcedTool.js';
 import { TEAM_LEAD_REF } from './identity.js';
@@ -195,11 +195,9 @@ export async function handToManager(
     startsAtLocal,
     endsAtLocal,
     escalatedFromNudge: n.id,
-    suggestion:
-      `The visit for '${title}' (${customer}) was scheduled to wrap up by ` +
-      `${wallClockLabel(endsAtLocal)}, but nothing has been recorded about it yet — no ` +
-      `field note and no status change. Worth checking how it went so the job's record ` +
-      `stays complete. If nothing needed recording, just dismiss this.`,
+    // ONE definition of this copy (it was duplicated byte-for-byte here and in
+    // watchers.ts — copy that says the same thing in two places drifts).
+    suggestion: stage0Suggestion(title, customer, endsAtLocal),
   });
   return item !== null;
 }

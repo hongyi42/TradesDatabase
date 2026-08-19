@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import type { PlacedAssignment } from '../db/assignments.js';
 import type { JobWithCustomer } from '../db/jobs.js';
 import type { Nudge } from '../db/nudges.js';
@@ -10,6 +10,7 @@ import {
   runWatchers,
   type WatcherDeps,
 } from './watchers.js';
+import { OVERDUE_VISIT_GAP_SPEC, type NudgeKindSpec } from './nudgeKinds.js';
 
 // Pure unit tests — every collaborator injected (lifecycle.test.ts pattern).
 // hasPushToken is always injected too, so nothing here reads process.env.
@@ -815,5 +816,135 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(summary.nudgesEscalated).toBe(1);
     expect(summary.itemsOpened).toBe(0); // nothing NEW for the manager
     expect(summary.pushed).toBe(0);
+  });
+});
+
+describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
+  // A second detector does not exist in production yet, so the brake and the
+  // stranded-kind behaviour are exercised through the injectable specs seam.
+  const secondSpec = (over: Partial<NudgeKindSpec> = {}): NudgeKindSpec => ({
+    kind: 'call_action' as NudgeKindSpec['kind'], // any registered ReviewKind
+    maxNewPerTenantTick: 2,
+    filled: () => null,
+    moot: () => null,
+    handoff: () => null,
+    ...over,
+  });
+
+  test('an UNREGISTERED kind is never swept, never escalated, never expired — and says so', async () => {
+    // The silent-stranding failure this registry exists to make observable: an
+    // unregistered kind used to be filtered out by a literal, with nothing
+    // logged, and the row sat open forever.
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+      errors.push(a.map(String).join(' '));
+    });
+    try {
+      const summary = await runWatchers(NOW, 'live', baseDeps({
+        listNudges: async () => [
+          nudgeRow({
+            id: 'n-alien',
+            kind: 'unlinked_call', // real ReviewKind, no spec registered
+            status: 'asked',
+            asked_at: '2026-08-13T00:00:00.000Z', // 49h+ stale → would escalate if swept
+          }),
+        ],
+        resolveNudge: async () => {
+          throw new Error('an unregistered kind must never be resolved');
+        },
+        flagGap: async () => {
+          throw new Error('an unregistered kind must never reach the manager');
+        },
+      }), 'live');
+      expect(summary.tenantErrors).toBe(0);
+      expect(summary.nudgesResolved).toBe(0);
+      expect(summary.nudgesEscalated).toBe(0);
+      expect(summary.nudgesExpired).toBe(0);
+      expect(errors.some((e) => e.includes('UNREGISTERED') && e.includes('unlinked_call'))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('the per-kind brake caps creation below the tenant ceiling', async () => {
+    // Three fresh gaps, a kind brake of 1 → only one is routed, even though the
+    // tenant-wide ceiling (5) would have allowed all three. (Cross-KIND
+    // independence cannot be exercised until a second kind routes — Phase 4.)
+    const created: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      specs: [{ ...OVERDUE_VISIT_GAP_SPEC, maxNewPerTenantTick: 1 }, secondSpec()],
+      listOverdue: async () => [
+        visit({ id: 'a1', job_id: 'j1', technician_id: 'tech-1', ends_at: '2026-08-15T01:00:00.000Z' }),
+        visit({ id: 'a2', job_id: 'j2', technician_id: 'tech-1', ends_at: '2026-08-15T02:00:00.000Z' }),
+        visit({ id: 'a3', job_id: 'j3', technician_id: 'tech-1', ends_at: '2026-08-15T03:00:00.000Z' }),
+      ],
+      listTeam: async () => [boundTech()],
+      createNudge: async (input) => {
+        created.push(input.subjectRef);
+        return nudgeRow({ subject_ref: input.subjectRef });
+      },
+    }), 'live');
+    expect(created).toEqual(['a1']); // oldest first, brake at 1
+    expect(summary.nudgesCreated).toBe(1);
+    expect(summary.tenantErrors).toBe(0);
+  });
+
+
+  test('creation is REGISTRY-GATED: an unregistered kind is never minted', async () => {
+    // Stranding is possible from BOTH ends. Filtering only the sweep would let
+    // the watcher keep MINTING a kind the sweep then refuses to touch — open
+    // forever, unresolvable, unescalatable. Nothing may be created for a kind
+    // that has no spec.
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      specs: [], // no spec for overdue_visit_gap
+      listOverdue: async () => [visit({ id: 'a1', technician_id: 'tech-1' })],
+      listTeam: async () => [boundTech()],
+      createNudge: async () => {
+        throw new Error('must not create a nudge for an unregistered kind');
+      },
+      flagGap: async () => {
+        throw new Error('an unregistered kind must not route at all');
+      },
+    }), 'live');
+    expect(summary.tenantErrors).toBe(0);
+    expect(summary.nudgesCreated).toBe(0);
+    expect(summary.itemsOpened).toBe(0);
+  });
+
+  test('the tenant-wide ceiling still caps the tick even when a kind brake is higher', async () => {
+    // A detector may never raise a firm's per-tick volume above the surge brake.
+    const routed: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      specs: [{ ...OVERDUE_VISIT_GAP_SPEC, maxNewPerTenantTick: 99 }],
+      listOverdue: async () => Array.from({ length: 9 }, (_, i) =>
+        visit({ id: `a${i}`, job_id: `j${i}`, ends_at: `2026-08-15T0${i}:00:00.000Z` })),
+      flagGap: async (input) => {
+        routed.push(input.assignmentId);
+        return openItem({ subject_ref: input.assignmentId });
+      },
+    }), 'live');
+    expect(routed.length).toBe(MAX_NEW_ITEMS_PER_TENANT_TICK);
+    expect(summary.itemsOpened).toBe(MAX_NEW_ITEMS_PER_TENANT_TICK);
+  });
+
+  test('escalation copy is byte-identical to the pre-registry wording', async () => {
+    // The registry moved this copy; a human reads it, so lock the exact text.
+    let suggestion = '';
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({ status: 'asked', asked_at: '2026-08-13T00:00:00.000Z' }),
+      ],
+      listAssignments: async () => [],
+      flagGap: async (input) => {
+        suggestion = input.suggestion;
+        return openItem({});
+      },
+    }), 'live');
+    expect(suggestion).toBe(
+      "Ben Shelton's assistant asked about the 'Furnace tune-up' visit (Henderson) on " +
+        "Thursday, Aug 13 at 12:00 AM and hasn't heard back — nothing is on the job's " +
+        'record yet. Worth a direct word so it gets closed out. If it\'s already handled, ' +
+        'just dismiss this.',
+    );
   });
 });

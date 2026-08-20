@@ -12,7 +12,7 @@ const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
   // WATCHERS_MODE cleared for the same reason as COMPOSIO_API_KEY: .env may
   // carry it, and the default runWatchers dep would hit the real database.
-  for (const k of ['DEFAULT_TENANT_ID', 'COMPOSIO_API_KEY', 'WATCHERS_MODE', 'NUDGES_MODE'] as const) {
+  for (const k of ['DEFAULT_TENANT_ID', 'COMPOSIO_API_KEY', 'WATCHERS_MODE', 'NUDGES_MODE', 'PLANNER_MODE'] as const) {
     if (!(k in saved)) saved[k] = process.env[k];
     delete process.env[k];
   }
@@ -644,5 +644,134 @@ describe('runLifecycle', () => {
     });
     expect(red.logIngest).toEqual({ stepError: 'logs API 500' });
     expect(red.ok).toBe(false);
+  });
+});
+
+// ── the team-lead planner (step 9, plan 2026-08-19 Phase 3) ────────────────
+describe('the planner gate', () => {
+  const STUBS = {
+    ...COST_STUBS,
+    listInStates: async () => [],
+    expire: async () => EXPIRE_OK,
+    ingestLogs: async () => INGEST_OK,
+    hasModelKey: () => true,
+  };
+
+  const planned = (over: Record<string, unknown> = {}) => {
+    const calls: Array<[string, string]> = [];
+    return {
+      calls,
+      deps: {
+        ...STUBS,
+        runPlanner: async (nowIso: string, mode: string) => {
+          calls.push([nowIso, mode]);
+          return {
+            mode: mode as 'shadow',
+            tenants: 1,
+            planned: 1,
+            skippedNoGaps: 0,
+            skippedWindow: 0,
+            decisions: 0,
+            dropped: 0,
+            applied: 0,
+            tenantErrors: 0,
+            byAction: {},
+            plans: [],
+          };
+        },
+        ...over,
+      },
+    };
+  };
+
+  test('unset PLANNER_MODE is a clean OFF — a cron deployed before the var must not go red', async () => {
+    const { calls, deps } = planned();
+    const s = await runLifecycle('2026-07-02T12:00:00.000Z', deps);
+    expect(calls).toEqual([]);
+    expect(s.teamLeadPlanner).toEqual({ skipped: "PLANNER_MODE 'off'" });
+    expect(s.ok).toBe(true);
+  });
+
+  test('a TYPO is loud — it must never read as "the planner is quietly off"', async () => {
+    process.env.PLANNER_MODE = 'shaddow';
+    const { calls, deps } = planned();
+    const s = await runLifecycle('2026-07-02T12:00:00.000Z', deps);
+    expect(calls).toEqual([]);
+    expect(s.teamLeadPlanner).toEqual({
+      stepError: "PLANNER_MODE must be 'off', 'shadow' or 'live', got 'shaddow'",
+    });
+    expect(s.ok).toBe(false);
+  });
+
+  test('the half-hour cadence: :00 and :30 run, :10 and :40 skip', async () => {
+    process.env.PLANNER_MODE = 'shadow';
+    for (const [minute, shouldRun] of [
+      ['00', true],
+      ['04', true], // `< 5` tolerates a delayed firing, like heavyTick
+      ['10', false],
+      // :15 and :45 are the ONLY minutes that separate a half-hour cadence from
+      // the quarter-hour one steps 1-7 use — without them this table passes
+      // against `% 15` and pins nothing.
+      ['15', false],
+      ['19', false],
+      ['30', true],
+      ['34', true],
+      ['40', false],
+      ['45', false],
+      ['55', false],
+    ] as Array<[string, boolean]>) {
+      const { calls, deps } = planned();
+      const s = await runLifecycle(`2026-07-02T12:${minute}:00.000Z`, deps);
+      expect(calls.length, `minute :${minute}`).toBe(shouldRun ? 1 : 0);
+      if (!shouldRun) {
+        expect(s.teamLeadPlanner).toEqual({
+          skipped: 'off-cadence tick (planner runs on the half hour)',
+        });
+      }
+    }
+  });
+
+  test('no inference credentials skips rather than erroring', async () => {
+    process.env.PLANNER_MODE = 'shadow';
+    const { calls, deps } = planned({ hasModelKey: () => false });
+    const s = await runLifecycle('2026-07-02T12:00:00.000Z', deps);
+    expect(calls).toEqual([]);
+    expect(s.teamLeadPlanner).toEqual({ skipped: 'no inference credentials' });
+    expect(s.ok).toBe(true);
+  });
+
+  test("the mode reaches the planner verbatim, and 'live' is passed through", async () => {
+    process.env.PLANNER_MODE = 'live';
+    const { calls, deps } = planned();
+    await runLifecycle('2026-07-02T12:30:00.000Z', deps);
+    expect(calls).toEqual([['2026-07-02T12:30:00.000Z', 'live']]);
+  });
+
+  test('a throwing planner is a stepError, red — and never blocks compose', async () => {
+    process.env.PLANNER_MODE = 'shadow';
+    process.env.NUDGES_MODE = 'live';
+    const composed: string[] = [];
+    const s = await runLifecycle('2026-07-02T12:00:00.000Z', {
+      ...STUBS,
+      runPlanner: async () => {
+        throw new Error('provider down');
+      },
+      composeNudges: async (nowIso: string) => {
+        composed.push(nowIso);
+        return {
+          composed: 0,
+          cancelled: 0,
+          failed: 0,
+          rowErrors: 0,
+          handoffs: 0,
+          held: 0,
+          heldNotBefore: 0,
+        };
+      },
+    });
+    expect(s.teamLeadPlanner).toEqual({ stepError: 'provider down' });
+    expect(s.ok).toBe(false);
+    // The ladder must keep working when its planner does not.
+    expect(composed).toEqual(['2026-07-02T12:00:00.000Z']);
   });
 });

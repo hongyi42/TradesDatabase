@@ -391,6 +391,53 @@ describe('runToolLoop', () => {
     ).rejects.toThrow(/exceeded its 60ms budget/);
   });
 
+  test('a terminal tool ends the loop on the turn it runs — no extra round-trip for "done"', async () => {
+    const SUBMIT: ForcedToolSpec = {
+      name: 'submit_plan',
+      description: 'deliver the plan',
+      inputSchema: { type: 'object', properties: { plan: { type: 'string' } }, required: ['plan'] },
+    };
+    // A second body is queued and must never be requested.
+    serve(toolCallBody('submit_plan', { plan: 'hold n1' }), finalBody('should not be reached'));
+    const submitted: unknown[] = [];
+    const res = await runToolLoop(
+      { system: 's', user: 'u', maxTokens: 128, label: 'planner', terminalTool: 'submit_plan' },
+      [READ_TOOL, SUBMIT],
+      async (_name, args) => {
+        submitted.push(args);
+        return { ok: true };
+      },
+      undefined,
+      { recordUsage: async () => {} },
+    );
+    expect(res.turns).toBe(1);
+    expect(sent).toHaveLength(1); // ONE model call, not two
+    expect(submitted).toEqual([{ plan: 'hold n1' }]);
+  });
+
+  test('a REJECTED terminal call does not end the loop — the model gets to correct it', async () => {
+    const SUBMIT: ForcedToolSpec = {
+      name: 'submit_plan',
+      description: 'deliver the plan',
+      inputSchema: { type: 'object', properties: { plan: { type: 'string' } }, required: ['plan'] },
+    };
+    serve(toolCallBody('submit_plan', { plan: '' }), finalBody('gave up'));
+    let attempts = 0;
+    const res = await runToolLoop(
+      { system: 's', user: 'u', maxTokens: 128, label: 'planner', terminalTool: 'submit_plan' },
+      [READ_TOOL, SUBMIT],
+      async () => {
+        attempts += 1;
+        throw new Error('plan was empty');
+      },
+      undefined,
+      { recordUsage: async () => {} },
+    );
+    expect(attempts).toBe(1);
+    expect(res.turns).toBe(2); // the loop went on
+    expect(res.calls[0].result).toContain('plan was empty');
+  });
+
   test('the wall-clock budget throws rather than letting a cron tick run long', async () => {
     serve(toolCallBody('spine_read', { sql: 'select 1' }));
     await expect(

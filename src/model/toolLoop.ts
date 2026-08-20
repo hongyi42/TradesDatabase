@@ -63,6 +63,20 @@ export interface ToolLoopRequest {
   label: string;
   maxTurns?: number;
   budgetMs?: number;
+  /**
+   * Name of a tool that ENDS the loop the moment the model calls it.
+   *
+   * For a caller whose answer is structured, the tool IS the answer — the same
+   * return-SHAPE contract runForcedTool uses, reached after the model has read
+   * whatever it needed. Without this the loop would have to wait for a further
+   * text-only turn, which costs a full billed round-trip to hear "done", and
+   * which the model may simply not produce — burning the whole plan on the turn
+   * ceiling when a perfectly good answer had already arrived.
+   *
+   * The terminal tool still EXECUTES (that is how its arguments reach the
+   * caller); the loop returns immediately after, with `text` from that same turn.
+   */
+  terminalTool?: string;
   /** Same meaning as ForcedToolRequest.reasoningEffort; ignored on the Anthropic path. */
   reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
 }
@@ -454,6 +468,12 @@ export async function runToolLoop(
       const content = stringifyResult(raw);
       results.push({ id: call.id, name: call.name, content, isError: !ok });
       calls.push({ turn: turns, name: call.name, args: call.args, ok, result: content });
+      // The terminal tool ends the loop as soon as it RUNS — only on success, so
+      // a rejected submission still gets its error relayed and the model gets to
+      // try again within the turn ceiling.
+      if (ok && call.name === req.terminalTool) {
+        return { text: step.text, turns, calls };
+      }
     }
     history.push(...transport.toolResults(results));
   }

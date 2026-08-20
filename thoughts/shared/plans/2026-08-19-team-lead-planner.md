@@ -268,6 +268,26 @@ Runs the planner every 30 minutes, produces a plan, writes nothing. Measures cos
 
 ### Changes required
 
+**Divergences from the plan, all flagged:**
+- **`src/model/toolLoop.ts` gained `terminalTool`** (a Phase-1 file, touched here because Phase 3
+  is its first consumer). Without it the planner would have to spend a whole extra billed
+  round-trip hearing the model say "done" after it had already submitted — and would lose the
+  entire plan to the turn ceiling whenever the model did not bother to say it.
+- **The `nudge-<id>` session attribution is NOT available.** The plan says the transport "already
+  produces" it: it produces the *session* (`nudgeQueue.ts:105`), but nothing carries that id onto
+  a capture, so the spine cannot tell a reply-to-a-nudge from any other note. Evidence is bounded
+  by time and job only. Stamping it would be a capture-side change, separate from this plan.
+- **The executor takes `tenantId` as a parameter**, not as a closure the caller binds once — the
+  planner walks every tenant in one process, and an executor bound to the wrong one would read
+  another firm's records into this firm's prompt.
+
+**`src/db/rawCaptures.ts`** (not in the plan's list) — `listJobEvidenceSince`, the text twin of
+`listJobStampedCaptureTimes`. Needed because a citation requires the WORDS, and because it must
+union the same two homes the activity probe does: a technician's reply lands in L1 before identity
+is resolved, so it often carries no `job_id` and is reachable only through the visit minted from
+it. Drops `manager_only` rows and folds retractions — citing a retracted note would be worse than
+citing nothing.
+
 **`src/teamLead/planner.ts`** (new)
 - `runPlanner(nowIso, mode, deps)` — per tenant with a live Telegram binding:
   - gather open nudges (`listNudgesByStatus`, `OPEN_NUDGE_STATUSES` at `nudges.ts:23`)
@@ -288,20 +308,59 @@ Runs the planner every 30 minutes, produces a plan, writes nothing. Measures cos
   `runTeamLeadCompose` (`:342`). In shadow it only logs its summary into the tick output.
 
 ### Automated verification
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass
-- [ ] new test: shadow mode writes NOTHING — assert with a stub that no write dep is called
-- [ ] new test: the evidence projection excludes anything at or before `asked_at`
-- [ ] new test: a decision without a citation cannot produce `close` (code-side guard, not prompt)
-- [ ] new test: outside the ask window the model dep is never invoked
-- [ ] new test: the 30-minute gate — `:00`/`:30` run, `:10`/`:40` skip
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` pass — 92 files, 1906/1906; `npm run build` too
+- [x] new test: shadow mode writes NOTHING — **against the real database**, not a stub. The
+      stub version would have been vacuous (this phase gives the planner no writer at all): the
+      test plants a real nudge, runs a real shadow pass returning a `hold`, and asserts the row is
+      byte-identical afterwards, `updated_at` included
+- [x] new test: the evidence projection excludes anything at or before `asked_at` — plus: another
+      job's evidence is never borrowed, a never-asked gap is shown none, and the per-gap cap keeps
+      the newest
+- [x] new test: a decision without a citation cannot produce `close` — plus **assert-only-cited**:
+      a citation that does not appear in what the model was actually SHOWN is refused too, while
+      differing whitespace and case still pass (quoting, not rewording)
+- [x] new test: outside the ask window the model dep is never invoked — and the window is the
+      FIRM's, not UTC
+- [x] new test: the 30-minute gate — `:00`/`:30` run, `:10`/`:40` skip. **The first version of this
+      table passed against `% 15` too**; `:15` and `:45` are the only minutes that separate the two
+      cadences, and the mutation check is what caught it
+- [x] further rails pinned: unknown gap, duplicate decision, unknown action, hold without a usable
+      `notBefore`, unreadable confidence reading as LOW, a submit that never arrives, and junk in
+      place of the decisions array (which found a real crash on `[null]`)
+- [x] mutation check: four, each caught — the evidence bound at `>=`; the citation-in-evidence
+      check disabled; the ask-window skip removed; the cadence changed to 15 minutes
 
 ### Live verification (agent-executable)
 - Prerequisites: `render` MCP (workspace `tea-d69903h5pdvs738dm81g`); `supabase-test` MCP for
   read-backs; `PLANNER_MODE=shadow` set on the cron
-- [ ] after deploy, read cron logs for ≥3 planner ticks; capture per-call token counts and
-      latency, and confirm `nudges` rows are byte-identical before and after (shadow proves itself
-      by changing nothing)
-- [ ] record the measured cost per call — this is the number the cost question has been waiting on
+- [x] **run locally against the real model and the real dispatch first** — this was not in the
+      plan and it is what caught two defects a deployed run would have discovered slowly:
+  1. **The first run produced NO plan at all.** GLM-5.2 thinks by default, and at `maxTokens:
+     4096` the very first turn came back `finish_reason=length`. The truncation guard did its job;
+     the planner simply could not function. Fixed by bounding the think (`reasoningEffort: 'low'`
+     — deliberately NOT `'none'`, which is right for a forced-JSON extraction and wrong for the
+     one call whose entire job is judgment) and raising the budget to 8192.
+  2. **It reasoned "it is the middle of the night" at 18:50 firm-local**, because the prompt
+     handed it UTC and nothing else — while pacing is precisely a judgment about whether this is a
+     decent hour to bother someone. The prompt is now grounded in the firm's own clock, weekday and
+     date from one derivation, zone named. Pinned by a test.
+
+  **Result after both fixes** (local stack, GLM-5.2 via Fireworks, two planted gaps — one answered
+  by a technician note, one silent):
+  - the ANSWERED gap → `close`, high confidence, citing the note **verbatim**; the code-side
+    citation check accepted it
+  - the SILENT gap → `hold`, medium, reasoning that it had used `spine_read` to discover *the job
+    is assigned to a different technician* — judgment no constant could express, and the reason
+    the read tool exists
+  - 0 refused, 0 errors, and the `nudges` rows **byte-identical before and after**
+- [x] **measured cost per call** — the number the cost question has been waiting on:
+      2 gaps → 2 turns / 2 tool calls / **10.6s**, and 3 turns / 4 tool calls / **28.6s** on the
+      run where it went looking. At 30-minute cadence inside a 12h window that is ~24 calls per
+      firm per day. **Flag for Phase 4:** 28.6s against a 90s `MAX_TOOL_LOOP_BUDGET_MS` is not
+      comfortable headroom once a firm has twenty gaps rather than two — re-check before going
+      live, and log a budget throw distinctly from a model error.
+- [ ] after deploy, read cron logs for ≥3 planner ticks and confirm the same on the pilot
+      **(blocked: needs `PLANNER_MODE=shadow` on the Render cron — user action)**
 
 ### Manual verification
 - [ ] read three consecutive shadow plans and judge whether the hold/close/escalate calls are

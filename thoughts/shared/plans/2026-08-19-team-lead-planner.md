@@ -189,25 +189,72 @@ the cost-item auto-resolve gap that escalate-then-close depends on. Behaviour is
   only. Read **every registered kind** so cost items can auto-resolve. Their resolve predicates
   already exist on the specs.
 
-**`supabase/migrations/20260820120001_review_items_ever_index.sql`** (new)
-- The any-status backstop index is partial — `where kind = 'overdue_visit_gap'`
-  (`nudges.sql:76-78`). Add the equivalent for `job_cost_gap`, or replace both with a
-  kind-generic one. **Check for existing duplicate rows before adding a unique index.**
+**`supabase/migrations/20260820120001_review_items_ever_index.sql`** — **NOT WRITTEN: already
+exists.** `20260819130000_job_cost_gap_backstop.sql` landed with the cost detector and creates
+`uq_review_items_job_cost_gap_ever` on exactly these columns. Confirmed present on both the local
+stack and the pilot; a duplicate migration would fail on the second apply. The duplicate-row
+precondition was checked anyway and is clean (0 dupes for both kinds).
+
+**Divergence from the plan, and one it understated:**
+- The deadlines migration is dated `20260819150000_nudge_deadlines.sql`, not `20260820…` — a
+  migration stamped tomorrow reads as a mistake forever, and the prefix is only an ordering key.
+- The plan said cost items could auto-resolve because "their resolve predicates already exist on
+  the specs". They did not: `filled`/`moot` are typed on a `Nudge` and answer the TECHNICIAN's
+  question, while the item sweep works on `ReviewItem` rows and asks the MANAGER's. So the
+  registry gained a third predicate, `itemResolved`, plus `subjectIsVisit` (a job-scoped kind's
+  `subject_ref` must not be looked up in `assignments`) and a `jobsWithCostEvents` fact.
 
 **`src/teamLead/compose.ts`**
 - The pending filter (`:177`) additionally skips rows whose `not_before` is in the future.
 
 ### Automated verification
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass
-- [ ] new test: a row with `escalate_after` in the past escalates; null falls back to 48h
-- [ ] new test: a row with `not_before` in the future is not composed, and IS composed after
-- [ ] new test: an open `job_cost_gap` review item auto-resolves when its job gains a cost
-- [ ] existing watcher/compose suites pass unchanged (this phase must be behaviour-identical)
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` pass — 91 files, 1871/1871; `npm run build` too
+- [x] new test: a row with `escalate_after` in the past escalates; null falls back to 48h — plus
+      a stamp in the FUTURE holding past 48h, a malformed stamp falling back, and a stamp on a
+      never-asked row not escalating (the delivery deadline owns that row)
+- [x] new test: a row with `not_before` in the future is not composed, and IS composed after —
+      plus: it costs no model call and no write, a malformed hold fails OPEN, and a held row does
+      not block its neighbours
+- [x] new test: an open `job_cost_gap` review item auto-resolves when its job gains a cost — plus
+      it STAYS open on activity alone, closes on a cancelled job, and its job-id subject never
+      reaches the assignments lookup
+- [x] existing watcher/compose suites pass unchanged; the two visit-item resolutions are asserted
+      byte-identical to the pre-registry wording
+- [x] mutation check: four, each caught — escalation ignoring `escalate_after`; the item sweep
+      reading one hardcoded kind; job-scoped subjects leaking into the assignments lookup;
+      compose ignoring `not_before`
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP (pilot is READ-ONLY here — read-backs only)
-- [ ] apply both migrations to the local stack; confirm the columns exist and are nullable, and
-      that the new index creation did not fail on existing rows
+- [x] applied to the local stack via `supabase db reset`; both columns exist, are `timestamptz`,
+      and are nullable with no default (confirmed by an `information_schema` read)
+
+  **Pilot read-back (SELECT only, 2026-08-19):** 6 nudge rows / 1 open (the escalation specimen —
+  its `escalate_after` will be NULL, so it still fires on the 48h constant as designed); 50 open
+  `overdue_visit_gap` items, 0 open `job_cost_gap` items; **zero** duplicate `(tenant, subject_ref)`
+  pairs for either kind, so the plan's "check for duplicates first" precondition holds. Both
+  `uq_review_items_*_ever` indexes ALREADY EXIST on the pilot — see the divergence note below.
+
+**Adversarial review (1 round, 5 findings, all folded):**
+1. `setNudgeSchedule` cleared a column when handed an explicit `undefined` — and that is exactly
+   the Phase-4 call shape, since `PlannerDecision`'s fields are optional and the natural call site
+   spreads both keys. "No opinion about escalation this tick" would have erased last tick's
+   deadline. Keyed on `!== undefined` now, not `in`; pinned and mutation-checked.
+2. The migration comment promised a clamp that does not exist until Phase 4. Reworded to say what
+   is true and who owes the clamp — a column comment is the one doc a future engineer reads at the
+   database.
+3. **Behaviour-identity has exactly one intended exception**, now pinned by its own test: an
+   `overdue_visit_gap` ITEM whose detail lacks a parseable `startsAtLocal` used to be dropped by
+   the parse and could never auto-resolve at all; it now closes on the status path with wording
+   that already existed. Strictly better, and empty for rows written by current code. An item with
+   no `jobId` is still dropped — that half of the parse stays fail-closed.
+4. Only the ITEM half of the `subjectIsVisit` guard was pinned; the NUDGE half now has its own
+   test (mutation-verified).
+5. `listJobsWithCustomerByIds` was a single unbounded query, and this phase changed its input from
+   "open nudges" to "open nudges + every open review item" — a set that grows with the manager's
+   backlog, not with the day. Chunked and paged like every other batched reader on this path, with
+   a stable `order` so paging is correct. `listJobIdsWithCostEvents` gained the same chunking on
+   its INCOMING jobIds (it already chunked `costIds`).
 
 ### Manual verification
 - [ ] none

@@ -818,8 +818,10 @@ export type Database = {
           attempts: number
           context: Json
           created_at: string
+          escalate_after: string | null
           id: string
           kind: string
+          not_before: string | null
           question: string | null
           queued_at: string | null
           resolution: string | null
@@ -837,8 +839,10 @@ export type Database = {
           attempts?: number
           context?: Json
           created_at?: string
+          escalate_after?: string | null
           id?: string
           kind: string
+          not_before?: string | null
           question?: string | null
           queued_at?: string | null
           resolution?: string | null
@@ -856,8 +860,10 @@ export type Database = {
           attempts?: number
           context?: Json
           created_at?: string
+          escalate_after?: string | null
           id?: string
           kind?: string
+          not_before?: string | null
           question?: string | null
           queued_at?: string | null
           resolution?: string | null

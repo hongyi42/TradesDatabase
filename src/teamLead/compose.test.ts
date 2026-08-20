@@ -71,7 +71,7 @@ describe('runTeamLeadCompose', () => {
         return pendingNudge({ status: 'queued' });
       },
     }));
-    expect(summary).toEqual({ composed: 1, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 0 });
+    expect(summary).toEqual({ composed: 1, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 0, heldNotBefore: 0 });
     expect(queuedWith).toHaveLength(1);
     const msg = queuedWith[0];
     expect(msg).toContain('How did the Henderson visit go?');
@@ -140,7 +140,7 @@ describe('runTeamLeadCompose', () => {
         return pendingNudge({ status: 'cancelled' });
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1, held: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1, held: 0, heldNotBefore: 0 });
     expect(outcomes).toEqual([['cancelled', 'declined: evidence too thin']]);
     expect(flagged).toHaveLength(1);
     expect(flagged[0].escalatedFromNudge).toBe('n1');
@@ -166,7 +166,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('an unfit row must stay open, not be cancelled');
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 0, heldNotBefore: 0 });
   });
 
   test('display-thin but FLAG-coherent context → manager handoff from raw fields, then cancelled', async () => {
@@ -200,7 +200,7 @@ describe('runTeamLeadCompose', () => {
         return pendingNudge({ status: 'cancelled' });
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1, held: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1, held: 0, heldNotBefore: 0 });
     expect(flagged).toHaveLength(1);
     expect(flagged[0].jobId).toBe('j1');
     expect(flagged[0].suggestion).toContain("The visit for 'Furnace tune-up' (unknown customer)");
@@ -222,7 +222,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('one failure must not be terminal');
       },
     }));
-    expect(first).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 1, handoffs: 0, held: 0 });
+    expect(first).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 1, handoffs: 0, held: 0, heldNotBefore: 0 });
     expect(writes).toEqual([['n1', 1]]);
 
     // The LAST allowed attempt failing goes terminal — and the manager takes
@@ -243,7 +243,7 @@ describe('runTeamLeadCompose', () => {
         return pendingNudge({ status: 'failed' });
       },
     }));
-    expect(last).toEqual({ composed: 0, cancelled: 0, failed: 1, rowErrors: 1, handoffs: 1, held: 0 });
+    expect(last).toEqual({ composed: 0, cancelled: 0, failed: 1, rowErrors: 1, handoffs: 1, held: 0, heldNotBefore: 0 });
     expect(outcomes).toEqual([`failed: compose failed ${MAX_COMPOSE_ATTEMPTS}x: inference 503`]);
     expect(flagged).toEqual(['a1']);
   });
@@ -265,7 +265,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('a queued deliverable must not be failed');
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 1, handoffs: 0, held: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 1, handoffs: 0, held: 0, heldNotBefore: 0 });
   });
 
   test('trust-boundary flattening (review F2): hostile context cannot forge the footer register', async () => {
@@ -368,7 +368,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('out-of-window nudges must not reach the manager');
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 1 });
+    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 1, heldNotBefore: 0 });
   });
 
   test('the window is FIRM-local, not UTC: 01:00 UTC is 6 PM in Los Angeles — composes', async () => {
@@ -386,7 +386,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('unknown kinds must not reach the model');
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 0, heldNotBefore: 0 });
   });
 });
 
@@ -500,4 +500,93 @@ describe('the kind registry drives compose (plan 2026-08-19 Phase 2)', () => {
     expect(summary.rowErrors).toBe(0);
   });
 
+});
+
+// ── the planner's hold (plan 2026-08-19, Phase 2) ───────────────────────────
+// not_before is the planner's ONE lever on pacing. A held row must reach the
+// later tick EXACTLY as it is: no model call (that is real money), no attempts
+// bump, and no state change — the same untouched treatment the overnight
+// ask-window hold gives, and for the same reason (the day phrase is baked in at
+// compose time, so a held row must be composed FRESH when its turn comes).
+describe('runTeamLeadCompose — not_before', () => {
+  const heldNudge = (notBefore: string | null) =>
+    pendingNudge({ not_before: notBefore } as Partial<Nudge>);
+
+  const runWith = async (n: Nudge) => {
+    const calls: string[] = [];
+    const writes: string[] = [];
+    const summary = await runTeamLeadCompose(NOW, baseDeps({
+      listNudges: async () => [n],
+      run: async () => {
+        calls.push('model');
+        return { ask: true, question: 'How did the Henderson visit go?', reason: 'gap' };
+      },
+      markQueued: async () => {
+        writes.push('queued');
+        return pendingNudge({ status: 'queued' });
+      },
+      setAttempts: async () => {
+        writes.push('attempts');
+        return pendingNudge();
+      },
+      markOutcome: async () => {
+        writes.push('outcome');
+        return pendingNudge({ status: 'cancelled' });
+      },
+    }));
+    return { calls, writes, summary };
+  };
+
+  test('a hold in the future costs NOTHING — no model call, no write, counted apart', async () => {
+    const { calls, writes, summary } = await runWith(heldNudge('2026-08-16T18:00:00.000Z'));
+    expect(calls).toEqual([]);
+    expect(writes).toEqual([]);
+    expect(summary.heldNotBefore).toBe(1);
+    expect(summary.composed).toBe(0);
+    // NOT the ask-window counter: "waiting for morning" and "the planner is
+    // pacing this" are different facts, and one number would hide a planner that
+    // has quietly frozen a firm's whole queue.
+    expect(summary.held).toBe(0);
+  });
+
+  test('the same row composes once its hold has passed', async () => {
+    const { calls, writes, summary } = await runWith(heldNudge('2026-08-16T11:59:00.000Z'));
+    expect(calls).toEqual(['model']);
+    expect(writes).toEqual(['queued']);
+    expect(summary.composed).toBe(1);
+    expect(summary.heldNotBefore).toBe(0);
+  });
+
+  test('no hold at all behaves exactly as before', async () => {
+    const { summary } = await runWith(heldNudge(null));
+    expect(summary.composed).toBe(1);
+    expect(summary.heldNotBefore).toBe(0);
+  });
+
+  test('a MALFORMED hold fails OPEN — a bad stamp must not silence a gap forever', async () => {
+    // The opposite choice from escalate_after, deliberately. There the fallback
+    // is a deadline that still fires; here a fail-closed reading would hold the
+    // row until the 24h delivery deadline expired it to the manager unasked.
+    const { calls, summary } = await runWith(heldNudge('whenever'));
+    expect(calls).toEqual(['model']);
+    expect(summary.composed).toBe(1);
+    expect(summary.heldNotBefore).toBe(0);
+  });
+
+  test('a held row does not stop its neighbours from composing', async () => {
+    const composed: string[] = [];
+    const summary = await runTeamLeadCompose(NOW, baseDeps({
+      listNudges: async () => [
+        pendingNudge({ id: 'n-held', not_before: '2026-08-16T18:00:00.000Z' } as Partial<Nudge>),
+        pendingNudge({ id: 'n-free' }),
+      ],
+      markQueued: async (id) => {
+        composed.push(id);
+        return pendingNudge({ status: 'queued' });
+      },
+    }));
+    expect(composed).toEqual(['n-free']);
+    expect(summary.composed).toBe(1);
+    expect(summary.heldNotBefore).toBe(1);
+  });
 });

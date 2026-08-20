@@ -141,6 +141,7 @@ export interface ComposeSummary {
   rowErrors: number;
   handoffs: number; // nudges that died unasked and became manager items (F1)
   held: number; // pending rows left for the next in-window tick (ask window)
+  heldNotBefore: number; // pending rows the PLANNER asked us to hold (not_before)
 }
 
 export async function runTeamLeadCompose(
@@ -165,6 +166,7 @@ export async function runTeamLeadCompose(
     rowErrors: 0,
     handoffs: 0,
     held: 0,
+    heldNotBefore: 0,
   };
 
   for (const tenantId of await listTenants()) {
@@ -174,7 +176,28 @@ export async function runTeamLeadCompose(
     // Registry-driven: a kind with no spec has no prompt, so it must not be
     // composed. It is also invisible to the watcher's sweep, so it should never
     // have been created — the watcher gates creation on the same registry.
-    const pending = (await listNudges(tenantId, ['pending'])).filter((n) => !!specFor(n.kind, specs));
+    const registered = (await listNudges(tenantId, ['pending'])).filter(
+      (n) => !!specFor(n.kind, specs),
+    );
+    // The planner's hold (plan 2026-08-19, Phase 2). A row with not_before in
+    // the future is left EXACTLY as it is — no model call, no attempts bump, no
+    // state change — the same untouched treatment the overnight ask-window hold
+    // gives, and for the same reason: the day phrase is baked in at compose
+    // time, so a held row must be composed FRESH when its time comes.
+    //
+    // Counted separately from `held` on purpose: "waiting for morning" and "the
+    // planner is pacing this" are different facts about a firm's queue, and a
+    // single counter would hide a planner that has quietly frozen everything.
+    const nowMs = Date.parse(nowIso);
+    const pending = registered.filter((n) => {
+      const holdUntil = n.not_before ? Date.parse(n.not_before) : NaN;
+      // NaN (absent or unparseable) → no hold. Fail OPEN here, deliberately: a
+      // malformed hold must never be able to silence a gap forever, and the 24h
+      // delivery deadline is the backstop that would otherwise have to catch it.
+      if (Number.isNaN(holdUntil) || holdUntil <= nowMs) return true;
+      summary.heldNotBefore += 1;
+      return false;
+    });
     if (pending.length === 0) continue;
     const tz = (await get(tenantId))?.timezone ?? 'UTC';
     if (!insideAskWindow(nowIso, tz)) {

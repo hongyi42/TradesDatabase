@@ -239,18 +239,24 @@ export async function listJobIdsWithCostEvents(
   // (1) Every material_cost row on these jobs — id AND job_id, because step 2
   // needs the ids to ask what was cancelled.
   const costRows: { id: number; job_id: string }[] = [];
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await getClient()
-      .from('money_events')
-      .select('id, job_id')
-      .eq('tenant_id', tenantId)
-      .eq('kind', 'material_cost')
-      .in('job_id', jobIds)
-      .order('id', { ascending: true })
-      .range(from, from + PAGE - 1);
-    if (error) throw new Error(`listJobIdsWithCostEvents failed: ${error.message}`);
-    costRows.push(...((data ?? []) as { id: number; job_id: string }[]));
-    if (!data || data.length < PAGE) break;
+  // The INCOMING jobIds are chunked too, for the same reason costIds are: the
+  // nudge sweep now passes open nudges plus every open review item, a set that
+  // grows with the manager's backlog rather than with the day.
+  for (let i = 0; i < jobIds.length; i += CHUNK) {
+    const jobSlice = jobIds.slice(i, i + CHUNK);
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('money_events')
+        .select('id, job_id')
+        .eq('tenant_id', tenantId)
+        .eq('kind', 'material_cost')
+        .in('job_id', jobSlice)
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listJobIdsWithCostEvents failed: ${error.message}`);
+      costRows.push(...((data ?? []) as { id: number; job_id: string }[]));
+      if (!data || data.length < PAGE) break;
+    }
   }
   if (costRows.length === 0) return [];
 

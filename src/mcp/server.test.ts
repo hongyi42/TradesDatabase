@@ -24,7 +24,13 @@ import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { logWebRequests } from '../db/webRequests.js';
-import { createServer, safeEnvInt, type ServerDeps } from './server.js';
+import {
+  createServer,
+  dispatchForIdentity,
+  safeEnvInt,
+  TEAM_LEAD_TOOL_SCHEMAS,
+  type ServerDeps,
+} from './server.js';
 import { localDateISO } from '../schedule/availability.js';
 
 // Drive the MCP server over the SDK's in-memory transport (no network/stdio).
@@ -7590,5 +7596,138 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     } finally {
       await c.close();
     }
+  });
+
+  // ── spine_read: the team lead's own reader (plan 2026-08-19, Phase 1) ──────
+  // The trap this replaces: query_spine WAS on the team-lead allowlist, but the
+  // manager-tier gate that runs after the ceiling refused it every time, because
+  // `spine:team-lead` has no roster row and so is never an active manager. These
+  // tests pin both halves of the fix — the new name works, and it did not become
+  // a hole for everyone else.
+
+  test('spine_read dispatches for spine:team-lead and returns rows', async () => {
+    const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+    try {
+      const res = await callWith('spine_read', { sql: 'select count(*) as n from v_jobs' });
+      expect(res.isError).toBe(false);
+      expect(res.data.status).toBe('ok');
+      expect(res.data.rowCount).toBe(1);
+      expect(typeof res.data.rows[0].n).toBe('number');
+    } finally {
+      await c.close();
+    }
+  });
+
+  // THE GUARD ON THE WHOLE DESIGN. spine_read is deliberately NOT in ADMIN_TOOLS
+  // — that is what lets a badge-less identity reach it. If it ever were, this
+  // call would fail with the manager-badge error instead of returning rows, so
+  // this test is what stops someone "tidying" it into the admin list.
+  test('spine_read is NOT admin-gated — it answers for an identity with no roster row at all', async () => {
+    const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+    try {
+      const res = await callWith('spine_read', { sql: 'select 1 as one' });
+      expect(res.isError).toBe(false);
+      expect(res.text).not.toContain('admin tools require a manager badge');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('spine_read is refused to managers and technicians — the surface SHIFTED, it did not expand', async () => {
+    const mgrC = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const res = await mgrC.callWith('spine_read', { sql: 'select 1 as one' });
+      expect(res.isError).toBe(true);
+      expect(res.text).toContain("team lead's own tool");
+      expect(res.text).toContain('query_spine');
+    } finally {
+      await mgrC.client.close();
+    }
+    // The main client is 'tech-mcp', an active plain technician. tools/list never
+    // showed it the name, but discovery is cosmetic here as everywhere — dispatch
+    // is the gate, so a guessed name must still be refused.
+    const tech = await call('spine_read', { sql: 'select 1 as one' });
+    expect(tech.isError).toBe(true);
+    expect(tech.text).toContain("team lead's own tool");
+  });
+
+  test('query_spine is now refused to the team lead — the dead allowlist entry is gone', async () => {
+    const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+    try {
+      const res = await callWith('query_spine', { sql: 'select 1 as one' });
+      expect(res.isError).toBe(true);
+      expect(res.text).toContain('capped to read/ask');
+    } finally {
+      await c.close();
+    }
+  });
+
+  // The planner's ONLY read tool. Its description is the whole of what the model
+  // is told about the database, and the date doctrine inside it is what stopped
+  // the 2026-07-25 week-boundary misread. Composed from shared constants, so a
+  // dropped `+` term would strip a rule with the suite still green — this pins
+  // the ones that cost incidents.
+  test('the spine_read schema carries the view catalog and the date doctrine', () => {
+    expect(TEAM_LEAD_TOOL_SCHEMAS.map((t) => t.name)).toEqual(['spine_read']);
+    const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
+    // the catalog
+    expect(desc).toContain('eight views');
+    expect(desc).toContain('v_money_events');
+    expect(desc).toContain('DIRECTION COMES FROM kind');
+    // the day doctrine
+    expect(desc).toContain('local_day, which is already the firm-local day');
+    expect(desc).toContain('local_weekday');
+    // the planner's own date rule — it is HANDED its dates, it does not derive them
+    expect(desc).toContain('NEVER write a date into');
+    expect(desc).toContain('your clock is UTC');
+    // and the resolve_date instruction that belongs to query_spine, not here
+    expect(desc).not.toContain('call resolve_date FIRST');
+    // the cap honesty rule
+    expect(desc).toContain('if truncated is true SAY SO');
+    expect(TEAM_LEAD_TOOL_SCHEMAS[0].inputSchema.required).toEqual(['sql']);
+  });
+
+  test('spine_read is listed to nobody — not the technician surface, not the manager one', async () => {
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name)).not.toContain('spine_read');
+    const mgrC = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const mgrTools = await mgrC.client.listTools();
+      expect(mgrTools.tools.map((t) => t.name)).not.toContain('spine_read');
+    } finally {
+      await mgrC.client.close();
+    }
+  });
+
+  // The in-process door the planner will use. It must be the SAME door: same
+  // gates, same order. Proven by driving both a permitted and a refused tool
+  // through it without any MCP transport in between.
+  test('dispatchForIdentity runs the same gates as the transport', async () => {
+    const rows = (await dispatchForIdentity(
+      'spine_read',
+      { sql: 'select count(*) as n from v_customers' },
+      { tenantId, technicianRef: 'spine:team-lead' },
+      { recordCost: async () => {} },
+    )) as { status: string; rowCount: number };
+    expect(rows.status).toBe('ok');
+    expect(rows.rowCount).toBe(1);
+
+    await expect(
+      dispatchForIdentity(
+        'record_field_note',
+        { text: 'x' },
+        { tenantId, technicianRef: 'spine:team-lead' },
+        { recordCost: async () => {} },
+      ),
+    ).rejects.toThrow(/capped to read\/ask/);
+
+    await expect(
+      dispatchForIdentity(
+        'spine_read',
+        { sql: 'select 1 as one' },
+        { tenantId, technicianRef: 'mgr-test' },
+        { recordCost: async () => {} },
+      ),
+    ).rejects.toThrow(/team lead's own tool/);
   });
 });

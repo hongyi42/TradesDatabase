@@ -46,6 +46,26 @@ export interface SweepFacts {
   // spec compares activity against the ASK time (asked_at, real UTC) while the
   // activity map is naive-local, so it cannot convert without this.
   naiveLocal: (utcIso: string) => string;
+  // Jobs that HAVE a live (non-negated) cost on the money ledger. Added for the
+  // ITEM sweep (plan 2026-08-19, Phase 2), which needs to know when a manager
+  // has done the thing their queue item asked for.
+  //
+  // Deliberately NOT consumed by any `filled` predicate. A cost recorded by the
+  // manager still does not close an open cost NUDGE — that is one of three
+  // "the ladder cannot see the money ledger" defects the user ruled should be
+  // designed once, together, in a later plan. Wiring it here because it happened
+  // to be in hand would be exactly the piecemeal fix that decision rejected.
+  jobsWithCostEvents: Set<string>;
+}
+
+// The manager-queue twin of SweepFacts' subject: what the item sweep knows about
+// ONE open review item, parsed fail-closed at the boundary the way nudge context
+// is. `jobId` is required (every gap is about a job); the visit bounds are null
+// for a job-scoped kind, and a spec that needs them returns null.
+export interface OpenItemView {
+  subjectRef: string;
+  jobId: string;
+  startsAtLocal: string | null;
 }
 
 // What a dying nudge hands the manager. The spec BUILDS this; the watcher
@@ -82,6 +102,11 @@ export interface ComposeBlock {
 
 export interface NudgeKindSpec {
   kind: ReviewKind;
+  // Does subject_ref name a VISIT (an assignment id), or something else? The
+  // sweep uses this to decide which batched status read a kind's subjects belong
+  // in — a job-scoped kind's subject is a job id, and looking it up in the
+  // assignments table is both wasted work and a lie about what the id means.
+  subjectIsVisit: boolean;
   // The per-detector runaway brake. The deleted per-person cap was incidentally
   // capping a MISFIRING detector; the user accepted that the backstop must move
   // per-detector (nudge-pacing-replacement-design §5). Max NEW nudges of this
@@ -92,6 +117,19 @@ export interface NudgeKindSpec {
   filled(n: Nudge, f: SweepFacts): string | null;
   // Nothing left to ask → resolution text, or null.
   moot(n: Nudge, f: SweepFacts): string | null;
+  // How an open MANAGER REVIEW ITEM of this kind closes itself → resolution
+  // text, or null to leave it open.
+  //
+  // Separate from `filled`/`moot` because the QUESTION is different. A nudge asks
+  // the technician and closes when they answer; an item asks the MANAGER and
+  // closes when the manager has done the thing it asked for. For a visit gap
+  // those coincide (a field report). For a cost gap they do not: the item asks a
+  // manager to RECORD the cost, and only the ledger can say whether they did.
+  //
+  // Before this existed the sweep read one hardcoded kind, so a cost item never
+  // left the queue — it could not be resolved by anything except a human
+  // dismissing it. That is the gap escalate-then-close depends on.
+  itemResolved(item: OpenItemView, f: SweepFacts): string | null;
   // `naiveLocal` is a PER-TENANT closure built from that tenant's timezone
   // (watchers.ts). OPTIONAL because compose and the delivery queue hand rows to
   // the manager too and have no timezone to build one from — they only ever use
@@ -135,6 +173,7 @@ const disp = <T>(c: Record<string, unknown>, k: string, fallback: T): string | T
 
 export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
   kind: 'overdue_visit_gap',
+  subjectIsVisit: true,
   // Matches the tenant-wide per-tick cap: with one detector this brake never
   // binds before the tenant ceiling does, which is exactly today's behaviour.
   maxNewPerTenantTick: 5,
@@ -154,6 +193,20 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
     return status === 'cancelled' || status === 'completed'
       ? `the visit was ${status} — nothing left to ask`
       : null;
+  },
+
+  // The two paths that were inlined in the sweep before the registry reached
+  // review items, with their resolution copy carried over VERBATIM — this move
+  // must not change a single manager-visible string.
+  itemResolved(item, f) {
+    if (item.startsAtLocal && f.hasActivitySince(item.jobId, item.startsAtLocal)) {
+      return 'field report arrived after this was flagged';
+    }
+    const status = f.visitStatusById.get(item.subjectRef);
+    if (status === 'cancelled' || status === 'completed') {
+      return `visit was ${status} after this was flagged`;
+    }
+    return null;
   },
 
   compose: {
@@ -230,6 +283,8 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
 //     record it. Nothing chases the manager yet — that is the next plan.
 export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
   kind: 'job_cost_gap',
+  // The only kind whose subject is a JOB — see the note above.
+  subjectIsVisit: false,
   // Tighter than the visit brake: cost gaps arrive in bursts when a batch of
   // jobs completes, and this is a brand-new detector — the runaway backstop
   // matters most before it has a track record.
@@ -251,6 +306,20 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
   moot(n, f) {
     const status = f.jobStatusById.get(str(ctxOf(n), 'jobId') ?? '');
     return status === 'cancelled' ? 'the job was cancelled — nothing left to ask' : null;
+  },
+
+  // A cost item asks the MANAGER to record what the job cost, so the ledger is
+  // the only thing that can say it is done — not a note, and not any other
+  // activity on the job. This is the item half ONLY; the nudge's `filled` above
+  // deliberately still ignores the ledger (see SweepFacts.jobsWithCostEvents).
+  itemResolved(item, f) {
+    if (f.jobsWithCostEvents.has(item.jobId)) {
+      return 'a cost was recorded for this job after it was flagged';
+    }
+    if (f.jobStatusById.get(item.jobId) === 'cancelled') {
+      return 'the job was cancelled after this was flagged';
+    }
+    return null;
   },
 
   handoff(n, mode) {

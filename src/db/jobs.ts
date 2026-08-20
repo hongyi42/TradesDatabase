@@ -167,13 +167,35 @@ export async function listJobsWithCustomerByIds(
   jobIds: string[],
 ): Promise<JobWithCustomer[]> {
   if (jobIds.length === 0) return [];
-  const { data, error } = await getClient()
-    .from('jobs')
-    .select('*, customers(name, address_line1, address_line2, city, state, postal_code)')
-    .eq('tenant_id', tenantId)
-    .in('id', jobIds);
-  if (error) throw new Error(`listJobsWithCustomerByIds failed: ${error.message}`);
-  return (data ?? []) as JobWithCustomer[];
+  // CHUNKED AND PAGED, like every other batched reader on the watcher's path.
+  // This was a single unbounded query while its input was one day-route's jobs;
+  // the nudge sweep now feeds it open nudges PLUS every open review item, and a
+  // review item leaves the queue only when it is resolved or dismissed — so the
+  // set grows with the manager's backlog rather than with the day. Past
+  // PostgREST's silent 1000-row cap the result would quietly lose rows, and past
+  // a few thousand ids the `in.()` would blow the URL. Both failures are silent,
+  // which is the only reason this is worth the loop.
+  const PAGE = 1000;
+  const CHUNK = 500;
+  const rows: JobWithCustomer[] = [];
+  for (let i = 0; i < jobIds.length; i += CHUNK) {
+    const slice = jobIds.slice(i, i + CHUNK);
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('jobs')
+        .select('*, customers(name, address_line1, address_line2, city, state, postal_code)')
+        .eq('tenant_id', tenantId)
+        .in('id', slice)
+        // A stable order is REQUIRED for paging to be correct — without it
+        // PostgREST may return overlapping or skipped rows across ranges.
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listJobsWithCustomerByIds failed: ${error.message}`);
+      rows.push(...((data ?? []) as JobWithCustomer[]));
+      if (!data || data.length < PAGE) break;
+    }
+  }
+  return rows;
 }
 
 // Detector #2's candidates (plan 2026-08-19): jobs whose WORK is finished

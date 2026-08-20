@@ -1969,6 +1969,18 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   to merged/abandoned worktrees — verify with
   `git merge-base --is-ancestor $(git -C <wt> rev-parse HEAD) origin/main` first.
 
+**Calling the model from the spine:**
+- **GLM-5.2 thinks BY DEFAULT, so a small `maxTokens` truncates the FIRST turn — not the answer,
+  the whole call.** Measured 2026-08-20: the team-lead planner at `maxTokens: 4096` with
+  `reasoningEffort` unset returned `finish_reason=length` on turn one and produced no plan at all.
+  The truncation guard caught it (that is what it is for); the caller simply could not run. Fixed
+  with `reasoningEffort: 'low'` + 8192 — deliberately NOT `'none'`, which is right for a
+  forced-JSON extraction and wrong for a call whose entire job is judgment.
+  **Three shipped callers carry the same latent risk, unmeasured:** `src/calls/classifyCall.ts`
+  (maxTokens **256**), `src/email/classify.ts` (**256**), `src/writePath/extract.ts` (1024). They
+  work today because their prompts are short; a long email or transcript is the input that trips
+  them, and the failure is a thrown error, not a degraded answer.
+
 **Working on the agent boxes:**
 - **A tool DESCRIPTION change is not deploy-only; a result-side field is.** Gateways cache
   `tools/list` per process, and descriptions are part of that payload — so editing one needs

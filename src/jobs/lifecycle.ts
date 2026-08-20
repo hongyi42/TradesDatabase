@@ -12,6 +12,9 @@ import { ensurePersonSession } from '../composio/sessions.js';
 import { runLogIngestion, type LogIngestSummary } from '../composio/logIngest.js';
 import { runWatchers, type WatchersSummary } from './watchers.js';
 import { runTeamLeadCompose, type ComposeSummary } from '../teamLead/compose.js';
+import { runPlanner, type PlannerMode, type PlannerSummary } from '../teamLead/planner.js';
+import { TEAM_LEAD_REF } from '../teamLead/identity.js';
+import { dispatchForIdentity, TEAM_LEAD_TOOL_SCHEMAS } from '../mcp/server.js';
 import { hasModelCredentials } from '../model/forcedTool.js';
 
 // The lifecycle heartbeat — the ONE scheduled entrypoint (Render Cron Job,
@@ -66,6 +69,7 @@ export interface LifecycleDeps {
   rollup?: typeof rollupCosts;
   runWatchers?: typeof runWatchers;
   composeNudges?: typeof runTeamLeadCompose;
+  runPlanner?: typeof runPlanner;
   // Seam so the skip branch is testable without setting a real key.
   hasModelKey?: () => boolean;
 }
@@ -87,6 +91,7 @@ export interface LifecycleSummary {
     | { skipped: string }
     | { stepError: string };
   watchers: WatchersSummary | { skipped: string } | { stepError: string };
+  teamLeadPlanner: PlannerSummary | { skipped: string } | { stepError: string };
   teamLeadCompose: ComposeSummary | { skipped: string } | { stepError: string };
   ok: boolean;
 }
@@ -327,7 +332,58 @@ export async function runLifecycle(
     }
   }
 
-  // 9. The team-lead compose turn — every tick, triple-gated (see header).
+  // 9. The team-lead PLANNER (plan 2026-08-19, Phase 3) — the half-hour tick,
+  // and it runs BEFORE compose so a hold it writes is honoured on the SAME tick
+  // rather than one behind. Same stateless cadence trick as heavyTick above: the
+  // minute is the state, and `< 5` tolerates a delayed firing. On a */5 schedule
+  // that is :00 and :30, never twice.
+  //
+  // PLANNER_MODE follows the NUDGES_MODE contract exactly: unset is a VALID
+  // 'off' (a cron deployed before the var is chosen must not go red), and any
+  // other value is a LOUD stepError, because a config typo must never read as
+  // "the planner is quietly off".
+  //
+  // NOT gated on NUDGES_MODE, unlike compose below — deliberate. The planner
+  // follows the SWEEP's rollback-rescue doctrine (watchers.ts: in-flight rows
+  // keep their lifecycle regardless of NUDGES_MODE, because silence must always
+  // escalate), not compose's creation gate. Consequence to hold: with the ladder
+  // rolled back and PLANNER_MODE on, the planner still makes a billed call for
+  // any tenant that still has open rows. It skips tenants with none.
+  const plannerTick = new Date(nowIso).getUTCMinutes() % 30 < 5;
+  const plannerModeRaw = process.env.PLANNER_MODE;
+  const plannerMode: PlannerMode | null =
+    !plannerModeRaw ? 'off'
+    : plannerModeRaw === 'off' || plannerModeRaw === 'shadow' || plannerModeRaw === 'live'
+      ? plannerModeRaw
+      : null;
+  let teamLeadPlanner: LifecycleSummary['teamLeadPlanner'];
+  if (plannerMode === null) {
+    teamLeadPlanner = {
+      stepError: `PLANNER_MODE must be 'off', 'shadow' or 'live', got '${plannerModeRaw}'`,
+    };
+    ok = false;
+  } else if (plannerMode === 'off') {
+    teamLeadPlanner = { skipped: "PLANNER_MODE 'off'" };
+  } else if (!plannerTick) {
+    teamLeadPlanner = { skipped: 'off-cadence tick (planner runs on the half hour)' };
+  } else if (!(deps.hasModelKey ?? hasModelCredentials)()) {
+    teamLeadPlanner = { skipped: 'no inference credentials' };
+  } else {
+    try {
+      teamLeadPlanner = await (deps.runPlanner ?? runPlanner)(nowIso, plannerMode, {
+        tools: [...TEAM_LEAD_TOOL_SCHEMAS],
+        // The identity is minted PER TENANT, from the tenant the planner is
+        // currently walking — never bound once for the process.
+        execute: (tenantId, name, args) =>
+          dispatchForIdentity(name, args, { tenantId, technicianRef: TEAM_LEAD_REF }),
+      });
+    } catch (err) {
+      teamLeadPlanner = { stepError: msg(err) };
+      ok = false;
+    }
+  }
+
+  // 10. The team-lead compose turn — every tick, triple-gated (see header).
   // Gated on NUDGES_MODE='live', not merely the key: only a live ladder mints
   // pending rows, and a rolled-back ladder must not keep composing leftovers
   // (the in-flight SWEEP keeps running inside step 8 — creation and compose
@@ -354,6 +410,7 @@ export async function runLifecycle(
     braveBackfill,
     costRollup,
     watchers,
+    teamLeadPlanner,
     teamLeadCompose,
     ok,
   };

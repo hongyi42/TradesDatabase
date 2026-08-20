@@ -12,8 +12,15 @@ export const TEAM_LEAD_REF = 'spine:team-lead';
 // fails closed (targetGuard doctrine). There is no human behind this identity
 // to confirm anything, so nothing irreversible or externally visible may ever
 // dispatch for it; enforcement is mechanism (the gate), never prompt text.
+//
+// `query_spine` was REMOVED 2026-08-19 rather than kept: it sat here from the
+// start but was provably unreachable — `spine:team-lead` has no roster row, so
+// the manager-tier gate that follows this one refused it every time. A name on
+// an allowlist that cannot dispatch is a lie about what this identity can do.
+// `spine_read` (src/mcp/server.ts, TEAM_LEAD_TOOLS) is the reachable
+// replacement: the same read, under a name that is not an admin tool.
 export const TEAM_LEAD_TOOL_NAMES: ReadonlySet<string> = new Set([
-  'query_spine',
+  'spine_read',
   'get_customer_context',
   'resolve_date',
 ]);

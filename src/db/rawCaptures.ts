@@ -229,6 +229,117 @@ export async function findRetractionsFor(captureIds: string[]): Promise<RawCaptu
   return data ?? [];
 }
 
+// The planner's evidence read (plan 2026-08-19, Phase 3): what actually LANDED
+// on these jobs after a floor — with the words, not just the timestamps.
+//
+// listJobStampedCaptureTimes above answers "did anything arrive"; this answers
+// "what did they SAY", because the planner may only mark a gap answered by
+// quoting the evidence (cite-or-don't-close). Same floor discipline, same paging.
+//
+// It unions the SAME two homes the watcher's activity probe does, and for the
+// same reason: a technician's reply lands in L1 before identity is resolved, so
+// its raw_captures.job_id is often null and the only link is the visit that
+// recordFieldNote minted from it (visits.source_capture_id). Reading job-stamped
+// captures alone would miss exactly the answers this exists to find.
+//
+// Two things are dropped, both deliberately:
+//  * manager_only rows — the team lead holds no manager badge, and its citations
+//    end up in technician-facing questions and manager items alike. Same
+//    treatment the MCP dispatch gives a non-manager caller.
+//  * retracted captures and the retraction rows themselves — citing a note
+//    somebody retracted would be worse than citing nothing.
+export interface JobEvidenceRow {
+  jobId: string;
+  capture: RawCapture;
+  // How this capture was found. 'job_stamp' means it names the job directly;
+  // 'visit' means it was reached through a visit minted from it.
+  via: 'job_stamp' | 'visit';
+}
+
+export async function listJobEvidenceSince(
+  tenantId: string,
+  jobIds: string[],
+  sinceUtcIso: string,
+): Promise<JobEvidenceRow[]> {
+  if (jobIds.length === 0) return []; // PostgREST `in.()` with zero values errors
+  const PAGE = 1000;
+  const CHUNK = 500;
+  const found = new Map<string, JobEvidenceRow>();
+
+  // (1) Captures that name the job themselves.
+  for (let i = 0; i < jobIds.length; i += CHUNK) {
+    const slice = jobIds.slice(i, i + CHUNK);
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('raw_captures')
+        .select()
+        .eq('tenant_id', tenantId)
+        .in('job_id', slice)
+        .gte('captured_at', sinceUtcIso)
+        .order('captured_at', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listJobEvidenceSince failed: ${error.message}`);
+      for (const row of (data ?? []) as RawCapture[]) {
+        if (row.job_id) found.set(row.id, { jobId: row.job_id, capture: row, via: 'job_stamp' });
+      }
+      if (!data || data.length < PAGE) break;
+    }
+  }
+
+  // (2) Visits minted since the floor — their source capture carries the words.
+  const viaVisit = new Map<string, string>(); // captureId -> jobId
+  for (let i = 0; i < jobIds.length; i += CHUNK) {
+    const slice = jobIds.slice(i, i + CHUNK);
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('visits')
+        .select('job_id, source_capture_id, created_at')
+        .eq('tenant_id', tenantId)
+        .in('job_id', slice)
+        .gte('created_at', sinceUtcIso)
+        .not('source_capture_id', 'is', null)
+        .order('created_at', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listJobEvidenceSince failed: ${error.message}`);
+      for (const row of (data ?? []) as { job_id: string; source_capture_id: string | null }[]) {
+        // A capture already found by its own job stamp keeps that provenance —
+        // the direct link is the stronger claim.
+        if (row.source_capture_id && !found.has(row.source_capture_id)) {
+          viaVisit.set(row.source_capture_id, row.job_id);
+        }
+      }
+      if (!data || data.length < PAGE) break;
+    }
+  }
+
+  const missingIds = [...viaVisit.keys()];
+  for (let i = 0; i < missingIds.length; i += CHUNK) {
+    const slice = missingIds.slice(i, i + CHUNK);
+    const { data, error } = await getClient()
+      .from('raw_captures')
+      .select()
+      .eq('tenant_id', tenantId)
+      .in('id', slice);
+    if (error) throw new Error(`listJobEvidenceSince failed: ${error.message}`);
+    for (const row of (data ?? []) as RawCapture[]) {
+      const jobId = viaVisit.get(row.id);
+      if (jobId) found.set(row.id, { jobId, capture: row, via: 'visit' });
+    }
+  }
+
+  // (3) Drop what must never be cited.
+  const rows = [...found.values()].filter((r) => r.capture.sensitivity !== 'manager_only');
+  const kept = new Set(
+    foldRetractions(
+      rows.map((r) => r.capture),
+      await findRetractionsFor(rows.map((r) => r.capture.id)),
+    ).map((c) => c.id),
+  );
+  return rows
+    .filter((r) => kept.has(r.capture.id))
+    .sort((a, b) => (a.capture.captured_at < b.capture.captured_at ? -1 : 1));
+}
+
 // Pure fold: drop every capture a retraction points at, and drop retraction
 // rows themselves (their own retracts_capture_id is non-null — they never
 // appear in folded views even when stamped into a customer/job list).

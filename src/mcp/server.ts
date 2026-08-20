@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { fileURLToPath } from 'node:url';
 import { TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
+import type { JsonSchemaObject } from '../model/forcedTool.js';
 import {
   annotateResolvedReviewItem,
   appendRawCapture,
@@ -605,6 +606,64 @@ const TOOLS = [
   },
 ];
 
+// The read-only SQL surface, in the model's words. BOTH tools that expose it —
+// query_spine (manager) and spine_read (the team lead) — build their description
+// from these two constants, because the views and the date rules are properties
+// of the DATABASE, not of who is asking. Duplicating them is how a new view, or a
+// fix to the direction-comes-from-kind warning, lands on one tool and not the
+// other.
+const SPINE_VIEW_CATALOG =
+  'It CANNOT write, and it can only read these eight views (nothing else exists to it): ' +
+  'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, promise_level, ' +
+  'promised_day, locked, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
+  'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
+  'schedule that STANDS: confirmed and completed visits only, so count(*) here is real ' +
+  'bookings; cancelled visits are NOT in it — they live in ' +
+  'v_cancelled_visits(assignment_id, local_day, local_weekday, starts_at, ends_at, reason, ' +
+  'updated_at, promise_level, promised_day, earliest_date, latest_date, technician_ref, ' +
+  'technician_name, job_id, job_title, job_type, customer_id, customer_name, city, ' +
+  'postal_code), which also says why (reason) and when (updated_at); ' +
+  'v_team(ref, display_name, tier, state, seat_exempt, skills, service_cities, availability, ' +
+  'created_at); ' +
+  'v_jobs(id, title, job_type, status, priority, duration_minutes, price_cents, created_at, ' +
+  'updated_at, customer_id, customer_name); ' +
+  'v_customers(id, name, phone, email, address_line1, city, state, postal_code, created_at); ' +
+  'v_time_off(technician_ref, technician_name, starts_on, ends_on, reason); ' +
+  'v_money_events(id, job_id, job_title, customer_id, customer_name, kind, amount_cents, ' +
+  'currency, occurred_at, actor_ref, corrects_event_id, method, external_ref) — the money ' +
+  'ledger, one row per money fact (invoice_issued, payment_received, …), amounts in CENTS; ' +
+  'a correction/invoice_voided row CANCELS the row its corrects_event_id points at, so ' +
+  'exclude both sides of a cancelled pair when summing (or prefer the money summary that ' +
+  'get_job already returns — it folds this for you). DIRECTION COMES FROM kind, NEVER from ' +
+  'the sign: every amount_cents is positive, so summing across kinds is meaningless — ' +
+  "'material_cost' is what the job COST the firm (parts/materials), NOT money the customer " +
+  'owes, and adding it to invoices or payments produces a number that means nothing. Always ' +
+  'filter by the kinds you actually want, and group by currency; ' +
+  'v_firm_profile(display_name, legal_name, address_line1, address_line2, city, state, ' +
+  'postal_code, phone, email, license_numbers, disclosure_footer, updated_at) — the ' +
+  "firm's own letterhead identity, one row at most (set_firm_profile edits it). ";
+
+const SPINE_DAY_RULES =
+  'ALWAYS group or filter dates on v_schedule.local_day, which is already the firm-local day — ' +
+  'starts_at is a timestamp and bucketing it by its UTC date puts evening visits on the wrong ' +
+  'day. When you name one of those dates to a person, SELECT local_weekday and use it verbatim ' +
+  '("Tuesday the 4th") — never work out which day of the week a date falls on yourself. ';
+
+// query_spine ONLY: the manager's agent has resolve_date on its surface, so the
+// fix for a relative period is "go call it". The team lead is handed its dates by
+// code instead, so pointing it at a tool its loop may not carry would be a lie —
+// spine_read states the code-supplied rule in its place.
+const SPINE_RESOLVE_DATE_RULE =
+  'NEVER write a date into the SQL that you worked out yourself. If the question names a ' +
+  'period relative to now — "the last 30 days", "this week", "since May", "so far this month" ' +
+  '— call resolve_date FIRST and paste the dates it returns. The dates rule applies inside SQL ' +
+  'exactly as it does when you book a visit; you are no better at calendar arithmetic here. ';
+
+const SPINE_QUERY_LIMITS =
+  'One statement, no semicolon. Results are capped; if truncated is true SAY SO rather ' +
+  'than presenting a partial list as complete. Every query is logged with the person who ' +
+  'asked.';
+
 // Seat-management tools — MANAGER-tier badges only. Listed only to managers and
 // re-gated at dispatch (requireManager), so a technician badge structurally has
 // no admin surface even if it guesses the tool names.
@@ -1077,46 +1136,10 @@ const ADMIN_TOOLS = [
       'earliest_date..latest_date. A day is NOT free just because no row lands ON it; for ' +
       'free/empty-day questions use get_team_schedule, or filter window rows by ' +
       'earliest_date/latest_date. ' +
-      'It CANNOT write, and it can only read these eight views (nothing else exists to it): ' +
-      'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, promise_level, ' +
-      'promised_day, locked, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
-      'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
-      'schedule that STANDS: confirmed and completed visits only, so count(*) here is real ' +
-      'bookings; cancelled visits are NOT in it — they live in ' +
-      'v_cancelled_visits(assignment_id, local_day, local_weekday, starts_at, ends_at, reason, ' +
-      'updated_at, promise_level, promised_day, earliest_date, latest_date, technician_ref, ' +
-      'technician_name, job_id, job_title, job_type, customer_id, customer_name, city, ' +
-      'postal_code), which also says why (reason) and when (updated_at); ' +
-      'v_team(ref, display_name, tier, state, seat_exempt, skills, service_cities, availability, ' +
-      'created_at); ' +
-      'v_jobs(id, title, job_type, status, priority, duration_minutes, price_cents, created_at, ' +
-      'updated_at, customer_id, customer_name); ' +
-      'v_customers(id, name, phone, email, address_line1, city, state, postal_code, created_at); ' +
-      'v_time_off(technician_ref, technician_name, starts_on, ends_on, reason); ' +
-      'v_money_events(id, job_id, job_title, customer_id, customer_name, kind, amount_cents, ' +
-      'currency, occurred_at, actor_ref, corrects_event_id, method, external_ref) — the money ' +
-      'ledger, one row per money fact (invoice_issued, payment_received, …), amounts in CENTS; ' +
-      'a correction/invoice_voided row CANCELS the row its corrects_event_id points at, so ' +
-      'exclude both sides of a cancelled pair when summing (or prefer the money summary that ' +
-      'get_job already returns — it folds this for you). DIRECTION COMES FROM kind, NEVER from ' +
-      'the sign: every amount_cents is positive, so summing across kinds is meaningless — ' +
-      "'material_cost' is what the job COST the firm (parts/materials), NOT money the customer " +
-      'owes, and adding it to invoices or payments produces a number that means nothing. Always ' +
-      'filter by the kinds you actually want, and group by currency; ' +
-      'v_firm_profile(display_name, legal_name, address_line1, address_line2, city, state, ' +
-      'postal_code, phone, email, license_numbers, disclosure_footer, updated_at) — the ' +
-      "firm's own letterhead identity, one row at most (set_firm_profile edits it). " +
-      'ALWAYS group or filter dates on v_schedule.local_day, which is already the firm-local day — ' +
-      'starts_at is a timestamp and bucketing it by its UTC date puts evening visits on the wrong ' +
-      'day. When you name one of those dates to a person, SELECT local_weekday and use it verbatim ' +
-      '("Tuesday the 4th") — never work out which day of the week a date falls on yourself. ' +
-      'NEVER write a date into the SQL that you worked out yourself. If the question names a ' +
-      'period relative to now — "the last 30 days", "this week", "since May", "so far this month" ' +
-      '— call resolve_date FIRST and paste the dates it returns. The dates rule applies inside SQL ' +
-      'exactly as it does when you book a visit; you are no better at calendar arithmetic here. ' +
-      'One statement, no semicolon. Results are capped; if truncated is true SAY SO rather ' +
-      'than presenting a partial list as complete. Every query is logged with the person who ' +
-      'asked.',
+      SPINE_VIEW_CATALOG +
+      SPINE_DAY_RULES +
+      SPINE_RESOLVE_DATE_RULE +
+      SPINE_QUERY_LIMITS,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1579,9 +1602,82 @@ function slugify(displayName: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
+// The TEAM LEAD's own surface (plan 2026-08-19, Phase 1). A third list, beside
+// TOOLS and ADMIN_TOOLS, and the reason it exists is a trap that was traced and
+// probed before this was written: query_spine was already on the team-lead
+// allowlist, but `spine:team-lead` has no roster row, so activeManager is
+// permanently false and the ADMIN_TOOL_NAMES gate refused every call with
+// "admin tools require a manager badge". A dead allowlist entry.
+//
+// The two ways out were "exempt the team lead from the manager gate" and "give
+// it a name of its own". This is the second: spine_read must NEVER appear in
+// ADMIN_TOOLS, so ADMIN_TOOL_NAMES cannot contain it and the manager boundary is
+// sidestepped rather than weakened — no `if (… || isTeamLead)` anywhere near the
+// tier gate, which is exactly the sort of exception that later grows.
+//
+// It is NOT listed to anyone: tools/list serves TOOLS or MANAGER_TOOLS, and the
+// team lead is an in-process caller that is handed its tool schemas directly.
+// Discovery is cosmetic here in the same way it is everywhere else — dispatch is
+// the gate.
+const TEAM_LEAD_TOOLS = [
+  {
+    name: 'spine_read',
+    description:
+      "Read this firm's own records with ONE read-only SQL SELECT. This is how you get the " +
+      'context behind a gap: what the job is, who the customer is, what has been billed, what ' +
+      'else that technician has open. Use it when the answer would change your decision — not ' +
+      'to browse. ' +
+      'You are deciding about gaps in the record, so ABSENCE is usually what you are testing ' +
+      'for: a query that returns no rows is an answer, not a failure. ' +
+      SPINE_VIEW_CATALOG +
+      SPINE_DAY_RULES +
+      'Every date you need has been given to you in your instructions. NEVER write a date into ' +
+      'the SQL that you worked out yourself, and never assume what today is — your clock is UTC ' +
+      "and the firm's day is not. " +
+      SPINE_QUERY_LIMITS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sql: {
+          type: 'string',
+          description:
+            'One SELECT over the views above. No semicolon, no writes. Example: ' +
+            "select id, title, status from v_jobs where customer_id = '…'",
+        },
+        maxRows: {
+          type: 'number',
+          description: 'Row cap, default 200, hard ceiling 1000.',
+        },
+      },
+      required: ['sql'],
+    },
+  },
+];
+
+// Handed to the team-lead loop as its tool schemas. Exported (the array itself is
+// not) so the planner never re-declares them — one definition, one dispatch.
+export const TEAM_LEAD_TOOL_SCHEMAS: ReadonlyArray<{
+  name: string;
+  description: string;
+  inputSchema: JsonSchemaObject;
+}> = TEAM_LEAD_TOOLS.map((t) => ({
+  name: t.name,
+  description: t.description,
+  inputSchema: t.inputSchema as JsonSchemaObject,
+}));
+
 // The names the dispatch gate keys on: EVERY tool in ADMIN_TOOLS is gated
 // before the switch, so adding an admin tool cannot forget its guard.
 const ADMIN_TOOL_NAMES = new Set(ADMIN_TOOLS.map((t) => t.name));
+
+// The other half of the team-lead design. Keeping spine_read OUT of ADMIN_TOOLS
+// is what lets the team lead reach it — but on its own that would also hand it to
+// every technician badge, since ADMIN_TOOL_NAMES is the only tier gate and
+// tools/list is cosmetic. This set closes that: these names dispatch for the
+// `spine:` namespace and NOTHING else, so the surface SHIFTS rather than
+// expanding. Derived from the array, so a second team-lead tool is gated the day
+// it is added.
+const TEAM_LEAD_ONLY_TOOL_NAMES = new Set(TEAM_LEAD_TOOLS.map((t) => t.name));
 
 // The manager surface = base tools MINUS get_schedule, PLUS the admin tools
 // (user decision 2026-07-19). get_schedule is the technician driving-route
@@ -1861,6 +1957,24 @@ async function isActiveManager(identity: RequestIdentity): Promise<boolean> {
   return !!caller && caller.tier === 'manager' && caller.state === 'active';
 }
 
+// The in-process entry for spine-internal callers (the team-lead planner). It
+// exists so `dispatch` itself stays module-private: everything that reaches the
+// tools still passes the SAME gates in the SAME order — deactivation, the
+// spine: namespace ceiling, the manager tier gate — because there is only one
+// door and this is a handle on it, not a second one.
+//
+// `identity` is a parameter rather than a default because there is no ambient
+// team-lead identity: the caller must name the tenant it is acting for, exactly
+// as the gateway does for a badge.
+export async function dispatchForIdentity(
+  name: string,
+  args: Record<string, unknown>,
+  identity: RequestIdentity,
+  deps: Omit<ServerDeps, 'identity'> = {},
+): Promise<unknown> {
+  return dispatch(name, args, { ...deps, identity });
+}
+
 async function dispatch(
   name: string,
   args: Record<string, unknown>,
@@ -1919,6 +2033,14 @@ async function dispatch(
   // untouched: discovery is cosmetic, dispatch is the gate.
   if (identity.technicianRef.startsWith('spine:') && !TEAM_LEAD_TOOL_NAMES.has(name)) {
     throw new Error('the team-lead identity is capped to read/ask — tool not allowed');
+  }
+  // The INVERSE of that ceiling, and the reason spine_read can safely sit outside
+  // ADMIN_TOOLS: it is refused to every badge that is not a spine: identity. A
+  // manager asking for it is pointed at query_spine (same read, its own name and
+  // its own audit trail); a technician gets the same refusal, so guessing the
+  // name buys nothing. Deny-by-default in the other direction.
+  if (TEAM_LEAD_ONLY_TOOL_NAMES.has(name) && !identity.technicianRef.startsWith('spine:')) {
+    throw new Error(`${name} is the team lead's own tool — managers use query_spine`);
   }
   // The real tier gate (the tools/list filter is cosmetic): applied by tool
   // NAME so no admin case can be added without it.
@@ -4865,7 +4987,13 @@ async function dispatch(
           'They are now visible to the scheduler on their working days. Tell the manager exactly this.',
       };
     }
-    case 'query_spine': {
+    // ONE implementation, two names (plan 2026-08-19, Phase 1). spine_read is the
+    // team lead's name for the same read: it runs as the same `spine_reader`
+    // database role — no write privilege, SELECT on the views only — so the
+    // read-only guarantee is a property of the ROLE, held by construction, and
+    // cannot drift between the two callers. A copied handler could.
+    case 'query_spine':
+    case 'spine_read': {
       // The tenant is NOT taken from args and never interpolated into the SQL:
       // it goes to the function as a separate parameter, from the verified HMAC
       // identity. Everything the model wrote stays inside p_sql, where it runs
@@ -4886,8 +5014,8 @@ async function dispatch(
         // customers" tells the agent precisely what it may not do, and a
         // generic failure would have it retry the same shape forever.
         throw new Error(
-          `query_spine rejected that query: ${e instanceof Error ? e.message : String(e)}. ` +
-            'Only SELECT, one statement, and only the five v_* views listed in the tool description.',
+          `${name} rejected that query: ${e instanceof Error ? e.message : String(e)}. ` +
+            'Only SELECT, one statement, and only the v_* views listed in the tool description.',
         );
       }
       return {

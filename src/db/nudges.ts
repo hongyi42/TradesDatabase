@@ -233,6 +233,54 @@ export async function markNudgeOutcome(
   return data as Nudge | null;
 }
 
+// The planner's ONE write onto a nudge's timing (plan 2026-08-19, Phase 2).
+//
+// Deliberately a SCHEDULE write and nothing else: the planner never escalates,
+// resolves or cancels a row directly. To escalate it sets escalate_after to now
+// and lets the sweep perform the handoff — so the rung-2 flag, the orphan
+// doctrine and the "flag first, close second" order stay in ONE place
+// (watchers.ts) rather than being re-implemented beside it.
+//
+// Status-guarded conditional UPDATE (the markNudgeQueued shape): open rows only,
+// null when the row moved under us. A planner call takes seconds, and a delivery
+// ack or an auto-resolve can land in that window — the write must lose, not
+// resurrect a closed gap's timing.
+//
+// `undefined` leaves a column alone; `null` CLEARS it back to the code default.
+// The two are distinguished on purpose: "I have no opinion this tick" and "forget
+// what I said last tick" are different instructions.
+export async function setNudgeSchedule(
+  id: string,
+  tenantId: string,
+  schedule: { notBefore?: string | null; escalateAfter?: string | null },
+  fromStatuses: NudgeStatus[] = OPEN_NUDGE_STATUSES,
+): Promise<Nudge | null> {
+  // `!== undefined`, NOT `in`: the natural Phase-4 call site spreads a decision
+  // object whose fields are OPTIONAL, so `{ notBefore: d.notBefore, escalateAfter:
+  // d.escalateAfter }` carries both KEYS with undefined values. Keying on `in`
+  // would read "the planner had no opinion about escalation this tick" as "clear
+  // the deadline", silently erasing the escalate_after it wrote last tick.
+  const patch: { not_before?: string | null; escalate_after?: string | null } = {};
+  if (schedule.notBefore !== undefined) patch.not_before = schedule.notBefore;
+  if (schedule.escalateAfter !== undefined) patch.escalate_after = schedule.escalateAfter;
+  // An empty patch would be an UPDATE with no SET — PostgREST rejects it, and it
+  // could only ever come from a caller bug. Refuse it here where the caller is
+  // named, rather than as an opaque database error.
+  if (Object.keys(patch).length === 0) {
+    throw new Error('setNudgeSchedule: nothing to set (pass notBefore and/or escalateAfter)');
+  }
+  const { data, error } = await getClient()
+    .from('nudges')
+    .update(patch)
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .in('status', fromStatuses)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`setNudgeSchedule failed: ${error.message}`);
+  return data as Nudge | null;
+}
+
 // Write back a failed COMPOSE attempt count. A literal SET (not an increment
 // expression — PostgREST has none): the caller read the row this tick and the
 // cron is the only writer (Render guarantees one concurrent run). The guard

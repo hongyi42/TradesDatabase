@@ -822,14 +822,289 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
   });
 });
 
+// ── Deadlines as DATA (plan 2026-08-19, Phase 2) ────────────────────────────
+// The 48h constant becomes a DEFAULT, and the planner may stamp a per-row
+// escalate_after. The fail-safe is that the safe behaviour lives in the ABSENCE
+// of a stamp: if the planner never runs, every row still escalates on 48h.
+describe('escalate_after: the deadline on the row', () => {
+  const askedNudge = (over: Partial<Nudge>) =>
+    nudgeRow({
+      id: 'n-timed',
+      subject_ref: 'a-timed',
+      status: 'asked',
+      context: {
+        customerName: 'Henderson',
+        jobTitle: 'Furnace tune-up',
+        technicianRef: 'ben-shelton',
+        technicianName: 'Ben Shelton',
+        jobId: 'j1',
+        startsAtLocal: '2026-08-16T07:00:00.000Z',
+        endsAtLocal: '2026-08-16T08:00:00.000Z',
+      },
+      ...over,
+    });
+
+  const runWith = async (n: Nudge) => {
+    const resolved: Array<[string, string]> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [n],
+      flagNudge: async (input) => openItem({ subject_ref: input.subjectRef }),
+      resolveNudge: async (id, _t, status) => {
+        resolved.push([id, status]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    return { resolved, summary };
+  };
+
+  test('a stamp in the past escalates EARLY — well before the 48h default', async () => {
+    // Asked 1h ago: nowhere near 48h, so only the stamp can be doing this.
+    const { resolved, summary } = await runWith(
+      askedNudge({
+        asked_at: '2026-08-16T11:00:00.000Z',
+        escalate_after: '2026-08-16T11:30:00.000Z',
+      } as Partial<Nudge>),
+    );
+    expect(resolved).toEqual([['n-timed', 'escalated']]);
+    expect(summary.nudgesEscalated).toBe(1);
+  });
+
+  test('a stamp in the future HOLDS — even once the 48h default has passed', async () => {
+    // Asked 49h ago, which would escalate on the constant. The stamp wins.
+    const { resolved, summary } = await runWith(
+      askedNudge({
+        asked_at: '2026-08-14T11:00:00.000Z',
+        escalate_after: '2026-08-17T00:00:00.000Z',
+      } as Partial<Nudge>),
+    );
+    expect(resolved).toEqual([]);
+    expect(summary.nudgesEscalated).toBe(0);
+  });
+
+  test('NO stamp falls back to the 48h constant — the planner never running is safe', async () => {
+    const late = await runWith(askedNudge({ asked_at: '2026-08-14T11:00:00.000Z' })); // 49h
+    expect(late.resolved).toEqual([['n-timed', 'escalated']]);
+    const early = await runWith(askedNudge({ asked_at: '2026-08-15T11:00:00.000Z' })); // 25h
+    expect(early.resolved).toEqual([]);
+  });
+
+  test('a MALFORMED stamp falls back to the constant rather than escalating now or never', async () => {
+    const late = await runWith(
+      askedNudge({
+        asked_at: '2026-08-14T11:00:00.000Z', // 49h → the constant says escalate
+        escalate_after: 'not-a-timestamp',
+      } as Partial<Nudge>),
+    );
+    expect(late.resolved).toEqual([['n-timed', 'escalated']]);
+    const early = await runWith(
+      askedNudge({
+        asked_at: '2026-08-16T11:00:00.000Z', // 1h → the constant says wait
+        escalate_after: 'not-a-timestamp',
+      } as Partial<Nudge>),
+    );
+    expect(early.resolved).toEqual([]);
+  });
+
+  test('a stamp on a NEVER-ASKED row does not escalate — there is no silence to measure', async () => {
+    const { resolved, summary } = await runWith(
+      askedNudge({
+        status: 'pending',
+        asked_at: null,
+        escalate_after: '2026-08-16T00:00:00.000Z', // long past
+      } as Partial<Nudge>),
+    );
+    // The 24h delivery deadline owns this row, and it was created 2026-08-14 —
+    // so it EXPIRES to the manager instead. Never 'escalated': the escalation
+    // path measures silence AFTER an ask, and no ask ever landed here.
+    expect(resolved.map(([, status]) => status)).not.toContain('escalated');
+    expect(summary.nudgesEscalated).toBe(0);
+    expect(summary.nudgesExpired).toBe(1);
+  });
+});
+
+// ── The manager queue drains for every kind (plan 2026-08-19, Phase 2) ──────
+// Before this, the open-item sweep named ONE kind as a literal, so a cost item
+// could only ever leave the queue by a human dismissing it.
+describe('review-item auto-resolve is kind-generic', () => {
+  const costItem = (over: Partial<ReviewItem> = {}) =>
+    openItem({
+      id: 'ri-cost',
+      kind: 'job_cost_gap',
+      subject_ref: 'j-cost', // the JOB id — this kind's subject is not a visit
+      detail: { jobId: 'j-cost', technicianRef: 'ben-shelton' },
+      ...over,
+    });
+
+  test('a cost item closes once the job gains a cost — the thing it asked for', async () => {
+    const resolved: Array<[string, string, string | null]> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      findOpenGaps: async (_t, kind) => (kind === 'job_cost_gap' ? [costItem()] : []),
+      // The manager recorded it.
+      listCostEvents: async (_t, jobIds) => jobIds.filter((j) => j === 'j-cost'),
+      resolveGap: async (_t, kind, subjectRef, _status, note) => {
+        resolved.push([kind, subjectRef, note ?? null]);
+        return costItem();
+      },
+    }), 'live');
+    expect(resolved).toEqual([
+      ['job_cost_gap', 'j-cost', 'a cost was recorded for this job after it was flagged'],
+    ]);
+    expect(summary.itemsResolved).toBe(1);
+  });
+
+  test('a cost item with no cost recorded STAYS OPEN — activity alone is not the answer', async () => {
+    const resolved: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      findOpenGaps: async (_t, kind) => (kind === 'job_cost_gap' ? [costItem()] : []),
+      listCostEvents: async () => [],
+      // A field note landed on the job — that closes a VISIT gap, not a cost one:
+      // the item asks a MANAGER to record a number, and prose is not a number.
+      listCaptureTimes: async () => [{ job_id: 'j-cost', captured_at: '2026-08-16T11:00:00.000Z' }],
+      resolveGap: async (_t, kind) => {
+        resolved.push(kind);
+        return costItem();
+      },
+    }), 'live');
+    expect(resolved).toEqual([]);
+    expect(summary.itemsResolved).toBe(0);
+  });
+
+  test('a cost item closes when its job is cancelled — nothing left to record', async () => {
+    const notes: string[] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      findOpenGaps: async (_t, kind) => (kind === 'job_cost_gap' ? [costItem()] : []),
+      listCostEvents: async () => [],
+      listJobs: async () =>
+        [{ id: 'j-cost', tenant_id: 't1', status: 'cancelled' }] as unknown as JobWithCustomer[],
+      resolveGap: async (_t, _k, _s, _status, note) => {
+        notes.push(note ?? '');
+        return costItem();
+      },
+    }), 'live');
+    expect(notes).toEqual(['the job was cancelled after this was flagged']);
+  });
+
+  test("a job-scoped NUDGE's subject never reaches the ASSIGNMENTS lookup either", async () => {
+    // The item half is pinned below; this is the nudge half of the same guard.
+    // Wasted payload today (a job id matches no assignment), but a future
+    // job-scoped spec that read visitStatusById would get a silent `undefined`.
+    const asked: string[][] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({
+          id: 'n-cost',
+          kind: 'job_cost_gap',
+          subject_ref: 'j-cost',
+          status: 'asked',
+          asked_at: '2026-08-16T11:00:00.000Z',
+          context: { jobId: 'j-cost', jobTitle: 'Furnace tune-up', customerName: 'Henderson' },
+        }),
+      ],
+      listAssignments: async (_t, ids) => {
+        asked.push(ids);
+        return [];
+      },
+    }), 'live');
+    expect(asked.flat()).not.toContain('j-cost');
+  });
+
+  test("a job-scoped item's subject never reaches the ASSIGNMENTS lookup", async () => {
+    // subject_ref is a job id for this kind. Sending it to listAssignments would
+    // be a wasted `in()` element and a claim the id means something it does not.
+    const asked: string[][] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      findOpenGaps: async (_t, kind) => (kind === 'job_cost_gap' ? [costItem()] : []),
+      listCostEvents: async () => [],
+      listAssignments: async (_t, ids) => {
+        asked.push(ids);
+        return [];
+      },
+    }), 'live');
+    expect(asked.flat()).not.toContain('j-cost');
+  });
+
+  // THE ONE INTENDED BEHAVIOUR CHANGE in a phase that otherwise promises none.
+  // The old parse required a parseable startsAtLocal and DROPPED items without
+  // one, so such an item could never auto-resolve by any path — it sat open until
+  // a human dismissed it. jobId alone is required now, so it closes on the status
+  // path, using the wording that already existed. Strictly better, and the class
+  // is empty for rows written by current code (the visit flagger always passes
+  // startsAtLocal), so only legacy or tampered rows are affected.
+  test('a visit item with NO startsAtLocal can now close on the status path', async () => {
+    const notes: string[] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      findOpenGaps: async (_t, kind) =>
+        kind === 'overdue_visit_gap' ? [openItem({ detail: { jobId: 'j1' } })] : [],
+      listAssignments: async () => [visit({ id: 'a1', status: 'cancelled' })],
+      resolveGap: async (_t, _k, _s, _status, note) => {
+        notes.push(note ?? '');
+        return openItem({});
+      },
+    }), 'live');
+    expect(notes).toEqual(['visit was cancelled after this was flagged']);
+  });
+
+  test('an item with no jobId at all is still DROPPED — that parse stays fail-closed', async () => {
+    const notes: string[] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      findOpenGaps: async (_t, kind) =>
+        kind === 'overdue_visit_gap' ? [openItem({ detail: { startsAtLocal: '2026-08-16T07:00:00.000Z' } })] : [],
+      listAssignments: async () => [visit({ id: 'a1', status: 'cancelled' })],
+      resolveGap: async (_t, _k, _s, _status, note) => {
+        notes.push(note ?? '');
+        return openItem({});
+      },
+    }), 'live');
+    expect(notes).toEqual([]);
+  });
+
+  test('the visit item paths are UNCHANGED — same two closures, same wording', async () => {
+    const notes: Array<[string, string]> = [];
+    const resolveGap = async (
+      _t: string,
+      kind: string,
+      _s: string,
+      _status: string,
+      note?: string | null,
+    ) => {
+      notes.push([kind, note ?? '']);
+      return openItem({});
+    };
+    // (1) activity arrived after the flag
+    await runWatchers(NOW, 'live', baseDeps({
+      findOpenGaps: async (_t, kind) =>
+        kind === 'overdue_visit_gap'
+          ? [openItem({ detail: { jobId: 'j1', startsAtLocal: '2026-08-16T07:00:00.000Z' } })]
+          : [],
+      listCaptureTimes: async () => [{ job_id: 'j1', captured_at: '2026-08-16T09:00:00.000Z' }],
+      resolveGap,
+    }), 'live');
+    // (2) the visit left 'confirmed'
+    await runWatchers(NOW, 'live', baseDeps({
+      findOpenGaps: async (_t, kind) =>
+        kind === 'overdue_visit_gap'
+          ? [openItem({ detail: { jobId: 'j1', startsAtLocal: '2026-08-16T07:00:00.000Z' } })]
+          : [],
+      listAssignments: async () => [visit({ id: 'a1', status: 'cancelled' })],
+      resolveGap,
+    }), 'live');
+    expect(notes).toEqual([
+      ['overdue_visit_gap', 'field report arrived after this was flagged'],
+      ['overdue_visit_gap', 'visit was cancelled after this was flagged'],
+    ]);
+  });
+});
+
 describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
   // A second detector does not exist in production yet, so the brake and the
   // stranded-kind behaviour are exercised through the injectable specs seam.
   const secondSpec = (over: Partial<NudgeKindSpec> = {}): NudgeKindSpec => ({
     kind: 'call_action' as NudgeKindSpec['kind'], // any registered ReviewKind
+    subjectIsVisit: false,
     maxNewPerTenantTick: 2,
     filled: () => null,
     moot: () => null,
+    itemResolved: () => null,
     handoff: () => null,
     compose: { system: 'second', tool: OVERDUE_VISIT_GAP_SPEC.compose.tool, prepare: () => null },
     ...over,

@@ -9,6 +9,7 @@ import {
   markNudgeOutcome,
   markNudgeQueued,
   setNudgeAttempts,
+  setNudgeSchedule,
 } from './nudges.js';
 import { createTenant } from './tenants.js';
 
@@ -219,5 +220,98 @@ describe('review_items once-ever backstop index (Feature A debt, paid here)', ()
        values ($1, 'call_action', 'nudge-bt-2')`,
       [tenantId],
     );
+  });
+});
+
+// ── setNudgeSchedule: the planner's only write onto a nudge (Phase 2) ───────
+describe('setNudgeSchedule', () => {
+  const openRow = async (subjectRef: string) => {
+    const n = await createPendingNudge({
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef,
+      technicianId: techId,
+      context: { jobId: 'j-sched' },
+    });
+    if (!n) throw new Error('fixture nudge was not created');
+    return n;
+  };
+
+  test('stamps both columns, and an unstamped row reads null (the code default)', async () => {
+    const n = await openRow('asg-sched-1');
+    expect(n.not_before).toBeNull();
+    expect(n.escalate_after).toBeNull();
+
+    const updated = await setNudgeSchedule(n.id, tenantId, {
+      notBefore: '2026-08-20T15:00:00.000Z',
+      escalateAfter: '2026-08-21T15:00:00.000Z',
+    });
+    expect(updated?.not_before).toBe('2026-08-20T15:00:00+00:00');
+    expect(updated?.escalate_after).toBe('2026-08-21T15:00:00+00:00');
+  });
+
+  test('an omitted key is LEFT ALONE; an explicit null CLEARS it', async () => {
+    // The distinction is load-bearing: "no opinion this tick" and "forget what I
+    // said last tick" are different instructions from the planner.
+    const n = await openRow('asg-sched-2');
+    await setNudgeSchedule(n.id, tenantId, {
+      notBefore: '2026-08-20T15:00:00.000Z',
+      escalateAfter: '2026-08-21T15:00:00.000Z',
+    });
+
+    const partial = await setNudgeSchedule(n.id, tenantId, { notBefore: null });
+    expect(partial?.not_before).toBeNull();
+    expect(partial?.escalate_after).toBe('2026-08-21T15:00:00+00:00'); // untouched
+  });
+
+  test('an explicit undefined leaves the column ALONE — the Phase-4 call shape', async () => {
+    // The planner spreads a decision object whose fields are optional, so both
+    // KEYS arrive with one value undefined. Keying on `in` would read "no opinion
+    // about escalation this tick" as "clear it", erasing last tick's deadline.
+    const n = await openRow('asg-sched-6');
+    await setNudgeSchedule(n.id, tenantId, {
+      notBefore: '2026-08-20T15:00:00.000Z',
+      escalateAfter: '2026-08-21T15:00:00.000Z',
+    });
+    const decision: { notBefore?: string | null; escalateAfter?: string | null } = {
+      notBefore: '2026-08-22T15:00:00.000Z',
+    };
+    const after = await setNudgeSchedule(n.id, tenantId, {
+      notBefore: decision.notBefore,
+      escalateAfter: decision.escalateAfter, // undefined — no opinion, not "clear it"
+    });
+    expect(after?.not_before).toBe('2026-08-22T15:00:00+00:00');
+    expect(after?.escalate_after).toBe('2026-08-21T15:00:00+00:00');
+  });
+
+  test('an empty patch is refused where the caller is named, not as a database error', async () => {
+    const n = await openRow('asg-sched-3');
+    await expect(setNudgeSchedule(n.id, tenantId, {})).rejects.toThrow(/nothing to set/);
+  });
+
+  test('a CLOSED row is never re-scheduled — the planner must lose a race it lost', async () => {
+    // A planner call takes seconds; a delivery ack or an auto-resolve can land in
+    // that window. The write must return null rather than put a deadline back on
+    // a gap that is already done.
+    const n = await openRow('asg-sched-4');
+    await markNudgeOutcome(n.id, tenantId, 'answered', 'a note landed');
+    const late = await setNudgeSchedule(n.id, tenantId, {
+      escalateAfter: '2026-08-21T15:00:00.000Z',
+    });
+    expect(late).toBeNull();
+    const [row] = await listNudgesByStatus(tenantId, ['answered']).then((rows) =>
+      rows.filter((r) => r.subject_ref === 'asg-sched-4'),
+    );
+    expect(row.escalate_after).toBeNull();
+  });
+
+  test('another tenant cannot schedule this row', async () => {
+    // A bare non-matching uuid is enough — the guard is the tenant_id predicate,
+    // and inventing a second tenant row here would leak one past the cleanup.
+    const n = await openRow('asg-sched-5');
+    const cross = await setNudgeSchedule(n.id, '00000000-0000-0000-0000-0000000000ff', {
+      notBefore: '2026-08-20T15:00:00.000Z',
+    });
+    expect(cross).toBeNull();
   });
 });

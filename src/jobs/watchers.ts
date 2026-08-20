@@ -284,19 +284,36 @@ export async function runWatchers(
       const to = naiveLocal(new Date(nowMs - OVERDUE_HOURS * 3_600_000).toISOString());
 
       const candidates = await listOverdue(tenantId, from, to);
-      const openItems = mode === 'live' ? await findOpenGaps(tenantId, 'overdue_visit_gap') : [];
+      // EVERY registered kind (plan 2026-08-19, Phase 2). This read used to name
+      // one kind as a literal, which meant a COST item — the manager's copy of a
+      // cost gap — was never swept at all: it left the queue only when a human
+      // dismissed it. Registry-driven now, so a third detector's items are swept
+      // the day its spec is registered, not the day someone remembers this line.
+      const openItems =
+        mode === 'live'
+          ? (
+              await Promise.all(
+                specs.map(async (spec) =>
+                  (await findOpenGaps(tenantId, spec.kind)).map((item) => ({ item, spec })),
+                ),
+              )
+            ).flat()
+          : [];
 
-      // Open items' detail is watcher-written JSON, but fail CLOSED once, at
-      // the boundary: malformed rows are dropped here and can only be closed
-      // by the status-change path or a manual dismiss.
-      const openGaps = openItems.flatMap((item) => {
+      // Detail is watcher-written JSON, read fail-CLOSED at the boundary. jobId
+      // ALONE is required now: a job-scoped kind carries no visit window, and
+      // demanding startsAtLocal here is exactly what excluded cost items from
+      // every path below. The window is passed along as nullable and a kind that
+      // NEEDS it declines in its own predicate — the fail-closed judgment moved
+      // into the spec, where it is allowed to differ per kind.
+      const openGaps = openItems.flatMap(({ item, spec }) => {
         const d = (item.detail ?? {}) as Record<string, unknown>;
         const jobId = typeof d.jobId === 'string' ? d.jobId : null;
         const startsAtLocal =
           typeof d.startsAtLocal === 'string' && !Number.isNaN(Date.parse(d.startsAtLocal))
             ? d.startsAtLocal
             : null;
-        return jobId && startsAtLocal ? [{ item, jobId, startsAtLocal }] : [];
+        return jobId ? [{ item, spec, jobId, startsAtLocal }] : [];
       });
 
       // Open nudges are swept whenever the WATCHER is live — deliberately
@@ -361,7 +378,11 @@ export async function runWatchers(
         // the precise compare stays in JS.
         let minNaiveMs = Date.parse(from);
         for (const c of candidates) minNaiveMs = Math.min(minNaiveMs, Date.parse(c.starts_at));
-        for (const g of openGaps) minNaiveMs = Math.min(minNaiveMs, Date.parse(g.startsAtLocal));
+        // A job-scoped item has no visit start to contribute — the window's own
+        // start already bounds it (same treatment as the nudge branch below).
+        for (const g of openGaps) {
+          if (g.startsAtLocal) minNaiveMs = Math.min(minNaiveMs, Date.parse(g.startsAtLocal));
+        }
         for (const x of openNudgeGaps) {
           // A job-scoped gap has no start; its context's visit END is the
           // earliest thing its answer could follow, so it serves as the floor
@@ -415,10 +436,16 @@ export async function runWatchers(
       // Auto-resolve, two paths. (1) The gap an open item describes has been
       // filled by activity since the visit started. ONE status batch serves
       // items and nudges alike (both key their subject on the assignment id).
+      // Only kinds whose subject IS a visit belong in an assignments lookup. A
+      // job-scoped kind's subject_ref is a JOB id: passing it here would be a
+      // wasted `in()` element and, worse, a claim that the id means something it
+      // does not.
       const statusSubjects = [
         ...new Set([
-          ...openGaps.map((g) => g.item.subject_ref),
-          ...openNudgeGaps.map((x) => x.n.subject_ref),
+          ...openGaps.filter((g) => g.spec.subjectIsVisit).map((g) => g.item.subject_ref),
+          ...openNudgeGaps
+            .filter((x) => specFor(x.n.kind, specs)?.subjectIsVisit)
+            .map((x) => x.n.subject_ref),
         ]),
       ];
       const statusById = new Map(
@@ -427,43 +454,58 @@ export async function runWatchers(
       // Job statuses, for the sweep's JOB-scoped predicates (a cost gap is moot
       // once its job is cancelled). Same batched discipline as everything else
       // here — one read over ids already in hand, never per row.
-      const nudgeJobIds = [
-        ...new Set(openNudgeGaps.map((x) => x.jobId).filter((v): v is string => !!v)),
+      // Nudges AND items: a cost item on a cancelled job must be able to close
+      // too, and it has no assignment status to close on.
+      const predicateJobIds = [
+        ...new Set([
+          ...openNudgeGaps.map((x) => x.jobId).filter((v): v is string => !!v),
+          ...openGaps.map((g) => g.jobId),
+        ]),
       ];
       const jobStatusById = new Map<string, string>(
-        nudgeJobIds.length === 0
+        predicateJobIds.length === 0
           ? []
-          : (await listJobs(tenantId, nudgeJobIds))
+          : (await listJobs(tenantId, predicateJobIds))
               .filter((j) => j.tenant_id === tenantId)
               .map((j) => [j.id, j.status]),
       );
+      // Which of those jobs carry a LIVE (non-negated) cost. Built over exactly
+      // the same id set as jobStatusById, deliberately: a Set populated for only
+      // some jobs is a landmine, because `has() === false` would mean either "no
+      // cost" or "never asked" and no caller could tell them apart. One batched
+      // read, skipped entirely when nothing is open.
+      const jobsWithCostEvents = new Set<string>(
+        predicateJobIds.length === 0 ? [] : await listCostEvents(tenantId, predicateJobIds),
+      );
+
+      // The facts every spec judges against, built ONCE per tenant per tick and
+      // shared by both sweeps (items below, nudges further down). A spec takes
+      // facts, never a DB client, so it cannot regress this into N queries.
+      const facts: SweepFacts = {
+        hasActivitySince,
+        visitStatusById: statusById,
+        jobStatusById,
+        naiveLocal,
+        jobsWithCostEvents,
+      };
+      // ONE resolve path for every kind. The two visit predicates that used to be
+      // inlined here now live on OVERDUE_VISIT_GAP_SPEC.itemResolved, with their
+      // manager-visible copy carried over verbatim; the cost spec answers the
+      // different question its item actually asks (did a cost get RECORDED).
       for (const g of openGaps) {
-        if (hasActivitySince(g.jobId, g.startsAtLocal)) {
-          const resolved = await resolveGap(
-            tenantId,
-            'overdue_visit_gap',
-            g.item.subject_ref,
-            'resolved',
-            'field report arrived after this was flagged',
-          );
-          if (resolved) summary.itemsResolved += 1;
-          continue;
-        }
-        // (2) The visit left 'confirmed' — cancelled or completed is the
-        // "status update" the item copy promises counts (final-review fix:
-        // without this, a cancelled visit sits in the queue forever asking
-        // the manager to follow up on work they already killed).
-        const status = statusById.get(g.item.subject_ref);
-        if (status === 'cancelled' || status === 'completed') {
-          const resolved = await resolveGap(
-            tenantId,
-            'overdue_visit_gap',
-            g.item.subject_ref,
-            'resolved',
-            `visit was ${status} after this was flagged`,
-          );
-          if (resolved) summary.itemsResolved += 1;
-        }
+        const resolution = g.spec.itemResolved(
+          { subjectRef: g.item.subject_ref, jobId: g.jobId, startsAtLocal: g.startsAtLocal },
+          facts,
+        );
+        if (!resolution) continue;
+        const resolved = await resolveGap(
+          tenantId,
+          g.spec.kind,
+          g.item.subject_ref,
+          'resolved',
+          resolution,
+        );
+        if (resolved) summary.itemsResolved += 1;
       }
 
       // Sweep open nudges with the SAME two resolve paths, then collect the
@@ -476,15 +518,6 @@ export async function runWatchers(
       const openedByKind = { overdue: 0, cost: 0 };
       const escalations: typeof openNudgeGaps = [];
       const expired: typeof openNudgeGaps = [];
-      // Facts the specs judge against — fetched ONCE per tenant per tick, never
-      // per row (a spec takes facts, never a DB client, so it cannot regress
-      // this into N queries).
-      const facts: SweepFacts = {
-        hasActivitySince,
-        visitStatusById: statusById,
-        jobStatusById,
-        naiveLocal,
-      };
       for (const x of openNudgeGaps) {
         // Present by construction: openNudges was filtered to registered kinds.
         const spec = specFor(x.n.kind, specs)!;
@@ -500,13 +533,26 @@ export async function runWatchers(
           if (closed) summary.nudgesResolved += 1;
           continue;
         }
-        if (
-          x.n.status === 'asked' &&
-          x.n.asked_at &&
-          Date.parse(x.n.asked_at) <= nowMs - NUDGE_ESCALATE_HOURS * 3_600_000
-        ) {
-          escalations.push(x);
-          continue;
+        // Rung 2. The deadline is now DATA (plan 2026-08-19, Phase 2): the
+        // planner may write escalate_after per row, and the 48h constant is what
+        // an unwritten row falls back to. That fallback is the fail-safe — if the
+        // planner never runs, or crashes, or is rolled back, every row still
+        // escalates on the constant, because the safe behaviour lives in the
+        // ABSENCE of a value rather than in a writer being healthy.
+        //
+        // Fail-closed on a malformed stamp: an unparseable escalate_after falls
+        // back to the constant rather than escalating immediately or never.
+        // asked_at is still REQUIRED — a row that was never asked has no silence
+        // to measure, and the delivery-deadline path below owns it instead.
+        if (x.n.status === 'asked' && x.n.asked_at) {
+          const stamped = x.n.escalate_after ? Date.parse(x.n.escalate_after) : NaN;
+          const dueAt = Number.isNaN(stamped)
+            ? Date.parse(x.n.asked_at) + NUDGE_ESCALATE_HOURS * 3_600_000
+            : stamped;
+          if (dueAt <= nowMs) {
+            escalations.push(x);
+            continue;
+          }
         }
         // Never ASKED within the deadline (Phase-4 review F1): the row is
         // stuck in some way the serve path cannot see — liveness-skipped

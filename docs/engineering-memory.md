@@ -335,7 +335,17 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 **Deploy/migration gotchas (each one burned us):**
 - Render's **"Redeploy" button re-runs the OLD commit** — use "deploy latest commit" and
   confirm the **live commit hash** in the dashboard. Two E2E attempts once failed on stale
-  server code this way.
+  server code this way. The API is the same trap: `POST /v1/services/{id}/deploys` with no body
+  redeploys **whatever is already live**, and the MCP `trigger_deploy` reports that old commit
+  back to you (observed 2026-08-20 — it returned #157 while main was two commits ahead).
+- **A CRON service cannot be deployed by commit id at all.** `POST /v1/services/{id}/deploys`
+  with `{"commitId": …}` answers `400 cannot deploy cron job service … by commit reference ID`.
+  So for `lifecycle-heart` there is NO "ship this specific commit" escape hatch: it is
+  branch-head via webhook, or a redeploy of the live commit. **If a webhook is genuinely
+  dropped, the only fix is another push.** Normal webhook latency is ~16s (measured); one
+  2026-08-20 push sat >6 minutes with no deploy record created at all, so do not assume slow
+  means stuck — but do not fire `trigger_deploy` at an autoDeploy service either, it only
+  rebuilds what is already running.
 - **Nothing auto-applies DB migrations to the pilot.** Render only builds+starts.
   `npm run db:push` is unreliable here — the pilot's migration ledger has drifted from the
   repo (versions applied that no repo file carries). Use the Supabase MCP `apply_migration`
@@ -900,10 +910,19 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   ledger, though the DETECTOR checks it before creating), and `job_cost_gap` review items never
   auto-resolve (the open-item sweep reads `findOpenGaps(tenantId, 'overdue_visit_gap')` only).
   All three are one design problem — fix them together, not as three patches. Research:
-  `thoughts/shared/research/2026-08-19-nudge-money-answer-blindspot.md`. **A live specimen is
-  deliberately being kept OPEN on the pilot (user decision) as the rung-2 escalation test — it
-  fires a knowingly-false manager item ~2026-08-21 19:05Z. Do not clean it up and do not report
-  that item as a new bug.** Separately fixed in PR #156 (they did NOT share this root cause): the
+  `thoughts/shared/research/2026-08-19-nudge-money-answer-blindspot.md`. **The live specimen FIRED
+  2026-08-20 19:55:41Z** (a day early — `NUDGE_ESCALATE_HOURS` moved 48 → 24 that afternoon and the
+  row was already 24.8h old). It proved BOTH halves. The escalation path is correct: nudge →
+  `escalated`, review item `5927d0f8-…` opened with `escalatedFromNudge` linking back, weekday and
+  date fused and firm-local. And the copy is false on both counts — *"hasn't heard back"* and
+  *"nothing is on the job's record yet"* — about a person who answered and a job carrying a
+  `payment_received` row. **The lesson is that nothing about that message LOOKS broken:** it is
+  confident, specific and well written, and only the escape-hatch line ("If it's already handled,
+  just dismiss this") keeps it recoverable. The item is open on the pilot and is safe to dismiss;
+  its evidentiary job is done. The 2026-08-20 planner work added a `basis: 'record'` close for the
+  PLANNER on `job_cost_gap` only (authorised by `listJobIdsWithCostEvents`, never by the model
+  asserting it) — it deliberately does NOT touch the sweep's `filled`, and it does not help this
+  row: a visit gap's hole is the missing write-up, which is genuinely still missing.** Separately fixed in PR #156 (they did NOT share this root cause): the
   cost detector skipped `paid` jobs entirely — `deriveStatusTarget` auto-walks a job to `paid`
   once payment clears, and the detector only looks 3h after the visit ends, so a
   paid-at-the-door job was past the filter before it ever ran — and a CORRECTED `material_cost`
@@ -1968,6 +1987,29 @@ The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, archit
   (`docker stats --no-stream`); a comments-only diff cannot break 15 tests. Stop stacks belonging
   to merged/abandoned worktrees — verify with
   `git merge-base --is-ancestor $(git -C <wt> rev-parse HEAD) origin/main` first.
+
+**Tuning a constant (the nudge ladder, 2026-08-20):**
+- `NUDGE_ESCALATE_HOURS` **48 → 24** and `NUDGE_DELIVERY_DEADLINE_HOURS` **24 → 18**. These ask
+  DIFFERENT questions and had collided by accident: escalation is *how long do we wait for a
+  PERSON*; the delivery deadline is *how long before we admit the MACHINERY is broken* (offboarded
+  tech, recycled sandbox with a cleared `host_id`, rollback-frozen row). Nobody is ignoring us in
+  the second case, so there is no patience to extend — **a gap nobody can even receive should reach
+  the manager SOONER than one somebody is sitting on.** The deadline's floor is ~14h, not zero: the
+  7am-7pm ask window holds an evening gap overnight (12h; 13h on a DST fall-back night), and below
+  that we start telling the manager "never delivered" about a question that was seconds from being
+  asked. A window that ever excludes whole DAYS must move that number FIRST.
+- The evidence for 24h came from the PLANNER, before the code changed: across three shadow ticks on
+  one real pilot gap it chose to escalate at 24h and argued it from job size ("a routine 60-min
+  visit follow-up should not sit unanswered for a full day"). 48 was never reasoned about.
+- **Retuning a constant is retroactive.** The pilot row was already 24.8h old, so the first sweep on
+  the new code escalated it 14 seconds after the container came up — a day earlier than its own
+  clock would have. Check what is already past the NEW threshold before shipping a shortened one.
+- **TEST ROT — hit three times in one day.** Fixtures that hardcode hours (`49h`, `25h`, `22h`) were
+  each chosen to sit on one side of a boundary; retune the constant and the boundary slides out from
+  under them, and a test named for a case silently stops testing it. Derive fixture timestamps FROM
+  the constant. Same shape as the weekday-guard bomb below. The check that catches it: flip the
+  constant and confirm the suite is still green *for the right reason* — then break the behaviour
+  and confirm it fails.
 
 **Calling the model from the spine:**
 - **GLM-5.2 thinks BY DEFAULT, so a small `maxTokens` truncates the FIRST turn — not the answer,

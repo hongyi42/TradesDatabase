@@ -342,6 +342,13 @@ export async function runLifecycle(
   // 'off' (a cron deployed before the var is chosen must not go red), and any
   // other value is a LOUD stepError, because a config typo must never read as
   // "the planner is quietly off".
+  //
+  // NOT gated on NUDGES_MODE, unlike compose below — deliberate. The planner
+  // follows the SWEEP's rollback-rescue doctrine (watchers.ts: in-flight rows
+  // keep their lifecycle regardless of NUDGES_MODE, because silence must always
+  // escalate), not compose's creation gate. Consequence to hold: with the ladder
+  // rolled back and PLANNER_MODE on, the planner still makes a billed call for
+  // any tenant that still has open rows. It skips tenants with none.
   const plannerTick = new Date(nowIso).getUTCMinutes() % 30 < 5;
   const plannerModeRaw = process.env.PLANNER_MODE;
   const plannerMode: PlannerMode | null =

@@ -11,6 +11,10 @@ import { runToolLoop } from '../model/toolLoop.js';
 import type { ForcedToolSpec } from '../model/forcedTool.js';
 import { NUDGE_KIND_SPECS, specFor, type NudgeKindSpec } from '../jobs/nudgeKinds.js';
 import { insideAskWindow } from './compose.js';
+// A plain const, read only inside functions — never at module-evaluation time.
+// watchers.ts and nudgeKinds.ts are a documented import cycle; this module sits
+// outside it, so there is no temporal-dead-zone hazard here.
+import { NUDGE_DELIVERY_DEADLINE_HOURS } from '../jobs/watchers.js';
 import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
 import { TEAM_LEAD_REF } from './identity.js';
@@ -174,7 +178,12 @@ interface GapView {
 // The evidence bound is CODE's, not the model's: only what landed after the ask,
 // on that gap's job. A planner that could decide for itself what counted as
 // evidence could mark a gap answered by something that predates the question.
-function buildGapView(n: Nudge, nowMs: number, evidence: JobEvidenceRow[]): GapView {
+function buildGapView(
+  n: Nudge,
+  nowMs: number,
+  evidence: JobEvidenceRow[],
+  sharesJob: boolean,
+): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
   const relevant = Number.isNaN(askedAtMs)
@@ -202,6 +211,15 @@ function buildGapView(n: Nudge, nowMs: number, evidence: JobEvidenceRow[]): GapV
   } else if (relevant.length === 0) {
     lines.push('  evidence since the ask: NOTHING has landed on this job since the question went out');
   } else {
+    if (sharesJob) {
+      // Code-computed, because code KNOWS this and the model would have to infer
+      // it. Two gaps on one job see the same notes, and nothing below can tell
+      // which question a given sentence answers.
+      lines.push(
+        '  NOTE: this job has more than one open gap, so the evidence below is SHARED between ' +
+          'them. Make sure your quote answers THIS question, not the other one.',
+      );
+    }
     lines.push('  evidence since the ask:');
     relevant.forEach((e, i) => {
       lines.push(
@@ -217,6 +235,27 @@ function buildGapView(n: Nudge, nowMs: number, evidence: JobEvidenceRow[]): GapV
 // is quoting; a model that changes words is not.
 const norm = (s: string): string => s.replace(/\s+/g, ' ').trim().toLowerCase();
 
+// A quote has to be worth something. `includes()` alone accepts "the", which
+// appears in almost any note — probed, and it closed a gap whose evidence said
+// "the van broke down, nothing to report on this job yet". In Phase 4 that would
+// close a real gap and write "the" into `resolution` as the evidence for it.
+//
+// Two words and twelve characters keeps genuinely short answers ("forty
+// dollars", "no parts needed") and rejects the ones that are only technically
+// present. A too-short quote refuses the close and the gap stays open — the
+// cheap failure, on purpose.
+export const MIN_CITATION_CHARS = 12;
+export const MIN_CITATION_WORDS = 2;
+
+// How far ahead a hold may reach. Past its 24h delivery deadline a pending row
+// is handed to the manager as NEVER DELIVERED — so a longer hold does not hold
+// anything, it silently converts the gap into a manager item with copy saying
+// the ask never landed. This is the clamp nudges.not_before's column comment
+// names, and it belongs here because the planner is the writer.
+function holdCeilingMs(n: Nudge): number {
+  return Date.parse(n.created_at) + NUDGE_DELIVERY_DEADLINE_HOURS * 3_600_000;
+}
+
 /**
  * The code rails, applied to every decision before it can reach a writer. These
  * run in shadow too: a shadow run that reported an invalid plan as valid would
@@ -225,9 +264,11 @@ const norm = (s: string): string => s.replace(/\s+/g, ' ').trim().toLowerCase();
 export function validateDecisions(
   raw: unknown,
   views: Map<string, GapView>,
+  nowMs: number = Date.now(),
 ): { decisions: PlannerDecision[]; dropped: DroppedDecision[] } {
   const decisions: PlannerDecision[] = [];
   const dropped: DroppedDecision[] = [];
+  const usedQuotes = new Set<string>();
   const list = Array.isArray((raw as { decisions?: unknown })?.decisions)
     ? ((raw as { decisions: unknown[] }).decisions as Record<string, unknown>[])
     : [];
@@ -271,11 +312,27 @@ export function validateDecisions(
         push('close without a citation');
         continue;
       }
+      const wanted = norm(quote);
+      if (wanted.length < MIN_CITATION_CHARS || wanted.split(' ').length < MIN_CITATION_WORDS) {
+        push(`close whose citation is too short to be evidence ('${quote}')`);
+        continue;
+      }
       const shown = view.evidenceText.map(norm);
-      if (!shown.some((text) => text.includes(norm(quote)))) {
+      if (!shown.some((text) => text.includes(wanted))) {
         push('close whose citation does not appear in the evidence');
         continue;
       }
+      // ONE quote may close ONE gap. Two gaps on the same job share one evidence
+      // pool — the two shipped detectors do exactly that — and nothing in code
+      // can tell which QUESTION a given sentence answers. This does not make a
+      // single wrong close impossible, but it stops one note from closing every
+      // open gap on a job, which is the shape that would actually happen. The
+      // real fix is a nudge-session stamp on the capture, which does not exist.
+      if (usedQuotes.has(wanted)) {
+        push('close reusing a quote that already closed another gap in this plan');
+        continue;
+      }
+      usedQuotes.add(wanted);
       citation = quote;
     }
 
@@ -284,6 +341,18 @@ export function validateDecisions(
       const at = typeof d.notBefore === 'string' ? Date.parse(d.notBefore) : NaN;
       if (Number.isNaN(at)) {
         push('hold without a usable notBefore');
+        continue;
+      }
+      if (at <= nowMs) {
+        push('hold until a moment that has already passed');
+        continue;
+      }
+      const ceiling = holdCeilingMs(view.nudge);
+      if (at > ceiling) {
+        push(
+          `hold past the 24h delivery deadline (${new Date(ceiling).toISOString()}), ` +
+            'which would hand the gap to the manager as never-asked instead of holding it',
+        );
         continue;
       }
       notBefore = new Date(at).toISOString();
@@ -372,8 +441,16 @@ export async function runPlanner(
           ? await listEvidence(tenantId, jobIds, new Date(Math.min(...askedAt)).toISOString())
           : [];
 
+      const gapsPerJob = new Map<string, number>();
+      for (const n of open) {
+        const j = ctxStr(n, 'jobId');
+        if (j) gapsPerJob.set(j, (gapsPerJob.get(j) ?? 0) + 1);
+      }
       const views = new Map<string, GapView>();
-      for (const n of open) views.set(n.id, buildGapView(n, nowMs, evidence));
+      for (const n of open) {
+        const j = ctxStr(n, 'jobId');
+        views.set(n.id, buildGapView(n, nowMs, evidence, !!j && (gapsPerJob.get(j) ?? 0) > 1));
+      }
 
       // GROUNDING, code-computed. The first live run reasoned "it is the middle
       // of the night" at 18:50 in the firm's own timezone, because it was handed
@@ -391,7 +468,15 @@ export async function runPlanner(
       ].join('\n');
 
       const started = Date.now();
-      let submitted: unknown;
+      // Validated INSIDE the executor on purpose. Validating after the loop
+      // returns means a plan the rails refuse is simply gone — the model never
+      // learns its citation was unusable, and the gap stays open with nobody the
+      // wiser. Here a wholly-refused submission comes back as a tool error, and
+      // the model gets to fix it within the turn ceiling.
+      let outcome: { decisions: PlannerDecision[]; dropped: DroppedDecision[] } = {
+        decisions: [],
+        dropped: [],
+      };
       const result = await runLoop(
         {
           system: PLANNER_SYSTEM,
@@ -404,8 +489,25 @@ export async function runPlanner(
         [...tools, SUBMIT_PLAN_TOOL],
         async (name, args) => {
           if (name === SUBMIT_PLAN_TOOL.name) {
-            submitted = args;
-            return { status: 'ok', received: true };
+            const checked = validateDecisions(args, views, nowMs);
+            outcome = checked; // the LAST submission stands, refusals included
+            // A submission where EVERY decision was refused is a correctable
+            // mistake, not an answer. An EMPTY plan is a legitimate choice
+            // ("leave them all alone") and is accepted as it is.
+            if (checked.decisions.length === 0 && checked.dropped.length > 0) {
+              throw new Error(
+                'every decision was refused: ' +
+                  checked.dropped
+                    .map((d) => `${d.action || '?'} ${d.nudgeId || '?'} — ${d.why}`)
+                    .join('; ') +
+                  '. Fix these and call submit_plan again.',
+              );
+            }
+            return {
+              status: 'ok',
+              accepted: checked.decisions.length,
+              refused: checked.dropped.length,
+            };
           }
           if (!execute) throw new Error(`no executor for '${name}'`);
           return execute(tenantId, name, args);
@@ -413,7 +515,7 @@ export async function runPlanner(
         { tenantId, technicianRef: TEAM_LEAD_REF },
       );
 
-      const { decisions, dropped } = validateDecisions(submitted, views);
+      const { decisions, dropped } = outcome;
       summary.planned += 1;
       summary.decisions += decisions.length;
       summary.dropped += dropped.length;

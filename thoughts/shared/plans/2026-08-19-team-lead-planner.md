@@ -362,6 +362,55 @@ citing nothing.
 - [ ] after deploy, read cron logs for ≥3 planner ticks and confirm the same on the pilot
       **(blocked: needs `PLANNER_MODE=shadow` on the Render cron — user action)**
 
+  *Wording note for the next reader:* shadow leaves **`nudges` byte-identical**, which is the
+  claim. It does still write telemetry — one `cost_events` batch per model turn, one per tool
+  call, and one `query_audit` row per `spine_read`. That is the phase's own goal ("record the
+  measured cost per call") and the read audit trail, not a regression.
+
+**Adversarial review (1 round, 7 findings + 1 minor, all folded):**
+1. **`listJobEvidenceSince` had ZERO automated coverage** — the function that decides what a
+   citation may be checked against, crossing a tenant boundary on a join, with Phase 4 about to
+   turn its output into a row-closing write. New suite `src/db/rawCaptures.test.ts`, 9 tests,
+   4 mutation-verified. Writing it surfaced a guard nothing exercised: `visits.source_capture_id`
+   is a bare FK with no tenant constraint, so a visit in OUR tenant can name ANOTHER tenant's
+   capture — and the visit query that finds it is filtered by our tenant, so nothing upstream
+   catches it. The capture fetch's own `tenant_id` filter is the only thing stopping that from
+   becoming citable evidence, and it is now the subject of its own test.
+2. **The citation rail accepted a trivial quote.** `citation: 'the'` against *"the van broke down,
+   nothing to report on this job yet"* was ACCEPTED — and in Phase 4 that closes a real gap and
+   writes `"the"` into `resolution` as the evidence. Now requires ≥2 words and ≥12 characters,
+   which keeps genuinely short answers ("forty dollars") and rejects the merely-present ones.
+3. **Two gaps on one job share one evidence pool**, so a `job_cost_gap` could be closed by quoting
+   *"visit went fine"* — the exact hole the missing `nudge-<id>` attribution would have filled.
+   Two partial rails, both honest about what they do NOT fix: **one quote may close only one gap
+   per plan** (stops one note closing every gap on a job, which is the shape that would actually
+   happen), and the prompt now SAYS when a job carries more than one open gap, because code knows
+   that and the model would have to infer it. A single wrong close is still possible; the real fix
+   is a capture-side session stamp.
+4. **`hold` had no bounds** — `notBefore: '2099-01-01'` passed. Now refused if in the past
+   (it holds nothing) or past `created_at + 24h`, beyond which the expiry sweep hands the gap to
+   the manager as *never delivered* — the opposite of a hold. This is the clamp `not_before`'s
+   column comment names, landed early because the shadow log is the human judgment gate and
+   "hold until 2099" must not read there as a valid decision.
+5. Telemetry-vs-state wording — folded into the note above.
+6. Tenant isolation confirmed sound, no change.
+7. **A wholly-refused plan was silently lost.** Validation ran after the loop, so the model never
+   learned its citation was unusable and the gap just stayed open. `validateDecisions` now runs
+   INSIDE the executor: a submission where every decision is refused comes back as a tool error
+   naming the reasons, and the model corrects it within the turn ceiling. An empty plan is still
+   accepted as a legitimate choice. (This also made the test's loop stub unfaithful — it let the
+   throw escape, which the real loop never does. Fixed.)
+8. The planner is deliberately **not** gated on `NUDGES_MODE`: it follows the sweep's
+   rollback-rescue doctrine (in-flight rows keep their lifecycle) rather than compose's creation
+   gate. Documented at the gate.
+
+**Follow-up the reviewer surfaced, OUT of scope here:** three other callers leave GLM-5.2's
+default thinking on against small budgets — `src/calls/classifyCall.ts` (maxTokens **256**),
+`src/email/classify.ts` (**256**), `src/writePath/extract.ts` (1024). That is precisely the shape
+that produced `finish_reason=length` on the planner's first turn. They work today because their
+prompts are short; a long email or transcript is the input that would trip them. Worth its own
+measurement.
+
 ### Manual verification
 - [ ] read three consecutive shadow plans and judge whether the hold/close/escalate calls are
       ones you would have made. This is the judgment gate — nothing automated can stand in for it.

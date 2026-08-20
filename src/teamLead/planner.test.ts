@@ -62,14 +62,34 @@ const evidence = (capturedAt: string, text: string, jobId = 'j1'): JobEvidenceRo
 });
 
 // A loop stub that captures the prompt and replays a canned submit_plan call.
-function loopReturning(decisions: unknown[], seen: { user?: string } = {}) {
+//
+// It CATCHES the executor's error the way runToolLoop does — the planner now
+// rejects a wholly-refused submission so the model can correct it, and a stub
+// that let that throw escape would test a loop this repo does not have.
+// `attempts` optionally replays a second submission, the way a real model would.
+function loopReturning(
+  decisions: unknown[],
+  seen: { user?: string; errors?: string[] } = {},
+  retry?: unknown[],
+) {
   return (async (
     req: { user: string },
     _tools: unknown,
     execute: (name: string, args: Record<string, unknown>) => Promise<unknown>,
   ): Promise<ToolLoopResult> => {
     seen.user = req.user;
-    await execute(SUBMIT_PLAN_TOOL.name, { decisions });
+    seen.errors = [];
+    const submit = async (d: unknown[]) => {
+      try {
+        await execute(SUBMIT_PLAN_TOOL.name, { decisions: d });
+        return true;
+      } catch (err) {
+        seen.errors?.push(err instanceof Error ? err.message : String(err));
+        return false;
+      }
+    };
+    const ok = await submit(decisions);
+    if (!ok && retry) await submit(retry);
     return { text: '', turns: 1, calls: [] };
   }) as unknown as NonNullable<PlannerDeps['runLoop']>;
 }
@@ -326,6 +346,98 @@ describe('the code rails on what the model returns', () => {
     expect(s.tenantErrors).toBe(0);
   });
 
+  test('a citation too short to be evidence is refused — "the" is in almost any note', async () => {
+    const s = await run(
+      [{ nudgeId: 'n1', action: 'close', citation: 'the', confidence: 'high', reason: 'x' }],
+      [evidence('2026-08-15T13:00:00.000Z', 'the van broke down, nothing to report on this job yet')],
+    );
+    expect(s.decisions).toBe(0);
+    expect(s.plans[0].dropped[0].why).toContain('too short to be evidence');
+  });
+
+  test('a genuinely short answer still passes — "forty dollars" is evidence, "the" is not', async () => {
+    const s = await run(
+      [{ nudgeId: 'n1', action: 'close', citation: 'forty dollars', confidence: 'high', reason: 'x' }],
+      [evidence('2026-08-15T13:00:00.000Z', 'parts came to forty dollars all in')],
+    );
+    expect(s.decisions).toBe(1);
+  });
+
+  test('ONE quote may close ONE gap — a shared note cannot close every gap on a job', async () => {
+    // The two shipped detectors land on the same job, and nothing in code can
+    // tell which QUESTION a sentence answers. This stops the shape that would
+    // actually happen: one note closing all of them.
+    const shared = 'all wrapped up, customer signed off';
+    const s = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [
+        nudge({ id: 'n1', subject_ref: 'a1' }),
+        nudge({ id: 'n2', kind: 'job_cost_gap', subject_ref: 'j1' }),
+      ],
+      listEvidence: async () => [evidence('2026-08-15T13:00:00.000Z', shared)],
+      runLoop: loopReturning([
+        { nudgeId: 'n1', action: 'close', citation: shared, confidence: 'high', reason: 'a' },
+        { nudgeId: 'n2', action: 'close', citation: shared, confidence: 'high', reason: 'b' },
+      ]),
+    }));
+    expect(s.decisions).toBe(1);
+    expect(s.plans[0].dropped[0].why).toContain('already closed another gap');
+  });
+
+  test('a job with two open gaps SAYS SO in the prompt — code knows it, the model would have to guess', async () => {
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [
+        nudge({ id: 'n1', subject_ref: 'a1' }),
+        nudge({ id: 'n2', kind: 'job_cost_gap', subject_ref: 'j1' }),
+      ],
+      listEvidence: async () => [evidence('2026-08-15T13:00:00.000Z', 'all wrapped up')],
+      runLoop: loopReturning([], seen),
+    }));
+    expect(seen.user).toContain('this job has more than one open gap');
+  });
+
+  test('a hold in the PAST is refused — it holds nothing', async () => {
+    const s = await run([
+      { nudgeId: 'n1', action: 'hold', notBefore: '1999-01-01T00:00:00Z', confidence: 'high', reason: 'x' },
+    ]);
+    expect(s.decisions).toBe(0);
+    expect(s.plans[0].dropped[0].why).toContain('already passed');
+  });
+
+  test('a hold past the 24h delivery deadline is refused — it would hand the gap over, not hold it', async () => {
+    const s = await run([
+      { nudgeId: 'n1', action: 'hold', notBefore: '2099-01-01T00:00:00Z', confidence: 'high', reason: 'x' },
+    ]);
+    expect(s.decisions).toBe(0);
+    expect(s.plans[0].dropped[0].why).toContain('past the 24h delivery deadline');
+  });
+
+  test('a WHOLLY refused plan comes back as a tool error the model can correct', async () => {
+    // Validating after the loop would lose the plan silently: the model never
+    // learns its citation was unusable and the gap just stays open.
+    const seen: { user?: string; errors?: string[] } = {};
+    const good = 'parts came to forty dollars';
+    const s = await runPlanner(NOW, 'shadow', baseDeps({
+      listEvidence: async () => [evidence('2026-08-15T13:00:00.000Z', good)],
+      runLoop: loopReturning(
+        [{ nudgeId: 'n1', action: 'close', citation: 'invented words', confidence: 'high', reason: 'x' }],
+        seen,
+        [{ nudgeId: 'n1', action: 'close', citation: good, confidence: 'high', reason: 'x' }],
+      ),
+    }));
+    expect(seen.errors?.[0]).toContain('every decision was refused');
+    expect(seen.errors?.[0]).toContain('does not appear in the evidence');
+    expect(s.decisions).toBe(1); // the retry landed
+  });
+
+  test('an EMPTY plan is accepted as a real choice, not treated as a mistake', async () => {
+    const seen: { errors?: string[] } = {};
+    const s = await runPlanner(NOW, 'shadow', baseDeps({ runLoop: loopReturning([], seen) }));
+    expect(seen.errors).toEqual([]);
+    expect(s.planned).toBe(1);
+    expect(s.decisions).toBe(0);
+  });
+
   test('validateDecisions tolerates junk in place of a decisions array', () => {
     for (const junk of [undefined, null, {}, { decisions: 'nope' }, { decisions: [null] }]) {
       expect(() => validateDecisions(junk, new Map())).not.toThrow();
@@ -364,31 +476,52 @@ describe('shadow mode leaves the database untouched', () => {
     await pg.end();
   });
 
-  test('a plan full of send/hold/close/escalate changes not one column', async () => {
-    const planted = await createPendingNudge({
-      tenantId,
-      kind: 'overdue_visit_gap',
-      subjectRef: 'asg-planner-shadow',
-      technicianId: techId,
-      context: { jobId: '11111111-1111-1111-1111-111111111111', jobTitle: 'Furnace tune-up' },
-    });
-    if (!planted) throw new Error('fixture nudge was not created');
+  test('a plan of send/hold/close/escalate changes not one column', async () => {
+    const jobId = '11111111-1111-1111-1111-111111111111';
+    const planted: string[] = [];
+    for (const ref of ['asg-shadow-1', 'asg-shadow-2', 'asg-shadow-3', 'asg-shadow-4']) {
+      const n = await createPendingNudge({
+        tenantId,
+        kind: 'overdue_visit_gap',
+        subjectRef: ref,
+        technicianId: techId,
+        context: { jobId, jobTitle: 'Furnace tune-up' },
+      });
+      if (!n) throw new Error('fixture nudge was not created');
+      planted.push(n.id);
+    }
+    // Every action, including a close carrying a citation the rails accept —
+    // the whole point is that even a VALID plan writes nothing in shadow.
+    const answer = 'all wrapped up, parts came to forty dollars';
+    const rows = await listNudgesByStatus(tenantId, ['pending']);
+    // asked_at must exist for evidence to be in bounds; these rows are pending,
+    // so the close is fed through a row that has one.
+    await pg.query("update nudges set status='asked', asked_at=now() - interval '2 hours' where id=$1", [
+      planted[2],
+    ]);
+    const before = await pg.query('select * from nudges where tenant_id=$1 order by subject_ref', [tenantId]);
+    expect(rows).toHaveLength(4);
 
-    const before = (await listNudgesByStatus(tenantId, ['pending']))[0];
     const summary = await runPlanner(NOW, 'shadow', {
       listTenants: async () => [tenantId],
       getTenant: async () => ({ id: tenantId, timezone: 'UTC' }) as unknown as Tenant,
-      listEvidence: async () => [],
+      listNudges: async () =>
+        (await listNudgesByStatus(tenantId, ['pending', 'queued', 'asked'])).map((n) =>
+          n.id === planted[2] ? ({ ...n, asked_at: '2026-08-16T10:00:00.000Z' } as Nudge) : n,
+        ),
+      listEvidence: async () => [evidence('2026-08-16T11:00:00.000Z', answer, jobId)],
       runLoop: loopReturning([
-        { nudgeId: planted.id, action: 'hold', notBefore: '2026-08-20T15:00:00Z', confidence: 'high', reason: 'pace it' },
+        { nudgeId: planted[0], action: 'send', confidence: 'high', reason: 'go now' },
+        { nudgeId: planted[1], action: 'hold', notBefore: '2026-08-16T18:00:00Z', confidence: 'high', reason: 'pace it' },
+        { nudgeId: planted[2], action: 'close', citation: answer, confidence: 'high', reason: 'answered' },
+        { nudgeId: planted[3], action: 'escalate', confidence: 'low', reason: 'no reply' },
       ]),
     });
-    expect(summary.decisions).toBe(1);
+    expect(summary.decisions).toBe(4);
+    expect(summary.dropped).toBe(0);
     expect(summary.applied).toBe(0);
 
-    const after = (await listNudgesByStatus(tenantId, ['pending']))[0];
-    expect(after).toEqual(before); // every column, including updated_at
-    expect(after.not_before).toBeNull();
-    expect(after.escalate_after).toBeNull();
+    const after = await pg.query('select * from nudges where tenant_id=$1 order by subject_ref', [tenantId]);
+    expect(after.rows).toEqual(before.rows); // every column, including updated_at
   });
 });

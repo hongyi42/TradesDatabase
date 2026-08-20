@@ -100,6 +100,7 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     getTenant: async () => ({ id: 't1', timezone: 'UTC' }) as unknown as Tenant,
     listNudges: async () => [nudge()],
     listEvidence: async () => [],
+    listCostEvents: async () => [],
     runLoop: loopReturning([]),
     ...over,
   };
@@ -436,6 +437,96 @@ describe('the code rails on what the model returns', () => {
     expect(seen.errors).toEqual([]);
     expect(s.planned).toBe(1);
     expect(s.decisions).toBe(0);
+  });
+
+  // ── the record basis: a gap is a HOLE, not an unanswered message ──────────
+  // Live 2026-08-20: a cost gap whose figure the MANAGER had already entered was
+  // held rather than closed — the planner found the ledger row, said so, and then
+  // chased the technician anyway, because the only closure it had was "quote the
+  // person who answered" and nobody had.
+
+  test('a cost gap whose figure is already on the ledger closes on the RECORD, with no quote', async () => {
+    const s = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge({ id: 'n1', kind: 'job_cost_gap', subject_ref: 'j1' })],
+      listCostEvents: async () => ['j1'], // the ledger says the hole is filled
+      listEvidence: async () => [],
+      runLoop: loopReturning([
+        { nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'already recorded' },
+      ]),
+    }));
+    expect(s.decisions).toBe(1);
+    expect(s.plans[0].decisions[0].basis).toBe('record');
+    // The resolution text is CODE's words, never the model's.
+    expect(s.plans[0].decisions[0].citation).toBe(
+      'a cost is recorded against this job on the money ledger',
+    );
+  });
+
+  test('the record basis is REFUSED when the ledger says the hole is still open', async () => {
+    const s = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge({ id: 'n1', kind: 'job_cost_gap', subject_ref: 'j1' })],
+      listCostEvents: async () => [], // nothing recorded
+      listEvidence: async () => [],
+      runLoop: loopReturning([
+        { nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'trust me' },
+      ]),
+    }));
+    expect(s.decisions).toBe(0);
+    expect(s.plans[0].dropped[0].why).toContain('record is not filled');
+  });
+
+  test('a VISIT gap can never close on the record — only a cost gap has that test', async () => {
+    const s = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge({ id: 'n1', kind: 'overdue_visit_gap', subject_ref: 'a1' })],
+      listCostEvents: async () => ['j1'],
+      listEvidence: async () => [],
+      runLoop: loopReturning([
+        { nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'x' },
+      ]),
+    }));
+    expect(s.decisions).toBe(0);
+    expect(s.plans[0].dropped[0].why).toContain('record is not filled');
+  });
+
+  test('the prompt TELLS the planner what the record says, both ways', async () => {
+    const filled: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge({ id: 'n1', kind: 'job_cost_gap', subject_ref: 'j1' })],
+      listCostEvents: async () => ['j1'],
+      runLoop: loopReturning([], filled),
+    }));
+    expect(filled.user).toContain('THE RECORD: a cost is recorded against this job');
+    expect(filled.user).toContain('The hole this gap names is CLOSED');
+
+    const open: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge({ id: 'n1', kind: 'job_cost_gap', subject_ref: 'j1' })],
+      listCostEvents: async () => [],
+      runLoop: loopReturning([], open),
+    }));
+    expect(open.user).toContain('no cost is recorded against this job yet');
+  });
+
+  test('the ledger is read ONLY for cost gaps, and only for their jobs', async () => {
+    const asked: string[][] = [];
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge({ id: 'n1', kind: 'overdue_visit_gap', subject_ref: 'a1' })],
+      listCostEvents: async (_t, ids) => {
+        asked.push(ids);
+        return [];
+      },
+      runLoop: loopReturning([]),
+    }));
+    expect(asked).toEqual([]); // no cost gaps → no ledger read at all
+  });
+
+  test('the gap block carries the JOB ID, so the planner filters by key instead of hunting by name', async () => {
+    // Live 2026-08-20: given only names it searched `customer_name LIKE '%Okafor%'`
+    // and burned turns on queries that returned nothing.
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({ runLoop: loopReturning([], seen) }));
+    expect(seen.user).toContain('job id: j1');
+    expect(seen.user).toContain('filter by this id, never by name');
   });
 
   test('validateDecisions tolerates junk in place of a decisions array', () => {

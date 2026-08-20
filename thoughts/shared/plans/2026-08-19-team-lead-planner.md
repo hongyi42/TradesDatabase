@@ -404,6 +404,48 @@ citing nothing.
    rollback-rescue doctrine (in-flight rows keep their lifecycle) rather than compose's creation
    gate. Documented at the gate.
 
+**Human gate outcome (2026-08-20) — user judged the plans, two changes requested and made:**
+
+The judgment on ordinary gaps was accepted, specifically the two holds on the technician who
+promised a write-up rather than answering. Three consecutive ticks over six gaps: the
+acknowledgement-not-an-answer note never closed a gap; 50h of silence escalated every tick while
+1h of silence did not; and a held gap closed the tick after its answer landed, quoting it.
+
+Two defects the gate exposed, both now fixed:
+
+1. **A gap is a HOLE IN THE RECORD, not an unanswered message.** Probed live: a cost gap whose
+   figure the MANAGER had already entered ($127.50 on the money ledger) was HELD, not closed. The
+   planner ran six queries, found the ledger row, said so in its reasoning — and chased the
+   technician anyway. Two causes: the prompt framed closing as *"it has been answered"* (a
+   conversation), and the citation rail only accepted quotes from technician notes, so closing on
+   the ledger was **impossible even if it had wanted to**. We gave it read tools and made what it
+   reads inadmissible.
+   **Fix:** a second closure basis. `basis: 'record'` closes a gap because the hole is filled,
+   whoever filled it — authorised ONLY by a code-computed fact (`listJobIdsWithCostEvents`, the
+   same reader the item sweep uses), never by the model asserting it; the resolution text is
+   code's words. `basis: 'evidence'` is the existing quote-the-answer path, unchanged. The gap
+   block now states what the record says, both ways. **41.1s and a wrong hold → 1.3s and a correct
+   close, with no reads needed at all.**
+   *Scope note:* this gives the PLANNER a record-basis close. The sweep's `filled` predicate still
+   ignores the ledger — the three "ladder cannot see the money ledger" defects are still to be
+   designed together.
+2. **It hunted by name because we withheld the ids.** The gap block named the job and customer in
+   words but not their ids, so it searched `customer_name LIKE '%Okafor%'` and burned turns on
+   queries returning nothing. The block now carries the job id and says to filter by it.
+   **10 name searches → 0; empty results 12 → 5; turns per tick 3/7/8 → 2/1/3.**
+
+Re-verified after both: the endorsed judgment is unchanged — the promise still never closes a gap,
+the silent gap still escalates, the answered gap still closes on a verbatim quote, and shadow still
+leaves `nudges` byte-identical.
+
+**Out-of-plan fix (a red gate blocked the commit):** `src/control/weekdayGuardPlugin.test.ts` began
+failing when the clock rolled to 2026-08-20 — nothing to do with this plan. `expandOrdinals`
+resolves a bare "the 4th" to whichever month's 4th is NEAREST TODAY, so from the 20th of a month it
+means next month's, landing on a different weekday. Both hook tests hardcoded "Aug 4 is a Tuesday";
+they cannot pass a reference date because the handler reads the real clock. Both now state the date
+in full (month + year), which removes the resolution entirely. One had detonated; the other was
+surviving on luck.
+
 **Follow-up the reviewer surfaced, OUT of scope here:** three other callers leave GLM-5.2's
 default thinking on against small budgets — `src/calls/classifyCall.ts` (maxTokens **256**),
 `src/email/classify.ts` (**256**), `src/writePath/extract.ts` (1024). That is precisely the shape

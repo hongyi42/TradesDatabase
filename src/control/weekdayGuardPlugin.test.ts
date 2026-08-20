@@ -291,8 +291,15 @@ describe('weekday guard — the hook contract', () => {
     const handlers = registerAndGetHandlers();
 
     // Flagged content: STILL undefined — never rewrite, never cancel.
+    // The date is EXPLICIT (month + year) on purpose. A bare "the 4th" is
+    // resolved by expandOrdinals to whichever month's 4th is NEAREST TODAY, so
+    // the weekday it lands on changes as the month goes on — every hook test
+    // asserting a bare ordinal is a time bomb, and the one below detonated on
+    // 2026-08-20. Handler tests cannot pass a reference date (the handler reads
+    // the real clock), so they must state the date in full instead.
+    // Aug 4 2026 is a Tuesday, permanently.
     expect(
-      handlers.message_sending({ content: 'See you Monday the 4th.', channel: 'telegram' }),
+      handlers.message_sending({ content: 'See you Monday August 4, 2026.', channel: 'telegram' }),
     ).toBeUndefined();
     // Clean content: logged as the denominator.
     expect(handlers.message_sending({ content: 'On my way.', channel: 'telegram' })).toBeUndefined();
@@ -314,17 +321,19 @@ describe('weekday guard — the hook contract', () => {
     const handlers = registerAndGetHandlers();
     // The vendor docs do not pin ReplyPayload's fields; the extractor accepts
     // the plausible shapes. Each unique text avoids the dedupe window.
+    // Dates stated in FULL — see the note above; this test failed on 2026-08-20
+    // because "the 4th" had started resolving to September.
     expect(
-      handlers.reply_payload_sending({ payload: { text: 'Booked for Monday the 4th, Amy.' } }),
+      handlers.reply_payload_sending({ payload: { text: 'Booked for Monday August 4, 2026, Amy.' } }),
     ).toBeUndefined();
     expect(
-      handlers.reply_payload_sending({ text: 'Rescheduled to Tuesday the 4th ok?' }),
+      handlers.reply_payload_sending({ text: 'Rescheduled to Tuesday August 4, 2026 ok?' }),
     ).toBeUndefined();
     const lines = readFileSync(logPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     expect(lines).toHaveLength(2);
     expect(lines[0].hook).toBe('reply_payload_sending');
-    expect(lines[0].flags).toHaveLength(1); // Aug 4 is a Tuesday
-    expect(lines[1].flags).toEqual([]); // Tuesday the 4th is correct
+    expect(lines[0].flags).toHaveLength(1); // Aug 4 2026 is a Tuesday, not a Monday
+    expect(lines[1].flags).toEqual([]); // Tuesday Aug 4 2026 is correct
   });
 
   test('the same reply through BOTH hooks: second line is marked dup', () => {

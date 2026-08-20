@@ -1,6 +1,7 @@
 import {
   getTenant,
   listJobEvidenceSince,
+  listJobIdsWithCostEvents,
   listNudgesByStatus,
   listTenantIdsWithTelegramBindings,
   OPEN_NUDGE_STATUSES,
@@ -46,6 +47,11 @@ export interface PlannerDecision {
   action: PlannerAction;
   notBefore?: string | null;
   escalateAfter?: string | null;
+  // WHY this close is allowed to stand. 'evidence' = somebody answered, and
+  // `citation` quotes their words. 'record' = the hole the gap names is filled,
+  // whoever filled it — authorised ONLY by the code-computed fact on the gap
+  // view, never by the model asserting it.
+  basis?: 'evidence' | 'record';
   citation?: string | null;
   confidence: 'low' | 'medium' | 'high';
   reason: string;
@@ -113,6 +119,9 @@ export interface PlannerDeps {
   getTenant?: typeof getTenant;
   listNudges?: typeof listNudgesByStatus;
   listEvidence?: typeof listJobEvidenceSince;
+  // The record-level test for cost gaps. Same reader the item sweep uses, so
+  // "the ledger says this is filled" means one thing across the whole ladder.
+  listCostEvents?: typeof listJobIdsWithCostEvents;
   runLoop?: typeof runToolLoop;
   // The team lead's read tools and the door they dispatch through. Injected so a
   // test never needs the MCP server — and so the planner cannot reach any tool
@@ -172,6 +181,13 @@ interface GapView {
   nudge: Nudge;
   jobId: string | null;
   evidenceText: string[]; // exactly the strings rendered into the prompt
+  // Whether the HOLE this gap names is closed in the record, as CODE sees it —
+  // independent of whether anybody replied. Null when the kind has no
+  // record-level test (a visit gap's hole is "no note", and the sweep already
+  // auto-closes those before the planner ever sees them). This is the only thing
+  // that may authorise a `record`-basis close, which is why it is computed here
+  // and never taken from the model.
+  recordFilled: string | null;
   block: string;
 }
 
@@ -183,6 +199,7 @@ function buildGapView(
   nowMs: number,
   evidence: JobEvidenceRow[],
   sharesJob: boolean,
+  jobsWithCostEvents: Set<string>,
 ): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
@@ -193,10 +210,23 @@ function buildGapView(
         .slice(-EVIDENCE_PER_GAP);
 
   const evidenceText = relevant.map((e) => flat(e.capture.raw_text ?? '', EVIDENCE_TEXT_CHARS));
+
+  // The record-level test, per kind. A cost gap names a hole in the LEDGER, and
+  // the ledger is the only thing that can say the hole is closed — a note cannot,
+  // and neither can silence. Code owns this because it is a fact, not a judgment.
+  const recordFilled =
+    n.kind === 'job_cost_gap' && jobId && jobsWithCostEvents.has(jobId)
+      ? 'a cost is recorded against this job on the money ledger'
+      : null;
+
   const lines = [
     `gap ${n.id}`,
     `  kind: ${n.kind}`,
     `  about: ${ctxStr(n, 'jobTitle') ?? 'a job'} for ${ctxStr(n, 'customerName') ?? 'unknown customer'}`,
+    // The ID, not just the name. Without it the planner searched with
+    // `customer_name LIKE '%Okafor%'` and burned turns on queries that returned
+    // nothing — it had the words but not the key.
+    ...(jobId ? [`  job id: ${jobId}   (filter by this id, never by name)`] : []),
     `  person: ${ctxStr(n, 'technicianName') ?? 'unknown'}`,
     `  state: ${n.status}`,
     `  noticed: ${hoursBetween(n.created_at, nowMs)}h ago`,
@@ -204,6 +234,14 @@ function buildGapView(
   if (n.asked_at) lines.push(`  asked: ${hoursBetween(n.asked_at, nowMs)}h ago`);
   else lines.push('  asked: not yet');
   if (n.question) lines.push(`  the question asked: ${flat(n.question, 400)}`);
+  if (n.kind === 'job_cost_gap') {
+    lines.push(
+      recordFilled
+        ? `  THE RECORD: ${recordFilled}. The hole this gap names is CLOSED — whoever filled it. ` +
+          'Close this gap with basis "record".'
+        : '  THE RECORD: no cost is recorded against this job yet. The hole is still open.',
+    );
+  }
   if (n.not_before) lines.push(`  currently held until: ${n.not_before}`);
   if (n.escalate_after) lines.push(`  currently escalates at: ${n.escalate_after}`);
   if (!n.asked_at) {
@@ -228,7 +266,7 @@ function buildGapView(
       );
     });
   }
-  return { nudge: n, jobId, evidenceText, block: lines.join('\n') };
+  return { nudge: n, jobId, evidenceText, recordFilled, block: lines.join('\n') };
 }
 
 // Normalised for the citation check ONLY — a model that changes spacing or case
@@ -306,7 +344,36 @@ export function validateDecisions(
     // SHOWED the model is refused — ambiguity defaults to open, because a
     // false-open is loud and cheap and a false-close is silent.
     let citation: string | null = null;
+    let basis: 'evidence' | 'record' | undefined;
     if (action === 'close') {
+      // A gap names a HOLE IN THE RECORD, and a hole can close two ways: somebody
+      // answered, or the record simply got filled. The second route exists
+      // because the first cannot express it — a parts cost the MANAGER entered
+      // has no technician quote to point at, and demanding one meant the planner
+      // chased people for figures the books already had (observed live,
+      // 2026-08-20). The authority is the code-computed fact on the view: the
+      // model chooses the basis, code decides whether that basis holds.
+      if (d.basis === 'record') {
+        if (!view.recordFilled) {
+          push('close on the record when the record is not filled');
+          continue;
+        }
+        basis = 'record';
+        seen.add(nudgeId);
+        decisions.push({
+          nudgeId,
+          action: 'close',
+          basis,
+          citation: view.recordFilled, // code's words, not the model's
+          confidence:
+            d.confidence === 'low' || d.confidence === 'medium' || d.confidence === 'high'
+              ? d.confidence
+              : 'low',
+          reason: typeof d.reason === 'string' ? flat(d.reason, 300) : '',
+        });
+        continue;
+      }
+      basis = 'evidence';
       const quote = typeof d.citation === 'string' ? d.citation.trim() : '';
       if (quote.length === 0) {
         push('close without a citation');
@@ -367,6 +434,7 @@ export function validateDecisions(
       nudgeId,
       action: action as PlannerAction,
       ...(notBefore ? { notBefore } : {}),
+      ...(basis ? { basis } : {}),
       ...(citation ? { citation } : {}),
       confidence,
       reason: typeof d.reason === 'string' ? flat(d.reason, 300) : '',
@@ -384,6 +452,7 @@ export async function runPlanner(
   const get = deps.getTenant ?? getTenant;
   const listNudges = deps.listNudges ?? listNudgesByStatus;
   const listEvidence = deps.listEvidence ?? listJobEvidenceSince;
+  const listCostEvents = deps.listCostEvents ?? listJobIdsWithCostEvents;
   const runLoop = deps.runLoop ?? runToolLoop;
   const specs = deps.specs ?? NUDGE_KIND_SPECS;
   const tools = deps.tools ?? [];
@@ -441,6 +510,21 @@ export async function runPlanner(
           ? await listEvidence(tenantId, jobIds, new Date(Math.min(...askedAt)).toISOString())
           : [];
 
+      // ONE ledger read per tenant, over the cost gaps' jobs only — the same
+      // batched discipline as the evidence read. Skipped entirely when the firm
+      // has no open cost gaps this tick.
+      const costJobIds = [
+        ...new Set(
+          open
+            .filter((n) => n.kind === 'job_cost_gap')
+            .map((n) => ctxStr(n, 'jobId'))
+            .filter((v): v is string => !!v),
+        ),
+      ];
+      const jobsWithCostEvents = new Set(
+        costJobIds.length > 0 ? await listCostEvents(tenantId, costJobIds) : [],
+      );
+
       const gapsPerJob = new Map<string, number>();
       for (const n of open) {
         const j = ctxStr(n, 'jobId');
@@ -449,7 +533,10 @@ export async function runPlanner(
       const views = new Map<string, GapView>();
       for (const n of open) {
         const j = ctxStr(n, 'jobId');
-        views.set(n.id, buildGapView(n, nowMs, evidence, !!j && (gapsPerJob.get(j) ?? 0) > 1));
+        views.set(
+          n.id,
+          buildGapView(n, nowMs, evidence, !!j && (gapsPerJob.get(j) ?? 0) > 1, jobsWithCostEvents),
+        );
       }
 
       // GROUNDING, code-computed. The first live run reasoned "it is the middle

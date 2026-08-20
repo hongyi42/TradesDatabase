@@ -1276,7 +1276,7 @@ identify by which chat answers):
 | Sandbox | Person | Notes |
 |---|---|---|
 | s2 | manager-sam (the owner, TG 5801703167) | main manager test bot |
-| s3 | judy-testing | real beta — hands off. Roster TG is NULL (no phone bound yet); the sandbox allowlist currently holds 8991633730 (ben-shelton's id — drift): correct it when Judy binds or she's locked out |
+| s3 | judy-testing (beta user GONE) | **NORMAL SEAT as of 2026-08-20** — the "hands off" carve-out is retired and s3 was wired that day (deny applied, all doctrine current). Roster TG is NULL; the sandbox allowlist holds 8991633730 (ben-shelton's id — drift): correct it before this seat is reassigned |
 | s5 | ben-shelton, invited technician (@ragisan03_bot, TG 8991633730) | |
 | s6 | COLD BLANK (@ragisan2_bot) | the pool's one free blank (from s1's recycle) |
 | s7 | Yutao (manager, active, Default Tenant, TG 8639645984) | the box's DEFAULT sandbox; NOT in `sandbox_pool` (provisioned outside the pool, like pre-pool s2/s3) |
@@ -1746,9 +1746,11 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   The agent relayed the server-rendered summary VERBATIM ("Joy — Tue–Sat 09:00–17:00; Mon, Sun
   off") and the fused free/busy note — both `get_availability` design bets, confirmed live.
   Reverted fleet-wide 2026-08-04: s2/s5/s6/s7/s8 `toolSearch:false`, config hash matching, zero
-  stale blocks, ownership intact. **s3 was deliberately NOT wired** (the tool trim is declined
-  there by owner decision) so it still lacks §0f rule 5 — the UTC-timestamp trap is LIVE on Judy's
-  box; applying only the §0f block, without the trim, is the pending follow-up.
+  stale blocks, ownership intact. **s3 was deliberately NOT wired** (the tool trim was declined
+  there by owner decision), so it lacked §0f rule 5 and the UTC-timestamp trap stayed live on that
+  seat until **2026-08-20**, when the carve-out was retired and s3 was wired in full. That is the
+  cost of a per-seat exemption: it silently exempts the seat from EVERY later fix, not just the one
+  it was written for.
   **PROCESS TRAP hit here: PR #99 was merged BEFORE the revert commit was pushed to its branch**,
   so `main` briefly carried `toolSearch: true` and §0i/§0j while the live fleet was reverted —
   i.e. re-running `wire` from main would have re-broken a box. A merged PR does not stop taking
@@ -1875,10 +1877,11 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   text moved into descriptions ran **2.7s median with MORE tokens** (41.3k vs 38.6k), replicated
   3× interleaved. Applied to s2/s5/s6/s7/s8 via `agents.list[].tools.deny` (the `agents` section
   survives rebuilds; top-level `tools.deny` does NOT — see `openclaw-config-merge.ts`
-  `backupDurableSections`). **s3 (Judy) deliberately NOT touched** — originally under a hands-off
-  rule, which the owner lifted 2026-07-31; asked the same day whether to apply the deny there, the
-  owner declined ("she doesn't need the latency fix"). So s3 stays on the untrimmed tool surface by
-  DECISION, not oversight — don't re-raise it.
+  `backupDurableSections`). **s3 was excluded until 2026-08-20** — first under a hands-off
+  rule, then by an explicit owner decision on 2026-07-31 ("she doesn't need the latency fix"). The
+  beta user has since left and the **carve-out is RETIRED (owner, 2026-08-20)**: s3 was wired the
+  same day and now carries the same deny as every other seat. Do not reinstate a per-seat
+  exemption — see the trap in §5 on what this one cost.
   Also flipped `models…models[].reasoning: true`: while false, `agents.defaults.thinkingDefault`
   is IGNORED and every session resolves to `thinkingLevel: off`. With it true, `adaptive`
   (ranks equal to `medium`, both 30) takes effect at no measurable cost on cheap turns.
@@ -2014,6 +2017,41 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
 
 The box-side details live in `Box_Setup_Stuff/` (setup guide §8 gotchas, architecture-memory
 "Gotchas") — this is the index of what exists, so you know to go look.
+
+**FIVE copies of `bootstrap-box.sh` live on trades-box-1, and the obvious path was the STALEST —
+this is what produced fleet-wide doctrine drift (found + fixed 2026-08-20).** An audit of the six
+live seats found **five distinct `AGENTS.md` md5s**: the confirmation-doctrine block was at
+`2026-07-26` on ALL SIX (repo: `2026-08-14`), so **rule 6 — assent-takes-recommendation — was
+deployed on zero seats** even though spine-eval M09 had verified it 3/3. The dates block sat at
+three different versions (s2 `08-15`, s5–s8 `08-04`, s3 `07-15`).
+
+Root cause: the copy at `~/bootstrap-box.sh` — the path you would naturally type — was from
+**2026-08-06** and contains exactly `Confirmations … 2026-07-26` + `Dates … 2026-08-04`, i.e. the
+state four seats were running. **Seat doctrine is a fossil record of which copy was used, and
+when.** The inventory at the time:
+
+| path | state | note |
+|---|---|---|
+| `~/bootstrap-box.sh` | 2026-08-06, stale | **now overwritten with the repo copy**; old kept as `.stale-20260806.bak` |
+| `~/Box_Setup_Stuff/` | 2026-08-15 | no `plugins/` dir — cannot run `wire` end to end |
+| `~/stage-deepinfra-retire/` | matches repo | only 2 files — also no `plugins/` |
+| `~/deploy-recycler/` | 2026-07-12 | |
+| `/usr/local/sbin/bootstrap-box.sh` | matches repo | **the one the recycler actually runs** (`recycle-sandbox.sh` → `$BOOTSTRAP wire`); its bundled guard plugin was stale at 0.2.0 and was updated to 0.4.0 the same day |
+
+Rules this leaves behind:
+- **md5 a box-local `bootstrap-box.sh` against the repo before running it** — the same discipline
+  the doorman/medic entries already demand ("the path the unit actually runs, never a sibling copy").
+  A first `find` sweep missed `/usr/local/sbin/` entirely; search system dirs too.
+- **`wire` needs the WHOLE `Box_Setup_Stuff/` tree**, not just the script — the weekday-guard step
+  reads `$SCRIPT_DIR/plugins/trades-weekday-guard`, so a script-only copy half-applies.
+- **4 of the 9 AGENTS.md blocks are append-once** (`accuracy-rules`, `permanent-record`,
+  `batching`, `web-content` are skip-if-present); `wire` can NEVER update them. Changing their text
+  requires an explicit removal step first, or the fleet silently keeps the old wording.
+- **s2 is the canary and must stay the most up-to-date seat** (owner: "s2 is the testing box for
+  the repo"). Corollary: s2 being freshest is *how this hid* — audit a NON-s2 seat, or all of them.
+- **A per-seat exemption exempts that seat from every LATER fix, not just the one it was written
+  for.** s3's tool-deny carve-out meant nothing ever re-ran `wire` there, so it sat on July doctrine
+  for six weeks. Retired 2026-08-20.
 
 **Working in a second worktree (local Supabase stacks):**
 - **`npx supabase stop` targets the `project_id` in the CURRENT directory's
@@ -2426,8 +2464,9 @@ mechanism in [long-running-task-batching.md](long-running-task-batching.md).
   prompt text** describing a `tool_search → tool_describe → tool_call` route the model no longer
   has, which costs tokens on every turn and could actively mislead — worth a deliberate decision
   to keep or remove, not silent retention; (c) an eval that shows the model all tools directly is
-  therefore **faithful** on this axis, not optimistic. **Also verified: `tools.deny` is the same
-  10 native tools on s2/s5–s8 but `0` on s3** (Judy's seat is deliberately untrimmed), and the
+  therefore **faithful** on this axis, not optimistic. **Also verified: `tools.deny` was the same
+  10 native tools on s2/s5–s8 but `0` on s3** (untrimmed until the carve-out was retired 2026-08-20 —
+  all six seats now carry the identical deny), and the
   `composio` MCP server exists **only** on the manager seats s2/s3 — s5–s8 are spine-only. Seat
   shape is not uniform; never generalise one seat's timing to the fleet.
 - **The gateway HAS an authenticated HTTP entry — `POST /hooks/agent` — so a gateway-inclusive

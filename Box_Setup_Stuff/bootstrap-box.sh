@@ -1124,7 +1124,10 @@ EOF
     # by the AGENTS.md batching block; \`edit\`; and the sessions_spawn/sessions_yield/
     # agents_list subagent machinery (\`subagents\` and \`sessions_*\` are called).
     #
-    # s3 (Judy) is excluded by owner decision — do not run this block against it.
+    # s3 was carved out of this block for a beta user who has since left. The carve-out is
+    # RETIRED (owner decision 2026-08-20) and s3 was wired the same day: every seat gets the
+    # deny. Do not reinstate a per-seat exemption here — it cost s3 ~67s turns and, because
+    # nothing re-ran `wire` against it, left it on July doctrine until 2026-08-20.
     ts_deny='["message","browser","canvas","nodes","dir_fetch","dir_list","file_fetch","file_write","tts","web_fetch"]'
     ts_tmp=$(mktemp -d)
     nemoclaw "$agent" download /sandbox/.openclaw/openclaw.json "$ts_tmp/oc.json" </dev/null

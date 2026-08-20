@@ -299,6 +299,56 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   never `--agent main`). Candidate medic v3 (recorded, not built): probe with a real 1-token
   completion under a ~30s timeout so completion stalls trip the nvidia-prod failover.
 
+### Continual learning — direction, and the finding that changes the obvious fix (2026-08-20)
+
+**User direction, recorded as direction (mostly out of current scope):** we eventually want
+**continual-learning frameworks** for the team-lead planner *and* the technician/manager agents.
+The planner is the natural first host — it runs once per 30 minutes, so it can afford to think
+longer, carry a bigger context, and possibly run a frontier model. Full literature record with
+citations: `thoughts/shared/research/2026-08-20-continual-learning-for-the-planner.md` (three
+AI Engineer / Sequoia talks, Aug 2026, plus ACE arXiv 2510.04618 and the experience-reuse study
+arXiv 2604.27003).
+
+**Do not build "feed it the logs".** Measured (arXiv 2604.27003): raw trajectories as the memory
+unit give **NEGATIVE** forward transfer (−9.5% / −7.5%); ~3 **abstracted insights per episode**
+give **POSITIVE** (+6.5% / +9.0%). Raw traces are worse than no memory at all. Three companion
+cautions, all measured or named in the literature:
+
+- **Homogeneous memory collapses retrieval** — 88.5% of queries returned the same item, 5.4% of
+  entries ever read. A planner decision log is maximally homogeneous (`hold, hold, hold`), so any
+  reuse must be **scoped to the gap**, never a global similarity pool.
+- **Context collapse / brevity bias** (ACE) — a model iteratively *rewriting* an accumulated
+  context erodes it. Correct shape: itemised entries + incremental delta updates merged by
+  **deterministic non-LLM code**. Needs no labelled supervision; natural execution feedback is
+  enough.
+- **Hint leakage** (on-policy self-distillation) — never put the outcome into a replayed context.
+  This is the trap any future planner replay-eval will hit.
+
+**Framing to reuse (Yu Su):** *intelligence* = reasoning through an unfamiliar problem from
+available context, every episode independent; *expertise* = accumulated situated competence.
+"Intelligence solves the problem given the context; expertise brings the right context."
+Intelligence expands search, expertise compresses it. Scaling IQ alone produces **"the world's
+smartest novice"**. And modern work is **millions of micro-worlds** with their own local physics —
+every trades firm is one, which is the strongest outside statement of this repo's thesis.
+
+**Model choice — answered, and the answer is "not yet".** The planner's observed failures are
+context and vocabulary failures, not reasoning failures: it whiplashed send→escalate inside 30
+minutes because it had no record of its earlier decision, and it reached for `send` on an
+already-`asked` row because no "ask again" action exists. A stronger model with the same amnesia
+makes the same mistakes. Fix context and actions first, then re-measure — noting we currently
+**cannot** measure it, because there is no planner eval. `scripts/date-eval/` is the proven shape
+for one (real traffic, graded through the real harness, mechanical adjudication).
+
+**We fail traceability today.** Planner decisions go to `console.log` plus the lifecycle stdout
+JSON and nowhere else — nothing is persisted, so every tick's experience is discarded and no
+corpus exists for any of the above. Two harness rules from the same talks that our code should be
+held to: **make tool responses informative** (a tool returning `done` leaves nothing to learn
+from — and it is exactly why a `send` on an asked row would be a silent no-op), and the real
+feedback signal is **edits, undos and retries**, not thumbs up/down. Lessons also carry a
+**pertinence tier** — globally-true → weights, per-org/per-user → context; we own no weights, so
+everything lands in context, but the tier still has to be recorded or per-firm quirks leak across
+tenants.
+
 ## 3. Environments & infrastructure
 
 ```

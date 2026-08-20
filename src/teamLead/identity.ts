@@ -21,6 +21,10 @@ export const TEAM_LEAD_REF = 'spine:team-lead';
 // replacement: the same read, under a name that is not an admin tool.
 export const TEAM_LEAD_TOOL_NAMES: ReadonlySet<string> = new Set([
   'spine_read',
+  // The planner's own decision history (Phase 4). Deny-by-default means a
+  // tool absent from this set cannot dispatch no matter what schema the loop
+  // was handed — so the two lists must be added to together.
+  'recall_decisions',
   'get_customer_context',
   'resolve_date',
 ]);

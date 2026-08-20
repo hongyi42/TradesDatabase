@@ -119,6 +119,8 @@ const RESET_TABLES = [
   // new table gets registered BY NAME — incidental cascade coverage is how
   // tenant_profiles got missed).
   'nudges',
+  // Cascades from nudges, named anyway (eng-memory §1).
+  'nudge_decisions',
   // Infra, but the eval registers its own cold pool for bind_telegram, so stale
   // rows from a previous run would otherwise accumulate.
   'sandbox_pool',
@@ -166,6 +168,8 @@ const PILOT_TENANT_SCOPED = [
   // delete below would 23503 and roll the whole rebuild back — and stale
   // any-status rows would permanently suppress asks on the rebuilt schedule
   // (the once-ever dedup). Phase-1 review finding (2026-08-16).
+  // Before nudges: explicit, though the cascade FK would also carry it.
+  'nudge_decisions',
   'nudges',
   'schedule_events',
   'dropped_audit',

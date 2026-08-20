@@ -1,12 +1,18 @@
 import {
   getTenant,
+  listDecisionsForNudges,
   listJobEvidenceSince,
   listJobIdsWithCostEvents,
   listNudgesByStatus,
   listTenantIdsWithTelegramBindings,
+  markNudgeOutcome,
   OPEN_NUDGE_STATUSES,
+  recordNudgeDecisions,
+  setNudgeSchedule,
   type JobEvidenceRow,
   type Nudge,
+  type NudgeDecision,
+  type NudgeDecisionInput,
 } from '../db/index.js';
 import { runToolLoop } from '../model/toolLoop.js';
 import type { ForcedToolSpec } from '../model/forcedTool.js';
@@ -63,6 +69,12 @@ export interface DroppedDecision {
   nudgeId: string;
   action: string;
   why: string;
+  // Carried so a refused decision can be RECORDED with the model's own
+  // confidence and reasoning, not just counted. A refusal is the most
+  // informative row in the log — it is the one place we learn what the model
+  // wanted to do and could not.
+  confidence?: 'low' | 'medium' | 'high';
+  reason?: string;
 }
 
 export interface PlannerTenantPlan {
@@ -70,6 +82,9 @@ export interface PlannerTenantPlan {
   gaps: number;
   decisions: PlannerDecision[];
   dropped: DroppedDecision[];
+  applied: number;
+  refusedAtApply: number;
+  recorded: number;
   turns: number;
   toolCalls: number;
   ms: number;
@@ -83,7 +98,9 @@ export interface PlannerSummary {
   skippedWindow: number; // outside the firm's ask window — nothing could be sent anyway
   decisions: number;
   dropped: number;
-  applied: number; // Phase 4 — always 0 in shadow
+  applied: number; // decisions the code actually performed — always 0 in shadow
+  refusedAtApply: number; // accepted by the rails, then refused by the write
+  recorded: number; // rows written to nudge_decisions
   tenantErrors: number;
   byAction: Record<string, number>;
   plans: PlannerTenantPlan[];
@@ -123,6 +140,13 @@ export interface PlannerDeps {
   // "the ledger says this is filled" means one thing across the whole ladder.
   listCostEvents?: typeof listJobIdsWithCostEvents;
   runLoop?: typeof runToolLoop;
+  // Phase 4: the memory, and the two writers. Injected like everything else so
+  // a test never touches the database — and so `shadow` can be proven to call
+  // NEITHER writer.
+  listDecisions?: typeof listDecisionsForNudges;
+  recordDecisions?: typeof recordNudgeDecisions;
+  setSchedule?: typeof setNudgeSchedule;
+  markOutcome?: typeof markNudgeOutcome;
   // The team lead's read tools and the door they dispatch through. Injected so a
   // test never needs the MCP server — and so the planner cannot reach any tool
   // its caller did not hand it.
@@ -188,7 +212,35 @@ interface GapView {
   // that may authorise a `record`-basis close, which is why it is computed here
   // and never taken from the model.
   recordFilled: string | null;
+  // Every decision already made about this gap, oldest first. Only its SHAPE
+  // reaches the prompt (a count and the last action); the detail is pulled with
+  // recall_decisions. Kept on the view so tests can assert both halves.
+  history: NudgeDecision[];
   block: string;
+}
+
+// The ONE thing about the history that is PUSHED rather than left to a lookup.
+//
+// Everything else is fetched with recall_decisions, because injecting a growing
+// history into every prompt does not scale and raw trajectories are the wrong
+// memory unit anyway. But "you have decided about this before, and here is the
+// last thing you did" has to be present whether or not the model thinks to ask —
+// the failure it prevents (re-deciding from zero every 30 minutes, escalating
+// something already escalated) IS the failure of not knowing there was anything
+// to look up. Push the keys and the existence; pull the content.
+function historyLine(history: NudgeDecision[], nowMs: number): string | null {
+  if (history.length === 0) return null;
+  const last = history[history.length - 1];
+  const mark =
+    last.outcome === 'applied'
+      ? ''
+      : last.outcome === 'refused'
+        ? ' — REFUSED'
+        : ' — shadow, not applied';
+  return (
+    `  prior decisions: ${history.length} (last: ${last.action}${mark}, ` +
+    `${hoursBetween(last.decided_at, nowMs)}h ago). Use recall_decisions for the detail.`
+  );
 }
 
 // The evidence bound is CODE's, not the model's: only what landed after the ask,
@@ -200,6 +252,7 @@ function buildGapView(
   evidence: JobEvidenceRow[],
   sharesJob: boolean,
   jobsWithCostEvents: Set<string>,
+  history: NudgeDecision[] = [],
 ): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
@@ -244,6 +297,8 @@ function buildGapView(
   }
   if (n.not_before) lines.push(`  currently held until: ${n.not_before}`);
   if (n.escalate_after) lines.push(`  currently escalates at: ${n.escalate_after}`);
+  const hist = historyLine(history, nowMs);
+  if (hist) lines.push(hist);
   if (!n.asked_at) {
     lines.push('  evidence since the ask: (nothing was asked yet, so there is none)');
   } else if (relevant.length === 0) {
@@ -266,7 +321,7 @@ function buildGapView(
       );
     });
   }
-  return { nudge: n, jobId, evidenceText, recordFilled, block: lines.join('\n') };
+  return { nudge: n, jobId, evidenceText, recordFilled, history, block: lines.join('\n') };
 }
 
 // Normalised for the citation check ONLY — a model that changes spacing or case
@@ -323,7 +378,15 @@ export function validateDecisions(
     const d = entry as Record<string, unknown>;
     const nudgeId = typeof d.nudgeId === 'string' ? d.nudgeId : '';
     const action = String(d.action ?? '');
-    const push = (why: string) => dropped.push({ nudgeId, action, why });
+    // Read up here so a REFUSED decision is recorded with the model's own
+    // confidence and words, not just a counter. Unreadable confidence is not
+    // high confidence.
+    const confidence: 'low' | 'medium' | 'high' =
+      d.confidence === 'low' || d.confidence === 'medium' || d.confidence === 'high'
+        ? d.confidence
+        : 'low';
+    const reason = typeof d.reason === 'string' ? flat(d.reason, 300) : '';
+    const push = (why: string) => dropped.push({ nudgeId, action, why, confidence, reason });
 
     const view = views.get(nudgeId);
     if (!view) {
@@ -337,6 +400,47 @@ export function validateDecisions(
     if (!(PLANNER_ACTIONS as readonly string[]).includes(action)) {
       push(`unknown action '${action}'`);
       continue;
+    }
+
+    // `send` and `hold` only MEAN something on a row that has not gone out yet.
+    // Both write `not_before`, and `not_before` gates COMPOSE and nothing else
+    // (compose.ts:190) — the delivery pull does not read it and an asked row has
+    // no compose left to gate. Applying either to a queued or asked row would
+    // return the row happily and change nothing anybody could observe: the
+    // silent no-op this phase exists to make impossible. Observed live
+    // 2026-08-20, when the planner chose `send` on a row that had been asked
+    // hours earlier.
+    //
+    // Refused rather than translated. "Give them more time" IS expressible —
+    // by not naming the gap at all — and the prompt says so; inventing a
+    // mapping from `hold` to `escalate_after` would be code doing the model's
+    // judgment for it, which is the one thing this design does not do.
+    // Escalation is for silence AFTER a question went out: the sweep's handoff
+    // requires `status === 'asked' && asked_at` (watchers.ts:576), so bringing
+    // escalate_after forward on a pending row moves nothing. A gap nobody can
+    // even be asked already has its own path — the delivery deadline hands it
+    // to the manager as never-delivered.
+    if (action === 'escalate' && view.nudge.status !== 'asked') {
+      push(
+        'escalate on a gap that has not been asked yet — escalation is for silence after a ' +
+          'question went out, and a gap that cannot be delivered reaches the manager on its own.',
+      );
+      continue;
+    }
+
+    if (action === 'send' || action === 'hold') {
+      const st = view.nudge.status;
+      if (st !== 'pending') {
+        push(
+          st === 'asked'
+            ? `${action} on a gap that has ALREADY been asked — the question is with the person ` +
+                'now, so only close or escalate mean anything. To give them more time, leave the ' +
+                'gap out of your plan.'
+            : `${action} on a gap that is already composed and waiting to be delivered — there ` +
+                'is nothing to release. Leave it out of your plan.',
+        );
+        continue;
+      }
     }
 
     // ASSERT-ONLY-CITED, in code. The prompt asks for a verbatim quote; this is
@@ -365,11 +469,8 @@ export function validateDecisions(
           action: 'close',
           basis,
           citation: view.recordFilled, // code's words, not the model's
-          confidence:
-            d.confidence === 'low' || d.confidence === 'medium' || d.confidence === 'high'
-              ? d.confidence
-              : 'low',
-          reason: typeof d.reason === 'string' ? flat(d.reason, 300) : '',
+          confidence,
+          reason,
         });
         continue;
       }
@@ -426,10 +527,6 @@ export function validateDecisions(
       notBefore = new Date(at).toISOString();
     }
 
-    const confidence =
-      d.confidence === 'low' || d.confidence === 'medium' || d.confidence === 'high'
-        ? d.confidence
-        : 'low'; // unreadable confidence is not high confidence
     seen.add(nudgeId);
     decisions.push({
       nudgeId,
@@ -438,10 +535,59 @@ export function validateDecisions(
       ...(basis ? { basis } : {}),
       ...(citation ? { citation } : {}),
       confidence,
-      reason: typeof d.reason === 'string' ? flat(d.reason, 300) : '',
+      reason,
     });
   }
   return { decisions, dropped };
+}
+
+/**
+ * Perform ONE decision and report what ACTUALLY happened (plan Phase 4).
+ *
+ * Every path returns an outcome the log can trust. `applied` is claimed only
+ * when a row really moved: these are status-guarded conditional updates, so a
+ * null return means the row changed between the model's read and this write —
+ * a delivery ack, an auto-resolve, another sweep — which is a real event, not a
+ * failure, and must not be recorded as success.
+ *
+ * The planner never escalates, resolves or cancels a row by hand. `escalate`
+ * brings the deadline forward and lets the SWEEP perform the handoff, so the
+ * rung-2 flag, the orphan doctrine and the flag-then-close ordering stay in one
+ * place (watchers.ts) instead of being re-implemented beside it.
+ */
+async function applyDecision(
+  tenantId: string,
+  d: PlannerDecision,
+  nowIso: string,
+  setSchedule: typeof setNudgeSchedule,
+  markOutcome: typeof markNudgeOutcome,
+): Promise<{ outcome: 'applied' | 'refused'; detail?: string }> {
+  const moved = 'the gap changed state between the plan and the write — nothing was applied';
+  const done = (row: Nudge | null): { outcome: 'applied' | 'refused'; detail?: string } =>
+    row ? { outcome: 'applied' } : { outcome: 'refused', detail: moved };
+  switch (d.action) {
+    case 'send':
+      // `null` CLEARS the hold — the deliberate other half of setNudgeSchedule's
+      // undefined/null distinction ("forget what I said last tick"). Pending-only
+      // guard repeats the rail, because the row can move in between.
+      return done(await setSchedule(d.nudgeId, tenantId, { notBefore: null }, ['pending']));
+    case 'hold':
+      return done(
+        await setSchedule(d.nudgeId, tenantId, { notBefore: d.notBefore ?? null }, ['pending']),
+      );
+    case 'escalate':
+      return done(await setSchedule(d.nudgeId, tenantId, { escalateAfter: nowIso }, ['asked']));
+    case 'close': {
+      // The resolution is the durable audit line a manager may later read, so it
+      // says WHERE the answer came from. A record-basis close quotes code's own
+      // words (validateDecisions overwrote the model's citation with them).
+      const resolution =
+        d.basis === 'record'
+          ? `closed on the record — ${d.citation}`
+          : `answered — "${d.citation}"`;
+      return done(await markOutcome(d.nudgeId, tenantId, 'answered', resolution));
+    }
+  }
 }
 
 export async function runPlanner(
@@ -455,6 +601,10 @@ export async function runPlanner(
   const listEvidence = deps.listEvidence ?? listJobEvidenceSince;
   const listCostEvents = deps.listCostEvents ?? listJobIdsWithCostEvents;
   const runLoop = deps.runLoop ?? runToolLoop;
+  const listDecisions = deps.listDecisions ?? listDecisionsForNudges;
+  const recordDecisions = deps.recordDecisions ?? recordNudgeDecisions;
+  const setSchedule = deps.setSchedule ?? setNudgeSchedule;
+  const markOutcome = deps.markOutcome ?? markNudgeOutcome;
   const specs = deps.specs ?? NUDGE_KIND_SPECS;
   const tools = deps.tools ?? [];
   const execute = deps.execute;
@@ -469,6 +619,8 @@ export async function runPlanner(
     decisions: 0,
     dropped: 0,
     applied: 0,
+    refusedAtApply: 0,
+    recorded: 0,
     tenantErrors: 0,
     byAction: {},
     plans: [],
@@ -526,6 +678,14 @@ export async function runPlanner(
         costJobIds.length > 0 ? await listCostEvents(tenantId, costJobIds) : [],
       );
 
+      // ONE batched read of the planner's own history for this tick's gaps —
+      // the same discipline as the evidence and ledger reads above. Only its
+      // shape reaches the prompt; the detail is pulled with recall_decisions.
+      const historyByNudge = await listDecisions(
+        tenantId,
+        open.map((n) => n.id),
+      );
+
       const gapsPerJob = new Map<string, number>();
       for (const n of open) {
         const j = ctxStr(n, 'jobId');
@@ -536,7 +696,14 @@ export async function runPlanner(
         const j = ctxStr(n, 'jobId');
         views.set(
           n.id,
-          buildGapView(n, nowMs, evidence, !!j && (gapsPerJob.get(j) ?? 0) > 1, jobsWithCostEvents),
+          buildGapView(
+            n,
+            nowMs,
+            evidence,
+            !!j && (gapsPerJob.get(j) ?? 0) > 1,
+            jobsWithCostEvents,
+            historyByNudge.get(n.id) ?? [],
+          ),
         );
       }
 
@@ -608,23 +775,104 @@ export async function runPlanner(
       summary.decisions += decisions.length;
       summary.dropped += dropped.length;
       for (const d of decisions) summary.byAction[d.action] = (summary.byAction[d.action] ?? 0) + 1;
+
+      // APPLY (live only), THEN RECORD what actually happened. This order is the
+      // point: recording first would log an intention as an outcome, and the
+      // whole reason this table exists is that "the planner decided X" and "X
+      // happened" had become indistinguishable.
+      const records: NudgeDecisionInput[] = [];
+      let applied = 0;
+      let refusedAtApply = 0;
+      for (const d of decisions) {
+        const jobId = views.get(d.nudgeId)?.jobId ?? null;
+        const base = {
+          tenantId,
+          nudgeId: d.nudgeId,
+          jobId,
+          mode,
+          action: d.action,
+          notBefore: d.notBefore ?? null,
+          basis: d.basis ?? null,
+          citation: d.citation ?? null,
+          confidence: d.confidence,
+          reason: d.reason,
+        };
+        if (mode !== 'live') {
+          records.push({ ...base, mode: 'shadow', outcome: 'shadow' });
+          continue;
+        }
+        let res: { outcome: 'applied' | 'refused'; detail?: string };
+        try {
+          res = await applyDecision(tenantId, d, nowIso, setSchedule, markOutcome);
+        } catch (err) {
+          // One failed write must not abandon the rest of the firm's plan, and
+          // it must not be silent either — it becomes a refusal WITH the reason.
+          res = {
+            outcome: 'refused',
+            detail: `write failed: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+        if (res.outcome === 'applied') applied += 1;
+        else refusedAtApply += 1;
+        records.push({ ...base, mode: 'live', outcome: res.outcome, outcomeDetail: res.detail });
+      }
+      // Rail-refused decisions are recorded too — a refusal is the most
+      // informative row in the log, being the one place we learn what the model
+      // wanted to do and could not. Only entries naming a real gap and a real
+      // action: a malformed submission is a parse failure, not a decision. The
+      // model's citation is deliberately NOT stored on a refused close, or a
+      // quote the rails rejected as unfindable would be preserved as evidence.
+      for (const d of dropped) {
+        if (!views.has(d.nudgeId)) continue;
+        if (!(PLANNER_ACTIONS as readonly string[]).includes(d.action)) continue;
+        records.push({
+          tenantId,
+          nudgeId: d.nudgeId,
+          jobId: views.get(d.nudgeId)?.jobId ?? null,
+          mode,
+          action: d.action,
+          confidence: d.confidence ?? 'low',
+          reason: d.reason ?? '',
+          outcome: 'refused',
+          outcomeDetail: d.why,
+        });
+      }
+
+      let recorded = 0;
+      try {
+        recorded = await recordDecisions(records);
+      } catch (err) {
+        // Be LOUD but do not take the tick down (the recordModelUsage posture).
+        // In live the nudges rows still carry the state, so what is lost here is
+        // the memory and the corpus — bad, not dangerous.
+        console.error(`[planner] tenant ${tenantId}: recording ${records.length} decisions failed`, err);
+      }
+      summary.applied += applied;
+      summary.refusedAtApply += refusedAtApply;
+      summary.recorded += recorded;
+
       summary.plans.push({
         tenantId,
         gaps: open.length,
         decisions,
         dropped,
+        applied,
+        refusedAtApply,
+        recorded,
         turns: result.turns,
         toolCalls: result.calls.length,
         ms: Date.now() - started,
       });
 
-      // SHADOW WRITES NOTHING — not a nudge, not a schedule, not a resolution.
-      // The plan is logged and that is all, which is what makes the cost and the
-      // judgment measurable before anything depends on either.
+      // SHADOW TOUCHES NO NUDGE — not a schedule, not a resolution. It DOES
+      // write nudge_decisions, which is the point: the corpus and the planner's
+      // own memory start accumulating before anything is applied, so the effect
+      // of having a memory can be watched in shadow rather than discovered live.
       if (mode === 'shadow') {
         console.log(
           `[planner:shadow] tenant ${tenantId}: ${open.length} gaps → ` +
             `${decisions.length} decisions (${dropped.length} refused), ` +
+            `${recorded} recorded, ` +
             `${result.turns} turns, ${result.calls.length} tool calls, ${Date.now() - started}ms`,
         );
         for (const d of decisions) {

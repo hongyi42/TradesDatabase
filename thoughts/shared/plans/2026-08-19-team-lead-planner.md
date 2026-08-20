@@ -537,19 +537,19 @@ counts.
   and a planner eval. All belong to the separate RPI cycle on the memory framing.
 
 ### Automated verification
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass
-- [ ] new test: `close` without a citation is refused in code even if the model returns one
-- [ ] new test: `notBefore` beyond the delivery deadline is clamped, not honoured
-- [ ] new test: a decision for an already-`answered` row is dropped, not applied
-- [ ] new test: `send` on an already-`asked` row is refused and RECORDED with a reason
-- [ ] new test: a thrown planner call leaves all rows unchanged and the sweep still escalates on
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` pass
+- [x] new test: `close` without a citation is refused in code even if the model returns one
+- [x] new test: `notBefore` beyond the delivery deadline is clamped, not honoured
+- [x] new test: a decision for an already-`answered` row is dropped, not applied
+- [x] new test: `send` on an already-`asked` row is refused and RECORDED with a reason
+- [x] new test: a thrown planner call leaves all rows unchanged and the sweep still escalates on
       defaults
-- [ ] new test: decisions are recorded in `shadow` with `outcome='shadow'` and NOTHING is written
+- [x] new test: decisions are recorded in `shadow` with `outcome='shadow'` and NOTHING is written
       to `nudges`
-- [ ] new test: the gap block shows `prior decisions: N` only when a history exists
-- [ ] new test: `recall_decisions` dispatches for `spine:team-lead` and is refused for a
+- [x] new test: the gap block shows `prior decisions: N` only when a history exists
+- [x] new test: `recall_decisions` dispatches for `spine:team-lead` and is refused for a
       technician and a manager badge
-- [ ] mutation check: disabling the clamp makes its test fail; disabling the `send`-on-asked
+- [x] mutation check: disabling the clamp makes its test fail; disabling the `send`-on-asked
       refusal makes its test fail
 
 ### Live verification (agent-executable)

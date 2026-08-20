@@ -674,6 +674,8 @@ describe('the planner gate', () => {
             decisions: 0,
             dropped: 0,
             applied: 0,
+      refusedAtApply: 0,
+      recorded: 0,
             tenantErrors: 0,
             byAction: {},
             plans: [],

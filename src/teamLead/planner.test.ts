@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from '../db/client.js';
 import { createPendingNudge, listNudgesByStatus } from '../db/nudges.js';
-import type { Nudge, Tenant, JobEvidenceRow, RawCapture } from '../db/index.js';
+import type { Nudge, NudgeDecision, Tenant, JobEvidenceRow, RawCapture } from '../db/index.js';
 import {
   EVIDENCE_PER_GAP,
   runPlanner,
@@ -102,6 +102,10 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     listNudges: async () => [nudge()],
     listEvidence: async () => [],
     listCostEvents: async () => [],
+    // Phase 4: stubbed by default so a prompt/rail test never reaches the
+    // database. Tests that care about the memory or the writers override these.
+    listDecisions: async () => new Map(),
+    recordDecisions: async (rows) => rows.length,
     runLoop: loopReturning([]),
     ...over,
   };
@@ -261,6 +265,17 @@ describe('the code rails on what the model returns', () => {
       runLoop: loopReturning(decisions),
     }));
 
+  // `send` and `hold` only mean anything on a PENDING row — the state rail fires
+  // before every other check, so the tests for their OTHER rails need a pending
+  // fixture or the rail under test is never reached. (This is the test-rot shape
+  // the constants retune already cost us once: a fixture that quietly stops
+  // exercising the thing its name claims.)
+  const runPending = async (decisions: unknown[]) =>
+    runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge({ status: 'pending', asked_at: null, question: null })],
+      runLoop: loopReturning(decisions),
+    }));
+
   test('close WITHOUT a citation is refused — in code, not by the prompt', async () => {
     const s = await run([{ nudgeId: 'n1', action: 'close', confidence: 'high', reason: 'looks done' }]);
     expect(s.decisions).toBe(0);
@@ -309,7 +324,7 @@ describe('the code rails on what the model returns', () => {
   });
 
   test('a second decision for the same gap is dropped, the first stands', async () => {
-    const s = await run([
+    const s = await runPending([
       { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'first' },
       { nudgeId: 'n1', action: 'escalate', confidence: 'high', reason: 'second' },
     ]);
@@ -325,7 +340,7 @@ describe('the code rails on what the model returns', () => {
   });
 
   test('hold without a usable notBefore is dropped — a hold with no end is a silence', async () => {
-    const s = await run([
+    const s = await runPending([
       { nudgeId: 'n1', action: 'hold', notBefore: 'later', confidence: 'high', reason: 'x' },
     ]);
     expect(s.decisions).toBe(0);
@@ -333,7 +348,7 @@ describe('the code rails on what the model returns', () => {
   });
 
   test('an unreadable confidence reads as LOW, never as high', async () => {
-    const s = await run([{ nudgeId: 'n1', action: 'send', confidence: 'certain', reason: 'x' }]);
+    const s = await runPending([{ nudgeId: 'n1', action: 'send', confidence: 'certain', reason: 'x' }]);
     expect(s.plans[0].decisions[0].confidence).toBe('low');
   });
 
@@ -399,7 +414,7 @@ describe('the code rails on what the model returns', () => {
   });
 
   test('a hold in the PAST is refused — it holds nothing', async () => {
-    const s = await run([
+    const s = await runPending([
       { nudgeId: 'n1', action: 'hold', notBefore: '1999-01-01T00:00:00Z', confidence: 'high', reason: 'x' },
     ]);
     expect(s.decisions).toBe(0);
@@ -407,7 +422,7 @@ describe('the code rails on what the model returns', () => {
   });
 
   test('a hold past the delivery deadline is refused — it would hand the gap over, not hold it', async () => {
-    const s = await run([
+    const s = await runPending([
       { nudgeId: 'n1', action: 'hold', notBefore: '2099-01-01T00:00:00Z', confidence: 'high', reason: 'x' },
     ]);
     expect(s.decisions).toBe(0);
@@ -542,6 +557,320 @@ describe('the code rails on what the model returns', () => {
 // WRITER was called — and in this phase the planner is given none, which makes
 // that assertion vacuous. This one plants a real row, runs a real shadow pass,
 // and reads the row back.
+describe('the state rails — no decision may be a silent no-op', () => {
+  const runOn = async (over: Partial<Nudge>, decisions: unknown[], deps: Partial<PlannerDeps> = {}) =>
+    runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge(over)],
+      runLoop: loopReturning(decisions),
+      ...deps,
+    }));
+
+  // The defect this rail exists for, observed live 2026-08-20: the planner chose
+  // `send` on a row asked hours earlier. not_before gates COMPOSE and nothing
+  // else, so the write would have returned the row happily and changed nothing.
+  test('send on an ALREADY-ASKED gap is refused, and says why', async () => {
+    const s = await runOn({ status: 'asked' }, [
+      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'chase it again' },
+    ]);
+    expect(s.decisions).toBe(0);
+    expect(s.plans[0].dropped[0].why).toContain('ALREADY been asked');
+    expect(s.plans[0].dropped[0].why).toContain('leave the gap out of your plan');
+  });
+
+  test('hold on an already-asked gap is refused too — the question is already out', async () => {
+    const s = await runOn({ status: 'asked' }, [
+      { nudgeId: 'n1', action: 'hold', notBefore: '2099-01-01T00:00:00Z', confidence: 'high', reason: 'wait' },
+    ]);
+    expect(s.decisions).toBe(0);
+    expect(s.plans[0].dropped[0].why).toContain('ALREADY been asked');
+  });
+
+  test('send on a QUEUED gap is refused — it is written and waiting to be delivered', async () => {
+    const s = await runOn({ status: 'queued', asked_at: null }, [
+      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go' },
+    ]);
+    expect(s.decisions).toBe(0);
+    expect(s.plans[0].dropped[0].why).toContain('waiting to be delivered');
+  });
+
+  // The sweep's handoff requires status 'asked' AND an asked_at, so bringing the
+  // deadline forward on a pending row moves nothing at all.
+  test('escalate on a gap that was never asked is refused', async () => {
+    const s = await runOn({ status: 'pending', asked_at: null }, [
+      { nudgeId: 'n1', action: 'escalate', confidence: 'high', reason: 'manager should see this' },
+    ]);
+    expect(s.decisions).toBe(0);
+    expect(s.plans[0].dropped[0].why).toContain('has not been asked yet');
+  });
+
+  test('a rail-refused decision is RECORDED with the model own words, not just counted', async () => {
+    const recorded: unknown[] = [];
+    await runOn(
+      { status: 'asked' },
+      [{ nudgeId: 'n1', action: 'send', confidence: 'medium', reason: 'chase it again' }],
+      {
+        recordDecisions: async (rows) => {
+          recorded.push(...rows);
+          return rows.length;
+        },
+      },
+    );
+    expect(recorded).toHaveLength(1);
+    const row = recorded[0] as Record<string, unknown>;
+    expect(row.outcome).toBe('refused');
+    expect(row.action).toBe('send');
+    expect(row.confidence).toBe('medium');
+    expect(row.reason).toBe('chase it again');
+    expect(String(row.outcomeDetail)).toContain('ALREADY been asked');
+  });
+
+  // A refused close must not preserve the quote the rails rejected: storing it
+  // would keep model-invented text in a column read as evidence.
+  test('a refused close records no citation', async () => {
+    const recorded: unknown[] = [];
+    await runOn({ status: 'asked' }, [
+      { nudgeId: 'n1', action: 'close', citation: 'words nobody said', confidence: 'high', reason: 'done' },
+    ], {
+      recordDecisions: async (rows) => {
+        recorded.push(...rows);
+        return rows.length;
+      },
+    });
+    expect((recorded[0] as Record<string, unknown>).citation ?? null).toBeNull();
+  });
+});
+
+describe('the planner sees that it has run before', () => {
+  const decisionRow = (over: Partial<NudgeDecision> = {}): NudgeDecision =>
+    ({
+      id: 'd1',
+      tenant_id: 't1',
+      nudge_id: 'n1',
+      job_id: 'j1',
+      decided_at: '2026-08-16T11:00:00.000Z', // one hour before NOW
+      mode: 'live',
+      action: 'hold',
+      not_before: null,
+      basis: null,
+      citation: null,
+      confidence: 'high',
+      reason: 'giving them the morning',
+      outcome: 'applied',
+      outcome_detail: null,
+      ...over,
+    }) as unknown as NudgeDecision;
+
+  const withHistory = async (history: NudgeDecision[], seen: { user?: string }) =>
+    runPlanner(NOW, 'shadow', baseDeps({
+      listDecisions: async () => new Map([['n1', history]]),
+      runLoop: loopReturning([], seen),
+    }));
+
+  test('a gap with no history says nothing — the line is absent, not empty', async () => {
+    const seen: { user?: string } = {};
+    await withHistory([], seen);
+    expect(seen.user).not.toContain('prior decisions');
+  });
+
+  // The ONE pushed fact. Everything else is pulled with recall_decisions, but
+  // "you have decided about this before" has to be present whether or not the
+  // model thinks to look — not knowing there is anything to look up IS the
+  // failure it prevents.
+  test('a gap with history carries a count, the last action, and how long ago', async () => {
+    const seen: { user?: string } = {};
+    await withHistory([decisionRow({ decided_at: '2026-08-16T09:00:00.000Z' }), decisionRow()], seen);
+    expect(seen.user).toContain('prior decisions: 2 (last: hold, 1h ago)');
+    expect(seen.user).toContain('recall_decisions');
+  });
+
+  test('a refused last decision is marked as refused, not reported as done', async () => {
+    const seen: { user?: string } = {};
+    await withHistory([decisionRow({ action: 'send', outcome: 'refused' })], seen);
+    expect(seen.user).toContain('last: send — REFUSED');
+  });
+
+  test('a shadow decision says it was not applied', async () => {
+    const seen: { user?: string } = {};
+    await withHistory([decisionRow({ outcome: 'shadow', mode: 'shadow' })], seen);
+    expect(seen.user).toContain('shadow, not applied');
+  });
+
+  test('history is read for the tick gaps in ONE batched call', async () => {
+    const listDecisions = vi.fn<NonNullable<PlannerDeps['listDecisions']>>(async () => new Map());
+    await runPlanner(NOW, 'shadow', baseDeps({ listDecisions }));
+    expect(listDecisions).toHaveBeenCalledTimes(1);
+    expect(listDecisions.mock.calls[0][1]).toEqual(['n1']);
+  });
+});
+
+describe('live mode — the decision becomes a write, and the write becomes the record', () => {
+  const live = async (over: Partial<Nudge>, decisions: unknown[], deps: Partial<PlannerDeps> = {}) => {
+    const setSchedule = vi.fn<NonNullable<PlannerDeps['setSchedule']>>(async () => nudge());
+    const markOutcome = vi.fn<NonNullable<PlannerDeps['markOutcome']>>(async () => nudge());
+    const recorded: Record<string, unknown>[] = [];
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [nudge(over)],
+      runLoop: loopReturning(decisions),
+      setSchedule,
+      markOutcome,
+      recordDecisions: async (rows) => {
+        recorded.push(...(rows as unknown as Record<string, unknown>[]));
+        return rows.length;
+      },
+      ...deps,
+    }));
+    return { summary, setSchedule, markOutcome, recorded };
+  };
+
+  test('send CLEARS the hold, pending-guarded', async () => {
+    const { setSchedule, summary, recorded } = await live({ status: 'pending', asked_at: null }, [
+      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go now' },
+    ]);
+    expect(setSchedule).toHaveBeenCalledWith('n1', 't1', { notBefore: null }, ['pending']);
+    expect(summary.applied).toBe(1);
+    expect(recorded[0].outcome).toBe('applied');
+    expect(recorded[0].mode).toBe('live');
+  });
+
+  test('hold stamps the instant the model chose', async () => {
+    // created_at an hour ago, not a day: the hold ceiling is
+    // created_at + NUDGE_DELIVERY_DEADLINE_HOURS, and the default fixture is old
+    // enough that any future hold would be refused by THAT rail instead.
+    const { setSchedule } = await live(
+      { status: 'pending', asked_at: null, created_at: '2026-08-16T11:00:00.000Z' },
+      [
+        { nudgeId: 'n1', action: 'hold', notBefore: '2026-08-16T18:00:00Z', confidence: 'high', reason: 'pace' },
+      ],
+    );
+    expect(setSchedule).toHaveBeenCalledWith(
+      'n1', 't1', { notBefore: '2026-08-16T18:00:00.000Z' }, ['pending'],
+    );
+  });
+
+  // The planner never escalates by hand: it moves the deadline and the SWEEP
+  // performs the handoff, so the rung-2 flag and the orphan doctrine stay in
+  // one place.
+  test('escalate moves the deadline and touches nothing else', async () => {
+    const { setSchedule, markOutcome } = await live({ status: 'asked' }, [
+      { nudgeId: 'n1', action: 'escalate', confidence: 'low', reason: 'no reply' },
+    ]);
+    expect(setSchedule).toHaveBeenCalledWith('n1', 't1', { escalateAfter: NOW }, ['asked']);
+    expect(markOutcome).not.toHaveBeenCalled();
+  });
+
+  test('close writes a resolution that QUOTES the evidence it cited', async () => {
+    const answer = 'parts came to forty dollars';
+    const { markOutcome } = await live({ status: 'asked' }, [
+      { nudgeId: 'n1', action: 'close', citation: answer, confidence: 'high', reason: 'answered' },
+    ], { listEvidence: async () => [evidence('2026-08-15T13:00:00.000Z', answer)] });
+    expect(markOutcome).toHaveBeenCalledWith('n1', 't1', 'answered', `answered — "${answer}"`);
+  });
+
+  // A status-guarded update that matches nothing means the row moved under us —
+  // a real event, and the one thing that must never be logged as success.
+  test('a write that lands nowhere is recorded as REFUSED, never as applied', async () => {
+    const { summary, recorded } = await live({ status: 'pending', asked_at: null }, [
+      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go' },
+    ], { setSchedule: async () => null });
+    expect(summary.applied).toBe(0);
+    expect(summary.refusedAtApply).toBe(1);
+    expect(recorded[0].outcome).toBe('refused');
+    expect(String(recorded[0].outcomeDetail)).toContain('changed state');
+  });
+
+  test('a writer that throws refuses that ONE decision and keeps the reason', async () => {
+    const { summary, recorded } = await live({ status: 'pending', asked_at: null }, [
+      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go' },
+    ], {
+      setSchedule: async () => {
+        throw new Error('connection reset');
+      },
+    });
+    expect(summary.refusedAtApply).toBe(1);
+    expect(String(recorded[0].outcomeDetail)).toContain('connection reset');
+  });
+
+  test('SHADOW calls neither writer, but still records', async () => {
+    const setSchedule = vi.fn<NonNullable<PlannerDeps['setSchedule']>>(async () => nudge());
+    const markOutcome = vi.fn<NonNullable<PlannerDeps['markOutcome']>>(async () => nudge());
+    const recorded: Record<string, unknown>[] = [];
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge({ status: 'pending', asked_at: null })],
+      runLoop: loopReturning([{ nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go' }]),
+      setSchedule,
+      markOutcome,
+      recordDecisions: async (rows) => {
+        recorded.push(...(rows as unknown as Record<string, unknown>[]));
+        return rows.length;
+      },
+    }));
+    expect(setSchedule).not.toHaveBeenCalled();
+    expect(markOutcome).not.toHaveBeenCalled();
+    expect(summary.applied).toBe(0);
+    expect(summary.recorded).toBe(1);
+    expect(recorded[0].outcome).toBe('shadow');
+  });
+
+  // A gap that already resolved is not in `open`, so it never reaches the view
+  // map and the unknown-gap rail catches it. Pinned explicitly because the
+  // REASON is a two-step argument, and a future change to the status filter
+  // would break it silently.
+  test('a decision for an already-answered gap is dropped, never applied', async () => {
+    const setSchedule = vi.fn<NonNullable<PlannerDeps['setSchedule']>>(async () => nudge());
+    const markOutcome = vi.fn<NonNullable<PlannerDeps['markOutcome']>>(async () => nudge());
+    const s = await runPlanner(NOW, 'live', baseDeps({
+      // The row the model names is NOT among the open gaps this tick.
+      listNudges: async () => [nudge({ id: 'n-open', status: 'asked' })],
+      runLoop: loopReturning([
+        { nudgeId: 'n-answered', action: 'close', citation: 'all done here', confidence: 'high', reason: 'x' },
+      ]),
+      setSchedule,
+      markOutcome,
+    }));
+    expect(s.decisions).toBe(0);
+    expect(s.applied).toBe(0);
+    expect(markOutcome).not.toHaveBeenCalled();
+    expect(s.plans[0].dropped[0].why).toContain('not in this plan');
+  });
+
+  // The fail-safe the whole design rests on: a dead planner degrades to exactly
+  // the behaviour that shipped before it existed, because the sweep's constants
+  // still apply to rows nobody touched.
+  test('a planner call that throws touches nothing and writes nothing', async () => {
+    const setSchedule = vi.fn<NonNullable<PlannerDeps['setSchedule']>>(async () => nudge());
+    const markOutcome = vi.fn<NonNullable<PlannerDeps['markOutcome']>>(async () => nudge());
+    const recordDecisions = vi.fn<NonNullable<PlannerDeps['recordDecisions']>>(async () => 0);
+    const s = await runPlanner(NOW, 'live', baseDeps({
+      runLoop: (async () => {
+        throw new Error('provider suspended');
+      }) as unknown as NonNullable<PlannerDeps['runLoop']>,
+      setSchedule,
+      markOutcome,
+      recordDecisions,
+    }));
+    expect(s.tenantErrors).toBe(1);
+    expect(s.applied).toBe(0);
+    expect(setSchedule).not.toHaveBeenCalled();
+    expect(markOutcome).not.toHaveBeenCalled();
+    expect(recordDecisions).not.toHaveBeenCalled();
+  });
+
+  // Losing the log must not lose the tick: in live the nudges rows still carry
+  // the state, so what a failed insert costs is the memory, not the work.
+  test('a recording failure is loud but does not take the tick down', async () => {
+    const summary = await live({ status: 'pending', asked_at: null }, [
+      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go' },
+    ], {
+      recordDecisions: async () => {
+        throw new Error('insert failed');
+      },
+    });
+    expect(summary.summary.applied).toBe(1);
+    expect(summary.summary.recorded).toBe(0);
+    expect(summary.summary.tenantErrors).toBe(0);
+  });
+});
+
 describe('shadow mode leaves the database untouched', () => {
   const pg = new Client({ connectionString: process.env.DATABASE_URL });
   let tenantId: string;
@@ -588,9 +917,13 @@ describe('shadow mode leaves the database untouched', () => {
     const rows = await listNudgesByStatus(tenantId, ['pending']);
     // asked_at must exist for evidence to be in bounds; these rows are pending,
     // so the close is fed through a row that has one.
-    await pg.query("update nudges set status='asked', asked_at=now() - interval '2 hours' where id=$1", [
-      planted[2],
-    ]);
+    // Two rows must be ASKED, not pending: `close` needs an asked_at for the
+    // evidence bound, and `escalate` is refused on a row that was never asked
+    // (bringing the deadline forward on a pending row moves nothing).
+    await pg.query(
+      "update nudges set status='asked', asked_at=now() - interval '2 hours' where id = any($1)",
+      [[planted[2], planted[3]]],
+    );
     const before = await pg.query('select * from nudges where tenant_id=$1 order by subject_ref', [tenantId]);
     expect(rows).toHaveLength(4);
 
@@ -599,7 +932,9 @@ describe('shadow mode leaves the database untouched', () => {
       getTenant: async () => ({ id: tenantId, timezone: 'UTC' }) as unknown as Tenant,
       listNudges: async () =>
         (await listNudgesByStatus(tenantId, ['pending', 'queued', 'asked'])).map((n) =>
-          n.id === planted[2] ? ({ ...n, asked_at: '2026-08-16T10:00:00.000Z' } as Nudge) : n,
+          n.id === planted[2] || n.id === planted[3]
+            ? ({ ...n, asked_at: '2026-08-16T10:00:00.000Z' } as Nudge)
+            : n,
         ),
       listEvidence: async () => [evidence('2026-08-16T11:00:00.000Z', answer, jobId)],
       runLoop: loopReturning([
@@ -615,5 +950,19 @@ describe('shadow mode leaves the database untouched', () => {
 
     const after = await pg.query('select * from nudges where tenant_id=$1 order by subject_ref', [tenantId]);
     expect(after.rows).toEqual(before.rows); // every column, including updated_at
+
+    // ...but the DECISIONS are written, in shadow too. That is the whole point
+    // of Phase 4's amendment: the corpus and the planner's own memory start
+    // accumulating before anything is applied, so the effect of having a memory
+    // can be watched in shadow rather than discovered live.
+    expect(summary.recorded).toBe(4);
+    const logged = await pg.query(
+      'select action, outcome, mode, job_id from nudge_decisions where tenant_id=$1 order by action',
+      [tenantId],
+    );
+    expect(logged.rows.map((r) => r.action)).toEqual(['close', 'escalate', 'hold', 'send']);
+    expect(logged.rows.every((r) => r.outcome === 'shadow' && r.mode === 'shadow')).toBe(true);
+    // Denormalised so history can be recalled by JOB, not only by gap.
+    expect(logged.rows.every((r) => r.job_id === jobId)).toBe(true);
   });
 });

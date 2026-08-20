@@ -162,6 +162,14 @@ async function truncateSpine(hasScheduling) {
         where table_schema = 'public' and table_name = 'nudges'`,
     );
     if (nd.rows.length > 0) tables += ', nudges';
+    // nudge_decisions cascades from nudges above, but is named explicitly:
+    // incidental cascade coverage is exactly how tenant_profiles got missed
+    // (eng-memory §1). Existence-probed like the two above.
+    const ndd = await client.query(
+      `select 1 from information_schema.tables
+        where table_schema = 'public' and table_name = 'nudge_decisions'`,
+    );
+    if (ndd.rows.length > 0) tables += ', nudge_decisions';
     await client.query(`truncate table ${tables} cascade`);
   } finally {
     await client.end();

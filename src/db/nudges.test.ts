@@ -124,7 +124,7 @@ describe('status-guarded transitions', () => {
     await markNudgeQueued(n!.id, tenantId, 'q');
     await markNudgeAsked(n!.id, tenantId); // the ack landed first
     // The expiry sweep's "never delivered" close is pending|queued-scoped —
-    // on an asked row it must write NOTHING (the 48h escalation owns it now).
+    // on an asked row it must write NOTHING (the 24h escalation owns it now).
     expect(
       await markNudgeOutcome(n!.id, tenantId, 'failed', 'never delivered', ['pending', 'queued']),
     ).toBeNull();

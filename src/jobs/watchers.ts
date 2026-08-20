@@ -82,7 +82,7 @@ export type WatcherMode = 'shadow' | 'live';
 // reachable, a fresh gap becomes a NUDGE — a question
 // delivered through their own agent — INSTEAD of a manager review item; the
 // manager surface remains as the fallback (unreachable tech) and as rung 2
-// (48h of silence after the ask). NUDGES_MODE gates it independently of
+// (24h of silence after the ask). NUDGES_MODE gates it independently of
 // WATCHERS_MODE: 'off' is byte-for-byte the deployed Stage-0 behavior,
 // 'shadow' counts would-be nudges while still flagging the manager, 'live'
 // runs the ladder. Watchers-live is a PREREQUISITE for any of it — in
@@ -99,7 +99,7 @@ export const MAX_NEW_ITEMS_PER_TENANT_TICK = 5;
 // self-serving first, batch the unimportant — none of which a counter can
 // express. Volume is bounded instead by uq_nudges_subject_ever (a subject is
 // asked about once, EVER) and by MAX_NEW_ITEMS_PER_TENANT_TICK above, which
-// stays as the per-tenant surge brake. 48h of post-ask silence escalates.
+// stays as the per-tenant surge brake. 24h of post-ask silence escalates.
 // Code constants, not env (the OVERDUE_HOURS pattern: one tuning surface).
 //
 // The deleted counter was ALSO, incidentally, the brake on a misfiring
@@ -107,7 +107,16 @@ export const MAX_NEW_ITEMS_PER_TENANT_TICK = 5;
 // having exactly ONE well-tested detector, not from the design, so detector #2
 // must land with its own brake. See
 // thoughts/shared/research/2026-08-19-nudge-pacing-replacement-design.md (§5).
-export const NUDGE_ESCALATE_HOURS = 48;
+//
+// 48 -> 24 (user decision 2026-08-20), and the evidence for it is unusual: the
+// PLANNER reached the same number on its own, three shadow ticks running,
+// before the constant was touched. Watching one real pilot gap it chose to
+// escalate at 24h — half the constant — and argued the case from job size:
+// "a routine 60-min visit follow-up should not sit unanswered for a full day".
+// Two days was never reasoned about; it was the round number the ladder shipped
+// with. This is now the DEFAULT rather than the rule — a per-row escalate_after
+// overrides it, which is the whole point of Phase 2.
+export const NUDGE_ESCALATE_HOURS = 24;
 // A nudge still not ASKED this long after creation is stuck in some silent
 // way the serve path cannot see (Phase-4 review F1: an offboarded technician
 // is liveness-skipped forever; a recycled sandbox clears host_id, making the
@@ -194,7 +203,7 @@ export interface WatchersSummary {
   nudgesWouldCreate: number; // nudge-shadow: gaps the live ladder would have asked about
   nudgesCreated: number;
   nudgesResolved: number; // answered (activity) or cancelled (status change)
-  nudgesEscalated: number; // 48h silence → handed to the manager (rung 2)
+  nudgesEscalated: number; // 24h silence → handed to the manager (rung 2)
   nudgesExpired: number; // never asked within the deadline → manager fallback
   // Per-kind breakdown — the ONLY place a single detector's numbers are
   // readable. The flat counters above are ALL-KIND TOTALS: nudgesCreated,
@@ -534,7 +543,7 @@ export async function runWatchers(
           continue;
         }
         // Rung 2. The deadline is now DATA (plan 2026-08-19, Phase 2): the
-        // planner may write escalate_after per row, and the 48h constant is what
+        // planner may write escalate_after per row, and the 24h constant is what
         // an unwritten row falls back to. That fallback is the fail-safe — if the
         // planner never runs, or crashes, or is rolled back, every row still
         // escalates on the constant, because the safe behaviour lives in the
@@ -600,7 +609,7 @@ export async function runWatchers(
         try {
           // pending|queued-scoped (final-review #3): a delivery ack racing
           // this sweep moves the row to 'asked' — the expiry must then LOSE
-          // (the 48h escalation owns an asked row's silence), or the audit
+          // (the 24h escalation owns an asked row's silence), or the audit
           // would claim an ask that actually landed never did.
           const moved = await resolveNudge(
             x.n.id,

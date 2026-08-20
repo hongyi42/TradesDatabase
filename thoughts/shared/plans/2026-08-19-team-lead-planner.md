@@ -117,17 +117,49 @@ reach. No ladder behaviour changes.
   removing is preferred, since it is provably unreachable and a dead allowlist entry is a lie.
 
 ### Automated verification
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass
-- [ ] new test: `spine_read` dispatches for `spine:team-lead` and returns rows
-- [ ] new test: `spine_read` is NOT in `ADMIN_TOOL_NAMES` (guards the whole design)
-- [ ] new test: a write tool still hits the cap error for `spine:team-lead`
-- [ ] new test: `runToolLoop` stops at `MAX_TURNS` and records usage per turn
-- [ ] mutation check: removing the `spine_read` case makes its test fail
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` pass — 91 files, 1843/1843
+- [x] new test: `spine_read` dispatches for `spine:team-lead` and returns rows
+- [x] new test: `spine_read` is NOT in `ADMIN_TOOL_NAMES` (guards the whole design) —
+      asserted behaviourally (it answers for a roster-less identity), plus a disjointness
+      test in `src/eval/toolCases.test.ts`
+- [x] new test: a write tool still hits the cap error for `spine:team-lead` (pre-existing,
+      still passing) — and the NEW inverse gate: `spine_read` is refused to managers and
+      technicians, so the surface shifted rather than expanding
+- [x] new test: `runToolLoop` stops at `MAX_TURNS` and records usage per turn
+- [x] mutation check: three mutations, each caught — (a) removing the `spine_read` case,
+      (b) adding `spine_read` to `ADMIN_TOOL_NAMES`, (c) disabling the inverse gate
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack; a provider key in `.env` for a real loop call
-- [ ] run a loop asking a question that needs a lookup ("how many jobs completed this week")
+- [x] run a loop asking a question that needs a lookup ("how many jobs completed this week")
       and confirm it made ≥1 tool call and returned a number matching a direct SQL read
+
+  **Evidence (2026-08-19, local stack `http://127.0.0.1:54621`, GLM-5.2 via Fireworks):**
+  2 turns, 1 tool call, 998ms wall. The model wrote its own SQL —
+  `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status = 'completed') AS completed FROM v_jobs`
+  — and answered `total=3 completed=0`. Independent psql read of the base table
+  (`select count(*) … from jobs where tenant_id = $1`) returned `{"total":3,"completed":0}`:
+  match. Cross-channel read-back from `query_audit` confirms the query executed under
+  `technician_ref = 'spine:team-lead'`, row_count 1, no error. Wall time across three runs:
+  998ms / 2496ms / 13334ms for 2 turns — **provider variance is large**, and 13.3s for two
+  turns puts eight turns near the 90s ceiling. Re-check against Phase 3's shadow latencies.
+
+**Beyond the plan (implementer, flagged):** an INVERSE gate was added at `server.ts:2042` —
+keeping `spine_read` out of `ADMIN_TOOLS` dodges the manager gate but would also have left it
+open to every technician badge, since `ADMIN_TOOL_NAMES` is the only tier gate. The surface
+shifts rather than expands. Two files outside the plan's list also changed:
+`src/model/forcedTool.ts` (endpoint resolvers extracted so the two transports cannot drift) and
+`src/eval/toolCases.test.ts` (its tool-surface scraper swept up the new list).
+
+**Adversarial review: 2 rounds.** Round 1 found 7 issues, all folded: unbounded ERROR results,
+unbounded tool calls per turn, a budget that could not bound a hung request, ceilings that were
+only defaults, an unpinned `spine_read` description, mismatched synthesized tool-call ids, and
+zero Anthropic-transport coverage. Round 2 verified each fix by breaking it, and found two more:
+an abort escaped without the caller's label, and nothing asserted the outbound `tools` array
+(the quiet failure — the API answers in prose and the loop returns it as a plan). Both closed
+and mutation-checked. Round-2 note carried forward: **use `safeEnvInt`, never `Number()`, for
+Phase 3's env plumbing** — `Math.min(NaN, 8)` is `NaN` and `turns >= NaN` is false, which would
+disable the turn ceiling entirely.
 
 ### Manual verification
 - [ ] none

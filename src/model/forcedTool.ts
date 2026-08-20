@@ -55,6 +55,39 @@ const DEFAULT_OPENAI_BASE_URL = 'https://api.fireworks.ai/inference/v1';
 const DEFAULT_OPENAI_MODEL = 'accounts/fireworks/routers/glm-5p2-fast';
 const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6';
 
+// Endpoint resolution, exported so the MULTI-TURN transport (toolLoop.ts) reads
+// exactly the same env vars, defaults and cache-key fields as this one. Both
+// transports speak to the same account, and a constant copied into the second
+// file is how they drift — the same failure the truncation guard's comment
+// names, where a fix landed on one path and not the other.
+export function resolveOpenAiEndpoint(): { baseUrl: string; model: string; apiKey: string } {
+  const apiKey = process.env.INFERENCE_API_KEY;
+  if (!apiKey) throw new Error('INFERENCE_API_KEY is not set');
+  return {
+    apiKey,
+    baseUrl: (process.env.INFERENCE_BASE_URL || DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, ''),
+    model: process.env.INFERENCE_MODEL || DEFAULT_OPENAI_MODEL,
+  };
+}
+
+export function resolveAnthropicEndpoint(): { model: string; apiKey: string } {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
+  return { apiKey, model: process.env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL };
+}
+
+// Cache-affinity key (set INFERENCE_CACHE_KEY to enable). Fireworks caches per
+// replica: without a stable key, prefix-cache hits — and the $0.21/M cached-input
+// billing — are routing luck (probed 2026-08-15: byte-identical repeats missed
+// keyless; 21,014/21,017 tokens cached with a key). Sent as BOTH prompt_cache_key
+// and user, matching what the provider's routing reads. Harmless on providers that
+// ignore both (DeepInfra did, verified in the GLM cache-key trial), so the var is
+// safe to leave set if the endpoint is ever repointed.
+export function cacheKeyFields(): Record<string, string> {
+  const key = process.env.INFERENCE_CACHE_KEY;
+  return key ? { prompt_cache_key: key, user: key } : {};
+}
+
 export function activeProvider(): ModelProvider {
   return process.env.MODEL_PROVIDER === 'anthropic' ? 'anthropic' : 'openai';
 }
@@ -189,11 +222,10 @@ async function callAnthropic(
   tool: ForcedToolSpec,
   req: ForcedToolRequest,
 ): Promise<ForcedToolReply> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
+  const { apiKey, model } = resolveAnthropicEndpoint();
   const client = new Anthropic({ apiKey });
   const message = await client.messages.create({
-    model: process.env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL,
+    model,
     max_tokens: req.maxTokens,
     system: req.system,
     tools: [
@@ -238,28 +270,16 @@ async function callOpenAiCompatible(
   tool: ForcedToolSpec,
   req: ForcedToolRequest,
 ): Promise<ForcedToolReply> {
-  const apiKey = process.env.INFERENCE_API_KEY;
-  if (!apiKey) throw new Error('INFERENCE_API_KEY is not set');
-  const baseUrl = (process.env.INFERENCE_BASE_URL || DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, '');
+  const { apiKey, baseUrl, model } = resolveOpenAiEndpoint();
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
-      model: process.env.INFERENCE_MODEL || DEFAULT_OPENAI_MODEL,
+      model,
       max_tokens: req.maxTokens,
       temperature: 0,
       ...(req.reasoningEffort ? { reasoning_effort: req.reasoningEffort } : {}),
-      // Cache-affinity key (set INFERENCE_CACHE_KEY to enable). Fireworks
-      // caches per replica: without a stable key, prefix-cache hits — and the
-      // $0.21/M cached-input billing — are routing luck (probed 2026-08-15:
-      // byte-identical repeats missed keyless; 21,014/21,017 tokens cached
-      // with a key). Sent as BOTH prompt_cache_key and user, matching what the
-      // provider's routing reads. Harmless on providers that ignore both (DeepInfra
-      // did, verified in the GLM cache-key trial), so the var is safe to leave set
-      // if the endpoint is ever repointed.
-      ...(process.env.INFERENCE_CACHE_KEY
-        ? { prompt_cache_key: process.env.INFERENCE_CACHE_KEY, user: process.env.INFERENCE_CACHE_KEY }
-        : {}),
+      ...cacheKeyFields(),
       // No top-level `system` in this format — it is the first message.
       messages: [
         { role: 'system', content: req.system },

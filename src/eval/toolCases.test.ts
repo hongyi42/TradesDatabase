@@ -5,17 +5,38 @@ import { buildToolCases, confirmIdOf, toolsCovered, type CaseContext, type ToolO
 const cases = buildToolCases();
 
 /**
- * The spine's tool names, read out of the server source at test time.
+ * The spine's BADGE-reachable tool names, read out of the server source at test
+ * time.
  *
  * Deliberately derived rather than hardcoded: a hardcoded list would have to be
  * edited by the same person adding a tool, which is exactly when it stops being a
- * check. Read this way, adding a 43rd tool FAILS this test until the eval covers
+ * check. Read this way, adding a 45th tool FAILS this test until the eval covers
  * it — the coverage gate maintains itself.
+ *
+ * TEAM_LEAD_TOOLS is deliberately OUTSIDE this slice (plan 2026-08-19, Phase 1):
+ * those names dispatch only for the `spine:` namespace and are refused to every
+ * badge, so a tier-1 agent case for one could not be written. The slice ends at
+ * that block by NAME rather than at MANAGER_TOOLS, so the exclusion is stated
+ * rather than a side effect of where the declaration happens to sit.
  */
-function spineToolNames(): string[] {
+function namesBetween(startMarker: string, endMarker: string): string[] {
   const src = readFileSync('src/mcp/server.ts', 'utf8');
-  const slice = src.slice(src.indexOf('const TOOLS = ['), src.indexOf('const MANAGER_TOOLS'));
-  return [...slice.matchAll(/^ {4}name: '([a-z_]+)',$/gm)].map((m) => m[1]);
+  const start = src.indexOf(startMarker);
+  const end = src.indexOf(endMarker);
+  // Loud, not silent: a renamed marker makes indexOf return -1, and slice(a, -1)
+  // would quietly return a surface one character short of the truth.
+  if (start < 0) throw new Error(`marker not found in server.ts: ${startMarker}`);
+  if (end <= start) throw new Error(`marker not found after ${startMarker}: ${endMarker}`);
+  return [...src.slice(start, end).matchAll(/^ {4}name: '([a-z_]+)',$/gm)].map((m) => m[1]);
+}
+
+function spineToolNames(): string[] {
+  return namesBetween('const TOOLS = [', "// The TEAM LEAD's own surface");
+}
+
+/** The team lead's own tools — reachable by no badge, and asserted disjoint. */
+function teamLeadToolNames(): string[] {
+  return namesBetween('const TEAM_LEAD_TOOLS = [', 'export const TEAM_LEAD_TOOL_SCHEMAS');
 }
 
 describe('tool cases — the corpus covers the surface', () => {
@@ -36,6 +57,16 @@ describe('tool cases — the corpus covers the surface', () => {
     const real = new Set([...spineToolNames(), 'tools/list']);
     const invented = toolsCovered(cases).filter((n) => !real.has(n));
     expect(invented, `cases referencing non-existent tools: ${invented.join(', ')}`).toEqual([]);
+  });
+
+  it('the team-lead surface is real, and disjoint from the badge surface', () => {
+    const teamLead = teamLeadToolNames();
+    expect(teamLead).toEqual(['spine_read']);
+    // A name in both lists would mean a tool the eval must cover AND a tool no
+    // badge can call — a contradiction, and in practice the sign that spine_read
+    // drifted into TOOLS/ADMIN_TOOLS.
+    const badge = new Set(spineToolNames());
+    expect(teamLead.filter((n) => badge.has(n))).toEqual([]);
   });
 
   it('has unique case ids', () => {

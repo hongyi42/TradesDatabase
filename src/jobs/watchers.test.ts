@@ -7,6 +7,7 @@ import type { Tenant } from '../db/tenants.js';
 import type { Technician } from '../db/technicians.js';
 import {
   MAX_NEW_ITEMS_PER_TENANT_TICK,
+  NUDGE_ESCALATE_HOURS,
   runWatchers,
   type WatcherDeps,
 } from './watchers.js';
@@ -427,7 +428,7 @@ describe('runWatchers', () => {
 
 // Stage 1 (plan 2026-08-15 feature B): the ladder. Rung 1 = ask the
 // technician through their own agent; the manager item becomes the fallback
-// (unreachable tech) and rung 2 (48h silence). Same pure-unit style.
+// (unreachable tech) and rung 2 (silence past the escalation default). Same pure-unit style.
 describe('runWatchers — the ladder (NUDGES_MODE)', () => {
   test("default nudgeMode 'off': rung-1 creation never happens — a reachable tech still gets the manager fallback", async () => {
     const flagged: string[] = [];
@@ -614,7 +615,7 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
           id: 'n-waiting',
           subject_ref: 'a-waiting',
           status: 'asked',
-          asked_at: '2026-08-16T10:00:00.000Z', // 2h ago — nowhere near 48h
+          asked_at: '2026-08-16T10:00:00.000Z', // 2h ago — nowhere near the default
           context: { jobId: 'j6', startsAtLocal: '2026-08-14T07:00:00.000Z' },
         }),
       ],
@@ -640,7 +641,7 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(summary.nudgesEscalated).toBe(0);
   });
 
-  test('rung 2: 48h of silence → ONE manager item with the escalation copy, nudge marked escalated, push fires', async () => {
+  test('rung 2: silence past the default → ONE manager item with the escalation copy, nudge marked escalated, push fires', async () => {
     const flagged: Array<{ suggestion: string; escalatedFromNudge?: string; technicianRef: string | null }> = [];
     const resolved: Array<[string, string]> = [];
     const pushes: string[] = [];
@@ -823,10 +824,22 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
 });
 
 // ── Deadlines as DATA (plan 2026-08-19, Phase 2) ────────────────────────────
-// The 48h constant becomes a DEFAULT, and the planner may stamp a per-row
+// The escalation constant becomes a DEFAULT, and the planner may stamp a per-row
 // escalate_after. The fail-safe is that the safe behaviour lives in the ABSENCE
-// of a stamp: if the planner never runs, every row still escalates on 48h.
+// of a stamp: if the planner never runs, every row still escalates on the
+// constant.
+//
+// Times below are derived FROM the constant, never hardcoded. It moved 48 -> 24
+// on 2026-08-20 and a test pinned to "49h" silently stopped testing the boundary
+// it was named for; a test that bakes in a tunable value stops guarding it the
+// moment somebody tunes it.
 describe('escalate_after: the deadline on the row', () => {
+  // An ask that is `h` hours before NOW.
+  const askedHoursAgo = (h: number): string =>
+    new Date(Date.parse(NOW) - h * 3_600_000).toISOString();
+  const PAST_DUE = askedHoursAgo(NUDGE_ESCALATE_HOURS + 1);
+  const NOT_YET = askedHoursAgo(NUDGE_ESCALATE_HOURS - 1);
+
   const askedNudge = (over: Partial<Nudge>) =>
     nudgeRow({
       id: 'n-timed',
@@ -857,8 +870,8 @@ describe('escalate_after: the deadline on the row', () => {
     return { resolved, summary };
   };
 
-  test('a stamp in the past escalates EARLY — well before the 48h default', async () => {
-    // Asked 1h ago: nowhere near 48h, so only the stamp can be doing this.
+  test('a stamp in the past escalates EARLY — well before the default', async () => {
+    // Asked 1h ago: nowhere near the constant, so only the stamp can do this.
     const { resolved, summary } = await runWith(
       askedNudge({
         asked_at: '2026-08-16T11:00:00.000Z',
@@ -869,11 +882,11 @@ describe('escalate_after: the deadline on the row', () => {
     expect(summary.nudgesEscalated).toBe(1);
   });
 
-  test('a stamp in the future HOLDS — even once the 48h default has passed', async () => {
-    // Asked 49h ago, which would escalate on the constant. The stamp wins.
+  test('a stamp in the future HOLDS — even once the default has passed', async () => {
+    // Past due on the constant, so only the stamp can be holding it back.
     const { resolved, summary } = await runWith(
       askedNudge({
-        asked_at: '2026-08-14T11:00:00.000Z',
+        asked_at: PAST_DUE,
         escalate_after: '2026-08-17T00:00:00.000Z',
       } as Partial<Nudge>),
     );
@@ -881,17 +894,17 @@ describe('escalate_after: the deadline on the row', () => {
     expect(summary.nudgesEscalated).toBe(0);
   });
 
-  test('NO stamp falls back to the 48h constant — the planner never running is safe', async () => {
-    const late = await runWith(askedNudge({ asked_at: '2026-08-14T11:00:00.000Z' })); // 49h
+  test('NO stamp falls back to the constant — the planner never running is safe', async () => {
+    const late = await runWith(askedNudge({ asked_at: PAST_DUE }));
     expect(late.resolved).toEqual([['n-timed', 'escalated']]);
-    const early = await runWith(askedNudge({ asked_at: '2026-08-15T11:00:00.000Z' })); // 25h
+    const early = await runWith(askedNudge({ asked_at: NOT_YET }));
     expect(early.resolved).toEqual([]);
   });
 
   test('a MALFORMED stamp falls back to the constant rather than escalating now or never', async () => {
     const late = await runWith(
       askedNudge({
-        asked_at: '2026-08-14T11:00:00.000Z', // 49h → the constant says escalate
+        asked_at: PAST_DUE, // past the constant → it says escalate
         escalate_after: 'not-a-timestamp',
       } as Partial<Nudge>),
     );
@@ -1348,7 +1361,7 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
     expect(resolved).toEqual([['n-cost', 'cancelled']]);
   });
 
-  test('48h of silence escalates a cost gap to the manager, with COST copy and no visit window', async () => {
+  test('silence past the default escalates a cost gap to the manager, with COST copy and no visit window', async () => {
     const flagged: Array<Record<string, unknown>> = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listNudges: async () => [costNudge({ status: 'asked', asked_at: '2026-08-13T00:00:00.000Z' })],

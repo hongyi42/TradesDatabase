@@ -57,7 +57,7 @@ export interface NudgeQueueDeps {
 // Build one pull's worth of deliveries for a host. Liveness is RE-FILTERED at
 // serve time (constraints 19-20): a technician who went inactive or lost
 // their sandbox between queue and serve is SKIPPED, not failed — a rebind may
-// heal them, and the escalation sweep (48h from asked) never starts because
+// heal them, and the escalation sweep (24h from asked) never starts because
 // the row never reaches 'asked'; the 10-serve cap is what finally moves a
 // never-deliverable row to the manager.
 export async function buildNudgeDelivery(

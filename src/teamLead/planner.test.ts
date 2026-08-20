@@ -10,6 +10,7 @@ import {
   type PlannerDeps,
 } from './planner.js';
 import { SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
+import { NUDGE_DELIVERY_DEADLINE_HOURS } from '../jobs/watchers.js';
 import type { ToolLoopResult } from '../model/toolLoop.js';
 
 // NOW is inside the 7am–7pm UTC ask window for a UTC firm.
@@ -405,12 +406,12 @@ describe('the code rails on what the model returns', () => {
     expect(s.plans[0].dropped[0].why).toContain('already passed');
   });
 
-  test('a hold past the 24h delivery deadline is refused — it would hand the gap over, not hold it', async () => {
+  test('a hold past the delivery deadline is refused — it would hand the gap over, not hold it', async () => {
     const s = await run([
       { nudgeId: 'n1', action: 'hold', notBefore: '2099-01-01T00:00:00Z', confidence: 'high', reason: 'x' },
     ]);
     expect(s.decisions).toBe(0);
-    expect(s.plans[0].dropped[0].why).toContain('past the 24h delivery deadline');
+    expect(s.plans[0].dropped[0].why).toContain(`past the ${NUDGE_DELIVERY_DEADLINE_HOURS}h delivery deadline`);
   });
 
   test('a WHOLLY refused plan comes back as a tool error the model can correct', async () => {

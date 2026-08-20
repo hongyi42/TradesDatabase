@@ -566,7 +566,7 @@ describe('runTeamLeadCompose — not_before', () => {
   test('a MALFORMED hold fails OPEN — a bad stamp must not silence a gap forever', async () => {
     // The opposite choice from escalate_after, deliberately. There the fallback
     // is a deadline that still fires; here a fail-closed reading would hold the
-    // row until the 24h delivery deadline expired it to the manager unasked.
+    // row until the delivery deadline expired it to the manager unasked.
     const { calls, summary } = await runWith(heldNudge('whenever'));
     expect(calls).toEqual(['model']);
     expect(summary.composed).toBe(1);

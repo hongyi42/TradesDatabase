@@ -7,6 +7,7 @@ import type { Tenant } from '../db/tenants.js';
 import type { Technician } from '../db/technicians.js';
 import {
   MAX_NEW_ITEMS_PER_TENANT_TICK,
+  NUDGE_DELIVERY_DEADLINE_HOURS,
   NUDGE_ESCALATE_HOURS,
   runWatchers,
   type WatcherDeps,
@@ -22,6 +23,17 @@ import { JOB_COST_GAP_SPEC, OVERDUE_VISIT_GAP_SPEC, type NudgeKindSpec } from '.
 // items on arrived activity OR on the visit leaving 'confirmed'.
 
 const NOW = '2026-08-16T12:00:00.000Z';
+
+// Times DERIVED from the tunable constants, never hardcoded hours. Both
+// constants moved on 2026-08-20 (escalate 48->24, delivery deadline 24->18) and
+// every test that had baked in "25h" or "22h" either broke or, worse, silently
+// stopped testing the boundary it was named for.
+const hoursBeforeNow = (h: number): string =>
+  new Date(Date.parse(NOW) - h * 3_600_000).toISOString();
+/** Old enough that the delivery deadline has passed. */
+const UNDELIVERED_PAST_DUE = hoursBeforeNow(NUDGE_DELIVERY_DEADLINE_HOURS + 1);
+/** Young enough that the delivery deadline has NOT passed. */
+const UNDELIVERED_YOUNG = hoursBeforeNow(NUDGE_DELIVERY_DEADLINE_HOURS - 1);
 
 const tenant = (timezone: string): Tenant => ({ id: 't1', timezone }) as unknown as Tenant;
 
@@ -697,7 +709,7 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     ]);
   });
 
-  test('delivery deadline (Phase-4 review F1): never-asked rows past 24h hand to the manager with STAGE-0 copy', async () => {
+  test('delivery deadline (Phase-4 review F1): never-asked rows past the deadline hand to the manager with STAGE-0 copy', async () => {
     // A rollback-frozen pending row and a liveness-stuck queued row, both a
     // day old; a young queued row waits. The manager copy must be the plain
     // Stage-0 shape — NEVER "their assistant asked" (the ask never landed).
@@ -718,21 +730,21 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
           id: 'n-frozen-pending',
           subject_ref: 'a-frozen',
           status: 'pending',
-          created_at: '2026-08-15T11:00:00.000Z', // 25h before NOW
+          created_at: UNDELIVERED_PAST_DUE,
           context: quietCtx('j-quiet-1'),
         }),
         nudgeRow({
           id: 'n-stuck-queued',
           subject_ref: 'a-stuck',
           status: 'queued',
-          created_at: '2026-08-15T11:00:00.000Z',
+          created_at: UNDELIVERED_PAST_DUE,
           context: quietCtx('j-quiet-2'),
         }),
         nudgeRow({
           id: 'n-young-queued',
           subject_ref: 'a-young',
           status: 'queued',
-          created_at: '2026-08-15T14:00:00.000Z', // 22h — still inside the deadline
+          created_at: UNDELIVERED_YOUNG,
           context: quietCtx('j-quiet-3'),
         }),
       ],
@@ -926,7 +938,7 @@ describe('escalate_after: the deadline on the row', () => {
         escalate_after: '2026-08-16T00:00:00.000Z', // long past
       } as Partial<Nudge>),
     );
-    // The 24h delivery deadline owns this row, and it was created 2026-08-14 —
+    // The delivery deadline owns this row, and it was created 2026-08-14 —
     // so it EXPIRES to the manager instead. Never 'escalated': the escalation
     // path measures silence AFTER an ask, and no ask ever landed here.
     expect(resolved.map(([, status]) => status)).not.toContain('escalated');

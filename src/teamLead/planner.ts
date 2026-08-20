@@ -285,7 +285,7 @@ const norm = (s: string): string => s.replace(/\s+/g, ' ').trim().toLowerCase();
 export const MIN_CITATION_CHARS = 12;
 export const MIN_CITATION_WORDS = 2;
 
-// How far ahead a hold may reach. Past its 24h delivery deadline a pending row
+// How far ahead a hold may reach. Past its delivery deadline a pending row
 // is handed to the manager as NEVER DELIVERED — so a longer hold does not hold
 // anything, it silently converts the gap into a manager item with copy saying
 // the ask never landed. This is the clamp nudges.not_before's column comment
@@ -417,7 +417,8 @@ export function validateDecisions(
       const ceiling = holdCeilingMs(view.nudge);
       if (at > ceiling) {
         push(
-          `hold past the 24h delivery deadline (${new Date(ceiling).toISOString()}), ` +
+          `hold past the ${NUDGE_DELIVERY_DEADLINE_HOURS}h delivery deadline ` +
+            `(${new Date(ceiling).toISOString()}), ` +
             'which would hand the gap to the manager as never-asked instead of holding it',
         );
         continue;

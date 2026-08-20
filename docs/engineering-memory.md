@@ -349,6 +349,32 @@ feedback signal is **edits, undos and retries**, not thumbs up/down. Lessons als
 everything lands in context, but the tier still has to be recorded or per-firm quirks leak across
 tenants.
 
+**The design framing that came out of it (2026-08-20, user ratified).** Five rules, in the order
+they bite:
+
+- **Push the keys, pull the content.** Injecting literal history into every prompt does not scale;
+  telling the model to "go look" fails when it does not know a fact exists. Keys cannot be guessed,
+  so they are pushed; content is fetched. Proof from this system: the planner searched
+  `customer_name LIKE '%Okafor%'` and burned turns on nothing — the fix was pushing the job id.
+  **You cannot prompt your way to a UUID.** The gap id and job id are already in the prompt;
+  `customer_id` is NOT, so any customer-level memory repeats the trap until it is.
+- **Only accumulate what something can later falsify.** The line between memory and drift. A gap
+  decision has a built-in check (did the hole get filled); a free-form "picture of the customer"
+  has none, so a wrong entry is never corrected and feeds the next tick. "Pays 30+ days late"
+  (money ledger) yes; "the tech seems frustrated" no.
+- **Traces are not memory.** Tool calls and full reasoning are raw traces — the measured-negative
+  thing to feed back. Store them for us (eval, debugging, a future Reflector); the planner reads
+  distilled entries only.
+- **Append-only, never model-rewritten.** ACE's context collapse is exactly a model iteratively
+  rewriting its own accumulated context. Add entries; never edit or delete.
+- **Keep it out of the record.** Agent-inferred memory is the weakest evidence class and must not
+  live in L3 `attributes`, which `get_job` renders to managers as business fact.
+
+**Verified state of tracing, 2026-08-20: there is none.** `runToolLoop` returns `calls[]` (name,
+args, result) and `planner.ts` uses `.length`; the rest is discarded. `recordModelUsage` writes
+COST events only — tenant + technician_ref + sku + tokens, no job, gap or decision. Spine reads
+write no L1 capture. Nothing can point a batch of tool calls at a decision about a job.
+
 ## 3. Environments & infrastructure
 
 ```

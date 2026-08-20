@@ -463,9 +463,35 @@ measurement.
 ## Phase 4: The planner takes the wheel
 
 ### What this phase does
-The same call now writes its decisions. Code still enforces every rail.
+The same call now writes its decisions — and, for the first time, **remembers making them**. Code
+still enforces every rail.
+
+**AMENDED 2026-08-20 (user).** Three additions to the original phase, all arising from watching
+real shadow ticks. Rationale in
+`thoughts/shared/research/2026-08-20-continual-learning-for-the-planner.md`:
+1. **Decisions are persisted**, in shadow *and* live. Today they go to `console.log` and age out
+   of Render's logs, so every tick's experience is discarded. This is the traceability step, and
+   nothing else here (or in the later memory work) is possible without it.
+2. **Applying a decision records what actually happened**, refusals included. A tool that returns
+   `done` teaches nothing; more concretely, it is why `send` on an already-`asked` row would be a
+   silent no-op.
+3. **The planner can reach its own history** — via a tool, not by injecting it. The keys it needs
+   (gap id, job id) are *already* in its prompt, so this is a store plus one prompt line.
+   **push the keys, pull the content.**
 
 ### Changes required
+
+**`supabase/migrations/<ts>_nudge_decisions.sql`** — new table `nudge_decisions`:
+`id`, `tenant_id`, `nudge_id` (FK, cascade), `job_id`, `decided_at`, `mode` (shadow|live),
+`action`, `not_before`, `basis`, `citation`, `confidence`, `reason`,
+`outcome` (`applied` | `refused` | `shadow`), `outcome_detail`.
+- **TRAP (eng-mem §1):** a new table must be named in `scripts/spine-eval/world.mjs` and
+  `scripts/seed.mjs` or it escapes every cleanup cascade.
+- Append-only in spirit: rows are inserted, never edited. One row per decision per tick.
+
+**`src/db/nudgeDecisions.ts`** (new) — `recordDecisions()`, and
+`listDecisionsForNudges(tenantId, nudgeIds)` / `listDecisionsForJob(tenantId, jobId)`.
+Paged and chunked (the PostgREST 1000-row cap discipline).
 
 **`src/teamLead/planner.ts`**
 - In `live`, apply decisions: `setNudgeSchedule` for `send`/`hold`; `markNudgeOutcome('answered')`
@@ -473,30 +499,66 @@ The same call now writes its decisions. Code still enforces every rail.
 - **`escalate` writes `escalate_after = now` and lets the SWEEP escalate** (self-review fix).
   Escalating directly would be a second escalation path re-implementing the rung-2 flag and the
   orphan doctrine beside the one at `watchers.ts:579-616`. One path, reached two ways.
-- **Rails, all code-side, applied to every decision before it lands:**
-  - `escalate` and `close` go through the existing handoff/resolve helpers — the orphan doctrine
-    is not re-implemented
-  - `notBefore` is clamped so it can never push a row past its 24h delivery deadline
-  - a decision naming an unknown or already-terminal `nudgeId` is dropped and logged
-  - a whole-call failure leaves every row untouched — the sweep's constants still apply
+- **`send` on a row that is already `asked` is REFUSED**, with `outcome_detail` saying so — not
+  applied, not silent. `send` stays correct on `pending` rows. (There is no re-ask action; see
+  Not in scope.)
+- **Every decision is recorded** with its outcome, in both modes. In `shadow` the outcome is
+  `shadow` and nothing is written to `nudges`.
+- **Rails, all code-side, applied to every decision before it lands:** unchanged from the original
+  phase — handoff/resolve helpers reused, `notBefore` clamped inside the delivery deadline,
+  unknown/terminal `nudgeId` dropped and logged, a whole-call failure leaves every row untouched.
+- **Gap block gains ONE line** when a history exists:
+  `prior decisions: 3 (last: escalate, 0.5h ago)`. Existence only — the detail is pulled. This is
+  the one fact that must never be missed, so it is pushed rather than left to a lookup.
 
-**`src/jobs/lifecycle.ts`**
-- `PLANNER_MODE=live` applies decisions; the summary gains per-action counts.
+**`src/mcp/server.ts`** — a second entry in `TEAM_LEAD_TOOLS`: `recall_decisions`, taking a gap id
+or job id and returning that history as shaped rows (no SQL for the model to get wrong).
+- Gated automatically: `TEAM_LEAD_ONLY_TOOL_NAMES` is derived from the array, so it dispatches for
+  `spine:` and nothing else the day it is added.
+- **Deliberately NOT a ninth spine view.** `SPINE_VIEW_CATALOG` is shared by `query_spine`
+  (managers) and `spine_read` — adding it there would hand managers the planner's deliberations.
+
+**`src/teamLead/plannerPrompt.ts`** — a short block: the history exists, it is keyed by the gap and
+job ids already in front of you, consult it before repeating yourself or escalating.
+
+**`src/jobs/lifecycle.ts`** — `PLANNER_MODE=live` applies decisions; the summary gains per-action
+counts.
+
+### Not in scope (deliberate)
+- **A re-ask verb.** With no lifetime ask counter on the row, and the escalation clock keyed
+  `escalate_after ?? asked_at + NUDGE_ESCALATE_HOURS`, a re-ask that bumps `asked_at` would reset
+  escalation every tick — spam *and* a gap that never reaches the manager. Needs a code-side
+  counter and ceiling first (the two-touch ceiling survives as doctrine with nothing to bind to).
+- **A brake on `escalate`.** The planner whiplashed send→escalate in shadow, but escalation hands
+  the gap to a *human* and the manager can dismiss it — it is the safe direction. The costly
+  irreversible action is `close`, already guarded by the citation requirement. Adding an ad-hoc
+  guard without measurement would be guessing.
+- **Pushing `customer_id`**, cross-gap or cross-firm memory, insight distillation (the Reflector),
+  and a planner eval. All belong to the separate RPI cycle on the memory framing.
 
 ### Automated verification
 - [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass
 - [ ] new test: `close` without a citation is refused in code even if the model returns one
-- [ ] new test: `notBefore` beyond the 24h deadline is clamped, not honoured
+- [ ] new test: `notBefore` beyond the delivery deadline is clamped, not honoured
 - [ ] new test: a decision for an already-`answered` row is dropped, not applied
+- [ ] new test: `send` on an already-`asked` row is refused and RECORDED with a reason
 - [ ] new test: a thrown planner call leaves all rows unchanged and the sweep still escalates on
       defaults
-- [ ] mutation check: disabling the clamp makes its test fail
+- [ ] new test: decisions are recorded in `shadow` with `outcome='shadow'` and NOTHING is written
+      to `nudges`
+- [ ] new test: the gap block shows `prior decisions: N` only when a history exists
+- [ ] new test: `recall_decisions` dispatches for `spine:team-lead` and is refused for a
+      technician and a manager badge
+- [ ] mutation check: disabling the clamp makes its test fail; disabling the `send`-on-asked
+      refusal makes its test fail
 
 ### Live verification (agent-executable)
 - Prerequisites: `render` + `supabase-test` MCP; `PLANNER_MODE=live`; a staged gap on the pilot
 - [ ] one gap is held then sent, and `nudges.not_before` shows the planner's stamp
 - [ ] one asked gap is closed with a citation; read back `resolution` and confirm it quotes real
       evidence that exists in `raw_captures`/`visits`
+- [ ] `nudge_decisions` holds one row per decision with a truthful `outcome`
+- [ ] a second tick shows the planner either citing or fetching its own prior decision
 - [ ] judge by the session **trajectory**, never CLI stdout (Stage 1's rotting-stdout trap)
 
 ### Manual verification

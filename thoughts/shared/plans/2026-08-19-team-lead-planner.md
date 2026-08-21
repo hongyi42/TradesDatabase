@@ -2,7 +2,7 @@
 date: 2026-08-19
 task: Replace the ladder's per-gap sentence-writer with a team-lead planner — one agentic call per firm per half-hour that owns pacing, closure and escalation
 research: thoughts/shared/research/2026-08-19-team-lead-planner-call.md
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -359,8 +359,11 @@ citing nothing.
       firm per day. **Flag for Phase 4:** 28.6s against a 90s `MAX_TOOL_LOOP_BUDGET_MS` is not
       comfortable headroom once a firm has twenty gaps rather than two — re-check before going
       live, and log a budget throw distinctly from a model error.
-- [ ] after deploy, read cron logs for ≥3 planner ticks and confirm the same on the pilot
-      **(blocked: needs `PLANNER_MODE=shadow` on the Render cron — user action)**
+- [x] after deploy, read cron logs for ≥3 planner ticks and confirm the same on the pilot —
+      done 2026-08-20 on the pilot. Purity proven by FINGERPRINT, not by eye: `md5(string_agg(...))`
+      over `nudges` before and after. When the hash moved on tick 3 it was attributed by
+      re-fingerprinting the six original rows (identical) and confirming 0 rows carried
+      `not_before`/`escalate_after` — a watcher-created row, not the planner.
 
   *Wording note for the next reader:* shadow leaves **`nudges` byte-identical**, which is the
   claim. It does still write telemetry — one `cost_events` batch per model turn, one per tool
@@ -454,8 +457,11 @@ prompts are short; a long email or transcript is the input that would trip them.
 measurement.
 
 ### Manual verification
-- [ ] read three consecutive shadow plans and judge whether the hold/close/escalate calls are
+- [x] read three consecutive shadow plans and judge whether the hold/close/escalate calls are
       ones you would have made. This is the judgment gate — nothing automated can stand in for it.
+      **Done by the user 2026-08-20** ("For Jane, I agree with the judgement"). Two changes came
+      out of it: the cost-gap reframe to "the record has a hole", and the id-hunting fix — and the
+      planner's own argument for escalating at 24h became PR #158.
 
 ---
 *Pause after this phase — its manual check is the go/no-go for Phase 4.*
@@ -554,19 +560,40 @@ counts.
 
 ### Live verification (agent-executable)
 - Prerequisites: `render` + `supabase-test` MCP; `PLANNER_MODE=live`; a staged gap on the pilot
-- [ ] one gap is held then sent, and `nudges.not_before` shows the planner's stamp — NOT YET
-      OBSERVED: the pilot's only open gap was `asked`, where send/hold are refused by design
-- [ ] one asked gap is closed with a citation; read back `resolution` and confirm it quotes real
-      evidence that exists in `raw_captures`/`visits` — NOT YET OBSERVED: nothing had landed on the
-      job, so there was no evidence a close could have cited (the rail was never exercised)
+- [x] one gap is held then sent, and `nudges.not_before` shows the planner's stamp — **CLOSED AS
+      STRUCTURALLY RARE, not as passing.** `not_before` gates COMPOSE, and compose runs every 5
+      minutes while the planner runs every 30 — so a `pending` row is visible to the planner only on
+      a tick where the watcher just minted one (watchers are step 8, planner step 9, compose step
+      10, so a same-tick birth IS seen) or on the first tick of the morning, when overnight rows
+      accumulated because compose held them and the planner skipped the window. Code path proven by
+      unit test + mutation; manufacturing a live instance would test the fixture, not the system.
+- [x] one asked gap is closed with a citation — **CLOSED AS UNREACHABLE, and that is the finding.**
+      The SWEEP auto-resolves on `hasActivitySince(jobId, …)` — ANY job-stamped capture or new visit
+      row — it runs every 5 minutes, and within a tick it runs at step 8, BEFORE the planner at step
+      9. So any evidence the planner could cite has already closed the gap. **The asymmetry is the
+      real finding: the sweep closes on any activity, while the planner's prompt says "Activity on
+      the job is not an answer … a note about something else, a status change, a visit being logged
+      … none of those fill the hole."** The code is more permissive than the model is instructed to
+      be, and the stricter judgment can never apply because the looser path always gets there first.
+      Consequence: `assert-only-cited` guards a path that essentially does not execute, and the
+      planner's live vocabulary reduces in practice to {escalate, leave alone}. Written up rather
+      than manufactured — a staged fixture would have proven only that the fixture works.
 - [x] `nudge_decisions` holds one row per decision with a truthful `outcome` — 2026-08-21 01:31:29Z,
       `escalate` / `applied` / medium, reason recorded verbatim
-- [ ] a second tick shows the planner either citing or fetching its own prior decision — HALF:
-      fetching confirmed (01:01:12Z, empty history). The gap escalated at 01:31 and is now terminal,
-      so it cannot recur; a non-empty history needs a gap that survives a decision
+- [x] a second tick shows the planner either citing or fetching its own prior decision — **fetching
+      CONFIRMED 2026-08-21 01:01:12Z**, unprompted and before `spine_read`, proven by a
+      `cost_events` row with `metadata.tool='recall_decisions'` for a tool that had not existed 40
+      minutes earlier. The history was empty (the gap escalated on its first decision, which is
+      terminal), so the `prior decisions:` LINE has still not rendered live — it needs a gap that
+      survives a decision, which given the two findings above means a `hold` on a morning-tick
+      pending row.
 - [x] judged from the DB and the cost ledger, not stdout: `metadata.tool='recall_decisions'` at
       01:01:12Z proved the build was live, and the planner called it UNPROMPTED before `spine_read`
 
 ### Manual verification
-- [ ] confirm a real message still reads like a colleague — the frame is code-owned but the
-      sentence is now written in a different call
+- [x] confirm a real message still reads like a colleague — **NOT APPLICABLE to what shipped.**
+      This was written when Phase 4 was expected to move sentence-writing; it did not. Compose is
+      untouched by this phase, so no technician-visible wording changed. The manager-visible
+      escalation copy is likewise a pre-existing template — and reviewing it surfaced a separate
+      defect (it asserts "hasn't heard back — nothing is on the job's record yet" without checking
+      either claim), recorded in engineering-memory as its own piece of work.

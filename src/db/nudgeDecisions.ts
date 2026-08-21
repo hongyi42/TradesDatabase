@@ -26,6 +26,22 @@ export interface NudgeDecisionInput {
 const CHUNK = 500;
 const PAGE = 1000;
 
+// `job_id` is a uuid column with no FK, and the insert is one statement per
+// chunk — PostgREST has no partial insert, so ONE malformed id would reject the
+// whole batch and lose up to 500 decisions. The corpus is the entire point of
+// this table, so a bad id costs its own job-keyed recall and nothing else, and
+// says so loudly rather than taking the batch down with it.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function safeJobId(jobId: string | null | undefined, nudgeId: string): string | null {
+  if (!jobId) return null;
+  if (UUID_RE.test(jobId)) return jobId;
+  console.error(
+    `[nudgeDecisions] nudge ${nudgeId} carries a non-uuid jobId (${jobId}) — recording the ` +
+      'decision without it. Its context is malformed upstream.',
+  );
+  return null;
+}
+
 /**
  * Append the tick's decisions. Insert-only — these rows are never updated (see
  * the migration header: the history is read back into the model's context, and
@@ -41,7 +57,7 @@ export async function recordNudgeDecisions(inputs: NudgeDecisionInput[]): Promis
     const rows = inputs.slice(i, i + CHUNK).map((d) => ({
       tenant_id: d.tenantId,
       nudge_id: d.nudgeId,
-      job_id: d.jobId ?? null,
+      job_id: safeJobId(d.jobId, d.nudgeId),
       mode: d.mode,
       action: d.action,
       not_before: d.notBefore ?? null,

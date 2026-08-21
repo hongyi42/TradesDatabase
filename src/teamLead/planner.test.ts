@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from '../db/client.js';
 import { createPendingNudge, listNudgesByStatus } from '../db/nudges.js';
+import { recordNudgeDecisions } from '../db/nudgeDecisions.js';
 import type { Nudge, NudgeDecision, Tenant, JobEvidenceRow, RawCapture } from '../db/index.js';
 import {
   EVIDENCE_PER_GAP,
@@ -11,7 +12,7 @@ import {
 } from './planner.js';
 import { SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
 import { NUDGE_DELIVERY_DEADLINE_HOURS } from '../jobs/watchers.js';
-import type { ToolLoopResult } from '../model/toolLoop.js';
+import { ToolLoopLimitError, type ToolLoopResult } from '../model/toolLoop.js';
 
 // NOW is inside the 7am–7pm UTC ask window for a UTC firm.
 const NOW = '2026-08-16T12:00:00.000Z';
@@ -833,6 +834,33 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     expect(s.plans[0].dropped[0].why).toContain('not in this plan');
   });
 
+  // Phase-3 flagged this for Phase 4: at two gaps the planner used 28.6s of a 90s
+  // budget, so a twenty-gap firm will hit the ceiling — and in the logs that
+  // would look exactly like a provider outage. The two need opposite responses,
+  // so they must never read the same.
+  test('a LIMIT hit is counted and logged apart from a model failure', async () => {
+    const throwing = (err: Error) =>
+      runPlanner(NOW, 'live', baseDeps({
+        runLoop: (async () => {
+          throw err;
+        }) as unknown as NonNullable<PlannerDeps['runLoop']>,
+      }));
+
+    const budget = await throwing(
+      new ToolLoopLimitError('budget', 'teamLeadPlanner: tool loop exceeded its 90000ms budget'),
+    );
+    expect(budget.limitHits).toEqual({ budget: 1, turns: 0 });
+
+    const turns = await throwing(new ToolLoopLimitError('turns', 'teamLeadPlanner: turn ceiling'));
+    expect(turns.limitHits).toEqual({ budget: 0, turns: 1 });
+
+    // A provider failure must NOT land in either bucket...
+    const provider = await throwing(new Error('502 from the inference gateway'));
+    expect(provider.limitHits).toEqual({ budget: 0, turns: 0 });
+    // ...but every one of them still trips the existing alarm.
+    for (const s of [budget, turns, provider]) expect(s.tenantErrors).toBe(1);
+  });
+
   // The fail-safe the whole design rests on: a dead planner degrades to exactly
   // the behaviour that shipped before it existed, because the sweep's constants
   // still apply to rows nobody touched.
@@ -964,5 +992,39 @@ describe('shadow mode leaves the database untouched', () => {
     expect(logged.rows.every((r) => r.outcome === 'shadow' && r.mode === 'shadow')).toBe(true);
     // Denormalised so history can be recalled by JOB, not only by gap.
     expect(logged.rows.every((r) => r.job_id === jobId)).toBe(true);
+  });
+
+  // `job_id` is a uuid column and the insert is ONE statement per chunk —
+  // PostgREST has no partial insert, so a single malformed id would reject up to
+  // 500 decisions. The corpus is what this table exists for, so a bad id must
+  // cost its own job-keyed recall and nothing else.
+  test('a malformed jobId costs that row its job recall, not the whole batch', async () => {
+    const n = await createPendingNudge({
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef: 'asg-badjob',
+      technicianId: techId,
+      context: { jobId: 'not-a-uuid' },
+    });
+    if (!n) throw new Error('fixture nudge was not created');
+    const good = '33333333-3333-3333-3333-333333333333';
+
+    const written = await recordNudgeDecisions([
+      { tenantId, nudgeId: n.id, jobId: 'not-a-uuid', mode: 'shadow', action: 'hold',
+        confidence: 'low', reason: 'malformed', outcome: 'shadow' },
+      { tenantId, nudgeId: n.id, jobId: good, mode: 'shadow', action: 'escalate',
+        confidence: 'low', reason: 'fine', outcome: 'shadow' },
+    ]);
+
+    // BOTH rows land — the batch was not rejected.
+    expect(written).toBe(2);
+    const rows = await pg.query<{ action: string; job_id: string | null }>(
+      'select action, job_id from nudge_decisions where nudge_id = $1 order by action',
+      [n.id],
+    );
+    expect(rows.rows).toEqual([
+      { action: 'escalate', job_id: good },
+      { action: 'hold', job_id: null }, // dropped, loudly, rather than throwing
+    ]);
   });
 });

@@ -14,7 +14,7 @@ import {
   type NudgeDecision,
   type NudgeDecisionInput,
 } from '../db/index.js';
-import { runToolLoop } from '../model/toolLoop.js';
+import { runToolLoop, ToolLoopLimitError, type ToolLoopLimit } from '../model/toolLoop.js';
 import type { ForcedToolSpec } from '../model/forcedTool.js';
 import { NUDGE_KIND_SPECS, specFor, type NudgeKindSpec } from '../jobs/nudgeKinds.js';
 import { insideAskWindow } from './compose.js';
@@ -102,6 +102,13 @@ export interface PlannerSummary {
   refusedAtApply: number; // accepted by the rails, then refused by the write
   recorded: number; // rows written to nudge_decisions
   tenantErrors: number;
+  // Tenants whose call died on the LOOP's own limits rather than on the model
+  // or the provider. Counted apart because the two need opposite responses: a
+  // provider error is waited out, a limit hit means the work stopped fitting —
+  // twenty gaps in a firm that used to have two — and the ceiling or the
+  // batching has to change. Rolled into tenantErrors as well, so the existing
+  // ok=false alarm still fires.
+  limitHits: Record<ToolLoopLimit, number>;
   byAction: Record<string, number>;
   plans: PlannerTenantPlan[];
 }
@@ -622,6 +629,7 @@ export async function runPlanner(
     refusedAtApply: 0,
     recorded: 0,
     tenantErrors: 0,
+    limitHits: { budget: 0, turns: 0 },
     byAction: {},
     plans: [],
   };
@@ -890,7 +898,17 @@ export async function runPlanner(
       // untouched: the sweep's constants still apply, so a dead planner degrades
       // to exactly the behaviour that shipped before it existed.
       summary.tenantErrors += 1;
-      console.error(`[planner] tenant ${tenantId} failed`, err);
+      if (err instanceof ToolLoopLimitError) {
+        summary.limitHits[err.limit] += 1;
+        // Said loudly and in different words on purpose: this firm's plan did
+        // not fit, which is a CAPACITY fact about the queue, not an outage.
+        console.error(
+          `[planner] tenant ${tenantId} hit the loop's ${err.limit} limit — the work no longer ` +
+            `fits, this is NOT a model or provider failure: ${err.message}`,
+        );
+      } else {
+        console.error(`[planner] tenant ${tenantId} failed`, err);
+      }
     }
   }
   return summary;

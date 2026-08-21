@@ -16,7 +16,7 @@ import {
   MAX_TOOL_RESULT_CHARS,
   runToolLoop,
   type ToolExecutor,
-} from './toolLoop.js';
+  ToolLoopLimitError,} from './toolLoop.js';
 import type { ForcedToolSpec } from './forcedTool.js';
 import type { recordModelUsage } from '../db/index.js';
 
@@ -175,6 +175,42 @@ describe('runToolLoop', () => {
     expect(MAX_TOOL_LOOP_TURNS).toBe(8);
     expect(execute).toHaveBeenCalledTimes(8);
     expect(recordUsage).toHaveBeenCalledTimes(8);
+  });
+
+  // The TYPE is the contract, not the message text. A caller has to tell "the
+  // work stopped fitting" from "the provider fell over" — they need opposite
+  // responses — and matching on a message string breaks the moment somebody
+  // rewords it.
+  test('both self-imposed limits throw a TYPED error carrying which limit it was', async () => {
+    serve(toolCallBody('spine_read', { sql: 'select 1' })); // repeats forever
+    const run = (over: Record<string, unknown>) =>
+      runToolLoop(
+        { system: 's', user: 'u', maxTokens: 128, label: 'planner', ...over },
+        [READ_TOOL],
+        vi.fn(async () => []),
+        undefined,
+        { recordUsage: vi.fn(async () => {}) },
+      );
+
+    await expect(run({ maxTurns: 1 })).rejects.toMatchObject({
+      name: 'ToolLoopLimitError',
+      limit: 'turns',
+    });
+    await expect(run({ maxTurns: 1 })).rejects.toBeInstanceOf(ToolLoopLimitError);
+
+    // budgetMs 1 with a tool that outlives it: the between-turn check fires.
+    await expect(
+      runToolLoop(
+        { system: 's', user: 'u', maxTokens: 128, label: 'planner', budgetMs: 1 },
+        [READ_TOOL],
+        vi.fn(async () => {
+          await new Promise((r) => setTimeout(r, 10));
+          return [];
+        }),
+        undefined,
+        { recordUsage: vi.fn(async () => {}) },
+      ),
+    ).rejects.toMatchObject({ name: 'ToolLoopLimitError', limit: 'budget' });
   });
 
   test('maxTurns is caller-overridable and still throws rather than returning partial work', async () => {

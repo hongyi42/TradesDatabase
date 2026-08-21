@@ -554,12 +554,18 @@ counts.
 
 ### Live verification (agent-executable)
 - Prerequisites: `render` + `supabase-test` MCP; `PLANNER_MODE=live`; a staged gap on the pilot
-- [ ] one gap is held then sent, and `nudges.not_before` shows the planner's stamp
+- [ ] one gap is held then sent, and `nudges.not_before` shows the planner's stamp — NOT YET
+      OBSERVED: the pilot's only open gap was `asked`, where send/hold are refused by design
 - [ ] one asked gap is closed with a citation; read back `resolution` and confirm it quotes real
-      evidence that exists in `raw_captures`/`visits`
-- [ ] `nudge_decisions` holds one row per decision with a truthful `outcome`
-- [ ] a second tick shows the planner either citing or fetching its own prior decision
-- [ ] judge by the session **trajectory**, never CLI stdout (Stage 1's rotting-stdout trap)
+      evidence that exists in `raw_captures`/`visits` — NOT YET OBSERVED: nothing had landed on the
+      job, so there was no evidence a close could have cited (the rail was never exercised)
+- [x] `nudge_decisions` holds one row per decision with a truthful `outcome` — 2026-08-21 01:31:29Z,
+      `escalate` / `applied` / medium, reason recorded verbatim
+- [ ] a second tick shows the planner either citing or fetching its own prior decision — HALF:
+      fetching confirmed (01:01:12Z, empty history). The gap escalated at 01:31 and is now terminal,
+      so it cannot recur; a non-empty history needs a gap that survives a decision
+- [x] judged from the DB and the cost ledger, not stdout: `metadata.tool='recall_decisions'` at
+      01:01:12Z proved the build was live, and the planner called it UNPROMPTED before `spine_read`
 
 ### Manual verification
 - [ ] confirm a real message still reads like a colleague — the frame is code-owned but the

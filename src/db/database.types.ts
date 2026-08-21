@@ -811,6 +811,72 @@ export type Database = {
           },
         ]
       }
+      nudge_decisions: {
+        Row: {
+          action: string
+          basis: string | null
+          citation: string | null
+          confidence: string
+          decided_at: string
+          id: string
+          job_id: string | null
+          mode: string
+          not_before: string | null
+          nudge_id: string
+          outcome: string
+          outcome_detail: string | null
+          reason: string
+          tenant_id: string
+        }
+        Insert: {
+          action: string
+          basis?: string | null
+          citation?: string | null
+          confidence: string
+          decided_at?: string
+          id?: string
+          job_id?: string | null
+          mode: string
+          not_before?: string | null
+          nudge_id: string
+          outcome: string
+          outcome_detail?: string | null
+          reason?: string
+          tenant_id: string
+        }
+        Update: {
+          action?: string
+          basis?: string | null
+          citation?: string | null
+          confidence?: string
+          decided_at?: string
+          id?: string
+          job_id?: string | null
+          mode?: string
+          not_before?: string | null
+          nudge_id?: string
+          outcome?: string
+          outcome_detail?: string | null
+          reason?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "nudge_decisions_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: false
+            referencedRelation: "nudges"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "nudge_decisions_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       nudges: {
         Row: {
           actor_ref: string

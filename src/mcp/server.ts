@@ -183,6 +183,8 @@ import {
   listUnassignedAssignments,
   listUnplacedForRange,
   listJobsWithCustomerByIds,
+  listDecisionsForNudge,
+  listDecisionsForJob,
   type PromiseLevel,
 } from '../db/index.js';
 import { braveWebSearch } from '../web/braveSearch.js';
@@ -1652,6 +1654,32 @@ const TEAM_LEAD_TOOLS = [
       required: ['sql'],
     },
   },
+  {
+    name: 'recall_decisions',
+    description:
+      'YOUR OWN DECISION HISTORY: what you have already decided about a gap, and what the system ' +
+      'actually did with it. You do not remember previous runs — this table is the only record ' +
+      'that you ran at all, so consult it before repeating yourself, and always before escalating ' +
+      '(escalating hands the gap to a person and cannot be taken back). ' +
+      'Call it with gapId — the id printed after "gap" in your list — or with jobId, the id ' +
+      'printed as "job id". Never a customer or job NAME; this takes ids only. jobId returns every ' +
+      'gap on that job, which is how you see the whole story of one piece of work. ' +
+      'Each row says what you chose, why you chose it, and the OUTCOME: "applied" (it happened), ' +
+      '"refused" (a rule rejected it — outcomeDetail says which, and repeating it will fail the ' +
+      'same way), or "shadow" (recorded only; nothing was done to the gap). ' +
+      'No rows is an ANSWER, not a failure: it means you have not decided about this before.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        gapId: { type: 'string', description: 'A gap id, copied exactly from your list.' },
+        jobId: {
+          type: 'string',
+          description: "A job id, copied exactly from a gap's `job id` line.",
+        },
+        limit: { type: 'number', description: 'Row cap, default 20 by gap / 40 by job, max 200.' },
+      },
+    },
+  },
 ];
 
 // Handed to the team-lead loop as its tool schemas. Exported (the array itself is
@@ -2040,7 +2068,15 @@ async function dispatch(
   // its own audit trail); a technician gets the same refusal, so guessing the
   // name buys nothing. Deny-by-default in the other direction.
   if (TEAM_LEAD_ONLY_TOOL_NAMES.has(name) && !identity.technicianRef.startsWith('spine:')) {
-    throw new Error(`${name} is the team lead's own tool — managers use query_spine`);
+    // The pointer to query_spine belongs to spine_read alone. recall_decisions
+    // has no manager equivalent ON PURPOSE — it holds the planner's own
+    // deliberations, which are not a manager's business — so naming one would be
+    // a lie about what exists.
+    throw new Error(
+      name === 'spine_read'
+        ? `${name} is the team lead's own tool — managers use query_spine`
+        : `${name} is the team lead's own tool`,
+    );
   }
   // The real tier gate (the tools/list filter is cosmetic): applied by tool
   // NAME so no admin case can be added without it.
@@ -5030,6 +5066,43 @@ async function dispatch(
                 'Tell the person the list is partial; do not present it as complete.',
             }
           : {}),
+      };
+    }
+    // The team lead's own memory (plan 2026-08-19, Phase 4). Gated by
+    // TEAM_LEAD_ONLY_TOOL_NAMES above, so it dispatches for the `spine:`
+    // namespace and nothing else. Deliberately NOT a ninth spine view:
+    // SPINE_VIEW_CATALOG is shared by query_spine, so a view would hand every
+    // manager the planner's deliberations.
+    case 'recall_decisions': {
+      const gapId = str('gapId');
+      const jobId = str('jobId');
+      if (!gapId && !jobId) throw new Error('pass gapId or jobId (ids only, never a name)');
+      if (gapId && jobId) throw new Error('pass gapId OR jobId, not both');
+      const limit = typeof args.limit === 'number' ? args.limit : undefined;
+      const rows = gapId
+        ? await listDecisionsForNudge(tenantId, gapId, limit ?? 20)
+        : await listDecisionsForJob(tenantId, jobId as string, limit ?? 40);
+      return {
+        status: 'ok',
+        rowCount: rows.length,
+        // Absence is an answer here, and saying so beats an empty array the
+        // model may read as a failed lookup and retry.
+        ...(rows.length === 0
+          ? { note: 'No decisions recorded — you have not decided about this before.' }
+          : {}),
+        decisions: rows.map((r) => ({
+          gapId: r.nudge_id,
+          jobId: r.job_id,
+          decidedAt: r.decided_at,
+          action: r.action,
+          notBefore: r.not_before,
+          basis: r.basis,
+          citation: r.citation,
+          confidence: r.confidence,
+          reason: r.reason,
+          outcome: r.outcome,
+          outcomeDetail: r.outcome_detail,
+        })),
       };
     }
     case 'get_availability': {

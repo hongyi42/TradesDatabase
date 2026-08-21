@@ -7651,6 +7651,53 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     expect(tech.text).toContain("team lead's own tool");
   });
 
+  // ── recall_decisions: the team lead's own memory (Phase 4) ────────────────
+  // Added to TEAM_LEAD_TOOLS *and* TEAM_LEAD_TOOL_NAMES. The allowlist is
+  // deny-by-default, so a tool present in one list and missing from the other is
+  // simply dead — the exact shape query_spine was in before it was removed.
+
+  test('recall_decisions dispatches for spine:team-lead, and says so when there is nothing', async () => {
+    const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+    try {
+      const res = await callWith('recall_decisions', {
+        gapId: '11111111-2222-3333-4444-555555555555',
+      });
+      expect(res.isError).toBe(false);
+      expect(res.data.status).toBe('ok');
+      expect(res.data.rowCount).toBe(0);
+      // Absence is an ANSWER. An empty array alone reads as a failed lookup and
+      // the model retries it.
+      expect(res.data.note).toContain('have not decided about this before');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('recall_decisions takes ids only — it refuses an empty call rather than browsing', async () => {
+    const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+    try {
+      const res = await callWith('recall_decisions', {});
+      expect(res.isError).toBe(true);
+      expect(res.text).toContain('ids only, never a name');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('recall_decisions is refused to managers and technicians — the planner deliberations are not theirs', async () => {
+    const mgrC = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const res = await mgrC.callWith('recall_decisions', { gapId: 'x' });
+      expect(res.isError).toBe(true);
+      expect(res.text).toContain("team lead's own tool");
+    } finally {
+      await mgrC.client.close();
+    }
+    const tech = await call('recall_decisions', { gapId: 'x' });
+    expect(tech.isError).toBe(true);
+    expect(tech.text).toContain("team lead's own tool");
+  });
+
   test('query_spine is now refused to the team lead — the dead allowlist entry is gone', async () => {
     const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
     try {
@@ -7668,7 +7715,7 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
   // dropped `+` term would strip a rule with the suite still green — this pins
   // the ones that cost incidents.
   test('the spine_read schema carries the view catalog and the date doctrine', () => {
-    expect(TEAM_LEAD_TOOL_SCHEMAS.map((t) => t.name)).toEqual(['spine_read']);
+    expect(TEAM_LEAD_TOOL_SCHEMAS.map((t) => t.name)).toEqual(['spine_read', 'recall_decisions']);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
     // the catalog
     expect(desc).toContain('eight views');

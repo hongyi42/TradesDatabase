@@ -299,6 +299,36 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   never `--agent main`). Candidate medic v3 (recorded, not built): probe with a real 1-token
   completion under a ~30s timeout so completion stalls trip the nvidia-prod failover.
 
+### The sweep is more permissive than the planner is instructed to be (2026-08-21)
+
+Found while closing out Phase 4, and it makes two of the planner's four actions
+near-unreachable in production.
+
+**Ordering.** In one lifecycle run: watchers+sweep (step 8) → planner (step 9) → compose (step 10).
+The cron is `*/5`; the planner self-gates to `%30 < 5`. So the sweep sees everything six times more
+often than the planner does, and beats it within a tick.
+
+**`close` is unreachable.** The sweep auto-resolves on `hasActivitySince(jobId, …)` — ANY
+job-stamped capture or new visit row. Any evidence the planner could cite has therefore already
+closed the gap. **And the two disagree about what counts:** the sweep closes on any activity, while
+the planner's prompt says *"Activity on the job is not an answer: a note about something else, a
+status change, a visit being logged, or somebody promising to write it up later — none of those
+fill the hole."* The code is looser than the model's instruction, and the stricter judgment can
+never apply because the looser path always arrives first. Consequence: `assert-only-cited` guards a
+path that essentially does not execute, and gaps close on activity that may not answer the
+question — the exact failure the prompt warns against.
+
+**`send`/`hold` are rare.** Both write `not_before`, which gates COMPOSE only. Compose drains
+pending rows every 5 minutes, so a `pending` row is visible to the planner only on a tick where the
+watcher just minted one (same-tick birth IS seen, given the step ordering) or on the first tick of
+the morning, when overnight rows accumulated because compose held them and the planner skipped the
+ask window.
+
+**So the planner's LIVE vocabulary is in practice {escalate, leave alone}** — which matches the only
+live decision observed so far. Worth confirming against a fuller `nudge_decisions` corpus before
+treating it as settled, and worth remembering before anyone tunes the planner's judgment about
+closure: today that judgment mostly cannot reach the row.
+
 ### The planner's first live decision, and how we proved the deploy (2026-08-21)
 
 **Phase 4 ran end to end in production at 01:31:29Z.** Gap `4bd956ea` (Radiant heat check), asked

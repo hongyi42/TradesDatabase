@@ -47,7 +47,7 @@ export function AddSeatModal({
   }, [onClose]);
 
   const handle = name.trim().toLowerCase().split(/\s+/)[0] || 'tech';
-  const suggestedBot = `harrow_${handle}_bot`;
+  const suggestedBot = `brandt_${handle}_bot`;
   const unit = PRICE_CENTS[tier];
   const proratedCents = prorate(unit, DAYS_LEFT, DAYS_IN_MONTH);
 

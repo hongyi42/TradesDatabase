@@ -112,7 +112,7 @@ export function SignIn({ onBack }: { onBack: () => void }) {
                   type="email"
                   required
                   autoComplete="email"
-                  placeholder="you@company.co.uk"
+                  placeholder="you@company.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   style={inputStyle}
@@ -183,7 +183,7 @@ export function SignIn({ onBack }: { onBack: () => void }) {
             color: 'oklch(0.7 0.01 250)',
           }}
         >
-          Ray Harrow · Harrow Brothers Electrical · 8 seats
+          Ray Brandt · Brandt Electric · 8 seats
         </p>
       </div>
     </div>

@@ -1,23 +1,39 @@
 # Design — customer account portal
 
-The approved design for the customer-facing portal (`/portal`, source in `web/portal/`),
-kept here so the implementation can be checked against its brief without hunting for a
-Downloads folder.
+Design material for the customer-facing portal (`/portal`, source in `web/portal/`), kept here
+so the implementation can be checked against its brief without hunting for a Downloads folder.
 
-**There are two handoffs, covering two different surfaces.** They do not agree with each
-other, and they are not meant to:
+> ## ⚠️ Read this first — the landing page changed systems on 2026-08-21
+>
+> **The active design system for the landing page is [`/DESIGN.md`](../../DESIGN.md) at the repo
+> root.** It is an adaptation of **IBM Carbon** — white canvas, charcoal type, one blue accent,
+> square corners, no shadows, display type at weight 300.
+>
+> - Why, and what it replaced: [`decisions/2026-08-21-landing-direction.md`](decisions/2026-08-21-landing-direction.md)
+> - Source material (Carbon + four runners-up): [`reference/`](reference/), pulled from
+>   <https://github.com/VoltAgent/awesome-design-md>
+> - The critique that drove the work: [`decisions/2026-08-21-landing-critique.md`](decisions/2026-08-21-landing-critique.md)
+>
+> **`handoff-landing-v2/` is now HISTORICAL.** Everything below that describes the landing as a
+> dark page with warm-paper bands, an amber accent, or a Chivo display face describes the
+> *previous* system. It is kept because the reasoning is still useful and several of its
+> non-visual decisions still bind — but where it disagrees with `/DESIGN.md`, `/DESIGN.md` wins.
 
+**Three surfaces, three sets of material:**
+
+- **`/DESIGN.md` (root)** — the **landing page**, current. IBM Carbon adapted.
 - **`handoff-2026-08-07/`** — the **signed-in app** (Billing, Seats, Seat detail, Data &
-  exports, Admin queue, Sign in). White cards on a dark slate shell. Approved and built.
-- **`handoff-landing-v2/`** — the **public marketing landing** only, a full redesign that
-  replaced a landing rejected twice. Dark page with two warm-paper bands. Its palette
-  collides *by name* with the app's and it runs a different type stack. This is deliberate;
-  see "The landing is a separate design system" below.
+  exports, Admin queue, Sign in). White cards on a dark slate shell. **Still current, untouched
+  by the landing migration.**
+- **`handoff-landing-v2/`** — the **landing page, previous system**. Historical; see the box above.
 
 ## What's in this directory
 
 | Path | What it is |
 |---|---|
+| [../../DESIGN.md](../../DESIGN.md) | **The active landing design system.** Tokens with measured contrast, type scale, components, spacing. **Start here for the landing.** |
+| [reference/](reference/) | Unmodified `DESIGN.md` files from awesome-design-md — Carbon (adopted) plus PostHog, Binance, WIRED and Intercom (runners-up). Read `reference/README.md` before reusing any of them. |
+| [decisions/](decisions/) | Dated decision records and the critique snapshots that produced them. |
 | [handoff-landing-v2/README.md](handoff-landing-v2/README.md) | **The landing handoff.** Tokens with measured contrast, type scale, all ten bands, interaction and responsive rules, photography brief. **Start here for the landing.** |
 | `handoff-landing-v2/TradesDatabase Landing.dc.html` | The landing prototype. Open in a browser with its sibling files present. |
 | `handoff-landing-v2/Design spec.dc.html` | Token table with measured contrast, type scale, photography brief. |
@@ -45,7 +61,7 @@ the code is right and the divergence is listed below with its reason.
 | One screen per file | `web/portal/src/screens/` |
 | The landing's ten bands | [web/portal/src/screens/Landing.tsx](../../web/portal/src/screens/Landing.tsx) |
 | Landing contact form, product-film placeholder | `src/components/ContactForm.tsx`, `VideoPlaceholder.tsx` |
-| Fonts — app (Archivo, Inter Tight, JetBrains Mono) and landing (Chivo, IBM Plex Sans, IBM Plex Mono) | self-hosted via `@fontsource`, imported in `src/main.tsx` — no CDN at runtime |
+| Fonts — app (Archivo, Inter Tight, JetBrains Mono) and landing (IBM Plex Sans, IBM Plex Mono) | self-hosted via `@fontsource`, imported in `src/main.tsx` — no CDN at runtime. **Chivo was removed in the Carbon migration**; the landing now runs one family plus mono. |
 
 ## The landing is a separate design system
 
@@ -53,10 +69,23 @@ This is the thing most likely to trip someone up, so it is spelled out.
 
 **The landing's tokens are declared on `.landing`, not `:root`.** `--bg`, `--surface`,
 `--line`, `--text`, `--amber` and `--teal` all exist in both `tokens.css` and `landing.css`
-with completely different values — the app is white cards on a slate shell, the landing is a
-dark page with two paper bands. Scoping the landing's set to `.landing` shadows the app's for
-that subtree only. **Do not lift landing tokens into `:root` and do not "unify" the two
-palettes** — it would repaint every app screen.
+with completely different values — the app is white cards on a slate shell, the landing is now
+a white Carbon canvas. Scoping the landing's set to `.landing` shadows the app's for that
+subtree only. **Do not lift landing tokens into `:root` and do not "unify" the two palettes** —
+it would repaint every app screen.
+
+**The landing's token NAMES are historical and no longer describe their colours.** They were
+coined for the dark design and deliberately kept through the Carbon migration so ~106 component
+rules did not have to be rewritten. Read them as roles: `--amber` / `--amber-fill` mean *the
+accent* and are now IBM Blue `#0f62fe`; `--paper` means *the record surface* and is now white;
+`--teal` means *the quiet accent* and is also blue. The mapping is commented at the top of
+`landing.css`.
+
+**Inverted surfaces rebind their roles rather than patching descendants.** The footer, the
+manager seat card and the bot chat bubble sit on `#161616`. Each one re-declares `--text-2`,
+`--amber`, `--teal` and `--on-amber` locally so descendants stay legible without knowing they
+are on dark. This exists because the ordinary accent is **3.62:1** on `#161616` and fails AA;
+`--blue-on-dark` (`#78a9ff`) is 7.68:1.
 
 **Two type stacks on one origin, on purpose.** The app runs Archivo / Inter Tight / JetBrains
 Mono; the landing runs Chivo / IBM Plex Sans / IBM Plex Mono, rebound onto the same three role
@@ -161,6 +190,11 @@ it wasn't, all commented at the point they occur in `landing.css` / `Landing.tsx
    specificity, so the rule still beats `tokens.css`'s bare `a` but loses to the component
    classes. **Keep that rule above them in the file.**
 
+> **The two subsections below describe the PREVIOUS (dark) landing system.** They are kept as
+> reasoning, not as current spec. Under Carbon the amber/paper values they discuss no longer
+> exist; the current measured contrast table is [`/DESIGN.md`](../../DESIGN.md) §5, and the
+> current audit result is **112 text nodes, 0 failures, lowest pair 4.55:1**.
+
 ### Landing values that are below 3:1 and are meant to be
 
 Measured, reported, and left alone because the handoff specifies them. Do not "fix" these
@@ -183,9 +217,11 @@ behaviour** — the app design is desktop-first and fixed-width (236px sidebar, 
 560px modal). Below ~1100px it degrades. The repo's other two web surfaces are phone-first, so
 this is worth settling before a customer sees it.
 
-**The landing is done on both counts** — the v2 handoff specifies hover, focus and responsive
-behaviour, and all three are built. It reflows continuously from 360px to 1440px, verified with
-no horizontal overflow at any width.
+**The landing** still specifies hover, focus and responsive behaviour, and all three are built.
+It reflows with no horizontal overflow at 390px, 800px or 1280px, re-verified after the Carbon
+migration. Two P0 issues from the 2026-08-21 critique remain open, though: there is no call to
+action between the hero and the footer form, and no reassurance beside the submit button. See
+[decisions/2026-08-21-landing-critique.md](decisions/2026-08-21-landing-critique.md).
 
 **Two things on the landing ship as deliberate placeholders**, and the handoff is emphatic that
 they stay visible rather than being filled with something fake:

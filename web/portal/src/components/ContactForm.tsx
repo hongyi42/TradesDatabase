@@ -55,7 +55,7 @@ export function ContactForm() {
       <div className="ld-field-pair">
         <label className="ld-field ld-field-half">
           <span className="ld-field-label">Your name</span>
-          <input className="ld-input" required name="name" autoComplete="name" placeholder="Ray Harrow" />
+          <input className="ld-input" required name="name" autoComplete="name" />
         </label>
         <label className="ld-field ld-field-half">
           <span className="ld-field-label">Business</span>
@@ -64,7 +64,6 @@ export function ContactForm() {
             required
             name="company"
             autoComplete="organization"
-            placeholder="Harrow Brothers Electrical"
           />
         </label>
       </div>
@@ -78,19 +77,21 @@ export function ContactForm() {
             type="email"
             name="email"
             autoComplete="email"
-            placeholder="ray@harrowbros.co.uk"
           />
         </label>
         <label className="ld-field ld-field-half">
           <span className="ld-field-label">Phone (optional)</span>
-          <input className="ld-input" type="tel" name="phone" autoComplete="tel" placeholder="07700 900123" />
+          <input className="ld-input" type="tel" name="phone" autoComplete="tel" />
         </label>
       </div>
 
-      <label className="ld-field">
-        <span className="ld-field-label">How many on the tools</span>
+      <div className="ld-field">
+        <label className="ld-field-label" htmlFor="team-size">
+          How many in the field
+        </label>
         <select
           className="ld-select"
+          id="team-size"
           name="teamSize"
           value={teamSize}
           onChange={(e) => setTeamSize(e.target.value)}
@@ -99,7 +100,7 @@ export function ContactForm() {
             <option key={s}>{s}</option>
           ))}
         </select>
-      </label>
+      </div>
 
       <label className="ld-field">
         <span className="ld-field-label">What&rsquo;s driving you mad</span>
@@ -107,7 +108,7 @@ export function ContactForm() {
           className="ld-textarea"
           name="message"
           rows={3}
-          placeholder="Chasing job sheets, certs going missing…"
+          placeholder="Chasing job sheets, reports going missing…"
         />
       </label>
 

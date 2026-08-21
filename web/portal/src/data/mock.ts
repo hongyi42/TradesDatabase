@@ -5,18 +5,18 @@ import type { ExportJob, Invoice, JobRecord, QueueItem, Seat, Tier } from './mod
 // judged before the data work lands.
 
 export const ACCOUNT = {
-  name: 'Harrow Brothers Electrical',
+  name: 'Brandt Electric',
   plan: 'Team plan',
   billingCycle: 'billed monthly',
-  dueDate: '1 Sep 2026',
+  dueDate: 'Sep 1, 2026',
   host: 'td-prod-1',
-  region: 'eu-west-2',
+  region: 'us-east-1',
 };
 
 export const USER = {
-  name: 'Ray Harrow',
+  name: 'Ray Brandt',
   role: 'Account owner',
-  email: 'ray@harrowbrothers.co.uk',
+  email: 'ray@brandtelectric.com',
 };
 
 /** Purchased capacity per tier — `tenants.manager_seats` / `.technician_seats`. */
@@ -27,14 +27,14 @@ export const PURCHASED: Record<Tier, number> = {
 
 export const SEATS: Seat[] = [
   {
-    ref: 'ray-harrow',
-    name: 'Ray Harrow',
+    ref: 'ray-brandt',
+    name: 'Ray Brandt',
     trade: 'Electrician',
     tier: 'manager',
     state: 'active',
     seatExempt: false,
     telegramUserId: '418902733',
-    botUsername: '@harrow_ray_bot',
+    botUsername: '@brandt_ray_bot',
     sandboxRef: 's2',
     seatSince: 'Mar 2026',
   },
@@ -46,7 +46,7 @@ export const SEATS: Seat[] = [
     state: 'active',
     seatExempt: false,
     telegramUserId: '502114876',
-    botUsername: '@harrow_nadia_bot',
+    botUsername: '@brandt_nadia_bot',
     sandboxRef: 's3',
     seatSince: 'Mar 2026',
   },
@@ -58,7 +58,7 @@ export const SEATS: Seat[] = [
     state: 'active',
     seatExempt: false,
     telegramUserId: '618223401',
-    botUsername: '@harrow_pr_bot',
+    botUsername: '@brandt_pr_bot',
     sandboxRef: 's5',
     seatSince: 'Apr 2026',
   },
@@ -70,7 +70,7 @@ export const SEATS: Seat[] = [
     state: 'active',
     seatExempt: false,
     telegramUserId: '733901254',
-    botUsername: '@harrow_dev_bot',
+    botUsername: '@brandt_dev_bot',
     sandboxRef: 's7',
     seatSince: 'Apr 2026',
   },
@@ -82,7 +82,7 @@ export const SEATS: Seat[] = [
     state: 'active',
     seatExempt: false,
     telegramUserId: '811457309',
-    botUsername: '@harrow_marnie_bot',
+    botUsername: '@brandt_marnie_bot',
     sandboxRef: 's8',
     seatSince: 'May 2026',
   },
@@ -95,7 +95,7 @@ export const SEATS: Seat[] = [
     state: 'pending_verification',
     seatExempt: false,
     telegramUserId: '904118762',
-    botUsername: '@harrow_josh_bot',
+    botUsername: '@brandt_josh_bot',
     sandboxRef: 's9',
     seatSince: 'Aug 2026',
   },
@@ -108,7 +108,7 @@ export const SEATS: Seat[] = [
     state: 'offboarding',
     seatExempt: false,
     telegramUserId: '655230198',
-    botUsername: '@harrow_colin_bot',
+    botUsername: '@brandt_colin_bot',
     sandboxRef: 's4',
     seatSince: 'Feb 2026',
   },
@@ -140,14 +140,14 @@ export const INVOICES: Invoice[] = [
 export const QUEUE: QueueItem[] = [
   {
     id: 'q1',
-    account: 'Harrow Brothers Electrical',
+    account: 'Brandt Electric',
     item: 'sandbox s9 · josh-kelleher',
     reason: 'Stuck provisioning — 41 min, no completion report from td-prod-1',
     action: 'Retry',
   },
   {
     id: 'q2',
-    account: 'Kestrel Heating',
+    account: 'Kestrel Heating & Air',
     item: 'bot @kestrel_amy_bot',
     reason: 'Token rejected by Telegram (401) — bot deleted at BotFather?',
     action: 'Notify',
@@ -156,7 +156,7 @@ export const QUEUE: QueueItem[] = [
     id: 'q3',
     account: 'Delaney Roofing',
     item: 'Telegram ID 418902733',
-    reason: 'Duplicate — already bound on Harrow Brothers Electrical',
+    reason: 'Duplicate — already bound on Brandt Electric',
     action: 'Review',
   },
   {
@@ -169,41 +169,41 @@ export const QUEUE: QueueItem[] = [
 ];
 
 export const RECORDS: JobRecord[] = [
-  { id: 'JOB-4471', description: 'Consumer unit replacement', site: '14 Bell Lane, N4', date: '06 Aug' },
-  { id: 'JOB-4462', description: 'EICR — remedial works', site: 'Unit 3, Colville Est.', date: '04 Aug' },
-  { id: 'JOB-4455', description: 'Emergency callout, no power', site: '88 Ridgemount Rd', date: '02 Aug' },
-  { id: 'JOB-4441', description: 'EV charger install, 7kW', site: '2 Farrier Close', date: '29 Jul' },
+  { id: 'JOB-4471', description: 'Breaker panel replacement', site: '1420 Birch St, Aurora', date: 'Aug 6' },
+  { id: 'JOB-4462', description: 'Inspection — corrective work', site: 'Unit 3, Colfax Commerce Park', date: 'Aug 4' },
+  { id: 'JOB-4455', description: 'Emergency service call, no power', site: '88 Ridgemount Rd', date: 'Aug 2' },
+  { id: 'JOB-4441', description: 'EV charger install, Level 2', site: '2 Farrier Ct', date: 'Jul 29' },
 ];
 
 export const EXPORTS: ExportJob[] = [
   {
     id: 'exp-0043',
     kind: 'records',
-    requestedBy: 'Ray Harrow',
-    requestedAt: '06 Aug 2026, 09:12',
+    requestedBy: 'Ray Brandt',
+    requestedAt: 'Aug 6, 2026, 9:12 AM',
     sizeLabel: '1.4 MB',
     status: 'Ready',
-    expiresLabel: 'expires 13 Aug',
+    expiresLabel: 'expires Aug 13',
     rowCount: 1183,
   },
   {
     id: 'exp-0038',
     kind: 'conversations',
-    requestedBy: 'Ray Harrow',
-    requestedAt: '28 Jul 2026, 16:40',
+    requestedBy: 'Ray Brandt',
+    requestedAt: 'Jul 28, 2026, 4:40 PM',
     sizeLabel: '38.2 MB',
     status: 'Expired',
-    expiresLabel: 'expired 04 Aug',
+    expiresLabel: 'expired Aug 4',
     rowCount: 12904,
   },
   {
     id: 'exp-0031',
     kind: 'logs',
     requestedBy: 'Nadia Okafor',
-    requestedAt: '19 Jul 2026, 08:05',
+    requestedAt: 'Jul 19, 2026, 8:05 AM',
     sizeLabel: '620 KB',
     status: 'Expired',
-    expiresLabel: 'expired 26 Jul',
+    expiresLabel: 'expired Jul 26',
     rowCount: 8422,
   },
 ];

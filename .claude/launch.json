@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "portal",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "portal:dev"
+      ],
+      "port": 5173,
+      "url": "http://localhost:5173"
+    }
+  ]
+}

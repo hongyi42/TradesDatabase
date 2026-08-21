@@ -15,6 +15,13 @@ facts change.
 New to the repo? [docs/onboarding.md](docs/onboarding.md) is the map — what the project is, how the
 pieces fit, day-1 local setup, and the rules that cost us incidents.
 
+## Design
+
+The landing page's design system is **[DESIGN.md](DESIGN.md)** at the repo root — IBM Carbon
+adapted. Read it before changing anything visual on `web/portal/src/screens/`. Source material,
+decision records and the still-current design for the *signed-in app* (a different system, on
+purpose) live in [docs/design/](docs/design/).
+
 ## Conventions
 - TypeScript, ESM (`"type":"module"`, `NodeNext`) — use explicit `.js` extensions on relative imports.
 - All database access goes through the typed layer in `src/db/`; don't hand-write Supabase queries elsewhere.

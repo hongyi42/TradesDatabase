@@ -23,3 +23,9 @@ inbound-last.json
 
 # macOS Finder metadata (arrives with any drag/copy into the repo)
 .DS_Store
+
+# Impeccable design tooling — installed with `npx impeccable install`, 3.4 MB of
+# vendored skill files that regenerate. The design artifacts we actually care
+# about are copied into docs/design/ instead.
+.claude/skills/impeccable/
+.impeccable/

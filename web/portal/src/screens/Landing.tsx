@@ -25,10 +25,13 @@ import './landing.css';
 const MANAGER_PRICE = PRICE_CENTS.manager / 100;
 const TECHNICIAN_PRICE = PRICE_CENTS.technician / 100;
 
-// OPEN QUESTION from the handoff, decided by the owner 2026-08-11: the design
-// prices in £ because the customers are UK, but the app shows $ and the two
-// must not disagree. $ wins for now. When the product moves to £ this is one
-// constant here plus `CURRENCY` in data/model.ts.
+// The v2 handoff priced in £ for a UK audience. The target market is the US
+// (owner decision 2026-08-20), so the page is dollars throughout AND every
+// worked example on it is American — address, trade vocabulary, paperwork,
+// phone format. A US electrician does not recognise "EICR" or "consumer unit",
+// and a page whose only concrete details are foreign fails the one job the
+// examples have: making the reader think "this is for me".
+// Currency stays single-sourced: `CURRENCY` in data/model.ts.
 const money = (n: number) =>
   new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -36,20 +39,42 @@ const money = (n: number) =>
     maximumFractionDigits: 0,
   }).format(n);
 
-const TRADES = ['Electrical', 'Plumbing', 'Roofing', 'HVAC', 'Carpentry'];
+const TRADES = ['Electrical', 'Plumbing', 'Roofing', 'HVAC', 'Appliance repair'];
 
 const QUOTES = [
-  { quote: '“It’s all in the group chat somewhere.”', who: 'Owner · 11 vans' },
-  { quote: '“They won’t use another app.”', who: 'Owner · 6 vans' },
+  { quote: '“It’s all in the group chat somewhere.”', who: 'Owner · 11 trucks' },
+  { quote: '“They won’t use another app.”', who: 'Owner · 6 trucks' },
   { quote: '“What did we do at this address?”', who: 'Office manager' },
-  { quote: '“I do the paperwork on Sunday.”', who: 'Owner · 4 vans' },
+  { quote: '“I do the paperwork on Sunday.”', who: 'Owner · 4 trucks' },
 ];
 
 const CLAIMS = [
-  { title: 'No new app', body: 'They already have Telegram.' },
-  { title: 'Search the address', body: 'Every visit, photo and cert for it.' },
-  { title: 'Evidence kept', body: 'Every field shows its message.' },
-  { title: 'Yours to take', body: 'CSV export, any time.' },
+  {
+    title: 'No new app',
+    body: 'It’s the chat they’re already in all day.',
+  },
+  {
+    title: 'Search the address',
+    body: 'Every visit, photo and report for it, going back years.',
+  },
+  {
+    // The product's core claim, stated as a CONTRAST. Provenance is the one
+    // thing no competitor in this category ships, so the line has to say so
+    // out loud; "evidence kept" read as a feature label and landed as nothing.
+    title: 'Every field shows its source',
+    body: 'Tap a line, see the message it came from. Ask your current software to do that.',
+  },
+  {
+    // The retiring-technician argument. ~25,000 experienced techs leave the US
+    // trades every year and nearly 30% of HVAC techs are over 55 — the single
+    // strongest reason this record is worth paying for, and it was missing.
+    title: 'It stays when they leave',
+    body: 'When your best tech retires, what he knew about your customers stays.',
+  },
+  {
+    title: 'Yours to take',
+    body: 'Full export, any time. No exit fee, no hostage data.',
+  },
 ];
 
 // The provisioning story is: one tap → Telegram Managed Bots creates the bot →
@@ -63,8 +88,8 @@ const STEPS = [
 
 // The three photographs in the strip. None have been shot — see PhotoPlate.
 const STRIP = [
-  'Van doors open, first light',
-  'Hands, scuffed phone, finished board',
+  'Truck doors open, first light',
+  'Hands, scuffed phone, finished panel',
   'Kitchen table, 9pm, paperwork',
 ];
 
@@ -92,6 +117,11 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
 
   return (
     <div className="landing">
+      {/* First thing in the tab order. Keyboard and screen-reader users
+          otherwise walk the whole nav on every section jump. */}
+      <a className="ld-skip" href="#product">
+        Skip to content
+      </a>
       <header className="ld-header">
         <div className="ld-header-inner">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -119,42 +149,41 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
         </div>
       </header>
 
+      <main>
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
       <section className="ld-hero">
         <div className="ld-hero-inner">
           <div className="ld-hero-copy">
-            <p className="ld-eyebrow">
-              <span aria-hidden="true" />
-              Runs inside Telegram
-            </p>
             <h1 className="ld-h1">
-              They already
+              They already{' '}
               <br />
-              text you.
+              text you.{' '}
               <br />
-              <span style={{ color: 'var(--amber)' }}>Now it&rsquo;s a record.</span>
+              <span className="ld-h1-turn">Now it&rsquo;s a record.</span>
             </h1>
             <p className="ld-lead">
-              One bot each. They text it like they text you. Nobody installs anything.
+              One Telegram bot each. They text it like they text you. Nobody installs
+              anything, and nobody logs in.
             </p>
             <div className="ld-cta-row">
               <a className="ld-btn ld-btn-primary" href="#contact">
                 Book a walkthrough
               </a>
-              <a className="ld-btn ld-btn-outline" href="#product">
-                See how it works
-              </a>
             </div>
           </div>
           <div className="ld-hero-film">
-            <VideoPlaceholder />
+            <VideoPlaceholder
+              onSeeHow={() =>
+                document.getElementById('product')?.scrollIntoView({ behavior: 'smooth' })
+              }
+            />
           </div>
         </div>
       </section>
 
       {/* ── Photo band ───────────────────────────────────────────────────── */}
       <section className="ld-photoband">
-        <PhotoPlate brief="Sparky mid-job, phone in hand, consumer unit open behind" />
+        <PhotoPlate brief="Electrician mid-job, phone in hand, open breaker panel behind" />
         <div className="ld-photoband-plate">
           <div className="ld-trades">
             <span>Built for</span>
@@ -168,9 +197,9 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
       {/* ── 01 What we heard ─────────────────────────────────────────────── */}
       <section className="ld-section ld-surface">
         <div className="ld-wrap">
-          <p className="ld-mark" style={{ color: 'var(--amber)', margin: '0 0 clamp(22px, 3vw, 36px)' }}>
-            01 / What we heard
-          </p>
+          <h2 className="ld-h2" style={{ margin: '0 0 clamp(22px, 3vw, 36px)' }}>
+            The same four problems, every time
+          </h2>
           <div className="ld-grid ld-quotes">
             {QUOTES.map((q) => (
               <div className="ld-quote-cell" key={q.who + q.quote}>
@@ -188,9 +217,6 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
       <section id="product" className="ld-section ld-paper">
         <div className="ld-wrap">
           <div className="ld-head" style={{ marginBottom: 'clamp(24px, 3vw, 40px)' }}>
-            <span className="ld-mark" style={{ color: 'var(--paper-ink-2)' }}>
-              02 /
-            </span>
             <h2 className="ld-h2">One text in. One record out.</h2>
           </div>
 
@@ -202,20 +228,20 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                   TD
                 </span>
                 {/* Mono, because a bot handle is a machine-generated value. */}
-                <span style={{ fontFamily: 'var(--mono)', fontSize: 11.5, color: 'var(--paper-ink-2)' }}>
-                  @harrowbros_pete_bot
+                <span style={{ fontFamily: 'var(--mono)', fontSize: 12.5, color: 'var(--paper-ink-2)' }}>
+                  @brandtelectric_pete_bot
                 </span>
               </div>
 
               <div className="ld-bubble-tech">
                 <p className="ld-bubble-text">
-                  Done at 14 Bell Lane. Replaced the consumer unit, tested and signed off. Cert
+                  Done at 1420 Birch St. Replaced the breaker panel, tested and signed off. Report
                   attached.
                 </p>
                 <p
                   style={{
                     fontFamily: 'var(--mono)',
-                    fontSize: 10,
+                    fontSize: 12,
                     color: 'var(--paper-ink-2)',
                     textAlign: 'right',
                     margin: '5px 0 0',
@@ -237,17 +263,17 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                     flex: '0 0 auto',
                   }}
                 />
-                <span style={{ fontFamily: 'var(--mono)', fontSize: 11.5 }}>EICR_14BellLane.pdf</span>
+                <span style={{ fontFamily: 'var(--mono)', fontSize: 12.5 }}>Inspection_1420Birch.pdf</span>
               </div>
 
               <div className="ld-bubble-bot">
                 <p className="ld-bubble-text" style={{ marginBottom: 9 }}>
-                  Filed. Bell Lane, consumer unit.
+                  Filed. Birch St, breaker panel.
                 </p>
                 <span
                   style={{
                     fontFamily: 'var(--mono)',
-                    fontSize: 11,
+                    fontSize: 12,
                     color: 'var(--on-amber)',
                     background: 'var(--amber)',
                     padding: '3px 7px',
@@ -272,19 +298,19 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
               <div style={{ padding: '4px 18px 16px' }}>
                 <div className="ld-row">
                   <span className="ld-row-label">Customer</span>
-                  <span className="ld-row-value">M. Okonjo · 14 Bell Lane, N4</span>
+                  <span className="ld-row-value">M. Okonjo · 1420 Birch St, Aurora CO</span>
                 </div>
                 <div className="ld-row">
                   <span className="ld-row-label">Work</span>
-                  <span className="ld-row-value">Consumer unit replacement</span>
+                  <span className="ld-row-value">Breaker panel replacement</span>
                 </div>
                 <div className="ld-row">
                   <span className="ld-row-label">Visit</span>
-                  <span className="ld-row-value">06 Aug · Pete Rowan</span>
+                  <span className="ld-row-value">Aug 6 · Pete Rowan</span>
                 </div>
                 <div className="ld-row">
                   <span className="ld-row-label">Attached</span>
-                  <span style={{ fontFamily: 'var(--mono)', fontSize: 13 }}>EICR_14BellLane.pdf</span>
+                  <span style={{ fontFamily: 'var(--mono)', fontSize: 13 }}>Inspection_1420Birch.pdf</span>
                 </div>
                 {/* The evidence link back to L1 — the product's core claim.
                     Every structured field can show the message it came from.
@@ -293,7 +319,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                   <p
                     style={{
                       fontFamily: 'var(--mono)',
-                      fontSize: 10.5,
+                      fontSize: 12.5,
                       letterSpacing: '0.1em',
                       textTransform: 'uppercase',
                       color: 'var(--paper-ink-2)',
@@ -303,7 +329,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                     Source · Telegram 14:52
                   </p>
                   <p style={{ fontSize: 13.5, lineHeight: 1.5, margin: 0 }}>
-                    &ldquo;Done at 14 Bell Lane&hellip;&rdquo;
+                    &ldquo;Done at 1420 Birch St&hellip;&rdquo;
                   </p>
                 </div>
               </div>
@@ -334,9 +360,6 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
       <section className="ld-section ld-dark">
         <div className="ld-wrap">
           <div className="ld-head">
-            <span className="ld-mark" style={{ color: 'var(--amber)' }}>
-              03 /
-            </span>
             <h2 className="ld-h2">Adding someone takes one tap</h2>
           </div>
           <div className="ld-grid ld-steps">
@@ -359,18 +382,12 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
       <section id="pricing" className="ld-section ld-paper">
         <div className="ld-wrap">
           <div className="ld-head" style={{ marginBottom: 'clamp(24px, 3vw, 36px)' }}>
-            <span className="ld-mark" style={{ color: 'var(--paper-ink-2)' }}>
-              04 /
-            </span>
             <h2 className="ld-h2">Two kinds of seat</h2>
           </div>
 
           <div className="ld-seats">
             {/* Technician */}
             <div className="ld-seat ld-seat-tech">
-              <p className="ld-seat-label" style={{ color: 'var(--paper-ink-2)', margin: 0 }}>
-                On the tools
-              </p>
               <h3 className="ld-seat-name">Technician</h3>
               <div className="ld-price-row" style={{ borderTop: '1px solid var(--paper-line-2)' }}>
                 <span className="ld-price">{money(TECHNICIAN_PRICE)}</span>
@@ -379,7 +396,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                 </span>
               </div>
               <div className="ld-seat-items" style={{ color: 'var(--paper-ink-2)' }}>
-                {['Own Telegram bot', 'Jobs, certs, photos', 'Sees their own day'].map((i) => (
+                {['Own Telegram bot', 'Jobs, reports, photos', 'Sees their own day'].map((i) => (
                   <div key={i}>
                     <span style={{ color: 'var(--paper-ink)' }} aria-hidden="true">
                       &mdash;
@@ -392,11 +409,11 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
 
             {/* Manager — inverted card */}
             <div className="ld-seat ld-seat-mgr">
-              <span className="ld-seat-tab">At least one</span>
-              <p className="ld-seat-label" style={{ color: 'var(--teal)', margin: 0 }}>
-                Runs the day
-              </p>
               <h3 className="ld-seat-name">Manager</h3>
+              {/* Absolutely positioned into the card's top-right corner. It
+                  sits AFTER the heading in the DOM on purpose: before it, the
+                  detector (rightly) read it as a kicker above the h3. */}
+              <span className="ld-seat-tab">At least one</span>
               <div className="ld-price-row" style={{ borderTop: '1px solid var(--invert-line)' }}>
                 {/* Amber carries text here only because this card is dark ink,
                     not paper — 9.2:1. Amber text is never put on --paper. */}
@@ -484,7 +501,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
               <div className="ld-total-row">
                 <span
                   className="ld-mark"
-                  style={{ color: 'var(--paper-ink-2)', letterSpacing: '0.1em', fontSize: 11.5 }}
+                  style={{ color: 'var(--paper-ink-2)', letterSpacing: '0.1em', fontSize: 12.5 }}
                 >
                   Per month
                 </span>
@@ -493,6 +510,10 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
             </div>
           </div>
 
+          <p className="ld-scope">
+            We don&rsquo;t do invoicing, estimates or payroll. Keep whatever you use for
+            those. This is the record underneath them.
+          </p>
           <p className="ld-foot-note">Placeholder pricing. No setup fee, no contract.</p>
         </div>
       </section>
@@ -501,21 +522,20 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
       <section id="contact" className="ld-section ld-dark">
         <div className="ld-contact-inner">
           <div className="ld-contact-copy">
-            <p className="ld-mark" style={{ color: 'var(--amber)', margin: '0 0 14px' }}>
-              05 / Get in touch
-            </p>
             <h2 className="ld-h2-contact">
               Fifteen minutes,
               <br />
               no slide deck.
             </h2>
             <p style={{ fontSize: 16, lineHeight: 1.55, color: 'var(--text-2)', maxWidth: '34ch', margin: 0 }}>
-              We set firms up one at a time, by hand. Same working day reply.
+              We set firms up one at a time, by hand. Same business day reply.
             </p>
           </div>
           <ContactForm />
         </div>
       </section>
+
+      </main>
 
       <footer className="ld-footer">
         <div className="ld-footer-inner">
@@ -528,11 +548,11 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
               © 2026 TradesDatabase
             </span>
           </div>
-          <div className="ld-footer-links">
-            <a href="#status">Status</a>
-            <a href="#terms">Terms</a>
-            <a href="#privacy">Privacy</a>
-          </div>
+          {/* Status / Terms / Privacy lived here as href="#status" etc. with no
+              matching elements — they did nothing when clicked. Removed rather
+              than left dead. They MUST return, as real routes, before the
+              contact form is wired to anything: it collects a name, email and
+              phone, and a privacy link is not optional once that is live. */}
         </div>
       </footer>
     </div>

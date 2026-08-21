@@ -176,10 +176,14 @@ don't work — users are jaded.
   logging, no deletion, and proactive questioning are product foundations that must be disclosed;
   copy may not contradict or soften them.
 - **Category stance is decided; price and proof are not.** The stance (2026-08-17): *"works
-  alongside what you already have" in the sale, "the AI manager" in the story* — profile §10. Two
-  gaps still block confident ranking rather than mere detail: **no price exists anywhere**, and
-  **there are zero recorded active external customers**, so any option whose strength depends on
-  proof or price cannot be ranked honestly. Say so rather than projecting certainty.
+  alongside what you already have" in the sale, "the AI manager" in the story* — profile §10. Price
+  **structure** is now decided (profile §15) but the **number is an untested hypothesis**, and there
+  are still **zero recorded active external customers** — so any option whose strength depends on
+  proof, or on a price holding, cannot be ranked honestly. Say so rather than projecting certainty.
+- **Use the market's own words — they're sourced now.** Profile §16 carries a word-swap table,
+  worked action statements, and header candidates lifted from ~500 trades-owner posts. Prefer those
+  to anything you'd phrase yourself. The vocabulary is sourced; the value props it expresses are
+  still research-state B.
 - **Verify a competitor is real before treating it as one.** Chapter 2 warns against over-analyzing
   early-stage companies but assumes they *are* companies. Before citing anything as a peer, check
   funding and legal entity — a landing page is not a competitor. Tier findings by evidence strength

@@ -61,6 +61,24 @@ claim is unclaimed and it is the emotional core of the pitch.
 
 Segment A is the bigger contract and the easier sale once you have references. Don't lead with it.
 
+**What segment B says, in its own words** (Reddit corpus 2026-08-18, see
+`thoughts/shared/research/2026-08-18-segment-b-newly-solo-operators.md`) — this is market signal, not
+customer validation, but it is *their* language and ch. 4 says to use it:
+
+> "Learn a trade → start a business → **do everything but that trade**." — r/skilledtrades, top comment
+
+> "**Running the business is a full-time job and I'm on the tools doing a full-time job.** I feel near
+> a breaking point." — same thread
+
+**Segment B's real competitor is not Jobber — it is an unstructured text thread.** From a poster who
+interviewed 20+ UK sole traders: *"All of the 20 solo businesses I spoke to use WhatsApp, but lots
+complained about losing things in there, and mixing in with their personal contacts."* US equivalent
+is SMS/iMessage; the app varies, the failure doesn't.
+
+That reframes "Telegram is the entire UI" from a constraint we accepted into **a match to how they
+already work** — and the two named failures of that workflow (things get lost; business bleeds into
+personal) are precisely what a structured record and a separate business bot fix.
+
 **Two user tiers (enforced in the DB, not marketing labels):**
 
 | Tier | Who | Can do | Tools |
@@ -298,6 +316,7 @@ before treating anything as a competitor.
 | **Verified, major** | **ServiceTitan** (Atlas / Titan Intelligence), public | Chat over a record they already own. 2–4wk training, $8–15k/yr |
 | **Verified, funded** | **Mura** — $6M seed, Level One Fund + Lerer Hippeau | Order-to-cash / AR / AP. Calls itself "dark software" operating **inside existing systems rather than replacing** — a funded validation of the layer-alongside play |
 | **Established** | Housecall Pro ($59–79 Basic — no QuickBooks sync, no GPS; $149–189 Essentials — both; $329+ MAX), Jobber ($25–249/mo), Simpro (Lightning), FieldPulse, BuildOps | Invoice-first FSM, AI features bolted on. **Your QuickBooks story competes with HCP's $149 tier, not their $59 one** |
+| **Segment B's actual alternative** | **WhatsApp / SMS + a paper invoice book** | Not a company — the incumbent *behaviour*. Top-voted answer to "is Jobber overkill?" was a $10 Staples invoice book photographed and Zelled. Ask "what isn't $200/month?" is the real price ceiling down here |
 | **Bilingual lane** | FieldSub | First fully bilingual subcontractor app + "AI business companion" |
 | ⚠️ **Unfunded / SEO-heavy** | FieldCamp (founder "Jeel," Brampton ON, **no funding**), Fieldproxy, Quantra | Marketing sites. Their performance stats are vendor claims. Not threats today |
 | ⚠️ **Not a company** | **FieldServe** | Croatian dev shop (Netpoint Systems d.o.o., Zagreb), domain created 2026-04-29, no funding/team/customers. **Do not cite as a peer** |
@@ -386,8 +405,15 @@ The intelligent-spine "team leader" is **direction only** — mark as roadmap if
 
 ## 15. Open gaps — ask, never invent
 
-1. **Price.** No dollar figure exists anywhere. Model is seat-based, manager seats higher.
-   Benchmarks to price against: HCP $59–189/mo, Jobber $25–249/mo, ServiceTitan $8–15k/yr.
+1. **Price.** Structure is **decided** (2026-08-18): team seats, manager expensive + technician
+   cheap, bill the seat *setting* not the roster, peak-in-period via prorate-up/no-refund-down,
+   pooled inference cap scaling with seats, overage as usage credits, one-manager-seat floor,
+   `seat_exempt` as the deliberate free tier. The **number is a hypothesis, not a decision** —
+   $199/manager + $39/tech, constructed from anchors, untested. Anchors: HCP $59–189/mo, Jobber
+   $25–249/mo, ServiceTitan $8–15k/yr, Avoca ~$1,000–3,000/mo, part-time office manager
+   $2,680–4,020/mo, and a real operator paying **$1,100/mo for a VA who only answers phones**.
+   Segment B's stated ceiling is far lower — "what isn't $200/month?" — so the solo price needs
+   its own test.
 2. **Current customers.** Zero active external as recorded. Any paying firms now? Nameable?
 3. **Outcome proof.** Nothing. Any pilot anecdote or quote at all?
 4. **Language validation.** Do Spanish-speaking owners *want* to operate in Spanish? Unvalidated.
@@ -397,3 +423,110 @@ The intelligent-spine "team leader" is **direction only** — mark as roadmap if
    manager to send themselves? That changes the disclosure story, since outbound sends are
    classifier-free and permanently logged.
 7. **Segment priority.** This file recommends leading with the newly-solo technician. Confirm.
+
+## 16. The market's own vocabulary — sourced, not invented
+
+Ch. 4 asks *"how would users describe your product to a friend?"* and says to borrow that language.
+The words below are lifted from ~500 trades-owner posts
+(`thoughts/shared/research/2026-08-18-reddit-trades-pain-points.md` and the segment B companion).
+
+**Provenance rule:** the *vocabulary* is sourced. The *value props it expresses* are still
+research-state B — documented, not customer-validated. Don't let borrowed words imply validated
+claims.
+
+### Word swaps
+
+| ❌ Category / SaaS word | ✅ What they actually say |
+|---|---|
+| Field service management, platform, solution | **the software**, or the name: "Jobber," "Housecall" |
+| Administrative overhead, back office | **paperwork**, **the office**, **"the other half of the job"** |
+| Performing billable work | **on the tools** |
+| Travel time | **windshield time**, **drive time** |
+| Return visit under warranty | **callback** |
+| Dispatch a technician | **roll a truck**, **a wasted trip** |
+| Employees, staff | **my guys** |
+| Sole proprietor, solopreneur | **one man band**, **one man shop**, **solo** |
+| Unqualified lead | **tire kicker** |
+| Client did not attend | **no show**, **ghosted** |
+| Trip minimum, diagnostic fee | **service call fee**, **trip charge** |
+| At capacity | **booked out two weeks** |
+| Accounts receivable | **getting paid**, **chasing payment** |
+| Your business | **your shop** |
+
+**Retire entirely:** streamline, seamless, leverage, optimize, unified, end-to-end, robust,
+ecosystem, workflow. Plus our internal vocabulary — *spine, context layer, memory layer, capture,
+L1* — which means nothing outside this repo.
+
+**Nuance:** they do say "CRM," but they mean a booking tool. It is not their word for what we are.
+
+### Value props as action statements (ch. 3's exercise, worked)
+
+| Bad alternative | Better solution | **Action statement** |
+|---|---|---|
+| Doing the office work at 9pm after a full day on the tools | The AI does the office half | **Stop doing the office job at 9pm.** |
+| A text thread that loses things and mixes with personal messages | One place that remembers every customer | **Every customer remembered — not buried in your texts.** |
+| Dave has been here eleven years and just *knows* the Hendersons have a dog | The record outlives the person | **What one guy knows, everyone knows.** |
+| "I can't prove I was there 6.5 hours" | Timestamped record, each line citing its note | **Prove the hours.** |
+| Quoted a good margin, cleared 8% | Costs captured by voice as they happen | **Know which jobs actually made money.** |
+| 4–6 weeks of onboarding and a dedicated admin | Talking | **Nothing to learn.** |
+| Every screen translated, forever | Same conversation, different language | **In whatever language you speak.** |
+
+The last two already existed in §7–8. The middle two are **new** and carry the strongest demand
+evidence in the corpus — see §17.
+
+### Header candidates, litmus applied
+
+Ch. 3: *if the visitor reads only the header, do they know exactly what you sell?*
+
+| | Copy | Litmus |
+|---|---|---|
+| **A** ⭐ | **Run your trades business by texting it.** It answers the phone, remembers every customer, and drafts your invoices. | **Passes.** Concrete verbs, mechanism first. "By texting it" differentiates in a way "AI manager" doesn't — nobody else can say it |
+| **B** | **You went into business to do the work, not the paperwork.** | Fails alone — could be an accountant or a course. Use as subheader or ad copy |
+| **C** | **Stop doing the office job at 9pm.** One AI that answers your phone, remembers every customer, and writes your invoices — you just talk to it. | Passes once the description follows. Hook-first variant |
+
+**Recommendation: A as header, B's sentiment as subheader.** Descriptive-first is ch. 3's explicit
+rule.
+
+### Differentiating phrases, by what each one fights
+
+- **The incumbents' seams (segment A):** *"The voice agent has the conversation. The scheduler has
+  the appointment. **Neither one has the record.**"*
+- **The text thread (segment B):** *"You already have a system. It's a text thread. **It works right
+  up until you need to find something.**"*
+- **Learning software:** *"**There's nothing to learn.** No screens, no fields, no second app."* —
+  pair with ServiceTitan's documented 2–4wk training / 4–6wk onboarding at $8–15k/yr.
+- **Hiring:** *"**Cheaper than an office manager. Doesn't quit.**"* — anchor is the $1,100/mo VA.
+- **Proof (most unclaimed territory):** *"**Every fact cites the note it came from.**"* Nobody else
+  says this because nobody else can. Describes behaviour, so it clears §12's proof rules.
+- **Compounding, for lower on the page:** *"A record with three months of notes in it is a different
+  product from an empty one."*
+
+### ⚠️ Open question on the word "manager"
+
+The category stance ratified 2026-08-17 is *"the AI manager" in the story* (§10). The corpus is
+newer and complicates it **for segment B specifically**: a solo operator doesn't *have* a manager —
+he **is** one. And "manager" carries baggage in trades, with visible hostility toward being bossed,
+toward PE-installed management, toward KPIs (a 542↑ r/HVAC post is a sustained rant on exactly that).
+
+**"The AI runs your office"** may land better with segment B — *office* is the thing they want gone;
+*manager* is a person they may not want to be reminded of. Not a proposal to overturn the stance: a
+macro A/B variant to test once traffic exists (ch. 8).
+
+## 17. Two value props the corpus supports — and their build status
+
+Both are **market-signal strong, product-incomplete.** Do not put either in copy until the feature
+exists; both are recorded here because they should shape what gets built next.
+
+**Job costing** — the single most consistent owner complaint across every trades sub. An 18-tech
+HVAC owner cleared 8% on a job he'd quoted well, because drive time, refrigerant, a rental, and
+warranty callbacks never entered the numbers. The reason no incumbent solves it is stated outright:
+*"Most guys wouldn't enter every fitting. That would get old real quick on a busy day."* **Capture,
+not analysis, is the failure** — which is exactly what voice notes fix.
+Status: revenue side complete (`money_events`), cost side absent; the extractor is currently
+instructed *not* to extract prices. See `thoughts/shared/research/2026-08-18-job-costing-money-ledger-gap.md`.
+
+**Proof of work** — a 360-comment r/electricians thread on a customer demanding proof of 6.5 hours
+and threatening a chargeback. The community's workaround is screenshotting the Google Maps timeline;
+nobody names a software feature. Status: evidence chain exists (append-only L1, `source_capture_id`,
+visit timestamps), no human-facing artifact.
+See `thoughts/shared/research/2026-08-18-work-record-artifact.md`.

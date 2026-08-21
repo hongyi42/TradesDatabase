@@ -467,6 +467,63 @@ args, result) and `planner.ts` uses `.length`; the rest is discarded. `recordMod
 COST events only — tenant + technician_ref + sku + tokens, no job, gap or decision. Spine reads
 write no L1 capture. Nothing can point a batch of tool calls at a decision about a job.
 
+- **Field notes record one-shot; standing facts still confirm** (2026-08-21, user decision):
+  `record_field_note`'s two-step confirm is being REMOVED. The confirm was justified by "L1 is
+  append-only", but that reads the constraint too literally: `retract_capture` never deletes and
+  yet the **fold** drops the capture, its visit, and any standing fact citing it from every
+  consumer read *by construction* (`src/db/context.ts:75-78`) — and **"only the capture's author
+  or a manager may retract"**, so the technician can undo their own note unaided. A wrong note is
+  therefore functionally revertable, which puts it squarely under the ratified confirmation-tone
+  doctrine (confirm only the irreversible or externally visible; reversible = do it and say what
+  you did).
+
+  Note the confirmations currently sit on the wrong side of the asymmetry: recording a note is
+  additive with no fan-out, while **retraction cascades** — it silently removes visits and
+  standing facts, which is why it stages a `willAlsoRemove` preview. Same ceremony, opposite blast
+  radius.
+
+  **Scoped to field notes.** `record_standing_fact` KEEPS its confirm: a standing fact lands in
+  every future briefing, so a wrong one propagates until somebody notices. Two things retraction
+  does not cover, for the record: side effects the note caused (e.g. a job status change) are not
+  auto-reverted, and audit-channel captures (`outbound_email`, `agent_action`) are manager-only to
+  retract.
+
+  Motivating specimen (2026-08-19): one technician message answered a visit gap and a money gap.
+  The money committed instantly (one-shot), the note became an *offer* — so the reply opened with
+  "Recorded!" and then asked permission, telling the technician they were done when they were not.
+  The agent never even called `record_field_note`; there was no staged note to say yes to.
+
+- **A mixed batch confirms as a whole** (2026-08-21, user decision): when one message produces
+  writes of differing confirmation levels, the batch takes the STRICTEST — nothing is recorded
+  until one yes covers all of it. This kills the two-states-in-one-message failure above.
+  **Adoption order is load-bearing:** remove the field-note confirm FIRST. The batch rule alone,
+  with field notes still confirming, would have held the Aug 19 money event behind a yes that
+  never came — losing the $500 that today at least lands.
+
+  **Recording is atomic; undo is NOT, and must not be forced to be.** One confirmation can produce
+  three records with three different undo paths:
+
+  | record | undo | shape |
+  |---|---|---|
+  | field note | `retract_capture` — folds the note **and its visit** | L1 fold |
+  | standing fact | `retract_capture` on its OWN capture (`externalId: fact:<confirmId>`) | L1 fold |
+  | money event | a voiding/correcting ledger entry (`correctsEventId`) | ledger, not a fold |
+
+  Verified: none of these cascade to the others. The fact mints its own capture at commit
+  (`server.ts:3388`), so note and fact never cite each other; and money is untouched twice over —
+  the dispatch never passes `sourceCaptureId` (`server.ts:5479`), and nothing folds money anyway
+  (`context.ts` does not mention it). **Do not "fix" this by folding money** — a ledger corrects
+  by adding a reversing entry, never by hiding a row; a read-time fold would make the books
+  disagree with themselves.
+
+  The gap to close is that the records do not know they were born together. Design direction for
+  the Group A plan: **stamp one batch id into everything a single confirmation produces** (note
+  capture metadata, fact capture metadata, money event `detail`) so a retraction can look sideways
+  and OFFER the siblings per item rather than silently leaving them. The hook nearly exists — the
+  fact's capture already stamps `stagedConfirmId`, but it points at that fact's own token rather
+  than a shared one. This also closes a standing provenance hole: **money events currently record
+  no link to the message that reported them at all.**
+
 ## 3. Environments & infrastructure
 
 ```

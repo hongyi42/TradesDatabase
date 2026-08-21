@@ -54,6 +54,30 @@ export const MAX_TOOL_RESULT_CHARS = 20_000;
 // one per call, or the next request is malformed) — it just says no.
 export const MAX_TOOL_CALLS_PER_TURN = 8;
 
+/**
+ * The loop gave up on ITS OWN limits — not the model, not the provider.
+ *
+ * Phase-3 finding, paid in Phase 4: at two gaps the planner took 28.6s of a
+ * 90s budget, and a firm with twenty gaps has no comfortable headroom. When
+ * that lands it will look exactly like a provider outage in the logs unless
+ * something separates them — and the two need opposite responses. A provider
+ * error is waited out; a limit hit means the work no longer fits and the
+ * ceiling (or the batching) has to change.
+ *
+ * Thrown rather than returned because both cases end the call with no plan:
+ * the caller's job is to tell them apart, not to recover.
+ */
+export type ToolLoopLimit = 'budget' | 'turns';
+
+export class ToolLoopLimitError extends Error {
+  readonly limit: ToolLoopLimit;
+  constructor(limit: ToolLoopLimit, message: string) {
+    super(message);
+    this.name = 'ToolLoopLimitError';
+    this.limit = limit;
+  }
+}
+
 export interface ToolLoopRequest {
   system: string;
   user: string;
@@ -384,14 +408,16 @@ export async function runToolLoop(
 
   for (;;) {
     if (turns >= maxTurns) {
-      throw new Error(
+      throw new ToolLoopLimitError(
+        'turns',
         `${req.label}: tool loop hit the ${maxTurns}-turn ceiling without a final answer ` +
           `(${calls.length} tool calls made)`,
       );
     }
     const remaining = budgetMs - (Date.now() - started);
     if (remaining <= 0) {
-      throw new Error(
+      throw new ToolLoopLimitError(
+        'budget',
         `${req.label}: tool loop exceeded its ${budgetMs}ms budget after ${turns} turns`,
       );
     }

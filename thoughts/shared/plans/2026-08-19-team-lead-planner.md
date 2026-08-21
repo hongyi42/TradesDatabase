@@ -359,8 +359,11 @@ citing nothing.
       firm per day. **Flag for Phase 4:** 28.6s against a 90s `MAX_TOOL_LOOP_BUDGET_MS` is not
       comfortable headroom once a firm has twenty gaps rather than two — re-check before going
       live, and log a budget throw distinctly from a model error.
-- [ ] after deploy, read cron logs for ≥3 planner ticks and confirm the same on the pilot
-      **(blocked: needs `PLANNER_MODE=shadow` on the Render cron — user action)**
+- [x] after deploy, read cron logs for ≥3 planner ticks and confirm the same on the pilot —
+      done 2026-08-20 on the pilot. Purity proven by FINGERPRINT, not by eye: `md5(string_agg(...))`
+      over `nudges` before and after. When the hash moved on tick 3 it was attributed by
+      re-fingerprinting the six original rows (identical) and confirming 0 rows carried
+      `not_before`/`escalate_after` — a watcher-created row, not the planner.
 
   *Wording note for the next reader:* shadow leaves **`nudges` byte-identical**, which is the
   claim. It does still write telemetry — one `cost_events` batch per model turn, one per tool
@@ -454,8 +457,11 @@ prompts are short; a long email or transcript is the input that would trip them.
 measurement.
 
 ### Manual verification
-- [ ] read three consecutive shadow plans and judge whether the hold/close/escalate calls are
+- [x] read three consecutive shadow plans and judge whether the hold/close/escalate calls are
       ones you would have made. This is the judgment gate — nothing automated can stand in for it.
+      **Done by the user 2026-08-20** ("For Jane, I agree with the judgement"). Two changes came
+      out of it: the cost-gap reframe to "the record has a hole", and the id-hunting fix — and the
+      planner's own argument for escalating at 24h became PR #158.
 
 ---
 *Pause after this phase — its manual check is the go/no-go for Phase 4.*

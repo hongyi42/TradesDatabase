@@ -676,6 +676,7 @@ describe('the planner gate', () => {
             applied: 0,
       refusedAtApply: 0,
       recorded: 0,
+      limitHits: { budget: 0, turns: 0 },
             tenantErrors: 0,
             byAction: {},
             plans: [],

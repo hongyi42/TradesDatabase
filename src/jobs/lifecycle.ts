@@ -46,11 +46,15 @@ import { hasModelCredentials } from '../model/forcedTool.js';
 //     (rung 1 is optional — the Stage-0 behavior needs no new env), 'shadow'
 //     counts would-be nudges, 'live' asks technicians first; any other value
 //     is the same LOUD stepError.
-// (9) the team-lead compose turn (feature B Phase 3): the ONE model call in
-//     the ladder — writes the question for each pending nudge (or declines).
-//     Every tick, but triple-gated: NUDGES_MODE='live' (a frozen ladder must
-//     not keep composing leftovers), model credentials present (the step-3/4
-//     key idiom), and per-row attempt caps inside the runner.
+// (9) the team-lead PLANNER (plan 2026-08-19): one agentic call per firm per
+//     half-hour that decides pacing, closure and escalation. Gated on
+//     PLANNER_MODE alone — NOT on NUDGES_MODE — and runs BEFORE compose so a
+//     hold it writes is honoured on the same tick;
+// (10) the team-lead compose turn (feature B Phase 3): the ONE model call that
+//     writes the question for each pending nudge (or declines). Every tick, but
+//     triple-gated: NUDGES_MODE='live' (a frozen ladder must not keep composing
+//     leftovers), model credentials present (the step-3/4 key idiom), and
+//     per-row attempt caps inside the runner.
 // Steps 5 and 7 report `skipped` — not an error — when the cost tables are absent,
 // so a deploy that lands before the migration does not turn the cron red.
 // (The schedule-sheet mirror step retired with the Telegram-schedule series
@@ -372,6 +376,13 @@ export async function runLifecycle(
     try {
       teamLeadPlanner = await (deps.runPlanner ?? runPlanner)(nowIso, plannerMode, {
         tools: [...TEAM_LEAD_TOOL_SCHEMAS],
+        // The planner's `escalate` only moves a deadline — the SWEEP inside
+        // step 8 performs the handoff, and it reads nothing unless the watcher
+        // is live. Deliberately decoupling the planner's gate from the ladder
+        // (see above) means this combination is reachable: watcher rolled back
+        // to shadow, planner still on. Without this the escalation would write
+        // its row, log `applied`, and reach nobody.
+        sweepLive: watchersMode === 'live',
         // The identity is minted PER TENANT, from the tenant the planner is
         // currently walking — never bound once for the process.
         execute: (tenantId, name, args) =>

@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from 'vitest';
 import type { Technician } from '../db/technicians.js';
 import { runLifecycle } from './lifecycle.js';
+import type { PlannerDeps } from '../teamLead/planner.js';
 
 // Pure unit tests â€” every step injected. The exit-code contract is `ok`
 // (main() maps ok:false â†’ exit 1 so Render marks the run failed).
@@ -659,12 +660,17 @@ describe('the planner gate', () => {
 
   const planned = (over: Record<string, unknown> = {}) => {
     const calls: Array<[string, string]> = [];
+    // The third argument too: `sweepLive` rides in here, and the planner cannot
+    // work it out for itself.
+    const opts: Array<PlannerDeps | undefined> = [];
     return {
       calls,
+      opts,
       deps: {
         ...STUBS,
-        runPlanner: async (nowIso: string, mode: string) => {
+        runPlanner: async (nowIso: string, mode: string, o?: PlannerDeps) => {
           calls.push([nowIso, mode]);
+          opts.push(o);
           return {
             mode: mode as 'shadow',
             tenants: 1,
@@ -748,6 +754,31 @@ describe('the planner gate', () => {
     const { calls, deps } = planned();
     await runLifecycle('2026-07-02T12:30:00.000Z', deps);
     expect(calls).toEqual([['2026-07-02T12:30:00.000Z', 'live']]);
+  });
+
+  // The rail in validateDecisions is only real if this wiring is right: the
+  // planner's `escalate` is performed by the SWEEP in step 8, and the planner
+  // cannot see whether that sweep will run. Both directions are pinned, because
+  // a wiring that always said `true` would pass a one-sided test and quietly
+  // restore the defect.
+  test.each([
+    ['live', true],
+    ['shadow', false],
+  ] as const)('WATCHERS_MODE %s reaches the planner as sweepLive=%s', async (watchers, expected) => {
+    process.env.PLANNER_MODE = 'live';
+    process.env.WATCHERS_MODE = watchers;
+    const { opts, deps } = planned();
+    await runLifecycle('2026-07-02T12:30:00.000Z', deps);
+    expect(opts).toHaveLength(1);
+    expect(opts[0]?.sweepLive).toBe(expected);
+  });
+
+  test('an UNSET watcher also reads as sweepLive=false — step 8 never runs at all', async () => {
+    process.env.PLANNER_MODE = 'live';
+    delete process.env.WATCHERS_MODE;
+    const { opts, deps } = planned();
+    await runLifecycle('2026-07-02T12:30:00.000Z', deps);
+    expect(opts[0]?.sweepLive).toBe(false);
   });
 
   test('a throwing planner is a stepError, red — and never blocks compose', async () => {

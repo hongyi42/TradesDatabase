@@ -167,6 +167,21 @@ export interface PlannerDeps {
     args: Record<string, unknown>,
   ) => Promise<unknown>;
   specs?: NudgeKindSpec[];
+  // Will the SWEEP run this deployment? Not a seam for tests — a fact the
+  // caller owns and the planner cannot see, because `escalate` does not
+  // escalate: it brings the deadline forward and lets watchers.ts perform the
+  // handoff. The sweep reads open nudges only when WATCHERS_MODE is 'live'
+  // (watchers.ts:361), and step 8 is skipped entirely when it is unset — so
+  // with the watcher rolled back and PLANNER_MODE on, every escalate would
+  // write a real row, report `applied`, and reach nobody. Recording an
+  // escalation that never happened is worse than not escalating: the one place
+  // a manager would check says the handover was made.
+  //
+  // Defaults TRUE — the old behaviour — because the alternative fails in the
+  // worse direction: a caller that forgets to pass it would silently stop
+  // escalating in a healthy deployment. lifecycle.ts always passes it, and a
+  // test pins that wiring.
+  sweepLive?: boolean;
 }
 
 const ctxStr = (n: Nudge, k: string): string | null => {
@@ -365,6 +380,7 @@ export function validateDecisions(
   raw: unknown,
   views: Map<string, GapView>,
   nowMs: number = Date.now(),
+  sweepLive: boolean = true,
 ): { decisions: PlannerDecision[]; dropped: DroppedDecision[] } {
   const decisions: PlannerDecision[] = [];
   const dropped: DroppedDecision[] = [];
@@ -427,6 +443,24 @@ export function validateDecisions(
     // escalate_after forward on a pending row moves nothing. A gap nobody can
     // even be asked already has its own path — the delivery deadline hands it
     // to the manager as never-delivered.
+    // The SWEEP performs every escalation; this rail is the same principle as
+    // the send/hold ones below, one level up. There, an action is refused
+    // because the ROW cannot observe it; here, because the DEPLOYMENT cannot.
+    // Both are the silent no-op this phase exists to make impossible — and this
+    // one is the more dangerous of the two, since the write succeeds and the
+    // decision log would read `applied` for a handover nobody ever received.
+    //
+    // Refused, not skipped: the model's judgment was sound, so it is recorded
+    // with its own words and confidence. What failed is the machinery, and the
+    // reason says so rather than blaming the decision.
+    if (action === 'escalate' && !sweepLive) {
+      push(
+        'escalate while the watcher is not live — escalation is performed by the sweep, which ' +
+          'only runs when WATCHERS_MODE is live, so nothing would reach the manager. This is a ' +
+          'deployment state, not a fault in the decision.',
+      );
+      continue;
+    }
     if (action === 'escalate' && view.nudge.status !== 'asked') {
       push(
         'escalate on a gap that has not been asked yet — escalation is for silence after a ' +
@@ -613,6 +647,7 @@ export async function runPlanner(
   const setSchedule = deps.setSchedule ?? setNudgeSchedule;
   const markOutcome = deps.markOutcome ?? markNudgeOutcome;
   const specs = deps.specs ?? NUDGE_KIND_SPECS;
+  const sweepLive = deps.sweepLive ?? true;
   const tools = deps.tools ?? [];
   const execute = deps.execute;
 
@@ -752,7 +787,7 @@ export async function runPlanner(
         [...tools, SUBMIT_PLAN_TOOL],
         async (name, args) => {
           if (name === SUBMIT_PLAN_TOOL.name) {
-            const checked = validateDecisions(args, views, nowMs);
+            const checked = validateDecisions(args, views, nowMs, sweepLive);
             outcome = checked; // the LAST submission stands, refusals included
             // A submission where EVERY decision was refused is a correctable
             // mistake, not an answer. An EMPTY plan is a legitimate choice

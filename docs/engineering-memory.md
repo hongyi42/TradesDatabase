@@ -329,6 +329,40 @@ live decision observed so far. Worth confirming against a fuller `nudge_decision
 treating it as settled, and worth remembering before anyone tunes the planner's judgment about
 closure: today that judgment mostly cannot reach the row.
 
+### A delegated action needs its performer's gate (2026-08-21)
+
+Found by reading the planner plan's four phases **together** rather than one PR at a time — a
+cross-phase pass after every phase had already been reviewed on its own and an independent
+whole-PR review of Phase 4 came back clean. Neither could see this, because no single diff
+contains it.
+
+**The shape.** Phase 4 made `escalate` *delegate*: it does not escalate, it writes
+`escalate_after = now` and lets the sweep perform the handoff, so the rung-2 flag and the orphan
+doctrine stay in one place. Phase 3 had separately, and deliberately, decoupled the planner's gate
+from the ladder — `PLANNER_MODE` alone, never `NUDGES_MODE`. That decoupling reasoned carefully
+about a NUDGES_MODE rollback and never mentioned `WATCHERS_MODE`. But the sweep reads open nudges
+only when the watcher is live (`watchers.ts:361`), and step 8 is skipped outright when the var is
+unset.
+
+So `WATCHERS_MODE` ∈ {unset, shadow} with `PLANNER_MODE=live` gave: the deadline write succeeds,
+`applyDecision` correctly reports `applied` because a row really moved, the decision log records an
+escalation — and no manager is ever told. **Void is survivable; void-and-logged-as-delivered is
+not**, because the one place anybody would check says the handover was made.
+
+**The rule.** When an action is performed by a different component than the one that decides it,
+the decider must be told whether the performer is running. The planner now takes `sweepLive` from
+lifecycle and refuses `escalate` without it — the same rail as the `send`/`hold` status checks, one
+level up: there an action is refused because the ROW cannot observe it, here because the DEPLOYMENT
+cannot. Refused, not skipped, and the reason says the machinery failed rather than the judgment.
+
+**Also fixed in the same pass:** the prompt's WHEN TO GIVE UP paragraph told the model that an
+already-escalated, still-unanswered gap should be closed. Closing requires a quote to cite or a
+filled record, and an unanswered gap has neither — so the instruction could only ever be refused.
+It was harmless while the planner had no memory; **Phase 4's history line made it reachable**, since
+an applied-but-not-yet-swept escalate renders as `prior decisions: 1 (last: escalate, …)`. A
+capability added in one phase can activate dead prompt text written in another — re-read the prompt
+against the rails whenever either changes.
+
 ### The planner's first live decision, and how we proved the deploy (2026-08-21)
 
 **Phase 4 ran end to end in production at 01:31:29Z.** Gap `4bd956ea` (Radiant heat check), asked

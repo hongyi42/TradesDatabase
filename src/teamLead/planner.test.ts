@@ -604,6 +604,33 @@ describe('the state rails — no decision may be a silent no-op', () => {
     expect(s.plans[0].dropped[0].why).toContain('has not been asked yet');
   });
 
+  // Cross-phase defect: `escalate` does not escalate — it moves the deadline and
+  // the SWEEP performs the handoff. The sweep reads open nudges only when the
+  // watcher is live, so with the watcher rolled back the write would succeed,
+  // the log would say `applied`, and no manager would ever be told.
+  test('escalate is refused when the sweep that performs it is not running', async () => {
+    const s = await runOn(
+      { status: 'asked' },
+      [{ nudgeId: 'n1', action: 'escalate', confidence: 'high', reason: 'silent for a day' }],
+      { sweepLive: false },
+    );
+    expect(s.decisions).toBe(0);
+    expect(s.plans[0].dropped[0].why).toContain('watcher is not live');
+    // The DECISION was sound; the machinery was not. The reason must not read
+    // as though the model got it wrong.
+    expect(s.plans[0].dropped[0].why).toContain('not a fault in the decision');
+  });
+
+  test('escalate is allowed on the same row once the sweep IS running', async () => {
+    const s = await runOn(
+      { status: 'asked' },
+      [{ nudgeId: 'n1', action: 'escalate', confidence: 'high', reason: 'silent for a day' }],
+      { sweepLive: true },
+    );
+    expect(s.decisions).toBe(1);
+    expect(s.plans[0].dropped).toEqual([]);
+  });
+
   test('a rail-refused decision is RECORDED with the model own words, not just counted', async () => {
     const recorded: unknown[] = [];
     await runOn(
@@ -757,6 +784,28 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     ]);
     expect(setSchedule).toHaveBeenCalledWith('n1', 't1', { escalateAfter: NOW }, ['asked']);
     expect(markOutcome).not.toHaveBeenCalled();
+  });
+
+  // The whole point of the rail: with the sweep down, the deadline write would
+  // have SUCCEEDED and been logged `applied`. A truthful log is the reason this
+  // is refused rather than attempted — an escalation recorded as delivered is
+  // worse than one that never happened, because it stops anyone looking.
+  test('with the sweep down, escalate writes NOTHING and is logged as refused', async () => {
+    const { setSchedule, markOutcome, summary, recorded } = await live(
+      { status: 'asked' },
+      [{ nudgeId: 'n1', action: 'escalate', confidence: 'high', reason: 'no reply all day' }],
+      { sweepLive: false },
+    );
+    expect(setSchedule).not.toHaveBeenCalled();
+    expect(markOutcome).not.toHaveBeenCalled();
+    expect(summary.applied).toBe(0);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].outcome).toBe('refused');
+    expect(recorded[0].action).toBe('escalate');
+    // The model's own words survive, so the log distinguishes "it decided badly"
+    // from "we could not carry it out".
+    expect(recorded[0].reason).toBe('no reply all day');
+    expect(recorded[0].confidence).toBe('high');
   });
 
   test('close writes a resolution that QUOTES the evidence it cited', async () => {

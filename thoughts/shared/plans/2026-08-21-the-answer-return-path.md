@@ -1,6 +1,6 @@
 ---
 date: 2026-08-21
-task: Close the ladder's return path — stop the escalation copy asserting what it hasn't checked, let field notes record in one call, and give an answer a provable link to the gap it answered
+task: Close the ladder's return path — hold every manager-facing template to "assert nothing you were not given", let field notes record in one call, and give an answer a provable link to the gap it answered
 research: thoughts/shared/research/2026-08-21-the-answer-return-path.md
 status: draft
 ---
@@ -39,14 +39,22 @@ the `--deliver` path, a live check); the return-path eval (its own plan).
 - **A mixed batch confirms as a whole** (user, ratified) — no code needed here: once phase 2 lands,
   note and money are both one-shot, so no mixed case remains in the nudge-answer path. The rule
   binds only when `record_standing_fact` is in the batch.
-- **Phase 1 REMOVES unchecked claims; it does not verify them** (review finding, reversed from the
-  first draft) — the first draft would have passed `hasActivitySince` into the copy so it could
-  check itself. That is provably useless: `watchers.ts:553-557` resolves and `continue`s whenever
-  `spec.filled()` is truthy, and `filled` **is** `hasActivitySince` (`nudgeKinds.ts:186`, `:301`),
-  so at the escalation push (`:582`) it is false by construction. Worse, the 2026-08-20 specimen was
-  false precisely because the activity was a `money_events` row, which `hasActivitySince` cannot
-  see. Verifying the claim honestly requires the money ledger — the deferred trio. So the copy stops
-  asserting instead.
+- **One rule governs every template on the manager path** (user, 2026-08-21, after a survey of all
+  twelve fixed strings across the planner/seat-agent/human paths): *a template may render data it
+  was given and may carry instructions, but must never assert a fact it did not receive as an
+  argument.* It is checkable from a function signature — `handoff(n, mode, naiveLocal?)` takes a
+  nudge and a clock, so every factual claim in its output was unbacked by construction. That is a
+  signature bug, not a copy bug. Phase 1 applies the rule to all four offending templates (#4-#7),
+  widened from the original two on user instruction.
+- **A clause is argument-fed ONLY where a predicate genuinely backs it; otherwise it is deleted**
+  (implementation call, from the review) — the first draft would have passed `hasActivitySince` in
+  so the copy could check itself. Two problems. At the escalation push it is false by construction
+  (`watchers.ts:553-557` resolves and `continue`s whenever `filled()` is truthy, and `filled` **is**
+  `hasActivitySince`). And it is blind to `money_events` — the exact reason the 2026-08-20 specimen
+  was false. So the flag that IS passed is named `noNoteOrStatusChange`, after the predicate rather
+  than a conclusion, and it licenses one wording only. Claims it cannot back — anything about "the
+  record" generally, anything about cost — are deleted. Backing those honestly needs the deferred
+  money-ledger trio.
 - **Phase 4 is ADDITIVE** — making the sweep close only on stamped answers would break every flow on
   day one, since no stamp exists until agents start passing one. Both paths close the gap and write
   different `resolution` text; that difference IS the corpus.
@@ -107,53 +115,95 @@ Phases 2-4 need the local Supabase stack (`npm run seed:local`, already required
 the `supabase-test` MCP (pilot read-back, already connected); phase 3's message check additionally
 needs ssh to trades-box-1.
 
-## Phase 1: The escalation copy stops asserting what it hasn't checked
+## Phase 1: The manager copy asserts nothing it wasn't given
 
 ### What this phase does
-Deletes the two unverified claims from the escalated copy and carries the planner's own reason
-through to the manager.
+Applies one rule to every fixed string on the manager path: **a template may render data it was
+given and may carry instructions, but must never assert a fact it did not receive as an argument.**
+Four templates violate it today. Each factual clause either becomes argument-fed with wording that
+exactly matches the predicate backing it, or is deleted. The planner's own reason replaces the
+guesswork with something we actually know.
 
 ### Changes required
 
 **`src/jobs/nudgeKinds.ts`**
-- Widen the signature (`:138-142`) to
-  `handoff(n, mode, naiveLocal?, ctx?: { plannerReason?: string | null }): HandoffPlan | null`.
-  Optional for the same reason `naiveLocal` is: the two `'expired'` call sites have no sweep state.
-  (Deliberately NOT passing `hasActivitySince` — see Decisions.)
-- `OVERDUE_VISIT_GAP_SPEC.handoff` (`:230-264`): delete "and hasn't heard back" and "nothing is on
-  the job's record yet". Say what is true: the assistant asked on `<date>` and the question is still
-  open on our side.
-- `JOB_COST_GAP_SPEC.handoff` (`:325`): same. NOTE its current signature is `(n, mode)` only — widen
-  it to match the interface.
+- Add the context type. **The field name is the constraint — it names the predicate, not a
+  conclusion**, so a future caller cannot use it to justify a wider claim:
+  ```ts
+  interface HandoffContext {
+    plannerReason?: string | null;
+    // TRUE only when the caller has just evaluated hasActivitySince and it was
+    // false. Backs ONE clause with ONE wording: "no field note and no status
+    // change". It does NOT back "nothing is on the record" (that predicate is
+    // blind to money_events — the 2026-08-20 specimen) and it does NOT back any
+    // claim about cost (see :314 — the cost `filled` ignores the ledger).
+    noNoteOrStatusChange?: boolean;
+  }
+  ```
+- Widen `handoff` (`:138-142`) to `handoff(n, mode, naiveLocal?, ctx?: HandoffContext)`. Optional for
+  the same reason `naiveLocal` is: `compose.ts:98` has no sweep state — and that is exactly the call
+  site that must stop asserting.
+- **(#4) `stage0Suggestion` (`:151-159`)** — takes a 4th arg `noNoteOrStatusChange?: boolean`. Drop
+  the general claim "nothing has been recorded about it yet"; keep only the specific one, and only
+  when the flag is true: "no field note and no status change has been recorded for it". The general
+  claim is the false one — it is a statement about the whole record made from a predicate that reads
+  two tables.
+- **(#5) `OVERDUE_VISIT_GAP_SPEC.handoff` escalated (`:258-262`)** — delete "and hasn't heard back"
+  (no reply-side datum exists anywhere in the system) and "nothing is on the job's record yet"
+  (replaced by the argument-fed clause above).
+- **(#6) `JOB_COST_GAP_SPEC.handoff` (`:325`)** — its signature is `(n, mode)` only; widen it to the
+  interface. Delete "and hasn't heard back" AND "the job's costs are still incomplete". The cost
+  clause is **deleted, not made argument-fed**: `filled` (`:301`) tests `hasActivitySince`, and the
+  comment at `:314` states the nudge path "deliberately still ignores the ledger", so nothing
+  reaching this function can back a claim about cost.
 - Append the reason when present, attributed and truncated to 200 chars:
   `` `\n\nThe assistant's note: "<reason>"` `` — attributed because it is model-authored text on a
-  manager surface where every other word is code-owned. `flat()` is private to `planner.ts:220` and
-  `flatten` is unexported in `composeCopy.ts` — add a local helper here rather than exporting either.
+  surface where every other word is code-owned. `flat()` is private to `planner.ts:220` and
+  `flatten` is unexported in `composeCopy.ts`; add a local helper rather than exporting either.
 
 **`src/jobs/watchers.ts`**
 - Add `listDecisions?: typeof listDecisionsForNudges` to `WatcherDeps` (`:182-210`). **Required** —
-  `watchers.test.ts:17` states every collaborator is injected, and an un-injected DB read would make
-  the existing escalation tests (`:656`, `:814`) hit the database.
+  `watchers.test.ts:17` states every collaborator is injected; an un-injected read would make the
+  existing escalation tests (`:656`, `:814`) hit the database.
 - Before the escalation loop (`:654`), batch-read once for all escalating ids; `reasonFor(id)` = the
-  newest row with `action === 'escalate' && outcome === 'applied'`, else null.
-- `:656` — pass `{ plannerReason: reasonFor(x.n.id) }`. `:605` (`'expired'`) unchanged.
+  newest row with `action === 'escalate' && outcome === 'applied'`, else null. One query, not N.
+- `:656` — pass `{ plannerReason: reasonFor(x.n.id), noNoteOrStatusChange: true }`. The flag is
+  honest here for both specs: escalation is only reached after `filled()` returned null, and both
+  specs' `filled` is `hasActivitySince` (over different windows).
+- `:605` (`'expired'`) — same flag, same justification; no `plannerReason` (nobody planned it).
+- `:804` — `stage0Suggestion(title, customer, g.ends_at, true)`; the detector filtered on
+  `!hasActivitySince` at `:444`.
+- **(#7) `:888-891`** — delete "so the job's costs are incomplete". **Before wording the survivor,
+  confirm what the cost candidate filter actually reads**: `jobsWithCostEvents` is built at `:506`
+  and used only in `itemResolved`, so it is NOT obvious the detector consults the ledger. If it does
+  not, the sentence may say only that the job has no recorded cost *note*, never that its costs are
+  incomplete.
+
+**`src/teamLead/compose.ts:98`** — unchanged, and that is the point: passing no `ctx` now means both
+factual clauses are omitted. This path asserts nothing because it has checked nothing.
 
 ### Automated verification
 - [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] new test: escalated copy contains neither "hasn't heard back" nor "on the job's record"
+- [ ] new test: escalated visit copy contains neither "hasn't heard back" nor "on the job's record"
+- [ ] new test: escalated cost copy contains no claim about costs being incomplete
+- [ ] new test: `stage0Suggestion` WITHOUT the flag omits the note/status clause entirely
+- [ ] new test: `stage0Suggestion` WITH the flag says "no field note and no status change" and does
+      NOT say "nothing has been recorded"
+- [ ] new test: `handoff` called with no `ctx` (the `compose.ts:98` shape) emits no factual clause
+      and still returns a valid plan
 - [ ] new test: an `applied` escalate reason appears, attributed, truncated at 200
 - [ ] new test: a `refused` or `shadow` decision's reason is NOT carried
-- [ ] new test: `handoff` with no `ctx` still returns a valid plan
-- [ ] new test: the reasons are read in ONE batched call for N escalations, not N calls
-- [ ] mutation: restore either deleted claim → test 1 fails
+- [ ] new test: reasons are read in ONE batched call for N escalations
+- [ ] mutation: restore any deleted claim → its test fails
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP
-- [ ] Read the stored `suggestion` on the two existing specimen items and confirm it is the OLD copy
-      — so any new item is distinguishable from the pre-change corpus
+- [ ] Read the stored `suggestion` on the two existing specimen items and confirm it is the OLD copy,
+      so any new item is distinguishable from the pre-change corpus
 
 ### Manual verification
-- [ ] Read one regenerated sentence and judge it reads as a colleague's note, not a machine hedging
+- [ ] Read one regenerated escalation and one regenerated expiry side by side and judge they read as
+      a colleague's note, not a machine hedging
 
 ---
 *Pause after this phase — Manual verification is non-empty.*

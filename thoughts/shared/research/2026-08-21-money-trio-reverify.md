@@ -23,6 +23,13 @@ the planner's record-basis close. What remains is narrower but load-bearing: one
 closing it) for BOTH gap kinds. Separately, money events are the only L2-adjacent rows in the
 system that record no provenance.
 
+A second finding, surfaced while tracing who should judge a money answer: **the planner cannot move
+an escalation deadline outward.** The escalation clock is a flat 24h enforced by a sweep that runs
+288 times a day; the planner is awake at most 24 times a day and, for an already-asked gap, its
+whole vocabulary is close / escalate-now / leave alone. Its prompt tells it that leaving a gap
+alone grants more time, which is true for a gap that has not gone out yet and false for one that
+has.
+
 The most important finding is a trap: **the obvious one-line fix does not fix the specimen.** The
 set that is already in hand at the sweep, `jobsWithCostEvents`, is scoped to `kind='material_cost'`
 only. The Tankless event was a `payment_received`. Wiring that set into the closure predicate would
@@ -123,6 +130,40 @@ shows every other L2 surface stamped — `visits` (`recordFieldNote.ts:244`), `c
 unstamped. The `record_money_event` dispatch (`server.ts:5479-5490`) passes ten fields; that is not
 one of them.
 
+### The planner's duty cycle, and what it is able to write
+
+The escalation deadline is a flat 24h from `asked_at` (`NUDGE_ESCALATE_HOURS`,
+`src/jobs/watchers.ts:119`), enforced by the sweep. The sweep has **no window gate** — zero
+references to `insideAskWindow` in `watchers.ts`. The planner runs at `getUTCMinutes() % 30 < 5`
+(`src/jobs/lifecycle.ts:352`) and skips out-of-window tenants entirely
+(`src/teamLead/planner.ts:656-659`; window 7-19 firm-local, `src/teamLead/compose.ts:51-52`).
+
+Measured against one day: **288 sweep ticks, at most 24 planner ticks.** The escalation clock and
+the planner's waking hours are unrelated to each other.
+
+What the planner can write to a nudge (`src/teamLead/planner.ts:565-598`):
+
+| action | writes | status rail |
+|---|---|---|
+| `send` | `not_before = null` | `pending` only |
+| `hold` | `not_before = <instant>` | `pending` only |
+| `escalate` | `escalate_after = now` | `asked` only |
+| `close` | `markNudgeOutcome` | none |
+
+`setNudgeSchedule` (`src/db/nudges.ts:252-282`) accepts any `escalateAfter` instant — the
+mechanism is unrestricted. **The planner's only writer of it is `escalate`, which always passes
+`nowIso`.** No path exists by which the planner moves a deadline LATER. `not_before` gates compose
+and nothing else (`src/teamLead/compose.ts:192-200`), so `hold` changes nothing observable on an
+asked row, which is why the rail refuses it (`src/teamLead/planner.ts:439-449`).
+
+The prompt states the opposite:
+
+> "To give somebody more time, simply DO NOT NAME the gap. Leaving it alone is how waiting is
+> expressed" (`src/teamLead/plannerPrompt.ts:44-46`)
+
+That holds for a `pending` row. For an `asked` row the 24h clock runs regardless of whether the
+planner names it, so "leaving it alone" does not grant time — it forfeits the turn.
+
 ## External Dependencies
 
 - **Supabase / PostgREST** — every read here. The silent 1000-row cap is why `listJobIdsWithCostEvents`
@@ -152,26 +193,38 @@ one of them.
 
 ## Decision Points
 
-**D1. Does a money event alone fill a VISIT gap?** Carried forward unanswered from the 2026-08-19
-doc, which called it *"a product call, not an engineering one"*: a payment proves contact happened
-but says nothing about how the work went. Option A — yes, it closes the nudge (somebody answered).
-Option B — no; it proves contact but the job's record still lacks the field report, so it wants a
-second predicate. Option C — it closes the nudge but simultaneously opens (or leaves) a
-record-completeness gap. Today's code does none of these: it cannot see the event at all.
+**D1. Where the money judgment is made.** The repo's stated split is that facts live in code and
+the planner adjudicates (`src/teamLead/plannerPrompt.ts:11`; plan `2026-08-19-team-lead-planner.md`
+Decisions). Splitting the 2026-08-19 question along that line yields two: *"did a money event land
+on this job"* is a fact; *"does a payment answer 'how did the visit go'"* is a judgment.
+Option A — widen `filled` so the SWEEP decides. It runs 12x more often and at an earlier lifecycle
+step, so this makes the sweep the judge and further shrinks the planner's already-narrow reachable
+`close` (`docs/engineering-memory.md:302-330`).
+Option B — leave `filled` narrow and extend the planner's GAP VIEW, the way `recordFilled`
+(`src/teamLead/planner.ts:288-296`) already does for cost gaps, so the model judges. Money is the
+one evidence class the sweep cannot pre-empt, because it cannot see it at all — so under Option B
+the planner's `close` is reachable here in a way it is not elsewhere.
+Option C — both, with the sweep's predicate as a conservative floor and the planner free above it.
 
-**D2. Which money kinds count as activity, and for which gap kind.** `jobsWithCostEvents` is
-`material_cost`-only by deliberate design. A visit gap answered with `payment_received` needs a
-different read. Option A — one broad "any money event since the bound" reader used by both kinds.
-Option B — per-kind money scoping in the registry, so each spec declares which kinds answer it.
-Option C — keep `material_cost` for cost gaps and add a separate broad reader for visit gaps.
+**D2. Which money kinds count as an answer, and for which gap kind.** `jobsWithCostEvents` is
+`material_cost`-only by deliberate design (`src/db/moneyEvents.ts:220-221`), so a visit gap
+answered with `payment_received` needs a different read. Option A — one broad "any money event on
+these jobs since a bound" reader serving both kinds. Option B — per-kind money scoping declared in
+the kind registry, so each spec states which kinds answer it. Option C — keep `material_cost` for
+cost gaps and add a separate broad reader for visit gaps only.
 
-**D3. Where the widening happens.** Option A — extend `latestByJob`'s accumulator so the closure
-check asks "did anything land on this job", with the input list extensible by the kind registry
-(the 2026-08-19 doc's own suggestion). This fixes detection AND closure for both kinds in one
-place. Option B — leave `latestByJob` alone and add money as a separate fact on `SweepFacts` that
-each spec consults, which keeps the visit detector blind unless changed too.
+**D3. Whether the planner can move an escalation deadline outward.** Today it cannot (see "The
+planner's duty cycle" above): `setNudgeSchedule` accepts any instant, but `escalate` is its only
+caller and always passes `nowIso`. Option A — leave it, and let the fail-safe carry every gap whose
+deadline falls outside the planner's waking hours. Option B — add an `extend` action writing a
+later `escalate_after`, bounded by a ceiling the way `hold` is bounded by the delivery deadline
+(`src/teamLead/planner.ts:355-357`); an unbounded extend would let the model postpone indefinitely
+and the deadline would stop being a fail-safe. Option C — raise `NUDGE_ESCALATE_HOURS`, noting it
+was lowered 48 -> 24 on 2026-08-20 with the planner's own reasoning as the evidence
+(`src/jobs/watchers.ts:111-118`). Under every option the prompt paragraph at
+`plannerPrompt.ts:44-46` describes a capability that does not exist for asked rows.
 
-**D4. Whether widening the predicate should also change DETECTION.** `hasActivitySince` is used at
+**D4. Whether widening should also change DETECTION.** `hasActivitySince` is used at
 `watchers.ts:444` to decide whether to open a visit gap at all. Widening it means fewer gaps are
 ever opened. Option A — accept that (a job with a payment right after the visit is arguably not a
 gap). Option B — scope the widening to closure only, keeping detection's current sensitivity.

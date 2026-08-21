@@ -110,20 +110,29 @@ The marker distinguishes the three outcomes: nothing for `applied`, ` — REFUSE
 | `nudges` | the gap itself: question text, state, timings, `resolution` | `subject_ref` | watchers, compose, the box runner, the planner |
 | `review_items` | manager-facing handoffs, `detail` JSONB + `suggestion` | `subject_ref` | managers (via admin tools), the sweep |
 | `raw_captures` (L1) | verbatim human text, plus outbound agent actions | `job_id`, `customer_id` | everything; append-only |
-| `cost_events` | token/tool spend | `technician_ref` (`spine:team-lead`) | the cost rollup |
+| `cost_events` (model) | token spend per call | `technician_ref` (`spine:team-lead`) | the cost rollup |
+| `cost_events` (tool) | **one row per spine tool call, naming the tool** | `technician_ref` + `metadata.tool` | the cost rollup |
 | L3 `attributes` | standing facts about a customer/job | the L2 row | `get_job` / `get_customer_context`, rendered to managers |
 | box transcripts | seat-agent conversation history | the sandbox session | the agent itself, on its own box |
 
-**Tool calls are not in this table because they are not stored anywhere.** `runToolLoop` returns a
-`calls[]` array carrying turn number, tool name, arguments, result and success flag;
-[planner.ts:863](src/teamLead/planner.ts#L863) consumes `result.calls.length` and the rest is
-garbage-collected when the tick ends.
+**Tool calls are HALF traced, by the cost path rather than by any trace path.** Two separate
+recorders write to `cost_events` and they differ:
 
-**`cost_events` has the hooks for attribution and does not use them.** The table carries
-`source_ref` and `metadata` columns, but `recordModelUsage` ([costs.ts:173](src/db/costs.ts#L173))
-builds its rows from `{tenantId, technicianRef, provider, unit, method}` only. So spend is
-attributable to *the planner as a whole* and to nothing finer — not a firm's gap, not a job, not a
-decision.
+- `recordModelUsage` ([costs.ts:173](src/db/costs.ts#L173)) bills tokens and sets
+  `{tenantId, technicianRef, provider, unit, method}` only — no `source_ref`, no `metadata`.
+- The MCP dispatch recorder ([server.ts:2037](src/mcp/server.ts#L2037)) writes one
+  `sku: 'tool_call'` row per call with **`metadata: { tool: name }`**, and does so *before the tier
+  gate*, so a refused call still counts.
+
+So for every spine tool call there is a durable row naming **which tool, which tenant, which caller
+ref, and when** — but not its arguments, its result, or which decision it served. The arguments and
+results do exist in memory: `runToolLoop` returns a `calls[]` array carrying turn number, tool name,
+arguments, result and success flag, and [planner.ts:863](src/teamLead/planner.ts#L863) consumes
+`result.calls.length` while the rest is garbage-collected when the tick ends.
+
+This half-trace is not theoretical: it is what proved, on 2026-08-21, that the Phase 4 build was
+live — a `metadata.tool = 'recall_decisions'` row at 01:01:12Z for a tool that had not existed forty
+minutes earlier.
 
 ## External Dependencies
 
@@ -211,13 +220,15 @@ documents these properties:
    `nudge_decisions` keyed by customer/job; or keep lessons only as derived reads over
    `nudge_decisions` with nothing new stored.
 
-2. **Whether traces get stored at all.** Tool calls exist in memory during a tick and are discarded.
-   Storing them makes replay and a future distillation pass possible; not storing them keeps the
-   only persisted artifact the already-abstracted decision row.
+2. **Whether traces get stored beyond the name.** A per-call row already exists naming the tool and
+   the time (`cost_events` + `metadata.tool`); what is discarded is the arguments, the results, and
+   the link to the decision they served. The fork is whether to widen the existing row, add a
+   separate trace store, or keep the already-abstracted decision row as the only durable artifact.
 
-3. **Whether spend becomes attributable.** `cost_events.source_ref` and `.metadata` exist and are
-   unused by `recordModelUsage`. Populating them would make "what did deciding about this gap cost"
-   answerable; leaving them keeps one writer and one shape for all spine model spend.
+3. **Whether model spend becomes attributable.** `source_ref` is unused by BOTH recorders, and
+   `metadata` is unused by the model-token one. Populating them would make "what did deciding about
+   this gap cost" answerable; leaving them keeps one shape for all spine model spend. Note the tool
+   recorder already demonstrates the pattern works.
 
 4. **Whether an eval precedes further memory work.** The only decision-quality harness in the repo
    is `date-eval`, and its README documents what made it trustworthy: an independent truth
@@ -235,10 +246,14 @@ documents these properties:
 ## Open Questions
 
 - **Does the pushed history line change behaviour?** It landed with Phase 4 and has not been
-  observed against a gap that has any history — at the time of writing `nudge_decisions` holds zero
-  rows on the pilot.
-- **Does the planner call `recall_decisions` unprompted?** The prompt instructs it to, but tool
-  choice is the model's, and no tick has yet run with a non-empty history to consult.
+  observed against a gap that has any history — as of 2026-08-21 01:05Z `nudge_decisions` still
+  holds zero rows on the pilot, because the only live tick so far chose to leave its one gap alone
+  (correctly: 5.5h into a 24h escalation default, genuinely unanswered). An empty plan writes
+  nothing, so the first history line needs a tick that actually decides something.
+- ~~**Does the planner call `recall_decisions` unprompted?**~~ **ANSWERED 2026-08-21 01:01:12Z, the
+  first live tick on which the tool existed: yes.** It called `recall_decisions` before `spine_read`,
+  on a gap with no history, and got back the "you have not decided about this before" note. What is
+  still unknown is whether it keeps doing so once the answer stops being empty.
 - **Is `nudge_decisions` growth real in practice?** Constraint 6 describes an unbounded path that
   requires `NUDGES_MODE` to be rolled back while `PLANNER_MODE` stays on; whether that combination
   ever persists long enough to matter is unmeasured.

@@ -299,6 +299,34 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   never `--agent main`). Candidate medic v3 (recorded, not built): probe with a real 1-token
   completion under a ~30s timeout so completion stalls trip the nvidia-prod failover.
 
+### The planner's first live decision, and how we proved the deploy (2026-08-21)
+
+**Phase 4 ran end to end in production at 01:31:29Z.** Gap `4bd956ea` (Radiant heat check), asked
+12:34 PM firm-local, decided 18:31 local — 6.0h after the ask against a 24h default. `escalate` /
+`applied` / medium. The planner wrote `escalate_after`; the SWEEP opened the review item four
+minutes later and set the resolution. One escalation path, reached two ways — as designed.
+
+**Every factual claim was true this time**, unlike the 2026-08-20 specimen: no captures since the
+ask, assignment still `confirmed` rather than completed. The hardcoded manager copy happened to be
+accurate — which is luck, not a guarantee: that copy asserts "hasn't heard back — nothing is on the
+job's record yet" as a TEMPLATE (`nudgeKinds.ts:259`) and checks neither claim at write time.
+
+**The reasoning is the part to keep:** it escalated not on a clock but because *the working day was
+ending* — "End of business — a manager should follow up directly." That is judgment a constant
+cannot express. **Watch for the failure mode**: with a 7am-7pm ask window, "it's nearly 7pm"
+eventually becomes true of every gap, which would collapse the 24h default into "escalate the same
+evening."
+
+**PROOF-OF-DEPLOY TECHNIQUE, reusable and better than the Render dashboard.** `cost_events` rows
+with `sku='tool_call'` carry `metadata.tool`, written at `server.ts:2037` **before the tier gate**,
+so even refused calls count. A `recall_decisions` row at 01:01:12Z — a tool that had not existed
+forty minutes earlier — proved the new build was serving, without touching Render at all. This also
+corrects a claim made earlier the same day: tool calls ARE half-traced (name, tenant, caller, time);
+what is missing is arguments, results, and the link to the decision they served.
+
+The planner also called `recall_decisions` **unprompted**, before `spine_read`, on a gap with no
+history — the pull half of "push the keys, pull the content" works without being forced.
+
 ### Continual learning — direction, and the finding that changes the obvious fix (2026-08-20)
 
 **User direction, recorded as direction (mostly out of current scope):** we eventually want

@@ -7,6 +7,7 @@ import { isUniqueViolation } from './rawCaptures.js';
 import {
   appendMoneyEvent,
   listJobIdsWithCostEvents,
+  listLiveMoneyEventsForJobsSince,
   technicianMoneyView,
   deriveStatusTarget,
   listMoneyEventsForJob,
@@ -389,6 +390,98 @@ describe('material_cost — a COST kind is inert in every revenue number (plan 2
     ).rejects.toThrow();
     // And it does not move the job off its status.
     expect((await getJob(jobId))?.status).toBe('open');
+  });
+});
+
+describe('listLiveMoneyEventsForJobsSince — what the planner is shown', () => {
+  const PAST = '2000-01-01T00:00:00.000Z';
+
+  test('returns money on the named jobs, and nothing from another job', async () => {
+    const a = await freshJob();
+    const b = await freshJob();
+    await appendMoneyEvent({ tenantId, jobId: a.jobId, kind: 'payment_received', amountCents: 50000 });
+    await appendMoneyEvent({ tenantId, jobId: b.jobId, kind: 'payment_received', amountCents: 1 });
+    const rows = await listLiveMoneyEventsForJobsSince(tenantId, [a.jobId], PAST);
+    expect(rows.map((r) => r.job_id)).toEqual([a.jobId]);
+  });
+
+  test('the bound EXCLUDES what landed before it', async () => {
+    const { jobId } = await freshJob();
+    await appendMoneyEvent({ tenantId, jobId, kind: 'payment_received', amountCents: 50000 });
+    // A bound in the future of the row that was just written.
+    const future = new Date(Date.now() + 60_000).toISOString();
+    expect(await listLiveMoneyEventsForJobsSince(tenantId, [jobId], future)).toEqual([]);
+  });
+
+  // The bound is created_at, NOT occurred_at, and the two genuinely differ here.
+  // A payment the manager states happened last year but records TODAY is still
+  // them answering today's question — and occurred_at is caller-supplied, so
+  // filtering on it would also let a caller hide a row from the planner.
+  test('filters on created_at, not the caller-supplied occurred_at', async () => {
+    const { jobId } = await freshJob();
+    await appendMoneyEvent({
+      tenantId, jobId, kind: 'payment_received', amountCents: 50000,
+      occurredAt: '2020-01-01T00:00:00.000Z',
+    });
+    // A bound AFTER the stated occurrence but BEFORE the row was written.
+    const rows = await listLiveMoneyEventsForJobsSince(tenantId, [jobId], '2021-01-01T00:00:00.000Z');
+    expect(rows.map((r) => r.kind)).toEqual(['payment_received']);
+    expect(rows[0].occurred_at.slice(0, 4)).toBe('2020');
+  });
+
+  test('empty input returns empty (PostgREST in.() with zero values errors)', async () => {
+    expect(await listLiveMoneyEventsForJobsSince(tenantId, [], PAST)).toEqual([]);
+  });
+
+  // The load-bearing one. The canceller is written AFTER the target, so a
+  // second pass that carried the same time filter would miss it and the
+  // cancelled amount would render to the planner as live money.
+  test('an event cancelled by a LATER correction disappears — and so does the correction', async () => {
+    const { jobId } = await freshJob();
+    const target = await appendMoneyEvent({
+      tenantId, jobId, kind: 'invoice_issued', amountCents: 90000,
+    });
+    await appendMoneyEvent({
+      tenantId, jobId, kind: 'invoice_voided', correctsEventId: target.id,
+    });
+    const rows = await listLiveMoneyEventsForJobsSince(tenantId, [jobId], PAST);
+    expect(rows.map((r) => r.kind)).toEqual([]);
+  });
+
+  test('a payment_refunded is NOT a negation — both rows still show', async () => {
+    // Refunds fold by subtraction, not by cancellation. The planner is entitled
+    // to see both and weigh them; hiding either would misstate the job.
+    const { jobId } = await freshJob();
+    await appendMoneyEvent({ tenantId, jobId, kind: 'payment_received', amountCents: 50000 });
+    await appendMoneyEvent({ tenantId, jobId, kind: 'payment_refunded', amountCents: 50000 });
+    const rows = await listLiveMoneyEventsForJobsSince(tenantId, [jobId], PAST);
+    expect(rows.map((r) => r.kind).sort()).toEqual(['payment_received', 'payment_refunded']);
+  });
+
+  test('a live row survives beside a cancelled one', async () => {
+    const { jobId } = await freshJob();
+    const doomed = await appendMoneyEvent({
+      tenantId, jobId, kind: 'invoice_issued', amountCents: 1000,
+    });
+    await appendMoneyEvent({ tenantId, jobId, kind: 'invoice_voided', correctsEventId: doomed.id });
+    await appendMoneyEvent({ tenantId, jobId, kind: 'payment_received', amountCents: 2500 });
+    const rows = await listLiveMoneyEventsForJobsSince(tenantId, [jobId], PAST);
+    expect(rows.map((r) => r.kind)).toEqual(['payment_received']);
+  });
+
+  test('pages past the silent 1000-row cap', async () => {
+    // listMoneyEventsForJobs has no paging loop; this reader must not copy it.
+    const { jobId } = await freshJob();
+    const rowsToWrite = 1005;
+    const values = Array.from(
+      { length: rowsToWrite },
+      (_, i) => `('${tenantId}','${jobId}','payment_received',${i + 1})`,
+    ).join(',');
+    await pg.query(
+      `insert into money_events (tenant_id, job_id, kind, amount_cents) values ${values}`,
+    );
+    const rows = await listLiveMoneyEventsForJobsSince(tenantId, [jobId], PAST);
+    expect(rows.length).toBe(rowsToWrite);
   });
 });
 

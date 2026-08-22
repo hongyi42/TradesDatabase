@@ -182,23 +182,30 @@ record line may describe money as well as a cost, and that money on the job is a
 an instruction to close. The existing THE RECORD wording for cost gaps stays.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] new test: money after `asked_at` appears in its own block and sets `moneyOnRecord`
-- [ ] new test: `evidenceText` is UNCHANGED by money (it stays capture text only)
-- [ ] new test: a close with `basis: 'record'` on a visit gap citing `moneyOnRecord` is accepted and
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [x] new test: money after `asked_at` appears in its own block and sets `moneyOnRecord`
+- [x] new test: `evidenceText` is UNCHANGED by money (it stays capture text only)
+- [x] new test: a close with `basis: 'record'` on a visit gap citing `moneyOnRecord` is accepted and
       writes `closed on the record — …`, never `answered — "…"`
-- [ ] new test: money BEFORE `asked_at` does not appear; a gap with no `asked_at` shows none
-- [ ] new test: an event cancelled by a LATER `correction` does not appear, and the `correction`
+- [x] new test: money BEFORE `asked_at` does not appear; a gap with no `asked_at` shows none
+- [x] new test: an event cancelled by a LATER `correction` does not appear, and the `correction`
       row itself does not appear either
-- [ ] new test: a `payment_refunded` still renders (it is not a negation)
-- [ ] new test: the capture lines keep their correct `[n]` labels when money is present
-- [ ] new test: two gaps on one job with money but no notes both get the shared-evidence warning
-- [ ] DB-backed test: the reader pages past 1000 rows
-- [ ] mutation: drop the negation fold → the cancelled-event test fails
+- [x] new test: a `payment_refunded` still renders (it is not a negation)
+- [x] new test: the capture lines keep their correct `[n]` labels when money is present
+- [x] new test: two gaps on one job with money but no notes both get the shared-evidence warning
+- [x] DB-backed test: the reader pages past 1000 rows
+- [x] mutation: drop the negation fold → the cancelled-event test fails
+- [x] EXTRA (review): the `created_at` vs `occurred_at` choice was untested — a mutation to
+      `occurred_at` passed everything. Now pinned at all three sites (reader filter, gap filter,
+      rendered date) with fixtures where the two columns genuinely differ
+- [x] EXTRA (review): the money block and `moneyOnRecord` were uncapped — one job can carry
+      1005+ rows (the reader's own test writes that many), which would be an enormous prompt and
+      a multi-kilobyte PERMANENT `nudges.resolution`. Capped at `EVIDENCE_PER_GAP`, most recent
+      first, and the record fact names the latest entry plus a count
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP (read-only)
-- [ ] Read job `eea05151-77af-4a23-bc27-e47031406f33` and confirm its `payment_received` row's
+- [x] Read job `eea05151-77af-4a23-bc27-e47031406f33` and confirm its `payment_received` row's
       **`created_at`** falls after nudge `10d68c23-…`'s `asked_at` (2026-08-19 19:05:44Z). Report
       both timestamps and name the column
 

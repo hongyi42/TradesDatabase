@@ -103,6 +103,11 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     listNudges: async () => [nudge()],
     listEvidence: async () => [],
     listCostEvents: async () => [],
+    // Plan ① 2026-08-21: stubbed for the same reason as listEvidence above.
+    // WITHOUT this every shadow test below falls through to the real reader with
+    // tenant 't1' and non-uuid job ids — PostgREST 400, swallowed by the
+    // per-tenant catch, surfacing as tenantErrors:1 rather than a loud failure.
+    listMoneySince: async () => [],
     // Phase 4: stubbed by default so a prompt/rail test never reaches the
     // database. Tests that care about the memory or the writers override these.
     listDecisions: async () => new Map(),
@@ -111,6 +116,148 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     ...over,
   };
 }
+
+// A money row shaped like the reader returns one. `created_at` is the bound the
+// planner filters on — deliberately not `occurred_at`, which is caller-supplied.
+const moneyRow = (
+  createdAt: string,
+  kind = 'payment_received',
+  amountCents: number | null = 50000,
+  jobId = 'j1',
+  occurredAt = createdAt,
+) =>
+  ({
+    id: Math.floor(Math.random() * 1e9),
+    tenant_id: 't1',
+    job_id: jobId,
+    kind,
+    amount_cents: amountCents,
+    created_at: createdAt,
+    occurred_at: occurredAt,
+    corrects_event_id: null,
+  }) as unknown as import('../db/index.js').MoneyEvent;
+
+describe('the planner can see money (plan 2026-08-21 ①)', () => {
+  const withMoney = async (money: unknown[], over: Partial<Nudge> = {}) => {
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge(over)],
+      listMoneySince: async () => money as never,
+      runLoop: loopReturning([], seen),
+    }));
+    return seen;
+  };
+
+  test('money after the ask is shown in its OWN block, labelled as the ledger', async () => {
+    const seen = await withMoney([moneyRow('2026-08-15T13:00:00.000Z')]);
+    expect(seen.user).toContain('money on this job since the question went out');
+    expect(seen.user).toContain('payment_received $500.00');
+    // Named as a fact, so the model cannot read it as somebody having spoken.
+    expect(seen.user).toContain('not a quote from a person');
+  });
+
+  test('money BEFORE the ask is not shown — same bound the notes use', async () => {
+    const seen = await withMoney([moneyRow('2026-08-15T11:30:00.000Z')]);
+    expect(seen.user).not.toContain('money on this job');
+  });
+
+  test('a never-asked gap is shown no money at all', async () => {
+    const seen = await withMoney([moneyRow('2026-08-15T13:00:00.000Z')], {
+      status: 'pending', asked_at: null, question: null,
+    });
+    expect(seen.user).not.toContain('money on this job');
+  });
+
+  test("another job's money never leaks into this gap", async () => {
+    const seen = await withMoney([moneyRow('2026-08-15T13:00:00.000Z', 'payment_received', 900, 'j-other')]);
+    expect(seen.user).not.toContain('money on this job');
+  });
+
+  test('an amountless kind renders without a figure, and nothing is ever summed', async () => {
+    const seen = await withMoney([
+      moneyRow('2026-08-15T13:00:00.000Z', 'estimate_declined', null),
+      moneyRow('2026-08-15T13:05:00.000Z', 'payment_received', 2500),
+      moneyRow('2026-08-15T13:06:00.000Z', 'material_cost', 1500),
+    ]);
+    expect(seen.user).toContain('estimate_declined, recorded');
+    expect(seen.user).toContain('payment_received $25.00');
+    expect(seen.user).toContain('material_cost $15.00');
+    // $40.00 is 2500 + 1500 — a figure that appears ONLY if something sums them.
+    expect(seen.user).not.toContain('$40.00');
+  });
+
+  test('the note lines keep their own [n] labels when money is present', async () => {
+    // The render loop indexes evidenceText by the CAPTURE list's index. Money
+    // spliced in ahead of it would silently mislabel every note.
+    const seen = await withMoney([moneyRow('2026-08-15T13:00:00.000Z')]);
+    expect(seen.user).toContain('[1] payment_received');
+    const seen2: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listEvidence: async () => [evidence('2026-08-15T12:30:00.000Z', 'the note text')],
+      listMoneySince: async () => [moneyRow('2026-08-15T13:00:00.000Z')] as never,
+      runLoop: loopReturning([], seen2),
+    }));
+    // The note's own TEXT must sit under [1]; asserting only the timestamp would
+    // pass even if money had been spliced into evidenceText and shifted it.
+    expect(seen2.user).toContain(
+      '[1] 2026-08-15T12:30:00.000Z via technician_note (ben-shelton): the note text',
+    );
+    expect(seen2.user).toContain('[1] payment_received $500.00');
+  });
+
+  // The bound is created_at, NOT occurred_at. A payment that HAPPENED before the
+  // question but was RECORDED after it is still the person answering — and
+  // occurred_at is caller-supplied, so only created_at is unspoofable.
+  test('a payment that OCCURRED before the ask but was RECORDED after it is shown', async () => {
+    const seen = await withMoney([
+      moneyRow('2026-08-15T13:00:00.000Z', 'payment_received', 50000, 'j1', '2026-08-10T09:00:00.000Z'),
+    ]);
+    expect(seen.user).toContain('payment_received $500.00');
+    // …and the date printed is the one the filter used.
+    expect(seen.user).toContain('recorded 2026-08-15');
+    expect(seen.user).not.toContain('2026-08-10');
+  });
+
+  test('a payment that OCCURRED after the ask but was RECORDED before it is NOT shown', async () => {
+    const seen = await withMoney([
+      moneyRow('2026-08-15T11:00:00.000Z', 'payment_received', 50000, 'j1', '2026-08-16T09:00:00.000Z'),
+    ]);
+    expect(seen.user).not.toContain('money on this job');
+  });
+
+  test('the money block is capped like the notes are, and the record fact stays short', async () => {
+    // One job can carry a great many ledger rows; an uncapped block would be an
+    // enormous prompt AND a multi-kilobyte permanent resolution line.
+    const many = Array.from({ length: EVIDENCE_PER_GAP + 4 }, (_, i) =>
+      moneyRow(`2026-08-15T13:${String(i).padStart(2, '0')}:00.000Z`, 'payment_received', 100 * (i + 1)),
+    );
+    const seen = await withMoney(many);
+    expect(seen.user).toContain(`[${EVIDENCE_PER_GAP}] payment_received`);
+    expect(seen.user).not.toContain(`[${EVIDENCE_PER_GAP + 1}] payment_received`);
+    // Oldest dropped, most recent kept — the notes' own rule.
+    expect(seen.user).toContain('payment_received $10.00'); // the newest (i=9)
+    expect(seen.user).not.toContain('payment_received $1.00'); // the oldest (i=0)
+  });
+
+  test('two gaps on one job are warned that MONEY is shared too, with no notes present', async () => {
+    // The warning used to live inside the has-notes branch, so a job with money
+    // and no notes fell straight past it.
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge(), nudge({ id: 'n2', kind: 'job_cost_gap', subject_ref: 'j1' })],
+      listMoneySince: async () => [moneyRow('2026-08-15T13:00:00.000Z')] as never,
+      runLoop: loopReturning([], seen),
+    }));
+    expect(seen.user).toContain('SHARED between');
+  });
+
+  test('with money present the notes line says NOTES, not "nothing has landed"', async () => {
+    // Otherwise the block contradicts itself one line later.
+    const seen = await withMoney([moneyRow('2026-08-15T13:00:00.000Z')]);
+    expect(seen.user).toContain('NO notes have landed');
+    expect(seen.user).not.toContain('NOTHING has landed');
+  });
+});
 
 describe('runPlanner — what it is shown', () => {
   test("evidence is bounded in CODE to what landed AFTER the ask, never at or before it", async () => {
@@ -138,7 +285,7 @@ describe('runPlanner — what it is shown', () => {
       ],
       runLoop: loopReturning([], seen),
     }));
-    expect(seen.user).toContain('NOTHING has landed');
+    expect(seen.user).toContain('NO notes have landed');
     expect(seen.user).not.toContain('different job');
   });
 
@@ -806,6 +953,53 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     // from "we could not carry it out".
     expect(recorded[0].reason).toBe('no reply all day');
     expect(recorded[0].confidence).toBe('high');
+  });
+
+  // The reason money is a RECORD fact and not evidence. `basis: 'evidence'`
+  // means "somebody answered and the citation is THEIR words", and its
+  // resolution reads `answered — "..."`. Closing on money under that basis would
+  // write a permanent audit line saying a person replied when nobody did.
+  test('a money close writes "closed on the record", never "answered"', async () => {
+    const { markOutcome, summary } = await live(
+      { status: 'asked' },
+      [{ nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'they paid' }],
+      { listMoneySince: async () => [moneyRow('2026-08-15T13:00:00.000Z')] as never },
+    );
+    expect(summary.applied).toBe(1);
+    const resolution = markOutcome.mock.calls[0][3] as string;
+    expect(resolution).toContain('closed on the record —');
+    expect(resolution).toContain('payment_received $500.00');
+    expect(resolution).not.toContain('answered —');
+  });
+
+  test('money is NOT quotable as evidence — the citation rail refuses it', async () => {
+    // evidenceText stays capture text only. A model that tries to quote the
+    // money line as somebody's words gets refused, which is what keeps the
+    // `answered — "..."` resolution honest.
+    const { setSchedule, markOutcome, summary } = await live(
+      { status: 'asked' },
+      [{
+        nudgeId: 'n1', action: 'close', basis: 'evidence',
+        citation: 'payment_received $500.00', confidence: 'high', reason: 'they paid',
+      }],
+      { listMoneySince: async () => [moneyRow('2026-08-15T13:00:00.000Z')] as never },
+    );
+    expect(summary.decisions).toBe(0);
+    expect(setSchedule).not.toHaveBeenCalled();
+    expect(markOutcome).not.toHaveBeenCalled();
+    expect(summary.plans[0].dropped[0].why).toContain('does not appear in the evidence');
+  });
+
+  test('a record close still prefers the COST fact when a cost gap has both', async () => {
+    const { markOutcome } = await live(
+      { status: 'asked', kind: 'job_cost_gap' },
+      [{ nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'costed' }],
+      {
+        listCostEvents: async () => ['j1'],
+        listMoneySince: async () => [moneyRow('2026-08-15T13:00:00.000Z')] as never,
+      },
+    );
+    expect(markOutcome.mock.calls[0][3] as string).toContain('a cost is recorded against this job');
   });
 
   test('close writes a resolution that QUOTES the evidence it cited', async () => {

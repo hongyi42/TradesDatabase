@@ -3,6 +3,7 @@ import {
   listDecisionsForNudges,
   listJobEvidenceSince,
   listJobIdsWithCostEvents,
+  listLiveMoneyEventsForJobsSince,
   listNudgesByStatus,
   listTenantIdsWithTelegramBindings,
   markNudgeOutcome,
@@ -10,6 +11,7 @@ import {
   recordNudgeDecisions,
   setNudgeSchedule,
   type JobEvidenceRow,
+  type MoneyEvent,
   type Nudge,
   type NudgeDecision,
   type NudgeDecisionInput,
@@ -146,6 +148,12 @@ export interface PlannerDeps {
   // The record-level test for cost gaps. Same reader the item sweep uses, so
   // "the ledger says this is filled" means one thing across the whole ladder.
   listCostEvents?: typeof listJobIdsWithCostEvents;
+  // Money that landed on a gap's job after the ask (plan 2026-08-21 ①). A
+  // separate read from listCostEvents, deliberately: that one answers "does
+  // this job have a live material_cost" for the cost gap's record test, and is
+  // kind-scoped. This one is every kind, because the PLANNER decides which
+  // kinds answer which question — code states the fact, the model judges it.
+  listMoneySince?: typeof listLiveMoneyEventsForJobsSince;
   runLoop?: typeof runToolLoop;
   // Phase 4: the memory, and the two writers. Injected like everything else so
   // a test never touches the database — and so `shadow` can be proven to call
@@ -234,6 +242,13 @@ interface GapView {
   // that may authorise a `record`-basis close, which is why it is computed here
   // and never taken from the model.
   recordFilled: string | null;
+  // Money that landed on this job after the ask, stated as a FACT (plan
+  // 2026-08-21 ①). Null when none did. It authorises a `record`-basis close the
+  // same way recordFilled does — and for the same reason it is computed here
+  // rather than taken from the model. It is deliberately NOT part of
+  // evidenceText: `evidence` means somebody's own words, and a money-close must
+  // never write `answered — "..."` about a row no person spoke.
+  moneyOnRecord: string | null;
   // Every decision already made about this gap, oldest first. Only its SHAPE
   // reaches the prompt (a count and the last action); the detail is pulled with
   // recall_decisions. Kept on the view so tests can assert both halves.
@@ -275,6 +290,7 @@ function buildGapView(
   sharesJob: boolean,
   jobsWithCostEvents: Set<string>,
   history: NudgeDecision[] = [],
+  money: MoneyEvent[] = [],
 ): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
@@ -293,6 +309,33 @@ function buildGapView(
     n.kind === 'job_cost_gap' && jobId && jobsWithCostEvents.has(jobId)
       ? 'a cost is recorded against this job on the money ledger'
       : null;
+
+  // Money on THIS gap's job, bounded the same way the captures are: only what
+  // landed after the question went out, and nothing at all if it was never
+  // asked. `created_at`, not `occurred_at` — see the reader's own comment.
+  const moneyHere = Number.isNaN(askedAtMs)
+    ? []
+    : money.filter((m) => m.job_id === jobId && Date.parse(m.created_at) > askedAtMs);
+  // Cents to dollars, and NEVER summed and never signed: direction comes from
+  // `kind` (moneyEvents.ts), and the standing rule is to aggregate the
+  // summaries, never the rows. An amountless kind renders without a figure.
+  const moneyAmount = (m: MoneyEvent): string =>
+    `${m.kind}${m.amount_cents == null ? '' : ` $${(m.amount_cents / 100).toFixed(2)}`}`;
+  const moneyLine = (m: MoneyEvent): string =>
+    `${moneyAmount(m)}, recorded ${m.created_at.slice(0, 10)}`;
+  // Capped like the notes are, and for the same reason: one job can carry a very
+  // large number of ledger rows (the reader's own test writes 1005), and an
+  // uncapped block would be both an enormous prompt and — through
+  // `moneyOnRecord` below — a multi-kilobyte line written PERMANENTLY into
+  // nudges.resolution. Most recent wins, matching the notes' `.slice(-N)`.
+  const moneyShown = moneyHere.slice(-EVIDENCE_PER_GAP);
+  const latest = moneyHere[moneyHere.length - 1];
+  const others = moneyHere.length - 1;
+  const moneyOnRecord = latest
+    ? `the money ledger records ${moneyAmount(latest)} against this job, recorded ` +
+      `${latest.created_at.slice(0, 10)} after the question went out` +
+      (others > 0 ? ` (and ${others} other ledger ${others === 1 ? 'entry' : 'entries'})` : '')
+    : null;
 
   const lines = [
     `gap ${n.id}`,
@@ -323,27 +366,53 @@ function buildGapView(
   if (hist) lines.push(hist);
   if (!n.asked_at) {
     lines.push('  evidence since the ask: (nothing was asked yet, so there is none)');
-  } else if (relevant.length === 0) {
-    lines.push('  evidence since the ask: NOTHING has landed on this job since the question went out');
   } else {
+    // The warning sits ABOVE both blocks and outside the has-notes branch: two
+    // gaps on one job share their money as well as their notes, and a job with
+    // money but no notes used to fall straight past this.
     if (sharesJob) {
       // Code-computed, because code KNOWS this and the model would have to infer
       // it. Two gaps on one job see the same notes, and nothing below can tell
       // which question a given sentence answers.
       lines.push(
-        '  NOTE: this job has more than one open gap, so the evidence below is SHARED between ' +
-          'them. Make sure your quote answers THIS question, not the other one.',
+        '  NOTE: this job has more than one open gap, so everything below is SHARED between ' +
+          'them. Make sure it answers THIS question, not the other one.',
       );
     }
-    lines.push('  evidence since the ask:');
-    relevant.forEach((e, i) => {
+    if (relevant.length === 0) {
+      // "notes", not "nothing has landed": money may be printed directly below,
+      // and a blanket nothing-landed claim would contradict it on the next line.
+      lines.push('  notes since the ask: NO notes have landed on this job since the question went out');
+    } else {
+      lines.push('  evidence since the ask:');
+      relevant.forEach((e, i) => {
+        lines.push(
+          `    [${i + 1}] ${e.capture.captured_at} via ${e.capture.channel}` +
+            `${e.capture.technician_ref ? ` (${e.capture.technician_ref})` : ''}: ${evidenceText[i]}`,
+        );
+      });
+    }
+    // AFTER the capture loop, always: that loop indexes evidenceText by
+    // `relevant`'s own index, so anything spliced in ahead of it silently
+    // mislabels every note line.
+    if (moneyShown.length > 0) {
+      lines.push('  money on this job since the question went out:');
+      moneyShown.forEach((m, i) => lines.push(`    [${i + 1}] ${moneyLine(m)}`));
       lines.push(
-        `    [${i + 1}] ${e.capture.captured_at} via ${e.capture.channel}` +
-          `${e.capture.technician_ref ? ` (${e.capture.technician_ref})` : ''}: ${evidenceText[i]}`,
+        '  That is a fact from the ledger, not a quote from a person — weigh whether it answers ' +
+          'THIS question. If it does, close with basis "record".',
       );
-    });
+    }
   }
-  return { nudge: n, jobId, evidenceText, recordFilled, history, block: lines.join('\n') };
+  return {
+    nudge: n,
+    jobId,
+    evidenceText,
+    recordFilled,
+    moneyOnRecord,
+    history,
+    block: lines.join('\n'),
+  };
 }
 
 // Normalised for the citation check ONLY — a model that changes spacing or case
@@ -499,7 +568,11 @@ export function validateDecisions(
       // 2026-08-20). The authority is the code-computed fact on the view: the
       // model chooses the basis, code decides whether that basis holds.
       if (d.basis === 'record') {
-        if (!view.recordFilled) {
+        // EITHER code-computed fact authorises it. recordFilled wins where both
+        // exist: on a cost gap the ledger's cost IS the hole, and it is the more
+        // specific statement of the two.
+        const fact = view.recordFilled ?? view.moneyOnRecord;
+        if (!fact) {
           push('close on the record when the record is not filled');
           continue;
         }
@@ -509,7 +582,7 @@ export function validateDecisions(
           nudgeId,
           action: 'close',
           basis,
-          citation: view.recordFilled, // code's words, not the model's
+          citation: fact, // code's words, not the model's
           confidence,
           reason,
         });
@@ -641,6 +714,7 @@ export async function runPlanner(
   const listNudges = deps.listNudges ?? listNudgesByStatus;
   const listEvidence = deps.listEvidence ?? listJobEvidenceSince;
   const listCostEvents = deps.listCostEvents ?? listJobIdsWithCostEvents;
+  const listMoneySince = deps.listMoneySince ?? listLiveMoneyEventsForJobsSince;
   const runLoop = deps.runLoop ?? runToolLoop;
   const listDecisions = deps.listDecisions ?? listDecisionsForNudges;
   const recordDecisions = deps.recordDecisions ?? recordNudgeDecisions;
@@ -701,10 +775,13 @@ export async function runPlanner(
       const jobIds = [
         ...new Set(open.map((n) => ctxStr(n, 'jobId')).filter((v): v is string => !!v)),
       ];
-      const evidence =
+      // ONE derivation of the floor, shared by the evidence and money reads: two
+      // copies of a bound that must stay identical is a defect waiting to happen.
+      const sinceIso =
         askedAt.length > 0 && jobIds.length > 0
-          ? await listEvidence(tenantId, jobIds, new Date(Math.min(...askedAt)).toISOString())
-          : [];
+          ? new Date(Math.min(...askedAt)).toISOString()
+          : null;
+      const evidence = sinceIso ? await listEvidence(tenantId, jobIds, sinceIso) : [];
 
       // ONE ledger read per tenant, over the cost gaps' jobs only — the same
       // batched discipline as the evidence read. Skipped entirely when the firm
@@ -720,6 +797,12 @@ export async function runPlanner(
       const jobsWithCostEvents = new Set(
         costJobIds.length > 0 ? await listCostEvents(tenantId, costJobIds) : [],
       );
+
+      // ONE batched money read for the whole tick, bounded by the EARLIEST ask
+      // among these gaps; buildGapView narrows it per gap. Skipped entirely when
+      // nothing has been asked yet — an unasked gap can have no answer, so there
+      // is no window to read.
+      const money = sinceIso ? await listMoneySince(tenantId, jobIds, sinceIso) : [];
 
       // ONE batched read of the planner's own history for this tick's gaps —
       // the same discipline as the evidence and ledger reads above. Only its
@@ -746,6 +829,7 @@ export async function runPlanner(
             !!j && (gapsPerJob.get(j) ?? 0) > 1,
             jobsWithCostEvents,
             historyByNudge.get(n.id) ?? [],
+            money,
           ),
         );
       }

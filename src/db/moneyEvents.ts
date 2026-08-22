@@ -292,6 +292,84 @@ export async function listJobIdsWithCostEvents(
   return [...new Set(costRows.filter((r) => !negated.has(r.id)).map((r) => r.job_id))];
 }
 
+// Money that LANDED on these jobs after a bound — the planner's evidence read
+// (plan 2026-08-21 ①). Batched and paged like listJobIdsWithCostEvents, never a
+// tenant-wide scan, and deliberately NOT modelled on listMoneyEventsForJobs
+// above: that one has no paging loop and is exposed to PostgREST's silent
+// 1000-row cap.
+//
+// The bound is `created_at`, not `occurred_at`. Two reasons, and the second is
+// the load-bearing one: (a) a payment that HAPPENED before the question was
+// asked but was RECORDED after it is still the person answering, and (b)
+// `occurred_at` is caller-supplied (appendMoneyEvent takes it as input) while
+// `created_at` is never set by the insert — so only `created_at` is unspoofable.
+//
+// "Live" here means what summarizeMoney means by it, because there is exactly
+// ONE definition (see NEGATING_KINDS): a row is dropped if something cancels
+// it, AND the cancelling rows themselves are dropped. Without the second half a
+// correction would render to the planner as fresh money. Note `payment_refunded`
+// is deliberately NOT a negation — the fold handles it by subtraction — so a
+// refunded payment still appears here, which is correct: it is still something
+// that landed on the job and the planner is entitled to weigh it.
+export async function listLiveMoneyEventsForJobsSince(
+  tenantId: string,
+  jobIds: string[],
+  sinceIso: string,
+): Promise<MoneyEvent[]> {
+  if (jobIds.length === 0) return []; // PostgREST `in.()` with zero values errors
+  const PAGE = 1000;
+  const CHUNK = 500;
+
+  // (1) Everything on these jobs inside the window.
+  const rows: MoneyEvent[] = [];
+  for (let i = 0; i < jobIds.length; i += CHUNK) {
+    const jobSlice = jobIds.slice(i, i + CHUNK);
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('money_events')
+        .select()
+        .eq('tenant_id', tenantId)
+        .in('job_id', jobSlice)
+        .gt('created_at', sinceIso)
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listLiveMoneyEventsForJobsSince failed: ${error.message}`);
+      rows.push(...((data ?? []) as MoneyEvent[]));
+      if (!data || data.length < PAGE) break;
+    }
+  }
+  if (rows.length === 0) return [];
+
+  // (2) What cancels any of them. NO time filter — not because one would break
+  // it today (a canceller is always written after its target, so any canceller
+  // of an in-window row is itself in-window; this was probed with a mutation and
+  // the filtered variant passed), but because the filter would be load-bearing
+  // for a reason nothing states and nothing tests. The unfiltered query is the
+  // simpler one and stays correct if `created_at` ever stops being insert-time.
+  const ids = rows.map((r) => r.id);
+  const negated = new Set<number>();
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const slice = ids.slice(i, i + CHUNK);
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('money_events')
+        .select('corrects_event_id')
+        .eq('tenant_id', tenantId)
+        .in('kind', [...NEGATING_KINDS])
+        .in('corrects_event_id', slice)
+        .order('corrects_event_id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listLiveMoneyEventsForJobsSince failed: ${error.message}`);
+      for (const r of (data ?? []) as { corrects_event_id: number | null }[]) {
+        if (r.corrects_event_id != null) negated.add(r.corrects_event_id);
+      }
+      if (!data || data.length < PAGE) break;
+    }
+  }
+
+  return rows.filter((r) => !negated.has(r.id) && !NEGATING_KINDS.has(r.kind));
+}
+
 export interface MoneySummary {
   /** Last approved estimate + change orders after that approval. */
   quotedCents: number;

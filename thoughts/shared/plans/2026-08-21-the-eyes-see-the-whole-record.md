@@ -2,7 +2,7 @@
 date: 2026-08-21
 task: Let the planner see money and give it a way to postpone an escalation — the first of three plans splitting Group A, in dependency order
 research: thoughts/shared/research/2026-08-21-money-trio-reverify.md
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -340,17 +340,23 @@ tenant/job coherence lives in the typed layer as "ONE write-side guard for every
   already writes the column (`:164`).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] new test: a valid `sourceCaptureId` lands on the row
-- [ ] new test: a capture from ANOTHER tenant is dropped and the money event still records
-- [ ] new test: an UNKNOWN capture id produces the identical outcome and the identical warning
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [x] new test: a valid `sourceCaptureId` lands on the row
+- [x] new test: a capture from ANOTHER tenant is dropped and the money event still records
+- [x] new test: an UNKNOWN capture id produces the identical outcome and the identical warning
       (no existence oracle — a test asserting they differ would be asserting the bug)
-- [ ] new test: a malformed id is dropped, a warning logs, and the money event STILL records
-- [ ] mutation: drop the tenant guard → the cross-tenant test fails
+- [x] new test: a malformed id is dropped, a warning logs, and the money event STILL records
+- [x] mutation: drop the tenant guard → the cross-tenant test fails
+- [x] EXTRA (review): `sourceCaptureId: ''` THREW and lost the money row — `?? null` keeps an
+      empty string while the truthiness guard skips it, so `''` reached a uuid column. Reachable
+      from the dispatch, since `str()` returns `''` unchanged. Now `|| null`, with a test
+- [x] EXTRA (review): nothing asserted that the two warnings are the same STRING. Outcome parity
+      alone would let a future edit split them into "unknown" vs "another tenant" and rebuild the
+      existence oracle with a green suite. Now spied and compared
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP
-- [ ] Query `money_events` for rows with a non-null `source_capture_id` over the following week.
+- [x] Query `money_events` for rows with a non-null `source_capture_id` over the following week.
       **Zero is a finding, not a pass** — it means no agent is passing it, which is the same
       adoption question plan ③'s stamp faces
 

@@ -1462,6 +1462,13 @@ const ADMIN_TOOLS = [
             'true = deposit / progress / milestone invoice — records the money without implying ' +
             'the job is done.',
         },
+        sourceCaptureId: {
+          type: 'string',
+          description:
+            'The capture this amount came from, when you recorded the message it came from in ' +
+            'this same conversation — copy the id record_field_note returned. Omit if there is ' +
+            'none; a wrong id costs the link, never the entry.',
+        },
         correctsEventId: {
           type: 'integer',
           description:
@@ -5445,7 +5452,9 @@ async function dispatch(
       // rule) — EVERY arg, because this row is append-only: a numeric
       // externalRef (check numbers are numbers) silently dropped by str()
       // would be unfixable except by void-and-re-enter (review finding).
-      for (const k of ['jobId', 'kind', 'occurredAt', 'method', 'externalRef', 'note']) {
+      for (const k of [
+        'jobId', 'kind', 'occurredAt', 'method', 'externalRef', 'note', 'sourceCaptureId',
+      ]) {
         if (args[k] !== undefined && typeof args[k] !== 'string') {
           throw new Error(`${k} must be a string`);
         }
@@ -5483,6 +5492,11 @@ async function dispatch(
         amountCents: (args.amountCents as number | undefined) ?? null,
         occurredAt: str('occurredAt') ?? null,
         actorRef: identity.technicianRef,
+        // Where this amount came from, when the agent recorded the message it
+        // came from in the same conversation. Validated and tenant-guarded in
+        // the typed layer, beside the job and correctsEventId coherence checks —
+        // ONE write-side guard for every surface, per this dispatch's own rule.
+        sourceCaptureId: str('sourceCaptureId') ?? null,
         correctsEventId: (args.correctsEventId as number | undefined) ?? null,
         method: str('method') ?? null,
         externalRef: str('externalRef') ?? null,

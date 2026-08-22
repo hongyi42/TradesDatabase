@@ -1,7 +1,7 @@
 import type { Database, Json } from './database.types.js';
 import { getClient } from './client.js';
 import { ALLOWED_TRANSITIONS, getJob, updateJobStatus, type JobStatus } from './jobs.js';
-import { wrapDbError } from './rawCaptures.js';
+import { getRawCapture, wrapDbError } from './rawCaptures.js';
 
 export type MoneyEvent = Database['public']['Tables']['money_events']['Row'];
 export type MoneyEventKind = Database['public']['Enums']['money_event_kind'];
@@ -48,6 +48,10 @@ const AMOUNTLESS_KINDS: ReadonlySet<MoneyEventKind> = new Set([
 // void" would be accepted and change nothing — the remedy for a mistaken void
 // is RE-ISSUING the cancelled entry (review finding).
 const MUST_REFERENCE: ReadonlySet<MoneyEventKind> = new Set(['invoice_voided', 'correction']);
+// Shape-checked before it can reach a uuid column: PostgREST answers a
+// malformed uuid with an error (22P02), and a mistyped provenance id must cost
+// the LINK, never the amount. Same guard shape as nudgeDecisions' safeJobId.
+const CAPTURE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Exported so "is this row still live?" has exactly ONE definition — the fold
 // (negatedIds) and the cost probe (listJobIdsWithCostEvents) both read it, so a
 // new negating kind cannot land in one and be silently forgotten in the other.
@@ -109,6 +113,33 @@ export async function appendMoneyEvent(input: AppendMoneyEventInput): Promise<Mo
     throw new Error(`appendMoneyEvent: job ${input.jobId} not found for this tenant`);
   }
 
+  // Provenance — which capture this amount came from. Optional, and its guard is
+  // deliberately the OPPOSITE of the job guard above: a bad value drops the LINK
+  // and records the amount anyway. An amount that fails to record because its
+  // provenance was mistyped is strictly worse than an amount recorded without
+  // provenance, and unlike jobId this is not load-bearing for anything.
+  //
+  // Unknown and cross-tenant get the SAME outcome and the SAME message, for the
+  // reason the job guard states: no existence oracle. A caller must not be able
+  // to learn that an id exists in some other firm's record by watching which
+  // way this behaves.
+  // `||`, not `??`: an empty string is truthy-adjacent enough to survive `??`
+  // and falsy enough to skip the guard below, so it would sail through to a uuid
+  // column and take the whole entry down with it — the exact outcome this guard
+  // exists to prevent. safeJobId (nudgeDecisions.ts) gets this right with an
+  // explicit `if (!jobId) return null`.
+  let sourceCaptureId = input.sourceCaptureId || null;
+  if (sourceCaptureId) {
+    const capture = CAPTURE_ID_RE.test(sourceCaptureId) ? await getRawCapture(sourceCaptureId) : null;
+    if (!capture || capture.tenant_id !== input.tenantId) {
+      console.error(
+        `[moneyEvents] sourceCaptureId ${sourceCaptureId} is not a capture in this tenant — ` +
+          'recording the amount without it',
+      );
+      sourceCaptureId = null;
+    }
+  }
+
   if (MUST_REFERENCE.has(input.kind)) {
     if (input.correctsEventId == null) {
       throw new Error(
@@ -161,7 +192,7 @@ export async function appendMoneyEvent(input: AppendMoneyEventInput): Promise<Mo
       currency: input.currency ?? 'USD',
       ...(input.occurredAt ? { occurred_at: input.occurredAt } : {}),
       actor_ref: input.actorRef ?? null,
-      source_capture_id: input.sourceCaptureId ?? null,
+      source_capture_id: sourceCaptureId,
       corrects_event_id: input.correctsEventId ?? null,
       method: input.method ?? null,
       external_ref: input.externalRef ?? null,

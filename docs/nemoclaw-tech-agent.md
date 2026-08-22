@@ -81,7 +81,7 @@ HTTP server every bot calls**, with identity asserted per request by the gateway
     stateless transport returns `406`/`415` without both. (The MCP SDK client sets these automatically.)
 - The server rejects a missing/forged signature with `401`, then resolves `(tenant, technician)` from the
   verified header — never from tool args. `record_field_note` no longer accepts a `technicianRef` arg.
-- **Stateless ⇒ horizontally scalable:** the `record_field_note` stage→confirm flow keys off a
+- **Stateless ⇒ horizontally scalable:** the `record_field_note` identity/create-customer flow keys off a
   DB-persisted review-item token (`confirmId`, same store as `send_email`'s staged sends), so any
   replica can serve any request — no session affinity behind a load balancer.
 
@@ -210,16 +210,24 @@ every call, so sessions crossing midnight stay grounded. It states what today IS
 `resolve_date` remains the only sanctioned way to compute any OTHER date (eval:
 date-knowledge alone scores 66–81% on scheduling phrases; the tool 99%). Array-shaped results
 (e.g. `list_recent_captures`) keep their shape and carry no rider.
-- The agent calls `record_field_note({ text, channel })`. **Nothing is recorded by this call** —
-  the note is staged server-side (a review-item token) and the response carries a `confirmId`.
+- The agent calls `record_field_note({ text, channel })`. **If identity resolves to a customer or
+  job that already exists, this call RECORDS** — L1 + L2 in one step, `status: 'recorded'`
+  (plan ②, 2026-08-21). Idempotency comes from a content stamp
+  (`note:<sha256(tenant|tech|channel|identity|text|blobPath)>`), so a retried tool call returns
+  `duplicate` instead of writing a second permanent row and a second visit.
 - If the result `status` is `needs_identity`, the agent asks the technician which customer
   (a `suggestion` carries the scheduled address when there is one), then calls again with
-  `confirmId` + `confirmed: { customerId }` (or `{ address }`).
-- On `needs_confirmation` the response includes a `preview` (customer name, new-customer flag,
-  note text). The agent shows the technician exactly that preview and waits for an explicit yes,
-  then calls again with **ONLY `confirmId`** — that final call writes L1 + L2 in one step and
-  returns `status: 'recorded'`. The STAGED copy is what commits; fresh args are ignored.
-- Staged notes expire after 15 minutes; one staged note per person (a re-stage supersedes).
+  `confirmId` + `confirmed: { customerId }` (or `{ address }`). **That answer records too** — a
+  missing datum was never a confirmation, so there is no third call.
+- `needs_confirmation` now happens in exactly ONE case: the answer would **create a new
+  customer**. The response carries a `preview` (customer name, new-customer flag, note text); the
+  agent shows it verbatim, waits for an explicit yes, then calls again with **ONLY `confirmId`**.
+  The STAGED copy is what commits; fresh args are ignored. The confirm survives here and nowhere
+  else because the retractability argument that removed it does not cover creation: a note can be
+  retracted by its author, but a customer pinned by a stamped capture cannot be removed at all.
+- Staged notes expire after 15 minutes; one staged note per person (a re-stage supersedes). A
+  `needs_identity` item is deliberately left open if nobody answers — its `detail.text` is the
+  ONLY copy of that note, so expiring it would destroy it.
 - **Fixing a mistake:** the record is append-only — nothing is ever deleted. The agent records
   the corrected note first, then calls `retract_capture({ captureId, reason })` on the wrong
   capture (also two-step: stage → show → confirm with only `confirmId`). Retracted captures,

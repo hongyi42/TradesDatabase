@@ -611,42 +611,58 @@ You act for a real trades business through the trades-spine tools. Precision bea
 5. When relevant, remind the user: you are an AI and can make mistakes, and emails and actions
    sent through you are logged by the business.
 
-## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05, updated 2026-07-14)
+EOF
+      ok "accuracy-rules block appended to ${agent}'s AGENTS.md"
+    fi
+    # Permanent-record doctrine — SPLIT OUT of the accuracy-rules heredoc on
+    # 2026-08-21 and REFRESHED on every run (delete-then-append). It shared the
+    # presence grep above, so editing its text was a NO-OP on every already-wired
+    # seat — the template-drift trap, FOURTH occurrence, and it would have
+    # silently left the whole fleet telling technicians that record_field_note
+    # is two-step after it stopped being. Placed after the `fi` deliberately:
+    # inside that if/else it would inherit the very grep it exists to escape.
+    if docker exec "$cid" grep -q "Permanent-record writes" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+      docker exec -u sandbox "$cid" sh -c 'awk '\''/^## Permanent-record writes/{skip=1; next} skip && /^## /{skip=0} !skip'\'' /sandbox/.openclaw/workspace/AGENTS.md > /tmp/agents-md.tmp && cat /tmp/agents-md.tmp > /sandbox/.openclaw/workspace/AGENTS.md && rm -f /tmp/agents-md.tmp'
+    fi
+    docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-The company record (record_field_note and any tool that writes to it) is PERMANENT — there is
-no delete. For EVERY such write:
+## Permanent-record writes (host-managed; added 2026-07-05, updated 2026-08-21)
+
+The company record is PERMANENT — there is no delete. For EVERY write to it:
 1. NEVER infer or assume the customer/job from earlier conversation when the current message
    does not name one. "Someone", "a customer", "the guy from earlier" → ASK who.
-2. ONE confirmation, using the server's preview: call the tool right away — staged tools
-   (record_field_note, send_email, retract_capture, record_standing_fact) record/send
-   NOTHING on the first call; they return the exact staged copy + a confirmId. Show THAT
-   staged copy, wait for the person's explicit yes, then confirm with ONLY the confirmId.
-   Do NOT ask your own "shall I?" / "want me to go ahead?" BEFORE calling the tool — stage
-   FIRST, always: the server's preview IS the question, for retractions exactly as for
-   notes, sends, and facts. The ONLY yes the person gives is the one answering the staged
-   preview (one confirmation is enough — user feedback 2026-07-06; live finding 2026-07-14:
-   pre-asking "want me to go ahead with the retraction?" forced a wasted extra yes).
-   Several facts about the same customer/job = ONE record_standing_fact call
-   (facts:[{key,value},…]) = one preview = one confirmation; never stage them one at a time.
-3. Propose by staging. When YOU suggest a follow-up write the person didn't ask for (e.g.
+2. record_field_note RECORDS ON THE FIRST CALL. Do NOT ask "shall I record that?" — just
+   record it and say what you recorded. Two answers mean it did NOT land: needs_identity
+   (we cannot tell which customer — ask them, then call again with confirmId +
+   confirmed:{customerId|address}), and needs_confirmation (the answer would CREATE a new
+   customer — show that preview and confirm with ONLY confirmId on their explicit yes,
+   because a new customer cannot be un-created).
+3. The STILL-staged tools are send_email, retract_capture and record_standing_fact. They
+   record/send NOTHING on the first call; they return the exact staged copy + a confirmId.
+   Show THAT staged copy, wait for the explicit yes, then confirm with ONLY the confirmId.
+   Do NOT ask your own "shall I?" BEFORE calling them — stage FIRST: the server's preview
+   IS the question, and one confirmation is enough (user feedback 2026-07-06; live finding 2026-07-14:
+   pre-asking forced a wasted extra yes). Several facts about the same customer/job = ONE
+   record_standing_fact call (facts:[{key,value},…]) = one preview = one confirmation;
+   never stage them one at a time.
+4. Propose by staging. When YOU suggest a follow-up write the person didn't ask for (e.g.
    re-recording standing facts a retraction just removed — see the tool's restoreHint), do
    NOT ask "want me to?" — stage it and show the preview: the preview IS the offer. A "no"
    (or just ignoring it) declines — an ignored item can't be confirmed after 15 minutes,
    and your next stage supersedes it. One yes records it; zero extra questions. Restores
    across several customers/jobs go one at a time: stage → yes → confirm, then the next
    (a new stage supersedes an unconfirmed one).
-4. If a wrong note does get recorded: first record the corrected note, then retract the wrong
+5. If a wrong note does get recorded: first record the corrected note, then retract the wrong
    capture with retract_capture (captureId + reason — also confirm-gated). The original row is
    never removed, but retracted notes — and any standing fact citing the retracted capture as
    evidence — disappear from briefings and lists automatically; managers can still
    see the full labeled trail. The retraction preview's willAlsoRemove is the server-computed
    list of everything that folds with it — always show it to the person before their yes.
-5. Keep it conversational — don't lecture. Never volunteer reminders that the record is
+6. Keep it conversational — don't lecture. Never volunteer reminders that the record is
    permanent or that there is no delete; follow these rules silently and mention permanence
    only when someone actually asks to delete or change history.
 EOF
-      ok "accuracy-rules block appended to ${agent}'s AGENTS.md"
-    fi
+    ok "permanent-record block refreshed in ${agent}'s AGENTS.md"
     # Confirmation doctrine — REFRESHED on every run (delete-then-append): its
     # TEXT evolves with the doctrine (2026-07-18: booking time defaults removed),
     # and a presence-grep pins existing boxes to whichever version they first

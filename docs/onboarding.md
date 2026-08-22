@@ -198,8 +198,11 @@ Our server exposes ~40 tools. Two deployment shapes exist in the repo:
 L1 append (verbatim, with `external_id` for dedup) → model **extract** structured fields →
 **identity match** (deterministic) → write/update L2 + L3 with `source_capture_id` provenance.
 
-Two-step confirm: ambiguous identity stages a preview and asks. What the preview showed is exactly
-what the commit does — the resolution travels with the token, so a commit never re-matches.
+One call when the customer is already known (plan ②, 2026-08-21). Two cases still stage and ask:
+ambiguous identity ("which customer?"), and an answer that would CREATE a customer — that one
+previews, because a note can be retracted but a customer pinned by a stamped capture cannot. What
+the preview showed is exactly what the commit does — the resolution travels with the token, so a
+commit never re-matches.
 
 Related: `retract_capture` (L1 can't be deleted, so a retraction is a *new* row that folds the old
 one out of reads), `record_standing_fact` (L3 facts wrapped with the capture that evidences them —

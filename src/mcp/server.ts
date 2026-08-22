@@ -1,6 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
 import type { JsonSchemaObject } from '../model/forcedTool.js';
@@ -254,19 +255,25 @@ const TOOLS = [
   {
     name: 'record_field_note',
     description:
-      'Record a technician field note into the permanent company record — two-step. First call ' +
-      'with text: NOTHING is recorded; you get back needs_identity (ask the technician which ' +
-      'customer, then call again with confirmId + confirmed:{customerId|address}) or ' +
-      'needs_confirmation with a preview. Show the technician EXACTLY the preview (customer + ' +
-      'note text); only on their explicit yes call again with ONLY confirmId — the STAGED copy ' +
-      'is what gets recorded, permanently (there is no delete; a mistake needs retract_capture).',
+      'Record a technician field note into the permanent company record. ONE call: pass the ' +
+      'text and it is recorded — do NOT ask "shall I record that?" first. Two answers mean it ' +
+      'did not land yet: needs_identity (we cannot tell which customer — ask them, then call ' +
+      'again with confirmId + confirmed:{customerId|address}), and needs_confirmation (the ' +
+      'answer would CREATE a new customer, so show the preview and call again with ONLY ' +
+      'confirmId on their explicit yes). Recording is permanent — there is no delete; a mistake ' +
+      'is fixed by recording the correction and then retract_capture.',
     inputSchema: {
       type: 'object',
       properties: {
-        text: { type: 'string', description: 'The note text (voice already transcribed to text). First call only.' },
-        blobPath: { type: 'string', description: 'Optional object-store pointer for audio/photo. First call only.' },
-        channel: { type: 'string', enum: TECH_CHANNELS, description: 'Defaults to technician_note. First call only.' },
-        confirmId: { type: 'string', description: 'Set on follow-up calls; ALONE it records the staged note.' },
+        text: { type: 'string', description: 'The note text (voice already transcribed to text).' },
+        blobPath: { type: 'string', description: 'Optional object-store pointer for audio/photo.' },
+        channel: { type: 'string', enum: TECH_CHANNELS, description: 'Defaults to technician_note.' },
+        confirmId: {
+          type: 'string',
+          description:
+            'Only for following up a needs_identity or needs_confirmation answer. With ' +
+            'confirmed: supplies the missing customer. ALONE: confirms a new-customer preview.',
+        },
         confirmed: {
           type: 'object',
           description: 'With confirmId: the technician\'s answer to a needs_identity question.',
@@ -553,8 +560,9 @@ const TOOLS = [
     name: 'record_standing_fact',
     description:
       'Record durable standing facts about ONE customer or job ("prefers email", "gate code ' +
-      '4321") onto their permanent record — two-step. Unlike record_field_note (one trip\'s ' +
-      'note), this sets facts every future briefing sees. EVERY fact from the same ' +
+      '4321") onto their permanent record — two-step, and it STAYS two-step even though ' +
+      'record_field_note no longer is: a note describes one trip and can be retracted, while a ' +
+      'standing fact lands in every future briefing. EVERY fact from the same ' +
       'conversation about the same customer/job goes in ONE call: first call with customerId ' +
       "OR jobId + facts:[{key,value},…] (+ sourceText, the person's exact words): NOTHING is " +
       'recorded; you get needs_confirmation with ONE preview listing every fact (and the ' +
@@ -1824,6 +1832,49 @@ interface StagedNoteDetail {
   identityReason?: string;
 }
 
+// The one-shot path's idempotency stamp (plan ②, 2026-08-21). The staged path
+// gets its stamp for free — `note:<confirmId>` — because a review item exists to
+// name it. A one-shot call has no item, so a retried tool call would write a
+// SECOND permanent L1 row and a SECOND visit, and L1 has no delete.
+//
+// Every field that could distinguish two legitimately-different notes is in the
+// key, because a collision is a note SILENTLY LOST:
+//   * channel/text/blobPath — a note may be a photo with no text at all, so
+//     hashing text alone makes two different photos for one customer collide.
+//   * identity — "done" for the Hendersons and "done" for the Duartes are not
+//     the same note.
+// There is deliberately NO date component: it would buy a rare same-note
+// re-record at the cost of a midnight-straddle double write, and identity
+// already separates the cases that matter. The accepted consequence is that a
+// genuinely repeated identical note about the same customer comes back
+// `duplicate` — which the caller must report honestly, never as `recorded`.
+//
+// Only ever called where identity resolved to an EXISTING customer/job, so
+// there is no createFrom limb to get wrong.
+function oneShotNoteStamp(input: {
+  tenantId: string;
+  technicianRef: string;
+  channel: CaptureChannel;
+  resolved: ResolvedIdentity;
+  text: string | null;
+  blobPath: string | null;
+}): string {
+  const identity = input.resolved.customerId ?? `job:${input.resolved.jobId ?? ''}`;
+  const h = createHash('sha256')
+    .update(
+      [
+        input.tenantId,
+        input.technicianRef,
+        input.channel,
+        identity,
+        input.text ?? '',
+        input.blobPath ?? '',
+      ].join('\u0000'),
+    )
+    .digest('hex');
+  return `note:${h}`;
+}
+
 // MatchResult → the staged resolution, or undefined while identity is unknown.
 // A confirmed answer that matched no existing customer resolves to create-new;
 // the FULL draft is built here (schedule prefill > extracted/confirmed) so the
@@ -1884,6 +1935,70 @@ async function stagedNotePreview(detail: StagedNoteDetail): Promise<{
     address: draft?.addressLine1 ?? null,
     text: detail.text,
     channel: detail.channel,
+  };
+}
+
+// The ONE commit for a field note, shared by all three paths that record one
+// (plan ②, 2026-08-21): the one-shot call, the identity resume, and the
+// legacy staged confirm. Sharing it is not tidiness — L1 is undeletable, so
+// "did this already land?" must be answered identically everywhere. A path
+// that reported `recorded` on a duplicate would tell a technician their note
+// was written twice when it was written once, or hide a half-written record.
+async function commitNote(input: {
+  tenantId: string;
+  technicianRef: string;
+  text: string | null;
+  blobPath: string | null;
+  channel: CaptureChannel;
+  resolved: ResolvedIdentity;
+  externalId: string;
+  sourceMeta?: Json;
+  extracted: ExtractedFields;
+  // The staged paths know how to describe an already-landed commit against
+  // their token (complete vs partial). The one-shot path has no token, so it
+  // falls back to the plain duplicate report below.
+  reportExisting?: (captureId: string) => Promise<Record<string, unknown>>;
+  retryHint?: string;
+}): Promise<Record<string, unknown>> {
+  let result;
+  try {
+    result = await recordFieldNote(
+      {
+        tenantId: input.tenantId,
+        technicianRef: input.technicianRef,
+        text: input.text,
+        blobPath: input.blobPath,
+        channel: input.channel,
+        resolved: input.resolved,
+        externalId: input.externalId,
+        ...(input.sourceMeta ? { sourceMeta: input.sourceMeta } : {}),
+      },
+      // Replay: no model call, and the commit cannot extract differently than
+      // the identity match the technician was answering.
+      { extract: async () => input.extracted },
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `note NOT recorded: ${msg} — ${input.retryHint ?? 'call again with the same note text'}`,
+    );
+  }
+  if (result.status === 'duplicate') {
+    if (input.reportExisting) return await input.reportExisting(result.captureId);
+    // One-shot: the content stamp already matched, so this exact note is
+    // already on the record. Say so plainly rather than claiming a new write.
+    return {
+      status: 'duplicate',
+      captureId: result.captureId,
+      note: 'this note is already on the record — nothing was written twice',
+    };
+  }
+  return {
+    status: 'recorded',
+    captureId: result.captureId,
+    customerId: result.customerId,
+    jobId: result.jobId,
+    visitId: result.visitId,
   };
 }
 
@@ -2171,6 +2286,38 @@ async function dispatch(
           ...(match.suggestion ? { suggestion: match.suggestion } : {}),
           ...(match.reason ? { identityReason: match.reason } : {}),
         };
+        // ONE-SHOT (plan ②, 2026-08-21): identity resolved to a customer or job
+        // that ALREADY EXISTS → record now. The confirm it replaces bought
+        // ceremony, not safety: a wrong note is retractable by its own author,
+        // and stopping at "shall I?" made the agent answer "Recorded!" to a
+        // technician who was not done (live specimen, 2026-08-19).
+        //
+        // A `createFrom` resolution deliberately does NOT come here. That call
+        // would MINT A CUSTOMER, and a customer pinned by a stamped capture
+        // cannot be removed — so the preview survives exactly where
+        // revertability ends (user, 2026-08-21).
+        if (resolved && (resolved.customerId || resolved.jobId)) {
+          return await commitNote({
+            tenantId,
+            technicianRef: subjectRef,
+            text: text ?? null,
+            blobPath: blobPath ?? null,
+            channel,
+            resolved,
+            externalId: oneShotNoteStamp({
+              tenantId,
+              technicianRef: subjectRef,
+              channel,
+              resolved,
+              text: text ?? null,
+              blobPath: blobPath ?? null,
+            }),
+            // Replay the extraction the identity match just used. Without this
+            // the write path calls the model a SECOND time and can extract
+            // differently than the match that chose this customer.
+            extracted,
+          });
+        }
         const item = await upsertOpenReviewItem({
           tenantId,
           kind: 'pending_field_note',
@@ -2278,6 +2425,31 @@ async function dispatch(
             note: 'Still ambiguous — ask the technician and call again with confirmId + confirmed:{customerId} (or {address}).',
           };
         }
+        // The technician just supplied the missing datum, and a missing datum
+        // was never a confirmation — so an EXISTING customer/job records now.
+        // A createFrom still previews (it would mint a customer).
+        if (resolved.customerId || resolved.jobId) {
+          const out = await commitNote({
+            tenantId,
+            technicianRef: subjectRef,
+            text: detail.text ?? null,
+            blobPath: detail.blobPath ?? null,
+            channel: detail.channel ?? 'technician_note',
+            resolved,
+            // The item exists, so it still owns the stamp — no content hash
+            // needed, and a retry with the same confirmId converges on it.
+            externalId: `note:${item.id}`,
+            sourceMeta: { stagedConfirmId: item.id },
+            extracted: detail.extracted ?? {},
+            reportExisting,
+          });
+          try {
+            await resolveReviewItem(item.id, tenantId, 'resolved', `note recorded by ${subjectRef}`);
+          } catch {
+            /* advisory — a retried confirm hits the externalId dedup */
+          }
+          return out;
+        }
         const newDetail: StagedNoteDetail = { ...detail, resolved };
         const updated = await updateOpenReviewItemDetail(
           item.id,
@@ -2306,50 +2478,35 @@ async function dispatch(
       // stamp `note:<confirmId>` + orphan heal), so a crash mid-commit leaves
       // the token open and a retried confirm converges on ONE L1 row —
       // consume-first would orphan a half-written permanent row instead.
-      let result;
-      try {
-        result = await recordFieldNote(
-          {
-            tenantId,
-            technicianRef: subjectRef,
-            text: detail.text,
-            blobPath: detail.blobPath,
-            channel: detail.channel ?? 'technician_note',
-            resolved: detail.resolved,
-            externalId: `note:${item.id}`,
-            sourceMeta: { stagedConfirmId: item.id },
-          },
-          // Replay the staged extraction: no model call, and commit cannot
-          // extract differently than what the technician was shown.
-          { extract: async () => detail.extracted ?? {} },
-        );
-      } catch (err) {
-        // The token is still open (consume hasn't run): a retry with the SAME
-        // confirmId re-runs this commit under the SAME externalId and heals.
-        // Restaging instead would mint a new stamp and could double-write.
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(
-          `note NOT recorded: ${msg} — the staged note is still held; retry with the SAME confirmId (do not restage)`,
-        );
-      }
-      if (result.status === 'duplicate') {
-        // Idempotent retry after a crash between commit and consume — but
-        // only reassure if the earlier commit actually completed (visit
+      //
+      // This branch survives plan ②'s one-shot change on purpose: tokens staged
+      // before the deploy must still be able to land.
+      const out = await commitNote({
+        tenantId,
+        technicianRef: subjectRef,
+        text: detail.text,
+        blobPath: detail.blobPath,
+        channel: detail.channel ?? 'technician_note',
+        resolved: detail.resolved,
+        externalId: `note:${item.id}`,
+        sourceMeta: { stagedConfirmId: item.id },
+        extracted: detail.extracted ?? {},
+        // Only reassure if the earlier commit actually COMPLETED (visit
         // linked); a mid-L2 crash must surface, not read as success.
-        return await reportExisting(result.captureId);
-      }
+        reportExisting,
+        // The token is still open (consume hasn't run): a retry with the SAME
+        // confirmId re-runs under the SAME externalId and heals. Restaging
+        // instead would mint a new stamp and could double-write.
+        retryHint:
+          'the staged note is still held; retry with the SAME confirmId (do not restage)',
+      });
+      if (out.status === 'duplicate') return out;
       try {
         await resolveReviewItem(item.id, tenantId, 'resolved', `note recorded by ${subjectRef}`);
       } catch {
         /* advisory — a retried confirm hits the externalId dedup (duplicate) */
       }
-      return {
-        status: 'recorded',
-        captureId: result.captureId,
-        customerId: result.customerId,
-        jobId: result.jobId,
-        visitId: result.visitId,
-      };
+      return out;
     }
     case 'find_customer': {
       const query = str('query');

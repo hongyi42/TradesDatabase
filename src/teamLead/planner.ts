@@ -284,7 +284,7 @@ function flat(text: string, max: number): string {
 }
 
 /** What the model is shown about ONE gap, and what its citation is checked against. */
-interface GapView {
+export interface GapView {
   nudge: Nudge;
   jobId: string | null;
   evidenceText: string[]; // exactly the strings rendered into the prompt
@@ -343,7 +343,10 @@ function historyLine(history: NudgeDecision[], nowMs: number): string | null {
 // The evidence bound is CODE's, not the model's: only what landed after the ask,
 // on that gap's job. A planner that could decide for itself what counted as
 // evidence could mark a gap answered by something that predates the question.
-function buildGapView(
+// Exported for the planner-copy eval (plan 2026-08-22). The eval MUST render
+// the real block: `src/eval/doctrine.ts` exists because measuring a copy of a
+// prompt measures a paraphrase and reports the difference as a regression.
+export function buildGapView(
   n: Nudge,
   nowMs: number,
   evidence: JobEvidenceRow[],
@@ -881,6 +884,25 @@ export function validateDecisions(
 }
 
 /**
+ * The per-tick user message, byte for byte.
+ *
+ * Extracted from runPlanner so the eval can render EXACTLY what production
+ * sends rather than a reconstruction of it (plan 2026-08-22). Both callers go
+ * through here, and a test asserts runPlanner's recorded call equals this
+ * function's output, so the two cannot drift apart silently.
+ */
+export function buildPlannerUserMessage(nowIso: string, tz: string, views: GapView[]): string {
+  return [
+    `Right now it is ${firmClockLine(nowIso, tz)}.`,
+    `In UTC that instant is ${nowIso} — use UTC for any notBefore you write.`,
+    '',
+    `This firm has ${views.length} open gap(s).`,
+    '',
+    views.map((v) => v.block).join('\n\n'),
+  ].join('\n');
+}
+
+/**
  * Perform ONE decision and report what ACTUALLY happened (plan Phase 4).
  *
  * Every path returns an outcome the log can trust. `applied` is claimed only
@@ -1082,14 +1104,7 @@ export async function runPlanner(
       // this is a reasonable hour to bother somebody. Same doctrine as the tool
       // results' `now` rider and the weekday guard: the model is never the thing
       // that converts a clock.
-      const user = [
-        `Right now it is ${firmClockLine(nowIso, tz)}.`,
-        `In UTC that instant is ${nowIso} — use UTC for any notBefore you write.`,
-        '',
-        `This firm has ${open.length} open gap(s).`,
-        '',
-        [...views.values()].map((v) => v.block).join('\n\n'),
-      ].join('\n');
+      const user = buildPlannerUserMessage(nowIso, tz, [...views.values()]);
 
       const started = Date.now();
       // Validated INSIDE the executor on purpose. Validating after the loop

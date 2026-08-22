@@ -5,6 +5,8 @@ import { createPendingNudge, listNudgesByStatus } from '../db/nudges.js';
 import { recordNudgeDecisions } from '../db/nudgeDecisions.js';
 import type { Nudge, NudgeDecision, Tenant, JobEvidenceRow, RawCapture } from '../db/index.js';
 import {
+  buildGapView,
+  buildPlannerUserMessage,
   cleanHandoffNote,
   EVIDENCE_PER_GAP,
   runPlanner,
@@ -1624,5 +1626,37 @@ describe('validateDecisions — the handoff note', () => {
     expect(decisions).toHaveLength(1);
     expect(decisions[0].action).toBe('hold');
     expect(decisions[0].handoffNote).toBeUndefined();
+  });
+});
+
+// ── plan 2026-08-22: the eval must render the REAL prompt ───────────────────
+describe('buildPlannerUserMessage — the anti-drift lock', () => {
+  test('runPlanner sends exactly what the exported builder produces', async () => {
+    // The planner-copy eval renders its scenarios through this function. If
+    // runPlanner ever stops using it — or someone re-inlines the assembly and
+    // edits it — the eval would silently be measuring a prompt we do not ship.
+    // That is the failure src/eval/doctrine.ts exists to prevent, one layer up.
+    const asked = '2026-08-16T10:00:00.000Z';
+    const rows = [
+      nudge({ id: 'n1', asked_at: asked }),
+      nudge({ id: 'n2', subject_ref: 'a2', asked_at: asked }),
+    ];
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => rows,
+      runLoop: loopReturning([], seen),
+    }));
+
+    const nowMs = Date.parse(NOW);
+    // sharesJob=true: both fixtures name job j1, which is what runPlanner
+    // computes for them. Getting this wrong is how the first draft failed —
+    // and the failure was the test's, which is the point of comparing whole
+    // strings rather than spot-checking lines.
+    const views = rows.map((n) => buildGapView(n, nowMs, [], true, new Set(), [], [], 'UTC'));
+    expect(seen.user).toBe(buildPlannerUserMessage(NOW, 'UTC', views));
+    // …and it is not vacuous: the thing being compared has real content in it.
+    expect(seen.user).toContain('This firm has 2 open gap(s).');
+    expect(seen.user).toContain('n1');
+    expect(seen.user).toContain('n2');
   });
 });

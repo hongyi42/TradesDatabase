@@ -232,25 +232,39 @@ factual clause is omitted. This path asserts nothing because it has checked noth
   the subject-less-copy failure above. Do not touch them.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] escalated visit copy contains neither `hasn't heard back` nor `on the job's record`
-- [ ] escalated cost copy contains no `incomplete`, and says nothing about cost when
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [x] escalated visit copy contains neither `hasn't heard back` nor `on the job's record`
+- [x] escalated cost copy contains no `incomplete`, and says nothing about cost when
       `noCostOnLedger` is absent
-- [ ] `stage0Suggestion` WITHOUT the flag omits the note/status clause; WITH it says
+- [x] `stage0Suggestion` WITHOUT the flag omits the note/status clause; WITH it says
       `no field note and no status change` and never `nothing has been recorded`
-- [ ] `handoff` called with no `ctx` (the `compose.ts:98` shape) emits no factual clause and still
+- [x] `handoff` called with no `ctx` (the `compose.ts:98` shape) emits no factual clause and still
       returns a valid plan
-- [ ] an `applied` escalate reason appears, attributed, whitespace-collapsed, truncated at 200
-- [ ] a `refused` or `shadow` decision's reason is NOT carried; nor is an `extend`'s reason on a gap
+- [x] an `applied` escalate reason appears, attributed, whitespace-collapsed, truncated at 200
+- [x] a `refused` or `shadow` decision's reason is NOT carried; nor is an `extend`'s reason on a gap
       the sweep escalated
-- [ ] reasons are read in ONE batched call for N escalations, and a throwing `listDecisions` still
+- [x] reasons are read in ONE batched call for N escalations, and a throwing `listDecisions` still
       escalates
-- [ ] mutation: restore any deleted claim → its test fails; invert either flag → its test fails
+- [x] mutation: restore any deleted claim → its test fails; invert either flag → its test fails
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP
-- [ ] Read the `suggestion` on the 3 open false review items and confirm it is the OLD copy, so any
+- [x] Read the `suggestion` on the 3 open false review items and confirm it is the OLD copy, so any
       new item is distinguishable from the pre-change corpus. Report their ids.
+
+**Evidence (read-only SELECTs against the pilot, 2026-08-21):** `suggestion` is a top-level `text`
+column, never null on these rows. The pre-change corpus is **80 open `overdue_visit_gap` items in one
+tenant**, and every one carries exactly one deleted phrase — 77 say *"nothing has been recorded about
+it yet"* (the stage-0 copy), 3 say BOTH *"hasn't heard back"* and *"nothing is on the job's record
+yet"*: `96494d6a-2de6-4bdd-be1d-db601febd27b` (2026-08-19 05:35Z, Garbage disposal swap /
+Henderson Family), `5927d0f8-2244-49fc-aa58-db0a41c2ce08` (2026-08-20 19:55Z, Tankless descaling /
+Marisol Duarte), `82acc6e8-ce6f-42a1-be80-2e8b5cfb413e` (2026-08-21 01:35Z, Radiant heat check /
+Elena Vasquez). Counts are identical across ALL 144 review_items, because **no
+`overdue_visit_gap` item has ever been resolved or dismissed** — the queue only grows.
+Cut line for post-deploy diffing: `created_at > 2026-08-22 02:50:20.908009+00`.
+**Finding, not in the plan:** `job_cost_gap` has produced ZERO review items ever (it exists only as
+a `nudges` kind, 1 row, answered). The substring `cost` appears in 0 of all 144 suggestions — so the
+cost-copy half of this phase is forward-looking, and any `job_cost_gap` item at all is post-change.
 
 ### Manual verification
 - [ ] Read one regenerated escalation and one regenerated expiry side by side and judge they read as

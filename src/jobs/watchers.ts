@@ -700,13 +700,21 @@ export async function runWatchers(
       };
       for (const x of escalations) {
         const spec = specFor(x.n.kind, specs)!;
-        // Both flags are honest here: this loop is only reached after filled()
-        // returned null, and for an ASKED row both specs' filled IS
-        // hasActivitySince. jobsWithCostEvents is built over every open nudge's
-        // job, so has() === false means "no cost", not "never asked".
+        // noCostOnLedger is honest for every kind: jobsWithCostEvents is built
+        // over every open nudge's job, so has() === false means "no cost", not
+        // "never asked".
+        //
+        // noNoteOrStatusChange needs BOTH halves backed (see its doc), so it
+        // goes only to a kind whose SUBJECT status was actually consulted —
+        // which is what subjectIsVisit names. Those kinds' `moot` read
+        // visitStatusById and returned null to reach this loop, and that IS the
+        // "no status change" half. A job-scoped kind consults no assignment
+        // status at all, so it gets no flag. Inert today, because its copy does
+        // not render the clause — and "inert today" is exactly how the claims
+        // this phase deleted were allowed to survive.
         const plan = spec.handoff(x.n, 'escalated', naiveLocal, {
           plannerReason: reasonFor(x.n.id),
-          noNoteOrStatusChange: true,
+          ...(spec.subjectIsVisit ? { noNoteOrStatusChange: true } : {}),
           noCostOnLedger: !jobsWithCostEvents.has(x.jobId ?? ''),
         });
         if (!plan) continue; // malformed context — fail-closed, never escalates
@@ -970,18 +978,27 @@ export async function runWatchers(
           // "a recent visit has nothing on record" when the item is actually
           // about parts cost is simply false. Visit-only tenants keep the exact
           // wording they have today.
+          // Plan ② (2026-08-21): this line knows ONE thing — how many items just
+          // opened, and of which kind. It used to assert the RECORD's state
+          // ("has no parts cost on record yet", "has nothing on record yet")
+          // from a count, and the cost wording was reachably FALSE: a cost nudge
+          // escalates even when the ledger HAS the cost, because
+          // JOB_COST_GAP_SPEC.filled ignores it (①'s ratified decision). The
+          // manager got a push saying no cost was on record about an item whose
+          // own copy correctly claimed nothing of the kind. It now says what
+          // opened, which is true by construction.
           const costOnly = openedByKind.overdue === 0 && openedByKind.cost > 0;
           const mixed = openedByKind.overdue > 0 && openedByKind.cost > 0;
           const line =
             mixed ?
-              `Heads-up: ${opened} recent jobs have something missing from their record — they’re waiting in your pending reviews whenever you have a minute.`
+              `Heads-up: ${opened} recent jobs have open questions on them — they’re waiting in your pending reviews whenever you have a minute.`
             : costOnly ?
               opened === 1 ?
-                'Heads-up: a recent job has no parts cost on record yet — it’s waiting in your pending reviews whenever you have a minute.'
-              : `Heads-up: ${opened} recent jobs have no parts cost on record yet — they’re waiting in your pending reviews whenever you have a minute.`
+                'Heads-up: a recent job has an open question about its parts cost — it’s waiting in your pending reviews whenever you have a minute.'
+              : `Heads-up: ${opened} recent jobs have open questions about their parts cost — they’re waiting in your pending reviews whenever you have a minute.`
             : opened === 1 ?
-              'Heads-up: a recent visit has nothing on record yet — it’s waiting in your pending reviews whenever you have a minute.'
-            : `Heads-up: ${opened} recent visits have nothing on record yet — they’re waiting in your pending reviews whenever you have a minute.`;
+              'Heads-up: a recent visit has an open question on it — it’s waiting in your pending reviews whenever you have a minute.'
+            : `Heads-up: ${opened} recent visits have open questions on them — they’re waiting in your pending reviews whenever you have a minute.`;
           await notify(tenantId, line);
           summary.pushed += 1;
         } else {

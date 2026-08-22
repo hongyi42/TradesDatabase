@@ -344,7 +344,7 @@ describe('runWatchers', () => {
     expect(texts).toHaveLength(1); // pushed for the ONE tenant, once — not per item
     // One item → the singular phrasing, not "1 visits".
     expect(texts[0]).toBe(
-      'Heads-up: a recent visit has nothing on record yet — it’s waiting in your pending reviews whenever you have a minute.',
+      'Heads-up: a recent visit has an open question on it — it’s waiting in your pending reviews whenever you have a minute.',
     );
 
     const quiet = await runWatchers(NOW, 'live', baseDeps({
@@ -377,7 +377,7 @@ describe('runWatchers', () => {
     expect(pushes).toEqual([
       [
         't1',
-        'Heads-up: 2 recent visits have nothing on record yet — they’re waiting in your pending reviews whenever you have a minute.',
+        'Heads-up: 2 recent visits have open questions on them — they’re waiting in your pending reviews whenever you have a minute.',
       ],
     ]);
     expect(summary.pushed).toBe(1);
@@ -711,7 +711,7 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(summary.nudgesEscalated).toBe(1);
     expect(summary.itemsOpened).toBe(1);
     expect(pushes).toEqual([
-      'Heads-up: a recent visit has nothing on record yet — it’s waiting in your pending reviews whenever you have a minute.',
+      'Heads-up: a recent visit has an open question on it — it’s waiting in your pending reviews whenever you have a minute.',
     ]);
   });
 
@@ -1753,6 +1753,108 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
     expect(suggestion).toContain('Furnace tune-up'); // it IS the stage-0 copy
     expect(suggestion).not.toContain('No field note');
     expect(suggestion).not.toContain('nothing has been recorded');
+  });
+
+  // F1 from the Phase-1 review: the detector's unreachable-technician fallback
+  // had NO test touching its suggestion at all, so restoring the deleted
+  // conclusion there left the suite green.
+  test('the cost detector fallback states the ledger fact and draws no conclusion', async () => {
+    let suggestion = '';
+    await runWatchers(NOW, 'live', baseDeps({
+      listCostCandidates: async () => [
+        {
+          jobId: 'j-cost',
+          technicianId: 'tech-1',
+          jobTitle: 'Boiler swap',
+          customerName: 'Henderson',
+          endsAtLocal: '2026-08-15T11:00:00.000Z',
+        } as never,
+      ],
+      listTeam: async () => [boundTech({ telegram_user_id: null })], // UNREACHABLE
+      flagNudge: async (input) => {
+        suggestion = input.suggestion;
+        return openItem({ subject_ref: input.subjectRef });
+      },
+    }), 'live');
+    // Backed by this detector's own ledger filter (freshCost excludes withCost).
+    expect(suggestion).toContain(
+      "Nothing is recorded about what the 'Boiler swap' job (Henderson) cost in parts or materials.",
+    );
+    // The CONCLUSION is deleted: a job with no parts has complete costs.
+    expect(suggestion).not.toContain('incomplete');
+  });
+
+  // F2 from the review: the per-tick push is a manager-facing template too, and
+  // its cost wording was reachably false — a cost nudge escalates even when the
+  // ledger HAS the cost.
+  test('the push line says what opened, never what is on the record', async () => {
+    const pushes: string[] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [costRow({ status: 'asked', asked_at: '2026-08-13T00:00:00.000Z' })],
+      listJobs: async () => [{ id: 'j-cost', tenant_id: 't1', status: 'completed' } as never],
+      listCostEvents: async () => ['j-cost'], // the ledger DOES have the cost
+      flagNudge: async (input) => openItem({ subject_ref: input.subjectRef }),
+      resolveNudge: async () => costRow({ status: 'escalated' }),
+      notify: async (_t, line) => {
+        pushes.push(line);
+      },
+    }), 'live');
+    expect(pushes).toHaveLength(1);
+    // The old copy asserted this about a job whose cost IS recorded.
+    expect(pushes[0]).not.toContain('no parts cost on record');
+    expect(pushes[0]).not.toContain('nothing on record');
+    expect(pushes[0]).toContain('an open question about its parts cost');
+  });
+
+  // F4: a job-scoped kind consults no assignment status, so it must not be
+  // handed the flag whose clause asserts one.
+  test('the note/status flag goes only to a kind whose subject status was read', async () => {
+    const seen: Array<boolean | undefined> = [];
+    const probe: NudgeKindSpec = {
+      ...JOB_COST_GAP_SPEC,
+      handoff: (n, mode, naive, ctx) => {
+        seen.push(ctx?.noNoteOrStatusChange);
+        return JOB_COST_GAP_SPEC.handoff(n, mode, naive, ctx);
+      },
+    };
+    await runWatchers(NOW, 'live', baseDeps({
+      specs: [OVERDUE_VISIT_GAP_SPEC, probe],
+      listNudges: async () => [costRow({ status: 'asked', asked_at: '2026-08-13T00:00:00.000Z' })],
+      listJobs: async () => [{ id: 'j-cost', tenant_id: 't1', status: 'completed' } as never],
+      flagNudge: async (input) => openItem({ subject_ref: input.subjectRef }),
+      resolveNudge: async () => costRow({ status: 'escalated' }),
+    }), 'live');
+    expect(seen).toEqual([undefined]); // never `true` for a job-scoped kind
+  });
+
+  // F5: an unparseable startsAtLocal makes `filled` return before
+  // hasActivitySince runs, so the flag describes nothing.
+  test('an unparseable visit start drops the claim but still escalates', async () => {
+    let suggestion = '';
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({
+          status: 'asked',
+          asked_at: '2026-08-13T00:00:00.000Z',
+          context: {
+            customerName: 'Henderson',
+            jobTitle: 'Furnace tune-up',
+            technicianRef: 'ben-shelton',
+            technicianName: 'Ben Shelton',
+            jobId: 'j1',
+            startsAtLocal: 'not-a-date',
+            endsAtLocal: '2026-08-14T08:00:00.000Z',
+          },
+        }),
+      ],
+      flagNudge: async (input) => {
+        suggestion = input.suggestion;
+        return openItem({});
+      },
+      resolveNudge: async () => askedVisit,
+    }), 'live');
+    expect(summary.nudgesEscalated).toBe(1); // the manager still hears about it
+    expect(suggestion).not.toContain('No field note');
   });
 
   test('a job that DOES have a live cost gets no cost claim at all', async () => {

@@ -112,12 +112,21 @@ export interface HandoffContext {
   // text on a surface where every other word is code-owned, so it is quoted and
   // attributed rather than blended in.
   plannerReason?: string | null;
-  // TRUE only when the caller has just evaluated hasActivitySince and it was
-  // false. Backs ONE clause with ONE wording: "no field note and no status
-  // change". It does NOT back "nothing is on the record" — that predicate reads
-  // two tables and is blind to money_events, which is exactly how the
-  // 2026-08-20 specimen told a manager nothing had happened on a job the
-  // customer had already paid for.
+  // Backs ONE clause with ONE wording: "no field note and no status change".
+  // That clause has TWO halves and the caller owes a predicate for EACH — a
+  // caller that has only run hasActivitySince may NOT pass this flag:
+  //   * "no field note" ← hasActivitySince was false. It reads raw_captures and
+  //     visits.created_at ONLY.
+  //   * "no status change" ← something else established that the subject has not
+  //     left 'confirmed'. hasActivitySince cannot see that; watchers.ts's module
+  //     header names it as a SEPARATE path ("or whose visit left 'confirmed'").
+  //     At the escalation site that half comes from OVERDUE_VISIT_GAP_SPEC.moot
+  //     having returned null; at the detector fallback, from the candidate
+  //     query's own status filter.
+  // It does NOT back "nothing is on the record" — hasActivitySince reads two
+  // tables and is blind to money_events, which is exactly how the 2026-08-20
+  // specimen told a manager nothing had happened on a job the customer had
+  // already paid for.
   // NOT passed on the EXPIRED path: JOB_COST_GAP_SPEC.filled short-circuits on
   // `!n.asked_at` (:298) and an expired row was never asked, so the predicate is
   // never evaluated there for that kind.
@@ -301,6 +310,13 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
     // and a way to render it in the firm's clock.
     if (!n.asked_at || !naiveLocal) return null;
     const techName = disp(c, 'technicianName', 'The technician');
+    // `filled` returns at its own parse guard (:230) when startsAtLocal is a
+    // non-empty but UNPARSEABLE string — hasActivitySince never ran, so the
+    // caller's flag describes nothing. The base guard above only requires a
+    // non-empty string, so re-check rather than trust it. Escalation still
+    // proceeds; only the CLAIM is dropped.
+    const activityChecked =
+      !!ctx?.noNoteOrStatusChange && !Number.isNaN(Date.parse(startsAtLocal));
     return {
       ...base,
       // Same copy doctrine as the fallback suggestion — and about the JOB, even
@@ -312,9 +328,7 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
       suggestion:
         `${techName}'s assistant asked about the '${title}' visit (${customer}) on ` +
         `${wallClockLabel(naiveLocal(n.asked_at))}.` +
-        (ctx?.noNoteOrStatusChange
-          ? ` No field note and no status change has been recorded since.`
-          : '') +
+        (activityChecked ? ` No field note and no status change has been recorded since.` : '') +
         ` Worth a direct word so it gets closed out. If it's already handled, just dismiss this.` +
         plannerNote(ctx),
     };

@@ -78,10 +78,19 @@ export const SCENARIOS = [
     money: [
       { kind: 'payment_received', amount_cents: 50000, occurred_at: ago(20), created_at: ago(20), note: null },
     ],
+    // CORRECTED 2026-08-22. This first asserted the planner must NOT escalate,
+    // which contradicts the shipped doctrine: PLANNER_SYSTEM says outright that
+    // "a payment tells you the customer settled up; it does not tell you how
+    // the work went", and plan ① ratified that the PLANNER judges whether a
+    // fact answers the question — code only states the fact. The planner
+    // escalated and was right to; the expectation was wrong.
+    //
+    // What is still measurable here, and is the real risk: whatever it decides,
+    // the note must not tell a manager the record is empty when $500 is sitting
+    // on it.
     expect: {
-      actionNot: 'escalate',
-      mustNotClaim: ['nothing', 'no record', 'has not'],
-      note: 'money landed after the ask — escalating here is the money-blind failure',
+      mustNotClaim: ['nothing has', 'no record', 'nothing is on'],
+      note: 'money landed after the ask — the DECISION is the planner\'s to make, the CLAIM is not',
     },
   },
   {

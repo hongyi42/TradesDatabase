@@ -104,5 +104,7 @@ preamble, never mention the system or the note itself, same supplied-dates rule.
 - [ ] mutation: use the draft without checking `outcome === 'applied'` → its test fails
 
 ### Manual verification
-- [ ] Read three planner-written questions beside three compose-written ones and judge whether the
-      technician would notice the difference
+- [ ] Read three planner-written questions and judge them on their own terms: accurate, and
+      professional enough to go out in a technician's assistant's voice. NOT "indistinguishable
+      from compose" — that was the wrong bar (user, 2026-08-22). Compose's output is not the
+      standard; it is just the incumbent.

@@ -1851,7 +1851,7 @@ interface StagedNoteDetail {
 //
 // Only ever called where identity resolved to an EXISTING customer/job, so
 // there is no createFrom limb to get wrong.
-function oneShotNoteStamp(input: {
+export function oneShotNoteStamp(input: {
   tenantId: string;
   technicianRef: string;
   channel: CaptureChannel;
@@ -1859,7 +1859,11 @@ function oneShotNoteStamp(input: {
   text: string | null;
   blobPath: string | null;
 }): string {
-  const identity = input.resolved.customerId ?? `job:${input.resolved.jobId ?? ''}`;
+  // BOTH ids, not customerId-or-jobId: two notes on two jobs of the same
+  // customer with identical text ("done, all good") are different notes, and a
+  // collision does not merely skip a write — it answers `duplicate`, so the
+  // second note is silently never recorded and the agent reports success.
+  const identity = `${input.resolved.customerId ?? ''}|job:${input.resolved.jobId ?? ''}`;
   const h = createHash('sha256')
     .update(
       [
@@ -1908,6 +1912,10 @@ function resolutionFrom(
 
 // What the technician must be shown before confirming. newCustomer flags a
 // create-on-confirm so the agent can say "…for NEW customer Jane, 12 Oak St".
+// NOTE (2026-08-21): only a createFrom resolution stages now, so the
+// customerId limb below is currently unreachable. Kept rather than deleted —
+// it is the correct rendering if anything ever stages a known customer again,
+// and a preview that silently mis-renders is worse than a dead branch.
 async function stagedNotePreview(detail: StagedNoteDetail): Promise<{
   customerName: string | null;
   newCustomer: boolean;
@@ -1990,7 +1998,10 @@ async function commitNote(input: {
     return {
       status: 'duplicate',
       captureId: result.captureId,
-      note: 'this note is already on the record — nothing was written twice',
+      // Deliberately "was already recorded", not "is on the record": a manager
+      // may have retracted it, which folds it out of every read while the row
+      // survives. recordFieldNote answers `duplicate` either way.
+      note: 'this exact note was already recorded — nothing was written twice',
     };
   }
   return {
@@ -2296,7 +2307,12 @@ async function dispatch(
         // would MINT A CUSTOMER, and a customer pinned by a stamped capture
         // cannot be removed — so the preview survives exactly where
         // revertability ends (user, 2026-08-21).
-        if (resolved && (resolved.customerId || resolved.jobId)) {
+        // customerId, NOT `customerId || jobId`: recordFieldNote maps a
+        // jobId-only resolution to needs_disambiguation and MINTS an "Unknown
+        // customer" — the exact thing the carve-out below exists to prevent.
+        // resolutionFrom never returns jobId alone today; this keeps that from
+        // mattering if it ever does.
+        if (resolved?.customerId) {
           return await commitNote({
             tenantId,
             technicianRef: subjectRef,
@@ -2353,6 +2369,22 @@ async function dispatch(
         subjectRef,
       });
       if (!item) {
+        // Before telling the agent to restage, check whether this token's commit
+        // ALREADY LANDED. It used to be safe not to: a restage produced a
+        // preview, so a human stood between the retry and a second write. Since
+        // the one-shot change that backstop is gone — the agent re-sends the
+        // text and it records under a DIFFERENT stamp (`note:<sha256>` vs
+        // `note:<item.id>`), which recordFieldNote's dedup cannot see across.
+        // Two permanent captures, two visits, no delete. Same check the TTL
+        // branch below already makes, for the same reason.
+        const landed = await getRawCaptureByExternalId(tenantId, `note:${confirmId}`);
+        if (landed) {
+          return {
+            status: 'duplicate',
+            captureId: landed.id,
+            note: 'this note was already recorded by an earlier confirm — do NOT send it again',
+          };
+        }
         throw new Error('confirmation not found — call record_field_note again with the note text to restage');
       }
       const detail = (item.detail ?? {}) as unknown as StagedNoteDetail;

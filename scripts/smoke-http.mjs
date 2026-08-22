@@ -124,22 +124,37 @@ async function main() {
       captureId = d1.captureId;
       ok(`first call status=${d1.status}, captureId=${captureId?.slice(0, 8)}…`);
 
-      // 4. Resume with a confirmed address → creates L2 (customer/job/visit).
-      console.log('4) resume w/ confirmed address → L2');
+      // 4. An unknown address is the ONE case that still previews: it would
+      //    CREATE a customer, and a customer pinned by a stamped capture cannot
+      //    be removed (plan ②, 2026-08-21). Confirm it to build L2.
+      //    (This script previously passed `captureId` and expected
+      //    status 'matched' — both dead since the confirmId token landed.)
+      console.log('4) confirm the new-customer preview → L2');
       const r2 = await c1.callTool({
         name: 'record_field_note',
-        arguments: { captureId, confirmed: { address: '123 Test Street' } },
+        arguments: { confirmId: d1.confirmId, confirmed: { address: '123 Test Street' } },
       });
       if (r2.isError) {
         bad(`resume errored: ${r2.content?.[0]?.text}`);
       } else {
         const d2 = JSON.parse(r2.content[0].text);
-        createdCustomerId = d2.customerId;
-        d2.status === 'matched' && d2.customerId && d2.jobId && d2.visitId
+        // Either it recorded straight away (the address matched an existing
+        // customer) or it previewed a new one and needs the yes.
+        let d3 = d2;
+        if (d2.status === 'needs_confirmation') {
+          const r3 = await c1.callTool({
+            name: 'record_field_note',
+            arguments: { confirmId: d2.confirmId },
+          });
+          if (r3.isError) bad(`confirm errored: ${r3.content?.[0]?.text}`);
+          else d3 = JSON.parse(r3.content[0].text);
+        }
+        createdCustomerId = d3.customerId;
+        d3.status === 'recorded' && d3.customerId && d3.jobId && d3.visitId
           ? ok(
-              `L2 created: customer=${d2.customerId.slice(0, 8)}… job=${d2.jobId.slice(0, 8)}… visit=${d2.visitId.slice(0, 8)}…`,
+              `L2 created: customer=${d3.customerId.slice(0, 8)}… job=${d3.jobId.slice(0, 8)}… visit=${d3.visitId.slice(0, 8)}…`,
             )
-          : bad(`resume did not produce full L2: ${JSON.stringify(d2)}`);
+          : bad(`did not produce full L2: ${JSON.stringify(d3)}`);
       }
     }
 

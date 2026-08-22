@@ -409,10 +409,14 @@ describe('MCP server', () => {
     );
     expect(vis.rows[0].technician_name).toBe('tech-mcp');
 
-    // The token is consumed: a repeat confirm errors cleanly, nothing doubles.
+    // The token is consumed: a repeat confirm reports the note that already
+    // landed. It used to throw "confirmation not found — restage", which since
+    // the one-shot change would have talked the agent into a second permanent
+    // write under a different stamp.
     const again = await call('record_field_note', { confirmId: first.data.confirmId });
-    expect(again.isError).toBe(true);
-    expect(again.text).toContain('confirmation not found');
+    expect(again.isError).toBe(false);
+    expect(again.data.status).toBe('duplicate');
+    expect(again.data.captureId).toBe(done.data.captureId);
     expect(await noteRows()).toBe(1);
   });
 
@@ -509,6 +513,69 @@ describe('MCP server', () => {
         ).rows[0].n,
       ),
     ).toBe(0);
+  });
+
+  test('a stale COMMITTABLE token cannot double-write once the same note records one-shot', async () => {
+    // The supersede must run on EVERY no-confirmId call, not only when the call
+    // stages. Move it inside the staging branch and this happens:
+    //   1. text T with an unknown address  -> stages item I, resolved={createFrom}
+    //   2. same text T, customer now named -> records one-shot (content stamp)
+    //   3. confirmId: I                    -> commits T AGAIN under note:<I>
+    // Two permanent captures, two visits, no delete. The stale token has to be
+    // COMMITTABLE for this to bite — an ambiguous stage carries no resolution,
+    // so confirming it throws anyway and proves nothing.
+    const cust = await createCustomer({
+      tenantId,
+      name: 'Supersede Guard',
+      addressLine1: '31 Guard St',
+    });
+    const caps = async () =>
+      Number(
+        (
+          await pg.query<{ n: string }>(
+            "select count(*)::int as n from raw_captures where raw_text = 'topped up the refrigerant'",
+          )
+        ).rows[0].n,
+      );
+
+    const stagedNew = await call('record_field_note', {
+      text: 'topped up the refrigerant',
+      confirmed: { address: '888 Never Heard Of St' },
+    });
+    expect(stagedNew.data.status).toBe('needs_confirmation'); // committable token
+    expect(await caps()).toBe(0);
+
+    // The same note comes back, this time naming a customer we already have.
+    const done = await call('record_field_note', {
+      text: 'topped up the refrigerant',
+      confirmed: { customerId: cust.id },
+    });
+    expect(done.data.status).toBe('recorded');
+    expect(await caps()).toBe(1);
+
+    // The stale token must be DEAD — superseded by the call above.
+    const stale = await call('record_field_note', { confirmId: stagedNew.data.confirmId });
+    expect(stale.isError).toBe(true);
+    expect(await caps()).toBe(1); // still ONE, and no second visit
+  });
+
+  test('a consumed confirmId reports the landed note instead of ordering a restage', async () => {
+    // The restage instruction was safe while restaging produced a preview. It
+    // is not any more: the agent re-sends the text and it records under a
+    // different stamp than `note:<confirmId>`, which the dedup cannot see.
+    const staged = await call('record_field_note', {
+      text: 'cleared the condensate line',
+      confirmed: { address: '32 Consumed Ave' },
+    });
+    expect(staged.data.status).toBe('needs_confirmation');
+    const done = await call('record_field_note', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('recorded');
+
+    const again = await call('record_field_note', { confirmId: staged.data.confirmId });
+    expect(again.isError).toBe(false); // NOT "confirmation not found — restage"
+    expect(again.data.status).toBe('duplicate');
+    expect(again.data.captureId).toBe(done.data.captureId);
+    expect(String(again.data.note)).toContain('do NOT send it again');
   });
 
   test('a note that would CREATE a customer still previews first, and creates nothing yet', async () => {

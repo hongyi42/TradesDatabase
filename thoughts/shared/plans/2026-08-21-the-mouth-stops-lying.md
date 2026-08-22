@@ -2,7 +2,7 @@
 date: 2026-08-21
 task: Hold every manager-facing template to "assert nothing you were not given", and let a field note record in one call
 research: thoughts/shared/research/2026-08-21-the-answer-return-path.md
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -351,21 +351,21 @@ behaviours**, never deleted.
   stops confirm-discipline flagging a correct one-shot call.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] one call resolving to an EXISTING customer writes the L1 capture + visit and returns the
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [x] one call resolving to an EXISTING customer writes the L1 capture + visit and returns the
       recorded id
-- [ ] one call resolving to a NEW customer returns `needs_confirmation` with the preview and writes
+- [x] one call resolving to a NEW customer returns `needs_confirmation` with the preview and writes
       NOTHING — no capture, and **no customer row** (assert the customers count is unchanged)
-- [ ] one call with ambiguous identity returns `needs_identity` and writes NOTHING
-- [ ] the identity resume (`confirmId + confirmed`) returns `recorded`, not `needs_confirmation`
-- [ ] **a repeated identical call does not write a second capture or a second visit** and reports
+- [x] one call with ambiguous identity returns `needs_identity` and writes NOTHING
+- [x] the identity resume (`confirmId + confirmed`) returns `recorded`, not `needs_confirmation`
+- [x] **a repeated identical call does not write a second capture or a second visit** and reports
       `duplicate` (the idempotency decision, locked in)
-- [ ] the same text for a DIFFERENT customer on the same day records separately (identity is in the key)
-- [ ] regression: an already-staged `pending_field_note` still commits via `confirmId` alone
-- [ ] `record_standing_fact` still returns `needs_confirmation` on its first call
-- [ ] the §0c refresh actually replaces the block: run the awk against a fixture AGENTS.md that
+- [x] the same text for a DIFFERENT customer on the same day records separately (identity is in the key)
+- [x] regression: an already-staged `pending_field_note` still commits via `confirmId` alone
+- [x] `record_standing_fact` still returns `needs_confirmation` on its first call
+- [x] the §0c refresh actually replaces the block: run the awk against a fixture AGENTS.md that
       already carries the old text and assert the new text is present exactly once
-- [ ] mutation: make the one-shot path stage instead → test 1 fails; drop `identityKey` from the
+- [x] mutation: make the one-shot path stage instead → test 1 fails; drop `identityKey` from the
       hash → the different-customer test fails
 
 ### Live verification (agent-executable)
@@ -373,7 +373,7 @@ behaviours**, never deleted.
 - [ ] Compare `raw_captures` of channel `technician_note` against `review_items` of kind
       `pending_field_note` in the 24h after deploy. Expect captures to continue and stages to fall —
       **not to zero**, because `needs_identity` still stages. Report both counts rather than
-      asserting a direction.
+      asserting a direction. *(Post-deploy — nothing to read yet.)*
 
 ### Manual verification
-- [ ] none
+- [x] none

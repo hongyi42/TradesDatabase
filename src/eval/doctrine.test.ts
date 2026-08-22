@@ -116,6 +116,57 @@ describe('buildSystemPrompt', () => {
     expect(prompt).not.toMatch(/\b20\d\d-\d\d-\d\d\b[^.\n]{0,20}\bis\s+today\b/i);
   });
 
+  it('the permanent-record block REFRESHES on an already-wired seat', () => {
+    // The template-drift trap, fourth occurrence: this block used to live inside
+    // the accuracy-rules heredoc, which is guarded by a PRESENCE GREP — so
+    // editing its text was a no-op on every seat that already had it, and the
+    // fleet would have gone on telling technicians record_field_note is
+    // two-step after it stopped being. It now has its own delete-then-append
+    // refresh. This asserts the awk in the script actually strips the OLD
+    // heading, which is the half a presence grep cannot do.
+    const awkLine = script
+      .split('\n')
+      .find((l) => l.includes('/^## Permanent-record writes/') && l.includes('skip=1'));
+    expect(awkLine, 'no delete-then-append guard for the permanent-record block').toBeTruthy();
+
+    // Replay the awk's semantics against a seat that carries the OLD text.
+    const wired = [
+      '## Trades assistant — accuracy rules (host-managed; keep at top priority)',
+      '',
+      '1. Copy values character-for-character.',
+      '',
+      '## Permanent-record writes — confirm FIRST (host-managed; added 2026-07-05, updated 2026-07-14)',
+      '',
+      'OLD: record_field_note is two-step.',
+      '',
+      "## Confirmations — what needs a yes and what doesn't",
+      '',
+      'The rule, in general: confirm only what is irreversible.',
+    ].join('\n');
+    let skip = false;
+    const stripped = wired
+      .split('\n')
+      .filter((line) => {
+        if (/^## Permanent-record writes/.test(line)) {
+          skip = true;
+          return false;
+        }
+        if (skip && /^## /.test(line)) skip = false;
+        return !skip;
+      })
+      .join('\n');
+    expect(stripped).not.toContain('OLD: record_field_note is two-step.');
+    expect(stripped).not.toContain('confirm FIRST');
+    expect(stripped).toContain('accuracy rules'); // the neighbours survive
+    expect(stripped).toContain('Confirmations — what needs a yes');
+
+    // …and the block the script appends lands exactly once, saying the new thing.
+    const section = extractDoctrine(script).filter((s) => s.name === 'Permanent-record writes');
+    expect(section).toHaveLength(1);
+    expect(section[0].body).toContain('RECORDS ON THE FIRST CALL');
+    expect(section[0].body).not.toContain('confirm FIRST');
+  });
+
   it('carries no date outside the host-managed heading stamps', () => {
     // The companion check: every date in the prompt must be accounted for, so a
     // future edit that pastes a live date into the BODY is caught rather than

@@ -467,8 +467,17 @@ args, result) and `planner.ts` uses `.length`; the rest is discarded. `recordMod
 COST events only — tenant + technician_ref + sku + tokens, no job, gap or decision. Spine reads
 write no L1 capture. Nothing can point a batch of tool calls at a decision about a job.
 
-- **Field notes record one-shot; standing facts still confirm** (2026-08-21, user decision):
-  `record_field_note`'s two-step confirm is being REMOVED. The confirm was justified by "L1 is
+- **Field notes record one-shot; standing facts still confirm** (2026-08-21, user decision —
+  **SHIPPED**, plan ② Phase 2): `record_field_note`'s two-step confirm is GONE for a customer or
+  job that already exists. It survives in exactly one case, and that carve-out is load-bearing:
+  an answer that would **CREATE a customer** still previews, on the first call and on the
+  identity resume alike, because the revertability argument below does not reach it — a note can
+  be retracted by its author, but a customer pinned by a stamped capture cannot be removed at
+  all. Answering `needs_identity` records: a missing datum was never a confirmation. One-shot
+  writes carry a content-hash `external_id` over tenant, technician, channel, customer, job,
+  text AND blobPath — a note can be a photo with no text, and a hash collision on an append-only
+  table means a note silently, permanently missing. A repeat answers `duplicate`, never
+  `recorded`. The original reasoning: The confirm was justified by "L1 is
   append-only", but that reads the constraint too literally: `retract_capture` never deletes and
   yet the **fold** drops the capture, its visit, and any standing fact citing it from every
   consumer read *by construction* (`src/db/context.ts:75-78`) — and **"only the capture's author

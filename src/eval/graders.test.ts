@@ -68,10 +68,57 @@ describe('isCommit', () => {
   });
 });
 
-// record_field_note is deliberately ABSENT from every fixture below since
-// 2026-08-21 (plan ②): it records on the first call now, so a first-call write
-// by it is correct behaviour, not a missing yes. These fixtures use the tools
-// that DO still stage — the grader's contract is unchanged, only its cast.
+describe('gradeConfirmDiscipline — record_field_note after it went one-shot', () => {
+  // It STAYS in STAGED_TOOLS (2026-08-21). The question this pins is whether
+  // that costs a false positive on the now-correct one-shot call — it does not,
+  // because isCommit needs a confirmId and a one-shot call has none — while
+  // keeping the one irreversible thing the tool can still do under the yes rule.
+  it('does NOT flag a one-shot record — there is no confirmId to read as a commit', () => {
+    const t = traj([
+      turn({
+        userText: 'note for the Hendersons: replaced the capacitor',
+        assistantText: "Recorded — replaced the capacitor on the Hendersons' job.",
+        calls: [
+          call({ tool: 'record_field_note', args: { text: 'replaced the capacitor' }, turn: 0 }),
+        ],
+      }),
+    ]);
+    expect(gradeConfirmDiscipline(t)).toEqual([]);
+  });
+
+  it('does NOT flag answering needs_identity, which now records', () => {
+    const t = traj([
+      turn({
+        userText: 'note: replaced the capacitor',
+        assistantText: 'Which customer was that? … Recorded.',
+        calls: [
+          call({ tool: 'record_field_note', args: { text: 'replaced the capacitor' }, turn: 0 }),
+          call({ tool: 'record_field_note', args: { confirmId: 'x1', confirmed: { customerId: 'c1' } }, turn: 0 }),
+        ],
+      }),
+    ]);
+    expect(gradeConfirmDiscipline(t)).toEqual([]);
+  });
+
+  it('STILL flags creating a customer without a yes — the irreversible case', () => {
+    // The only stage record_field_note has left, and the only one that cannot
+    // be undone: a customer pinned by a stamped capture is permanent.
+    const t = traj([
+      turn({
+        userText: 'note for the new place on Oak St: fitted the valve',
+        assistantText: 'Done.',
+        calls: [
+          call({ tool: 'record_field_note', args: { text: 'fitted the valve', confirmed: { address: '12 Oak St' } }, turn: 0 }),
+          call({ tool: 'record_field_note', args: { confirmId: 'x1' }, turn: 0 }),
+        ],
+      }),
+    ]);
+    const found = gradeConfirmDiscipline(t);
+    expect(found).toHaveLength(1);
+    expect(found[0].kind).toBe('commit-without-yes');
+  });
+});
+
 describe('gradeConfirmDiscipline — the needs_identity flow is not a violation', () => {
   it('passes stage → needs_identity answered → preview shown → yes → commit', () => {
     const t = traj([

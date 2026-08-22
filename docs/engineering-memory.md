@@ -2873,6 +2873,38 @@ fireworks-prod / accounts/fireworks/routers/glm-5p2-fast — serving verified (t
 returned)"*. The monthly spend limit was raised. A future session acting on the parked note
 would have reverted a healthy fleet. DeepInfra stays configured as the manual rollback.
 
+**Nudge delivery, measured from real trajectories (not flag names).** `--deliver` does not create
+a session — `--session-id` does, and `nudge-runner.sh` pins a fresh `nudge-<uuid>` per nudge. The
+nudge session is **one-way**: the spine injects the question as a `user` turn, the agent replies to
+Telegram, and the technician's answer routes to their **normal** session (proof on s2: nudge
+`fd98ab15` delivered into `nudge-fd98ab15…` 23:17, Sam's "all done" landed in `8dc26855…` 23:18;
+`sessions_list` inside the nudge session returns `count: 0`). **Any design that passes a token out
+and expects the nudge agent to hand it back is dead.**
+
+**But the channel is shared context.** openclaw injects a rolling window of recent CHANNEL messages
+into every turn as `Conversation context (untrusted, chronological, selected for current message)`,
+whatever session produced them — Sam's main session carried `#761`–`#771` across three days with
+the nudge's delivered text immediately before his reply. Combined with **`openclaw message send`**
+(present on the deployed 2026.6.34, no inference — docs.openclaw.ai/cli/message), **delivery can
+cost zero inference.** There is no documented way to append to a session transcript without
+inference, and none is needed.
+
+Today one nudge costs **6 turns, 84,251 uncached input + 156,608 cacheRead + 3,245 output**, and
+the turns are the agent *searching for ids the message never gave it* — `memory_search`,
+`find_customer`, `list_recent_captures`, `sessions_list`, `get_customer_context`, `list_team`.
+`assembleNudgeMessage` prints a customer NAME and job TITLE and no ids: the repo's own "you cannot
+prompt your way to a UUID" finding, fixed for the planner and never for the seat.
+
+Four things a direct-send design must handle: (1) the **duty** does not cross the channel
+(`record-keeping check` scored 0 hits in the main session — the footer is inbound-only, so the
+instruction to call `record_field_note` must move into always-loaded AGENTS.md doctrine); (2) the
+context window is **bounded** (~11 messages / 3 days observed); (3) "selected for current message"
+implies selection logic, n=1, recency-vs-relevance unverified; (4) delivery verification currently
+reads assistant text from the trajectory and would need the send's own result instead. Also found:
+`memory_search` on s2 returns `{"disabled": true, "unavailable": true}` and is burned every turn,
+and the footer's "First read back through this conversation" is unsatisfiable in a fresh session —
+which is exactly why the agent reaches for `sessions_list`.
+
 **Re-confirmed trap:** a non-interactive `ssh` has no `~/.local/bin` on PATH, so
 `bootstrap-box.sh wire` dies at its bare `nemoclaw` call — `export PATH="$HOME/.local/bin:$PATH"`
 first. Already recorded; hit again because the recorded fix is easy to skip.

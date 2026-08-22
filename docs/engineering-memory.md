@@ -2842,7 +2842,49 @@ mechanism in [long-running-task-batching.md](long-running-task-batching.md).
   lists its known deferred nits.
 - **This file** replaces nothing above — it's the map plus the facts that had no home.
 
-### 2026-08-22 — PR #163 deployed, fleet re-wired, and two recorded facts corrected
+### 2026-08-22 — PR #163 deployed
+
+**Build order, revised 2026-08-22 (third revision).** Two user rulings reshaped it.
+
+*Ruling 1 — closing is the planner's job.* The sweep runs every 5 min and the planner every 30, so
+the fast deterministic thing always won the race, which is backwards from the AI-manager premise.
+Only `filled` ("did this answer the question?") is a judgment; `moot`, escalate, expire and the
+delivery caps are facts. `filled` therefore stops closing and the planner's `close` becomes the
+normal end of a gap. Three things fall out free: two-gaps-one-job becomes judgeable (the gap stays
+open, so the planner sees the answer), the planner gains a feedback loop it never had, and
+`record_filled` is redundant because `basis:'record'` vs `basis:'evidence'` already carries the
+answered-vs-filled distinction. Fail-safe = **one working day**, anchored to the existing
+escalation deadline rather than a new constant (already 24h default, planner-adjustable, 48h cap,
+and sitting exactly where a false escalation would land); it fires only when no APPLIED planner
+*judgment* exists in 24h. **Cross-phase hazard:** the continuity phase writes `unmentioned` rows
+with `outcome:'applied'`, so a naive liveness test would be true for every gap on every tick and
+the fail-safe would silently never fire — count only real verbs.
+
+*Ruling 2 — the planner should read basically everything.* `spine_read` exposes 8 views
+(`v_customers`, `v_jobs`, `v_schedule`, `v_team`, `v_money_events`, `v_firm_profile`, `v_time_off`,
+`v_cancelled_visits`) and **none covers `raw_captures`, `nudges` or `review_items`** — the planner
+cannot read what anyone said. This is why the read surface moved IN FRONT of the memory work: the
+memory design is "push the keys, pull the content", and the pull half does not work if the content
+is unreachable.
+
+```
+① eyes see the whole record   money trio                    MERGED #162
+② the mouth stops lying       manager copy + one-shot notes  MERGED #163 (+ ②b)
+③ THE BRAIN DECIDES           attribution · closing → planner · continuity   (plan written)
+④ THE BRAIN CAN LOOK          read surface: captures / nudges / review_items
+⑤ memory architecture         needs ③'s corpus AND ④'s reach
+⑥ fixture-spine agentic eval at scale
+── delivery costs nothing      `openclaw message send`; box-side, own re-wire. Independent
+── Group B "the bucket drains" 90 open items, zero ever resolved. Independent
+```
+
+**Dead:** the gap-id stamp. A ref cannot survive the path — under `--deliver` it must pass through
+an agent whose footer tells it to strip "any internal detail" (a stripped ref is silent), and under
+direct send the technician would read it in their chat. Attribution is spine-side and code-only
+now: at `record_field_note` time the spine knows the technician, resolves the job, and reads its
+own open gaps — exactly one → stamp, two or more → let the planner judge.
+
+, fleet re-wired, and two recorded facts corrected
 
 **The wire that plan ② owed.** PR #163 (`590998c`) shipped the one-shot `record_field_note`, and
 until the seats were re-wired every one of them was serving the OLD two-step doctrine against a

@@ -15,6 +15,11 @@ export interface NudgeDecisionInput {
   mode: 'shadow' | 'live';
   action: string;
   notBefore?: string | null;
+  // What an `extend` moved the deadline TO. Null for every other action, the
+  // way notBefore is null for everything but a hold. Without it the corpus
+  // records THAT a deadline was postponed but never how far, so no eval can
+  // ask whether the planner postpones sensibly.
+  escalateAfter?: string | null;
   basis?: 'evidence' | 'record' | null;
   citation?: string | null;
   confidence: 'low' | 'medium' | 'high';
@@ -61,6 +66,7 @@ export async function recordNudgeDecisions(inputs: NudgeDecisionInput[]): Promis
       mode: d.mode,
       action: d.action,
       not_before: d.notBefore ?? null,
+      escalate_after: d.escalateAfter ?? null,
       basis: d.basis ?? null,
       citation: d.citation ?? null,
       confidence: d.confidence,

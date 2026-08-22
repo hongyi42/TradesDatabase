@@ -818,6 +818,7 @@ export type Database = {
           citation: string | null
           confidence: string
           decided_at: string
+          escalate_after: string | null
           id: string
           job_id: string | null
           mode: string
@@ -834,6 +835,7 @@ export type Database = {
           citation?: string | null
           confidence: string
           decided_at?: string
+          escalate_after?: string | null
           id?: string
           job_id?: string | null
           mode: string
@@ -850,6 +852,7 @@ export type Database = {
           citation?: string | null
           confidence?: string
           decided_at?: string
+          escalate_after?: string | null
           id?: string
           job_id?: string | null
           mode?: string

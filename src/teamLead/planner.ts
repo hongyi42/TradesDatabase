@@ -23,7 +23,11 @@ import { insideAskWindow } from './compose.js';
 // A plain const, read only inside functions — never at module-evaluation time.
 // watchers.ts and nudgeKinds.ts are a documented import cycle; this module sits
 // outside it, so there is no temporal-dead-zone hazard here.
-import { NUDGE_DELIVERY_DEADLINE_HOURS } from '../jobs/watchers.js';
+import {
+  NUDGE_DELIVERY_DEADLINE_HOURS,
+  NUDGE_ESCALATE_HOURS,
+  NUDGE_ESCALATE_MAX_HOURS,
+} from '../jobs/watchers.js';
 import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
 import { TEAM_LEAD_REF } from './identity.js';
@@ -47,7 +51,7 @@ import { TEAM_LEAD_REF } from './identity.js';
 
 export type PlannerMode = 'off' | 'shadow' | 'live';
 
-export const PLANNER_ACTIONS = ['send', 'hold', 'close', 'escalate'] as const;
+export const PLANNER_ACTIONS = ['send', 'hold', 'close', 'escalate', 'extend'] as const;
 export type PlannerAction = (typeof PLANNER_ACTIONS)[number];
 
 export interface PlannerDecision {
@@ -361,7 +365,16 @@ function buildGapView(
     );
   }
   if (n.not_before) lines.push(`  currently held until: ${n.not_before}`);
-  if (n.escalate_after) lines.push(`  currently escalates at: ${n.escalate_after}`);
+  // The deadline is stated for EVERY asked gap, not only a stamped one. It is
+  // the clock `extend` has to beat, and on a first extend there is no stamp — so
+  // printing only the stamp told the model the number exactly when it already
+  // knew it and withheld it when it did not.
+  if (!Number.isNaN(askedAtMs)) {
+    lines.push(
+      `  escalates automatically at: ${new Date(currentDeadlineMs(n, askedAtMs)).toISOString()}` +
+        `${n.escalate_after ? '' : ' (the default — nothing has moved it)'}`,
+    );
+  }
   const hist = historyLine(history, nowMs);
   if (hist) lines.push(hist);
   if (!n.asked_at) {
@@ -440,6 +453,16 @@ function holdCeilingMs(n: Nudge): number {
   return Date.parse(n.created_at) + NUDGE_DELIVERY_DEADLINE_HOURS * 3_600_000;
 }
 
+// The deadline a row is ACTUALLY on right now — the sweep's own rule, mirrored:
+// a stamped escalate_after wins, and an UNPARSEABLE stamp falls back to the
+// constant rather than being treated as stamped (watchers.ts, the fail-closed
+// read). If the two disagreed, `extend` could report success while the sweep
+// escalated on a different clock.
+function currentDeadlineMs(n: Nudge, askedAtMs: number): number {
+  const stamped = n.escalate_after ? Date.parse(n.escalate_after) : NaN;
+  return Number.isNaN(stamped) ? askedAtMs + NUDGE_ESCALATE_HOURS * 3_600_000 : stamped;
+}
+
 /**
  * The code rails, applied to every decision before it can reach a writer. These
  * run in shadow too: a shadow run that reported an invalid plan as valid would
@@ -504,7 +527,9 @@ export function validateDecisions(
     // hours earlier.
     //
     // Refused rather than translated. "Give them more time" IS expressible —
-    // by not naming the gap at all — and the prompt says so; inventing a
+    // with `extend` on an asked row, or by leaving a PENDING one alone (where
+    // not_before is what waits); it is `extend` that the prompt now names,
+    // because leaving an asked gap alone does not stop its clock. Inventing a
     // mapping from `hold` to `escalate_after` would be code doing the model's
     // judgment for it, which is the one thing this design does not do.
     // Escalation is for silence AFTER a question went out: the sweep's handoff
@@ -544,8 +569,9 @@ export function validateDecisions(
         push(
           st === 'asked'
             ? `${action} on a gap that has ALREADY been asked — the question is with the person ` +
-                'now, so only close or escalate mean anything. To give them more time, leave the ' +
-                'gap out of your plan.'
+                'now, so only close, escalate or extend mean anything. To give them more time, ' +
+                'use extend — leaving the gap out of your plan does NOT stop its escalation ' +
+                'clock.'
             : `${action} on a gap that is already composed and waiting to be delivered — there ` +
                 'is nothing to release. Leave it out of your plan.',
         );
@@ -641,11 +667,70 @@ export function validateDecisions(
       notBefore = new Date(at).toISOString();
     }
 
+    // `extend` — the only way to move a deadline OUTWARD. Before it existed the
+    // planner's whole vocabulary for an already-asked gap was close, escalate
+    // now, or leave alone; and leaving alone does not stop the 24h clock, which
+    // runs on a sweep that ticks 288 times a day while the planner wakes at most
+    // 24. So "give them more time" was a thing the prompt claimed and the code
+    // could not do.
+    let escalateAfter: string | null = null;
+    if (action === 'extend') {
+      const askedAtMs = view.nudge.asked_at ? Date.parse(view.nudge.asked_at) : NaN;
+      // FIRST, and fail-closed. Every comparison below is against a number
+      // derived from asked_at, and NaN makes both `>` and `<=` false — so an
+      // unparseable asked_at would sail through every rail beneath this one and
+      // land an UNBOUNDED extend.
+      if (Number.isNaN(askedAtMs)) {
+        push('extend on a gap with no usable ask time — there is no clock to move');
+        continue;
+      }
+      if (view.nudge.status !== 'asked') {
+        push(
+          'extend on a gap that has not been asked yet — there is no silence to wait through, ' +
+            'and an undelivered gap reaches the manager on its own deadline.',
+        );
+        continue;
+      }
+      const at = typeof d.escalateAfter === 'string' ? Date.parse(d.escalateAfter) : NaN;
+      if (Number.isNaN(at)) {
+        push('extend without a usable escalateAfter');
+        continue;
+      }
+      // In the future, mirroring the hold rail. NOT redundant with the
+      // later-than check below: a deadline that has ALREADY passed (the sweep
+      // in shadow, or an escalate stamp not yet swept) makes "later than the
+      // current deadline" satisfiable by an instant that is still in the past —
+      // an extend that shortens, reported as applied.
+      if (at <= nowMs) {
+        push('extend to a moment that has already passed');
+        continue;
+      }
+      const current = currentDeadlineMs(view.nudge, askedAtMs);
+      if (at <= current) {
+        push(
+          `extend to ${new Date(at).toISOString()}, which is not LATER than the deadline this gap ` +
+            `is already on (${new Date(current).toISOString()}) — that would either change ` +
+            'nothing or escalate it sooner, wearing the wrong name for it.',
+        );
+        continue;
+      }
+      const ceiling = askedAtMs + NUDGE_ESCALATE_MAX_HOURS * 3_600_000;
+      if (at > ceiling) {
+        push(
+          `extend past the ${NUDGE_ESCALATE_MAX_HOURS}h limit on how long a gap may wait ` +
+            `(${new Date(ceiling).toISOString()}). A manager takes it from there.`,
+        );
+        continue;
+      }
+      escalateAfter = new Date(at).toISOString();
+    }
+
     seen.add(nudgeId);
     decisions.push({
       nudgeId,
       action: action as PlannerAction,
       ...(notBefore ? { notBefore } : {}),
+      ...(escalateAfter ? { escalateAfter } : {}),
       ...(basis ? { basis } : {}),
       ...(citation ? { citation } : {}),
       confidence,
@@ -691,6 +776,22 @@ async function applyDecision(
       );
     case 'escalate':
       return done(await setSchedule(d.nudgeId, tenantId, { escalateAfter: nowIso }, ['asked']));
+    case 'extend':
+      // The mirror image of escalate: the same column, pushed OUT instead of
+      // pulled in. Status-guarded identically, so a row that got answered
+      // between the plan and the write refuses rather than silently moving.
+      //
+      // The explicit guard is not dead code being defensive. `?? null` here
+      // would CLEAR the stamp — reverting the row to the 24h default — and then
+      // report `applied`, which is the silent-no-op class these rails exist to
+      // make impossible. validateDecisions cannot emit this today; the guard is
+      // what keeps that true if it ever can.
+      if (!d.escalateAfter) {
+        return { outcome: 'refused', detail: 'extend carried no instant to move the deadline to' };
+      }
+      return done(
+        await setSchedule(d.nudgeId, tenantId, { escalateAfter: d.escalateAfter }, ['asked']),
+      );
     case 'close': {
       // The resolution is the durable audit line a manager may later read, so it
       // says WHERE the answer came from. A record-basis close quotes code's own
@@ -919,6 +1020,7 @@ export async function runPlanner(
           mode,
           action: d.action,
           notBefore: d.notBefore ?? null,
+          escalateAfter: d.escalateAfter ?? null,
           basis: d.basis ?? null,
           citation: d.citation ?? null,
           confidence: d.confidence,

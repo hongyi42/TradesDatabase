@@ -278,21 +278,34 @@ and the insert maps it, mirroring `notBefore`.
   `extend`; leaving it alone forfeits the turn.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] new test: `extend` on an asked gap writes the later instant, status-guarded
-- [ ] new test: `extend` on a `pending` gap is refused
-- [ ] new test: `extend` on a gap whose `asked_at` is null/unparseable is refused (the fail-open bug)
-- [ ] new test: an unparseable `escalate_after` falls back to `asked_at + 24h`, not to "stamped"
-- [ ] new test: `extend` past `asked_at + 48h` is refused and the reason names the ceiling
-- [ ] new test: `extend` earlier than the current deadline is refused
-- [ ] new test: repeated extends cannot push past the ceiling in aggregate
-- [ ] DB-backed test: an `extend` decision INSERTS, with its `escalate_after` readable back
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [x] new test: `extend` on an asked gap writes the later instant, status-guarded
+- [x] new test: `extend` on a `pending` gap is refused
+- [x] new test: `extend` on a gap whose `asked_at` is null/unparseable is refused (the fail-open bug)
+- [x] new test: an unparseable `escalate_after` falls back to `asked_at + 24h`, not to "stamped"
+- [x] new test: `extend` past `asked_at + 48h` is refused and the reason names the ceiling
+- [x] new test: `extend` earlier than the current deadline is refused
+- [x] new test: repeated extends cannot push past the ceiling in aggregate
+- [x] DB-backed test: an `extend` decision INSERTS, with its `escalate_after` readable back
       (a code-only test passes against the old constraint and proves nothing)
-- [ ] mutation: remove the ceiling check → the past-48h test fails
+- [x] mutation: remove the ceiling check → the past-48h test fails
+- [x] EXTRA (review): the plan's "must be in the future" rail was MISSING from the
+      implementation. Reachable whenever the current deadline has already passed (sweep in
+      shadow, or an escalate stamp not yet swept): an extend to a PAST instant satisfied
+      "later than the current deadline" and was written as applied — an extend that shortens
+- [x] EXTRA (review): the model was never told the clock it had to beat. The gap view printed
+      `escalates at` only when a stamp existed — i.e. never on a FIRST extend — and refusal
+      reasons only reach the model when EVERY decision is refused. The effective deadline is now
+      stated on every asked gap and the 48h ceiling is named in the prompt
+- [x] EXTRA (review): `applyDecision` used `?? null`, which would CLEAR the stamp and report
+      applied. Unreachable today; now refused explicitly so it stays that way
+- [x] EXTRA (review): two tests were vacuous — the pending-gap test tripped the asked_at rail
+      rather than the status rail (which had zero coverage), and the unparseable-stamp test
+      asserted acceptance, which passes under the bug too. Both repointed
 
 ### Live verification (agent-executable)
 - Prerequisites: `mcp__supabase-test__apply_migration` — **ask the user before applying to the pilot**
-- [ ] After applying, read the constraint definition and the column back from the pilot and report
+- [x] After applying, read the constraint definition and the column back from the pilot and report
       both verbatim
 
 ### Manual verification

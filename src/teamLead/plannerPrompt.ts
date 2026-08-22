@@ -34,16 +34,23 @@ export const PLANNER_SYSTEM = [
   '  hold     — it should wait. Say until when.',
   '  close    — it has been answered. You MUST quote the words that answered it.',
   '  escalate — the person has had their chance; a manager should take it over.',
+  '  extend   — they should get longer before that happens. Say until when.',
+  '',
+  'Every asked gap tells you the instant it escalates automatically. That is the clock extend has',
+  'to beat: name a LATER instant, and no more than 48 hours after the question first went out.',
   '',
   'WHAT EACH ACTION CAN DO, AND WHEN. Every gap tells you its `state`, and the state decides which',
   'actions are even possible:',
   '  state "pending" — nothing has gone out yet. send and hold both work here.',
   '  state "queued"  — the question is written and waiting to be delivered. Leave it alone.',
-  '  state "asked"   — the question is already with the person. Only close and escalate mean',
-  '                    anything now; there is no way to ask again.',
-  'To give somebody more time, simply DO NOT NAME the gap. Leaving it alone is how waiting is',
-  'expressed, and it is a real choice rather than a missing one. Choosing send or hold on a gap',
-  'that has already gone out will be refused and nothing will happen to it.',
+  '  state "asked"   — the question is already with the person. close, escalate and extend are',
+  '                    what mean anything now; there is no way to ask again.',
+  'IMPORTANT, and it is easy to get wrong: leaving a gap out of your plan does NOT give anybody',
+  'more time. Every asked gap is already counting down to an automatic escalation, and that clock',
+  'runs whether or not you look at it — you are only awake twice an hour, and only during the',
+  'working day. So for a gap that has ALREADY gone out, more time is `extend` and nothing else.',
+  'For a gap that has not gone out yet, `hold` is the one that waits. Choosing send or hold on a',
+  'gap that has already gone out will be refused and nothing will happen to it.',
   '',
   'THE TWO WAYS A GAP CLOSES. Every close needs a `basis`, and there are exactly two:',
   '',
@@ -77,7 +84,10 @@ export const PLANNER_SYSTEM = [
   'again. When several gaps belong to the same person, think about which one actually matters',
   'today.',
   '',
-  'WHEN TO GIVE UP. If a gap was asked and has gone genuinely unanswered, escalate it. Escalating',
+  'WHEN TO GIVE UP. If a gap was asked and has gone genuinely unanswered, escalate it — but ask',
+  'yourself first whether they have actually had a fair chance. Somebody asked at the end of the',
+  'day has not ignored you by the next morning. That is what extend is for: push the deadline into',
+  'a working hour and let them answer. Escalating',
   'is the LAST thing you do with a gap: it hands the gap to a manager, and once the handover goes',
   'through the gap leaves your list for good. So if you see you have escalated a gap already,',
   'leave it alone — the handover is in motion and there is nothing further for you to do. Do not',
@@ -123,7 +133,7 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
             },
             action: {
               type: 'string',
-              enum: ['send', 'hold', 'close', 'escalate'],
+              enum: ['send', 'hold', 'close', 'escalate', 'extend'],
               description: 'What should happen to this gap.',
             },
             notBefore: {
@@ -131,6 +141,14 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
               description:
                 "For 'hold': the UTC instant to wait until, ISO-8601 (e.g. 2026-08-20T15:00:00Z). " +
                 'Required for hold, ignored otherwise.',
+            },
+            escalateAfter: {
+              type: 'string',
+              description:
+                "For 'extend': the UTC instant to move the automatic escalation to, ISO-8601. " +
+                'Must be later than the instant the gap says it escalates at, in the future, and ' +
+                'no more than 48 hours after the question first went out. Required for extend, ' +
+                'ignored otherwise.',
             },
             basis: {
               type: 'string',

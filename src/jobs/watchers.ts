@@ -117,6 +117,14 @@ export const MAX_NEW_ITEMS_PER_TENANT_TICK = 5;
 // with. This is now the DEFAULT rather than the rule — a per-row escalate_after
 // overrides it, which is the whole point of Phase 2.
 export const NUDGE_ESCALATE_HOURS = 24;
+// The furthest the PLANNER may push a deadline out with `extend` (plan
+// 2026-08-21 ①). 48 is not arbitrary: it is what this ladder shipped with for
+// months before the constant above was halved on 2026-08-20, so the ceiling
+// says the model may re-derive the slack that was removed when it has a reason,
+// and no further. Measured from asked_at, so it bounds TOTAL postponement
+// however many times a row is extended — a per-extend cap would let the model
+// walk a gap forward forever and the deadline would stop being a fail-safe.
+export const NUDGE_ESCALATE_MAX_HOURS = 48;
 // A nudge still not ASKED this long after creation is stuck in some silent
 // way the serve path cannot see (Phase-4 review F1: an offboarded technician
 // is liveness-skipped forever; a recycled sandbox clears host_id, making the

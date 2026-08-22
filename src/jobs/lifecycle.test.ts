@@ -362,7 +362,7 @@ describe('runLifecycle', () => {
           cancelled: 1,
           failed: 0,
           rowErrors: 0,
-          handoffs: 0,
+          handoffs: 0, draftedByPlanner: 0,
           held: 0,
           heldNotBefore: 0,
         }),
@@ -373,7 +373,7 @@ describe('runLifecycle', () => {
         cancelled: 1,
         failed: 0,
         rowErrors: 0,
-        handoffs: 0,
+        handoffs: 0, draftedByPlanner: 0,
         held: 0,
         heldNotBefore: 0,
       });
@@ -797,7 +797,7 @@ describe('the planner gate', () => {
           cancelled: 0,
           failed: 0,
           rowErrors: 0,
-          handoffs: 0,
+          handoffs: 0, draftedByPlanner: 0,
           held: 0,
           heldNotBefore: 0,
         };

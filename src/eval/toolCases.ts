@@ -481,7 +481,7 @@ export function buildToolCases(): ToolCase[] {
   add({
     id: 'W01',
     family: 'writes',
-    title: 'record_field_note stages before it records, and records on confirm',
+    title: 'record_field_note records a known customer in ONE call; an unknown one asks who',
     tool: 'record_field_note',
     tenant: 'main',
     badge: 'tech-jane',
@@ -495,18 +495,39 @@ export function buildToolCases(): ToolCase[] {
         args: (ctx) => ({
           text: `Replaced the thermostat for ${customerName(ctx.tenant, 'fx-t1-cap-01')} and tested the cycle.`,
         }),
-        // Either a preview or a needs_identity question — both are "nothing
-        // recorded yet", which is the property that matters.
+        // Plan ② (2026-08-21): a resolvable note RECORDS on this call. The
+        // only other legal outcome is needs_identity — the matcher could not
+        // tell who. needs_confirmation is NOT legal here: that preview exists
+        // solely to guard CREATING a customer, and creating one requires a
+        // `confirmed` argument this step does not pass. If it appears, the
+        // carve-out has leaked into the ordinary path.
         check: all(
           ok,
           (out) =>
-            /needs_confirmation|needs_identity/.test(out.text)
+            /needs_confirmation/.test(out.text)
+              ? `first call previewed without a \`confirmed\` arg — the create-customer ` +
+                `carve-out leaked: ${out.text.slice(0, 200)}`
+              : /recorded|needs_identity/.test(out.text)
+                ? null
+                : `first call neither recorded nor asked who: ${out.text.slice(0, 200)}`,
+          // When it recorded, L1 must already hold it — the whole point of the
+          // one-shot change is that there is no second call to wait for.
+          async (out, ctx) =>
+            /needs_identity/.test(out.text)
               ? null
-              : `first call neither staged nor asked who: ${out.text.slice(0, 200)}`,
+              : dbCheck(
+                  'a one-shot record must be in L1 immediately',
+                  (c) => ({
+                    text: `select count(*)::int n from raw_captures
+                            where tenant_id = $1 and customer_id = $2 and raw_text like '%thermostat%'`,
+                    params: [c.tenant.id, customerId(c.tenant, 'fx-t1-cap-01')],
+                  }),
+                  (rows) => count(rows) >= 1,
+                )(out, ctx),
         ),
       },
       {
-        label: 'confirm with the customer named',
+        label: 'answer the identity question — which RECORDS, no third call',
         when: ifStaged,
         args: (ctx) => ({
           confirmId: confirmIdOf(ctx.prior[0]) as string,
@@ -514,8 +535,12 @@ export function buildToolCases(): ToolCase[] {
         }),
         check: all(
           ok,
+          (out) =>
+            /needs_confirmation/.test(out.text)
+              ? `answering needs_identity must RECORD, not preview: ${out.text.slice(0, 200)}`
+              : null,
           dbCheck(
-            'the confirmed note must be in L1',
+            'the note must be in L1 after the identity answer',
             (ctx) => ({
               text: `select count(*)::int n from raw_captures
                       where tenant_id = $1 and customer_id = $2 and raw_text like '%thermostat%'`,

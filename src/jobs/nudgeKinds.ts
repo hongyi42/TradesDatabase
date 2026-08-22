@@ -100,6 +100,47 @@ export interface ComposeBlock {
   ): { user: string; assemble: (question: string) => string } | null;
 }
 
+// What the CALLER has already checked, handed to a template so its copy can say
+// it. The rule every manager-facing string here obeys (user, 2026-08-21): a
+// template may render data it was given and may carry instructions, but must
+// NEVER assert a fact it did not receive as an argument. Each field below is
+// therefore named after the PREDICATE that produces it, never after the
+// conclusion a reader might draw — a later caller must not be able to reach for
+// one of these to justify a wider claim than the predicate supports.
+export interface HandoffContext {
+  // The manager-facing line the PLANNER wrote when it escalated this gap, or
+  // null when the sweep escalated on its own (it has no model). When present it
+  // IS the message — the templates below are the fallback, not the frame (user,
+  // 2026-08-22). Its dates are rail-checked against labels the planner was
+  // handed, which is why code can hand a model-written sentence to a manager at
+  // all; everything else about it is measured by eval, not enforced here.
+  plannerNote?: string | null;
+  // Backs ONE clause with ONE wording: "no field note and no status change".
+  // That clause has TWO halves and the caller owes a predicate for EACH — a
+  // caller that has only run hasActivitySince may NOT pass this flag:
+  //   * "no field note" ← hasActivitySince was false. It reads raw_captures and
+  //     visits.created_at ONLY.
+  //   * "no status change" ← something else established that the subject has not
+  //     left 'confirmed'. hasActivitySince cannot see that; watchers.ts's module
+  //     header names it as a SEPARATE path ("or whose visit left 'confirmed'").
+  //     At the escalation site that half comes from OVERDUE_VISIT_GAP_SPEC.moot
+  //     having returned null; at the detector fallback, from the candidate
+  //     query's own status filter.
+  // It does NOT back "nothing is on the record" — hasActivitySince reads two
+  // tables and is blind to money_events, which is exactly how the 2026-08-20
+  // specimen told a manager nothing had happened on a job the customer had
+  // already paid for.
+  // NOT passed on the EXPIRED path: JOB_COST_GAP_SPEC.filled short-circuits on
+  // `!n.asked_at` (:298) and an expired row was never asked, so the predicate is
+  // never evaluated there for that kind.
+  noNoteOrStatusChange?: boolean;
+  // TRUE only when the caller has checked the money ledger for this job and
+  // found no live material_cost. Backs "nothing is recorded for it yet". It does
+  // NOT back "the job's costs are incomplete" — a job with no parts has complete
+  // costs, and that conclusion is nobody's to draw from this predicate.
+  noCostOnLedger?: boolean;
+}
+
 export interface NudgeKindSpec {
   kind: ReviewKind;
   // Does subject_ref name a VISIT (an assignment id), or something else? The
@@ -135,10 +176,15 @@ export interface NudgeKindSpec {
   // the manager too and have no timezone to build one from — they only ever use
   // 'expired', which prints no timestamp. A spec whose 'escalated' copy needs
   // one must return null when it is absent (fail-closed, never a wrong time).
+  // `ctx` is OPTIONAL for the same reason `naiveLocal` is: compose.ts and the
+  // delivery queue hand rows to the manager too, and they have checked nothing.
+  // A spec must therefore omit every factual clause when it is absent — that
+  // path asserts nothing because it knows nothing.
   handoff(
     n: Nudge,
     mode: 'escalated' | 'expired',
     naiveLocal?: (utcIso: string) => string,
+    ctx?: HandoffContext,
   ): HandoffPlan | null;
   compose: ComposeBlock;
 }
@@ -148,15 +194,34 @@ export interface NudgeKindSpec {
 // compose's thin-context handoff — deliberately NOT the escalation copy, which
 // claims "their assistant asked": an expired nudge's ask never landed, and the
 // manager must never be told it did (Phase-4 review F1/F3).
+//
+// THE CLOSING LINE ASKS FOR THE DATUM, NEVER OFFERS AN EXIT (user, 2026-08-21).
+// Every one of these used to end "if it's already handled, just dismiss this",
+// which reads as: if you know the answer, don't bother telling us. That is
+// backwards. The job was almost certainly handled in the real world — the whole
+// reason this item exists is that the RECORD does not know it. The handled case
+// is the case where the information EXISTS and we most want it, so "dismiss" is
+// the one thing the copy must not invite. The manager can still dismiss from
+// the queue; it just stops being the offer.
+//
+// Kept SHORT and unqualified (user, 2026-08-21: "these are easy questions with
+// easy answers"). In particular the cost ask does not spell out that zero is
+// acceptable — it is, and verifiably so (money_events.amount_cents is
+// `check (… >= 0)`, and both the detector filter and itemResolved key on
+// kind='material_cost' with no amount predicate, so a zero closes the gap like
+// any other figure) — but saying it out loud is clutter on a question the
+// manager already knows how to answer.
 export const stage0Suggestion = (
   title: string,
   customer: string,
   endsAtLocal: string,
+  // See HandoffContext.noNoteOrStatusChange. Absent = the caller checked
+  // nothing, so the clause is omitted rather than softened.
+  noNoteOrStatusChange?: boolean,
 ): string =>
-  `The visit for '${title}' (${customer}) was scheduled to wrap up by ` +
-  `${wallClockLabel(endsAtLocal)}, but nothing has been recorded about it yet — no ` +
-  `field note and no status change. Worth checking how it went so the job's record ` +
-  `stays complete. If nothing needed recording, just dismiss this.`;
+  `'${title}' (${customer}) was due to wrap up ${wallClockLabel(endsAtLocal)}` +
+  (noNoteOrStatusChange ? ` — no note or status update on it yet` : '') +
+  `. Tell me how it went and I'll put it on the record.`;
 
 // Nudge context is watcher-written JSON, read fail-closed at every boundary.
 const str = (c: Record<string, unknown>, k: string): string | null =>
@@ -227,7 +292,7 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
     },
   },
 
-  handoff(n, mode, naiveLocal) {
+  handoff(n, mode, naiveLocal, ctx) {
     const c = ctxOf(n);
     const jobId = str(c, 'jobId');
     const startsAtLocal = str(c, 'startsAtLocal');
@@ -244,23 +309,41 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
     };
     if (mode === 'expired') {
       // The ask never landed → the Stage-0 copy, never the escalation copy.
-      return { ...base, suggestion: stage0Suggestion(title, customer, endsAtLocal) };
+      return {
+        ...base,
+        suggestion: stage0Suggestion(title, customer, endsAtLocal, ctx?.noNoteOrStatusChange),
+      };
     }
     // Escalation copy quotes the ask time, so it needs both a real asked_at
     // and a way to render it in the firm's clock.
     if (!n.asked_at || !naiveLocal) return null;
-    const techName = disp(c, 'technicianName', 'The technician');
-    return {
-      ...base,
-      // Same copy doctrine as the fallback suggestion — and about the JOB, even
-      // here: the ask is "close the record out", never "your technician is
-      // unresponsive".
-      suggestion:
-        `${techName}'s assistant asked about the '${title}' visit (${customer}) on ` +
-        `${wallClockLabel(naiveLocal(n.asked_at))} and hasn't heard back — ` +
-        `nothing is on the job's record yet. Worth a direct word so it gets closed out. ` +
-        `If it's already handled, just dismiss this.`,
-    };
+    const techName = disp(c, 'technicianName', 'the technician');
+    // `filled` returns at its own parse guard (:230) when startsAtLocal is a
+    // non-empty but UNPARSEABLE string — hasActivitySince never ran, so the
+    // caller's flag describes nothing. The base guard above only requires a
+    // non-empty string, so re-check rather than trust it. Escalation still
+    // proceeds; only the CLAIM is dropped.
+    const activityChecked =
+      !!ctx?.noNoteOrStatusChange && !Number.isNaN(Date.parse(startsAtLocal));
+    // The JOB leads, never the person: "your technician is unresponsive" is not
+    // the ask and not something we can even know (user, 2026-08-21 — the first
+    // draft put the technician in the subject position and read as blame).
+    // "hasn't heard back" stays DELETED: no reply-side datum exists anywhere in
+    // the system, so nothing could ever back it.
+    //
+    // "since the visit" is the window hasActivitySince ACTUALLY uses for this
+    // kind (`filled` bounds on startsAtLocal, :230). The first draft put the
+    // clause straight after the ask time, which read as "nothing since we
+    // asked" — a different, narrower window than the one we checked.
+    const template =
+      `'${title}' (${customer})` +
+      (activityChecked ? ` — no note or status update since the visit` : '') +
+      `. We asked ${techName} on ${wallClockLabel(naiveLocal(n.asked_at))}. Tell me how it ` +
+      `went and I'll put it on the record.`;
+    // When the planner escalated this gap it wrote the manager's line itself,
+    // and that line IS the message (user, 2026-08-22). The template is the
+    // fallback for a clock-driven escalation, where no model was in the loop.
+    return { ...base, suggestion: ctx?.plannerNote ?? template };
   },
 };
 
@@ -322,13 +405,13 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
     return null;
   },
 
-  handoff(n, mode) {
+  handoff(n, mode, _naiveLocal, ctx) {
     const c = ctxOf(n);
     const jobId = str(c, 'jobId');
     if (!jobId) return null;
     const title = disp(c, 'jobTitle', 'a job');
     const customer = disp(c, 'customerName', 'unknown customer');
-    const techName = disp(c, 'technicianName', 'The technician');
+    const techName = disp(c, 'technicianName', 'the technician');
     return {
       subjectRef: n.subject_ref,
       jobId,
@@ -338,14 +421,22 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
       startsAtLocal: null,
       endsAtLocal: null,
       // Neither copy prints a timestamp, so this kind never needs naiveLocal.
+      // The expired lead-in is the ONLY place this copy names the job, the
+      // customer and the topic, and handToManager reaches it with NO ctx — so
+      // the subject is rendered data and stays unconditional, and only the
+      // ledger CLAIM is gated. Gating the whole sentence shipped a manager item
+      // that said merely "Worth asking Ben what they picked up for it."
+      // Expired never has a planner note — nothing was ever asked, so nothing
+      // was ever planned. Escalated takes the planner's line when there is one.
       suggestion:
         mode === 'expired'
-          ? `Nothing is recorded about what the '${title}' job (${customer}) cost in parts or ` +
-            `materials, so the job's costs are incomplete. Worth asking ${techName} what they ` +
-            `picked up for it. If there were no parts, just dismiss this.`
-          : `${techName}'s assistant asked what the '${title}' job (${customer}) cost in parts ` +
-            `and materials and hasn't heard back — the job's costs are still incomplete. Worth ` +
-            `a direct word so it can be recorded. If it's already handled, just dismiss this.`,
+          ? `'${title}' (${customer}) — open question about what it cost in parts or materials` +
+            (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
+            `. ${techName} would know. Tell me the figure and I'll put it on the books.`
+          : (ctx?.plannerNote ??
+            `'${title}' (${customer}) — we asked ${techName} what it cost in parts and materials` +
+              (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
+              `. Tell me the figure and I'll put it on the books.`),
     };
   },
 

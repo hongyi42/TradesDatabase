@@ -27,7 +27,9 @@ export interface DoctrineSection {
  */
 export const EXPECTED_SECTIONS = [
   'Trades assistant — accuracy rules',
-  'Permanent-record writes — confirm FIRST',
+  // Renamed 2026-08-21 (plan ②): record_field_note stopped confirming first, so
+  // a heading promising it did would have been the doctrine lying to the agent.
+  'Permanent-record writes',
   "Confirmations — what needs a yes and what doesn't",
   'The dispatch board link',
   'Long or bulk tasks — work in bounded, resumable batches',

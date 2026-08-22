@@ -467,8 +467,17 @@ args, result) and `planner.ts` uses `.length`; the rest is discarded. `recordMod
 COST events only — tenant + technician_ref + sku + tokens, no job, gap or decision. Spine reads
 write no L1 capture. Nothing can point a batch of tool calls at a decision about a job.
 
-- **Field notes record one-shot; standing facts still confirm** (2026-08-21, user decision):
-  `record_field_note`'s two-step confirm is being REMOVED. The confirm was justified by "L1 is
+- **Field notes record one-shot; standing facts still confirm** (2026-08-21, user decision —
+  **SHIPPED**, plan ② Phase 2): `record_field_note`'s two-step confirm is GONE for a customer or
+  job that already exists. It survives in exactly one case, and that carve-out is load-bearing:
+  an answer that would **CREATE a customer** still previews, on the first call and on the
+  identity resume alike, because the revertability argument below does not reach it — a note can
+  be retracted by its author, but a customer pinned by a stamped capture cannot be removed at
+  all. Answering `needs_identity` records: a missing datum was never a confirmation. One-shot
+  writes carry a content-hash `external_id` over tenant, technician, channel, customer, job,
+  text AND blobPath — a note can be a photo with no text, and a hash collision on an append-only
+  table means a note silently, permanently missing. A repeat answers `duplicate`, never
+  `recorded`. The original reasoning: The confirm was justified by "L1 is
   append-only", but that reads the constraint too literally: `retract_capture` never deletes and
   yet the **fold** drops the capture, its visit, and any standing fact citing it from every
   consumer read *by construction* (`src/db/context.ts:75-78`) — and **"only the capture's author
@@ -523,6 +532,101 @@ write no L1 capture. Nothing can point a batch of tool calls at a decision about
   fact's capture already stamps `stagedConfirmId`, but it points at that fact's own token rather
   than a shared one. This also closes a standing provenance hole: **money events currently record
   no link to the message that reported them at all.**
+
+### The person we ask may not know, or may not have been there (2026-08-21)
+
+User direction, while reviewing the manager copy:
+
+> "we need to accept that sometimes the technician is not a qualified source to answer a question"
+> … "they might even get replaced by another technician for a job without us knowing, then we'll
+> probably be forced to escalate to resolve the gap"
+
+The ladder currently treats every unanswered ask as silence to be chased. Two cases are not that:
+
+1. **Wrong question — and we cannot tell which firms it is wrong for.** The cost detector asks
+   *"what did the job cost in parts and materials"*. Sometimes the technician has no idea: the
+   price is on an invoice the office holds and they never see it. **Sometimes they know it better
+   than the manager does** — they negotiated on site, added services, took payment on the spot
+   (user, 2026-08-22). Which one a firm is depends on how that firm operates, and nothing in the
+   spine knows. So an earlier draft of this section asserting "it is on an invoice the office
+   holds" was wrong, and the planner prompt repeated it to a manager as a fact about a specific
+   job before the eval caught it (see below).
+   The safe conclusion is narrow: **do not assume who knows.** A question like *"what parts did
+   you put in?"* is answerable by any technician regardless of which kind of firm it is, which is
+   why it is the better ask — not because the office holds the price. Flagged, **not built** —
+   deliberately kept out of plan ② to avoid widening it.
+2. **Wrong person.** A job's technician can be swapped in the real world with nothing telling the
+   spine. The person being chased was never on site. Their silence is correct behaviour.
+
+**Consequence.** Escalation is not only a failure path — when the respondent cannot answer, handing
+the gap to a manager IS the right resolution, and no copy or metric may frame it as the technician
+having ignored us. (Same reasoning that deleted "hasn't heard back" from every manager template in
+plan ②: we have no reply-side datum, and would not be entitled to that conclusion if we did.) Any
+future answer-rate metric must separate *could not answer* from *did not answer*, or it reads a
+routing problem as a compliance problem.
+
+### The manager's bucket has never drained (2026-08-21)
+
+Live audit of the pilot: **80 open review items, and not one has ever been resolved or dismissed** —
+77 stage-0 visit items, 3 escalations, 0 cost items. A visit item auto-closes as soon as any
+activity lands on its job, so 80 sitting open means nothing ever landed on any of them.
+
+User's design for Group B, **not yet built**: batch the open items and have the planner send a
+one-click "record all" near the end of each working day, rather than surfacing them one at a time
+(spam) or letting the bucket grow unbounded. Gaps the planner judges urgent still surface alone.
+The asymmetry to design around: only MONEY items can be one-click, because only they have a figure
+sitting in a note waiting to be promoted — the visit items in the bucket have nothing to propose
+from, so for them "batch" can only mean batch-re-ask or batch-dismiss.
+
+### The layering is a capability assumption, and it is expiring (2026-08-22)
+
+Much of the ladder's stage-splitting — detector, planner, compose, sweep, each its own model call
+or none — was absorbed while the agent stack ran GLM-5.2: runaway reasoning, 4096-token
+truncation, a 13-deep tool schema turning a 3-second turn into 67. Those are claims about what a
+model can hold, and they do not survive a frontier planner.
+
+This repo's own measurement says the same thing from the other side: the date eval went
+**86 → 97 → 100% on the SAME model**, and every gain was a context fix (`upcomingVisits`,
+server-side counts, `windowCoverByDay`, served phrases, a clock warning). The recorded conclusion
+is that our failures are **context and vocabulary, not reasoning**.
+
+**User direction, 2026-08-22:** memory architecture (Group C) FIRST, then the fixture-spine agentic
+eval at scale — running it earlier would measure a planner re-investigating from scratch every 30
+minutes, which is not the system we intend to ship. Then collapse investigate/plan/compose into one
+model call.
+
+**The collapse is a COHERENCE play, not a cost one.** `runTeamLeadCompose` calls the model once per
+PENDING nudge, and a nudge is composed once before it becomes `queued` — so volume tracks gap
+creation (~5/day for a small firm) against the planner's 24/day. The defect worth fixing is that
+the decision and the wording never meet: compose cannot see that this is a third ask, or that the
+planner judged it urgent. Only a timestamp crosses between them.
+
+Two properties must be given up deliberately rather than discovered:
+- **Independent rollback of the technician-facing voice.** Compose is gated on `NUDGES_MODE`, not
+  `PLANNER_MODE`, so today the ladder still speaks with the planner switched off.
+- **Per-gap failure isolation.** One call for N gaps means one timeout affects N; today a compose
+  failure costs exactly one gap, which hands to the manager.
+
+### What the planner-copy eval does and does not measure (2026-08-22)
+
+`scripts/planner-eval/` renders scenarios through the REAL `buildGapView` and
+`buildPlannerUserMessage` out of `dist/` — the `doctrine.ts` rule one layer up: an eval that
+hand-writes its own gap blocks measures a prompt we do not ship.
+
+It gives the model **one forced `submit_plan` call and no read tools**. Production hands it
+`spine_read`, `recall_decisions`, `get_customer_context` and `resolve_date` inside `runToolLoop`.
+So it measures *"given context already gathered and laid out, does it decide and write well"* —
+never *"does it find what it needs"*. First run: 9/9 deterministic copy checks, and the judge
+caught the planner asserting *"the figure may sit on an invoice the office holds"* — prompt
+guidance surfacing as a fact about a specific job, which a planner with no way to look anything up
+has to guess at.
+
+**Cost shape, measured:** OUTPUT was **52.4%** of the bill, uncached gap blocks 30.3%, and the
+cacheable prefix — all caching can touch — **17.3%**. A "90% saving from prompt caching" quoted
+without that split reads far bigger than it is. And the planner's 30-minute cadence means the
+DEFAULT 5-minute TTL is cold on every call: it pays the 1.25× write and never reads, which is worse
+than not caching. Only `ttl: '1h'` wins in production, and that rests on a cache read refreshing
+the TTL — unverified, because seconds-apart eval calls cannot test a 30-minute gap.
 
 ## 3. Environments & infrastructure
 

@@ -1,0 +1,410 @@
+{
+  "results": [
+    {
+      "id": "S1-silence",
+      "expect": {
+        "action": "escalate",
+        "mustName": [
+          "Tankless descaling",
+          "Marisol Duarte"
+        ],
+        "mustNotClaim": [
+          "the technician ignored",
+          "refused",
+          "failed to"
+        ]
+      },
+      "decisions": 1,
+      "perGap": [
+        {
+          "nudgeId": "n-visit",
+          "action": "escalate",
+          "note": "Tankless descaling for Marisol Duarte (j-tankless) has no record of the visit that was due Tuesday, Aug 18 at 1:30 PM; the ask went out to Ben Shelton yesterday and nothing has landed on the job since. Confirming whether the visit happened, and by whom, would close it.",
+          "checks": [
+            {
+              "name": "present",
+              "pass": true
+            },
+            {
+              "name": "dates-supplied-only",
+              "pass": true
+            },
+            {
+              "name": "length",
+              "pass": true,
+              "detail": "269 chars"
+            },
+            {
+              "name": "two-sentences-ish",
+              "pass": true
+            },
+            {
+              "name": "no-blame-phrases",
+              "pass": true
+            },
+            {
+              "name": "no-dismissal-invite",
+              "pass": true
+            },
+            {
+              "name": "no-link",
+              "pass": true
+            },
+            {
+              "name": "names-the-subject",
+              "pass": true
+            },
+            {
+              "name": "no-false-claim",
+              "pass": true
+            },
+            {
+              "name": "action-as-expected",
+              "pass": true
+            }
+          ],
+          "verdict": null
+        }
+      ],
+      "cost": {
+        "usd": 0.010018,
+        "inTok": 559,
+        "outTok": 216,
+        "read": 3646,
+        "write5m": 0,
+        "write1h": 0,
+        "cacheHit": true
+      }
+    },
+    {
+      "id": "S2-answered-something-else",
+      "expect": {
+        "action": "escalate",
+        "mustNotClaim": [
+          "nothing has been recorded",
+          "no note"
+        ],
+        "note": "a note DID land — a note saying nothing landed is false"
+      },
+      "decisions": 1,
+      "perGap": [
+        {
+          "nudgeId": "n-visit",
+          "action": "escalate",
+          "note": "Tankless descaling for Marisol Duarte (j-tankless): the record still has no outcome for the visit that was due Tuesday, Aug 18 at 1:30 PM, and the ask to Ben Shelton went out Tuesday, Aug 18 at 4:00 AM. What would close it is confirmation of whether that visit happened and what was done, or that it needs rebooking.",
+          "checks": [
+            {
+              "name": "present",
+              "pass": true
+            },
+            {
+              "name": "dates-supplied-only",
+              "pass": true
+            },
+            {
+              "name": "length",
+              "pass": true,
+              "detail": "316 chars"
+            },
+            {
+              "name": "two-sentences-ish",
+              "pass": true
+            },
+            {
+              "name": "no-blame-phrases",
+              "pass": true
+            },
+            {
+              "name": "no-dismissal-invite",
+              "pass": true
+            },
+            {
+              "name": "no-link",
+              "pass": true
+            },
+            {
+              "name": "names-the-subject",
+              "pass": true
+            },
+            {
+              "name": "no-false-claim",
+              "pass": true
+            },
+            {
+              "name": "action-as-expected",
+              "pass": true
+            }
+          ],
+          "verdict": null
+        }
+      ],
+      "cost": {
+        "usd": 0.010783,
+        "inTok": 587,
+        "outTok": 241,
+        "read": 3646,
+        "write5m": 0,
+        "write1h": 0,
+        "cacheHit": true
+      }
+    },
+    {
+      "id": "S3-money-answered-it",
+      "expect": {
+        "actionNot": "escalate",
+        "mustNotClaim": [
+          "nothing",
+          "no record",
+          "has not"
+        ],
+        "note": "money landed after the ask — escalating here is the money-blind failure"
+      },
+      "decisions": 1,
+      "perGap": [
+        {
+          "nudgeId": "n-visit",
+          "action": "escalate",
+          "note": "Tankless descaling for Marisol Duarte (j-tankless): the record still has no confirmation of the visit that was due Tuesday, Aug 18 at 1:30 PM, and the ask went out Tuesday, Aug 18 at 4:00 AM. Please find out whether the visit happened and what was done, so the visit record can be completed.",
+          "checks": [
+            {
+              "name": "present",
+              "pass": true
+            },
+            {
+              "name": "dates-supplied-only",
+              "pass": true
+            },
+            {
+              "name": "length",
+              "pass": true,
+              "detail": "291 chars"
+            },
+            {
+              "name": "two-sentences-ish",
+              "pass": true
+            },
+            {
+              "name": "no-blame-phrases",
+              "pass": true
+            },
+            {
+              "name": "no-dismissal-invite",
+              "pass": true
+            },
+            {
+              "name": "no-link",
+              "pass": true
+            },
+            {
+              "name": "names-the-subject",
+              "pass": true
+            },
+            {
+              "name": "no-false-claim",
+              "pass": true
+            },
+            {
+              "name": "action-avoided",
+              "pass": false,
+              "detail": "did escalate, which the scenario says it should not"
+            }
+          ],
+          "verdict": null
+        }
+      ],
+      "cost": {
+        "usd": 0.010243,
+        "inTok": 559,
+        "outTok": 225,
+        "read": 3646,
+        "write5m": 0,
+        "write1h": 0,
+        "cacheHit": true
+      }
+    },
+    {
+      "id": "S4-end-of-day",
+      "expect": {
+        "actionNot": "escalate"
+      },
+      "decisions": 1,
+      "perGap": [
+        {
+          "nudgeId": "n-visit",
+          "action": "extend",
+          "note": null,
+          "checks": [
+            {
+              "name": "action-avoided",
+              "pass": true
+            }
+          ],
+          "verdict": null
+        }
+      ],
+      "cost": {
+        "usd": 0.007858,
+        "inTok": 562,
+        "outTok": 129,
+        "read": 3646,
+        "write5m": 0,
+        "write1h": 0,
+        "cacheHit": true
+      }
+    },
+    {
+      "id": "S5-cost-gap",
+      "expect": {
+        "action": "escalate",
+        "mustName": [
+          "Boiler swap",
+          "Henderson"
+        ],
+        "mustNotClaim": [
+          "ignored",
+          "failed to",
+          "unresponsive"
+        ]
+      },
+      "decisions": 1,
+      "perGap": [
+        {
+          "nudgeId": "n-cost",
+          "action": "escalate",
+          "note": "Boiler swap for Henderson Family still has no cost recorded; the ask went out to Ben Shelton yesterday, Tuesday, Aug 18 at 4:00 AM, with nothing landing on the job since. The figure may sit on an invoice the office holds — a materials and labour total would close it.",
+          "checks": [
+            {
+              "name": "present",
+              "pass": true
+            },
+            {
+              "name": "dates-supplied-only",
+              "pass": true
+            },
+            {
+              "name": "length",
+              "pass": true,
+              "detail": "267 chars"
+            },
+            {
+              "name": "two-sentences-ish",
+              "pass": true
+            },
+            {
+              "name": "no-blame-phrases",
+              "pass": true
+            },
+            {
+              "name": "no-dismissal-invite",
+              "pass": true
+            },
+            {
+              "name": "no-link",
+              "pass": true
+            },
+            {
+              "name": "names-the-subject",
+              "pass": true
+            },
+            {
+              "name": "no-false-claim",
+              "pass": true
+            },
+            {
+              "name": "action-as-expected",
+              "pass": true
+            }
+          ],
+          "verdict": null
+        }
+      ],
+      "cost": {
+        "usd": 0.010238,
+        "inTok": 583,
+        "outTok": 220,
+        "read": 3646,
+        "write5m": 0,
+        "write1h": 0,
+        "cacheHit": true
+      }
+    },
+    {
+      "id": "S6-two-gaps-one-job",
+      "expect": {
+        "note": "the VISIT gap is answered; the COST gap is not"
+      },
+      "decisions": 2,
+      "perGap": [
+        {
+          "nudgeId": "n-a",
+          "action": "close",
+          "note": null,
+          "checks": [],
+          "verdict": null
+        },
+        {
+          "nudgeId": "n-b",
+          "action": "escalate",
+          "note": "Boiler swap for Henderson Family still has no cost recorded, though the ask went out yesterday on Tuesday, Aug 18 at 4:00 AM. A materials and labour figure, which may sit on an invoice held by the office rather than with the tech, would close it.",
+          "checks": [
+            {
+              "name": "present",
+              "pass": true
+            },
+            {
+              "name": "dates-supplied-only",
+              "pass": true
+            },
+            {
+              "name": "length",
+              "pass": true,
+              "detail": "246 chars"
+            },
+            {
+              "name": "two-sentences-ish",
+              "pass": true
+            },
+            {
+              "name": "no-blame-phrases",
+              "pass": true
+            },
+            {
+              "name": "no-dismissal-invite",
+              "pass": true
+            },
+            {
+              "name": "no-link",
+              "pass": true
+            },
+            {
+              "name": "names-the-subject",
+              "pass": true
+            },
+            {
+              "name": "no-false-claim",
+              "pass": true
+            }
+          ],
+          "verdict": null
+        }
+      ],
+      "cost": {
+        "usd": 0.014093,
+        "inTok": 984,
+        "outTok": 294,
+        "read": 3646,
+        "write5m": 0,
+        "write1h": 0,
+        "cacheHit": true
+      }
+    }
+  ],
+  "spent": 0.063233,
+  "judgeSpend": 0,
+  "counterfactuals": {
+    "noCache": 0.10938,
+    "ttl5m": 0.0319025,
+    "ttl1h": 0.045575,
+    "allWrites5m": 0.136725
+  }
+}

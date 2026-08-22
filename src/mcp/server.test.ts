@@ -342,7 +342,7 @@ describe('MCP server', () => {
     expect(Array.isArray(caps.data)).toBe(true);
   });
 
-  test('record_field_note stages (NO L1), resolves identity, and records only on the final confirm', async () => {
+  test('an ambiguous note asks who, then RECORDS on the answer (no third call)', async () => {
     // FIRM-local today (seed tenant tz = America/Los_Angeles): the matcher
     // consults the capture's firm-local day, so the fixture must book there.
     const day = localDateISO(new Date().toISOString(), 'America/Los_Angeles');
@@ -380,18 +380,12 @@ describe('MCP server', () => {
 
     // Identity resume: the address resolves to the scheduled visit's REAL
     // customer (assignments always link one — no create-new prefill anymore).
-    const resumed = await call('record_field_note', {
+    // Identity resume: plan ② (2026-08-21) — a missing datum was never a
+    // confirmation, so supplying it RECORDS. There is no third call.
+    const done = await call('record_field_note', {
       confirmId: first.data.confirmId,
       confirmed: { address: '12 MCP St' },
     });
-    expect(resumed.data.status).toBe('needs_confirmation');
-    expect(resumed.data.preview.customerName).toBe('MCP Cust');
-    expect(resumed.data.preview.newCustomer).toBe(false);
-    expect(resumed.data.preview.text).toBe('all wrapped up');
-    expect(await noteRows()).toBe(0); // still nothing recorded
-
-    // Final confirm: NOW the permanent rows land — exactly what was previewed.
-    const done = await call('record_field_note', { confirmId: first.data.confirmId });
     expect(done.data.status).toBe('recorded');
     expect(await noteRows()).toBe(1);
 
@@ -415,28 +409,224 @@ describe('MCP server', () => {
     );
     expect(vis.rows[0].technician_name).toBe('tech-mcp');
 
-    // The token is consumed: a repeat confirm errors cleanly, nothing doubles.
+    // The token is consumed: a repeat confirm reports the note that already
+    // landed. It used to throw "confirmation not found — restage", which since
+    // the one-shot change would have talked the agent into a second permanent
+    // write under a different stamp.
     const again = await call('record_field_note', { confirmId: first.data.confirmId });
-    expect(again.isError).toBe(true);
-    expect(again.text).toContain('confirmation not found');
+    expect(again.isError).toBe(false);
+    expect(again.data.status).toBe('duplicate');
+    expect(again.data.captureId).toBe(done.data.captureId);
     expect(await noteRows()).toBe(1);
   });
 
-  test('staging with a known customer goes straight to needs_confirmation; re-stage supersedes the old token', async () => {
-    const customer = await createCustomer({ tenantId, name: 'Stage Direct', phone: '555-2211' });
+  test('a note whose customer is KNOWN records on the first call, and a retry does not double it', async () => {
+    const cust = await createCustomer({
+      tenantId,
+      name: 'One Shot Co',
+      addressLine1: '9 Oneshot Ave',
+    });
+    const rows = async (text: string) =>
+      Number(
+        (
+          await pg.query<{ n: string }>(
+            'select count(*)::int as n from raw_captures where raw_text = $1',
+            [text],
+          )
+        ).rows[0].n,
+      );
+    const visits = async () =>
+      Number(
+        (
+          await pg.query<{ n: string }>(
+            `select count(*)::int as n from visits v
+               join jobs j on j.id = v.job_id
+              where j.customer_id = $1`,
+            [cust.id],
+          )
+        ).rows[0].n,
+      );
 
+    const done = await call('record_field_note', {
+      text: 'swapped the capacitor',
+      confirmed: { customerId: cust.id },
+    });
+    expect(done.data.status).toBe('recorded'); // NOT needs_confirmation
+    expect(await rows('swapped the capacitor')).toBe(1);
+    expect(await visits()).toBe(1);
+
+    // The undeletable hazard: a retried tool call must not write a SECOND
+    // permanent row and a SECOND visit. The content stamp is what stops it.
+    const retry = await call('record_field_note', {
+      text: 'swapped the capacitor',
+      confirmed: { customerId: cust.id },
+    });
+    expect(retry.data.status).toBe('duplicate'); // reported honestly
+    expect(await rows('swapped the capacitor')).toBe(1);
+    expect(await visits()).toBe(1);
+
+    // …but the SAME words about a DIFFERENT customer are a different note.
+    const other = await createCustomer({
+      tenantId,
+      name: 'Other Co',
+      addressLine1: '10 Other Ave',
+    });
+    const second = await call('record_field_note', {
+      text: 'swapped the capacitor',
+      confirmed: { customerId: other.id },
+    });
+    expect(second.data.status).toBe('recorded');
+    expect(await rows('swapped the capacitor')).toBe(2);
+  });
+
+  test('answering needs_identity with an UNKNOWN address previews too — the resume path carve-out', async () => {
+    // The first-call carve-out has a twin on the resume path, and it is the one
+    // that is easy to lose: the technician already answered a question, so it
+    // feels like a confirmation — but if the answer would MINT a customer, it
+    // is not, and nothing may be created without the preview.
+    const countCustomers = async () =>
+      Number(
+        (
+          await pg.query<{ n: string }>(
+            'select count(*)::int as n from customers where tenant_id = $1',
+            [tenantId],
+          )
+        ).rows[0].n,
+      );
+    const first = await call('record_field_note', { text: 'gate was open, nobody home' });
+    expect(first.data.status).toBe('needs_identity');
+    const before = await countCustomers();
+
+    const resumed = await call('record_field_note', {
+      confirmId: first.data.confirmId,
+      confirmed: { address: '999 Unheard Of Rd' },
+    });
+    expect(resumed.data.status).toBe('needs_confirmation'); // NOT recorded
+    expect(resumed.data.preview.newCustomer).toBe(true);
+    expect(await countCustomers()).toBe(before); // nothing minted
+    expect(
+      Number(
+        (
+          await pg.query<{ n: string }>(
+            "select count(*)::int as n from raw_captures where raw_text = 'gate was open, nobody home'",
+          )
+        ).rows[0].n,
+      ),
+    ).toBe(0);
+  });
+
+  test('a stale COMMITTABLE token cannot double-write once the same note records one-shot', async () => {
+    // The supersede must run on EVERY no-confirmId call, not only when the call
+    // stages. Move it inside the staging branch and this happens:
+    //   1. text T with an unknown address  -> stages item I, resolved={createFrom}
+    //   2. same text T, customer now named -> records one-shot (content stamp)
+    //   3. confirmId: I                    -> commits T AGAIN under note:<I>
+    // Two permanent captures, two visits, no delete. The stale token has to be
+    // COMMITTABLE for this to bite — an ambiguous stage carries no resolution,
+    // so confirming it throws anyway and proves nothing.
+    const cust = await createCustomer({
+      tenantId,
+      name: 'Supersede Guard',
+      addressLine1: '31 Guard St',
+    });
+    const caps = async () =>
+      Number(
+        (
+          await pg.query<{ n: string }>(
+            "select count(*)::int as n from raw_captures where raw_text = 'topped up the refrigerant'",
+          )
+        ).rows[0].n,
+      );
+
+    const stagedNew = await call('record_field_note', {
+      text: 'topped up the refrigerant',
+      confirmed: { address: '888 Never Heard Of St' },
+    });
+    expect(stagedNew.data.status).toBe('needs_confirmation'); // committable token
+    expect(await caps()).toBe(0);
+
+    // The same note comes back, this time naming a customer we already have.
+    const done = await call('record_field_note', {
+      text: 'topped up the refrigerant',
+      confirmed: { customerId: cust.id },
+    });
+    expect(done.data.status).toBe('recorded');
+    expect(await caps()).toBe(1);
+
+    // The stale token must be DEAD — superseded by the call above.
+    const stale = await call('record_field_note', { confirmId: stagedNew.data.confirmId });
+    expect(stale.isError).toBe(true);
+    expect(await caps()).toBe(1); // still ONE, and no second visit
+  });
+
+  test('a consumed confirmId reports the landed note instead of ordering a restage', async () => {
+    // The restage instruction was safe while restaging produced a preview. It
+    // is not any more: the agent re-sends the text and it records under a
+    // different stamp than `note:<confirmId>`, which the dedup cannot see.
+    const staged = await call('record_field_note', {
+      text: 'cleared the condensate line',
+      confirmed: { address: '32 Consumed Ave' },
+    });
+    expect(staged.data.status).toBe('needs_confirmation');
+    const done = await call('record_field_note', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('recorded');
+
+    const again = await call('record_field_note', { confirmId: staged.data.confirmId });
+    expect(again.isError).toBe(false); // NOT "confirmation not found — restage"
+    expect(again.data.status).toBe('duplicate');
+    expect(again.data.captureId).toBe(done.data.captureId);
+    expect(String(again.data.note)).toContain('do NOT send it again');
+  });
+
+  test('a note that would CREATE a customer still previews first, and creates nothing yet', async () => {
+    // The carve-out (user, 2026-08-21): a note is retractable, a customer
+    // pinned by a stamped capture is not — so the confirm survives exactly
+    // where revertability ends.
+    const before = Number(
+      (await pg.query<{ n: string }>('select count(*)::int as n from customers where tenant_id = $1', [tenantId]))
+        .rows[0].n,
+    );
+    const staged = await call('record_field_note', {
+      text: 'left the invoice on the counter',
+      confirmed: { address: '404 Nowhere Ln' },
+    });
+    expect(staged.data.status).toBe('needs_confirmation');
+    expect(staged.data.preview.newCustomer).toBe(true);
+    const after = Number(
+      (await pg.query<{ n: string }>('select count(*)::int as n from customers where tenant_id = $1', [tenantId]))
+        .rows[0].n,
+    );
+    expect(after).toBe(before); // NOTHING minted without the yes
+    expect(
+      Number(
+        (
+          await pg.query<{ n: string }>(
+            "select count(*)::int as n from raw_captures where raw_text = 'left the invoice on the counter'",
+          )
+        ).rows[0].n,
+      ),
+    ).toBe(0);
+
+    // …and the yes still lands it, through the path staged tokens keep.
+    const done = await call('record_field_note', { confirmId: staged.data.confirmId });
+    expect(done.data.status).toBe('recorded');
+  });
+
+  test('a new-customer stage previews; re-staging supersedes the old token', async () => {
+    // Re-pointed by plan ② at the path that still stages: a KNOWN customer now
+    // records one-shot, so only a would-create-a-customer answer previews.
     const a = await call('record_field_note', {
       text: 'first attempt',
-      confirmed: { customerId: customer.id },
+      confirmed: { address: '77 Supersede Way' },
     });
     expect(a.data.status).toBe('needs_confirmation');
-    expect(a.data.preview.customerName).toBe('Stage Direct');
-    expect(a.data.preview.newCustomer).toBe(false);
+    expect(a.data.preview.newCustomer).toBe(true);
+    expect(a.data.preview.address).toBe('77 Supersede Way');
 
     // Re-stage before confirming: one staged note per person.
     const b = await call('record_field_note', {
       text: 'second attempt',
-      confirmed: { customerId: customer.id },
+      confirmed: { address: '77 Supersede Way' },
     });
     expect(b.data.status).toBe('needs_confirmation');
     expect(b.data.confirmId).not.toBe(a.data.confirmId);
@@ -462,10 +652,9 @@ describe('MCP server', () => {
     expect(forged.isError).toBe(true);
     expect(forged.text).toContain('confirmation not found');
 
-    const customer = await createCustomer({ tenantId, name: 'Expiry Cust', phone: '555-2222' });
     const staged = await call('record_field_note', {
       text: 'about to expire',
-      confirmed: { customerId: customer.id },
+      confirmed: { address: '78 Expiry Way' },
     });
     // Backdate the staging clock past the 15-min window (review_items is mutable).
     await pg.query(
@@ -483,10 +672,9 @@ describe('MCP server', () => {
   });
 
   test('crash-heal: commit landed but the token was left open — a retried confirm converges on ONE L1 row', async () => {
-    const customer = await createCustomer({ tenantId, name: 'Heal Confirm', phone: '555-2233' });
     const staged = await call('record_field_note', {
       text: 'healed note',
-      confirmed: { customerId: customer.id },
+      confirmed: { address: '79 Heal Way' },
     });
     const done = await call('record_field_note', { confirmId: staged.data.confirmId });
     expect(done.data.status).toBe('recorded');
@@ -509,10 +697,9 @@ describe('MCP server', () => {
   });
 
   test('resolve_review refuses to "resolve" a staged field note (live token); dismiss cancels it', async () => {
-    const customer = await createCustomer({ tenantId, name: 'Cancel Cust', phone: '555-2244' });
     const staged = await call('record_field_note', {
       text: 'to be cancelled',
-      confirmed: { customerId: customer.id },
+      confirmed: { address: '80 Cancel Way' },
     });
     const { client: mgrClient, callWith } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
     try {
@@ -1084,12 +1271,11 @@ describe('spine tool_call cost counter', () => {
 describe('retract_capture + retraction folding', () => {
   test('author two-step retraction; context stops showing the capture and its visit', async () => {
     const customer = await createCustomer({ tenantId, name: 'Retract Cust', phone: '555-3311' });
-    // Record a note via the staged flow (creates capture + visit).
-    const staged = await call('record_field_note', {
+    // One call now (plan ②) — a known customer records straight away.
+    const done = await call('record_field_note', {
       text: 'bad note to retract',
       confirmed: { customerId: customer.id },
     });
-    const done = await call('record_field_note', { confirmId: staged.data.confirmId });
     expect(done.data.status).toBe('recorded');
 
     const retractionRows = async () =>

@@ -2,6 +2,7 @@ import {
   flagNudgeGap,
   reviewItemExistsFor,
   getTenant,
+  listDecisionsForNudges,
   listNudgesByStatus,
   listTenantIdsWithTelegramBindings,
   markNudgeOutcome,
@@ -125,6 +126,10 @@ export interface ComposeDeps {
   listTenants?: typeof listTenantIdsWithTelegramBindings;
   getTenant?: typeof getTenant;
   listNudges?: typeof listNudgesByStatus;
+  // The planner's drafts (plan 2026-08-22). Injected like every other
+  // collaborator; un-injected it would make the existing compose tests hit the
+  // database.
+  listDecisions?: typeof listDecisionsForNudges;
   run?: typeof runForcedTool;
   markQueued?: typeof markNudgeQueued;
   markOutcome?: typeof markNudgeOutcome;
@@ -140,6 +145,11 @@ export interface ComposeSummary {
   failed: number;
   rowErrors: number;
   handoffs: number; // nudges that died unasked and became manager items (F1)
+  // Questions the PLANNER wrote, so no model call was made for them. Counted
+  // separately because a silent substitution would make it impossible to tell
+  // whether the planner is writing anything at all — "composed" would look
+  // identical either way.
+  draftedByPlanner: number;
   held: number; // pending rows left for the next in-window tick (ask window)
   heldNotBefore: number; // pending rows the PLANNER asked us to hold (not_before)
 }
@@ -151,6 +161,7 @@ export async function runTeamLeadCompose(
   const listTenants = deps.listTenants ?? listTenantIdsWithTelegramBindings;
   const get = deps.getTenant ?? getTenant;
   const listNudges = deps.listNudges ?? listNudgesByStatus;
+  const listDecisions = deps.listDecisions ?? listDecisionsForNudges;
   const run = deps.run ?? runForcedTool;
   const markQueued = deps.markQueued ?? markNudgeQueued;
   const markOutcome = deps.markOutcome ?? markNudgeOutcome;
@@ -165,6 +176,7 @@ export async function runTeamLeadCompose(
     failed: 0,
     rowErrors: 0,
     handoffs: 0,
+    draftedByPlanner: 0,
     held: 0,
     heldNotBefore: 0,
   };
@@ -206,6 +218,34 @@ export async function runTeamLeadCompose(
       summary.held += pending.length;
       continue;
     }
+    // ONE batched read for the whole pending set, never one per row. Isolated:
+    // losing the drafts costs model calls, not questions — compose writes its
+    // own exactly as it did before this existed.
+    let drafts = new Map<string, string>();
+    if (pending.length > 0) {
+      try {
+        const rows = await listDecisions(
+          tenantId,
+          pending.map((n) => n.id),
+        );
+        for (const [id, list] of rows) {
+          // Oldest first, so scan backwards for the newest. Only an APPLIED
+          // `send` counts: a refused decision did not happen, a shadow one was
+          // never carried out, and a hold's draft is for a send that has not
+          // been decided yet.
+          for (let i = list.length - 1; i >= 0; i--) {
+            if (list[i].action === 'send' && list[i].outcome === 'applied' && list[i].question_draft) {
+              drafts.set(id, list[i].question_draft as string);
+              break;
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[teamLeadCompose] draft read failed for ${tenantId} — composing normally`, err);
+        drafts = new Map();
+      }
+    }
+
     for (const n of pending) {
       try {
         const spec = specFor(n.kind, specs)!; // present: `pending` was filtered
@@ -224,17 +264,24 @@ export async function runTeamLeadCompose(
           }
           continue;
         }
-        const args = await run(
-          spec.compose.tool,
-          {
-            system: spec.compose.system,
-            user: prepared.user,
-            maxTokens: 300,
-            label: 'teamLeadCompose',
-            reasoningEffort: 'none',
-          },
-          { tenantId, technicianRef: TEAM_LEAD_REF },
-        );
+        // The planner already wrote this one, so spend nothing. Deciding to
+        // send IS the `ask: true` this path would otherwise be asking for, and
+        // every guard below still applies — the draft is cheaper, not more
+        // trusted.
+        const drafted = drafts.get(n.id);
+        const args = drafted
+          ? { ask: true, question: drafted }
+          : await run(
+              spec.compose.tool,
+              {
+                system: spec.compose.system,
+                user: prepared.user,
+                maxTokens: 300,
+                label: 'teamLeadCompose',
+                reasoningEffort: 'none',
+              },
+              { tenantId, technicianRef: TEAM_LEAD_REF },
+            );
         if (args.ask !== true) {
           // A decline is a judgment about ASKING, not about the gap — the
           // manager still gets it (F1).
@@ -265,7 +312,10 @@ export async function runTeamLeadCompose(
           throw new Error('compose question tried to impersonate the assistant footer');
         }
         const queued = await markQueued(n.id, tenantId, prepared.assemble(question));
-        if (queued) summary.composed += 1; // null = the row moved under us — drop the write
+        if (queued) {
+          summary.composed += 1; // null = the row moved under us — drop the write
+          if (drafted) summary.draftedByPlanner += 1;
+        }
       } catch (err) {
         // Per-row isolation: one bad row/model blip never blocks the sweep.
         summary.rowErrors += 1;

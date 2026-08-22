@@ -1,0 +1,476 @@
+---
+date: 2026-08-21
+task: Hold every manager-facing template to "assert nothing you were not given", and let a field note record in one call
+research: thoughts/shared/research/2026-08-21-the-answer-return-path.md
+status: draft
+---
+
+## Overview
+
+Plan ② of three (see `memory: ladder-build-schedule`). Plan ① widened the **planner's** eye so it can
+see money. This plan fixes the **mouth**: the fixed strings the system speaks to a manager, and the
+two-call ceremony it makes a technician perform.
+
+Rebased onto `e36b601` (PR #162 merged). Line references below are re-verified against that commit.
+
+**What the rebase changed, and what it did not:**
+
+- ① touched `planner.ts`, `plannerPrompt.ts`, `moneyEvents.ts`, `nudgeDecisions.ts` and **8 lines of
+  `watchers.ts`** (one exported constant). It did **not** touch `nudgeKinds.ts` at all. The overlap
+  the schedule warned about never materialised — but the line numbers in `watchers.ts` (+8) and
+  `server.ts` (+6 in the note path) moved, and every anchor below is re-checked.
+- The comment at `nudgeKinds.ts:311-314` — *"the nudge's `filled` deliberately still ignores the
+  ledger"* — is **still true after ①**. So Phase 1's original call to **delete** the cost claim
+  rather than back it stands. What changed is that we now know the *detector* does read the ledger
+  (`watchers.ts:835`, `listCostEvents`), so one claim is backable that we had assumed was not.
+- ① added the `extend` action to `nudge_decisions`, so the decision history this plan reads back is
+  no longer escalate-only. The reader must select on `action === 'escalate'`, not "the last row".
+
+**Out of scope:** the gap-id stamp and the sweep's answer/activity split (plan ③); anything that
+widens a `filled` predicate (①'s ratified decision).
+
+## Decisions
+
+- **One rule governs every template on the manager path** (user, 2026-08-21): *a template may render
+  data it was given and may carry instructions, but must never assert a fact it did not receive as
+  an argument.* Checkable from a signature — `handoff(n, mode, naiveLocal?)` takes a nudge and a
+  clock, so every factual claim in its output was unbacked by construction. A signature bug, not a
+  copy bug.
+- **A clause is argument-fed only where a predicate genuinely backs it; otherwise it is deleted.**
+  Flags are named after the **predicate**, never the conclusion, so a later caller cannot use one to
+  justify a wider claim.
+- **`noCostOnLedger` is passed, and the cost claim survives in backed form** (implementation call,
+  NEW on rebase — the original plan deleted it outright). Re-verification showed the cost detector
+  filters candidates through `listCostEvents` (`watchers.ts:830-840`) and the sweep already builds
+  `jobsWithCostEvents` over every open nudge's job (`:514`). So *"nothing is recorded about what
+  this job cost"* is a fact in hand at every cost handoff site — it just was never passed. Feeding
+  it is not the thing ①'s decision forbade: ① refused to let the ledger **close a gap**; this only
+  stops the copy from asserting a costs claim blind. The unbacked **conclusion** — *"so the job's
+  costs are incomplete"* — is still deleted everywhere: a job with no parts has complete costs.
+- **The planner WRITES the manager's message; it does not have its reasoning pasted under a
+  template** (user, 2026-08-22 — correcting my reading of D6). Phase 1 shipped the plumbing but the
+  wrong payload: `reason` is documented "for the humans reading the log", and appending it as
+  *"The assistant's note: …"* leaks a debug field into product copy. Phase 3 replaces it. The
+  plumbing itself is unchanged and correct — read at handoff from `nudge_decisions`, newest row
+  with `action === 'escalate' && outcome === 'applied'`.
+  A gap the planner **extended** and the sweep later escalated on the clock has no such row, so no
+  note appears — correct, and not to be "fixed" by falling back to the extend's reason. That would
+  attribute a decision to a planner that never made it.
+- **Field notes record one-shot; standing facts keep their confirm** (user, ratified 2026-08-21).
+- **The identity resume commits too** (implementation call, settled here). `needs_identity` stays —
+  a missing datum is not a confirmation — but once the technician names the customer there is
+  nothing left to confirm, so `confirmId + confirmed` records instead of returning a preview. The
+  `confirmId`-alone path is kept solely so tokens staged before the deploy still commit.
+- **SETTLED (was OPEN): the one-shot idempotency stamp** is
+  `note:<sha256(tenantId|technicianRef|channel|identityKey|text ?? ''|blobPath ?? '')>`, where
+  `identityKey` is `resolved.customerId`, else `job:<resolved.jobId>`. There is no `createFrom`
+  limb: a new-customer note never reaches this path, so it keeps its `note:<item.id>` stamp — which
+  also disposes of the null-`addressLine1` collision the review found. `blobPath` and `channel` ARE
+  in the key, because a note may be a PHOTO with no text at all (`server.ts:2140`); without them two
+  different photos for the same customer hash identically and the second is silently swallowed.
+  **No date component** —
+  the original sketch's `:<yyyy-mm-dd>` buys a rare re-record at the cost of a midnight-straddle
+  double write, and identity in the key already separates "done" for two customers. Consequence,
+  accepted: a genuinely repeated identical note about the same customer returns `duplicate` rather
+  than recording twice. It must be **reported honestly**, never as `recorded` — L1 is undeletable
+  and a double-written note plus a double-written visit cannot be undone.
+- **A one-shot call may NOT create a customer** (user, 2026-08-21, from the review). `resolutionFrom`
+  (`server.ts:1839`) returns a `createFrom` resolution whenever `confirmed` is present, and
+  `confirmed` is legal on the first call (`server.test.ts:428` does exactly that) — so a plain
+  one-shot rule would mint a customer row the technician never saw. The ratified decision rests on
+  notes being **revertable**; a customer created by a stamped capture is not
+  (`memory: l1-pins-l2-undeletable`), so retracting the note would leave the customer behind. The
+  confirm therefore survives exactly where revertability ends: **one-shot when the note attaches to
+  an EXISTING customer or job; the staged preview when the resolution is `createFrom`.**
+  Boundary, stated deliberately: creating a **job** under a known customer stays one-shot. That is
+  the ordinary consequence of recording work on a customer the technician already named, and it is
+  not the case the preview was protecting.
+- **A stranded `needs_identity` item is LEFT OPEN** (implementation call, REVERSES the original
+  plan's "add a TTL sweep"). Once staging happens only on ambiguity, the item's `detail.text` is the
+  **only** copy of that note — nothing is in L1. Expiring it destroys the note. It belongs in
+  `list_pending_reviews` as exactly what it is: a note nobody could attribute.
+
+## Plain-language walkthrough
+
+**Phase 1 — stop telling the manager things we haven't checked.** When a question goes unanswered
+the manager gets a fixed sentence claiming the technician "hasn't heard back" and that "nothing is
+on the job's record". Neither is looked up. On 2026-08-20 both were false, on a job where the
+customer had already paid. Each claim is either deleted or handed the fact that backs it. In their
+place the manager gets something we *do* know and today throw away: the planner's own reason.
+
+```
+ today                                   after phase 1
+ ─────                                   ─────────────
+ handoff(nudge, 'escalated', clock)      handoff(nudge, 'escalated', clock, {
+   │                                         plannerReason,        ← from nudge_decisions
+   │  "…hasn't heard back —                  noNoteOrStatusChange, ← the predicate just run
+   │   nothing is on the job's                noCostOnLedger })    ← the Set already built
+   │   record yet."                        │
+   └── nobody checked either claim         └── every clause traces to an argument
+```
+
+**Phase 2 — one call, not two.** Recording a field note takes two tool calls: the first stages a
+preview and writes nothing, the second commits. On 2026-08-19 a technician answered two questions in
+one message; the money half committed instantly, the note half stopped at "shall I?", and the reply
+opened with "Recorded!" — telling them they were done when they were not. A wrong note can be
+retracted by its own author, so the confirm buys ceremony, not safety. Standing facts keep theirs:
+those land in every future briefing.
+
+## Secrets & env preflight
+
+- **Phase 1:** none. **Phase 2:** none.
+
+Both phases need the local Supabase stack (`npm run seed:local`, already required). Live checks need
+the `supabase-test` MCP (pilot read-back, already connected).
+
+## Phase 1: The manager copy asserts nothing it wasn't given
+
+### What this phase does
+Applies the rule to all four offending templates, and carries the planner's reason to the manager.
+
+### Changes required
+
+**`src/jobs/nudgeKinds.ts`** (untouched by ①, so every line below is exact)
+- Add above `NudgeKindSpec` (which opens at `:103`):
+  ```ts
+  export interface HandoffContext {
+    // Newest applied ESCALATE reason for this gap, or null. Model-authored.
+    plannerReason?: string | null;
+    // TRUE only when the caller has just evaluated hasActivitySince and it was
+    // false. Backs ONE clause with ONE wording: "no field note and no status
+    // change". It does NOT back "nothing is on the record" — that predicate
+    // reads two tables and is blind to money_events (the 2026-08-20 specimen).
+    // NOT passed on the EXPIRED path: JOB_COST_GAP_SPEC.filled short-circuits on
+    // `!n.asked_at` (`:298`) and an expired row was never asked, so the
+    // predicate is never evaluated there for that kind.
+    noNoteOrStatusChange?: boolean;
+    // TRUE only when the caller has checked the money ledger for this job and
+    // found no live material_cost. Backs "nothing is recorded about what this
+    // job cost". It does NOT back "the costs are incomplete" — a job with no
+    // parts has complete costs.
+    noCostOnLedger?: boolean;
+  }
+  ```
+- Widen `handoff` (`:138-142`) to `handoff(n, mode, naiveLocal?, ctx?: HandoffContext)`. Optional for
+  the same reason `naiveLocal` is: `compose.ts:98` has no sweep state — and that is exactly the call
+  site that must stop asserting.
+- Add a module-local helper (do **not** export `flat` from `planner.ts:220` or `flatten` from
+  `composeCopy.ts` — both are private):
+  ```ts
+  const plannerNote = (ctx?: HandoffContext): string => {
+    const r = ctx?.plannerReason?.replace(/\s+/g, ' ').trim();
+    if (!r) return '';
+    return `\n\nThe assistant's note: "${r.length > 200 ? r.slice(0, 199) + '…' : r}"`;
+  };
+  ```
+  Attributed because it is model-authored text on a surface where every other word is code-owned.
+- **(#4) `stage0Suggestion` (`:151-159`)** — 4th arg `noNoteOrStatusChange?: boolean`. Delete the
+  general claim `nothing has been recorded about it yet`; keep the specific one, gated:
+  ```ts
+  `The visit for '${title}' (${customer}) was scheduled to wrap up by ${wallClockLabel(endsAtLocal)}.` +
+  (noNoteOrStatusChange ? ` No field note and no status change has been recorded for it.` : '') +
+  ` Worth checking how it went so the job's record stays complete. If nothing needed recording, just dismiss this.`
+  ```
+- **(#5) `OVERDUE_VISIT_GAP_SPEC.handoff` escalated (`:255-262`)** — delete `and hasn't heard back`
+  (no reply-side datum exists anywhere in the system) and `nothing is on the job's record yet`
+  (replaced by the gated clause). Expired branch (`:247`) passes the flag through to
+  `stage0Suggestion`. Append `plannerNote(ctx)` to the escalated suggestion.
+- **(#6) `JOB_COST_GAP_SPEC.handoff` (`:325`)** — signature is `(n, mode)` today; widen to the
+  interface. **Expired (`:343-345`)** — the lead-in is the ONLY place this copy names the job, the
+  customer and the topic, and `handToManager` reaches it with no ctx, so gating the whole sentence
+  would ship a subject-less item (and break `nudgeQueue.test.ts:262`). Split it: the subject is
+  rendered data and stays unconditional; only the ledger CLAIM is gated, and
+  `so the job's costs are incomplete` is deleted.
+  ```ts
+  `The '${title}' job (${customer}) has an open question about what it cost in parts or materials.` +
+  (ctx?.noCostOnLedger ? ` Nothing is recorded for it yet.` : '') +
+  ` Worth asking ${techName} what they picked up for it. If there were no parts, just dismiss this.`
+  ```
+  "has an open question" is true by construction — we are handing off an open gap.
+  **Escalated (`:346-348`)**: delete `and hasn't heard back` and `the job's costs are still
+  incomplete`. The surviving opener already names everything and is backed (the nudge WAS asked);
+  add ` Nothing is recorded for it yet.` gated on `noCostOnLedger`, then append `plannerNote(ctx)`.
+
+**`src/jobs/watchers.ts`**
+- `WatcherDeps` (`:190-218`) gains `listDecisions?: typeof listDecisionsForNudges`. **Required** —
+  `watchers.test.ts:17` states every collaborator is injected; an un-injected read would make the
+  existing escalation tests hit the database. Default it beside the others at `:272`.
+- Before the escalation loop (`:664`), one batched read over every escalating id.
+  `listDecisionsForNudges` returns **oldest-first** per nudge, so:
+  ```ts
+  const reasonFor = (id: string): string | null => {
+    const rows = decisions.get(id) ?? [];
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].action === 'escalate' && rows[i].outcome === 'applied') return rows[i].reason;
+    }
+    return null;
+  };
+  ```
+  One query, not N. Wrap it so a read failure logs and yields no reasons rather than blocking the
+  escalation — the handoff matters more than the note.
+- `:664` — pass `{ plannerReason: reasonFor(x.n.id), noNoteOrStatusChange: true,
+  noCostOnLedger: !jobsWithCostEvents.has(x.jobId ?? '') }`. Both flags are honest here: the loop at
+  `:555` `continue`s on `filled()`, and both specs' `filled` **is** `hasActivitySince`;
+  `jobsWithCostEvents` (`:514`) is built over every open nudge's job, so `has()` is meaningful.
+- `:613` (`'expired'`) — pass `noCostOnLedger` ONLY. **No** `plannerReason` (nobody planned it — an
+  expired nudge never went out) and **no** `noNoteOrStatusChange`: the expired list holds
+  `pending`/`queued` rows (`:599-604`), which were never asked, so the cost spec's `filled` returns
+  at `nudgeKinds.ts:298` without ever calling `hasActivitySince`. The flag would be honest for the
+  visit kind and vacuous for the cost kind — exactly what the naming rule exists to prevent. Its
+  clause therefore appears only at `:812`, where `!hasActivitySince` was literally the filter.
+- `:812` — `stage0Suggestion(title, customer, g.ends_at, true)`; the detector filtered on
+  `!hasActivitySince` at `:452`.
+- **(#7) `:896-899`** — delete `so the job's costs are incomplete`. The surviving lead-in needs no
+  flag: this is the detector's own fallback and `freshCost` (`:840`) already excludes every job in
+  `withCost`.
+
+**`src/teamLead/compose.ts:98`** — unchanged, and that is the point: passing no `ctx` means every
+factual clause is omitted. This path asserts nothing because it has checked nothing.
+
+### Existing tests this phase MUST rewrite
+- `src/jobs/watchers.test.ts:1234` — `'escalation copy is byte-identical to the pre-registry
+  wording'` asserts the whole old string with `toBe`, including both deleted clauses. Re-pin it to
+  the new text; it is the lock that keeps this copy deliberate, so update it, never loosen it.
+- `src/control/nudgeQueue.test.ts:262` and `src/jobs/watchers.test.ts:1397` assert
+  `toContain('cost in parts')` and must still PASS unchanged — they are the regression guard for
+  the subject-less-copy failure above. Do not touch them.
+
+### Automated verification
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [x] escalated visit copy contains neither `hasn't heard back` nor `on the job's record`
+- [x] escalated cost copy contains no `incomplete`, and says nothing about cost when
+      `noCostOnLedger` is absent
+- [x] `stage0Suggestion` WITHOUT the flag omits the note/status clause; WITH it says
+      `no field note and no status change` and never `nothing has been recorded`
+- [x] `handoff` called with no `ctx` (the `compose.ts:98` shape) emits no factual clause and still
+      returns a valid plan
+- [x] an `applied` escalate reason appears, attributed, whitespace-collapsed, truncated at 200
+- [x] a `refused` or `shadow` decision's reason is NOT carried; nor is an `extend`'s reason on a gap
+      the sweep escalated
+- [x] reasons are read in ONE batched call for N escalations, and a throwing `listDecisions` still
+      escalates
+- [x] mutation: restore any deleted claim → its test fails; invert either flag → its test fails
+
+### Live verification (agent-executable)
+- Prerequisites: `supabase-test` MCP
+- [x] Read the `suggestion` on the 3 open false review items and confirm it is the OLD copy, so any
+      new item is distinguishable from the pre-change corpus. Report their ids.
+
+**Evidence (read-only SELECTs against the pilot, 2026-08-21):** `suggestion` is a top-level `text`
+column, never null on these rows. The pre-change corpus is **80 open `overdue_visit_gap` items in one
+tenant**, and every one carries exactly one deleted phrase — 77 say *"nothing has been recorded about
+it yet"* (the stage-0 copy), 3 say BOTH *"hasn't heard back"* and *"nothing is on the job's record
+yet"*: `96494d6a-2de6-4bdd-be1d-db601febd27b` (2026-08-19 05:35Z, Garbage disposal swap /
+Henderson Family), `5927d0f8-2244-49fc-aa58-db0a41c2ce08` (2026-08-20 19:55Z, Tankless descaling /
+Marisol Duarte), `82acc6e8-ce6f-42a1-be80-2e8b5cfb413e` (2026-08-21 01:35Z, Radiant heat check /
+Elena Vasquez). Counts are identical across ALL 144 review_items, because **no
+`overdue_visit_gap` item has ever been resolved or dismissed** — the queue only grows.
+Cut line for post-deploy diffing: `created_at > 2026-08-22 02:50:20.908009+00`.
+**Finding, not in the plan:** `job_cost_gap` has produced ZERO review items ever (it exists only as
+a `nudges` kind, 1 row, answered). The substring `cost` appears in 0 of all 144 suggestions — so the
+cost-copy half of this phase is forward-looking, and any `job_cost_gap` item at all is post-change.
+
+### Manual verification
+- [x] Read one regenerated escalation and one regenerated expiry side by side and judge they read as
+      a colleague's note, not a machine hedging — **approved by the user 2026-08-22** after three
+      rounds: shorter and blame-free (the job leads, never the person), the closing line asks for
+      the datum instead of offering a dismissal, and the qualifiers ("even a line is enough", "zero
+      is worth recording too") were cut as reassurance on easy questions.
+
+---
+*Pause after this phase — Manual verification is non-empty.*
+
+## Phase 2: Field notes record in one call
+
+### What this phase does
+Removes `record_field_note`'s staged confirm so a note whose customer is known commits on the first
+call, and so the answer to a `needs_identity` question commits on the second.
+
+### Changes required
+
+**`src/mcp/server.ts`**
+- `:255-262` — rewrite the description: no longer two-step; the note is recorded on this call; a
+  mistake is fixed with `retract_capture`. `:264-277` schema comments say "First call only" — correct
+  them.
+- `:556` — `record_standing_fact`'s description says *"Unlike record_field_note … two-step"*; fix.
+- `:2124-2131` — the cross-tenant `confirmed.customerId` guard runs before either branch; unchanged.
+- `:2135` (`if (!confirmId)`) — branch on WHAT the resolution is, not merely on whether there is
+  one:
+  ```
+  resolved.customerId || resolved.jobId  ->  COMMIT now (content-hash externalId)
+  resolved.createFrom                    ->  stage, return needs_confirmation + preview (as today)
+  no resolution                          ->  stage, return needs_identity (as today)
+  ```
+  Only the first line is new behaviour.
+  **Leave the supersede at `:2157` exactly where it is — before the branch, on EVERY no-confirmId
+  call.** Moving it into the ambiguous branch opens an undeletable double-write: an ambiguous note
+  stages as item `I`, the same note is re-sent and now resolves, commits under
+  `note:<sha256(…)>` while `I` stays open, and a later `record_field_note({confirmId: I,
+  confirmed})` commits it again under `note:<I>`. Different `externalId`, so `recordFieldNote`'s
+  dedup (`src/writePath/recordFieldNote.ts:125-137`) cannot see it — two L1 rows and two visits.
+  **Replay the extraction both times**: pass `{ extract: async () => extracted }` as
+  `recordFieldNote`'s second argument, the way the confirm path does at `:2324`. Without it the
+  write path calls the model a second time and can extract differently than the identity match that
+  chose the customer. `sourceMeta` is omitted on this path — there is no `stagedConfirmId`.
+- `:2258-2296` (`confirmId + confirmed`) — same three-way branch: an EXISTING customer/job commits
+  with `externalId: note:<item.id>` and resolves the item; a `createFrom` still returns
+  `needs_confirmation` + preview; still ambiguous still returns `needs_identity`.
+- Keep the `confirmId`-alone commit (`:2298-2352`) and its 15-min TTL untouched: tokens staged before
+  the deploy must still land.
+- **Keep `stagedNotePreview` (`:1860`) and both of its callers.** They are now the `createFrom`
+  path: the preview is what the technician sees before a customer is created. (Under a full
+  one-shot rule it would have been dead code — it is not.)
+- Every commit path must return `duplicate` honestly when `recordFieldNote` says so — never
+  `recorded`.
+
+**Existing tests this phase MUST rewrite** (they stage-then-confirm and will go red):
+`src/mcp/server.test.ts:345` (asserts `needs_confirmation` on the identity resume — now `recorded`),
+`:425` (its first case expects `needs_confirmation` from a resolvable `confirmed.customerId` — now
+`recorded`; re-check which of its two cases is `createFrom` and therefore still stages), `:458`
+(backdated `stagedAt`; re-point at a `needs_identity` token), `:485` (crash-heal on
+`note:<confirmId>`; re-point), `:511` (resolve_review refuses a live staged token; re-point), `:1085`
+(retraction fixture — one call fewer). `:1014` (cross-tenant guard) and `:592` survive unchanged.
+The supersede / expiry / crash-heal coverage must be **re-pointed at the paths that still have those
+behaviours**, never deleted.
+
+**Box_Setup_Stuff sync** (standing rule — an agent-stack change updates these in the same commit):
+- `Box_Setup_Stuff/bootstrap-box.sh` — the doctrine lives in the `## Permanent-record writes —
+  confirm FIRST` section (`:614-647`), which is appended by the **same heredoc** as `## Trades
+  assistant — accuracy rules` and guarded by a **presence grep at `:589`**. Editing its text is a
+  **no-op on every already-wired seat** (the documented template-drift trap, fourth occurrence).
+  **Split it into its own heredoc with its own delete-then-append refresh, placed AFTER the `fi` at
+  `:649`** — inside the `if/else` it would inherit the very presence grep it exists to escape —
+  copying the idiom at `:655-657` verbatim (`awk '/^## Permanent-record writes/{skip=1;next} skip && /^## /{skip=0} !skip'`).
+  Leave the accuracy-rules presence grep alone. Rule 2's "staged tools (record_field_note, …)" list
+  loses `record_field_note`; rule 4's retract guidance stays and becomes the *only* safety net.
+- `Box_Setup_Stuff/nemoclaw-inference-medic.sh:149` — embeds the tool's schema for its real-tool-call
+  probe; a stale copy breaks the health probe.
+- `Box_Setup_Stuff/doorman-nemoclaw-setup-guide.md:24`, `:132-140`, `:164`
+- `Box_Setup_Stuff/doorman-architecture-memory.md:314`
+- `docs/nemoclaw-tech-agent.md:84`, `:213`; `docs/onboarding.md:196`
+
+**The eval harness encodes the two-step and `npm test` will NOT catch it:**
+- `src/eval/toolCases.ts:481-527` (W01) — step 1 asserts the first call returned
+  `needs_confirmation|needs_identity` and errors with *"first call neither staged nor asked who"*.
+  A resolvable one-shot returns `recorded`, so W01 fails on the next spine-tool eval run.
+- `src/eval/graders.ts:62-83` keeps `record_field_note` in `STAGED_TOOLS`, and `isCommit`'s doc
+  comment (`:89-100`) states the two-step as the contract. Removing it from `STAGED_TOOLS` is what
+  stops confirm-discipline flagging a correct one-shot call.
+
+### Automated verification
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [x] one call resolving to an EXISTING customer writes the L1 capture + visit and returns the
+      recorded id
+- [x] one call resolving to a NEW customer returns `needs_confirmation` with the preview and writes
+      NOTHING — no capture, and **no customer row** (assert the customers count is unchanged)
+- [x] one call with ambiguous identity returns `needs_identity` and writes NOTHING
+- [x] the identity resume (`confirmId + confirmed`) returns `recorded`, not `needs_confirmation`
+- [x] **a repeated identical call does not write a second capture or a second visit** and reports
+      `duplicate` (the idempotency decision, locked in)
+- [x] the same text for a DIFFERENT customer on the same day records separately (identity is in the key)
+- [x] regression: an already-staged `pending_field_note` still commits via `confirmId` alone
+- [x] `record_standing_fact` still returns `needs_confirmation` on its first call
+- [x] the §0c refresh actually replaces the block: run the awk against a fixture AGENTS.md that
+      already carries the old text and assert the new text is present exactly once
+- [x] mutation: make the one-shot path stage instead → test 1 fails; drop `identityKey` from the
+      hash → the different-customer test fails
+
+### Live verification (agent-executable)
+- Prerequisites: `supabase-test` MCP
+- [ ] Compare `raw_captures` of channel `technician_note` against `review_items` of kind
+      `pending_field_note` in the 24h after deploy. Expect captures to continue and stages to fall —
+      **not to zero**, because `needs_identity` still stages. Report both counts rather than
+      asserting a direction. *(Post-deploy — nothing to read yet.)*
+
+### Manual verification
+- [x] none
+
+
+## Phase 3: The planner writes the handover, and code owns every date
+
+### What this phase does
+Phase 1 made the template stop lying. This makes the template the FALLBACK: when the planner
+escalated a gap, it writes the manager's message itself, in its own words. Code keeps exactly one
+thing — every date and time — because that is the one class of fact language models are measurably
+bad at, and because a supplied-label rule is mechanically enforceable where "don't embellish" is not.
+
+### Decisions
+- **The planner writes the WHOLE message** (user, 2026-08-22) — not a body under a code-owned
+  header. A frontier model will not typo a customer name, and an eval can measure whether that
+  holds. Accepted trade: the assert-nothing guarantee stops being checkable from a function
+  signature for this one string, and becomes an eval's job.
+- **Dates are the exception, and the exception is a RAIL, not a request** (user) — the planner is
+  handed pre-rendered firm-local labels and may use no other temporal wording. Code checks the
+  produced note against that set; a note that invents a date is DROPPED, not corrected.
+- **A bad note never blocks the escalation** — the handover is the point; the note is decoration.
+  A dropped note falls back to the Phase-1 template and records why in `outcome_detail`.
+- **Its own column, not `reason`** — `reason` is written for REFUSED and SHADOW decisions too
+  ("extend refused: the instant is not in the future"), which would be nonsense to a manager. It
+  stays diagnostic and stays the corpus.
+- **Only the planner-driven escalation gets a written note.** The sweep escalates on the 24h clock
+  and expires undelivered nudges with no model in the loop (`watchers.ts:36` — "No model calls"),
+  and it must stay that way: it is the deterministic organ. Those keep the template permanently.
+
+### Changes required
+
+**`supabase/migrations/<ts>_nudge_decisions_handoff_note.sql`** (pilot DDL — needs authorisation)
+```sql
+alter table nudge_decisions add column if not exists handoff_note text;
+```
+
+**`src/db/nudgeDecisions.ts`** — `NudgeDecisionInput.handoffNote?: string | null`, mapped to
+`handoff_note` beside `escalate_after` (`:70`).
+
+**`src/teamLead/planner.ts`**
+- `buildGapView` (~`:355-380`) — add pre-rendered labels to what the gap prints. Today the only
+  temporal values the planner sees are `Xh ago` and an ISO instant (`:374`); neither is usable in a
+  sentence a person reads. Render with `wallClockLabel` (`watchers.ts:169`) against the tenant's
+  clock, exactly as the handoff does:
+  ```
+  dates you may use, VERBATIM and only these:
+    the ask went out: Thursday, Aug 13 at 12:00 AM
+    the visit was due: Friday, Aug 14 at 8:00 AM
+    how long ago that was: 3 days ago
+  ```
+  `elapsedLabel` is code-computed for the same reason the others are — "3 days" is arithmetic.
+- New rail beside the citation check in `validateDecisions`: scan `handoffNote` for temporal
+  shapes — weekday names, month names, `\d{1,2}[/-]\d{1,2}`, ISO dates, clock times,
+  today/yesterday/tomorrow, `\d+\s*(hour|day|week)s?` — and require every match to be a substring
+  of a supplied label. Any miss → drop the note, keep the escalate, set
+  `outcomeDetail: 'handoff note dropped — unsupplied date'`.
+- Also drop a note that is empty, over 400 chars, or contains a URL.
+
+**`src/teamLead/plannerPrompt.ts`** — `handoffNote` on the `escalate` branch of `SUBMIT_PLAN_TOOL`,
+plus the writing rules in `PLANNER_SYSTEM`: two sentences at most; name the job and the customer;
+say what is missing and what would close it; **never suggest the technician is at fault** — they may
+not know the answer or may not have been on the job (`docs/engineering-memory.md`, "The person we
+ask may not know"); use only the supplied date labels; do not invite a dismissal.
+
+**`src/jobs/watchers.ts`** — `reasonFor` becomes `noteFor`, reading `handoff_note` (same batched
+read, same newest-applied-escalate selection). Passed as `HandoffContext.plannerNote`.
+
+**`src/jobs/nudgeKinds.ts`** — `HandoffContext.plannerReason` → `plannerNote`. When present, the
+escalated branch returns it as the WHOLE suggestion; when absent, today's template. Delete the
+`plannerNote()` quoting helper — the note is no longer a quotation.
+
+### Automated verification
+- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [ ] a supplied note replaces the escalated template entirely; an absent one falls back to it
+- [ ] the expired path and the detector fallback NEVER use a note (no model ran)
+- [ ] rail: a note using a supplied label passes; one inventing `Aug 14`, `8/14`, `tomorrow`,
+      `2 days ago` or `at 9am` is dropped, the escalation still happens, `outcome_detail` says why
+- [ ] rail: a 500-char note and a note containing a URL are dropped
+- [ ] `reason` is still recorded for a REFUSED decision and never reaches a manager
+- [ ] mutation: drop the date rail → the invented-date test fails; make a dropped note block the
+      escalate → the escalation test fails
+
+### Live verification (agent-executable)
+- Prerequisites: `supabase-test` MCP
+- [ ] After the next planner-driven escalation, read the item's `suggestion` and the decision's
+      `handoff_note` and confirm they match, and that no date appears that the gap did not supply
+
+### Manual verification
+- [ ] Read three generated notes and judge the voice: short, no blame, asks for the datum
+
+---
+*Pause after this phase — Manual verification is non-empty.*

@@ -72,6 +72,9 @@ export interface PlannerDecision {
   // Manager-facing copy, escalate only. Survives the rails or is dropped
   // whole; a bad note never blocks the handover.
   handoffNote?: string | null;
+  // Technician-facing question, send only. Compose uses it in place of its own
+  // model call; a dropped draft costs the draft, never the send.
+  questionDraft?: string | null;
 }
 
 // A decision the code rails refused, kept so a shadow run reports what the model
@@ -579,19 +582,60 @@ export function cleanHandoffNote(
   raw: unknown,
   dateLabels: string[],
 ): { note: string | null; why?: string } {
+  const base = cleanPlannerText(raw, dateLabels, { label: 'handoff note', maxLen: 400 });
+  return base;
+}
+
+/**
+ * The shared shape of every string the planner writes for a HUMAN.
+ *
+ * One function because the date rule is the one guarantee that survived making
+ * this copy model-written, and a second copy of it would drift from the first.
+ * The label is threaded through so a refusal names which surface it came from —
+ * "handoff note used a date it was not given" and "question used a date it was
+ * not given" are different findings.
+ */
+function cleanPlannerText(
+  raw: unknown,
+  dateLabels: string[],
+  opts: { label: string; maxLen: number },
+): { note: string | null; why?: string } {
   if (raw === undefined || raw === null) return { note: null };
-  if (typeof raw !== 'string') return { note: null, why: 'handoff note was not a string' };
+  if (typeof raw !== 'string') return { note: null, why: `${opts.label} was not a string` };
   const note = raw.replace(/\s+/g, ' ').trim();
   if (!note) return { note: null };
-  if (note.length > 400) return { note: null, why: 'handoff note over 400 characters' };
-  if (/https?:\/\//i.test(note)) return { note: null, why: 'handoff note contained a link' };
+  if (note.length > opts.maxLen) {
+    return { note: null, why: `${opts.label} over ${opts.maxLen} characters` };
+  }
+  if (/https?:\/\//i.test(note)) return { note: null, why: `${opts.label} contained a link` };
   const haystack = dateLabels.join(' | ').toLowerCase();
   for (const m of note.match(TEMPORAL_RE) ?? []) {
     if (!haystack.includes(m.toLowerCase())) {
-      return { note: null, why: `handoff note used a date it was not given: "${m}"` };
+      return { note: null, why: `${opts.label} used a date it was not given: "${m}"` };
     }
   }
   return { note };
+}
+
+/**
+ * The technician-facing question, or null.
+ *
+ * Same date rail as the handoff note, and higher stakes: this reaches a person
+ * OUTSIDE the office, in their own assistant's voice. The 500-char cap and the
+ * footer-impersonation check mirror compose's own guards exactly
+ * (`compose.ts:263-268`) — a planner-written question is not more trusted than
+ * a compose-written one, only cheaper.
+ */
+export function cleanQuestionDraft(
+  raw: unknown,
+  dateLabels: string[],
+): { note: string | null; why?: string } {
+  const base = cleanPlannerText(raw, dateLabels, { label: 'question', maxLen: 500 });
+  if (!base.note) return base;
+  if (/note for the assistant/i.test(base.note)) {
+    return { note: null, why: 'question tried to impersonate the assistant footer' };
+  }
+  return base;
 }
 
 export function validateDecisions(
@@ -858,6 +902,14 @@ export function validateDecisions(
     seen.add(nudgeId);
     // Escalate only. A note on any other action would never be read: nothing
     // else in the ladder puts a sentence in front of a manager.
+    // Send only. A question on any other action would be written, stored and
+    // never read — compose only ever looks at an applied `send`.
+    let questionDraft: string | null = null;
+    if (action === 'send') {
+      const q = cleanQuestionDraft(d.question, view.dateLabels);
+      questionDraft = q.note;
+      if (q.why) noteDrops.push(`${nudgeId}: ${q.why}`);
+    }
     let handoffNote: string | null = null;
     if (action === 'escalate') {
       const cleaned = cleanHandoffNote(d.handoffNote, view.dateLabels);
@@ -876,6 +928,7 @@ export function validateDecisions(
       ...(basis ? { basis } : {}),
       ...(citation ? { citation } : {}),
       ...(handoffNote ? { handoffNote } : {}),
+      ...(questionDraft ? { questionDraft } : {}),
       confidence,
       reason,
     });
@@ -1189,6 +1242,7 @@ export async function runPlanner(
           confidence: d.confidence,
           reason: d.reason,
           handoffNote: d.handoffNote ?? null,
+          questionDraft: d.questionDraft ?? null,
         };
         if (mode !== 'live') {
           records.push({ ...base, mode: 'shadow', outcome: 'shadow' });

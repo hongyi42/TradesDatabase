@@ -827,6 +827,7 @@ export type Database = {
           nudge_id: string
           outcome: string
           outcome_detail: string | null
+          question_draft: string | null
           reason: string
           tenant_id: string
         }
@@ -845,6 +846,7 @@ export type Database = {
           nudge_id: string
           outcome: string
           outcome_detail?: string | null
+          question_draft?: string | null
           reason?: string
           tenant_id: string
         }
@@ -863,6 +865,7 @@ export type Database = {
           nudge_id?: string
           outcome?: string
           outcome_detail?: string | null
+          question_draft?: string | null
           reason?: string
           tenant_id?: string
         }

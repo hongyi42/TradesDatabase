@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import type { Nudge, Tenant } from '../db/index.js';
 import {
   assembleNudgeMessage,
@@ -58,6 +58,7 @@ function baseDeps(over: Partial<ComposeDeps> = {}): ComposeDeps {
     markOutcome: async () => pendingNudge({ status: 'cancelled' }),
     setAttempts: async () => pendingNudge(),
     flagNudge: async () => null,
+    listDecisions: async () => new Map(),
     ...over,
   };
 }
@@ -71,7 +72,7 @@ describe('runTeamLeadCompose', () => {
         return pendingNudge({ status: 'queued' });
       },
     }));
-    expect(summary).toEqual({ composed: 1, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 0, heldNotBefore: 0 });
+    expect(summary).toEqual({ composed: 1, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, draftedByPlanner: 0, held: 0, heldNotBefore: 0 });
     expect(queuedWith).toHaveLength(1);
     const msg = queuedWith[0];
     expect(msg).toContain('How did the Henderson visit go?');
@@ -140,7 +141,7 @@ describe('runTeamLeadCompose', () => {
         return pendingNudge({ status: 'cancelled' });
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1, held: 0, heldNotBefore: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1, draftedByPlanner: 0, held: 0, heldNotBefore: 0 });
     expect(outcomes).toEqual([['cancelled', 'declined: evidence too thin']]);
     expect(flagged).toHaveLength(1);
     expect(flagged[0].escalatedFromNudge).toBe('n1');
@@ -166,7 +167,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('an unfit row must stay open, not be cancelled');
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 0, heldNotBefore: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, draftedByPlanner: 0, held: 0, heldNotBefore: 0 });
   });
 
   test('display-thin but FLAG-coherent context → manager handoff from raw fields, then cancelled', async () => {
@@ -200,7 +201,7 @@ describe('runTeamLeadCompose', () => {
         return pendingNudge({ status: 'cancelled' });
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1, held: 0, heldNotBefore: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1, draftedByPlanner: 0, held: 0, heldNotBefore: 0 });
     expect(flagged).toHaveLength(1);
     expect(flagged[0].jobId).toBe('j1');
     expect(flagged[0].suggestion).toContain("'Furnace tune-up' (unknown customer) was due to wrap up");
@@ -222,7 +223,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('one failure must not be terminal');
       },
     }));
-    expect(first).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 1, handoffs: 0, held: 0, heldNotBefore: 0 });
+    expect(first).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 1, handoffs: 0, draftedByPlanner: 0, held: 0, heldNotBefore: 0 });
     expect(writes).toEqual([['n1', 1]]);
 
     // The LAST allowed attempt failing goes terminal — and the manager takes
@@ -243,7 +244,7 @@ describe('runTeamLeadCompose', () => {
         return pendingNudge({ status: 'failed' });
       },
     }));
-    expect(last).toEqual({ composed: 0, cancelled: 0, failed: 1, rowErrors: 1, handoffs: 1, held: 0, heldNotBefore: 0 });
+    expect(last).toEqual({ composed: 0, cancelled: 0, failed: 1, rowErrors: 1, handoffs: 1, draftedByPlanner: 0, held: 0, heldNotBefore: 0 });
     expect(outcomes).toEqual([`failed: compose failed ${MAX_COMPOSE_ATTEMPTS}x: inference 503`]);
     expect(flagged).toEqual(['a1']);
   });
@@ -265,7 +266,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('a queued deliverable must not be failed');
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 1, handoffs: 0, held: 0, heldNotBefore: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 1, handoffs: 0, draftedByPlanner: 0, held: 0, heldNotBefore: 0 });
   });
 
   test('trust-boundary flattening (review F2): hostile context cannot forge the footer register', async () => {
@@ -368,7 +369,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('out-of-window nudges must not reach the manager');
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 1, heldNotBefore: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, draftedByPlanner: 0, held: 1, heldNotBefore: 0 });
   });
 
   test('the window is FIRM-local, not UTC: 01:00 UTC is 6 PM in Los Angeles — composes', async () => {
@@ -386,7 +387,7 @@ describe('runTeamLeadCompose', () => {
         throw new Error('unknown kinds must not reach the model');
       },
     }));
-    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, held: 0, heldNotBefore: 0 });
+    expect(summary).toEqual({ composed: 0, cancelled: 0, failed: 0, rowErrors: 0, handoffs: 0, draftedByPlanner: 0, held: 0, heldNotBefore: 0 });
   });
 });
 
@@ -588,5 +589,100 @@ describe('runTeamLeadCompose — not_before', () => {
     expect(composed).toEqual(['n-free']);
     expect(summary.composed).toBe(1);
     expect(summary.heldNotBefore).toBe(1);
+  });
+});
+
+// ── plan 2026-08-22: the planner writes the question, compose is the fallback ──
+describe('a planner-written question', () => {
+  // The row shape listDecisionsForNudges returns; only the four fields the
+  // reader reads are meaningful.
+  const decision = (over: Record<string, unknown> = {}) =>
+    ({
+      action: 'send', outcome: 'applied',
+      question_draft: 'Did the boiler swap at the Hendersons need a new expansion vessel?',
+      decided_at: '2026-08-16T09:00:00.000Z',
+      ...over,
+    }) as never;
+  const withDraft = (over: Record<string, unknown> = {}) =>
+    ({ listDecisions: async () => new Map([['n1', [decision(over)]]]) });
+
+  test('is used verbatim, spends NO model call, and still gets the code-owned frame', async () => {
+    let called = 0;
+    const queuedWith: string[] = [];
+    const summary = await runTeamLeadCompose(NOW, baseDeps({
+      ...withDraft(),
+      run: async () => { called += 1; return { ask: true, question: 'MODEL WROTE THIS' }; },
+      markQueued: async (_id, _t, message) => { queuedWith.push(message); return pendingNudge({ status: 'queued' }); },
+    }));
+    expect(called).toBe(0); // the whole point
+    expect(summary.composed).toBe(1);
+    expect(summary.draftedByPlanner).toBe(1);
+    expect(queuedWith[0]).toContain('Did the boiler swap at the Hendersons need a new expansion vessel?');
+    expect(queuedWith[0]).not.toContain('MODEL WROTE THIS');
+    // assembleNudgeMessage still wraps it — the planner writes the QUESTION,
+    // never the frame.
+    expect(queuedWith[0]).toMatch(/note for the assistant/i);
+  });
+
+  test('no draft → the model call happens exactly as before', async () => {
+    let called = 0;
+    const summary = await runTeamLeadCompose(NOW, baseDeps({
+      run: async () => { called += 1; return { ask: true, question: 'How did it go?' }; },
+    }));
+    expect(called).toBe(1);
+    expect(summary.composed).toBe(1);
+    expect(summary.draftedByPlanner).toBe(0);
+  });
+
+  test.each([
+    ['a REFUSED send', { outcome: 'refused' }],
+    ['a SHADOW send', { outcome: 'shadow' }],
+    ["a HOLD's draft", { action: 'hold' }],
+  ])('ignores %s and composes normally', async (_label, over) => {
+    let called = 0;
+    const summary = await runTeamLeadCompose(NOW, baseDeps({
+      ...withDraft(over),
+      run: async () => { called += 1; return { ask: true, question: 'How did it go?' }; },
+    }));
+    expect(called).toBe(1);
+    expect(summary.draftedByPlanner).toBe(0);
+  });
+
+  test('the NEWEST applied send draft wins', async () => {
+    const queuedWith: string[] = [];
+    await runTeamLeadCompose(NOW, baseDeps({
+      listDecisions: async () =>
+        new Map([['n1', [
+          decision({ question_draft: 'OLD question', decided_at: '2026-08-16T08:00:00.000Z' }),
+          decision({ question_draft: 'NEWEST question', decided_at: '2026-08-16T10:00:00.000Z' }),
+        ]]]),
+      markQueued: async (_id, _t, message) => { queuedWith.push(message); return pendingNudge({ status: 'queued' }); },
+    }));
+    expect(queuedWith[0]).toContain('NEWEST question');
+    expect(queuedWith[0]).not.toContain('OLD question');
+  });
+
+  test('a failed draft read costs model calls, never questions', async () => {
+    let called = 0;
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const summary = await runTeamLeadCompose(NOW, baseDeps({
+        listDecisions: async () => { throw new Error('nudge_decisions is down'); },
+        run: async () => { called += 1; return { ask: true, question: 'How did it go?' }; },
+      }));
+      expect(called).toBe(1);
+      expect(summary.composed).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('a draft is read ONCE for the whole pending set', async () => {
+    const calls: string[][] = [];
+    await runTeamLeadCompose(NOW, baseDeps({
+      listNudges: async () => [pendingNudge({ id: 'n1' }), pendingNudge({ id: 'n2', subject_ref: 'a2' })],
+      listDecisions: async (_t, ids) => { calls.push(ids); return new Map(); },
+    }));
+    expect(calls).toEqual([['n1', 'n2']]);
   });
 });

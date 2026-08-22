@@ -93,6 +93,17 @@ export const PLANNER_SYSTEM = [
   'again. When several gaps belong to the same person, think about which one actually matters',
   'today.',
   '',
+  'WRITING THE QUESTION. When you choose `send`, YOU write the question in `question`. It is',
+  'delivered by that person\'s OWN assistant, in their chat, so write what the assistant would say',
+  'to them:',
+  '  * One question. No preamble, no greeting, no sign-off — the system adds the frame.',
+  '  * Never mention the record system, this plan, a gap, or that anybody was chased. To them',
+  '    this is their assistant asking a normal work question.',
+  '  * Never suggest they are late or have been asked before, even when they have. You are asking',
+  '    for something, not collecting on something.',
+  '  * DATES: the same rule as below — only the strings the gap lists under "dates you may use".',
+  '  * A question that breaks these is thrown away and the system writes its own instead.',
+  '',
   'WRITING THE HANDOVER. When you escalate, YOU write the line the manager reads — the system no',
   'longer has a sentence of its own for it. Put it in `handoffNote`. Rules, all of them load-bearing:',
   '  * Two sentences at most. A manager is scanning a queue, not reading a report.',
@@ -166,6 +177,14 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
               description:
                 "For 'hold': the UTC instant to wait until, ISO-8601 (e.g. 2026-08-20T15:00:00Z). " +
                 'Required for hold, ignored otherwise.',
+            },
+            question: {
+              type: 'string',
+              description:
+                "For 'send': the question the TECHNICIAN reads, in their own assistant's voice. " +
+                'One question, no preamble or sign-off, no mention of the record system or of ' +
+                'having been asked before. Use only the date strings the gap listed under ' +
+                '"dates you may use". Ignored for every other action.',
             },
             handoffNote: {
               type: 'string',

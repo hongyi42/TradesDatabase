@@ -570,6 +570,56 @@ The asymmetry to design around: only MONEY items can be one-click, because only 
 sitting in a note waiting to be promoted — the visit items in the bucket have nothing to propose
 from, so for them "batch" can only mean batch-re-ask or batch-dismiss.
 
+### The layering is a capability assumption, and it is expiring (2026-08-22)
+
+Much of the ladder's stage-splitting — detector, planner, compose, sweep, each its own model call
+or none — was absorbed while the agent stack ran GLM-5.2: runaway reasoning, 4096-token
+truncation, a 13-deep tool schema turning a 3-second turn into 67. Those are claims about what a
+model can hold, and they do not survive a frontier planner.
+
+This repo's own measurement says the same thing from the other side: the date eval went
+**86 → 97 → 100% on the SAME model**, and every gain was a context fix (`upcomingVisits`,
+server-side counts, `windowCoverByDay`, served phrases, a clock warning). The recorded conclusion
+is that our failures are **context and vocabulary, not reasoning**.
+
+**User direction, 2026-08-22:** memory architecture (Group C) FIRST, then the fixture-spine agentic
+eval at scale — running it earlier would measure a planner re-investigating from scratch every 30
+minutes, which is not the system we intend to ship. Then collapse investigate/plan/compose into one
+model call.
+
+**The collapse is a COHERENCE play, not a cost one.** `runTeamLeadCompose` calls the model once per
+PENDING nudge, and a nudge is composed once before it becomes `queued` — so volume tracks gap
+creation (~5/day for a small firm) against the planner's 24/day. The defect worth fixing is that
+the decision and the wording never meet: compose cannot see that this is a third ask, or that the
+planner judged it urgent. Only a timestamp crosses between them.
+
+Two properties must be given up deliberately rather than discovered:
+- **Independent rollback of the technician-facing voice.** Compose is gated on `NUDGES_MODE`, not
+  `PLANNER_MODE`, so today the ladder still speaks with the planner switched off.
+- **Per-gap failure isolation.** One call for N gaps means one timeout affects N; today a compose
+  failure costs exactly one gap, which hands to the manager.
+
+### What the planner-copy eval does and does not measure (2026-08-22)
+
+`scripts/planner-eval/` renders scenarios through the REAL `buildGapView` and
+`buildPlannerUserMessage` out of `dist/` — the `doctrine.ts` rule one layer up: an eval that
+hand-writes its own gap blocks measures a prompt we do not ship.
+
+It gives the model **one forced `submit_plan` call and no read tools**. Production hands it
+`spine_read`, `recall_decisions`, `get_customer_context` and `resolve_date` inside `runToolLoop`.
+So it measures *"given context already gathered and laid out, does it decide and write well"* —
+never *"does it find what it needs"*. First run: 9/9 deterministic copy checks, and the judge
+caught the planner asserting *"the figure may sit on an invoice the office holds"* — prompt
+guidance surfacing as a fact about a specific job, which a planner with no way to look anything up
+has to guess at.
+
+**Cost shape, measured:** OUTPUT was **52.4%** of the bill, uncached gap blocks 30.3%, and the
+cacheable prefix — all caching can touch — **17.3%**. A "90% saving from prompt caching" quoted
+without that split reads far bigger than it is. And the planner's 30-minute cadence means the
+DEFAULT 5-minute TTL is cold on every call: it pays the 1.25× write and never reads, which is worse
+than not caching. Only `ttl: '1h'` wins in production, and that rests on a cache read refreshing
+the TTL — unverified, because seconds-apart eval calls cannot test a 30-minute gap.
+
 ## 3. Environments & infrastructure
 
 ```

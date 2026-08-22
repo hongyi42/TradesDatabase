@@ -2841,3 +2841,39 @@ mechanism in [long-running-task-batching.md](long-running-task-batching.md).
   `thoughts/shared/plans/` — dated artifacts for every feature; a plan's final-review section
   lists its known deferred nits.
 - **This file** replaces nothing above — it's the map plus the facts that had no home.
+
+### 2026-08-22 — PR #163 deployed, fleet re-wired, and two recorded facts corrected
+
+**The wire that plan ② owed.** PR #163 (`590998c`) shipped the one-shot `record_field_note`, and
+until the seats were re-wired every one of them was serving the OLD two-step doctrine against a
+one-shot spine — verified before touching anything: all six (s2, s3, s5, s6, s7, s8) matched
+"STALE (two-step)". The `## Permanent-record writes` block is delete-then-append, so `wire`
+genuinely refreshes it. After: all six "NEW", **exactly one block each** (no duplication),
+containers untouched (`wire` restarts the gateway inside, not the container). Order followed:
+s2 canary → verify in-container → fleet → audit a NON-s2 seat (s7, oldest uptime): all eight
+`EXPECTED_SECTIONS` present, `toolSearch: false`, weekday guard loaded.
+
+**Deploy verification is NOT optional here — the spine has `autoDeploy: "no"`.** Merging ships
+nothing. `srv-d8uqmdegvqtc73bfn83g` went live on `590998c` at 18:57Z by a **manual** trigger;
+the `lifecycle-heart` cron (`crn-d93iq7a8qa3s73ap6260`, autoDeploy yes) went live at 18:35Z.
+Check both — the cron and the web service are separate deploys of the same commit.
+
+**CORRECTION 1 — the bootstrap-copy ranking is not stable.** There are **six** copies on the
+box, not four, and the Aug-20 note naming `~/bootstrap-box.sh` as the stalest was already wrong
+by Aug-22 (it had become mid-pack at `973afe2f`; the stalest were `~/deploy-recycler`, Jul-12,
+and `~/Box_Setup_Stuff`, Aug-15). On 2026-08-22 **no copy matched the repo at all.** The durable
+rule is md5-against-the-repo every time; any recorded table of which copy is stale is a snapshot
+that rots. Fixed by `rsync`ing the repo tree to `~/Box_Setup_Stuff/` and verifying the hash
+before running anything from it.
+
+**CORRECTION 2 — the "fleet parked on deepinfra-prod" note is RETIRED as wrong.** Verified live
+2026-08-22 20:02Z: the installed medic is md5 `0921ab1e` (the repo-identical **Fireworks** build
+— the DeepInfra hand-edit is gone), its timer is `active`, and its tick reports *"route OK on
+fireworks-prod / accounts/fireworks/routers/glm-5p2-fast — serving verified (tool call
+returned)"*. The monthly spend limit was raised. A future session acting on the parked note
+would have reverted a healthy fleet. DeepInfra stays configured as the manual rollback.
+
+**Re-confirmed trap:** a non-interactive `ssh` has no `~/.local/bin` on PATH, so
+`bootstrap-box.sh wire` dies at its bare `nemoclaw` call — `export PATH="$HOME/.local/bin:$PATH"`
+first. Already recorded; hit again because the recorded fix is easy to skip.
+

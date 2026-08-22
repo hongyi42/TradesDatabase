@@ -2,8 +2,23 @@
 date: 2026-08-22
 task: Give the ladder a ground truth — an answer names its gap, `answered` stops meaning `filled`, and a tick that decides nothing still leaves a trace
 research: thoughts/shared/research/2026-08-22-brain-memory-foundations.md
-status: draft
+status: blocked — Phase 1 rests on a false assumption (see BLOCKER)
 ---
+
+## BLOCKER — found 2026-08-22 by reading a real trajectory
+
+**The nudge session is ONE-WAY, so the ref cannot come back.** `nudge-runner.sh` pins
+`--session-id nudge-<uuid>` (fresh per nudge, decision D6); `--deliver` only pushes the agent's
+reply to Telegram. The technician's answer routes to their **normal** session, not the nudge
+session. Proven on s2: nudge `fd98ab15` was delivered into `nudge-fd98ab15…` at 23:17, and Sam's
+reply *"all done"* landed in session `8dc26855…` at 23:18. The nudge session holds exactly one
+inbound message — the spine's own — and `sessions_list` inside it returns `{"count": 0}`.
+
+So an agent told to "pass ref K7M2QX4P back" says it into a transcript that is never read again,
+while the agent that actually receives the answer never saw the ref. **Phase 1's return path does
+not exist.** Phases 2 and 3 are unaffected — they touch the sweep and the planner, not the seat.
+
+Resolve the fork below before implementing Phase 1.
 
 ## Overview
 

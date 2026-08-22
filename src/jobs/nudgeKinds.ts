@@ -108,10 +108,13 @@ export interface ComposeBlock {
 // conclusion a reader might draw — a later caller must not be able to reach for
 // one of these to justify a wider claim than the predicate supports.
 export interface HandoffContext {
-  // The newest APPLIED escalate reason for this gap, or null. Model-authored
-  // text on a surface where every other word is code-owned, so it is quoted and
-  // attributed rather than blended in.
-  plannerReason?: string | null;
+  // The manager-facing line the PLANNER wrote when it escalated this gap, or
+  // null when the sweep escalated on its own (it has no model). When present it
+  // IS the message — the templates below are the fallback, not the frame (user,
+  // 2026-08-22). Its dates are rail-checked against labels the planner was
+  // handed, which is why code can hand a model-written sentence to a manager at
+  // all; everything else about it is measured by eval, not enforced here.
+  plannerNote?: string | null;
   // Backs ONE clause with ONE wording: "no field note and no status change".
   // That clause has TWO halves and the caller owes a predicate for EACH — a
   // caller that has only run hasActivitySince may NOT pass this flag:
@@ -137,16 +140,6 @@ export interface HandoffContext {
   // costs, and that conclusion is nobody's to draw from this predicate.
   noCostOnLedger?: boolean;
 }
-
-// The planner's own words, appended to a handoff. Kept local: `flat` is private
-// to planner.ts and `flatten` is unexported in composeCopy.ts, and widening
-// either one to reach here would export a helper purely for a caller that wants
-// a different shape anyway.
-const plannerNote = (ctx?: HandoffContext): string => {
-  const r = ctx?.plannerReason?.replace(/\s+/g, ' ').trim();
-  if (!r) return '';
-  return `\n\nThe assistant's note: "${r.length > 200 ? r.slice(0, 199) + '…' : r}"`;
-};
 
 export interface NudgeKindSpec {
   kind: ReviewKind;
@@ -332,25 +325,25 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
     // proceeds; only the CLAIM is dropped.
     const activityChecked =
       !!ctx?.noNoteOrStatusChange && !Number.isNaN(Date.parse(startsAtLocal));
-    return {
-      ...base,
-      // The JOB leads, never the person: "your technician is unresponsive" is
-      // not the ask and not something we can even know (user, 2026-08-21 — the
-      // first draft put the technician in the subject position and read as
-      // blame). "hasn't heard back" stays DELETED: no reply-side datum exists
-      // anywhere in the system, so nothing could ever back it.
-      //
-      // "since the visit" is the window hasActivitySince ACTUALLY uses for this
-      // kind (`filled` bounds on startsAtLocal, :230). The first draft put the
-      // clause straight after the ask time, which read as "nothing since we
-      // asked" — a different, narrower window than the one we checked.
-      suggestion:
-        `'${title}' (${customer})` +
-        (activityChecked ? ` — no note or status update since the visit` : '') +
-        `. We asked ${techName} on ${wallClockLabel(naiveLocal(n.asked_at))}. Tell me how it ` +
-        `went and I'll put it on the record.` +
-        plannerNote(ctx),
-    };
+    // The JOB leads, never the person: "your technician is unresponsive" is not
+    // the ask and not something we can even know (user, 2026-08-21 — the first
+    // draft put the technician in the subject position and read as blame).
+    // "hasn't heard back" stays DELETED: no reply-side datum exists anywhere in
+    // the system, so nothing could ever back it.
+    //
+    // "since the visit" is the window hasActivitySince ACTUALLY uses for this
+    // kind (`filled` bounds on startsAtLocal, :230). The first draft put the
+    // clause straight after the ask time, which read as "nothing since we
+    // asked" — a different, narrower window than the one we checked.
+    const template =
+      `'${title}' (${customer})` +
+      (activityChecked ? ` — no note or status update since the visit` : '') +
+      `. We asked ${techName} on ${wallClockLabel(naiveLocal(n.asked_at))}. Tell me how it ` +
+      `went and I'll put it on the record.`;
+    // When the planner escalated this gap it wrote the manager's line itself,
+    // and that line IS the message (user, 2026-08-22). The template is the
+    // fallback for a clock-driven escalation, where no model was in the loop.
+    return { ...base, suggestion: ctx?.plannerNote ?? template };
   },
 };
 
@@ -433,15 +426,17 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
       // the subject is rendered data and stays unconditional, and only the
       // ledger CLAIM is gated. Gating the whole sentence shipped a manager item
       // that said merely "Worth asking Ben what they picked up for it."
+      // Expired never has a planner note — nothing was ever asked, so nothing
+      // was ever planned. Escalated takes the planner's line when there is one.
       suggestion:
         mode === 'expired'
           ? `'${title}' (${customer}) — open question about what it cost in parts or materials` +
             (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
             `. ${techName} would know. Tell me the figure and I'll put it on the books.`
-          : `'${title}' (${customer}) — we asked ${techName} what it cost in parts and materials` +
-            (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
-            `. Tell me the figure and I'll put it on the books.` +
-            plannerNote(ctx),
+          : (ctx?.plannerNote ??
+            `'${title}' (${customer}) — we asked ${techName} what it cost in parts and materials` +
+              (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
+              `. Tell me the figure and I'll put it on the books.`),
     };
   },
 

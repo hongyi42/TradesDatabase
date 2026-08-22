@@ -1538,7 +1538,10 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
     ({
       action: 'escalate',
       outcome: 'applied',
-      reason: 'asked twice, no answer',
+      // Diagnostic. Must NEVER reach a manager — it is written for refusals too
+      // and is the corpus continual learning reads (user, 2026-08-22).
+      reason: 'INTERNAL-ONLY diagnostic line',
+      handoff_note: "'Furnace tune-up' (Henderson) still has no write-up. A quick word with Ben and I'll record it.",
       decided_at: '2026-08-16T09:00:00.000Z',
       ...over,
     }) as never;
@@ -1597,32 +1600,39 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
     expect(withFlag).not.toContain('nothing has been recorded');
   });
 
-  test("an APPLIED escalate reason reaches the manager, attributed and bounded", async () => {
+  test("the planner's note IS the message, and `reason` never reaches the manager", async () => {
     let suggestion = '';
     await runWatchers(NOW, 'live', baseDeps({
       listNudges: async () => [askedVisit],
-      listDecisions: async () =>
-        new Map([['n1', [decision({ reason: '  chased   twice,\n  still nothing  ' })]]]),
+      listDecisions: async () => new Map([['n1', [decision({})]]]),
       flagNudge: async (input) => {
         suggestion = input.suggestion;
         return openItem({});
       },
     }), 'live');
-    expect(suggestion).toContain('The assistant\'s note: "chased twice, still nothing"');
+    // The planner's line replaces the template WHOLESALE — not appended to it,
+    // not quoted under it, not framed by it (user, 2026-08-22).
+    expect(suggestion).toBe(
+      "'Furnace tune-up' (Henderson) still has no write-up. A quick word with Ben and I'll record it.",
+    );
+    expect(suggestion).not.toContain('INTERNAL-ONLY');
+    expect(suggestion).not.toContain('We asked'); // no template text survives
   });
 
-  test('a long reason is truncated at 200 characters', async () => {
+  test('no note → the template, unchanged', async () => {
+    // The clock-driven escalation: the sweep has no model, so nobody wrote a
+    // line. This is the normal case, not the exception.
     let suggestion = '';
     await runWatchers(NOW, 'live', baseDeps({
       listNudges: async () => [askedVisit],
-      listDecisions: async () => new Map([['n1', [decision({ reason: 'x'.repeat(500) })]]]),
+      listDecisions: async () => new Map([['n1', [decision({ handoff_note: null })]]]),
       flagNudge: async (input) => {
         suggestion = input.suggestion;
         return openItem({});
       },
     }), 'live');
-    expect(suggestion).toContain('x'.repeat(199) + '…');
-    expect(suggestion).not.toContain('x'.repeat(201));
+    expect(suggestion).toContain('We asked Ben Shelton on Thursday, Aug 13 at 12:00 AM');
+    expect(suggestion).not.toContain('INTERNAL-ONLY');
   });
 
   test('only an APPLIED escalate is quoted — never a refusal, a shadow, or an extend', async () => {
@@ -1635,14 +1645,15 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
       let suggestion = '';
       await runWatchers(NOW, 'live', baseDeps({
         listNudges: async () => [askedVisit],
-        listDecisions: async () => new Map([['n1', [decision(over)]]]),
+        listDecisions: async () =>
+          new Map([['n1', [decision({ ...over, handoff_note: 'DO NOT SHOW THIS' })]]]),
         flagNudge: async (input) => {
           suggestion = input.suggestion;
           return openItem({});
         },
       }), 'live');
-      expect(suggestion).not.toContain("The assistant's note");
-      expect(suggestion).not.toContain(String(over.reason));
+      expect(suggestion).not.toContain('DO NOT SHOW THIS');
+      expect(suggestion).toContain('We asked Ben Shelton'); // fell back
     }
   });
 
@@ -1660,8 +1671,8 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
           [
             'n1',
             [
-              decision({ reason: 'OLD', decided_at: '2026-08-16T08:00:00.000Z' }),
-              decision({ reason: 'NEWEST', decided_at: '2026-08-16T10:00:00.000Z' }),
+              decision({ handoff_note: 'OLD note', decided_at: '2026-08-16T08:00:00.000Z' }),
+              decision({ handoff_note: 'NEWEST note', decided_at: '2026-08-16T10:00:00.000Z' }),
             ],
           ],
         ]);
@@ -1674,8 +1685,7 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
     }), 'live');
     expect(summary.nudgesEscalated).toBe(2);
     expect(calls).toEqual([['n1', 'n2']]); // ONE call, both ids
-    expect(suggestion).toContain('NEWEST');
-    expect(suggestion).not.toContain('OLD');
+    expect(suggestion).toBe('NEWEST note');
   });
 
   test('a throwing decision read still escalates — the handoff outranks the note', async () => {
@@ -1694,8 +1704,8 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
         resolveNudge: async () => askedVisit,
       }), 'live');
       expect(summary.nudgesEscalated).toBe(1);
-      expect(suggestion).toContain("and I'll put it on the record");
-      expect(suggestion).not.toContain("The assistant's note");
+      expect(suggestion).toContain('We asked Ben Shelton'); // the template
+      expect(suggestion).not.toContain('INTERNAL-ONLY');
     } finally {
       spy.mockRestore();
     }

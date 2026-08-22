@@ -819,6 +819,7 @@ export type Database = {
           confidence: string
           decided_at: string
           escalate_after: string | null
+          handoff_note: string | null
           id: string
           job_id: string | null
           mode: string
@@ -836,6 +837,7 @@ export type Database = {
           confidence: string
           decided_at?: string
           escalate_after?: string | null
+          handoff_note?: string | null
           id?: string
           job_id?: string | null
           mode: string
@@ -853,6 +855,7 @@ export type Database = {
           confidence?: string
           decided_at?: string
           escalate_after?: string | null
+          handoff_note?: string | null
           id?: string
           job_id?: string | null
           mode?: string

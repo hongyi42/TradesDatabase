@@ -66,7 +66,12 @@ export interface PlannerDecision {
   basis?: 'evidence' | 'record';
   citation?: string | null;
   confidence: 'low' | 'medium' | 'high';
+  // Diagnostic, for the log and for continual learning. NEVER shown to a
+  // manager — it is written for refusals too, where it reads as machinery.
   reason: string;
+  // Manager-facing copy, escalate only. Survives the rails or is dropped
+  // whole; a bad note never blocks the handover.
+  handoffNote?: string | null;
 }
 
 // A decision the code rails refused, kept so a shadow run reports what the model
@@ -206,6 +211,50 @@ function hoursBetween(fromIso: string, toMs: number): number {
   return Number.isNaN(ms) ? 0 : Math.round((ms / 3_600_000) * 10) / 10;
 }
 
+// "Thursday, Aug 13 at 12:00 AM" — byte-identical in shape to watchers.ts's
+// wallClockLabel, so a planner-written note and the template that replaces it
+// when there is none read as the same voice.
+//
+// `tz` is the firm's zone for a REAL-UTC instant (asked_at), and 'UTC' for a
+// naive-local string that is already in the firm's clock (endsAtLocal, written
+// that way by the watcher). Getting that backwards shifts every printed time,
+// so the two call sites below name which they are passing.
+function clockLabel(iso: string | null | undefined, tz: string): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  try {
+    const day = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      weekday: 'long',
+      month: 'short',
+      day: 'numeric',
+    }).format(d);
+    const time = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    }).format(d);
+    return `${day} at ${time}`;
+  } catch {
+    return null; // unknown zone — supply no label rather than a wrong one
+  }
+}
+
+// "3 days ago" / "yesterday" / "5 hours ago". Code-computed for exactly the
+// reason the labels are: this is arithmetic on a date.
+function elapsedLabel(fromIso: string | null, nowMs: number): string | null {
+  if (!fromIso) return null;
+  const ms = nowMs - Date.parse(fromIso);
+  if (Number.isNaN(ms) || ms < 0) return null;
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours < 1) return 'less than an hour ago';
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? 'yesterday' : `${days} days ago`;
+}
+
 // "Wednesday, August 19, 2026 at 6:50 PM in the firm's timezone (America/Los_Angeles)".
 // Weekday and date come from ONE derivation so they cannot disagree, and the
 // zone is named so the reader can tell this is not UTC.
@@ -257,6 +306,13 @@ interface GapView {
   // reaches the prompt (a count and the last action); the detail is pulled with
   // recall_decisions. Kept on the view so tests can assert both halves.
   history: NudgeDecision[];
+  // The ONLY temporal strings a handoff note may contain, pre-rendered in the
+  // firm's own clock. Dates are the one class of fact a language model is
+  // measurably bad at (docs/engineering-memory.md, the date-eval arc), so they
+  // stay code-owned even though the rest of the note is written by the model —
+  // and because they are supplied as literals, "did it invent a date" is a
+  // string check rather than a judgment.
+  dateLabels: string[];
   block: string;
 }
 
@@ -295,6 +351,7 @@ function buildGapView(
   jobsWithCostEvents: Set<string>,
   history: NudgeDecision[] = [],
   money: MoneyEvent[] = [],
+  tz: string = 'UTC',
 ): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
@@ -305,6 +362,14 @@ function buildGapView(
         .slice(-EVIDENCE_PER_GAP);
 
   const evidenceText = relevant.map((e) => flat(e.capture.raw_text ?? '', EVIDENCE_TEXT_CHARS));
+
+  // The temporal vocabulary a handoff note is allowed. asked_at is a REAL UTC
+  // instant → the firm's zone; endsAtLocal was written naive-local by the
+  // watcher → 'UTC' formats it as-is (see clockLabel's header).
+  const askedLabel = clockLabel(n.asked_at, tz);
+  const dueLabel = clockLabel(ctxStr(n, 'endsAtLocal'), 'UTC');
+  const agoLabel = elapsedLabel(n.asked_at, nowMs);
+  const dateLabels = [askedLabel, dueLabel, agoLabel].filter((v): v is string => !!v);
 
   // The record-level test, per kind. A cost gap names a hole in the LEDGER, and
   // the ledger is the only thing that can say the hole is closed — a note cannot,
@@ -375,6 +440,14 @@ function buildGapView(
         `${n.escalate_after ? '' : ' (the default — nothing has moved it)'}`,
     );
   }
+  if (dateLabels.length > 0) {
+    lines.push(
+      '  dates you may use in a handover note, VERBATIM and only these:' +
+        (askedLabel ? `\n    the ask went out: ${askedLabel}` : '') +
+        (dueLabel ? `\n    the visit was due: ${dueLabel}` : '') +
+        (agoLabel ? `\n    how long ago the ask went out: ${agoLabel}` : ''),
+    );
+  }
   const hist = historyLine(history, nowMs);
   if (hist) lines.push(hist);
   if (!n.asked_at) {
@@ -424,6 +497,7 @@ function buildGapView(
     recordFilled,
     moneyOnRecord,
     history,
+    dateLabels,
     block: lines.join('\n'),
   };
 }
@@ -468,14 +542,67 @@ function currentDeadlineMs(n: Nudge, askedAtMs: number): number {
  * run in shadow too: a shadow run that reported an invalid plan as valid would
  * measure the wrong thing.
  */
+// Anything that reads as a point in time. Deliberately broad: a false positive
+// costs a note (the template takes over), a false negative puts a date the firm
+// never stated in front of a manager, and the whole reason dates stayed
+// code-owned is that this is the one thing the model is known to get wrong.
+const TEMPORAL_RE = new RegExp(
+  [
+    '\\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\\b',
+    '\\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\.?\\s*\\d{1,2}\\b',
+    '\\b\\d{1,2}\\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\b',
+    '\\b\\d{4}-\\d{2}-\\d{2}\\b',
+    '\\b\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?\\b',
+    '\\b\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)\\b',
+    '\\b(?:today|tonight|yesterday|tomorrow|this morning|this afternoon)\\b',
+    '\\b\\d+\\s*(?:minute|hour|day|week|month)s?\\b',
+  ].join('|'),
+  'gi',
+);
+
+/**
+ * A handoff note the manager may safely read, or null.
+ *
+ * The note is written by the model and replaces a code-owned template wholesale
+ * (user, 2026-08-22), so the only guarantee left is this one — and it is a
+ * guarantee precisely because the labels were SUPPLIED as literals: "did it
+ * invent a date" reduces to a substring check.
+ *
+ * Fail-soft on purpose. A rejected note is dropped and the template takes over;
+ * it never blocks the escalation, because handing the gap to a person is the
+ * point and the sentence is decoration.
+ */
+export function cleanHandoffNote(
+  raw: unknown,
+  dateLabels: string[],
+): { note: string | null; why?: string } {
+  if (raw === undefined || raw === null) return { note: null };
+  if (typeof raw !== 'string') return { note: null, why: 'handoff note was not a string' };
+  const note = raw.replace(/\s+/g, ' ').trim();
+  if (!note) return { note: null };
+  if (note.length > 400) return { note: null, why: 'handoff note over 400 characters' };
+  if (/https?:\/\//i.test(note)) return { note: null, why: 'handoff note contained a link' };
+  const haystack = dateLabels.join(' | ').toLowerCase();
+  for (const m of note.match(TEMPORAL_RE) ?? []) {
+    if (!haystack.includes(m.toLowerCase())) {
+      return { note: null, why: `handoff note used a date it was not given: "${m}"` };
+    }
+  }
+  return { note };
+}
+
 export function validateDecisions(
   raw: unknown,
   views: Map<string, GapView>,
   nowMs: number = Date.now(),
   sweepLive: boolean = true,
-): { decisions: PlannerDecision[]; dropped: DroppedDecision[] } {
+): { decisions: PlannerDecision[]; dropped: DroppedDecision[]; noteDrops: string[] } {
   const decisions: PlannerDecision[] = [];
   const dropped: DroppedDecision[] = [];
+  // Notes the rails rejected, surfaced on the return so the caller can log them
+  // and an eval can count them. Separate from `dropped`, which means a whole
+  // DECISION was refused — a rejected note refuses nothing.
+  const noteDrops: string[] = [];
   const usedQuotes = new Set<string>();
   const list = Array.isArray((raw as { decisions?: unknown })?.decisions)
     ? ((raw as { decisions: unknown[] }).decisions as Record<string, unknown>[])
@@ -726,6 +853,18 @@ export function validateDecisions(
     }
 
     seen.add(nudgeId);
+    // Escalate only. A note on any other action would never be read: nothing
+    // else in the ladder puts a sentence in front of a manager.
+    let handoffNote: string | null = null;
+    if (action === 'escalate') {
+      const cleaned = cleanHandoffNote(d.handoffNote, view.dateLabels);
+      handoffNote = cleaned.note;
+      // Recorded as a NOTE on an applied decision, not a refusal: the escalate
+      // itself is fine and is going ahead. Without this line a dropped note is
+      // indistinguishable from one the model never wrote, and no eval could
+      // ever measure how often the date rail fires.
+      if (cleaned.why) noteDrops.push(`${nudgeId}: ${cleaned.why}`);
+    }
     decisions.push({
       nudgeId,
       action: action as PlannerAction,
@@ -733,11 +872,12 @@ export function validateDecisions(
       ...(escalateAfter ? { escalateAfter } : {}),
       ...(basis ? { basis } : {}),
       ...(citation ? { citation } : {}),
+      ...(handoffNote ? { handoffNote } : {}),
       confidence,
       reason,
     });
   }
-  return { decisions, dropped };
+  return { decisions, dropped, noteDrops };
 }
 
 /**
@@ -931,6 +1071,7 @@ export async function runPlanner(
             jobsWithCostEvents,
             historyByNudge.get(n.id) ?? [],
             money,
+            tz,
           ),
         );
       }
@@ -974,6 +1115,13 @@ export async function runPlanner(
           if (name === SUBMIT_PLAN_TOOL.name) {
             const checked = validateDecisions(args, views, nowMs, sweepLive);
             outcome = checked; // the LAST submission stands, refusals included
+            // A dropped note is not a refused decision, so it would otherwise
+            // leave no trace anywhere — and "how often does the date rail fire"
+            // is the number that says whether the model can be trusted with
+            // this copy at all.
+            for (const d of checked.noteDrops) {
+              console.error(`[planner] ${tenantId} ${d}`);
+            }
             // A submission where EVERY decision was refused is a correctable
             // mistake, not an answer. An EMPTY plan is a legitimate choice
             // ("leave them all alone") and is accepted as it is.
@@ -1025,6 +1173,7 @@ export async function runPlanner(
           citation: d.citation ?? null,
           confidence: d.confidence,
           reason: d.reason,
+          handoffNote: d.handoffNote ?? null,
         };
         if (mode !== 'live') {
           records.push({ ...base, mode: 'shadow', outcome: 'shadow' });

@@ -20,6 +20,11 @@ export interface NudgeDecisionInput {
   // records THAT a deadline was postponed but never how far, so no eval can
   // ask whether the planner postpones sensibly.
   escalateAfter?: string | null;
+  // The manager-facing sentence the planner wrote for an APPLIED escalate, or
+  // null when the sweep escalated on its own (it has no model). Deliberately
+  // separate from `reason`: that one is diagnostic, is written for refusals
+  // too, and is the corpus — this one is product copy and is read by a person.
+  handoffNote?: string | null;
   basis?: 'evidence' | 'record' | null;
   citation?: string | null;
   confidence: 'low' | 'medium' | 'high';
@@ -67,6 +72,7 @@ export async function recordNudgeDecisions(inputs: NudgeDecisionInput[]): Promis
       action: d.action,
       not_before: d.notBefore ?? null,
       escalate_after: d.escalateAfter ?? null,
+      handoff_note: d.handoffNote ?? null,
       basis: d.basis ?? null,
       citation: d.citation ?? null,
       confidence: d.confidence,

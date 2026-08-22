@@ -93,6 +93,22 @@ export const PLANNER_SYSTEM = [
   'again. When several gaps belong to the same person, think about which one actually matters',
   'today.',
   '',
+  'WRITING THE HANDOVER. When you escalate, YOU write the line the manager reads — the system no',
+  'longer has a sentence of its own for it. Put it in `handoffNote`. Rules, all of them load-bearing:',
+  '  * Two sentences at most. A manager is scanning a queue, not reading a report.',
+  '  * Name the job and the customer, say what is missing, and say what would close it.',
+  '  * NEVER suggest the person is at fault. You do not know that they ignored you — they may not',
+  '    know the answer (a price is on an invoice the office holds, not in their van), or they may',
+  '    not have been on that job at all, because technicians get swapped without the records',
+  '    hearing about it. Silence is not avoidance. The gap is about the RECORD, never the person.',
+  '  * Ask for the thing you want. Do not offer the manager a way to close the item without',
+  '    telling you anything — the whole reason it exists is that the record does not know.',
+  '  * DATES: use ONLY the strings listed under "dates you may use" on that gap, copied exactly.',
+  '    Write no other date, weekday, time or duration — not "tomorrow", not "two days", not a',
+  '    date you worked out yourself. A note containing anything else is thrown away and the',
+  '    manager gets a plain system sentence instead, so you lose the message, not just the date.',
+  '  * No links.',
+  '',
   'WHEN TO GIVE UP. If a gap was asked and has gone genuinely unanswered, escalate it — but ask',
   'yourself first whether they have actually had a fair chance. Somebody asked at the end of the',
   'day has not ignored you by the next morning. That is what extend is for: push the deadline into',
@@ -150,6 +166,15 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
               description:
                 "For 'hold': the UTC instant to wait until, ISO-8601 (e.g. 2026-08-20T15:00:00Z). " +
                 'Required for hold, ignored otherwise.',
+            },
+            handoffNote: {
+              type: 'string',
+              description:
+                "For 'escalate': the line the MANAGER reads, in your words. Two sentences at " +
+                'most; name the job and customer, what is missing, and what would close it. ' +
+                'Never imply the person is at fault. Use only the date strings the gap listed ' +
+                'under "dates you may use", copied exactly — any other date and the note is ' +
+                'discarded. Ignored for every other action.',
             },
             escalateAfter: {
               type: 'string',

@@ -689,12 +689,18 @@ export async function runWatchers(
       }
       // Rows come back OLDEST first, so scan backwards for the newest. Only an
       // APPLIED escalate counts: a refused one did not happen, a shadow one was
-      // never carried out, and an `extend` reason would attribute a decision to
+      // never carried out, and an `extend`'s note would attribute a decision to
       // the planner that it never made about this handoff.
-      const reasonFor = (id: string): string | null => {
+      //
+      // handoff_note, NEVER reason. `reason` is diagnostic — it is written for
+      // refusals too and is the corpus continual learning will read; putting it
+      // in front of a manager was the 2026-08-21 mistake this replaced.
+      const noteFor = (id: string): string | null => {
         const rows = decisions.get(id) ?? [];
         for (let i = rows.length - 1; i >= 0; i--) {
-          if (rows[i].action === 'escalate' && rows[i].outcome === 'applied') return rows[i].reason;
+          if (rows[i].action === 'escalate' && rows[i].outcome === 'applied') {
+            return rows[i].handoff_note;
+          }
         }
         return null;
       };
@@ -713,7 +719,7 @@ export async function runWatchers(
         // not render the clause — and "inert today" is exactly how the claims
         // this phase deleted were allowed to survive.
         const plan = spec.handoff(x.n, 'escalated', naiveLocal, {
-          plannerReason: reasonFor(x.n.id),
+          plannerNote: noteFor(x.n.id),
           ...(spec.subjectIsVisit ? { noNoteOrStatusChange: true } : {}),
           noCostOnLedger: !jobsWithCostEvents.has(x.jobId ?? ''),
         });

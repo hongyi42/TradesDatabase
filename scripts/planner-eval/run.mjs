@@ -8,6 +8,16 @@
 // and writes one JSONL row per scenario. analyze.mjs grades the rows; nothing
 // here judges anything, so a grading change never needs to re-spend.
 //
+// FIDELITY, stated up front because it bounds every number this produces:
+// this harness gives the model ONE forced submit_plan call and nothing else.
+// Production hands it four read tools first — spine_read, recall_decisions,
+// get_customer_context, resolve_date — inside runToolLoop, so it can go and
+// LOOK before deciding. So this measures "given context already gathered and
+// laid out, does it decide and write well", NOT "does it find what it needs".
+// The two are different questions and only the first is answered here. A
+// planner that would have investigated instead has to guess, which is a
+// plausible source of any invented detail this run surfaces.
+//
 // TTL, and why the eval's answer is NOT production's answer:
 //   * here, calls fire back to back and a cache READ refreshes the TTL, so the
 //     default 5m holds for the whole run at a 1.25x write. Correct and cheapest.

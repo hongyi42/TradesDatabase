@@ -117,6 +117,38 @@ const hits = costs.filter((c) => c.cacheHit).length;
 console.log(B('\n═══ MONEY ═══'));
 console.log(`  run: $${spent.toFixed(4)} over ${rows.length} calls   cache hits ${hits}/${rows.length}   ttl ${meta.ttl}`);
 console.log(`  judge: $${judgeSpend.toFixed(4)}`);
+
+// WHERE THE MONEY GOES, before any talk of caching. The first version of this
+// report led with the cacheable prefix priced four ways, which put the emphasis
+// on the smallest slice: the planner's system prompt is short and its output is
+// a whole plan, so OUTPUT dominates and caching cannot touch it. A caching
+// number quoted without this breakdown reads as a bigger win than it is.
+const P = (await import('./anthropic.mjs')).PRICES[meta.model];
+const M = 1e6;
+const tot = costs.reduce(
+  (a, c) => ({
+    inTok: a.inTok + c.inTok, read: a.read + c.read,
+    write: a.write + c.write5m + c.write1h, outTok: a.outTok + c.outTok,
+  }),
+  { inTok: 0, read: 0, write: 0, outTok: 0 },
+);
+const part = {
+  'uncached input (the gap blocks)': (tot.inTok * P.base) / M,
+  'cache reads (the prefix)': (tot.read * P.base * 0.1) / M,
+  'cache writes (the prefix)': (tot.write * P.base * 1.25) / M,
+  'OUTPUT (the plan itself)': (tot.outTok * P.out) / M,
+};
+const sum = Object.values(part).reduce((a, b) => a + b, 0) || 1;
+console.log(B('\n  where it went:'));
+for (const [k, v] of Object.entries(part)) {
+  console.log(`    ${k.padEnd(32)} $${v.toFixed(4)}   ${((100 * v) / sum).toFixed(1).padStart(5)}%`);
+}
+console.log(
+  `    ${'— caching can only touch'.padEnd(32)} $${(part['cache reads (the prefix)'] + part['cache writes (the prefix)']).toFixed(4)}   ` +
+    `${((100 * (part['cache reads (the prefix)'] + part['cache writes (the prefix)'])) / sum).toFixed(1).padStart(5)}%`,
+);
+console.log(`    ${'output tokens'.padEnd(32)} ${tot.outTok} at $${P.out}/MTok — never cacheable`);
+
 console.log(B('\n  the cacheable prefix, priced four ways (same tokens):'));
 console.log(`    no cache at all            $${cf.noCache.toFixed(4)}`);
 console.log(`    5m TTL, warm  (this run)   $${cf.ttl5m.toFixed(4)}`);

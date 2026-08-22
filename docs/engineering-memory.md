@@ -524,6 +524,43 @@ write no L1 capture. Nothing can point a batch of tool calls at a decision about
   than a shared one. This also closes a standing provenance hole: **money events currently record
   no link to the message that reported them at all.**
 
+### The person we ask may not know, or may not have been there (2026-08-21)
+
+User direction, while reviewing the manager copy:
+
+> "we need to accept that sometimes the technician is not a qualified source to answer a question"
+> … "they might even get replaced by another technician for a job without us knowing, then we'll
+> probably be forced to escalate to resolve the gap"
+
+The ladder currently treats every unanswered ask as silence to be chased. Two cases are not that:
+
+1. **Wrong question.** The cost detector asks *"what did the job cost in parts and materials"*. A
+   technician who fits a condensate pump often does not know the price — it is on an invoice the
+   office holds. The answerable question is *"what parts did you put in?"*, and the office prices
+   it. Flagged, **not built** — deliberately kept out of plan ② to avoid widening it.
+2. **Wrong person.** A job's technician can be swapped in the real world with nothing telling the
+   spine. The person being chased was never on site. Their silence is correct behaviour.
+
+**Consequence.** Escalation is not only a failure path — when the respondent cannot answer, handing
+the gap to a manager IS the right resolution, and no copy or metric may frame it as the technician
+having ignored us. (Same reasoning that deleted "hasn't heard back" from every manager template in
+plan ②: we have no reply-side datum, and would not be entitled to that conclusion if we did.) Any
+future answer-rate metric must separate *could not answer* from *did not answer*, or it reads a
+routing problem as a compliance problem.
+
+### The manager's bucket has never drained (2026-08-21)
+
+Live audit of the pilot: **80 open review items, and not one has ever been resolved or dismissed** —
+77 stage-0 visit items, 3 escalations, 0 cost items. A visit item auto-closes as soon as any
+activity lands on its job, so 80 sitting open means nothing ever landed on any of them.
+
+User's design for Group B, **not yet built**: batch the open items and have the planner send a
+one-click "record all" near the end of each working day, rather than surfacing them one at a time
+(spam) or letting the bucket grow unbounded. Gaps the planner judges urgent still surface alone.
+The asymmetry to design around: only MONEY items can be one-click, because only they have a figure
+sitting in a note waiting to be promoted — the visit items in the bucket have nothing to propose
+from, so for them "batch" can only mean batch-re-ask or batch-dismiss.
+
 ## 3. Environments & infrastructure
 
 ```

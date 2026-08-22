@@ -59,27 +59,28 @@ widens a `filled` predicate (①'s ratified decision).
   `confirmId`-alone path is kept solely so tokens staged before the deploy still commit.
 - **SETTLED (was OPEN): the one-shot idempotency stamp** is
   `note:<sha256(tenantId|technicianRef|channel|identityKey|text ?? ''|blobPath ?? '')>`, where
-  `identityKey` is `resolved.customerId`, else `job:<resolved.jobId>`, else `new:` + the JSON of the
-  whole `createFrom` draft. `blobPath` and `channel` are in the key because a note may be a PHOTO
-  with no text at all (`server.ts:2140`) — without them two different photos for the same customer
-  hash identically and the second is silently swallowed. The whole draft, not just its address,
-  because `resolutionFrom` (`:1848`) can leave `addressLine1` null and every addressless draft would
-  collapse to one key. **No date component** —
+  `identityKey` is `resolved.customerId`, else `job:<resolved.jobId>`. There is no `createFrom`
+  limb: a new-customer note never reaches this path, so it keeps its `note:<item.id>` stamp — which
+  also disposes of the null-`addressLine1` collision the review found. `blobPath` and `channel` ARE
+  in the key, because a note may be a PHOTO with no text at all (`server.ts:2140`); without them two
+  different photos for the same customer hash identically and the second is silently swallowed.
+  **No date component** —
   the original sketch's `:<yyyy-mm-dd>` buys a rare re-record at the cost of a midnight-straddle
   double write, and identity in the key already separates "done" for two customers. Consequence,
   accepted: a genuinely repeated identical note about the same customer returns `duplicate` rather
   than recording twice. It must be **reported honestly**, never as `recorded` — L1 is undeletable
   and a double-written note plus a double-written visit cannot be undone.
-- **OPEN — does a one-shot call get to CREATE a customer?** `resolutionFrom` (`server.ts:1839`)
-  returns a `createFrom` resolution whenever `confirmed` is present, and `confirmed` is legal on the
-  first call (`server.test.ts:428` does exactly that). So under a plain one-shot rule, a first call
-  carrying `confirmed:{address}` that matches nothing **mints a new customer row the technician was
-  never shown** — today the preview says *"…for NEW customer Jane, 12 Oak St"* and they get to catch
-  it. The ratified decision rests on notes being revertable; a customer created by a stamped capture
-  is **not** (`memory: l1-pins-l2-undeletable`). **Recommend: one-shot when the note attaches to an
-  EXISTING customer or job; keep the preview when the resolution is `createFrom`.** The alternative
-  is full one-shot, accepting silently-minted customers. Needs the user's call before Phase 2 is
-  implemented — it changes which branch commits.
+- **A one-shot call may NOT create a customer** (user, 2026-08-21, from the review). `resolutionFrom`
+  (`server.ts:1839`) returns a `createFrom` resolution whenever `confirmed` is present, and
+  `confirmed` is legal on the first call (`server.test.ts:428` does exactly that) — so a plain
+  one-shot rule would mint a customer row the technician never saw. The ratified decision rests on
+  notes being **revertable**; a customer created by a stamped capture is not
+  (`memory: l1-pins-l2-undeletable`), so retracting the note would leave the customer behind. The
+  confirm therefore survives exactly where revertability ends: **one-shot when the note attaches to
+  an EXISTING customer or job; the staged preview when the resolution is `createFrom`.**
+  Boundary, stated deliberately: creating a **job** under a known customer stays one-shot. That is
+  the ordinary consequence of recording work on a customer the technician already named, and it is
+  not the case the preview was protecting.
 - **A stranded `needs_identity` item is LEFT OPEN** (implementation call, REVERSES the original
   plan's "add a TTL sweep"). Once staging happens only on ambiguity, the item's `detail.text` is the
   **only** copy of that note — nothing is in L1. Expiring it destroys the note. It belongs in
@@ -272,9 +273,14 @@ call, and so the answer to a `needs_identity` question commits on the second.
   them.
 - `:556` — `record_standing_fact`'s description says *"Unlike record_field_note … two-step"*; fix.
 - `:2124-2131` — the cross-tenant `confirmed.customerId` guard runs before either branch; unchanged.
-- `:2135` (`if (!confirmId)`) — after `resolutionFrom` yields a resolution, **commit** with the
-  content-hash `externalId` and return the recorded result. When it does not, stage exactly as today
-  and return `needs_identity` (`:2185-2192`).
+- `:2135` (`if (!confirmId)`) — branch on WHAT the resolution is, not merely on whether there is
+  one:
+  ```
+  resolved.customerId || resolved.jobId  ->  COMMIT now (content-hash externalId)
+  resolved.createFrom                    ->  stage, return needs_confirmation + preview (as today)
+  no resolution                          ->  stage, return needs_identity (as today)
+  ```
+  Only the first line is new behaviour.
   **Leave the supersede at `:2157` exactly where it is — before the branch, on EVERY no-confirmId
   call.** Moving it into the ambiguous branch opens an undeletable double-write: an ambiguous note
   stages as item `I`, the same note is re-sent and now resolves, commits under
@@ -285,18 +291,21 @@ call, and so the answer to a `needs_identity` question commits on the second.
   `recordFieldNote`'s second argument, the way the confirm path does at `:2324`. Without it the
   write path calls the model a second time and can extract differently than the identity match that
   chose the customer. `sourceMeta` is omitted on this path — there is no `stagedConfirmId`.
-- `:2258-2296` (`confirmId + confirmed`) — on a resolution, commit with `externalId: note:<item.id>` and
-  resolve the item; drop the `needs_confirmation` return. Still ambiguous → `needs_identity` as today.
+- `:2258-2296` (`confirmId + confirmed`) — same three-way branch: an EXISTING customer/job commits
+  with `externalId: note:<item.id>` and resolves the item; a `createFrom` still returns
+  `needs_confirmation` + preview; still ambiguous still returns `needs_identity`.
 - Keep the `confirmId`-alone commit (`:2298-2352`) and its 15-min TTL untouched: tokens staged before
   the deploy must still land.
-- Delete `stagedNotePreview` (`:1860`) — its only two callers (`:2197`, `:2293`) are removed, and
-  lint fails on the unused function.
+- **Keep `stagedNotePreview` (`:1860`) and both of its callers.** They are now the `createFrom`
+  path: the preview is what the technician sees before a customer is created. (Under a full
+  one-shot rule it would have been dead code — it is not.)
 - Every commit path must return `duplicate` honestly when `recordFieldNote` says so — never
   `recorded`.
 
 **Existing tests this phase MUST rewrite** (they stage-then-confirm and will go red):
 `src/mcp/server.test.ts:345` (asserts `needs_confirmation` on the identity resume — now `recorded`),
-`:425` (both cases expect `needs_confirmation` from a resolvable `confirmed.customerId`), `:458`
+`:425` (its first case expects `needs_confirmation` from a resolvable `confirmed.customerId` — now
+`recorded`; re-check which of its two cases is `createFrom` and therefore still stages), `:458`
 (backdated `stagedAt`; re-point at a `needs_identity` token), `:485` (crash-heal on
 `note:<confirmId>`; re-point), `:511` (resolve_review refuses a live staged token; re-point), `:1085`
 (retraction fixture — one call fewer). `:1014` (cross-tenant guard) and `:592` survive unchanged.
@@ -329,7 +338,10 @@ behaviours**, never deleted.
 
 ### Automated verification
 - [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] one call with resolvable identity writes the L1 capture + visit and returns the recorded id
+- [ ] one call resolving to an EXISTING customer writes the L1 capture + visit and returns the
+      recorded id
+- [ ] one call resolving to a NEW customer returns `needs_confirmation` with the preview and writes
+      NOTHING — no capture, and **no customer row** (assert the customers count is unchanged)
 - [ ] one call with ambiguous identity returns `needs_identity` and writes NOTHING
 - [ ] the identity resume (`confirmId + confirmed`) returns `recorded`, not `needs_confirmation`
 - [ ] **a repeated identical call does not write a second capture or a second visit** and reports

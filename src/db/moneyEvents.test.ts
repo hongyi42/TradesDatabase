@@ -1,12 +1,13 @@
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
 import { createCustomer } from './customers.js';
 import { ALLOWED_TRANSITIONS, createJob, getJob, type JobStatus } from './jobs.js';
-import { isUniqueViolation } from './rawCaptures.js';
+import { appendRawCapture, isUniqueViolation } from './rawCaptures.js';
 import {
   appendMoneyEvent,
   listJobIdsWithCostEvents,
+  listLiveMoneyEventsForJobsSince,
   technicianMoneyView,
   deriveStatusTarget,
   listMoneyEventsForJob,
@@ -170,16 +171,25 @@ test('TERMINAL_STATUSES derivation is unchanged: exactly paid/cancelled/declined
 // read-back channel and cleanup (spine.test.ts convention).
 const pg = new Client({ connectionString: process.env.DATABASE_URL });
 let tenantId: string;
+// A SECOND firm, so "another tenant's capture" is a real row rather than a
+// made-up id — the no-existence-oracle test is only meaningful if the id
+// genuinely exists somewhere.
+let otherTenantId: string;
 
 beforeAll(async () => {
   await pg.connect();
   const { data, error } = await getClient().from('tenants').select('id').limit(1).single();
   if (error || !data) throw new Error(`could not load seed tenant: ${error?.message ?? 'none'}`);
   tenantId = data.id;
+  const other = await pg.query<{ id: string }>(
+    "insert into public.tenants (name) values ('money-provenance-other') returning id",
+  );
+  otherTenantId = other.rows[0].id;
 });
 
 afterAll(async () => {
   await pg.query('truncate table money_events, customers, jobs, visits, raw_captures cascade');
+  await pg.query('delete from public.tenants where id = $1', [otherTenantId]);
   await pg.end();
 });
 
@@ -389,6 +399,194 @@ describe('material_cost — a COST kind is inert in every revenue number (plan 2
     ).rejects.toThrow();
     // And it does not move the job off its status.
     expect((await getJob(jobId))?.status).toBe('open');
+  });
+});
+
+describe('sourceCaptureId — an amount can cite what it came from', () => {
+  test('a capture in this tenant is stamped on the row', async () => {
+    const { jobId } = await freshJob();
+    const capture = await appendRawCapture({
+      tenantId, channel: 'technician_note', rawText: 'they paid 500 on the spot',
+    });
+    const ev = await appendMoneyEvent({
+      tenantId, jobId, kind: 'payment_received', amountCents: 50000,
+      sourceCaptureId: capture.id,
+    });
+    expect(ev.source_capture_id).toBe(capture.id);
+  });
+
+  // The guard is the OPPOSITE of the job guard: a bad value costs the link, not
+  // the entry. Losing a $500 payment because its provenance was mistyped would
+  // be strictly worse than recording it unattributed.
+  test('an UNKNOWN capture id is dropped and the amount still records', async () => {
+    const { jobId } = await freshJob();
+    const ev = await appendMoneyEvent({
+      tenantId, jobId, kind: 'payment_received', amountCents: 50000,
+      sourceCaptureId: '99999999-9999-4999-8999-999999999999',
+    });
+    expect(ev.source_capture_id).toBeNull();
+    expect(ev.amount_cents).toBe(50000);
+  });
+
+  test("another tenant's capture is dropped IDENTICALLY — no existence oracle", async () => {
+    // If unknown and cross-tenant behaved differently, a caller could learn that
+    // an id exists in some other firm's record by watching which way this went.
+    const { jobId } = await freshJob();
+    const foreign = await appendRawCapture({
+      tenantId: otherTenantId, channel: 'technician_note', rawText: 'another firm entirely',
+    });
+    const ev = await appendMoneyEvent({
+      tenantId, jobId, kind: 'payment_received', amountCents: 50000,
+      sourceCaptureId: foreign.id,
+    });
+    expect(ev.source_capture_id).toBeNull();
+    expect(ev.amount_cents).toBe(50000);
+  });
+
+  test('an EMPTY STRING is dropped, not passed to a uuid column', async () => {
+    // `?? null` keeps '' while `if (sourceCaptureId)` skips it, so it reaches
+    // the column and the INSERT fails — losing the amount, which is the one
+    // outcome this guard exists to prevent. The dispatch can produce it: str()
+    // returns '' unchanged.
+    const { jobId } = await freshJob();
+    const ev = await appendMoneyEvent({
+      tenantId, jobId, kind: 'payment_received', amountCents: 50000,
+      sourceCaptureId: '',
+    });
+    expect(ev.source_capture_id).toBeNull();
+    expect(ev.amount_cents).toBe(50000);
+  });
+
+  test('unknown and cross-tenant produce the IDENTICAL warning, not just the same outcome', async () => {
+    // Outcome parity alone is not enough: splitting the message into "unknown"
+    // vs "not in this tenant" would rebuild the existence oracle with a green
+    // suite, because both still record the amount.
+    const { jobId } = await freshJob();
+    const foreign = await appendRawCapture({
+      tenantId: otherTenantId, channel: 'technician_note', rawText: 'another firm',
+    });
+    const unknown = '99999999-9999-4999-8999-999999999999';
+    const said: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((m: unknown) => {
+      said.push(String(m));
+    });
+    try {
+      await appendMoneyEvent({
+        tenantId, jobId, kind: 'payment_received', amountCents: 1, sourceCaptureId: unknown,
+      });
+      await appendMoneyEvent({
+        tenantId, jobId, kind: 'payment_received', amountCents: 1, sourceCaptureId: foreign.id,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(said).toHaveLength(2);
+    // Identical once the id itself — which the caller already has — is removed.
+    expect(said[0].replace(unknown, 'ID')).toBe(said[1].replace(foreign.id, 'ID'));
+  });
+
+  test('a MALFORMED id is dropped without reaching the database', async () => {
+    // A non-uuid would make PostgREST answer 22P02 on a uuid column, which would
+    // throw and take the amount down with it.
+    const { jobId } = await freshJob();
+    const ev = await appendMoneyEvent({
+      tenantId, jobId, kind: 'payment_received', amountCents: 50000,
+      sourceCaptureId: 'not-a-uuid',
+    });
+    expect(ev.source_capture_id).toBeNull();
+    expect(ev.amount_cents).toBe(50000);
+  });
+});
+
+describe('listLiveMoneyEventsForJobsSince — what the planner is shown', () => {
+  const PAST = '2000-01-01T00:00:00.000Z';
+
+  test('returns money on the named jobs, and nothing from another job', async () => {
+    const a = await freshJob();
+    const b = await freshJob();
+    await appendMoneyEvent({ tenantId, jobId: a.jobId, kind: 'payment_received', amountCents: 50000 });
+    await appendMoneyEvent({ tenantId, jobId: b.jobId, kind: 'payment_received', amountCents: 1 });
+    const rows = await listLiveMoneyEventsForJobsSince(tenantId, [a.jobId], PAST);
+    expect(rows.map((r) => r.job_id)).toEqual([a.jobId]);
+  });
+
+  test('the bound EXCLUDES what landed before it', async () => {
+    const { jobId } = await freshJob();
+    await appendMoneyEvent({ tenantId, jobId, kind: 'payment_received', amountCents: 50000 });
+    // A bound in the future of the row that was just written.
+    const future = new Date(Date.now() + 60_000).toISOString();
+    expect(await listLiveMoneyEventsForJobsSince(tenantId, [jobId], future)).toEqual([]);
+  });
+
+  // The bound is created_at, NOT occurred_at, and the two genuinely differ here.
+  // A payment the manager states happened last year but records TODAY is still
+  // them answering today's question — and occurred_at is caller-supplied, so
+  // filtering on it would also let a caller hide a row from the planner.
+  test('filters on created_at, not the caller-supplied occurred_at', async () => {
+    const { jobId } = await freshJob();
+    await appendMoneyEvent({
+      tenantId, jobId, kind: 'payment_received', amountCents: 50000,
+      occurredAt: '2020-01-01T00:00:00.000Z',
+    });
+    // A bound AFTER the stated occurrence but BEFORE the row was written.
+    const rows = await listLiveMoneyEventsForJobsSince(tenantId, [jobId], '2021-01-01T00:00:00.000Z');
+    expect(rows.map((r) => r.kind)).toEqual(['payment_received']);
+    expect(rows[0].occurred_at.slice(0, 4)).toBe('2020');
+  });
+
+  test('empty input returns empty (PostgREST in.() with zero values errors)', async () => {
+    expect(await listLiveMoneyEventsForJobsSince(tenantId, [], PAST)).toEqual([]);
+  });
+
+  // The load-bearing one. The canceller is written AFTER the target, so a
+  // second pass that carried the same time filter would miss it and the
+  // cancelled amount would render to the planner as live money.
+  test('an event cancelled by a LATER correction disappears — and so does the correction', async () => {
+    const { jobId } = await freshJob();
+    const target = await appendMoneyEvent({
+      tenantId, jobId, kind: 'invoice_issued', amountCents: 90000,
+    });
+    await appendMoneyEvent({
+      tenantId, jobId, kind: 'invoice_voided', correctsEventId: target.id,
+    });
+    const rows = await listLiveMoneyEventsForJobsSince(tenantId, [jobId], PAST);
+    expect(rows.map((r) => r.kind)).toEqual([]);
+  });
+
+  test('a payment_refunded is NOT a negation — both rows still show', async () => {
+    // Refunds fold by subtraction, not by cancellation. The planner is entitled
+    // to see both and weigh them; hiding either would misstate the job.
+    const { jobId } = await freshJob();
+    await appendMoneyEvent({ tenantId, jobId, kind: 'payment_received', amountCents: 50000 });
+    await appendMoneyEvent({ tenantId, jobId, kind: 'payment_refunded', amountCents: 50000 });
+    const rows = await listLiveMoneyEventsForJobsSince(tenantId, [jobId], PAST);
+    expect(rows.map((r) => r.kind).sort()).toEqual(['payment_received', 'payment_refunded']);
+  });
+
+  test('a live row survives beside a cancelled one', async () => {
+    const { jobId } = await freshJob();
+    const doomed = await appendMoneyEvent({
+      tenantId, jobId, kind: 'invoice_issued', amountCents: 1000,
+    });
+    await appendMoneyEvent({ tenantId, jobId, kind: 'invoice_voided', correctsEventId: doomed.id });
+    await appendMoneyEvent({ tenantId, jobId, kind: 'payment_received', amountCents: 2500 });
+    const rows = await listLiveMoneyEventsForJobsSince(tenantId, [jobId], PAST);
+    expect(rows.map((r) => r.kind)).toEqual(['payment_received']);
+  });
+
+  test('pages past the silent 1000-row cap', async () => {
+    // listMoneyEventsForJobs has no paging loop; this reader must not copy it.
+    const { jobId } = await freshJob();
+    const rowsToWrite = 1005;
+    const values = Array.from(
+      { length: rowsToWrite },
+      (_, i) => `('${tenantId}','${jobId}','payment_received',${i + 1})`,
+    ).join(',');
+    await pg.query(
+      `insert into money_events (tenant_id, job_id, kind, amount_cents) values ${values}`,
+    );
+    const rows = await listLiveMoneyEventsForJobsSince(tenantId, [jobId], PAST);
+    expect(rows.length).toBe(rowsToWrite);
   });
 });
 

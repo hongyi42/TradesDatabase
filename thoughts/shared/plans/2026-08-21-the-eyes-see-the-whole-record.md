@@ -2,7 +2,7 @@
 date: 2026-08-21
 task: Let the planner see money and give it a way to postpone an escalation — the first of three plans splitting Group A, in dependency order
 research: thoughts/shared/research/2026-08-21-money-trio-reverify.md
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -182,23 +182,30 @@ record line may describe money as well as a cost, and that money on the job is a
 an instruction to close. The existing THE RECORD wording for cost gaps stays.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] new test: money after `asked_at` appears in its own block and sets `moneyOnRecord`
-- [ ] new test: `evidenceText` is UNCHANGED by money (it stays capture text only)
-- [ ] new test: a close with `basis: 'record'` on a visit gap citing `moneyOnRecord` is accepted and
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [x] new test: money after `asked_at` appears in its own block and sets `moneyOnRecord`
+- [x] new test: `evidenceText` is UNCHANGED by money (it stays capture text only)
+- [x] new test: a close with `basis: 'record'` on a visit gap citing `moneyOnRecord` is accepted and
       writes `closed on the record — …`, never `answered — "…"`
-- [ ] new test: money BEFORE `asked_at` does not appear; a gap with no `asked_at` shows none
-- [ ] new test: an event cancelled by a LATER `correction` does not appear, and the `correction`
+- [x] new test: money BEFORE `asked_at` does not appear; a gap with no `asked_at` shows none
+- [x] new test: an event cancelled by a LATER `correction` does not appear, and the `correction`
       row itself does not appear either
-- [ ] new test: a `payment_refunded` still renders (it is not a negation)
-- [ ] new test: the capture lines keep their correct `[n]` labels when money is present
-- [ ] new test: two gaps on one job with money but no notes both get the shared-evidence warning
-- [ ] DB-backed test: the reader pages past 1000 rows
-- [ ] mutation: drop the negation fold → the cancelled-event test fails
+- [x] new test: a `payment_refunded` still renders (it is not a negation)
+- [x] new test: the capture lines keep their correct `[n]` labels when money is present
+- [x] new test: two gaps on one job with money but no notes both get the shared-evidence warning
+- [x] DB-backed test: the reader pages past 1000 rows
+- [x] mutation: drop the negation fold → the cancelled-event test fails
+- [x] EXTRA (review): the `created_at` vs `occurred_at` choice was untested — a mutation to
+      `occurred_at` passed everything. Now pinned at all three sites (reader filter, gap filter,
+      rendered date) with fixtures where the two columns genuinely differ
+- [x] EXTRA (review): the money block and `moneyOnRecord` were uncapped — one job can carry
+      1005+ rows (the reader's own test writes that many), which would be an enormous prompt and
+      a multi-kilobyte PERMANENT `nudges.resolution`. Capped at `EVIDENCE_PER_GAP`, most recent
+      first, and the record fact names the latest entry plus a count
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP (read-only)
-- [ ] Read job `eea05151-77af-4a23-bc27-e47031406f33` and confirm its `payment_received` row's
+- [x] Read job `eea05151-77af-4a23-bc27-e47031406f33` and confirm its `payment_received` row's
       **`created_at`** falls after nudge `10d68c23-…`'s `asked_at` (2026-08-19 19:05:44Z). Report
       both timestamps and name the column
 
@@ -271,21 +278,34 @@ and the insert maps it, mirroring `notBefore`.
   `extend`; leaving it alone forfeits the turn.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] new test: `extend` on an asked gap writes the later instant, status-guarded
-- [ ] new test: `extend` on a `pending` gap is refused
-- [ ] new test: `extend` on a gap whose `asked_at` is null/unparseable is refused (the fail-open bug)
-- [ ] new test: an unparseable `escalate_after` falls back to `asked_at + 24h`, not to "stamped"
-- [ ] new test: `extend` past `asked_at + 48h` is refused and the reason names the ceiling
-- [ ] new test: `extend` earlier than the current deadline is refused
-- [ ] new test: repeated extends cannot push past the ceiling in aggregate
-- [ ] DB-backed test: an `extend` decision INSERTS, with its `escalate_after` readable back
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [x] new test: `extend` on an asked gap writes the later instant, status-guarded
+- [x] new test: `extend` on a `pending` gap is refused
+- [x] new test: `extend` on a gap whose `asked_at` is null/unparseable is refused (the fail-open bug)
+- [x] new test: an unparseable `escalate_after` falls back to `asked_at + 24h`, not to "stamped"
+- [x] new test: `extend` past `asked_at + 48h` is refused and the reason names the ceiling
+- [x] new test: `extend` earlier than the current deadline is refused
+- [x] new test: repeated extends cannot push past the ceiling in aggregate
+- [x] DB-backed test: an `extend` decision INSERTS, with its `escalate_after` readable back
       (a code-only test passes against the old constraint and proves nothing)
-- [ ] mutation: remove the ceiling check → the past-48h test fails
+- [x] mutation: remove the ceiling check → the past-48h test fails
+- [x] EXTRA (review): the plan's "must be in the future" rail was MISSING from the
+      implementation. Reachable whenever the current deadline has already passed (sweep in
+      shadow, or an escalate stamp not yet swept): an extend to a PAST instant satisfied
+      "later than the current deadline" and was written as applied — an extend that shortens
+- [x] EXTRA (review): the model was never told the clock it had to beat. The gap view printed
+      `escalates at` only when a stamp existed — i.e. never on a FIRST extend — and refusal
+      reasons only reach the model when EVERY decision is refused. The effective deadline is now
+      stated on every asked gap and the 48h ceiling is named in the prompt
+- [x] EXTRA (review): `applyDecision` used `?? null`, which would CLEAR the stamp and report
+      applied. Unreachable today; now refused explicitly so it stays that way
+- [x] EXTRA (review): two tests were vacuous — the pending-gap test tripped the asked_at rail
+      rather than the status rail (which had zero coverage), and the unparseable-stamp test
+      asserted acceptance, which passes under the bug too. Both repointed
 
 ### Live verification (agent-executable)
 - Prerequisites: `mcp__supabase-test__apply_migration` — **ask the user before applying to the pilot**
-- [ ] After applying, read the constraint definition and the column back from the pilot and report
+- [x] After applying, read the constraint definition and the column back from the pilot and report
       both verbatim
 
 ### Manual verification
@@ -320,17 +340,23 @@ tenant/job coherence lives in the typed layer as "ONE write-side guard for every
   already writes the column (`:164`).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
-- [ ] new test: a valid `sourceCaptureId` lands on the row
-- [ ] new test: a capture from ANOTHER tenant is dropped and the money event still records
-- [ ] new test: an UNKNOWN capture id produces the identical outcome and the identical warning
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [x] new test: a valid `sourceCaptureId` lands on the row
+- [x] new test: a capture from ANOTHER tenant is dropped and the money event still records
+- [x] new test: an UNKNOWN capture id produces the identical outcome and the identical warning
       (no existence oracle — a test asserting they differ would be asserting the bug)
-- [ ] new test: a malformed id is dropped, a warning logs, and the money event STILL records
-- [ ] mutation: drop the tenant guard → the cross-tenant test fails
+- [x] new test: a malformed id is dropped, a warning logs, and the money event STILL records
+- [x] mutation: drop the tenant guard → the cross-tenant test fails
+- [x] EXTRA (review): `sourceCaptureId: ''` THREW and lost the money row — `?? null` keeps an
+      empty string while the truthiness guard skips it, so `''` reached a uuid column. Reachable
+      from the dispatch, since `str()` returns `''` unchanged. Now `|| null`, with a test
+- [x] EXTRA (review): nothing asserted that the two warnings are the same STRING. Outcome parity
+      alone would let a future edit split them into "unknown" vs "another tenant" and rebuild the
+      existence oracle with a green suite. Now spied and compared
 
 ### Live verification (agent-executable)
 - Prerequisites: `supabase-test` MCP
-- [ ] Query `money_events` for rows with a non-null `source_capture_id` over the following week.
+- [x] Query `money_events` for rows with a non-null `source_capture_id` over the following week.
       **Zero is a finding, not a pass** — it means no agent is passing it, which is the same
       adoption question plan ③'s stamp faces
 

@@ -3,6 +3,7 @@ import {
   listDecisionsForNudges,
   listJobEvidenceSince,
   listJobIdsWithCostEvents,
+  listLiveMoneyEventsForJobsSince,
   listNudgesByStatus,
   listTenantIdsWithTelegramBindings,
   markNudgeOutcome,
@@ -10,6 +11,7 @@ import {
   recordNudgeDecisions,
   setNudgeSchedule,
   type JobEvidenceRow,
+  type MoneyEvent,
   type Nudge,
   type NudgeDecision,
   type NudgeDecisionInput,
@@ -21,7 +23,11 @@ import { insideAskWindow } from './compose.js';
 // A plain const, read only inside functions — never at module-evaluation time.
 // watchers.ts and nudgeKinds.ts are a documented import cycle; this module sits
 // outside it, so there is no temporal-dead-zone hazard here.
-import { NUDGE_DELIVERY_DEADLINE_HOURS } from '../jobs/watchers.js';
+import {
+  NUDGE_DELIVERY_DEADLINE_HOURS,
+  NUDGE_ESCALATE_HOURS,
+  NUDGE_ESCALATE_MAX_HOURS,
+} from '../jobs/watchers.js';
 import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
 import { TEAM_LEAD_REF } from './identity.js';
@@ -45,7 +51,7 @@ import { TEAM_LEAD_REF } from './identity.js';
 
 export type PlannerMode = 'off' | 'shadow' | 'live';
 
-export const PLANNER_ACTIONS = ['send', 'hold', 'close', 'escalate'] as const;
+export const PLANNER_ACTIONS = ['send', 'hold', 'close', 'escalate', 'extend'] as const;
 export type PlannerAction = (typeof PLANNER_ACTIONS)[number];
 
 export interface PlannerDecision {
@@ -146,6 +152,12 @@ export interface PlannerDeps {
   // The record-level test for cost gaps. Same reader the item sweep uses, so
   // "the ledger says this is filled" means one thing across the whole ladder.
   listCostEvents?: typeof listJobIdsWithCostEvents;
+  // Money that landed on a gap's job after the ask (plan 2026-08-21 ①). A
+  // separate read from listCostEvents, deliberately: that one answers "does
+  // this job have a live material_cost" for the cost gap's record test, and is
+  // kind-scoped. This one is every kind, because the PLANNER decides which
+  // kinds answer which question — code states the fact, the model judges it.
+  listMoneySince?: typeof listLiveMoneyEventsForJobsSince;
   runLoop?: typeof runToolLoop;
   // Phase 4: the memory, and the two writers. Injected like everything else so
   // a test never touches the database — and so `shadow` can be proven to call
@@ -234,6 +246,13 @@ interface GapView {
   // that may authorise a `record`-basis close, which is why it is computed here
   // and never taken from the model.
   recordFilled: string | null;
+  // Money that landed on this job after the ask, stated as a FACT (plan
+  // 2026-08-21 ①). Null when none did. It authorises a `record`-basis close the
+  // same way recordFilled does — and for the same reason it is computed here
+  // rather than taken from the model. It is deliberately NOT part of
+  // evidenceText: `evidence` means somebody's own words, and a money-close must
+  // never write `answered — "..."` about a row no person spoke.
+  moneyOnRecord: string | null;
   // Every decision already made about this gap, oldest first. Only its SHAPE
   // reaches the prompt (a count and the last action); the detail is pulled with
   // recall_decisions. Kept on the view so tests can assert both halves.
@@ -275,6 +294,7 @@ function buildGapView(
   sharesJob: boolean,
   jobsWithCostEvents: Set<string>,
   history: NudgeDecision[] = [],
+  money: MoneyEvent[] = [],
 ): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
@@ -293,6 +313,33 @@ function buildGapView(
     n.kind === 'job_cost_gap' && jobId && jobsWithCostEvents.has(jobId)
       ? 'a cost is recorded against this job on the money ledger'
       : null;
+
+  // Money on THIS gap's job, bounded the same way the captures are: only what
+  // landed after the question went out, and nothing at all if it was never
+  // asked. `created_at`, not `occurred_at` — see the reader's own comment.
+  const moneyHere = Number.isNaN(askedAtMs)
+    ? []
+    : money.filter((m) => m.job_id === jobId && Date.parse(m.created_at) > askedAtMs);
+  // Cents to dollars, and NEVER summed and never signed: direction comes from
+  // `kind` (moneyEvents.ts), and the standing rule is to aggregate the
+  // summaries, never the rows. An amountless kind renders without a figure.
+  const moneyAmount = (m: MoneyEvent): string =>
+    `${m.kind}${m.amount_cents == null ? '' : ` $${(m.amount_cents / 100).toFixed(2)}`}`;
+  const moneyLine = (m: MoneyEvent): string =>
+    `${moneyAmount(m)}, recorded ${m.created_at.slice(0, 10)}`;
+  // Capped like the notes are, and for the same reason: one job can carry a very
+  // large number of ledger rows (the reader's own test writes 1005), and an
+  // uncapped block would be both an enormous prompt and — through
+  // `moneyOnRecord` below — a multi-kilobyte line written PERMANENTLY into
+  // nudges.resolution. Most recent wins, matching the notes' `.slice(-N)`.
+  const moneyShown = moneyHere.slice(-EVIDENCE_PER_GAP);
+  const latest = moneyHere[moneyHere.length - 1];
+  const others = moneyHere.length - 1;
+  const moneyOnRecord = latest
+    ? `the money ledger records ${moneyAmount(latest)} against this job, recorded ` +
+      `${latest.created_at.slice(0, 10)} after the question went out` +
+      (others > 0 ? ` (and ${others} other ledger ${others === 1 ? 'entry' : 'entries'})` : '')
+    : null;
 
   const lines = [
     `gap ${n.id}`,
@@ -318,32 +365,67 @@ function buildGapView(
     );
   }
   if (n.not_before) lines.push(`  currently held until: ${n.not_before}`);
-  if (n.escalate_after) lines.push(`  currently escalates at: ${n.escalate_after}`);
+  // The deadline is stated for EVERY asked gap, not only a stamped one. It is
+  // the clock `extend` has to beat, and on a first extend there is no stamp — so
+  // printing only the stamp told the model the number exactly when it already
+  // knew it and withheld it when it did not.
+  if (!Number.isNaN(askedAtMs)) {
+    lines.push(
+      `  escalates automatically at: ${new Date(currentDeadlineMs(n, askedAtMs)).toISOString()}` +
+        `${n.escalate_after ? '' : ' (the default — nothing has moved it)'}`,
+    );
+  }
   const hist = historyLine(history, nowMs);
   if (hist) lines.push(hist);
   if (!n.asked_at) {
     lines.push('  evidence since the ask: (nothing was asked yet, so there is none)');
-  } else if (relevant.length === 0) {
-    lines.push('  evidence since the ask: NOTHING has landed on this job since the question went out');
   } else {
+    // The warning sits ABOVE both blocks and outside the has-notes branch: two
+    // gaps on one job share their money as well as their notes, and a job with
+    // money but no notes used to fall straight past this.
     if (sharesJob) {
       // Code-computed, because code KNOWS this and the model would have to infer
       // it. Two gaps on one job see the same notes, and nothing below can tell
       // which question a given sentence answers.
       lines.push(
-        '  NOTE: this job has more than one open gap, so the evidence below is SHARED between ' +
-          'them. Make sure your quote answers THIS question, not the other one.',
+        '  NOTE: this job has more than one open gap, so everything below is SHARED between ' +
+          'them. Make sure it answers THIS question, not the other one.',
       );
     }
-    lines.push('  evidence since the ask:');
-    relevant.forEach((e, i) => {
+    if (relevant.length === 0) {
+      // "notes", not "nothing has landed": money may be printed directly below,
+      // and a blanket nothing-landed claim would contradict it on the next line.
+      lines.push('  notes since the ask: NO notes have landed on this job since the question went out');
+    } else {
+      lines.push('  evidence since the ask:');
+      relevant.forEach((e, i) => {
+        lines.push(
+          `    [${i + 1}] ${e.capture.captured_at} via ${e.capture.channel}` +
+            `${e.capture.technician_ref ? ` (${e.capture.technician_ref})` : ''}: ${evidenceText[i]}`,
+        );
+      });
+    }
+    // AFTER the capture loop, always: that loop indexes evidenceText by
+    // `relevant`'s own index, so anything spliced in ahead of it silently
+    // mislabels every note line.
+    if (moneyShown.length > 0) {
+      lines.push('  money on this job since the question went out:');
+      moneyShown.forEach((m, i) => lines.push(`    [${i + 1}] ${moneyLine(m)}`));
       lines.push(
-        `    [${i + 1}] ${e.capture.captured_at} via ${e.capture.channel}` +
-          `${e.capture.technician_ref ? ` (${e.capture.technician_ref})` : ''}: ${evidenceText[i]}`,
+        '  That is a fact from the ledger, not a quote from a person — weigh whether it answers ' +
+          'THIS question. If it does, close with basis "record".',
       );
-    });
+    }
   }
-  return { nudge: n, jobId, evidenceText, recordFilled, history, block: lines.join('\n') };
+  return {
+    nudge: n,
+    jobId,
+    evidenceText,
+    recordFilled,
+    moneyOnRecord,
+    history,
+    block: lines.join('\n'),
+  };
 }
 
 // Normalised for the citation check ONLY — a model that changes spacing or case
@@ -369,6 +451,16 @@ export const MIN_CITATION_WORDS = 2;
 // names, and it belongs here because the planner is the writer.
 function holdCeilingMs(n: Nudge): number {
   return Date.parse(n.created_at) + NUDGE_DELIVERY_DEADLINE_HOURS * 3_600_000;
+}
+
+// The deadline a row is ACTUALLY on right now — the sweep's own rule, mirrored:
+// a stamped escalate_after wins, and an UNPARSEABLE stamp falls back to the
+// constant rather than being treated as stamped (watchers.ts, the fail-closed
+// read). If the two disagreed, `extend` could report success while the sweep
+// escalated on a different clock.
+function currentDeadlineMs(n: Nudge, askedAtMs: number): number {
+  const stamped = n.escalate_after ? Date.parse(n.escalate_after) : NaN;
+  return Number.isNaN(stamped) ? askedAtMs + NUDGE_ESCALATE_HOURS * 3_600_000 : stamped;
 }
 
 /**
@@ -435,7 +527,9 @@ export function validateDecisions(
     // hours earlier.
     //
     // Refused rather than translated. "Give them more time" IS expressible —
-    // by not naming the gap at all — and the prompt says so; inventing a
+    // with `extend` on an asked row, or by leaving a PENDING one alone (where
+    // not_before is what waits); it is `extend` that the prompt now names,
+    // because leaving an asked gap alone does not stop its clock. Inventing a
     // mapping from `hold` to `escalate_after` would be code doing the model's
     // judgment for it, which is the one thing this design does not do.
     // Escalation is for silence AFTER a question went out: the sweep's handoff
@@ -475,8 +569,9 @@ export function validateDecisions(
         push(
           st === 'asked'
             ? `${action} on a gap that has ALREADY been asked — the question is with the person ` +
-                'now, so only close or escalate mean anything. To give them more time, leave the ' +
-                'gap out of your plan.'
+                'now, so only close, escalate or extend mean anything. To give them more time, ' +
+                'use extend — leaving the gap out of your plan does NOT stop its escalation ' +
+                'clock.'
             : `${action} on a gap that is already composed and waiting to be delivered — there ` +
                 'is nothing to release. Leave it out of your plan.',
         );
@@ -499,7 +594,11 @@ export function validateDecisions(
       // 2026-08-20). The authority is the code-computed fact on the view: the
       // model chooses the basis, code decides whether that basis holds.
       if (d.basis === 'record') {
-        if (!view.recordFilled) {
+        // EITHER code-computed fact authorises it. recordFilled wins where both
+        // exist: on a cost gap the ledger's cost IS the hole, and it is the more
+        // specific statement of the two.
+        const fact = view.recordFilled ?? view.moneyOnRecord;
+        if (!fact) {
           push('close on the record when the record is not filled');
           continue;
         }
@@ -509,7 +608,7 @@ export function validateDecisions(
           nudgeId,
           action: 'close',
           basis,
-          citation: view.recordFilled, // code's words, not the model's
+          citation: fact, // code's words, not the model's
           confidence,
           reason,
         });
@@ -568,11 +667,70 @@ export function validateDecisions(
       notBefore = new Date(at).toISOString();
     }
 
+    // `extend` — the only way to move a deadline OUTWARD. Before it existed the
+    // planner's whole vocabulary for an already-asked gap was close, escalate
+    // now, or leave alone; and leaving alone does not stop the 24h clock, which
+    // runs on a sweep that ticks 288 times a day while the planner wakes at most
+    // 24. So "give them more time" was a thing the prompt claimed and the code
+    // could not do.
+    let escalateAfter: string | null = null;
+    if (action === 'extend') {
+      const askedAtMs = view.nudge.asked_at ? Date.parse(view.nudge.asked_at) : NaN;
+      // FIRST, and fail-closed. Every comparison below is against a number
+      // derived from asked_at, and NaN makes both `>` and `<=` false — so an
+      // unparseable asked_at would sail through every rail beneath this one and
+      // land an UNBOUNDED extend.
+      if (Number.isNaN(askedAtMs)) {
+        push('extend on a gap with no usable ask time — there is no clock to move');
+        continue;
+      }
+      if (view.nudge.status !== 'asked') {
+        push(
+          'extend on a gap that has not been asked yet — there is no silence to wait through, ' +
+            'and an undelivered gap reaches the manager on its own deadline.',
+        );
+        continue;
+      }
+      const at = typeof d.escalateAfter === 'string' ? Date.parse(d.escalateAfter) : NaN;
+      if (Number.isNaN(at)) {
+        push('extend without a usable escalateAfter');
+        continue;
+      }
+      // In the future, mirroring the hold rail. NOT redundant with the
+      // later-than check below: a deadline that has ALREADY passed (the sweep
+      // in shadow, or an escalate stamp not yet swept) makes "later than the
+      // current deadline" satisfiable by an instant that is still in the past —
+      // an extend that shortens, reported as applied.
+      if (at <= nowMs) {
+        push('extend to a moment that has already passed');
+        continue;
+      }
+      const current = currentDeadlineMs(view.nudge, askedAtMs);
+      if (at <= current) {
+        push(
+          `extend to ${new Date(at).toISOString()}, which is not LATER than the deadline this gap ` +
+            `is already on (${new Date(current).toISOString()}) — that would either change ` +
+            'nothing or escalate it sooner, wearing the wrong name for it.',
+        );
+        continue;
+      }
+      const ceiling = askedAtMs + NUDGE_ESCALATE_MAX_HOURS * 3_600_000;
+      if (at > ceiling) {
+        push(
+          `extend past the ${NUDGE_ESCALATE_MAX_HOURS}h limit on how long a gap may wait ` +
+            `(${new Date(ceiling).toISOString()}). A manager takes it from there.`,
+        );
+        continue;
+      }
+      escalateAfter = new Date(at).toISOString();
+    }
+
     seen.add(nudgeId);
     decisions.push({
       nudgeId,
       action: action as PlannerAction,
       ...(notBefore ? { notBefore } : {}),
+      ...(escalateAfter ? { escalateAfter } : {}),
       ...(basis ? { basis } : {}),
       ...(citation ? { citation } : {}),
       confidence,
@@ -618,6 +776,22 @@ async function applyDecision(
       );
     case 'escalate':
       return done(await setSchedule(d.nudgeId, tenantId, { escalateAfter: nowIso }, ['asked']));
+    case 'extend':
+      // The mirror image of escalate: the same column, pushed OUT instead of
+      // pulled in. Status-guarded identically, so a row that got answered
+      // between the plan and the write refuses rather than silently moving.
+      //
+      // The explicit guard is not dead code being defensive. `?? null` here
+      // would CLEAR the stamp — reverting the row to the 24h default — and then
+      // report `applied`, which is the silent-no-op class these rails exist to
+      // make impossible. validateDecisions cannot emit this today; the guard is
+      // what keeps that true if it ever can.
+      if (!d.escalateAfter) {
+        return { outcome: 'refused', detail: 'extend carried no instant to move the deadline to' };
+      }
+      return done(
+        await setSchedule(d.nudgeId, tenantId, { escalateAfter: d.escalateAfter }, ['asked']),
+      );
     case 'close': {
       // The resolution is the durable audit line a manager may later read, so it
       // says WHERE the answer came from. A record-basis close quotes code's own
@@ -641,6 +815,7 @@ export async function runPlanner(
   const listNudges = deps.listNudges ?? listNudgesByStatus;
   const listEvidence = deps.listEvidence ?? listJobEvidenceSince;
   const listCostEvents = deps.listCostEvents ?? listJobIdsWithCostEvents;
+  const listMoneySince = deps.listMoneySince ?? listLiveMoneyEventsForJobsSince;
   const runLoop = deps.runLoop ?? runToolLoop;
   const listDecisions = deps.listDecisions ?? listDecisionsForNudges;
   const recordDecisions = deps.recordDecisions ?? recordNudgeDecisions;
@@ -701,10 +876,13 @@ export async function runPlanner(
       const jobIds = [
         ...new Set(open.map((n) => ctxStr(n, 'jobId')).filter((v): v is string => !!v)),
       ];
-      const evidence =
+      // ONE derivation of the floor, shared by the evidence and money reads: two
+      // copies of a bound that must stay identical is a defect waiting to happen.
+      const sinceIso =
         askedAt.length > 0 && jobIds.length > 0
-          ? await listEvidence(tenantId, jobIds, new Date(Math.min(...askedAt)).toISOString())
-          : [];
+          ? new Date(Math.min(...askedAt)).toISOString()
+          : null;
+      const evidence = sinceIso ? await listEvidence(tenantId, jobIds, sinceIso) : [];
 
       // ONE ledger read per tenant, over the cost gaps' jobs only — the same
       // batched discipline as the evidence read. Skipped entirely when the firm
@@ -720,6 +898,12 @@ export async function runPlanner(
       const jobsWithCostEvents = new Set(
         costJobIds.length > 0 ? await listCostEvents(tenantId, costJobIds) : [],
       );
+
+      // ONE batched money read for the whole tick, bounded by the EARLIEST ask
+      // among these gaps; buildGapView narrows it per gap. Skipped entirely when
+      // nothing has been asked yet — an unasked gap can have no answer, so there
+      // is no window to read.
+      const money = sinceIso ? await listMoneySince(tenantId, jobIds, sinceIso) : [];
 
       // ONE batched read of the planner's own history for this tick's gaps —
       // the same discipline as the evidence and ledger reads above. Only its
@@ -746,6 +930,7 @@ export async function runPlanner(
             !!j && (gapsPerJob.get(j) ?? 0) > 1,
             jobsWithCostEvents,
             historyByNudge.get(n.id) ?? [],
+            money,
           ),
         );
       }
@@ -835,6 +1020,7 @@ export async function runPlanner(
           mode,
           action: d.action,
           notBefore: d.notBefore ?? null,
+          escalateAfter: d.escalateAfter ?? null,
           basis: d.basis ?? null,
           citation: d.citation ?? null,
           confidence: d.confidence,

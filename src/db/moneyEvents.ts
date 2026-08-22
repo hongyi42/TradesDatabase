@@ -1,7 +1,7 @@
 import type { Database, Json } from './database.types.js';
 import { getClient } from './client.js';
 import { ALLOWED_TRANSITIONS, getJob, updateJobStatus, type JobStatus } from './jobs.js';
-import { wrapDbError } from './rawCaptures.js';
+import { getRawCapture, wrapDbError } from './rawCaptures.js';
 
 export type MoneyEvent = Database['public']['Tables']['money_events']['Row'];
 export type MoneyEventKind = Database['public']['Enums']['money_event_kind'];
@@ -48,6 +48,10 @@ const AMOUNTLESS_KINDS: ReadonlySet<MoneyEventKind> = new Set([
 // void" would be accepted and change nothing — the remedy for a mistaken void
 // is RE-ISSUING the cancelled entry (review finding).
 const MUST_REFERENCE: ReadonlySet<MoneyEventKind> = new Set(['invoice_voided', 'correction']);
+// Shape-checked before it can reach a uuid column: PostgREST answers a
+// malformed uuid with an error (22P02), and a mistyped provenance id must cost
+// the LINK, never the amount. Same guard shape as nudgeDecisions' safeJobId.
+const CAPTURE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Exported so "is this row still live?" has exactly ONE definition — the fold
 // (negatedIds) and the cost probe (listJobIdsWithCostEvents) both read it, so a
 // new negating kind cannot land in one and be silently forgotten in the other.
@@ -109,6 +113,33 @@ export async function appendMoneyEvent(input: AppendMoneyEventInput): Promise<Mo
     throw new Error(`appendMoneyEvent: job ${input.jobId} not found for this tenant`);
   }
 
+  // Provenance — which capture this amount came from. Optional, and its guard is
+  // deliberately the OPPOSITE of the job guard above: a bad value drops the LINK
+  // and records the amount anyway. An amount that fails to record because its
+  // provenance was mistyped is strictly worse than an amount recorded without
+  // provenance, and unlike jobId this is not load-bearing for anything.
+  //
+  // Unknown and cross-tenant get the SAME outcome and the SAME message, for the
+  // reason the job guard states: no existence oracle. A caller must not be able
+  // to learn that an id exists in some other firm's record by watching which
+  // way this behaves.
+  // `||`, not `??`: an empty string is truthy-adjacent enough to survive `??`
+  // and falsy enough to skip the guard below, so it would sail through to a uuid
+  // column and take the whole entry down with it — the exact outcome this guard
+  // exists to prevent. safeJobId (nudgeDecisions.ts) gets this right with an
+  // explicit `if (!jobId) return null`.
+  let sourceCaptureId = input.sourceCaptureId || null;
+  if (sourceCaptureId) {
+    const capture = CAPTURE_ID_RE.test(sourceCaptureId) ? await getRawCapture(sourceCaptureId) : null;
+    if (!capture || capture.tenant_id !== input.tenantId) {
+      console.error(
+        `[moneyEvents] sourceCaptureId ${sourceCaptureId} is not a capture in this tenant — ` +
+          'recording the amount without it',
+      );
+      sourceCaptureId = null;
+    }
+  }
+
   if (MUST_REFERENCE.has(input.kind)) {
     if (input.correctsEventId == null) {
       throw new Error(
@@ -161,7 +192,7 @@ export async function appendMoneyEvent(input: AppendMoneyEventInput): Promise<Mo
       currency: input.currency ?? 'USD',
       ...(input.occurredAt ? { occurred_at: input.occurredAt } : {}),
       actor_ref: input.actorRef ?? null,
-      source_capture_id: input.sourceCaptureId ?? null,
+      source_capture_id: sourceCaptureId,
       corrects_event_id: input.correctsEventId ?? null,
       method: input.method ?? null,
       external_ref: input.externalRef ?? null,
@@ -290,6 +321,84 @@ export async function listJobIdsWithCostEvents(
   // A job is "already costed" only if it still has a LIVE cost row. Two
   // cancelled rows and one live one still counts; all cancelled does not.
   return [...new Set(costRows.filter((r) => !negated.has(r.id)).map((r) => r.job_id))];
+}
+
+// Money that LANDED on these jobs after a bound — the planner's evidence read
+// (plan 2026-08-21 ①). Batched and paged like listJobIdsWithCostEvents, never a
+// tenant-wide scan, and deliberately NOT modelled on listMoneyEventsForJobs
+// above: that one has no paging loop and is exposed to PostgREST's silent
+// 1000-row cap.
+//
+// The bound is `created_at`, not `occurred_at`. Two reasons, and the second is
+// the load-bearing one: (a) a payment that HAPPENED before the question was
+// asked but was RECORDED after it is still the person answering, and (b)
+// `occurred_at` is caller-supplied (appendMoneyEvent takes it as input) while
+// `created_at` is never set by the insert — so only `created_at` is unspoofable.
+//
+// "Live" here means what summarizeMoney means by it, because there is exactly
+// ONE definition (see NEGATING_KINDS): a row is dropped if something cancels
+// it, AND the cancelling rows themselves are dropped. Without the second half a
+// correction would render to the planner as fresh money. Note `payment_refunded`
+// is deliberately NOT a negation — the fold handles it by subtraction — so a
+// refunded payment still appears here, which is correct: it is still something
+// that landed on the job and the planner is entitled to weigh it.
+export async function listLiveMoneyEventsForJobsSince(
+  tenantId: string,
+  jobIds: string[],
+  sinceIso: string,
+): Promise<MoneyEvent[]> {
+  if (jobIds.length === 0) return []; // PostgREST `in.()` with zero values errors
+  const PAGE = 1000;
+  const CHUNK = 500;
+
+  // (1) Everything on these jobs inside the window.
+  const rows: MoneyEvent[] = [];
+  for (let i = 0; i < jobIds.length; i += CHUNK) {
+    const jobSlice = jobIds.slice(i, i + CHUNK);
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('money_events')
+        .select()
+        .eq('tenant_id', tenantId)
+        .in('job_id', jobSlice)
+        .gt('created_at', sinceIso)
+        .order('id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listLiveMoneyEventsForJobsSince failed: ${error.message}`);
+      rows.push(...((data ?? []) as MoneyEvent[]));
+      if (!data || data.length < PAGE) break;
+    }
+  }
+  if (rows.length === 0) return [];
+
+  // (2) What cancels any of them. NO time filter — not because one would break
+  // it today (a canceller is always written after its target, so any canceller
+  // of an in-window row is itself in-window; this was probed with a mutation and
+  // the filtered variant passed), but because the filter would be load-bearing
+  // for a reason nothing states and nothing tests. The unfiltered query is the
+  // simpler one and stays correct if `created_at` ever stops being insert-time.
+  const ids = rows.map((r) => r.id);
+  const negated = new Set<number>();
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const slice = ids.slice(i, i + CHUNK);
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('money_events')
+        .select('corrects_event_id')
+        .eq('tenant_id', tenantId)
+        .in('kind', [...NEGATING_KINDS])
+        .in('corrects_event_id', slice)
+        .order('corrects_event_id', { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listLiveMoneyEventsForJobsSince failed: ${error.message}`);
+      for (const r of (data ?? []) as { corrects_event_id: number | null }[]) {
+        if (r.corrects_event_id != null) negated.add(r.corrects_event_id);
+      }
+      if (!data || data.length < PAGE) break;
+    }
+  }
+
+  return rows.filter((r) => !negated.has(r.id) && !NEGATING_KINDS.has(r.kind));
 }
 
 export interface MoneySummary {

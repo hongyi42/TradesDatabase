@@ -2,7 +2,7 @@
 date: 2026-08-21
 task: Hold every manager-facing template to "assert nothing you were not given", and let a field note record in one call
 research: thoughts/shared/research/2026-08-21-the-answer-return-path.md
-status: complete
+status: draft
 ---
 
 ## Overview
@@ -47,8 +47,12 @@ widens a `filled` predicate (①'s ratified decision).
   it is not the thing ①'s decision forbade: ① refused to let the ledger **close a gap**; this only
   stops the copy from asserting a costs claim blind. The unbacked **conclusion** — *"so the job's
   costs are incomplete"* — is still deleted everywhere: a job with no parts has complete costs.
-- **The planner's reason reaches the manager** (user, D6) — read at handoff from `nudge_decisions`,
-  not carried in a new column. Newest row with `action === 'escalate' && outcome === 'applied'`.
+- **The planner WRITES the manager's message; it does not have its reasoning pasted under a
+  template** (user, 2026-08-22 — correcting my reading of D6). Phase 1 shipped the plumbing but the
+  wrong payload: `reason` is documented "for the humans reading the log", and appending it as
+  *"The assistant's note: …"* leaks a debug field into product copy. Phase 3 replaces it. The
+  plumbing itself is unchanged and correct — read at handoff from `nudge_decisions`, newest row
+  with `action === 'escalate' && outcome === 'applied'`.
   A gap the planner **extended** and the sweep later escalated on the clock has no such row, so no
   note appears — correct, and not to be "fixed" by falling back to the extend's reason. That would
   attribute a decision to a planner that never made it.
@@ -377,3 +381,93 @@ behaviours**, never deleted.
 
 ### Manual verification
 - [x] none
+
+
+## Phase 3: The planner writes the handover, and code owns every date
+
+### What this phase does
+Phase 1 made the template stop lying. This makes the template the FALLBACK: when the planner
+escalated a gap, it writes the manager's message itself, in its own words. Code keeps exactly one
+thing — every date and time — because that is the one class of fact language models are measurably
+bad at, and because a supplied-label rule is mechanically enforceable where "don't embellish" is not.
+
+### Decisions
+- **The planner writes the WHOLE message** (user, 2026-08-22) — not a body under a code-owned
+  header. A frontier model will not typo a customer name, and an eval can measure whether that
+  holds. Accepted trade: the assert-nothing guarantee stops being checkable from a function
+  signature for this one string, and becomes an eval's job.
+- **Dates are the exception, and the exception is a RAIL, not a request** (user) — the planner is
+  handed pre-rendered firm-local labels and may use no other temporal wording. Code checks the
+  produced note against that set; a note that invents a date is DROPPED, not corrected.
+- **A bad note never blocks the escalation** — the handover is the point; the note is decoration.
+  A dropped note falls back to the Phase-1 template and records why in `outcome_detail`.
+- **Its own column, not `reason`** — `reason` is written for REFUSED and SHADOW decisions too
+  ("extend refused: the instant is not in the future"), which would be nonsense to a manager. It
+  stays diagnostic and stays the corpus.
+- **Only the planner-driven escalation gets a written note.** The sweep escalates on the 24h clock
+  and expires undelivered nudges with no model in the loop (`watchers.ts:36` — "No model calls"),
+  and it must stay that way: it is the deterministic organ. Those keep the template permanently.
+
+### Changes required
+
+**`supabase/migrations/<ts>_nudge_decisions_handoff_note.sql`** (pilot DDL — needs authorisation)
+```sql
+alter table nudge_decisions add column if not exists handoff_note text;
+```
+
+**`src/db/nudgeDecisions.ts`** — `NudgeDecisionInput.handoffNote?: string | null`, mapped to
+`handoff_note` beside `escalate_after` (`:70`).
+
+**`src/teamLead/planner.ts`**
+- `buildGapView` (~`:355-380`) — add pre-rendered labels to what the gap prints. Today the only
+  temporal values the planner sees are `Xh ago` and an ISO instant (`:374`); neither is usable in a
+  sentence a person reads. Render with `wallClockLabel` (`watchers.ts:169`) against the tenant's
+  clock, exactly as the handoff does:
+  ```
+  dates you may use, VERBATIM and only these:
+    the ask went out: Thursday, Aug 13 at 12:00 AM
+    the visit was due: Friday, Aug 14 at 8:00 AM
+    how long ago that was: 3 days ago
+  ```
+  `elapsedLabel` is code-computed for the same reason the others are — "3 days" is arithmetic.
+- New rail beside the citation check in `validateDecisions`: scan `handoffNote` for temporal
+  shapes — weekday names, month names, `\d{1,2}[/-]\d{1,2}`, ISO dates, clock times,
+  today/yesterday/tomorrow, `\d+\s*(hour|day|week)s?` — and require every match to be a substring
+  of a supplied label. Any miss → drop the note, keep the escalate, set
+  `outcomeDetail: 'handoff note dropped — unsupplied date'`.
+- Also drop a note that is empty, over 400 chars, or contains a URL.
+
+**`src/teamLead/plannerPrompt.ts`** — `handoffNote` on the `escalate` branch of `SUBMIT_PLAN_TOOL`,
+plus the writing rules in `PLANNER_SYSTEM`: two sentences at most; name the job and the customer;
+say what is missing and what would close it; **never suggest the technician is at fault** — they may
+not know the answer or may not have been on the job (`docs/engineering-memory.md`, "The person we
+ask may not know"); use only the supplied date labels; do not invite a dismissal.
+
+**`src/jobs/watchers.ts`** — `reasonFor` becomes `noteFor`, reading `handoff_note` (same batched
+read, same newest-applied-escalate selection). Passed as `HandoffContext.plannerNote`.
+
+**`src/jobs/nudgeKinds.ts`** — `HandoffContext.plannerReason` → `plannerNote`. When present, the
+escalated branch returns it as the WHOLE suggestion; when absent, today's template. Delete the
+`plannerNote()` quoting helper — the note is no longer a quotation.
+
+### Automated verification
+- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
+- [ ] a supplied note replaces the escalated template entirely; an absent one falls back to it
+- [ ] the expired path and the detector fallback NEVER use a note (no model ran)
+- [ ] rail: a note using a supplied label passes; one inventing `Aug 14`, `8/14`, `tomorrow`,
+      `2 days ago` or `at 9am` is dropped, the escalation still happens, `outcome_detail` says why
+- [ ] rail: a 500-char note and a note containing a URL are dropped
+- [ ] `reason` is still recorded for a REFUSED decision and never reaches a manager
+- [ ] mutation: drop the date rail → the invented-date test fails; make a dropped note block the
+      escalate → the escalation test fails
+
+### Live verification (agent-executable)
+- Prerequisites: `supabase-test` MCP
+- [ ] After the next planner-driven escalation, read the item's `suggestion` and the decision's
+      `handoff_note` and confirm they match, and that no date appears that the gap did not supply
+
+### Manual verification
+- [ ] Read three generated notes and judge the voice: short, no blame, asks for the datum
+
+---
+*Pause after this phase — Manual verification is non-empty.*

@@ -10,7 +10,7 @@ import {
   validateDecisions,
   type PlannerDeps,
 } from './planner.js';
-import { SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
+import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
 import {
   NUDGE_DELIVERY_DEADLINE_HOURS,
   NUDGE_ESCALATE_HOURS,
@@ -170,6 +170,22 @@ describe('extend — the only way to move a deadline OUTWARD (plan 2026-08-21 �
   // The model has to name an instant LATER than the deadline, so it has to be
   // told the deadline. On a first extend nothing is stamped, so printing only
   // the stamp gave it the number exactly when it already knew it.
+  // Drift guard. The prompt states the ceiling and the rail enforces it; if a
+  // future retune moves the constant and the prompt keeps an old literal, the
+  // model names instants the rail refuses — and a refusal only reaches it when
+  // EVERY decision was refused, so it would never learn why.
+  test('the prompt states the SAME ceiling the rail enforces', () => {
+    // Both places the number is stated to the model. It lives in the SYSTEM
+    // prompt, not the per-tick user message — the gap block carries each row's
+    // own deadline, the ceiling is a standing rule.
+    expect(PLANNER_SYSTEM).toContain(`no more than ${NUDGE_ESCALATE_MAX_HOURS} hours`);
+    // The tool schema too — that description is the other place the number is
+    // stated, and it is what the model reads when filling escalateAfter in.
+    expect(JSON.stringify(SUBMIT_PLAN_TOOL.inputSchema)).toContain(
+      `no more than ${NUDGE_ESCALATE_MAX_HOURS} hours`,
+    );
+  });
+
   test('every asked gap states the instant it escalates at, stamped or not', async () => {
     const seen: { user?: string } = {};
     await runPlanner(NOW, 'shadow', baseDeps({

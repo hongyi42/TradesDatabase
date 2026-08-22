@@ -1,4 +1,12 @@
 import type { ForcedToolSpec } from '../model/forcedTool.js';
+// The ceiling the RAIL enforces, so the prompt cannot state a different one.
+// Its sibling NUDGE_ESCALATE_HOURS was retuned 48 -> 24 on 2026-08-20, so this
+// is not a hypothetical drift: a stale literal here would have the model name
+// instants the rail then refuses, and the refusal only reaches it when EVERY
+// decision was refused. Read at module scope, which planner.ts warns against
+// for this import — checked, and safe: the watchers/nudgeKinds cycle does not
+// reach this file, so watchers is fully evaluated before this module's body.
+import { NUDGE_ESCALATE_MAX_HOURS } from '../jobs/watchers.js';
 
 // The team-lead planner's prompt and its return-shape contract (plan
 // 2026-08-19, Phase 3).
@@ -37,7 +45,8 @@ export const PLANNER_SYSTEM = [
   '  extend   — they should get longer before that happens. Say until when.',
   '',
   'Every asked gap tells you the instant it escalates automatically. That is the clock extend has',
-  'to beat: name a LATER instant, and no more than 48 hours after the question first went out.',
+  `to beat: name a LATER instant, and no more than ${NUDGE_ESCALATE_MAX_HOURS} hours after the ` +
+    'question first went out.',
   '',
   'WHAT EACH ACTION CAN DO, AND WHEN. Every gap tells you its `state`, and the state decides which',
   'actions are even possible:',
@@ -147,8 +156,8 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
               description:
                 "For 'extend': the UTC instant to move the automatic escalation to, ISO-8601. " +
                 'Must be later than the instant the gap says it escalates at, in the future, and ' +
-                'no more than 48 hours after the question first went out. Required for extend, ' +
-                'ignored otherwise.',
+                `no more than ${NUDGE_ESCALATE_MAX_HOURS} hours after the question first went ` +
+                'out. Required for extend, ignored otherwise.',
             },
             basis: {
               type: 'string',

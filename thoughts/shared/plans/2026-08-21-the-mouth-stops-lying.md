@@ -58,13 +58,28 @@ widens a `filled` predicate (①'s ratified decision).
   nothing left to confirm, so `confirmId + confirmed` records instead of returning a preview. The
   `confirmId`-alone path is kept solely so tokens staged before the deploy still commit.
 - **SETTLED (was OPEN): the one-shot idempotency stamp** is
-  `note:<sha256(tenantId|technicianRef|identityKey|text)>` where `identityKey` is
-  `resolved.customerId ?? resolved.jobId ?? 'new:' + createFrom address`. **No date component** —
+  `note:<sha256(tenantId|technicianRef|channel|identityKey|text ?? ''|blobPath ?? '')>`, where
+  `identityKey` is `resolved.customerId`, else `job:<resolved.jobId>`, else `new:` + the JSON of the
+  whole `createFrom` draft. `blobPath` and `channel` are in the key because a note may be a PHOTO
+  with no text at all (`server.ts:2140`) — without them two different photos for the same customer
+  hash identically and the second is silently swallowed. The whole draft, not just its address,
+  because `resolutionFrom` (`:1848`) can leave `addressLine1` null and every addressless draft would
+  collapse to one key. **No date component** —
   the original sketch's `:<yyyy-mm-dd>` buys a rare re-record at the cost of a midnight-straddle
   double write, and identity in the key already separates "done" for two customers. Consequence,
   accepted: a genuinely repeated identical note about the same customer returns `duplicate` rather
   than recording twice. It must be **reported honestly**, never as `recorded` — L1 is undeletable
   and a double-written note plus a double-written visit cannot be undone.
+- **OPEN — does a one-shot call get to CREATE a customer?** `resolutionFrom` (`server.ts:1839`)
+  returns a `createFrom` resolution whenever `confirmed` is present, and `confirmed` is legal on the
+  first call (`server.test.ts:428` does exactly that). So under a plain one-shot rule, a first call
+  carrying `confirmed:{address}` that matches nothing **mints a new customer row the technician was
+  never shown** — today the preview says *"…for NEW customer Jane, 12 Oak St"* and they get to catch
+  it. The ratified decision rests on notes being revertable; a customer created by a stamped capture
+  is **not** (`memory: l1-pins-l2-undeletable`). **Recommend: one-shot when the note attaches to an
+  EXISTING customer or job; keep the preview when the resolution is `createFrom`.** The alternative
+  is full one-shot, accepting silently-minted customers. Needs the user's call before Phase 2 is
+  implemented — it changes which branch commits.
 - **A stranded `needs_identity` item is LEFT OPEN** (implementation call, REVERSES the original
   plan's "add a TTL sweep"). Once staging happens only on ambiguity, the item's `detail.text` is the
   **only** copy of that note — nothing is in L1. Expiring it destroys the note. It belongs in
@@ -111,7 +126,7 @@ Applies the rule to all four offending templates, and carries the planner's reas
 ### Changes required
 
 **`src/jobs/nudgeKinds.ts`** (untouched by ①, so every line below is exact)
-- Add above `NudgeKindSpec` (~`:115`):
+- Add above `NudgeKindSpec` (which opens at `:103`):
   ```ts
   export interface HandoffContext {
     // Newest applied ESCALATE reason for this gap, or null. Model-authored.
@@ -120,6 +135,9 @@ Applies the rule to all four offending templates, and carries the planner's reas
     // false. Backs ONE clause with ONE wording: "no field note and no status
     // change". It does NOT back "nothing is on the record" — that predicate
     // reads two tables and is blind to money_events (the 2026-08-20 specimen).
+    // NOT passed on the EXPIRED path: JOB_COST_GAP_SPEC.filled short-circuits on
+    // `!n.asked_at` (`:298`) and an expired row was never asked, so the
+    // predicate is never evaluated there for that kind.
     noNoteOrStatusChange?: boolean;
     // TRUE only when the caller has checked the money ledger for this job and
     // found no live material_cost. Backs "nothing is recorded about what this
@@ -153,12 +171,23 @@ Applies the rule to all four offending templates, and carries the planner's reas
   (replaced by the gated clause). Expired branch (`:247`) passes the flag through to
   `stage0Suggestion`. Append `plannerNote(ctx)` to the escalated suggestion.
 - **(#6) `JOB_COST_GAP_SPEC.handoff` (`:325`)** — signature is `(n, mode)` today; widen to the
-  interface. **Expired (`:343-345`)**: keep the lead-in only when `ctx.noCostOnLedger`, delete
-  `so the job's costs are incomplete`. **Escalated (`:346-348`)**: delete `and hasn't heard back`
-  and `the job's costs are still incomplete`; add the same gated lead-in; append `plannerNote(ctx)`.
+  interface. **Expired (`:343-345`)** — the lead-in is the ONLY place this copy names the job, the
+  customer and the topic, and `handToManager` reaches it with no ctx, so gating the whole sentence
+  would ship a subject-less item (and break `nudgeQueue.test.ts:262`). Split it: the subject is
+  rendered data and stays unconditional; only the ledger CLAIM is gated, and
+  `so the job's costs are incomplete` is deleted.
+  ```ts
+  `The '${title}' job (${customer}) has an open question about what it cost in parts or materials.` +
+  (ctx?.noCostOnLedger ? ` Nothing is recorded for it yet.` : '') +
+  ` Worth asking ${techName} what they picked up for it. If there were no parts, just dismiss this.`
+  ```
+  "has an open question" is true by construction — we are handing off an open gap.
+  **Escalated (`:346-348`)**: delete `and hasn't heard back` and `the job's costs are still
+  incomplete`. The surviving opener already names everything and is backed (the nudge WAS asked);
+  add ` Nothing is recorded for it yet.` gated on `noCostOnLedger`, then append `plannerNote(ctx)`.
 
 **`src/jobs/watchers.ts`**
-- `WatcherDeps` (`:190-217`) gains `listDecisions?: typeof listDecisionsForNudges`. **Required** —
+- `WatcherDeps` (`:190-218`) gains `listDecisions?: typeof listDecisionsForNudges`. **Required** —
   `watchers.test.ts:17` states every collaborator is injected; an un-injected read would make the
   existing escalation tests hit the database. Default it beside the others at `:272`.
 - Before the escalation loop (`:664`), one batched read over every escalating id.
@@ -178,8 +207,12 @@ Applies the rule to all four offending templates, and carries the planner's reas
   noCostOnLedger: !jobsWithCostEvents.has(x.jobId ?? '') }`. Both flags are honest here: the loop at
   `:555` `continue`s on `filled()`, and both specs' `filled` **is** `hasActivitySince`;
   `jobsWithCostEvents` (`:514`) is built over every open nudge's job, so `has()` is meaningful.
-- `:613` (`'expired'`) — same two flags, same justification; **no** `plannerReason` (nobody planned
-  it — an expired nudge never went out).
+- `:613` (`'expired'`) — pass `noCostOnLedger` ONLY. **No** `plannerReason` (nobody planned it — an
+  expired nudge never went out) and **no** `noNoteOrStatusChange`: the expired list holds
+  `pending`/`queued` rows (`:599-604`), which were never asked, so the cost spec's `filled` returns
+  at `nudgeKinds.ts:298` without ever calling `hasActivitySince`. The flag would be honest for the
+  visit kind and vacuous for the cost kind — exactly what the naming rule exists to prevent. Its
+  clause therefore appears only at `:812`, where `!hasActivitySince` was literally the filter.
 - `:812` — `stage0Suggestion(title, customer, g.ends_at, true)`; the detector filtered on
   `!hasActivitySince` at `:452`.
 - **(#7) `:896-899`** — delete `so the job's costs are incomplete`. The surviving lead-in needs no
@@ -188,6 +221,14 @@ Applies the rule to all four offending templates, and carries the planner's reas
 
 **`src/teamLead/compose.ts:98`** — unchanged, and that is the point: passing no `ctx` means every
 factual clause is omitted. This path asserts nothing because it has checked nothing.
+
+### Existing tests this phase MUST rewrite
+- `src/jobs/watchers.test.ts:1234` — `'escalation copy is byte-identical to the pre-registry
+  wording'` asserts the whole old string with `toBe`, including both deleted clauses. Re-pin it to
+  the new text; it is the lock that keeps this copy deliberate, so update it, never loosen it.
+- `src/control/nudgeQueue.test.ts:262` and `src/jobs/watchers.test.ts:1397` assert
+  `toContain('cost in parts')` and must still PASS unchanged — they are the regression guard for
+  the subject-less-copy failure above. Do not touch them.
 
 ### Automated verification
 - [ ] `npm run typecheck` / `npm run lint` / `npm test` pass
@@ -233,12 +274,18 @@ call, and so the answer to a `needs_identity` question commits on the second.
 - `:2124-2131` — the cross-tenant `confirmed.customerId` guard runs before either branch; unchanged.
 - `:2135` (`if (!confirmId)`) — after `resolutionFrom` yields a resolution, **commit** with the
   content-hash `externalId` and return the recorded result. When it does not, stage exactly as today
-  and return `needs_identity` (`:2185-2192`) — including the supersede at `:2157`.
+  and return `needs_identity` (`:2185-2192`).
+  **Leave the supersede at `:2157` exactly where it is — before the branch, on EVERY no-confirmId
+  call.** Moving it into the ambiguous branch opens an undeletable double-write: an ambiguous note
+  stages as item `I`, the same note is re-sent and now resolves, commits under
+  `note:<sha256(…)>` while `I` stays open, and a later `record_field_note({confirmId: I,
+  confirmed})` commits it again under `note:<I>`. Different `externalId`, so `recordFieldNote`'s
+  dedup (`src/writePath/recordFieldNote.ts:125-137`) cannot see it — two L1 rows and two visits.
   **Replay the extraction both times**: pass `{ extract: async () => extracted }` as
   `recordFieldNote`'s second argument, the way the confirm path does at `:2324`. Without it the
   write path calls the model a second time and can extract differently than the identity match that
   chose the customer. `sourceMeta` is omitted on this path — there is no `stagedConfirmId`.
-- `:2296` (`confirmId + confirmed`) — on a resolution, commit with `externalId: note:<item.id>` and
+- `:2258-2296` (`confirmId + confirmed`) — on a resolution, commit with `externalId: note:<item.id>` and
   resolve the item; drop the `needs_confirmation` return. Still ambiguous → `needs_identity` as today.
 - Keep the `confirmId`-alone commit (`:2298-2352`) and its 15-min TTL untouched: tokens staged before
   the deploy must still land.
@@ -261,8 +308,9 @@ behaviours**, never deleted.
   confirm FIRST` section (`:614-647`), which is appended by the **same heredoc** as `## Trades
   assistant — accuracy rules` and guarded by a **presence grep at `:589`**. Editing its text is a
   **no-op on every already-wired seat** (the documented template-drift trap, fourth occurrence).
-  **Split it into its own heredoc with its own delete-then-append refresh**, copying the idiom at
-  `:653-655` verbatim (`awk '/^## Permanent-record writes/{skip=1;next} skip && /^## /{skip=0} !skip'`).
+  **Split it into its own heredoc with its own delete-then-append refresh, placed AFTER the `fi` at
+  `:649`** — inside the `if/else` it would inherit the very presence grep it exists to escape —
+  copying the idiom at `:655-657` verbatim (`awk '/^## Permanent-record writes/{skip=1;next} skip && /^## /{skip=0} !skip'`).
   Leave the accuracy-rules presence grep alone. Rule 2's "staged tools (record_field_note, …)" list
   loses `record_field_note`; rule 4's retract guidance stays and becomes the *only* safety net.
 - `Box_Setup_Stuff/nemoclaw-inference-medic.sh:149` — embeds the tool's schema for its real-tool-call
@@ -270,6 +318,14 @@ behaviours**, never deleted.
 - `Box_Setup_Stuff/doorman-nemoclaw-setup-guide.md:24`, `:132-140`, `:164`
 - `Box_Setup_Stuff/doorman-architecture-memory.md:314`
 - `docs/nemoclaw-tech-agent.md:84`, `:213`; `docs/onboarding.md:196`
+
+**The eval harness encodes the two-step and `npm test` will NOT catch it:**
+- `src/eval/toolCases.ts:481-527` (W01) — step 1 asserts the first call returned
+  `needs_confirmation|needs_identity` and errors with *"first call neither staged nor asked who"*.
+  A resolvable one-shot returns `recorded`, so W01 fails on the next spine-tool eval run.
+- `src/eval/graders.ts:62-83` keeps `record_field_note` in `STAGED_TOOLS`, and `isCommit`'s doc
+  comment (`:89-100`) states the two-step as the contract. Removing it from `STAGED_TOOLS` is what
+  stops confirm-discipline flagging a correct one-shot call.
 
 ### Automated verification
 - [ ] `npm run typecheck` / `npm run lint` / `npm test` pass

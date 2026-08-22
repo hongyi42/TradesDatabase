@@ -151,6 +151,13 @@ Builds the inference fallback underneath so attribution still happens when the r
   the nudge ROW (a column, not `context`) — they already receive the `Nudge`.
 - Both `assemble*Message`: when non-null the footer's closing sentence gains `, passing ref
   ${refCode},`. When null the sentence is **byte-identical to today** — an old nudge must deliver.
+- **Also print the job id.** The `(re: …)` line carries a customer NAME and job TITLE and no ids,
+  so a real delivery spent six tool calls — `memory_search`, `find_customer`,
+  `list_recent_captures`, `sessions_list`, `get_customer_context`, `list_team` — ≈245k input
+  tokens to ask one question (measured on trajectory `nudge-fd98ab15…`, 2026-08-18). This is the
+  repo's own "you cannot prompt your way to a UUID" finding, already fixed for the planner and
+  never for the seat. `ComposeContext.jobId` is present; `CostComposeContext.jobId` is required.
+  Render it as `record_field_note … for job <id>` so the agent stops searching for what we knew.
 - Callers to update: `src/teamLead/compose.test.ts:414-421` and `:434-441` build `ComposeContext`
   literals inline.
 
@@ -177,6 +184,16 @@ Builds the inference fallback underneath so attribution still happens when the r
   - `ref` absent → fallback: if the caller has exactly ONE open nudge whose context `jobId` equals
     the returned `jobId`, stamp it. More than one → stamp nothing; the planner judges.
 
+**`src/teamLead/planner.ts`** — WITHOUT this the attribution is written and never read
+- `buildGapView` marks evidence the technician **submitted as this gap's answer**. No new
+  parameter and no new read: `answered_by_capture_id` is a column on the `Nudge` the function
+  already receives, so it is a comparison against `e.capture.id`.
+- Attributed evidence renders as `ANSWERS THIS GAP: "…"`; everything else keeps today's wording.
+- The `sharesJob` warning ("everything below is SHARED between them") is **suppressed for an
+  attributed capture** — that sentence exists because nothing could tell which question a
+  sentence answered, and for this capture something now can. It stays for the rest.
+- This makes Phase 2's byte-identical assertion relative to **Phase 1's** output, not today's.
+
 **`Box_Setup_Stuff/bootstrap-box.sh`** — the doctrine that actually reaches an agent
 - One line inside the **existing** `## Permanent-record writes` AGENTS.md heredoc section
   ([:629](Box_Setup_Stuff/bootstrap-box.sh#L629)): when a delivered question names a ref, pass it
@@ -202,6 +219,10 @@ Builds the inference fallback underneath so attribution still happens when the r
 - [ ] **the ref survives a `needs_identity` round-trip**: stage, resume with `confirmId` +
       `confirmed`, and assert the nudge is stamped
 - [ ] the single-open-gap fallback stamps; two open gaps on one job stamp nothing
+- [ ] **two gaps on one job, one capture attributed**: the attributed gap's view says
+      `ANSWERS THIS GAP` and drops the SHARED warning; the OTHER gap's view still shows the
+      capture as shared and unattributed — the test that proves the loop actually closes
+- [ ] the `(re: …)` line carries the job id for both kinds
 - [ ] `src/eval/doctrine.ts` passes (section list unchanged)
 
 ### Live verification (agent-executable)
@@ -276,7 +297,8 @@ Adds a per-kind `holeClosed` predicate — "is the hole this gap names actually 
 - [ ] escalation and expiry leave `record_filled` **null**, not `false`
 - [ ] a planner close with `basis:'record'` writes `true`; `basis:'evidence'` writes `false`
 - [ ] **routing unchanged**: same gaps close/escalate/expire, same `WatcherSummary` counts
-- [ ] **`buildGapView` output is byte-identical to today**, asserted by the existing whole-string
+- [ ] **`buildGapView` output is byte-identical to PHASE 1's** (not today's — Phase 1
+      deliberately changed it), asserted by the existing whole-string
       test at [planner.test.ts:1645-1661](src/teamLead/planner.test.ts#L1645-L1661) and the
       `THE RECORD:` assertion at [:821](src/teamLead/planner.test.ts#L821) — this is what proves
       `holeClosed` did not leak into the planner's close authorisation

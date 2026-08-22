@@ -955,7 +955,8 @@ export async function runWatchers(
                 // job with no parts has complete costs.
                 suggestion:
                   `'${title}' (${customer}) — nothing recorded yet about what it cost in parts ` +
-                  `or materials. Worth checking what was picked up. No parts? Just dismiss.`,
+                  `or materials. Tell me the figure and I'll put it on the books — if there ` +
+                  `were no parts, zero is worth recording too.`,
               });
               if (item) {
                 opened += 1;

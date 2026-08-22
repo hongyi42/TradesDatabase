@@ -146,7 +146,7 @@ describe('runTeamLeadCompose', () => {
     expect(flagged[0].escalatedFromNudge).toBe('n1');
     // The manager sees the familiar Stage-0 copy, not a new dialect.
     expect(flagged[0].suggestion).toContain("'Furnace tune-up' (Henderson) was due to wrap up");
-    expect(flagged[0].suggestion).toContain('Nothing to record? Just dismiss.');
+    expect(flagged[0].suggestion).toContain("I'll put it on the record");
   });
 
   test('incomplete context, unfit even to flag → FROZEN (never cancelled), no model call', async () => {

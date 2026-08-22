@@ -201,6 +201,18 @@ export interface NudgeKindSpec {
 // compose's thin-context handoff — deliberately NOT the escalation copy, which
 // claims "their assistant asked": an expired nudge's ask never landed, and the
 // manager must never be told it did (Phase-4 review F1/F3).
+//
+// THE CLOSING LINE ASKS FOR THE DATUM, NEVER OFFERS AN EXIT (user, 2026-08-21).
+// Every one of these used to end "if it's already handled, just dismiss this",
+// which reads as: if you know the answer, don't bother telling us. That is
+// backwards. The job was almost certainly handled in the real world — the whole
+// reason this item exists is that the RECORD does not know it. The handled case
+// is the case where the information EXISTS and we most want it, so "dismiss" is
+// the one thing the copy must not invite. For a cost, "there were no parts" is
+// itself the answer: money_events.amount_cents allows 0, and a zero
+// material_cost closes the gap exactly like any other figure, because both the
+// detector filter and itemResolved key on the KIND, never the amount. The
+// manager can still dismiss from the queue — it just stops being the offer.
 export const stage0Suggestion = (
   title: string,
   customer: string,
@@ -211,7 +223,7 @@ export const stage0Suggestion = (
 ): string =>
   `'${title}' (${customer}) was due to wrap up ${wallClockLabel(endsAtLocal)}` +
   (noNoteOrStatusChange ? ` — no note or status update on it yet` : '') +
-  `. Worth a quick check on how it went. Nothing to record? Just dismiss.`;
+  `. Tell me how it went and I'll put it on the record — even a line is enough.`;
 
 // Nudge context is watcher-written JSON, read fail-closed at every boundary.
 const str = (c: Record<string, unknown>, k: string): string | null =>
@@ -330,8 +342,8 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
       suggestion:
         `'${title}' (${customer})` +
         (activityChecked ? ` — no note or status update since the visit` : '') +
-        `. We asked ${techName} on ${wallClockLabel(naiveLocal(n.asked_at))}; a quick word ` +
-        `should close it out. Already handled? Just dismiss.` +
+        `. We asked ${techName} on ${wallClockLabel(naiveLocal(n.asked_at))}. Tell me how it ` +
+        `went, or what ${techName} told you, and I'll put it on the record.` +
         plannerNote(ctx),
     };
   },
@@ -420,10 +432,12 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
         mode === 'expired'
           ? `'${title}' (${customer}) — open question about what it cost in parts or materials` +
             (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
-            `. Worth asking ${techName} what they picked up. No parts? Just dismiss.`
+            `. ${techName} would know. Tell me the figure and I'll put it on the books — if ` +
+            `there were no parts, zero is worth recording too.`
           : `'${title}' (${customer}) — we asked ${techName} what it cost in parts and materials` +
             (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
-            `. A quick word gets it on the books. Already handled? Just dismiss.` +
+            `. Tell me the figure and I'll put it on the books — if there were no parts, ` +
+            `zero is worth recording too.` +
             plannerNote(ctx),
     };
   },

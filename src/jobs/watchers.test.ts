@@ -703,7 +703,7 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
       "'Furnace tune-up' (Henderson) — no note or status update since the visit. We asked Ben Shelton on",
     );
     expect(flagged[0].suggestion).toContain('Friday, Aug 14 at 11:00 AM'); // the ask's wall-clock moment
-    expect(flagged[0].suggestion).toContain('Already handled? Just dismiss.');
+    expect(flagged[0].suggestion).toContain("I'll put it on the record");
     expect(flagged[0].suggestion).not.toContain('Spine');
     expect(flagged[0].escalatedFromNudge).toBe('n-silent');
     expect(flagged[0].technicianRef).toBe('ben-shelton');
@@ -1256,8 +1256,8 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
     }), 'live');
     expect(suggestion).toBe(
       "'Furnace tune-up' (Henderson) — no note or status update since the visit. We asked " +
-        'Ben Shelton on Thursday, Aug 13 at 12:00 AM; a quick word should close it out. ' +
-        'Already handled? Just dismiss.',
+        "Ben Shelton on Thursday, Aug 13 at 12:00 AM. Tell me how it went, or what Ben " +
+        "Shelton told you, and I'll put it on the record.",
     );
   });
 });
@@ -1694,7 +1694,7 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
         resolveNudge: async () => askedVisit,
       }), 'live');
       expect(summary.nudgesEscalated).toBe(1);
-      expect(suggestion).toContain('a quick word should close it out');
+      expect(suggestion).toContain("and I'll put it on the record");
       expect(suggestion).not.toContain("The assistant's note");
     } finally {
       spy.mockRestore();
@@ -1778,7 +1778,8 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
     // Backed by this detector's own ledger filter (freshCost excludes withCost).
     expect(suggestion).toBe(
       "'Boiler swap' (Henderson) — nothing recorded yet about what it cost in parts or " +
-        'materials. Worth checking what was picked up. No parts? Just dismiss.',
+        "materials. Tell me the figure and I'll put it on the books — if there were no " +
+        'parts, zero is worth recording too.',
     );
     // The CONCLUSION is deleted: a job with no parts has complete costs.
     expect(suggestion).not.toContain('incomplete');
@@ -1855,6 +1856,50 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
     }), 'live');
     expect(summary.nudgesEscalated).toBe(1); // the manager still hears about it
     expect(suggestion).not.toContain('no note or status update');
+  });
+
+  // The standing guard for the 2026-08-21 decision. Every one of these strings
+  // used to end "just dismiss this", which tells a manager that if they know
+  // the answer they need not tell us — backwards, since the record not knowing
+  // is the whole reason the item exists.
+  test('NO manager copy invites a dismissal, in any ctx combination', () => {
+    const ctxs = [
+      undefined,
+      {},
+      { noNoteOrStatusChange: true },
+      { noCostOnLedger: true },
+      { noNoteOrStatusChange: true, noCostOnLedger: true, plannerReason: 'nothing came back' },
+    ];
+    const rendered: string[] = [
+      stage0Suggestion('Furnace tune-up', 'Henderson', '2026-08-14T08:00:00.000Z'),
+      stage0Suggestion('Furnace tune-up', 'Henderson', '2026-08-14T08:00:00.000Z', true),
+    ];
+    for (const ctx of ctxs) {
+      for (const mode of ['escalated', 'expired'] as const) {
+        rendered.push(
+          OVERDUE_VISIT_GAP_SPEC.handoff(askedVisit, mode, NAIVE, ctx)?.suggestion ?? '',
+          JOB_COST_GAP_SPEC.handoff(costRow({ status: 'asked' }), mode, NAIVE, ctx)?.suggestion ?? '',
+        );
+      }
+    }
+    for (const text of rendered) {
+      expect(text).not.toMatch(/dismiss/i);
+      // …and every one of them asks for the datum instead.
+      if (text) expect(text).toMatch(/Tell me/);
+    }
+  });
+
+  test('the cost ask invites a ZERO, which the ledger accepts and the gap honours', () => {
+    // money_events.amount_cents allows 0 (migration check `>= 0`), and both the
+    // detector filter and itemResolved key on kind='material_cost', never on the
+    // amount — so "there were no parts" recorded as zero really does close this.
+    // If that ever stops being true, this copy becomes a false promise.
+    for (const mode of ['escalated', 'expired'] as const) {
+      const s = JOB_COST_GAP_SPEC.handoff(costRow({ status: 'asked' }), mode, NAIVE, {
+        noCostOnLedger: true,
+      })!.suggestion;
+      expect(s).toContain('zero is worth recording too');
+    }
   });
 
   test('a job that DOES have a live cost gets no cost claim at all', async () => {

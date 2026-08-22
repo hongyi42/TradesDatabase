@@ -543,10 +543,18 @@ User direction, while reviewing the manager copy:
 
 The ladder currently treats every unanswered ask as silence to be chased. Two cases are not that:
 
-1. **Wrong question.** The cost detector asks *"what did the job cost in parts and materials"*. A
-   technician who fits a condensate pump often does not know the price — it is on an invoice the
-   office holds. The answerable question is *"what parts did you put in?"*, and the office prices
-   it. Flagged, **not built** — deliberately kept out of plan ② to avoid widening it.
+1. **Wrong question — and we cannot tell which firms it is wrong for.** The cost detector asks
+   *"what did the job cost in parts and materials"*. Sometimes the technician has no idea: the
+   price is on an invoice the office holds and they never see it. **Sometimes they know it better
+   than the manager does** — they negotiated on site, added services, took payment on the spot
+   (user, 2026-08-22). Which one a firm is depends on how that firm operates, and nothing in the
+   spine knows. So an earlier draft of this section asserting "it is on an invoice the office
+   holds" was wrong, and the planner prompt repeated it to a manager as a fact about a specific
+   job before the eval caught it (see below).
+   The safe conclusion is narrow: **do not assume who knows.** A question like *"what parts did
+   you put in?"* is answerable by any technician regardless of which kind of firm it is, which is
+   why it is the better ask — not because the office holds the price. Flagged, **not built** —
+   deliberately kept out of plan ② to avoid widening it.
 2. **Wrong person.** A job's technician can be swapped in the real world with nothing telling the
    spine. The person being chased was never on site. Their silence is correct behaviour.
 

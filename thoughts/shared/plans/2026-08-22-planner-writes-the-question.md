@@ -65,7 +65,7 @@ breath, and compose spends nothing.
 
 ### Changes required
 
-**`supabase/migrations/<ts>_nudge_decisions_question_draft.sql`** — pilot DDL, needs authorisation:
+**`supabase/migrations/20260822060000_nudge_decisions_question_draft.sql`** — **APPLIED to the pilot by the user 2026-08-22**, alongside `handoff_note`; both verified present and nullable:
 ```sql
 alter table nudge_decisions add column if not exists question_draft text;
 ```

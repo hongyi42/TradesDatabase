@@ -271,8 +271,11 @@ a `nudges` kind, 1 row, answered). The substring `cost` appears in 0 of all 144 
 cost-copy half of this phase is forward-looking, and any `job_cost_gap` item at all is post-change.
 
 ### Manual verification
-- [ ] Read one regenerated escalation and one regenerated expiry side by side and judge they read as
-      a colleague's note, not a machine hedging
+- [x] Read one regenerated escalation and one regenerated expiry side by side and judge they read as
+      a colleague's note, not a machine hedging — **approved by the user 2026-08-22** after three
+      rounds: shorter and blame-free (the job leads, never the person), the closing line asks for
+      the datum instead of offering a dismissal, and the qualifiers ("even a line is enough", "zero
+      is worth recording too") were cut as reassurance on easy questions.
 
 ---
 *Pause after this phase — Manual verification is non-empty.*

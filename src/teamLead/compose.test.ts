@@ -145,8 +145,8 @@ describe('runTeamLeadCompose', () => {
     expect(flagged).toHaveLength(1);
     expect(flagged[0].escalatedFromNudge).toBe('n1');
     // The manager sees the familiar Stage-0 copy, not a new dialect.
-    expect(flagged[0].suggestion).toContain("The visit for 'Furnace tune-up' (Henderson)");
-    expect(flagged[0].suggestion).toContain('just dismiss this');
+    expect(flagged[0].suggestion).toContain("'Furnace tune-up' (Henderson) was due to wrap up");
+    expect(flagged[0].suggestion).toContain('Nothing to record? Just dismiss.');
   });
 
   test('incomplete context, unfit even to flag → FROZEN (never cancelled), no model call', async () => {
@@ -203,7 +203,7 @@ describe('runTeamLeadCompose', () => {
     expect(summary).toEqual({ composed: 0, cancelled: 1, failed: 0, rowErrors: 0, handoffs: 1, held: 0, heldNotBefore: 0 });
     expect(flagged).toHaveLength(1);
     expect(flagged[0].jobId).toBe('j1');
-    expect(flagged[0].suggestion).toContain("The visit for 'Furnace tune-up' (unknown customer)");
+    expect(flagged[0].suggestion).toContain("'Furnace tune-up' (unknown customer) was due to wrap up");
     expect(outcomes).toEqual(['cancelled: context incomplete']);
   });
 

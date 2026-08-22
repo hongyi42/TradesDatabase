@@ -323,7 +323,7 @@ describe('runWatchers', () => {
     expect(flagged[0].technicianRef).toBe('ben-shelton');
     expect(flagged[1].technicianRef).toBeNull();
     expect(flagged[0].startsAtLocal).toBe('2026-08-15T00:00:00.000Z');
-    expect(flagged[0].suggestion).toContain("The visit for 'Furnace tune-up' (Henderson)");
+    expect(flagged[0].suggestion).toContain("'Furnace tune-up' (Henderson) was due to wrap up");
     // a0's ends_at (2026-08-15T01:00 naive) as the warm wall-clock label —
     // weekday and date come from one Intl derivation, so they can't disagree.
     expect(flagged[0].suggestion).toContain('Saturday, Aug 15 at 1:00 AM');
@@ -700,10 +700,10 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(summary.tenantErrors).toBe(0);
     expect(flagged).toHaveLength(1);
     expect(flagged[0].suggestion).toContain(
-      "Ben Shelton's assistant asked about the 'Furnace tune-up' visit (Henderson)",
+      "'Furnace tune-up' (Henderson) — no note or status update since the visit. We asked Ben Shelton on",
     );
     expect(flagged[0].suggestion).toContain('Friday, Aug 14 at 11:00 AM'); // the ask's wall-clock moment
-    expect(flagged[0].suggestion).toContain('just dismiss this');
+    expect(flagged[0].suggestion).toContain('Already handled? Just dismiss.');
     expect(flagged[0].suggestion).not.toContain('Spine');
     expect(flagged[0].escalatedFromNudge).toBe('n-silent');
     expect(flagged[0].technicianRef).toBe('ben-shelton');
@@ -770,7 +770,7 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(summary.tenantErrors).toBe(0);
     expect(flagged.map((f) => f.assignmentId).sort()).toEqual(['a-frozen', 'a-stuck']);
     for (const f of flagged) {
-      expect(f.suggestion).toContain('was scheduled to wrap up by');
+      expect(f.suggestion).toContain('was due to wrap up');
       expect(f.suggestion).not.toContain('assistant asked'); // the ask never landed
       expect(f.escalatedFromNudge).toBeDefined();
     }
@@ -1255,10 +1255,9 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
       },
     }), 'live');
     expect(suggestion).toBe(
-      "Ben Shelton's assistant asked about the 'Furnace tune-up' visit (Henderson) on " +
-        'Thursday, Aug 13 at 12:00 AM. No field note and no status change has been ' +
-        "recorded since. Worth a direct word so it gets closed out. If it's already " +
-        'handled, just dismiss this.',
+      "'Furnace tune-up' (Henderson) — no note or status update since the visit. We asked " +
+        'Ben Shelton on Thursday, Aug 13 at 12:00 AM; a quick word should close it out. ' +
+        'Already handled? Just dismiss.',
     );
   });
 });
@@ -1558,7 +1557,7 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
     expect(cost.suggestion).not.toContain("hasn't heard back");
     expect(cost.suggestion).not.toContain('incomplete');
     // The backed replacement IS there.
-    expect(cost.suggestion).toContain('Nothing is recorded for it yet.');
+    expect(cost.suggestion).toContain('nothing recorded for it yet');
   });
 
   test('without a ctx every factual clause is omitted, and the plan is still valid', () => {
@@ -1566,7 +1565,7 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
     const expired = JOB_COST_GAP_SPEC.handoff(costRow({}), 'expired')!;
     expect(expired).not.toBeNull();
     expect(expired.jobId).toBe('j-cost');
-    expect(expired.suggestion).not.toContain('Nothing is recorded');
+    expect(expired.suggestion).not.toContain('nothing recorded for it yet');
     expect(expired.suggestion).not.toContain('incomplete');
     // …but the SUBJECT survives: gating the whole lead-in shipped a manager
     // item that named neither the job nor the topic.
@@ -1576,13 +1575,13 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
 
     const visit = OVERDUE_VISIT_GAP_SPEC.handoff(askedVisit, 'escalated', NAIVE)!;
     expect(visit).not.toBeNull();
-    expect(visit.suggestion).not.toContain('No field note');
+    expect(visit.suggestion).not.toContain('no note or status update');
     expect(visit.suggestion).not.toContain("The assistant's note");
   });
 
   test('stage0Suggestion states the predicate it was given, and nothing wider', () => {
     const without = stage0Suggestion('Furnace tune-up', 'Henderson', '2026-08-14T08:00:00.000Z');
-    expect(without).not.toContain('No field note');
+    expect(without).not.toContain('no note or status update');
     expect(without).not.toContain('nothing has been recorded');
     expect(without).toContain('Furnace tune-up');
 
@@ -1592,7 +1591,7 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
       '2026-08-14T08:00:00.000Z',
       true,
     );
-    expect(withFlag).toContain('No field note and no status change has been recorded for it.');
+    expect(withFlag).toContain('— no note or status update on it yet');
     // The general claim is DELETED, not merely reworded: it is a statement about
     // the whole record made from a predicate that reads two tables.
     expect(withFlag).not.toContain('nothing has been recorded');
@@ -1695,7 +1694,7 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
         resolveNudge: async () => askedVisit,
       }), 'live');
       expect(summary.nudgesEscalated).toBe(1);
-      expect(suggestion).toContain('Worth a direct word');
+      expect(suggestion).toContain('a quick word should close it out');
       expect(suggestion).not.toContain("The assistant's note");
     } finally {
       spy.mockRestore();
@@ -1723,8 +1722,8 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
       },
       resolveNudge: async () => costRow({ status: 'failed' }),
     }), 'live');
-    expect(suggestion).toContain('Nothing is recorded for it yet.');
-    expect(suggestion).not.toContain('No field note');
+    expect(suggestion).toContain('nothing recorded for it yet');
+    expect(suggestion).not.toContain('no note or status update');
     expect(suggestion).not.toContain("The assistant's note");
   });
 
@@ -1751,7 +1750,7 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
       resolveNudge: async () => askedVisit,
     }), 'live');
     expect(suggestion).toContain('Furnace tune-up'); // it IS the stage-0 copy
-    expect(suggestion).not.toContain('No field note');
+    expect(suggestion).not.toContain('no note or status update');
     expect(suggestion).not.toContain('nothing has been recorded');
   });
 
@@ -1777,8 +1776,9 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
       },
     }), 'live');
     // Backed by this detector's own ledger filter (freshCost excludes withCost).
-    expect(suggestion).toContain(
-      "Nothing is recorded about what the 'Boiler swap' job (Henderson) cost in parts or materials.",
+    expect(suggestion).toBe(
+      "'Boiler swap' (Henderson) — nothing recorded yet about what it cost in parts or " +
+        'materials. Worth checking what was picked up. No parts? Just dismiss.',
     );
     // The CONCLUSION is deleted: a job with no parts has complete costs.
     expect(suggestion).not.toContain('incomplete');
@@ -1854,7 +1854,7 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
       resolveNudge: async () => askedVisit,
     }), 'live');
     expect(summary.nudgesEscalated).toBe(1); // the manager still hears about it
-    expect(suggestion).not.toContain('No field note');
+    expect(suggestion).not.toContain('no note or status update');
   });
 
   test('a job that DOES have a live cost gets no cost claim at all', async () => {

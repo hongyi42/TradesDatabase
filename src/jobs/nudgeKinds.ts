@@ -209,11 +209,9 @@ export const stage0Suggestion = (
   // nothing, so the clause is omitted rather than softened.
   noNoteOrStatusChange?: boolean,
 ): string =>
-  `The visit for '${title}' (${customer}) was scheduled to wrap up by ` +
-  `${wallClockLabel(endsAtLocal)}.` +
-  (noNoteOrStatusChange ? ` No field note and no status change has been recorded for it.` : '') +
-  ` Worth checking how it went so the job's record stays complete. If nothing needed ` +
-  `recording, just dismiss this.`;
+  `'${title}' (${customer}) was due to wrap up ${wallClockLabel(endsAtLocal)}` +
+  (noNoteOrStatusChange ? ` — no note or status update on it yet` : '') +
+  `. Worth a quick check on how it went. Nothing to record? Just dismiss.`;
 
 // Nudge context is watcher-written JSON, read fail-closed at every boundary.
 const str = (c: Record<string, unknown>, k: string): string | null =>
@@ -309,7 +307,7 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
     // Escalation copy quotes the ask time, so it needs both a real asked_at
     // and a way to render it in the firm's clock.
     if (!n.asked_at || !naiveLocal) return null;
-    const techName = disp(c, 'technicianName', 'The technician');
+    const techName = disp(c, 'technicianName', 'the technician');
     // `filled` returns at its own parse guard (:230) when startsAtLocal is a
     // non-empty but UNPARSEABLE string — hasActivitySince never ran, so the
     // caller's flag describes nothing. The base guard above only requires a
@@ -319,17 +317,21 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
       !!ctx?.noNoteOrStatusChange && !Number.isNaN(Date.parse(startsAtLocal));
     return {
       ...base,
-      // Same copy doctrine as the fallback suggestion — and about the JOB, even
-      // here: the ask is "close the record out", never "your technician is
-      // unresponsive".
-      // "hasn't heard back" is DELETED, not gated: no reply-side datum exists
-      // anywhere in the system, so nothing could ever back it. The record claim
-      // is gated on the predicate that was actually run.
+      // The JOB leads, never the person: "your technician is unresponsive" is
+      // not the ask and not something we can even know (user, 2026-08-21 — the
+      // first draft put the technician in the subject position and read as
+      // blame). "hasn't heard back" stays DELETED: no reply-side datum exists
+      // anywhere in the system, so nothing could ever back it.
+      //
+      // "since the visit" is the window hasActivitySince ACTUALLY uses for this
+      // kind (`filled` bounds on startsAtLocal, :230). The first draft put the
+      // clause straight after the ask time, which read as "nothing since we
+      // asked" — a different, narrower window than the one we checked.
       suggestion:
-        `${techName}'s assistant asked about the '${title}' visit (${customer}) on ` +
-        `${wallClockLabel(naiveLocal(n.asked_at))}.` +
-        (activityChecked ? ` No field note and no status change has been recorded since.` : '') +
-        ` Worth a direct word so it gets closed out. If it's already handled, just dismiss this.` +
+        `'${title}' (${customer})` +
+        (activityChecked ? ` — no note or status update since the visit` : '') +
+        `. We asked ${techName} on ${wallClockLabel(naiveLocal(n.asked_at))}; a quick word ` +
+        `should close it out. Already handled? Just dismiss.` +
         plannerNote(ctx),
     };
   },
@@ -399,7 +401,7 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
     if (!jobId) return null;
     const title = disp(c, 'jobTitle', 'a job');
     const customer = disp(c, 'customerName', 'unknown customer');
-    const techName = disp(c, 'technicianName', 'The technician');
+    const techName = disp(c, 'technicianName', 'the technician');
     return {
       subjectRef: n.subject_ref,
       jobId,
@@ -416,16 +418,12 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
       // that said merely "Worth asking Ben what they picked up for it."
       suggestion:
         mode === 'expired'
-          ? `The '${title}' job (${customer}) has an open question about what it cost in parts ` +
-            `or materials.` +
-            (ctx?.noCostOnLedger ? ` Nothing is recorded for it yet.` : '') +
-            ` Worth asking ${techName} what they picked up for it. If there were no parts, just ` +
-            `dismiss this.`
-          : `${techName}'s assistant asked what the '${title}' job (${customer}) cost in parts ` +
-            `and materials.` +
-            (ctx?.noCostOnLedger ? ` Nothing is recorded for it yet.` : '') +
-            ` Worth a direct word so it can be recorded. If it's already handled, just dismiss ` +
-            `this.` +
+          ? `'${title}' (${customer}) — open question about what it cost in parts or materials` +
+            (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
+            `. Worth asking ${techName} what they picked up. No parts? Just dismiss.`
+          : `'${title}' (${customer}) — we asked ${techName} what it cost in parts and materials` +
+            (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
+            `. A quick word gets it on the books. Already handled? Just dismiss.` +
             plannerNote(ctx),
     };
   },

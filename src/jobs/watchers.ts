@@ -954,9 +954,8 @@ export async function runWatchers(
                 // CONCLUSION "so the job's costs are incomplete" is deleted — a
                 // job with no parts has complete costs.
                 suggestion:
-                  `Nothing is recorded about what the '${title}' job (${customer}) cost in ` +
-                  `parts or materials. Worth checking what was picked up for it. If there were ` +
-                  `no parts, just dismiss this.`,
+                  `'${title}' (${customer}) — nothing recorded yet about what it cost in parts ` +
+                  `or materials. Worth checking what was picked up. No parts? Just dismiss.`,
               });
               if (item) {
                 opened += 1;

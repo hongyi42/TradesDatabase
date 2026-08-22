@@ -1,6 +1,7 @@
 import {
   createPendingNudge,
   listCostGapCandidates,
+  listDecisionsForNudges,
   listJobIdsWithCostEvents,
   findOpenReviewItemsByKind,
   flagNudgeGap,
@@ -212,6 +213,10 @@ export interface WatcherDeps {
   // Detector #2 seams
   listCostCandidates?: typeof listCostGapCandidates;
   listCostEvents?: typeof listJobIdsWithCostEvents;
+  // The escalation copy carries the planner's own reason, so the sweep reads
+  // the decision log. Injected like every other collaborator — un-injected it
+  // would make the existing escalation tests hit the database.
+  listDecisions?: typeof listDecisionsForNudges;
   // The kind registry, injectable so a test can register a second detector
   // before one exists in production.
   specs?: NudgeKindSpec[];
@@ -270,6 +275,7 @@ export async function runWatchers(
   const specs = deps.specs ?? NUDGE_KIND_SPECS;
   const listCostCandidates = deps.listCostCandidates ?? listCostGapCandidates;
   const listCostEvents = deps.listCostEvents ?? listJobIdsWithCostEvents;
+  const listDecisions = deps.listDecisions ?? listDecisionsForNudges;
 
   // listTenantIdsWithTelegramBindings, not listTenantSeats: it skips tenants
   // with nobody Telegram-reachable. Today that ALSO excludes the eval tenants
@@ -610,7 +616,15 @@ export async function runWatchers(
       // (logged; the status-change path can still close them).
       for (const x of expired) {
         const spec = specFor(x.n.kind, specs)!;
-        const plan = spec.handoff(x.n, 'expired', naiveLocal);
+        // noCostOnLedger ONLY. No plannerReason (nobody planned this — the ask
+        // never went out), and no noNoteOrStatusChange: this list holds
+        // pending/queued rows, which were never asked, so JOB_COST_GAP_SPEC.filled
+        // returns at its `!n.asked_at` guard without ever calling
+        // hasActivitySince. A flag that is honest for one kind and vacuous for
+        // another is exactly what naming them after the predicate prevents.
+        const plan = spec.handoff(x.n, 'expired', naiveLocal, {
+          noCostOnLedger: !jobsWithCostEvents.has(x.jobId ?? ''),
+        });
         if (!plan) {
           console.error(`[watchers] expired nudge ${x.n.id} unfit for handoff (thin context)`);
           continue;
@@ -659,9 +673,42 @@ export async function runWatchers(
       // The guard just below drops malformed-context rows (they re-collect
       // every tick and never escalate — fail-closed; they still close via
       // the status-change path above).
+      // ONE batched read for every escalating gap, never one per row. Isolated:
+      // the handoff is what matters, and losing the planner's note is strictly
+      // better than not escalating at all.
+      let decisions: Awaited<ReturnType<typeof listDecisions>> = new Map();
+      if (escalations.length > 0) {
+        try {
+          decisions = await listDecisions(
+            tenantId,
+            escalations.map((x) => x.n.id),
+          );
+        } catch (err) {
+          console.error(`[watchers] decision read failed for ${tenantId} — escalating without reasons`, err);
+        }
+      }
+      // Rows come back OLDEST first, so scan backwards for the newest. Only an
+      // APPLIED escalate counts: a refused one did not happen, a shadow one was
+      // never carried out, and an `extend` reason would attribute a decision to
+      // the planner that it never made about this handoff.
+      const reasonFor = (id: string): string | null => {
+        const rows = decisions.get(id) ?? [];
+        for (let i = rows.length - 1; i >= 0; i--) {
+          if (rows[i].action === 'escalate' && rows[i].outcome === 'applied') return rows[i].reason;
+        }
+        return null;
+      };
       for (const x of escalations) {
         const spec = specFor(x.n.kind, specs)!;
-        const plan = spec.handoff(x.n, 'escalated', naiveLocal);
+        // Both flags are honest here: this loop is only reached after filled()
+        // returned null, and for an ASKED row both specs' filled IS
+        // hasActivitySince. jobsWithCostEvents is built over every open nudge's
+        // job, so has() === false means "no cost", not "never asked".
+        const plan = spec.handoff(x.n, 'escalated', naiveLocal, {
+          plannerReason: reasonFor(x.n.id),
+          noNoteOrStatusChange: true,
+          noCostOnLedger: !jobsWithCostEvents.has(x.jobId ?? ''),
+        });
         if (!plan) continue; // malformed context — fail-closed, never escalates
         // The KIND-GENERIC flagger: a job-scoped gap has no visit window, and
         // the visit flagger's assignment-as-subject convention does not fit it.
@@ -809,7 +856,8 @@ export async function runWatchers(
             // heard the word "spine". The purpose clause ("so the job's
             // record stays complete") is what makes this read as bookkeeping
             // help rather than an audit.
-            suggestion: stage0Suggestion(title, customer, g.ends_at),
+            // The detector's own filter at :452 IS !hasActivitySince.
+            suggestion: stage0Suggestion(title, customer, g.ends_at, true),
           });
           if (item) {
             opened += 1; // null = flagged concurrently — not new
@@ -893,10 +941,14 @@ export async function runWatchers(
                 subjectRef: c.jobId,
                 jobId: c.jobId,
                 technicianRef: tech?.ref ?? null,
+                // The claim is backed by this detector's own filter: freshCost
+                // excludes every job already in withCost (the ledger read). The
+                // CONCLUSION "so the job's costs are incomplete" is deleted — a
+                // job with no parts has complete costs.
                 suggestion:
                   `Nothing is recorded about what the '${title}' job (${customer}) cost in ` +
-                  `parts or materials, so the job's costs are incomplete. Worth checking what ` +
-                  `was picked up for it. If there were no parts, just dismiss this.`,
+                  `parts or materials. Worth checking what was picked up for it. If there were ` +
+                  `no parts, just dismiss this.`,
               });
               if (item) {
                 opened += 1;

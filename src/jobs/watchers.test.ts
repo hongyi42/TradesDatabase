@@ -12,7 +12,12 @@ import {
   runWatchers,
   type WatcherDeps,
 } from './watchers.js';
-import { JOB_COST_GAP_SPEC, OVERDUE_VISIT_GAP_SPEC, type NudgeKindSpec } from './nudgeKinds.js';
+import {
+  JOB_COST_GAP_SPEC,
+  OVERDUE_VISIT_GAP_SPEC,
+  stage0Suggestion,
+  type NudgeKindSpec,
+} from './nudgeKinds.js';
 
 // Pure unit tests — every collaborator injected (lifecycle.test.ts pattern).
 // hasPushToken is always injected too, so nothing here reads process.env.
@@ -98,6 +103,7 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     listNudged: async () => [],
     listNudges: async () => [],
     resolveNudge: async () => null,
+    listDecisions: async () => new Map(),
     ...over,
   };
 }
@@ -1231,8 +1237,12 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
     expect(summary.itemsOpened).toBe(MAX_NEW_ITEMS_PER_TENANT_TICK);
   });
 
-  test('escalation copy is byte-identical to the pre-registry wording', async () => {
-    // The registry moved this copy; a human reads it, so lock the exact text.
+  test('escalation copy is byte-identical to the wording we chose', async () => {
+    // A human reads this; lock the exact text. Re-pinned by plan ②
+    // (2026-08-21): "hasn't heard back" is gone for good (no reply-side datum
+    // exists anywhere to back it) and the record claim now states exactly the
+    // predicate the sweep ran. Update this string deliberately, never loosen
+    // the assertion.
     let suggestion = '';
     await runWatchers(NOW, 'live', baseDeps({
       listNudges: async () => [
@@ -1246,9 +1256,9 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
     }), 'live');
     expect(suggestion).toBe(
       "Ben Shelton's assistant asked about the 'Furnace tune-up' visit (Henderson) on " +
-        "Thursday, Aug 13 at 12:00 AM and hasn't heard back — nothing is on the job's " +
-        'record yet. Worth a direct word so it gets closed out. If it\'s already handled, ' +
-        'just dismiss this.',
+        'Thursday, Aug 13 at 12:00 AM. No field note and no status change has been ' +
+        "recorded since. Worth a direct word so it gets closed out. If it's already " +
+        'handled, just dismiss this.',
     );
   });
 });
@@ -1494,5 +1504,270 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
   test('the cost spec is registered in production, not just in tests', async () => {
     expect(JOB_COST_GAP_SPEC.kind).toBe('job_cost_gap');
     expect(JOB_COST_GAP_SPEC.maxNewPerTenantTick).toBe(3);
+  });
+});
+
+// ── plan ② (2026-08-21): the manager copy asserts nothing it wasn't given ────
+//
+// The rule under test: a template may render data it was given and may carry
+// instructions, but must NEVER assert a fact it did not receive as an argument.
+// These are the locks. Every deletion below has a live specimen behind it —
+// 2026-08-20 told a manager a technician "hasn't heard back" and that "nothing
+// is on the job's record" on a job the customer had already paid for, and both
+// halves were false.
+describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21)', () => {
+  const NAIVE = (iso: string) => iso;
+  const askedVisit = nudgeRow({ status: 'asked', asked_at: '2026-08-13T00:00:00.000Z' });
+  const costRow = (over: Partial<Nudge> = {}): Nudge =>
+    nudgeRow({
+      id: 'n-cost',
+      kind: 'job_cost_gap',
+      subject_ref: 'j-cost',
+      context: {
+        customerName: 'Henderson',
+        jobTitle: 'Boiler swap',
+        technicianRef: 'ben-shelton',
+        technicianName: 'Ben Shelton',
+        jobId: 'j-cost',
+        endsAtLocal: '2026-08-15T11:00:00.000Z',
+      },
+      ...over,
+    });
+  // The shape listDecisionsForNudges returns; only the four fields the reader
+  // reads are meaningful.
+  const decision = (over: Record<string, unknown>) =>
+    ({
+      action: 'escalate',
+      outcome: 'applied',
+      reason: 'asked twice, no answer',
+      decided_at: '2026-08-16T09:00:00.000Z',
+      ...over,
+    }) as never;
+
+  test('the deleted claims are gone from BOTH escalated copies', () => {
+    const visit = OVERDUE_VISIT_GAP_SPEC.handoff(askedVisit, 'escalated', NAIVE, {
+      noNoteOrStatusChange: true,
+      noCostOnLedger: true,
+    })!;
+    expect(visit.suggestion).not.toContain("hasn't heard back");
+    expect(visit.suggestion).not.toContain("on the job's record");
+
+    const cost = JOB_COST_GAP_SPEC.handoff(costRow({ status: 'asked' }), 'escalated', NAIVE, {
+      noCostOnLedger: true,
+    })!;
+    expect(cost.suggestion).not.toContain("hasn't heard back");
+    expect(cost.suggestion).not.toContain('incomplete');
+    // The backed replacement IS there.
+    expect(cost.suggestion).toContain('Nothing is recorded for it yet.');
+  });
+
+  test('without a ctx every factual clause is omitted, and the plan is still valid', () => {
+    // The compose.ts:98 / handToManager shape: two arguments, nothing checked.
+    const expired = JOB_COST_GAP_SPEC.handoff(costRow({}), 'expired')!;
+    expect(expired).not.toBeNull();
+    expect(expired.jobId).toBe('j-cost');
+    expect(expired.suggestion).not.toContain('Nothing is recorded');
+    expect(expired.suggestion).not.toContain('incomplete');
+    // …but the SUBJECT survives: gating the whole lead-in shipped a manager
+    // item that named neither the job nor the topic.
+    expect(expired.suggestion).toContain('cost in parts or materials');
+    expect(expired.suggestion).toContain('Boiler swap');
+    expect(expired.suggestion).toContain('Henderson');
+
+    const visit = OVERDUE_VISIT_GAP_SPEC.handoff(askedVisit, 'escalated', NAIVE)!;
+    expect(visit).not.toBeNull();
+    expect(visit.suggestion).not.toContain('No field note');
+    expect(visit.suggestion).not.toContain("The assistant's note");
+  });
+
+  test('stage0Suggestion states the predicate it was given, and nothing wider', () => {
+    const without = stage0Suggestion('Furnace tune-up', 'Henderson', '2026-08-14T08:00:00.000Z');
+    expect(without).not.toContain('No field note');
+    expect(without).not.toContain('nothing has been recorded');
+    expect(without).toContain('Furnace tune-up');
+
+    const withFlag = stage0Suggestion(
+      'Furnace tune-up',
+      'Henderson',
+      '2026-08-14T08:00:00.000Z',
+      true,
+    );
+    expect(withFlag).toContain('No field note and no status change has been recorded for it.');
+    // The general claim is DELETED, not merely reworded: it is a statement about
+    // the whole record made from a predicate that reads two tables.
+    expect(withFlag).not.toContain('nothing has been recorded');
+  });
+
+  test("an APPLIED escalate reason reaches the manager, attributed and bounded", async () => {
+    let suggestion = '';
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [askedVisit],
+      listDecisions: async () =>
+        new Map([['n1', [decision({ reason: '  chased   twice,\n  still nothing  ' })]]]),
+      flagNudge: async (input) => {
+        suggestion = input.suggestion;
+        return openItem({});
+      },
+    }), 'live');
+    expect(suggestion).toContain('The assistant\'s note: "chased twice, still nothing"');
+  });
+
+  test('a long reason is truncated at 200 characters', async () => {
+    let suggestion = '';
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [askedVisit],
+      listDecisions: async () => new Map([['n1', [decision({ reason: 'x'.repeat(500) })]]]),
+      flagNudge: async (input) => {
+        suggestion = input.suggestion;
+        return openItem({});
+      },
+    }), 'live');
+    expect(suggestion).toContain('x'.repeat(199) + '…');
+    expect(suggestion).not.toContain('x'.repeat(201));
+  });
+
+  test('only an APPLIED escalate is quoted — never a refusal, a shadow, or an extend', async () => {
+    const cases: Array<Record<string, unknown>> = [
+      { outcome: 'refused', reason: 'REFUSED-REASON' },
+      { outcome: 'shadow', reason: 'SHADOW-REASON' },
+      { action: 'extend', outcome: 'applied', reason: 'EXTEND-REASON' },
+    ];
+    for (const over of cases) {
+      let suggestion = '';
+      await runWatchers(NOW, 'live', baseDeps({
+        listNudges: async () => [askedVisit],
+        listDecisions: async () => new Map([['n1', [decision(over)]]]),
+        flagNudge: async (input) => {
+          suggestion = input.suggestion;
+          return openItem({});
+        },
+      }), 'live');
+      expect(suggestion).not.toContain("The assistant's note");
+      expect(suggestion).not.toContain(String(over.reason));
+    }
+  });
+
+  test('the NEWEST applied escalate wins, read in ONE batched call for N gaps', async () => {
+    const calls: string[][] = [];
+    let suggestion = '';
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        askedVisit,
+        nudgeRow({ id: 'n2', subject_ref: 'a2', status: 'asked', asked_at: '2026-08-13T00:00:00.000Z' }),
+      ],
+      listDecisions: async (_t, ids) => {
+        calls.push(ids);
+        return new Map([
+          [
+            'n1',
+            [
+              decision({ reason: 'OLD', decided_at: '2026-08-16T08:00:00.000Z' }),
+              decision({ reason: 'NEWEST', decided_at: '2026-08-16T10:00:00.000Z' }),
+            ],
+          ],
+        ]);
+      },
+      flagNudge: async (input) => {
+        if (input.escalatedFromNudge === 'n1') suggestion = input.suggestion;
+        return openItem({ subject_ref: input.subjectRef });
+      },
+      resolveNudge: async () => askedVisit,
+    }), 'live');
+    expect(summary.nudgesEscalated).toBe(2);
+    expect(calls).toEqual([['n1', 'n2']]); // ONE call, both ids
+    expect(suggestion).toContain('NEWEST');
+    expect(suggestion).not.toContain('OLD');
+  });
+
+  test('a throwing decision read still escalates — the handoff outranks the note', async () => {
+    let suggestion = '';
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const summary = await runWatchers(NOW, 'live', baseDeps({
+        listNudges: async () => [askedVisit],
+        listDecisions: async () => {
+          throw new Error('nudge_decisions is down');
+        },
+        flagNudge: async (input) => {
+          suggestion = input.suggestion;
+          return openItem({});
+        },
+        resolveNudge: async () => askedVisit,
+      }), 'live');
+      expect(summary.nudgesEscalated).toBe(1);
+      expect(suggestion).toContain('Worth a direct word');
+      expect(suggestion).not.toContain("The assistant's note");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('the EXPIRED path carries the ledger fact but never the note/status flag', async () => {
+    // A pending row past the delivery deadline was NEVER asked, so the cost
+    // spec's filled short-circuits before hasActivitySince ever runs. Passing
+    // noNoteOrStatusChange there would be honest for one kind and vacuous for
+    // the other.
+    let suggestion = '';
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        costRow({
+          status: 'pending',
+          created_at: new Date(Date.parse(NOW) - (NUDGE_DELIVERY_DEADLINE_HOURS + 1) * 3_600_000).toISOString(),
+        }),
+      ],
+      listJobs: async () => [{ id: 'j-cost', tenant_id: 't1', status: 'completed' } as never],
+      listCostEvents: async () => [],
+      flagNudge: async (input) => {
+        suggestion = input.suggestion;
+        return openItem({ subject_ref: input.subjectRef });
+      },
+      resolveNudge: async () => costRow({ status: 'failed' }),
+    }), 'live');
+    expect(suggestion).toContain('Nothing is recorded for it yet.');
+    expect(suggestion).not.toContain('No field note');
+    expect(suggestion).not.toContain("The assistant's note");
+  });
+
+  test('an EXPIRED VISIT nudge omits the note/status clause entirely', async () => {
+    // The counterpart lock for the expired path: the cost copy never renders
+    // that clause, so only a VISIT row can prove the flag is not being passed.
+    // It must stay absent — an expired row was never asked, and the detector
+    // fallback at :812 (which DID run !hasActivitySince) is the only place the
+    // clause is earned.
+    let suggestion = '';
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({
+          status: 'pending',
+          created_at: new Date(
+            Date.parse(NOW) - (NUDGE_DELIVERY_DEADLINE_HOURS + 1) * 3_600_000,
+          ).toISOString(),
+        }),
+      ],
+      flagNudge: async (input) => {
+        suggestion = input.suggestion;
+        return openItem({});
+      },
+      resolveNudge: async () => askedVisit,
+    }), 'live');
+    expect(suggestion).toContain('Furnace tune-up'); // it IS the stage-0 copy
+    expect(suggestion).not.toContain('No field note');
+    expect(suggestion).not.toContain('nothing has been recorded');
+  });
+
+  test('a job that DOES have a live cost gets no cost claim at all', async () => {
+    let suggestion = '';
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [costRow({ status: 'asked', asked_at: '2026-08-13T00:00:00.000Z' })],
+      listJobs: async () => [{ id: 'j-cost', tenant_id: 't1', status: 'completed' } as never],
+      listCostEvents: async () => ['j-cost'], // the ledger says a cost IS recorded
+      flagNudge: async (input) => {
+        suggestion = input.suggestion;
+        return openItem({ subject_ref: input.subjectRef });
+      },
+      resolveNudge: async () => costRow({ status: 'escalated' }),
+    }), 'live');
+    expect(suggestion).toContain('cost in parts and materials');
+    expect(suggestion).not.toContain('Nothing is recorded');
   });
 });

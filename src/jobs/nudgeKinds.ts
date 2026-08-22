@@ -100,6 +100,45 @@ export interface ComposeBlock {
   ): { user: string; assemble: (question: string) => string } | null;
 }
 
+// What the CALLER has already checked, handed to a template so its copy can say
+// it. The rule every manager-facing string here obeys (user, 2026-08-21): a
+// template may render data it was given and may carry instructions, but must
+// NEVER assert a fact it did not receive as an argument. Each field below is
+// therefore named after the PREDICATE that produces it, never after the
+// conclusion a reader might draw — a later caller must not be able to reach for
+// one of these to justify a wider claim than the predicate supports.
+export interface HandoffContext {
+  // The newest APPLIED escalate reason for this gap, or null. Model-authored
+  // text on a surface where every other word is code-owned, so it is quoted and
+  // attributed rather than blended in.
+  plannerReason?: string | null;
+  // TRUE only when the caller has just evaluated hasActivitySince and it was
+  // false. Backs ONE clause with ONE wording: "no field note and no status
+  // change". It does NOT back "nothing is on the record" — that predicate reads
+  // two tables and is blind to money_events, which is exactly how the
+  // 2026-08-20 specimen told a manager nothing had happened on a job the
+  // customer had already paid for.
+  // NOT passed on the EXPIRED path: JOB_COST_GAP_SPEC.filled short-circuits on
+  // `!n.asked_at` (:298) and an expired row was never asked, so the predicate is
+  // never evaluated there for that kind.
+  noNoteOrStatusChange?: boolean;
+  // TRUE only when the caller has checked the money ledger for this job and
+  // found no live material_cost. Backs "nothing is recorded for it yet". It does
+  // NOT back "the job's costs are incomplete" — a job with no parts has complete
+  // costs, and that conclusion is nobody's to draw from this predicate.
+  noCostOnLedger?: boolean;
+}
+
+// The planner's own words, appended to a handoff. Kept local: `flat` is private
+// to planner.ts and `flatten` is unexported in composeCopy.ts, and widening
+// either one to reach here would export a helper purely for a caller that wants
+// a different shape anyway.
+const plannerNote = (ctx?: HandoffContext): string => {
+  const r = ctx?.plannerReason?.replace(/\s+/g, ' ').trim();
+  if (!r) return '';
+  return `\n\nThe assistant's note: "${r.length > 200 ? r.slice(0, 199) + '…' : r}"`;
+};
+
 export interface NudgeKindSpec {
   kind: ReviewKind;
   // Does subject_ref name a VISIT (an assignment id), or something else? The
@@ -135,10 +174,15 @@ export interface NudgeKindSpec {
   // the manager too and have no timezone to build one from — they only ever use
   // 'expired', which prints no timestamp. A spec whose 'escalated' copy needs
   // one must return null when it is absent (fail-closed, never a wrong time).
+  // `ctx` is OPTIONAL for the same reason `naiveLocal` is: compose.ts and the
+  // delivery queue hand rows to the manager too, and they have checked nothing.
+  // A spec must therefore omit every factual clause when it is absent — that
+  // path asserts nothing because it knows nothing.
   handoff(
     n: Nudge,
     mode: 'escalated' | 'expired',
     naiveLocal?: (utcIso: string) => string,
+    ctx?: HandoffContext,
   ): HandoffPlan | null;
   compose: ComposeBlock;
 }
@@ -152,11 +196,15 @@ export const stage0Suggestion = (
   title: string,
   customer: string,
   endsAtLocal: string,
+  // See HandoffContext.noNoteOrStatusChange. Absent = the caller checked
+  // nothing, so the clause is omitted rather than softened.
+  noNoteOrStatusChange?: boolean,
 ): string =>
   `The visit for '${title}' (${customer}) was scheduled to wrap up by ` +
-  `${wallClockLabel(endsAtLocal)}, but nothing has been recorded about it yet — no ` +
-  `field note and no status change. Worth checking how it went so the job's record ` +
-  `stays complete. If nothing needed recording, just dismiss this.`;
+  `${wallClockLabel(endsAtLocal)}.` +
+  (noNoteOrStatusChange ? ` No field note and no status change has been recorded for it.` : '') +
+  ` Worth checking how it went so the job's record stays complete. If nothing needed ` +
+  `recording, just dismiss this.`;
 
 // Nudge context is watcher-written JSON, read fail-closed at every boundary.
 const str = (c: Record<string, unknown>, k: string): string | null =>
@@ -227,7 +275,7 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
     },
   },
 
-  handoff(n, mode, naiveLocal) {
+  handoff(n, mode, naiveLocal, ctx) {
     const c = ctxOf(n);
     const jobId = str(c, 'jobId');
     const startsAtLocal = str(c, 'startsAtLocal');
@@ -244,7 +292,10 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
     };
     if (mode === 'expired') {
       // The ask never landed → the Stage-0 copy, never the escalation copy.
-      return { ...base, suggestion: stage0Suggestion(title, customer, endsAtLocal) };
+      return {
+        ...base,
+        suggestion: stage0Suggestion(title, customer, endsAtLocal, ctx?.noNoteOrStatusChange),
+      };
     }
     // Escalation copy quotes the ask time, so it needs both a real asked_at
     // and a way to render it in the firm's clock.
@@ -255,11 +306,17 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
       // Same copy doctrine as the fallback suggestion — and about the JOB, even
       // here: the ask is "close the record out", never "your technician is
       // unresponsive".
+      // "hasn't heard back" is DELETED, not gated: no reply-side datum exists
+      // anywhere in the system, so nothing could ever back it. The record claim
+      // is gated on the predicate that was actually run.
       suggestion:
         `${techName}'s assistant asked about the '${title}' visit (${customer}) on ` +
-        `${wallClockLabel(naiveLocal(n.asked_at))} and hasn't heard back — ` +
-        `nothing is on the job's record yet. Worth a direct word so it gets closed out. ` +
-        `If it's already handled, just dismiss this.`,
+        `${wallClockLabel(naiveLocal(n.asked_at))}.` +
+        (ctx?.noNoteOrStatusChange
+          ? ` No field note and no status change has been recorded since.`
+          : '') +
+        ` Worth a direct word so it gets closed out. If it's already handled, just dismiss this.` +
+        plannerNote(ctx),
     };
   },
 };
@@ -322,7 +379,7 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
     return null;
   },
 
-  handoff(n, mode) {
+  handoff(n, mode, _naiveLocal, ctx) {
     const c = ctxOf(n);
     const jobId = str(c, 'jobId');
     if (!jobId) return null;
@@ -338,14 +395,24 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
       startsAtLocal: null,
       endsAtLocal: null,
       // Neither copy prints a timestamp, so this kind never needs naiveLocal.
+      // The expired lead-in is the ONLY place this copy names the job, the
+      // customer and the topic, and handToManager reaches it with NO ctx — so
+      // the subject is rendered data and stays unconditional, and only the
+      // ledger CLAIM is gated. Gating the whole sentence shipped a manager item
+      // that said merely "Worth asking Ben what they picked up for it."
       suggestion:
         mode === 'expired'
-          ? `Nothing is recorded about what the '${title}' job (${customer}) cost in parts or ` +
-            `materials, so the job's costs are incomplete. Worth asking ${techName} what they ` +
-            `picked up for it. If there were no parts, just dismiss this.`
+          ? `The '${title}' job (${customer}) has an open question about what it cost in parts ` +
+            `or materials.` +
+            (ctx?.noCostOnLedger ? ` Nothing is recorded for it yet.` : '') +
+            ` Worth asking ${techName} what they picked up for it. If there were no parts, just ` +
+            `dismiss this.`
           : `${techName}'s assistant asked what the '${title}' job (${customer}) cost in parts ` +
-            `and materials and hasn't heard back — the job's costs are still incomplete. Worth ` +
-            `a direct word so it can be recorded. If it's already handled, just dismiss this.`,
+            `and materials.` +
+            (ctx?.noCostOnLedger ? ` Nothing is recorded for it yet.` : '') +
+            ` Worth a direct word so it can be recorded. If it's already handled, just dismiss ` +
+            `this.` +
+            plannerNote(ctx),
     };
   },
 

@@ -208,11 +208,16 @@ export interface NudgeKindSpec {
 // backwards. The job was almost certainly handled in the real world — the whole
 // reason this item exists is that the RECORD does not know it. The handled case
 // is the case where the information EXISTS and we most want it, so "dismiss" is
-// the one thing the copy must not invite. For a cost, "there were no parts" is
-// itself the answer: money_events.amount_cents allows 0, and a zero
-// material_cost closes the gap exactly like any other figure, because both the
-// detector filter and itemResolved key on the KIND, never the amount. The
-// manager can still dismiss from the queue — it just stops being the offer.
+// the one thing the copy must not invite. The manager can still dismiss from
+// the queue; it just stops being the offer.
+//
+// Kept SHORT and unqualified (user, 2026-08-21: "these are easy questions with
+// easy answers"). In particular the cost ask does not spell out that zero is
+// acceptable — it is, and verifiably so (money_events.amount_cents is
+// `check (… >= 0)`, and both the detector filter and itemResolved key on
+// kind='material_cost' with no amount predicate, so a zero closes the gap like
+// any other figure) — but saying it out loud is clutter on a question the
+// manager already knows how to answer.
 export const stage0Suggestion = (
   title: string,
   customer: string,
@@ -223,7 +228,7 @@ export const stage0Suggestion = (
 ): string =>
   `'${title}' (${customer}) was due to wrap up ${wallClockLabel(endsAtLocal)}` +
   (noNoteOrStatusChange ? ` — no note or status update on it yet` : '') +
-  `. Tell me how it went and I'll put it on the record — even a line is enough.`;
+  `. Tell me how it went and I'll put it on the record.`;
 
 // Nudge context is watcher-written JSON, read fail-closed at every boundary.
 const str = (c: Record<string, unknown>, k: string): string | null =>
@@ -343,7 +348,7 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
         `'${title}' (${customer})` +
         (activityChecked ? ` — no note or status update since the visit` : '') +
         `. We asked ${techName} on ${wallClockLabel(naiveLocal(n.asked_at))}. Tell me how it ` +
-        `went, or what ${techName} told you, and I'll put it on the record.` +
+        `went and I'll put it on the record.` +
         plannerNote(ctx),
     };
   },
@@ -432,12 +437,10 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
         mode === 'expired'
           ? `'${title}' (${customer}) — open question about what it cost in parts or materials` +
             (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
-            `. ${techName} would know. Tell me the figure and I'll put it on the books — if ` +
-            `there were no parts, zero is worth recording too.`
+            `. ${techName} would know. Tell me the figure and I'll put it on the books.`
           : `'${title}' (${customer}) — we asked ${techName} what it cost in parts and materials` +
             (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
-            `. Tell me the figure and I'll put it on the books — if there were no parts, ` +
-            `zero is worth recording too.` +
+            `. Tell me the figure and I'll put it on the books.` +
             plannerNote(ctx),
     };
   },

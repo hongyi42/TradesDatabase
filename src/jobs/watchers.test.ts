@@ -1256,8 +1256,8 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
     }), 'live');
     expect(suggestion).toBe(
       "'Furnace tune-up' (Henderson) — no note or status update since the visit. We asked " +
-        "Ben Shelton on Thursday, Aug 13 at 12:00 AM. Tell me how it went, or what Ben " +
-        "Shelton told you, and I'll put it on the record.",
+        "Ben Shelton on Thursday, Aug 13 at 12:00 AM. Tell me how it went and I'll put it " +
+        'on the record.',
     );
   });
 });
@@ -1778,8 +1778,7 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
     // Backed by this detector's own ledger filter (freshCost excludes withCost).
     expect(suggestion).toBe(
       "'Boiler swap' (Henderson) — nothing recorded yet about what it cost in parts or " +
-        "materials. Tell me the figure and I'll put it on the books — if there were no " +
-        'parts, zero is worth recording too.',
+        "materials. Tell me the figure and I'll put it on the books.",
     );
     // The CONCLUSION is deleted: a job with no parts has complete costs.
     expect(suggestion).not.toContain('incomplete');
@@ -1889,17 +1888,23 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
     }
   });
 
-  test('the cost ask invites a ZERO, which the ledger accepts and the gap honours', () => {
-    // money_events.amount_cents allows 0 (migration check `>= 0`), and both the
-    // detector filter and itemResolved key on kind='material_cost', never on the
-    // amount — so "there were no parts" recorded as zero really does close this.
-    // If that ever stops being true, this copy becomes a false promise.
-    for (const mode of ['escalated', 'expired'] as const) {
-      const s = JOB_COST_GAP_SPEC.handoff(costRow({ status: 'asked' }), mode, NAIVE, {
-        noCostOnLedger: true,
-      })!.suggestion;
-      expect(s).toContain('zero is worth recording too');
-    }
+  test('a ZERO cost really does close the gap — the unstated half of the ask', () => {
+    // The copy asks for "the figure" without qualifying it, which is only fair
+    // because a zero is a real answer here: itemResolved keys on the KIND, with
+    // no amount predicate, so a $0 material_cost resolves the item exactly like
+    // any other figure. If that ever changes, the plain ask becomes a trap for
+    // the manager who answers "no parts".
+    const item = { subjectRef: 'j-cost', jobId: 'j-cost', startsAtLocal: null };
+    const facts = {
+      hasActivitySince: () => false,
+      visitStatusById: new Map<string, string>(),
+      jobStatusById: new Map<string, string>(),
+      naiveLocal: (i: string) => i,
+      jobsWithCostEvents: new Set(['j-cost']), // what a ZERO material_cost produces
+    };
+    expect(JOB_COST_GAP_SPEC.itemResolved(item, facts)).toBe(
+      'a cost was recorded for this job after it was flagged',
+    );
   });
 
   test('a job that DOES have a live cost gets no cost claim at all', async () => {

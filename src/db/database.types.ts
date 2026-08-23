@@ -126,6 +126,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "assignments_source_capture_id_fkey"
+            columns: ["source_capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "assignments_technician_id_fkey"
             columns: ["technician_id"]
             isOneToOne: false
@@ -211,6 +218,13 @@ export type Database = {
             columns: ["capture_id"]
             isOneToOne: false
             referencedRelation: "raw_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "call_ingest_capture_id_fkey"
+            columns: ["capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
             referencedColumns: ["id"]
           },
           {
@@ -445,6 +459,13 @@ export type Database = {
             columns: ["source_capture_id"]
             isOneToOne: false
             referencedRelation: "raw_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "customers_source_capture_fk"
+            columns: ["source_capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
             referencedColumns: ["id"]
           },
           {
@@ -692,6 +713,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "jobs_source_capture_fk"
+            columns: ["source_capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "jobs_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
@@ -803,6 +831,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "money_events_source_capture_id_fkey"
+            columns: ["source_capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "money_events_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
@@ -875,6 +910,13 @@ export type Database = {
             columns: ["nudge_id"]
             isOneToOne: false
             referencedRelation: "nudges"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "nudge_decisions_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: false
+            referencedRelation: "v_nudges"
             referencedColumns: ["id"]
           },
           {
@@ -1180,10 +1222,24 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "raw_captures_retracts_capture_id_fkey"
+            columns: ["retracts_capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "raw_captures_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
             referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raw_captures_visit_id_fkey"
+            columns: ["visit_id"]
+            isOneToOne: false
+            referencedRelation: "v_visits"
             referencedColumns: ["id"]
           },
           {
@@ -1814,6 +1870,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "visits_source_capture_fk"
+            columns: ["source_capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "visits_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
@@ -1883,6 +1946,108 @@ export type Database = {
           updated_at: string | null
         }
         Relationships: []
+      }
+      v_captures: {
+        Row: {
+          captured_at: string | null
+          channel: Database["public"]["Enums"]["capture_channel"] | null
+          customer_id: string | null
+          id: string | null
+          job_id: string | null
+          raw_text: string | null
+          retracted: boolean | null
+          retracted_at: string | null
+          retraction_reason: string | null
+          retracts_capture_id: string | null
+          sensitivity: string | null
+          technician_ref: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "raw_captures_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raw_captures_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "raw_captures_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raw_captures_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "raw_captures_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_money_events"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "raw_captures_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "raw_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raw_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "raw_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raw_captures_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "raw_captures_retracts_capture_id_fkey"
+            columns: ["retracts_capture_id"]
+            isOneToOne: false
+            referencedRelation: "raw_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raw_captures_retracts_capture_id_fkey"
+            columns: ["retracts_capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       v_customers: {
         Row: {
@@ -2042,6 +2207,71 @@ export type Database = {
           },
         ]
       }
+      v_nudges: {
+        Row: {
+          answered_by_capture_id: string | null
+          asked_at: string | null
+          attempts: number | null
+          created_at: string | null
+          escalate_after: string | null
+          id: string | null
+          job_id: string | null
+          kind: string | null
+          not_before: string | null
+          question: string | null
+          queued_at: string | null
+          resolution: string | null
+          resolved_at: string | null
+          serve_count: number | null
+          status: string | null
+          subject_ref: string | null
+          technician_name: string | null
+          technician_ref: string | null
+        }
+        Relationships: []
+      }
+      v_review_items: {
+        Row: {
+          created_at: string | null
+          escalated_from_nudge: string | null
+          id: string | null
+          job_id: string | null
+          kind: string | null
+          resolution: string | null
+          resolved_at: string | null
+          status: Database["public"]["Enums"]["review_status"] | null
+          subject_ref: string | null
+          suggestion: string | null
+          technician_ref: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          escalated_from_nudge?: never
+          id?: string | null
+          job_id?: never
+          kind?: string | null
+          resolution?: string | null
+          resolved_at?: string | null
+          status?: Database["public"]["Enums"]["review_status"] | null
+          subject_ref?: string | null
+          suggestion?: string | null
+          technician_ref?: never
+        }
+        Update: {
+          created_at?: string | null
+          escalated_from_nudge?: never
+          id?: string | null
+          job_id?: never
+          kind?: string | null
+          resolution?: string | null
+          resolved_at?: string | null
+          status?: Database["public"]["Enums"]["review_status"] | null
+          subject_ref?: string | null
+          suggestion?: string | null
+          technician_ref?: never
+        }
+        Relationships: []
+      }
       v_schedule: {
         Row: {
           assignment_id: string | null
@@ -2113,6 +2343,76 @@ export type Database = {
           technician_ref: string | null
         }
         Relationships: []
+      }
+      v_visits: {
+        Row: {
+          created_at: string | null
+          id: string | null
+          job_id: string | null
+          labor_hours: number | null
+          source_capture_id: string | null
+          technician_name: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string | null
+          job_id?: string | null
+          labor_hours?: number | null
+          source_capture_id?: string | null
+          technician_name?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          id?: string | null
+          job_id?: string | null
+          labor_hours?: number | null
+          source_capture_id?: string | null
+          technician_name?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "visits_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visits_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "visits_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visits_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "visits_source_capture_fk"
+            columns: ["source_capture_id"]
+            isOneToOne: false
+            referencedRelation: "raw_captures"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "visits_source_capture_fk"
+            columns: ["source_capture_id"]
+            isOneToOne: false
+            referencedRelation: "v_captures"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Functions: {

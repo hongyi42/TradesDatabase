@@ -2,7 +2,7 @@
 date: 2026-08-23
 task: ④ The brain can look — v_captures, v_visits, v_nudges, v_review_items join the planner's read surface
 research: thoughts/shared/research/2026-08-23-the-brain-can-look.md
-status: draft
+status: complete
 supersedes: thoughts/shared/plans/2026-08-04-query-spine-design.md (decision B only; supersession first recorded by the research doc)
 ---
 
@@ -175,21 +175,20 @@ TRUNCATE, relying on `fileParallelism: false`.)
   names** — goes red the moment the migration lands. Update the pinned list to the twelve.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass (show output)
-- [ ] `npm run gen:types:local` — diff shows exactly the four views
-- [ ] new spineViews tests: isolation, labels, the note→job bridge, NULL-trap documentation,
-      safe cast, ACL
-- [ ] querySpine.test.ts: base-table refusals retitled AND the exact-grant-list test updated
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass (2147 passed | 8 skipped)
+- [x] `npm run gen:types:local` — diff shows exactly the four views (+300 lines)
+- [x] new spineViews tests: isolation, labels, the note→job bridge, NULL-trap documentation,
+      safe cast, ACL (14 tests)
+- [x] querySpine.test.ts: base-table refusals retitled AND the exact-grant-list test updated (twelve)
 
 ### Live verification (agent-executable)
 - Prerequisites: `mcp__supabase-test` (the pilot).
-- [ ] **First, prerequisite columns** — the view SQL selects `answered_by_capture_id` (2026-08-22)
-      and `not_before`/`escalate_after` (2026-08-19). Verify via `information_schema.columns`
-      (never `list_migrations` — the ledger lies) and apply anything missing IN ORDER before this
-      migration, or `create view v_nudges` fails mid-apply.
-- [ ] **Before the code deploy**: apply the migration, verify via `information_schema.views` that
-      all four exist, and run one pilot query over `v_captures` (labeled shape) and one over the
-      capture⋈visit bridge. Evidence: the rows.
+- [x] **First, prerequisite columns** — verified via `information_schema.columns` 2026-08-23:
+      nudges 3/3, visits 3/3, raw_captures 4/4. Nothing missing.
+- [x] **Before the code deploy**: applied 2026-08-23; `information_schema.views` lists all four.
+      Evidence through the real `query_spine` function: labeled trail — "Maria has a dog on the
+      property" → retracted:true, reason "Recorded in error — there is no dog on M…"; bridge — 8
+      unstamped captures reachable only via their visit; ruling — 20 manager_only rows visible.
 
 ### Manual verification
 - None.
@@ -243,9 +242,15 @@ lock pattern already used for other clauses).
 names all three views and the `is distinct from` warning.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` / `npm run build` pass (show output)
-- [ ] catalog + prompt pins pass, including the updated `twelve views` count pin; planner-copy
-      eval still renders the real prompt (buildPlannerUserMessage untouched)
+- [x] `npm run typecheck` / `npm run lint` / `npm test` / `npm run build` pass (2149 | 8 skipped; all exit 0)
+- [x] catalog + prompt pins pass, including the updated `twelve views` count pin; planner-copy
+      eval still renders the real prompt (buildPlannerUserMessage untouched — verified by the
+      reviewer: PLANNER_SYSTEM's only non-test consumer is planner.ts:1301)
+- [x] **added at review: READ ≠ CITE is voiced on both surfaces.** ④ lets the planner read full,
+      pre-ask and retracted text while the citation rail matches only the gap's own truncated
+      evidence lines — without one sentence saying so, a planner quoting what it READ gets refused
+      every tick until the fail-safe escalates a genuinely answered gap. Prompt sentence
+      (`READING IS NOT CITING`), catalog rule 5, and a pin on each.
 
 ### Live verification (agent-executable)
 - Prerequisites: `mcp__supabase-test`, `mcp__render` (deploy is manual; migration already applied

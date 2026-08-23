@@ -211,7 +211,12 @@ describe('query_spine — what it must refuse', () => {
     await expect(run(tenantA, 'select * from customers')).rejects.toThrow(/permission denied/i);
   });
 
-  test('cannot read L1 (raw_captures) — decision B', async () => {
+  test('cannot reach the raw_captures BASE table — v_captures is the sanctioned path', async () => {
+    // Decision B (query-spine design, 2026-08-04) excluded L1 outright; its
+    // revisit clause was exercised on 2026-08-23 (④ — the planner closes gaps
+    // on evidence and must be able to read it). What survives of decision B is
+    // the mechanism: the BASE table stays ungranted, and only the columns
+    // v_captures names — labeled trail included — are readable.
     await expect(run(tenantA, 'select * from raw_captures')).rejects.toThrow(/permission denied/i);
   });
 
@@ -309,25 +314,31 @@ describe('query_spine — bounds', () => {
 });
 
 describe('query_spine — the view surface is closed', () => {
-  test('spine_reader holds SELECT on exactly the eight views and nothing else', async () => {
+  test('spine_reader holds SELECT on exactly the twelve views and nothing else', async () => {
     // A new table must not become readable by default. This is the test that
     // fails when someone adds a grant without thinking.
     // v_money_events added 2026-08-15 (money-ledger plan, manager-only money
     // reads — query_spine is an admin tool, so the tier gate holds upstream).
     // v_firm_profile added 2026-08-15 (firm-profile plan, same tier logic).
+    // v_captures/v_visits/v_nudges/v_review_items added 2026-08-23 (④ — the
+    // planner's read surface; nudge_decisions is the deliberate exception).
     const { rows } = await pg.query(
       `select table_name from information_schema.table_privileges
         where grantee = 'spine_reader' order by table_name`,
     );
     expect(rows.map((r) => r.table_name)).toEqual([
       'v_cancelled_visits',
+      'v_captures',
       'v_customers',
       'v_firm_profile',
       'v_jobs',
       'v_money_events',
+      'v_nudges',
+      'v_review_items',
       'v_schedule',
       'v_team',
       'v_time_off',
+      'v_visits',
     ]);
   });
 

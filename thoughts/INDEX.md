@@ -42,7 +42,7 @@ Regenerate with `npm run decisions:index`. 156 documents · 153 live · 3 supers
 
 ## Live
 
-- `2026-08-23` `plan` [2026-08-23-the-brain-can-look](shared/plans/2026-08-23-the-brain-can-look.md) · _draft_ — ④ The brain can look — v_captures, v_visits, v_nudges, v_review_items join the planner's read surface
+- `2026-08-23` `plan` [2026-08-23-the-brain-can-look](shared/plans/2026-08-23-the-brain-can-look.md) — ④ The brain can look — v_captures, v_visits, v_nudges, v_review_items join the planner's read surface
 - `2026-08-23` `research` [2026-08-23-the-brain-can-look](shared/research/2026-08-23-the-brain-can-look.md) `landed` — ④ The planner's read surface — what spine_read exposes, what the planner cannot reach and what substitutes, t…
 - `2026-08-22` `plan` [2026-08-22-planner-copy-eval](shared/plans/2026-08-22-planner-copy-eval.md) · _draft_ — Measure what the planner WRITES — the manager-facing handoff note — on Opus 5, with explicit prompt caching a…
 - `2026-08-22` `plan` [2026-08-22-planner-writes-the-question](shared/plans/2026-08-22-planner-writes-the-question.md) · _draft_ — The planner writes the technician's question for gaps it decides to send; compose becomes the fallback

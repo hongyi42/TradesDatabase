@@ -2997,12 +2997,16 @@ and sitting exactly where a false escalation would land); it fires only when no 
 with `outcome:'applied'`, so a naive liveness test would be true for every gap on every tick and
 the fail-safe would silently never fire — count only real verbs.
 
-*Ruling 2 — the planner should read basically everything.* `spine_read` exposes 8 views
-(`v_customers`, `v_jobs`, `v_schedule`, `v_team`, `v_money_events`, `v_firm_profile`, `v_time_off`,
-`v_cancelled_visits`) and **none covers `raw_captures`, `nudges` or `review_items`** — the planner
-cannot read what anyone said. This is why the read surface moved IN FRONT of the memory work: the
-memory design is "push the keys, pull the content", and the pull half does not work if the content
-is unreachable.
+*Ruling 2 — the planner should read basically everything.* **RESOLVED 2026-08-23 (④, plan
+`thoughts/shared/plans/2026-08-23-the-brain-can-look.md`):** `v_captures` (labeled retraction
+trail, sensitivity unfiltered per the same-day ruling), `v_visits` (the note→job bridge — a note's
+own `job_id` is NULL by design, the durable link is the visit), `v_nudges` and `v_review_items`
+joined the surface: twelve views. `nudge_decisions` stays deliberately view-less (the catalog is
+shared with the manager's `query_spine`). Historical statement of the gap, kept for the reasoning:
+`spine_read` exposed 8 views and **none covered `raw_captures`, `nudges` or `review_items`** — the
+planner could not read what anyone said. This is why the read surface moved IN FRONT of the memory
+work: the memory design is "push the keys, pull the content", and the pull half does not work if
+the content is unreachable.
 
 ```
 ① eyes see the whole record   money trio                    MERGED #162

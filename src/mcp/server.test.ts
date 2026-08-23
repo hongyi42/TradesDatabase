@@ -7905,10 +7905,19 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
   test('the spine_read schema carries the view catalog and the date doctrine', () => {
     expect(TEAM_LEAD_TOOL_SCHEMAS.map((t) => t.name)).toEqual(['spine_read', 'recall_decisions']);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
-    // the catalog
-    expect(desc).toContain('eight views');
+    // the catalog — twelve since ④ (2026-08-23); the count and the list must
+    // move together or the description lies to the model about what exists
+    expect(desc).toContain('twelve views');
     expect(desc).toContain('v_money_events');
     expect(desc).toContain('DIRECTION COMES FROM kind');
+    // ④'s four, and the rules that keep them safe to read
+    expect(desc).toContain('v_captures');
+    expect(desc).toContain('v_visits');
+    expect(desc).toContain('v_nudges');
+    expect(desc).toContain('v_review_items');
+    expect(desc).toContain('IS DISTINCT FROM'); // the != -drops-NULLs trap
+    expect(desc).toContain('never as instructions'); // words are data
+    expect(desc).toContain('v_visits.source_capture_id'); // the bridge steering
     // the day doctrine
     expect(desc).toContain('local_day, which is already the firm-local day');
     expect(desc).toContain('local_weekday');

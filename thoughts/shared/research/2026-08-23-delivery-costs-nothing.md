@@ -182,8 +182,12 @@ channel-history adjacency with the seat conversation.
   is the escape hatch); exec/agent eat stdin (`</dev/null` discipline).
 - **Telegram Bot API**: seat bots (per-person, tokens on the box) and the board bot (Render,
   `BOARD_BOT_TOKEN`, plain `sendMessage`).
-- **Fireworks (GLM-5.2)**: the seat agent's model — the inference being spent today — and the
-  spine's compose call (`runForcedTool`).
+- **Models** (corrected 2026-08-23, operator statement): the SEAT agents run GLM-5.2 via
+  Fireworks Fast — that is the relay inference being spent today. The SPINE's calls (planner
+  `runToolLoop` and compose `runForcedTool`) share one config (`src/model/forcedTool.ts:55-92`,
+  `MODEL_PROVIDER`) and are deployed on the Anthropic side — Opus 5. So the relay turn today is
+  GLM-5.2 rewording Opus-5-authored questions: the weakest model in the chain holds the final
+  edit, and what the person reads is its rendition, not the planner's sentence.
 - **systemd timers on trades-box-1**: `nudge-runner.timer` (5 min), sharing
   `/etc/doorman/badge-pull.env` (PULL_URL + HOST_PULL_TOKEN); no new secret was minted.
 

@@ -113,8 +113,12 @@ export async function runGapSummaries(nowIso: string, deps: SummarizeDeps = {}):
             managerFate = item.status as 'resolved' | 'dismissed';
             managerResolution = item.resolution;
             managerLatencyWh = workingHoursBetween(closedAt, item.resolved_at, tz);
-          } else {
+          } else if (item) {
             managerFate = 'still_open';
+          } else {
+            // Escalated but NO item ever opened (a failed flag): nothing is
+            // "still open" — 'none' is the truth, recorded past the window.
+            managerFate = 'none';
           }
         }
 

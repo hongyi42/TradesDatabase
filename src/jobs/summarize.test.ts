@@ -159,6 +159,20 @@ describe('runGapSummaries', () => {
     expect(rows[0].escalated).toBe(true);
   });
 
+  test('escalated with NO item ever opened: past the window the fate is none', async () => {
+    const closedAt = new Date(Date.parse(NOW) - (HOLDBACK_DAYS + 1) * 24 * 3_600_000).toISOString();
+    const nudgeId = await insertClosedNudge({
+      subjectRef: `sum-noitem-${RUN}`,
+      status: 'escalated',
+      askedAt: closedAt,
+      resolvedAt: closedAt,
+    });
+    await runGapSummaries(NOW);
+    const rows = await summaryFor(nudgeId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].manager_fate).toBe('none'); // a failed flag left nothing open
+  });
+
   test('the holdback times out: still-open past the window writes still_open', async () => {
     const closedAt = new Date(Date.parse(NOW) - (HOLDBACK_DAYS + 1) * 24 * 3_600_000).toISOString();
     const nudgeId = await insertClosedNudge({

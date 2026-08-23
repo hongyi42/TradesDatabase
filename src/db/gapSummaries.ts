@@ -24,30 +24,28 @@ export async function insertGapSummary(input: GapSummaryInsert): Promise<boolean
   return (data ?? []).length > 0;
 }
 
-// Closed nudges with no summary row yet. PostgREST cannot anti-join, so this
-// is two reads: a page of closed rows, then the already-summarized ids among
-// them, filtered out in code. Oldest first so a backlog drains in order.
+// Closed nudges with no summary row yet — a SERVER-SIDE anti-join via a left
+// embed filtered to null, so the page always contains only unsummarized rows.
+// (The naive shape — page closed rows, filter summarized ones out in code —
+// STALLS: once the oldest page is fully summarized it returns [] forever
+// while newer closed rows wait behind it.) Oldest first so a backlog drains
+// in order; held-back escalations re-enter every tick until written.
 export async function listUnsummarizedClosedNudges(limit = 200): Promise<Nudge[]> {
   const { data, error } = await getClient()
     .from('nudges')
-    .select()
+    .select('*, gap_summaries!left(nudge_id)')
     .in('status', [...CLOSED_NUDGE_STATUSES])
+    .is('gap_summaries', null)
     .order('resolved_at', { ascending: true, nullsFirst: false })
     .limit(limit);
   if (error) {
     throw new Error(`listUnsummarizedClosedNudges failed: ${error.message}`, { cause: error });
   }
-  const rows = (data ?? []) as Nudge[];
-  if (rows.length === 0) return [];
-  const { data: done, error: doneErr } = await getClient()
-    .from('gap_summaries')
-    .select('nudge_id')
-    .in('nudge_id', rows.map((r) => r.id));
-  if (doneErr) {
-    throw new Error(`listUnsummarizedClosedNudges failed: ${doneErr.message}`, { cause: doneErr });
-  }
-  const summarized = new Set((done ?? []).map((r) => r.nudge_id));
-  return rows.filter((r) => !summarized.has(r.id));
+  return ((data ?? []) as (Nudge & { gap_summaries: unknown })[]).map((r) => {
+    const { gap_summaries, ...row } = r;
+    void gap_summaries; // embed marker only — stripped from the returned row
+    return row as Nudge;
+  });
 }
 
 export async function listRecentSummaries(tenantId: string, limit = 40): Promise<GapSummary[]> {

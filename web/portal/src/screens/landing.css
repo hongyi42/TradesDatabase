@@ -222,10 +222,10 @@
 
 .ld-quote {
   font-family: var(--display);
-  font-weight: 600;
+  font-weight: 300;
   font-size: clamp(22px, 2.3vw, 30px);
   line-height: 1.2;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
   margin: 0 0 14px;
 }
 
@@ -273,6 +273,10 @@
   flex: 0 0 auto;
 }
 
+/* The ONE display-scale element deliberately left at weight 600 while every
+   other was unified to 300 (DESIGN.md §3, "do not bold display type"). A
+   wordmark is brand identity, not a display heading: thinned to 300 next to
+   the solid TD mark it reads as weak rather than quiet. Exception, not drift. */
 .ld-wordmark {
   font-family: var(--display);
   font-weight: 600;
@@ -602,9 +606,9 @@
 
 .ld-film-title {
   font-family: var(--display);
-  font-weight: 600;
+  font-weight: 300;
   font-size: clamp(19px, 2vw, 24px);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
   text-align: center;
 }
 
@@ -809,7 +813,7 @@
 }
 
 .ld-bubble-text {
-  font-size: 14.5px;
+  font-size: 14px;
   line-height: 1.5;
   margin: 0;
 }
@@ -905,14 +909,14 @@
 
 .ld-claim-title {
   font-family: var(--display);
-  font-weight: 600;
+  font-weight: 300;
   font-size: 21px;
   line-height: 1.15;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
 }
 
 .ld-claim-body {
-  font-size: 14.5px;
+  font-size: 14px;
   line-height: 1.5;
   color: var(--paper-ink-2);
   margin: 6px 0 0;
@@ -939,10 +943,10 @@
 
 .ld-step-title {
   font-family: var(--display);
-  font-weight: 600;
+  font-weight: 300;
   font-size: 23px;
   line-height: 1.15;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
 }
 
 .ld-step-note {

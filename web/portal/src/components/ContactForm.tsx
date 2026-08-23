@@ -29,9 +29,9 @@ export function ContactForm() {
           style={{
             margin: 0,
             fontFamily: 'var(--display)',
-            fontWeight: 700,
+            fontWeight: 300,
             fontSize: 23,
-            letterSpacing: '-0.02em',
+            letterSpacing: '-0.01em',
           }}
         >
           Got it — we&rsquo;ll come back to you today.

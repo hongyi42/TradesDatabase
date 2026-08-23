@@ -4,19 +4,28 @@ import { ContactForm } from '../components/ContactForm.js';
 import { PRICE_CENTS, CURRENCY } from '../data/model.js';
 import './landing.css';
 
-// Marketing landing — implements docs/design/handoff-landing-v2/ in full.
+// Marketing landing — implements root DESIGN.md (IBM Carbon, adapted).
 //
-// The organising idea is DARK SHELL, RECORDS ON PAPER. The page base is a cool
-// steel dark; the two bands that represent records — the product proof and the
-// pricing ledger — sit on warm paper. That alternation is the thing that stops
-// the page reading as another dark SaaS template, so it is load-bearing: do not
-// flatten it to one background.
+// THIS HEADER USED TO DESCRIBE A DARK SHELL WITH WARM-PAPER BANDS. That system
+// was retired on 2026-08-21 (e276d11) and docs/design/handoff-landing-v2/ is
+// marked HISTORICAL. Carbon is the system now: white canvas, charcoal type, one
+// blue accent, 0-4px corners, no shadows, display type at weight 300 — and the
+// authority is /DESIGN.md, not the old handoff.
 //
-// Every colour, size and string here comes from that handoff. Tokens are
-// declared on `.landing` in landing.css and shadow the app's same-named tokens
-// for this subtree only — see the comment at the top of that file.
+// The organising idea is ONE RECORD, SHOWN EARLY. The proof — a text arriving
+// and becoming a job sheet whose every field cites the message it came from —
+// runs directly under the hero as a grey record band. It is the one thing here
+// that could not sit on a competitor's page, and it leads for that reason. The
+// bands alternate --canvas and --surface-1 from there (DESIGN.md §4); that
+// alternation is load-bearing, so do not flatten it to one background.
 //
-// The signed-in app keeps its own slate shell and is untouched by this page.
+// Do not bold display type. Weight 300 is the Carbon signature and the page
+// previously ran two type systems at once because half the mid-size headings
+// were left at 600 — see DESIGN.md §3 and the 2026-08-22 critique (B1).
+//
+// Tokens are declared on `.landing` in landing.css and shadow the app's
+// same-named tokens for this subtree only — see the comment at the top of that
+// file. The signed-in app keeps its own system and is untouched by this page.
 
 // Both tiers are read off the app's own constants so the landing cannot drift
 // from what Billing charges. They are NEVER averaged into one per-seat figure:
@@ -181,40 +190,16 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
         </div>
       </section>
 
-      {/* ── Photo band ───────────────────────────────────────────────────── */}
-      <section className="ld-photoband">
-        <PhotoPlate brief="Electrician mid-job, phone in hand, open breaker panel behind" />
-        <div className="ld-photoband-plate">
-          <div className="ld-trades">
-            <span>Built for</span>
-            {TRADES.map((t) => (
-              <span key={t}>{t}</span>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ── 01 What we heard ─────────────────────────────────────────────── */}
-      <section className="ld-section ld-surface">
-        <div className="ld-wrap">
-          <h2 className="ld-h2" style={{ margin: '0 0 clamp(22px, 3vw, 36px)' }}>
-            The same four problems, every time
-          </h2>
-          <div className="ld-grid ld-quotes">
-            {QUOTES.map((q) => (
-              <div className="ld-quote-cell" key={q.who + q.quote}>
-                <p className="ld-quote">{q.quote}</p>
-                <p className="ld-attrib" style={{ margin: 0 }}>
-                  {q.who}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ── 02 One text in. One record out. (paper) ──────────────────────── */}
-      <section id="product" className="ld-section ld-paper">
+      {/* ── The proof, immediately after the hero ────────────────────────
+          Promoted from band four on 2026-08-22. This is the one thing on the
+          page that could not sit on a competitor's site — a text arriving and
+          becoming a record whose every field cites the message it came from —
+          and it was reading below three other bands. It also breaks the
+          eight-band cadence: a grey record band directly under the white hero
+          is a different shape from everything that follows, which is what stops
+          the page scanning as a stack of interchangeable slabs.
+          See docs/design/decisions/2026-08-22-landing-critique.md (B3, B4). */}
+      <section id="product" className="ld-section ld-surface">
         <div className="ld-wrap">
           <div className="ld-head" style={{ marginBottom: 'clamp(24px, 3vw, 40px)' }}>
             <h2 className="ld-h2">One text in. One record out.</h2>
@@ -228,7 +213,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                   TD
                 </span>
                 {/* Mono, because a bot handle is a machine-generated value. */}
-                <span style={{ fontFamily: 'var(--mono)', fontSize: 12.5, color: 'var(--paper-ink-2)' }}>
+                <span style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--paper-ink-2)' }}>
                   @brandtelectric_pete_bot
                 </span>
               </div>
@@ -263,7 +248,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                     flex: '0 0 auto',
                   }}
                 />
-                <span style={{ fontFamily: 'var(--mono)', fontSize: 12.5 }}>Inspection_1420Birch.pdf</span>
+                <span style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>Inspection_1420Birch.pdf</span>
               </div>
 
               <div className="ld-bubble-bot">
@@ -310,7 +295,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                 </div>
                 <div className="ld-row">
                   <span className="ld-row-label">Attached</span>
-                  <span style={{ fontFamily: 'var(--mono)', fontSize: 13 }}>Inspection_1420Birch.pdf</span>
+                  <span style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>Inspection_1420Birch.pdf</span>
                 </div>
                 {/* The evidence link back to L1 — the product's core claim.
                     Every structured field can show the message it came from.
@@ -319,7 +304,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                   <p
                     style={{
                       fontFamily: 'var(--mono)',
-                      fontSize: 12.5,
+                      fontSize: 12,
                       letterSpacing: '0.1em',
                       textTransform: 'uppercase',
                       color: 'var(--paper-ink-2)',
@@ -328,7 +313,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                   >
                     Source · Telegram 14:52
                   </p>
-                  <p style={{ fontSize: 13.5, lineHeight: 1.5, margin: 0 }}>
+                  <p style={{ fontSize: 14, lineHeight: 1.5, margin: 0 }}>
                     &ldquo;Done at 1420 Birch St&hellip;&rdquo;
                   </p>
                 </div>
@@ -349,6 +334,38 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
         </div>
       </section>
 
+      {/* ── Photo band ───────────────────────────────────────────────────── */}
+      <section className="ld-photoband">
+        <PhotoPlate brief="Electrician mid-job, phone in hand, open breaker panel behind" />
+        <div className="ld-photoband-plate">
+          <div className="ld-trades">
+            <span>Built for</span>
+            {TRADES.map((t) => (
+              <span key={t}>{t}</span>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── What we heard ───────────────────────────────────────────────── */}
+      <section className="ld-section ld-surface">
+        <div className="ld-wrap">
+          <h2 className="ld-h2" style={{ margin: '0 0 clamp(22px, 3vw, 36px)' }}>
+            The same four problems, every time
+          </h2>
+          <div className="ld-grid ld-quotes">
+            {QUOTES.map((q) => (
+              <div className="ld-quote-cell" key={q.who + q.quote}>
+                <p className="ld-quote">{q.quote}</p>
+                <p className="ld-attrib" style={{ margin: 0 }}>
+                  {q.who}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* ── Photo strip ──────────────────────────────────────────────────── */}
       <section className="ld-strip">
         {STRIP.map((brief) => (
@@ -356,7 +373,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
         ))}
       </section>
 
-      {/* ── 03 Adding someone takes one tap ──────────────────────────────── */}
+      {/* ── Adding someone takes one tap ─────────────────────────────────── */}
       <section className="ld-section ld-dark">
         <div className="ld-wrap">
           <div className="ld-head">
@@ -378,7 +395,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
         </div>
       </section>
 
-      {/* ── 04 Two kinds of seat (paper) ─────────────────────────────────── */}
+      {/* ── Two kinds of seat ────────────────────────────────────────────── */}
       <section id="pricing" className="ld-section ld-paper">
         <div className="ld-wrap">
           <div className="ld-head" style={{ marginBottom: 'clamp(24px, 3vw, 36px)' }}>
@@ -501,7 +518,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
               <div className="ld-total-row">
                 <span
                   className="ld-mark"
-                  style={{ color: 'var(--paper-ink-2)', letterSpacing: '0.1em', fontSize: 12.5 }}
+                  style={{ color: 'var(--paper-ink-2)', letterSpacing: '0.1em', fontSize: 12 }}
                 >
                   Per month
                 </span>
@@ -518,7 +535,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
         </div>
       </section>
 
-      {/* ── 05 Get in touch ──────────────────────────────────────────────── */}
+      {/* ── Get in touch ─────────────────────────────────────────────────── */}
       <section id="contact" className="ld-section ld-dark">
         <div className="ld-contact-inner">
           <div className="ld-contact-copy">

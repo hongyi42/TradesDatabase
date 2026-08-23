@@ -1570,6 +1570,35 @@ describe('shadow mode leaves the database untouched', () => {
     expect(rows.rows[0].action).toBe('extend');
     expect(rows.rows[0].escalate_after?.toISOString()).toBe(moved);
   });
+
+  test('agent_context reaches the ROW — the snake_case insert seam (④b review residue)', async () => {
+    // The planner-level test stubs recordDecisions, so the one line it cannot
+    // see is nudgeDecisions.ts's `agent_context: d.agentContext ?? null`.
+    const n = await createPendingNudge({
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef: 'asg-agctx-row',
+      technicianId: techId,
+      context: {},
+    });
+    if (!n) throw new Error('fixture nudge was not created');
+    const written = await recordNudgeDecisions([
+      { tenantId, nudgeId: n.id, jobId: null, mode: 'live', action: 'escalate',
+        confidence: 'high', reason: 'no reply all day',
+        handoffNote: 'Still no write-up on the furnace job.',
+        agentContext: 'Job j1: asked once; ledger empty; a figure unblocks the invoice.',
+        outcome: 'applied' },
+    ]);
+    expect(written).toBe(1);
+    const rows = await pg.query<{ agent_context: string | null; handoff_note: string | null }>(
+      'select agent_context, handoff_note from nudge_decisions where nudge_id = $1',
+      [n.id],
+    );
+    expect(rows.rows[0].agent_context).toBe(
+      'Job j1: asked once; ledger empty; a figure unblocks the invoice.',
+    );
+    expect(rows.rows[0].handoff_note).toBe('Still no write-up on the furnace job.');
+  });
 });
 
 // ── plan ② Phase 3: the planner writes the manager's line ───────────────────

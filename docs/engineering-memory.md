@@ -3222,3 +3222,37 @@ date-eval flags (`GROUNDING_BARE`/`GROUNDING_LEAN`/`EVAL_FAKE_NOW`) are still se
 service env — the MCP env write is classifier-blocked, the user owns clearing them; if
 `GROUNDING_BARE=1` was captured by the 17:22Z deploy, every seat is on the stripped date
 surface until cleared + redeployed (then bounce seat gateways to refresh cached tools/list).
+*(Resolved same day: user cleared the three flags, redeploy 18:09Z, s2 gateway bounced 18:17Z.)*
+
+## ④b COMPLETE — and what the briefing probe taught (2026-08-23)
+
+Plan `thoughts/shared/plans/2026-08-23-delivery-costs-nothing.md` is **complete**, all five
+phases live-verified in production (PRs #171/#172/#174; note #173 merged into its side branch —
+GitHub only retargets a stacked PR when the base branch is deleted at merge — and was re-landed
+as #174; check `origin/main` CONTAINS a "merged" PR before believing it landed). Footer retired:
+stored = shown = sent (nudge d0050e93 proved the full-hash identity). The seeded world produced
+the first fully organic v2 delivery the same hour (Elena Vasquez, threshold crossed at noon).
+
+**The briefing (agentContext) contract, as live-tested:** every mechanical layer works — planner
+rail → nudge_decisions → review_items.detail → list_pending_reviews serves it verbatim into the
+agent's context. The last inch is ATTENTION, and it behaves exactly as the plan's own note
+predicted: a briefed item served inside a ~30-item oldest-first queue was aggregated away
+("30+ overdue gaps — dismiss in bulk?"), while an ITEM-FOCUSED question ("what's the deal with
+the Marcus Ellery sump pump job?") produced a briefing-informed answer — the briefing's causal
+story in the agent's own words, no quoting, no machinery named. **User ruling: the queue-scan
+case is a test-design error, not an agent failure — briefings serve item-focused engagement;
+there is no salience/economic model that justifies expecting an agent to weight one of 30
+undifferentiated items.** Probe design corollary: manager-as-technician makes escalation probes
+circular (the ladder is technician-first); the honest rung-2 shortcut specimen is a tech with no
+seat/Telegram (hman), whose gap goes straight to the manager queue on the SAME tick — no 48h
+plant needed. Also live-observed: ③'s auto-resolve healed a raced escalation on its own
+("field report arrived after this was flagged") when the fail-safe (every-5-min SWEEP, not the
+half-hourly planner) escalated seconds before the answer landed.
+
+**Follow-ups this surfaced (queue-triage family, unscheduled):** review-queue hygiene/expiry
+(~30 stale open items on the pilot from Aug 14-22 — any needle drowns), newest-first or
+salience-aware ordering (today: `created_at` ASCENDING, the newest item sorts LAST), bulk-triage
+machinery (belongs with the unbuilt pacing/earn-the-ask work), and the briefing-discovery eval
+the plan note called for. Rung-2 items are PULL-only today (no proactive manager ping — the
+no-unearned-pings doctrine); if managers should be NOTIFIED of escalations, that is pacing-work
+scope too.

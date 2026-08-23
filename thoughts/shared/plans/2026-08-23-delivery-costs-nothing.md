@@ -215,9 +215,10 @@ the only test of what `GET /control/nudges` actually serves — extended to asse
 
 ### Live verification (agent-executable)
 - Prerequisites: Render MCP (workspace confirmed) after user merges.
-- [ ] deploy live on the merge commit; `GET /control/nudges` shape confirmed via a pilot read
-  (host-token endpoint — verify via the next real pull's gateway log, or a curl with the box's
-  env on the box itself)
+- [x] deploy live on the merge commit (dep-da5iogjncjis7392kokg live at 6c41149, user-triggered
+  2026-08-23 17:23Z; lifecycle-heart cron auto-deployed the same commit); endpoint verified via
+  curl on the box with its own env — HTTP 200, queue empty at check time, so the item-shape
+  half completes at Phase 4's first real pull
 
 *No manual items — continue.*
 

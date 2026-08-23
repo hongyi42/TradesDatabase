@@ -92,17 +92,37 @@ function resolveRef(ref, byPath, byBase) {
   return byBase.get(base) ?? null;
 }
 
-/** Source files this doc actually discusses, ranked by how often it names them. */
-function sourceRefs(text) {
+/** Every source file a document names, with how often it names it. */
+function allSourceRefs(text) {
   const counts = new Map();
   for (const m of text.matchAll(/\bsrc\/[a-zA-Z0-9_/-]+\.ts\b/g)) {
     counts.set(m[0], (counts.get(m[0]) ?? 0) + 1);
   }
+  return counts;
+}
+
+/**
+ * Files for the hook's locality lookup: precise, so the reminder is about this file and not
+ * a file the document mentioned once in passing.
+ */
+function localityRefs(counts) {
   return [...counts.entries()]
     .filter(([p, n]) => n >= MENTION_FLOOR && existsSync(join(ROOT, p)))
     .sort((a, b) => b[1] - a[1])
     .slice(0, MAX_FILES_PER_DOC)
     .map(([path, mentions]) => ({ path, mentions }));
+}
+
+/**
+ * Files for the staleness measure: broad, and deliberately INCLUDING files that no longer
+ * exist. A document describing deleted code is the most stale document there is; filtering
+ * those references out made it render as clean, which is the exact inverse of the truth.
+ */
+function stalenessRefs(counts) {
+  const live = [];
+  const dead = [];
+  for (const p of counts.keys()) (existsSync(join(ROOT, p)) ? live : dead).push(p);
+  return { live, dead };
 }
 
 /**
@@ -314,9 +334,10 @@ const docs = walk(THOUGHTS)
       supersedes: null,
       supersededBy: null,
       commit: (fm.commit ?? '').match(/^[0-9a-f]{7,40}/)?.[0] ?? '',
-      files: sourceRefs(text),
+      files: localityRefs(allSourceRefs(text)),
+      staleness: stalenessRefs(allSourceRefs(text)),
       drift: 0,
-      driftFiles: 0,
+      deadFiles: 0,
     };
   })
   .sort((a, b) => (b.date || '').localeCompare(a.date || '') || a.path.localeCompare(b.path));
@@ -328,14 +349,11 @@ for (const d of docs) {
   const written = Date.parse(`${d.date}T23:59:59Z`);
   if (Number.isNaN(written)) continue;
   let commits = 0;
-  let moved = 0;
-  for (const f of d.files) {
-    const after = (fileHistory.get(f.path) ?? []).filter((ts) => ts > written).length;
-    if (after > 0) moved++;
-    commits += after;
+  for (const p of d.staleness.live) {
+    commits += (fileHistory.get(p) ?? []).filter((ts) => ts > written).length;
   }
   d.drift = commits;
-  d.driftFiles = moved;
+  d.deadFiles = d.staleness.dead.length;
 }
 
 const byPath = new Map(docs.map((d) => [d.path, d]));
@@ -382,6 +400,11 @@ const md = [
   '- `drift N` — the source files this document discusses have taken **N commits since it was',
   '  written**. High drift does not mean the decision was reversed; it means the document\'s',
   '  *description of the code* is probably out of date. Verify against the code before quoting it.',
+  '- `describes N deleted files` — it names source files that no longer exist. The strongest',
+  '  staleness signal there is: whatever it describes has been moved, renamed or removed.',
+  '',
+  '**A document with no badge is not certified current** — it means no staleness signal fired,',
+  'usually because it names no source files. Absence of a badge is absence of evidence.',
   '',
   `Regenerate with \`npm run decisions:index\`. ${docs.length} documents · ${live.length} live · ${superseded.length} superseded.`,
   '',
@@ -409,6 +432,7 @@ for (const d of live) {
   const marks = [];
   if (d.landed === true) marks.push('`landed`');
   if (d.landed === false) marks.push('`not landed`');
+  if (d.deadFiles > 0) marks.push(`\`describes ${d.deadFiles} deleted file${d.deadFiles > 1 ? 's' : ''}\``);
   if (d.drift >= DRIFT_LOUD) marks.push(`\`drift ${d.drift}\``);
   const badge = marks.length ? ` ${marks.join(' ')}` : '';
   md.push(`- \`${d.date || '????-??-??'}\` \`${d.kind}\` ${link(d)}${badge}${status}${what ? ` — ${what}` : ''}`);
@@ -497,5 +521,6 @@ if (process.argv.includes('--check')) {
   const unlanded = docs.filter((d) => d.landed === false).length;
   console.log(`  ${proseRules.length} file-specific rules lifted from CLAUDE.md + docs/`);
   console.log(`  ${memoryEntries.length} engineering-memory entries indexed${tocWritten ? ' (map written into the doc)' : ''}`);
+  console.log(`  ${docs.filter((d) => d.deadFiles > 0).length} describe source files that no longer exist`);
   console.log(`  ${docs.filter((d) => d.landed === true).length} landed · ${unlanded} named a commit that never reached main · ${drifted} drifted (>=${DRIFT_LOUD} commits)`);
 }

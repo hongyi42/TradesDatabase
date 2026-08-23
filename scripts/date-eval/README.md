@@ -229,3 +229,26 @@ a model that ignores doctrine and bounds `query_spine` SQL with the
 database's own `current_date` reads the REAL day and fails — which is the
 same violation the doctrine already prohibits, now caught loudly instead of
 passing silently mid-day.
+
+## The bare-clock arm: `GROUNDING_BARE=1` (Arm C)
+
+The strictest test: the model's ONLY date help is the firm-local `now` rider.
+Setting `GROUNDING_BARE=1` on the spine (module-load read — it rides a
+deploy, unlike the per-call flags) does three things: implies
+`GROUNDING_LEAN` (data crutches off), hides `resolve_date` from tools/list
+(dispatch stays alive for the planner), and strips the date-discipline
+steering from tool descriptions ("your clock is UTC", "you are unreliable at
+calendar math"), keeping only schema facts (`local_day` is the firm-local
+bucket). The model does its own calendar math off the rider.
+
+The box half, run-day only: remove the §0f dates block from the eval seat's
+AGENTS.md (it is a delete-then-append wire block, so `bootstrap-box.sh wire
+<seat>` restores it verbatim after the run):
+
+```bash
+ssh tradesbox 'docker exec -u sandbox <cid> sh -c \
+  "awk '\''/^## Dates and times — never guess/{skip=1; next} skip && /^## /{skip=0} !skip'\'' \
+   /sandbox/.openclaw/workspace/AGENTS.md > /tmp/a && cat /tmp/a > /sandbox/.openclaw/workspace/AGENTS.md && rm /tmp/a"'
+```
+
+After the run: re-run `wire` for the seat, unset the env flags, redeploy.

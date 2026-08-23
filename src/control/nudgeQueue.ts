@@ -32,21 +32,21 @@ export const MAX_SERVE_COUNT = 10;
 // at queue time, so the delivery ledger is its own (see markNudgeQueued).
 export const MAX_DELIVERY_ATTEMPTS = 3;
 
-// One deliverable, exactly what the runner needs and nothing else. messageB64
-// keeps the multi-line deliverable shell-safe on the box (badge-pull's
-// argument discipline); sessionId pins a FRESH session per nudge (decision
-// D6 — id reuse resumes stale conversations).
+// One deliverable, exactly what the runner needs and nothing else. The
+// legacy messageB64 (the footered deliverable v1 relayed through an agent
+// turn) was REMOVED in ④b Phase 5 — the whole fleet runs v2, which reads
+// only directMessageB64. sessionId remains pinned per nudge (decision D6)
+// though v2 no longer opens a session with it.
 export interface NudgeDeliveryItem {
   id: string;
   sandboxRef: string;
   replyTo: string; // the technician's telegram user id
   sessionId: string;
-  messageB64: string;
-  // The VERBATIM twin (④b): the deliverable with the agent-facing footer
-  // stripped — what a runner-v2 box sends straight to the person, byte-equal
-  // to what the audit stores once Phase 5 stops composing the footer at all.
-  // Served alongside messageB64 so spine deploy and box re-wire stay
-  // independent; a footer-less question passes through unchanged.
+  // The verbatim deliverable (④b): base64 keeps the multi-line body
+  // shell-safe on the box (badge-pull's argument discipline). The
+  // FOOTER_DELIMITER strip below is for LEGACY rows queued before the
+  // footer's retirement — a post-retirement question passes through
+  // unchanged (stored = shown = sent).
   directMessageB64: string;
 }
 
@@ -110,7 +110,6 @@ export async function buildNudgeDelivery(
         sandboxRef: tech.sandbox_ref,
         replyTo: tech.telegram_user_id,
         sessionId: `nudge-${row.id}`,
-        messageB64: Buffer.from(row.question, 'utf8').toString('base64'),
         directMessageB64: Buffer.from(
           row.question.split(FOOTER_DELIMITER)[0],
           'utf8',

@@ -17,8 +17,10 @@ import {
 // shapes are pinned in httpServer.test.ts; this file pins the serve/report
 // semantics.
 
-// A footer-carrying deliverable, the pre-Phase-5 shape: human half + the
-// agent-facing footer on the shared delimiter.
+// A footer-carrying deliverable, the LEGACY pre-Phase-5 shape (rows queued
+// before the retirement deploy still look like this): human half + the
+// agent-facing footer on the shared delimiter. The strip must keep serving
+// these clean for as long as any such row can exist.
 const HUMAN_HALF = 'How did it go?\n\n(re: Henderson — Furnace tune-up, visit on 2026-08-14)';
 const QUESTION =
   HUMAN_HALF + "\n\nNote for the assistant: you are Ben's own assistant — ask them here.";
@@ -92,18 +94,18 @@ describe('buildNudgeDelivery', () => {
       replyTo: '8991633730',
       sessionId: 'nudge-n1',
     });
-    expect(Buffer.from(nudges[0].messageB64, 'base64').toString('utf8')).toBe(QUESTION);
-    // ④b: the verbatim twin is the deliverable with the footer stripped —
-    // exactly the human half, ending at the "(re: …)" line.
+    // ④b: a LEGACY footered row serves with the footer stripped — exactly the
+    // human half, ending at the "(re: …)" line. (messageB64 removed Phase 5.)
+    expect('messageB64' in nudges[0]).toBe(false);
     expect(Buffer.from(nudges[0].directMessageB64, 'base64').toString('utf8')).toBe(HUMAN_HALF);
     expect(serves).toEqual([['n1', 't1', 1]]);
   });
 
-  test('assemble↔strip round-trip: the twin ends at the "(re: …)" line for BOTH kinds', () => {
-    // Through the REAL assemble functions, not a hand-built fixture (review
-    // finding): a cost-footer opener reworded away from the shared constant
-    // would otherwise ship the agent-facing footer to a human on every cost
-    // nudge while the whole suite stayed green.
+  test('stored = shown: BOTH kinds assemble footer-less and pass the strip unchanged', () => {
+    // Through the REAL assemble functions, not a hand-built fixture: after
+    // the footer's retirement (④b Phase 5) the deliverable ends at the
+    // "(re: …)" line, contains no trace of the delimiter, and the outbox
+    // strip — kept for legacy rows — is a no-op on it.
     const visit = assembleNudgeMessage('How did it go?', {
       customerName: 'Henderson',
       jobTitle: 'Furnace tune-up',
@@ -113,28 +115,27 @@ describe('buildNudgeDelivery', () => {
       startsAtLocal: null,
       technicianRef: null,
     });
-    expect(visit.split(FOOTER_DELIMITER)).toHaveLength(2); // delimiter present, exactly once
-    expect(visit.split(FOOTER_DELIMITER)[0]).toBe(
+    expect(visit).toBe(
       'How did it go?\n\n(re: Henderson — Furnace tune-up, visit on 2026-08-14)',
     );
+    expect(visit.includes(FOOTER_DELIMITER)).toBe(false);
+    expect(visit.split(FOOTER_DELIMITER)[0]).toBe(visit); // strip = no-op
     const cost = assembleCostNudgeMessage('Any parts on that one?', {
       customerName: 'Henderson',
       jobTitle: 'Furnace tune-up',
       technicianName: 'Ben',
       jobId: 'j-cost',
     });
-    expect(cost.split(FOOTER_DELIMITER)).toHaveLength(2);
-    expect(cost.split(FOOTER_DELIMITER)[0]).toBe(
-      'Any parts on that one?\n\n(re: Henderson — Furnace tune-up)',
-    );
+    expect(cost).toBe('Any parts on that one?\n\n(re: Henderson — Furnace tune-up)');
+    expect(cost.includes(FOOTER_DELIMITER)).toBe(false);
+    expect(cost.split(FOOTER_DELIMITER)[0]).toBe(cost);
   });
 
-  test('a footer-less question (Phase 5 onward) passes through the twin unchanged', async () => {
+  test('a footer-less question (Phase 5 onward) passes through the serve unchanged', async () => {
     const { nudges } = await buildNudgeDelivery('host-1', baseDeps({
       listQueued: async () => [queuedRow({ question: HUMAN_HALF })],
     }));
     expect(Buffer.from(nudges[0].directMessageB64, 'base64').toString('utf8')).toBe(HUMAN_HALF);
-    expect(Buffer.from(nudges[0].messageB64, 'base64').toString('utf8')).toBe(HUMAN_HALF);
   });
 
   test('liveness re-filter at serve time: inactive/unbound techs are SKIPPED, not failed', async () => {

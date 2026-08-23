@@ -41,7 +41,15 @@ date: YYYY-MM-DD
 branch: <current branch>
 commit: <short hash>
 topic: <what was researched>
+supersedes: <path to the document this overturns, or "nothing">
 ---
+
+
+**`supersedes:` is not optional bookkeeping.** If this document overturns a decision made in an
+earlier one, name that document's path. Now is the only moment the reason is fresh enough to
+record accurately — nobody reconstructs it correctly three months later, and a superseded
+document left unmarked is worse than no document, because a future session will find it and
+build on it. If it overturns nothing, write `nothing`.
 
 ## Summary
 One paragraph, in plain language a non-expert can follow (expand jargon on first use).
@@ -81,3 +89,15 @@ After writing the file, print its path, a one-paragraph plain-language summary o
 - Do not make suggestions or recommendations.
 - If you find something surprising or concerning, document it as a finding — do not act on it.
 - File paths and line numbers must be exact.
+
+## Final step — refresh the decision index
+
+After writing the document, run:
+
+```bash
+npm run decisions:index
+```
+
+This regenerates `thoughts/INDEX.md`, the machine index the pre-edit hook reads, and the map
+inside `docs/engineering-memory.md`. Commit the regenerated files alongside the document. An
+index that lags the corpus is the failure mode this whole mechanism exists to prevent.

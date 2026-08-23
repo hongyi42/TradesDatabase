@@ -12,6 +12,18 @@ catalog of operational traps) lives in [docs/engineering-memory.md](docs/enginee
 read it before touching the agent stack, the pilot DB, or deploys, and keep it updated when those
 facts change.
 
+**The decision index — read before building on prior work.** `thoughts/INDEX.md` lists every
+research and plan document with evidence of whether it is still current: `landed` (its `commit:`
+reached `main`), `not landed` (a proposal, not a record), and `drift N` (the source files it
+describes have taken N commits since it was written — verify against the code before quoting it).
+`docs/engineering-memory.md` now opens with a generated map of its entries; grep that map instead
+of reading 3000 lines. A `PreToolUse` hook (`.claude/hooks/decisions-for-file.mjs`) hands you the
+decisions attached to a file the moment you edit it, once per file per session — when it names a
+rule governing the file you are changing, that rule outranks your plan.
+
+Regenerate all three with `npm run decisions:index` whenever you add or amend a document under
+`thoughts/`, and commit the regenerated files with it.
+
 New to the repo? [docs/onboarding.md](docs/onboarding.md) is the map — what the project is, how the
 pieces fit, day-1 local setup, and the rules that cost us incidents.
 

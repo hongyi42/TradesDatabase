@@ -70,8 +70,11 @@ const CLAIMS = [
     // The product's core claim, stated as a CONTRAST. Provenance is the one
     // thing no competitor in this category ships, so the line has to say so
     // out loud; "evidence kept" read as a feature label and landed as nothing.
+    // `keystone` gives it the accent rule in the claims grid — exactly one of
+    // the five carries it, because marking all five would mark none.
     title: 'Every field shows its source',
     body: 'Tap a line, see the message it came from. Ask your current software to do that.',
+    keystone: true,
   },
   {
     // The retiring-technician argument. ~25,000 experienced techs leave the US
@@ -95,20 +98,75 @@ const STEPS = [
   { when: '~10 minutes', title: 'Sandbox ready', note: 'They reply. That’s the training.' },
 ];
 
-// The three photographs in the strip. None have been shot — see PhotoPlate.
+// ── PHOTOGRAPHS ───────────────────────────────────────────────────────────
+//
+// Every plate on this page is an empty slot waiting for a real photograph.
+// To fill one:
+//
+//   1. Put the file in `web/portal/src/photos/` (create it; there is no
+//      `public/` dir and there must not be a nested `assets/` dir — the build
+//      output is deliberately FLAT because src/portal/portalApi.ts rejects any
+//      filename containing a path separator. Importing through Vite is what
+//      keeps the emitted name flat and content-hashed).
+//   2. `import truckDoors from '../photos/truck-doors.jpg';`
+//   3. Pass it in: `<PhotoPlate brief="…" src={truckDoors} alt="…" />`
+//
+// The `alt` is not optional and is not the shot brief — it describes what is in
+// the photograph, for someone who cannot see it.
+//
+// LICENSING: this is a commercial page. Only use photographs we shot, or ones
+// under a licence that permits commercial use without attribution (Unsplash and
+// Pexels licences both do). Do not paste in an image found through a search
+// engine — "it was on the internet" is not a licence.
+//
+// DESIGN.md §6 rules out STOCK photography specifically: a smiling man in clean
+// hi-vis reads as fake to this audience and costs more trust than an empty
+// plate buys. If a candidate image looks like an advert, it is the wrong image.
+// What works: unposed, dirty, real light, faces incidental or absent.
+//
+// The three photographs in the strip. None have been shot yet.
 const STRIP = [
   'Truck doors open, first light',
   'Hands, scuffed phone, finished panel',
   'Kitchen table, 9pm, paperwork',
 ];
 
-/** A photograph that has not been taken yet, drawn to look unfinished on
- *  purpose. The handoff is emphatic that stock is not an interim option: this
- *  audience spots a smiling man in a clean hi-vis instantly and it costs trust.
- *  The plate carries the brief for the shot it is holding. */
-function PhotoPlate({ brief, className }: { brief: string; className?: string }) {
+/** An image slot. Give it a `src` and it renders the photograph; leave `src`
+ *  off and it renders the honest unfinished plate carrying the brief for the
+ *  shot it is holding.
+ *
+ *  DESIGN.md §6 rules out stock photography as an interim — this audience spots
+ *  a smiling man in a clean hi-vis instantly and it costs trust — so a plate
+ *  standing empty is a deliberate state, not a missing asset. When real
+ *  photographs exist, import them (see the PHOTOS note below) and pass them in.
+ *
+ *  `alt` is required alongside `src` and must describe the photograph. The empty
+ *  plate is aria-hidden instead: a screen-reader user has no use for a
+ *  production note, and it previously announced all five shot briefs as content
+ *  (2026-08-22 critique, C3). */
+function PhotoPlate({
+  brief,
+  src,
+  alt,
+  className,
+}: {
+  brief: string;
+  src?: string;
+  alt?: string;
+  className?: string;
+}) {
+  const cls = className ? `ld-plate ${className}` : 'ld-plate';
+
+  if (src) {
+    return (
+      <div className={`${cls} ld-plate-shot`}>
+        <img className="ld-plate-img" src={src} alt={alt ?? ''} loading="lazy" decoding="async" />
+      </div>
+    );
+  }
+
   return (
-    <div className={className ? `ld-plate ${className}` : 'ld-plate'} role="img" aria-label={`Photograph to be shot: ${brief}`}>
+    <div className={cls} aria-hidden="true">
       <span className="ld-plate-note">Photo to shoot &middot; {brief}</span>
       <span className="ld-tick ld-tick-tl" aria-hidden="true" />
       <span className="ld-tick ld-tick-br" aria-hidden="true" />
@@ -190,14 +248,27 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
         </div>
       </section>
 
-      {/* ── The proof, immediately after the hero ────────────────────────
-          Promoted from band four on 2026-08-22. This is the one thing on the
-          page that could not sit on a competitor's site — a text arriving and
-          becoming a record whose every field cites the message it came from —
-          and it was reading below three other bands. It also breaks the
-          eight-band cadence: a grey record band directly under the white hero
-          is a different shape from everything that follows, which is what stops
-          the page scanning as a stack of interchangeable slabs.
+      {/* ── Photo band ───────────────────────────────────────────────────── */}
+      <section className="ld-photoband">
+        <PhotoPlate brief="Electrician mid-job, phone in hand, open breaker panel behind" />
+        <div className="ld-photoband-plate">
+          <div className="ld-trades">
+            <span>Built for</span>
+            {TRADES.map((t) => (
+              <span key={t}>{t}</span>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── The proof ─────────────────────────────────────────────────────
+          Promoted from band four on 2026-08-22, and now the third band: the
+          hero, then the trades photo band that qualifies the reader, then this.
+          It is the one thing on the page that could not sit on a competitor's
+          site — a text arriving and becoming a record whose every field cites
+          the message it came from — and it was reading below three other bands.
+          Keep it above the quotes: the page shows the thing, then explains the
+          problem it solves.
           See docs/design/decisions/2026-08-22-landing-critique.md (B3, B4). */}
       <section id="product" className="ld-section ld-surface">
         <div className="ld-wrap">
@@ -323,7 +394,11 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
 
           <div className="ld-claims">
             {CLAIMS.map((c) => (
-              <div key={c.title}>
+              <div
+                key={c.title}
+                className={c.keystone ? 'ld-claim ld-claim-keystone' : 'ld-claim'}
+              >
+                {c.keystone && <p className="ld-claim-mark">The difference</p>}
                 <p className="ld-claim-title" style={{ margin: 0 }}>
                   {c.title}
                 </p>
@@ -334,21 +409,8 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
         </div>
       </section>
 
-      {/* ── Photo band ───────────────────────────────────────────────────── */}
-      <section className="ld-photoband">
-        <PhotoPlate brief="Electrician mid-job, phone in hand, open breaker panel behind" />
-        <div className="ld-photoband-plate">
-          <div className="ld-trades">
-            <span>Built for</span>
-            {TRADES.map((t) => (
-              <span key={t}>{t}</span>
-            ))}
-          </div>
-        </div>
-      </section>
-
       {/* ── What we heard ───────────────────────────────────────────────── */}
-      <section className="ld-section ld-surface">
+      <section className="ld-section ld-paper">
         <div className="ld-wrap">
           <h2 className="ld-h2" style={{ margin: '0 0 clamp(22px, 3vw, 36px)' }}>
             The same four problems, every time

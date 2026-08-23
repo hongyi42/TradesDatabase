@@ -100,67 +100,102 @@ const STEPS = [
 
 // ── PHOTOGRAPHS ───────────────────────────────────────────────────────────
 //
-// Every plate on this page is an empty slot waiting for a real photograph.
-// To fill one:
+// Photographs are picked up from `web/portal/src/photos/` BY FILENAME. There is
+// no code change to make: drop a file named for the slot and it appears; remove
+// it and the slot goes back to its honest "photo to shoot" plate.
 //
-//   1. Put the file in `web/portal/src/photos/` (create it; there is no
-//      `public/` dir and there must not be a nested `assets/` dir — the build
-//      output is deliberately FLAT because src/portal/portalApi.ts rejects any
-//      filename containing a path separator. Importing through Vite is what
-//      keeps the emitted name flat and content-hashed).
-//   2. `import truckDoors from '../photos/truck-doors.jpg';`
-//   3. Pass it in: `<PhotoPlate brief="…" src={truckDoors} alt="…" />`
+//   photo-band.jpg   the wide band under the hero, behind the trades strip
+//   strip-1.jpg      truck doors, first light
+//   strip-2.jpg      hands, scuffed phone, finished panel
+//   strip-3.jpg      kitchen table, 9pm, paperwork
 //
-// The `alt` is not optional and is not the shot brief — it describes what is in
-// the photograph, for someone who cannot see it.
+// .jpg .jpeg .png .webp and .avif all work. No subdirectories — the portal build
+// is deliberately FLAT because src/portal/portalApi.ts rejects any filename
+// containing a path separator, and Vite is what keeps the emitted name flat and
+// content-hashed.
 //
-// LICENSING: this is a commercial page. Only use photographs we shot, or ones
-// under a licence that permits commercial use without attribution (Unsplash and
-// Pexels licences both do). Do not paste in an image found through a search
-// engine — "it was on the internet" is not a licence.
+// The ALT TEXT lives in this file, not in the filename, because it describes
+// what is IN the photograph for someone who cannot see it — which the filename
+// cannot know. Each slot below carries alt written for the shot its brief
+// describes. **If the photograph you drop in differs from the brief, change the
+// alt to match it**, or the page will describe an image that isn't there.
 //
-// DESIGN.md §6 rules out STOCK photography specifically: a smiling man in clean
-// hi-vis reads as fake to this audience and costs more trust than an empty
-// plate buys. If a candidate image looks like an advert, it is the wrong image.
-// What works: unposed, dirty, real light, faces incidental or absent.
+// LICENSING: this is a commercial page. Only photographs we shot, or images
+// under a licence permitting commercial use without attribution (Unsplash and
+// Pexels both qualify). An image found through a search engine is not licensed.
 //
-// The three photographs in the strip. None have been shot yet.
+// WHAT WORKS: unposed, doing the actual work, dirty hands, real light, faces
+// incidental or absent — and AMERICAN. A European DIN-rail consumer unit reads
+// wrong to a US contractor exactly the way "EICR" did before 2026-08-20; the
+// market is US and every concrete detail has to say "this is for me".
+//
+// Vite resolves this glob at build time, so a missing file is not an error —
+// the slot simply stays empty, which is a designed state (DESIGN.md §6).
+const PHOTO_FILES = import.meta.glob('../photos/*.{jpg,jpeg,png,webp,avif}', {
+  eager: true,
+  query: '?url',
+  import: 'default',
+}) as Record<string, string>;
+
+/** Slot name (the filename without its extension) -> resolved asset URL. */
+const PHOTOS: Record<string, string> = Object.fromEntries(
+  Object.entries(PHOTO_FILES).map(([path, url]) => [
+    path.split('/').pop()!.replace(/\.[^.]+$/, ''),
+    url,
+  ]),
+);
+
+// The three photographs in the strip. `slot` is the filename to drop in
+// src/photos/; `alt` describes the intended shot and must be updated if the
+// photograph you use differs from the brief.
 const STRIP = [
-  'Truck doors open, first light',
-  'Hands, scuffed phone, finished panel',
-  'Kitchen table, 9pm, paperwork',
+  {
+    slot: 'strip-1',
+    brief: 'Truck doors open, first light',
+    alt: 'A work van with its rear doors open at dawn, tools racked inside.',
+  },
+  {
+    slot: 'strip-2',
+    brief: 'Hands, scuffed phone, finished panel',
+    alt: "A technician's hands holding a worn phone in front of a finished electrical panel.",
+  },
+  {
+    slot: 'strip-3',
+    brief: 'Kitchen table, 9pm, paperwork',
+    alt: 'Job paperwork spread across a kitchen table under a lamp at night.',
+  },
 ];
 
-/** An image slot. Give it a `src` and it renders the photograph; leave `src`
- *  off and it renders the honest unfinished plate carrying the brief for the
- *  shot it is holding.
+/** An image slot, resolved by name from src/photos/ (see the PHOTOGRAPHS note
+ *  above). Drop `<slot>.jpg` in that directory and this renders the photograph;
+ *  with no such file it renders the honest unfinished plate carrying the brief
+ *  for the shot it is holding.
  *
  *  DESIGN.md §6 rules out stock photography as an interim — this audience spots
- *  a smiling man in a clean hi-vis instantly and it costs trust — so a plate
- *  standing empty is a deliberate state, not a missing asset. When real
- *  photographs exist, import them (see the PHOTOS note below) and pass them in.
+ *  a smiling man in clean hi-vis instantly and it costs trust — so an empty
+ *  plate is a deliberate state, not a missing asset.
  *
- *  `alt` is required alongside `src` and must describe the photograph. The empty
- *  plate is aria-hidden instead: a screen-reader user has no use for a
+ *  The empty plate is aria-hidden: a screen-reader user has no use for a
  *  production note, and it previously announced all five shot briefs as content
- *  (2026-08-22 critique, C3). */
+ *  (2026-08-22 critique, C3). A filled plate carries its `alt` instead. */
 function PhotoPlate({
+  slot,
   brief,
-  src,
   alt,
   className,
 }: {
+  slot: string;
   brief: string;
-  src?: string;
-  alt?: string;
+  alt: string;
   className?: string;
 }) {
+  const src = PHOTOS[slot];
   const cls = className ? `ld-plate ${className}` : 'ld-plate';
 
   if (src) {
     return (
       <div className={`${cls} ld-plate-shot`}>
-        <img className="ld-plate-img" src={src} alt={alt ?? ''} loading="lazy" decoding="async" />
+        <img className="ld-plate-img" src={src} alt={alt} loading="lazy" decoding="async" />
       </div>
     );
   }
@@ -250,7 +285,11 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
 
       {/* ── Photo band ───────────────────────────────────────────────────── */}
       <section className="ld-photoband">
-        <PhotoPlate brief="Electrician mid-job, phone in hand, open breaker panel behind" />
+        <PhotoPlate
+          slot="photo-band"
+          brief="Electrician mid-job, phone in hand, open breaker panel behind"
+          alt="An electrician working at an open breaker panel, phone in hand."
+        />
         <div className="ld-photoband-plate">
           <div className="ld-trades">
             <span>Built for</span>
@@ -430,8 +469,8 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
 
       {/* ── Photo strip ──────────────────────────────────────────────────── */}
       <section className="ld-strip">
-        {STRIP.map((brief) => (
-          <PhotoPlate key={brief} brief={brief} />
+        {STRIP.map((p) => (
+          <PhotoPlate key={p.slot} slot={p.slot} brief={p.brief} alt={p.alt} />
         ))}
       </section>
 

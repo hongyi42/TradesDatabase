@@ -6,35 +6,42 @@ carrying its brief.
 
 ## Adding one
 
-1. Drop the file in this directory. **No subdirectories** — the portal build is
-   deliberately flat because `src/portal/portalApi.ts` rejects any filename
-   containing a path separator (the same traversal guard `/admin` and `/board`
-   use). Importing through Vite is what keeps the emitted name flat and
-   content-hashed.
-2. Import it in `web/portal/src/screens/Landing.tsx`:
-   ```ts
-   import truckDoors from '../photos/truck-doors.jpg';
-   ```
-3. Pass it to the slot:
-   ```tsx
-   <PhotoPlate brief="Truck doors open, first light" src={truckDoors} alt="…" />
-   ```
+**Drop a file in this directory named for its slot. That is the whole process —
+there is no code to change.**
 
-`alt` is required with `src`, and it is **not** the shot brief — it describes
-what is in the photograph, for someone who cannot see it.
-
-## The briefs still open
-
-| Slot | Brief |
+| Filename | Where it lands |
 |---|---|
-| Photo band (under the hero) | Electrician mid-job, phone in hand, open breaker panel behind |
-| Strip 1 | Truck doors open, first light |
-| Strip 2 | Hands, scuffed phone, finished panel |
-| Strip 3 | Kitchen table, 9pm, paperwork |
+| `photo-band.*` | The wide band under the hero, behind the "Built for" trades strip |
+| `strip-1.*` | Truck doors open, first light |
+| `strip-2.*` | Hands, scuffed phone, finished panel |
+| `strip-3.*` | Kitchen table, 9pm, paperwork |
 
-The photo band's image sits under a dark scrim carrying the "Built for" trades
-strip, so **it must be a photograph that survives being darkened at the bottom
-edge** — avoid anything with its subject low in the frame.
+`.jpg` `.jpeg` `.png` `.webp` `.avif` all work. Remove the file and the slot goes
+back to its honest "photo to shoot" plate — the two states are interchangeable at
+any time, and a missing file is never an error.
+
+**No subdirectories.** The portal build is deliberately flat because
+`src/portal/portalApi.ts` rejects any filename containing a path separator (the
+same traversal guard `/admin` and `/board` use). Vite resolves this directory
+with `import.meta.glob` and emits each file flat and content-hashed, e.g.
+`photo-band-gZFHmBQm.png`.
+
+## Alt text — the one thing you must still edit
+
+Alt text lives in `web/portal/src/screens/Landing.tsx`, not in the filename,
+because it describes what is *in* the photograph for someone who cannot see it —
+which a filename cannot know. Each slot already carries alt written for the shot
+its brief describes.
+
+**If the photograph you drop in differs from its brief, update the alt to match**,
+or the page describes an image that isn't there. Search for `STRIP` and for
+`slot="photo-band"` in that file.
+
+## The photo band has one extra constraint
+
+Its image sits under a dark scrim carrying the "Built for" trades strip, so it
+must survive being darkened along its bottom edge. Avoid anything with its
+subject low in the frame. Landscape, roughly 3:1 or wider, crops best.
 
 ## Licensing — read before adding anything
 

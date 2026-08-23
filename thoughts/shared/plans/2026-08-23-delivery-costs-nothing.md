@@ -2,7 +2,7 @@
 date: 2026-08-23
 task: "④b delivery costs nothing — planner words reach people verbatim via openclaw message send; the relay turn dies; the reasoning-context rail ships with it"
 research: thoughts/shared/research/2026-08-23-delivery-costs-nothing.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -298,15 +298,20 @@ a comment: the identity-first lesson it encodes). **`src/control/nudgeQueue.ts`*
 updated (no footer; stored = shown).
 
 ### Automated verification
-- [ ] gates + updated tests pass (`httpServer.test.ts` updated for the removed `messageB64`)
+- [x] gates + updated tests pass (suite 2165; legacy footered rows pinned to still strip clean;
+  wire shape pins messageB64's absence; reviewer caught the branch-stacking gap — Phase 5 cut
+  from main would have paired a messageB64-less spine with runner v1, fixed by stacking on the
+  Phase-4 branch; note #173 merged into the side branch, re-landed on main as PR #174)
 
 ### Live verification (agent-executable)
 - Prerequisites: ssh; pilot DB MCP; Render MCP; the Phase-4 nudge still open.
-- [ ] merge + MANUAL Render deploy of this phase (autoDeploy is off) — ordered strictly AFTER
-  the fleet-wide runner-v2 verification above, or v1 boxes fail every delivery on the missing
-  `messageB64` and hand gaps to the manager at 3 strikes
-- [ ] one fresh post-deploy nudge delivered footer-less end-to-end (this is the check that
-  exercises THIS phase's code — the Phase-4 replays do not)
+- [x] merge + MANUAL Render deploy (PR #174 → 85a3c16, web live 11:41 AM firm-local; cron
+  auto-deployed same commit) — after fleet-wide v2 verification, as ordered
+- [x] one fresh post-deploy nudge footer-less end-to-end (nudge d0050e93, Nora Quist: stored
+  138 chars, footer_pos 0; journal sha256 1c6f76e5… = DB digest of the ENTIRE stored question —
+  stored = shown = sent, no strip ran). BONUS unstaged specimen: the seeded world's Elena
+  Vasquez visit crossed the 3h threshold at noon and was asked organically — the first fully
+  production-initiated v2 delivery
 - [x] record-duty probe (2026-08-23, ran EARLY off the Phase-4 nudge — the direct-send path
   already exercises this phase's behavioral question): user replied 18:06 → `raw_captures`
   87074d22 (technician_note, reply near-verbatim) → L2 visit workPerformed filled →
@@ -315,14 +320,25 @@ updated (no footer; stored = shown).
   visit"), nudge `answered`. Full chain ask→send→reply→record→attribute→close in 35 min, zero
   delivery inference. Also lands the Phase-1 deferred fact: the agent resolved a reply to a
   DIRECTLY-sent, footer-less message to the right customer and job via channel history + §0k
-- [ ] briefing probe: escalate a test gap carrying `agentContext` → ask s2's agent about the item
-  in Telegram → transcript shows it USED the briefing (names the specifics) without quoting it
-  verbatim
+- [x] briefing probe (redesigned twice, both lessons recorded): (1) manager-as-technician was
+  circular — user catch: the ladder is technician-first, so the probe subject became hman, an
+  active tech with no seat/Telegram whose gap goes straight to the manager queue (the real
+  rung-2 shortcut; item a442190d). (2) First probe form — "anything waiting for my review?" —
+  FAILED at the attention layer: the item + briefing were served verbatim (transcript-proven)
+  but drowned in a ~30-item oldest-first queue; user ruling: that is a TEST-DESIGN issue, not
+  an agent failure — briefings serve ITEM-FOCUSED engagement, not queue scanning, and no
+  salience/weighting model exists to justify scanning. (3) The fair probe — asking about the
+  specific job — PASSED: the reply carried the briefing's causal story (no seat/no Telegram →
+  routed to you) in its own words, fair framing, no quoting, no machinery mentioned.
+  FOLLOW-UPS recorded: queue hygiene/expiry (~30 stale open items), newest-first or salience
+  ordering, bulk-triage machinery (pacing/batching family), and the briefing-discovery eval
+  the plan's own note predicted
 
 ### Manual verification
 - [x] you reply to the Phase-4 question in Telegram (done 2026-08-23 18:06 — "half complete,
   bigger problems, probably needs another visit"; the probe read the rest)
-- [ ] the agent's briefing-informed answer reads like help, not like a machine quoting a log
+- [x] the agent's briefing-informed answer reads like help, not like a machine quoting a log
+  (user verdict 2026-08-23: pass, on the item-focused probe)
 
 ---
 *Pause — both live probes need your Telegram replies.*

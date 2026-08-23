@@ -22,7 +22,7 @@ import { createHost } from '../db/hosts.js';
 import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
-import { upsertOpenReviewItem } from '../db/reviewItems.js';
+import { flagNudgeGap, upsertOpenReviewItem } from '../db/reviewItems.js';
 import { logWebRequests } from '../db/webRequests.js';
 import {
   attributeAnswerToGap,
@@ -994,6 +994,31 @@ describe('MCP server', () => {
       });
       const pending = await callWith('list_pending_reviews', {});
       expect(pending.data.map((i: { id: string }) => i.id)).toContain(item.id);
+
+      // ④b fourth rail: a gap item's briefing rides detail to the manager's
+      // agent verbatim — and the tool description carries the never-relay rule.
+      const gapItem = await flagNudgeGap({
+        tenantId,
+        kind: 'overdue_visit_gap',
+        subjectRef: 'agctx-subject-1',
+        jobId: '00000000-0000-0000-0000-0000000000aa',
+        technicianRef: 'tech-mcp',
+        startsAtLocal: '2026-12-01 09:00:00+00',
+        endsAtLocal: '2026-12-01 10:00:00+00',
+        suggestion: 'open question on a visit — agentContext carrier',
+        agentContext: 'Job aa: asked once on the visit day; ledger empty; a figure unblocks the invoice.',
+      });
+      expect(gapItem).not.toBeNull();
+      const withBriefing = await callWith('list_pending_reviews', {});
+      const briefed = (withBriefing.data as Array<{ id: string; detail?: { agentContext?: string } }>).find(
+        (r) => r.id === gapItem!.id,
+      );
+      expect(briefed?.detail?.agentContext).toBe(
+        'Job aa: asked once on the visit day; ledger empty; a figure unblocks the invoice.',
+      );
+      const tool = (await mgrClient.listTools()).tools.find((t) => t.name === 'list_pending_reviews');
+      expect(tool?.description).toContain('agentContext');
+      expect(tool?.description).toContain('never read it aloud');
       const resolved = await callWith('resolve_review', {
         reviewItemId: item.id,
         resolution: 'dismissed',

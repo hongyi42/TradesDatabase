@@ -1996,6 +1996,35 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
     expect(suggestion).not.toContain('INTERNAL-ONLY');
   });
 
+  test('the briefing rides detail-bound agentContext, never the suggestion (④b)', async () => {
+    let capturedContext: unknown = 'UNSET';
+    let capturedSuggestion = '';
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [askedVisit],
+      listDecisions: async () =>
+        new Map([['n1', [decision({ agent_context: 'Job j-1: asked once; ledger empty.' })]]]),
+      flagNudge: async (input) => {
+        capturedContext = input.agentContext;
+        capturedSuggestion = input.suggestion;
+        return openItem({});
+      },
+    }), 'live');
+    expect(capturedContext).toBe('Job j-1: asked once; ledger empty.');
+    expect(capturedSuggestion).not.toContain('ledger empty'); // machine context never in human copy
+
+    // Absent when the planner wrote none — the normal, sweep-clock case.
+    let absent: unknown = 'UNSET';
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [askedVisit],
+      listDecisions: async () => new Map([['n1', [decision({})]]]),
+      flagNudge: async (input) => {
+        absent = input.agentContext;
+        return openItem({});
+      },
+    }), 'live');
+    expect(absent).toBeUndefined();
+  });
+
   test('only an APPLIED escalate is quoted — never a refusal, a shadow, or an extend', async () => {
     const cases: Array<Record<string, unknown>> = [
       { outcome: 'refused', reason: 'REFUSED-REASON' },

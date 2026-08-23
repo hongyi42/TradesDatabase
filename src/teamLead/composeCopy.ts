@@ -75,6 +75,15 @@ export const flatten = (s: string, max: number): string =>
     .trim()
     .slice(0, max);
 
+// The seam between the HUMAN half of a deliverable (question + evidence line)
+// and the footer written for the RECEIVING AGENT. Exported because the outbox
+// (control/nudgeQueue.ts) strips on exactly this string to serve the verbatim
+// direct-send twin — assemble and strip must share one constant or they drift.
+// It occurs exactly once per deliverable by construction: `flatten` collapses
+// newlines in every embedded field, and both compose's guard and
+// cleanQuestionDraft refuse model text containing the phrase.
+export const FOOTER_DELIMITER = '\n\nNote for the assistant:';
+
 export interface ComposeContext {
   customerName: string;
   jobTitle: string;
@@ -131,8 +140,8 @@ export function assembleNudgeMessage(question: string, ctx: ComposeContext): str
   const bareDate = ctx.endsAtLocal.slice(0, 10);
   return (
     `${question.trim()}\n\n` +
-    `(re: ${ctx.customerName} — ${ctx.jobTitle}, visit on ${bareDate})\n\n` +
-    `Note for the assistant: you are ${ctx.technicianName}'s own assistant and the person in ` +
+    `(re: ${ctx.customerName} — ${ctx.jobTitle}, visit on ${bareDate})` +
+    `${FOOTER_DELIMITER} you are ${ctx.technicianName}'s own assistant and the person in ` +
     `THIS chat is ${ctx.technicianName} — ask them here. There is nobody to forward this to ` +
     `and no other conversation to go looking for. This is a routine record-keeping check ` +
     `from the office. First read back through this conversation: if ${ctx.technicianName} ` +
@@ -219,8 +228,8 @@ export function readCostComposeContext(n: Nudge): CostComposeContext | null {
 export function assembleCostNudgeMessage(question: string, ctx: CostComposeContext): string {
   return (
     `${question.trim()}\n\n` +
-    `(re: ${ctx.customerName} — ${ctx.jobTitle})\n\n` +
-    `Note for the assistant: you are ${ctx.technicianName}'s own assistant and the person in ` +
+    `(re: ${ctx.customerName} — ${ctx.jobTitle})` +
+    `${FOOTER_DELIMITER} you are ${ctx.technicianName}'s own assistant and the person in ` +
     `THIS chat is ${ctx.technicianName} — ask them here. There is nobody to forward this to ` +
     `and no other conversation to go looking for. This is a routine record-keeping check ` +
     `from the office. First read back through this conversation: if ${ctx.technicianName} ` +

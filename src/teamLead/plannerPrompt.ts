@@ -137,6 +137,9 @@ export const PLANNER_SYSTEM = [
   '    date you worked out yourself. A note containing anything else is thrown away and the',
   '    manager gets a plain system sentence instead, so you lose the message, not just the date.',
   '  * No links.',
+  'Alongside the note you MAY write `agentContext`: a briefing for the manager\'s ASSISTANT —',
+  'never shown to the manager — with ids, what you already checked, and what an answer would',
+  'unblock. Same dates rule as the note.',
   '',
   'WHEN TO GIVE UP. If a gap was asked and has gone genuinely unanswered, escalate it — but ask',
   'yourself first whether they have actually had a fair chance. Somebody asked at the end of the',
@@ -224,6 +227,14 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
                 'Never imply the person is at fault. Use only the date strings the gap listed ' +
                 'under "dates you may use", copied exactly — any other date and the note is ' +
                 'discarded. Ignored for every other action.',
+            },
+            agentContext: {
+              type: 'string',
+              description:
+                "For 'escalate': a briefing for the manager's ASSISTANT, not the manager — " +
+                'ids, what you already tried or checked, what an answer would unblock. The ' +
+                'manager never reads it; the assistant uses it when the manager engages with ' +
+                'the item. Same date rule as handoffNote. Ignored for every other action.',
             },
             escalateAfter: {
               type: 'string',

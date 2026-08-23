@@ -8,6 +8,7 @@ import {
   buildGapView,
   cleanQuestionDraft,
   buildPlannerUserMessage,
+  cleanAgentContext,
   cleanHandoffNote,
   EVIDENCE_PER_GAP,
   PLANNER_ACTIONS,
@@ -1132,6 +1133,28 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     expect(markOutcome).not.toHaveBeenCalled();
   });
 
+  test('an applied escalate RECORDS its briefing — the one link the other tests cannot see', async () => {
+    // ④b review finding: rail, threading and surface were each covered, but a
+    // dropped mapping at either recording seam (planner.ts base object or the
+    // nudgeDecisions insert) would fail silently. Pin the decision→row link.
+    const { recorded } = await live({ status: 'asked' }, [
+      {
+        nudgeId: 'n1',
+        action: 'escalate',
+        confidence: 'high',
+        reason: 'no reply all day',
+        handoffNote: 'Still no write-up on the furnace job.',
+        agentContext: 'Job j1: asked once; ledger empty; a figure unblocks the invoice.',
+      },
+    ]);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].outcome).toBe('applied');
+    expect(recorded[0].agentContext).toBe(
+      'Job j1: asked once; ledger empty; a figure unblocks the invoice.',
+    );
+    expect(recorded[0].handoffNote).toBe('Still no write-up on the furnace job.');
+  });
+
   // The whole point of the rail: with the sweep down, the deadline write would
   // have SUCCEEDED and been logged `applied`. A truthful log is the reason this
   // is refused rather than attempted — an escalation recorded as delivered is
@@ -1547,6 +1570,35 @@ describe('shadow mode leaves the database untouched', () => {
     expect(rows.rows[0].action).toBe('extend');
     expect(rows.rows[0].escalate_after?.toISOString()).toBe(moved);
   });
+
+  test('agent_context reaches the ROW — the snake_case insert seam (④b review residue)', async () => {
+    // The planner-level test stubs recordDecisions, so the one line it cannot
+    // see is nudgeDecisions.ts's `agent_context: d.agentContext ?? null`.
+    const n = await createPendingNudge({
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef: 'asg-agctx-row',
+      technicianId: techId,
+      context: {},
+    });
+    if (!n) throw new Error('fixture nudge was not created');
+    const written = await recordNudgeDecisions([
+      { tenantId, nudgeId: n.id, jobId: null, mode: 'live', action: 'escalate',
+        confidence: 'high', reason: 'no reply all day',
+        handoffNote: 'Still no write-up on the furnace job.',
+        agentContext: 'Job j1: asked once; ledger empty; a figure unblocks the invoice.',
+        outcome: 'applied' },
+    ]);
+    expect(written).toBe(1);
+    const rows = await pg.query<{ agent_context: string | null; handoff_note: string | null }>(
+      'select agent_context, handoff_note from nudge_decisions where nudge_id = $1',
+      [n.id],
+    );
+    expect(rows.rows[0].agent_context).toBe(
+      'Job j1: asked once; ledger empty; a figure unblocks the invoice.',
+    );
+    expect(rows.rows[0].handoff_note).toBe('Still no write-up on the furnace job.');
+  });
 });
 
 // ── plan ② Phase 3: the planner writes the manager's line ───────────────────
@@ -1624,6 +1676,31 @@ describe('cleanHandoffNote — the date rail', () => {
   });
 });
 
+describe('cleanAgentContext — the briefing rail (④b fourth rail)', () => {
+  const LABELS = ['Thursday, Aug 13 at 12:00 AM'];
+
+  test('ids pass the date rail — uuid hex is not a date', () => {
+    const { note, why } = cleanAgentContext(
+      'Job 4bd956ea-1111-2222-3333-444444444444: asked on Thursday, Aug 13 at 12:00 AM; ' +
+        'ledger empty; an amount would unblock the invoice.',
+      LABELS,
+    );
+    expect(why).toBeUndefined();
+    expect(note).toContain('4bd956ea');
+  });
+
+  test('an invented date drops the briefing whole, named by its own label', () => {
+    const { note, why } = cleanAgentContext('Checked the ledger on Monday.', LABELS);
+    expect(note).toBeNull();
+    expect(why).toBe('agent context used a date it was not given: "Monday"');
+  });
+
+  test('the 700-char cap and the link ban hold', () => {
+    expect(cleanAgentContext('x'.repeat(701), LABELS).why).toMatch(/over 700/);
+    expect(cleanAgentContext('see https://example.com/x', LABELS).why).toMatch(/link/);
+  });
+});
+
 describe('validateDecisions — the handoff note', () => {
   const view = (over: Record<string, unknown> = {}) =>
     ({
@@ -1683,6 +1760,54 @@ describe('validateDecisions — the handoff note', () => {
     expect(decisions[0].handoffNote).toBeUndefined();
     expect(dropped).toEqual([]); // the DECISION was not refused
     expect(noteDrops).toEqual(['n1: handoff note used a date it was not given: "Monday"']);
+  });
+
+  test('the briefing rides the escalate, and drops ALONE — never with the note', () => {
+    // ④b: agentContext is railed beside handoffNote but independently — a bad
+    // briefing costs the briefing, never the manager's sentence or the handover.
+    const { decisions, dropped, noteDrops } = validateDecisions(
+      {
+        decisions: [
+          {
+            nudgeId: 'n1',
+            action: 'escalate',
+            confidence: 'high',
+            reason: 'internal',
+            handoffNote: 'Still no write-up on the furnace job.',
+            agentContext: 'Ledger checked on Monday — empty.',
+          },
+        ],
+      },
+      views,
+      NOW,
+    );
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0].handoffNote).toBe('Still no write-up on the furnace job.');
+    expect(decisions[0].agentContext).toBeUndefined();
+    expect(dropped).toEqual([]);
+    expect(noteDrops).toEqual(['n1: agent context used a date it was not given: "Monday"']);
+  });
+
+  test('a clean briefing survives beside the note', () => {
+    const { decisions, noteDrops } = validateDecisions(
+      {
+        decisions: [
+          {
+            nudgeId: 'n1',
+            action: 'escalate',
+            confidence: 'high',
+            reason: 'internal',
+            agentContext: 'Job j1: asked once; ledger empty; an amount unblocks the invoice.',
+          },
+        ],
+      },
+      views,
+      NOW,
+    );
+    expect(decisions[0].agentContext).toBe(
+      'Job j1: asked once; ledger empty; an amount unblocks the invoice.',
+    );
+    expect(noteDrops).toEqual([]);
   });
 
   test('a note on a non-escalate action is ignored entirely', () => {

@@ -10,6 +10,7 @@ import {
   setNudgeServeCount,
 } from '../db/index.js';
 import { handToManager } from '../teamLead/compose.js';
+import { FOOTER_DELIMITER } from '../teamLead/composeCopy.js';
 
 // The voice's transport, spine side (plan 2026-08-15 feature B, Phase 4).
 // The spine NEVER reaches into the agent box — the box already phones home
@@ -41,6 +42,12 @@ export interface NudgeDeliveryItem {
   replyTo: string; // the technician's telegram user id
   sessionId: string;
   messageB64: string;
+  // The VERBATIM twin (④b): the deliverable with the agent-facing footer
+  // stripped — what a runner-v2 box sends straight to the person, byte-equal
+  // to what the audit stores once Phase 5 stops composing the footer at all.
+  // Served alongside messageB64 so spine deploy and box re-wire stay
+  // independent; a footer-less question passes through unchanged.
+  directMessageB64: string;
 }
 
 export interface NudgeQueueDeps {
@@ -104,6 +111,10 @@ export async function buildNudgeDelivery(
         replyTo: tech.telegram_user_id,
         sessionId: `nudge-${row.id}`,
         messageB64: Buffer.from(row.question, 'utf8').toString('base64'),
+        directMessageB64: Buffer.from(
+          row.question.split(FOOTER_DELIMITER)[0],
+          'utf8',
+        ).toString('base64'),
       });
     } catch (err) {
       // One poisoned row never blocks the host's other deliveries.

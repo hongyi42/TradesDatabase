@@ -4,6 +4,7 @@ import { listJobsForCustomer, type Job } from './jobs.js';
 import { listVisitsForCustomer, type Visit } from './visits.js';
 import { listUpcomingAssignmentsForCustomer } from './assignments.js';
 import { localDateISO } from '../schedule/availability.js';
+import { spineNowIso } from '../evalClock.js';
 // Full weekday name, matching resolve_date's phrase convention ("Monday
 // 2026-08-03") — the label the agent is told to say verbatim. fit.ts's
 // weekdayLabel is the short form used by schedule grids; a phrase spoken to a
@@ -95,7 +96,10 @@ export async function getCustomerContext(
   let upcomingVisits: UpcomingVisit[] = [];
   if (customer) {
     const tz = (await getTenant(customer.tenant_id))?.timezone ?? 'UTC';
-    const todayLocal = localDateISO(new Date().toISOString(), tz);
+    // Real clock unless EVAL_FAKE_NOW anchors THIS tenant (date-eval only):
+    // the upcoming/recent split must agree with the anchored resolve_date, or
+    // an anchored run charges the model for the harness's own inconsistency.
+    const todayLocal = localDateISO(spineNowIso(customer.tenant_id), tz);
     const rows = await listUpcomingAssignmentsForCustomer(customer.tenant_id, customerId, todayLocal);
     upcomingVisits = rows
       // Re-check the embed's tenant: "a job shares its customer's tenant" is

@@ -4,6 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
+import { spineNowIso } from '../evalClock.js';
 import type { JsonSchemaObject } from '../model/forcedTool.js';
 import {
   annotateResolvedReviewItem,
@@ -2762,7 +2763,9 @@ async function dispatch(
       // (src/schedule/dateResolve.ts). Returning today+timezone also grounds
       // the agent for whatever it does next.
       const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
-      const todayLocal = localDateISO(new Date().toISOString(), tz);
+      // spineNowIso: real clock unless EVAL_FAKE_NOW anchors THIS tenant
+      // (the date-eval's any-hour regime — see src/evalClock.ts).
+      const todayLocal = localDateISO(spineNowIso(tenantId), tz);
       const weekdayArg = str('weekday');
       if (weekdayArg !== undefined && !isWeekday(weekdayArg)) {
         throw new Error(`invalid weekday: ${weekdayArg} (use a lowercase day name)`);
@@ -3745,7 +3748,7 @@ async function dispatch(
       const to = str('to');
       // Truthiness, not ??=: an empty-string from means "today" (main/board
       // parity — same rule as get_schedule above).
-      if (!from) from = localDateISO(new Date().toISOString(), teamTenant?.timezone ?? 'UTC');
+      if (!from) from = localDateISO(spineNowIso(tenantId), teamTenant?.timezone ?? 'UTC');
       const DATE = /^\d{4}-\d{2}-\d{2}$/;
       if (!DATE.test(from)) {
         return { status: 'invalid_range', note: 'from must be YYYY-MM-DD' };
@@ -7318,7 +7321,7 @@ async function groundingNow(tenantId: string): Promise<string> {
   }
   // The exact condition-B format the eval measured (80.6% vs bare-date 66.3%):
   // weekday spelled out, firm-local, timezone named.
-  const human = new Date().toLocaleDateString('en-US', {
+  const human = new Date(spineNowIso(tenantId)).toLocaleDateString('en-US', {
     timeZone: tz,
     weekday: 'long',
     month: 'long',

@@ -175,6 +175,23 @@ describe('MCP server', () => {
     expect(names).toHaveLength(14);
   });
 
+  test('EVAL_FAKE_NOW anchors resolve_date for ONE tenant only (date-eval any-hour regime)', async () => {
+    // 02:30Z = the previous firm-local EVENING in America/Los_Angeles — the
+    // exact UTC-day-vs-firm-day disagreement the evening regime provides.
+    process.env.EVAL_FAKE_NOW = `${tenantId}:2027-03-04T02:30:00.000Z`;
+    try {
+      const anchored = await call('resolve_date', { dayShift: 0 });
+      expect(anchored.data.status).toBe('resolved');
+      expect(anchored.data.today).toBe('2027-03-03');
+      // A different tenant id in the flag → THIS tenant keeps the real clock.
+      process.env.EVAL_FAKE_NOW = `00000000-0000-0000-0000-000000000000:2027-03-04T02:30:00.000Z`;
+      const real = await call('resolve_date', { dayShift: 0 });
+      expect(real.data.today).toBe(localDateISO(new Date().toISOString(), 'America/Los_Angeles'));
+    } finally {
+      delete process.env.EVAL_FAKE_NOW;
+    }
+  });
+
   test('resolve_date computes the date server-side from the firm clock (agent never passes today)', async () => {
     // The firm-local today the server will use (seed tenant tz = Pacific).
     const today = localDateISO(new Date().toISOString(), 'America/Los_Angeles');
@@ -3984,6 +4001,18 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
         expect(Array.isArray(leanCtx.data.jobs)).toBe(true);
       } finally {
         delete process.env.GROUNDING_LEAN;
+      }
+
+      // EVAL_FAKE_NOW also pins the no-args default range (an anchored eval
+      // question like "what's on the schedule?" must open at the ANCHOR's
+      // today, not the wall clock's).
+      process.env.EVAL_FAKE_NOW = `${tenantId}:2027-03-04T02:30:00.000Z`;
+      try {
+        const anchoredSched = await callWith('get_team_schedule', {});
+        expect(anchoredSched.data.status).toBe('ok');
+        expect(anchoredSched.data.from).toBe('2027-03-03');
+      } finally {
+        delete process.env.EVAL_FAKE_NOW;
       }
     } finally {
       await mgrClient.close();

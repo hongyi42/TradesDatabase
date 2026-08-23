@@ -196,3 +196,36 @@ Comparison discipline: the 100% GLM baseline (v3, 2026-08-13) is an
 **evening-regime weekday-anchor** run — compare like with like, and read
 weekend-anchor misses through the weekend-ambiguity lens first (the
 2026-08-15 Saturday run's misses were all that class).
+
+## Anchored runs: the regime at any hour (`--anchor`)
+
+The adversarial "evening regime" was never about the evening — it is the
+model's UTC clock naming a different day than the firm's. An anchored run
+manufactures that disagreement at any wall-clock hour instead of waiting
+for one:
+
+```bash
+npm run date-eval:plan -- --anchor 2026-08-20        # a THURSDAY inside the seed window,
+                                                     # pinned at 18:30 firm-local
+# plan prints:  EVAL_FAKE_NOW=<tenantId>:<instant>   ← set on Render (per-call read, no deploy)
+npm run date-eval:run -- --dir <dir> --yes --anchored
+# remove EVAL_FAKE_NOW from Render immediately after
+```
+
+Mechanics: `EVAL_FAKE_NOW` (src/evalClock.ts) pins "now" for EXACTLY the eval
+tenant — the rider, `resolve_date`, the schedule default range, and the
+upcoming/recent split all serve the anchor; every other tenant keeps the real
+clock, and any parse failure fails closed to the real clock. The box's clock
+is deliberately left real: its disagreement with the anchored rider IS the
+condition under test. The weekday guard is unaffected (it checks weekday↔date
+pair consistency, which is calendar-fixed). `run.mjs` refuses an anchored
+manifest without `--anchored` — read the env back from Render first; an
+unanchored spine mis-grades every question.
+
+Three problems one anchor solves: any-hour runs, weekday anchors on weekend
+days (kills the weekend-ambiguity confound), and anchoring inside the seed
+world's data window regardless of the real date. One residual honesty note:
+a model that ignores doctrine and bounds `query_spine` SQL with the
+database's own `current_date` reads the REAL day and fails — which is the
+same violation the doctrine already prohibits, now caught loudly instead of
+passing silently mid-day.

@@ -2963,3 +2963,37 @@ which is exactly why the agent reaches for `sessions_list`.
 `bootstrap-box.sh wire` dies at its bare `nemoclaw` call — `export PATH="$HOME/.local/bin:$PATH"`
 first. Already recorded; hit again because the recorded fix is easy to skip.
 
+
+### Deploy does not migrate — and the pilot's migration ledger lies (2026-08-23)
+
+Found while deploying PR #164 (③ the brain decides). Two separate traps, one incident.
+
+**Render deploys no migrations.** The web service builds with `npm install && npm run build` and
+starts `npm run mcp:serve:http`; the cron runs `npm run job:lifecycle`. Nothing in either invokes
+`supabase migration up` or `db push`. So the merge commit went live at 00:44Z against a pilot schema
+that still lacked both of its migrations; the schema arrived ~12 minutes later, by hand, and only
+because it was checked. **Deploy and migrate are two independent manual steps. Run the migration
+FIRST, then the code** — the reverse is what happened here.
+
+**The pilot's migration ledger is out of sync with its actual schema.** `list_migrations` stopped at
+`nudge_decisions_extend`, yet `nudge_decisions.handoff_note` and `question_draft` (PR #163) were
+present as columns. Some DDL reaches the pilot by a path Supabase does not record, so the ledger can
+report a migration missing when it is applied — and would equally hide the reverse.
+
+> **Verify the artefact, never the record of the artefact.** `information_schema.columns` and
+> `pg_get_constraintdef(...)`, not `list_migrations`. Same doctrine as the six drifting
+> `bootstrap-box.sh` copies on trades-box-1.
+
+**Why the CHECK constraint was the dangerous half.** A missing nullable column is benign — Phase 1's
+attribution no-ops into its own try/catch. A missing CHECK is not: `recordNudgeDecisions` inserts one
+statement per chunk with no partial insert, so a single un-migrated value rejects **up to 500 rows**.
+Phase 3 appends `unmentioned` for every gap the planner does not name, so *every* tick's batch would
+have failed — and the tick still reports `ok: true`, because the write sits inside a try/catch. The
+knock-on is the bad part: `plannerAlive` reads that table, so with nothing being written it reads
+false for every gap, and Phase 2's fail-safe would auto-close answered gaps while blaming a planner
+that was working perfectly.
+
+**Verified-good state, 2026-08-23 01:01:17Z** (the first in-window planner tick after the fix):
+`decisions 2 · dropped 0 · applied 2 · recorded 2 · tenantErrors 0`, `byAction {"leave": 2}`, both
+carrying substantive reasons; `watchers.nudgesAutoClosed: 0`. `recorded: 2` is the proof the
+constraint took — pre-migration that number is 0 with a loud error and no other symptom.

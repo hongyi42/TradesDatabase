@@ -1007,6 +1007,41 @@ EOF
     echo "    WARN: no running container for ${agent} — append the §0h freeze-ritual block manually once it's up"
   fi
 
+  # Office-questions block — REFRESHED on every run (delete-then-append, the
+  # doctrine idiom): ④b Phase 4 moves nudge delivery from an agent relay turn
+  # to a verbatim `openclaw message send`, so the duties the per-message
+  # footer used to carry MUST live here — a seat wired without this block
+  # would see office questions in its channel history with no standing rule
+  # to record the answers.
+  log "office-questions block (§0k — record answers to office questions; agentContext briefings are agent-only; refreshed per run)"
+  if [ -n "$cid" ]; then
+    if docker exec "$cid" grep -q "Questions and items from the office" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
+      docker exec -u sandbox "$cid" sh -c 'awk '\''/^## Questions and items from the office/{skip=1; next} skip && /^## /{skip=0} !skip'\'' /sandbox/.openclaw/workspace/AGENTS.md > /tmp/agents-md.tmp && cat /tmp/agents-md.tmp > /sandbox/.openclaw/workspace/AGENTS.md && rm -f /tmp/agents-md.tmp'
+    fi
+    docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
+
+## Questions and items from the office (host-managed; refreshed; added 2026-08-23)
+
+The office sends short work questions into this chat DIRECTLY — a message can appear in the
+conversation history that you did not write (for example "how did the visit go?" with a
+"(re: customer — job)" line naming the job). That is normal, not an intrusion.
+
+1. When the person answers an office question — even "nothing to report" or "no parts" —
+   record the answer with record_field_note for the job the "(re: …)" line names, so the
+   office's record is complete. Record on the first call (the permanent-record rules apply),
+   and never re-ask a question the office already asked and the person already answered.
+2. Open items in the office's review queue (list_pending_reviews, where you have it) may
+   carry `agentContext` — a briefing from the office's planner written FOR YOU, not for the
+   person: ids, what was already tried, what an answer would unblock. Use it to help them
+   decide; NEVER read it aloud, quote it, or mention that it exists.
+3. If you cannot tell which open question or item a person's reply answers, ask them —
+   never guess which record to close.
+EOF
+    ok "office-questions block refreshed in ${agent}'s AGENTS.md"
+  else
+    echo "    WARN: no running container for ${agent} — append the §0k office-questions block manually once it's up"
+  fi
+
   log "heartbeat OFF (blind 30-min poll → 0m; scheduled work uses cron instead — added 2026-07-20)"
   if [ -n "$cid" ]; then
     hb_cur=$(docker exec -u sandbox -e HOME=/sandbox "$cid" openclaw config get agents.defaults.heartbeat.every 2>/dev/null | tr -d '\n')

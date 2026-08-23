@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
-# nudge-runner.sh — deliver queued team-lead nudges through each technician's
-# OWN agent (plan 2026-08-15 feature B, Phase 4). Runs as ROOT on a systemd
-# timer (every 5 min), pairs with the spine's GET/POST /control/nudges.
+# nudge-runner.sh — v2 (plan 2026-08-23 ④b, Phase 4): deliver queued team-lead
+# nudges VERBATIM to each person's Telegram with `openclaw message send` —
+# ZERO model calls on the delivery leg. Runs as ROOT on a systemd timer
+# (every 5 min), pairs with the spine's GET/POST /control/nudges.
+#
+# v1 relayed each nudge through the seat agent (`nemoclaw <seat> agent
+# --deliver`): a full model turn whose ONLY job was rewording a message the
+# spine had already composed, judged by scraping the session trajectory.
+# v2 sends the spine's footer-less twin (`directMessageB64`, served since
+# 2026-08-23) straight to the chat: what the planner approved is byte-what-
+# arrives, the seat's model runs only on the REPLY (which lands in the
+# person's NORMAL session with the sent question visible in channel history),
+# and the ~6-turn/84k-token delivery cost drops to one CLI call. The duties
+# the old footer carried (record the answer; briefings are agent-only) now
+# live in the seats' AGENTS.md ("Questions and items from the office" block,
+# wired by bootstrap-box.sh).
 #
 # Posture (ops-report.sh discipline): ALWAYS exits 0 — delivery must never
 # mark the box unhealthy; failures are reported per item to the spine, which
@@ -9,19 +22,24 @@
 # Every network call carries a hard --max-time; every CLI call a hard timeout.
 #
 # Per item:
-#   1. validate sandboxRef/replyTo/sessionId (they become argv — never paths,
-#      never flags; the badge-pull retirement-ref rule),
-#   2. decode the message (base64 keeps the multi-line deliverable shell-safe),
-#   3. STAGE the body to a file inside the sandbox and pass --message-file
-#      (openshell exec rejects newlines in argv, so -m cannot carry it),
-#   4. `nemoclaw <sandbox> agent --deliver` into a FRESH per-nudge session
-#      (id reuse resumes stale conversations — decision D6); --deliver runs on
-#      the GATEWAY and fires the outbound plugin hooks (weekday guard
-#      included), so the agent's reply reaches the technician's Telegram,
-#   5. judge success by assistant text in the session TRAJECTORY — never CLI
-#      stdout (stdout is chrome and has rotted before), never `docker exec`
-#      (the gateway port lives in a nested netns; ssh→exec is the way),
-#   6. POST the outcome. One item's failure never aborts the loop.
+#   1. validate id/sandboxRef/replyTo (they become argv — never paths, never
+#      flags; the badge-pull retirement-ref rule),
+#   2. sent-marker pre-check: /var/lib/nudge-runner/sent-<id> present means a
+#      previous tick delivered and only the ACK was lost — re-ack, never
+#      re-ping (duplicate pings are the over-pinging failure mode),
+#   3. decode directMessageB64 (absent → report failed: v2 NEVER falls back
+#      to relaying the footered payload through the agent),
+#   4. STAGE the body to a file inside the sandbox (openshell exec rejects
+#      newlines in argv — the live-proven 2026-08-18 trap; the deliverable is
+#      multi-line by construction) and send with `openclaw message send`
+#      IN-CONTAINER (the binary lives in the sandbox, not on the box PATH —
+#      probed 2026-08-23). The weekday guard's message_sending hook fires on
+#      this path, so direct send keeps full guard coverage.
+#   5. judge by the send's own exit — deterministic (probed: failure = exit 1
+#      + OutboundDeliveryError; the gateway logs one `message.action` line),
+#      no trajectory scraping,
+#   6. write the marker, THEN report — a lost ack re-acks next tick via the
+#      marker. One item's failure never aborts the loop.
 #
 # Setup (once, as root — see doorman-nemoclaw-setup-guide.md):
 #   install -o root -g root -m 700 nudge-runner.sh /usr/local/sbin/nudge-runner.sh
@@ -43,7 +61,10 @@ NUDGE_URL="${NUDGE_URL:-${PULL_URL%/control/badges}/control/nudges}"
 NEMOCLAW_USER="${NEMOCLAW_USER:-ubuntu}"
 home=$(getent passwd "$NEMOCLAW_USER" | cut -d: -f6)
 NEMOCLAW_BIN="${NEMOCLAW_BIN:-$home/.local/bin/nemoclaw}"
-TRAJ_DIR="/sandbox/.openclaw/agents/main/sessions"
+# Sent markers: one empty file per delivered nudge id. Must exist BEFORE the
+# loop or the idempotence pre-check silently never engages (plan review catch).
+MARK_DIR="/var/lib/nudge-runner"
+install -d -m 700 "$MARK_DIR"
 
 if [ ! -x "$NEMOCLAW_BIN" ]; then
   echo "nudge-runner: nemoclaw not found at $NEMOCLAW_BIN — nothing delivered" >&2
@@ -69,35 +90,14 @@ report() { # $1 id, $2 outcome, $3 fixed detail string (NEVER interpolated outpu
     "$NUDGE_URL" >/dev/null 2>&1 || true
 }
 
-# Does this nudge's session hold ANY assistant TEXT? The verdict mirrors the
-# repo's canonical trajectory reader (scripts/date-eval/run.mjs
-# replyFromTrajectory): role must be assistant AND the joined type:"text"
-# content must be non-empty — a bare role marker is NOT success (an assistant
-# turn carrying only thinking/tool blocks occurs live, and with --deliver no
-# reply text means nothing was sent). Returns 1 when the session file does not
-# exist yet (first serve) or the read fails.
-traj_has_text() { # $1 sandboxRef, $2 sessionId
-  local out n
-  out=$(timeout 60 sudo -u "$NEMOCLAW_USER" -H "$NEMOCLAW_BIN" "$1" exec --no-tty -- \
-    cat "$TRAJ_DIR/$2.jsonl" </dev/null 2>/dev/null) || return 1
-  n=$(printf '%s\n' "$out" | jq -R '
-        try fromjson catch empty
-        | select(.message.role? == "assistant")
-        | ((.message.content // []) | map(select(.type? == "text") | (.text // "")) | join("")
-           | gsub("\\s+"; ""))
-        | select(length > 0)' 2>/dev/null | wc -l)
-  [ "${n:-0}" -gt 0 ] 2>/dev/null
-}
-
 printf '%s' "$resp" | jq -c '.nudges[]' | while IFS= read -r item; do
   id=$(printf '%s' "$item" | jq -r '.id // empty')
   sref=$(printf '%s' "$item" | jq -r '.sandboxRef // empty')
   reply_to=$(printf '%s' "$item" | jq -r '.replyTo // empty')
-  sid=$(printf '%s' "$item" | jq -r '.sessionId // empty')
-  b64=$(printf '%s' "$item" | jq -r '.messageB64 // empty')
+  b64=$(printf '%s' "$item" | jq -r '.directMessageB64 // empty')
 
-  # ids are uuids minted by the spine; refs/session ids become ARGV — accept
-  # only sane names (badge-pull.sh retirement-ref rule).
+  # ids are uuids minted by the spine; refs become ARGV — accept only sane
+  # names (badge-pull.sh retirement-ref rule).
   if ! printf '%s' "$id" | grep -Eq '^[A-Za-z0-9-]+$'; then continue; fi
   if ! printf '%s' "$sref" | grep -Eq '^[A-Za-z0-9_]+$'; then
     report "$id" failed "invalid sandboxRef"
@@ -107,40 +107,31 @@ printf '%s' "$resp" | jq -c '.nudges[]' | while IFS= read -r item; do
     report "$id" failed "invalid replyTo"
     continue
   fi
-  if ! printf '%s' "$sid" | grep -Eq '^[A-Za-z0-9-]+$'; then
-    report "$id" failed "invalid sessionId"
-    continue
-  fi
-  msg=$(printf '%s' "$b64" | base64 -d 2>/dev/null) || {
-    report "$id" failed "message decode failed"
-    continue
-  }
-  [ -n "$msg" ] || { report "$id" failed "empty message"; continue; }
 
-  # Idempotence pre-check (Phase-4 review F4): the per-nudge session id is
-  # stable, so if a PREVIOUS tick already delivered here and only the ack was
-  # lost, the session already holds assistant text — re-ack it, never re-ping
-  # the technician (duplicate pings are the over-pinging failure mode the
-  # budget exists to prevent; without this, a broken report path re-delivers
-  # every tick until the serve cap). On the first serve the session file does
-  # not exist and this falls through to delivery.
-  if traj_has_text "$sref" "$sid"; then
+  # Idempotence pre-check: the marker means a PREVIOUS tick already sent this
+  # id and only the ack was lost — re-ack it, never re-ping the person
+  # (without this, a broken report path re-delivers every tick until the
+  # serve cap). On the first serve no marker exists and this falls through.
+  if [ -f "$MARK_DIR/sent-$id" ]; then
     report "$id" delivered ""
     continue
   fi
 
-  # STAGE THE BODY INSIDE THE SANDBOX FIRST. `nemoclaw <name> agent` forwards
-  # argv through `openshell sandbox exec`, which REJECTS any argument
-  # containing a newline — and our deliverable is multi-line by construction
-  # (question / evidence line / footer). Passing it with -m exits 2 in ~1s:
-  #   "command argument N (... spanning 5 lines) contains a newline or
-  #    carriage return, which OpenShell exec does not accept."
-  # Live-proven 2026-08-18: every delivery failed this way until the message
-  # moved out of argv. `--message-file` reads the body from a path INSIDE the
-  # sandbox, so write it there over stdin first (the documented escape hatch).
-  # Single-line test messages hide this bug — always exercise a real one.
-  # $sid is validated above as [A-Za-z0-9-]+, so it is safe to interpolate.
-  msgfile="/tmp/nudge-$sid.txt"
+  msg=$(printf '%s' "$b64" | base64 -d 2>/dev/null) || {
+    report "$id" failed "message decode failed"
+    continue
+  }
+  # An item without the verbatim twin is not deliverable by v2 — never fall
+  # back to relaying the footered messageB64 through the agent.
+  [ -n "$msg" ] || { report "$id" failed "no direct payload"; continue; }
+
+  # STAGE THE BODY INSIDE THE SANDBOX FIRST. openshell exec REJECTS any argv
+  # containing a newline, and the deliverable is multi-line by construction
+  # (question / evidence line) — live-proven 2026-08-18: every delivery
+  # failed until the message moved out of argv. Single-line test messages
+  # hide this bug — always exercise a real one. $id is validated above as
+  # [A-Za-z0-9-]+, so it is safe to interpolate.
+  msgfile="/tmp/nudge-$id.txt"
   if ! printf '%s' "$msg" | timeout 60 sudo -u "$NEMOCLAW_USER" -H \
       "$NEMOCLAW_BIN" "$sref" exec --no-tty -- bash -c "cat > $msgfile" \
       >/dev/null 2>&1; then
@@ -148,23 +139,25 @@ printf '%s' "$resp" | jq -c '.nudges[]' | while IFS= read -r item; do
     continue
   fi
 
-  # Deliver through the person's own agent. </dev/null: exec/agent eat stdin
-  # and would swallow the while-loop's remaining items (recorded gotcha).
-  if ! timeout 240 sudo -u "$NEMOCLAW_USER" -H "$NEMOCLAW_BIN" "$sref" agent \
-      --agent main --session-id "$sid" --message-file "$msgfile" \
-      --deliver --reply-channel telegram --reply-to "$reply_to" \
+  # Send verbatim. The openclaw binary lives IN the container (probed
+  # 2026-08-23) — run it via exec; $(cat) rehydrates the multi-line body on
+  # the far side of the argv wall. $reply_to is validated ^[0-9]+$ above.
+  # </dev/null: exec eats stdin and would swallow the while-loop's remaining
+  # items (recorded gotcha). Exit status IS the verdict: the probe showed
+  # deterministic exit 1 + OutboundDeliveryError on failure.
+  if timeout 120 sudo -u "$NEMOCLAW_USER" -H "$NEMOCLAW_BIN" "$sref" exec --no-tty -- \
+      bash -c "openclaw message send --channel telegram --target $reply_to -m \"\$(cat $msgfile)\" --json" \
       </dev/null >/dev/null 2>&1; then
-    report "$id" failed "agent CLI exited non-zero or timed out"
-    continue
-  fi
-
-  # The CLI exiting 0 is NOT the verdict (stdout/chrome has rotted before) —
-  # assistant TEXT in the per-nudge session trajectory is. Since the
-  # pre-check above found none, text now means THIS turn produced it.
-  if traj_has_text "$sref" "$sid"; then
+    # Marker BEFORE report: if the ack is lost, next tick re-acks instead of
+    # re-pinging. The sha256 line is the byte-identity evidence trail — the
+    # hash of exactly what was sent, comparable to the stored question's
+    # pre-footer half, without putting message content in the journal.
+    touch "$MARK_DIR/sent-$id"
+    hash=$(printf '%s' "$msg" | sha256sum | cut -d' ' -f1)
+    echo "nudge-runner: sent $id chars=${#msg} sha256=$hash" >&2
     report "$id" delivered ""
   else
-    report "$id" failed "no assistant text in trajectory"
+    report "$id" failed "message send failed"
   fi
 done
 

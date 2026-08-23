@@ -165,3 +165,34 @@ The inference route is **gateway-level**: `openshell inference set` changes the
 model for the whole fleet, so every live bot runs the candidate model for the
 duration of the run. That is a real cost — do it deliberately, on a quiet
 window, and put the route back afterwards. There is no per-sandbox override.
+
+Two more gates apply to a model swap: the run refuses unless the served model
+matches the manifest (`DATE_EVAL_EXPECT_MODEL=<id as the gateway spells it>` at
+plan time), and the inference medic re-asserts its own `WANT_*` route every
+5 minutes — pause its timer for the window or the swap is silently reverted
+mid-run.
+
+## Comparing scaffolding: `GROUNDING_LEAN=1` (Arm B)
+
+The question "does a frontier model need the GLM-era mechanisms at all?"
+(user hypothesis 2026-08-23: the firm-local `now` rider alone should be
+enough) is testable without touching the corpus. Setting `GROUNDING_LEAN=1`
+in the **spine's** environment (Render env var — read per call, no build)
+serves lean tool results for the window:
+
+- `get_team_schedule` loses `counts`/`windowCoverByDay`/`countsNote` — the
+  model must count stop rows itself.
+- `get_customer_context` loses `upcomingVisits` and `openWorkNote` — the
+  schedule-ahead must come from schedule reads.
+
+Everything else stays: the `now` rider (firm-local, weekday spelled, tz
+named), `resolve_date`, static tool descriptions (prompt guidance is part of
+the product, not the scaffolding under test), and the `v_schedule` status
+filter (a correctness fix — stripping it would make any model wrong). The
+flag changes the LIVE pilot's tool results while set: flip it on for the run
+window, revert immediately after, and never set it in normal operation.
+
+Comparison discipline: the 100% GLM baseline (v3, 2026-08-13) is an
+**evening-regime weekday-anchor** run — compare like with like, and read
+weekend-anchor misses through the weekend-ambiguity lens first (the
+2026-08-15 Saturday run's misses were all that class).

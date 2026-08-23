@@ -3959,6 +3959,32 @@ describe('scheduling tools (book/move/unschedule_visit + get_team_schedule)', ()
       for (const d of Object.keys(counts.byDay)) {
         expect(d >= '2026-12-20' && d <= '2026-12-24').toBe(true);
       }
+
+      // GROUNDING_LEAN=1 (date-eval Arm B, 2026-08-23): the derived crutches
+      // disappear — counts/countsNote off get_team_schedule, upcomingVisits/
+      // openWorkNote off get_customer_context — while the DATA (days, jobs)
+      // stays. Presence with the flag OFF is pinned by the counts assertions
+      // above and the upcomingVisits check here, so normal operation cannot
+      // silently serve the lean shape.
+      const fullCtx = await callWith('get_customer_context', { customerId: customer.id });
+      expect(fullCtx.data.upcomingVisits).toBeDefined();
+      process.env.GROUNDING_LEAN = '1';
+      try {
+        const leanSched = await callWith('get_team_schedule', {
+          from: '2026-12-20',
+          to: '2026-12-24',
+        });
+        expect(leanSched.data.status).toBe('ok');
+        expect(leanSched.data.counts).toBeUndefined();
+        expect(leanSched.data.countsNote).toBeUndefined();
+        expect(Array.isArray(leanSched.data.days)).toBe(true);
+        const leanCtx = await callWith('get_customer_context', { customerId: customer.id });
+        expect(leanCtx.data.upcomingVisits).toBeUndefined();
+        expect(leanCtx.data.openWorkNote).toBeUndefined();
+        expect(Array.isArray(leanCtx.data.jobs)).toBe(true);
+      } finally {
+        delete process.env.GROUNDING_LEAN;
+      }
     } finally {
       await mgrClient.close();
     }

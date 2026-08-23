@@ -62,9 +62,20 @@ function main(evt) {
       superseded: 'SUPERSEDED — do not build on this',
     };
     const tag = TAGS[h.kind] ?? h.date ?? '';
-    const drift = h.kind !== 'memory' && h.drift >= 15
-      ? ` [code has moved ${h.drift} commits since — verify before quoting]` : '';
-    return `- ${tag} · ${h.what}${drift}\n  ${h.where}`;
+    // A drifted document is not a wrong document. What it DECIDED still binds; what it said
+    // about the code has rotted. Say which half to trust rather than "verify this".
+    const signals = [];
+    if (h.dead > 0) signals.push(`describes ${h.dead} file${h.dead > 1 ? 's' : ''} that no longer exist`);
+    if (h.drift >= 15) signals.push(`code moved ${h.drift} commits since`);
+    const note = signals.length
+      ? `\n  ${signals.join('; ')} — ${
+        h.durableFirm ? `its \`${h.durable}\` still binds`
+          : h.durable ? `start from its \`${h.durable}\` for what still holds`
+            : 'what it decided still holds'
+      },`
+        + ' its file/line references do not. Check the code, not the prose.'
+      : '';
+    return `- ${tag} · ${h.what}\n  ${h.where}${note}`;
   });
 
   const context = [
@@ -74,7 +85,9 @@ function main(evt) {
     '',
     'These are prior decisions about this exact file. Check them before changing its behaviour —'
       + ' re-deciding something already settled, or reviving something already rejected, is the'
-      + ' failure this index exists to prevent. Full index: thoughts/INDEX.md',
+      + ' failure this index exists to prevent. Where a note says the code has moved, the'
+      + ' DECISION still stands; only the document\'s description of the code is stale.'
+      + ' Full index: thoughts/INDEX.md',
   ].join('\n');
 
   process.stdout.write(JSON.stringify({ additionalContext: context }));

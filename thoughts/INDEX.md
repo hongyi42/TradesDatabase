@@ -11,13 +11,26 @@ Each entry carries:
 - `landed` — its `commit:` is an ancestor of `origin/main`, so the work really shipped.
 - `not landed` — it names a commit that never reached `main`. Treat as a proposal, not a record.
 - `drift N` — the source files this document discusses have taken **N commits since it was
-  written**. High drift does not mean the decision was reversed; it means the document's
-  *description of the code* is probably out of date. Verify against the code before quoting it.
+  written**. See *What drift does and does not mean* below.
 - `describes N deleted files` — it names source files that no longer exist. The strongest
   staleness signal there is: whatever it describes has been moved, renamed or removed.
 
 **A document with no badge is not certified current** — it means no staleness signal fired,
 usually because it names no source files. Absence of a badge is absence of evidence.
+
+### What drift does and does not mean
+
+Every plan holds two kinds of claim, and they age at completely different rates:
+
+- **What was decided** — durable. It binds until something explicitly reverses it. A plan
+  from June is still the authority on why June went the way it did. Drift never touches this.
+- **What the code looked like at the time** — perishable. File paths, line numbers, function
+  names and control flow rot the moment anyone edits the file.
+
+Drift measures only the second kind. So on a drifted document: **read its `## Decisions`
+section and treat it as binding; treat every file path, line number and code description in
+it as history, and check the code instead.** Do not discard a drifted document — the decision
+in it is very likely still the one in force. Do not quote its code prose as fact.
 
 Regenerate with `npm run decisions:index`. 150 documents · 148 live · 2 superseded.
 

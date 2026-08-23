@@ -92,6 +92,22 @@ function resolveRef(ref, byPath, byBase) {
   return byBase.get(base) ?? null;
 }
 
+/**
+ * The heading under which a document keeps its DURABLE claims.
+ *
+ * A plan mixes two kinds of statement: what was decided (binds until something reverses it)
+ * and what the code looked like at the time (rots the moment anyone touches the file). Drift
+ * measures only the second kind, so a drift warning that says "verify this document" is vague
+ * to the point of being unhelpful. Naming the section that still binds makes it actionable.
+ */
+function durableSection(text) {
+  const decided = /^## (Decisions?|Decision Points)\s*$/mi.exec(text);
+  if (decided) return { heading: `## ${decided[1]}`, firm: true };
+  const summary = /^## (Summary|Overview)\s*$/mi.exec(text);
+  if (summary) return { heading: `## ${summary[1]}`, firm: false };
+  return { heading: '', firm: false };
+}
+
 /** Every source file a document names, with how often it names it. */
 function allSourceRefs(text) {
   const counts = new Map();
@@ -334,6 +350,7 @@ const docs = walk(THOUGHTS)
       supersedes: null,
       supersededBy: null,
       commit: (fm.commit ?? '').match(/^[0-9a-f]{7,40}/)?.[0] ?? '',
+      durable: durableSection(text),
       files: localityRefs(allSourceRefs(text)),
       staleness: stalenessRefs(allSourceRefs(text)),
       drift: 0,
@@ -398,13 +415,26 @@ const md = [
   '- `landed` — its `commit:` is an ancestor of `origin/main`, so the work really shipped.',
   '- `not landed` — it names a commit that never reached `main`. Treat as a proposal, not a record.',
   '- `drift N` — the source files this document discusses have taken **N commits since it was',
-  '  written**. High drift does not mean the decision was reversed; it means the document\'s',
-  '  *description of the code* is probably out of date. Verify against the code before quoting it.',
+  '  written**. See *What drift does and does not mean* below.',
   '- `describes N deleted files` — it names source files that no longer exist. The strongest',
   '  staleness signal there is: whatever it describes has been moved, renamed or removed.',
   '',
   '**A document with no badge is not certified current** — it means no staleness signal fired,',
   'usually because it names no source files. Absence of a badge is absence of evidence.',
+  '',
+  '### What drift does and does not mean',
+  '',
+  'Every plan holds two kinds of claim, and they age at completely different rates:',
+  '',
+  '- **What was decided** — durable. It binds until something explicitly reverses it. A plan',
+  '  from June is still the authority on why June went the way it did. Drift never touches this.',
+  '- **What the code looked like at the time** — perishable. File paths, line numbers, function',
+  '  names and control flow rot the moment anyone edits the file.',
+  '',
+  'Drift measures only the second kind. So on a drifted document: **read its `## Decisions`',
+  'section and treat it as binding; treat every file path, line number and code description in',
+  'it as history, and check the code instead.** Do not discard a drifted document — the decision',
+  'in it is very likely still the one in force. Do not quote its code prose as fact.',
   '',
   `Regenerate with \`npm run decisions:index\`. ${docs.length} documents · ${live.length} live · ${superseded.length} superseded.`,
   '',
@@ -452,6 +482,9 @@ for (const d of docs) {
       statusClass: d.statusClass,
       supersededBy: d.supersededBy,
       drift: d.drift,
+      deadFiles: d.deadFiles,
+      durable: d.durable.heading,
+      durableFirm: d.durable.firm,
       mentions: f.mentions,
     });
   }
@@ -504,6 +537,9 @@ for (const [file, list] of Object.entries(byFile)) {
       where: e.path,
       kind: e.statusClass,
       drift: e.drift ?? 0,
+      dead: e.deadFiles ?? 0,
+      durable: e.durable ?? '',
+      durableFirm: e.durableFirm ?? false,
     }));
 }
 writeFileSync(HOOK_OUT, `${JSON.stringify(hookView)}\n`);

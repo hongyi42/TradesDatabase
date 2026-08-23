@@ -261,8 +261,14 @@ names all three views and the `is distinct from` warning.
       nothing breaks and the audit trail works; adoption is watched over days, the census pattern.)
 
 ### Manual verification
-- [ ] One read of a live `v_captures` query result by you: does the labeled-trail shape read
-      sensibly next to the catalog's description of it?
+- [x] ~~One read of a live `v_captures` query result by you~~ **PREMISE CORRECTED (user,
+      2026-08-23): no human ever reads this block.** Its readers are the planner, a manager's
+      agent (which paraphrases), and an engineer debugging — the same false-audience mistake as
+      `nudges.resolution`, caught by the same person. What the item is actually worth is a human
+      PROXY-READ of model-facing copy, which happened during review (the live row: "Maria has a
+      dog on the property" → retracted, "Recorded in error…"). The real question — does the MODEL
+      treat a retracted row as withdrawn — is behavioral: watched via the census over live ticks,
+      and a candidate probe for the planner-copy eval, not a sign-off item.
 
 ---
 *Phase 1 has no manual items — continue straight into Phase 2. Phase 2's manual item gates only

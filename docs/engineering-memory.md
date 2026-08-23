@@ -299,7 +299,19 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   never `--agent main`). Candidate medic v3 (recorded, not built): probe with a real 1-token
   completion under a ~30s timeout so completion stalls trip the nvidia-prod failover.
 
-### The sweep is more permissive than the planner is instructed to be (2026-08-21)
+### The sweep is more permissive than the planner is instructed to be (2026-08-21) — FIXED 2026-08-22
+
+> **RESOLVED by the 2026-08-22 plan (`thoughts/shared/plans/2026-08-22-the-brain-can-attribute.md`).**
+> The `close` half below is now HISTORY: `spec.filled` no longer closes an ASKED gap at all, so the
+> race it describes cannot happen and `close` is the normal way an answered gap ends. Kept because
+> the *diagnosis* is the reasoning behind that plan, and because the `send`/`hold` half still
+> stands. Two things a reader must carry forward:
+> - `filled` still closes a gap **nobody has been asked yet** (the pre-ask carve-out) — that is the
+>   detector re-checking itself, not a judgment, and removing it means asking a technician at 7am
+>   about a job they reported at 8pm.
+> - The sweep keeps a **fail-safe** at the escalation deadline for a planner that has gone silent
+>   for a working day. It declines when the job carries more than one open gap, because `filled`
+>   is job-keyed and cannot tell which question a note answered.
 
 Found while closing out Phase 4, and it makes two of the planner's four actions
 near-unreachable in production.
@@ -308,7 +320,7 @@ near-unreachable in production.
 The cron is `*/5`; the planner self-gates to `%30 < 5`. So the sweep sees everything six times more
 often than the planner does, and beats it within a tick.
 
-**`close` is unreachable.** The sweep auto-resolves on `hasActivitySince(jobId, …)` — ANY
+**`close` is unreachable.** *(No longer true — see the resolution note above.)* The sweep auto-resolves on `hasActivitySince(jobId, …)` — ANY
 job-stamped capture or new visit row. Any evidence the planner could cite has therefore already
 closed the gap. **And the two disagree about what counts:** the sweep closes on any activity, while
 the planner's prompt says *"Activity on the job is not an answer: a note about something else, a

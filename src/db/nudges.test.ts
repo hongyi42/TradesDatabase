@@ -8,6 +8,8 @@ import {
   markNudgeAsked,
   markNudgeOutcome,
   markNudgeQueued,
+  listAskedNudgesForTechnicianJob,
+  setNudgeAnsweredBy,
   setNudgeAttempts,
   setNudgeSchedule,
 } from './nudges.js';
@@ -313,5 +315,141 @@ describe('setNudgeSchedule', () => {
       notBefore: '2026-08-20T15:00:00.000Z',
     });
     expect(cross).toBeNull();
+  });
+});
+
+// Attribution (plan 2026-08-22, Phase 1): which gap an answer answered.
+describe('attribution — an answer remembers its question', () => {
+  const JOB_A = '11111111-1111-4111-8111-111111111111';
+  const JOB_B = '22222222-2222-4222-8222-222222222222';
+  const CAP_1 = '33333333-3333-4333-8333-333333333331';
+  const CAP_2 = '33333333-3333-4333-8333-333333333332';
+
+  let otherTechId: string;
+  beforeAll(async () => {
+    const t = await pg.query<{ id: string }>(
+      `insert into technicians (tenant_id, ref, display_name, tier, state, seat_exempt)
+       values ($1, 'nudge-attr-other', 'Other Tech', 'technician', 'active', true)
+       on conflict (tenant_id, ref) do update set display_name = excluded.display_name
+       returning id`,
+      [tenantId],
+    );
+    otherTechId = t.rows[0].id;
+  });
+  afterAll(async () => {
+    // This inner hook runs BEFORE the file-level truncate, so the recipient's
+    // own rows have to go first — nudges.technician_id is a real FK.
+    await pg.query('delete from nudges where technician_id = $1', [otherTechId]);
+    await pg.query('delete from technicians where id = $1', [otherTechId]);
+  });
+
+  const gapOn = async (subjectRef: string, jobId: string, technicianId = techId) => {
+    const n = await createPendingNudge({
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef,
+      technicianId,
+      context: { jobId },
+    });
+    if (!n) throw new Error('fixture nudge was not created');
+    return n;
+  };
+  // pending -> queued -> asked: the only state in which a person could be
+  // replying to anything.
+  const askedGapOn = async (subjectRef: string, jobId: string, technicianId = techId) => {
+    const n = await gapOn(subjectRef, jobId, technicianId);
+    await markNudgeQueued(n.id, tenantId, 'How did it go?');
+    const asked = await markNudgeAsked(n.id, tenantId);
+    if (!asked) throw new Error('fixture nudge was not asked');
+    return asked;
+  };
+
+  test('finds only THIS person’s ASKED gaps on THIS job', async () => {
+    const mine = await askedGapOn('asg-attr-1', JOB_A);
+    await askedGapOn('asg-attr-2', JOB_B); // same person, different job
+    await askedGapOn('asg-attr-3', JOB_A, otherTechId); // same job, different person
+
+    const found = await listAskedNudgesForTechnicianJob(tenantId, techId, JOB_A);
+    expect(found.map((n) => n.id)).toEqual([mine.id]);
+  });
+
+  test('a PENDING or QUEUED gap is invisible — nobody has been asked anything yet', async () => {
+    // The narrowing that makes attribution work at all. A pending gap can sit
+    // for hours (not_before gates compose only, and `hold` may push it to the
+    // 18h ceiling); any routine note in that window would otherwise be stamped
+    // as the ANSWER to a question nobody has been asked — and first-write-wins
+    // means the real answer could never claim the slot afterwards.
+    await pg.query('update nudges set status = $1 where tenant_id = $2', ['answered', tenantId]);
+    const pending = await gapOn('asg-attr-pending', JOB_A);
+    expect(pending.status).toBe('pending');
+    expect(await listAskedNudgesForTechnicianJob(tenantId, techId, JOB_A)).toEqual([]);
+
+    await markNudgeQueued(pending.id, tenantId, 'How did it go?');
+    expect(await listAskedNudgesForTechnicianJob(tenantId, techId, JOB_A)).toEqual([]);
+
+    await markNudgeAsked(pending.id, tenantId);
+    const asked = await listAskedNudgesForTechnicianJob(tenantId, techId, JOB_A);
+    expect(asked.map((r) => r.id)).toEqual([pending.id]);
+  });
+
+  test('an unasked SIBLING gap on the job does not make the real answer ambiguous', async () => {
+    // Two gaps on one job, only ONE of them asked: the count attribution keys on
+    // must be 1, or a brand-new cost gap would silently block the answer to the
+    // visit question that actually went out.
+    await pg.query('update nudges set status = $1 where tenant_id = $2', ['answered', tenantId]);
+    const askedOne = await askedGapOn('asg-attr-sib-a', JOB_A);
+    await gapOn('asg-attr-sib-b', JOB_A); // pending — never delivered
+    const found = await listAskedNudgesForTechnicianJob(tenantId, techId, JOB_A);
+    expect(found.map((r) => r.id)).toEqual([askedOne.id]);
+  });
+
+  test('a CLOSED gap is not asked any more, and another tenant sees nothing', async () => {
+    const n = await askedGapOn('asg-attr-4', JOB_A);
+    // Two open now (asg-attr-1 from above and this one) — close this one and the
+    // remaining single row is what attribution would act on.
+    await markNudgeOutcome(n.id, tenantId, 'answered', 'closed for this test');
+    const open = await listAskedNudgesForTechnicianJob(tenantId, techId, JOB_A);
+    expect(open.map((r) => r.id)).not.toContain(n.id);
+
+    const cross = await listAskedNudgesForTechnicianJob(
+      '00000000-0000-0000-0000-0000000000ff',
+      techId,
+      JOB_A,
+    );
+    expect(cross).toEqual([]);
+  });
+
+  test('stamps once and a LATER capture never overwrites the first', async () => {
+    const n = await gapOn('asg-attr-5', JOB_B);
+    expect(n.answered_by_capture_id).toBeNull();
+
+    const first = await setNudgeAnsweredBy(n.id, tenantId, CAP_1);
+    expect(first?.answered_by_capture_id).toBe(CAP_1);
+
+    // A DIFFERENT capture id, deliberately: the same id would pass even if the
+    // guard were broken, and `.eq(col, null)` (which matches zero rows) would
+    // make a same-id assertion pass for exactly the wrong reason.
+    const second = await setNudgeAnsweredBy(n.id, tenantId, CAP_2);
+    expect(second).toBeNull(); // the guard refused it
+    const [row] = (await listNudgesByStatus(tenantId, ['pending'])).filter(
+      (r) => r.id === n.id,
+    );
+    expect(row.answered_by_capture_id).toBe(CAP_1); // still the first
+  });
+
+  test('another tenant cannot stamp this row', async () => {
+    const n = await gapOn('asg-attr-6', JOB_B);
+    const cross = await setNudgeAnsweredBy(n.id, '00000000-0000-0000-0000-0000000000ff', CAP_1);
+    expect(cross).toBeNull();
+  });
+
+  test('a CLOSED gap can still be stamped — the answer is a historical fact', async () => {
+    // Deliberately NOT status-guarded (unlike every lifecycle write here): a
+    // sweep closing the gap a moment before the note lands must not erase the
+    // record of WHICH capture answered it.
+    const n = await gapOn('asg-attr-7', JOB_B);
+    await markNudgeOutcome(n.id, tenantId, 'answered', 'a note landed');
+    const stamped = await setNudgeAnsweredBy(n.id, tenantId, CAP_1);
+    expect(stamped?.answered_by_capture_id).toBe(CAP_1);
   });
 });

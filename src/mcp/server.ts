@@ -38,6 +38,7 @@ import {
   isInactiveState,
   isSeatCapError,
   isUniqueViolation,
+  listAskedNudgesForTechnicianJob,
   listOpenReviewItems,
   listRawCapturesForJob,
   listRawCapturesForCustomer,
@@ -47,6 +48,7 @@ import {
   isFactBundle,
   resolveOpenReviewItemFor,
   resolveReviewItem,
+  setNudgeAnsweredBy,
   trySetCustomerAttribute,
   trySetJobAttribute,
   updateOpenReviewItemDetail,
@@ -1673,9 +1675,11 @@ const TEAM_LEAD_TOOLS = [
     name: 'recall_decisions',
     description:
       'YOUR OWN DECISION HISTORY: what you have already decided about a gap, and what the system ' +
-      'actually did with it. You do not remember previous runs — this table is the only record ' +
-      'that you ran at all, so consult it before repeating yourself, and always before escalating ' +
-      '(escalating hands the gap to a person and cannot be taken back). ' +
+      'actually did with it. You do not remember previous runs, so consult it before repeating ' +
+      'yourself, and always before escalating (escalating hands the gap to a person and cannot be ' +
+      'taken back). It returns DECISIONS ONLY — a gap you have merely looked at and never acted ' +
+      'on comes back empty, and its own block already tells you how many times you considered it, ' +
+      'so there is nothing here to fetch for one of those. ' +
       'Call it with gapId — the id printed after "gap" in your list — or with jobId, the id ' +
       'printed as "job id". Never a customer or job NAME; this takes ids only. jobId returns every ' +
       'gap on that job, which is how you see the whole story of one piece of work. ' +
@@ -1946,6 +1950,48 @@ async function stagedNotePreview(detail: StagedNoteDetail): Promise<{
   };
 }
 
+// Tie an answer back to the question it answered (plan 2026-08-22, Phase 1).
+//
+// There is no ref code in the message and there is not going to be: under
+// `--deliver` the question passes through an agent whose own footer tells it to
+// strip "any internal detail", so a ref would arrive stripped and silent; under a
+// direct send the technician would read `(ref K7M2QX4P)` in their chat, which is
+// the same machine-artifact-in-a-human's-face mistake as showing a manager the
+// planner's reasoning. So the spine attributes from what it already knows: WHO
+// recorded the note, WHICH job it landed on, and which of its own gaps are open.
+//
+// EXACTLY ONE open gap for that person on that job → stamp it. Two or more →
+// stamp NOTHING. Code cannot tell which question a sentence answers, and the
+// planner reads the words, so an ambiguous case is deliberately handed up rather
+// than guessed at (the `sharesJob` warning in buildGapView is the other half).
+//
+// Never throws. A lost link is a lost link; a lost note is a lost note, and L1
+// is undeletable — attribution must not be able to fail a write that landed.
+// Exported so a test can prove that with a REAL database error rather than a
+// stub — the swallow is the whole safety property here.
+export async function attributeAnswerToGap(input: {
+  tenantId: string;
+  // technicians.id. Null for a ROSTER-LESS badge (record_field_note serves them
+  // by design — see the subjectRef note in its dispatch), which has no roster row
+  // to scope gaps by. Fail closed: attribute nothing.
+  technicianId: string | null;
+  jobId: string | undefined;
+  captureId: string;
+}): Promise<void> {
+  const { tenantId, technicianId, jobId, captureId } = input;
+  if (!technicianId || !jobId) return;
+  try {
+    const open = await listAskedNudgesForTechnicianJob(tenantId, technicianId, jobId);
+    if (open.length !== 1) return;
+    await setNudgeAnsweredBy(open[0].id, tenantId, captureId);
+  } catch (err) {
+    console.error(
+      `[attribution] capture ${captureId} not linked to a gap on job ${jobId} — ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 // The ONE commit for a field note, shared by all three paths that record one
 // (plan ②, 2026-08-21): the one-shot call, the identity resume, and the
 // legacy staged confirm. Sharing it is not tidiness — L1 is undeletable, so
@@ -1967,6 +2013,18 @@ async function commitNote(input: {
   // falls back to the plain duplicate report below.
   reportExisting?: (captureId: string) => Promise<Record<string, unknown>>;
   retryHint?: string;
+  // The badge's roster row id, for gap attribution below. Threaded through the
+  // ONE commit rather than each of its three call sites on purpose: an answer
+  // most often lands on a RESUME path, and a per-site hook is exactly the kind
+  // of thing that gets added to the obvious site and forgotten on the other two.
+  //
+  // REQUIRED, not optional — typecheck is the pin. Two of the three sites are
+  // covered by tests; the third (the legacy staged confirm) is reachable only
+  // for a createFrom resolution, which mints a NEW customer and therefore a job
+  // with no gaps on it, so no test can distinguish it passing this from not.
+  // Making the field mandatory is what defends that site, and every site added
+  // after this one.
+  answeredByTechnicianId: string | null;
 }): Promise<Record<string, unknown>> {
   let result;
   try {
@@ -2004,6 +2062,16 @@ async function commitNote(input: {
       note: 'this exact note was already recorded — nothing was written twice',
     };
   }
+  // AFTER `recorded`, never before: recordFieldNote resolves the job only after
+  // the L1 append, so the capture id and job id this needs do not exist until
+  // here. A `duplicate` returned above deliberately does not reach this — that
+  // note was attributed (or not) on the delivery that actually landed it.
+  await attributeAnswerToGap({
+    tenantId: input.tenantId,
+    technicianId: input.answeredByTechnicianId,
+    jobId: result.jobId,
+    captureId: result.captureId,
+  });
   return {
     status: 'recorded',
     captureId: result.captureId,
@@ -2320,6 +2388,7 @@ async function dispatch(
             blobPath: blobPath ?? null,
             channel,
             resolved,
+            answeredByTechnicianId: caller?.id ?? null,
             externalId: oneShotNoteStamp({
               tenantId,
               technicianRef: subjectRef,
@@ -2473,6 +2542,7 @@ async function dispatch(
             externalId: `note:${item.id}`,
             sourceMeta: { stagedConfirmId: item.id },
             extracted: detail.extracted ?? {},
+            answeredByTechnicianId: caller?.id ?? null,
             reportExisting,
           });
           try {
@@ -2523,6 +2593,7 @@ async function dispatch(
         externalId: `note:${item.id}`,
         sourceMeta: { stagedConfirmId: item.id },
         extracted: detail.extracted ?? {},
+        answeredByTechnicianId: caller?.id ?? null,
         // Only reassure if the earlier commit actually COMPLETED (visit
         // linked); a mid-L2 crash must surface, not read as success.
         reportExisting,

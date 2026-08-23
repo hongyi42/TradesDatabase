@@ -9,9 +9,11 @@ import {
   MAX_NEW_ITEMS_PER_TENANT_TICK,
   NUDGE_DELIVERY_DEADLINE_HOURS,
   NUDGE_ESCALATE_HOURS,
+  PLANNER_JUDGMENT_ACTIONS,
   runWatchers,
   type WatcherDeps,
 } from './watchers.js';
+import { PLANNER_ACTIONS } from '../teamLead/planner.js';
 import {
   JOB_COST_GAP_SPEC,
   OVERDUE_VISIT_GAP_SPEC,
@@ -26,6 +28,11 @@ import {
 // at-or-after the visit's START (minute-floored), the per-tick cap meters
 // FRESH gaps only (ever-flagged filtered out first), and auto-resolve closes
 // items on arrived activity OR on the visit leaving 'confirmed'.
+//
+// SINCE 2026-08-22 (Phase 2): `filled` no longer closes an ASKED nudge — that
+// judgment is the planner's. It still closes a never-asked one (the detector
+// re-checking itself), and the sweep keeps a fail-safe at the escalation
+// deadline for a planner that has gone silent. Item auto-resolve is unchanged.
 
 const NOW = '2026-08-16T12:00:00.000Z';
 
@@ -466,11 +473,15 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(summary).toMatchObject({ nudgeMode: 'off', nudgesCreated: 0, nudgesWouldCreate: 0 });
   });
 
-  test("rollback rescue (review F1): in-flight nudges keep resolving AND escalating at nudgeMode 'off'", async () => {
+  test("rollback rescue (review F1): in-flight nudges keep their lifecycle at nudgeMode 'off'", async () => {
     // The ladder was live, three questions went out, then the operator unset
-    // NUDGES_MODE. Silence must STILL escalate and replies must still close —
-    // otherwise a nudged gap reaches neither surface, ever (its assignment is
-    // never fresh again in any mode).
+    // NUDGES_MODE. Silence must STILL escalate — otherwise a nudged gap reaches
+    // neither surface, ever (its assignment is never fresh again in any mode).
+    //
+    // Both halves survive the 2026-08-22 closing move, for different reasons.
+    // The QUEUED row was never asked, so its close is the PRE-ASK carve-out —
+    // the detector re-checking its own predicate, still a fact. The asked-and-
+    // silent row escalates exactly as before.
     const resolved: Array<[string, string]> = [];
     const flagged: string[] = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
@@ -507,7 +518,8 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
       ['n-rolled-silent', 'escalated'],
     ]);
     expect(flagged).toEqual(['a-silent']);
-    expect(summary.nudgesResolved).toBe(1);
+    expect(summary.nudgesResolved).toBe(1); // the pre-ask close
+    expect(summary.nudgesAutoClosed).toBe(0);
     expect(summary.nudgesEscalated).toBe(1);
     expect(summary.itemsOpened).toBe(1);
   });
@@ -617,7 +629,12 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(summary.itemsOpened).toBe(2);
   });
 
-  test('live ladder auto-resolve: arrived activity answers; a cancelled visit cancels; asked-and-recent waits', async () => {
+  test('live ladder sweep: pre-ask activity closes; a cancelled visit cancels; asked-and-recent waits', async () => {
+    // The 2026-08-22 division. `moot` is a FACT and still closes. `filled` closes
+    // ONLY before anyone was asked (the detector re-checking itself); once a
+    // question has gone out, whether an answer answers it is the planner's
+    // judgment and the gap stays open for it.
+
     const resolved: Array<[string, string, string | null | undefined]> = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listNudges: async () => [
@@ -656,6 +673,7 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
       ['n-cancelled', 'cancelled', 'the visit was cancelled — nothing left to ask'],
     ]);
     expect(summary.nudgesResolved).toBe(2);
+    expect(summary.nudgesAutoClosed).toBe(0);
     expect(summary.nudgesEscalated).toBe(0);
   });
 
@@ -1336,23 +1354,48 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
     expect(summary.tenantErrors).toBe(0);
   });
 
-  test('the answer closes it — activity AFTER the ask, not the visit', async () => {
-    // The bound is asked_at. A completed job usually already has a field note
-    // (that is what completed it), so comparing against the visit would mark
-    // every cost nudge answered the instant it was created.
-    const resolved: Array<[string, string, string | null | undefined]> = [];
+  test('an answer to an ASKED gap no longer closes it — the planner judges', async () => {
+    // The 2026-08-22 ruling, at the point it bites hardest. A note landed after
+    // the ask, so `filled` is TRUE — and the sweep closes nothing, because "did
+    // this note answer the cost question?" is a judgment. The gap stays open so
+    // the planner can read the words.
+    //
+    // Asked 2h ago, deliberately: the deadline is 24h out, so the fail-safe
+    // below is not in play and this test measures ONLY the removal of the close.
     const summary = await runWatchers(NOW, 'live', baseDeps({
-      listNudges: async () => [costNudge({ status: 'asked', asked_at: '2026-08-15T12:00:00.000Z' })],
+      listNudges: async () => [costNudge({ status: 'asked', asked_at: '2026-08-16T10:00:00.000Z' })],
       // A note landed AFTER the ask.
-      listCaptureTimes: async () => [{ job_id: 'j-cost', captured_at: '2026-08-15T13:00:00.000Z' }],
+      listCaptureTimes: async () => [{ job_id: 'j-cost', captured_at: '2026-08-16T11:00:00.000Z' }],
       listJobs: async () => [{ id: 'j-cost', tenant_id: 't1', status: 'completed' } as never],
-      resolveNudge: async (id, _t, status, resolution) => {
-        resolved.push([id, status, resolution]);
-        return costNudge({});
+      resolveNudge: async () => {
+        throw new Error('an asked gap must not be closed by the sweep');
       },
     }), 'live');
-    expect(resolved).toEqual([['n-cost', 'answered', 'the technician answered — a note landed on the job']]);
-    expect(summary.nudgesResolved).toBe(1);
+    expect(summary.nudgesResolved).toBe(0);
+    expect(summary.nudgesAutoClosed).toBe(0);
+    expect(summary.nudgesEscalated).toBe(0);
+    expect(summary.tenantErrors).toBe(0);
+  });
+
+  test('the predicate itself is UNCHANGED — only its authority moved', async () => {
+    // `filled` still answers "is this gap answerable from the record?" exactly as
+    // it did; the fail-safe and the planner's gap view both read it. If this ever
+    // goes false the fail-safe silently stops working, so pin the predicate
+    // directly rather than inferring it from a close that no longer happens.
+    const asked = '2026-08-16T10:00:00.000Z';
+    const facts = {
+      hasActivitySince: (jobId: string, since: string) =>
+        jobId === 'j-cost' && Date.parse('2026-08-16T11:00:00.000Z') >= Date.parse(since),
+      visitStatusById: new Map<string, string>(),
+      jobStatusById: new Map<string, string>(),
+      naiveLocal: (iso: string) => iso,
+      jobsWithCostEvents: new Set<string>(),
+    };
+    expect(JOB_COST_GAP_SPEC.filled(costNudge({ status: 'asked', asked_at: asked }), facts))
+      .toBe('the technician answered — a note landed on the job');
+    // …and it is still bounded by the ASK, not the visit.
+    expect(JOB_COST_GAP_SPEC.filled(costNudge({ status: 'asked', asked_at: '2026-08-16T11:30:00.000Z' }), facts))
+      .toBeNull();
   });
 
   test('activity BEFORE the ask does NOT close it (the trap this bound exists for)', async () => {
@@ -1438,11 +1481,13 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
     expect(created).toHaveLength(JOB_COST_GAP_SPEC.maxNewPerTenantTick); // 3, not 9, not 5
   });
 
-  test('KNOWN LIMIT: on the SAME job, answering either question closes both', async () => {
-    // hasActivitySince is keyed on the JOB, not on who answered — so a note
-    // landing after the ask satisfies both a visit gap and a cost gap on that
-    // job. Asserted so the behaviour is visible rather than discovered: it is
-    // the case Plan B's partial-answer batching has to reckon with.
+  test('the SAME-job limit is GONE: one note no longer closes both questions', async () => {
+    // This used to be a KNOWN LIMIT, asserted so it was visible: hasActivitySince
+    // is keyed on the JOB, not on who answered, so one note satisfied both a
+    // visit gap and a cost gap on that job and closed the pair. That was the
+    // clearest case for moving closing to the planner (2026-08-22) — code cannot
+    // tell which question a sentence answers, and a mind can. Both gaps now stay
+    // open, and the planner sees the note with the SHARED warning on it.
     const resolved: string[] = [];
     await runWatchers(NOW, 'live', baseDeps({
       listNudges: async () => [
@@ -1459,12 +1504,14 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
         return costNudge({});
       },
     }), 'live');
-    expect(resolved.sort()).toEqual(['n-cost', 'n-visit']); // BOTH close on one note
+    expect(resolved).toEqual([]); // NEITHER closes — one note, two questions
   });
 
-  test('both kinds run in one tick and each resolves on its OWN predicate', async () => {
-    // The partial-answer shape Plan B will build batching on: answering one
-    // question must not close the other.
+  test('both kinds run in one tick and NEITHER asked gap is closed by the sweep', async () => {
+    // The partial-answer shape, after the closing move: activity on the visit's
+    // job used to close the visit gap and leave the cost gap open. Now both are
+    // asked gaps, so the sweep closes neither and the planner sorts out which
+    // question the note actually answered.
     const resolved: Array<[string, string]> = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listNudges: async () => [
@@ -1479,8 +1526,9 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
         return nudgeRow({ id, status } as Partial<Nudge>);
       },
     }), 'live');
-    expect(resolved).toEqual([['n-visit', 'answered']]); // the cost one stays open
-    expect(summary.nudgesResolved).toBe(1);
+    expect(resolved).toEqual([]); // both stay open for the planner
+    expect(summary.nudgesResolved).toBe(0);
+    expect(summary.tenantErrors).toBe(0);
   });
 
   test('the tenant ceiling is shared across kinds — a detector cannot raise per-tick volume', async () => {
@@ -1503,6 +1551,319 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
   test('the cost spec is registered in production, not just in tests', async () => {
     expect(JOB_COST_GAP_SPEC.kind).toBe('job_cost_gap');
     expect(JOB_COST_GAP_SPEC.maxNewPerTenantTick).toBe(3);
+  });
+});
+
+// ── plan 2026-08-22 Phase 2: closing is the planner's, the sweep keeps a fail-safe ──
+describe('the deadline fail-safe', () => {
+  // Asked 25h before NOW — past the 24h default deadline, so this row is at the
+  // exact instant the sweep would otherwise hand a manager a gap claiming
+  // nobody answered.
+  const OVERDUE_ASK = '2026-08-15T11:00:00.000Z';
+  const answeredGap = () =>
+    nudgeRow({
+      id: 'n-fs',
+      subject_ref: 'a-fs',
+      status: 'asked',
+      asked_at: OVERDUE_ASK,
+      context: {
+        customerName: 'Henderson',
+        jobTitle: 'Furnace tune-up',
+        technicianRef: 'ben-shelton',
+        technicianName: 'Ben Shelton',
+        jobId: 'j1',
+        startsAtLocal: '2026-08-14T07:00:00.000Z',
+        endsAtLocal: '2026-08-14T08:00:00.000Z',
+      },
+    });
+  // A note on j1 after the visit started — `filled` is true for this gap.
+  const answeredOnJob = async () => [{ job_id: 'j1', captured_at: '2026-08-14T07:30:00.000Z' }];
+  const dec = (over: Record<string, unknown>) =>
+    ({
+      action: 'hold',
+      outcome: 'applied',
+      reason: 'r',
+      handoff_note: null,
+      decided_at: '2026-08-16T09:00:00.000Z', // 3h before NOW — inside the window
+      ...over,
+    }) as never;
+
+  test('answered + a SILENT planner → auto-closed, and the text names the fail-safe', async () => {
+    const resolved: Array<[string, string, string | null | undefined]> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [answeredGap()],
+      listCaptureTimes: answeredOnJob,
+      listDecisions: async () => new Map(), // the planner has said nothing, ever
+      flagNudge: async () => {
+        throw new Error('an answered gap must not reach the manager');
+      },
+      resolveNudge: async (id, _t, status, resolution) => {
+        resolved.push([id, status, resolution]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    expect(resolved).toHaveLength(1);
+    const [id, status, resolution] = resolved[0];
+    expect(id).toBe('n-fs');
+    expect(status).toBe('answered');
+    // A manager reading this later must not mistake it for a considered
+    // decision, and the next engineer must be able to tell it from a planner
+    // close by reading the row alone.
+    expect(resolution).toContain('closed automatically');
+    expect(resolution).toContain('Nobody reviewed it within 24h');
+    // It says WHAT it is about. `nudges.resolution` has no reader today, which
+    // is exactly why this is easy to get wrong: the row has to stand alone for
+    // the engineer reading it now and for the planner reading it after ④.
+    expect(resolution).toContain("'Furnace tune-up' (Henderson)");
+    // And no internal component name — the same rule that killed the ref code.
+    expect(resolution).not.toContain('planner');
+    expect(summary.nudgesAutoClosed).toBe(1);
+    expect(summary.nudgesResolved).toBe(0); // counted apart — this is an ALARM
+    expect(summary.nudgesEscalated).toBe(0);
+  });
+
+  test('answered + a LIVE planner → ESCALATES; its judgment stands', async () => {
+    // The planner has been deciding about this gap and chose not to close it.
+    // That is a judgment, not an outage, and the fail-safe must not overrule it.
+    const resolved: Array<[string, string]> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [answeredGap()],
+      listCaptureTimes: answeredOnJob,
+      listDecisions: async () => new Map([['n-fs', [dec({ action: 'hold' })]]]),
+      flagNudge: async (input) => openItem({ subject_ref: input.subjectRef }),
+      resolveNudge: async (id, _t, status) => {
+        resolved.push([id, status]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    expect(resolved).toEqual([['n-fs', 'escalated']]);
+    expect(summary.nudgesAutoClosed).toBe(0);
+    expect(summary.nudgesEscalated).toBe(1);
+  });
+
+  test('a THIN context degrades to no subject, never to "undefined"', async () => {
+    const resolved: Array<string | null | undefined> = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({
+          id: 'n-fs',
+          subject_ref: 'a-fs',
+          status: 'asked',
+          asked_at: OVERDUE_ASK,
+          context: { jobId: 'j1', startsAtLocal: '2026-08-14T07:00:00.000Z' }, // no title
+        }),
+      ],
+      listCaptureTimes: answeredOnJob,
+      listDecisions: async () => new Map(),
+      resolveNudge: async (id, _t, status, resolution) => {
+        resolved.push(resolution);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    expect(resolved[0]).not.toContain('undefined');
+    expect(resolved[0]).toMatch(/^closed automatically/);
+  });
+
+  test('CROSS-PHASE: only `unmentioned` rows → AUTO-CLOSES', async () => {
+    // The regression this phase's seam exists for. Phase 3 appends an
+    // `unmentioned` row with outcome 'applied' for every gap the planner merely
+    // LOOKED at. A naive `outcome === applied` liveness test would then be true
+    // for every open gap on every tick and the fail-safe would silently never
+    // fire again — with nothing in any log to show for it.
+    const resolved: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [answeredGap()],
+      listCaptureTimes: answeredOnJob,
+      listDecisions: async () =>
+        new Map([['n-fs', [dec({ action: 'unmentioned' }), dec({ action: 'unmentioned' })]]]),
+      resolveNudge: async (id, _t, status) => {
+        resolved.push(`${id}:${status}`);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    expect(resolved).toEqual(['n-fs:answered']);
+    expect(summary.nudgesAutoClosed).toBe(1);
+  });
+
+  test('a judgment OUTSIDE the liveness window does not count as alive', async () => {
+    const resolved: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [answeredGap()],
+      listCaptureTimes: answeredOnJob,
+      // 30h before NOW — the planner decided once and then went quiet.
+      listDecisions: async () =>
+        new Map([['n-fs', [dec({ decided_at: '2026-08-15T06:00:00.000Z' })]]]),
+      resolveNudge: async (id, _t, status) => {
+        resolved.push(`${id}:${status}`);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    expect(resolved).toEqual(['n-fs:answered']);
+    expect(summary.nudgesAutoClosed).toBe(1);
+  });
+
+  test('a REFUSED or SHADOW decision is not evidence of a planner that can act', async () => {
+    const resolved: string[] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [answeredGap()],
+      listCaptureTimes: answeredOnJob,
+      listDecisions: async () =>
+        new Map([['n-fs', [dec({ outcome: 'refused' }), dec({ outcome: 'shadow' })]]]),
+      resolveNudge: async (id, _t, status) => {
+        resolved.push(`${id}:${status}`);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    expect(resolved).toEqual(['n-fs:answered']);
+  });
+
+  test('NOT answered → escalates, exactly as before', async () => {
+    const resolved: Array<[string, string]> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [answeredGap()],
+      listCaptureTimes: async () => [], // nothing landed on the job at all
+      listDecisions: async () => new Map(),
+      flagNudge: async (input) => openItem({ subject_ref: input.subjectRef }),
+      resolveNudge: async (id, _t, status) => {
+        resolved.push([id, status]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    expect(resolved).toEqual([['n-fs', 'escalated']]);
+    expect(summary.nudgesAutoClosed).toBe(0);
+    expect(summary.nudgesEscalated).toBe(1);
+  });
+
+  test('a FAILED decision read holds the fail-safe back — it escalates instead', async () => {
+    // Fail toward the manager, never toward an automatic close on missing
+    // evidence. A read that did not happen is not evidence of silence, and the
+    // two mistakes are not equally bad: escalating loses nobody's answer.
+    const resolved: Array<[string, string]> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [answeredGap()],
+      listCaptureTimes: answeredOnJob,
+      listDecisions: async () => {
+        throw new Error('decision log unreachable');
+      },
+      flagNudge: async (input) => openItem({ subject_ref: input.subjectRef }),
+      resolveNudge: async (id, _t, status) => {
+        resolved.push([id, status]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    expect(resolved).toEqual([['n-fs', 'escalated']]);
+    expect(summary.nudgesAutoClosed).toBe(0);
+    expect(summary.nudgesEscalated).toBe(1);
+    expect(summary.tenantErrors).toBe(0); // isolated, not a tenant failure
+  });
+
+  test('TWO gaps on one job → the fail-safe DECLINES; one note cannot close two questions', async () => {
+    // The same-job double-close, deferred by 24h rather than removed (final
+    // review). `filled` is job-keyed and cannot tell which QUESTION a note
+    // answers, so at the deadline it would close both — and the cost gap's
+    // PERMANENT resolution would read "the technician answered" about a
+    // question nobody answered, with the figure never captured.
+    const resolved: Array<[string, string]> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        answeredGap(),
+        nudgeRow({
+          id: 'n-fs2',
+          subject_ref: 'a-fs2',
+          kind: 'job_cost_gap',
+          status: 'asked',
+          asked_at: OVERDUE_ASK,
+          context: { jobId: 'j1', jobTitle: 'Furnace tune-up', customerName: 'Henderson' },
+        }),
+      ],
+      listCaptureTimes: answeredOnJob,
+      listDecisions: async () => new Map(), // planner silent — the fail-safe's own case
+      flagNudge: async (input) => openItem({ subject_ref: input.subjectRef }),
+      resolveNudge: async (id, _t, status) => {
+        resolved.push([id, status]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    // Both escalate — fails toward the manager, like every other ambiguity here.
+    expect(summary.nudgesAutoClosed).toBe(0);
+    expect(resolved.map(([, st]) => st)).toEqual(['escalated', 'escalated']);
+  });
+
+  test('an ANSWERABLE gap that escalates must not claim "no note or status update"', async () => {
+    // The false claim this phase re-opened the door to (review finding). Before
+    // Phase 2 a `filled`-true row could never reach the escalation loop — it
+    // closed at the top of the sweep — so the clause was backed implicitly. Now
+    // an answered gap whose planner is ALIVE and chose not to close it falls
+    // through to here, and the item would tell a manager there is no note with
+    // the field report sitting on the job. That is exactly the claim plan ②
+    // deleted, re-entering through a door this phase opened.
+    const flagged: string[] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [answeredGap()],
+      listCaptureTimes: answeredOnJob, // a report IS on the job
+      // A live planner that chose `extend` — so it escalates rather than
+      // auto-closing, and no handoff_note masks the template.
+      listDecisions: async () =>
+        new Map([['n-fs', [dec({ action: 'extend', handoff_note: null })]]]),
+      flagNudge: async (input) => {
+        flagged.push(input.suggestion);
+        return openItem({ subject_ref: input.subjectRef });
+      },
+      resolveNudge: async (id, _t, status) => nudgeRow({ id, status } as Partial<Nudge>),
+    }), 'live');
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0]).not.toContain('no note or status update');
+    // …and it does not ask the manager for a datum the record already holds.
+    // The stage-0 doctrine's premise is "the RECORD does not know it", which is
+    // exactly what an answerable gap falsifies.
+    expect(flagged[0]).not.toContain("Tell me how it went");
+    expect(flagged[0]).toContain('Something has landed on the job since');
+    expect(flagged[0]).toContain('Furnace tune-up');
+  });
+
+  test('the nudge’s own resolution stops saying "no reply" when something landed', async () => {
+    const resolved: Array<[string, string, string | null | undefined]> = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [answeredGap()],
+      listCaptureTimes: answeredOnJob,
+      listDecisions: async () =>
+        new Map([['n-fs', [dec({ action: 'extend', handoff_note: null })]]]),
+      flagNudge: async (input) => openItem({ subject_ref: input.subjectRef }),
+      resolveNudge: async (id, _t, status, resolution) => {
+        resolved.push([id, status, resolution]);
+        return nudgeRow({ id, status } as Partial<Nudge>);
+      },
+    }), 'live');
+    expect(resolved[0][2]).toBe('not confirmed as answered — handed to the manager');
+  });
+
+  test('a genuinely SILENT gap still gets the clause — the fix narrows, it does not delete', async () => {
+    const flagged: string[] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [answeredGap()],
+      listCaptureTimes: async () => [], // nothing landed — the claim is TRUE here
+      listDecisions: async () => new Map(),
+      flagNudge: async (input) => {
+        flagged.push(input.suggestion);
+        return openItem({ subject_ref: input.subjectRef });
+      },
+      resolveNudge: async (id, _t, status) => nudgeRow({ id, status } as Partial<Nudge>),
+    }), 'live');
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0]).toContain('no note or status update');
+    expect(flagged[0]).toContain("Tell me how it went"); // the ask is right here
+  });
+
+  test('the JUDGMENT vocabulary is pinned — a new action must be added here too', () => {
+    // watchers.ts and planner.ts have to agree about what counts as a decision.
+    // If PLANNER_ACTIONS grows and this set does not, the new verb silently
+    // stops counting as liveness and the fail-safe starts firing under a planner
+    // that is working fine.
+    expect([...PLANNER_JUDGMENT_ACTIONS].sort()).toEqual([
+      'close', 'escalate', 'extend', 'hold', 'leave', 'send',
+    ]);
+    for (const a of PLANNER_ACTIONS) expect(PLANNER_JUDGMENT_ACTIONS.has(a)).toBe(true);
+    expect(PLANNER_JUDGMENT_ACTIONS.has('unmentioned')).toBe(false);
   });
 });
 

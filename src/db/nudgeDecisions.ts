@@ -99,9 +99,14 @@ export async function recordNudgeDecisions(inputs: NudgeDecisionInput[]): Promis
  * limit and a truncated read would make the count in the prompt a lie. Paged and
  * chunked; the 1000-row default cap is silent, so it is never relied on.
  *
+ * Includes the `unmentioned` tick marks (plan 2026-08-22, Phase 3) — the COUNT
+ * is exactly what the pushed history line is for, so filtering them here would
+ * make that number a lie. The two `recall_decisions` lookups below drop them.
+ *
  * Growth: while the ladder is live a gap cannot outlive its escalation or
  * delivery deadline, so at one tick per 30 minutes it accumulates a few dozen
- * decisions at most. That bound is the SWEEP's, not this table's — with
+ * decisions at most (now including one tick mark per in-window tick, capped per
+ * gap by UNMENTIONED_CAP in planner.ts). That bound is the SWEEP's, not this table's — with
  * NUDGES_MODE rolled back the planner still runs (deliberately, see
  * lifecycle.ts) and nothing closes the gap, so rows accrue at ~24/day for as
  * long as that lasts. The paging keeps this correct rather than silently short;
@@ -123,6 +128,20 @@ export async function listDecisionsForNudges(
         .eq('tenant_id', tenantId)
         .in('nudge_id', slice)
         .order('decided_at', { ascending: true })
+        // TIEBREAK. `decided_at` defaults to now(), so every row from ONE insert
+        // shares a timestamp to the microsecond — a tick writes its decisions
+        // and its `unmentioned` filler in the same statement. Without a second
+        // key the order within a tick is not just arbitrary but UNSTABLE, so
+        // identical data could page differently between reads.
+        //
+        // What this buys and what it does not: `id` is a random uuid, so it is a
+        // DETERMINISTIC order, not insertion order. That is enough for every
+        // reader here — historyLine skips `unmentioned` outright and the rest are
+        // predicate scans — but it does NOT make "newest" meaningful between two
+        // real rows written by the same tick (a duplicate submission writes an
+        // applied row and a refused one at the same instant; which reads as later
+        // is arbitrary, just consistently so).
+        .order('id', { ascending: true })
         .range(from, from + PAGE - 1);
       if (error) throw new Error(`listDecisionsForNudges failed: ${error.message}`);
       for (const row of (data ?? []) as NudgeDecision[]) {
@@ -147,7 +166,14 @@ export async function listDecisionsForNudge(
     .select('*')
     .eq('tenant_id', tenantId)
     .eq('nudge_id', nudgeId)
+    // The tick marks are excluded here and KEPT in listDecisionsForNudges above.
+    // That split is the design: the count of considerations belongs in the
+    // pushed line, while a planner asking to READ its history wants the
+    // decisions — 200 rows of "said nothing" would bury the four that matter and
+    // spend the limit on filler.
+    .neq('action', 'unmentioned')
     .order('decided_at', { ascending: false })
+    .order('id', { ascending: false })
     .limit(Math.max(1, Math.min(limit, 200)));
   if (error) throw new Error(`listDecisionsForNudge failed: ${error.message}`);
   return (data ?? []) as NudgeDecision[];
@@ -168,7 +194,9 @@ export async function listDecisionsForJob(
     .select('*')
     .eq('tenant_id', tenantId)
     .eq('job_id', jobId)
+    .neq('action', 'unmentioned') // same reason as the per-gap lookup above
     .order('decided_at', { ascending: false })
+    .order('id', { ascending: false })
     .limit(Math.max(1, Math.min(limit, 200)));
   if (error) throw new Error(`listDecisionsForJob failed: ${error.message}`);
   return (data ?? []) as NudgeDecision[];

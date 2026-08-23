@@ -1,0 +1,34 @@
+-- Two new decision verbs (plan 2026-08-22, Phase 3): 'leave' and 'unmentioned'.
+--
+-- Same reason the 'extend' migration had to land before the code that writes it
+-- (20260821180000_nudge_decisions_extend.sql): recordNudgeDecisions inserts one
+-- statement per chunk with NO partial insert, so a single un-migrated value would
+-- reject up to 500 decisions in one go.
+--
+-- The constraint name is DETERMINISTIC — Postgres names an inline column check
+-- <table>_<column>_check — so it is written literally rather than looked up. A
+-- migration must run identically on the local stack and the pilot; a name
+-- discovered from one database would be a guess about the other. Verified against
+-- the pilot before writing: 'nudge_decisions_action_check'.
+--
+-- WHAT THE TWO VERBS MEAN, because they are NOT variations on each other:
+--
+--   'leave'       — THE MODEL'S. "I looked at this gap and I am waiting." A real
+--                   decision with a reason, submitted through submit_plan. It
+--                   changes nothing about the row, which is the point: today the
+--                   only way to say "deliberately nothing" is to omit the gap,
+--                   and an omission is indistinguishable from not having looked.
+--
+--   'unmentioned' — CODE'S, and unwritable by the model (validateDecisions
+--                   refuses it). Appended for every gap that was in the plan's
+--                   view and in neither the accepted nor the refused list. It is
+--                   how a quiet tick leaves a trace at all: before this, a tick
+--                   where the model said nothing wrote ZERO rows, so "the planner
+--                   considered this gap 40 times and did nothing" and "the planner
+--                   has never seen this gap" were the same empty history.
+--
+-- Drop/re-add is safe here: RLS-with-no-policies and the anon/authenticated
+-- revoke are untouched, and every existing row satisfies the superset.
+alter table nudge_decisions drop constraint if exists nudge_decisions_action_check;
+alter table nudge_decisions add constraint nudge_decisions_action_check
+  check (action in ('send', 'hold', 'close', 'escalate', 'extend', 'leave', 'unmentioned'));

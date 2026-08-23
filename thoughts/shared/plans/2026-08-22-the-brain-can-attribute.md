@@ -2,7 +2,7 @@
 date: 2026-08-22
 task: Closing a gap becomes the planner's judgment; the sweep keeps the facts and a fail-safe
 research: thoughts/shared/research/2026-08-22-brain-memory-foundations.md
-status: draft
+status: complete
 ---
 
 ## Overview
@@ -103,13 +103,23 @@ box change. `buildGapView` then marks attributed evidence so the planner can see
   not be constrained by the ladder (`nudge_decisions.job_id` precedent).
 
 **`src/db/nudges.ts`**
-- `listOpenNudgesForTechnicianJob(tenantId, technicianId, jobId): Promise<Nudge[]>` — filters
-  `tenant_id`, `technician_id`, `status in OPEN_NUDGE_STATUSES`, and `context->>'jobId' = jobId`.
+- `listAskedNudgesForTechnicianJob(tenantId, technicianId, jobId): Promise<Nudge[]>` — filters
+  `tenant_id`, `technician_id`, `status = 'asked'`, and `context->>'jobId' = jobId`.
+  **DIVERGENCE, implemented 2026-08-22 (round-1 review):** the plan originally said
+  `status in OPEN_NUDGE_STATUSES`, which defeats its own purpose two reachable ways — a note
+  recorded while a gap is still `pending` (which `hold` can stretch to the 18h ceiling) would burn
+  the first-write-wins stamp so the real answer could never claim it, and an unasked sibling gap
+  would make the count 2 and block attribution entirely. A person can only answer a question they
+  were asked. Renamed to match.
 - `setNudgeAnsweredBy(id, tenantId, captureId): Promise<Nudge | null>` — guarded with
   **`.is('answered_by_capture_id', null)`** so the first answer wins. `.eq(col, null)` renders as
   `col=eq.null` and matches ZERO rows; there is no `.eq(x, null)` anywhere in `src/db/`.
 
-**`src/mcp/server.ts`** — in the `record_field_note` dispatch ([:2239](src/mcp/server.ts#L2239))
+**`src/mcp/server.ts`** — inside `commitNote`, the ONE commit all three paths share
+- **DIVERGENCE, implemented 2026-08-22:** placed inside `commitNote` rather than repeated at its
+  three call sites, and `answeredByTechnicianId` is a **required** field so typecheck pins every
+  present and future site. A per-site hook is exactly the thing that gets added to the obvious
+  site and forgotten on the other two.
 - **After** a `recorded` result, never before: `recordFieldNote` resolves the job *after* the L1
   append ([recordFieldNote.ts:251](src/writePath/recordFieldNote.ts#L251)), so use the `captureId`
   and `jobId` the commit returns.
@@ -123,26 +133,33 @@ box change. `buildGapView` then marks attributed evidence so the planner can see
   where a nudge answer most often lands.
 
 **`src/teamLead/planner.ts`**
-- `buildGapView` marks evidence the technician submitted as this gap's answer as
-  `ANSWERS THIS GAP: "…"`. No new parameter and no new read — `answered_by_capture_id` is a column
-  on the `Nudge` the function already receives; compare against `e.capture.id`.
-- Suppress the `sharesJob` SHARED warning **for an attributed capture only**; it stays for the rest.
-- Three callers move: [planner.ts:1141](src/teamLead/planner.ts#L1141),
-  [planner-eval/run.mjs:81](scripts/planner-eval/run.mjs#L81),
-  [planner.test.ts:1656](src/teamLead/planner.test.ts#L1656).
+- `buildGapView` marks the linked capture `<-- LINKED TO THIS GAP`. No new parameter and no new
+  read — `answered_by_capture_id` is a column on the `Nudge` the function already receives;
+  compare against `e.capture.id`.
+  **DIVERGENCE, implemented 2026-08-22 (round-2 review):** the marker reads `LINKED`, not
+  `ANSWERS`. Code knows WHO recorded WHAT and WHEN; whether it answers the question is the
+  judgment Phase 2 hands to the planner, and the repo's copy doctrine is to name the predicate,
+  never the conclusion a reader might draw.
+- The `sharesJob` SHARED warning is **NARROWED** by an attributed capture, never dropped
+  (round-1 review): the warning sits above the notes AND the shared money block, so one marked
+  line must not clear the guardrail off a sibling's evidence.
+- No callers move — the signature did not change.
 
 ### Automated verification
-- [ ] the CLAUDE.md gates (typecheck / lint / test) + `npm run gen:types:local`
-- [ ] one open gap on the job → stamped; two open gaps → nothing stamped
-- [ ] another technician's open gap on the same job is NOT stamped
-- [ ] a roster-less badge attributes nothing and still records the note
-- [ ] `setNudgeAnsweredBy` stamps once and is a no-op on a second call **with a different capture
+- [x] the CLAUDE.md gates (typecheck / lint / test) + `npm run gen:types:local`
+- [x] one open gap on the job → stamped; two open gaps → nothing stamped
+- [x] another technician's open gap on the same job is NOT stamped
+- [x] a roster-less badge attributes nothing and still records the note
+- [x] `setNudgeAnsweredBy` stamps once and is a no-op on a second call **with a different capture
       id** — proves the `.is()` guard rather than the happy path
-- [ ] attribution throwing does not fail `record_field_note`
-- [ ] **the stamp survives a `needs_identity` round-trip** — stage, resume with `confirmId` +
+- [x] attribution throwing does not fail `record_field_note` (driven by a REAL Postgres error)
+- [x] **the stamp survives a `needs_identity` round-trip** — stage, resume with `confirmId` +
       `confirmed`, assert the nudge is stamped (the resume paths are the common case)
-- [ ] two gaps on one job, one capture attributed: the attributed gap's view says
-      `ANSWERS THIS GAP` and drops the SHARED warning; the other gap's view keeps both
+- [x] two gaps on one job, one capture attributed: the attributed gap's view says
+      `LINKED TO THIS GAP` and NARROWS the SHARED warning; the other gap's view keeps the original
+- [x] a note recorded BEFORE the ask does not burn the stamp; the later real answer claims it
+- [x] an UNASKED sibling gap on the job does not make the real answer ambiguous
+- [x] a stamp naming a capture outside the evidence window changes nothing
 
 ### Live verification (agent-executable)
 - Prerequisites: `mcp__supabase-test`.
@@ -164,8 +181,24 @@ deadline, which fires only when the planner has been silent for a working day.
 ### Changes required
 
 **`src/jobs/watchers.ts`** — the nudge sweep loop ([:565](src/jobs/watchers.ts#L565))
-- **Delete the `filled` close.** The `filled` branch no longer calls `resolveNudge`. `moot` is
-  untouched — a cancelled visit or job is a fact.
+- **Delete the `filled` close FOR AN ASKED GAP.** `moot` is untouched — a cancelled visit or job
+  is a fact.
+- **DIVERGENCE, implemented 2026-08-22.** The plan said delete it outright. It survives for a row
+  **nobody has been asked yet** (`!n.asked_at`), because there is no answer to judge there — only
+  the detector re-checking its own predicate, which is the same class as `moot`. Deleting it
+  outright causes two concrete harms, both verified against the code at review:
+  1. `compose.ts:191` reads `['pending']` rows and never re-checks `filled`, and its ask window
+     holds an evening gap until 7am. A report filed at 8pm would be followed by asking that
+     technician at 7am how the job went — the mouth lying about what the record already knows,
+     which is the class plan ② was built to stop.
+  2. An undelivered row whose job HAS a report would reach the 18h delivery deadline and hand a
+     manager a gap the record already answers, opening an item that self-closes next tick.
+  Independent evidence: removing the carve-out breaks `delivery deadline: arrived activity still
+  wins over expiry`, a pre-existing test this plan never touched.
+- **The escalation copy needs a new explicit check (review finding).** `noNoteOrStatusChange` used
+  to be backed implicitly — a `filled`-true row could never reach the escalation loop. It can now
+  (answered + planner alive), so the flag is gated on `!spec.filled(...)` or the manager is told
+  "no note or status update since the visit" with the report sitting on the job.
 - **Fail-safe at the deadline.** In the `status === 'asked' && dueAt <= nowMs` branch, before
   pushing to `escalations`:
   ```
@@ -197,26 +230,41 @@ deadline, which fires only when the planner has been silent for a working day.
   future reader will otherwise re-wire it to close.
 - **No `holeClosed`, no `record_filled`** — dropped; `basis` carries that distinction now.
 
+**`src/teamLead/plannerPrompt.ts`** and **`src/mcp/server.ts`** (the `recall_decisions` description)
+- **ADDED at review.** Both carried text this phase falsified. The prompt told the model to look
+  for a `prior decisions` line that no longer exists, and used the line's PRESENCE as the signal to
+  read history — inverted once filler makes every gap carry one, which would have cost five wasted
+  `recall_decisions` turns per tick. The tool description claimed the table "is the only record
+  that you ran at all", which is false of the filtered view that tool returns. This is the repo's
+  own recorded trap (engineering-memory: *a capability added in one phase can activate dead prompt
+  text written in another*).
+
 **`src/teamLead/plannerPrompt.ts`**
 - The prompt already describes `close` with `basis` and `citation`. Add one line: closing is now
   the ONLY way an answered gap ends before its deadline, and leaving an answered gap open until
   the deadline means it closes itself and says the planner did not act.
 
 ### Automated verification
-- [ ] the CLAUDE.md gates (typecheck / lint / test)
-- [ ] activity on a job **no longer closes** its gap on the sweep — the gap stays `asked`
-- [ ] `moot` still closes immediately (cancelled visit, cancelled job)
-- [ ] at the deadline with activity and **no** applied planner decision in 24h → auto-closed, and
+- [x] the CLAUDE.md gates (typecheck / lint / test)
+- [x] activity on a job **no longer closes** an ASKED gap on the sweep — it stays `asked`
+- [x] activity on a job DOES still close a gap nobody was asked yet (the carve-out)
+- [x] an escalating gap that IS answerable never claims "no note or status update"
+- [x] a genuinely silent one still does — the fix narrows the clause, it does not delete it
+- [x] `filled` itself is unchanged — pinned directly, since the fail-safe now depends on it
+- [x] `moot` still closes immediately (cancelled visit, cancelled job)
+- [x] at the deadline with activity and **no** applied planner decision in 24h → auto-closed, and
       the resolution text names the fail-safe
-- [ ] at the deadline with activity and an applied planner decision in 24h → **escalates**, does
+- [x] at the deadline with activity and an applied planner decision in 24h → **escalates**, does
       not auto-close (the planner's judgment stands)
-- [ ] **at the deadline with activity and only `unmentioned` rows → AUTO-CLOSES.** This is the
+- [x] a judgment OUTSIDE the 24h window, or a refused/shadow one, is not liveness
+- [x] **at the deadline with activity and only `unmentioned` rows → AUTO-CLOSES.** This is the
       cross-phase regression test: `unmentioned` must not read as a live judgment, or Phase 3
       silently disables Phase 2's fail-safe
-- [ ] at the deadline with no activity → escalates, exactly as today
-- [ ] a `listDecisions` failure at the deadline → escalates (fails toward the manager)
-- [ ] the planner's own `close` still works and still requires `basis` + `citation`
-- [ ] expire / serve-cap / delivery-cap paths are untouched
+- [x] `PLANNER_JUDGMENT_ACTIONS` is pinned against `PLANNER_ACTIONS`, so a new verb must be added
+- [x] at the deadline with no activity → escalates, exactly as today
+- [x] a `listDecisions` failure at the deadline → escalates (fails toward the manager)
+- [x] the planner's own `close` still works and still requires `basis` + `citation`
+- [x] expire / serve-cap / delivery-cap paths are untouched
 
 ### Live verification (agent-executable)
 - Prerequisites: `mcp__supabase-test`.
@@ -225,7 +273,19 @@ deadline, which fires only when the planner has been silent for a working day.
       `resolution`, and the matching `nudge_decisions` row with its reason and citation.
 
 ### Manual verification
-- [ ] The auto-close resolution text reads sensibly to a manager who encounters it.
+- [x] The auto-close resolution text reads sensibly to whoever encounters it. **This item's own
+      premise was wrong and was corrected (user, 2026-08-22): NO MANAGER READS IT.** Checked rather
+      than assumed — `nudges.resolution` has no reader outside `watchers.ts`, there is no
+      `v_nudges` view, `query_spine` has no grant on the table, and an auto-closed gap returns
+      before the escalation path so it never becomes a manager item either. The manager is not told
+      at all; the live signal is the `console.error` beside the write.
+      The real readers are an engineer at a psql prompt, and the planner once ④ lands a nudges read
+      surface. So the line was made to STAND ALONE — it names its job the way every human-facing
+      string in this ladder does, because a row that cannot say what it is about is useless to all
+      three, and "nobody sees it" is how a string rots into a surface later:
+      *"'Furnace tune-up' (Henderson) — closed automatically — a field report arrived — the gap
+      filled itself. Nobody reviewed it within 24h, so the record was closed on the evidence."*
+      A thin context degrades to no subject, never to `'undefined' (undefined)` — pinned by test.
 
 ---
 
@@ -285,18 +345,25 @@ carrying elapsed time and a consideration count.
   once a gap's history exceeds 200 rows, logging once when it first bites.
 
 ### Automated verification
-- [ ] the CLAUDE.md gates (typecheck / lint / test) + `npm run gen:types:local`
-- [ ] 3 open gaps, model names 1 → **3** rows (1 decision, 2 `unmentioned`)
-- [ ] an EMPTY plan over 3 open gaps writes 3 rows (today: zero)
-- [ ] a tick whose `runLoop` throws writes 3 `unmentioned` rows with `outcome='refused'`
-- [ ] `leave` records the model's reason; `unmentioned` records none — distinguishable
-- [ ] `'unmentioned'` submitted by the model is REFUSED by `validateDecisions`
-- [ ] shadow mode writes `outcome='shadow'` and touches no nudge
-- [ ] `recall_decisions` omits `unmentioned`; the per-tick read includes them
-- [ ] **`historyLine` reports the last REAL action** with 20 `unmentioned` rows appended after it —
+- [x] the CLAUDE.md gates (typecheck / lint / test) + `npm run gen:types:local`
+- [x] 3 open gaps, model names 1 → **3** rows (1 decision, 2 `unmentioned`)
+- [x] an EMPTY plan over 3 open gaps writes 3 rows (today: zero)
+- [x] a tick whose `runLoop` throws writes 3 `unmentioned` rows with `outcome='refused'`
+- [x] `leave` records the model's reason; `unmentioned` records none — distinguishable
+- [x] `'unmentioned'` submitted by the model is REFUSED by `validateDecisions`
+- [x] shadow mode writes `outcome='shadow'` and touches no nudge
+- [x] `recall_decisions` omits `unmentioned`; the per-tick read includes them
+- [x] **`historyLine` reports the last REAL action** with 20 `unmentioned` rows appended after it —
       the test that would have caught the filler bug
-- [ ] `historyLine` omits `last:` when every row is `unmentioned`; returns null on empty history
-- [ ] the 200-row cap stops appending and logs once
+- [x] `historyLine` omits `last:` when every row is `unmentioned`; returns null on empty history
+- [x] a gap dropped for an UNKNOWN action still gets a row — it is not "spoken for" by a refusal
+      that was never recorded (bug found at review: `spokenFor` now derives from the rows actually
+      written, never from the decisions/dropped lists)
+- [x] the SUBMIT_PLAN_TOOL action enum is pinned against `PLANNER_ACTIONS` — drift would silently
+      make a verb unusable by the model while the rails still accepted it
+- [x] a failure BEFORE the views are built records nothing; a recording failure on the failed path
+      is loud and does not mask the real error
+- [x] the 200-row cap stops appending and logs once
 
 ### Live verification (agent-executable)
 - Prerequisites: `mcp__supabase-test`.
@@ -305,3 +372,43 @@ carrying elapsed time and a consideration count.
 
 ### Manual verification
 - None.
+
+---
+
+## Final review — what the CROSS-PHASE gate caught
+
+Each phase was reviewed alone and its findings fixed. A fourth review over the combined diff found
+six more that no per-phase review could see, because each is an interaction:
+
+1. **`leave` was mandated on every gap** (my prompt wording, not the plan's), which made
+   `plannerAlive` true for every gap forever — silently disabling Phase 2's fail-safe, defeating
+   `historyLine`'s filler-skip, and burying `recall_decisions`. `leave` is now the exception, for
+   when the REASON is worth remembering; plain silence is the default and is already recorded.
+2. **The fail-safe re-introduced the same-job double-close**, 24h later than before. `filled` is
+   job-keyed, so one note closed two questions and the cost gap's permanent resolution read "the
+   technician answered" about a question nobody answered. It now declines when the job carries more
+   than one open gap — failing toward the manager, like every other ambiguity here.
+3. **An answerable gap that escalates still asked the manager for the datum the record held.**
+   Phase 2 gated the "no note or status update" clause but left the closing ask unconditioned. Both
+   handoff templates and the nudge's own `no reply` resolution are now gated on answerability.
+4. **The sweep's decision read grew on three axes at once** — every 5 min × every asked gap ×
+   a history Phase 3 appends to every tick, over gaps Phase 2 keeps open longer. Scoped to gaps at
+   or past their deadline, which is the only set either consumer needs: back to ~zero rows a tick.
+5. **`docs/engineering-memory.md` still asserted "`close` is unreachable"** — the exact defect this
+   plan inverts. Corrected in place with a resolution note.
+6. **`leave` had no status rail**: on a pending gap it wrote nothing, so compose sent the question
+   on the same tick — the model would say "I am waiting" and cause an ask. Now refused with a
+   pointer to `hold`.
+
+A seventh, raised by the user after the review: **the auto-close resolution had no reader and named
+no job.** `nudges.resolution` is write-only today, which is precisely why it was easy to write a
+line that cannot stand alone. Now self-identifying. The underlying gap — that a closed nudge leaves
+no manager-visible trace at all — is ④'s to close, not this plan's.
+
+Two things recorded rather than fixed, both consequences worth knowing:
+- **Phase 2 shrinks Phase 1's yield.** Attribution stamps only when exactly one gap is asked for
+  that person on that job; Phase 2 makes two-gaps-one-job the common case, so the stamp will land
+  less often than its design discussion assumed.
+- **`nudgesAutoClosed` is an alarm for a DEAD planner only.** A planner that is alive and
+  systematically wrong escalates answered gaps instead, so the sweep logs that shape explicitly
+  (`escalated although its gap is answerable from the record`).

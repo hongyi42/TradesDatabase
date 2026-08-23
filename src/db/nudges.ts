@@ -305,3 +305,87 @@ export async function setNudgeAttempts(
   if (error) throw new Error(`setNudgeAttempts failed: ${error.message}`);
   return data as Nudge | null;
 }
+
+// Which questions THIS person has actually been ASKED about THIS job — the
+// attribution lookup (plan 2026-08-22, Phase 1). Called at record_field_note
+// time, after the note has landed and the job is resolved.
+//
+// Scoped by technician BECAUSE a job can carry gaps belonging to different
+// people: Ben's visit report and Judy's cost question can sit on one job, and
+// Ben answering his must never stamp hers. `technicianId` is technicians.id
+// (the badge's roster row), not a ref.
+//
+// 'asked' ALONE, not OPEN_NUDGE_STATUSES — deliberately narrower than the plan's
+// wording, because the wider read defeats the plan's own purpose in two reachable
+// ways (both found at review):
+//   1. A pending gap can sit for hours (`not_before` gates compose only, and the
+//      planner's `hold` may push it out to the 18h delivery ceiling). Any routine
+//      note in that window would be stamped as the ANSWER to a question nobody
+//      has been asked yet — and the stamp is first-write-wins, so the real answer
+//      could never claim it afterwards. Attribution would fail silently, forever,
+//      on exactly the gap it exists to serve.
+//   2. A brand-new pending cost gap on the same job would make the count 2 and
+//      block attribution of the answer to the one question that WAS asked.
+// A person can only answer a question they were asked. Anything earlier is a
+// note, not a reply.
+//
+// `context->>'jobId'`, not a column: the job a gap is about lives in its
+// watcher-written context, which is where every other reader gets it
+// (watchers.ts, nudgeKinds.ts). A gap whose context is malformed simply does
+// not match, which is the fail-closed answer — an unattributed answer is a
+// missing link, an unattributable one stamped anyway is a lie.
+export async function listAskedNudgesForTechnicianJob(
+  tenantId: string,
+  technicianId: string,
+  jobId: string,
+): Promise<Nudge[]> {
+  const { data, error } = await getClient()
+    .from('nudges')
+    .select()
+    .eq('tenant_id', tenantId)
+    .eq('technician_id', technicianId)
+    .eq('status', 'asked')
+    .eq('context->>jobId', jobId)
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`listAskedNudgesForTechnicianJob failed: ${error.message}`);
+  return (data ?? []) as Nudge[];
+}
+
+// Stamp the capture that answered a gap. First write wins.
+//
+// `.is('answered_by_capture_id', null)`, NEVER `.eq(col, null)`: PostgREST
+// renders `.eq(x, null)` as `col=eq.null`, which matches ZERO rows in SQL's
+// three-valued logic — the guard would silently never let anything through and
+// the stamp would never land, while a test asserting "no-op when already set"
+// passed for entirely the wrong reason. There is no `.eq(x, null)` anywhere in
+// src/db/ and there must not be.
+//
+// KNOWN CONSEQUENCE of first-write-wins (round-2 review): if the stamped capture
+// is later RETRACTED, the evidence reader folds it out and the marker disappears,
+// but the slot stays taken — a re-recorded answer can never claim it. Degradation
+// only (the planner still reads the words), and it is the same "a lost link is a
+// lost link" trade this whole helper is built on. Recorded so it is a known
+// consequence rather than a surprise.
+//
+// NOT status-guarded, unlike every other write in this file. The other guards
+// exist because their writes MOVE the row's lifecycle and must lose a race; this
+// one records a historical fact about a capture that really did land, and it is
+// still true if a sweep closed the gap a moment earlier. Stamping a
+// just-closed gap is exactly what we want — that is the audit trail for why it
+// closed.
+export async function setNudgeAnsweredBy(
+  id: string,
+  tenantId: string,
+  captureId: string,
+): Promise<Nudge | null> {
+  const { data, error } = await getClient()
+    .from('nudges')
+    .update({ answered_by_capture_id: captureId })
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .is('answered_by_capture_id', null)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`setNudgeAnsweredBy failed: ${error.message}`);
+  return data as Nudge | null;
+}

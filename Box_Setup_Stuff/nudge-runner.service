@@ -1,7 +1,7 @@
 # /etc/systemd/system/nudge-runner.service
-# Deliver queued team-lead nudges through each technician's own agent (plan
-# 2026-08-15 feature B, Phase 4). Pulls the spine's /control/nudges outbox and
-# reports per-item outcomes; the spine owns retries. The script ALWAYS exits 0
+# Deliver queued team-lead nudges verbatim to each person's Telegram (v2
+# direct-send, plan 2026-08-23 ④b Phase 4). Pulls the spine's /control/nudges
+# outbox and reports per-item outcomes; the spine owns retries. The script ALWAYS exits 0
 # (ops-report.sh discipline) — a delivery problem is the spine's row state,
 # never a red unit on the box.
 [Unit]

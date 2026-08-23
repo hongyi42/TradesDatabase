@@ -180,3 +180,54 @@ npm run typecheck && npm run lint && npm run build
 
 Before committing a visual change, check it at **390px and 1280px**, confirm no horizontal
 overflow at either, and confirm nothing new falls below the contrast floor in §5.
+
+## 8. Motion
+
+Adopted 2026-08-23. Carbon publishes a motion system and we use it rather than inventing timings.
+Source: [carbon-design-system/carbon, `packages/motion`](https://github.com/carbon-design-system/carbon/tree/main/packages/motion)
+— durations from `src/dtcg/motion.json`, curves from `src/tokens.ts`. Tokens are declared on
+`.landing` in `landing.css`.
+
+| Token | Value | Use |
+|---|---|---|
+| `--dur-fast-01` | `70ms` | Buttons, toggles. Instant response to a press. |
+| `--dur-fast-02` | `110ms` | Small fades. |
+| `--dur-moderate-01` | `150ms` | **Default transition speed.** |
+| `--dur-moderate-02` | `240ms` | Expansion; elements carrying visual weight. |
+| `--dur-slow-01` | `400ms` | Large expansion; a deliberate, prominent moment. |
+
+| Curve | Value | Use |
+|---|---|---|
+| `--ease-standard` | `cubic-bezier(0.2, 0, 0.38, 0.9)` | Movement within the viewport. |
+| `--ease-entrance` | `cubic-bezier(0, 0, 0.38, 0.9)` | **Productive** entrance — data arriving. |
+| `--ease-entrance-expressive` | `cubic-bezier(0, 0, 0.3, 1)` | **Expressive** entrance — things with weight. |
+
+**Productive vs expressive** is Carbon's own split and it is the decision to get right: productive
+is fast and businesslike and belongs on data; expressive is slower and belongs on the few moments
+that carry meaning. Most of this page is productive.
+
+### Rules
+
+1. **Animate `opacity` and `transform` only.** Both are GPU-composited. Animating `width`,
+   `height`, `top` or `margin` forces layout on every frame.
+2. **Motion must mean something.** The proof band's fill sequence exists because a record really is
+   assembled from a message over time. Decorative movement is the generated-page signature this
+   design has twice been rebuilt to escape — see the 2026-08-22 critique.
+3. **Every motion is guarded by `prefers-reduced-motion`, and the guard renders the FINISHED state
+   rather than a faster animation.** A reader who asked for less motion should not have to sit
+   through a shortened performance. Forced motion is a vestibular problem, not a taste question.
+4. **Scroll-triggered sequences play once.** Disconnect the observer after firing; a demonstration
+   that replays every time the reader scrolls back becomes noise.
+5. **No motion on first paint above the fold.** The hero must be readable the instant it renders.
+
+### What is animated today
+
+| Where | What | Timing |
+|---|---|---|
+| Buttons | Colour on hover, 1px press on `:active` | `150ms` / `80ms` |
+| In-page anchors | `scroll-behavior: smooth` | browser default |
+| Proof band | The record writing itself — chat, then sheet rows, then the source rule | `120ms`–`2500ms`, once, on scroll into view |
+
+The proof band sequence is CSS-only past a single class flip: React adds `.is-playing` when the
+band enters the viewport and every step's timing is a `transition-delay`. There are no timers to
+leak and no per-frame JavaScript.

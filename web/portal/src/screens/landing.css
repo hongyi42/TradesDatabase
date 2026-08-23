@@ -64,6 +64,20 @@
   --inverse-ink: #ffffff;
   --inverse-ink-muted: #c6c6c6;
 
+  /* ── Motion. Carbon's own tokens, not invented ones. ──────────────────
+     Source: github.com/carbon-design-system/carbon, packages/motion —
+     src/dtcg/motion.json (durations) and src/tokens.ts (easing curves).
+     Productive is the fast, businesslike mode for data; expressive is for
+     things carrying visual weight. Documented in DESIGN.md §8. */
+  --dur-fast-01: 70ms;      /* buttons, toggles */
+  --dur-fast-02: 110ms;     /* small fades */
+  --dur-moderate-01: 150ms; /* default transition speed */
+  --dur-moderate-02: 240ms; /* expansion, elements with weight */
+  --dur-slow-01: 400ms;     /* large expansion, deliberate moments */
+  --ease-standard: cubic-bezier(0.2, 0, 0.38, 0.9);
+  --ease-entrance: cubic-bezier(0, 0, 0.38, 0.9);
+  --ease-entrance-expressive: cubic-bezier(0, 0, 0.3, 1);
+
   /* Native chrome, themed from the palette rather than left at the default. */
   caret-color: var(--amber);
   accent-color: var(--amber-fill);
@@ -341,6 +355,105 @@
 @media (prefers-reduced-motion: no-preference) {
   html:has(.landing) {
     scroll-behavior: smooth;
+  }
+}
+
+/* ── The record writing itself ────────────────────────────────────────────
+   The proof band is the page's one real demonstration, and as a finished
+   before-and-after it read as a diagram. Played once, in order, it becomes the
+   product demo the unshot 90-second film is standing in for.
+
+   The sequence is CSS-only past a single class flip: React adds .is-playing
+   when the band scrolls into view, and every step's timing is a
+   transition-delay below. No timers to leak, no per-frame work.
+
+   opacity and transform ONLY — both composited, so nothing here triggers
+   layout. Elements start hidden, which is safe because this is a client-only
+   SPA: with no JS there is no page at all, not a page with invisible content.
+
+   Everything is inert until .ld-proof-armed is present, and React only adds
+   that when the reader has NOT asked for reduced motion. Under reduce the band
+   renders finished, immediately, with no transitions to sit through — see the
+   media query at the end of this block. */
+.ld-proof-armed .ld-seq {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.ld-proof-armed.is-playing .ld-seq {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--dur-moderate-02) var(--ease-entrance-expressive),
+    transform var(--dur-moderate-02) var(--ease-entrance-expressive);
+}
+
+/* The chat arrives first: message, attachment, then the bot's confirmation. */
+.ld-proof-armed.is-playing .ld-seq-msg    { transition-delay: 120ms; }
+.ld-proof-armed.is-playing .ld-seq-file   { transition-delay: 520ms; }
+.ld-proof-armed.is-playing .ld-seq-bot    { transition-delay: 900ms; }
+.ld-proof-armed.is-playing .ld-seq-arrow  { transition-delay: 1200ms; }
+
+/* Then the sheet fills, a row at a time. moderate-01 + productive easing:
+   these are data landing, not a flourish. */
+.ld-proof-armed .ld-seq-row {
+  transform: translateX(-6px);
+}
+.ld-proof-armed.is-playing .ld-seq-row {
+  transform: none;
+  transition:
+    opacity var(--dur-moderate-01) var(--ease-entrance),
+    transform var(--dur-moderate-01) var(--ease-entrance);
+}
+.ld-proof-armed.is-playing .ld-seq-row:nth-of-type(1) { transition-delay: 1400ms; }
+.ld-proof-armed.is-playing .ld-seq-row:nth-of-type(2) { transition-delay: 1580ms; }
+.ld-proof-armed.is-playing .ld-seq-row:nth-of-type(3) { transition-delay: 1760ms; }
+.ld-proof-armed.is-playing .ld-seq-row:nth-of-type(4) { transition-delay: 1940ms; }
+
+/* The source rule draws down last and slowest. It is the differentiator, so it
+   is the one moment on the page worth taking 400ms over. */
+.ld-proof-armed .ld-source {
+  position: relative;
+}
+.ld-proof-armed .ld-source::before {
+  content: '';
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--amber-fill);
+  transform: scaleY(0);
+  transform-origin: top;
+}
+.ld-proof-armed.is-playing .ld-source::before {
+  transform: scaleY(1);
+  transition: transform var(--dur-slow-01) var(--ease-entrance-expressive) 2250ms;
+}
+/* The real border is hidden while armed so the ::before pseudo can draw it. */
+.ld-proof-armed .ld-source {
+  border-left-color: transparent;
+}
+.ld-proof-armed.is-playing .ld-seq-source {
+  transition-delay: 2500ms;
+}
+
+/* Asked for less motion: render the finished state and skip the performance.
+   Not a slower version of it — no delays, no transitions, nothing to wait
+   through. Forced motion is a vestibular problem, not a taste question. */
+@media (prefers-reduced-motion: reduce) {
+  .ld-proof-armed .ld-seq,
+  .ld-proof-armed.is-playing .ld-seq {
+    opacity: 1;
+    transform: none;
+    transition: none;
+    transition-delay: 0ms;
+  }
+  .ld-proof-armed .ld-source {
+    border-left-color: var(--amber-fill);
+  }
+  .ld-proof-armed .ld-source::before {
+    display: none;
   }
 }
 

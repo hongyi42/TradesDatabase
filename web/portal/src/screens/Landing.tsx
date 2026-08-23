@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { VideoPlaceholder } from '../components/VideoPlaceholder.js';
 import { ContactForm } from '../components/ContactForm.js';
 import { PRICE_CENTS, CURRENCY } from '../data/model.js';
@@ -209,7 +209,62 @@ function PhotoPlate({
   );
 }
 
+/** Plays the proof band's fill sequence once, the first time it scrolls into
+ *  view. Returns a ref for the band and the class names to put on it.
+ *
+ *  Reduced motion is handled by NOT ARMING at all rather than by animating
+ *  faster: a reader who asked for less motion gets the finished band on first
+ *  paint, with no transitions attached to sit through. The CSS carries a
+ *  matching guard so the two cannot drift apart.
+ *
+ *  The observer disconnects after firing — this is a one-shot demonstration,
+ *  not something that should replay every time the reader scrolls back up. */
+function useFillOnce() {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [armed] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+  );
+  const [playing, setPlaying] = useState(false);
+
+  useEffect(() => {
+    if (!armed) return;
+    const el = ref.current;
+    // IntersectionObserver is everywhere we support, but a missing implementation
+    // must not leave the band invisible — show it rather than hide it.
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setPlaying(true);
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setPlaying(true);
+          io.disconnect();
+        }
+      },
+      { threshold: 0.25 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [armed]);
+
+  const className = [
+    'ld-proof',
+    armed ? 'ld-proof-armed' : '',
+    armed && playing ? 'is-playing' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  return { ref, className };
+}
+
 export function Landing({ onSignIn }: { onSignIn: () => void }) {
+  const proof = useFillOnce();
+
   // The only stateful widget on the page.
   const [managers, setManagers] = useState(1);
   const [technicians, setTechnicians] = useState(4);
@@ -327,7 +382,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
             <h2 className="ld-h2">One text in. One record out.</h2>
           </div>
 
-          <div className="ld-proof">
+          <div className={proof.className} ref={proof.ref}>
             {/* Chat card */}
             <div className="ld-chat">
               <div className="ld-chat-head">
@@ -340,7 +395,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                 </span>
               </div>
 
-              <div className="ld-bubble-tech">
+              <div className="ld-bubble-tech ld-seq ld-seq-msg">
                 <p className="ld-bubble-text">
                   Done at 1420 Birch St. Replaced the breaker panel, tested and signed off. Report
                   attached.
@@ -358,7 +413,10 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                 </p>
               </div>
 
-              <div className="ld-bubble-tech" style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '9px 13px' }}>
+              <div
+                className="ld-bubble-tech ld-seq ld-seq-file"
+                style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '9px 13px' }}
+              >
                 <span
                   aria-hidden="true"
                   style={{
@@ -373,7 +431,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                 <span style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>Inspection_1420Birch.pdf</span>
               </div>
 
-              <div className="ld-bubble-bot">
+              <div className="ld-bubble-bot ld-seq ld-seq-bot">
                 <p className="ld-bubble-text" style={{ marginBottom: 9 }}>
                   Filed. Birch St, breaker panel.
                 </p>
@@ -392,7 +450,7 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
               </div>
             </div>
 
-            <div className="ld-arrow" aria-hidden="true">
+            <div className="ld-arrow ld-seq ld-seq-arrow" aria-hidden="true">
               &rarr;
             </div>
 
@@ -403,26 +461,26 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                 <span>JOB-4471</span>
               </div>
               <div style={{ padding: '4px 18px 16px' }}>
-                <div className="ld-row">
+                <div className="ld-row ld-seq ld-seq-row">
                   <span className="ld-row-label">Customer</span>
                   <span className="ld-row-value">M. Okonjo · 1420 Birch St, Aurora CO</span>
                 </div>
-                <div className="ld-row">
+                <div className="ld-row ld-seq ld-seq-row">
                   <span className="ld-row-label">Work</span>
                   <span className="ld-row-value">Breaker panel replacement</span>
                 </div>
-                <div className="ld-row">
+                <div className="ld-row ld-seq ld-seq-row">
                   <span className="ld-row-label">Visit</span>
                   <span className="ld-row-value">Aug 6 · Pete Rowan</span>
                 </div>
-                <div className="ld-row">
+                <div className="ld-row ld-seq ld-seq-row">
                   <span className="ld-row-label">Attached</span>
                   <span style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>Inspection_1420Birch.pdf</span>
                 </div>
                 {/* The evidence link back to L1 — the product's core claim.
                     Every structured field can show the message it came from.
                     Keep this block. */}
-                <div className="ld-source">
+                <div className="ld-source ld-seq ld-seq-source">
                   <p
                     style={{
                       fontFamily: 'var(--mono)',

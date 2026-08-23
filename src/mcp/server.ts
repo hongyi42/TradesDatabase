@@ -252,6 +252,15 @@ const TECH_CHANNELS: CaptureChannel[] = ['technician_voice', 'technician_note', 
 const BRIEF_FOCUSES: BriefFocus[] = ['next_visit', 'full_history'];
 const TIERS: TechnicianTier[] = ['manager', 'technician'];
 
+// GROUNDING_BARE=1 (date-eval bare-clock arm, 2026-08-23): the model's ONLY
+// date help is the firm-local `now` rider. Read at module load — the flag
+// rides a deploy — and it implies GROUNDING_LEAN (see leanGrounding). It
+// (a) hides resolve_date from tools/list (dispatch stays alive: the planner's
+// loop still carries the tool), and (b) removes the date-discipline steering
+// from tool descriptions, keeping only schema facts. Never set in normal
+// operation.
+const GROUNDING_BARE = process.env.GROUNDING_BARE === '1';
+
 // The technician tool surface — what every badge sees (the doorman runbook's
 // tool-count verification counts exactly these).
 const TOOLS = [
@@ -678,17 +687,22 @@ const SPINE_VIEW_CATALOG =
   'technician_ref, escalated_from_nudge, created_at, resolved_at) — the ' +
   "manager's queue; status='open' is what nobody has acted on. ";
 
-const SPINE_DAY_RULES =
-  'ALWAYS group or filter dates on v_schedule.local_day, which is already the firm-local day — ' +
-  'starts_at is a timestamp and bucketing it by its UTC date puts evening visits on the wrong ' +
-  'day. When you name one of those dates to a person, SELECT local_weekday and use it verbatim ' +
-  '("Tuesday the 4th") — never work out which day of the week a date falls on yourself. ';
+const SPINE_DAY_RULES = GROUNDING_BARE
+  ? // Bare keeps the SCHEMA facts (they are true of the data, not advice to a
+    // weak model): local_day is the firm-local bucket, local_weekday exists.
+    'Group or filter dates on v_schedule.local_day, which is already the firm-local day — ' +
+    'starts_at is a timestamp and bucketing it by its UTC date puts evening visits on the ' +
+    'wrong day. local_weekday carries each date\'s weekday. '
+  : 'ALWAYS group or filter dates on v_schedule.local_day, which is already the firm-local day — ' +
+    'starts_at is a timestamp and bucketing it by its UTC date puts evening visits on the wrong ' +
+    'day. When you name one of those dates to a person, SELECT local_weekday and use it verbatim ' +
+    '("Tuesday the 4th") — never work out which day of the week a date falls on yourself. ';
 
 // query_spine ONLY: the manager's agent has resolve_date on its surface, so the
 // fix for a relative period is "go call it". The team lead is handed its dates by
 // code instead, so pointing it at a tool its loop may not carry would be a lie —
 // spine_read states the code-supplied rule in its place.
-const SPINE_RESOLVE_DATE_RULE =
+const SPINE_RESOLVE_DATE_RULE = GROUNDING_BARE ? '' :
   'NEVER write a date into the SQL that you worked out yourself. If the question names a ' +
   'period relative to now — "the last 30 days", "this week", "since May", "so far this month" ' +
   '— call resolve_date FIRST and paste the dates it returns. The dates rule applies inside SQL ' +
@@ -1163,9 +1177,10 @@ const ADMIN_TOOLS = [
       'get_team_schedule, get_availability, find_customer, find_slots and the rest are faster, ' +
       'tested, and carry rules this tool does not. Reach for query_spine only for questions they ' +
       'cannot answer (counts, totals, "how many…since…", cross-cutting lists). ' +
-      'DATE BOUNDS: your clock is UTC and names TOMORROW from late afternoon on — before writing ' +
-      'any window that involves today ("so far this year", "through today", "last 30 days"), call ' +
-      "resolve_date and bound the SQL with ITS returned date, never your clock's. " +
+      (GROUNDING_BARE ? '' :
+        'DATE BOUNDS: your clock is UTC and names TOMORROW from late afternoon on — before writing ' +
+        'any window that involves today ("so far this year", "through today", "last 30 days"), call ' +
+        "resolve_date and bound the SQL with ITS returned date, never your clock's. ") +
       'WINDOW ROWS: unplaced (time-TBD) visits have NULL starts_at/local_day, so a local_day or ' +
       'starts_at range filter silently EXCLUDES them — a window job covers every day in ' +
       'earliest_date..latest_date. A day is NOT free just because no row lands ON it; for ' +
@@ -7297,7 +7312,8 @@ async function dispatch(
 // CALL, not at module load, so the eval window flips it via Render env with
 // no build, and tests toggle it around individual calls. Never set it in
 // normal operation.
-const leanGrounding = () => process.env.GROUNDING_LEAN === '1';
+const leanGrounding = () =>
+  process.env.GROUNDING_LEAN === '1' || process.env.GROUNDING_BARE === '1';
 
 // ─── temporal grounding rider ────────────────────────────────────────────
 // The firm timezone backs EVERY tool result's `now` line, so it is memoized
@@ -7346,7 +7362,12 @@ export function createServer(deps: ServerDeps = {}): Server {
     const admin = deps.identity
       ? await isActiveManager(deps.identity).catch(() => false)
       : false;
-    return { tools: admin ? MANAGER_TOOLS : TOOLS };
+    const served = admin ? MANAGER_TOOLS : TOOLS;
+    // Bare-clock arm: hide resolve_date from the MODEL's surface only —
+    // dispatch stays alive (the planner's tool loop still carries it).
+    return {
+      tools: GROUNDING_BARE ? served.filter((t) => t.name !== 'resolve_date') : served,
+    };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {

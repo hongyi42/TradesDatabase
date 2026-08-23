@@ -521,6 +521,111 @@ export type Database = {
           },
         ]
       }
+      gap_summaries: {
+        Row: {
+          answered_by_capture_id: string | null
+          arc: Json
+          asked_at: string | null
+          closed_at: string
+          considered: number
+          created_at: string
+          escalated: boolean
+          extended_to: string | null
+          id: string
+          job_id: string | null
+          kind: string
+          manager_fate: string
+          manager_latency_wh: number | null
+          manager_resolution: string | null
+          nudge_id: string
+          resolution: string | null
+          status: string
+          subject: string
+          tenant_id: string
+          working_hours_open: number | null
+        }
+        Insert: {
+          answered_by_capture_id?: string | null
+          arc?: Json
+          asked_at?: string | null
+          closed_at: string
+          considered?: number
+          created_at?: string
+          escalated?: boolean
+          extended_to?: string | null
+          id?: string
+          job_id?: string | null
+          kind: string
+          manager_fate?: string
+          manager_latency_wh?: number | null
+          manager_resolution?: string | null
+          nudge_id: string
+          resolution?: string | null
+          status: string
+          subject: string
+          tenant_id: string
+          working_hours_open?: number | null
+        }
+        Update: {
+          answered_by_capture_id?: string | null
+          arc?: Json
+          asked_at?: string | null
+          closed_at?: string
+          considered?: number
+          created_at?: string
+          escalated?: boolean
+          extended_to?: string | null
+          id?: string
+          job_id?: string | null
+          kind?: string
+          manager_fate?: string
+          manager_latency_wh?: number | null
+          manager_resolution?: string | null
+          nudge_id?: string
+          resolution?: string | null
+          status?: string
+          subject?: string
+          tenant_id?: string
+          working_hours_open?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "gap_summaries_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: true
+            referencedRelation: "mv_escalation_fates"
+            referencedColumns: ["nudge_id"]
+          },
+          {
+            foreignKeyName: "gap_summaries_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: true
+            referencedRelation: "mv_gap_outcomes"
+            referencedColumns: ["nudge_id"]
+          },
+          {
+            foreignKeyName: "gap_summaries_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: true
+            referencedRelation: "nudges"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "gap_summaries_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: true
+            referencedRelation: "v_nudges"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "gap_summaries_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       hosts: {
         Row: {
           created_at: string
@@ -908,6 +1013,20 @@ export type Database = {
           tenant_id?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "nudge_decisions_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: false
+            referencedRelation: "mv_escalation_fates"
+            referencedColumns: ["nudge_id"]
+          },
+          {
+            foreignKeyName: "nudge_decisions_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: false
+            referencedRelation: "mv_gap_outcomes"
+            referencedColumns: ["nudge_id"]
+          },
           {
             foreignKeyName: "nudge_decisions_nudge_id_fkey"
             columns: ["nudge_id"]
@@ -1925,6 +2044,151 @@ export type Database = {
       }
     }
     Views: {
+      mv_escalation_fates: {
+        Row: {
+          by_planner: boolean | null
+          escalated_at: string | null
+          fate: string | null
+          item_id: string | null
+          item_resolved_at: string | null
+          kind: string | null
+          late: boolean | null
+          nudge_id: string | null
+          premature: boolean | null
+          resolution: string | null
+          tenant_id: string | null
+          working_hours_to_fate: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "nudges_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      mv_extend_effectiveness: {
+        Row: {
+          answered_in_time: boolean | null
+          extended_at: string | null
+          extended_to: string | null
+          nudge_id: string | null
+          resolved_at: string | null
+          status: string | null
+          tenant_id: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "nudge_decisions_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: false
+            referencedRelation: "mv_escalation_fates"
+            referencedColumns: ["nudge_id"]
+          },
+          {
+            foreignKeyName: "nudge_decisions_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: false
+            referencedRelation: "mv_gap_outcomes"
+            referencedColumns: ["nudge_id"]
+          },
+          {
+            foreignKeyName: "nudge_decisions_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: false
+            referencedRelation: "nudges"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "nudge_decisions_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: false
+            referencedRelation: "v_nudges"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "nudge_decisions_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      mv_gap_outcomes: {
+        Row: {
+          asked_at: string | null
+          closed_by_technician: boolean | null
+          kind: string | null
+          nudge_id: string | null
+          outcome_bucket: string | null
+          resolution: string | null
+          resolved_at: string | null
+          status: string | null
+          tenant_id: string | null
+          working_hours_open: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "nudges_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      mv_whiplash: {
+        Row: {
+          action: string | null
+          decided_at: string | null
+          hours_between: number | null
+          job_id: string | null
+          nudge_id: string | null
+          prev_action: string | null
+          prev_at: string | null
+          tenant_id: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "nudge_decisions_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: false
+            referencedRelation: "mv_escalation_fates"
+            referencedColumns: ["nudge_id"]
+          },
+          {
+            foreignKeyName: "nudge_decisions_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: false
+            referencedRelation: "mv_gap_outcomes"
+            referencedColumns: ["nudge_id"]
+          },
+          {
+            foreignKeyName: "nudge_decisions_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: false
+            referencedRelation: "nudges"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "nudge_decisions_nudge_id_fkey"
+            columns: ["nudge_id"]
+            isOneToOne: false
+            referencedRelation: "v_nudges"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "nudge_decisions_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       v_cancelled_visits: {
         Row: {
           assignment_id: string | null
@@ -2471,6 +2735,10 @@ export type Database = {
           sku: string
           unit: string
         }[]
+      }
+      working_hours_between: {
+        Args: { from_ts: string; to_ts: string; tz: string }
+        Returns: number
       }
     }
     Enums: {

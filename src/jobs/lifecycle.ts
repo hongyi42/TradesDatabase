@@ -10,6 +10,7 @@ import { checkPairing } from '../composio/pairing.js';
 import { expireOffboarding, type ExpireResult } from '../composio/offboarding.js';
 import { ensurePersonSession } from '../composio/sessions.js';
 import { runLogIngestion, type LogIngestSummary } from '../composio/logIngest.js';
+import { runGapSummaries, type SummarizeSummary } from './summarize.js';
 import { runWatchers, type WatchersSummary } from './watchers.js';
 import { runTeamLeadCompose, type ComposeSummary } from '../teamLead/compose.js';
 import { runPlanner, type PlannerMode, type PlannerSummary } from '../teamLead/planner.js';
@@ -74,6 +75,7 @@ export interface LifecycleDeps {
   runWatchers?: typeof runWatchers;
   composeNudges?: typeof runTeamLeadCompose;
   runPlanner?: typeof runPlanner;
+  summarize?: typeof runGapSummaries;
   // Seam so the skip branch is testable without setting a real key.
   hasModelKey?: () => boolean;
 }
@@ -97,6 +99,7 @@ export interface LifecycleSummary {
   watchers: WatchersSummary | { skipped: string } | { stepError: string };
   teamLeadPlanner: PlannerSummary | { skipped: string } | { stepError: string };
   teamLeadCompose: ComposeSummary | { skipped: string } | { stepError: string };
+  gapSummaries: SummarizeSummary | { skipped: string } | { stepError: string };
   ok: boolean;
 }
 
@@ -413,6 +416,22 @@ export async function runLifecycle(
     }
   }
 
+  // 11. Gap-life summaries (⑤ Phase 2): one code-written row per closed gap —
+  // the planner's experience corpus. AFTER compose so a gap that closed this
+  // very tick is summarizable next tick at the latest. Ungated by mode flags:
+  // it writes history, and history is wanted whether or not the ladder is
+  // live. Missing table → skipped, never red (the braveBackfill idiom: code
+  // can deploy before its migration on a lagging environment).
+  let gapSummaries: LifecycleSummary['gapSummaries'];
+  try {
+    gapSummaries = await (deps.summarize ?? runGapSummaries)(nowIso);
+  } catch (err) {
+    gapSummaries = isMissingCostLedger(err)
+      ? { skipped: 'gap_summaries not migrated here yet' }
+      : { stepError: msg(err) };
+    if (!isMissingCostLedger(err)) ok = false;
+  }
+
   return {
     pairing,
     offboarding,
@@ -423,6 +442,7 @@ export async function runLifecycle(
     watchers,
     teamLeadPlanner,
     teamLeadCompose,
+    gapSummaries,
     ok,
   };
 }

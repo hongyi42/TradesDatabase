@@ -3187,3 +3187,38 @@ relay). **The weekday guard FIRES on this path**: weekday-guard.jsonl grew by on
 second — direct send keeps full guard coverage, so retiring the relay turn loses nothing.
 Channel-history appearance is unobservable on a dead target; that fact lands with ④b Phase 4's
 real send.
+
+## Nudge delivery v2 is LIVE — verbatim send, zero inference (④b Phase 4, 2026-08-23)
+
+The box's nudge-runner is **v2** as of 2026-08-23 ~18:40Z (installed md5
+`1e4c65b677c33566e93ea344c4689b1d`; service unit comment synced; ALL SIX seats wired with the
+new §0k "Questions and items from the office" AGENTS.md block — audited on s2 AND s5, ten
+doctrine headings exactly once each). v2 sends the spine's footer-less `directMessageB64`
+straight to the person's Telegram with `openclaw message send` (staged in-sandbox file; the
+probed transport contract above) and judges by the send's own exit — no agent turn, no
+trajectory scraping. **Deploy-order inversion to remember:** the box ran v2 FROM THE FEATURE
+BRANCH while `main` still carried v1 until the ④b Phase-4 PR merged — md5-against-repo remains
+the only truth about what the box runs, in either direction.
+
+First live E2E (nudge `35ebfd2f`, throwaway subject on Default Tenant): tick 17:55:38Z created
+and composed on the same lifecycle run → box tick 17:58:48 sent 147 chars → `asked` at
+17:58:49, serve_count 1. Byte-what-arrived proven three independent ways: runner journal
+sha256 `8b48506c…f51427` = the DB's own digest of the stored question's pre-footer half = the
+weekday guard's `message_sending` record (0 flags) — **guard coverage survived the relay's
+retirement**. Delivery leg ~13s vs v1's ~117s agent turn. Duplicate-protection proven live:
+row re-queued with the ack suppressed → next tick re-served (serve_count 2), runner hit the
+sent-marker under `/var/lib/nudge-runner/`, re-acked with NO second message.
+
+This also answers Stage-1's "STILL UNPINNED" failed-send question for the v2 path: a dead /
+never-started chat is a **deterministic exit 1** (`OutboundDeliveryError: chat not found`), so
+the runner reports `failed`, the spine keeps serving, and the 10-serve cap hands the gap to
+the manager — the silent-by-nature failure mode is now loud row state. (The v1 `--deliver`
+behavior on a dead chat remains unmeasured and no longer matters.)
+
+Residue: markers and in-sandbox `/tmp/nudge-<id>.txt` files accumulate (trivial at pilot
+scale); marker-before-report covers lost-ack, not a crash between send and `touch` — a
+send-then-die re-pings once (at-least-once by design). OPEN at time of writing: whether the
+date-eval flags (`GROUNDING_BARE`/`GROUNDING_LEAN`/`EVAL_FAKE_NOW`) are still set on the web
+service env — the MCP env write is classifier-blocked, the user owns clearing them; if
+`GROUNDING_BARE=1` was captured by the 17:22Z deploy, every seat is on the stripped date
+surface until cleared + redeployed (then bounce seat gateways to refresh cached tools/list).

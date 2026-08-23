@@ -25,12 +25,14 @@ import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
 import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { logWebRequests } from '../db/webRequests.js';
 import {
+  attributeAnswerToGap,
   createServer,
   dispatchForIdentity,
   safeEnvInt,
   TEAM_LEAD_TOOL_SCHEMAS,
   type ServerDeps,
 } from './server.js';
+import { createPendingNudge, listNudgesByStatus, markNudgeAsked, markNudgeQueued } from '../db/nudges.js';
 import { localDateISO } from '../schedule/availability.js';
 
 // Drive the MCP server over the SDK's in-memory transport (no network/stdio).
@@ -7962,5 +7964,190 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
         { recordCost: async () => {} },
       ),
     ).rejects.toThrow(/team lead's own tool/);
+  });
+});
+
+// Attribution (plan 2026-08-22, Phase 1): the spine ties an answer back to the
+// question it answered, with no ref code anywhere in the message.
+describe('record_field_note — an answer remembers its question', () => {
+  let customerId: string;
+  let jobId: string;
+  let strangerId: string;
+
+  beforeAll(async () => {
+    const c = await createCustomer({ tenantId, name: 'Attribution Customer' });
+    customerId = c.id;
+    const j = await createJob({ tenantId, customerId, title: 'Attribution job' });
+    jobId = j.id;
+    const t = await pg.query<{ id: string }>(
+      `insert into technicians (tenant_id, ref, display_name, tier, state, seat_exempt)
+       values ($1, 'attr-stranger', 'Attr Stranger', 'technician', 'active', true)
+       on conflict (tenant_id, ref) do update set display_name = excluded.display_name
+       returning id`,
+      [tenantId],
+    );
+    strangerId = t.rows[0].id;
+  });
+  afterAll(async () => {
+    await pg.query('delete from nudges where technician_id = $1', [strangerId]);
+    await pg.query('delete from technicians where id = $1', [strangerId]);
+  });
+
+  // An ASKED gap for `who` on this job — the state a real answer comes back to.
+  const askedGap = async (subjectRef: string, technicianId: string) => {
+    const n = await createPendingNudge({
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef,
+      technicianId,
+      context: { jobId },
+    });
+    if (!n) throw new Error('fixture nudge was not created');
+    await markNudgeQueued(n.id, tenantId, 'How did it go?');
+    await markNudgeAsked(n.id, tenantId);
+    return n;
+  };
+  const reread = async (id: string) => {
+    const rows = await listNudgesByStatus(tenantId, ['pending', 'queued', 'asked']);
+    return rows.find((r) => r.id === id) ?? null;
+  };
+
+  test('exactly ONE open gap on the job → the answering capture is stamped on it', async () => {
+    const gap = await askedGap('attr-one', techMcpId);
+    const out = await call('record_field_note', {
+      text: 'replaced the capacitor, all good',
+      confirmed: { customerId },
+    });
+    expect(out.data.status).toBe('recorded');
+    expect((await reread(gap.id))?.answered_by_capture_id).toBe(out.data.captureId);
+  });
+
+  test('TWO open gaps on the job → nothing is stamped; the planner judges it', async () => {
+    // Code cannot tell which question a sentence answers. Guessing here is the
+    // failure this whole design exists to avoid.
+    await pg.query('update nudges set status = $1 where tenant_id = $2', ['answered', tenantId]);
+    const a = await askedGap('attr-two-a', techMcpId);
+    const b = await askedGap('attr-two-b', techMcpId);
+    const out = await call('record_field_note', {
+      text: 'came to about eighty dollars in parts',
+      confirmed: { customerId },
+    });
+    expect(out.data.status).toBe('recorded');
+    expect((await reread(a.id))?.answered_by_capture_id).toBeNull();
+    expect((await reread(b.id))?.answered_by_capture_id).toBeNull();
+  });
+
+  test('another person’s gap on the same job is NOT stamped', async () => {
+    await pg.query('update nudges set status = $1 where tenant_id = $2', ['answered', tenantId]);
+    const theirs = await askedGap('attr-stranger-gap', strangerId);
+    const out = await call('record_field_note', {
+      text: 'flushed the drain line and tested it',
+      confirmed: { customerId },
+    });
+    expect(out.data.status).toBe('recorded');
+    expect((await reread(theirs.id))?.answered_by_capture_id).toBeNull();
+  });
+
+  test('the stamp survives a needs_identity round-trip — the common answer path', async () => {
+    // A technician answering a nudge usually lands on a RESUME, not the one-shot
+    // path: the note names no customer, the agent asks, they say which one.
+    await pg.query('update nudges set status = $1 where tenant_id = $2', ['answered', tenantId]);
+    const gap = await askedGap('attr-resume', techMcpId);
+    const staged = await call('record_field_note', { text: 'took two hours, no parts needed' });
+    expect(staged.data.status).toBe('needs_identity');
+    const done = await call('record_field_note', {
+      confirmId: staged.data.confirmId,
+      confirmed: { customerId },
+    });
+    expect(done.data.status).toBe('recorded');
+    expect((await reread(gap.id))?.answered_by_capture_id).toBe(done.data.captureId);
+  });
+
+  test('a note BEFORE the question goes out does not burn the stamp', async () => {
+    // The defect this narrowing fixes. A pending gap can sit for hours; a
+    // routine note in that window must NOT be stamped as its answer, because
+    // the stamp is first-write-wins and the real answer could then never claim
+    // it — attribution would fail silently on exactly the gap it exists for.
+    await pg.query('update nudges set status = $1 where tenant_id = $2', ['answered', tenantId]);
+    const n = await createPendingNudge({
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef: 'attr-preask',
+      technicianId: techMcpId,
+      context: { jobId },
+    });
+    if (!n) throw new Error('fixture nudge was not created');
+
+    const early = await call('record_field_note', {
+      text: 'stopped by to drop off the part',
+      confirmed: { customerId },
+    });
+    expect(early.data.status).toBe('recorded');
+    expect((await reread(n.id))?.answered_by_capture_id).toBeNull();
+
+    // NOW the question actually goes out, and the reply claims the slot.
+    await markNudgeQueued(n.id, tenantId, 'How did it go?');
+    await markNudgeAsked(n.id, tenantId);
+    const answer = await call('record_field_note', {
+      text: 'fitted it and tested the run, all good',
+      confirmed: { customerId },
+    });
+    expect((await reread(n.id))?.answered_by_capture_id).toBe(answer.data.captureId);
+  });
+
+  test('an UNASKED sibling gap does not make the real answer ambiguous', async () => {
+    // A brand-new pending cost gap on the same job must not block attribution
+    // of the answer to the visit question that actually went out.
+    await pg.query('update nudges set status = $1 where tenant_id = $2', ['answered', tenantId]);
+    const askedOne = await askedGap('attr-sib-asked', techMcpId);
+    const unasked = await createPendingNudge({
+      tenantId,
+      kind: 'job_cost_gap',
+      subjectRef: 'attr-sib-pending',
+      technicianId: techMcpId,
+      context: { jobId },
+    });
+    if (!unasked) throw new Error('fixture nudge was not created');
+
+    const out = await call('record_field_note', {
+      text: 'wrapped up around four, customer happy',
+      confirmed: { customerId },
+    });
+    expect((await reread(askedOne.id))?.answered_by_capture_id).toBe(out.data.captureId);
+    expect((await reread(unasked.id))?.answered_by_capture_id).toBeNull();
+  });
+
+  test('a ROSTER-LESS badge attributes nothing and still records the note', async () => {
+    // record_field_note serves badges with no roster row by design. There is no
+    // technicians.id to scope gaps by, so attribution fails closed — but the
+    // note must still land, which is the whole point of that carve-out.
+    await pg.query('update nudges set status = $1 where tenant_id = $2', ['answered', tenantId]);
+    const gap = await askedGap('attr-rosterless', techMcpId);
+    const out = (await dispatchForIdentity(
+      'record_field_note',
+      { text: 'meter read fine on arrival', confirmed: { customerId } },
+      { tenantId, technicianRef: 'no-roster-row-at-all' },
+      { extract: async () => ({ workPerformed: 'did the work' }) },
+    )) as { status: string; captureId: string };
+    expect(out.status).toBe('recorded');
+    expect(out.captureId).toBeTruthy();
+    expect((await reread(gap.id))?.answered_by_capture_id).toBeNull();
+  });
+
+  test('a failure inside attribution never fails the note', async () => {
+    // A REAL database error (a non-uuid technician id is rejected by Postgres),
+    // not a stub: the swallow is the safety property, and L1 is undeletable, so
+    // a lost link must never become a lost note.
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(
+      attributeAnswerToGap({
+        tenantId,
+        technicianId: 'not-a-uuid',
+        jobId,
+        captureId: '44444444-4444-4444-8444-444444444444',
+      }),
+    ).resolves.toBeUndefined();
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

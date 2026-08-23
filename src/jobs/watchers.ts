@@ -157,6 +157,43 @@ export const NUDGE_ESCALATE_MAX_HOURS = 48;
 // at 24 — move this number FIRST if the window ever grows.
 export const NUDGE_DELIVERY_DEADLINE_HOURS = 18;
 
+// How long the planner may be silent about a gap before the sweep stops waiting
+// for it (plan 2026-08-22, Phase 2 — user set the duration: ONE WORKING DAY).
+//
+// This is a LIVENESS window, not a second deadline. The fail-safe itself is
+// anchored to the escalation deadline above — already 24h by default,
+// planner-adjustable with `extend`, hard-capped at 48h — because that is the
+// exact instant the damage lands: the moment the sweep would otherwise hand a
+// manager a gap claiming nobody answered when somebody did. This number only
+// decides whether the planner counts as ALIVE at that instant.
+//
+// Read the pairing carefully: an `extend` moves the deadline AND is itself a
+// judgment, so a planner that is actively postponing a gap both delays the
+// fail-safe and keeps proving it is awake. That is intended — the fail-safe
+// exists for a planner that is DEAD, never for one that disagrees.
+export const PLANNER_SILENCE_HOURS = 24;
+
+// What counts as the planner having DECIDED something about a gap.
+//
+// This set is the seam between Phase 2 and Phase 3 of the 2026-08-22 plan, and
+// getting it wrong is silent. Phase 3 writes an `unmentioned` row with
+// `outcome: 'applied'` for every gap the planner merely LOOKED at — so a naive
+// `outcome === 'applied'` liveness test would be true for every open gap on
+// every tick, and the fail-safe below would never fire again with nothing to
+// show for it. `unmentioned` means "saw it, said nothing"; only a real verb is a
+// judgment.
+//
+// Adding a new planner action means adding it HERE too. Exported so a test pins
+// exactly that, rather than trusting a future reader to remember.
+export const PLANNER_JUDGMENT_ACTIONS: ReadonlySet<string> = new Set([
+  'send',
+  'hold',
+  'close',
+  'escalate',
+  'extend',
+  'leave',
+]);
+
 // UTC offsets span −12h..+14h; subtracting 14h from a wall-clock instant is a
 // floor no real timezone's UTC reading can undershoot.
 const MAX_UTC_OFFSET_MS = 14 * 3_600_000;
@@ -235,7 +272,16 @@ export interface WatchersSummary {
   nudgeMode: NudgeMode;
   nudgesWouldCreate: number; // nudge-shadow: gaps the live ladder would have asked about
   nudgesCreated: number;
-  nudgesResolved: number; // answered (activity) or cancelled (status change)
+  // Closed by a FACT: a cancelled visit/job (`moot`), or a gap whose report
+  // arrived before anyone was asked (the pre-ask carve-out). Activity on an
+  // ALREADY-ASKED gap no longer counts — that close is the planner's.
+  nudgesResolved: number;
+  // The fail-safe firing: an answered gap whose planner said nothing for a full
+  // working day, closed by the sweep at its escalation deadline. Counted apart
+  // from nudgesResolved on purpose — this number is not throughput, it is an
+  // ALARM. In healthy operation the planner closes and this stays 0 (plan
+  // 2026-08-22, Phase 2).
+  nudgesAutoClosed: number;
   nudgesEscalated: number; // 24h silence → handed to the manager (rung 2)
   nudgesExpired: number; // never asked within the deadline → manager fallback
   // Per-kind breakdown — the ONLY place a single detector's numbers are
@@ -300,6 +346,7 @@ export async function runWatchers(
     nudgesWouldCreate: 0,
     nudgesCreated: 0,
     nudgesResolved: 0,
+    nudgesAutoClosed: 0,
     nudgesEscalated: 0,
     nudgesExpired: 0,
     byKind: {},
@@ -561,15 +608,122 @@ export async function runWatchers(
       const openedByKind = { overdue: 0, cost: 0 };
       const escalations: typeof openNudgeGaps = [];
       const expired: typeof openNudgeGaps = [];
+
+      // When a row's deadline falls. ONE definition, used by the decision read
+      // below and by the sweep loop — if the two ever disagreed, the loop could
+      // ask about liveness for a gap the read never fetched and treat a live
+      // planner as silent.
+      //
+      // Fail-closed on a malformed stamp: an unparseable escalate_after falls back
+      // to the constant rather than escalating immediately or never.
+      const dueAtOf = (n: { asked_at: string | null; escalate_after: string | null }): number => {
+        const stamped = n.escalate_after ? Date.parse(n.escalate_after) : NaN;
+        return Number.isNaN(stamped)
+          ? Date.parse(n.asked_at ?? '') + NUDGE_ESCALATE_HOURS * 3_600_000
+          : stamped;
+      };
+
+      // The planner's own decisions (plan 2026-08-22, Phase 2). This used to be
+      // fetched AFTER the loop, for the escalation copy alone; it now GATES the
+      // loop, because the fail-safe has to know whether the planner is alive
+      // before it closes anything.
+      //
+      // Scoped to gaps that are AT OR PAST their deadline, not every asked gap.
+      // Both consumers need exactly that set — `plannerAlive` is only ever called
+      // inside the deadline branch, and every escalation comes from it — so the
+      // wider read bought nothing and cost a great deal once the other two phases
+      // landed beside it (final-review finding: this read grew on all three axes
+      // at once — every 5 minutes, every asked gap, and a history that Phase 3
+      // now appends a row to on every tick, over gaps Phase 2 keeps open far
+      // longer). This restores its pre-hoist breadth: usually zero rows.
+      //
+      // Isolated, and the failure direction is deliberate: on a read failure
+      // `decisionsReadable` goes false and every gap is treated as having a LIVE
+      // planner, so the fail-safe cannot fire. A missing read is not evidence of
+      // silence, and the cost of guessing wrong points one way only — failing
+      // toward the manager loses nobody's answer, while auto-closing on absent
+      // evidence would swallow a real gap and say the planner did it.
+      const askedIds = openNudgeGaps
+        .filter((x) => x.n.status === 'asked' && !!x.n.asked_at && dueAtOf(x.n) <= nowMs)
+        .map((x) => x.n.id);
+      let decisions: Awaited<ReturnType<typeof listDecisions>> = new Map();
+      let decisionsReadable = true;
+      if (askedIds.length > 0) {
+        try {
+          decisions = await listDecisions(tenantId, askedIds);
+        } catch (err) {
+          decisionsReadable = false;
+          console.error(
+            `[watchers] decision read failed for ${tenantId} — escalating without reasons, ` +
+              'and the auto-close fail-safe is held back this tick',
+            err,
+          );
+        }
+      }
+      // Has the planner DECIDED anything about this gap inside the liveness
+      // window? Only a real verb counts — see PLANNER_JUDGMENT_ACTIONS for why
+      // `unmentioned` must never be in that set. `applied` only: a refused
+      // decision did not happen and a shadow one was never carried out, so
+      // neither is evidence of a planner that can act on this row.
+      const plannerAlive = (nudgeId: string): boolean => {
+        if (!decisionsReadable) return true; // fail toward escalation
+        const since = nowMs - PLANNER_SILENCE_HOURS * 3_600_000;
+        return (decisions.get(nudgeId) ?? []).some(
+          (d) =>
+            d.outcome === 'applied' &&
+            PLANNER_JUDGMENT_ACTIONS.has(d.action) &&
+            Date.parse(d.decided_at) > since,
+        );
+      };
+
       for (const x of openNudgeGaps) {
         // Present by construction: openNudges was filtered to registered kinds.
         const spec = specFor(x.n.kind, specs)!;
-        const filled = spec.filled(x.n, facts);
-        if (filled) {
-          const closed = await resolveNudge(x.n.id, tenantId, 'answered', filled);
-          if (closed) summary.nudgesResolved += 1;
-          continue;
+        // `filled` NO LONGER CLOSES (plan 2026-08-22, Phase 2 — user ruling).
+        //
+        // "Did this answer the question?" is the one thing the sweep decides that
+        // is a JUDGMENT rather than a fact, and the sweep is the wrong organ for
+        // it: it runs every 5 minutes against a planner that runs every 30, so
+        // the fast deterministic thing always won the race. Backwards from the
+        // AI-manager premise. Now the gap STAYS OPEN until the planner reads the
+        // answer and closes it with a reason and a citation — which is also what
+        // finally lets the planner SEE an answer at all, and what makes the
+        // two-gaps-on-one-job case judgeable instead of coin-flipped.
+        //
+        // The predicate itself survives, and is still consulted twice below: by
+        // the fail-safe at the deadline, and (via buildGapView) by the planner.
+        // What changed is its authority, not its truth.
+        //
+        // PRE-ASK CARVE-OUT — the one place `filled` still closes, and it is NOT
+        // the case the ruling was about.
+        //
+        // On a row nobody has been asked yet there is no answer to judge; there
+        // is only the DETECTOR re-checking its own predicate — "is this still a
+        // gap?" — which is a fact, the same class as `moot`. Closing it needs no
+        // mind, and NOT closing it does active harm: compose reads pending rows
+        // and never re-checks this, and its ask window holds an evening gap until
+        // 7am. A report filed at 8pm would then be followed by us asking that
+        // technician at 7am how the job went. That is the mouth lying about what
+        // the record already knows — exactly what plan ② was built to stop.
+        //
+        // Without this the delivery deadline is the other victim: an undelivered
+        // row whose job HAS a report would sit until 18h and then hand a manager
+        // a gap the record already answers, opening an item that self-closes on
+        // the next tick. Churn, and a manager's attention spent on nothing.
+        //
+        // Only the visit spec can fire here; JOB_COST_GAP_SPEC.filled returns at
+        // its own `!n.asked_at` guard, correctly — a cost question's predicate is
+        // bounded by the ask and means nothing before it.
+        if (!x.n.asked_at) {
+          const filledBeforeAsking = spec.filled(x.n, facts);
+          if (filledBeforeAsking) {
+            const closed = await resolveNudge(x.n.id, tenantId, 'answered', filledBeforeAsking);
+            if (closed) summary.nudgesResolved += 1;
+            continue;
+          }
         }
+        // `moot` is untouched: a cancelled visit or job is a FACT, not a
+        // judgment, and there is nothing left for anyone to decide about it.
         const moot = spec.moot(x.n, facts);
         if (moot) {
           const closed = await resolveNudge(x.n.id, tenantId, 'cancelled', moot);
@@ -588,11 +742,79 @@ export async function runWatchers(
         // asked_at is still REQUIRED — a row that was never asked has no silence
         // to measure, and the delivery-deadline path below owns it instead.
         if (x.n.status === 'asked' && x.n.asked_at) {
-          const stamped = x.n.escalate_after ? Date.parse(x.n.escalate_after) : NaN;
-          const dueAt = Number.isNaN(stamped)
-            ? Date.parse(x.n.asked_at) + NUDGE_ESCALATE_HOURS * 3_600_000
-            : stamped;
-          if (dueAt <= nowMs) {
+          if (dueAtOf(x.n) <= nowMs) {
+            // THE FAIL-SAFE (plan 2026-08-22, Phase 2). Closing moved to the
+            // planner, so a dead planner would leave every answered gap sitting
+            // open until its deadline and then hand the manager a gap claiming
+            // nobody answered — with the answer sitting on the job. This is the
+            // exact instant that would happen, which is why the fail-safe is
+            // anchored here rather than to a new clock of its own: the deadline
+            // is already planner-adjustable via `extend` and 48h-capped, so an
+            // extend correctly moves BOTH.
+            //
+            // It fires only when the planner has said nothing about this gap
+            // for a full working day. A planner that HAS been deciding here and
+            // chose not to close is exercising judgment, not failing — that
+            // escalates exactly as it did before.
+            const answered = spec.filled(x.n, facts);
+            // The gap's own subject line, from its watcher-written context —
+            // read fail-closed like everywhere else, and omitted entirely rather
+            // than rendered as "'undefined' (undefined)" when it is thin.
+            const c = (x.n.context ?? {}) as Record<string, unknown>;
+            const title = typeof c.jobTitle === 'string' ? c.jobTitle : null;
+            const customer = typeof c.customerName === 'string' ? c.customerName : null;
+            // The separator rides WITH the subject, so an absent subject leaves no
+            // orphan space or dash at the front of the line.
+            const subject = title ? `'${title}'${customer ? ` (${customer})` : ''} — ` : '';
+            // ONE OPEN GAP ON THE JOB, or the fail-safe declines.
+            //
+            // `filled` is JOB-keyed, not question-keyed — it asks "did anything
+            // land on this job", and it cannot tell which QUESTION a note
+            // answers. With one gap that is unambiguous. With two it is the
+            // same-job double-close this plan set out to end: one note would
+            // close both, and the cost gap's permanent resolution would read
+            // "the technician answered" about a question nobody answered, with
+            // the figure never captured and the ledger still blind.
+            //
+            // Everywhere else this fail-safe fails TOWARD the manager (see the
+            // decision-read failure above). It must here too: an ambiguous gap
+            // escalates, which loses nobody's answer, rather than closing
+            // silently on a guess. Phase 1's stamp cannot rescue this either —
+            // it declines on exactly this shape, for exactly this reason.
+            const soleGapOnJob =
+              !!x.jobId &&
+              openNudgeGaps.filter((o) => o.jobId === x.jobId).length === 1;
+            if (answered && soleGapOnJob && !plannerAlive(x.n.id)) {
+              const closed = await resolveNudge(
+                x.n.id,
+                tenantId,
+                'answered',
+                // WHO ACTUALLY READS THIS, checked rather than assumed: nobody
+                // today. `nudges.resolution` has no reader outside this file —
+                // there is no v_nudges view, query_spine has no grant on the
+                // table, and an auto-closed gap returns before the escalation
+                // path so it never becomes a manager item either. The live
+                // readers are an engineer at a psql prompt and the console line
+                // below; the planner joins them when ④ gives it a nudges view.
+                //
+                // So it is written to stand ALONE. It names the job the way every
+                // human-facing string in this ladder does, because a row that
+                // cannot say what it is about is useless to all three of those
+                // readers — and "it is fine, nobody sees it" is exactly how a
+                // string rots into a surface later.
+                `${subject}closed automatically — ${answered}. Nobody reviewed it within ` +
+                  `${PLANNER_SILENCE_HOURS}h, so the record was closed on the evidence.`,
+              );
+              if (closed) {
+                summary.nudgesAutoClosed += 1;
+                console.error(
+                  `[watchers] nudge ${x.n.id} auto-closed at its deadline — the answer landed ` +
+                    'but the planner never acted. This is the fail-safe firing, not normal ' +
+                    'operation: check that the planner is running.',
+                );
+              }
+              continue;
+            }
             escalations.push(x);
             continue;
           }
@@ -673,20 +895,13 @@ export async function runWatchers(
       // The guard just below drops malformed-context rows (they re-collect
       // every tick and never escalate — fail-closed; they still close via
       // the status-change path above).
-      // ONE batched read for every escalating gap, never one per row. Isolated:
-      // the handoff is what matters, and losing the planner's note is strictly
-      // better than not escalating at all.
-      let decisions: Awaited<ReturnType<typeof listDecisions>> = new Map();
-      if (escalations.length > 0) {
-        try {
-          decisions = await listDecisions(
-            tenantId,
-            escalations.map((x) => x.n.id),
-          );
-        } catch (err) {
-          console.error(`[watchers] decision read failed for ${tenantId} — escalating without reasons`, err);
-        }
-      }
+      // `decisions` was read ONCE above, before the sweep loop, because the
+      // fail-safe needed it too (plan 2026-08-22, Phase 2). It covers every ASKED
+      // gap, which is a superset of `escalations` — every escalation comes from
+      // the asked-and-overdue branch. Losing the planner's note is still strictly
+      // better than not escalating at all, so a failed read leaves the map empty
+      // and the templates take over.
+      //
       // Rows come back OLDEST first, so scan backwards for the newest. Only an
       // APPLIED escalate counts: a refused one did not happen, a shadow one was
       // never carried out, and an `extend`'s note would attribute a decision to
@@ -718,12 +933,38 @@ export async function runWatchers(
         // status at all, so it gets no flag. Inert today, because its copy does
         // not render the clause — and "inert today" is exactly how the claims
         // this phase deleted were allowed to survive.
+        //
+        // THE "no field note" HALF NOW NEEDS AN EXPLICIT CHECK (Phase-2 review
+        // finding). It used to be backed implicitly: a `filled`-true row could
+        // never reach this loop, because it closed at the top of the sweep. Phase
+        // 2 removed that guarantee — an answered gap whose planner is ALIVE and
+        // chose not to close it falls through to here — so without this the item
+        // would tell a manager "no note or status update since the visit" with
+        // the field report sitting on the job. That is precisely the false claim
+        // plan ② deleted, re-entering through the door this phase opened.
+        const answerable = spec.filled(x.n, facts);
         const plan = spec.handoff(x.n, 'escalated', naiveLocal, {
           plannerNote: noteFor(x.n.id),
-          ...(spec.subjectIsVisit ? { noNoteOrStatusChange: true } : {}),
+          ...(spec.subjectIsVisit && !answerable ? { noNoteOrStatusChange: true } : {}),
+          answerableFromRecord: answerable,
           noCostOnLedger: !jobsWithCostEvents.has(x.jobId ?? ''),
         });
         if (!plan) continue; // malformed context — fail-closed, never escalates
+        if (answerable) {
+          // THE SHAPE "the planner is wrong" NOW TAKES. Phase 2's fail-safe only
+          // catches a planner that is DEAD; a planner that is alive and simply
+          // misjudges an answered gap keeps it open until the deadline and it
+          // escalates here instead — with the answer sitting on the job and
+          // nudgesAutoClosed still reading 0. That is inside the ratified
+          // semantics (the planner's judgment stands), but it must not be
+          // SILENT, or the one failure mode this ladder can still have has no
+          // signal at all.
+          console.error(
+            `[watchers] nudge ${x.n.id} escalated although its gap is answerable from the ` +
+              `record (${answerable}) — the planner had it and did not close it. Not an ` +
+              'outage; a judgment worth reviewing.',
+          );
+        }
         // The KIND-GENERIC flagger: a job-scoped gap has no visit window, and
         // the visit flagger's assignment-as-subject convention does not fit it.
         // Both bounds are optional here and omitted from `detail` when absent.
@@ -754,7 +995,11 @@ export async function runWatchers(
             x.n.id,
             tenantId,
             'escalated',
-            'no reply — handed to the manager',
+            // "no reply" is FALSE once something has landed on the job. The
+            // durable audit line must say which of the two actually happened.
+            answerable
+              ? 'not confirmed as answered — handed to the manager'
+              : 'no reply — handed to the manager',
           );
           if (moved) summary.nudgesEscalated += 1;
         } catch (err) {

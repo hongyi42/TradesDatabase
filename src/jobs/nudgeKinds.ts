@@ -50,11 +50,12 @@ export interface SweepFacts {
   // ITEM sweep (plan 2026-08-19, Phase 2), which needs to know when a manager
   // has done the thing their queue item asked for.
   //
-  // Deliberately NOT consumed by any `filled` predicate. A cost recorded by the
-  // manager still does not close an open cost NUDGE — that is one of three
-  // "the ladder cannot see the money ledger" defects the user ruled should be
-  // designed once, together, in a later plan. Wiring it here because it happened
-  // to be in hand would be exactly the piecemeal fix that decision rejected.
+  // Deliberately NOT consumed by any `filled` predicate. Since 2026-08-22 that
+  // matters far less than it did: `filled` no longer closes an ASKED nudge, and
+  // the planner reads the ledger directly (buildGapView's THE RECORD line, plus
+  // moneyOnRecord) and may close on basis 'record'. So the money-blindness that
+  // was a HOLE in the sweep is now simply the sweep declining to judge, which is
+  // the correct division. Wiring it in here would put the judgment back.
   jobsWithCostEvents: Set<string>;
 }
 
@@ -115,6 +116,18 @@ export interface HandoffContext {
   // handed, which is why code can hand a model-written sentence to a manager at
   // all; everything else about it is measured by eval, not enforced here.
   plannerNote?: string | null;
+  // The sentence `filled` produced, when this gap IS answerable from the record
+  // (plan 2026-08-22, final review). Null when it is not.
+  //
+  // Named after the PREDICATE like everything else here. It exists because
+  // Phase 2 made a new shape reachable: an answered gap whose planner is alive
+  // and did not close it escalates anyway. Before that, an escalating gap always
+  // had `filled` false, so the closing ask — "Tell me how it went and I'll put
+  // it on the record" — was safe by construction. It is not any more: with a
+  // report sitting on the job, that sentence asks a manager for a datum the
+  // record already holds, and the stage0 doctrine's own premise ("the RECORD
+  // does not know it") is exactly what this flag falsifies.
+  answerableFromRecord?: string | null;
   // Backs ONE clause with ONE wording: "no field note and no status change".
   // That clause has TWO halves and the caller owes a predicate for EACH — a
   // caller that has only run hasActivitySince may NOT pass this flag:
@@ -154,7 +167,34 @@ export interface NudgeKindSpec {
   // kind per tenant per tick — the tenant-wide MAX_NEW_ITEMS_PER_TENANT_TICK
   // ceiling still applies across all kinds on top of this.
   maxNewPerTenantTick: number;
-  // The gap answered itself → resolution text, or null. Checked FIRST.
+  // IS THIS GAP ANSWERABLE FROM THE RECORD? → the sentence saying so, or null.
+  //
+  // THIS PREDICATE NO LONGER CLOSES AN ASKED GAP (plan 2026-08-22, Phase 2 —
+  // user ruling). Read that twice before wiring it into a resolve path, because
+  // its name still sounds like a verdict and re-connecting it is a one-line
+  // change that would silently undo the whole phase.
+  //
+  // "Did this answer the question?" is a JUDGMENT, and the sweep is the wrong
+  // organ for it: it runs every 5 minutes against a planner that runs every 30,
+  // so the fast deterministic thing always won the race and the planner never
+  // saw an answer at all. Closing now belongs to the planner, which reads the
+  // words, writes a reason and cites the evidence.
+  //
+  // It still CLOSES in exactly one place — a gap NOBODY HAS BEEN ASKED yet
+  // (watchers.ts, the pre-ask carve-out). That is not a judgment about an
+  // answer; it is the detector re-checking its own predicate, and it must stay:
+  // compose reads pending rows without re-checking this, and its ask window
+  // holds an evening gap till 7am, so removing it means asking a technician at
+  // 7am about a job they reported at 8pm.
+  //
+  // It is otherwise READ-ONLY, feeding:
+  //   1. the sweep's fail-safe at the escalation deadline (watchers.ts) — the
+  //      only way an ASKED gap still closes without the planner, and only when
+  //      the planner has been silent for a full working day;
+  //   2. the escalation copy's "no field note" clause, which needs this false
+  //      before it may be claimed;
+  //   3. the planner's own gap view, via buildGapView.
+  // Its truth did not change. Its authority over an asked gap did.
   filled(n: Nudge, f: SweepFacts): string | null;
   // Nothing left to ask → resolution text, or null.
   moot(n: Nudge, f: SweepFacts): string | null;
@@ -335,11 +375,17 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
     // kind (`filled` bounds on startsAtLocal, :230). The first draft put the
     // clause straight after the ask time, which read as "nothing since we
     // asked" — a different, narrower window than the one we checked.
+    // The closing line changes when the record can already answer this. Asking
+    // "tell me how it went" with a field report on the job wastes the manager's
+    // attention on something they would only have to look up — and the queue
+    // item's whole justification is that the record does NOT know.
     const template =
       `'${title}' (${customer})` +
       (activityChecked ? ` — no note or status update since the visit` : '') +
-      `. We asked ${techName} on ${wallClockLabel(naiveLocal(n.asked_at))}. Tell me how it ` +
-      `went and I'll put it on the record.`;
+      `. We asked ${techName} on ${wallClockLabel(naiveLocal(n.asked_at))}. ` +
+      (ctx?.answerableFromRecord
+        ? `Something has landed on the job since — worth a look to see if it covers it.`
+        : `Tell me how it went and I'll put it on the record.`);
     // When the planner escalated this gap it wrote the manager's line itself,
     // and that line IS the message (user, 2026-08-22). The template is the
     // fallback for a clock-driven escalation, where no model was in the loop.
@@ -393,8 +439,12 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
 
   // A cost item asks the MANAGER to record what the job cost, so the ledger is
   // the only thing that can say it is done — not a note, and not any other
-  // activity on the job. This is the item half ONLY; the nudge's `filled` above
-  // deliberately still ignores the ledger (see SweepFacts.jobsWithCostEvents).
+  // activity on the job. This is the ITEM half, and it is UNCHANGED by the
+  // 2026-08-22 closing move: a manager's queue item is not a question put to a
+  // person through the ladder, and nothing about it is a judgment the planner
+  // was handed. `filled` above still ignores the ledger (see
+  // SweepFacts.jobsWithCostEvents) — and now that it no longer closes anything,
+  // the planner reads the ledger itself through buildGapView's THE RECORD line.
   itemResolved(item, f) {
     if (f.jobsWithCostEvents.has(item.jobId)) {
       return 'a cost was recorded for this job after it was flagged';
@@ -436,7 +486,9 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
           : (ctx?.plannerNote ??
             `'${title}' (${customer}) — we asked ${techName} what it cost in parts and materials` +
               (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
-              `. Tell me the figure and I'll put it on the books.`),
+              (ctx?.answerableFromRecord
+                ? `. Something has landed on the job since — worth a look for the figure.`
+                : `. Tell me the figure and I'll put it on the books.`)),
     };
   },
 

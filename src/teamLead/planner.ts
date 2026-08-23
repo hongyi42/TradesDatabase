@@ -51,8 +51,38 @@ import { TEAM_LEAD_REF } from './identity.js';
 
 export type PlannerMode = 'off' | 'shadow' | 'live';
 
-export const PLANNER_ACTIONS = ['send', 'hold', 'close', 'escalate', 'extend'] as const;
+// Everything the MODEL may submit. `leave` joined 2026-08-22 (Phase 3): it means
+// "I looked at this and I am waiting", takes a reason, and changes nothing.
+// Without it the only way to say "deliberately nothing" was to omit the gap, and
+// an omission is indistinguishable from never having looked at it.
+//
+// Adding a verb here means adding it to PLANNER_JUDGMENT_ACTIONS in watchers.ts
+// too, or the sweep's fail-safe stops counting it as liveness and starts firing
+// under a planner that is working. A test pins that pair.
+export const PLANNER_ACTIONS = ['send', 'hold', 'close', 'escalate', 'extend', 'leave'] as const;
 export type PlannerAction = (typeof PLANNER_ACTIONS)[number];
+
+// CODE'S OWN verb, and deliberately NOT in PLANNER_ACTIONS: the model must never
+// be able to submit it, because it is the record of the model having said
+// NOTHING. If it were submittable, "I chose silence" and "silence was observed"
+// would collapse into one value and the corpus would stop being able to tell
+// them apart. validateDecisions refuses it by construction (it is not a known
+// action), and a test pins that.
+//
+// It is also invisible to `recall_decisions` — a planner reading its own history
+// wants the decisions, not the tick marks — while the per-tick read that feeds
+// historyLine keeps them, because the COUNT is the whole point.
+export const UNMENTIONED = 'unmentioned';
+
+// How many decisions a single gap may accumulate before the tick-mark filler
+// stops being appended to it. Real decisions are never capped.
+//
+// Normally unreachable: a gap cannot outlive its 18h delivery deadline or its
+// 48h escalation ceiling, so at ~24 in-window ticks a day it collects a few
+// dozen rows at most. The configuration that escapes that is NUDGES_MODE
+// off/shadow with PLANNER_MODE live — the sweep stops closing gaps while the
+// planner keeps running — and there the filler would grow forever.
+export const UNMENTIONED_CAP = 200;
 
 export interface PlannerDecision {
   nudgeId: string;
@@ -328,9 +358,34 @@ export interface GapView {
 // the failure it prevents (re-deciding from zero every 30 minutes, escalating
 // something already escalated) IS the failure of not knowing there was anything
 // to look up. Push the keys and the existence; pull the content.
-function historyLine(history: NudgeDecision[], nowMs: number): string | null {
+function historyLine(history: NudgeDecision[], nowMs: number, tz: string): string | null {
   if (history.length === 0) return null;
-  const last = history[history.length - 1];
+  // The last REAL action, scanning backwards — NOT history[length-1]. Since
+  // Phase 3 an `unmentioned` tick mark is appended on nearly every tick, so the
+  // final row is almost always filler and rendering it would tell the planner
+  // "last: unmentioned" about a gap it escalated an hour ago. The filler is what
+  // makes the COUNT meaningful; it is not what the model should be reminded of.
+  let last: NudgeDecision | undefined;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].action !== UNMENTIONED) {
+      last = history[i];
+      break;
+    }
+  }
+  // "considered", never "ticks" or "times seen": a row now means "this gap was
+  // in a plan I was shown". Rows written before this phase under-count, so the
+  // word has to be one the data can back either way.
+  //
+  // `watched since` comes from the FIRST row — the moment this gap entered the
+  // planner's world — rendered in the firm's own clock, because every other
+  // temporal string in this block is (the date-eval doctrine: the model never
+  // converts a clock).
+  const since = clockLabel(history[0].decided_at, tz);
+  const head =
+    `  watched since ${since ?? history[0].decided_at} — considered ${history.length}×`;
+  // No real decision yet: the model has looked at this gap and never acted on
+  // it. Say exactly that rather than inventing a `last:` out of filler.
+  if (!last) return `${head}, no decision yet. Use recall_decisions for the detail.`;
   const mark =
     last.outcome === 'applied'
       ? ''
@@ -338,8 +393,8 @@ function historyLine(history: NudgeDecision[], nowMs: number): string | null {
         ? ' — REFUSED'
         : ' — shadow, not applied';
   return (
-    `  prior decisions: ${history.length} (last: ${last.action}${mark}, ` +
-    `${hoursBetween(last.decided_at, nowMs)}h ago). Use recall_decisions for the detail.`
+    `${head}, last: ${last.action}${mark} ${hoursBetween(last.decided_at, nowMs)}h ago. ` +
+    'Use recall_decisions for the detail.'
   );
 }
 
@@ -368,6 +423,14 @@ export function buildGapView(
         .slice(-EVIDENCE_PER_GAP);
 
   const evidenceText = relevant.map((e) => flat(e.capture.raw_text ?? '', EVIDENCE_TEXT_CHARS));
+
+  // Spine-side attribution (plan 2026-08-22, Phase 1). No new read and no new
+  // parameter: the stamp is a column on the Nudge this function already holds.
+  // It says the spine matched this capture to THIS gap at record time, because
+  // it was the only gap open for that person on that job — a fact code knows and
+  // the model cannot infer from the words.
+  const answeredBy = n.answered_by_capture_id;
+  const attributedHere = !!answeredBy && relevant.some((e) => e.capture.id === answeredBy);
 
   // The temporal vocabulary a handoff note is allowed. asked_at is a REAL UTC
   // instant → the firm's zone; endsAtLocal was written naive-local by the
@@ -454,7 +517,7 @@ export function buildGapView(
         (agoLabel ? `\n    how long ago the ask went out: ${agoLabel}` : ''),
     );
   }
-  const hist = historyLine(history, nowMs);
+  const hist = historyLine(history, nowMs, tz);
   if (hist) lines.push(hist);
   if (!n.asked_at) {
     lines.push('  evidence since the ask: (nothing was asked yet, so there is none)');
@@ -466,9 +529,20 @@ export function buildGapView(
       // Code-computed, because code KNOWS this and the model would have to infer
       // it. Two gaps on one job see the same notes, and nothing below can tell
       // which question a given sentence answers.
+      //
+      // NARROWED by an attributed capture, never switched off (review finding):
+      // the stamp ties exactly ONE note to this gap, and everything else in the
+      // block — the other notes AND the shared money below — is still shared and
+      // still unattributed. Dropping the whole warning on the strength of one
+      // marked line would clear the guardrail off a sibling's note and let a
+      // Phase-2 close cite words that answered somebody else's question.
       lines.push(
-        '  NOTE: this job has more than one open gap, so everything below is SHARED between ' +
-          'them. Make sure it answers THIS question, not the other one.',
+        attributedHere
+          ? '  NOTE: this job has more than one open gap. The marked note is linked to THIS one; ' +
+            'everything else below is SHARED between them, so make sure it answers THIS ' +
+            'question, not the other one.'
+          : '  NOTE: this job has more than one open gap, so everything below is SHARED between ' +
+            'them. Make sure it answers THIS question, not the other one.',
       );
     }
     if (relevant.length === 0) {
@@ -477,10 +551,20 @@ export function buildGapView(
       lines.push('  notes since the ask: NO notes have landed on this job since the question went out');
     } else {
       lines.push('  evidence since the ask:');
+      if (attributedHere) {
+        // Say what the marker MEANS. An unexplained arrow is a machine artifact;
+        // this states the fact behind it, in the same voice as THE RECORD line.
+        lines.push(
+          '    (the marked note was recorded by this person on this job while THIS was the only ' +
+            'question open for them here, so the spine linked the two. That is WHO and WHEN, ' +
+            'not WHAT: whether it actually answers the question is still yours to judge.)',
+        );
+      }
       relevant.forEach((e, i) => {
         lines.push(
           `    [${i + 1}] ${e.capture.captured_at} via ${e.capture.channel}` +
-            `${e.capture.technician_ref ? ` (${e.capture.technician_ref})` : ''}: ${evidenceText[i]}`,
+            `${e.capture.technician_ref ? ` (${e.capture.technician_ref})` : ''}` +
+            `${e.capture.id === answeredBy ? '  <-- LINKED TO THIS GAP' : ''}: ${evidenceText[i]}`,
         );
       });
     }
@@ -753,6 +837,25 @@ export function validateDecisions(
       }
     }
 
+    // `leave` GETS A STATUS RAIL TOO (final-review finding). On a PENDING row it
+    // is a silent no-op with the opposite of its stated effect: it writes
+    // nothing, so `not_before` stays null, and compose — which runs at the next
+    // lifecycle step of the SAME tick and gates on `not_before` alone — sends the
+    // question immediately. The model would have said "I am waiting" and caused
+    // an ask, with `leave / applied` in the log. That is exactly the silent-no-op
+    // class the send/hold rail above exists to make impossible.
+    //
+    // Queued and asked are both fine: nothing composes a queued row, and an asked
+    // row has already gone out, so "I looked and I am waiting" is true of both.
+    if (action === 'leave' && view.nudge.status === 'pending') {
+      push(
+        'leave on a gap that has NOT gone out yet — it would not hold anything, because a ' +
+          'pending question is sent as soon as it is composed. Use hold (with a time) to wait, ' +
+          'or send to release it now.',
+      );
+      continue;
+    }
+
     // ASSERT-ONLY-CITED, in code. The prompt asks for a verbatim quote; this is
     // what makes it true. A close whose quote is absent from what we actually
     // SHOWED the model is refused — ambiguity defaults to open, because a
@@ -808,8 +911,12 @@ export function validateDecisions(
       // pool — the two shipped detectors do exactly that — and nothing in code
       // can tell which QUESTION a given sentence answers. This does not make a
       // single wrong close impossible, but it stops one note from closing every
-      // open gap on a job, which is the shape that would actually happen. The
-      // real fix is a nudge-session stamp on the capture, which does not exist.
+      // open gap on a job, which is the shape that would actually happen.
+      //
+      // Spine-side attribution (plan 2026-08-22, Phase 1) narrows this but does
+      // not retire it: a stamp exists only when exactly ONE question was open
+      // for that person on that job, which is precisely NOT the case this rail
+      // guards. Unstamped shared evidence is still unattributable.
       if (usedQuotes.has(wanted)) {
         push('close reusing a quote that already closed another gap in this plan');
         continue;
@@ -1007,6 +1114,16 @@ async function applyDecision(
       return done(
         await setSchedule(d.nudgeId, tenantId, { escalateAfter: d.escalateAfter }, ['asked']),
       );
+    case 'leave':
+      // Deliberately a no-op WRITE-side, and `applied` rather than some third
+      // outcome: the planner really did decide this, and the decision really was
+      // carried out — what it asked for was that nothing change. Recording it as
+      // refused would make the corpus read as if a rail rejected it.
+      //
+      // It counts as liveness for the sweep's fail-safe (PLANNER_JUDGMENT_ACTIONS),
+      // which is correct: a planner saying "I am waiting on this one" is awake
+      // and has an opinion, and the fail-safe exists for a planner that is dead.
+      return { outcome: 'applied' };
     case 'close': {
       // The resolution is the durable audit line a manager may later read, so it
       // says WHERE the answer came from. A record-basis close quotes code's own
@@ -1064,6 +1181,13 @@ export async function runPlanner(
   summary.tenants = tenantIds.length;
 
   for (const tenantId of tenantIds) {
+    // DECLARED OUTSIDE the try on purpose (plan 2026-08-22, Phase 3). The catch
+    // below has to write one `unmentioned` row per gap the tick was ABOUT, and a
+    // views map scoped to the try would be invisible there — leaving the tick
+    // that failed as the one tick with no trace, which is precisely the tick
+    // worth knowing about. Empty when the failure happened before the views were
+    // built, which correctly records nothing.
+    let views = new Map<string, GapView>();
     try {
       // Registry-gated like every other ladder path: a kind with no spec is not
       // composed, not swept, and not planned for either.
@@ -1133,7 +1257,6 @@ export async function runPlanner(
         const j = ctxStr(n, 'jobId');
         if (j) gapsPerJob.set(j, (gapsPerJob.get(j) ?? 0) + 1);
       }
-      const views = new Map<string, GapView>();
       for (const n of open) {
         const j = ctxStr(n, 'jobId');
         views.set(
@@ -1225,6 +1348,7 @@ export async function runPlanner(
       // whole reason this table exists is that "the planner decided X" and "X
       // happened" had become indistinguishable.
       const records: NudgeDecisionInput[] = [];
+      let cappedWarned = false; // one line per tenant per tick, not one per gap
       let applied = 0;
       let refusedAtApply = 0;
       for (const d of decisions) {
@@ -1285,6 +1409,62 @@ export async function runPlanner(
         });
       }
 
+      // THE THIRD SOURCE: every gap that was in the view and in NEITHER list.
+      //
+      // This is the phase's whole point. Before it, a tick where the model
+      // mentioned two of five gaps wrote two rows, and a tick where it mentioned
+      // none wrote zero — so "considered 40 times and left alone" and "never
+      // seen" were the same empty history, and the planner had no way to know it
+      // had been here before. `unmentioned` is silence, RECORDED.
+      //
+      // Distinguishable from `leave` by design: `leave` carries the model's own
+      // reason and is a decision it made; this carries none and is an observation
+      // code made. Both say "nothing changed"; only one says anybody thought
+      // about it.
+      // Built from the rows ACTUALLY PUSHED, not from `decisions`/`dropped`.
+      // Those two lists are not the same thing as "a row was written": the
+      // dropped loop deliberately skips entries whose action is not a known verb
+      // (a malformed submission is a parse failure, not a decision). Keying off
+      // `dropped` therefore marked such a gap as spoken for while recording
+      // nothing for it — leaving it with NO row at all, which is precisely the
+      // hole this phase exists to close. Caught by the test that submits
+      // `unmentioned` as if it were a verb.
+      const spokenFor = new Set(records.map((r) => r.nudgeId));
+      for (const [nudgeId, view] of views) {
+        if (spokenFor.has(nudgeId)) continue;
+        // GROWTH CAP. Rows accrue per open gap per in-window tick (~24/day),
+        // normally bounded by the gap's own lifetime (18h delivery deadline, 48h
+        // absolute escalation ceiling). One configuration escapes that bound:
+        // NUDGES_MODE off/shadow with PLANNER_MODE live, where the sweep does not
+        // close gaps but the planner still runs (deliberately — see
+        // lifecycle.ts). Filler must not grow without limit there.
+        //
+        // The cap deliberately does NOT stop `leave`, `close` or any real
+        // decision — only the tick marks. A gap this old is a stuck ladder
+        // showing through, and that is the bug to fix, not this write.
+        if (view.history.length >= UNMENTIONED_CAP) {
+          if (!cappedWarned) {
+            cappedWarned = true;
+            console.error(
+              `[planner] tenant ${tenantId}: gap ${nudgeId} has ${view.history.length} decisions — ` +
+                `no longer appending '${UNMENTIONED}' filler past ${UNMENTIONED_CAP}. A gap this ` +
+                'old means the ladder is not closing it; fix that, not this cap.',
+            );
+          }
+          continue;
+        }
+        records.push({
+          tenantId,
+          nudgeId,
+          jobId: view.jobId ?? null,
+          mode,
+          action: UNMENTIONED,
+          confidence: 'low',
+          reason: '',
+          outcome: mode === 'live' ? 'applied' : 'shadow',
+        });
+      }
+
       let recorded = 0;
       try {
         recorded = await recordDecisions(records);
@@ -1337,6 +1517,37 @@ export async function runPlanner(
       // untouched: the sweep's constants still apply, so a dead planner degrades
       // to exactly the behaviour that shipped before it existed.
       summary.tenantErrors += 1;
+      // …but it no longer leaves NO TRACE. This catch sits after runLoop, so a
+      // ToolLoopLimitError or a provider outage used to write nothing at all —
+      // making the failed tick indistinguishable from a tick that never ran, in
+      // exactly the history the planner reads to orient itself. Without this the
+      // phase's own goal fails in the one case most worth knowing about.
+      //
+      // `refused`, never `applied`: nothing was carried out, and the outcome
+      // column has to stay honest about that. It therefore does NOT count as
+      // liveness for the sweep's fail-safe, which is correct — a planner that
+      // cannot complete a tick IS the outage the fail-safe exists for.
+      const why = err instanceof Error ? err.message : String(err);
+      if (views.size > 0) {
+        try {
+          await recordDecisions(
+            [...views].map(([nudgeId, view]) => ({
+              tenantId,
+              nudgeId,
+              jobId: view.jobId ?? null,
+              mode,
+              action: UNMENTIONED,
+              confidence: 'low' as const,
+              reason: '',
+              outcome: 'refused' as const,
+              outcomeDetail: flat(`tick failed: ${why}`, 300),
+            })),
+          );
+        } catch (recErr) {
+          // Loud, and never allowed to replace the real error below.
+          console.error(`[planner] tenant ${tenantId}: could not record the failed tick`, recErr);
+        }
+      }
       if (err instanceof ToolLoopLimitError) {
         summary.limitHits[err.limit] += 1;
         // Said loudly and in different words on purpose: this firm's plan did

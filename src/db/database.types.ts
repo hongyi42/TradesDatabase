@@ -889,6 +889,7 @@ export type Database = {
       nudges: {
         Row: {
           actor_ref: string
+          answered_by_capture_id: string | null
           asked_at: string | null
           attempts: number
           context: Json
@@ -910,6 +911,7 @@ export type Database = {
         }
         Insert: {
           actor_ref?: string
+          answered_by_capture_id?: string | null
           asked_at?: string | null
           attempts?: number
           context?: Json
@@ -931,6 +933,7 @@ export type Database = {
         }
         Update: {
           actor_ref?: string
+          answered_by_capture_id?: string | null
           asked_at?: string | null
           attempts?: number
           context?: Json

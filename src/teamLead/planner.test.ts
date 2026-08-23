@@ -10,7 +10,9 @@ import {
   buildPlannerUserMessage,
   cleanHandoffNote,
   EVIDENCE_PER_GAP,
+  PLANNER_ACTIONS,
   runPlanner,
+  UNMENTIONED_CAP,
   validateDecisions,
   type PlannerDeps,
 } from './planner.js';
@@ -49,6 +51,7 @@ function nudge(over: Partial<Nudge> = {}): Nudge {
     resolution: null,
     not_before: null,
     escalate_after: null,
+    answered_by_capture_id: null,
     queued_at: null,
     asked_at: '2026-08-15T12:00:00.000Z',
     resolved_at: null,
@@ -1006,18 +1009,52 @@ describe('the planner sees that it has run before', () => {
   test('a gap with no history says nothing — the line is absent, not empty', async () => {
     const seen: { user?: string } = {};
     await withHistory([], seen);
-    expect(seen.user).not.toContain('prior decisions');
+    expect(seen.user).not.toContain('watched since');
+    expect(seen.user).not.toContain('considered');
   });
 
   // The ONE pushed fact. Everything else is pulled with recall_decisions, but
   // "you have decided about this before" has to be present whether or not the
   // model thinks to look — not knowing there is anything to look up IS the
   // failure it prevents.
-  test('a gap with history carries a count, the last action, and how long ago', async () => {
+  test('a gap with history carries how long it has been watched, a count, and the last action', async () => {
     const seen: { user?: string } = {};
     await withHistory([decisionRow({ decided_at: '2026-08-16T09:00:00.000Z' }), decisionRow()], seen);
-    expect(seen.user).toContain('prior decisions: 2 (last: hold, 1h ago)');
+    expect(seen.user).toContain('considered 2×');
+    expect(seen.user).toContain('last: hold 1h ago');
+    // Rendered in the firm's clock, like every other temporal string here — the
+    // model is never the thing that converts one.
+    expect(seen.user).toContain('watched since');
     expect(seen.user).toContain('recall_decisions');
+  });
+
+  test('the last REAL action is reported, never the filler on top of it', async () => {
+    // The bug this phase would otherwise create. Since Phase 3 an `unmentioned`
+    // tick mark is appended on nearly every tick, so history[length-1] is almost
+    // always filler — rendering it would tell the planner "last: unmentioned"
+    // about a gap it escalated an hour ago.
+    const seen: { user?: string } = {};
+    await withHistory(
+      [
+        decisionRow({ action: 'escalate', decided_at: '2026-08-16T09:00:00.000Z' }),
+        ...Array.from({ length: 20 }, () => decisionRow({ action: 'unmentioned', reason: '' })),
+      ],
+      seen,
+    );
+    expect(seen.user).toContain('last: escalate 3h ago');
+    expect(seen.user).not.toContain('last: unmentioned');
+    // …and the filler is exactly what makes the count worth having.
+    expect(seen.user).toContain('considered 21×');
+  });
+
+  test('a gap the planner has only LOOKED at says so, rather than inventing a last action', async () => {
+    const seen: { user?: string } = {};
+    await withHistory(
+      Array.from({ length: 3 }, () => decisionRow({ action: 'unmentioned', reason: '' })),
+      seen,
+    );
+    expect(seen.user).toContain('considered 3×, no decision yet');
+    expect(seen.user).not.toContain('last:');
   });
 
   test('a refused last decision is marked as refused, not reported as done', async () => {
@@ -1269,7 +1306,12 @@ describe('live mode — the decision becomes a write, and the write becomes the 
   // The fail-safe the whole design rests on: a dead planner degrades to exactly
   // the behaviour that shipped before it existed, because the sweep's constants
   // still apply to rows nobody touched.
-  test('a planner call that throws touches nothing and writes nothing', async () => {
+  test('a planner call that throws touches no NUDGE, but records the failed tick', async () => {
+    // The write side is unchanged: a failed tick moves nothing, and the sweep's
+    // constants still apply. What changed in Phase 3 is that it is no longer
+    // INVISIBLE — the catch sits after runLoop, so a provider outage or a loop
+    // limit used to write nothing at all, making the failed tick and a tick that
+    // never ran identical in the history the planner reads to orient itself.
     const setSchedule = vi.fn<NonNullable<PlannerDeps['setSchedule']>>(async () => nudge());
     const markOutcome = vi.fn<NonNullable<PlannerDeps['markOutcome']>>(async () => nudge());
     const recordDecisions = vi.fn<NonNullable<PlannerDeps['recordDecisions']>>(async () => 0);
@@ -1285,7 +1327,50 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     expect(s.applied).toBe(0);
     expect(setSchedule).not.toHaveBeenCalled();
     expect(markOutcome).not.toHaveBeenCalled();
+    // …but the tick left a trace, and it is honest about what happened.
+    expect(recordDecisions).toHaveBeenCalledTimes(1);
+    const rows = recordDecisions.mock.calls[0][0];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      nudgeId: 'n1',
+      action: 'unmentioned',
+      // 'refused', never 'applied': nothing was carried out. This also keeps it
+      // out of the sweep's liveness test, which is right — a planner that cannot
+      // finish a tick IS the outage the fail-safe exists for.
+      outcome: 'refused',
+    });
+    expect(String(rows[0].outcomeDetail)).toContain('provider suspended');
+  });
+
+  test('a failure BEFORE the views are built records nothing — there is nothing to record', async () => {
+    const recordDecisions = vi.fn<NonNullable<PlannerDeps['recordDecisions']>>(async () => 0);
+    const s = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => {
+        throw new Error('database unreachable');
+      },
+      recordDecisions,
+    }));
+    expect(s.tenantErrors).toBe(1);
     expect(recordDecisions).not.toHaveBeenCalled();
+  });
+
+  test('a recording failure on the FAILED path is loud but does not mask the real error', async () => {
+    const errs: unknown[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+      errs.push(a.join(' '));
+    });
+    const s = await runPlanner(NOW, 'live', baseDeps({
+      runLoop: (async () => {
+        throw new Error('provider suspended');
+      }) as unknown as NonNullable<PlannerDeps['runLoop']>,
+      recordDecisions: async () => {
+        throw new Error('insert failed');
+      },
+    }));
+    expect(s.tenantErrors).toBe(1);
+    expect(errs.some((e) => String(e).includes('could not record the failed tick'))).toBe(true);
+    expect(errs.some((e) => String(e).includes('failed'))).toBe(true);
+    spy.mockRestore();
   });
 
   // Losing the log must not lose the tick: in live the nudges rows still carry
@@ -1736,5 +1821,248 @@ describe('validateDecisions — the question draft', () => {
     expect(decisions).toHaveLength(1);
     expect(decisions[0].action).toBe('hold');
     expect(decisions[0].questionDraft).toBeUndefined();
+  });
+});
+
+// ── plan 2026-08-22 Phase 3: the quiet ticks leave a trace ─────────────────
+describe('unmentioned — silence, recorded', () => {
+  const gaps = (n: number) =>
+    Array.from({ length: n }, (_, i) =>
+      nudge({ id: `n${i + 1}`, subject_ref: `a${i + 1}`, asked_at: '2026-08-16T09:00:00.000Z' }),
+    );
+  const run = async (rows: Nudge[], decisions: unknown[], over: Partial<PlannerDeps> = {}) => {
+    const recorded: Record<string, unknown>[] = [];
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => rows,
+      runLoop: loopReturning(decisions),
+      recordDecisions: async (rs) => {
+        recorded.push(...(rs as unknown as Record<string, unknown>[]));
+        return rs.length;
+      },
+      ...over,
+    }));
+    return { recorded, summary };
+  };
+
+  test('3 open gaps, the model names 1 → THREE rows, not one', async () => {
+    const { recorded } = await run(gaps(3), [
+      { nudgeId: 'n1', action: 'leave', confidence: 'high', reason: 'waiting on the morning' },
+    ]);
+    expect(recorded).toHaveLength(3);
+    const byId = new Map(recorded.map((r) => [r.nudgeId, r]));
+    expect(byId.get('n1')).toMatchObject({ action: 'leave', outcome: 'applied' });
+    expect(byId.get('n2')).toMatchObject({ action: 'unmentioned', outcome: 'applied' });
+    expect(byId.get('n3')).toMatchObject({ action: 'unmentioned', outcome: 'applied' });
+  });
+
+  test('an EMPTY plan over 3 gaps writes 3 rows — today it wrote zero', async () => {
+    // The failure this phase exists for: "considered 40 times and left alone"
+    // and "never seen" used to be the same empty history.
+    const { recorded } = await run(gaps(3), []);
+    expect(recorded).toHaveLength(3);
+    expect(recorded.every((r) => r.action === 'unmentioned')).toBe(true);
+  });
+
+  test('a REFUSED decision still counts as spoken for — no filler on top of it', async () => {
+    // `dropped` already writes a row for this gap. Appending an `unmentioned`
+    // beside it would double-count the gap in every consideration total.
+    const { recorded } = await run(gaps(2), [
+      { nudgeId: 'n1', action: 'close', confidence: 'high', reason: 'no citation' },
+    ]);
+    expect(recorded).toHaveLength(2);
+    const n1 = recorded.filter((r) => r.nudgeId === 'n1');
+    expect(n1).toHaveLength(1);
+    expect(n1[0]).toMatchObject({ action: 'close', outcome: 'refused' });
+  });
+
+  test('leave records the model’s reason; unmentioned records none', async () => {
+    const { recorded } = await run(gaps(2), [
+      { nudgeId: 'n1', action: 'leave', confidence: 'medium', reason: 'the tech is mid-shift' },
+    ]);
+    const byId = new Map(recorded.map((r) => [r.nudgeId, r]));
+    expect(byId.get('n1')).toMatchObject({ reason: 'the tech is mid-shift', confidence: 'medium' });
+    expect(byId.get('n2')).toMatchObject({ reason: '', confidence: 'low' });
+  });
+
+  test('leave changes NOTHING about the row', async () => {
+    const setSchedule = vi.fn<NonNullable<PlannerDeps['setSchedule']>>(async () => nudge());
+    const markOutcome = vi.fn<NonNullable<PlannerDeps['markOutcome']>>(async () => nudge());
+    const { summary } = await run(
+      gaps(1),
+      [{ nudgeId: 'n1', action: 'leave', confidence: 'high', reason: 'waiting' }],
+      { setSchedule, markOutcome },
+    );
+    expect(setSchedule).not.toHaveBeenCalled();
+    expect(markOutcome).not.toHaveBeenCalled();
+    expect(summary.applied).toBe(1); // it WAS carried out — what it asked for was nothing
+  });
+
+  test('the model may NOT submit unmentioned — it is code’s word for having said nothing', async () => {
+    // If it were submittable, "I chose silence" and "silence was observed" would
+    // collapse into one value and the corpus could no longer tell them apart.
+    const { recorded } = await run(gaps(1), [
+      { nudgeId: 'n1', action: 'unmentioned', confidence: 'high', reason: 'sneaking it in' },
+    ]);
+    // Refused by the rails, so it is NOT recorded as a decision the model made…
+    const asDecision = recorded.filter((r) => r.outcome !== 'applied' && r.action === 'unmentioned');
+    expect(asDecision).toHaveLength(0);
+    // …and the gap still gets its code-written tick mark instead.
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ action: 'unmentioned', outcome: 'applied', reason: '' });
+    expect(validateDecisions(
+      { decisions: [{ nudgeId: 'n1', action: 'unmentioned', confidence: 'high', reason: 'x' }] },
+      new Map([['n1', buildGapView(nudge(), Date.parse(NOW), [], false, new Set())]]),
+      Date.parse(NOW),
+    ).dropped[0].why).toContain("unknown action 'unmentioned'");
+  });
+
+  test('shadow mode marks the filler shadow and touches no nudge', async () => {
+    const recorded: Record<string, unknown>[] = [];
+    const setSchedule = vi.fn<NonNullable<PlannerDeps['setSchedule']>>(async () => nudge());
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => gaps(2),
+      runLoop: loopReturning([]),
+      setSchedule,
+      recordDecisions: async (rs) => {
+        recorded.push(...(rs as unknown as Record<string, unknown>[]));
+        return rs.length;
+      },
+    }));
+    expect(recorded).toHaveLength(2);
+    expect(recorded.every((r) => r.outcome === 'shadow' && r.mode === 'shadow')).toBe(true);
+    expect(setSchedule).not.toHaveBeenCalled();
+  });
+
+  test('the filler carries the gap’s jobId, so job-keyed recall still finds the tick', async () => {
+    const { recorded } = await run(gaps(1), []);
+    expect(recorded[0].jobId).toBe('j1');
+  });
+
+  test('the per-gap cap stops the filler and says so exactly once', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const long = Array.from({ length: UNMENTIONED_CAP }, () =>
+      ({ action: 'unmentioned', outcome: 'applied', decided_at: '2026-08-16T09:00:00.000Z' }) as unknown as NudgeDecision,
+    );
+    const { recorded } = await run(gaps(2), [], {
+      listDecisions: async () => new Map([['n1', long], ['n2', long]]),
+    });
+    expect(recorded).toHaveLength(0); // both gaps are past the cap
+    const capLines = spy.mock.calls.filter((c) => String(c[0]).includes('no longer appending'));
+    expect(capLines).toHaveLength(1); // ONE line per tenant per tick, not per gap
+    spy.mockRestore();
+  });
+
+  test('leave on a PENDING gap is REFUSED — it would send, not wait', async () => {
+    // The silent no-op the rail exists for: `leave` writes nothing, so not_before
+    // stays null, and compose runs at the next lifecycle step of the SAME tick
+    // and gates on not_before alone. The model would say "I am waiting" and cause
+    // the question to go out, with `leave / applied` in the log.
+    const { recorded } = await run(
+      [nudge({ id: 'n1', status: 'pending', asked_at: null })],
+      [{ nudgeId: 'n1', action: 'leave', confidence: 'high', reason: 'waiting for morning' }],
+    );
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ action: 'leave', outcome: 'refused' });
+    expect(String(recorded[0].outcomeDetail)).toContain('has NOT gone out yet');
+  });
+
+  test('leave on a QUEUED or ASKED gap is accepted — both have really gone out', async () => {
+    for (const status of ['queued', 'asked'] as const) {
+      const { recorded } = await run(
+        [nudge({ id: 'n1', status, asked_at: status === 'asked' ? '2026-08-16T09:00:00.000Z' : null })],
+        [{ nudgeId: 'n1', action: 'leave', confidence: 'high', reason: 'still waiting' }],
+      );
+      expect(recorded[0]).toMatchObject({ action: 'leave', outcome: 'applied' });
+    }
+  });
+
+  test('the tool schema and PLANNER_ACTIONS name the SAME verbs', () => {
+    // The other unpinned pair (review finding). PLANNER_ACTIONS is pinned against
+    // watchers' judgment set; this one is the model-facing half. Drift means the
+    // enum rejects a verb validateDecisions would have accepted — the model
+    // physically cannot use a capability that exists, silently.
+    const enumed = (
+      SUBMIT_PLAN_TOOL.inputSchema.properties as {
+        decisions: { items: { properties: { action: { enum: string[] } } } };
+      }
+    ).decisions.items.properties.action.enum;
+    expect([...enumed].sort()).toEqual([...PLANNER_ACTIONS].sort());
+  });
+
+  test('the cap never stops a REAL decision', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const long = Array.from({ length: UNMENTIONED_CAP + 50 }, () =>
+      ({ action: 'unmentioned', outcome: 'applied', decided_at: '2026-08-16T09:00:00.000Z' }) as unknown as NudgeDecision,
+    );
+    const { recorded } = await run(
+      gaps(1),
+      [{ nudgeId: 'n1', action: 'leave', confidence: 'high', reason: 'still waiting' }],
+      { listDecisions: async () => new Map([['n1', long]]) },
+    );
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ action: 'leave' });
+    spy.mockRestore();
+  });
+});
+
+// ── plan 2026-08-22 Phase 1: an answer remembers its question ───────────────
+describe('buildGapView — spine-side attribution', () => {
+  const NOW_MS = Date.parse('2026-08-15T18:00:00.000Z');
+  const ANSWER = evidence('2026-08-15T14:00:00.000Z', 'came to sixty dollars in parts');
+  const OTHER = evidence('2026-08-15T15:00:00.000Z', 'left a voicemail for the customer');
+  const shared = [ANSWER, OTHER];
+
+  test('the attributed gap marks its answer and NARROWS the shared-job warning', async () => {
+    const stamped = nudge({ id: 'n1', answered_by_capture_id: ANSWER.capture.id });
+    const view = buildGapView(stamped, NOW_MS, shared, true, new Set(), [], [], 'UTC');
+    expect(view.block).toContain('LINKED TO THIS GAP');
+    // The marker names the PREDICATE, never the conclusion (the repo's
+    // handoff-copy doctrine). Code knows WHO recorded WHAT and WHEN; whether it
+    // answers the question is the judgment this plan is handing to the planner,
+    // so the block must not pre-empt it.
+    expect(view.block).not.toContain('ANSWERS THIS GAP');
+    expect(view.block).toContain('still yours to judge');
+    // The warning is NARROWED, never dropped. One marked note does not make the
+    // OTHER notes on a shared job attributable, and the money block sits under
+    // this same warning — clearing it wholesale would let a Phase-2 close cite
+    // words that answered somebody else's question.
+    expect(view.block).toContain('more than one open gap');
+    expect(view.block).toContain('The marked note is linked to THIS one');
+    expect(view.block).toContain('everything else below is SHARED');
+    // …and the marker lands on the RIGHT line, not merely somewhere in the block.
+    const marked = view.block.split('\n').filter((l) => l.includes('LINKED TO THIS GAP'));
+    expect(marked).toHaveLength(1);
+    expect(marked[0]).toContain('sixty dollars');
+    // The sibling's unattributed note is still listed, and still unmarked.
+    const sibling = view.block.split('\n').find((l) => l.includes('voicemail'));
+    expect(sibling).toBeDefined();
+    expect(sibling).not.toContain('LINKED TO THIS GAP');
+  });
+
+  test('the OTHER gap on the same job gets the UNNARROWED warning', async () => {
+    // The suppression must NARROW the warning, never switch it off: the sibling
+    // gap really is looking at notes nothing has tied to its question.
+    const sibling = nudge({ id: 'n2', subject_ref: 'a2', answered_by_capture_id: null });
+    const view = buildGapView(sibling, NOW_MS, shared, true, new Set(), [], [], 'UTC');
+    expect(view.block).toContain('so everything below is SHARED');
+    expect(view.block).not.toContain('The marked note is linked to THIS one');
+    expect(view.block).not.toContain('LINKED TO THIS GAP');
+  });
+
+  test('a stamp naming a capture outside the window changes nothing', async () => {
+    // The evidence bound stays CODE's: only what landed after the ask is shown,
+    // so a stamp pointing at something older must not resurrect it or silence
+    // the warning on the strength of a note the model cannot see.
+    const stale = nudge({ id: 'n1', answered_by_capture_id: 'c-2026-08-01T09:00:00.000Z' });
+    const view = buildGapView(stale, NOW_MS, shared, true, new Set(), [], [], 'UTC');
+    expect(view.block).not.toContain('LINKED TO THIS GAP');
+    expect(view.block).toContain('so everything below is SHARED');
+  });
+
+  test('an unstamped gap renders exactly as it did before this phase', async () => {
+    const plain = nudge({ id: 'n1' });
+    const view = buildGapView(plain, NOW_MS, shared, false, new Set(), [], [], 'UTC');
+    expect(view.block).not.toContain('LINKED TO THIS GAP');
+    expect(view.block).toContain('evidence since the ask:');
   });
 });

@@ -33,7 +33,20 @@ by deterministic code (the ACE shape); everything stored cites the rows that jus
 - **Reflector runs SHADOW first, threshold-gated** — no distillation before a firm has 15
   closed summaries; shadow = lessons proposed + logged, nothing stored as active, nothing
   injected. Mirrors the WATCHERS/NUDGES/PLANNER off/shadow/live idiom. `live` is ACCEPTED but
-  behaves as shadow in this plan (activation stays human); auto-promotion is a later decision.
+  behaves as shadow in this plan.
+- **Promotion at scale = a periodic ADVERSARIAL REVIEWER, not a human** (user ruling
+  2026-08-23): human review of proposals is pilot-only scaffolding. The designed mechanism is
+  a fortnightly-to-monthly adversarial judge — a model call prompted to REFUTE each proposed
+  lesson against its cited evidence (and to re-examine active ones for retirement), promoting
+  only what survives. Deliberately NOT built in these phases: the judge needs a corpus of real
+  proposals to be designed against, and the shadow phase is what accumulates it. Recorded here
+  so the operator script is understood as temporary.
+- **Hard cap on active lessons** (user ruling 2026-08-23 — input-token discipline): at most
+  5 ACTIVE lessons per firm, enforced by the Curator (activation beyond the cap is refused
+  until one is retired); the prompt block renders ALL active lessons — one number, no separate
+  render cap. Worst case ≈ 5 × 300 chars ≈ 400 tokens per tick. Proposals are unlimited but
+  expire: a proposal neither activated nor refuted within 60 days is marked stale (kept,
+  never re-shown).
 - **Working hours, pinned ONE way** (review find 8): `working_hours_open` = overlap of
   [asked_at, resolved_at] with the 7am-7pm firm-local ask window, computed from REAL-UTC
   columns + `tenants.timezone` via `at time zone` — never from naive-local `context` values.
@@ -61,6 +74,8 @@ already exist: how many gaps get filled and how fast; how many escalations were 
 (answered or dismissed within a working day) vs late; how often decisions flip with no new
 evidence; whether extends actually get answered. `npm run metrics:planner` prints the report;
 the first run is committed as the baseline snapshot. Nothing changes behavior.
+
+We can measure how the planner behaves today but since the pilot is only a testing environment, we can't really realistically use it as a benchmark because gaps won't get actively closed. We can still have the code for it though in case in the future, we need to use it on a firm that's been running the planner for like a month or something.
 
 **Phase 2 — one story per finished gap.** When a gap closes, a code sweep writes a
 `gap_summaries` row: asked when, considered how many times, which verbs, how it ended, what
@@ -223,13 +238,15 @@ reseeds leave a stale active lesson haunting the fresh world. gen:types after.
   tenant (refuse otherwise), inserts as 'proposed'.
 - `strikeLesson(tenantId, id, why)`: strikes+1; at 2 → 'retired' + reason.
   `activateLesson(tenantId, id)` — both tenant-scoped (operator-script callers paste ids;
-  a wrong paste must not cross tenants — review find 10).
-- `renderLessonsBlock(tenantId)`: active lessons as numbered bullets with ids, capped at 5
-  most-recently-activated (a prompt block, not an archive).
+  a wrong paste must not cross tenants — review find 10). Activation REFUSES when the firm
+  already has 5 active lessons (the cap ruling) — retire first, then activate.
+- `renderLessonsBlock(tenantId)`: ALL active lessons (≤5 by the cap) as numbered bullets
+  with ids.
 
 ### Automated verification
-- [ ] gates + tests: evidence-check refusal; two-strike retirement; date-rail allows "Friday
-  evening", refuses "2026-08-23"; render cap; text immutability (typed layer has no setter)
+- [ ] gates + tests: evidence-check refusal; two-strike retirement; the 5-active cap refuses
+  a sixth activation; date-rail allows "Friday evening", refuses "2026-08-23"; text
+  immutability (typed layer has no setter)
 
 ### Live verification
 - Prerequisites: pilot migration applied.
@@ -307,10 +324,12 @@ spine_read over v_review_items where escalated_from_nudge is not null").
 **`scripts/planner-metrics/report.mjs`** — lesson-usage section: decisions citing lesson ids,
 joined to their gaps' eventual outcomes (the keep/kill evidence).
 
-**Activation** (operator action, documented in the report script's --help): reviewing shadow
-proposals and flipping one to 'active' is a deliberate human act via a small
-`scripts/planner-metrics/lessons.mjs` (list / activate / retire) — no MCP tool, no manager
-exposure.
+**Activation** (pilot scaffolding — see the promotion Decision): reviewing shadow proposals
+and flipping one to 'active' is a human act via a small `scripts/planner-metrics/lessons.mjs`
+(list / activate / retire) — no MCP tool, no manager exposure. The script is the temporary
+stand-in for the future adversarial judge; its interface (list proposals with evidence,
+accept/retire verdicts) is deliberately the judge's interface, so the judge later replaces
+the human without reshaping the store.
 
 ### Automated verification
 - [ ] gates + tests: LESSONS block renders for active lessons only; absent block for none;

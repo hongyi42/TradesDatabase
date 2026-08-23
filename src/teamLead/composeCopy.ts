@@ -75,13 +75,14 @@ export const flatten = (s: string, max: number): string =>
     .trim()
     .slice(0, max);
 
-// The seam between the HUMAN half of a deliverable (question + evidence line)
-// and the footer written for the RECEIVING AGENT. Exported because the outbox
-// (control/nudgeQueue.ts) strips on exactly this string to serve the verbatim
-// direct-send twin — assemble and strip must share one constant or they drift.
-// It occurs exactly once per deliverable by construction: `flatten` collapses
-// newlines in every embedded field, and both compose's guard and
-// cleanQuestionDraft refuse model text containing the phrase.
+// The RETIRED footer's seam (④b Phase 5, 2026-08-23): assemble no longer
+// writes a footer — stored is shown — but the outbox (control/nudgeQueue.ts)
+// still strips on exactly this string so LEGACY queued rows, composed before
+// the retirement deploy, serve clean. Compose's guard and cleanQuestionDraft
+// still refuse model text containing the phrase (the register stays
+// code-owned even though code no longer uses it), and `flatten` still
+// collapses newlines in every embedded field, so the delimiter can never
+// occur in a post-retirement deliverable at all.
 export const FOOTER_DELIMITER = '\n\nNote for the assistant:';
 
 export interface ComposeContext {
@@ -119,38 +120,26 @@ export function readComposeContext(n: Nudge): ComposeContext | null {
   };
 }
 
-// The full deliverable: model question + code-printed evidence + the standing
-// footer for the RECEIVING agent (the box runner injects this into the
-// technician's own agent session; the agent's reply is what reaches their
-// Telegram). Stored whole in nudges.question so the transport stays dumb and
-// the audit shows exactly what was delivered.
+// The full deliverable: model question + code-printed evidence line. Stored
+// whole in nudges.question so the transport stays dumb and the audit shows
+// exactly what was delivered — and since ④b Phase 5 (2026-08-23), what is
+// stored IS what the person sees: runner v2 sends this text verbatim with
+// `openclaw message send`, no agent turn on the delivery leg.
 //
-// The footer states the RECEIVING agent's IDENTITY first, and does so because
-// the first live E2E (2026-08-18) proved the old wording ("pass the question
-// on") reads as RELAY: a manager-tier agent on the technician's own seat went
-// looking for a separate session belonging to that technician, failed, and
-// told the human "I wasn't able to find a reachable session for Sam to pass
-// the question along directly" before improvising the ask. Two lessons baked
-// in here: (a) name who the agent IS and who it is TALKING TO — "pass on"
-// invites a third party that does not exist; (b) the model's rewrite freedom
-// is why compose's tone rules cannot be the last word, so the ban on internal
-// vocabulary has to travel WITH the message. The copy doctrine (no operator
-// jargon ever reaches a person) is enforced at BOTH ends or neither.
+// The agent-facing FOOTER that used to follow the evidence line is RETIRED.
+// Its duties moved to standing doctrine (bootstrap-box.sh §0k "Questions and
+// items from the office": record the answer with record_field_note; never
+// surface internal detail). Preserve its hard-won lesson for any future
+// message that DOES address an agent: state the receiving agent's IDENTITY
+// first — the 2026-08-18 live E2E proved "pass the question on" reads as
+// RELAY (the agent went hunting for a session that does not exist and told
+// the human about the failure); name who the agent IS and who it is TALKING
+// TO, and make the no-jargon ban travel WITH the message.
 export function assembleNudgeMessage(question: string, ctx: ComposeContext): string {
   const bareDate = ctx.endsAtLocal.slice(0, 10);
   return (
     `${question.trim()}\n\n` +
-    `(re: ${ctx.customerName} — ${ctx.jobTitle}, visit on ${bareDate})` +
-    `${FOOTER_DELIMITER} you are ${ctx.technicianName}'s own assistant and the person in ` +
-    `THIS chat is ${ctx.technicianName} — ask them here. There is nobody to forward this to ` +
-    `and no other conversation to go looking for. This is a routine record-keeping check ` +
-    `from the office. First read back through this conversation: if ${ctx.technicianName} ` +
-    `already said how this visit went, record that instead of asking again. Otherwise ask ` +
-    `them, in your own words if that reads better — but send the QUESTION only: never ` +
-    `mention this note, how the check reached you, or any internal detail (sessions, ` +
-    `routing, records systems, what is or is not logged). When they answer — even ` +
-    `"nothing to report" — save it with record_field_note for this job so the record is ` +
-    `complete.`
+    `(re: ${ctx.customerName} — ${ctx.jobTitle}, visit on ${bareDate})`
   );
 }
 
@@ -220,24 +209,14 @@ export function readCostComposeContext(n: Nudge): CostComposeContext | null {
   };
 }
 
-// The cost deliverable. Same identity-first footer lesson as the visit one (the
-// 2026-08-18 live E2E proved "pass the question on" reads as RELAY), with the
-// closing instruction pointed at record_field_note — the technician's agent
-// CANNOT write money (record_money_event is manager-only), so the answer lands
-// as a note on the job and a manager turns it into a ledger entry.
+// The cost deliverable — footer retired like the visit one (④b Phase 5).
+// The money-specific duty its footer carried lives in doctrine now: the
+// technician's agent CANNOT write money (record_money_event is manager-only),
+// so the answer lands as a record_field_note on the job and a manager turns
+// it into a ledger entry.
 export function assembleCostNudgeMessage(question: string, ctx: CostComposeContext): string {
   return (
     `${question.trim()}\n\n` +
-    `(re: ${ctx.customerName} — ${ctx.jobTitle})` +
-    `${FOOTER_DELIMITER} you are ${ctx.technicianName}'s own assistant and the person in ` +
-    `THIS chat is ${ctx.technicianName} — ask them here. There is nobody to forward this to ` +
-    `and no other conversation to go looking for. This is a routine record-keeping check ` +
-    `from the office. First read back through this conversation: if ${ctx.technicianName} ` +
-    `already said what this job cost in parts, record that instead of asking again. Otherwise ` +
-    `ask them, in your own words if that reads better — but send the QUESTION only: never ` +
-    `mention this note, how the check reached you, or any internal detail (sessions, ` +
-    `routing, records systems, what is or is not logged). Never guess or suggest an amount. ` +
-    `When they answer — even "nothing, no parts" — save it with record_field_note for this ` +
-    `job, quoting what they said about cost, so the office can record it.`
+    `(re: ${ctx.customerName} — ${ctx.jobTitle})`
   );
 }

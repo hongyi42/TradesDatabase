@@ -12,7 +12,11 @@ import {
 // shapes are pinned in httpServer.test.ts; this file pins the serve/report
 // semantics.
 
-const QUESTION = 'How did it go?\n\n(re: Henderson — Furnace tune-up, visit on 2026-08-14)';
+// A footer-carrying deliverable, the pre-Phase-5 shape: human half + the
+// agent-facing footer on the shared delimiter.
+const HUMAN_HALF = 'How did it go?\n\n(re: Henderson — Furnace tune-up, visit on 2026-08-14)';
+const QUESTION =
+  HUMAN_HALF + "\n\nNote for the assistant: you are Ben's own assistant — ask them here.";
 
 function queuedRow(over: Partial<QueuedNudgeForHost> = {}): QueuedNudgeForHost {
   return {
@@ -84,7 +88,18 @@ describe('buildNudgeDelivery', () => {
       sessionId: 'nudge-n1',
     });
     expect(Buffer.from(nudges[0].messageB64, 'base64').toString('utf8')).toBe(QUESTION);
+    // ④b: the verbatim twin is the deliverable with the footer stripped —
+    // exactly the human half, ending at the "(re: …)" line.
+    expect(Buffer.from(nudges[0].directMessageB64, 'base64').toString('utf8')).toBe(HUMAN_HALF);
     expect(serves).toEqual([['n1', 't1', 1]]);
+  });
+
+  test('a footer-less question (Phase 5 onward) passes through the twin unchanged', async () => {
+    const { nudges } = await buildNudgeDelivery('host-1', baseDeps({
+      listQueued: async () => [queuedRow({ question: HUMAN_HALF })],
+    }));
+    expect(Buffer.from(nudges[0].directMessageB64, 'base64').toString('utf8')).toBe(HUMAN_HALF);
+    expect(Buffer.from(nudges[0].messageB64, 'base64').toString('utf8')).toBe(HUMAN_HALF);
   });
 
   test('liveness re-filter at serve time: inactive/unbound techs are SKIPPED, not failed', async () => {

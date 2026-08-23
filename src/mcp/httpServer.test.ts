@@ -522,7 +522,14 @@ describe('/control/nudges', () => {
     });
     expect(pull.status).toBe(200);
     const body = (await pull.json()) as {
-      nudges: Array<{ id: string; sandboxRef: string; replyTo: string; sessionId: string; messageB64: string }>;
+      nudges: Array<{
+        id: string;
+        sandboxRef: string;
+        replyTo: string;
+        sessionId: string;
+        messageB64: string;
+        directMessageB64: string;
+      }>;
     };
     const item = body.nudges.find((x) => x.id === nudgeId);
     expect(item).toBeDefined();
@@ -530,6 +537,8 @@ describe('/control/nudges', () => {
     expect(item!.replyTo).toBe('424242');
     expect(item!.sessionId).toBe(`nudge-${nudgeId}`);
     expect(Buffer.from(item!.messageB64, 'base64').toString('utf8')).toBe('How did it go?');
+    // ④b: the endpoint serves the verbatim twin too (footer-less question ⇒ equal).
+    expect(Buffer.from(item!.directMessageB64, 'base64').toString('utf8')).toBe('How did it go?');
 
     const served = await pg.query<{ serve_count: number }>(
       'select serve_count from nudges where id = $1',

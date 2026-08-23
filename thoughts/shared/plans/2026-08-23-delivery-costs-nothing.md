@@ -254,25 +254,28 @@ stale "Budget: ≤2 asks/person" (:424-425) corrected to the no-cap ruling (rese
 description rewritten for direct send (the Box_Setup_Stuff sync rule).
 
 ### Automated verification
-- [ ] `bash -n` both scripts; repo gates pass (docs/scripts only)
+- [x] `bash -n` both scripts; repo gates pass (typecheck/lint/build clean; suite 2165 passed —
+  the doctrine tripwire required registering the new §0k section with the tier-2 extractor)
 
 ### Live verification (agent-executable)
 - Prerequisites: ssh to `tradesbox`; rsync + md5 discipline (six-copy trap: verify the box copy
   matches the repo BEFORE running anything from it).
-- [ ] `wire` run on ALL SIX seats (the runner is box-global — every seat needs the duty the
-  moment sends go verbatim); in-container grep on s2 + one NON-s2 seat: new block once, §0f and
-  all prior blocks intact
-- [ ] runner v2 installed (md5 of `/usr/local/sbin/nudge-runner.sh` = repo); timer ticks clean;
-  `/var/lib/nudge-runner/` exists
-- [ ] one REAL nudge end-to-end: mint a THROWAWAY visit/assignment on 'Default Tenant' (pilot
-  write, allowed per-path; `uq_nudges_subject_ever` consumes the subject forever — never use a
-  real one) for manager-sam → runner sends → row reaches `asked`; the footer-less stored
-  question is byte-what-arrived (runner log evidence); message visible in the agent's
-  channel-history injection (the fact Phase 1 deferred). Preconditions stated: run INSIDE the
-  7am-7pm firm-local ask window and with `NUDGES_MODE=live`, or the row holds and nothing
-  distinguishes a break from the hold
-- [ ] duplicate-protection: re-serve with the ack suppressed once — the marker prevents a second
-  ping and re-acks instead
+- [x] `wire` run on ALL SIX seats (s2 s3 s5 s6 s7 s8, 2026-08-23 ~18:40Z); in-container grep on
+  s2 + s5: all ten doctrine headings (§0k included) present exactly once on both
+- [x] runner v2 installed (md5 1e4c65b677c33566e93ea344c4689b1d = repo); hand-run + timer ticks
+  clean (exit 0); `/var/lib/nudge-runner/` exists (700 root)
+- [x] one REAL nudge end-to-end (2026-08-23): throwaway Teddy Vance / Garage heater tune-up,
+  assignment 115b216a minted 17:47Z → tick 17:55:38 created AND composed nudge 35ebfd2f (875
+  chars, footer at byte 148) → box tick 17:58:48 sent chars=147 → `asked` 17:58:49, serve_count
+  1. Byte-what-arrived proven THREE ways: runner journal sha256 8b48506c…f51427 = the DB's own
+  digest of the stored question's pre-footer half = the weekday guard's message_sending record
+  (chars 147, sha 8b48506c6f64, 0 flags — guard coverage survived the relay's retirement).
+  Message confirmed in the person's Telegram (screenshot, 10:58 AM). Channel-history INJECTION
+  observation still rides the reply turn (the message is provably in the chat history the
+  gateway compiles from; the compiled-context proof lands with Phase 5's record-duty probe)
+- [x] duplicate-protection: row flipped back to `queued` (ack suppressed) → 18:03:43 tick
+  re-served (serve_count 1→2), runner hit the sent-marker, NO send line in the journal (~1s
+  run), row re-acked `asked` 18:03:44 — one ping total
 
 ### Manual verification
 - [ ] the message in YOUR Telegram (manager-sam) reads right: the question + "(re: …)" line,

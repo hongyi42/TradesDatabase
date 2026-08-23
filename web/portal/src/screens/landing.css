@@ -310,6 +310,29 @@
   .ld-nav-link {
     display: none;
   }
+
+  /* The section anchors go, the CTA stays — a phone reader keeps a way to act
+     on a page that is 6,000px long for them. The CTA's own narrow-width
+     tightening lives after .ld-btn-sm further down; putting it here made it
+     dead code, since both are single-class selectors and the later one wins. */
+  .ld-nav {
+    gap: 12px;
+  }
+
+  /* The wordmark is 152px of a 375px header and pushed the CTA off the right
+     edge. It is VISUALLY hidden, not display:none — the TD mark beside it is
+     aria-hidden, so this text is the only accessible brand name in the header
+     and removing it from the tree would leave the banner unnamed. */
+  .ld-wordmark {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 
 /* The page is entirely in-page anchors — nav, skip link, hero CTA. Instant
@@ -430,6 +453,23 @@
 /* `background: transparent` is load-bearing, not tidiness: this one is a
    <button> rather than an <a>, so without it the UA paints `buttonface` — a
    near-white fill that put --text at roughly 1:1 against its own background. */
+/* Sign in, demoted from a bordered button to a link. It serves existing
+   customers; the conversion path is the CTA beside it. */
+.ld-nav-signin {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-2);
+  background: none;
+  border: 0;
+  padding: 6px 0;
+  cursor: pointer;
+}
+
+.ld-nav-signin:hover {
+  color: var(--text);
+}
+
 .ld-btn-sm {
   padding: 12px 18px;
   font-size: 14px;
@@ -441,6 +481,34 @@
   color: var(--text);
   display: inline-block;
   cursor: pointer;
+}
+
+/* Primary variant of the small button — the nav CTA. Carbon primary: --blue
+   fill, canvas text, square. Same fill as the hero CTA so the two read as one
+   action, not two. Declared AFTER .ld-btn-sm on purpose: both are single-class
+   selectors, so source order is the only thing deciding the cascade, and while
+   this lived above the base rule its padding and font-size were dead code. */
+.ld-btn-sm-primary {
+  background: var(--amber-fill);
+  border-color: var(--amber-fill);
+  color: var(--on-amber);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.ld-btn-sm-primary:hover {
+  background: var(--amber-hover);
+  border-color: var(--amber-hover);
+  color: var(--on-amber);
+}
+
+/* nowrap: the label breaking to two lines silently doubles the header height.
+   Padding and font-size are deliberately NOT reduced at narrow widths. Tighter
+   values were tried and measured — 11px/13px dropped the button to 149x41, under
+   the 44x44 touch-target floor — and they bought horizontal room that was not
+   needed: the header already clears by 18px at 375px with the base sizing. */
+.ld-btn-sm-primary {
+  white-space: nowrap;
 }
 
 .ld-btn-sm:hover {

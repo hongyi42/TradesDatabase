@@ -45,3 +45,4 @@ inbound-last.json
 # halves together or the symlink dangles on a fresh clone.
 .agents/
 .claude/skills/redesign-existing-projects
+.claude/skills/ui-ux-pro-max

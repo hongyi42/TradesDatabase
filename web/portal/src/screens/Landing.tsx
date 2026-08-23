@@ -244,9 +244,21 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
             <a className="ld-nav-link" href="#contact">
               Contact
             </a>
-            <button type="button" className="ld-btn-sm" onClick={onSignIn}>
+            {/* Sign in is for people who already bought; it is not a conversion
+                path and it should not be the only button in the nav. Below 520px
+                the three anchors above are display:none, so before this the ONLY
+                thing a prospect on a phone could press was a door they have no
+                key to. Text link now — still reachable, no longer competing. */}
+            <button type="button" className="ld-nav-signin" onClick={onSignIn}>
               Sign in
             </button>
+            {/* The persistent CTA. The page previously offered no way to act
+                between the hero and the footer form — roughly 3,000px of scroll
+                on desktop and five screens on a phone — which was the 2026-08-22
+                critique's P0. It survives the 520px breakpoint deliberately. */}
+            <a className="ld-btn-sm ld-btn-sm-primary" href="#contact">
+              Book a walkthrough
+            </a>
           </nav>
         </div>
       </header>

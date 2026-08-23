@@ -209,7 +209,8 @@ for both kinds; footer-less input passes through unchanged) AND `httpServer.test
 the only test of what `GET /control/nudges` actually serves — extended to assert both fields.
 
 ### Automated verification
-- [ ] gates (typecheck / lint / test / build) + new tests pass
+- [x] gates (typecheck / lint / test / build) + new tests pass (three review rounds; both-kinds
+  round-trip pinned through the real assemble functions)
 
 ### Live verification (agent-executable)
 - Prerequisites: Render MCP (workspace confirmed) after user merges.

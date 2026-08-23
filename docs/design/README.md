@@ -40,7 +40,6 @@ so the implementation can be checked against its brief without hunting for a Dow
 | `handoff-landing-v2/Directions.dc.html` | Four earlier exploratory directions. Context only — the landing file is the spec. |
 | `handoff-landing-v2/support.js`, `image-slot.js` | Generated runtime the `.dc.html` files need. Not ours, don't edit, not for production. |
 | [landing-redesign-brief.md](landing-redesign-brief.md) | The brief that was sent out and produced `handoff-landing-v2/`. Historical. |
-| `current-state/` | Screenshots + a captured HTML snapshot of the landing *before* the v2 rebuild. Historical. |
 | [handoff-2026-08-07/README.md](handoff-2026-08-07/README.md) | The app handoff. Design tokens, type scale, all six screens, the interaction table, and the designer's own open questions. **Start here for the app.** |
 | [handoff-2026-08-07/2d-slate-shell.md](handoff-2026-08-07/2d-slate-shell.md) | Theme amendment "2d Slate shell" — the dark app shell. **Supersedes the neutral tokens in the README**; read it second. |
 | `handoff-2026-08-07/TradesDatabase v2 workwear.dc.html` | The interactive prototype, all six screens. Open in a browser; the dark bar at the top switches screens. Needs `support.js` beside it. |

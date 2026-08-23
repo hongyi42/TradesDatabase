@@ -4,6 +4,10 @@ node_modules/
 # Build output
 dist/
 
+# Python bytecode (Box_Setup_Stuff/*.py)
+__pycache__/
+*.pyc
+
 # Env / secrets — never commit
 .env
 .env.test
@@ -18,6 +22,10 @@ id_ed25519
 # Supabase CLI local state
 supabase/.temp/
 
+# Per-developer Claude Code settings — machine-local, never shared.
+# (.claude/settings.json IS committed; only the .local. variant is personal.)
+.claude/settings.local.json
+
 # Inbound webhook debug capture (INBOUND_DEBUG=1) — holds real email content
 inbound-last.json
 
@@ -29,3 +37,11 @@ inbound-last.json
 # about are copied into docs/design/ instead.
 .claude/skills/impeccable/
 .impeccable/
+
+# Third-party skills installed from GitHub (`npx skills add ...`). Same rule as
+# impeccable above: the install is reproducible from skills-lock.json, which IS
+# committed, so the vendored copy doesn't belong in the repo. `.agents/skills/`
+# holds the real files; `.claude/skills/<name>` is a symlink into it — ignore both
+# halves together or the symlink dangles on a fresh clone.
+.agents/
+.claude/skills/redesign-existing-projects

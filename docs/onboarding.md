@@ -7,10 +7,6 @@ then points at the file that **owns** that fact — and the owning file wins whe
 with this one. If you find yourself wanting to add a paragraph of detail here, add it to the owning
 file and link instead; a guide that restates other docs goes stale silently.
 
-> **Heads-up about `README.md`:** the file at the repo root is **not** a project README — it
-> documents a portable export of our Research→Plan→Implement workflow for *other* repos. Don't
-> read it looking for this project. This file is the entry point.
-
 **Reading order after this guide:**
 
 1. [Three-Layer-Context-Spine-Overview.md](Three-Layer-Context-Spine-Overview.md) — the product's core idea
@@ -301,7 +297,8 @@ by design, not a gap. `cost_rates` is the authority on which vendors are billed,
 changes as we learn how a vendor actually charges — **read the table, don't trust a list in a doc**
 (including this one).
 
-> **Owned by** [HANDOFF.md](../HANDOFF.md) (the shipped shape, what's still open, the traps it
+> **Owned by** [the cost-dashboard handoff](../thoughts/shared/handoffs/2026-07-27-per-tenant-cost-dashboard.md)
+> (the shipped shape, what's still open, the traps it
 > shipped with) and `thoughts/shared/plans/2026-07-24-per-tenant-cost-dashboard.md` (the design
 > rationale).
 

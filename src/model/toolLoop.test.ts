@@ -553,7 +553,12 @@ describe('runToolLoop on the Anthropic transport', () => {
     expect(first.max_tokens).toBe(256);
 
     const [params, options] = anthropicCreate.mock.calls[1];
-    expect(params.system).toBe('sys');
+    // The system prompt rides as ONE text block carrying the cache breakpoint
+    // (covers tools+system as a prefix; 2026-08-23 — production ran uncached).
+    expect(params.system).toEqual([
+      { type: 'text', text: 'sys', cache_control: { type: 'ephemeral' } },
+    ]);
+    expect(first.system).toEqual(params.system);
     expect(params.tools).toMatchObject([{ name: 'spine_read' }]);
     expect(params.messages).toHaveLength(3);
     expect(params.messages[1].role).toBe('assistant');

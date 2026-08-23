@@ -227,7 +227,17 @@ writeFileSync(join(DIR, 'run-context.json'), JSON.stringify({ startedAt: new Dat
 
 let asked = 0;
 for (const item of remaining) {
-  const b64 = Buffer.from(item.q, 'utf8').toString('base64');
+  // --clock-line (bare-clock arm, 2026-08-23): state the firm's clock IN the
+  // question, one neutral factual line, no doctrine. The rider only rides on
+  // spine tool results, so a pure date question in the bare arm otherwise
+  // reaches the model with NO clock at all — and it resourcefully consults
+  // the sandbox's real UTC clock instead (measured: exec `date`), which in an
+  // ANCHORED run is a different world. "All we give is the current time"
+  // requires actually giving it.
+  const clockPrefix = has('clock-line')
+    ? `(the firm's clock reads ${new Date(`${manifest.today}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })} — timezone ${manifest.timezone})  `
+    : '';
+  const b64 = Buffer.from(clockPrefix + item.q, 'utf8').toString('base64');
   // base64 in, so no question text can ever be mangled by two layers of shell
   // quoting; </dev/null because `nemoclaw exec` eats stdin in heredocs.
   const deliverFlags = DELIVER ? ` --deliver --reply-to ${REPLY_TO}` : '';

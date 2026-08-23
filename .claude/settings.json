@@ -33,6 +33,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/decisions-for-file.mjs\"",
+            "statusMessage": "Checking decisions on record"
+          }
+        ]
+      }
     ]
   }
 }

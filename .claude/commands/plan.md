@@ -42,7 +42,15 @@ date: YYYY-MM-DD
 task: <one-line description>
 research: <path to research doc, or "none">
 status: draft
+supersedes: <path to the document this overturns, or "nothing">
 ---
+
+
+**`supersedes:` is not optional bookkeeping.** If this document overturns a decision made in an
+earlier one, name that document's path. Now is the only moment the reason is fresh enough to
+record accurately — nobody reconstructs it correctly three months later, and a superseded
+document left unmarked is worse than no document, because a future session will find it and
+build on it. If it overturns nothing, write `nothing`.
 
 ## Overview
 What this plan accomplishes and why.
@@ -121,3 +129,15 @@ After writing the plan, print its path, then present in chat: the Decisions sect
 - If the right approach is unclear, document the uncertainty explicitly and propose two options — do not guess.
 - Every file path and line number must be exact (verify by reading the file if needed).
 - Keep the plan under 300 lines including the Decisions and Plain-language walkthrough sections. If it exceeds that, the scope is too large — split it or flag it.
+
+## Final step — refresh the decision index
+
+After writing the document, run:
+
+```bash
+npm run decisions:index
+```
+
+This regenerates `thoughts/INDEX.md`, the machine index the pre-edit hook reads, and the map
+inside `docs/engineering-memory.md`. Commit the regenerated files alongside the document. An
+index that lags the corpus is the failure mode this whole mechanism exists to prevent.

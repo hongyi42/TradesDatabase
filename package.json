@@ -28,7 +28,8 @@
     "spine-eval:tools": "npm run build && node scripts/spine-eval/run-tools.mjs",
     "spine-eval:agent": "npm run build && node scripts/spine-eval/run-agent.mjs",
     "spine-eval:gateway": "npm run build && node scripts/spine-eval/run-gateway.mjs",
-    "spine-eval:gate": "npm run build && node scripts/spine-eval/gate.mjs"
+    "spine-eval:gate": "npm run build && node scripts/spine-eval/gate.mjs",
+    "decisions:index": "node scripts/decision-index.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",

@@ -81,7 +81,9 @@
   /* Carbon precision detail — small POSITIVE tracking on body sizes. It looks
      like a mistake and is not. DESIGN.md §3. */
   letter-spacing: 0.16px;
-  min-height: 100vh;
+  /* dvh, not vh: on iOS Safari the URL bar makes 100vh taller than the
+     visible viewport, so the page jumps as the bar hides. */
+  min-height: 100dvh;
   /* `clip`, NOT `hidden`. overflow-x: hidden makes this element a scroll
      container, which silently breaks `position: sticky` on the header — it
      then anchors to .landing (which never scrolls) instead of the viewport, so
@@ -306,6 +308,15 @@
   }
 }
 
+/* The page is entirely in-page anchors — nav, skip link, hero CTA. Instant
+   jumps lose the reader's place. Guarded, because forced motion is a
+   vestibular problem for some people. */
+@media (prefers-reduced-motion: no-preference) {
+  html:has(.landing) {
+    scroll-behavior: smooth;
+  }
+}
+
 /* ---- browser surfaces ------------------------------------------------- */
 
 .landing ::selection {
@@ -366,6 +377,35 @@
 .ld-btn-primary {
   background: var(--amber-fill);
   color: var(--on-amber);
+}
+
+/* Interactive feedback. The page had hover states but no pressed state and
+   almost no transitions, so every control changed instantly and nothing felt
+   physical. Transform/opacity only — both GPU-composited. */
+.ld-btn,
+.ld-btn-sm,
+.ld-step-btn {
+  transition: background-color 150ms ease-out, color 150ms ease-out,
+    border-color 150ms ease-out, transform 80ms ease-out;
+}
+
+.ld-btn:active,
+.ld-btn-sm:active,
+.ld-step-btn:active {
+  transform: translateY(1px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-btn,
+  .ld-btn-sm,
+  .ld-step-btn {
+    transition: none;
+  }
+  .ld-btn:active,
+  .ld-btn-sm:active,
+  .ld-step-btn:active {
+    transform: none;
+  }
 }
 
 .ld-btn-primary:hover {

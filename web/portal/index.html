@@ -6,10 +6,23 @@
     <!-- Customer-facing, but nothing here should be indexed: every real page
          sits behind sign-in and the marketing site lives elsewhere. -->
     <meta name="robots" content="noindex, nofollow" />
-    <title>TradesDatabase</title>
+    <title>TradesDatabase — one record for every job, built from what your crew already texts</title>
+    <meta
+      name="description"
+      content="Your crew texts what happened; it becomes a searchable customer and job record where every field cites the message it came from. No app to install, nothing to log into."
+    />
+    <!-- Social cards. No og:image yet — there is no artwork to point at, and a
+         broken image URL renders worse than none. Add one with the photography. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="TradesDatabase" />
+    <meta
+      property="og:description"
+      content="One record for every job, built from what your crew already texts."
+    />
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
+

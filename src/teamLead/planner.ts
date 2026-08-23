@@ -1187,7 +1187,11 @@ export async function runPlanner(
     // that failed as the one tick with no trace, which is precisely the tick
     // worth knowing about. Empty when the failure happened before the views were
     // built, which correctly records nothing.
-    let views = new Map<string, GapView>();
+    //
+    // `const`, not `let`: it is MUTATED (`.set`) and never reassigned. It is still
+    // per-tenant — the declaration is inside this loop body, not above it — so a
+    // tenant never sees the previous one's views.
+    const views = new Map<string, GapView>();
     try {
       // Registry-gated like every other ladder path: a kind with no spec is not
       // composed, not swept, and not planned for either.

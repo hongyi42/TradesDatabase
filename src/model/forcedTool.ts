@@ -227,7 +227,19 @@ async function callAnthropic(
   const message = await client.messages.create({
     model,
     max_tokens: req.maxTokens,
-    system: req.system,
+    // Same breakpoint as toolLoop's transport: tools+system cached as one
+    // prefix, read at 0.1x within the TTL window. NOTE: compose's prompts
+    // (~350 tokens with the tool schema) sit UNDER Opus-class models'
+    // 512-token cache minimum, so for them this is a silent no-op today —
+    // deliberate: harmless there, and any caller with a bigger prompt starts
+    // caching without a second edit.
+    system: [
+      {
+        type: 'text' as const,
+        text: req.system,
+        cache_control: { type: 'ephemeral' as const },
+      },
+    ],
     tools: [
       {
         name: tool.name,

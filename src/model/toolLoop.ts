@@ -217,7 +217,20 @@ function anthropicTransport(req: ToolLoopRequest, tools: ForcedToolSpec[]): Loop
         {
           model,
           max_tokens: req.maxTokens,
-          system: req.system,
+          // cache_control on the LAST system block caches tools+system as one
+          // prefix (cache order: tools -> system -> messages), so every loop
+          // turn after the first — and every same-window call sharing the
+          // prefix — reads it at 0.1x instead of full price. Measured
+          // 2026-08-23: this path ran UNCACHED in production while
+          // scripts/planner-eval/anthropic.mjs cached the identical shape.
+          // The 5-min default TTL outlives a planner tick's loop.
+          system: [
+            {
+              type: 'text' as const,
+              text: req.system,
+              cache_control: { type: 'ephemeral' as const },
+            },
+          ],
           tools: tools.map((t) => ({
             name: t.name,
             description: t.description,

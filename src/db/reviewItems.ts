@@ -157,6 +157,9 @@ export async function flagNudgeGap(input: {
   // Set when this item is the ladder's RUNG 2 (Stage 1): the silent nudge it
   // grew out of — the audit thread from question to manager item.
   escalatedFromNudge?: string;
+  // The planner's briefing for the manager's AGENT (④b fourth rail). Stored in
+  // detail, surfaced by list_pending_reviews, never rendered into suggestion.
+  agentContext?: string | null;
 }): Promise<ReviewItem | null> {
   const { data, error } = await getClient()
     .from('review_items')
@@ -180,6 +183,7 @@ export async function flagNudgeGap(input: {
       ...(input.startsAtLocal ? { startsAtLocal: input.startsAtLocal } : {}),
       ...(input.endsAtLocal ? { endsAtLocal: input.endsAtLocal } : {}),
       ...(input.escalatedFromNudge ? { escalatedFromNudge: input.escalatedFromNudge } : {}),
+      ...(input.agentContext ? { agentContext: input.agentContext } : {}),
     },
   });
 }
@@ -195,6 +199,7 @@ export async function flagOverdueVisitGap(input: {
   endsAtLocal: string;
   suggestion: string;
   escalatedFromNudge?: string;
+  agentContext?: string | null;
 }): Promise<ReviewItem | null> {
   return flagNudgeGap({
     tenantId: input.tenantId,
@@ -206,6 +211,7 @@ export async function flagOverdueVisitGap(input: {
     endsAtLocal: input.endsAtLocal,
     suggestion: input.suggestion,
     ...(input.escalatedFromNudge ? { escalatedFromNudge: input.escalatedFromNudge } : {}),
+    ...(input.agentContext ? { agentContext: input.agentContext } : {}),
   });
 }
 

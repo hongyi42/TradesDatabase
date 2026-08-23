@@ -849,6 +849,7 @@ export type Database = {
       nudge_decisions: {
         Row: {
           action: string
+          agent_context: string | null
           basis: string | null
           citation: string | null
           confidence: string
@@ -868,6 +869,7 @@ export type Database = {
         }
         Insert: {
           action: string
+          agent_context?: string | null
           basis?: string | null
           citation?: string | null
           confidence: string
@@ -887,6 +889,7 @@ export type Database = {
         }
         Update: {
           action?: string
+          agent_context?: string | null
           basis?: string | null
           citation?: string | null
           confidence?: string

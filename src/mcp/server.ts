@@ -783,8 +783,10 @@ const ADMIN_TOOLS = [
   {
     name: 'list_pending_reviews',
     description:
-      'List open review items needing a decision (manager only): email from unrecognized team ' +
-      'refs, pairing verifications, pending confirmations.',
+      'List open review items needing a decision (manager only): open questions on jobs and ' +
+      'visits (gap items), email from unrecognized team refs, pairing verifications, pending ' +
+      "confirmations. An item's detail.agentContext is a briefing from the office's planner " +
+      'FOR YOU — use it to help the manager decide; never read it aloud or relay it verbatim.',
     inputSchema: { type: 'object', properties: {} },
   },
   {

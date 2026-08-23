@@ -105,6 +105,11 @@ export interface PlannerDecision {
   // Technician-facing question, send only. Compose uses it in place of its own
   // model call; a dropped draft costs the draft, never the send.
   questionDraft?: string | null;
+  // Machine-facing briefing for the manager's ASSISTANT, escalate only (the
+  // fourth audience, fourth rail — plan 2026-08-23). Rides the review item's
+  // detail and is pulled via list_pending_reviews; NEVER rendered to a human.
+  // Dropped whole by its rail; a bad briefing never blocks the handover.
+  agentContext?: string | null;
 }
 
 // A decision the code rails refused, kept so a shadow run reports what the model
@@ -671,6 +676,20 @@ export function cleanHandoffNote(
 }
 
 /**
+ * The briefing for the manager's ASSISTANT, or null. Same rail as the handoff
+ * note — model-written, date-checked against the supplied labels — sized for a
+ * briefing (ids and next steps; uuid hex never matches TEMPORAL_RE, so ids
+ * pass the date rail untouched). Never shown to a human: the receiving agent
+ * uses it, it does not quote it.
+ */
+export function cleanAgentContext(
+  raw: unknown,
+  dateLabels: string[],
+): { note: string | null; why?: string } {
+  return cleanPlannerText(raw, dateLabels, { label: 'agent context', maxLen: 700 });
+}
+
+/**
  * The shared shape of every string the planner writes for a HUMAN.
  *
  * One function because the date rule is the one guarantee that survived making
@@ -1018,6 +1037,7 @@ export function validateDecisions(
       if (q.why) noteDrops.push(`${nudgeId}: ${q.why}`);
     }
     let handoffNote: string | null = null;
+    let agentContext: string | null = null;
     if (action === 'escalate') {
       const cleaned = cleanHandoffNote(d.handoffNote, view.dateLabels);
       handoffNote = cleaned.note;
@@ -1026,6 +1046,11 @@ export function validateDecisions(
       // indistinguishable from one the model never wrote, and no eval could
       // ever measure how often the date rail fires.
       if (cleaned.why) noteDrops.push(`${nudgeId}: ${cleaned.why}`);
+      // The briefing rides the same boundary: railed alone, dropped alone —
+      // its loss never blocks the escalate or the manager's sentence.
+      const briefing = cleanAgentContext(d.agentContext, view.dateLabels);
+      agentContext = briefing.note;
+      if (briefing.why) noteDrops.push(`${nudgeId}: ${briefing.why}`);
     }
     decisions.push({
       nudgeId,
@@ -1035,6 +1060,7 @@ export function validateDecisions(
       ...(basis ? { basis } : {}),
       ...(citation ? { citation } : {}),
       ...(handoffNote ? { handoffNote } : {}),
+      ...(agentContext ? { agentContext } : {}),
       ...(questionDraft ? { questionDraft } : {}),
       confidence,
       reason,
@@ -1370,6 +1396,7 @@ export async function runPlanner(
           confidence: d.confidence,
           reason: d.reason,
           handoffNote: d.handoffNote ?? null,
+          agentContext: d.agentContext ?? null,
           questionDraft: d.questionDraft ?? null,
         };
         if (mode !== 'live') {

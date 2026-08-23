@@ -81,6 +81,9 @@ export interface HandoffPlan {
   startsAtLocal: string | null;
   endsAtLocal: string | null;
   suggestion: string;
+  // The planner's briefing for the manager's ASSISTANT, carried through to the
+  // item's detail UNRENDERED — it must never enter `suggestion` (human copy).
+  agentContext?: string | null;
 }
 
 // How ONE kind turns a nudge row into a model call and a deliverable.
@@ -116,6 +119,9 @@ export interface HandoffContext {
   // handed, which is why code can hand a model-written sentence to a manager at
   // all; everything else about it is measured by eval, not enforced here.
   plannerNote?: string | null;
+  // The planner's machine-facing briefing from the same applied escalate.
+  // Passed through to the plan verbatim; templates must never render it.
+  agentContext?: string | null;
   // The sentence `filled` produced, when this gap IS answerable from the record
   // (plan 2026-08-22, final review). Null when it is not.
   //
@@ -389,7 +395,11 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
     // When the planner escalated this gap it wrote the manager's line itself,
     // and that line IS the message (user, 2026-08-22). The template is the
     // fallback for a clock-driven escalation, where no model was in the loop.
-    return { ...base, suggestion: ctx?.plannerNote ?? template };
+    return {
+      ...base,
+      ...(ctx?.agentContext ? { agentContext: ctx.agentContext } : {}),
+      suggestion: ctx?.plannerNote ?? template,
+    };
   },
 };
 
@@ -466,6 +476,7 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
       subjectRef: n.subject_ref,
       jobId,
       technicianRef: disp(c, 'technicianRef', null),
+      ...(ctx?.agentContext ? { agentContext: ctx.agentContext } : {}),
       // A job-scoped gap has NO visit window — the flagger takes these as
       // optional and omits the keys rather than storing nulls.
       startsAtLocal: null,

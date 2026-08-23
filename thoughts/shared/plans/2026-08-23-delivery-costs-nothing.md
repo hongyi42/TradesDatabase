@@ -175,13 +175,14 @@ with the decision still applying + noteDrops recording; applied escalate row car
 `list_pending_reviews` returns it and the description pins the never-relay sentence.
 
 ### Automated verification
-- [ ] gates (`typecheck` · `lint` · `test` · `build`) + new tests pass
-- [ ] migration applied to LOCAL stack (`grep project_id supabase/config.toml` first — worktree trap)
+- [x] gates (`typecheck` · `lint` · `test` · `build`) + new tests pass (suite 2159, all green)
+- [x] migration applied to LOCAL stack (project_id TradesDatabase verified; column confirmed via
+  information_schema in the container)
 
 ### Live verification (agent-executable)
 - Prerequisites: `mcp__supabase-test__apply_migration` + `execute_sql` (pilot).
-- [ ] migration applied to the PILOT; verified via `information_schema.columns` (never
-  `list_migrations` — the ledger lies), BEFORE the Phase-3 deploy
+- [x] migration applied to the PILOT 2026-08-23 ~09:50Z; information_schema.columns returns
+  agent_context · text · nullable — BEFORE any Phase-3 deploy
 
 *No manual items — continue.*
 

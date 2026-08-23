@@ -910,14 +910,16 @@ export async function runWatchers(
       // handoff_note, NEVER reason. `reason` is diagnostic — it is written for
       // refusals too and is the corpus continual learning will read; putting it
       // in front of a manager was the 2026-08-21 mistake this replaced.
-      const noteFor = (id: string): string | null => {
+      const plannerEscalation = (
+        id: string,
+      ): { note: string | null; agentContext: string | null } => {
         const rows = decisions.get(id) ?? [];
         for (let i = rows.length - 1; i >= 0; i--) {
           if (rows[i].action === 'escalate' && rows[i].outcome === 'applied') {
-            return rows[i].handoff_note;
+            return { note: rows[i].handoff_note, agentContext: rows[i].agent_context };
           }
         }
-        return null;
+        return { note: null, agentContext: null };
       };
       for (const x of escalations) {
         const spec = specFor(x.n.kind, specs)!;
@@ -943,8 +945,10 @@ export async function runWatchers(
         // the field report sitting on the job. That is precisely the false claim
         // plan ② deleted, re-entering through the door this phase opened.
         const answerable = spec.filled(x.n, facts);
+        const pe = plannerEscalation(x.n.id);
         const plan = spec.handoff(x.n, 'escalated', naiveLocal, {
-          plannerNote: noteFor(x.n.id),
+          plannerNote: pe.note,
+          ...(pe.agentContext ? { agentContext: pe.agentContext } : {}),
           ...(spec.subjectIsVisit && !answerable ? { noNoteOrStatusChange: true } : {}),
           answerableFromRecord: answerable,
           noCostOnLedger: !jobsWithCostEvents.has(x.jobId ?? ''),
@@ -978,6 +982,7 @@ export async function runWatchers(
           endsAtLocal: plan.endsAtLocal,
           escalatedFromNudge: x.n.id,
           suggestion: plan.suggestion,
+          ...(plan.agentContext ? { agentContext: plan.agentContext } : {}),
         });
         if (item) {
           opened += 1;

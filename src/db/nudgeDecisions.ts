@@ -29,6 +29,9 @@ export interface NudgeDecisionInput {
   // Compose uses it instead of making its own model call. Third audience,
   // third rail — see the migration header.
   questionDraft?: string | null;
+  // The briefing for the manager's ASSISTANT on an applied `escalate` — the
+  // fourth audience, fourth rail. Machine context; never shown to a human.
+  agentContext?: string | null;
   basis?: 'evidence' | 'record' | null;
   citation?: string | null;
   confidence: 'low' | 'medium' | 'high';
@@ -77,6 +80,7 @@ export async function recordNudgeDecisions(inputs: NudgeDecisionInput[]): Promis
       not_before: d.notBefore ?? null,
       escalate_after: d.escalateAfter ?? null,
       handoff_note: d.handoffNote ?? null,
+      agent_context: d.agentContext ?? null,
       question_draft: d.questionDraft ?? null,
       basis: d.basis ?? null,
       citation: d.citation ?? null,

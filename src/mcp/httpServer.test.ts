@@ -527,7 +527,6 @@ describe('/control/nudges', () => {
         sandboxRef: string;
         replyTo: string;
         sessionId: string;
-        messageB64: string;
         directMessageB64: string;
       }>;
     };
@@ -536,8 +535,8 @@ describe('/control/nudges', () => {
     expect(item!.sandboxRef).toBe('s1');
     expect(item!.replyTo).toBe('424242');
     expect(item!.sessionId).toBe(`nudge-${nudgeId}`);
-    expect(Buffer.from(item!.messageB64, 'base64').toString('utf8')).toBe('How did it go?');
-    // ④b: the endpoint serves the verbatim twin too (footer-less question ⇒ equal).
+    // ④b Phase 5: the verbatim payload is the ONLY payload (messageB64 removed).
+    expect('messageB64' in item!).toBe(false);
     expect(Buffer.from(item!.directMessageB64, 'base64').toString('utf8')).toBe('How did it go?');
 
     const served = await pg.query<{ serve_count: number }>(

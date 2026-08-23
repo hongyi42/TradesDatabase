@@ -3126,3 +3126,48 @@ that was working perfectly.
 `decisions 2 · dropped 0 · applied 2 · recorded 2 · tenantErrors 0`, `byAction {"leave": 2}`, both
 carrying substantive reasons; `watchers.nudgesAutoClosed: 0`. `recorded: 2` is the proof the
 constraint took — pre-migration that number is 0 with a loud error and no other symptom.
+
+## The Opus-5 date-scaffolding verdict — and what one night of evals cost (2026-08-23, overnight)
+
+**User hypothesis confirmed: given ONLY a clock line, Opus 5 made ZERO calendar errors in 91
+planner-shaped questions.** Three arms on one anchored corpus (Thursday 2026-08-20): arm B
+(seat + full §0f doctrine + steering + resolve_date, data crutches off) 30/31 on real answers;
+arm C (seat + clock line only) 26/26 partial; **arm D (tier-2 direct API: clock line + 149 RAW
+schedule rows, no doctrine, no resolve_date, no crutches) 73/91 strict with every miss being
+something other than a date**: 13 bulk-counting tallies (~5-10% off over 149 rows — every
+week/month/quarter BOUNDARY was correct), 1 placed-vs-window semantic, 2 ask-both convention
+(removed with the doctrine; it picked a reading AND explained the ambiguity), 2 harness
+artifacts (the clock line carried no wall time). It caught the "the 25th is a Friday, right?"
+trap cold.
+
+**What survives on merit: server-side counting** — W13's lesson re-proven on a frontier model.
+Counting is arithmetic over rows, not date competence, and the planner is structurally immune
+only because SQL does its counting (the aggregate-the-summaries rule, generalized: any number
+the planner consumes or quotes must be computed by code, never tallied in-context). Everything
+else in the GLM-era date stack is, for Opus, replaceable by one sentence. ④b consequence: the
+`cleanQuestionDraft` rails stay as reject-only insurance; the case for building MORE code
+guards is dead.
+
+**The cost anatomy.** The seat surface costs **~52k input per model call** regardless of arm —
+harness prompt + full tool catalog + AGENTS.md; the date scaffolding was ~1-2k of it — at 2-3
+calls per question. 186 seat calls = 8.89M input ≈ $45, all full price because **Anthropic's
+OpenAI-compat endpoint never caches** (measured cacheRead 0; docs confirm `cache_control` is
+native-API, per-request, no console setup; Opus 5 min 512 tokens, reads 0.1x). The tier-2 arm
+(`scripts/date-eval/run-direct.mjs`, planner-eval's cached transport) ran the same 91 questions
+for **$0.92 in ~4 minutes**. `scripts/planner-eval/anthropic.mjs` caches correctly already;
+**production `toolLoop.ts` anthropicTransport sets NO cache_control — live planner ticks run
+uncached; a small PR closes a free ~90% input saving.**
+
+**Five traps re-bitten in one night** (all previously recorded): provider balance-out mid-run,
+twice (check balance FIRST; empty trajectory + instant dead turn = billing — read the gateway
+log); Render env vars are inert until a deploy on an autoDeploy:no service (arm B ran
+unanchored once — behavioral verification caught it at question 1); the gateway caches the
+spine's tools/list (surface changes need `gateway restart` AFTER the deploy is live); a
+surviving `.runid` re-mints the same session ids and replays OLD answers as 1.3s "turns";
+and the `-m` newline trap (a two-line clock prefix killed every turn in 1.4s — single line).
+
+Standing eval tooling from the night: `--anchor` + `EVAL_FAKE_NOW` (tenant-scoped anchored
+clock — the adversarial regime at any hour; evenings are no longer a scheduling constraint),
+`GROUNDING_LEAN` / `GROUNDING_BARE`, `--clock-line`, and the tier-2 direct runner (PR #170).
+Fleet fully restored and verified same night: fireworks-prod route, medic active, §0f back on
+s2, spine flags inert.

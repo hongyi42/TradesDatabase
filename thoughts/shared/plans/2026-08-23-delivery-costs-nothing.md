@@ -58,6 +58,8 @@ manager's AI assistant (ids, what was tried, what an answer unblocks). Stored wi
 decision, copied onto the queue item, read by the assistant when the manager engages; the
 manager never sees it raw.
 
+This may need an eval. We are not sure that the seat agent will actually read the briefing, or how they would know where to find the briefing and when to do so.
+
 **Phase 3 — the spine offers a "send this verbatim" payload.** Each queued question also ships
 footer-less. Old boxes keep working off the old payload; nothing visible changes yet.
 
@@ -110,12 +112,10 @@ Establishes the `message send` contract from openclaw's CURRENT docs (docs.openc
 ### Live verification (agent-executable)
 - Prerequisites: ssh to `tradesbox` (read-only probe + one send to chat id `1`, the date-eval
   dead-target precedent — hook layer runs, send fails "chat not found", nobody messaged).
-- [ ] exact invocation established (docs + --help); dead-target send executed **with a
-  multi-line body** (the openshell-exec argv-newline trap — nudge-runner.sh:132-141); exit
-  code, output and the gateway's success-signal log line captured
-- [ ] weekday-guard log checked before/after the send (informational either way)
-- [ ] channel-history appearance explicitly DEFERRED to Phase 4's real send (dead targets
-  cannot show it)
+- [x] exact invocation established (in-container; multi-line via staged file — probe 2026-08-23
+  09:29Z, exit 1 + OutboundDeliveryError on chat_id=1, gateway `message.action` log line)
+- [x] weekday-guard log 322→323: `message_sending` hook scanned the probe (chars 70, 0 flags)
+- [x] channel-history appearance DEFERRED to Phase 4's real send (dead targets cannot show it)
 
 *No manual items — continue.*
 

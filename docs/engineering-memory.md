@@ -3171,3 +3171,19 @@ clock — the adversarial regime at any hour; evenings are no longer a schedulin
 `GROUNDING_LEAN` / `GROUNDING_BARE`, `--clock-line`, and the tier-2 direct runner (PR #170).
 Fleet fully restored and verified same night: fireworks-prod route, medic active, §0f back on
 s2, spine flags inert.
+
+## `openclaw message send` — the ④b transport contract (probed 2026-08-23, s2, dead target)
+
+Docs (docs.openclaw.ai/cli/message) give syntax but omit exit codes, multi-line and hook
+behavior; all three probed on-box. **The binary lives IN THE SANDBOX CONTAINER** (no `openclaw`
+on the box PATH) — invocation is `nemoclaw <seat> exec --no-tty -- bash -c 'openclaw message
+send --channel telegram --target <chatId> -m "$(cat /tmp/<staged>)" --json'`. A multi-line body
+MUST go through a staged in-sandbox file exactly like the current runner's `--message-file`
+discipline: exec's argv still rejects newlines. **Success signal is deterministic**: exit 1 +
+`OutboundDeliveryError: Telegram send failed: chat not found (chat_id=1)` on the dead target;
+the gateway logs one `[ws] ⇄ res message.action` line per request (vs `res agent` for the old
+relay). **The weekday guard FIRES on this path**: weekday-guard.jsonl grew by one
+`{"hook":"message_sending","v":"0.4.0","chars":70,"flags":[]}` record timestamped to the probe
+second — direct send keeps full guard coverage, so retiring the relay turn loses nothing.
+Channel-history appearance is unobservable on a dead target; that fact lands with ④b Phase 4's
+real send.

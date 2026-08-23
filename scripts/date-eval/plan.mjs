@@ -24,6 +24,14 @@ const argOf = (name, dflt) => {
 };
 const OUT_DIR = argOf('out', join(process.cwd(), 'date-eval-runs', 'pending'));
 const TENANT = argOf('tenant', 'Default Tenant');
+// --anchor pins the eval to a chosen "now" instead of the wall clock, so the
+// adversarial regime (box UTC day != firm-local day) is available at ANY hour
+// and the anchor can sit inside the seed world's data window on a WEEKDAY.
+// Accepts a bare day (YYYY-MM-DD -> pinned at 18:30 firm-local, the evening
+// regime) or a full ISO instant. The spine must serve the same anchor via
+// EVAL_FAKE_NOW=<tenantId>:<instant> (tenant-scoped; src/evalClock.ts) — the
+// plan prints the exact line to set on Render.
+const ANCHOR = argOf('anchor', null);
 
 // Same two-URL agreement as seed.mjs. Read-only here, but a corpus built from
 // the wrong database would grade every answer against fiction, so the target
@@ -43,7 +51,29 @@ const one = async (sql, params) => (await client.query(sql, params)).rows;
 
 try {
   const [{ id: tenantId, timezone: tz }] = await one('select id, timezone from tenants where name = $1', [TENANT]);
-  const [{ today }] = await one(`select (now() at time zone $1)::date::text as today`, [tz]);
+  let today;
+  let anchorIso = null;
+  if (ANCHOR && /^\d{4}-\d{2}-\d{2}$/.test(ANCHOR)) {
+    // Bare day: pin the instant at 18:30 firm-local (the evening regime). The
+    // DB does the tz math — node has no tz database worth trusting here.
+    const [{ instant }] = await one(
+      `select (($1::date + time '18:30') at time zone $2)::text as instant`,
+      [ANCHOR, tz],
+    );
+    anchorIso = new Date(instant).toISOString();
+    today = ANCHOR;
+  } else if (ANCHOR) {
+    const t = Date.parse(ANCHOR);
+    if (Number.isNaN(t)) {
+      console.error(`REFUSING TO PLAN: --anchor '${ANCHOR}' is neither YYYY-MM-DD nor an ISO instant.`);
+      process.exit(1);
+    }
+    anchorIso = new Date(t).toISOString();
+    const [{ d }] = await one(`select ($1::timestamptz at time zone $2)::date::text as d`, [anchorIso, tz]);
+    today = d;
+  } else {
+    [{ today }] = await one(`select (now() at time zone $1)::date::text as today`, [tz]);
+  }
 
   // Timed visits that stand or were done — the schedule a person means by
   // "visits". Cancelled rows stay out (they retain stale flags, per the
@@ -126,7 +156,11 @@ try {
   const manifest = {
     builtAt: new Date().toISOString(),
     tenant: TENANT,
+    tenantId,
     today,
+    // Non-null = anchored run: the spine must be serving EVAL_FAKE_NOW with
+    // exactly this instant for this tenant, or every question mis-grades.
+    anchor: anchorIso,
     timezone: tz,
     // Fireworks' id spelling, because that is what production routes to
     // (since 2026-08-15). The old default here was `z-ai/glm-5.2` — NVIDIA's
@@ -157,6 +191,11 @@ try {
   const mins = Math.round((n * secsEach) / 60);
 
   console.log(`\n=== DATE EVAL — PLAN (nothing has run yet) ===`);
+  if (anchorIso) {
+    console.log(`  ANCHORED RUN — before running, set on the spine (Render env, no deploy needed):`);
+    console.log(`      EVAL_FAKE_NOW=${tenantId}:${anchorIso}`);
+    console.log(`  and REMOVE it the moment the run ends. Real UTC now: ${new Date().toISOString()}`);
+  }
   console.log(`  today (firm-local ${tz}):  ${titleWeekday(today)} ${today}`);
   console.log(`  this week:  ${weekStart(today)} → ${weekEnd(today)}     next week: ${weekStart(today, 1)} → ${weekEnd(today, 1)}`);
   console.log(`  tenant:     ${TENANT}    sandbox: ${manifest.sandbox}    expected model: ${manifest.expectedModel}`);

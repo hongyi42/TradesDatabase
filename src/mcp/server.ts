@@ -4,6 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
+import { spineNowIso } from '../evalClock.js';
 import type { JsonSchemaObject } from '../model/forcedTool.js';
 import {
   annotateResolvedReviewItem,
@@ -2683,11 +2684,11 @@ async function dispatch(
         const s = summarizeMoney(events);
         moneyByJob[jobId] = activeManager ? s : technicianMoneyView(s);
       }
-      return {
+      const contextResult: Record<string, unknown> = {
         ...ctx,
         ...(byJob.size > 0 ? { moneyByJob } : {}),
         recentCaptures: dropSensitive(ctx.recentCaptures),
-        ...(unscheduled.length
+        ...(unscheduled.length && !leanGrounding()
           ? {
               openWorkNote:
                 `UNSCHEDULED work on file: ${unscheduled.map((j) => `'${j.title}' (jobId ${j.id})`).join('; ')}. ` +
@@ -2697,6 +2698,11 @@ async function dispatch(
             }
           : {}),
       };
+      // Lean serves the RECORD only: the derived schedule-ahead block goes with
+      // the other crutches, and openWorkNote goes with it because its steering
+      // names the field it rides on.
+      if (leanGrounding()) delete contextResult.upcomingVisits;
+      return contextResult;
     }
     case 'get_job': {
       const jobId = str('jobId');
@@ -2757,7 +2763,9 @@ async function dispatch(
       // (src/schedule/dateResolve.ts). Returning today+timezone also grounds
       // the agent for whatever it does next.
       const tz = (await getTenant(tenantId))?.timezone ?? 'UTC';
-      const todayLocal = localDateISO(new Date().toISOString(), tz);
+      // spineNowIso: real clock unless EVAL_FAKE_NOW anchors THIS tenant
+      // (the date-eval's any-hour regime — see src/evalClock.ts).
+      const todayLocal = localDateISO(spineNowIso(tenantId), tz);
       const weekdayArg = str('weekday');
       if (weekdayArg !== undefined && !isWeekday(weekdayArg)) {
         throw new Error(`invalid weekday: ${weekdayArg} (use a lowercase day name)`);
@@ -3740,7 +3748,7 @@ async function dispatch(
       const to = str('to');
       // Truthiness, not ??=: an empty-string from means "today" (main/board
       // parity — same rule as get_schedule above).
-      if (!from) from = localDateISO(new Date().toISOString(), teamTenant?.timezone ?? 'UTC');
+      if (!from) from = localDateISO(spineNowIso(tenantId), teamTenant?.timezone ?? 'UTC');
       const DATE = /^\d{4}-\d{2}-\d{2}$/;
       if (!DATE.test(from)) {
         return { status: 'invalid_range', note: 'from must be YYYY-MM-DD' };
@@ -3952,15 +3960,19 @@ async function dispatch(
         to: toDay,
         scheduleVersion,
         technicianHorizonDays,
-        counts,
-        countsNote:
-          'counts.byDay/total are the visit counts for the requested range, computed here — ' +
-          'ALWAYS use these for how-many/busiest/compare questions, never count the stop rows ' +
-          'yourself. timeTbdListed visits are booked but not yet placed on a day, so they are ' +
-          'listed under their earliest possible day WITHOUT being counted; ' +
-          'counts.windowCoverByDay[date] is how many of those COULD still land on that date — ' +
-          'a day is only completely free when byDay AND windowCoverByDay are both 0. The range ' +
-          'is capped at 14 days: to scan further ahead, call again starting where this range ended.',
+        ...(leanGrounding()
+          ? {}
+          : {
+              counts,
+              countsNote:
+                'counts.byDay/total are the visit counts for the requested range, computed here — ' +
+                'ALWAYS use these for how-many/busiest/compare questions, never count the stop rows ' +
+                'yourself. timeTbdListed visits are booked but not yet placed on a day, so they are ' +
+                'listed under their earliest possible day WITHOUT being counted; ' +
+                'counts.windowCoverByDay[date] is how many of those COULD still land on that date — ' +
+                'a day is only completely free when byDay AND windowCoverByDay are both 0. The range ' +
+                'is capped at 14 days: to scan further ahead, call again starting where this range ended.',
+            }),
         days,
       };
     }
@@ -7276,6 +7288,17 @@ async function dispatch(
   }
 }
 
+// GROUNDING_LEAN=1 strips the derived date/schedule crutches added for the
+// GLM-era seat model — get_team_schedule counts/windowCoverByDay/countsNote,
+// get_customer_context upcomingVisits/openWorkNote — while keeping the `now`
+// rider, resolve_date, and every correctness filter (the v_schedule status
+// filter is a bug fix, not a crutch, and is untouched). Date-eval Arm B
+// (2026-08-23): measure a frontier model WITHOUT the scaffolding. Read per
+// CALL, not at module load, so the eval window flips it via Render env with
+// no build, and tests toggle it around individual calls. Never set it in
+// normal operation.
+const leanGrounding = () => process.env.GROUNDING_LEAN === '1';
+
 // ─── temporal grounding rider ────────────────────────────────────────────
 // The firm timezone backs EVERY tool result's `now` line, so it is memoized
 // (10-min TTL) rather than re-read per call — resolve_date's own per-call
@@ -7298,7 +7321,7 @@ async function groundingNow(tenantId: string): Promise<string> {
   }
   // The exact condition-B format the eval measured (80.6% vs bare-date 66.3%):
   // weekday spelled out, firm-local, timezone named.
-  const human = new Date().toLocaleDateString('en-US', {
+  const human = new Date(spineNowIso(tenantId)).toLocaleDateString('en-US', {
     timeZone: tz,
     weekday: 'long',
     month: 'long',

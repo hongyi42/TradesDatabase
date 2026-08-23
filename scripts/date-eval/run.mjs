@@ -194,7 +194,20 @@ if (manifest.expectedModel && startRoute.model !== manifest.expectedModel) {
   console.error(`Either point the fleet at the intended model, or re-plan with DATE_EVAL_EXPECT_MODEL=${startRoute.model}.`);
   process.exit(1);
 }
-if (manifest.today !== ssh(`date -u +%F`).stdout?.trim() && !has('allow-stale')) {
+if (manifest.anchor) {
+  // Anchored run: the manifest's day deliberately differs from the wall
+  // clock — the spine serves it via EVAL_FAKE_NOW (tenant-scoped,
+  // src/evalClock.ts). The harness cannot see Render's env, so the one check
+  // it can make is that the OPERATOR looked: an unanchored spine mis-grades
+  // every question, exactly the failure the staleness gate below exists for.
+  console.log(`  ANCHORED RUN: graded day is ${manifest.today} (anchor ${manifest.anchor}), wall UTC is ${new Date().toISOString()}.`);
+  if (!has('anchored')) {
+    console.error(`\nREFUSING TO RUN: this manifest is anchored. Verify the spine env holds`);
+    console.error(`    EVAL_FAKE_NOW=${manifest.tenantId}:${manifest.anchor}`);
+    console.error(`(read it back from Render — do not trust memory), then re-run with --anchored.`);
+    process.exit(1);
+  }
+} else if (manifest.today !== ssh(`date -u +%F`).stdout?.trim() && !has('allow-stale')) {
   // Not fatal on its own — the box clock is UTC and the firm is not — but a
   // manifest built on a different DAY grades against yesterday's schedule.
   const planned = new Date(`${manifest.today}T12:00:00Z`).getTime();

@@ -307,15 +307,21 @@ updated (no footer; stored = shown).
   `messageB64` and hand gaps to the manager at 3 strikes
 - [ ] one fresh post-deploy nudge delivered footer-less end-to-end (this is the check that
   exercises THIS phase's code — the Phase-4 replays do not)
-- [ ] record-duty probe: after the user replies to the Phase-4 question in Telegram, verify by DB
-  read-back: `raw_captures` row landed; `nudges.answered_by_capture_id` stamped; next planner
-  tick's decision mentions/closes the gap (query `nudge_decisions`)
+- [x] record-duty probe (2026-08-23, ran EARLY off the Phase-4 nudge — the direct-send path
+  already exercises this phase's behavioral question): user replied 18:06 → `raw_captures`
+  87074d22 (technician_note, reply near-verbatim) → L2 visit workPerformed filled →
+  `answered_by_capture_id` stamped → planner 18:31:01 `close/applied` ("Sam's own note answers
+  how the garage heater tune-up went: half complete, bigger problems found, needs another
+  visit"), nudge `answered`. Full chain ask→send→reply→record→attribute→close in 35 min, zero
+  delivery inference. Also lands the Phase-1 deferred fact: the agent resolved a reply to a
+  DIRECTLY-sent, footer-less message to the right customer and job via channel history + §0k
 - [ ] briefing probe: escalate a test gap carrying `agentContext` → ask s2's agent about the item
   in Telegram → transcript shows it USED the briefing (names the specifics) without quoting it
   verbatim
 
 ### Manual verification
-- [ ] you reply to the Phase-4 question in Telegram (one message; the probe reads the rest)
+- [x] you reply to the Phase-4 question in Telegram (done 2026-08-23 18:06 — "half complete,
+  bigger problems, probably needs another visit"; the probe read the rest)
 - [ ] the agent's briefing-informed answer reads like help, not like a machine quoting a log
 
 ---

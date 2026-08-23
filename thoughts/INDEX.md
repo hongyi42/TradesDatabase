@@ -32,10 +32,11 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 158 documents · 155 live · 3 superseded.
+Regenerate with `npm run decisions:index`. 159 documents · 155 live · 4 superseded.
 
 ## Superseded — do not build on these
 
+- `2026-08-22` ~~[2026-08-22-brain-memory-foundations](shared/research/2026-08-22-brain-memory-foundations.md)~~ → **[2026-08-23-memory-architecture-substrate](shared/research/2026-08-23-memory-architecture-substrate.md)**
 - `2026-08-04` ~~[2026-08-04-query-spine-design](shared/plans/2026-08-04-query-spine-design.md)~~ → **[2026-08-23-the-brain-can-look](shared/plans/2026-08-23-the-brain-can-look.md)**
 - `2026-07-04` ~~[2026-07-04-feature-B-outbound-composio-actions](shared/plans/2026-07-04-feature-B-outbound-composio-actions.md)~~ → **[2026-07-04-feature-B-outbound-composio-sessions](shared/plans/2026-07-04-feature-B-outbound-composio-sessions.md)**
 - `2026-06-30` ~~[2026-06-30-phone-call-input-short-two-tier](shared/plans/2026-06-30-phone-call-input-short-two-tier.md)~~ → **[2026-08-04-phone-call-signalwire](shared/plans/2026-08-04-phone-call-signalwire.md)**
@@ -45,11 +46,11 @@ Regenerate with `npm run decisions:index`. 158 documents · 155 live · 3 supers
 - `2026-08-23` `plan` [2026-08-23-delivery-costs-nothing](shared/plans/2026-08-23-delivery-costs-nothing.md) — "④b delivery costs nothing — planner words reach people verbatim via openclaw message send; the relay turn di…
 - `2026-08-23` `plan` [2026-08-23-the-brain-can-look](shared/plans/2026-08-23-the-brain-can-look.md) — ④ The brain can look — v_captures, v_visits, v_nudges, v_review_items join the planner's read surface
 - `2026-08-23` `research` [2026-08-23-delivery-costs-nothing](shared/research/2026-08-23-delivery-costs-nothing.md) `landed` — "④b delivery costs nothing — how a planner-composed question reaches a person today, and every surface a zero…
+- `2026-08-23` `research` [2026-08-23-memory-architecture-substrate](shared/research/2026-08-23-memory-architecture-substrate.md) `landed` — ⑤ memory — every store, reader, and gap in the substrate as built (planner + seats)
 - `2026-08-23` `research` [2026-08-23-the-brain-can-look](shared/research/2026-08-23-the-brain-can-look.md) `landed` — ④ The planner's read surface — what spine_read exposes, what the planner cannot reach and what substitutes, t…
 - `2026-08-22` `plan` [2026-08-22-planner-copy-eval](shared/plans/2026-08-22-planner-copy-eval.md) · _draft_ — Measure what the planner WRITES — the manager-facing handoff note — on Opus 5, with explicit prompt caching a…
 - `2026-08-22` `plan` [2026-08-22-planner-writes-the-question](shared/plans/2026-08-22-planner-writes-the-question.md) · _draft_ — The planner writes the technician's question for gaps it decides to send; compose becomes the fallback
 - `2026-08-22` `plan` [2026-08-22-the-brain-can-attribute](shared/plans/2026-08-22-the-brain-can-attribute.md) `drift 19` — Closing a gap becomes the planner's judgment; the sweep keeps the facts and a fail-safe
-- `2026-08-22` `research` [2026-08-22-brain-memory-foundations](shared/research/2026-08-22-brain-memory-foundations.md) `landed` `drift 20` — The brain's memory foundations — attribution, closure semantics, and continuity in the nudge ladder
 - `2026-08-21` `plan` [2026-08-21-the-answer-return-path](shared/plans/2026-08-21-the-answer-return-path.md) `drift 30` · _draft_ — Close the ladder's return path — hold every manager-facing template to "assert nothing you were not given", l…
 - `2026-08-21` `plan` [2026-08-21-the-eyes-see-the-whole-record](shared/plans/2026-08-21-the-eyes-see-the-whole-record.md) `drift 42` — Let the planner see money and give it a way to postpone an escalation — the first of three plans splitting Gr…
 - `2026-08-21` `plan` [2026-08-21-the-mouth-stops-lying](shared/plans/2026-08-21-the-mouth-stops-lying.md) `drift 52` · _draft_ — Hold every manager-facing template to "assert nothing you were not given", and let a field note record in one…

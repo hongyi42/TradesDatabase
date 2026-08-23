@@ -41,12 +41,13 @@ by deterministic code (the ACE shape); everything stored cites the rows that jus
   only what survives. Deliberately NOT built in these phases: the judge needs a corpus of real
   proposals to be designed against, and the shadow phase is what accumulates it. Recorded here
   so the operator script is understood as temporary.
-- **Hard cap on active lessons** (user ruling 2026-08-23 — input-token discipline): at most
-  5 ACTIVE lessons per firm, enforced by the Curator (activation beyond the cap is refused
-  until one is retired); the prompt block renders ALL active lessons — one number, no separate
-  render cap. Worst case ≈ 5 × 300 chars ≈ 400 tokens per tick. Proposals are unlimited but
-  expire: a proposal neither activated nor refuted within 60 days is marked stale (kept,
-  never re-shown).
+- **Lesson budget is a TOKEN budget, not a count** (user ruling 2026-08-23, refined): the
+  active set is bounded by the rendered LESSONS block's size — `LESSONS_BLOCK_BUDGET = 2000`
+  chars (~500 tokens/tick, the repo's standing chars-as-token-proxy). Activation is refused
+  when the block would exceed the budget (retire or shorten first); render = ALL active
+  lessons, bounded by construction. Many short lessons or few long ones — the model's cost is
+  what's capped. Proposals are unlimited but expire: neither activated nor refuted within 60
+  days → stale (kept, never re-shown).
 - **Working hours, pinned ONE way** (review find 8): `working_hours_open` = overlap of
   [asked_at, resolved_at] with the 7am-7pm firm-local ask window, computed from REAL-UTC
   columns + `tenants.timezone` via `at time zone` — never from naive-local `context` values.
@@ -238,14 +239,15 @@ reseeds leave a stale active lesson haunting the fresh world. gen:types after.
   tenant (refuse otherwise), inserts as 'proposed'.
 - `strikeLesson(tenantId, id, why)`: strikes+1; at 2 → 'retired' + reason.
   `activateLesson(tenantId, id)` — both tenant-scoped (operator-script callers paste ids;
-  a wrong paste must not cross tenants — review find 10). Activation REFUSES when the firm
-  already has 5 active lessons (the cap ruling) — retire first, then activate.
-- `renderLessonsBlock(tenantId)`: ALL active lessons (≤5 by the cap) as numbered bullets
-  with ids.
+  a wrong paste must not cross tenants — review find 10). Activation REFUSES when the
+  resulting rendered block would exceed `LESSONS_BLOCK_BUDGET` (the token-budget ruling) —
+  retire or shorten first, then activate.
+- `renderLessonsBlock(tenantId)`: ALL active lessons as numbered bullets with ids; total
+  bounded by the budget at activation time, by construction.
 
 ### Automated verification
-- [ ] gates + tests: evidence-check refusal; two-strike retirement; the 5-active cap refuses
-  a sixth activation; date-rail allows "Friday evening", refuses "2026-08-23"; text
+- [ ] gates + tests: evidence-check refusal; two-strike retirement; an activation that would
+  push the rendered block past LESSONS_BLOCK_BUDGET is refused; date-rail allows "Friday evening", refuses "2026-08-23"; text
   immutability (typed layer has no setter)
 
 ### Live verification

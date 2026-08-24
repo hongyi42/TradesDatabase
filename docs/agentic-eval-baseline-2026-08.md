@@ -44,11 +44,17 @@ money-blindness/false-claim specimen class this eval was built from. Family spli
   "midday Saturday… this Monday morning is the first working window since". The corpus
   offsets were authored as WORKING-TIME silence; on a weekend the same offsets mean weekend
   silence, where patience is arguably right. LS-01 shows the intended arc working (leave →
-  leave → escalate at end of the working day). GLM "passed" these partly by being day-blind —
-  it escalated through the weekend without noticing the calendar. This is the date-eval's
-  Saturday-anchor lesson recurring one layer up; counting the three as correct puts Opus at
-  ~57/65. Follow-up: pin t0 to a weekday (an `--anchor` like the spine-eval world's) or make
-  the late-family expectations weekend-aware.
+  leave → escalate at end of the working day). GLM is NOT day-blind — its reasons name the
+  days too ("most of that was a weekend… gives him the full working day") — the models differ
+  in DOCTRINE: GLM counts ELAPSED time (weekend acknowledged, 27-46h = "a fair chance"
+  regardless), Opus counts WORKING time (weekend hours weigh ~zero, Monday is "the first
+  working window"). The corpus never said which the firm wants — an open product question,
+  with a live tension: the sweep's 24h/48h fail-safe clocks run on REAL hours, so working-time
+  judgment extends through weekends while the wall-clock ticks. Counting the trio as correct
+  puts Opus at ~57/65. Follow-ups: pin t0 to a weekday (an `--anchor` like the spine-eval
+  world's) or make late-family expectations weekend-aware; and move the builders' default
+  VISIT times into working hours (both models correctly quoted seeded visits "due at
+  4:00 AM").
 - **CM-03 (both models): neither checked the dismissal pattern.** Six spine_reads, none
   touching v_review_items, before re-escalating a technician whose last three escalations the
   manager dismissed. The ⑤ self-check line in the prompt is not yet strong enough to induce

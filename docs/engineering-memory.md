@@ -3256,3 +3256,39 @@ machinery (belongs with the unbuilt pacing/earn-the-ask work), and the briefing-
 the plan note called for. Rung-2 items are PULL-only today (no proactive manager ping — the
 no-unearned-pings doctrine); if managers should be NOTIFIED of escalations, that is pacing-work
 scope too.
+
+## ⑤ MEMORY ARCHITECTURE COMPLETE — the learning loop exists, dark (2026-08-23)
+
+Plan `thoughts/shared/plans/2026-08-23-memory-architecture.md` is **complete**, five phases,
+five fresh-context review rounds (~20 findings folded), PRs #175/#176, everything live-verified
+on the pilot the same day. What exists now: **baseline metrics** (four ACL-locked mv_* views +
+`working_hours_between` pinned identically in SQL and TS; `npm run metrics:planner`; snapshot
+`docs/planner-baseline-2026-08.md` — pilot numbers are MACHINERY DEMO, not a benchmark, per the
+user's own plan note); **gap_summaries** (one code-written story per closed gap, lifecycle step
+11, escalation HOLDBACK covering both handoff paths so manager_fate can become true — the
+corrective signal's lifeline); **planner_lessons + the Curator** (evidence-cited, token-budget
+bounded `LESSONS_BLOCK_BUDGET=2000` chars, two-strike retirement, 60-day stale expiry,
+weekday-yes/dates-no rail); **the Reflector** (one call/firm/day max, gates: 2am+, marker,
+≥15 summaries, ≥5 new since last SUCCESS — failure markers are ok=false and never advance the
+watermark; REFLECTOR_MODE=shadow LIVE on lifecycle-heart, gate-skip verified in the tick JSON);
+**the closed loop** (LESSONS block in the planner user message, lesson-id stamping in `reason`
+for measurability, escalation self-check over v_review_items, live/shadow usage split in the
+report; `npm run lessons:planner` = the operator console whose interface is deliberately the
+future adversarial judge's).
+
+**Review-round lessons worth keeping:** the first `late` metric definition was structurally
+dead (all branches false by construction) — a paired metric that cannot fire un-pairs its twin;
+an append-only summary must HOLD BACK until late-arriving facts (manager fates) land or it
+poisons the corpus forever; failure markers must not advance freshness watermarks; everything
+crossing DB→prompt flattens at RENDER time when rows already exist; and test fixtures mixing a
+fixed `NOW` with DB `now()` can make two gates alibi each other — pin each gate alone.
+
+**Standing follow-ups:** read the first real shadow proposals with the user when the pilot
+corpus passes 15 (activation is deliberately human until the ratified adversarial-judge
+mechanism is built); the queue-triage family (above) is unmoved; **still unverified: whether
+`ANTHROPIC_MODEL` on lifecycle-heart actually names Opus — the code default is
+`claude-sonnet-4-6`** (src/model/forcedTool.ts:56) and no session has been able to read the env.
+Next on the ladder per standing direction: the agentic eval at scale, then collapsing
+investigate/plan/compose into one call. Rung-2 items are PULL-only today (no proactive manager ping — the
+no-unearned-pings doctrine); if managers should be NOTIFIED of escalations, that is pacing-work
+scope too.

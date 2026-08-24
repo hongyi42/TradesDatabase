@@ -44,7 +44,7 @@ Regenerate with `npm run decisions:index`. 165 documents · 161 live · 4 supers
 ## Live
 
 - `2026-08-24` `plan` [2026-08-24-agentic-planner-eval](shared/plans/2026-08-24-agentic-planner-eval.md) — the agentic planner eval at scale — multi-tick gap-life harness, ~60 scenarios, Opus 5 vs GLM
-- `2026-08-24` `plan` [2026-08-24-one-call-collapse](shared/plans/2026-08-24-one-call-collapse.md) · _draft_ — the one-call collapse — the planner queues its own sends; compose's model call retires
+- `2026-08-24` `plan` [2026-08-24-one-call-collapse](shared/plans/2026-08-24-one-call-collapse.md) — the one-call collapse — the planner queues its own sends; compose's model call retires
 - `2026-08-24` `research` [2026-08-24-one-call-collapse](shared/research/2026-08-24-one-call-collapse.md) `landed` — the one-call collapse — every model call left in the nudge pipeline, what context each sees, what compose sti…
 - `2026-08-23` `plan` [2026-08-23-delivery-costs-nothing](shared/plans/2026-08-23-delivery-costs-nothing.md) — "④b delivery costs nothing — planner words reach people verbatim via openclaw message send; the relay turn di…
 - `2026-08-23` `plan` [2026-08-23-memory-architecture](shared/plans/2026-08-23-memory-architecture.md) — ⑤ memory architecture — baseline metrics, gap-life summaries, a lessons store, and a shadow Reflector

@@ -3516,6 +3516,21 @@ scope too.
     manager within 5 minutes. Now such a row is asked with the gap view's placeholder copy or
     waits for the 18h sweep; a row too tampered even for `spec.handoff` stays frozen with loud
     logs (the pre-existing frozen-row doctrine). Detector-written rows are never thin.
+  * **THE ANCHOR IS LOAD-BEARING, not decoration.** Code appends "(re: customer — job)" to
+    every queued question (`anchorLine`, planner.ts). Standing box doctrine — AGENTS.md
+    "Questions and items from the office", on all six seats — files a technician's reply with
+    record_field_note "for the job the (re: …) line names" and ASKS rather than guessing
+    otherwise. The final review caught the collapse deleting its only producer: a bare
+    question makes "yeah, all done" unfilable, the answer never lands, and the gap escalates
+    claiming nobody responded. Never ship a delivered question without it; a row that cannot
+    name itself ships bare rather than fabricating one.
+  * **Two known gaps, accepted (2026-08-24) rather than discovered later:** (a) there is no
+    verb for "this should not be asked, give it to a person" on a PENDING row — compose's
+    `ask:false` decline path died with it, so such a row waits for the 18h expiry sweep
+    (`escalate`/`leave` are rail-refused on pending, `close` needs evidence); (b) the ladder
+    lost its "how many questions actually went out" counter (`ComposeSummary.composed`) —
+    `byAction.send` counts INTENT before apply, and the draftless-send refusal that now
+    silences a gap has no distinguishable counter. Both are candidates for the next pass.
   * **Eval comparability:** on any future corpus rerun, a rail-dropped question now fails its
     scenario's send expectation instead of falling back to compose. The 63/65 (Opus) baseline
     stays comparable; the GLM rollback arm's ~6 rail hits per run degrade by design.

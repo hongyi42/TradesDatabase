@@ -2,7 +2,7 @@
 date: 2026-08-24
 task: the one-call collapse — the planner queues its own sends; compose's model call retires
 research: thoughts/shared/research/2026-08-24-one-call-collapse.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 

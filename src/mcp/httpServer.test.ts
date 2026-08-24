@@ -140,6 +140,37 @@ describe('/composio relay routing', () => {
   });
 });
 
+describe('GET /health', () => {
+  test('unauthenticated liveness: 200 with a real DB round-trip and the running commit', async () => {
+    const prev = process.env.RENDER_GIT_COMMIT;
+    process.env.RENDER_GIT_COMMIT = 'abc1234';
+    try {
+      // No auth header, and it must answer ahead of the IP allowlist.
+      const res = await fetch(`${base}/health`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { status: string; commit: string; checks: { db: string } };
+      expect(body.status).toBe('ok');
+      expect(body.checks.db).toBe('ok'); // a real select against the local stack ran
+      expect(body.commit).toBe('abc1234'); // deploy provenance: the running SHA is curl-able
+    } finally {
+      if (prev === undefined) delete process.env.RENDER_GIT_COMMIT;
+      else process.env.RENDER_GIT_COMMIT = prev;
+    }
+  });
+
+  test('commit falls back to "unknown" when RENDER_GIT_COMMIT is unset', async () => {
+    const prev = process.env.RENDER_GIT_COMMIT;
+    delete process.env.RENDER_GIT_COMMIT;
+    try {
+      const res = await fetch(`${base}/health`);
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { commit: string }).commit).toBe('unknown');
+    } finally {
+      if (prev !== undefined) process.env.RENDER_GIT_COMMIT = prev;
+    }
+  });
+});
+
 describe('GET /control/badges', () => {
   test('bad or missing token → bare 401, no detail', async () => {
     const noAuth = await fetch(`${base}/control/badges`);

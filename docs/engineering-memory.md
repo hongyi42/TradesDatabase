@@ -3493,6 +3493,38 @@ scope too.
   analyze.mjs [--judge] [--compare]. This corpus is the regression suite and the yardstick
   the one-call collapse must beat — against the RE-JUDGED numbers, after the judge fix.
 
+- **THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md).**
+  The planner is now the ONLY model call in the nudge pipeline. Its `send` writes the entire
+  technician-facing message and queues it verbatim in one guarded write (`markNudgeQueued`,
+  pending-only) — compose's sweep, its per-kind prompts, its context readers and its
+  message-assembly templates are all deleted, and with them the code-printed "(re: customer —
+  job, visit on DATE)" frame. What the planner writes IS what the technician reads.
+  Consequences to hold:
+  * **A send with no surviving question is REFUSED**, never silently applied — the date-vocabulary
+    rail (`cleanQuestionDraft`) still screens the text, and a dropped draft now costs the SEND,
+    not just the draft. The prompt's YOUR MEMORY doctrine carries the one carve-out: this is the
+    single refusal the planner should retry, rewritten.
+  * **The ladder is MUTE when the planner is not live** (or has no credentials) while
+    NUDGES_MODE=live. Reported as `ladderMute` + a loud log on every tick, never `ok=false`
+    (a rollback is a legitimate choice). The floor is the 18h never-asked sweep — which itself
+    only runs when WATCHERS_MODE=live, so the warning says which case it is.
+  * **Ask latency moved from ~5 min to ≤~25 min** for a brand-new gap: compose ran every tick,
+    the planner runs on the half hour. Bounded far below NUDGE_DELIVERY_DEADLINE_HOURS (18h).
+  * **`teamLeadCompose` disappearing from cost_events is EXPECTED**, not breakage — there is no
+    compose call left to bill. Only `teamLeadPlanner` remains on the ladder's ledger line.
+  * **Thin-row handling changed owner:** compose used to hand a display-thin pending row to the
+    manager within 5 minutes. Now such a row is asked with the gap view's placeholder copy or
+    waits for the 18h sweep; a row too tampered even for `spec.handoff` stays frozen with loud
+    logs (the pre-existing frozen-row doctrine). Detector-written rows are never thin.
+  * **Eval comparability:** on any future corpus rerun, a rail-dropped question now fails its
+    scenario's send expectation instead of falling back to compose. The 63/65 (Opus) baseline
+    stays comparable; the GLM rollback arm's ~6 rail hits per run degrade by design.
+  * The eval's judge model is now `EVAL_JUDGE_MODEL ?? 'claude-opus-5'` (user ruling: a frontier
+    model grades; no Haiku patch), and `--judge` prints the resolved model before spending.
+  Live-proven on the local stack 2026-08-24: a seeded pending gap → real Opus planner tick →
+  row `queued` with `question` byte-identical to the decision's `question_draft`, read back
+  through psql (a second client).
+
 - **TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24).**
   The eval's Haiku judge grades escalation notes against the gap block ONLY — it never sees
   the model's tool calls. Result in the first baseline: ~8 verdicts flagged "the job is

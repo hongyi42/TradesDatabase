@@ -257,17 +257,18 @@ the whole path live on the local stack with one real Opus call.
 - No edit (the 18h/24h erratum is recorded in this plan's header).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass
-- [ ] judge-knob check without a paid call (review finding: analyze.mjs has no --help and
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass
+- [x] judge-knob check without a paid call (review finding: analyze.mjs has no --help and
       the model is only read inside the judge loop): make a temp run dir whose
       `results.jsonl` is empty, run `analyze.mjs --dir <tmp> --judge` with
       `EVAL_JUDGE_MODEL` unset then set — the printed `[judge] model:` line shows
       `claude-opus-5` then the override, zero rows graded
+      EVIDENCE: `[judge] model: claude-opus-5` then `[judge] model: claude-sonnet-5`, 0/0 graded
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack; `ANTHROPIC_API_KEY` + `MODEL_PROVIDER=anthropic` in
   the shell for this one command (never printed).
-- [ ] The E2E needs a small throwaway driver script, NOT the lifecycle binary (review
+- [x] The E2E needs a small throwaway driver script, NOT the lifecycle binary (review
       finding: lifecycle uses the wall clock, half-hour cadence, and ask-window gates, and
       `runPlanner` only walks tenants from `listTenantIdsWithTelegramBindings` — plannerSim's
       seeds are deliberately unreachable, no telegram_user_id). The driver: seed a tenant +
@@ -276,8 +277,20 @@ the whole path live on the local stack with one real Opus call.
       Then read back via a SECOND client (psql/supabase MCP): the row is `queued`, `question`
       equals the decision row's `question_draft` byte-for-byte, `queued_at` stamped,
       `nudge_decisions` has the applied `send`. Capture both rows as evidence.
-- [ ] One `runLifecycle` smoke on the local stack (any wall time): summary contains no
+      EVIDENCE (2026-08-24, local stack, real Opus call): planner
+      `{planned:1, decisions:1, applied:1, refusedAtApply:0, byAction:{send:1}}`; nudge row
+      `status=queued`, `queued_at=2026-08-24T20:59:50.782Z`, question "Quick one on the tankless
+      descaling for Marisol Duarte — did that visit get done, or does it still need another
+      trip?"; decision `action=send outcome=applied`, `question_draft` IDENTICAL to the row's
+      question. Read back via psql (second client). Scratch tenant + telegram-bound technician
+      deleted afterwards (verified 0 rows left).
+- [x] One `runLifecycle` smoke on the local stack (any wall time): summary contains no
       compose step and, with live+live modes, no `ladderMute`.
+      EVIDENCE (2026-08-24, WATCHERS_MODE=live NUDGES_MODE=live PLANNER_MODE=off):
+      `has teamLeadCompose key: false`; `[lifecycle] LADDER IS MUTE: NUDGES_MODE=live but
+      PLANNER_MODE is not live — … the 18h never-asked sweep hands them to managers`;
+      `teamLeadPlanner: {skipped: "PLANNER_MODE 'off'"}`; `ok: true` (mute is reported, never
+      red). The live+live no-mute half is covered by the codified lifecycle test.
 
 ### Manual verification
 - [ ] After the next pilot deploy (user-gated): watch one real gap flow detect → planner

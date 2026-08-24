@@ -1,17 +1,5 @@
 import type { Nudge } from '../db/nudges.js';
 import type { ReviewKind } from '../db/reviewItems.js';
-import type { ForcedToolSpec } from '../model/forcedTool.js';
-import {
-  COMPOSE_SYSTEM,
-  COMPOSE_TOOL,
-  COST_COMPOSE_SYSTEM,
-  COST_COMPOSE_TOOL,
-  assembleCostNudgeMessage,
-  assembleNudgeMessage,
-  readComposeContext,
-  readCostComposeContext,
-  relativeDayPhrase,
-} from '../teamLead/composeCopy.js';
 import { wallClockLabel } from './watchers.js';
 
 // The ladder's kind registry (plan 2026-08-19, Phase 1). Before this, the one
@@ -84,24 +72,6 @@ export interface HandoffPlan {
   // The planner's briefing for the manager's ASSISTANT, carried through to the
   // item's detail UNRENDERED — it must never enter `suggestion` (human copy).
   agentContext?: string | null;
-}
-
-// How ONE kind turns a nudge row into a model call and a deliverable.
-//
-// The row's context never escapes this block: `prepare` reads it and returns a
-// closure that assembles the final message. That is what lets a second kind
-// carry a completely different context shape with no union type and no generic
-// leaking into the registry — compose.ts only ever sees {user, assemble}.
-export interface ComposeBlock {
-  system: string;
-  tool: ForcedToolSpec;
-  // null = the row's evidence is thin or tampered. NEVER ask a model to guess
-  // around it; the caller hands the gap to the manager instead.
-  prepare(
-    n: Nudge,
-    nowIso: string,
-    tz: string,
-  ): { user: string; assemble: (question: string) => string } | null;
 }
 
 // What the CALLER has already checked, handed to a template so its copy can say
@@ -189,9 +159,9 @@ export interface NudgeKindSpec {
   // It still CLOSES in exactly one place — a gap NOBODY HAS BEEN ASKED yet
   // (watchers.ts, the pre-ask carve-out). That is not a judgment about an
   // answer; it is the detector re-checking its own predicate, and it must stay:
-  // compose reads pending rows without re-checking this, and its ask window
-  // holds an evening gap till 7am, so removing it means asking a technician at
-  // 7am about a job they reported at 8pm.
+  // the planner decides about pending rows without re-checking this, and its
+  // ask window holds an evening gap till 7am, so removing it means asking a
+  // technician at 7am about a job they reported at 8pm.
   //
   // It is otherwise READ-ONLY, feeding:
   //   1. the sweep's fail-safe at the escalation deadline (watchers.ts) — the
@@ -218,12 +188,12 @@ export interface NudgeKindSpec {
   // dismissing it. That is the gap escalate-then-close depends on.
   itemResolved(item: OpenItemView, f: SweepFacts): string | null;
   // `naiveLocal` is a PER-TENANT closure built from that tenant's timezone
-  // (watchers.ts). OPTIONAL because compose and the delivery queue hand rows to
-  // the manager too and have no timezone to build one from — they only ever use
+  // (watchers.ts). OPTIONAL because the delivery queue hands rows to the
+  // manager too and has no timezone to build one from — it only ever uses
   // 'expired', which prints no timestamp. A spec whose 'escalated' copy needs
   // one must return null when it is absent (fail-closed, never a wrong time).
-  // `ctx` is OPTIONAL for the same reason `naiveLocal` is: compose.ts and the
-  // delivery queue hand rows to the manager too, and they have checked nothing.
+  // `ctx` is OPTIONAL for the same reason `naiveLocal` is: the delivery queue
+  // hands rows to the manager too, and it has checked nothing.
   // A spec must therefore omit every factual clause when it is absent — that
   // path asserts nothing because it knows nothing.
   handoff(
@@ -232,12 +202,11 @@ export interface NudgeKindSpec {
     naiveLocal?: (utcIso: string) => string,
     ctx?: HandoffContext,
   ): HandoffPlan | null;
-  compose: ComposeBlock;
 }
 
 // The ONE manager-item copy for a plain unreported visit (user-approved
-// 2026-08-16). Used by the routing fallback, the expired-nudge handoff, and
-// compose's thin-context handoff — deliberately NOT the escalation copy, which
+// 2026-08-16). Used by the routing fallback and the expired-nudge handoff —
+// deliberately NOT the escalation copy, which
 // claims "their assistant asked": an expired nudge's ask never landed, and the
 // manager must never be told it did (Phase-4 review F1/F3).
 //
@@ -318,24 +287,6 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
       return `visit was ${status} after this was flagged`;
     }
     return null;
-  },
-
-  compose: {
-    system: COMPOSE_SYSTEM,
-    tool: COMPOSE_TOOL,
-    prepare(n, nowIso, tz) {
-      const ctx = readComposeContext(n);
-      if (!ctx) return null;
-      return {
-        user:
-          `Customer: ${ctx.customerName}\n` +
-          `Job: ${ctx.jobTitle}\n` +
-          `Technician: ${ctx.technicianName}\n` +
-          `The visit wrapped up ${relativeDayPhrase(nowIso, tz, ctx.endsAtLocal)}; ` +
-          `nothing has been recorded since — no field note and no status change.`,
-        assemble: (question) => assembleNudgeMessage(question, ctx),
-      };
-    },
   },
 
   handoff(n, mode, naiveLocal, ctx) {
@@ -503,27 +454,10 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
     };
   },
 
-  compose: {
-    system: COST_COMPOSE_SYSTEM,
-    tool: COST_COMPOSE_TOOL,
-    prepare(n) {
-      const ctx = readCostComposeContext(n);
-      if (!ctx) return null;
-      return {
-        user:
-          `Customer: ${ctx.customerName}\n` +
-          `Job: ${ctx.jobTitle}\n` +
-          `Technician: ${ctx.technicianName}\n` +
-          `The job is finished; nothing has been recorded about what it cost in parts or ` +
-          `materials.`,
-        assemble: (question) => assembleCostNudgeMessage(question, ctx),
-      };
-    },
-  },
 };
 
 // Every kind the ladder knows how to carry. Adding one here is what makes it
-// detected, swept, escalated and composed — there is no second place to edit.
+// detected, swept and escalated — there is no second place to edit.
 export const NUDGE_KIND_SPECS: NudgeKindSpec[] = [OVERDUE_VISIT_GAP_SPEC, JOB_COST_GAP_SPEC];
 
 export function specFor(

@@ -218,13 +218,13 @@ lifecycle step that ran it; adds the mute-mode warning.
 - `watchers.test.ts`: the kind-spec literal at :1158 loses its `compose` field.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass
-- [ ] `grep -rn "runTeamLeadCompose\|COMPOSE_SYSTEM\|assembleNudgeMessage" src scripts` → no hits
-- [ ] new ladderMute lifecycle test passes
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass (2224 passed, 8 skipped)
+- [x] `grep -rn "runTeamLeadCompose\|COMPOSE_SYSTEM\|assembleNudgeMessage" src scripts` → no hits
+- [x] new ladderMute lifecycle test passes (4 states incl. the credential case)
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack
-- [ ] none this phase (Phase 3 runs the full E2E)
+- [x] none this phase (Phase 3 runs the full E2E)
 
 ### Manual verification
 - [ ] none

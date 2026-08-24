@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from 'vitest';
+import { afterAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { Technician } from '../db/technicians.js';
 import { runLifecycle } from './lifecycle.js';
 import type { PlannerDeps } from '../teamLead/planner.js';
@@ -324,75 +324,71 @@ describe('runLifecycle', () => {
       expect(summary.ok).toBe(false);
     });
 
-    test('step 9 compose: gated on NUDGES_MODE=live, then on model credentials', async () => {
+    // The compose step retired with the collapse (plan 2026-08-24). What its
+    // gates used to protect is now a VISIBILITY problem: the planner is the only
+    // author of a question, so a live ladder with a non-live planner mints gaps
+    // nobody will ever ask about. That state must be reported, not silent — and
+    // never red, because rolling the planner back is a legitimate choice.
+    test('step 10 ladderMute: reported when the ladder can mint gaps but nothing can ask', async () => {
       process.env.WATCHERS_MODE = 'live';
-      const composeSentinel = async () => {
-        throw new Error('compose must not run behind its gates');
-      };
-
-      // Ladder not live → skipped, regardless of key.
-      const off = await runLifecycle(NOW, {
-        ...COST_STUBS,
-        ...BASE,
-        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const }),
-        composeNudges: composeSentinel,
-        hasModelKey: () => true,
-      });
-      expect(off.teamLeadCompose).toEqual({ skipped: "NUDGES_MODE not 'live'" });
-      expect(off.ok).toBe(true);
-
-      // Live ladder, no key → skipped cleanly (the step-3/4 idiom).
       process.env.NUDGES_MODE = 'live';
-      const keyless = await runLifecycle(NOW, {
-        ...COST_STUBS,
-        ...BASE,
-        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
-        composeNudges: composeSentinel,
-        hasModelKey: () => false,
-      });
-      expect(keyless.teamLeadCompose).toEqual({ skipped: 'no inference credentials' });
-      expect(keyless.ok).toBe(true);
+      process.env.PLANNER_MODE = 'live';
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-      // Both gates open → the summary passes through.
-      const live = await runLifecycle(NOW, {
+      // Both live → nothing to warn about. runPlanner is INJECTED: this case is
+      // the only one in the file that opens every planner gate at once, and an
+      // un-injected planner here would make a real billed call and apply real
+      // decisions from a unit test (the file's standing rule).
+      const healthy = await runLifecycle(NOW, {
         ...COST_STUBS,
         ...BASE,
         runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
-        composeNudges: async () => ({
-          composed: 2,
-          cancelled: 1,
-          failed: 0,
-          rowErrors: 0,
-          handoffs: 0, draftedByPlanner: 0,
-          held: 0,
-          heldNotBefore: 0,
+        runPlanner: async () => ({
+          mode: 'live' as const,
+          tenants: 0,
+          planned: 0,
+          skippedNoGaps: 0,
+          skippedWindow: 0,
+          decisions: 0,
+          dropped: 0,
+          applied: 0,
+          refusedAtApply: 0,
+          recorded: 0,
+          tenantErrors: 0,
+          limitHits: { budget: 0, turns: 0 },
+          byAction: {},
+          plans: [],
         }),
         hasModelKey: () => true,
       });
-      expect(live.teamLeadCompose).toEqual({
-        composed: 2,
-        cancelled: 1,
-        failed: 0,
-        rowErrors: 0,
-        handoffs: 0, draftedByPlanner: 0,
-        held: 0,
-        heldNotBefore: 0,
-      });
-      expect(live.ok).toBe(true);
+      expect(healthy.ladderMute).toBeUndefined();
+      expect(healthy.ok).toBe(true);
 
-      // A throwing compose is a stepError, red — other steps unaffected.
-      const thrown = await runLifecycle(NOW, {
+      // Ladder live, planner rolled back, sweep live → mute WITH the backstop.
+      process.env.PLANNER_MODE = 'off';
+      const mute = await runLifecycle(NOW, {
         ...COST_STUBS,
         ...BASE,
         runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
-        composeNudges: async () => {
-          throw new Error('inference down');
-        },
         hasModelKey: () => true,
       });
-      expect(thrown.teamLeadCompose).toEqual({ stepError: 'inference down' });
-      expect(thrown.ok).toBe(false);
-      expect(thrown.watchers).toMatchObject({ mode: 'live' });
+      expect(mute.ladderMute).toContain('18h never-asked sweep');
+      expect(mute.ok).toBe(true); // a rollback is a choice, not a failure
+
+      // Sweep rolled back too → the harsher wording: no backstop at all.
+      process.env.WATCHERS_MODE = 'shadow';
+      const noFloor = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'shadow' as const, nudgeMode: 'live' as const }),
+        hasModelKey: () => true,
+      });
+      expect(noFloor.ladderMute).toContain('NO backstop sweep is running');
+      expect(noFloor.ok).toBe(true);
+      expect(spy.mock.calls.some((c: unknown[]) => String(c[0]).includes('LADDER IS MUTE'))).toBe(
+        true,
+      );
+      spy.mockRestore();
     });
 
     test('a throwing watcher is a stepError, red — the other steps still reported', async () => {
@@ -848,31 +844,18 @@ describe('the planner gate', () => {
     expect(opts[0]?.sweepLive).toBe(false);
   });
 
-  test('a throwing planner is a stepError, red — and never blocks compose', async () => {
+  test('a throwing planner is a stepError, red — and the tick keeps going', async () => {
     process.env.PLANNER_MODE = 'shadow';
     process.env.NUDGES_MODE = 'live';
-    const composed: string[] = [];
     const s = await runLifecycle('2026-07-02T12:00:00.000Z', {
       ...STUBS,
       runPlanner: async () => {
         throw new Error('provider down');
       },
-      composeNudges: async (nowIso: string) => {
-        composed.push(nowIso);
-        return {
-          composed: 0,
-          cancelled: 0,
-          failed: 0,
-          rowErrors: 0,
-          handoffs: 0, draftedByPlanner: 0,
-          held: 0,
-          heldNotBefore: 0,
-        };
-      },
     });
     expect(s.teamLeadPlanner).toEqual({ stepError: 'provider down' });
     expect(s.ok).toBe(false);
-    // The ladder must keep working when its planner does not.
-    expect(composed).toEqual(['2026-07-02T12:00:00.000Z']);
+    // Shadow planner + live ladder is a mute ladder, and the tick says so.
+    expect(s.ladderMute).toBeDefined();
   });
 });

@@ -2,8 +2,6 @@ import { describe, expect, test } from 'vitest';
 import type { QueuedNudgeForHost } from '../db/index.js';
 import {
   FOOTER_DELIMITER,
-  assembleCostNudgeMessage,
-  assembleNudgeMessage,
 } from '../teamLead/composeCopy.js';
 import {
   buildNudgeDelivery,
@@ -101,34 +99,15 @@ describe('buildNudgeDelivery', () => {
     expect(serves).toEqual([['n1', 't1', 1]]);
   });
 
-  test('stored = shown: BOTH kinds assemble footer-less and pass the strip unchanged', () => {
-    // Through the REAL assemble functions, not a hand-built fixture: after
-    // the footer's retirement (④b Phase 5) the deliverable ends at the
-    // "(re: …)" line, contains no trace of the delimiter, and the outbox
-    // strip — kept for legacy rows — is a no-op on it.
-    const visit = assembleNudgeMessage('How did it go?', {
-      customerName: 'Henderson',
-      jobTitle: 'Furnace tune-up',
-      technicianName: 'Ben',
-      endsAtLocal: '2026-08-14 15:00:00+00',
-      jobId: null,
-      startsAtLocal: null,
-      technicianRef: null,
-    });
-    expect(visit).toBe(
-      'How did it go?\n\n(re: Henderson — Furnace tune-up, visit on 2026-08-14)',
-    );
-    expect(visit.includes(FOOTER_DELIMITER)).toBe(false);
-    expect(visit.split(FOOTER_DELIMITER)[0]).toBe(visit); // strip = no-op
-    const cost = assembleCostNudgeMessage('Any parts on that one?', {
-      customerName: 'Henderson',
-      jobTitle: 'Furnace tune-up',
-      technicianName: 'Ben',
-      jobId: 'j-cost',
-    });
-    expect(cost).toBe('Any parts on that one?\n\n(re: Henderson — Furnace tune-up)');
-    expect(cost.includes(FOOTER_DELIMITER)).toBe(false);
-    expect(cost.split(FOOTER_DELIMITER)[0]).toBe(cost);
+  test('stored = shown: a planner-written message passes the legacy strip unchanged', () => {
+    // Since the collapse (plan 2026-08-24) the PLANNER writes the whole
+    // delivered message and it is queued verbatim — there is no assemble step
+    // left to test. What still matters here is the outbox invariant: a message
+    // written today carries no trace of the retired footer delimiter, so the
+    // strip kept for LEGACY rows is a no-op on it.
+    const planner = 'How did the Henderson furnace tune-up go — anything worth noting?';
+    expect(planner.includes(FOOTER_DELIMITER)).toBe(false);
+    expect(planner.split(FOOTER_DELIMITER)[0]).toBe(planner); // strip = no-op
   });
 
   test('a footer-less question (Phase 5 onward) passes through the serve unchanged', async () => {

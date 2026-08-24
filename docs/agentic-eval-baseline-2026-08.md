@@ -55,6 +55,15 @@ money-blindness/false-claim specimen class this eval was built from. Family spli
   world's) or make late-family expectations weekend-aware; and move the builders' default
   VISIT times into working hours (both models correctly quoted seeded visits "due at
   4:00 AM").
+- **people-judgment (Opus 5/8, GLM 4/8) understates real success.** Both models executed the
+  2026-08-21 rulings at the DECISION level: swapped-tech and costs-on-office-invoice both
+  escalated without blame (Opus even checked the roster for "Dave" before deciding), and the
+  blame substring checks went clean family-wide. The points went to (a) judge strictness on
+  FORWARD-LOOKING phrasing — "the supply house invoice would close it" flagged because the
+  block never says an invoice exists (some flags are hair-splitting: "with Mo Reyes" is
+  block-supported); (b) one real copy miss (GLM's PJ-07 escalation never names the customer);
+  (c) the contested weekend PJ-03. Calibration call: keep the judge strict (free copy-training
+  pressure — notes go in front of managers) or permit clearly-marked suggestions.
 - **CM-03 (both models): neither checked the dismissal pattern.** Six spine_reads, none
   touching v_review_items, before re-escalating a technician whose last three escalations the
   manager dismissed. The ⑤ self-check line in the prompt is not yet strong enough to induce

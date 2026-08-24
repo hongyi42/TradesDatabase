@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 163 documents · 159 live · 4 superseded.
+Regenerate with `npm run decisions:index`. 164 documents · 160 live · 4 superseded.
 
 ## Superseded — do not build on these
 
@@ -44,6 +44,7 @@ Regenerate with `npm run decisions:index`. 163 documents · 159 live · 4 supers
 ## Live
 
 - `2026-08-24` `plan` [2026-08-24-agentic-planner-eval](shared/plans/2026-08-24-agentic-planner-eval.md) — the agentic planner eval at scale — multi-tick gap-life harness, ~60 scenarios, Opus 5 vs GLM
+- `2026-08-24` `research` [2026-08-24-one-call-collapse](shared/research/2026-08-24-one-call-collapse.md) `landed` — the one-call collapse — every model call left in the nudge pipeline, what context each sees, what compose sti…
 - `2026-08-23` `plan` [2026-08-23-delivery-costs-nothing](shared/plans/2026-08-23-delivery-costs-nothing.md) — "④b delivery costs nothing — planner words reach people verbatim via openclaw message send; the relay turn di…
 - `2026-08-23` `plan` [2026-08-23-memory-architecture](shared/plans/2026-08-23-memory-architecture.md) — ⑤ memory architecture — baseline metrics, gap-life summaries, a lessons store, and a shadow Reflector
 - `2026-08-23` `plan` [2026-08-23-the-brain-can-look](shared/plans/2026-08-23-the-brain-can-look.md) — ④ The brain can look — v_captures, v_visits, v_nudges, v_review_items join the planner's read surface

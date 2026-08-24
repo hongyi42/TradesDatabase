@@ -20,6 +20,7 @@ import { runToolLoop, ToolLoopLimitError, type ToolLoopLimit } from '../model/to
 import type { ForcedToolSpec } from '../model/forcedTool.js';
 import { NUDGE_KIND_SPECS, specFor, type NudgeKindSpec } from '../jobs/nudgeKinds.js';
 import { insideAskWindow } from './compose.js';
+import { renderLessonsBlock } from './lessons.js';
 // A plain const, read only inside functions — never at module-evaluation time.
 // watchers.ts and nudgeKinds.ts are a documented import cycle; this module sits
 // outside it, so there is no temporal-dead-zone hazard here.
@@ -189,6 +190,7 @@ export const PLANNER_REASONING = 'low' as const;
 
 export interface PlannerDeps {
   listTenants?: typeof listTenantIdsWithTelegramBindings;
+  lessons?: typeof renderLessonsBlock;
   getTenant?: typeof getTenant;
   listNudges?: typeof listNudgesByStatus;
   listEvidence?: typeof listJobEvidenceSince;
@@ -1077,7 +1079,12 @@ export function validateDecisions(
  * through here, and a test asserts runPlanner's recorded call equals this
  * function's output, so the two cannot drift apart silently.
  */
-export function buildPlannerUserMessage(nowIso: string, tz: string, views: GapView[]): string {
+export function buildPlannerUserMessage(
+  nowIso: string,
+  tz: string,
+  views: GapView[],
+  lessonsBlock = '',
+): string {
   return [
     `Right now it is ${firmClockLine(nowIso, tz)}.`,
     `In UTC that instant is ${nowIso} — use UTC for any notBefore you write.`,
@@ -1085,6 +1092,11 @@ export function buildPlannerUserMessage(nowIso: string, tz: string, views: GapVi
     `This firm has ${views.length} open gap(s).`,
     '',
     views.map((v) => v.block).join('\n\n'),
+    // ⑤ Phase 5: the firm's own distilled history, pushed (the briefing-probe
+    // finding: pull-only content goes unread). Empty until a human activates
+    // a lesson — zero cost until then. Bounded by LESSONS_BLOCK_BUDGET at
+    // activation time.
+    ...(lessonsBlock ? ['', "LESSONS (from this firm's own history):", lessonsBlock] : []),
   ].join('\n');
 }
 
@@ -1310,7 +1322,15 @@ export async function runPlanner(
       // this is a reasonable hour to bother somebody. Same doctrine as the tool
       // results' `now` rider and the weekday guard: the model is never the thing
       // that converts a clock.
-      const user = buildPlannerUserMessage(nowIso, tz, [...views.values()]);
+      // A lessons-read failure must never cost the tick — the block is an
+      // enhancement, the gaps are the job.
+      let lessonsBlock = '';
+      try {
+        lessonsBlock = await (deps.lessons ?? renderLessonsBlock)(tenantId);
+      } catch (err) {
+        console.error(`[planner] tenant ${tenantId}: lessons read failed — running without`, err);
+      }
+      const user = buildPlannerUserMessage(nowIso, tz, [...views.values()], lessonsBlock);
 
       const started = Date.now();
       // Validated INSIDE the executor on purpose. Validating after the loop
@@ -1377,6 +1397,22 @@ export async function runPlanner(
       // point: recording first would log an intention as an outcome, and the
       // whole reason this table exists is that "the planner decided X" and "X
       // happened" had become indistinguishable.
+      // The light lesson-usage rail (⑤ Phase 5): a reason naming a bracketed
+      // 8-hex id that is not an active lesson is LOGGED, never refused — the
+      // stamp exists for measurement, and refusing would teach the model to
+      // stop citing.
+      const knownShortIds = new Set(
+        [...lessonsBlock.matchAll(/\[([0-9a-f]{8})\]/g)].map((m) => m[1]),
+      );
+      for (const d of decisions) {
+        for (const m of d.reason.matchAll(/\[([0-9a-f]{8})\]/g)) {
+          if (!knownShortIds.has(m[1])) {
+            console.error(
+              `[planner] tenant ${tenantId}: decision on ${d.nudgeId} cites unknown lesson [${m[1]}]`,
+            );
+          }
+        }
+      }
       const records: NudgeDecisionInput[] = [];
       let cappedWarned = false; // one line per tenant per tick, not one per gap
       let applied = 0;

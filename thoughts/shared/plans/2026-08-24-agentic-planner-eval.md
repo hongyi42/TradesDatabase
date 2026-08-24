@@ -253,14 +253,19 @@ epilogue.
   sweep), the clock strictly advanced, and the epilogue summary row matches the arc.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test`
-- [ ] Stubbed-loop arc test passes incl. sweep-driven transition and epilogue read-back
+- [x] `npm run typecheck` / `npm run lint` / `npm test` (2227 passed incl. 2 new arc tests)
+- [x] Stubbed-loop arc test passes incl. sweep-driven transition and epilogue read-back
+      (extend → capture → escalate → sweep handoff on tick 3 → manager_resolve at sim +6h →
+      summary with manager_fate 'resolved' and non-null manager_latency_wh)
 
 ### Live verification (agent-executable)
 - Prerequisites: same as Phase 1.
-- [ ] One real-model arc (GLM) run via `--only ARC-SMOKE --yes`: evidence = results.jsonl row
-      with ≥2 ticks, a mid-arc event visible in the second tick's transcript, and a
-      gap_summaries epilogue.
+- [x] One real-model arc (GLM) via `--only ARC-SMOKE --yes`: 2 ticks; tick 1 saw the open
+      cost hole (recorded `unmentioned`); the mid-arc material_cost is visible in tick 2's
+      prompt (THE RECORD line fired); GLM closed basis `record` with code's citation; epilogue
+      gap_summaries row `answered`, working_hours_open 3.5 (10:00→13:30 firm-local — the
+      working-hours math riding the sim clock). Run agentic-glm-2026-08-24T08-54 + re-run
+      after review fixes.
 
 ### Manual verification
 - [ ] none

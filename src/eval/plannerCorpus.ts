@@ -6,18 +6,37 @@
 // provenance — a documented specimen, a user ruling, or a metric definition —
 // because a corpus is a record, not folklore.
 
-import type { Offset, ScenarioWorld } from './plannerSim.js';
+import type { Offset, ScenarioWorld, SimMoneyKind } from './plannerSim.js';
 
-// Phase 1: ticks only. Phase 2 adds 'capture' | 'money' | 'deliver' |
-// 'manager_resolve' steps (the deliver step is what moves pending→asked with
-// compose out of the loop; manager_resolve is what lets an escalated arc's
-// gap-summary epilogue escape the 7-day holdback).
-export interface TimelineStep {
-  at: Offset;
-  kind: 'tick';
-  /** Declared when a tick deliberately lands outside the ask window. */
-  expectWindowSkip?: boolean;
-}
+// A scenario's life, as ordered steps at offsets from t0 (monotonic — runArc
+// throws on a backwards clock). 'tick' runs sweep+planner; the event kinds
+// simulate the world moving between ticks:
+//   capture         — a note lands on the scenario's job (append-only L1)
+//   money           — a ledger row lands on the job
+//   deliver         — the ask goes OUT: pending/queued → asked. Compose and
+//                     the box are out of the eval loop, so nothing else moves
+//                     a row to 'asked'; without this, send/hold arcs stall
+//                     until the 18h expiry.
+//   manager_resolve — the manager settles the review item citing the gap.
+//                     Also what lets an escalated arc's gap-summary epilogue
+//                     escape the 7-day holdback (summarize.ts:118-124).
+export type TimelineStep =
+  | {
+      at: Offset;
+      kind: 'tick';
+      /** Declared when a tick deliberately lands outside the ask window. */
+      expectWindowSkip?: boolean;
+    }
+  | { at: Offset; kind: 'capture'; text: string; fromTechnician?: boolean }
+  | { at: Offset; kind: 'money'; moneyKind: SimMoneyKind; amountCents?: number | null }
+  | { at: Offset; kind: 'deliver'; nudgeKey: string }
+  | {
+      at: Offset;
+      kind: 'manager_resolve';
+      nudgeKey: string;
+      outcome: 'resolved' | 'dismissed';
+      note?: string;
+    };
 
 export interface ScenarioExpect {
   /** Which gap the expectation grades. Default: the world's sole nudge key —
@@ -119,6 +138,36 @@ export const SMOKE_SCENARIOS: PlannerScenario[] = [
     },
     timeline: [{ at: '+0h', kind: 'tick' }],
     expect: { mustNotClaim: ['nothing has', 'no record', 'nothing is on'] },
+  },
+  {
+    id: 'ARC-SMOKE',
+    family: 'smoke',
+    why:
+      'Harness proof, multi-tick: a cost gap whose LEDGER fills between ticks. Tick 1 sees an ' +
+      'open hole; a material_cost lands mid-arc; tick 2’s THE RECORD line then authorizes a ' +
+      'record-basis close — the code-computed fact doctrine, moving under the model’s feet.',
+    world: {
+      customer: { name: 'Ivan Petrov' },
+      job: { title: 'Furnace igniter replacement', status: 'completed' },
+      technician: { ref: 'smoke-dee', name: 'Dee Marsh' },
+      visit: { startsAt: '-8h', endsAt: '-6h', status: 'completed' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'job_cost_gap',
+          status: 'asked',
+          createdAt: '-3h',
+          askedAt: '-2h',
+          question: 'What did the igniter job run in parts?',
+        },
+      ],
+    },
+    timeline: [
+      { at: '+0h', kind: 'tick' },
+      { at: '+1h', kind: 'money', moneyKind: 'material_cost', amountCents: 8_500 },
+      { at: '+1.5h', kind: 'tick' },
+    ],
+    expect: { action: 'close' },
   },
 ];
 

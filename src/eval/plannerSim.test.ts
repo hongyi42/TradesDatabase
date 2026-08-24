@@ -7,13 +7,16 @@ import {
   atOffset,
   clearSimClock,
   parseOffsetMs,
+  runArc,
   runTick,
   seedScenario,
   setSimClock,
   simStartIso,
   SIM_TZ,
   toNaiveLocal,
+  type ScenarioWorld,
 } from './plannerSim.js';
+import type { TimelineStep } from './plannerCorpus.js';
 import type { runToolLoop } from '../model/toolLoop.js';
 import { localTimeHHMM, localDateISO } from '../schedule/availability.js';
 
@@ -214,5 +217,113 @@ describe('runTick — production wiring, stubbed model', () => {
     expect(tick.planner.planned).toBe(0);
     expect(tick.userPrompt).toBeNull();
     expect(tick.decisions).toHaveLength(0);
+  });
+});
+
+describe('runArc — a scripted gap life (Phase 2)', () => {
+  test('extend → mid-arc capture → escalate → sweep handoff → manager resolve → ⑤ epilogue', async () => {
+    const t = await createTenant(`Eval PlannerSimArc ${Date.now()}`);
+    await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
+    const t0 = simStartIso(10);
+    const t0Ms = Date.parse(t0);
+
+    const world: ScenarioWorld = {
+      customer: { name: 'Rosa Alvarez' },
+      job: { title: 'Water heater relight', status: 'in_progress' },
+      technician: { ref: 'arc-tech', name: 'Dee Marsh' },
+      visit: { startsAt: '-6h', endsAt: '-5h' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'overdue_visit_gap',
+          status: 'asked',
+          createdAt: '-4h',
+          askedAt: '-3h',
+          question: 'How did the relight at Rosa Alvarez go?',
+        },
+      ],
+    };
+    const timeline: TimelineStep[] = [
+      { at: '+0h', kind: 'tick' }, // stub extends to +26h
+      { at: '+4h', kind: 'capture', text: 'Pilot is lit, swapped the thermocouple while I was there.' },
+      { at: '+5h', kind: 'tick' }, // stub escalates (brings deadline to now)
+      { at: '+5.5h', kind: 'tick' }, // sweep performs the handoff; stub sees zero gaps
+      { at: '+6h', kind: 'manager_resolve', nudgeKey: 'gap', outcome: 'resolved', note: 'thanked Dee' },
+    ];
+
+    let tickNo = 0;
+    const stubLoop: typeof runToolLoop = async (req, _tools, execute) => {
+      tickNo += 1;
+      if (tickNo === 2) {
+        // The mid-arc capture must be visible to the SECOND tick's prompt.
+        expect(req.user).toContain('thermocouple');
+      }
+      const plan =
+        tickNo === 1
+          ? { decisions: [{ nudgeId: reqGapId(req.user), action: 'extend', escalateAfter: atOffset(t0Ms, '+26h'), confidence: 'high', reason: 'stub extend' }] }
+          : tickNo === 2
+            ? { decisions: [{ nudgeId: reqGapId(req.user), action: 'escalate', confidence: 'high', reason: 'stub escalate', handoffNote: 'Water heater relight (Rosa Alvarez) — needs a decision on the thermocouple note.' }] }
+            : { decisions: [] };
+      await execute('submit_plan', plan);
+      return { text: '', turns: 1, calls: [{ turn: 1, name: 'submit_plan', args: {}, ok: true, result: 'ok' }] };
+    };
+    // The gap id, read from the rendered block — the stub has no other channel.
+    const reqGapId = (user: string): string => /gap ([0-9a-f-]{36})/.exec(user)![1];
+
+    const arc = await runArc(t.id, { world, timeline }, t0Ms, { runLoop: stubLoop });
+
+    // Tick 1: extend applied; the clock strictly advanced between ticks.
+    expect(arc.ticks).toHaveLength(3);
+    expect(arc.ticks[0].decisions.map((d) => `${d.action}/${d.outcome}`)).toContain('extend/applied');
+    expect(Date.parse(arc.ticks[1].nowIso)).toBeGreaterThan(Date.parse(arc.ticks[0].nowIso));
+
+    // Tick 2: escalate applied (deadline pulled to now) — the handoff itself
+    // happens on the NEXT sweep, which is the production shape.
+    expect(arc.ticks[1].decisions.map((d) => `${d.action}/${d.outcome}`)).toContain('escalate/applied');
+    const afterTick2 = arc.ticks[1].nudgesAfter[0];
+    expect(afterTick2.status).toBe('asked');
+
+    // Tick 3: the sweep performed the handoff — status escalated, item open.
+    expect(arc.ticks[2].watchers.nudgesEscalated).toBe(1);
+    const afterTick3 = arc.ticks[2].nudgesAfter[0];
+    expect(afterTick3.status).toBe('escalated');
+    expect(new Date(afterTick3.resolved_at!).toISOString()).toBe(arc.ticks[2].nowIso); // sim-stamped
+    const { rows: items } = await pg.query(
+      `select status, resolved_at, detail->>'escalatedFromNudge' as from_nudge from review_items where tenant_id = $1`,
+      [t.id],
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0].from_nudge).toBe(arc.seeded.nudgeIds.gap);
+    // The manager_resolve step settled it at sim +6h.
+    expect(items[0].status).toBe('resolved');
+    expect(new Date(items[0].resolved_at).toISOString()).toBe(atOffset(t0Ms, '+6h'));
+
+    // The ⑤ epilogue escaped the holdback (item no longer open) and reads the arc.
+    expect(arc.epilogue.summaries).toHaveLength(1);
+    const s = arc.epilogue.summaries[0];
+    expect(s.escalated).toBe(true);
+    expect(s.status).toBe('escalated');
+    expect(s.manager_fate).toBe('resolved');
+    expect(s.manager_latency_wh).not.toBeNull();
+    expect(new Date(s.closed_at).toISOString()).toBe(arc.ticks[2].nowIso);
+    const arcCounts = s.arc as Record<string, number>;
+    expect(arcCounts.extend).toBe(1);
+    expect(arcCounts.escalate).toBe(1);
+  });
+
+  test('a backwards timeline throws before touching the world', async () => {
+    const t = await createTenant(`Eval PlannerSimBackwards ${Date.now()}`);
+    await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
+    const t0Ms = Date.parse(simStartIso(10));
+    const world = SMOKE_SCENARIOS[0].world;
+    const timeline: TimelineStep[] = [
+      { at: '+1h', kind: 'tick' },
+      { at: '+0h', kind: 'tick' },
+    ];
+    await expect(
+      runArc(t.id, { world, timeline }, t0Ms, {
+        runLoop: async () => ({ text: '', turns: 1, calls: [] }),
+      }),
+    ).rejects.toThrow(/timeline regressed/);
   });
 });

@@ -67,9 +67,7 @@ if (arm === 'opus') {
 }
 
 const { SMOKE_SCENARIOS, ALL_SCENARIOS } = await import(`${DIST}/eval/plannerCorpus.js`);
-const { seedScenario, runTick, simStartIso, atOffset, clearSimClock } = await import(
-  `${DIST}/eval/plannerSim.js`
-);
+const { runArc, simStartIso, clearSimClock } = await import(`${DIST}/eval/plannerSim.js`);
 
 const only = argOf('only', null);
 const scenarios = (only ? ALL_SCENARIOS.filter((s) => only.split(',').includes(s.id)) : ALL_SCENARIOS);
@@ -194,19 +192,20 @@ for (const s of scenarios) {
   const row = { id: s.id, family: s.family, why: s.why, expect: s.expect ?? null, arm, model: modelLabel, ticks: [] };
   const wall = Date.now();
   try {
-    const seeded = await seedScenario(tenant.id, s.world, t0Ms);
-    row.seeded = { nudgeIds: seeded.nudgeIds, jobId: seeded.jobId };
-    for (const step of s.timeline) {
-      if (step.kind !== 'tick') continue; // Phase 2 adds event steps
-      const nowIso = atOffset(t0Ms, step.at);
-      const tick = await runTick(tenant.id, nowIso, {
-        expectWindowSkip: step.expectWindowSkip,
-      });
-      row.ticks.push(tick);
-    }
+    const arc = await runArc(tenant.id, s, t0Ms);
+    row.seeded = { nudgeIds: arc.seeded.nudgeIds, jobId: arc.seeded.jobId };
+    row.ticks = arc.ticks;
+    row.steps = arc.steps;
+    row.ticksSkipped = arc.ticksSkipped;
+    row.finalNowIso = arc.finalNowIso;
+    row.epilogue = arc.epilogue;
     const last = row.ticks[row.ticks.length - 1];
     const actions = last ? last.decisions.map((d) => d.action).join(',') : 'none';
-    console.log(`${row.ticks.length} tick(s) · decisions: ${actions || 'none'} · ${Date.now() - wall}ms`);
+    console.log(
+      `${row.ticks.length} tick(s)${arc.ticksSkipped ? ` (+${arc.ticksSkipped} skipped)` : ''} · ` +
+        `decisions: ${actions || 'none'} · ` +
+        `summaries: ${arc.epilogue.summaries.length} · ${Date.now() - wall}ms`,
+    );
   } catch (err) {
     harnessErrors += 1;
     row.harnessError = err instanceof Error ? err.message : String(err);

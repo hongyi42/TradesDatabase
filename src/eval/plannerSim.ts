@@ -41,6 +41,8 @@ import {
   type NudgeDecision,
 } from '../db/index.js';
 import { runWatchers, type WatchersSummary } from '../jobs/watchers.js';
+import { runGapSummaries, type SummarizeSummary } from '../jobs/summarize.js';
+import { CLOSED_NUDGE_STATUSES, type GapSummary } from '../db/gapSummaries.js';
 import { runPlanner, type PlannerSummary } from '../teamLead/planner.js';
 import { runToolLoop, type ToolLoopCall } from '../model/toolLoop.js';
 import { TEAM_LEAD_TOOL_SCHEMAS, dispatchForIdentity } from '../mcp/server.js';
@@ -96,6 +98,7 @@ export function simStartIso(hour = 10, tz: string = SIM_TZ): string {
 
 export type SimNudgeKind = 'overdue_visit_gap' | 'job_cost_gap';
 export type SimNudgeStatus = 'pending' | 'queued' | 'asked';
+export type SimMoneyKind = Database['public']['Enums']['money_event_kind'];
 
 export interface ScenarioNudgeSpec {
   /** Scenario-local key, referenced by history rows and expectations. */
@@ -120,11 +123,7 @@ export interface ScenarioWorld {
   evidence?: Array<{ at: Offset; text: string; fromTechnician?: boolean }>;
   /** Ledger rows. `at` sets BOTH occurred_at and created_at (the reader bounds
    *  on created_at, which the typed writer refuses to spoof). */
-  money?: Array<{
-    at: Offset;
-    kind: Database['public']['Enums']['money_event_kind'];
-    amountCents?: number | null;
-  }>;
+  money?: Array<{ at: Offset; kind: SimMoneyKind; amountCents?: number | null }>;
   /** Prior planner decisions, back-dated — the gap's watched history. */
   history?: Array<{
     at: Offset;
@@ -366,6 +365,16 @@ export async function runTick(
   const priorNudgeStamps = new Map(
     (priorNudgeRows ?? []).map((r) => [r.id, `${r.resolved_at}|${r.queued_at}`]),
   );
+  // review_items too: the SWEEP auto-resolves items (itemResolved → the typed
+  // resolver, which stamps a real-clock resolved_at) — summarize's
+  // manager_latency_wh reads that stamp, and a real-clock value against a sim
+  // closedAt inflates it or silently nulls it (review finding).
+  const { data: priorItemRows, error: priorItemErr } = await sb
+    .from('review_items')
+    .select('id, resolved_at')
+    .eq('tenant_id', tenantId);
+  if (priorItemErr) throw new Error(`pre-tick item snapshot failed: ${priorItemErr.message}`);
+  const priorItemStamps = new Map((priorItemRows ?? []).map((r) => [r.id, r.resolved_at]));
 
   const listTenants = async (): Promise<string[]> => [tenantId];
   const watchers = await runWatchers(
@@ -478,6 +487,25 @@ export async function runTick(
     const { error } = await sb.from('nudges').update(patch).eq('id', n.id);
     if (error) throw new Error(`nudge stamp fix-up failed: ${error.message}`);
   }
+  // Items the tick itself resolved (sweep auto-resolve) or minted: rewrite the
+  // real-clock resolved_at to sim-now. Items settled by a manager_resolve STEP
+  // are untouched — their stamp was written at sim time and is not a change
+  // this tick's snapshot sees.
+  const { data: itemsNow, error: itemsNowErr } = await sb
+    .from('review_items')
+    .select('id, resolved_at')
+    .eq('tenant_id', tenantId);
+  if (itemsNowErr) throw new Error(`post-tick item read failed: ${itemsNowErr.message}`);
+  for (const it of itemsNow ?? []) {
+    const before = priorItemStamps.get(it.id);
+    const changed = before !== undefined ? before !== it.resolved_at : it.resolved_at != null;
+    if (!changed || !it.resolved_at) continue;
+    const { error } = await sb
+      .from('review_items')
+      .update({ resolved_at: nowIso })
+      .eq('id', it.id);
+    if (error) throw new Error(`item resolved_at fix-up failed: ${error.message}`);
+  }
 
   return {
     nowIso,
@@ -488,5 +516,229 @@ export async function runTick(
     turns,
     userPrompt,
     nudgesAfter: (after ?? []) as Nudge[],
+  };
+}
+
+// ── the arc (Phase 2) ────────────────────────────────────────────────────────
+// A gap's whole life: ordered timeline steps at offsets from t0. Ticks run the
+// production pair; event steps move the world between them. Offsets must be
+// non-decreasing (a backwards clock invalidates the arc), and the tick count
+// is capped — a scenario that needs more than MAX_ARC_TICKS is measuring the
+// harness, not the planner.
+
+import type { PlannerScenario } from './plannerCorpus.js';
+
+export const MAX_ARC_TICKS = 12;
+
+export interface ArcStepRecord {
+  atIso: string;
+  kind: string;
+  /** What actually happened — including a fail-soft miss ('no open item'),
+   *  which is a graded observation, never a harness error: whether the model
+   *  ever produced the item a step waits on is model-dependent. */
+  detail: string;
+}
+
+export interface ArcRecord {
+  seeded: SeededScenario;
+  ticks: TickRecord[];
+  steps: ArcStepRecord[];
+  finalNowIso: string;
+  /** Scripted ticks NOT run because every scenario gap had already closed.
+   *  Non-zero matters to grading: an expectation on "the final tick" grades
+   *  the last EXECUTED tick, and steps[] records each skip. */
+  ticksSkipped: number;
+  epilogue: {
+    summarize: SummarizeSummary;
+    /** This scenario's gap_summaries rows (absent for still-open gaps). */
+    summaries: GapSummary[];
+  };
+}
+
+export async function runArc(
+  tenantId: string,
+  scenario: Pick<PlannerScenario, 'world' | 'timeline'>,
+  t0Ms: number,
+  opts: TickOpts = {},
+): Promise<ArcRecord> {
+  const sb = getClient();
+  const tz = opts.tz ?? SIM_TZ;
+
+  // Monotonic PRE-PASS, before a single row is written: a regressed timeline
+  // must fail before seeding — not after paid ticks have already run against
+  // a half-built world (review finding).
+  let prevMs = Number.NEGATIVE_INFINITY;
+  scenario.timeline.forEach((step, i) => {
+    const ms = parseOffsetMs(step.at);
+    if (ms < prevMs) {
+      throw new Error(
+        `timeline regressed: step ${i} ('${step.kind}' at ${step.at}) is earlier than the ` +
+          'step before it — a backwards clock invalidates the arc',
+      );
+    }
+    prevMs = ms;
+  });
+
+  const seeded = await seedScenario(tenantId, scenario.world, t0Ms, tz);
+  const scenarioNudgeIds = new Set(Object.values(seeded.nudgeIds));
+
+  const ticks: TickRecord[] = [];
+  const steps: ArcStepRecord[] = [];
+  let finalNowIso = new Date(t0Ms).toISOString();
+  let ticksSkipped = 0;
+  let allClosed = false;
+
+  for (let i = 0; i < scenario.timeline.length; i++) {
+    const step = scenario.timeline[i];
+    const atIso = new Date(t0Ms + parseOffsetMs(step.at)).toISOString();
+    finalNowIso = atIso;
+
+    switch (step.kind) {
+      case 'tick': {
+        // Every gap closed → remaining TICKS are skipped (nothing left to
+        // decide, no model spend), but later EVENT steps still run — a
+        // manager_resolve after closure is exactly how an escalated arc's
+        // epilogue escapes the holdback.
+        if (allClosed) {
+          ticksSkipped += 1;
+          steps.push({ atIso, kind: 'tick', detail: 'skipped — all gaps closed' });
+          break;
+        }
+        if (ticks.length >= MAX_ARC_TICKS) {
+          throw new Error(`arc exceeded ${MAX_ARC_TICKS} ticks — split the scenario`);
+        }
+        const tick = await runTick(tenantId, atIso, {
+          ...opts,
+          expectWindowSkip: step.expectWindowSkip,
+        });
+        ticks.push(tick);
+        steps.push({ atIso, kind: 'tick', detail: `decisions: ${tick.decisions.length}` });
+        const openLeft = tick.nudgesAfter.filter(
+          (n) =>
+            scenarioNudgeIds.has(n.id) &&
+            (n.status === 'pending' || n.status === 'queued' || n.status === 'asked'),
+        );
+        allClosed = openLeft.length === 0;
+        break;
+      }
+      case 'capture': {
+        const { error } = await sb.from('raw_captures').insert({
+          tenant_id: tenantId,
+          channel: 'technician_note',
+          raw_text: step.text,
+          technician_ref: step.fromTechnician === false ? null : seeded.technicianRef,
+          metadata: { source: 'agentic-eval-timeline' } as never,
+          job_id: seeded.jobId,
+          captured_at: atIso,
+        });
+        if (error) throw new Error(`timeline capture failed: ${error.message}`);
+        steps.push({ atIso, kind: 'capture', detail: step.text.slice(0, 80) });
+        break;
+      }
+      case 'money': {
+        const { error } = await sb.from('money_events').insert({
+          tenant_id: tenantId,
+          job_id: seeded.jobId,
+          kind: step.moneyKind,
+          amount_cents: step.amountCents ?? null,
+          occurred_at: atIso,
+          created_at: atIso,
+          detail: { source: 'agentic-eval-timeline' } as never,
+        });
+        if (error) throw new Error(`timeline money event failed: ${error.message}`);
+        steps.push({ atIso, kind: 'money', detail: step.moneyKind });
+        break;
+      }
+      case 'deliver': {
+        const nudgeId = seeded.nudgeIds[step.nudgeKey];
+        if (!nudgeId) throw new Error(`deliver names unknown nudge key '${step.nudgeKey}'`);
+        const { data, error } = await sb
+          .from('nudges')
+          .update({ status: 'asked', asked_at: atIso })
+          .eq('id', nudgeId)
+          .in('status', ['pending', 'queued'])
+          .select('id')
+          .maybeSingle();
+        if (error) throw new Error(`timeline deliver failed: ${error.message}`);
+        steps.push({
+          atIso,
+          kind: 'deliver',
+          detail: data ? `${step.nudgeKey} asked` : `${step.nudgeKey} MISSED — row was not pending/queued`,
+        });
+        break;
+      }
+      case 'manager_resolve': {
+        const nudgeId = seeded.nudgeIds[step.nudgeKey];
+        if (!nudgeId) throw new Error(`manager_resolve names unknown nudge key '${step.nudgeKey}'`);
+        const { data: item, error: findErr } = await sb
+          .from('review_items')
+          .select('id')
+          .eq('tenant_id', tenantId)
+          .eq('detail->>escalatedFromNudge', nudgeId)
+          .eq('status', 'open')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (findErr) throw new Error(`manager_resolve item lookup failed: ${findErr.message}`);
+        if (!item) {
+          // Fail-soft, recorded: whether an item exists is the MODEL's doing.
+          steps.push({ atIso, kind: 'manager_resolve', detail: `${step.nudgeKey} MISSED — no open item` });
+          break;
+        }
+        const { error } = await sb
+          .from('review_items')
+          .update({
+            status: step.outcome,
+            resolution: step.note ?? `${step.outcome} by the manager (simulated)`,
+            resolved_at: atIso, // sim-stamped: manager_latency_wh reads this
+          })
+          .eq('id', item.id);
+        if (error) throw new Error(`manager_resolve failed: ${error.message}`);
+        steps.push({ atIso, kind: 'manager_resolve', detail: `${step.nudgeKey} ${step.outcome}` });
+        break;
+      }
+    }
+  }
+
+  // The ⑤ epilogue: express the arc in the gap-summary vocabulary. The clock
+  // is the arc's final instant — the holdback and every working-hours figure
+  // are judged from there, not from the real wall clock. The lister is
+  // TENANT-SCOPED (injected via SummarizeDeps): the default scan is global
+  // with a 200-row page ordered oldest-first, so foreign debris on a shared
+  // local stack could starve this tenant's rows — and our sim clock must
+  // never be the holdback clock for another tenant's gaps (review finding).
+  setSimClock(tenantId, finalNowIso);
+  const summarize = await runGapSummaries(finalNowIso, {
+    listClosed: async () => {
+      const { data, error } = await sb
+        .from('nudges')
+        .select('*, gap_summaries!left(nudge_id)')
+        .eq('tenant_id', tenantId)
+        .in('status', [...CLOSED_NUDGE_STATUSES])
+        .is('gap_summaries', null)
+        .order('resolved_at', { ascending: true })
+        .limit(200);
+      if (error) throw new Error(`epilogue closed-nudge read failed: ${error.message}`);
+      return (data ?? []).map((row) => {
+        const n = { ...row } as Record<string, unknown>;
+        delete n.gap_summaries; // the left-embed used only as the anti-join probe
+        return n as unknown as Nudge;
+      });
+    },
+  });
+  const { data: sums, error: sumErr } = await sb
+    .from('gap_summaries')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .in('nudge_id', [...scenarioNudgeIds]);
+  if (sumErr) throw new Error(`epilogue summary read failed: ${sumErr.message}`);
+
+  return {
+    seeded,
+    ticks,
+    steps,
+    finalNowIso,
+    ticksSkipped,
+    epilogue: { summarize, summaries: (sums ?? []) as GapSummary[] },
   };
 }

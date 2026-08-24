@@ -137,9 +137,15 @@ export interface ToolLoopDeps {
 }
 
 interface ModelUsage {
+  /** TOTAL prompt tokens INCLUDING cached reads (the OpenAI convention —
+   *  recordModelUsage subtracts the cached share). Transports whose native
+   *  usage EXCLUDES cache activity (Anthropic) normalize to this here. */
   inputTokens?: number;
   outputTokens?: number;
   cachedInputTokens?: number;
+  /** Cache WRITES (Anthropic cache_creation_input_tokens) — their own price
+   *  tier (2x base on the 1h TTL), never folded into reads or fresh. */
+  cacheWriteTokens?: number;
 }
 
 interface PendingCall {
@@ -228,7 +234,10 @@ function anthropicTransport(req: ToolLoopRequest, tools: ForcedToolSpec[]): Loop
             {
               type: 'text' as const,
               text: req.system,
-              cache_control: { type: 'ephemeral' as const },
+              // 1h TTL (docs: ttl '1h', writes 2x, reads 0.1x, TTL refreshes
+              // free on every read) — the planner ticks every 30 minutes, so
+              // the 5-minute default was stone cold between ticks.
+              cache_control: { type: 'ephemeral' as const, ttl: '1h' as const },
             },
           ],
           tools: tools.map((t) => ({
@@ -260,9 +269,16 @@ function anthropicTransport(req: ToolLoopRequest, tools: ForcedToolSpec[]): Loop
         text,
         toolCalls,
         usage: {
-          inputTokens: message.usage?.input_tokens,
+          // Anthropic's input_tokens EXCLUDES cache activity (docs: "tokens
+          // after the last cache breakpoint"); normalize to the ledger's
+          // includes-cached convention so the fresh split stays correct.
+          inputTokens:
+            typeof message.usage?.input_tokens === 'number'
+              ? message.usage.input_tokens + (message.usage?.cache_read_input_tokens ?? 0)
+              : undefined,
           outputTokens: message.usage?.output_tokens,
           cachedInputTokens: message.usage?.cache_read_input_tokens ?? undefined,
+          cacheWriteTokens: message.usage?.cache_creation_input_tokens ?? undefined,
         },
         assistantMessage: { role: 'assistant', content: message.content },
       };

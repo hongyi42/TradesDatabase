@@ -540,8 +540,10 @@ describe('runToolLoop on the Anthropic transport', () => {
     expect(res.calls[0]).toMatchObject({ name: 'spine_read', ok: true });
     expect(recordUsage).toHaveBeenCalledTimes(2);
     expect(recordUsage.mock.calls[0][0]).toBe('anthropic');
+    // Anthropic input_tokens EXCLUDES cache activity; the transport
+    // normalizes to the ledger's includes-cached convention: 11 + 3 = 14.
     expect(recordUsage.mock.calls[0][1]).toMatchObject({
-      inputTokens: 11,
+      inputTokens: 14,
       outputTokens: 12,
       cachedInputTokens: 3,
     });
@@ -556,7 +558,7 @@ describe('runToolLoop on the Anthropic transport', () => {
     // The system prompt rides as ONE text block carrying the cache breakpoint
     // (covers tools+system as a prefix; 2026-08-23 — production ran uncached).
     expect(params.system).toEqual([
-      { type: 'text', text: 'sys', cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: 'sys', cache_control: { type: 'ephemeral', ttl: '1h' } },
     ]);
     expect(first.system).toEqual(params.system);
     expect(params.tools).toMatchObject([{ name: 'spine_read' }]);

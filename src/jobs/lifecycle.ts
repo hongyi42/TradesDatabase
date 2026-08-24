@@ -13,7 +13,6 @@ import { runLogIngestion, type LogIngestSummary } from '../composio/logIngest.js
 import { runGapSummaries, type SummarizeSummary } from './summarize.js';
 import { runReflector, type ReflectorMode, type ReflectorSummary } from '../teamLead/reflector.js';
 import { runWatchers, type WatchersSummary } from './watchers.js';
-import { runTeamLeadCompose, type ComposeSummary } from '../teamLead/compose.js';
 import { runPlanner, type PlannerMode, type PlannerSummary } from '../teamLead/planner.js';
 import { TEAM_LEAD_REF } from '../teamLead/identity.js';
 import { dispatchForIdentity, TEAM_LEAD_TOOL_SCHEMAS } from '../mcp/server.js';
@@ -49,14 +48,13 @@ import { hasModelCredentials } from '../model/forcedTool.js';
 //     counts would-be nudges, 'live' asks technicians first; any other value
 //     is the same LOUD stepError.
 // (9) the team-lead PLANNER (plan 2026-08-19): one agentic call per firm per
-//     half-hour that decides pacing, closure and escalation. Gated on
-//     PLANNER_MODE alone — NOT on NUDGES_MODE — and runs BEFORE compose so a
-//     hold it writes is honoured on the same tick;
-// (10) the team-lead compose turn (feature B Phase 3): the ONE model call that
-//     writes the question for each pending nudge (or declines). Every tick, but
-//     triple-gated: NUDGES_MODE='live' (a frozen ladder must not keep composing
-//     leftovers), model credentials present (the step-3/4 key idiom), and
-//     per-row attempt caps inside the runner.
+//     half-hour that decides pacing, closure and escalation — and, since the
+//     collapse (plan 2026-08-24), WRITES the technician's question and queues it
+//     itself. It is the ladder's only model call. Gated on PLANNER_MODE alone —
+//     NOT on NUDGES_MODE;
+// (10) the MUTE check (the collapse): the compose turn that used to sit here is
+//     gone, so a live ladder with a non-live planner mints gaps nobody can ask
+//     about. That state is reported, never made red — a rollback is a choice.
 // Steps 5 and 7 report `skipped` — not an error — when the cost tables are absent,
 // so a deploy that lands before the migration does not turn the cron red.
 // (The schedule-sheet mirror step retired with the Telegram-schedule series
@@ -74,7 +72,6 @@ export interface LifecycleDeps {
   latestBrave?: typeof latestBraveCostEventAt;
   rollup?: typeof rollupCosts;
   runWatchers?: typeof runWatchers;
-  composeNudges?: typeof runTeamLeadCompose;
   runPlanner?: typeof runPlanner;
   summarize?: typeof runGapSummaries;
   reflect?: typeof runReflector;
@@ -100,7 +97,11 @@ export interface LifecycleSummary {
     | { stepError: string };
   watchers: WatchersSummary | { skipped: string } | { stepError: string };
   teamLeadPlanner: PlannerSummary | { skipped: string } | { stepError: string };
-  teamLeadCompose: ComposeSummary | { skipped: string } | { stepError: string };
+  // The ladder cannot speak (the collapse, plan 2026-08-24): NUDGES_MODE is
+  // live so gaps are being minted, but the PLANNER — the only author of a
+  // question since compose retired — is not. Present only when true, so a
+  // healthy tick's report is unchanged.
+  ladderMute?: string;
   gapSummaries: SummarizeSummary | { skipped: string } | { stepError: string };
   reflector: ReflectorSummary | { skipped: string } | { stepError: string };
   ok: boolean;
@@ -343,8 +344,9 @@ export async function runLifecycle(
   }
 
   // 9. The team-lead PLANNER (plan 2026-08-19, Phase 3) — the half-hour tick,
-  // and it runs BEFORE compose so a hold it writes is honoured on the SAME tick
-  // rather than one behind. Same stateless cadence trick as heavyTick above: the
+  // and since the collapse it writes and queues the question itself, so a send
+  // it decides is deliverable the moment the tick ends. Same stateless cadence
+  // trick as heavyTick above: the
   // minute is the state, and `< 5` tolerates a delayed firing. On a */5 schedule
   // that is :00 and :30, never twice.
   //
@@ -353,7 +355,7 @@ export async function runLifecycle(
   // other value is a LOUD stepError, because a config typo must never read as
   // "the planner is quietly off".
   //
-  // NOT gated on NUDGES_MODE, unlike compose below — deliberate. The planner
+  // NOT gated on NUDGES_MODE — deliberate. The planner
   // follows the SWEEP's rollback-rescue doctrine (watchers.ts: in-flight rows
   // keep their lifecycle regardless of NUDGES_MODE, because silence must always
   // escalate), not compose's creation gate. Consequence to hold: with the ladder
@@ -400,28 +402,42 @@ export async function runLifecycle(
     }
   }
 
-  // 10. The team-lead compose turn — every tick, triple-gated (see header).
-  // Gated on NUDGES_MODE='live', not merely the key: only a live ladder mints
-  // pending rows, and a rolled-back ladder must not keep composing leftovers
-  // (the in-flight SWEEP keeps running inside step 8 — creation and compose
-  // are what a rollback turns off).
-  let teamLeadCompose: LifecycleSummary['teamLeadCompose'];
-  if (nudgeMode !== 'live') {
-    teamLeadCompose = { skipped: "NUDGES_MODE not 'live'" };
-  } else if (!(deps.hasModelKey ?? hasModelCredentials)()) {
-    teamLeadCompose = { skipped: 'no inference credentials' };
-  } else {
-    try {
-      teamLeadCompose = await (deps.composeNudges ?? runTeamLeadCompose)(nowIso);
-    } catch (err) {
-      teamLeadCompose = { stepError: msg(err) };
-      ok = false;
+  // 10. THE MUTE CHECK (the collapse, plan 2026-08-24). The compose turn used to
+  // live here and was the ladder's voice whenever the planner was off. It is
+  // gone: the planner writes every question now and queues it itself, so this
+  // combination — gaps being minted with no author for them — is a real
+  // operational state that must be visible rather than silently quiet.
+  //
+  // Deliberately NOT an `ok = false`: a rollback to PLANNER_MODE=off is a
+  // legitimate operator choice, and turning the cron red would train people to
+  // ignore it. The floor is the sweep's 18h never-asked handoff — but only when
+  // the SWEEP is live too (watchers.ts gates its open-nudge read on
+  // WATCHERS_MODE === 'live'), so the wording says which case this is.
+  let ladderMute: string | undefined;
+  if (nudgeMode === 'live') {
+    // Two ways to be voiceless, and the credential one is easy to miss: it used
+    // to surface as compose's own `skipped: no inference credentials`, and with
+    // compose gone it would otherwise read as a mere planner skip.
+    const why =
+      plannerMode !== 'live'
+        ? 'PLANNER_MODE is not live'
+        : !(deps.hasModelKey ?? hasModelCredentials)()
+          ? 'the planner has no inference credentials'
+          : null;
+    if (why) {
+      ladderMute =
+        watchersMode === 'live'
+          ? `NUDGES_MODE=live but ${why} — gaps are detected and nobody writes the questions; ` +
+            'the 18h never-asked sweep hands them to managers'
+          : `NUDGES_MODE=live but ${why} and WATCHERS_MODE is not live — gaps are detected, ` +
+            'nobody writes the questions, and NO backstop sweep is running';
+      console.error(`[lifecycle] LADDER IS MUTE: ${ladderMute}`);
     }
   }
 
   // 11. Gap-life summaries (⑤ Phase 2): one code-written row per closed gap —
-  // the planner's experience corpus. AFTER compose so a gap that closed this
-  // very tick is summarizable next tick at the latest. Ungated by mode flags:
+  // the planner's experience corpus. AFTER the planner, so a gap that closed
+  // this very tick is summarizable next tick at the latest. Ungated by mode flags:
   // it writes history, and history is wanted whether or not the ladder is
   // live. Missing table → skipped, never red (the braveBackfill idiom: code
   // can deploy before its migration on a lagging environment).
@@ -476,7 +492,7 @@ export async function runLifecycle(
     costRollup,
     watchers,
     teamLeadPlanner,
-    teamLeadCompose,
+    ...(ladderMute ? { ladderMute } : {}),
     gapSummaries,
     reflector,
     ok,

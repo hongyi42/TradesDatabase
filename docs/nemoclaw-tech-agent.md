@@ -414,7 +414,10 @@ register side-by-side in the gateway's `mcp.servers`.
   guide §10.
 - **Nudge delivery (2026-08-16 Stage 1 — the voice; v2 direct-send 2026-08-23, plan ④b):**
   the spine's watcher can queue ONE short work question for a technician (an unreported visit,
-  a missing job cost) after a hard-capped team-lead identity composes it; the box's
+  a missing job cost). Since the one-call collapse (2026-08-24) the team-lead PLANNER writes
+  that question itself and queues it in the same call — the separate compose turn is retired,
+  and code appends only the `(re: customer — job)` anchor the seat agent files replies
+  against. The box's
   `nudge-runner.timer` (5-min, root, reuses `/etc/doorman/badge-pull.env`) pulls
   `GET /control/nudges` and sends the served footer-less payload (`directMessageB64`) VERBATIM
   to the person's Telegram with `openclaw message send` (run inside the seat's container;

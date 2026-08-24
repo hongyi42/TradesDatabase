@@ -1083,29 +1083,109 @@ describe('live mode — the decision becomes a write, and the write becomes the 
   const live = async (over: Partial<Nudge>, decisions: unknown[], deps: Partial<PlannerDeps> = {}) => {
     const setSchedule = vi.fn<NonNullable<PlannerDeps['setSchedule']>>(async () => nudge());
     const markOutcome = vi.fn<NonNullable<PlannerDeps['markOutcome']>>(async () => nudge());
+    const markQueued = vi.fn<NonNullable<PlannerDeps['markQueued']>>(async () => nudge());
     const recorded: Record<string, unknown>[] = [];
     const summary = await runPlanner(NOW, 'live', baseDeps({
       listNudges: async () => [nudge(over)],
       runLoop: loopReturning(decisions),
       setSchedule,
       markOutcome,
+      markQueued,
       recordDecisions: async (rows) => {
         recorded.push(...(rows as unknown as Record<string, unknown>[]));
         return rows.length;
       },
       ...deps,
     }));
-    return { summary, setSchedule, markOutcome, recorded };
+    return { summary, setSchedule, markOutcome, markQueued, recorded };
   };
 
-  test('send CLEARS the hold, pending-guarded', async () => {
-    const { setSchedule, summary, recorded } = await live({ status: 'pending', asked_at: null }, [
-      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go now' },
-    ]);
-    expect(setSchedule).toHaveBeenCalledWith('n1', 't1', { notBefore: null }, ['pending']);
+  // The collapse (plan 2026-08-24): the planner's question IS the delivered
+  // message — an applied send queues it verbatim, and setSchedule is no longer
+  // part of the send path at all.
+  test('send QUEUES the planner\'s question verbatim, pending-guarded', async () => {
+    const q = 'Did the Henderson water heater swap wrap up, or is there work left?';
+    const { setSchedule, markQueued, summary, recorded } = await live(
+      { status: 'pending', asked_at: null },
+      [{ nudgeId: 'n1', action: 'send', question: q, confidence: 'high', reason: 'go now' }],
+    );
+    // Queued WITH the code-printed anchor: standing box doctrine files the
+    // technician's reply against "the job the (re: …) line names".
+    expect(markQueued).toHaveBeenCalledWith('n1', 't1', `${q}\n\n(re: Henderson — Furnace tune-up)`);
+    expect(setSchedule).not.toHaveBeenCalled();
     expect(summary.applied).toBe(1);
     expect(recorded[0].outcome).toBe('applied');
     expect(recorded[0].mode).toBe('live');
+    // The DRAFT is the model's own words; the anchor is code's.
+    expect(recorded[0].questionDraft).toBe(q);
+  });
+
+  test('the anchor names the job, and a row that cannot name itself ships bare', async () => {
+    const q = 'Did that one wrap up?';
+    const { markQueued } = await live(
+      { status: 'pending', asked_at: null, context: { jobId: 'j1' } as never },
+      [{ nudgeId: 'n1', action: 'send', question: q, confidence: 'high', reason: 'ask' }],
+    );
+    // No customerName, no jobTitle — never fabricate an anchor.
+    expect(markQueued).toHaveBeenCalledWith('n1', 't1', q);
+  });
+
+  test('control characters never reach the delivered message', async () => {
+    const { markQueued } = await live({ status: 'pending', asked_at: null }, [
+      {
+        nudgeId: 'n1',
+        action: 'send',
+        question: 'How did it go?\u0000 Anything\u001f worth noting?',
+        confidence: 'high',
+        reason: 'ask',
+      },
+    ]);
+    const sent = String((markQueued as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][2]);
+    expect(sent).toContain('How did it go? Anything worth noting?');
+    // eslint-disable-next-line no-control-regex
+    expect(/[\u0000-\u001f]/.test(sent.replace(/\n/g, ''))).toBe(false);
+  });
+
+  test('a send CLEARS a hold it overrides, so the gap view stops claiming "held"', async () => {
+    const { setSchedule } = await live({ status: 'pending', asked_at: null }, [
+      { nudgeId: 'n1', action: 'send', question: 'How did it go?', confidence: 'high', reason: 'ask' },
+    ], { markQueued: async () => nudge({ status: 'queued', not_before: '2026-08-16T18:00:00.000Z' }) });
+    expect(setSchedule).toHaveBeenCalledWith('n1', 't1', { notBefore: null }, ['queued']);
+  });
+
+  test('a send with NO surviving question is refused — no fallback author exists', async () => {
+    const { markQueued, summary, recorded } = await live({ status: 'pending', asked_at: null }, [
+      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go now' },
+    ]);
+    expect(markQueued).not.toHaveBeenCalled();
+    expect(summary.applied).toBe(0);
+    expect(summary.refusedAtApply).toBe(1);
+    expect(String(recorded[0].outcomeDetail)).toContain('send needs `question`');
+  });
+
+  test('a rail-dropped question refuses the send the same way, and logs the drop', async () => {
+    // "Tuesday" is not in the fixture's date vocabulary, so the rail drops the
+    // draft; with no author left, the send must refuse rather than apply — and
+    // the drop is still logged, because "how often does the date rail fire" is
+    // the number that says whether the model can be trusted with this copy.
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { markQueued, summary, recorded } = await live({ status: 'pending', asked_at: null }, [
+      {
+        nudgeId: 'n1',
+        action: 'send',
+        question: 'How did the visit on Tuesday go?',
+        confidence: 'high',
+        reason: 'go now',
+      },
+    ]);
+    expect(markQueued).not.toHaveBeenCalled();
+    expect(summary.refusedAtApply).toBe(1);
+    expect(String(recorded[0].outcomeDetail)).toContain('send needs `question`');
+    expect(recorded[0].questionDraft).toBeNull();
+    expect(
+      spy.mock.calls.some((c) => String(c[0]).includes('question used a date it was not given')),
+    ).toBe(true);
+    spy.mockRestore();
   });
 
   test('hold stamps the instant the model chose', async () => {
@@ -1237,8 +1317,8 @@ describe('live mode — the decision becomes a write, and the write becomes the 
   // a real event, and the one thing that must never be logged as success.
   test('a write that lands nowhere is recorded as REFUSED, never as applied', async () => {
     const { summary, recorded } = await live({ status: 'pending', asked_at: null }, [
-      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go' },
-    ], { setSchedule: async () => null });
+      { nudgeId: 'n1', action: 'send', question: 'How did it go?', confidence: 'high', reason: 'go' },
+    ], { markQueued: async () => null });
     expect(summary.applied).toBe(0);
     expect(summary.refusedAtApply).toBe(1);
     expect(recorded[0].outcome).toBe('refused');
@@ -1247,9 +1327,9 @@ describe('live mode — the decision becomes a write, and the write becomes the 
 
   test('a writer that throws refuses that ONE decision and keeps the reason', async () => {
     const { summary, recorded } = await live({ status: 'pending', asked_at: null }, [
-      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go' },
+      { nudgeId: 'n1', action: 'send', question: 'How did it go?', confidence: 'high', reason: 'go' },
     ], {
-      setSchedule: async () => {
+      markQueued: async () => {
         throw new Error('connection reset');
       },
     });
@@ -1401,7 +1481,7 @@ describe('live mode — the decision becomes a write, and the write becomes the 
   // the state, so what a failed insert costs is the memory, not the work.
   test('a recording failure is loud but does not take the tick down', async () => {
     const summary = await live({ status: 'pending', asked_at: null }, [
-      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go' },
+      { nudgeId: 'n1', action: 'send', question: 'How did it go?', confidence: 'high', reason: 'go' },
     ], {
       recordDecisions: async () => {
         throw new Error('insert failed');

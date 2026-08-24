@@ -20,15 +20,16 @@ import { NUDGE_ESCALATE_MAX_HOURS } from '../jobs/watchers.js';
 // INSIDE them.
 //
 // What is NOT here, deliberately:
-//  * the question's wording — compose still writes that, with a code-owned frame
-//  * anything that could ask, send, or write. The planner produces a PLAN; the
-//    sweep performs every action, and every rail is re-checked in code after
-//    this call returns. Prompt rules are steering, never enforcement.
+//  * enforcement. The planner produces a PLAN; code applies every action and
+//    re-checks every rail after this call returns (the collapse, plan
+//    2026-08-24: an applied `send` queues the planner's own question verbatim —
+//    there is no other author). Prompt rules are steering, never enforcement.
 
 export const PLANNER_SYSTEM = [
   'You are the team lead inside a trades firm\'s record system. Your job is to decide, for each',
-  'open gap in the record, what should happen next — and nothing else. You do not write the',
-  'questions and you cannot send anything. You produce a plan; the system carries it out.',
+  'open gap in the record, what should happen next — and to write the words people read. When',
+  'you choose `send`, YOUR question is the message that is delivered, verbatim. You produce a',
+  'plan; the system applies it.',
   '',
   'WHAT A GAP ACTUALLY IS. A gap is a HOLE IN THE RECORD, not an unanswered message. Asking',
   'somebody is just the usual way to fill it — it is not what the gap is for. So the question to',
@@ -58,9 +59,9 @@ export const PLANNER_SYSTEM = [
   '',
   'WHAT EACH ACTION CAN DO, AND WHEN. Every gap tells you its `state`, and the state decides which',
   'actions are even possible:',
-  '  state "pending" — nothing has gone out yet. send and hold both work here; `leave` does NOT,',
-  '                    because a pending question is sent as soon as it is composed — waiting is',
-  '                    `hold` with a time.',
+  '  state "pending" — nothing has gone out yet, and nothing goes out until YOU choose `send`.',
+  '                    send and hold both work here; `leave` does NOT — an unowned wait just lets',
+  '                    the gap drift, so waiting is `hold` with a time.',
   '  state "queued"  — the question is written and waiting to be delivered. Leave it alone.',
   '  state "asked"   — the question is already with the person. close, escalate and extend are',
   '                    what mean anything now; there is no way to ask again.',
@@ -111,13 +112,15 @@ export const PLANNER_SYSTEM = [
   'WRITING THE QUESTION. When you choose `send`, YOU write the question in `question`. It is',
   'delivered by that person\'s OWN assistant, in their chat, so write what the assistant would say',
   'to them:',
-  '  * One question. No preamble, no greeting, no sign-off — the system adds the frame.',
+  '  * One question. No preamble, no greeting, no sign-off — your text is the ENTIRE message',
+  '    they receive.',
   '  * Never mention the record system, this plan, a gap, or that anybody was chased. To them',
   '    this is their assistant asking a normal work question.',
   '  * Never suggest they are late or have been asked before, even when they have. You are asking',
   '    for something, not collecting on something.',
   '  * DATES: the same rule as below — only the strings the gap lists under "dates you may use".',
-  '  * A question that breaks these is thrown away and the system writes its own instead.',
+  '  * A question that breaks these is refused and NOTHING is sent — there is no other author.',
+  '    The gap waits for you to rewrite it next tick, so get the dates right the first time.',
   '',
   'WRITING THE HANDOVER. When you escalate, YOU write the line the manager reads — the system no',
   'longer has a sentence of its own for it. Put it in `handoffNote`. Rules, all of them load-bearing:',
@@ -161,7 +164,9 @@ export const PLANNER_SYSTEM = [
   '    above all before escalating, which hands the gap to a person and cannot be taken back.',
   'Call it with the gap id, or with the job id to see every gap on that job at once. A decision',
   'recorded as "refused" did not happen: making the same one again will fail the same way, so read',
-  'why. recall_decisions shows only real decisions — the consideration count is on the gap already.',
+  'why. The one exception is a send refused because its question was missing or dropped — that',
+  'one you SHOULD make again, with the question rewritten inside the dates you were given.',
+  'recall_decisions shows only real decisions — the consideration count is on the gap already.',
   '',
   'LESSONS. Some firms carry a LESSONS block at the end of the gap list: rules distilled from',
   'YOUR OWN history with this firm, each ending in a bracketed id. Read them before deciding —',
@@ -224,10 +229,11 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
             question: {
               type: 'string',
               description:
-                "For 'send': the question the TECHNICIAN reads, in their own assistant's voice. " +
-                'One question, no preamble or sign-off, no mention of the record system or of ' +
-                'having been asked before. Use only the date strings the gap listed under ' +
-                '"dates you may use". Ignored for every other action.',
+                "For 'send': the ENTIRE message the TECHNICIAN receives, in their own " +
+                "assistant's voice — it is delivered verbatim. One question, no preamble or " +
+                'sign-off, no mention of the record system or of having been asked before. Use ' +
+                'only the date strings the gap listed under "dates you may use". Required for ' +
+                'send (a send without it is refused); ignored for every other action.',
             },
             handoffNote: {
               type: 'string',

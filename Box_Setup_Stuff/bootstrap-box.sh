@@ -1024,7 +1024,10 @@ EOF
 
 The office sends short work questions into this chat DIRECTLY — a message can appear in the
 conversation history that you did not write (for example "how did the visit go?" with a
-"(re: customer — job)" line naming the job). That is normal, not an intrusion.
+"(re: customer — job)" line naming the job). That is normal, not an intrusion. The
+office's planner now writes those questions itself and they are delivered verbatim, so the
+wording varies — the "(re: …)" line is still printed by the office's code and is still what
+names the job.
 
 1. When the person answers an office question — even "nothing to report" or "no parts" —
    record the answer with record_field_note for the job the "(re: …)" line names, so the

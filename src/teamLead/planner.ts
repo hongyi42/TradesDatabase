@@ -7,6 +7,7 @@ import {
   listNudgesByStatus,
   listTenantIdsWithTelegramBindings,
   markNudgeOutcome,
+  markNudgeQueued,
   OPEN_NUDGE_STATUSES,
   recordNudgeDecisions,
   setNudgeSchedule,
@@ -103,8 +104,10 @@ export interface PlannerDecision {
   // Manager-facing copy, escalate only. Survives the rails or is dropped
   // whole; a bad note never blocks the handover.
   handoffNote?: string | null;
-  // Technician-facing question, send only. Compose uses it in place of its own
-  // model call; a dropped draft costs the draft, never the send.
+  // Technician-facing question, send only — the ENTIRE delivered message since
+  // the collapse (plan 2026-08-24): an applied send queues it verbatim. A
+  // missing or rail-dropped question refuses the send; no fallback author
+  // exists any more.
   questionDraft?: string | null;
   // Machine-facing briefing for the manager's ASSISTANT, escalate only (the
   // fourth audience, fourth rail — plan 2026-08-23). Rides the review item's
@@ -211,6 +214,10 @@ export interface PlannerDeps {
   recordDecisions?: typeof recordNudgeDecisions;
   setSchedule?: typeof setNudgeSchedule;
   markOutcome?: typeof markNudgeOutcome;
+  // The collapse (plan 2026-08-24): `send` queues the planner's own question as
+  // the delivered message — the write compose used to own. Injected so tests
+  // never touch the database.
+  markQueued?: typeof markNudgeQueued;
   // The team lead's read tools and the door they dispatch through. Injected so a
   // test never needs the MCP server — and so the planner cannot reach any tool
   // its caller did not hand it.
@@ -707,7 +714,14 @@ function cleanPlannerText(
 ): { note: string | null; why?: string } {
   if (raw === undefined || raw === null) return { note: null };
   if (typeof raw !== 'string') return { note: null, why: `${opts.label} was not a string` };
-  const note = raw.replace(/\s+/g, ' ').trim();
+  // Control characters strip too, not just whitespace runs: this text is queued
+  // verbatim and decoded on the box, and `\s` does not match NUL or most C0
+  // controls. Compose used to apply this via `flatten`; with compose gone the
+  // rail is the only crossing left.
+  const note = raw
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!note) return { note: null };
   if (note.length > opts.maxLen) {
     return { note: null, why: `${opts.label} over ${opts.maxLen} characters` };
@@ -720,6 +734,37 @@ function cleanPlannerText(
     }
   }
   return { note };
+}
+
+/**
+ * The ANCHOR line every delivered question carries: "(re: customer — job)".
+ *
+ * NOT decoration, and NOT a date frame (the collapse deleted that): this is the
+ * seam the technician's own agent keys on. Standing box doctrine — AGENTS.md
+ * §"Questions and items from the office", refreshed on all six seats 2026-08-23
+ * — tells that agent to file the reply with record_field_note "for the job the
+ * (re: …) line names", and to ASK rather than guess when it cannot tell. Ship a
+ * bare question and a "yeah, all done" reply resolves to no job, the answer is
+ * never filed, and the gap escalates telling a manager nobody responded — the
+ * false-claim class the escalation rules exist to prevent.
+ *
+ * Code-printed from the row's own context, never model-written, for the same
+ * reason the old frame was: it must be exact, and it must not cost the model a
+ * rail. Returns '' when the row cannot name itself, so a thin row is delivered
+ * bare rather than with a fabricated anchor.
+ */
+export function anchorLine(n: Nudge): string {
+  const customer = ctxStr(n, 'customerName');
+  const job = ctxStr(n, 'jobTitle');
+  if (!customer && !job) return '';
+  const flat = (v: string, max: number) =>
+    v
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, max);
+  const label = customer && job ? `${flat(customer, 80)} — ${flat(job, 120)}` : flat((customer ?? job)!, 120);
+  return `\n\n(re: ${label})`;
 }
 
 /**
@@ -797,9 +842,10 @@ export function validateDecisions(
     }
 
     // `send` and `hold` only MEAN something on a row that has not gone out yet.
-    // Both write `not_before`, and `not_before` gates COMPOSE and nothing else
-    // (compose.ts:190) — the delivery pull does not read it and an asked row has
-    // no compose left to gate. Applying either to a queued or asked row would
+    // `send` QUEUES the question (the collapse) and `hold` writes `not_before`,
+    // which since the collapse is the planner's own pacing note and nothing
+    // else — the delivery pull does not read it. Applying either to a queued or
+    // asked row would
     // return the row happily and change nothing anybody could observe: the
     // silent no-op this phase exists to make impossible. Observed live
     // 2026-08-20, when the planner chose `send` on a row that had been asked
@@ -858,21 +904,20 @@ export function validateDecisions(
       }
     }
 
-    // `leave` GETS A STATUS RAIL TOO (final-review finding). On a PENDING row it
-    // is a silent no-op with the opposite of its stated effect: it writes
-    // nothing, so `not_before` stays null, and compose — which runs at the next
-    // lifecycle step of the SAME tick and gates on `not_before` alone — sends the
-    // question immediately. The model would have said "I am waiting" and caused
-    // an ask, with `leave / applied` in the log. That is exactly the silent-no-op
-    // class the send/hold rail above exists to make impossible.
+    // `leave` GETS A STATUS RAIL TOO (final-review finding, re-grounded for the
+    // collapse). On a PENDING row "leave" records "I am waiting" with no horizon
+    // while nothing will ever send the question — the planner is the only author
+    // now, so an unowned wait is a gap drifting toward the 18h never-asked
+    // handoff with a log line claiming it was considered. Waiting on a pending
+    // row must be `hold` with a time; releasing it must be `send`.
     //
-    // Queued and asked are both fine: nothing composes a queued row, and an asked
-    // row has already gone out, so "I looked and I am waiting" is true of both.
+    // Queued and asked are both fine: a queued row is already on its way, and an
+    // asked row has already gone out, so "I looked and I am waiting" is true of
+    // both.
     if (action === 'leave' && view.nudge.status === 'pending') {
       push(
-        'leave on a gap that has NOT gone out yet — it would not hold anything, because a ' +
-          'pending question is sent as soon as it is composed. Use hold (with a time) to wait, ' +
-          'or send to release it now.',
+        'leave on a gap that has NOT gone out yet — nothing goes out until YOU send it, so ' +
+          '"leave" would let it drift. Use hold (with a time) to wait, or send to release it now.',
       );
       continue;
     }
@@ -1120,16 +1165,48 @@ async function applyDecision(
   nowIso: string,
   setSchedule: typeof setNudgeSchedule,
   markOutcome: typeof markNudgeOutcome,
+  markQueued: typeof markNudgeQueued,
+  // Code-printed, from the gap's own row (the caller holds the view). Empty when
+  // the row cannot name itself — a thin row ships bare rather than fabricating.
+  anchor: string,
 ): Promise<{ outcome: 'applied' | 'refused'; detail?: string }> {
   const moved = 'the gap changed state between the plan and the write — nothing was applied';
   const done = (row: Nudge | null): { outcome: 'applied' | 'refused'; detail?: string } =>
     row ? { outcome: 'applied' } : { outcome: 'refused', detail: moved };
   switch (d.action) {
-    case 'send':
-      // `null` CLEARS the hold — the deliberate other half of setNudgeSchedule's
-      // undefined/null distinction ("forget what I said last tick"). Pending-only
-      // guard repeats the rail, because the row can move in between.
-      return done(await setSchedule(d.nudgeId, tenantId, { notBefore: null }, ['pending']));
+    case 'send': {
+      // The planner's words ARE the delivered message (the collapse, plan
+      // 2026-08-24): queueing them verbatim is the whole action. No surviving
+      // question — never written, or dropped by the date rail — means there is
+      // nothing to deliver and no fallback author exists any more, so the send
+      // is refused loudly and the model rewrites it next tick. Pending-only
+      // guard lives inside markNudgeQueued, because the row can move in between.
+      if (!d.questionDraft) {
+        return {
+          outcome: 'refused',
+          detail:
+            'send needs `question` — it was missing or the date rail dropped it; ' +
+            'rewrite it using only the dates you were given',
+        };
+      }
+      // The anchor rides along, code-printed: what is stored IS what is sent
+      // (④b), and the technician's agent files the reply against the job this
+      // line names.
+      const queued = await markQueued(d.nudgeId, tenantId, `${d.questionDraft}${anchor}`);
+      // A hold this send overrides must be CLEARED, or the gap view keeps
+      // telling the planner "currently held until …" about a question already
+      // with the person. Best-effort and deliberately unguarded on its result:
+      // the ask has landed either way, and a stale hold is a display defect, not
+      // a lost question — never fail an applied send on this.
+      if (queued && queued.not_before) {
+        try {
+          await setSchedule(d.nudgeId, tenantId, { notBefore: null }, ['queued']);
+        } catch (err) {
+          console.error(`[planner] ${d.nudgeId}: queued, but clearing its stale hold failed`, err);
+        }
+      }
+      return done(queued);
+    }
     case 'hold':
       return done(
         await setSchedule(d.nudgeId, tenantId, { notBefore: d.notBefore ?? null }, ['pending']),
@@ -1191,6 +1268,7 @@ export async function runPlanner(
   const recordDecisions = deps.recordDecisions ?? recordNudgeDecisions;
   const setSchedule = deps.setSchedule ?? setNudgeSchedule;
   const markOutcome = deps.markOutcome ?? markNudgeOutcome;
+  const markQueued = deps.markQueued ?? markNudgeQueued;
   const specs = deps.specs ?? NUDGE_KIND_SPECS;
   const sweepLive = deps.sweepLive ?? true;
   const tools = deps.tools ?? [];
@@ -1441,7 +1519,16 @@ export async function runPlanner(
         }
         let res: { outcome: 'applied' | 'refused'; detail?: string };
         try {
-          res = await applyDecision(tenantId, d, nowIso, setSchedule, markOutcome);
+          const gapRow = views.get(d.nudgeId)?.nudge;
+          res = await applyDecision(
+            tenantId,
+            d,
+            nowIso,
+            setSchedule,
+            markOutcome,
+            markQueued,
+            gapRow ? anchorLine(gapRow) : '',
+          );
         } catch (err) {
           // One failed write must not abandon the rest of the firm's plan, and
           // it must not be silent either — it becomes a refusal WITH the reason.

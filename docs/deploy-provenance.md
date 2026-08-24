@@ -9,10 +9,20 @@ hash" and the system-design Tier 3 rule *"verify the live commit hash after depl
 
 ## Source of truth
 
-- **Repository:** `https://github.com/hhesecured-web/TradesDatabase.git`
+- **Repository:** `https://github.com/hongyi42/TradesDatabase.git`
 - **Branch Render deploys:** `main`
 - **Confirmed:** 2026-08-24 — Render deploys the canonical repo on `main` (the "separate/unrecorded
   repo" concern from the 2026-08-17 research is resolved: it is this repo, `main`).
+
+> **The repo was renamed** (2026-08-24, found on the first push of this branch): it used to live at
+> `hhesecured-web/TradesDatabase` and GitHub now answers that URL with
+> `This repository moved. Please use the new location: https://github.com/hongyi42/TradesDatabase.git`.
+> The old URL still works **only** through GitHub's redirect. That redirect is not a durable
+> address: it disappears the moment anyone creates a new repository at the old owner/name, and a
+> push that follows a stale remote then either fails or lands somewhere nobody is watching — which
+> is precisely the class of "we don't know where prod's code comes from" this file exists to
+> prevent. Anything still holding the old URL (local clones' `origin`, **each Render service's
+> connected repo**, CI configuration, deploy keys) should be repointed at the canonical URL above.
 
 Merging to `origin/main` **does** move production. (Historical note: a local checkout was once found
 160 commits behind `origin/main`; the fix is simply to work from `origin/main` — the deploy source
@@ -23,13 +33,16 @@ was never in doubt once checked. `main` is the source of truth.)
 All Render services deploy from the repo + branch above. Record auto-deploy per service; if any
 differs, note it here — a service on a different branch is exactly the drift this doc exists to catch.
 
-| Service          | Repo / branch      | Auto-deploy | Notes |
-|------------------|--------------------|-------------|-------|
-| web              | this repo · `main` | confirm     | central MCP/HTTP entrypoint |
-| Board_Worker     | this repo · `main` | confirm     | dispatch board worker |
-| lifecycle-heart  | this repo · `main` | confirm     | `*/5`… lifecycle cron |
-| calls-worker     | this repo · `main` | confirm     | phone-call feature |
-| calls-purge      | this repo · `main` | confirm     | phone-call purge cron |
+While confirming each service, check **which owner/name its connected repo records** — a service
+still wired to `hhesecured-web/...` is running on the redirect (see the rename note above).
+
+| Service          | Repo / branch      | Auto-deploy | Owner recorded | Notes |
+|------------------|--------------------|-------------|----------------|-------|
+| web              | this repo · `main` | confirm     | confirm        | central MCP/HTTP entrypoint |
+| Board_Worker     | this repo · `main` | confirm     | confirm        | dispatch board worker |
+| lifecycle-heart  | this repo · `main` | confirm     | confirm        | `*/5`… lifecycle cron |
+| calls-worker     | this repo · `main` | confirm     | confirm        | phone-call feature |
+| calls-purge      | this repo · `main` | confirm     | confirm        | phone-call purge cron |
 
 ## Verify what's actually live (not a proxy)
 

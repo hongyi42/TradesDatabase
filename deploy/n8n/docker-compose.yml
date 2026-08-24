@@ -1,0 +1,60 @@
+# Hardened self-hosted n8n for the Lightsail box (prod-devops plan Phase 1).
+# n8n becomes the highest-privilege system in the stack (it will hold Render,
+# Supabase, DeepInfra/Fireworks, AWS, Telegram credentials behind ONE key), and it
+# has shipped multiple CVSS-10 RCEs — so this compose is deliberately locked down:
+#   - NO public port on n8n (only Caddy reaches it over the internal network)
+#   - Caddy terminates TLS (Let's Encrypt) and is the only thing on 80/443
+#   - a PINNED, patched image tag (never :latest — see README "Pick the version")
+#   - executions auto-prune; encryption key supplied explicitly and backed up
+# Bring up:  docker compose up -d   (after filling .env — copy from .env.example)
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - n8n
+
+  n8n:
+    # PIN a specific PATCHED version — do NOT use :latest. See README.
+    image: n8nio/n8n:1.NNN.N
+    restart: unless-stopped
+    environment:
+      - N8N_HOST=${N8N_HOST}
+      - N8N_PROTOCOL=https
+      - N8N_PORT=5678
+      - WEBHOOK_URL=https://${N8N_HOST}/
+      - N8N_EDITOR_BASE_URL=https://${N8N_HOST}/
+      # Single point of custody for EVERY stored credential — back this up
+      # off-box (password manager). Lose it and all credentials are unrecoverable.
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_SECURE_COOKIE=true
+      # Keep execution history from growing without bound (turn on from day one).
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=336   # hours = 14 days
+      # Run tool/code steps in the isolated task runner (defense against the
+      # sandbox-escape class of n8n CVEs).
+      - N8N_RUNNERS_ENABLED=true
+      - GENERIC_TIMEZONE=${TZ}
+      - TZ=${TZ}
+    expose:
+      - "5678"            # internal only — intentionally NOT published to the host
+    volumes:
+      - n8n_data:/home/node/.n8n
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  n8n_data:
+  caddy_data:
+  caddy_config:

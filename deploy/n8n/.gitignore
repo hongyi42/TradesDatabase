@@ -1,0 +1,5 @@
+# Never commit the real environment (holds the encryption key) or n8n's exported
+# credentials. Only .env.example, the compose file, the Caddyfile, and the README
+# are tracked.
+.env
+backups/

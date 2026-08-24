@@ -1,0 +1,15 @@
+# Caddy reverse proxy: terminates HTTPS (auto Let's Encrypt) and forwards to n8n
+# over the internal Docker network. n8n itself publishes no host port, so this is
+# the ONLY public entrypoint. Replace n8n.example.com with your real subdomain
+# (its DNS A record must point at this box before `docker compose up`).
+#
+# OPTIONAL hardening — restrict who can even reach the editor. Uncomment to allow
+# only your office/VPN IPs (the editor is a high-value target; the fewer who can
+# reach the login, the better). Leave commented to rely on the owner login alone.
+#
+#   @blocked not remote_ip 203.0.113.10 203.0.113.11
+#   respond @blocked 403
+
+n8n.example.com {
+    reverse_proxy n8n:5678
+}

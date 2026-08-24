@@ -26,6 +26,10 @@ watchers+planner ticks, deterministic graders plus one blind judge, and a two-ar
   context-miss, premature, late/stuck, people-judgment, multi-gap, lessons, date/window edges).
   Pilot rows inform authoring, are not the source.
 - **Model arms** — user choice: **Opus 5 + GLM-5.2/Fireworks**, same corpus, two runs.
+  *Implementation note (Phase 1): the GLM arm pins the PRODUCTION endpoint explicitly
+  (`FIREWORKS_API_KEY` + the fast-router model), not `lib/env.mjs modelConfig()` — the
+  `EVAL_INFERENCE_*` values in `.env` point at DeepInfra, retired 2026-08-18, whose host no
+  longer maps to any ledger vendor.*
 - **Tick = watchers + planner, compose skipped** (mine): production's tick is sweep→planner→
   compose; the sweep drives state transitions the arcs need (answered/escalated/expired), but
   compose only writes delivery copy — not the graded surface, and it would double model spend.
@@ -51,8 +55,12 @@ watchers+planner ticks, deterministic graders plus one blind judge, and a two-ar
   `new Date()`, `decided_at`/`created_at`/`captured_at` are server defaults, money
   `created_at` is deliberately unspoofable) — so back-dated worlds are unreachable through it.
   The harness seeds nudges/captures/money/decision-history via SQL with explicit timestamps,
-  and after EVERY tick rewrites that tick's new `decided_at`/`resolved_at`/`queued_at` to
-  sim-now. Without the fix-up, watchers' `plannerAlive` check (real `decided_at` vs
+  and after EVERY tick rewrites that tick's new `decided_at`/`resolved_at`/`queued_at` (and a
+  detector-minted nudge's `created_at`) to sim-now. *Implementation note (Phase 1): the
+  fix-up identifies "what this tick wrote" by an id/value SNAPSHOT DIFF, not the planned
+  wall-clock `gte` boundary — sim stamps and the real clock are not comparable in either
+  direction (t0 sits in the real future on early-morning runs, and a prior tick's sim-stamped
+  rows must not be re-captured by a later tick's fix-up). Caught by the Phase 1 test.* Without the fix-up, watchers' `plannerAlive` check (real `decided_at` vs
   sim-now−24h, watchers.ts:668-677) reads the planner as dead mid-arc and auto-closes gaps —
   corrupting exactly the late/stuck arcs the corpus exists to grade.
 - **Transcript capture** — (mine): inject `runLoop` in `PlannerDeps` with a wrapper that
@@ -187,19 +195,23 @@ capture, per-arm env pinning, and JSONL results. Two smoke scenarios prove the l
   transcript + userPrompt captured, sim-time fix-up applied (decided_at == sim-now).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass (new tests included)
-- [ ] `npm run build`, then `node scripts/agentic-eval/run.mjs --arm glm --only
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass (2225 passed incl. 7 new
+      plannerSim tests; 2026-08-24)
+- [x] `npm run build`, then `node scripts/agentic-eval/run.mjs --arm glm --only
       SMOKE-1,SMOKE-2 --yes` completes on the local stack; results.jsonl has 2 rows each with
       a captured transcript, a stored userPrompt, and a decision read back from
-      `nudge_decisions`
+      `nudge_decisions` (run agentic-glm-2026-08-24T08-44-41: escalate/applied + leave/applied)
 
 ### Live verification (agent-executable)
-- Prerequisites: local Supabase stack + `INFERENCE_API_KEY`.
-- [ ] The GLM smoke run above IS the live check (real model, real tools). SMOKE-1 is authored
-      so deciding well REQUIRES a read (the answer sits in job evidence, not the gap block);
-      evidence: the transcript. Note `calls` always contains submit_plan itself — the check is
-      for a read tool call, and a submit-without-reading result is a valid (recorded) finding,
-      not a harness failure.
+- Prerequisites: local Supabase stack + `FIREWORKS_API_KEY`.
+- [x] The GLM smoke run above IS the live check (real model, real tools). Evidence: SMOKE-1's
+      transcript shows `recall_decisions` echoing the SEEDED history (decidedAt at the exact
+      −8h offset) plus six `spine_read`s before submit_plan; the block renders the seeded
+      capture; the date rail fired live on GLM's agentContext ("Monday"/"today" dropped);
+      ledger rows: glm-5.2-fast cached-input/input/output + spine tool_call on the local
+      stack. (SMOKE-1's lure is history via recall_decisions rather than the originally
+      drafted pre-ask evidence — evidence seeding is exercised and asserted in the round-trip
+      test instead.)
 
 ### Manual verification
 - [ ] none

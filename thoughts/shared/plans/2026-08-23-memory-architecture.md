@@ -212,9 +212,11 @@ checkout only — grep project_id first) and commit the regenerated types.
 
 ### Live verification (agent-executable)
 - Prerequisites: pilot DB MCP; pilot migration applied BEFORE merge/deploy.
-- [ ] after deploy, the next tick summarizes the pilot's existing closed gaps (incl. today's
-  Teddy Vance gap: arc must show its leave→close life and manager_fate none; the attic-fan gap
-  must show manager_fate resolved with the auto-heal resolution text)
+- [x] first post-deploy tick (2026-08-23 5:20 PM firm-local) wrote 7 pilot summaries: Teddy
+  Vance arc {leave:1, close:1} fate none ✓; attic-fan escalated/resolved with the auto-heal
+  text, 25.1 working hours ✓; the 4 open-item escalations correctly HELD BACK. Confirmed
+  follow-up (rides Phase 4): expiry-path handoffs (failed + citing item) freeze fate 'none' —
+  the holdback must cover them too
 
 *No manual items — continue.*
 

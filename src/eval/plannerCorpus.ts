@@ -751,7 +751,12 @@ const MULTI_GAP: PlannerScenario[] = [
     id: 'MG-06',
     family: 'multi-gap',
     why: 'Arc: the answers arrive in TWO notes at different hours — each gap closes on its own note, in order.',
-    world: twoGapWorld('Dot Wheeler', 'Zone panel rewire', 'mg6-dee', 'Dee Marsh', {}, {}),
+    world: twoGapWorld('Dot Wheeler', 'Zone panel rewire', 'mg6-dee', 'Dee Marsh', {
+      // Deadlines past the LAST tick: without these the sweep escalates both
+      // gaps at +2h (default due = asked+24h = +1h) before the planner decides.
+      visit: { escalateAfter: '+6h' },
+      cost: { escalateAfter: '+6h' },
+    }),
     timeline: [
       tick('+0h'),
       { at: '+1h', kind: 'capture', text: 'Rewire complete, all four zones firing on call.' },

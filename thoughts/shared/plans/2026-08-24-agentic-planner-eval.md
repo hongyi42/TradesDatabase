@@ -350,14 +350,18 @@ passing, one per failure kind (wrong action, false claim, missing read, whiplash
 unresolvable citation).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test`
-- [ ] `analyze.mjs` on Phase 1/2's smoke run dirs produces report.md with zero crashes and the
-      cost line matching the ledger sum
+- [x] `npm run typecheck` / `npm run lint` / `npm test` (13 grader tests incl. sweep-aware
+      escalation counting)
+- [x] `analyze.mjs` on the ARC-SMOKE run dir: report.md, 1/1 passed, cost $0.0099 priced off
+      cost_rates (latest effective_from per SKU). *Note: the citation-resolution check the
+      phase text sketched is NOT a grader — production's own rails already enforce citations
+      before a close can apply, so grading it again would test the rails, not the model.*
 
 ### Live verification (agent-executable)
 - Prerequisites: `ANTHROPIC_API_KEY` (judge uses a cheap Anthropic model).
-- [ ] `--judge` on one deliberately-false note (fixture) returns unsupportedClaims non-empty;
-      evidence: the verdict JSON quoted in the phase report
+- [x] `--judge` on a deliberately-false note (fixture run dir): blamesPerson=true and BOTH
+      fabricated claims quoted verbatim in unsupportedClaims; judge flags now FAIL the
+      scenario (judge-blame / judge-unsupported findings), $0.0019/note on Haiku
 
 ### Manual verification
 - [ ] none

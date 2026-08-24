@@ -51,11 +51,16 @@ describe('corpus structure', () => {
     }
   });
 
-  test("every seeded ASKED gap's deadline is later than the first tick", () => {
+  test("every seeded ASKED gap's deadline is later than EVERY scripted tick", () => {
+    // Not just the first (review finding, MG-06): the sweep runs at every
+    // tick, and a mid-arc due time silently hands the gap off before the
+    // planner decides — the scenario then grades the sweep, not the model.
     for (const s of ALL_SCENARIOS) {
-      const firstTick = s.timeline.find((t) => t.kind === 'tick' && !t.expectWindowSkip);
-      if (!firstTick) continue;
-      const tickMs = parseOffsetMs(firstTick.at);
+      const tickOffsets = s.timeline
+        .filter((t) => t.kind === 'tick' && !t.expectWindowSkip)
+        .map((t) => parseOffsetMs(t.at));
+      if (tickOffsets.length === 0) continue;
+      const lastTickMs = Math.max(...tickOffsets);
       for (const n of s.world.nudges) {
         if (n.status !== 'asked') continue;
         const due = n.escalateAfter
@@ -63,9 +68,9 @@ describe('corpus structure', () => {
           : parseOffsetMs(n.askedAt!) + 24 * HOUR;
         expect(
           due,
-          `${s.id}/${n.key}: due ${n.escalateAfter ?? '(asked+24h)'} is not after the first ` +
-            `tick ${firstTick.at} — the sweep would escalate before the planner ever decides`,
-        ).toBeGreaterThan(tickMs);
+          `${s.id}/${n.key}: due ${n.escalateAfter ?? '(asked+24h)'} is not after the LAST ` +
+            `tick — the sweep would escalate before the planner decides`,
+        ).toBeGreaterThan(lastTickMs);
       }
     }
   });

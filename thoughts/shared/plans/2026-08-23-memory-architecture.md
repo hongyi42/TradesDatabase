@@ -151,16 +151,18 @@ queries the views, prints paired metrics with denominators (never a rate without
 data window and caveat (one tenant, small n; tripwire not proof).
 
 ### Automated verification
-- [ ] gates pass; view definitions covered by a DB test (seeded local stack: one known
-  premature escalation + one whiplash pair produce exactly the expected rows; anon/
-  authenticated SELECT on every mv_* view is refused; SQL and TS working-hours agree on a
-  fixture)
-- [ ] `npm run metrics:planner` runs against the LOCAL stack in the test
+- [x] gates pass (suite 2201); DB tests cover all four views (premature, no-item, late,
+  outcome buckets incl. the expiry-path manager handoff, whiplash with/without evidence,
+  extend answered-in-time + pending), ACLs asserted, SQL↔TS parity incl. a DST fall-back day
+  and odd-second boundaries. Three review-fix rounds folded — most materially: `late` was
+  structurally dead as first specced and is redefined against the original 24h allowance
+- [x] `npm run metrics:planner` runs against the LOCAL stack in the test
 
 ### Live verification (agent-executable)
 - Prerequisites: pilot DB MCP (read-only queries).
-- [ ] report runs against the pilot; snapshot committed; spot-check one known specimen (the
-  2026-08-23 raced attic-fan escalation must appear in mv_escalation_fates as premature)
+- [x] report runs against the pilot; snapshot committed (v2 views: manager handoffs 55%,
+  late 2/6 where the first definition read 0 — an artifact); attic-fan specimen:
+  fate=resolved, premature=true, by_planner=false, 0.11 working hours to auto-heal
 
 *No manual items — continue.*
 
@@ -202,11 +204,11 @@ cause-code idiom, never an error. Run `npm run gen:types:local` after the migrat
 checkout only — grep project_id first) and commit the regenerated types.
 
 ### Automated verification
-- [ ] gates + new tests: a test CLOSES a gap with a known arc (the seed has no closed nudges —
-  a seed-then-tick check would pass vacuously, review find 11a) and the exact expected row
-  appears; idempotence; a no-decisions gap still summarizes; an escalated gap with an OPEN
-  item is held back, then summarized with the right manager_fate once the item resolves; the
-  7-day timeout writes 'still_open'
+- [x] gates + tests: closed-gap known arc exact row; idempotence; no-decisions gap; holdback
+  full cycle (open item defers → dismissal completes with latency; timeout → still_open;
+  NO-item escalations summarize immediately as 'none' — the once-ever dedup means their item
+  can never appear); extended_to reads applied extends only; the oldest-page anti-join stall
+  fixed server-side
 
 ### Live verification (agent-executable)
 - Prerequisites: pilot DB MCP; pilot migration applied BEFORE merge/deploy.
@@ -246,13 +248,15 @@ reseeds leave a stale active lesson haunting the fresh world. gen:types after.
   bounded by the budget at activation time, by construction.
 
 ### Automated verification
-- [ ] gates + tests: evidence-check refusal; two-strike retirement; an activation that would
-  push the rendered block past LESSONS_BLOCK_BUDGET is refused; date-rail allows "Friday evening", refuses "2026-08-23"; text
-  immutability (typed layer has no setter)
+- [x] gates + tests (12): evidence refusal; two-strike retirement (history settled — a third
+  strike cannot rewrite it); budget refusal; date rail allows "Friday evening" and ordinary
+  words ("maybe", "separate"), refuses YYYY-MM-DD / "Aug 23" / "Aug 23rd"; tenant scoping;
+  stale expiry; ACL pin; byte-level text immutability
 
 ### Live verification
 - Prerequisites: pilot migration applied.
-- [ ] schema verified on the pilot via information_schema (never list_migrations)
+- [x] schema verified on the pilot via information_schema: gap_summaries (20 cols) and
+  planner_lessons (11 cols) both present, RLS on; metrics v2 views applied
 
 *No manual items — continue.*
 

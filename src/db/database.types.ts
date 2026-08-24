@@ -1423,6 +1423,35 @@ export type Database = {
           },
         ]
       }
+      reflector_runs: {
+        Row: {
+          id: string
+          proposed: number
+          ran_at: string
+          tenant_id: string
+        }
+        Insert: {
+          id?: string
+          proposed?: number
+          ran_at?: string
+          tenant_id: string
+        }
+        Update: {
+          id?: string
+          proposed?: number
+          ran_at?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reflector_runs_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       review_items: {
         Row: {
           created_at: string

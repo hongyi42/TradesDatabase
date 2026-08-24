@@ -102,7 +102,11 @@ export async function runGapSummaries(nowIso: string, deps: SummarizeDeps = {}):
         let managerFate: GapSummaryInsert['manager_fate'] = 'none';
         let managerResolution: string | null = null;
         let managerLatencyWh: number | null = null;
-        if (n.status === 'escalated') {
+        // Manager handoffs travel TWO paths: 'escalated' (silence) and
+        // 'failed' with a citing item (expiry / serve-cap / delivery-cap).
+        // Both need the item join and the holdback, or the expiry path's
+        // fate freezes at 'none' (live-confirmed on the pilot 2026-08-23).
+        if (n.status === 'escalated' || n.status === 'failed') {
           item = await findItem(tenantId, n.id);
           // Hold ONLY when an open item exists: escalation flags the item
           // BEFORE closing the nudge (the watchers safe order), so no-item at
@@ -121,8 +125,9 @@ export async function runGapSummaries(nowIso: string, deps: SummarizeDeps = {}):
           } else if (item) {
             managerFate = 'still_open';
           } else {
-            // Escalated but NO item ever opened (a failed flag): nothing is
-            // "still open" — 'none' is the truth, recorded past the window.
+            // No item ever opened: for 'escalated' a failed flag (the
+            // once-ever dedup — it can never appear); for 'failed' a plain
+            // delivery failure with no handoff. 'none' is the truth.
             managerFate = 'none';
           }
         }
@@ -150,7 +155,7 @@ export async function runGapSummaries(nowIso: string, deps: SummarizeDeps = {}):
           arc,
           considered: history.length,
           extended_to: lastExtend?.escalate_after ?? n.escalate_after,
-          escalated: n.status === 'escalated',
+          escalated: n.status === 'escalated' || (n.status === 'failed' && item !== null),
           manager_fate: managerFate,
           manager_resolution: managerResolution,
           manager_latency_wh: managerLatencyWh,

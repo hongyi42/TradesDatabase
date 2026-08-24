@@ -11,6 +11,7 @@ import { expireOffboarding, type ExpireResult } from '../composio/offboarding.js
 import { ensurePersonSession } from '../composio/sessions.js';
 import { runLogIngestion, type LogIngestSummary } from '../composio/logIngest.js';
 import { runGapSummaries, type SummarizeSummary } from './summarize.js';
+import { runReflector, type ReflectorMode, type ReflectorSummary } from '../teamLead/reflector.js';
 import { runWatchers, type WatchersSummary } from './watchers.js';
 import { runTeamLeadCompose, type ComposeSummary } from '../teamLead/compose.js';
 import { runPlanner, type PlannerMode, type PlannerSummary } from '../teamLead/planner.js';
@@ -76,6 +77,7 @@ export interface LifecycleDeps {
   composeNudges?: typeof runTeamLeadCompose;
   runPlanner?: typeof runPlanner;
   summarize?: typeof runGapSummaries;
+  reflect?: typeof runReflector;
   // Seam so the skip branch is testable without setting a real key.
   hasModelKey?: () => boolean;
 }
@@ -100,6 +102,7 @@ export interface LifecycleSummary {
   teamLeadPlanner: PlannerSummary | { skipped: string } | { stepError: string };
   teamLeadCompose: ComposeSummary | { skipped: string } | { stepError: string };
   gapSummaries: SummarizeSummary | { skipped: string } | { stepError: string };
+  reflector: ReflectorSummary | { skipped: string } | { stepError: string };
   ok: boolean;
 }
 
@@ -432,6 +435,38 @@ export async function runLifecycle(
     if (!isMissingCostLedger(err)) ok = false;
   }
 
+  // 12. The Reflector (⑤ Phase 4) — the distiller, dark. REFLECTOR_MODE
+  // follows the PLANNER_MODE contract verbatim: unset = 'off' silently (a
+  // cron deployed before the var is chosen must not go red), bad value =
+  // LOUD stepError. 'live' is shadow-equivalent in this plan (activation
+  // stays human); the per-tenant gate inside owns dailiness and thresholds.
+  const reflectorModeRaw = process.env.REFLECTOR_MODE;
+  const reflectorMode: ReflectorMode | null =
+    !reflectorModeRaw ? 'off'
+    : reflectorModeRaw === 'off' || reflectorModeRaw === 'shadow' || reflectorModeRaw === 'live'
+      ? reflectorModeRaw
+      : null;
+  let reflector: LifecycleSummary['reflector'];
+  if (reflectorMode === null) {
+    reflector = {
+      stepError: `REFLECTOR_MODE must be 'off', 'shadow' or 'live', got '${reflectorModeRaw}'`,
+    };
+    ok = false;
+  } else if (reflectorMode === 'off') {
+    reflector = { skipped: "REFLECTOR_MODE 'off'" };
+  } else if (!(deps.hasModelKey ?? hasModelCredentials)()) {
+    reflector = { skipped: 'no inference credentials' };
+  } else {
+    try {
+      reflector = await (deps.reflect ?? runReflector)(nowIso, reflectorMode);
+    } catch (err) {
+      reflector = isMissingCostLedger(err)
+        ? { skipped: 'reflector tables not migrated here yet' }
+        : { stepError: msg(err) };
+      if (!isMissingCostLedger(err)) ok = false;
+    }
+  }
+
   return {
     pairing,
     offboarding,
@@ -443,6 +478,7 @@ export async function runLifecycle(
     teamLeadPlanner,
     teamLeadCompose,
     gapSummaries,
+    reflector,
     ok,
   };
 }

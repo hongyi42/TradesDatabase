@@ -120,6 +120,7 @@ const RESET_TABLES = [
   // tenant_profiles got missed).
   // References only tenants — no cascade reaches it (the tenant_profiles trap).
   'planner_lessons',
+  'reflector_runs',
   // Cascades from nudges, named anyway (eng-memory §1).
   'gap_summaries',
   'nudges',
@@ -176,6 +177,7 @@ const PILOT_TENANT_SCOPED = [
   'nudge_decisions',
   // References only tenants — no cascade reaches it (the tenant_profiles trap).
   'planner_lessons',
+  'reflector_runs',
   // Cascades from nudges, named anyway (eng-memory §1).
   'gap_summaries',
   'nudges',

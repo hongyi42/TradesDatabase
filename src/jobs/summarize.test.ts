@@ -172,6 +172,35 @@ describe('runGapSummaries', () => {
     expect(rows[0].manager_fate).toBe('none'); // once-ever dedup: the item can never appear
   });
 
+  test('the EXPIRY path (failed + citing item) gets the same holdback and fate', async () => {
+    const nudgeId = await insertClosedNudge({
+      subjectRef: `sum-expiry-${RUN}`,
+      status: 'failed',
+      askedAt: null,
+      resolvedAt: '2026-08-24T16:00:00Z',
+      resolution: 'never delivered — handed to the manager',
+    });
+    await pg.query(
+      `insert into review_items (tenant_id, kind, subject_ref, status, suggestion, detail, created_at)
+       values ($1, 'overdue_visit_gap', $2, 'open', 'chase',
+               jsonb_build_object('escalatedFromNudge', $3::text), '2026-08-24T16:00:00Z')`,
+      [tenantId, `sum-expiry-item-${RUN}`, nudgeId],
+    );
+    await runGapSummaries(NOW);
+    expect(await summaryFor(nudgeId)).toHaveLength(0); // held back like an escalation
+    await pg.query(
+      `update review_items set status='resolved', resolution='caught up by phone',
+              resolved_at='2026-08-24T17:00:00Z'
+        where tenant_id = $1 and detail->>'escalatedFromNudge' = $2`,
+      [tenantId, nudgeId],
+    );
+    await runGapSummaries(NOW);
+    const rows = await summaryFor(nudgeId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].manager_fate).toBe('resolved');
+    expect(rows[0].escalated).toBe(true); // a manager handoff, whichever path carried it
+  });
+
   test('extended_to reads the last APPLIED extend, never a refused one', async () => {
     const nudgeId = await insertClosedNudge({
       subjectRef: `sum-extend-${RUN}`,

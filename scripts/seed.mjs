@@ -184,6 +184,11 @@ async function truncateSpine(hasScheduling) {
         where table_schema = 'public' and table_name = 'planner_lessons'`,
     );
     if (pl.rows.length > 0) tables += ', planner_lessons';
+    const rr = await client.query(
+      `select 1 from information_schema.tables
+        where table_schema = 'public' and table_name = 'reflector_runs'`,
+    );
+    if (rr.rows.length > 0) tables += ', reflector_runs';
     await client.query(`truncate table ${tables} cascade`);
   } finally {
     await client.end();

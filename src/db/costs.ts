@@ -100,6 +100,9 @@ export interface RecorderDeps {
 export interface ModelUsage {
   inputTokens?: number;
   outputTokens?: number;
+  /** Cache WRITES (Anthropic cache_creation_input_tokens): a separate price
+   *  tier — 2x base on the 1h TTL — never a read, never fresh. */
+  cacheWriteTokens?: number;
   // Cached prompt tokens, when the provider reports them. Fireworks prices these
   // at $0.21/M against $2.10/M fresh — a 10x difference on the line that
   // dominates the bill (recorded input:output ratio ~230:1). Billing them at the
@@ -121,7 +124,7 @@ export interface ModelUsage {
 // another vendor's traffic the moment the endpoint is repointed — and the bill
 // it was priced against never arrives. (There is no failover lane as of
 // 2026-08-19; the map still matters because the ENDPOINT can be repointed.)
-export const MODEL_SKUS: Record<string, { provider: string; input: string; output: string; cachedInput?: string }> = {
+export const MODEL_SKUS: Record<string, { provider: string; input: string; output: string; cachedInput?: string; cacheWrite?: string }> = {
   // 'deepinfra' was removed here 2026-08-19 when the provider was retired. Its rows in
   // cost_rates DELIBERATELY REMAIN: this map is the WRITE path (which SKU to stamp on a new
   // event), while the rollup prices HISTORY by joining cost_events to cost_rates in SQL.
@@ -151,11 +154,17 @@ export const MODEL_SKUS: Record<string, { provider: string; input: string; outpu
     output: 'glm-5.2-fast-output',
     cachedInput: 'glm-5.2-fast-cached-input',
   },
-  // Kept whole as an env-var rollback, so its prices stay in the book too.
+  // The 2026-08-24 Opus switch (user ruling: planner on Opus 5, costs
+  // recorded honestly incl. the 1h-TTL cache tiers). This map is per-VENDOR:
+  // it assumes ANTHROPIC_MODEL=claude-opus-5 — a Sonnet rollback must re-edit
+  // these SKUs or Sonnet traffic bills at Opus rates (the sonnet rates stay
+  // in cost_rates for history).
   anthropic: {
     provider: 'anthropic',
-    input: 'claude-sonnet-4-6-input',
-    output: 'claude-sonnet-4-6-output',
+    input: 'claude-opus-5-input',
+    output: 'claude-opus-5-output',
+    cachedInput: 'claude-opus-5-cached-input',
+    cacheWrite: 'claude-opus-5-cache-write-1h',
   },
 };
 
@@ -200,6 +209,17 @@ export async function recordModelUsage(
       rows.push({ ...base, sku: skus.input, quantity: fresh });
       if (splitCache) {
         rows.push({ ...base, sku: skus.cachedInput as string, quantity: cached as number });
+      }
+    }
+    // Cache WRITES are their own price tier (2x base on the 1h TTL). A vendor
+    // without a cacheWrite SKU folds them into the input line — under-bills
+    // 2x→1x, but honest-available beats a guess (the cachedInput doctrine).
+    const writes = usage?.cacheWriteTokens;
+    if (typeof writes === 'number' && writes > 0) {
+      if (skus.cacheWrite) {
+        rows.push({ ...base, sku: skus.cacheWrite, quantity: writes });
+      } else {
+        rows.push({ ...base, sku: skus.input, quantity: writes });
       }
     }
     if (typeof usage?.outputTokens === 'number') {

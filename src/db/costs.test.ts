@@ -213,6 +213,10 @@ describe('cost_rates versioning', () => {
     expect(
       seeded.map((r) => `${r.provider}/${r.sku} ${Number(r.unit_cost_usd)}/${r.unit}`).sort(),
     ).toEqual([
+      'anthropic/claude-opus-5-cache-write-1h 0.00001/token',
+      'anthropic/claude-opus-5-cached-input 5e-7/token',
+      'anthropic/claude-opus-5-input 0.000005/token',
+      'anthropic/claude-opus-5-output 0.000025/token',
       'anthropic/claude-sonnet-4-6-input 0.000003/token',
       'anthropic/claude-sonnet-4-6-output 0.000015/token',
       'deepinfra/glm-5.2-cached-input 1.8e-7/token',
@@ -422,13 +426,36 @@ describe('recordModelUsage', () => {
     expect(seen).toHaveLength(0);
   });
 
-  test('bills the anthropic rollback under its own SKUs', async () => {
+  test('bills anthropic under Opus SKUs with all four tiers split', async () => {
+    // The 2026-08-24 Opus switch: fresh input, cache reads (0.1x), 1h cache
+    // writes (2x), output — each on its own priced line. inputTokens arrives
+    // ALREADY normalized to include reads (the transport's job), so fresh =
+    // 100 - 40 = 60; writes ride their own SKU, never the input line.
     const { seen, append } = capture();
-    await recordModelUsage('anthropic', { inputTokens: 10, outputTokens: 2 }, { tenantId: tenantA }, { append });
-    expect(seen[0].map((r) => `${r.provider}/${r.sku}`)).toEqual([
-      'anthropic/claude-sonnet-4-6-input',
-      'anthropic/claude-sonnet-4-6-output',
+    await recordModelUsage(
+      'anthropic',
+      { inputTokens: 100, outputTokens: 2, cachedInputTokens: 40, cacheWriteTokens: 25 },
+      { tenantId: tenantA },
+      { append },
+    );
+    expect(seen[0].map((r) => `${r.provider}/${r.sku}:${r.quantity}`)).toEqual([
+      'anthropic/claude-opus-5-input:60',
+      'anthropic/claude-opus-5-cached-input:40',
+      'anthropic/claude-opus-5-cache-write-1h:25',
+      'anthropic/claude-opus-5-output:2',
     ]);
+  });
+
+  test('cache writes from a vendor without a cacheWrite SKU fold into the input line', async () => {
+    const { seen, append } = capture();
+    await recordModelUsage(
+      'nvidia',
+      { inputTokens: 10, outputTokens: 2, cacheWriteTokens: 5 },
+      { tenantId: tenantA },
+      { append },
+    );
+    const inputs = seen[0].filter((r) => r.sku === 'glm-5.2-input');
+    expect(inputs.map((r) => r.quantity)).toEqual([10, 5]); // honest fallback, undivided rate
   });
 
   test('bills an NVIDIA failover under provider nvidia — not dropped, not deepinfra', async () => {

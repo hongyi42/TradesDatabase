@@ -215,7 +215,12 @@ export function parseOpenAiToolArgs(
 // returning it must not break the call — it is reported by the recorder instead.
 export interface ForcedToolReply {
   args: Record<string, unknown>;
-  usage?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
+  usage?: {
+    inputTokens?: number; // TOTAL incl. cached reads (the ledger convention)
+    outputTokens?: number;
+    cachedInputTokens?: number;
+    cacheWriteTokens?: number;
+  };
 }
 
 async function callAnthropic(
@@ -237,7 +242,7 @@ async function callAnthropic(
       {
         type: 'text' as const,
         text: req.system,
-        cache_control: { type: 'ephemeral' as const },
+        cache_control: { type: 'ephemeral' as const, ttl: '1h' as const },
       },
     ],
     tools: [
@@ -269,11 +274,17 @@ async function callAnthropic(
   return {
     args: toolUse.input as Record<string, unknown>,
     usage: {
-      inputTokens: message.usage?.input_tokens,
+      // Anthropic input_tokens excludes cache activity — normalize to the
+      // includes-cached ledger convention (see toolLoop's twin comment).
+      inputTokens:
+        typeof message.usage?.input_tokens === 'number'
+          ? message.usage.input_tokens + (message.usage?.cache_read_input_tokens ?? 0)
+          : undefined,
       outputTokens: message.usage?.output_tokens,
       // Anthropic reports cache reads separately; folded in so the ledger sees
       // the same shape from both transports.
       cachedInputTokens: message.usage?.cache_read_input_tokens ?? undefined,
+      cacheWriteTokens: message.usage?.cache_creation_input_tokens ?? undefined,
     },
   };
 }

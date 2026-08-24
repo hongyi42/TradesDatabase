@@ -2,7 +2,7 @@
 date: 2026-08-23
 task: ⑤ memory architecture — baseline metrics, gap-life summaries, a lessons store, and a shadow Reflector
 research: thoughts/shared/research/2026-08-23-memory-architecture-substrate.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -304,11 +304,14 @@ name in both cleanup lists.
 
 ### Live verification (agent-executable)
 - Prerequisites: pilot DB MCP; Render env `REFLECTOR_MODE=shadow` set by user; deploy.
-- [ ] pilot gate honestly SKIPS after deploy + REFLECTOR_MODE=shadow (7 summaries < 15 today);
-  first real shadow proposals reviewed with the user in a follow-up session
+- [x] pilot gate honestly SKIPS (tick 2026-08-23 6:11 PM firm-local: reflector {tenants:1,
+  ran:0, skippedGate:1, tenantErrors:0}, ok:true — and the same line shows the summarize
+  holdback holding 4 open-item escalations). REFLECTOR_MODE=shadow confirmed set (an unset
+  flag reads differently). STANDING FOLLOW-UP: read the first real shadow proposals with the
+  user once the corpus passes 15 — the activation judgment is deliberately human
 
 ### Manual verification
-- [ ] you set `REFLECTOR_MODE=shadow` on lifecycle-heart (my env writes are classifier-blocked)
+- [x] you set `REFLECTOR_MODE=shadow` on lifecycle-heart (proven by the tick's gate-skip shape)
 
 ---
 *Pause after this phase — the env flag is yours.*

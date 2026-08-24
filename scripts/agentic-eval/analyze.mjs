@@ -141,6 +141,7 @@ function familyTable(graded) {
 
 async function reportRun(dir, opts) {
   const { graded, meta, judgeSpend } = await gradeRun(dir, opts);
+  const write = opts.write !== false;
   const price = await priceLedger(meta.ledger);
   const passed = graded.filter((g) => g.status === 'passed').length;
   const failed = graded.filter((g) => g.status === 'failed');
@@ -194,10 +195,12 @@ async function reportRun(dir, opts) {
     }
   }
   const out = md.join('\n') + '\n';
-  writeFileSync(join(dir, 'report.md'), out);
-  writeFileSync(join(dir, 'rows.json'), JSON.stringify(graded, null, 2));
-  console.log(out);
-  console.log(`wrote ${join(dir, 'report.md')}`);
+  if (write) {
+    writeFileSync(join(dir, 'report.md'), out);
+    writeFileSync(join(dir, 'rows.json'), JSON.stringify(graded, null, 2));
+    console.log(out);
+    console.log(`wrote ${join(dir, 'report.md')}`);
+  }
   return { graded, meta, priceUsd: price.usd };
 }
 
@@ -209,8 +212,10 @@ if (hasFlag('compare')) {
     console.error('--compare <dirA> <dirB>');
     process.exit(2);
   }
-  const A = await reportRun(a, { judge: false });
-  const B = await reportRun(b, { judge: false });
+  // Read-only re-grade (deterministic checks only): comparing must never
+  // clobber a dir's judged report.md/rows.json (learned the hard way).
+  const A = await reportRun(a, { judge: false, write: false });
+  const B = await reportRun(b, { judge: false, write: false });
   const fams = [...new Set([...A.graded, ...B.graded].map((g) => g.family))];
   const cell = (run, fam) => {
     const rows = run.graded.filter((g) => g.family === fam);
@@ -218,6 +223,8 @@ if (hasFlag('compare')) {
   };
   const md = [];
   md.push(`# Two-arm comparison`);
+  md.push('');
+  md.push('_Deterministic checks only — judge findings live in each run\'s own report._');
   md.push('');
   md.push(`| family | ${A.meta.arm} (${A.meta.model}) | ${B.meta.arm} (${B.meta.model}) |`);
   md.push('|---|---|---|');

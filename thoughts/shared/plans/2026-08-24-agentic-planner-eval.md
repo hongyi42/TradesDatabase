@@ -380,13 +380,14 @@ Runs the full corpus on both arms, analyzes, compares, and records findings.
   the not-a-benchmark caveat if scenario count or arms change later); eng-memory entry.
 
 ### Automated verification
-- [ ] Both runs complete with 0 harness errors (scenario failures are results, not errors)
-- [ ] `--compare` report renders; cost lines match `cost_events` sums per arm
+- [x] Both runs complete with 0 harness errors (65/65 scenarios × 2 arms, 130 executions)
+- [x] `--compare` renders (deterministic-only, labeled; judge findings live in each run's
+      report); costs priced off cost_rates: opus $5.97, glm $1.51
 
 ### Live verification (agent-executable)
 - Prerequisites: both API keys, local stack.
-- [ ] The runs themselves; evidence: results.jsonl row counts = corpus size × arms, report.md
-      committed alongside the findings doc
+- [x] The runs themselves: 65 rows per arm; judged tallies Opus 54/65 vs GLM 44/65; findings
+      in docs/agentic-eval-baseline-2026-08.md; all four Anthropic cache tiers billed
 
 ### Manual verification
 - [ ] Read the findings with the user: which families each model fails, and whether the

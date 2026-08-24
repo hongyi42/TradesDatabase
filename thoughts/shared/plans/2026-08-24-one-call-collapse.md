@@ -157,13 +157,13 @@ Phase 2).
   never a throw; rail-dropped draft → `refused` + noteDrop recorded.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] new planner.test.ts cases above pass
-- [ ] compose.test.ts still passes untouched (intermediate state is legal)
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass (2250 passed, 8 skipped)
+- [x] new planner.test.ts cases above pass (148/148)
+- [x] compose.test.ts still passes untouched (intermediate state is legal)
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack (`npx supabase start`, `.env.test`)
-- [ ] none beyond the vitest suite this phase (no model call in the new path)
+- [x] none beyond the vitest suite this phase (no model call in the new path)
 
 ### Manual verification
 - [ ] none

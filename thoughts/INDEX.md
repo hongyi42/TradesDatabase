@@ -43,7 +43,7 @@ Regenerate with `npm run decisions:index`. 163 documents · 159 live · 4 supers
 
 ## Live
 
-- `2026-08-24` `plan` [2026-08-24-agentic-planner-eval](shared/plans/2026-08-24-agentic-planner-eval.md) `describes 3 deleted files` · _draft_ — the agentic planner eval at scale — multi-tick gap-life harness, ~60 scenarios, Opus 5 vs GLM
+- `2026-08-24` `plan` [2026-08-24-agentic-planner-eval](shared/plans/2026-08-24-agentic-planner-eval.md) · _draft_ — the agentic planner eval at scale — multi-tick gap-life harness, ~60 scenarios, Opus 5 vs GLM
 - `2026-08-23` `plan` [2026-08-23-delivery-costs-nothing](shared/plans/2026-08-23-delivery-costs-nothing.md) — "④b delivery costs nothing — planner words reach people verbatim via openclaw message send; the relay turn di…
 - `2026-08-23` `plan` [2026-08-23-memory-architecture](shared/plans/2026-08-23-memory-architecture.md) — ⑤ memory architecture — baseline metrics, gap-life summaries, a lessons store, and a shadow Reflector
 - `2026-08-23` `plan` [2026-08-23-the-brain-can-look](shared/plans/2026-08-23-the-brain-can-look.md) — ④ The brain can look — v_captures, v_visits, v_nudges, v_review_items join the planner's read surface

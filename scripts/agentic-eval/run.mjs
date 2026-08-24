@@ -6,7 +6,8 @@
 //   node scripts/agentic-eval/run.mjs --arm opus --yes
 //
 // One scenario = seed a world into the LOCAL stack, then run its timeline of
-// production-faithful ticks (sweep → planner with the real four read tools) at
+// production-faithful ticks (sweep → planner with its real TWO read tools —
+// spine_read + recall_decisions, the only schemas production hands it) at
 // simulated instants. Results land as one JSONL row per scenario;
 // analyze.mjs (Phase 4) grades them — nothing here judges anything.
 //
@@ -51,9 +52,12 @@ if (arm === 'opus') {
   // its EVAL_INFERENCE_* values point at DeepInfra, retired 2026-08-18, whose
   // host no longer maps to any ledger vendor (costs would be refused, and the
   // arm would measure a provider nothing runs on).
-  const key = process.env.FIREWORKS_API_KEY || process.env.INFERENCE_API_KEY;
+  // FIREWORKS_API_KEY ONLY — no INFERENCE_API_KEY fallback (review finding):
+  // a lingering retired-provider key would pass the gate here and then 401
+  // against Fireworks on every tick, after the world was already reset.
+  const key = process.env.FIREWORKS_API_KEY;
   if (!key) {
-    console.error('FIREWORKS_API_KEY (or INFERENCE_API_KEY) is not set (.env) — the glm arm cannot run.');
+    console.error('FIREWORKS_API_KEY is not set (.env) — the glm arm cannot run.');
     process.exit(2);
   }
   process.env.MODEL_PROVIDER = 'openai';
@@ -70,16 +74,21 @@ const { SMOKE_SCENARIOS, ALL_SCENARIOS } = await import(`${DIST}/eval/plannerCor
 const { runArc, simStartIso, clearSimClock } = await import(`${DIST}/eval/plannerSim.js`);
 
 const only = argOf('only', null);
-const scenarios = (only ? ALL_SCENARIOS.filter((s) => only.split(',').includes(s.id)) : ALL_SCENARIOS);
-if (only && scenarios.length !== only.split(',').length) {
+const wanted = only ? [...new Set(only.split(',').map((id) => id.trim()).filter(Boolean))] : null;
+const scenarios = wanted ? ALL_SCENARIOS.filter((s) => wanted.includes(s.id)) : ALL_SCENARIOS;
+if (wanted) {
   const found = new Set(scenarios.map((s) => s.id));
-  console.error(`--only names unknown scenario(s): ${only.split(',').filter((id) => !found.has(id)).join(', ')}`);
-  process.exit(2);
+  const unknown = wanted.filter((id) => !found.has(id));
+  if (unknown.length > 0) {
+    console.error(`--only names unknown scenario(s): ${unknown.join(', ')}`);
+    process.exit(2);
+  }
 }
 void SMOKE_SCENARIOS;
 
+// Model ticks only: an expectWindowSkip tick records nothing and spends nothing.
 const totalTicks = scenarios.reduce(
-  (n, s) => n + s.timeline.filter((t) => t.kind === 'tick').length,
+  (n, s) => n + s.timeline.filter((t) => t.kind === 'tick' && !t.expectWindowSkip).length,
   0,
 );
 
@@ -164,6 +173,25 @@ writeFileSync(out, '');
 
 const t0 = simStartIso(10);
 const t0Ms = Date.parse(t0);
+// DST guard (review finding): corpus offsets are pure milliseconds but the
+// window guard is wall-clock — a fall-back inside the corpus horizon moves a
+// +21h tick from 07:00 to 06:00 and throws mid-paid-run. Refuse the run day.
+{
+  const { localTimeHHMM } = await import(`${DIST}/schedule/availability.js`);
+  const tz = 'America/Los_Angeles';
+  for (const probe of [-48, 24, 36]) {
+    const then = new Date(t0Ms + probe * 3_600_000).toISOString();
+    const expected = ((10 + probe) % 24 + 24) % 24;
+    if (Number(localTimeHHMM(then, tz).slice(0, 2)) !== expected) {
+      console.error(
+        `A DST transition falls inside the corpus horizon (t0${probe >= 0 ? '+' : ''}${probe}h ` +
+          `is not ${expected}:00 firm-local) — offsets and wall clocks disagree today. ` +
+          'Run on a non-transition day.',
+      );
+      process.exit(2);
+    }
+  }
+}
 console.log(`  t0: ${t0} (10:00 firm-local)   arm: ${arm} (${modelLabel})\n`);
 
 let harnessErrors = 0;
@@ -195,7 +223,11 @@ for (const s of scenarios) {
   const wall = Date.now();
   try {
     const arc = await runArc(tenant.id, s, t0Ms);
-    row.seeded = { nudgeIds: arc.seeded.nudgeIds, jobId: arc.seeded.jobId };
+    row.seeded = {
+      nudgeIds: arc.seeded.nudgeIds,
+      jobId: arc.seeded.jobId,
+      lessonIds: arc.seeded.lessonIds,
+    };
     row.ticks = arc.ticks;
     row.steps = arc.steps;
     row.ticksSkipped = arc.ticksSkipped;

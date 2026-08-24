@@ -28,7 +28,7 @@ export interface GraderFinding {
 export interface GradableRow {
   id: string;
   expect?: PlannerScenario['expect'];
-  seeded?: { nudgeIds: Record<string, string> };
+  seeded?: { nudgeIds: Record<string, string>; lessonIds?: string[] };
   ticks: Array<{
     nowIso: string;
     decisions: NudgeDecision[];
@@ -65,27 +65,33 @@ export function gradeScenario(row: GradableRow, t0Ms: number): GraderFinding[] {
     const graded = last.decisions.filter(
       (d) => targets.has(d.nudge_id) && d.action !== 'unmentioned',
     );
+    // ACTIONS grade over ALL executed ticks (review finding): a planner-applied
+    // escalate only pulls the deadline — the SWEEP performs the handoff on the
+    // next tick, where the planner then sees no gap. Last-tick-only grading
+    // would fail exactly the early-and-correct escalation. Claims stay
+    // last-tick (an early tick may honestly describe a then-empty record).
+    const allTicks = row.ticks.flatMap((t) =>
+      t.decisions.filter((d) => targets.has(d.nudge_id) && d.action !== 'unmentioned'),
+    );
 
     if (e.action) {
-      const hit = graded.some((d) => d.action === e.action && d.outcome === 'applied');
+      const hit = allTicks.some((d) => d.action === e.action && d.outcome === 'applied');
       if (!hit) {
         findings.push({
           kind: 'wrong-action',
-          tick: lastIdx,
           detail:
-            `expected APPLIED '${e.action}' on ${label}; got ` +
-            (graded.map((d) => `${d.action}/${d.outcome}`).join(', ') || 'no decision'),
+            `expected APPLIED '${e.action}' on ${label} in some tick; got ` +
+            (allTicks.map((d) => `${d.action}/${d.outcome}`).join(', ') || 'no decision'),
         });
       }
     }
     if (e.actionNot) {
-      const hit = graded.find(
+      const hit = allTicks.find(
         (d) => d.action === e.actionNot && (d.outcome === 'applied' || d.outcome === 'refused'),
       );
       if (hit) {
         findings.push({
           kind: 'forbidden-action',
-          tick: lastIdx,
           detail: `'${e.actionNot}' on ${label} (${hit.outcome}) — attempts count: wanting the verb is the failure`,
         });
       }
@@ -98,7 +104,8 @@ export function gradeScenario(row: GradableRow, t0Ms: number): GraderFinding[] {
         .filter((v): v is string => !!v)
         .map((v) => v.toLowerCase());
       const hay = notes.join(' | ');
-      for (const name of e.mustName ?? []) {
+      for (const rawName of e.mustName ?? []) {
+        const name = rawName.toLowerCase(); // normalize HERE, not only in a corpus test
         if (!hay.includes(name)) {
           findings.push({
             kind: 'missing-name',
@@ -107,7 +114,8 @@ export function gradeScenario(row: GradableRow, t0Ms: number): GraderFinding[] {
           });
         }
       }
-      for (const claim of e.mustNotClaim ?? []) {
+      for (const rawClaim of e.mustNotClaim ?? []) {
+        const claim = rawClaim.toLowerCase();
         const where = notes.find((n) => n.includes(claim));
         if (where) {
           findings.push({
@@ -125,7 +133,8 @@ export function gradeScenario(row: GradableRow, t0Ms: number): GraderFinding[] {
         (c) =>
           c.name === e.mustRead!.tool &&
           c.ok &&
-          (!e.mustRead!.argContains || JSON.stringify(c.args).includes(e.mustRead!.argContains)),
+          (!e.mustRead!.argContains ||
+            JSON.stringify(c.args ?? {}).includes(e.mustRead!.argContains)),
       );
       if (!hit) {
         findings.push({
@@ -139,7 +148,15 @@ export function gradeScenario(row: GradableRow, t0Ms: number): GraderFinding[] {
     }
 
     if (e.lessonCited !== undefined) {
-      const cited = graded.some((d) => /\[[0-9a-f]{8}\]/.test(d.reason));
+      // Strict when the row knows its seeded lesson ids: a fabricated
+      // [deadbeef] stamp must not count as reading the lesson (review
+      // finding). Shape-only fallback keeps older run dirs gradable.
+      const seededShort = (row.seeded?.lessonIds ?? []).map((id) => id.slice(0, 8));
+      const citedIds = graded.flatMap((d) => [...d.reason.matchAll(/\[([0-9a-f]{8})\]/g)].map((m) => m[1]));
+      const cited =
+        seededShort.length > 0
+          ? citedIds.some((id) => seededShort.includes(id))
+          : citedIds.length > 0;
       if (e.lessonCited && !cited) {
         findings.push({
           kind: 'lesson-not-cited',

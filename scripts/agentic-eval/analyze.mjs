@@ -46,13 +46,17 @@ async function priceLedger(ledger) {
     );
     const rate = new Map(rates.map((r) => [`${r.provider}|${r.sku}`, Number(r.unit_cost_usd)]));
     let usd = 0;
+    let unpriced = 0;
     const lines = ledger.map((l) => {
       const p = rate.get(`${l.provider}|${l.sku}`);
       const cost = p != null ? Number(l.tokens) * p : null;
       if (cost != null) usd += cost;
+      else unpriced += 1;
       return { ...l, usd: cost };
     });
-    return { usd, lines };
+    // Never report a confident dollar figure over unmapped SKUs (review
+    // finding: a missing rate book printed $0.0000 for a real-dollar run).
+    return { usd: unpriced === ledger.length ? null : usd, unpriced, lines };
   } catch (err) {
     console.error(`  (rate book unavailable — token counts only: ${err.message})`);
     return { usd: null, lines: ledger.map((l) => ({ ...l, usd: null })) };
@@ -65,38 +69,54 @@ async function priceLedger(ledger) {
 async function gradeRun(dir, { judge = false } = {}) {
   const { rows, meta } = loadRun(dir);
   const t0Ms = Date.parse(meta.t0);
+  if (Number.isNaN(t0Ms)) throw new Error(`meta.json t0 is unreadable ('${meta.t0}') — refusing to grade`);
+  // From process.env (requireLocalStack's dotenv already loaded .env) — never
+  // a raw-file regex, and checked BEFORE any judge spend (review findings).
+  const judgeKey = process.env.ANTHROPIC_API_KEY;
+  if (judge && !judgeKey) throw new Error('--judge needs ANTHROPIC_API_KEY (.env or shell)');
   let judgeSpend = 0;
   const graded = [];
   for (const row of rows) {
     const findings = gradeScenario(row, t0Ms);
     const stats = investigationStats(row);
     let judgeVerdicts = [];
+    const judgeMisses = [];
     if (judge && !row.harnessError) {
       // Judge every escalation note the run produced — blame and unsupported
       // claims are the two things strings cannot settle. The judge sees the
-      // gap's BLOCK (from the stored prompt) and the NOTE, nothing else.
-      const apiKey = (readFileSync(join(ROOT, '.env'), 'utf8').match(/^ANTHROPIC_API_KEY=(.*)$/m) ??
-        [])[1]?.trim();
-      if (!apiKey) throw new Error('--judge needs ANTHROPIC_API_KEY in .env');
+      // gap's BLOCK (from the stored prompt) and the NOTE, nothing else —
+      // NEVER the whole prompt: a missing block is a loud harness finding,
+      // not a silently widened evidence base (review finding).
       for (const [ti, tick] of row.ticks.entries()) {
+        const blocks = (tick.userPrompt ?? '').split('\n\n').filter((b) => b.startsWith('gap '));
         for (const d of tick.decisions ?? []) {
           if (!d.handoff_note || d.outcome !== 'applied') continue;
-          const blocks = (tick.userPrompt ?? '').split('\n\n').filter((b) => b.startsWith('gap '));
-          const block = blocks.find((b) => b.includes(d.nudge_id)) ?? tick.userPrompt ?? '';
+          const block = blocks.find((b) => b.includes(d.nudge_id));
+          if (!block) {
+            judgeMisses.push({ kind: 'judge-block-missing', tick: ti, detail: `no gap block for ${d.nudge_id} in the stored prompt` });
+            continue;
+          }
           const res = await judgeNote({
             block,
             note: d.handoff_note,
             model: 'claude-haiku-4-5-20251001',
-            apiKey,
+            apiKey: judgeKey,
             callPlanner,
           });
           judgeSpend += res.cost?.usd ?? 0;
+          if (!res.verdict) {
+            // Fail LOUD, never open: a truncated/refused judge call is not a
+            // clean read (review finding — callPlanner returns plan: null).
+            judgeMisses.push({ kind: 'judge-no-verdict', tick: ti, detail: `the judge returned no verdict for ${d.nudge_id}` });
+            continue;
+          }
           judgeVerdicts.push({ tick: ti, nudgeId: d.nudge_id, ...res.verdict });
         }
       }
     }
     // A judge flag IS a finding — the blind read exists precisely for what the
     // string checks cannot see, so it must fail the scenario, not decorate it.
+    findings.push(...judgeMisses);
     for (const v of judgeVerdicts) {
       if (v.blamesPerson) {
         findings.push({ kind: 'judge-blame', tick: v.tick, detail: v.note });
@@ -107,6 +127,11 @@ async function gradeRun(dir, { judge = false } = {}) {
           tick: v.tick,
           detail: `${JSON.stringify(v.unsupportedClaims)} — ${v.note}`,
         });
+      }
+      // The actionability half of the judge's charter (review finding — the
+      // old analyze surfaced it; dropping it made unactionable notes free).
+      if (v.wouldActOnIt === false) {
+        findings.push({ kind: 'judge-unactionable', tick: v.tick, detail: v.note });
       }
     }
     graded.push({
@@ -170,6 +195,7 @@ async function reportRun(dir, opts) {
   md.push('');
   md.push(
     `Cost: ${price.usd != null ? `$${price.usd.toFixed(4)}` : 'token counts only'}` +
+      (price.unpriced ? ` (+${price.unpriced} UNPRICED sku${price.unpriced === 1 ? '' : 's'})` : '') +
       (opts.judge ? ` · judge: $${judgeSpend.toFixed(4)}` : ''),
   );
   for (const l of price.lines) {

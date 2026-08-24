@@ -1,8 +1,8 @@
 # Agentic planner eval — baseline, 2026-08-24
 
 The first at-scale run of the planner **as an agent**: 65 scenarios (62 graded + 3 harness
-smokes), each a seeded world run through the REAL tick (sweep → planner → the four read tools →
-real MCP dispatch) at simulated instants, graded deterministically with a blind judge on top.
+smokes), each a seeded world run through the REAL tick (sweep → planner → its two read tools,
+spine_read + recall_decisions, through the real MCP dispatch) at simulated instants, graded deterministically with a blind judge on top.
 Corpus, harness, and graders: plan `thoughts/shared/plans/2026-08-24-agentic-planner-eval.md`;
 runs `spine-eval-runs/agentic-{opus,glm}-2026-08-24T10-*`.
 
@@ -15,13 +15,14 @@ measurement — compare against them only with the same corpus at the same commi
 | | Opus 5 (production) | GLM-5.2/Fireworks (rollback) |
 |---|---|---|
 | deterministic checks | **60/65** | 58/65 |
-| with the blind judge | **54/65 (83%)** | 44/65 (68%) |
+| with the blind judge | **54/65 (83%)** | 42-44/65 (~66%) |
 | reads per decision | 3.97 (59/65 scenarios read) | 3.76 (56/65) |
 | run cost | $5.97 (+$0.03 judge) | $1.51 (+$0.06 judge) |
 
-Judge variance note: the judge (Haiku, blind, reported separately per the estate doctrine) is
-mildly non-deterministic — repeat gradings moved one borderline scenario each way (55↔54,
-43↔44). Deterministic numbers are exactly reproducible from results.jsonl.
+Judge variance note: the judge (Haiku, blind) is mildly non-deterministic — GLM's judged
+tally moved 42-44 across re-gradings (borderline unsupported-claim verdicts), Opus held 54-55.
+Deterministic numbers are exactly reproducible from results.jsonl. Post-review grading also
+counts judge-unactionable notes and judge misses (no verdict / missing block) as failures.
 
 ## Where the models separate
 
@@ -62,6 +63,11 @@ money-blindness/false-claim specimen class this eval was built from. Family spli
 
 ## Standing follow-ups
 
+0. **Production observation surfaced by the review:** the planner is handed TWO tool schemas
+   (`TEAM_LEAD_TOOL_SCHEMAS` = spine_read + recall_decisions). The identity allowlist names
+   `get_customer_context` and `resolve_date` too, but no schema reaches the loop, so they are
+   unreachable — in production as in the eval. Decide whether to hand them or prune the list.
+
 1. The corpus is the regression suite: new production failures get encoded as scenarios
    (the date-eval's 94-reply precedent).
 2. The Opus over-patience cluster (PJ-03/WD-05/LS-05) is a judgment-tuning question — a
@@ -71,3 +77,9 @@ money-blindness/false-claim specimen class this eval was built from. Family spli
    the family to measure.
 4. This baseline is the yardstick for the investigate/plan/compose one-call collapse: run the
    same corpus on the collapsed call and diff per family.
+5. Known grading limits (recorded, deliberate for v1): mustNotClaim passes vacuously on total
+   silence (silence is a pacing failure, not a false claim — a `mustDecide` field is the
+   future fix); the sim pairs sweep+planner only at scripted ticks (production sweeps every
+   5 min — deadlines expiring between ticks resolve later than production would); the judge
+   covers escalation notes only, and blame/dismissal-invite phrasing outside those notes is
+   graded by substring lists narrower than planner-eval's vocabulary.

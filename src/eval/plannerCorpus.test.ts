@@ -131,7 +131,10 @@ describe('corpus structure', () => {
   });
 
   test('lesson scenarios seed lessons; mustRead tools are real team-lead tools', () => {
-    const TOOLS = new Set(['spine_read', 'recall_decisions', 'get_customer_context', 'resolve_date']);
+    // ONLY the schemas production hands the loop (TEAM_LEAD_TOOL_SCHEMAS = 2).
+    // The identity allowlist names two more, but a tool with no handed schema
+    // is unreachable — a mustRead on it would fail every run forever.
+    const TOOLS = new Set(['spine_read', 'recall_decisions']);
     for (const s of ALL_SCENARIOS) {
       const expects: ScenarioExpect[] = Array.isArray(s.expect) ? s.expect : s.expect ? [s.expect] : [];
       for (const e of expects) {

@@ -154,6 +154,8 @@ export interface SeededScenario {
   technicianRef: string;
   /** scenario nudge key → nudges.id */
   nudgeIds: Record<string, string>;
+  /** Seeded ACTIVE lesson ids — the strict referent for lessonCited grading. */
+  lessonIds: string[];
 }
 
 /**
@@ -244,7 +246,10 @@ export async function seedScenario(
   for (const ev of world.evidence ?? []) {
     const { error } = await sb.from('raw_captures').insert({
       tenant_id: tenantId,
-      channel: 'technician_note',
+      // Customer-authored notes are NOT technician notes (review finding):
+      // a model reading 'via technician_note' about a customer call could
+      // honestly say "no contact from the customer" and be graded a liar.
+      channel: ev.fromTechnician === false ? 'phone_call' : 'technician_note',
       raw_text: ev.text,
       technician_ref: ev.fromTechnician === false ? null : tech.ref,
       metadata: { source: 'agentic-eval-seed' } as never,
@@ -286,16 +291,22 @@ export async function seedScenario(
     if (error) throw new Error(`seed decision history failed: ${error.message}`);
   }
 
+  const lessonIds: string[] = [];
   for (const lesson of world.lessons ?? []) {
     const evidence = Object.values(nudgeIds);
-    const { error } = await sb.from('planner_lessons').insert({
-      tenant_id: tenantId,
-      text: lesson.text,
-      status: 'active',
-      evidence: (evidence.length > 0 ? evidence : ['seed']) as never,
-      activated_at: new Date(t0Ms).toISOString(),
-    });
-    if (error) throw new Error(`seed lesson failed: ${error.message}`);
+    const { data: lrow, error } = await sb
+      .from('planner_lessons')
+      .insert({
+        tenant_id: tenantId,
+        text: lesson.text,
+        status: 'active',
+        evidence: (evidence.length > 0 ? evidence : ['seed']) as never,
+        activated_at: new Date(t0Ms).toISOString(),
+      })
+      .select('id')
+      .single();
+    if (error || !lrow) throw new Error(`seed lesson failed: ${error?.message}`);
+    lessonIds.push(lrow.id);
   }
 
   for (const [i, item] of (world.priorItems ?? []).entries()) {
@@ -326,6 +337,7 @@ export async function seedScenario(
     technicianId: tech.id,
     technicianRef: tech.ref,
     nudgeIds,
+    lessonIds,
   };
 }
 
@@ -537,13 +549,17 @@ export async function runTick(
   if (itemsNowErr) throw new Error(`post-tick item read failed: ${itemsNowErr.message}`);
   for (const it of itemsNow ?? []) {
     const before = priorItemStamps.get(it.id);
-    const changed = before !== undefined ? before !== it.resolved_at : it.resolved_at != null;
-    if (!changed || !it.resolved_at) continue;
-    const { error } = await sb
-      .from('review_items')
-      .update({ resolved_at: nowIso })
-      .eq('id', it.id);
-    if (error) throw new Error(`item resolved_at fix-up failed: ${error.message}`);
+    const isNewItem = before === undefined; // minted by this tick's sweep
+    const stampChanged = !isNewItem && before !== it.resolved_at && it.resolved_at != null;
+    if (!isNewItem && !stampChanged) continue;
+    const patch: { resolved_at?: string; created_at?: string } = {};
+    // A minted item's created_at is on v_review_items — a real-clock stamp in
+    // a sim-clock world reads as a contradiction the MODEL gets blamed for.
+    if (isNewItem) patch.created_at = nowIso;
+    if (it.resolved_at && (isNewItem || stampChanged)) patch.resolved_at = nowIso;
+    if (Object.keys(patch).length === 0) continue;
+    const { error } = await sb.from('review_items').update(patch).eq('id', it.id);
+    if (error) throw new Error(`item stamp fix-up failed: ${error.message}`);
   }
 
   return {
@@ -663,7 +679,7 @@ export async function runArc(
       case 'capture': {
         const { error } = await sb.from('raw_captures').insert({
           tenant_id: tenantId,
-          channel: 'technician_note',
+          channel: step.fromTechnician === false ? 'phone_call' : 'technician_note',
           raw_text: step.text,
           technician_ref: step.fromTechnician === false ? null : seeded.technicianRef,
           metadata: { source: 'agentic-eval-timeline' } as never,

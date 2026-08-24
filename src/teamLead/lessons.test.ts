@@ -12,6 +12,8 @@ import {
   strikeLesson,
 } from './lessons.js';
 import * as lessonsModule from './lessons.js';
+import { runPlanner } from './planner.js';
+import type { Nudge } from '../db/nudges.js';
 
 // ⑤ Phase 3 against the real local stack: the Curator's guards — evidence
 // verification, the token-budget activation refusal, two-strike retirement,
@@ -160,6 +162,52 @@ describe('the Curator', () => {
     await strikeLesson(tenantId, l.id, 'once');
     const after = await pg.query(`select text from planner_lessons where id = $1`, [l.id]);
     expect(after.rows[0].text).toBe('Immutable rule text.');
+  });
+
+  test('E2E through the DEFAULT seam: a real tick renders the real active lesson', async () => {
+    // The one link no component test witnesses (review): runPlanner with NO
+    // lessons stub, reading renderLessonsBlock against the real local DB.
+    const l = await proposeLesson({
+      tenantId,
+      text: 'Real seam rule: prefer extend on quiet afternoons.',
+      evidence: [evidenceIds[0]],
+    });
+    await activateLesson(tenantId, l.id);
+    const seen: { user?: string } = {};
+    const nudgeRow = {
+      id: '00000000-0000-4000-8000-0000000e2e01',
+      tenant_id: tenantId,
+      technician_id: null,
+      kind: 'overdue_visit_gap',
+      subject_ref: `lessons-e2e-${RUN}`,
+      status: 'asked',
+      question: null,
+      context: {},
+      created_at: '2026-08-24T16:00:00.000Z',
+      asked_at: '2026-08-24T16:00:00.000Z',
+      resolved_at: null,
+      resolution: null,
+      serve_count: 0,
+      attempts: 0,
+      delivery_attempts: 0,
+      not_before: null,
+      escalate_after: null,
+      answered_by_capture_id: null,
+    } as unknown as Nudge;
+    const summary = await runPlanner('2026-08-24T17:00:00.000Z', 'shadow', {
+      listTenants: async () => [tenantId],
+      listNudges: async () => [nudgeRow],
+      runLoop: async (req: { user: string }) => {
+        seen.user = req.user;
+        return { finalTool: { decisions: [] }, turns: 1, calls: [] } as never;
+      },
+    } as never);
+    expect(summary.tenantErrors).toBe(0);
+    expect(seen.user).toContain("LESSONS (from this firm's own history):");
+    expect(seen.user).toContain('Real seam rule: prefer extend on quiet afternoons.');
+    expect(seen.user).toContain(`[${l.id.slice(0, 8)}]`);
+    await strikeLesson(tenantId, l.id, 'e2e cleanup');
+    await strikeLesson(tenantId, l.id, 'e2e cleanup');
   });
 
   test('the usage join: a decision citing the short id counts against the lesson', async () => {

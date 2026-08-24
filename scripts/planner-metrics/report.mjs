@@ -97,8 +97,9 @@ try {
 
   const usage = await q(`
     select l.id, l.text, l.status,
-           count(d.id)::int as uses,
-           count(d.id) filter (where n.status = 'answered')::int as gap_answered
+           count(d.id) filter (where d.mode = 'live')::int   as uses_live,
+           count(d.id) filter (where d.mode = 'shadow')::int as uses_shadow,
+           count(d.id) filter (where n.status = 'answered' and d.mode = 'live')::int as gap_answered
       from planner_lessons l
       left join nudge_decisions d
         on d.tenant_id = l.tenant_id
@@ -106,12 +107,12 @@ try {
       left join nudges n on n.id = d.nudge_id
      group by l.id, l.text, l.status
      having count(d.id) > 0 or l.status = 'active'
-     order by uses desc`);
-  lines.push('## Lesson usage (the keep/kill evidence — empty until lessons are active and cited)');
+     order by uses_live desc, uses_shadow desc`);
+  lines.push('## Lesson usage (the keep/kill evidence — live citations only count; shadow shown apart)');
   if (usage.length === 0) lines.push('- none yet');
   for (const r of usage) {
     lines.push(
-      `- [${r.id.slice(0, 8)}] (${r.status}) cited ${r.uses}x, gap answered ${r.gap_answered}x — ${r.text}`,
+      `- [${r.id.slice(0, 8)}] (${r.status}) cited live ${r.uses_live}x / shadow ${r.uses_shadow}x, gap answered ${r.gap_answered}x — ${r.text}`,
     );
   }
   lines.push('');

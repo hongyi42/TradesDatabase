@@ -17,6 +17,10 @@ const arg = (name) => {
   const i = process.argv.indexOf(`--${name}`);
   return i !== -1 ? process.argv[i + 1] : null;
 };
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL is not set');
+  process.exit(1);
+}
 const cmd = process.argv[2];
 const tenantId = arg('tenant');
 if (!cmd || !tenantId) {

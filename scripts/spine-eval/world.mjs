@@ -118,6 +118,8 @@ const RESET_TABLES = [
   // Cascade-reachable via technicians, but named anyway (eng-memory §1: every
   // new table gets registered BY NAME — incidental cascade coverage is how
   // tenant_profiles got missed).
+  // References only tenants — no cascade reaches it (the tenant_profiles trap).
+  'planner_lessons',
   // Cascades from nudges, named anyway (eng-memory §1).
   'gap_summaries',
   'nudges',
@@ -172,6 +174,8 @@ const PILOT_TENANT_SCOPED = [
   // (the once-ever dedup). Phase-1 review finding (2026-08-16).
   // Before nudges: explicit, though the cascade FK would also carry it.
   'nudge_decisions',
+  // References only tenants — no cascade reaches it (the tenant_profiles trap).
+  'planner_lessons',
   // Cascades from nudges, named anyway (eng-memory §1).
   'gap_summaries',
   'nudges',

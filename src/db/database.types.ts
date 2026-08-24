@@ -1172,6 +1172,56 @@ export type Database = {
           },
         ]
       }
+      planner_lessons: {
+        Row: {
+          activated_at: string | null
+          evidence: Json
+          id: string
+          proposed_at: string
+          retired_at: string | null
+          retired_reason: string | null
+          scope: string
+          status: string
+          strikes: number
+          tenant_id: string
+          text: string
+        }
+        Insert: {
+          activated_at?: string | null
+          evidence: Json
+          id?: string
+          proposed_at?: string
+          retired_at?: string | null
+          retired_reason?: string | null
+          scope?: string
+          status?: string
+          strikes?: number
+          tenant_id: string
+          text: string
+        }
+        Update: {
+          activated_at?: string | null
+          evidence?: Json
+          id?: string
+          proposed_at?: string
+          retired_at?: string | null
+          retired_reason?: string | null
+          scope?: string
+          status?: string
+          strikes?: number
+          tenant_id?: string
+          text?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "planner_lessons_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       query_audit: {
         Row: {
           created_at: string

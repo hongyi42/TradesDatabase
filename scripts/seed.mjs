@@ -177,6 +177,13 @@ async function truncateSpine(hasScheduling) {
         where table_schema = 'public' and table_name = 'gap_summaries'`,
     );
     if (gs.rows.length > 0) tables += ', gap_summaries';
+    // planner_lessons references ONLY tenants — no cascade reaches it, and a
+    // stale ACTIVE lesson would haunt the fresh world's planner prompts.
+    const pl = await client.query(
+      `select 1 from information_schema.tables
+        where table_schema = 'public' and table_name = 'planner_lessons'`,
+    );
+    if (pl.rows.length > 0) tables += ', planner_lessons';
     await client.query(`truncate table ${tables} cascade`);
   } finally {
     await client.end();

@@ -26,6 +26,10 @@ watchers+planner ticks, deterministic graders plus one blind judge, and a two-ar
   context-miss, premature, late/stuck, people-judgment, multi-gap, lessons, date/window edges).
   Pilot rows inform authoring, are not the source.
 - **Model arms** — user choice: **Opus 5 + GLM-5.2/Fireworks**, same corpus, two runs.
+  *Implementation note (Phase 1): the GLM arm pins the PRODUCTION endpoint explicitly
+  (`FIREWORKS_API_KEY` + the fast-router model), not `lib/env.mjs modelConfig()` — the
+  `EVAL_INFERENCE_*` values in `.env` point at DeepInfra, retired 2026-08-18, whose host no
+  longer maps to any ledger vendor.*
 - **Tick = watchers + planner, compose skipped** (mine): production's tick is sweep→planner→
   compose; the sweep drives state transitions the arcs need (answered/escalated/expired), but
   compose only writes delivery copy — not the graded surface, and it would double model spend.
@@ -51,8 +55,12 @@ watchers+planner ticks, deterministic graders plus one blind judge, and a two-ar
   `new Date()`, `decided_at`/`created_at`/`captured_at` are server defaults, money
   `created_at` is deliberately unspoofable) — so back-dated worlds are unreachable through it.
   The harness seeds nudges/captures/money/decision-history via SQL with explicit timestamps,
-  and after EVERY tick rewrites that tick's new `decided_at`/`resolved_at`/`queued_at` to
-  sim-now. Without the fix-up, watchers' `plannerAlive` check (real `decided_at` vs
+  and after EVERY tick rewrites that tick's new `decided_at`/`resolved_at`/`queued_at` (and a
+  detector-minted nudge's `created_at`) to sim-now. *Implementation note (Phase 1): the
+  fix-up identifies "what this tick wrote" by an id/value SNAPSHOT DIFF, not the planned
+  wall-clock `gte` boundary — sim stamps and the real clock are not comparable in either
+  direction (t0 sits in the real future on early-morning runs, and a prior tick's sim-stamped
+  rows must not be re-captured by a later tick's fix-up). Caught by the Phase 1 test.* Without the fix-up, watchers' `plannerAlive` check (real `decided_at` vs
   sim-now−24h, watchers.ts:668-677) reads the planner as dead mid-arc and auto-closes gaps —
   corrupting exactly the late/stuck arcs the corpus exists to grade.
 - **Transcript capture** — (mine): inject `runLoop` in `PlannerDeps` with a wrapper that
@@ -187,19 +195,23 @@ capture, per-arm env pinning, and JSONL results. Two smoke scenarios prove the l
   transcript + userPrompt captured, sim-time fix-up applied (decided_at == sim-now).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` pass (new tests included)
-- [ ] `npm run build`, then `node scripts/agentic-eval/run.mjs --arm glm --only
+- [x] `npm run typecheck` / `npm run lint` / `npm test` pass (2225 passed incl. 7 new
+      plannerSim tests; 2026-08-24)
+- [x] `npm run build`, then `node scripts/agentic-eval/run.mjs --arm glm --only
       SMOKE-1,SMOKE-2 --yes` completes on the local stack; results.jsonl has 2 rows each with
       a captured transcript, a stored userPrompt, and a decision read back from
-      `nudge_decisions`
+      `nudge_decisions` (run agentic-glm-2026-08-24T08-44-41: escalate/applied + leave/applied)
 
 ### Live verification (agent-executable)
-- Prerequisites: local Supabase stack + `INFERENCE_API_KEY`.
-- [ ] The GLM smoke run above IS the live check (real model, real tools). SMOKE-1 is authored
-      so deciding well REQUIRES a read (the answer sits in job evidence, not the gap block);
-      evidence: the transcript. Note `calls` always contains submit_plan itself — the check is
-      for a read tool call, and a submit-without-reading result is a valid (recorded) finding,
-      not a harness failure.
+- Prerequisites: local Supabase stack + `FIREWORKS_API_KEY`.
+- [x] The GLM smoke run above IS the live check (real model, real tools). Evidence: SMOKE-1's
+      transcript shows `recall_decisions` echoing the SEEDED history (decidedAt at the exact
+      −8h offset) plus six `spine_read`s before submit_plan; the block renders the seeded
+      capture; the date rail fired live on GLM's agentContext ("Monday"/"today" dropped);
+      ledger rows: glm-5.2-fast cached-input/input/output + spine tool_call on the local
+      stack. (SMOKE-1's lure is history via recall_decisions rather than the originally
+      drafted pre-ask evidence — evidence seeding is exercised and asserted in the round-trip
+      test instead.)
 
 ### Manual verification
 - [ ] none
@@ -241,14 +253,19 @@ epilogue.
   sweep), the clock strictly advanced, and the epilogue summary row matches the arc.
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test`
-- [ ] Stubbed-loop arc test passes incl. sweep-driven transition and epilogue read-back
+- [x] `npm run typecheck` / `npm run lint` / `npm test` (2227 passed incl. 2 new arc tests)
+- [x] Stubbed-loop arc test passes incl. sweep-driven transition and epilogue read-back
+      (extend → capture → escalate → sweep handoff on tick 3 → manager_resolve at sim +6h →
+      summary with manager_fate 'resolved' and non-null manager_latency_wh)
 
 ### Live verification (agent-executable)
 - Prerequisites: same as Phase 1.
-- [ ] One real-model arc (GLM) run via `--only ARC-SMOKE --yes`: evidence = results.jsonl row
-      with ≥2 ticks, a mid-arc event visible in the second tick's transcript, and a
-      gap_summaries epilogue.
+- [x] One real-model arc (GLM) via `--only ARC-SMOKE --yes`: 2 ticks; tick 1 saw the open
+      cost hole (recorded `unmentioned`); the mid-arc material_cost is visible in tick 2's
+      prompt (THE RECORD line fired); GLM closed basis `record` with code's citation; epilogue
+      gap_summaries row `answered`, working_hours_open 3.5 (10:00→13:30 firm-local — the
+      working-hours math riding the sim clock). Run agentic-glm-2026-08-24T08-54 + re-run
+      after review fixes.
 
 ### Manual verification
 - [ ] none
@@ -286,9 +303,10 @@ as data.
   kind-appropriate id (assignmentId / jobId).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` (corpus render test = the gate)
-- [ ] `node scripts/agentic-eval/run.mjs --arm glm --dry` lists all ~60 with families and
-      estimated ticks/cost, exits 0 without spending
+- [x] `npm run typecheck` / `npm run lint` / `npm test` (2235 passed incl. 8 corpus-rail
+      tests; the seeding loop runs all 65 worlds against the local stack)
+- [x] `node scripts/agentic-eval/run.mjs --arm glm --dry` lists all 65 (79 model ticks)
+      with families and estimated cost, exits 0 without spending
 
 ### Live verification (agent-executable)
 - [ ] none this phase (authoring; Phase 5 exercises it)
@@ -332,14 +350,18 @@ passing, one per failure kind (wrong action, false claim, missing read, whiplash
 unresolvable citation).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test`
-- [ ] `analyze.mjs` on Phase 1/2's smoke run dirs produces report.md with zero crashes and the
-      cost line matching the ledger sum
+- [x] `npm run typecheck` / `npm run lint` / `npm test` (13 grader tests incl. sweep-aware
+      escalation counting)
+- [x] `analyze.mjs` on the ARC-SMOKE run dir: report.md, 1/1 passed, cost $0.0099 priced off
+      cost_rates (latest effective_from per SKU). *Note: the citation-resolution check the
+      phase text sketched is NOT a grader — production's own rails already enforce citations
+      before a close can apply, so grading it again would test the rails, not the model.*
 
 ### Live verification (agent-executable)
 - Prerequisites: `ANTHROPIC_API_KEY` (judge uses a cheap Anthropic model).
-- [ ] `--judge` on one deliberately-false note (fixture) returns unsupportedClaims non-empty;
-      evidence: the verdict JSON quoted in the phase report
+- [x] `--judge` on a deliberately-false note (fixture run dir): blamesPerson=true and BOTH
+      fabricated claims quoted verbatim in unsupportedClaims; judge flags now FAIL the
+      scenario (judge-blame / judge-unsupported findings), $0.0019/note on Haiku
 
 ### Manual verification
 - [ ] none
@@ -358,13 +380,14 @@ Runs the full corpus on both arms, analyzes, compares, and records findings.
   the not-a-benchmark caveat if scenario count or arms change later); eng-memory entry.
 
 ### Automated verification
-- [ ] Both runs complete with 0 harness errors (scenario failures are results, not errors)
-- [ ] `--compare` report renders; cost lines match `cost_events` sums per arm
+- [x] Both runs complete with 0 harness errors (65/65 scenarios × 2 arms, 130 executions)
+- [x] `--compare` renders (deterministic-only, labeled; judge findings live in each run's
+      report); costs priced off cost_rates: opus $5.97, glm $1.51
 
 ### Live verification (agent-executable)
 - Prerequisites: both API keys, local stack.
-- [ ] The runs themselves; evidence: results.jsonl row counts = corpus size × arms, report.md
-      committed alongside the findings doc
+- [x] The runs themselves: 65 rows per arm; judged tallies Opus 54/65 vs GLM 44/65; findings
+      in docs/agentic-eval-baseline-2026-08.md; all four Anthropic cache tiers billed
 
 ### Manual verification
 - [ ] Read the findings with the user: which families each model fails, and whether the

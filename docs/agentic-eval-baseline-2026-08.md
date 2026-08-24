@@ -38,11 +38,17 @@ money-blindness/false-claim specimen class this eval was built from. Family spli
   GLM largely ignores the LESSONS block — ⑤'s live value depends on the model reading it.
 - **premature: both 8/8.** Neither model pings managers early. The dismissal-fodder failure
   mode (mv_escalation_fates) is not where these models fail.
-- **late-stuck: Opus 7/8 + two escalate-shaped misses elsewhere.** Opus's characteristic
-  failure is the INVERSE of premature: it extends where the corpus expects escalation
-  (PJ-03 27h silence → extend; WD-05 at the 48h ceiling → extend; LS-05 second extend on a
-  stale gap). It is *patient past the point the metric calls stuck* — the exact opposite of
-  the pilot's 2026-08-20 premature-escalation specimen, worth watching in production.
+- **The "over-patience" cluster (PJ-03/WD-05/LS-05) is CONTESTED — read the reasons.** The
+  baseline ran on a SUNDAY (t0 anchors to today), and Opus's extend reasons all cite it
+  correctly: "the ask went out on a Sunday morning and today is the first working day",
+  "midday Saturday… this Monday morning is the first working window since". The corpus
+  offsets were authored as WORKING-TIME silence; on a weekend the same offsets mean weekend
+  silence, where patience is arguably right. LS-01 shows the intended arc working (leave →
+  leave → escalate at end of the working day). GLM "passed" these partly by being day-blind —
+  it escalated through the weekend without noticing the calendar. This is the date-eval's
+  Saturday-anchor lesson recurring one layer up; counting the three as correct puts Opus at
+  ~57/65. Follow-up: pin t0 to a weekday (an `--anchor` like the spine-eval world's) or make
+  the late-family expectations weekend-aware.
 - **CM-03 (both models): neither checked the dismissal pattern.** Six spine_reads, none
   touching v_review_items, before re-escalating a technician whose last three escalations the
   manager dismissed. The ⑤ self-check line in the prompt is not yet strong enough to induce

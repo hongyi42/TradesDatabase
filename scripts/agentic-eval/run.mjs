@@ -176,7 +176,9 @@ for (const s of scenarios) {
   // the run's price source, summed since startedAt below.
   await sql.query(`delete from review_items where tenant_id = $1`, [tenant.id]);
   await sql.query(`delete from nudges where tenant_id = $1`, [tenant.id]);
-  await sql.query(`delete from money_events where tenant_id = $1`, [tenant.id]);
+  // money_events is APPEND-ONLY (ledger trigger; caught by the corpus test) —
+  // rows persist across scenarios, harmlessly: money reads are JOB-scoped and
+  // every scenario seeds fresh jobs. Run-start TRUNCATE still clears them.
   await sql.query(`delete from planner_lessons where tenant_id = $1`, [tenant.id]);
   // Neutralize the PRIOR scenario's world for the live detectors: candidates
   // are CONFIRMED assignments in the 72h window, and every scenario shares one

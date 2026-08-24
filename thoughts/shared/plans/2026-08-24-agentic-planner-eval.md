@@ -303,9 +303,10 @@ as data.
   kind-appropriate id (assignmentId / jobId).
 
 ### Automated verification
-- [ ] `npm run typecheck` / `npm run lint` / `npm test` (corpus render test = the gate)
-- [ ] `node scripts/agentic-eval/run.mjs --arm glm --dry` lists all ~60 with families and
-      estimated ticks/cost, exits 0 without spending
+- [x] `npm run typecheck` / `npm run lint` / `npm test` (2235 passed incl. 8 corpus-rail
+      tests; the seeding loop runs all 65 worlds against the local stack)
+- [x] `node scripts/agentic-eval/run.mjs --arm glm --dry` lists all 65 (79 model ticks)
+      with families and estimated cost, exits 0 without spending
 
 ### Live verification (agent-executable)
 - [ ] none this phase (authoring; Phase 5 exercises it)

@@ -30,6 +30,7 @@
 // exists to grade. So after every tick, that tick's new time stamps are
 // rewritten to sim-now.
 
+import { randomUUID } from 'node:crypto';
 import { getClient } from '../db/client.js';
 import type { Database } from '../db/database.types.js';
 import {
@@ -134,6 +135,13 @@ export interface ScenarioWorld {
     escalateAfter?: Offset;
     handoffNote?: string;
   }>;
+  /** ACTIVE lessons (⑤): rendered into the prompt's LESSONS block. */
+  lessons?: Array<{ text: string }>;
+  /** SETTLED review items from PAST escalations about this technician — the
+   *  dismissal-pattern substrate the planner's self-check reads
+   *  (v_review_items where escalated_from_nudge is not null). The cited nudge
+   *  is synthetic: the column is JSONB detail, not an FK. */
+  priorItems?: Array<{ at: Offset; status: 'dismissed' | 'resolved'; note?: string }>;
 }
 
 export interface SeededScenario {
@@ -276,6 +284,37 @@ export async function seedScenario(
       decided_at: atOffset(t0Ms, h.at),
     });
     if (error) throw new Error(`seed decision history failed: ${error.message}`);
+  }
+
+  for (const lesson of world.lessons ?? []) {
+    const evidence = Object.values(nudgeIds);
+    const { error } = await sb.from('planner_lessons').insert({
+      tenant_id: tenantId,
+      text: lesson.text,
+      status: 'active',
+      evidence: (evidence.length > 0 ? evidence : ['seed']) as never,
+      activated_at: new Date(t0Ms).toISOString(),
+    });
+    if (error) throw new Error(`seed lesson failed: ${error.message}`);
+  }
+
+  for (const [i, item] of (world.priorItems ?? []).entries()) {
+    const at = atOffset(t0Ms, item.at);
+    const { error } = await sb.from('review_items').insert({
+      tenant_id: tenantId,
+      kind: 'overdue_visit_gap',
+      subject_ref: `eval-prior-${i}-${tech.ref}`,
+      status: item.status,
+      suggestion: item.note ?? `an earlier follow-up about ${world.technician.name}'s visit`,
+      resolution: item.note ?? null,
+      detail: {
+        technicianRef: tech.ref,
+        escalatedFromNudge: randomUUID(),
+      } as never,
+      created_at: at,
+      resolved_at: at,
+    });
+    if (error) throw new Error(`seed prior item failed: ${error.message}`);
   }
 
   return {

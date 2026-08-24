@@ -84,7 +84,7 @@ describe('seedScenario — explicit timestamps, pinned subjects', () => {
     // subject_ref pinned by kind: the ASSIGNMENT id for a visit gap, so the
     // live detector's once-ever dedup sees the gap as already surfaced.
     expect(n.subject_ref).toBe(seeded.assignmentId);
-    expect(new Date(n.asked_at).toISOString()).toBe(atOffset(t0Ms, '-30h'));
+    expect(new Date(n.asked_at).toISOString()).toBe(atOffset(t0Ms, '-24.5h'));
     expect(new Date(n.escalate_after).toISOString()).toBe(atOffset(t0Ms, '+2h'));
 
     const { rows: history } = await pg.query(
@@ -93,7 +93,7 @@ describe('seedScenario — explicit timestamps, pinned subjects', () => {
       [tenantId, seeded.nudgeIds.gap],
     );
     expect(history.map((h) => h.action)).toEqual(['leave', 'extend']);
-    expect(new Date(history[0].decided_at).toISOString()).toBe(atOffset(t0Ms, '-20h'));
+    expect(new Date(history[0].decided_at).toISOString()).toBe(atOffset(t0Ms, '-22h'));
 
     // Evidence captures land append-only with the SEEDED captured_at — the
     // reader bound buildGapView filters on.
@@ -113,7 +113,7 @@ describe('seedScenario — explicit timestamps, pinned subjects', () => {
       seeded.assignmentId,
     ]);
     expect(new Date(visits[0].starts_at).getTime()).toBe(
-      Date.parse(toNaiveLocal(atOffset(t0Ms, '-32h'))),
+      Date.parse(toNaiveLocal(atOffset(t0Ms, '-27h'))),
     );
   });
 
@@ -126,7 +126,7 @@ describe('seedScenario — explicit timestamps, pinned subjects', () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].kind).toBe('payment_received');
-    expect(new Date(rows[0].created_at).toISOString()).toBe(atOffset(t0Ms, '-4h'));
+    expect(new Date(rows[0].created_at).toISOString()).toBe(atOffset(t0Ms, '-1h'));
   });
 });
 

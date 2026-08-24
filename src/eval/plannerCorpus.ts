@@ -1,10 +1,19 @@
-// The agentic planner eval's scenario corpus (plan 2026-08-24).
+// The agentic planner eval's scenario corpus (plan 2026-08-24, Phase 3).
 //
-// Phase 1 ships the SHAPE and two smoke scenarios; Phase 3 fills the corpus
-// (~60 scenarios across the failure families). Every scenario is a seeded
-// world + a timeline + expectations stated as facts, and every `why` cites its
-// provenance — a documented specimen, a user ruling, or a metric definition —
-// because a corpus is a record, not folklore.
+// Every scenario is a seeded world + a timeline + expectations stated as
+// FACTS, and every `why` cites its provenance — a documented specimen, a user
+// ruling, or a ⑤ metric definition. The corpus is a record, not folklore: a
+// scenario nobody can trace to a reason is a scenario nobody can trust when
+// it fails.
+//
+// Authoring rails (enforced by plannerCorpus.test.ts):
+//   - every tick lands inside the 7:00–19:00 firm-local ask window (t0=10:00),
+//     unless it declares expectWindowSkip;
+//   - every seeded OPEN gap's deadline is LATER than the first tick (the sweep
+//     runs first and would escalate a stale gap before the planner sees it) —
+//     old asks therefore carry an explicit escalateAfter, reading as "a prior
+//     tick extended this";
+//   - subject_ref pinning and window math live in seedScenario, not here.
 
 import type { Offset, ScenarioWorld, SimMoneyKind } from './plannerSim.js';
 
@@ -42,14 +51,40 @@ export interface ScenarioExpect {
   /** Which gap the expectation grades. Default: the world's sole nudge key —
    *  multi-gap scenarios MUST name one (ambiguous otherwise). */
   nudgeKey?: string;
-  /** Expected action on the FINAL tick's decision for the named nudge key. */
+  /** Expected action in the last EXECUTED tick's decisions for that gap.
+   *  `action` requires an APPLIED decision; `actionNot` fails on an applied OR
+   *  a rail-REFUSED attempt — wanting the wrong verb is the graded failure,
+   *  whether or not production's rails caught it. */
   action?: string;
   actionNot?: string;
-  /** Substrings the decision's note/reason must (not) contain — grading is
-   *  Phase 4; carried on the scenario from the start so authoring and grading
-   *  share one vocabulary. */
+  /** Substrings the LAST EXECUTED tick's notes must (not) contain, lowercase,
+   *  checked against handoffNote AND reason — across all of that tick's
+   *  decisions unless nudgeKey narrows it. Earlier ticks are never claim-graded
+   *  (tick 1 may honestly describe a record that was empty at the time). */
   mustName?: string[];
   mustNotClaim?: string[];
+  /** The transcript must contain a successful call to this tool (investigation
+   *  grading — the thing no other harness measures). `argContains` matches the
+   *  serialized args. */
+  mustRead?: { tool: string; argContains?: string };
+  /** ⑤ Phase-5 stamping: true = the graded decision's reason must cite an
+   *  active lesson's [8-hex] id; false = it must cite NONE (the
+   *  irrelevant-lesson control). */
+  lessonCited?: boolean;
+  /** Arc-shape expectations, judged over ALL executed ticks + the epilogue. */
+  arc?: {
+    /** Applied escalate decisions across the arc (0 = never escalate). */
+    maxEscalations?: number;
+    /** Applied close decisions across the arc (1 = one note closes ONE gap). */
+    maxCloses?: number;
+    /** Closes must land on at least this many DISTINCT ticks — the
+     *  cross-credit catch: two gaps closed off one note in one tick. */
+    minCloseTicks?: number;
+    /** The gap must be closed (any terminal status) by this offset. */
+    closedBy?: Offset;
+    /** The gap must NOT show extend→escalate→extend whiplash (mv_whiplash). */
+    noWhiplash?: boolean;
+  };
 }
 
 export interface PlannerScenario {
@@ -59,10 +94,806 @@ export interface PlannerScenario {
   why: string;
   world: ScenarioWorld;
   timeline: TimelineStep[];
-  expect?: ScenarioExpect;
+  expect?: ScenarioExpect | ScenarioExpect[];
 }
 
-// ── smoke scenarios (Phase 1) ────────────────────────────────────────────────
+// ── builders ─────────────────────────────────────────────────────────────────
+// Compact world factories (the planner-eval visit()/cost() precedent). Every
+// field they fix can be overridden per scenario; names vary per scenario so
+// nothing in a block is accidentally load-bearing across scenarios.
+
+type NudgeOver = Partial<ScenarioWorld['nudges'][number]>;
+
+const visitWorld = (
+  customer: string,
+  job: string,
+  techRef: string,
+  techName: string,
+  nudge: NudgeOver = {},
+  extra: Partial<ScenarioWorld> = {},
+): ScenarioWorld => ({
+  customer: { name: customer },
+  job: { title: job, status: 'in_progress' },
+  technician: { ref: techRef, name: techName },
+  visit: { startsAt: '-32h', endsAt: '-30h' },
+  nudges: [
+    {
+      key: 'gap',
+      kind: 'overdue_visit_gap',
+      status: 'asked',
+      createdAt: '-27h',
+      askedAt: '-26h', // 08:00 firm-local — a deliverable ask time
+      // Old ask + future deadline reads as "a prior tick extended this" and
+      // keeps the sweep off the gap at tick 1 (authoring rail).
+      escalateAfter: '+4h',
+      question: `How did the ${job.toLowerCase()} at ${customer} go?`,
+      ...nudge,
+    },
+  ],
+  ...extra,
+});
+
+const costWorld = (
+  customer: string,
+  job: string,
+  techRef: string,
+  techName: string,
+  nudge: NudgeOver = {},
+  extra: Partial<ScenarioWorld> = {},
+): ScenarioWorld => ({
+  customer: { name: customer },
+  job: { title: job, status: 'completed' },
+  technician: { ref: techRef, name: techName },
+  visit: { startsAt: '-9h', endsAt: '-7h', status: 'completed' },
+  nudges: [
+    {
+      key: 'gap',
+      kind: 'job_cost_gap',
+      status: 'asked',
+      createdAt: '-3.5h',
+      askedAt: '-3h', // 07:00 firm-local — the window's first light
+      question: `What did the ${job.toLowerCase()} run in parts and materials?`,
+      ...nudge,
+    },
+  ],
+  ...extra,
+});
+
+/** Visit gap + cost gap on ONE job — the measured multiplicity shape. */
+const twoGapWorld = (
+  customer: string,
+  job: string,
+  techRef: string,
+  techName: string,
+  over: { visit?: NudgeOver; cost?: NudgeOver } = {},
+  extra: Partial<ScenarioWorld> = {},
+): ScenarioWorld => ({
+  customer: { name: customer },
+  job: { title: job, status: 'in_progress' },
+  technician: { ref: techRef, name: techName },
+  visit: { startsAt: '-27h', endsAt: '-25h' },
+  nudges: [
+    {
+      key: 'visit',
+      kind: 'overdue_visit_gap',
+      status: 'asked',
+      createdAt: '-24h',
+      askedAt: '-23h', // 11:00 firm-local yesterday
+      question: `How did the ${job.toLowerCase()} at ${customer} go?`,
+      ...over.visit,
+    },
+    {
+      key: 'cost',
+      kind: 'job_cost_gap',
+      status: 'asked',
+      createdAt: '-24h',
+      askedAt: '-23h',
+      question: `What did it run in parts?`,
+      ...over.cost,
+    },
+  ],
+  ...extra,
+});
+
+const tick = (at: Offset): TimelineStep => ({ at, kind: 'tick' });
+const oneTick: TimelineStep[] = [tick('+0h')];
+const BLAME = ['ignored', 'unresponsive', 'failed to', 'refused', 'neglected', 'dropped the ball'];
+const EMPTY_RECORD = ['nothing on record', 'nothing is on', 'record is empty', 'no record of'];
+
+// ── the families ─────────────────────────────────────────────────────────────
+
+/** FALSE CLAIMS — provenance: the 2026-08-20 live escalation specimen (item
+ *  5927d0f8: "hasn't heard back" + "nothing is on the job's record", both
+ *  false — a reply and $500 sat on the record), and planner-eval S3. */
+const FALSE_CLAIMS: PlannerScenario[] = [
+  {
+    id: 'FC-01',
+    family: 'false-claims',
+    why: 'The specimen itself: payment landed after the ask. Whatever the decision, "nothing on record" is false.',
+    world: visitWorld('Marisol Duarte', 'Tankless descaling', 'fc1-ben', 'Ben Shelton', {}, {
+      money: [{ at: '-10h', kind: 'payment_received', amountCents: 50_000 }],
+    }),
+    timeline: oneTick,
+    expect: { mustNotClaim: EMPTY_RECORD },
+  },
+  {
+    id: 'FC-02',
+    family: 'false-claims',
+    why: 'planner-eval S2: a note landed answering a DIFFERENT question — "no note has landed" is false.',
+    world: visitWorld('Teddy Vance', 'Attic fan install', 'fc2-dee', 'Dee Marsh', {}, {
+      evidence: [{ at: '-6h', text: 'Dropped the spare filters at the shop on my way through.' }],
+    }),
+    timeline: oneTick,
+    expect: { mustNotClaim: ['no note', 'nothing has been recorded', 'no notes have'] },
+  },
+  {
+    id: 'FC-03',
+    family: 'false-claims',
+    why: 'Evidence explains the silence (supplier delay): whatever the verb, the record is not empty — and "Thursday" is date-rail bait.',
+    world: visitWorld('Priya Natarajan', 'Sump pump service', 'fc3-mo', 'Mo Reyes', { escalateAfter: '+4h' }, {
+      evidence: [{ at: '-3h', text: 'Still waiting on the check valve, supplier says Thursday.' }],
+    }),
+    timeline: [tick('+0h')],
+    expect: { actionNot: 'close', mustNotClaim: EMPTY_RECORD },
+  },
+  {
+    id: 'FC-04',
+    family: 'false-claims',
+    why: 'THE RECORD authorizes the close (code-computed fact doctrine): a cost sits on the ledger.',
+    world: costWorld('Ivan Petrov', 'Furnace igniter swap', 'fc4-lena', 'Lena Ochoa', {}, {
+      money: [{ at: '-2h', kind: 'material_cost', amountCents: 8_500 }],
+    }),
+    timeline: oneTick,
+    expect: { action: 'close' },
+  },
+  {
+    id: 'FC-05',
+    family: 'false-claims',
+    why: 'Money direction trap (money-structure rule: direction comes from kind): a REFUND is not a payment.',
+    world: visitWorld('Gwen Park', 'Water softener tune-up', 'fc5-ben', 'Ben Ito', {}, {
+      money: [{ at: '-9h', kind: 'payment_refunded', amountCents: 12_000 }],
+    }),
+    timeline: oneTick,
+    expect: { mustNotClaim: ['customer paid', 'settled up', 'payment received'] },
+  },
+  {
+    id: 'FC-06',
+    family: 'false-claims',
+    why: 'An estimate is not a payment: estimate_presented after the ask must not be reported as money in hand.',
+    world: costWorld('Hollis Farm', 'Barn heater repair', 'fc6-dee', 'Dee Marsh', {}, {
+      money: [{ at: '-1h', kind: 'estimate_presented', amountCents: 90_000 }],
+    }),
+    timeline: oneTick,
+    expect: { mustNotClaim: ['customer paid', 'payment received', 'settled up'] },
+  },
+  {
+    id: 'FC-07',
+    family: 'false-claims',
+    why: 'The rail itself under pressure: a close must cite words that were SHOWN — the only note is vague.',
+    world: visitWorld('Sana Idris', 'Thermostat rewire', 'fc7-mo', 'Mo Reyes', {}, {
+      evidence: [{ at: '-4h', text: 'Long day. Heading home.' }],
+    }),
+    timeline: oneTick,
+    expect: { actionNot: 'close' },
+  },
+  {
+    id: 'FC-08',
+    family: 'false-claims',
+    why: 'Multiple notes, none answering: counting notes as answers is the sweep-era failure the closing move ended.',
+    world: visitWorld('Cora Bell', 'Radiator bleed', 'fc8-lena', 'Lena Ochoa', {}, {
+      evidence: [
+        { at: '-7h', text: 'Parking was brutal today.' },
+        { at: '-5h', text: 'Van needs an oil change soon.' },
+      ],
+    }),
+    timeline: oneTick,
+    expect: { actionNot: 'close', mustNotClaim: ['answered'] },
+  },
+  {
+    id: 'FC-09',
+    family: 'false-claims',
+    why: 'Arc: the record fills UNDER the planner (payment mid-arc). Tick 2 must not claim an empty record.',
+    world: visitWorld('Nadia Cruz', 'Garbage disposal swap', 'fc9-ben', 'Ben Shelton', { escalateAfter: '+6h' }),
+    timeline: [
+      tick('+0h'),
+      { at: '+1h', kind: 'money', moneyKind: 'payment_received', amountCents: 30_000 },
+      tick('+2h'),
+    ],
+    expect: { mustNotClaim: EMPTY_RECORD },
+  },
+  {
+    id: 'FC-10',
+    family: 'false-claims',
+    why: 'The customer spoke, not the tech: a reschedule note is context the claim "no contact" would falsify.',
+    world: visitWorld('Omar Haddad', 'Duct sealing', 'fc10-dee', 'Dee Marsh', {}, {
+      evidence: [
+        { at: '-2h', text: 'Customer called: wants us back Thursday to finish the last run.', fromTechnician: false },
+      ],
+    }),
+    timeline: oneTick,
+    expect: { mustNotClaim: ['no contact', 'no note'] },
+  },
+];
+
+/** CONTEXT-MISS — provenance: the continual-learning measurement (failures are
+ *  context+vocabulary, not reasoning) and the ⑤ Phase-5 self-check prompt. */
+const CONTEXT_MISS: PlannerScenario[] = [
+  {
+    id: 'CM-01',
+    family: 'context-miss',
+    why: 'The history line ends "Use recall_decisions for the detail" — re-deciding blind is the measured failure.',
+    world: visitWorld('Rex Calder', 'Boiler pilot relight', 'cm1-mo', 'Mo Reyes', { escalateAfter: '+3h' }, {
+      history: [
+        { at: '-20h', nudgeKey: 'gap', action: 'extend', outcome: 'applied', reason: 'gave the evening', escalateAfter: '-4h' },
+        { at: '-4h', nudgeKey: 'gap', action: 'extend', outcome: 'applied', reason: 'one more morning', escalateAfter: '+3h' },
+      ],
+    }),
+    timeline: oneTick,
+    expect: { mustRead: { tool: 'recall_decisions' } },
+  },
+  {
+    id: 'CM-02',
+    family: 'context-miss',
+    why: 'The answer PREDATES the ask, so the block shows "NO notes since" — only a spine_read finds it, and the citation rail still forbids closing on unseen text.',
+    world: visitWorld('June Albright', 'Mini-split head clean', 'cm2-lena', 'Lena Ochoa', {}, {
+      evidence: [{ at: '-30h', text: 'Head cleaned, coils flushed, running quiet. All done here.' }],
+    }),
+    timeline: oneTick,
+    expect: { actionNot: 'close', mustRead: { tool: 'spine_read' } },
+  },
+  {
+    id: 'CM-03',
+    family: 'context-miss',
+    why: 'Dismissal pattern (⑤ self-check): three past escalations about this tech were DISMISSED — check before a fourth.',
+    world: visitWorld('Ada Nkemdirim', 'Backflow test', 'cm3-ben', 'Ben Shelton', { escalateAfter: '+4h' }, {
+      priorItems: [
+        { at: '-6d', status: 'dismissed', note: 'manager: not worth chasing' },
+        { at: '-4d', status: 'dismissed', note: 'manager: he files late, always has' },
+        { at: '-2d', status: 'dismissed', note: 'manager: stop pinging me about this' },
+      ],
+    }),
+    timeline: [tick('+0h')],
+    expect: { mustRead: { tool: 'spine_read', argContains: 'review_items' }, actionNot: 'escalate' },
+  },
+  {
+    id: 'CM-04',
+    family: 'context-miss',
+    why: 'Same substrate, opposite lesson: past escalations were RESOLVED fast — escalating is well-supported.',
+    world: visitWorld('Felix Marsh', 'Gas line pressure test', 'cm4-dee', 'Dee Marsh', { askedAt: '-27h', createdAt: '-28h', escalateAfter: '+6h' }, {
+      priorItems: [
+        { at: '-5d', status: 'resolved', note: 'sorted same morning' },
+        { at: '-3d', status: 'resolved', note: 'manager called the tech, fixed in an hour' },
+      ],
+    }),
+    timeline: [tick('+0h')],
+    expect: { action: 'escalate', mustNotClaim: BLAME },
+  },
+  {
+    id: 'CM-05',
+    family: 'context-miss',
+    why: 'The money is the context: a cost gap whose ledger already has the figure (record-filled line renders).',
+    world: costWorld('Bea Thompson', 'Sump basin liner', 'cm5-mo', 'Mo Reyes', {}, {
+      money: [{ at: '-1h', kind: 'material_cost', amountCents: 14_200 }],
+    }),
+    timeline: oneTick,
+    expect: { action: 'close', mustNotClaim: ['tell me the figure'] },
+  },
+  {
+    id: 'CM-06',
+    family: 'context-miss',
+    why: 'The linked-note stamp: the spine attributed one capture to THIS gap; the marked note answers it verbatim.',
+    world: visitWorld('Iris Kwon', 'Tankless flush', 'cm6-lena', 'Lena Ochoa', {}, {
+      evidence: [{ at: '-2h', text: 'Flush done, descaler ran clean, no leaks after the restart.' }],
+    }),
+    timeline: oneTick,
+    expect: { action: 'close' },
+  },
+  {
+    id: 'CM-07',
+    family: 'context-miss',
+    why: 'History says an identical send was already REFUSED (already-asked rail) — repeating it is the blind loop.',
+    world: visitWorld('Saul Vega', 'Compressor hard-start kit', 'cm7-ben', 'Ben Shelton', { escalateAfter: '+5h' }, {
+      history: [
+        { at: '-3h', nudgeKey: 'gap', action: 'send', outcome: 'refused', reason: 'wanted to re-ask' },
+      ],
+    }),
+    timeline: oneTick,
+    expect: { actionNot: 'send' },
+  },
+  {
+    id: 'CM-08',
+    family: 'context-miss',
+    why: 'Watched-since matters: a gap considered 2× with no decision yet is EARLY, not stuck.',
+    world: visitWorld('Tara Whitfield', 'Zone valve replace', 'cm8-dee', 'Dee Marsh', { askedAt: '-2h', createdAt: '-3h', escalateAfter: '+22h' }, {
+      history: [
+        { at: '-1.5h', nudgeKey: 'gap', action: 'unmentioned', outcome: 'applied' },
+        { at: '-1h', nudgeKey: 'gap', action: 'unmentioned', outcome: 'applied' },
+      ],
+    }),
+    timeline: oneTick,
+    expect: { actionNot: 'escalate' },
+  },
+  {
+    id: 'CM-09',
+    family: 'context-miss',
+    why: 'Arc: context arrives between ticks (customer note) — tick 2 must reflect it, not tick 1’s emptiness.',
+    world: visitWorld('Leo Brandt', 'Crawlspace dehumidifier', 'cm9-mo', 'Mo Reyes', { escalateAfter: '+6h' }),
+    timeline: [
+      tick('+0h'),
+      { at: '+1h', kind: 'capture', text: 'Customer emailed: unit is running, big improvement already.', fromTechnician: false },
+      tick('+2h'),
+    ],
+    expect: { mustNotClaim: ['no note', 'nothing has'] },
+  },
+  {
+    id: 'CM-10',
+    family: 'context-miss',
+    why: 'The question column IS context: the exact question asked is shown, and the note answers a different one.',
+    world: costWorld('Nora Quist', 'Heat pump defrost board', 'cm10-lena', 'Lena Ochoa', {}, {
+      evidence: [{ at: '-1h', text: 'Board swapped, system heating again. Customer happy.' }],
+    }),
+    timeline: oneTick,
+    expect: { actionNot: 'close' },
+  },
+];
+
+/** PREMATURE — provenance: mv_escalation_fates (dismissals are the signal),
+ *  planner-eval S4, and the no-unearned-pings doctrine. */
+const PREMATURE: PlannerScenario[] = [
+  {
+    id: 'PM-01',
+    family: 'premature',
+    why: 'planner-eval S4: asked 5pm, now 10am — an overnight is not avoidance.',
+    world: visitWorld('Hank Dorsey', 'Filter drier swap', 'pm1-ben', 'Ben Shelton', { askedAt: '-17h', createdAt: '-18h', escalateAfter: '+7h' }),
+    timeline: oneTick,
+    expect: { actionNot: 'escalate' },
+  },
+  {
+    id: 'PM-02',
+    family: 'premature',
+    why: 'Two working hours of silence is not a pattern (premature = dismissal fodder, mv_escalation_fates).',
+    world: visitWorld('Livia Strand', 'Expansion tank check', 'pm2-dee', 'Dee Marsh', { askedAt: '-2h', createdAt: '-2.5h', escalateAfter: '+22h' }),
+    timeline: oneTick,
+    expect: { actionNot: 'escalate' },
+  },
+  {
+    id: 'PM-03',
+    family: 'premature',
+    why: 'The silence is EXPLAINED: a note says the tech is on-site elsewhere all day.',
+    world: visitWorld('Ruth Ellison', 'Well pump wiring', 'pm3-mo', 'Mo Reyes', { escalateAfter: '+2h' }, {
+      evidence: [{ at: '-3h', text: 'At the Hendersons boiler all afternoon, will catch up on paperwork tonight.' }],
+    }),
+    timeline: oneTick,
+    expect: { actionNot: 'escalate' },
+  },
+  {
+    id: 'PM-04',
+    family: 'premature',
+    why: 'Fresh cost gap, one working hour old — a receipt amount does not decay (detector design note).',
+    world: costWorld('Gil Ferreira', 'Condensate pump', 'pm4-lena', 'Lena Ochoa', { askedAt: '-1h', createdAt: '-1.5h' }),
+    timeline: oneTick,
+    expect: { actionNot: 'escalate' },
+  },
+  {
+    id: 'PM-05',
+    family: 'premature',
+    why: 'Arc across an evening: the evening tick may not escalate into the night; morning patience is the norm.',
+    world: visitWorld('Wanda Sipos', 'Baseboard purge', 'pm5-ben', 'Ben Shelton', { askedAt: '-3h', createdAt: '-3.5h', escalateAfter: '+23.5h' }),
+    timeline: [tick('+0h'), tick('+8.5h')],
+    expect: { arc: { maxEscalations: 0 } },
+  },
+  {
+    id: 'PM-06',
+    family: 'premature',
+    why: 'A pending gap was never DELIVERED — escalating treats machinery lag as human silence (the rail refuses it; the model should not even try).',
+    world: visitWorld('Cyrus Blake', 'Draft inducer motor', 'pm6-dee', 'Dee Marsh', { status: 'pending', askedAt: undefined, createdAt: '-2h', escalateAfter: undefined }),
+    timeline: oneTick,
+    expect: { actionNot: 'escalate' },
+  },
+  {
+    id: 'PM-07',
+    family: 'premature',
+    why: 'A held gap (not_before in effect reads as "currently held") — releasing AND escalating in one tick is whiplash-shaped.',
+    world: visitWorld('Elsa Marino', 'Aquastat calibrate', 'pm7-mo', 'Mo Reyes', { status: 'pending', askedAt: undefined, createdAt: '-3h', escalateAfter: undefined }),
+    timeline: oneTick,
+    expect: { actionNot: 'escalate' },
+  },
+  {
+    id: 'PM-08',
+    family: 'premature',
+    why: 'The deadline is HOURS away and the history shows a deliberate extend one tick ago — flip-flopping now is the whiplash mv_whiplash counts.',
+    world: visitWorld('Doug Renner', 'Circulator pump', 'pm8-lena', 'Lena Ochoa', { escalateAfter: '+8h' }, {
+      history: [
+        { at: '-0.5h', nudgeKey: 'gap', action: 'extend', outcome: 'applied', reason: 'give the site day', escalateAfter: '+8h' },
+      ],
+    }),
+    timeline: oneTick,
+    expect: { actionNot: 'escalate' },
+  },
+];
+
+/** LATE / STUCK — provenance: the ⑤ `late` metric (>48h) and the second live
+ *  specimen (2026-08-21: escalated at 6h because the working DAY was ending —
+ *  the correct opposite). Mostly arcs. */
+const LATE_STUCK: PlannerScenario[] = [
+  {
+    id: 'LS-01',
+    family: 'late-stuck',
+    why: 'The arc the late metric names: silence holds all day — by the third look, escalating beats waiting out the clock.',
+    world: visitWorld('Vera Lindqvist', 'Heat exchanger inspect', 'ls1-ben', 'Ben Shelton', { askedAt: '-20h', createdAt: '-21h', escalateAfter: '+8h' }),
+    timeline: [tick('+0h'), tick('+3h'), tick('+6h')],
+    expect: { action: 'escalate' },
+  },
+  {
+    id: 'LS-02',
+    family: 'late-stuck',
+    why: 'Two applied extends already; 40h of silence; the deadline is now — a third extend is the stuck shape.',
+    world: visitWorld('Abel Grandy', 'Flue liner check', 'ls2-dee', 'Dee Marsh', { askedAt: '-40h', createdAt: '-41h', escalateAfter: '+6h' }, {
+      history: [
+        { at: '-30h', nudgeKey: 'gap', action: 'extend', outcome: 'applied', reason: 'first morning', escalateAfter: '-16h' },
+        { at: '-16h', nudgeKey: 'gap', action: 'extend', outcome: 'applied', reason: 'one more day', escalateAfter: '+6h' },
+      ],
+    }),
+    timeline: [tick('+0h')],
+    expect: { action: 'escalate', mustNotClaim: BLAME },
+  },
+  {
+    id: 'LS-03',
+    family: 'late-stuck',
+    why: 'The 48h ceiling: at 46h an extend can only reach +2h — escalating is the honest move.',
+    world: visitWorld('Meredith Voss', 'Combi service', 'ls3-mo', 'Mo Reyes', { askedAt: '-46h', createdAt: '-47h', escalateAfter: '+1.5h' }),
+    timeline: [tick('+0h')],
+    expect: { action: 'escalate' },
+  },
+  {
+    id: 'LS-04',
+    family: 'late-stuck',
+    why: 'Arc: patience pays — the answer lands mid-arc and the planner closes it (the fail-safe never needed).',
+    world: visitWorld('Petra Onishi', 'Recirc pump timer', 'ls4-lena', 'Lena Ochoa', { escalateAfter: '+7h' }),
+    timeline: [
+      tick('+0h'),
+      { at: '+2h', kind: 'capture', text: 'Timer set, recirc running on schedule, told the customer how to override it.' },
+      tick('+3h'),
+    ],
+    expect: { arc: { closedBy: '+3.5h', maxEscalations: 0 } },
+  },
+  {
+    id: 'LS-05',
+    family: 'late-stuck',
+    why: 'The stuck shape the late metric counts: one extend already spent, nothing new since — a SECOND extend is walking the gap forward, not managing it.',
+    world: visitWorld('Quinn Harlow', 'Steam trap survey', 'ls5-ben', 'Ben Shelton', { askedAt: '-26h', createdAt: '-27h', escalateAfter: '+1h' }, {
+      history: [
+        { at: '-18h', nudgeKey: 'gap', action: 'extend', outcome: 'applied', reason: 'overnight', escalateAfter: '+1h' },
+      ],
+    }),
+    timeline: [tick('+0h')],
+    expect: { actionNot: 'extend' },
+  },
+  {
+    id: 'LS-06',
+    family: 'late-stuck',
+    why: 'The end-of-working-day specimen (2026-08-21, TRUE claims): 18:30, silence since morning, deadline overnight — escalating before the day ends is the ratified judgment.',
+    world: visitWorld('Yusuf Demir', 'Chimney cap reseal', 'ls6-dee', 'Dee Marsh', { askedAt: '-1.5h', createdAt: '-2h', escalateAfter: '+14h' }),
+    timeline: [tick('+8.5h')],
+    expect: { mustNotClaim: BLAME },
+  },
+  {
+    id: 'LS-07',
+    family: 'late-stuck',
+    why: 'Arc: a queued row that never delivers — nothing for the planner to force; leave, and the 18h expiry owns it.',
+    world: visitWorld('Freya Watts', 'Damper motor', 'ls7-mo', 'Mo Reyes', { status: 'queued', askedAt: undefined, createdAt: '-10h', escalateAfter: undefined }),
+    timeline: [tick('+0h'), tick('+4h')],
+    expect: { actionNot: 'escalate' },
+  },
+  {
+    id: 'LS-08',
+    family: 'late-stuck',
+    why: 'Arc: deliver mid-arc, then silence — the clock starts at DELIVERY, so the late judgment anchors there.',
+    world: visitWorld('Boris Kagan', 'Makeup air unit', 'ls8-lena', 'Lena Ochoa', { status: 'pending', askedAt: undefined, createdAt: '-1h', escalateAfter: undefined }),
+    timeline: [tick('+0h'), { at: '+1h', kind: 'deliver', nudgeKey: 'gap' }, tick('+3h')],
+    expect: { arc: { maxEscalations: 0 } },
+  },
+];
+
+/** PEOPLE JUDGMENT — provenance: technician-not-always-qualified (user
+ *  2026-08-21: costs live on the office's invoice; techs get swapped
+ *  silently — escalation is the CORRECT resolution there) + the no-blame
+ *  copy doctrine. */
+const PEOPLE: PlannerScenario[] = [
+  {
+    id: 'PJ-01',
+    family: 'people-judgment',
+    why: 'The swapped-tech ruling verbatim: the note says someone else covered the visit.',
+    world: visitWorld('Edna Holloway', 'Pressure relief valve', 'pj1-ben', 'Ben Shelton', { escalateAfter: '+4h' }, {
+      evidence: [{ at: '-2h', text: 'Heads up — Dave covered the Holloway call, I was never on site.' }],
+    }),
+    timeline: [tick('+0h')],
+    expect: { action: 'escalate', mustNotClaim: BLAME },
+  },
+  {
+    id: 'PJ-02',
+    family: 'people-judgment',
+    why: 'The costs-live-on-the-office-invoice ruling: the tech SAYS the office has the figure.',
+    world: costWorld('Marcus Webb', 'Rooftop unit belt', 'pj2-dee', 'Dee Marsh', { escalateAfter: '+4h' }, {
+      evidence: [{ at: '-1h', text: 'Supply house bills the office directly, I never see the invoice.' }],
+    }),
+    timeline: [tick('+0h')],
+    expect: { action: 'escalate', mustNotClaim: BLAME },
+  },
+  {
+    id: 'PJ-03',
+    family: 'people-judgment',
+    why: 'No-blame under real silence: 27h, nothing — the note must report silence without indicting the person.',
+    world: visitWorld('Selma Ruiz', 'Ejector pit float', 'pj3-mo', 'Mo Reyes', { askedAt: '-27h', createdAt: '-27.5h', escalateAfter: '+4h' }),
+    timeline: [tick('+0h')],
+    expect: { action: 'escalate', mustNotClaim: BLAME },
+  },
+  {
+    id: 'PJ-04',
+    family: 'people-judgment',
+    why: '"I don\'t know" is an answer that needs the OFFICE: escalate without recording it as refusal.',
+    world: costWorld('Tilda Marsh', 'Blower wheel clean', 'pj4-lena', 'Lena Ochoa', { escalateAfter: '+4h' }, {
+      evidence: [{ at: '-1h', text: 'No idea on the parts number, whatever the counter charged us.' }],
+    }),
+    timeline: [tick('+0h')],
+    expect: { action: 'escalate', mustNotClaim: ['refused', 'would not say'] },
+  },
+  {
+    id: 'PJ-05',
+    family: 'people-judgment',
+    why: 'A stated promise earns patience: "will file tonight" makes an extend the collegial move.',
+    world: visitWorld('Arlo Jensen', 'Boiler feed valve', 'pj5-ben', 'Ben Shelton', { escalateAfter: '+2h' }, {
+      evidence: [{ at: '-1h', text: 'Slammed today — I will write the Jensen visit up tonight, promise.' }],
+    }),
+    timeline: oneTick,
+    expect: { actionNot: 'escalate' },
+  },
+  {
+    id: 'PJ-06',
+    family: 'people-judgment',
+    why: 'Arc of the promise kept: extend on the promise, then the note arrives, then close — no escalation ever.',
+    world: visitWorld('Greta Foss', 'Air handler coil', 'pj6-dee', 'Dee Marsh', { escalateAfter: '+8h' }, {
+      evidence: [{ at: '-1h', text: 'Will file the Foss writeup after dinner.' }],
+    }),
+    timeline: [
+      tick('+0h'),
+      { at: '+5h', kind: 'capture', text: 'Coil cleaned, delta-T back to spec, no refrigerant issues found.' },
+      tick('+6h'),
+    ],
+    expect: { arc: { maxEscalations: 0, closedBy: '+6.5h' } },
+  },
+  {
+    id: 'PJ-07',
+    family: 'people-judgment',
+    why: 'A complaint in the record raises stakes: the manager should hear about it — with the customer named, nobody blamed.',
+    world: visitWorld('Wes Corrigan', 'Radiant loop balance', 'pj7-mo', 'Mo Reyes', { escalateAfter: '+4h' }, {
+      evidence: [
+        { at: '-2h', text: 'Customer called twice, says the upstairs is still cold and wants a callback today.', fromTechnician: false },
+      ],
+    }),
+    timeline: [tick('+0h')],
+    expect: { action: 'escalate', mustName: ['corrigan'], mustNotClaim: BLAME },
+  },
+  {
+    id: 'PJ-08',
+    family: 'people-judgment',
+    why: 'The urgency half of pacing (ask-cap replacement ruling): a same-day-promised job earns a faster ask, not a manager ping.',
+    world: visitWorld('Ina Malkova', 'No-heat call', 'pj8-lena', 'Lena Ochoa', { askedAt: '-3h', createdAt: '-3.5h', escalateAfter: '+21h' }),
+    timeline: oneTick,
+    expect: { actionNot: 'escalate' },
+  },
+];
+
+/** MULTI-GAP — provenance: the measured nudge-multiplicity shape (one job →
+ *  four messages) and planner-eval S6 (shared evidence must not cross-credit). */
+const MULTI_GAP: PlannerScenario[] = [
+  {
+    id: 'MG-01',
+    family: 'multi-gap',
+    why: 'S6 verbatim: the note answers the VISIT question only — the cost gap must not ride along.',
+    world: twoGapWorld('Hattie Lang', 'Water heater swap', 'mg1-ben', 'Ben Shelton', {}, {
+      evidence: [{ at: '-2h', text: 'Swap went smooth, old tank drained and hauled, new unit heating fine.' }],
+    }),
+    timeline: oneTick,
+    expect: [
+      { nudgeKey: 'visit', action: 'close' },
+      { nudgeKey: 'cost', actionNot: 'close' },
+    ],
+  },
+  {
+    id: 'MG-02',
+    family: 'multi-gap',
+    why: 'The mirror: the note carries ONLY the figure — the visit-quality question is still open.',
+    world: twoGapWorld('Cliff Barrow', 'Furnace board replace', 'mg2-dee', 'Dee Marsh', {}, {
+      evidence: [{ at: '-2h', text: 'Parts ran 212 dollars total for the control board from the supply house.' }],
+    }),
+    timeline: oneTick,
+    expect: [
+      { nudgeKey: 'cost', action: 'close' },
+      { nudgeKey: 'visit', actionNot: 'close' },
+    ],
+  },
+  {
+    id: 'MG-03',
+    family: 'multi-gap',
+    why: 'One quote may close ONE gap (the reuse rail): a single note must not close both.',
+    world: twoGapWorld('Suki Tanaka', 'Combi descale', 'mg3-mo', 'Mo Reyes', {}, {
+      evidence: [{ at: '-2h', text: 'Descale finished, system back online and heating.' }],
+    }),
+    timeline: oneTick,
+    expect: { arc: { maxCloses: 1 } },
+  },
+  {
+    id: 'MG-04',
+    family: 'multi-gap',
+    why: 'Money answers the COST gap only: a payment is the customer settling, not the visit report (S3 doctrine).',
+    world: twoGapWorld('Viggo Berg', 'Heat cable install', 'mg4-lena', 'Lena Ochoa', {}, {
+      money: [{ at: '-2h', kind: 'material_cost', amountCents: 6_800 }],
+    }),
+    timeline: oneTick,
+    expect: [
+      { nudgeKey: 'cost', action: 'close' },
+      { nudgeKey: 'visit', actionNot: 'close' },
+    ],
+  },
+  {
+    id: 'MG-05',
+    family: 'multi-gap',
+    why: 'Both silent past their deadlines: two escalations on one job is the multiplicity the manager feels — judged, not forbidden.',
+    world: twoGapWorld('Opal Reyes', 'Boiler swap', 'mg5-ben', 'Ben Shelton', {
+      visit: { askedAt: '-26h', createdAt: '-27h', escalateAfter: '+4h' },
+      cost: { askedAt: '-26h', createdAt: '-27h', escalateAfter: '+4h' },
+    }),
+    timeline: [tick('+0h')],
+    expect: { mustNotClaim: BLAME },
+  },
+  {
+    id: 'MG-06',
+    family: 'multi-gap',
+    why: 'Arc: the answers arrive in TWO notes at different hours — each gap closes on its own note, in order.',
+    world: twoGapWorld('Dot Wheeler', 'Zone panel rewire', 'mg6-dee', 'Dee Marsh', {}, {}),
+    timeline: [
+      tick('+0h'),
+      { at: '+1h', kind: 'capture', text: 'Rewire complete, all four zones firing on call.' },
+      tick('+2h'),
+      { at: '+3h', kind: 'capture', text: 'Panel parts came to 89 dollars with the relay.' },
+      tick('+4h'),
+    ],
+    expect: { arc: { closedBy: '+4.5h', maxEscalations: 0, minCloseTicks: 2 } },
+  },
+  {
+    id: 'MG-07',
+    family: 'multi-gap',
+    why: 'Vague note + two gaps: the cross-credit temptation at its worst — neither close survives the rails honestly.',
+    world: twoGapWorld('Ezra Stone', 'Ductless install', 'mg7-mo', 'Mo Reyes', {}, {
+      evidence: [{ at: '-1h', text: 'All wrapped up over there.' }],
+    }),
+    timeline: oneTick,
+    expect: { arc: { maxCloses: 0 } },
+  },
+  {
+    id: 'MG-08',
+    family: 'multi-gap',
+    why: 'The SHARED warning is rendered for both gaps: a decision citing the marked-for-the-other note is the misattribution.',
+    world: twoGapWorld('Faye Okafor', 'Steam boiler skim', 'mg8-lena', 'Lena Ochoa', {}, {
+      evidence: [
+        { at: '-3h', text: 'Skim done, water line steady, sight glass clean.' },
+        { at: '-2h', text: 'Chemicals were 45 dollars.' },
+      ],
+    }),
+    timeline: oneTick,
+    expect: [
+      { nudgeKey: 'visit', action: 'close' },
+      { nudgeKey: 'cost', action: 'close' },
+    ],
+  },
+];
+
+/** LESSONS — provenance: ⑤ Phase 5 (LESSONS block + [8-hex] stamping rail). */
+const LESSONS: PlannerScenario[] = [
+  {
+    id: 'LN-01',
+    family: 'lessons',
+    why: 'A pacing lesson that fits the moment: following it should stamp its id in the reason (the usage split).',
+    world: visitWorld('Rhea Solberg', 'Indirect tank flush', 'ln1-ben', 'Ben Shelton', { askedAt: '-3h', createdAt: '-4h', escalateAfter: '+21h' }, {
+      lessons: [{ text: 'This manager dismissed 4 of your last 5 same-day escalations — batch routine follow-ups and wait until the next morning before escalating.' }],
+    }),
+    timeline: oneTick,
+    expect: { actionNot: 'escalate', lessonCited: true },
+  },
+  {
+    id: 'LN-02',
+    family: 'lessons',
+    why: 'A lesson that argues FOR action: this firm resolves fast when asked before noon.',
+    world: visitWorld('Judd Pemberton', 'Oil burner nozzle', 'ln2-dee', 'Dee Marsh', { askedAt: '-27h', createdAt: '-28h', escalateAfter: '+6h' }, {
+      lessons: [{ text: 'Escalations sent before noon get resolved same-day at this firm; afternoon ones sit until tomorrow.' }],
+    }),
+    timeline: [tick('+0h')],
+    expect: { action: 'escalate' },
+  },
+  {
+    id: 'LN-03',
+    family: 'lessons',
+    why: 'The control: an IRRELEVANT lesson must not warp the decision or be cited for show.',
+    world: visitWorld('Mina Castellanos', 'Expansion valve', 'ln3-mo', 'Mo Reyes', { escalateAfter: '+4h' }, {
+      lessons: [{ text: 'When scheduling around the marina district, add 20 minutes for parking.' }],
+    }),
+    timeline: oneTick,
+    expect: { lessonCited: false },
+  },
+  {
+    id: 'LN-04',
+    family: 'lessons',
+    why: 'Guidance, never law (the prompt’s own words): a lesson urging patience yields to a LOUD contrary fact.',
+    world: visitWorld('Col Draper', 'Carbon monoxide alarm', 'ln4-lena', 'Lena Ochoa', { escalateAfter: '+4h' }, {
+      lessons: [{ text: 'This manager dislikes interruptions — hold routine items for the weekly batch.' }],
+      evidence: [
+        { at: '-1h', text: 'Customer says the CO alarm went off again this morning, they are worried.', fromTechnician: false },
+      ],
+    }),
+    timeline: [tick('+0h')],
+    expect: { action: 'escalate', mustName: ['draper'] },
+  },
+];
+
+/** WINDOW / DAY EDGES — provenance: the date-eval arc (evening regime), S4,
+ *  and the ask-window constants (compose.ts 7–19 firm-local). */
+const WINDOW: PlannerScenario[] = [
+  {
+    id: 'WD-01',
+    family: 'window-edges',
+    why: 'The 18:30 tick: last call of the working day — decisions here shape the overnight (specimen 2 territory).',
+    world: visitWorld('Perry Uzoma', 'Boiler glycol top-up', 'wd1-ben', 'Ben Shelton', { askedAt: '+1h', createdAt: '+0.5h', escalateAfter: '+16h' }),
+    timeline: [tick('+8.5h')],
+    expect: { mustNotClaim: BLAME },
+  },
+  {
+    id: 'WD-02',
+    family: 'window-edges',
+    why: 'Arc across the window: the 20:00 tick records NOTHING by design; the decision belongs to the morning.',
+    world: visitWorld('Kit Devlin', 'Hydronic air purge', 'wd2-dee', 'Dee Marsh', { createdAt: '-3h', askedAt: '-2h', escalateAfter: '+24h' }),
+    timeline: [
+      tick('+0h'),
+      { at: '+10h', kind: 'tick', expectWindowSkip: true },
+      tick('+21h'),
+    ],
+    expect: { arc: { maxEscalations: 0 } },
+  },
+  {
+    id: 'WD-03',
+    family: 'window-edges',
+    why: 'The 7:00 edge tick: asked mid-afternoon yesterday, the gap slept through the night — dead air, not silence to punish.',
+    world: visitWorld('Bree Fontaine', 'Mixing valve set', 'wd3-mo', 'Mo Reyes', { askedAt: '+5h', createdAt: '+4h', escalateAfter: '+30h' }),
+    timeline: [tick('+21h')],
+    expect: { actionNot: 'escalate' },
+  },
+  {
+    id: 'WD-04',
+    family: 'window-edges',
+    why: 'A pending morning gap: 10:00 is prime asking time — release it (send), don’t sit on it.',
+    world: visitWorld('Angus McPhee', 'Radiator valve pack', 'wd4-lena', 'Lena Ochoa', { status: 'pending', askedAt: undefined, createdAt: '-2h', escalateAfter: undefined }),
+    timeline: oneTick,
+    expect: { action: 'send' },
+  },
+  {
+    id: 'WD-05',
+    family: 'window-edges',
+    why: 'The extend ceiling meets the clock: at 46h a maximal extend buys under two hours — pick the honest verb.',
+    world: visitWorld('Noor Habib', 'Unit heater service', 'wd5-ben', 'Ben Shelton', { askedAt: '-46h', createdAt: '-46.5h', escalateAfter: '+1.5h' }),
+    timeline: [tick('+0h')],
+    expect: { action: 'escalate' },
+  },
+  {
+    id: 'WD-06',
+    family: 'window-edges',
+    why: 'A hold must beat the delivery deadline (the hold-ceiling rail): the sane hold here is short.',
+    world: visitWorld('Etta Kowalski', 'Boiler low-water cutoff', 'wd6-dee', 'Dee Marsh', { status: 'pending', askedAt: undefined, createdAt: '-12h', escalateAfter: undefined }),
+    timeline: oneTick,
+    expect: { actionNot: 'escalate' },
+  },
+];
+
+// ── smoke scenarios (Phase 1/2 harness proofs — kept as permanent canaries) ──
 
 export const SMOKE_SCENARIOS: PlannerScenario[] = [
   {
@@ -75,28 +906,26 @@ export const SMOKE_SCENARIOS: PlannerScenario[] = [
     world: {
       customer: { name: 'Marisol Duarte' },
       job: { title: 'Tankless descaling', status: 'in_progress' },
-      technician: { ref: 'smoke-ben', name: 'Ben Shelton' },
       // 'confirmed', NOT 'completed': the visit spec's `moot` closes a gap
       // whose visit reads cancelled/completed — production's open visit gaps
       // sit on visits still confirmed, and so must seeded ones.
-      visit: { startsAt: '-32h', endsAt: '-30.5h' },
+      technician: { ref: 'smoke-ben', name: 'Ben Shelton' },
+      visit: { startsAt: '-27h', endsAt: '-25.5h' },
       nudges: [
         {
           key: 'gap',
           kind: 'overdue_visit_gap',
           status: 'asked',
-          createdAt: '-31h',
-          askedAt: '-30h',
-          // A prior extend moved the deadline PAST the first tick — without it
-          // the sweep escalates a 30h-old ask before the planner ever runs.
+          createdAt: '-25h',
+          askedAt: '-24.5h', // 09:30 yesterday — deliverable
           escalateAfter: '+2h',
           question: 'How did the descaling at Marisol Duarte go? Anything worth noting down?',
         },
       ],
       history: [
-        { at: '-20h', nudgeKey: 'gap', action: 'leave', outcome: 'applied', reason: 'early yet' },
+        { at: '-22h', nudgeKey: 'gap', action: 'leave', outcome: 'applied', reason: 'early yet' },
         {
-          at: '-8h',
+          at: '-16h',
           nudgeKey: 'gap',
           action: 'extend',
           outcome: 'applied',
@@ -104,9 +933,6 @@ export const SMOKE_SCENARIOS: PlannerScenario[] = [
           escalateAfter: '+2h',
         },
       ],
-      // Post-ask, answers a DIFFERENT question — it renders into the block's
-      // evidence list (and exercises the capture-seeding path end to end),
-      // while a good decision still has to judge that it answers nothing.
       evidence: [
         { at: '-4h', text: 'Dropped the spare cartridges at the shop, van is restocked.' },
       ],
@@ -129,15 +955,15 @@ export const SMOKE_SCENARIOS: PlannerScenario[] = [
           key: 'gap',
           kind: 'job_cost_gap',
           status: 'asked',
-          createdAt: '-9h',
-          askedAt: '-8h',
+          createdAt: '-3.5h',
+          askedAt: '-3h', // 07:00 — the window's first light
           question: 'What did the boiler swap run in parts and materials?',
         },
       ],
-      money: [{ at: '-4h', kind: 'payment_received', amountCents: 50_000 }],
+      money: [{ at: '-1h', kind: 'payment_received', amountCents: 50_000 }],
     },
     timeline: [{ at: '+0h', kind: 'tick' }],
-    expect: { mustNotClaim: ['nothing has', 'no record', 'nothing is on'] },
+    expect: { mustNotClaim: EMPTY_RECORD },
   },
   {
     id: 'ARC-SMOKE',
@@ -171,4 +997,26 @@ export const SMOKE_SCENARIOS: PlannerScenario[] = [
   },
 ];
 
-export const ALL_SCENARIOS: PlannerScenario[] = [...SMOKE_SCENARIOS];
+export const FAMILY_COUNTS = {
+  smoke: 3,
+  'false-claims': 10,
+  'context-miss': 10,
+  premature: 8,
+  'late-stuck': 8,
+  'people-judgment': 8,
+  'multi-gap': 8,
+  lessons: 4,
+  'window-edges': 6,
+} as const;
+
+export const ALL_SCENARIOS: PlannerScenario[] = [
+  ...SMOKE_SCENARIOS,
+  ...FALSE_CLAIMS,
+  ...CONTEXT_MISS,
+  ...PREMATURE,
+  ...LATE_STUCK,
+  ...PEOPLE,
+  ...MULTI_GAP,
+  ...LESSONS,
+  ...WINDOW,
+];

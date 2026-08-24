@@ -25,8 +25,10 @@ export const RETIRE_STRIKES = 2;
 // is a RULE, not an event. (cleanPlannerText is the wrong rail here: it only
 // admits served date labels, and a lesson legitimately has none.)
 const ABSOLUTE_DATE = /\d{4}-\d{2}-\d{2}/;
+// Month names ENUMERATED (a bare [a-z]* wildcard refused "maybe", "separate",
+// "decrease" — review F2) and ordinal suffixes covered ("Aug 23rd" — F1).
 const MONTH_AND_DAY =
-  /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b/i;
+  /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?\b/i;
 
 export function cleanLessonText(raw: unknown): { text: string } | { refused: string } {
   if (typeof raw !== 'string') return { refused: 'lesson text must be a string' };
@@ -117,6 +119,9 @@ export async function activateLesson(tenantId: string, id: string): Promise<Plan
   if (!lesson) throw new Error(`no such lesson ${id} for this tenant`);
   if (lesson.status === 'active') return lesson;
   if (lesson.status === 'retired') throw new Error('a retired lesson never comes back');
+  // 'stale' IS activatable by explicit id: staleness governs listings (the
+  // default listLessons excludes it), and the 60-day sweep racing a human's
+  // just-made decision must not veto it. (Review F6, resolved this way.)
   const active = await listLessons(tenantId, ['active']);
   const rendered = renderBullets([...active, lesson]);
   if (rendered.length > LESSONS_BLOCK_BUDGET) {
@@ -145,6 +150,9 @@ export async function strikeLesson(
 ): Promise<PlannerLesson> {
   const lesson = await getLesson(tenantId, id);
   if (!lesson) throw new Error(`no such lesson ${id} for this tenant`);
+  // A retired lesson's history is settled — a third strike must not rewrite
+  // retired_at/retired_reason (review F7).
+  if (lesson.status === 'retired') return lesson;
   const strikes = lesson.strikes + 1;
   const retiring = strikes >= RETIRE_STRIKES;
   const { data, error } = await getClient()
@@ -161,9 +169,11 @@ export async function strikeLesson(
     })
     .eq('tenant_id', tenantId)
     .eq('id', id)
+    .eq('strikes', lesson.strikes) // lost-update guard (review F4)
     .select()
-    .single();
+    .maybeSingle();
   if (error) throw new Error(`strikeLesson failed: ${error.message}`, { cause: error });
+  if (!data) throw new Error('strikeLesson raced: the lesson moved under us — retry');
   return data as PlannerLesson;
 }
 

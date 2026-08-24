@@ -18,129 +18,143 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 ## What is in here
 
-101 entries — the map this file never had. Jump by line number, or grep the title.
+115 entries — the map this file never had. Jump by line number, or grep the title.
 
 **1. How we work (process rules)**
 
-- L149 · Every code change goes through a PR before main _(2026-07-12)_
-- L154 · RPI workflow
-- L157 · Box_Setup_Stuff/ is not documentation — it's the only context a host-side Claude gets
-- L161 · Verify vendor claims against live docs, cite URLs
-- L163 · Never paste badge plaintext anywhere _(2026-07-03)_
-- L165 · Concurrent sessions share a checkout at their peril _(2026-08-15)_
-- L171 · A new table that references ONLY tenants escapes every cleanup cascade _(2026-08-15)_
+- L163 · Every code change goes through a PR before main _(2026-07-12)_
+- L168 · RPI workflow
+- L171 · Box_Setup_Stuff/ is not documentation — it's the only context a host-side Claude gets
+- L175 · Verify vendor claims against live docs, cite URLs
+- L177 · Never paste badge plaintext anywhere _(2026-07-03)_
+- L179 · Concurrent sessions share a checkout at their peril _(2026-08-15)_
+- L185 · A new table that references ONLY tenants escapes every cleanup cascade _(2026-08-15)_
 
 **2. Product principles (user decisions — don't re-litigate, do cite when relevant)**
 
-- L183 · Agent-first framing + the intelligent-spine direction _(2026-08-15)_
-- L211 · Nudge frequency is paced by URGENCY, never capped _(2026-08-18)_
-- L265 · The spine is not the books _(2026-08-15)_
-- L278 · The money layer is workflow-agnostic — never pilot-fitted _(2026-08-15)_
-- L288 · Telegram is the entire UI _(2026-07-03)_
-- L298 · A schedule READ renders the booked order; it never re-derives one _(2026-07-31)_
-- L317 · Vocabulary must track what actually gates _(2026-07-23)_
-- L324 · Two access tiers, manager and technician _(2026-07-02)_
-- L331 · Seat-based licensing _(2026-07-02)_
-- L335 · EXPLORATORY direction — software-for-physical-data exchange _(2026-07-26)_
-- L352 · Spine scope boundary _(2026-07-06)_
-- L357 · Confirmation doctrine _(2026-07-17)_
-- L368 · REJECTED direction — do not propose again: _(2026-07-15)_
-- L372 · Agent model: _(2026-08-15)_
-- L561 · Homogeneous memory collapses retrieval
-- L564 · Context collapse / brevity bias
-- L568 · Hint leakage
-- L599 · Push the keys, pull the content.
-- L605 · Only accumulate what something can later falsify.
-- L609 · Traces are not memory.
-- L612 · Append-only, never model-rewritten.
-- L614 · Keep it out of the record.
-- L622 · Field notes record one-shot; standing facts still confirm _(2026-08-21)_
-- L657 · A mixed batch confirms as a whole _(2026-08-21)_
-- L757 · Independent rollback of the technician-facing voice.
-- L759 · Per-gap failure isolation.
+- L197 · Agent-first framing + the intelligent-spine direction _(2026-08-15)_
+- L225 · Nudge frequency is paced by URGENCY, never capped _(2026-08-18)_
+- L279 · The spine is not the books _(2026-08-15)_
+- L292 · The money layer is workflow-agnostic — never pilot-fitted _(2026-08-15)_
+- L302 · Telegram is the entire UI _(2026-07-03)_
+- L312 · A schedule READ renders the booked order; it never re-derives one _(2026-07-31)_
+- L331 · Vocabulary must track what actually gates _(2026-07-23)_
+- L338 · Two access tiers, manager and technician _(2026-07-02)_
+- L345 · Seat-based licensing _(2026-07-02)_
+- L349 · EXPLORATORY direction — software-for-physical-data exchange _(2026-07-26)_
+- L366 · Spine scope boundary _(2026-07-06)_
+- L371 · Confirmation doctrine _(2026-07-17)_
+- L382 · REJECTED direction — do not propose again: _(2026-07-15)_
+- L386 · Agent model: _(2026-08-15)_
+- L455 · Candidate seat model, MEASURED but NOT adopted (2026-08-24) — Gemini 3.7 Flash. _(2026-08-24)_
+- L593 · Homogeneous memory collapses retrieval
+- L596 · Context collapse / brevity bias
+- L600 · Hint leakage
+- L631 · Push the keys, pull the content.
+- L637 · Only accumulate what something can later falsify.
+- L641 · Traces are not memory.
+- L644 · Append-only, never model-rewritten.
+- L646 · Keep it out of the record.
+- L654 · Field notes record one-shot; standing facts still confirm _(2026-08-21)_
+- L689 · A mixed batch confirms as a whole _(2026-08-21)_
+- L789 · Independent rollback of the technician-facing voice.
+- L791 · Per-gap failure isolation.
 
 **3. Environments & infrastructure**
 
-- L822 · A CRON service cannot be deployed by commit id at all. _(2026-08-20)_
-- L830 · Nothing auto-applies DB migrations to the pilot.
-- L834 · Deploy-before-migration _(2026-07-19)_
-- L837 · A new tool surface silently bypasses whatever doctrine rule did not name it — twice now. _(2026-08-06)_
-- L867 · local_weekday did not close it — resolve_date week ranges were the real hole (2026-08-06). _(2026-08-06)_
-- L885 · A HOOK plugin is not installed until the GATEWAY's startup line says so (2026-08-06). _(2026-08-06)_
-- L896 · openclaw plugins install — the VENDOR's own CLI — trips the config-hash trap (2026-08-06). _(2026-08-06)_
-- L904 · gateway restart does NOT re-render config from sandboxes.json _(2026-08-19)_
-- L911 · DOCTRINE — the manager is NEVER a verification layer for dates (owner decision, 2026-08-11). _(2026-08-11)_
-- L939 · WHY the guard was deaf, and proof the version upgrade fixes it (2026-08-12). _(2026-08-12)_
-- L1000 · Guard v0.3.0 fixes both eval-found detector defects (2026-08-12, PR #124). _(2026-08-12)_
-- L1167 · Eval truth-set conventions (2026-08-13 adjudication, five grader bugs): _(2026-08-13)_
-- L1235 · medic v4+v5 are DEPLOYED as of 2026-08-13 19:54:23Z — the NVIDIA failover can no longer fire. _(2026-08-13)_
-- L1314 · Ops alerting: the verdict now leaves the box (2026-08-12). _(2026-08-12)_
-- L1384 · The ladder cannot see the MONEY LEDGER — and a money-only answer leaves the nudge open _(2026-08-19)_
-- L1455 · Stage-1 shadow CONFIRMED on the pilot (2026-08-18T00:05Z). _(2026-08-18)_
-- L1487 · USER DECISION 2026-08-18 — DeepInfra is being RETIRED; Fireworks replaces its inference key. _(2026-08-18)_
-- L1514 · Stage 1 is PROVEN END TO END IN PRODUCTION (2026-08-18 23:10-23:17Z, first clean run). _(2026-08-18)_
-- L1628 · nemoclaw list shows the ONBOARDING RECORD, not the live inference route (2026-08-06). _(2026-08-06)_
-- L1660 · revoke ... from public does NOT revoke anon/authenticated on a new function. _(2026-08-06)_
+- L859 · A CRON service cannot be deployed by commit id at all. _(2026-08-20)_
+- L867 · Nothing auto-applies DB migrations to the pilot.
+- L871 · Deploy-before-migration _(2026-07-19)_
+- L874 · A new tool surface silently bypasses whatever doctrine rule did not name it — twice now. _(2026-08-06)_
+- L904 · local_weekday did not close it — resolve_date week ranges were the real hole (2026-08-06). _(2026-08-06)_
+- L922 · A HOOK plugin is not installed until the GATEWAY's startup line says so (2026-08-06). _(2026-08-06)_
+- L933 · openclaw plugins install — the VENDOR's own CLI — trips the config-hash trap (2026-08-06). _(2026-08-06)_
+- L941 · gateway restart does NOT re-render config from sandboxes.json _(2026-08-19)_
+- L948 · DOCTRINE — the manager is NEVER a verification layer for dates (owner decision, 2026-08-11). _(2026-08-11)_
+- L976 · WHY the guard was deaf, and proof the version upgrade fixes it (2026-08-12). _(2026-08-12)_
+- L1037 · Guard v0.3.0 fixes both eval-found detector defects (2026-08-12, PR #124). _(2026-08-12)_
+- L1204 · Eval truth-set conventions (2026-08-13 adjudication, five grader bugs): _(2026-08-13)_
+- L1272 · medic v4+v5 are DEPLOYED as of 2026-08-13 19:54:23Z — the NVIDIA failover can no longer fire. _(2026-08-13)_
+- L1351 · Ops alerting: the verdict now leaves the box (2026-08-12). _(2026-08-12)_
+- L1421 · The ladder cannot see the MONEY LEDGER — and a money-only answer leaves the nudge open _(2026-08-19)_
+- L1492 · Stage-1 shadow CONFIRMED on the pilot (2026-08-18T00:05Z). _(2026-08-18)_
+- L1524 · USER DECISION 2026-08-18 — DeepInfra is being RETIRED; Fireworks replaces its inference key. _(2026-08-18)_
+- L1551 · Stage 1 is PROVEN END TO END IN PRODUCTION (2026-08-18 23:10-23:17Z, first clean run). _(2026-08-18)_
+- L1665 · nemoclaw list shows the ONBOARDING RECORD, not the live inference route (2026-08-06). _(2026-08-06)_
+- L1697 · revoke ... from public does NOT revoke anon/authenticated on a new function. _(2026-08-06)_
 
-**4. Live-state snapshot (as of 2026-07-22 — verify before relying)**
+**4. Live-state snapshot (as of 2026-08-24 — verify before relying)**
 
-- L1722 · Live: _(2026-07-20)_
-- L2062 · Deferred / backlog (each has an owner-stated reason — check before resurrecting): _(2026-07-25)_
-- L2293 · FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema. _(2026-07-30)_
-- L2365 · Dated debts: _(2026-10-30)_
-- L2374 · Pending human tests:
-- L2428 · Money's structure in the spine is load-bearing for FUTURE BUSINESS ANALYTICS _(2026-08-19)_
+- L1741 · The ladder is complete through ⑤ — all five stages merged AND deployed (2026-08-24). _(2026-08-24)_
+- L1750 · Model routing differs BY RENDER SERVICE (verified 2026-08-24). _(2026-08-24)_
+- L1767 · The Render estate — six services, two of them behind main (API-read 2026-08-24). _(2026-08-24)_
+- L1783 · 43 manager tools, a 2-tool team-lead surface, and 12 views (2026-08-24). _(2026-08-24)_
+- L1789 · What the brain has produced on the pilot: proven machinery, empty corpus (2026-08-24). _(2026-08-24)_
+- L1797 · In flight, NOT on main: the one-call collapse _(2026-08-24)_
+- L1802 · Tenants on the pilot DB — FOUR, not two (2026-08-24). _(2026-08-24)_
+- L1814 · The demo schedule has run out — re-shift before the next demo (2026-08-24). _(2026-08-24)_
+- L1820 · Roster: 31 technician rows, and the flag is a STATE, not a boolean (2026-08-24). _(2026-08-24)_
+- L1827 · Sandbox map on trades-box-1 (2026-08-24) _(2026-08-24)_
+- L1840 · sandbox_pool is a partial ledger, not the pool — never answer "which seats exist" from it.
+- L1845 · Board:
+- L1858 · Live: _(2026-07-20)_
+- L2202 · Deferred / backlog (each has an owner-stated reason — check before resurrecting): _(2026-07-25)_
+- L2442 · FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema. _(2026-07-30)_
+- L2514 · Dated debts (reviewed 2026-08-24): _(2026-08-24)_
+- L2534 · Pending human tests:
+- L2591 · Money's structure in the spine is load-bearing for FUTURE BUSINESS ANALYTICS _(2026-08-19)_
 
 **5. The walls — traps by the time you'd hit them**
 
-- L2473 · md5 a box-local bootstrap-box.sh against the repo before running it
-- L2476 · wire needs the WHOLE Box_Setup_Stuff/ tree
-- L2478 · 4 of the 9 AGENTS.md blocks are append-once
-- L2481 · s2 is the canary and must stay the most up-to-date seat
-- L2500 · Concurrent local stacks are the top cause of phantom test failures on this machine.
-- L2523 · Retuning a constant is retroactive.
-- L2526 · TEST ROT — hit three times in one day.
-- L2546 · A tool DESCRIPTION change is not deploy-only; a result-side field is. _(2026-07-31)_
-- L2568 · A sandbox can hold a badge the doorman no longer knows — and nothing says so. _(2026-08-04)_
-- L2596 · Credentials inject into a sandbox's process env at container launch ONLY.
-- L2614 · NEVER change a sandbox's openclaw.json with openclaw config patch. _(2026-07-30)_
-- L2652 · nemoclaw rebuild can destroy the sandbox's device private key
-- L2657 · The placeholder versioning trap:
-- L2661 · nemoclaw onboard/rebuild resets the gateway inference route
-- L2664 · Tool VOCABULARY lives in three places, and one of them self-reapplies. _(2026-07-25)_
-- L2672 · There is NO per-tool allowlist file
-- L2677 · The Telegram sender allowlist lives in TWO places
-- L2680 · Never health-check via nemoclaw <s> agent
-- L2683 · Trust box evidence over vendor status pages
-- L2685 · DeepInfra balance runs out roughly monthly and NOTHING alerts on it _(2026-07-11)_
-- L2698 · A deactivated seat's bot goes silent but alive
-- L2703 · Don't verify badges by extracting them from /proc/<pid>/environ
-- L2717 · CLI chat probes run on the EMBEDDED agent, not the gateway _(2026-07-23)_
-- L2745 · /hooks/agent (the gateway's HTTP webhook) CANNOT drive an agent turn on this box.
-- L2771 · A status gate outlives its truth — date it, or delete it. _(2026-08-06)_
-- L2781 · Resolve merge state with merge-base, never by eyeballing git log on a feature branch. _(2026-08-06)_
-- L2790 · When inbound email "stops working", check the webhook subscription FIRST
-- L2830 · npm test truncates the local stack, and that wipes the spine-eval world.
-- L2836 · An eval's own fixtures collide unless each scenario owns its rows AND its people. _(2026-08-12)_
-- L2843 · Fixture data must look like customer data.
-- L2848 · A missing BOARD_BOT_HANDLE makes the agent invent board links. _(2026-07-22)_
-- L2855 · resolve_date now has calendar-PERIOD modes _(2026-08-12)_
-- L2936 · Design consequence worth reusing: make the cheap tier the control group.
-- L2940 · The pilot DB is an accepted test-write target (user decision, 2026-08-12) _(2026-08-12)_
-- L2950 · L1 PINS L2: a stamped capture makes its customer permanently undeletable. _(2026-08-12)_
-- L2971 · A new tenant in the pilot silently enlists in the lifecycle cron.
+- L2636 · md5 a box-local bootstrap-box.sh against the repo before running it
+- L2639 · wire needs the WHOLE Box_Setup_Stuff/ tree
+- L2641 · 4 of the 9 AGENTS.md blocks are append-once
+- L2644 · s2 is the canary and must stay the most up-to-date seat
+- L2663 · Concurrent local stacks are the top cause of phantom test failures on this machine.
+- L2686 · Retuning a constant is retroactive.
+- L2689 · TEST ROT — hit three times in one day.
+- L2709 · A tool DESCRIPTION change is not deploy-only; a result-side field is. _(2026-07-31)_
+- L2731 · A sandbox can hold a badge the doorman no longer knows — and nothing says so. _(2026-08-04)_
+- L2759 · Credentials inject into a sandbox's process env at container launch ONLY.
+- L2777 · NEVER change a sandbox's openclaw.json with openclaw config patch. _(2026-07-30)_
+- L2815 · nemoclaw rebuild can destroy the sandbox's device private key
+- L2820 · The placeholder versioning trap:
+- L2824 · nemoclaw onboard/rebuild resets the gateway inference route
+- L2827 · Tool VOCABULARY lives in three places, and one of them self-reapplies. _(2026-07-25)_
+- L2835 · There is NO per-tool allowlist file
+- L2840 · The Telegram sender allowlist lives in TWO places
+- L2843 · Never health-check via nemoclaw <s> agent
+- L2846 · Trust box evidence over vendor status pages
+- L2848 · DeepInfra balance runs out roughly monthly and NOTHING alerts on it _(2026-07-11)_
+- L2861 · A deactivated seat's bot goes silent but alive
+- L2866 · Don't verify badges by extracting them from /proc/<pid>/environ
+- L2880 · CLI chat probes run on the EMBEDDED agent, not the gateway _(2026-07-23)_
+- L2908 · /hooks/agent (the gateway's HTTP webhook) CANNOT drive an agent turn on this box.
+- L2934 · A status gate outlives its truth — date it, or delete it. _(2026-08-06)_
+- L2944 · Resolve merge state with merge-base, never by eyeballing git log on a feature branch. _(2026-08-06)_
+- L2953 · When inbound email "stops working", check the webhook subscription FIRST
+- L2993 · npm test truncates the local stack, and that wipes the spine-eval world.
+- L2999 · An eval's own fixtures collide unless each scenario owns its rows AND its people. _(2026-08-12)_
+- L3006 · Fixture data must look like customer data.
+- L3011 · A missing BOARD_BOT_HANDLE makes the agent invent board links. _(2026-07-22)_
+- L3018 · resolve_date now has calendar-PERIOD modes _(2026-08-12)_
+- L3099 · Design consequence worth reusing: make the cheap tier the control group.
+- L3103 · The pilot DB is an accepted test-write target (user decision, 2026-08-12) _(2026-08-12)_
+- L3113 · L1 PINS L2: a stamped capture makes its customer permanently undeletable. _(2026-08-12)_
+- L3134 · A new tenant in the pilot silently enlists in the lifecycle cron.
 
-**6. Where the deep detail lives**
+**6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L2984 · Evals:
-- L2988 · Runbooks:
-- L2992 · Decision history with citations:
-- L2995 · This file
+- L3474 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L3496 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L3530 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
 
-**⑤ MEMORY ARCHITECTURE COMPLETE — the learning loop exists, dark (2026-08-23)**
+**7. Where the deep detail lives**
 
-- L3311 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L3333 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L3550 · Evals:
+- L3557 · Runbooks:
+- L3562 · Decision history with citations:
+- L3566 · This file
 
 <!-- INDEX:END -->
 
@@ -438,6 +452,24 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
   nemoclaw-inference-medic.service` → explicit-session probe turn (`--session-id probe-…`,
   never `--agent main`). Candidate medic v3 (recorded, not built): probe with a real 1-token
   completion under a ~30s timeout so completion stalls trip the nvidia-prod failover.
+- **Candidate seat model, MEASURED but NOT adopted (2026-08-24) — Gemini 3.7 Flash.**
+  `google/gemini-3.7-flash` sustains **~135–140 tok/s with TTFT 2.2–2.9s** (4 clean trials;
+  tok/s = OpenRouter `completion_tokens` ÷ first-to-last-token time), i.e. ~4× the ~34 tok/s
+  this stack gets from GLM-5.2, and reasoning is ON by default (65–95% of completion tokens are
+  thoughts). Two traps behind that number. (a) **Route it through OpenRouter with
+  `"provider": {"only": ["Google"]}`** — the "Google AI Studio" upstream BUFFERS (~12s of
+  silence, then a burst, so its apparent "262 tok/s" is a measurement artifact), while the
+  Vertex upstream streams steadily; the same pin is also the cheapest listed rate
+  (**$0.375/$1.875 per M — half AI Studio's**, which absorbs OpenRouter's ~5.5% credit fee).
+  (b) **The direct Gemini API free tier is not a fallback**: our `GEMINI_API_KEY` shed *all*
+  3.7-flash traffic with 503 "high demand" for 20+ minutes while OpenRouter served instantly,
+  through both the classic endpoint and the new Interactions API — capacity/tier, not request
+  format (gemini-3.6-flash on the same key was fine, and the key 403s on Vertex/aiplatform).
+  **User decision 2026-08-24: use OpenRouter "for the priority sake"**, fee accepted. Gemini is
+  closed-weights, so every other "vendor" is a reseller in front of Vertex/AI Studio (Vercel AI
+  Gateway $0.75/$3.75); BYO-key proxies do not help — they ride your own throttled key. Dated
+  debt on any adoption: **3.7-flash pricing DOUBLES on 2027-01-01** to $1.50/$7.50 per M
+  ([ai.google.dev/gemini-api/docs/pricing](https://ai.google.dev/gemini-api/docs/pricing)).
 
 ### The sweep is more permissive than the planner is instructed to be (2026-08-21) — FIXED 2026-08-22
 
@@ -794,15 +826,20 @@ the TTL — unverified, because seconds-apart eval calls cannot test a 30-minute
       │  HTTPS + HMAC identity headers (x-tenant-id / x-technician-ref)
       │  badges arrive on a SEPARATE path — the host polls GET /control/badges
       ▼                                        on its own 5-min timer, NOT the cron
- Render (tradesdatabase.onrender.com)
+ Render (tradesdatabase.onrender.com) — six services, two with autoDeploy OFF
    ├─ spine MCP server (src/mcp/server.ts) ──► Supabase "test" = PILOT LIVE DB
    ├─ /composio relay ──► per-person Composio session (Gmail, Sheets, …)
-   ├─ board web + background worker (global bot @DashboardMan_bot)
+   ├─ board web + Board_Worker (global bot @DashboardMan_bot)
    ├─ /admin operator cost dashboard (the ONE cross-tenant read surface)
-   └─ cron heartbeat (*/5 target; heavy sweeps self-gate to quarter-hour ticks) — pairing ·
+   ├─ inbound phone calls: /inbound/phone/* webhooks + Calls-worker (SignalWire → AssemblyAI
+   │  → recordFieldNote) + Calls-purge (nightly audio retention) — phone-call-runbook.md
+   └─ lifecycle-heart cron (*/5; heavy sweeps self-gate to quarter-hour ticks) — pairing ·
       grace expiry · Composio session provisioning · execution-log ingestion · cost backfill ·
-      bill pull · cost rollup · Stage-0 overdue-visit watcher (every tick, WATCHERS_MODE-gated)
- Inference: sandbox gateway ──► Fireworks GLM-5.2-fast (no failover; deepinfra = manual rollback)
+      bill pull · cost rollup · watchers/nudge ladder · THE PLANNER (every 30 min) · Reflector
+ Inference, THREE surfaces with two different models (see §4 "Model routing"):
+   sandbox gateways ─► Fireworks GLM-5.2-fast   (no failover; deepinfra = manual rollback)
+   web service      ─► Fireworks GLM-5.2-fast   (MODEL_PROVIDER unset ⇒ the openai path)
+   lifecycle-heart  ─► Anthropic Opus 5         (MODEL_PROVIDER=anthropic, ANTHROPIC_MODEL)
 ```
 
 **Three Supabase environments** (full detail: the test rules in `CLAUDE.md`):
@@ -1691,34 +1728,133 @@ the TTL — unverified, because seconds-apart eval calls cannot test a 30-minute
 - `rescheduleAssignment` creates the new row as `'proposed'` by default while every reader
   filters `['confirmed']` — moves MUST pass `status:'confirmed'`.
 
-## 4. Live-state snapshot (as of 2026-07-22 — verify before relying)
+## 4. Live-state snapshot (as of 2026-08-24 — verify before relying)
 
-**Tenants on the pilot DB:**
-- "Default Tenant" `82bbc6f8…` — demo/seed data; the user tests as `manager-sam`.
-- "Judy Testing" `ee65b342-24b3-4f26-bc23-0e2e30627e1d` — was the first real external beta
-  (onboarded 2026-07-07; manager tier, 1 manager + 3 tech seats; Gmail paired 2026-07-19).
-  **Out of beta testing as of 2026-08-14 (owner decision):** no longer an active external
-  user, so fleet-wide operations (route flips, restarts) need no Judy quiet-window; the
-  formerly-owed phone E2E and heads-up are moot.
+> **How to read this section.** *"Where the system stands"* below was re-verified on 2026-08-24
+> against the pilot database, the Render API and the repo, and it is the part to trust. Under it
+> the tenant and sandbox tables are maintained; **"Feature status" is a build log** written
+> forward from 2026-07-20 — read it for the reasoning, never as a status board. The newest month
+> of work has its own home in §6. Everything here rots: re-verify before you act on it.
 
-**Sandbox map on trades-box-1** (pre-pool legacy sandboxes' bot handles are NOT in the DB —
-identify by which chat answers):
+### Where the system stands (2026-08-24)
 
-| Sandbox | Person | Notes |
-|---|---|---|
-| s2 | manager-sam (the owner, TG 5801703167) | main manager test bot |
-| s3 | judy-testing (beta user GONE) | **NORMAL SEAT as of 2026-08-20** — the "hands off" carve-out is retired and s3 was wired that day (deny applied, all doctrine current). Roster TG is NULL; the sandbox allowlist holds 8991633730 (ben-shelton's id — drift): correct it before this seat is reassigned |
-| s5 | ben-shelton, invited technician (@ragisan03_bot, TG 8991633730) | |
-| s6 | COLD BLANK (@ragisan2_bot) | the pool's one free blank (from s1's recycle) |
-| s7 | Yutao (manager, active, Default Tenant, TG 8639645984) | the box's DEFAULT sandbox; NOT in `sandbox_pool` (provisioned outside the pool, like pre-pool s2/s3) |
-| s8 | manager-joy (Joy, manager, active, Default Tenant, TG 8816690083) | onboarded 2026-07-24; a crashed restart left a stale shields-transition lock (see ops trap below) — owner cleared it 2026-07-25 and the gateway now restarts clean (wired + restarted with the fleet, tool list fresh). The `nemoclaw list` "differs from onboarded" note (nvidia-prod live vs deepinfra-prod onboarded) reflects the medic's balance-out NVIDIA failover, not a broken sandbox |
-| s1, s4 | retired/recycled | historical only |
+- **The ladder is complete through ⑤ — all five stages merged AND deployed (2026-08-24).**
+  ① the eyes see the whole record (money trio, PR #162) · ② the mouth stops lying (manager copy
+  + one-shot field notes, PR #163; ②b the planner writes the technician's question) · ③ the
+  brain decides (attribution, closing moved from the sweep to the planner, continuity — PR #164,
+  first clean tick 2026-08-23 01:01Z) · ④ the brain can look (read surface, PR #167) · ④b
+  delivery costs nothing (runner v2, PRs #171/#172/#174) · ⑤ memory architecture (PRs
+  #175/#176). Blow-by-blow in §6. **The agentic planner eval (PR #178) is now the yardstick:**
+  re-judged baseline **Opus 63/65 vs GLM 58/65** — measure any planner change against those
+  numbers, never the withdrawn Haiku-judged ones.
+- **Model routing differs BY RENDER SERVICE (verified 2026-08-24).** The most surprising live
+  fact in this file. `activeProvider()` (`src/model/forcedTool.ts:91`) is one process-wide
+  switch reading `MODEL_PROVIDER`, and **anything other than the exact string
+  `anthropic` means Fireworks**. The two services are configured differently, so the same code
+  runs two different models:
 
-**Board:** one global non-AI bot `@DashboardMan_bot` (plain code on Render; tenant isolation
-comes from the roster lookup of the verified Telegram user id, not the bot).
-`BOARD_PUBLIC_URL` has **no** `/board` suffix — the worker appends it.
+  | Surface | Where it runs | Model today | Selected by |
+  |---|---|---|---|
+  | Planner + Reflector | `lifecycle-heart` cron (`crn-d93iq7a8qa3s73ap6260`, `*/5`) | **Opus 5** | `MODEL_PROVIDER=anthropic` + `ANTHROPIC_MODEL=claude-opus-5`, **both CONFIRMED on the service** — this closes the "is it really Opus?" question ⑤ left open (the code default is Sonnet 4.6, which was the trap) |
+  | Capture + synthesis forced-tool calls — email classify, extract, brief, answer, phone-call classify | web service (`srv-d8uqmdegvqtc73bfn83g`) | **GLM-5.2 via Fireworks Fast** | **neither** `MODEL_PROVIDER` nor `ANTHROPIC_MODEL` is set there, so the code default (`accounts/fireworks/routers/glm-5p2-fast`) wins |
+  | Seat agents (six sandboxes) | trades-box-1 gateways | GLM-5.2 via Fireworks Fast | box inference route; the medic asserts it |
 
-**Feature status:**
+  Two consequences worth carrying. **Billing:** `MODEL_SKUS` (`src/db/costs.ts`) is keyed per
+  VENDOR, not per model — every Anthropic call is priced as Opus 5, so a rollback to Sonnet must
+  re-edit that map or the ledger silently lies. **Caching:** the Anthropic path of both
+  transports now sets `cache_control` with a 1h TTL (`toolLoop.ts:233`, `forcedTool.ts:245`,
+  PR #177 + `cae37c4`) — the "production planner runs uncached" debt of 2026-08-23 is **PAID**.
+- **The Render estate — six services, two of them behind main (API-read 2026-08-24).** None is
+  suspended; the two stale ones have auto-deploy OFF, which is the shape of every stale-code
+  incident in this file: merging ships nothing there.
+
+  | Service | Kind | autoDeploy | Live commit |
+  |---|---|---|---|
+  | `lifecycle-heart` `crn-d93iq7a8qa3s73ap6260` | cron `*/5`, `npm run job:lifecycle` | **yes** | `c9c93ad` (head of main) |
+  | `TradesDatabase` `srv-d8uqmdegvqtc73bfn83g` | web, `npm run mcp:serve:http` | **no** | `eb70902` (PR #177) — **one commit behind**, last deployed by hand 04:05Z |
+  | `Calls-worker` `srv-d9qelh710e5c739hb8vg` | worker, `npm run calls:worker` | yes | `c9c93ad` |
+  | `Calls-purge` `crn-d9qeov1t0dsc73funmag` | cron `0 4 * * *`, `npm run calls:purge` | yes | `c9c93ad` |
+  | `Board_Worker` `srv-d9dr8iurnols73d1tjq0` | worker, `npm run board:worker` | **no** | `b18c152` (PR #89) — **27 days behind main** |
+  | `agent-mediation` `srv-d69alq6r433s73cuf2a0` | web (python) | yes | none — a **different repo** (`Yu-C1/agent-mediation`), last two deploys failed 2026-06-02 |
+
+  `Calls-worker`/`Calls-purge` serve the inbound phone-call channel (SignalWire → AssemblyAI →
+  `recordFieldNote`, plus the nightly audio-retention purge) — see
+  [phone-call-runbook.md](phone-call-runbook.md).
+- **43 manager tools, a 2-tool team-lead surface, and 12 views (2026-08-24).** `MANAGER_TOOLS`
+  (`src/mcp/server.ts:1776`, pinned by `server.test.ts:2027`) is 13 base + 30 admin = **43**. `spine_read` and `recall_decisions` are a **team-lead-only surface
+  that REPLACES rather than extends**, gated to the `spine:` namespace. `spine_read` now exposes
+  **twelve** views — the four ④ additions (`v_captures`, `v_visits`, `v_nudges`,
+  `v_review_items`) joined the original eight, so any "eight views" claim elsewhere in this file
+  is pre-④ history.
+- **What the brain has produced on the pilot: proven machinery, empty corpus (2026-08-24).**
+  Exact counts at 20:39Z. `nudges` 12 (5 answered · 6 escalated · 1 failed ·
+  **zero open**); `nudge_decisions` 38 and `review_items` 161, both still growing today;
+  `gap_summaries` 7; **`planner_lessons` 0 and `reflector_runs` 0** — the learning loop is built,
+  deployed and DARK exactly as designed, because the Reflector needs ≥15 gap summaries and
+  activation is a human decision. `money_events` holds **one row** (2026-08-19) and
+  `tenant_profiles` **zero**, so no claim that money analytics are "exercised" on the pilot is
+  true. Almost all of this is Default-Tenant-only.
+- **In flight, NOT on main: the one-call collapse** (investigate/plan/compose → one call). Plan
+  `thoughts/shared/plans/2026-08-24-one-call-collapse.md` (draft); branch
+  `feat/one-call-collapse` carries phase ① ("the planner queues its own sends", `164b6f2`) with
+  the compose deletion still uncommitted at the time of writing. Until it merges,
+  `teamLeadCompose` still exists and still costs a model call.
+- **Tenants on the pilot DB — FOUR, not two (2026-08-24).** All `America/Los_Angeles`:
+
+  | Tenant | id | Customers / jobs / assignments | Reality |
+  |---|---|---|---|
+  | Default Tenant | `82bbc6f8…` | 41 / 170 / 250 | the demo firm; the user tests as `manager-sam` |
+  | Judy Testing | `ee65b342-24b3-4f26-bc23-0e2e30627e1d` | 0 / 0 / 0 | first external beta (onboarded 2026-07-07). **Out of beta 2026-08-14 (owner decision)** — no quiet-window needed for fleet operations, the owed phone E2E is moot. Its L2 rows are gone but **127 `raw_captures` remain and always will** (L1 is append-only) |
+  | spine-eval-main | `6f033156-425e-40a8-9e4f-616f0e28d3ce` | 77 / 246 / 203 | the spine-eval world, seeded into the PILOT on 2026-08-12 |
+  | spine-eval-other | `275c3362-551a-49da-9eff-e5b7841361ee` | 1 / 1 / 1 | the eval's cross-tenant canary |
+
+  **The eval tenants are real tenants and the lifecycle cron sweeps them** — see the §5 trap "a
+  new tenant in the pilot silently enlists in the lifecycle cron". 8 of the 161 review items are
+  spine-eval-main's.
+- **The demo schedule has run out — re-shift before the next demo (2026-08-24).** Default
+  Tenant's confirmed work now ends at **2026-08-26**: today has **0**
+  visits and the entire future holds **3** (2 on Aug 25, 1 on Aug 26). The +14-day shift of
+  2026-08-11 is spent. The re-usable recipe — shift by a multiple of 7, timed rows in two passes,
+  leave `schedule_events` and `raw_captures` alone — is in the Feature-status log below.
+  spine-eval-main still has runway to 2026-09-11.
+- **Roster: 31 technician rows, and the flag is a STATE, not a boolean (2026-08-24).**
+  Across the four tenants; `state` ∈ {`active`, `invited`, `offboarded`} plus `seat_exempt`. Default
+  Tenant's eight: `manager-sam` (manager, active, s2), `yutao` (manager, active, s7),
+  `manager-joy` (manager, active, s8), `ben-shelton` (technician, **invited**, s5), `hman`
+  (technician, active, **seat_exempt**, no Telegram — the honest escalation specimen, because
+  their gap goes straight to the manager queue), `judy-testing` (invited), `tech-jane` and
+  `office-dispatch` (offboarded).
+- **Sandbox map on trades-box-1 (2026-08-24)** — pre-pool sandboxes' bot handles are NOT in the
+  DB; identify by which chat answers.
+
+  | Sandbox | Person | Notes |
+  |---|---|---|
+  | s2 | manager-sam (the owner, TG 5801703167) | main manager test bot; the canary — roll it first |
+  | s3 | judy-testing (Judy Testing tenant, manager row, no Telegram) | **NORMAL SEAT as of 2026-08-20** — the "hands off" carve-out is retired and s3 was wired that day (deny applied, all doctrine current). The sandbox allowlist still holds 8991633730 (ben-shelton's id — drift): correct it before this seat is reassigned |
+  | s5 | ben-shelton, technician, roster state **invited** (@ragisan03_bot, TG 8991633730) | the only seat with a live `sandbox_pool` binding |
+  | s6 | free blank (@ragisan2_bot), from s1's recycle | **DRIFT found 2026-08-24:** its `sandbox_pool` row is unbound, but spine-eval-main's `manager-sam` row claims `sandbox_ref = s6`. The eval world's roster reaches into the real pool — clear that before handing s6 out |
+  | s7 | Yutao (manager, active, Default Tenant, TG 8639645984) | the box's DEFAULT sandbox |
+  | s8 | manager-joy (Joy, manager, active, Default Tenant, TG 8816690083) | onboarded 2026-07-24; the stale shields-transition lock was cleared 2026-07-25 and it restarts clean |
+  | s1, s4 | retired/recycled | historical only |
+
+- **`sandbox_pool` is a partial ledger, not the pool — never answer "which seats exist" from it.**
+  It holds exactly four rows: s1 and s4 (retired), s5 (bound to ben-shelton) and s6 (unbound).
+  There is **no row at all for s2, s3, s7 or s8**, which were provisioned outside it, and no
+  free/cold/claimed state column — binding is `technician_id`, retirement is `retired_at`. Read
+  `technicians.sandbox_ref` and the box itself.
+- **Board:** one global non-AI bot `@DashboardMan_bot` (plain code on Render; tenant isolation
+  comes from the roster lookup of the verified Telegram user id, not the bot).
+  `BOARD_PUBLIC_URL` has **no** `/board` suffix — the worker appends it. Its worker is the
+  27-days-stale service in the table above.
+
+**Feature status — A BUILD LOG, NOT A STATUS BOARD.** What follows was written forward between
+2026-07-20 and 2026-08-19 and has not been re-verified line by line; the 2026-08-22→24 work is in
+§6 and today's state is the block above. Read it for the *reasoning* behind a decision (why a
+rollout was ordered that way, why a copy line reads as it does) and re-check any claim you would
+act on. Known corrections since it was written: the model line below is wrong twice over
+(DeepInfra is retired and the spine's forced-tool calls are more than four — see "Model routing"
+above), and the demo schedule window it describes has expired.
+
 - **Live:** spine + note lifecycle + retractions with fold-impact preview; technicians table +
   seat management + control-plane lifecycle; Feature A (manager binds a technician's Telegram
   from chat, pool claim + badge pull); schedule core (Plan 1, PR #43 + promise-default fix);
@@ -1740,8 +1876,12 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   one-shot doctrine; owner owes the one-line in-container sed + `/usr/local/sbin` install;
   structural fix = make that block refreshable (delete-then-append) like the doctrine block.
   **GLM swap (PR #81): LIVE since ~2026-07-26 (owner confirmed — `INFERENCE_API_KEY` set on
-  Render and deployed).** The spine's four forced-tool calls (classify/extract/brief/answer)
-  now run GLM-5.2 via DeepInfra; `MODEL_PROVIDER=anthropic` remains the env-var revert.
+  Render and deployed).** The spine's forced-tool calls then ran GLM-5.2 via DeepInfra;
+  `MODEL_PROVIDER=anthropic` was the env-var revert. *(Superseded — DeepInfra was retired
+  2026-08-19 (PR #154) and the split is now per-service: Opus 5 on the cron, Fireworks GLM in
+  the web service. There are seven forced-tool call sites today, not four: email classify,
+  extract, brief, answer, phone-call classify, `teamLeadCompose` — being deleted by the one-call
+  collapse — and the Reflector. See "Model routing" at the top of this section.)*
   Inbound classify E2E runs externally (owner's collaborator), not through this pilot.
   Live probes on s2 passed:
   `find_slots` fail-closed → set length 90 → SQL read-back → candidates from the job's own
@@ -2076,11 +2216,20 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   Fix shape when promoted: a week mode returning {weekStart, weekEnd}, flagged ambiguous on
   Sat/Sun with BOTH candidate ranges so the clarifying question contains the right options.
   Data layer verified clean; ask-first doctrine held; agent latency (~84s serial GLM round-trips);
-  Feature C (per-tenant agent memory layer); Feature D (customer/job-level L3 write path);
+  ~~Feature C (per-tenant agent memory layer)~~ — **BUILT 2026-08-23 as ⑤, and running dark**
+  (`planner_lessons` + Curator + Reflector in shadow; §6); Feature D (customer/job-level L3
+  write path) — **still open**;
   Telegram unbind/offboarding (apply path is additive-only); board-auth 401 logging (PR #51
   closed unmerged — debug future 401s with the "mint-a-slip" probe: sign a fake initData slip
   with the real bot token from `.env` against the live API to discriminate server-token vs
   Telegram-side).
+  **Added 2026-08-23 (the queue-triage family, unscheduled, all one problem):** review-queue
+  hygiene/expiry — the pilot is at **161 review items and none has ever been resolved**, so any
+  briefed needle drowns; ordering is `created_at` ASCENDING, so the newest item sorts LAST;
+  bulk-triage machinery; proactive escalation notification (rung-2 items are PULL-only today);
+  and the briefing-discovery eval. The earn/urgency/batch pacing replacement for the nudge cap
+  removed 2026-08-18 belongs with them — its trigger is met and ④b made asks cheap, so the
+  missing brake matters more, not less.
 - **CLOSED 2026-07-31 — DeepInfra prompt caching: there is nothing "explicit" to buy, and the
   `prompt_cache_key` trial showed no measurable benefit.** Per
   [docs.deepinfra.com/chat/prompt-caching](https://docs.deepinfra.com/chat/prompt-caching)
@@ -2362,17 +2511,31 @@ comes from the roster lookup of the verified Telegram user id, not the bot).
   it cannot be exercised from the CLI at all — device pairing blocks it, and the built-in
   `openclaw cron` CLI hits the identical wall, so plugin RPC needs a real Telegram turn to test.
   Beware `tar` from macOS: it ships `._*` AppleDouble files into the plugin dir.
-- **Dated debts:** GRANT/default-privileges migration to replace
-  `auto_expose_new_tables = true` — **due before 2026-10-30** (Supabase removes the flag;
-  fresh local stacks then break with `permission denied`). Old revoked NVIDIA key may still
-  sit in `/root/s4-nvidia.env` on the box — refresh before the next `provision` run. Render
-  `ANTHROPIC_API_KEY` was found invalid 2026-07-04 (write-path spine tools fail) — verify it
-  was fixed. NOTE: since the 2026-07-25 provider switch the four spine forced-tool calls
-  (classify/extract/brief/answer) use `INFERENCE_API_KEY` (GLM-5.2 via DeepInfra) by default
-  (`MODEL_PROVIDER=openai`, `src/model/forcedTool.ts`); `ANTHROPIC_API_KEY` only bites when
-  `MODEL_PROVIDER=anthropic`. So the on-Render key to keep valid is now `INFERENCE_API_KEY`.
-- **Pending human tests:** Ben's phone board test (read-only day view, no tab bar, push on
-  move); promised-visit confirm dialog via board drag; Judy items above.
+- **Dated debts (reviewed 2026-08-24):**
+  - **GRANT/default-privileges migration** to replace `auto_expose_new_tables = true` —
+    **due before 2026-10-30**, when Supabase removes the flag and fresh local stacks start
+    failing with `permission denied`. Still open, and it is the only debt here with a hard
+    external deadline.
+  - **The demo world has expired.** Default Tenant's confirmed schedule ends 2026-08-26 (today:
+    zero visits). Re-shift by a multiple of 7 days with the recipe in the Feature-status log
+    before the next demo, phone pass or live probe.
+  - **Two Render services have auto-deploy OFF and are behind main** — the web service by one
+    commit, `Board_Worker` by 27 days. Every stale-code incident in this file has this shape:
+    merging ships nothing there. Check the live commit hash, not the merge.
+  - **Keys to keep valid on Render:** `INFERENCE_API_KEY` (Fireworks) on the web service and the
+    workers; `ANTHROPIC_API_KEY` on `lifecycle-heart`, which is where `MODEL_PROVIDER=anthropic`
+    makes it load-bearing — a dead key there stops the planner, not a synthesis call. Watch the
+    Fireworks monthly spend cap the same way (412 = account status, not balance).
+  - Old revoked NVIDIA key may still sit in `/root/s4-nvidia.env` on the box — refresh before the
+    next `provision` run.
+  - **CLOSED 2026-08-24:** *is `lifecycle-heart` really on Opus?* — yes, `ANTHROPIC_MODEL=claude-opus-5`
+    read off the service. **CLOSED 2026-08-23:** the production planner ran uncached — both
+    Anthropic builders now send `cache_control` with a 1h TTL (PR #177, `cae37c4`).
+- **Pending human tests:** Ben's phone board test (read-only day view, no tab bar, push on move,
+  and 4b-2's no-strip-on-tech-tier check) — deferred repeatedly, still owed; promised-visit
+  confirm dialog via board drag; **read the first real Reflector shadow proposals with the user**
+  once the pilot passes 15 gap summaries (7 today) — activation is deliberately a human decision
+  until the adversarial-judge mechanism exists.
 
 - **2026-07-31 — cron was dead fleet-wide, for TWO stacked reasons. Both now fixed on s2, s3, s5,
   s6, s8 (s7 held back — in use for testing).**
@@ -2979,22 +3142,13 @@ mechanism in [long-running-task-batching.md](long-running-task-batching.md).
   every tenant.** The other steps are safe by shape (pairing advancement, offboarding expiry and
   log ingestion all need Composio state a synthetic tenant does not have).
 
-## 6. Where the deep detail lives
+## 6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)
 
-- **Evals:** [scripts/spine-eval/README.md](../scripts/spine-eval/README.md) — the spine-tool
-  eval (accuracy, per-leg latency, safety; local-only, two tiers, `/goal`-gated) and why its
-  seeded world cannot expire. [scripts/date-eval/README.md](../scripts/date-eval/README.md) —
-  the older live-box date-machinery eval and its four-phase attribution.
-- **Runbooks:** [doorman-runbook.md](doorman-runbook.md) (badge/doorman ops),
-  [control-plane.md](control-plane.md) (lifecycle cron), [nemoclaw-tech-agent.md](nemoclaw-tech-agent.md)
-  (agent stack + Composio §7), `Box_Setup_Stuff/` (host-side; self-contained for the box
-  Claude — keep it that way).
-- **Decision history with citations:** `thoughts/shared/research/` and
-  `thoughts/shared/plans/` — dated artifacts for every feature; a plan's final-review section
-  lists its known deferred nits.
-- **This file** replaces nothing above — it's the map plus the facts that had no home.
+The ladder's own record, oldest first, kept at full detail because the reasoning is what a later
+session needs. **Section 4 says what is true today; this section says how it got there.** Each
+entry is a `###` heading stamped with its date — grep the date or the stage number (①–⑤).
 
-### 2026-08-22 — PR #163 deployed
+### The build order, revised (2026-08-22)
 
 **Build order, revised 2026-08-22 (third revision).** Two user rulings reshaped it.
 
@@ -3023,15 +3177,23 @@ planner could not read what anyone said. This is why the read surface moved IN F
 work: the memory design is "push the keys, pull the content", and the pull half does not work if
 the content is unreachable.
 
+The board as it stood that day — **every line of it has since shipped; kept to show the order
+things were decided in, not as status.** Outcome in brackets:
+
 ```
 ① eyes see the whole record   money trio                    MERGED #162
 ② the mouth stops lying       manager copy + one-shot notes  MERGED #163 (+ ②b)
 ③ THE BRAIN DECIDES           attribution · closing → planner · continuity   (plan written)
+                                                            [MERGED #164, 2026-08-22]
 ④ THE BRAIN CAN LOOK          read surface: captures / nudges / review_items
+                                                            [MERGED #167, 2026-08-22]
 ⑤ memory architecture         needs ③'s corpus AND ④'s reach
-⑥ fixture-spine agentic eval at scale
+                                                            [MERGED #175/#176, 2026-08-23]
+⑥ fixture-spine agentic eval at scale                       [MERGED #178, 2026-08-24]
 ── delivery costs nothing      `openclaw message send`; box-side, own re-wire. Independent
+                               [④b, MERGED #171/#172/#174, 2026-08-23]
 ── Group B "the bucket drains" 90 open items, zero ever resolved. Independent
+                               [STILL OPEN — 161 items on 2026-08-24, still zero resolved]
 ```
 
 **Dead:** the gap-id stamp. A ref cannot survive the path — under `--deliver` it must pass through
@@ -3040,7 +3202,7 @@ direct send the technician would read it in their chat. Attribution is spine-sid
 now: at `record_field_note` time the spine knows the technician, resolves the job, and reads its
 own open gaps — exactly one → stamp, two or more → let the planner judge.
 
-, fleet re-wired, and two recorded facts corrected
+### PR #163 deployed, fleet re-wired, and two recorded facts corrected (2026-08-22)
 
 **The wire that plan ② owed.** PR #163 (`590998c`) shipped the one-shot `record_field_note`, and
 until the seats were re-wired every one of them was serving the OLD two-step doctrine against a
@@ -3142,7 +3304,7 @@ that was working perfectly.
 carrying substantive reasons; `watchers.nudgesAutoClosed: 0`. `recorded: 2` is the proof the
 constraint took — pre-migration that number is 0 with a loud error and no other symptom.
 
-## The Opus-5 date-scaffolding verdict — and what one night of evals cost (2026-08-23, overnight)
+### The Opus-5 date-scaffolding verdict — and what one night of evals cost (2026-08-23, overnight)
 
 **User hypothesis confirmed: given ONLY a clock line, Opus 5 made ZERO calendar errors in 91
 planner-shaped questions.** Three arms on one anchored corpus (Thursday 2026-08-20): arm B
@@ -3187,7 +3349,7 @@ clock — the adversarial regime at any hour; evenings are no longer a schedulin
 Fleet fully restored and verified same night: fireworks-prod route, medic active, §0f back on
 s2, spine flags inert.
 
-## `openclaw message send` — the ④b transport contract (probed 2026-08-23, s2, dead target)
+### `openclaw message send` — the ④b transport contract (probed 2026-08-23, s2, dead target)
 
 Docs (docs.openclaw.ai/cli/message) give syntax but omit exit codes, multi-line and hook
 behavior; all three probed on-box. **The binary lives IN THE SANDBOX CONTAINER** (no `openclaw`
@@ -3203,7 +3365,7 @@ second — direct send keeps full guard coverage, so retiring the relay turn los
 Channel-history appearance is unobservable on a dead target; that fact lands with ④b Phase 4's
 real send.
 
-## Nudge delivery v2 is LIVE — verbatim send, zero inference (④b Phase 4, 2026-08-23)
+### Nudge delivery v2 is LIVE — verbatim send, zero inference (④b Phase 4, 2026-08-23)
 
 The box's nudge-runner is **v2** as of 2026-08-23 ~18:40Z (installed md5
 `1e4c65b677c33566e93ea344c4689b1d`; service unit comment synced; ALL SIX seats wired with the
@@ -3239,7 +3401,7 @@ service env — the MCP env write is classifier-blocked, the user owns clearing 
 surface until cleared + redeployed (then bounce seat gateways to refresh cached tools/list).
 *(Resolved same day: user cleared the three flags, redeploy 18:09Z, s2 gateway bounced 18:17Z.)*
 
-## ④b COMPLETE — and what the briefing probe taught (2026-08-23)
+### ④b COMPLETE — and what the briefing probe taught (2026-08-23)
 
 Plan `thoughts/shared/plans/2026-08-23-delivery-costs-nothing.md` is **complete**, all five
 phases live-verified in production (PRs #171/#172/#174; note #173 merged into its side branch —
@@ -3272,7 +3434,7 @@ the plan note called for. Rung-2 items are PULL-only today (no proactive manager
 no-unearned-pings doctrine); if managers should be NOTIFIED of escalations, that is pacing-work
 scope too.
 
-## ⑤ MEMORY ARCHITECTURE COMPLETE — the learning loop exists, dark (2026-08-23)
+### ⑤ MEMORY ARCHITECTURE COMPLETE — the learning loop exists, dark (2026-08-23)
 
 Plan `thoughts/shared/plans/2026-08-23-memory-architecture.md` is **complete**, five phases,
 five fresh-context review rounds (~20 findings folded), PRs #175/#176, everything live-verified
@@ -3300,9 +3462,10 @@ fixed `NOW` with DB `now()` can make two gates alibi each other — pin each gat
 
 **Standing follow-ups:** read the first real shadow proposals with the user when the pilot
 corpus passes 15 (activation is deliberately human until the ratified adversarial-judge
-mechanism is built); the queue-triage family (above) is unmoved; **still unverified: whether
+mechanism is built); the queue-triage family (above) is unmoved; ~~still unverified: whether
 `ANTHROPIC_MODEL` on lifecycle-heart actually names Opus — the code default is
-`claude-sonnet-4-6`** (src/model/forcedTool.ts:56) and no session has been able to read the env.
+`claude-sonnet-4-6`~~ — **VERIFIED 2026-08-24: the service carries `ANTHROPIC_MODEL=claude-opus-5`
+and `MODEL_PROVIDER=anthropic`. The planner is on Opus 5.**
 Next on the ladder per standing direction: the agentic eval at scale, then collapsing
 investigate/plan/compose into one call. Rung-2 items are PULL-only today (no proactive manager ping — the
 no-unearned-pings doctrine); if managers should be NOTIFIED of escalations, that is pacing-work
@@ -3343,3 +3506,61 @@ scope too.
   substring claim checks can self-negate ("hasn't answered" contains "answered" — FC-08),
   and a scenario can fail both arms because it was mis-authored, not because the models
   erred (MG-07). Full verdicts: docs/agentic-eval-rejudge-2026-08.md.
+
+### The live-state re-verification pass, and what had drifted (2026-08-24)
+
+Section 4 had been stamped `2026-07-22` for a month while the system changed under it. Re-reading
+it against reality took three cheap reads, and this is the recipe for the next time — **do this
+before trusting any "current state" claim, and re-stamp the heading when you do.**
+
+1. **The pilot database** (read-only; `supabase-test` MCP is the LIVE pilot): tenant list with
+   per-tenant `customers`/`jobs`/`assignments` counts; `technicians` (state + `sandbox_ref` +
+   telegram present/null); `sandbox_pool`; `min/max(starts_at)` on confirmed assignments; exact
+   `count(*)` + `max(created_at)` on the brain tables (`nudges`, `nudge_decisions`,
+   `review_items`, `gap_summaries`, `planner_lessons`, `reflector_runs`, `money_events`).
+   Note the estimate trap: `list_tables` returns pg_class ESTIMATES — count exactly.
+   The `v_*` views need `spine.tenant_id` set, or every query errors on the missing GUC.
+2. **Render**: service list with type, `autoDeploy`, and the LIVE deploy's commit — plus env-var
+   NAMES per service (`GET /v1/services/{id}/env-vars`; the MCP server has no env read tool).
+   Never print values; `MODEL_PROVIDER` / `ANTHROPIC_MODEL` are the two non-secret exceptions and
+   they are the two that decide which model runs.
+3. **The repo**: the served tool count (pinned by a test), the view catalog, and
+   `activeProvider()` — the routing question is always "which env does THIS service carry".
+
+- **What had drifted, in order of how much it would have misled someone (2026-08-24).**
+  - **The model map.** The file said all spine model calls were GLM-5.2 via DeepInfra. DeepInfra
+    was retired 2026-08-19 and the calls now split BY SERVICE — Opus 5 on the cron, Fireworks GLM
+    in the web service — because `MODEL_PROVIDER` is set on one and not the other.
+  - **The tenant list** named two tenants; the pilot has four (the spine-eval world was seeded into
+    it on 2026-08-12), and the lifecycle cron sweeps all of them.
+  - **`sandbox_pool`** was described as the pool; it is a four-row claim/retire ledger with no row
+    for s2/s3/s7/s8, and the eval tenant's `manager-sam` has quietly claimed the free blank s6.
+  - **The demo schedule** had expired — a demo run today shows an empty calendar.
+  - **Two Render services** are behind main with autoDeploy off (one by 27 days), and the file's
+    own Feature-status log still described box rollouts as the thing that goes stale.
+  - **Two open questions were already answered** and nobody had gone back to close them: the
+    planner IS on Opus 5, and its tool loop is no longer uncached.
+
+The lesson is the one already written at the top of §4 in a different form: **a status board with
+no re-verification date is a liability, because it reads exactly like a fresh one.** A build log
+never lies about being old; a "current state" section does.
+
+## 7. Where the deep detail lives
+
+- **Evals:** [scripts/spine-eval/README.md](../scripts/spine-eval/README.md) — the spine-tool
+  eval (accuracy, per-leg latency, safety; local-only, two tiers, `/goal`-gated) and why its
+  seeded world cannot expire. [scripts/date-eval/README.md](../scripts/date-eval/README.md) —
+  the older live-box date-machinery eval and its four-phase attribution.
+  [scripts/agentic-eval/](../scripts/agentic-eval/) — the planner-as-agent corpus (65 scenarios)
+  and its two verdict files, [docs/agentic-eval-baseline-2026-08.md](agentic-eval-baseline-2026-08.md)
+  and [docs/agentic-eval-rejudge-2026-08.md](agentic-eval-rejudge-2026-08.md).
+- **Runbooks:** [doorman-runbook.md](doorman-runbook.md) (badge/doorman ops),
+  [control-plane.md](control-plane.md) (lifecycle cron), [nemoclaw-tech-agent.md](nemoclaw-tech-agent.md)
+  (agent stack + Composio §7), [inference-recovery-runbook.md](inference-recovery-runbook.md)
+  (the agents are dead — single-provider recovery), `Box_Setup_Stuff/` (host-side;
+  self-contained for the box Claude — keep it that way).
+- **Decision history with citations:** `thoughts/shared/research/` and
+  `thoughts/shared/plans/` — dated artifacts for every feature; a plan's final-review section
+  lists its known deferred nits. Read `thoughts/INDEX.md` FIRST: it stamps every one of them
+  `landed` / `not landed` / `drift N`.
+- **This file** replaces nothing above — it's the map plus the facts that had no home.

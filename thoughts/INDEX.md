@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 160 documents · 156 live · 4 superseded.
+Regenerate with `npm run decisions:index`. 161 documents · 157 live · 4 superseded.
 
 ## Superseded — do not build on these
 
@@ -48,6 +48,7 @@ Regenerate with `npm run decisions:index`. 160 documents · 156 live · 4 supers
 - `2026-08-23` `plan` [2026-08-23-the-brain-can-look](shared/plans/2026-08-23-the-brain-can-look.md) — ④ The brain can look — v_captures, v_visits, v_nudges, v_review_items join the planner's read surface
 - `2026-08-23` `research` [2026-08-23-delivery-costs-nothing](shared/research/2026-08-23-delivery-costs-nothing.md) `landed` — "④b delivery costs nothing — how a planner-composed question reaches a person today, and every surface a zero…
 - `2026-08-23` `research` [2026-08-23-memory-architecture-substrate](shared/research/2026-08-23-memory-architecture-substrate.md) `landed` — ⑤ memory — every store, reader, and gap in the substrate as built (planner + seats)
+- `2026-08-23` `research` [2026-08-23-per-call-model-routing](shared/research/2026-08-23-per-call-model-routing.md) `landed` — per-call model routing — how MODEL_PROVIDER reaches each model call site, the two transports, cost-ledger SKU…
 - `2026-08-23` `research` [2026-08-23-the-brain-can-look](shared/research/2026-08-23-the-brain-can-look.md) `landed` — ④ The planner's read surface — what spine_read exposes, what the planner cannot reach and what substitutes, t…
 - `2026-08-22` `plan` [2026-08-22-planner-copy-eval](shared/plans/2026-08-22-planner-copy-eval.md) · _draft_ — Measure what the planner WRITES — the manager-facing handoff note — on Opus 5, with explicit prompt caching a…
 - `2026-08-22` `plan` [2026-08-22-planner-writes-the-question](shared/plans/2026-08-22-planner-writes-the-question.md) · _draft_ — The planner writes the technician's question for gaps it decides to send; compose becomes the fallback

@@ -277,13 +277,15 @@ the whole path live on the local stack with one real Opus call.
       Then read back via a SECOND client (psql/supabase MCP): the row is `queued`, `question`
       equals the decision row's `question_draft` byte-for-byte, `queued_at` stamped,
       `nudge_decisions` has the applied `send`. Capture both rows as evidence.
-      EVIDENCE (2026-08-24, local stack, real Opus call): planner
-      `{planned:1, decisions:1, applied:1, refusedAtApply:0, byAction:{send:1}}`; nudge row
-      `status=queued`, `queued_at=2026-08-24T20:59:50.782Z`, question "Quick one on the tankless
-      descaling for Marisol Duarte — did that visit get done, or does it still need another
-      trip?"; decision `action=send outcome=applied`, `question_draft` IDENTICAL to the row's
-      question. Read back via psql (second client). Scratch tenant + telegram-bound technician
-      deleted afterwards (verified 0 rows left).
+      EVIDENCE (2026-08-24, local stack, real Opus call, re-run after the final review restored
+      the `(re: …)` anchor): planner `{planned:1, decisions:1, applied:1, refusedAtApply:0,
+      byAction:{send:1}}`; nudge row `status=queued`, `queued_at=2026-08-24T21:18:22.888Z`,
+      question "Did the tankless descaling at Marisol Duarte's get finished, or does it still
+      need another visit?\n\n(re: Marisol Duarte — Tankless descaling)"; decision
+      `action=send outcome=applied` whose `question_draft` is that text WITHOUT the anchor —
+      i.e. the model's words are queued verbatim and code appends only the anchor. Read back
+      via psql (second client). Scratch tenant + telegram-bound technician deleted afterwards
+      (verified 0 rows left).
 - [x] One `runLifecycle` smoke on the local stack (any wall time): summary contains no
       compose step and, with live+live modes, no `ladderMute`.
       EVIDENCE (2026-08-24, WATCHERS_MODE=live NUDGES_MODE=live PLANNER_MODE=off):

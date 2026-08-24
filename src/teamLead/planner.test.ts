@@ -1109,13 +1109,48 @@ describe('live mode — the decision becomes a write, and the write becomes the 
       { status: 'pending', asked_at: null },
       [{ nudgeId: 'n1', action: 'send', question: q, confidence: 'high', reason: 'go now' }],
     );
-    expect(markQueued).toHaveBeenCalledWith('n1', 't1', q);
+    // Queued WITH the code-printed anchor: standing box doctrine files the
+    // technician's reply against "the job the (re: …) line names".
+    expect(markQueued).toHaveBeenCalledWith('n1', 't1', `${q}\n\n(re: Henderson — Furnace tune-up)`);
     expect(setSchedule).not.toHaveBeenCalled();
     expect(summary.applied).toBe(1);
     expect(recorded[0].outcome).toBe('applied');
     expect(recorded[0].mode).toBe('live');
-    // Byte-for-byte: what was recorded as the draft is exactly what was queued.
+    // The DRAFT is the model's own words; the anchor is code's.
     expect(recorded[0].questionDraft).toBe(q);
+  });
+
+  test('the anchor names the job, and a row that cannot name itself ships bare', async () => {
+    const q = 'Did that one wrap up?';
+    const { markQueued } = await live(
+      { status: 'pending', asked_at: null, context: { jobId: 'j1' } as never },
+      [{ nudgeId: 'n1', action: 'send', question: q, confidence: 'high', reason: 'ask' }],
+    );
+    // No customerName, no jobTitle — never fabricate an anchor.
+    expect(markQueued).toHaveBeenCalledWith('n1', 't1', q);
+  });
+
+  test('control characters never reach the delivered message', async () => {
+    const { markQueued } = await live({ status: 'pending', asked_at: null }, [
+      {
+        nudgeId: 'n1',
+        action: 'send',
+        question: 'How did it go?\u0000 Anything\u001f worth noting?',
+        confidence: 'high',
+        reason: 'ask',
+      },
+    ]);
+    const sent = String((markQueued as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][2]);
+    expect(sent).toContain('How did it go? Anything worth noting?');
+    // eslint-disable-next-line no-control-regex
+    expect(/[\u0000-\u001f]/.test(sent.replace(/\n/g, ''))).toBe(false);
+  });
+
+  test('a send CLEARS a hold it overrides, so the gap view stops claiming "held"', async () => {
+    const { setSchedule } = await live({ status: 'pending', asked_at: null }, [
+      { nudgeId: 'n1', action: 'send', question: 'How did it go?', confidence: 'high', reason: 'ask' },
+    ], { markQueued: async () => nudge({ status: 'queued', not_before: '2026-08-16T18:00:00.000Z' }) });
+    expect(setSchedule).toHaveBeenCalledWith('n1', 't1', { notBefore: null }, ['queued']);
   });
 
   test('a send with NO surviving question is refused — no fallback author exists', async () => {

@@ -714,7 +714,14 @@ function cleanPlannerText(
 ): { note: string | null; why?: string } {
   if (raw === undefined || raw === null) return { note: null };
   if (typeof raw !== 'string') return { note: null, why: `${opts.label} was not a string` };
-  const note = raw.replace(/\s+/g, ' ').trim();
+  // Control characters strip too, not just whitespace runs: this text is queued
+  // verbatim and decoded on the box, and `\s` does not match NUL or most C0
+  // controls. Compose used to apply this via `flatten`; with compose gone the
+  // rail is the only crossing left.
+  const note = raw
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!note) return { note: null };
   if (note.length > opts.maxLen) {
     return { note: null, why: `${opts.label} over ${opts.maxLen} characters` };
@@ -727,6 +734,37 @@ function cleanPlannerText(
     }
   }
   return { note };
+}
+
+/**
+ * The ANCHOR line every delivered question carries: "(re: customer — job)".
+ *
+ * NOT decoration, and NOT a date frame (the collapse deleted that): this is the
+ * seam the technician's own agent keys on. Standing box doctrine — AGENTS.md
+ * §"Questions and items from the office", refreshed on all six seats 2026-08-23
+ * — tells that agent to file the reply with record_field_note "for the job the
+ * (re: …) line names", and to ASK rather than guess when it cannot tell. Ship a
+ * bare question and a "yeah, all done" reply resolves to no job, the answer is
+ * never filed, and the gap escalates telling a manager nobody responded — the
+ * false-claim class the escalation rules exist to prevent.
+ *
+ * Code-printed from the row's own context, never model-written, for the same
+ * reason the old frame was: it must be exact, and it must not cost the model a
+ * rail. Returns '' when the row cannot name itself, so a thin row is delivered
+ * bare rather than with a fabricated anchor.
+ */
+export function anchorLine(n: Nudge): string {
+  const customer = ctxStr(n, 'customerName');
+  const job = ctxStr(n, 'jobTitle');
+  if (!customer && !job) return '';
+  const flat = (v: string, max: number) =>
+    v
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, max);
+  const label = customer && job ? `${flat(customer, 80)} — ${flat(job, 120)}` : flat((customer ?? job)!, 120);
+  return `\n\n(re: ${label})`;
 }
 
 /**
@@ -804,9 +842,10 @@ export function validateDecisions(
     }
 
     // `send` and `hold` only MEAN something on a row that has not gone out yet.
-    // Both write `not_before`, and `not_before` gates COMPOSE and nothing else
-    // (compose.ts:190) — the delivery pull does not read it and an asked row has
-    // no compose left to gate. Applying either to a queued or asked row would
+    // `send` QUEUES the question (the collapse) and `hold` writes `not_before`,
+    // which since the collapse is the planner's own pacing note and nothing
+    // else — the delivery pull does not read it. Applying either to a queued or
+    // asked row would
     // return the row happily and change nothing anybody could observe: the
     // silent no-op this phase exists to make impossible. Observed live
     // 2026-08-20, when the planner chose `send` on a row that had been asked
@@ -1127,6 +1166,9 @@ async function applyDecision(
   setSchedule: typeof setNudgeSchedule,
   markOutcome: typeof markNudgeOutcome,
   markQueued: typeof markNudgeQueued,
+  // Code-printed, from the gap's own row (the caller holds the view). Empty when
+  // the row cannot name itself — a thin row ships bare rather than fabricating.
+  anchor: string,
 ): Promise<{ outcome: 'applied' | 'refused'; detail?: string }> {
   const moved = 'the gap changed state between the plan and the write — nothing was applied';
   const done = (row: Nudge | null): { outcome: 'applied' | 'refused'; detail?: string } =>
@@ -1147,7 +1189,23 @@ async function applyDecision(
             'rewrite it using only the dates you were given',
         };
       }
-      return done(await markQueued(d.nudgeId, tenantId, d.questionDraft));
+      // The anchor rides along, code-printed: what is stored IS what is sent
+      // (④b), and the technician's agent files the reply against the job this
+      // line names.
+      const queued = await markQueued(d.nudgeId, tenantId, `${d.questionDraft}${anchor}`);
+      // A hold this send overrides must be CLEARED, or the gap view keeps
+      // telling the planner "currently held until …" about a question already
+      // with the person. Best-effort and deliberately unguarded on its result:
+      // the ask has landed either way, and a stale hold is a display defect, not
+      // a lost question — never fail an applied send on this.
+      if (queued && queued.not_before) {
+        try {
+          await setSchedule(d.nudgeId, tenantId, { notBefore: null }, ['queued']);
+        } catch (err) {
+          console.error(`[planner] ${d.nudgeId}: queued, but clearing its stale hold failed`, err);
+        }
+      }
+      return done(queued);
     }
     case 'hold':
       return done(
@@ -1461,7 +1519,16 @@ export async function runPlanner(
         }
         let res: { outcome: 'applied' | 'refused'; detail?: string };
         try {
-          res = await applyDecision(tenantId, d, nowIso, setSchedule, markOutcome, markQueued);
+          const gapRow = views.get(d.nudgeId)?.nudge;
+          res = await applyDecision(
+            tenantId,
+            d,
+            nowIso,
+            setSchedule,
+            markOutcome,
+            markQueued,
+            gapRow ? anchorLine(gapRow) : '',
+          );
         } catch (err) {
           // One failed write must not abandon the rest of the firm's plan, and
           // it must not be silent either — it becomes a refusal WITH the reason.

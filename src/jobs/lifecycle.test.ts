@@ -385,6 +385,22 @@ describe('runLifecycle', () => {
       });
       expect(noFloor.ladderMute).toContain('NO backstop sweep is running');
       expect(noFloor.ok).toBe(true);
+
+      // The OTHER way to be voiceless — planner live, no credentials. It used to
+      // surface as compose's own credential skip; with compose gone the mute
+      // check is the only thing that names it.
+      process.env.WATCHERS_MODE = 'live';
+      process.env.PLANNER_MODE = 'live';
+      const keyless = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
+        hasModelKey: () => false,
+      });
+      expect(keyless.ladderMute).toContain('no inference credentials');
+      expect(keyless.teamLeadPlanner).toEqual({ skipped: 'no inference credentials' });
+      expect(keyless.ok).toBe(true);
+
       expect(spy.mock.calls.some((c: unknown[]) => String(c[0]).includes('LADDER IS MUTE'))).toBe(
         true,
       );

@@ -2099,6 +2099,7 @@ export type Database = {
           by_planner: boolean | null
           escalated_at: string | null
           fate: string | null
+          handoff_kind: string | null
           item_id: string | null
           item_resolved_at: string | null
           kind: string | null
@@ -2125,6 +2126,7 @@ export type Database = {
           extended_at: string | null
           extended_to: string | null
           nudge_id: string | null
+          pending: boolean | null
           resolved_at: string | null
           status: string | null
           tenant_id: string | null

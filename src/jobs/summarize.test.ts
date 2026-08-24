@@ -159,18 +159,39 @@ describe('runGapSummaries', () => {
     expect(rows[0].escalated).toBe(true);
   });
 
-  test('escalated with NO item ever opened: past the window the fate is none', async () => {
-    const closedAt = new Date(Date.parse(NOW) - (HOLDBACK_DAYS + 1) * 24 * 3_600_000).toISOString();
+  test('escalated with NO item is summarized IMMEDIATELY with fate none (no pointless hold)', async () => {
     const nudgeId = await insertClosedNudge({
       subjectRef: `sum-noitem-${RUN}`,
       status: 'escalated',
-      askedAt: closedAt,
-      resolvedAt: closedAt,
+      askedAt: '2026-08-24T15:00:00Z',
+      resolvedAt: '2026-08-24T16:00:00Z', // inside the window — must NOT hold
     });
     await runGapSummaries(NOW);
     const rows = await summaryFor(nudgeId);
     expect(rows).toHaveLength(1);
-    expect(rows[0].manager_fate).toBe('none'); // a failed flag left nothing open
+    expect(rows[0].manager_fate).toBe('none'); // once-ever dedup: the item can never appear
+  });
+
+  test('extended_to reads the last APPLIED extend, never a refused one', async () => {
+    const nudgeId = await insertClosedNudge({
+      subjectRef: `sum-extend-${RUN}`,
+      status: 'answered',
+      askedAt: '2026-08-24T15:00:00Z',
+      resolvedAt: '2026-08-24T18:00:00Z',
+    });
+    await pg.query(
+      `insert into nudge_decisions (tenant_id, nudge_id, decided_at, mode, action, confidence,
+                                    reason, outcome, escalate_after)
+       values ($1, $2, '2026-08-24T16:00:00Z', 'live', 'extend', 'high', 't', 'applied',
+               '2026-08-25T16:00:00Z'),
+              ($1, $2, '2026-08-24T17:00:00Z', 'live', 'extend', 'high', 't', 'refused',
+               '2026-08-30T16:00:00Z')`,
+      [tenantId, nudgeId],
+    );
+    await runGapSummaries(NOW);
+    const rows = await summaryFor(nudgeId);
+    expect(rows).toHaveLength(1);
+    expect(new Date(rows[0].extended_to).toISOString()).toBe('2026-08-25T16:00:00.000Z');
   });
 
   test('the holdback times out: still-open past the window writes still_open', async () => {

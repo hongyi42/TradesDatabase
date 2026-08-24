@@ -33,12 +33,18 @@ export function workingHoursBetween(
   if (Number.isNaN(from) || Number.isNaN(to) || to <= from) return null;
   const MINUTE = 60_000;
   let minutes = 0;
-  for (let t = from; t < to; t += MINUTE) {
+  // Grid ALIGNED TO WALL-CLOCK MINUTES, not to `from` (review find 6): the
+  // window's edges fall on local minute boundaries, and modern zone offsets
+  // are whole minutes, so aligned slices never straddle 07:00/19:00 — a
+  // from-anchored grid mis-attributed up to a minute per boundary crossing.
+  let t = from;
+  while (t < to) {
+    const next = Math.min(Math.floor(t / MINUTE) * MINUTE + MINUTE, to);
     const h = localHour(tz, t);
     if (h >= ASK_WINDOW_START_HOUR && h < ASK_WINDOW_END_HOUR) {
-      // The last step may be partial; count only what is inside the range.
-      minutes += Math.min(MINUTE, to - t) / MINUTE;
+      minutes += (next - t) / MINUTE;
     }
+    t = next;
   }
   return Math.round((minutes / 60) * 100) / 100;
 }

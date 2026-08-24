@@ -104,8 +104,13 @@ export async function runGapSummaries(nowIso: string, deps: SummarizeDeps = {}):
         let managerLatencyWh: number | null = null;
         if (n.status === 'escalated') {
           item = await findItem(tenantId, n.id);
+          // Hold ONLY when an open item exists: escalation flags the item
+          // BEFORE closing the nudge (the watchers safe order), so no-item at
+          // this point means no item ever (the once-per-subject-EVER flag
+          // dedup) — waiting for it would be a pointless 7-day delay before
+          // the truthful 'none'.
           const windowOpen = nowMs - Date.parse(closedAt) < HOLDBACK_DAYS * 24 * 3_600_000;
-          if ((!item || item.status === 'open') && windowOpen) {
+          if (item && item.status === 'open' && windowOpen) {
             summary.heldBack += 1;
             continue;
           }
@@ -125,7 +130,11 @@ export async function runGapSummaries(nowIso: string, deps: SummarizeDeps = {}):
         const history = decisions.get(n.id) ?? [];
         const arc: Record<string, number> = {};
         for (const d of history) arc[d.action] = (arc[d.action] ?? 0) + 1;
-        const lastExtend = [...history].reverse().find((d) => d.action === 'extend');
+        // Applied extends only: a rail-refused or shadow extend never governed
+        // the nudge (the plannerEscalation precedent).
+        const lastExtend = [...history]
+          .reverse()
+          .find((d) => d.action === 'extend' && d.outcome === 'applied');
 
         const wrote = await insert({
           tenant_id: tenantId,

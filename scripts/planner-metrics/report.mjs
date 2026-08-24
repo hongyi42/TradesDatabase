@@ -46,7 +46,10 @@ try {
            round(avg(hours_between), 1) as avg_hours
       from mv_whiplash`);
   const extendEff = await q(`
-    select answered_in_time, count(*)::int as n from mv_extend_effectiveness group by 1`);
+    select answered_in_time, count(*)::int as n from mv_extend_effectiveness
+     where not pending group by 1`);
+  const pendingExtends = await q(`
+    select count(*)::int as n from mv_extend_effectiveness where pending`);
 
   const closed = outcomes.reduce((s, r) => s + r.n, 0);
   const answered = outcomes.filter((r) => r.outcome_bucket === 'answered').reduce((s, r) => s + r.n, 0);
@@ -89,6 +92,7 @@ try {
   lines.push('');
   lines.push('## Extend effectiveness');
   lines.push(`- extends answered before their extended deadline: ${pct(extendsWorked, extends_)}`);
+  lines.push(`- still pending (deadline in the future — not counted above): ${pendingExtends[0]?.n ?? 0}`);
   lines.push('');
 
   const text = lines.join('\n');

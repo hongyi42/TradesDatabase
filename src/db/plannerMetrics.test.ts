@@ -96,6 +96,14 @@ describe('working_hours_between — SQL and TS agree (the pinned definition)', (
     ['2026-08-20T09:00:00Z', '2026-08-20T13:00:00Z', 0],
     // Half-hour granularity: 10:00 → 10:30 = 0.5.
     ['2026-08-20T17:00:00Z', '2026-08-20T17:30:00Z', 0.5],
+    // Odd seconds straddling the window's opening edge: 06:59:30 → 07:30 PDT
+    // = exactly 0.5 (the wall-clock-aligned grid, review find 6).
+    ['2026-08-20T13:59:30Z', '2026-08-20T14:30:00Z', 0.5],
+    // Across the 2026-11-01 fall-back day (America/Los_Angeles): the range
+    // starts 5am PST (already past the 09:00Z fall-back) and ends 8pm PST;
+    // the repeated 1-2am hour lies OUTSIDE the window, so the day contributes
+    // exactly its full 12 working hours in BOTH implementations.
+    ['2026-11-01T13:00:00Z', '2026-11-02T04:00:00Z', 12],
   ];
   test.each(CASES)('%s → %s = %sh, both implementations', async (from, to, hours) => {
     const { rows } = await pg.query(
@@ -198,6 +206,101 @@ describe('mv_whiplash', () => {
     await insertDecision(nudgeId, jobId, 'escalate', '2026-08-22T18:00:00Z');
     const { rows } = await pg.query(`select * from mv_whiplash where nudge_id = $1`, [nudgeId]);
     expect(rows).toEqual([]);
+  });
+});
+
+describe('mv_gap_outcomes', () => {
+  test('answered-with-stamp buckets answered/closed_by_technician; failed-with-item buckets manager', async () => {
+    const answeredId = await insertNudge({
+      subjectRef: `metrics-outcome-a-${RUN}`,
+      status: 'answered',
+      askedAt: '2026-08-20T17:00:00Z',
+      resolvedAt: '2026-08-20T19:00:00Z',
+    });
+    // The attribution stamp needs a real capture (FK) — reuse the fixture job.
+    const cap = await pg.query(
+      `insert into raw_captures (tenant_id, channel, raw_text, captured_at, job_id)
+       values ($1, 'technician_note', 'done', '2026-08-20T18:00:00Z', $2) returning id`,
+      [tenantId, jobId],
+    );
+    await pg.query(`update nudges set answered_by_capture_id = $1 where id = $2`, [
+      cap.rows[0].id,
+      answeredId,
+    ]);
+    const failedId = await insertNudge({
+      subjectRef: `metrics-outcome-f-${RUN}`,
+      status: 'failed',
+      askedAt: '2026-08-20T17:00:00Z',
+      resolvedAt: '2026-08-21T17:00:00Z',
+      resolution: 'never delivered — handed to the manager',
+    });
+    await pg.query(
+      `insert into review_items (tenant_id, kind, subject_ref, status, suggestion, detail, created_at)
+       values ($1, 'overdue_visit_gap', $2, 'open', 'chase',
+               jsonb_build_object('escalatedFromNudge', $3::text), '2026-08-21T17:00:00Z')`,
+      [tenantId, `metrics-outcome-f-item-${RUN}`, failedId],
+    );
+    const { rows } = await pg.query(
+      `select nudge_id, outcome_bucket, closed_by_technician, working_hours_open
+         from mv_gap_outcomes where nudge_id = any($1)`,
+      [[answeredId, failedId]],
+    );
+    const byId = Object.fromEntries(rows.map((r) => [r.nudge_id, r]));
+    expect(byId[answeredId].outcome_bucket).toBe('answered');
+    expect(byId[answeredId].closed_by_technician).toBe(true);
+    expect(Number(byId[answeredId].working_hours_open)).toBeCloseTo(2, 2);
+    // The expiry-path handoff is a MANAGER outcome, not 'abandoned' (review find 2).
+    expect(byId[failedId].outcome_bucket).toBe('manager');
+    // ...and it appears in the fates view with its handoff kind.
+    const fates = await pg.query(
+      `select fate, handoff_kind from mv_escalation_fates where nudge_id = $1`,
+      [failedId],
+    );
+    expect(fates.rows).toHaveLength(1);
+    expect(fates.rows[0].handoff_kind).toBe('failed');
+    expect(fates.rows[0].fate).toBe('still_open');
+  });
+
+  test('late fires against the ORIGINAL 24h allowance, doubled', async () => {
+    const lateId = await insertNudge({
+      subjectRef: `metrics-late-${RUN}`,
+      status: 'escalated',
+      askedAt: '2026-08-17T17:00:00Z',
+      resolvedAt: '2026-08-20T17:00:00Z', // 72h after the ask > 48h
+    });
+    const { rows } = await pg.query(
+      `select late from mv_escalation_fates where nudge_id = $1`,
+      [lateId],
+    );
+    expect(rows[0].late).toBe(true);
+  });
+});
+
+describe('mv_extend_effectiveness', () => {
+  test('answered-in-time true; a future-deadline open extend is pending', async () => {
+    const okId = await insertNudge({
+      subjectRef: `metrics-ext-ok-${RUN}`,
+      status: 'answered',
+      askedAt: '2026-08-20T15:00:00Z',
+      resolvedAt: '2026-08-20T18:00:00Z',
+    });
+    await insertDecision(okId, jobId, 'extend', '2026-08-20T16:00:00Z', {
+      escalateAfter: '2026-08-21T16:00:00Z',
+    });
+    const pendId = await insertNudge({ subjectRef: `metrics-ext-pend-${RUN}`, status: 'asked' });
+    await insertDecision(pendId, jobId, 'extend', '2026-08-20T16:00:00Z', {
+      escalateAfter: '2126-01-01T00:00:00Z', // far future — stays pending
+    });
+    const { rows } = await pg.query(
+      `select nudge_id, answered_in_time, pending from mv_extend_effectiveness
+        where nudge_id = any($1)`,
+      [[okId, pendId]],
+    );
+    const byId = Object.fromEntries(rows.map((r) => [r.nudge_id, r]));
+    expect(byId[okId].answered_in_time).toBe(true);
+    expect(byId[okId].pending).toBe(false);
+    expect(byId[pendId].answered_in_time).toBe(false);
+    expect(byId[pendId].pending).toBe(true);
   });
 });
 

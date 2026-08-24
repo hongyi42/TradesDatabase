@@ -2327,3 +2327,225 @@ describe('buildGapView — spine-side attribution', () => {
     expect(view.block).toContain('evidence since the ask:');
   });
 });
+
+// ── plan 2026-08-25 Phase 1: a close carries its own link ───────────────────
+//
+// The citation rail already proves WHICH shown note holds the quote; before this
+// phase that index was computed and thrown away. These pin that it is kept, that
+// it is derived by CODE (the model supplies a quote, never an id), and that the
+// evidence pool's non-technician rows can never claim the stamp — that column is
+// the entire definition of mv_gap_outcomes.closed_by_technician.
+describe('the close-derived attribution stamp', () => {
+  const NOW = '2026-08-15T18:00:00.000Z';
+  const NOW_MS = Date.parse(NOW);
+  const FIRST = evidence('2026-08-15T13:00:00.000Z', 'swapped the igniter and it fired right up');
+  const SECOND = evidence('2026-08-15T14:00:00.000Z', 'parts came to sixty dollars even');
+  // The two shapes production ACTUALLY emits for words a technician did not
+  // speak. Both carry a non-null technician_ref, which is why ref-presence
+  // cannot be the test: the phone worker stamps the 'phone-line' sentinel
+  // (calls/worker.ts) and mail ingest stamps the MAILBOX OWNER's ref on a
+  // customer's reply (email/ingest.ts).
+  const foreign = (id: string, channel: string, ref: string, text: string): JobEvidenceRow => ({
+    jobId: 'j1',
+    via: 'job_stamp',
+    capture: {
+      id,
+      captured_at: '2026-08-15T15:00:00.000Z',
+      channel,
+      technician_ref: ref,
+      raw_text: text,
+      sensitivity: null,
+    } as unknown as RawCapture,
+  });
+  const CUSTOMER_CALL = foreign(
+    'c-customer-call',
+    'phone_call',
+    'phone-line',
+    'customer says the invoice came to ninety dollars',
+  );
+  const CUSTOMER_EMAIL = foreign(
+    'c-customer-email',
+    'email',
+    'ben-shelton',
+    'From: pat@example.com\nthe part was quoted at one hundred and ten dollars',
+  );
+
+  const viewsFor = (rows: JobEvidenceRow[]) => {
+    const view = buildGapView(nudge({ id: 'n1' }), NOW_MS, rows, false, new Set(), [], [], 'UTC');
+    return { view, views: new Map([['n1', view]]) };
+  };
+
+  test('the ids are index-aligned with the strings the model was shown', () => {
+    const { view } = viewsFor([FIRST, SECOND, CUSTOMER_CALL, CUSTOMER_EMAIL]);
+    expect(view.evidenceCaptureIds).toHaveLength(view.evidenceText.length);
+    expect(view.evidenceText[1]).toContain('sixty dollars');
+    expect(view.evidenceCaptureIds[1]).toBe(SECOND.capture.id);
+    // Both foreign lines are SHOWN — the planner should read them — but neither
+    // can be stamped as a technician's answer. Ref-presence would have passed
+    // both: 'phone-line' and 'ben-shelton' are each non-null.
+    expect(view.evidenceText[2]).toContain('ninety dollars');
+    expect(view.evidenceCaptureIds[2]).toBeNull();
+    expect(view.evidenceText[3]).toContain('one hundred and ten dollars');
+    expect(view.evidenceCaptureIds[3]).toBeNull();
+  });
+
+  test('a close on the SECOND note records that note, not the first', () => {
+    const { views } = viewsFor([FIRST, SECOND]);
+    const { decisions, dropped } = validateDecisions(
+      {
+        decisions: [
+          {
+            nudgeId: 'n1',
+            action: 'close',
+            basis: 'evidence',
+            citation: 'parts came to sixty dollars even',
+            confidence: 'high',
+            reason: 'the figure landed',
+          },
+        ],
+      },
+      views,
+      NOW_MS,
+    );
+    expect(dropped).toEqual([]);
+    expect(decisions[0].answeredByCaptureId).toBe(SECOND.capture.id);
+  });
+
+  test.each([
+    ['a customer phone call (the phone-line sentinel)', 'c-customer-call', 'the invoice came to ninety dollars'],
+    ["a customer's email (the mailbox owner's ref)", 'c-customer-email', 'quoted at one hundred and ten dollars'],
+  ])('a quote found only in %s records NO id', (_label, id, citation) => {
+    // The close still stands — the words are there and the planner judged them.
+    // What must not happen is the row reading as closed BY A TECHNICIAN.
+    const row = id === 'c-customer-call' ? CUSTOMER_CALL : CUSTOMER_EMAIL;
+    const { views } = viewsFor([row]);
+    const { decisions, dropped } = validateDecisions(
+      {
+        decisions: [
+          {
+            nudgeId: 'n1',
+            action: 'close',
+            basis: 'evidence',
+            citation,
+            confidence: 'high',
+            reason: 'the words are on the job',
+          },
+        ],
+      },
+      views,
+      NOW_MS,
+    );
+    expect(dropped).toEqual([]);
+    expect(decisions[0].action).toBe('close');
+    expect(decisions[0].answeredByCaptureId).toBeUndefined();
+  });
+
+  test('a record-basis close and a refused close both carry no id', () => {
+    const view = buildGapView(
+      nudge({ id: 'n1', kind: 'job_cost_gap' }),
+      NOW_MS,
+      [FIRST],
+      false,
+      new Set(['j1']),
+      [],
+      [],
+      'UTC',
+    );
+    const views = new Map([['n1', view]]);
+    const onRecord = validateDecisions(
+      { decisions: [{ nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'ledger' }] },
+      views,
+      NOW_MS,
+    );
+    expect(onRecord.decisions[0].answeredByCaptureId).toBeUndefined();
+
+    const unfindable = validateDecisions(
+      {
+        decisions: [
+          {
+            nudgeId: 'n1',
+            action: 'close',
+            basis: 'evidence',
+            citation: 'words nobody ever wrote down',
+            confidence: 'high',
+            reason: 'invented',
+          },
+        ],
+      },
+      views,
+      NOW_MS,
+    );
+    expect(unfindable.decisions).toEqual([]);
+    expect(unfindable.dropped[0].why).toContain('does not appear in the evidence');
+  });
+
+  // ── the write side ────────────────────────────────────────────────────────
+  const liveClose = (over: Partial<PlannerDeps> = {}) => {
+    const stampAnswer = vi.fn<NonNullable<PlannerDeps['stampAnswer']>>(async () => nudge());
+    const deps = baseDeps({
+      listNudges: async () => [nudge({ id: 'n1' })],
+      listEvidence: async () => [SECOND],
+      markOutcome: vi.fn<NonNullable<PlannerDeps['markOutcome']>>(async () => nudge()),
+      stampAnswer,
+      recordDecisions: async (rows) => rows.length,
+      runLoop: loopReturning([
+        {
+          nudgeId: 'n1',
+          action: 'close',
+          basis: 'evidence',
+          citation: 'parts came to sixty dollars even',
+          confidence: 'high',
+          reason: 'the figure landed',
+        },
+      ]),
+      ...over,
+    });
+    // Return the spy the deps ACTUALLY carry: an `over` that replaces
+    // stampAnswer must hand back its own, or the assertions watch a fn nothing
+    // called.
+    return { deps, stampAnswer: deps.stampAnswer as ReturnType<typeof vi.fn> };
+  };
+
+  test('an applied close stamps the capture its citation came from', async () => {
+    const { deps, stampAnswer } = liveClose();
+    const summary = await runPlanner(NOW, 'live', deps);
+    expect(summary.applied).toBe(1);
+    expect(stampAnswer).toHaveBeenCalledTimes(1);
+    expect(stampAnswer).toHaveBeenCalledWith('n1', 't1', SECOND.capture.id);
+  });
+
+  test('a close that LOST its race stamps nothing', async () => {
+    // markOutcome returning null means the row moved between the plan and the
+    // write. There is no close, so there is nothing to attribute.
+    const { deps, stampAnswer } = liveClose({
+      markOutcome: vi.fn<NonNullable<PlannerDeps['markOutcome']>>(async () => null),
+    });
+    const summary = await runPlanner(NOW, 'live', deps);
+    expect(summary.applied).toBe(0);
+    expect(summary.refusedAtApply).toBe(1);
+    expect(stampAnswer).not.toHaveBeenCalled();
+  });
+
+  test('a failing stamp is LOUD but never fails the close', async () => {
+    // The attributeAnswerToGap doctrine, mirrored: a lost link is a lost link,
+    // and it must not turn a close that really happened into a refusal.
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { deps, stampAnswer } = liveClose({
+      stampAnswer: vi.fn<NonNullable<PlannerDeps['stampAnswer']>>(async () => {
+        throw new Error('database is on fire');
+      }),
+    });
+    const summary = await runPlanner(NOW, 'live', deps);
+    expect(summary.applied).toBe(1);
+    expect(summary.refusedAtApply).toBe(0);
+    expect(stampAnswer).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  test('shadow mode stamps nothing', async () => {
+    const { deps, stampAnswer } = liveClose();
+    await runPlanner(NOW, 'shadow', deps);
+    expect(stampAnswer).not.toHaveBeenCalled();
+  });
+});

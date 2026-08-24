@@ -47,7 +47,12 @@ both a schema change and a fleet-wide doctrine change.
   stays untouched. Consequence handled in Phase 4: the sibling payload dedupes by text.
 - **Attribution: keep record-time, add close-derived** (user, 2026-08-25). `setNudgeAnsweredBy`
   already guards `.is(…, null)`, so the paths compose with no new logic.
-- **The derived stamp only fires on a capture with a `technician_ref`** (review finding 11).
+- **The derived stamp only fires on a capture a badge-holder SPOKE** — implemented as a channel
+  test (`technician_note|technician_voice|technician_photo`) AND a non-null ref, not the
+  ref-presence test this plan first specified. **Phase-1 review found the ref-only guard inert**:
+  the phone worker stamps the sentinel `'phone-line'` (`src/calls/worker.ts:129`) and mail ingest
+  stamps the MAILBOX OWNER's ref on a customer's reply (`src/email/ingest.ts:109`), so both foreign
+  shapes carry a non-null ref and would have been stamped.
   `listJobEvidenceSince` applies no technician filter, so `evidenceText` includes customer phone
   calls, email and manager notes; without this guard a gap closed on a customer's call would read
   as `closed_by_technician`. Accepted consequence stands: that metric begins counting
@@ -168,13 +173,13 @@ holding the quote (quote in the *second* of several shown); a quote found in a c
 `markOutcome` returns null does NOT stamp; a throwing `stampAnswer` still reports `applied`.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] the seven new planner.test.ts cases pass
-- [ ] existing `src/db/nudges.test.ts` first-write-wins cases still pass (record-time path untouched)
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass (2236 passed, 8 skipped; lint 0 errors — the one warning at planner.test.ts:1145 is pre-existing and outside this diff)
+- [x] the new planner.test.ts cases pass — NINE, not seven: the foreign-capture case split into a `test.each` over the two shapes production actually emits (see below), and a shadow-mode case was added
+- [x] existing `src/db/nudges.test.ts` first-write-wins cases still pass (record-time path untouched)
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack running.
-- [ ] none beyond the suite — no model call and no new external surface.
+- [x] none beyond the suite — no model call and no new external surface.
 
 ### Manual verification
 - [ ] none

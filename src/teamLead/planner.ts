@@ -10,6 +10,7 @@ import {
   markNudgeQueued,
   OPEN_NUDGE_STATUSES,
   recordNudgeDecisions,
+  setNudgeAnsweredBy,
   setNudgeSchedule,
   type JobEvidenceRow,
   type MoneyEvent,
@@ -114,6 +115,12 @@ export interface PlannerDecision {
   // detail and is pulled via list_pending_reviews; NEVER rendered to a human.
   // Dropped whole by its rail; a bad briefing never blocks the handover.
   agentContext?: string | null;
+  // The capture whose words closed this gap — DERIVED BY CODE from the citation
+  // the rails already verified, never supplied by the model (plan 2026-08-25,
+  // Phase 1). Close only, and only for basis 'evidence': a record-basis close
+  // quotes the ledger, which no person spoke. Null when the quote's capture
+  // carries no technician_ref — see evidenceCaptureIds.
+  answeredByCaptureId?: string | null;
 }
 
 // A decision the code rails refused, kept so a shadow run reports what the model
@@ -218,6 +225,10 @@ export interface PlannerDeps {
   // the delivered message — the write compose used to own. Injected so tests
   // never touch the database.
   markQueued?: typeof markNudgeQueued;
+  // The capture->gap link a close derives from its own verified quote (plan
+  // 2026-08-25, Phase 1). Injected like every other writer so a test never
+  // touches the database.
+  stampAnswer?: typeof setNudgeAnsweredBy;
   // The team lead's read tools and the door they dispatch through. Injected so a
   // test never needs the MCP server — and so the planner cannot reach any tool
   // its caller did not hand it.
@@ -335,6 +346,17 @@ export interface GapView {
   nudge: Nudge;
   jobId: string | null;
   evidenceText: string[]; // exactly the strings rendered into the prompt
+  // INDEX-ALIGNED with evidenceText: evidenceCaptureIds[i] is the capture that
+  // produced evidenceText[i]. This is what lets a verified citation name its own
+  // source without the model asserting anything (plan 2026-08-25, Phase 1).
+  //
+  // NULL for any capture a technician did not SPEAK — see
+  // TECHNICIAN_SPOKEN_CHANNELS. The evidence read is job-scoped, not
+  // person-scoped (listJobEvidenceSince), so this pool also holds customer
+  // phone calls, inbound email and manager notes. `answered_by_capture_id` is
+  // the whole definition of mv_gap_outcomes.closed_by_technician, so stamping
+  // one of those would silently rewrite what that metric counts.
+  evidenceCaptureIds: (string | null)[];
   // Whether the HOLE this gap names is closed in the record, as CODE sees it —
   // independent of whether anybody replied. Null when the kind has no
   // record-level test (a visit gap's hole is "no note", and the sweep already
@@ -412,6 +434,39 @@ function historyLine(history: NudgeDecision[], nowMs: number, tz: string): strin
   );
 }
 
+// Did a BADGE-HOLDER speak this capture through an assistant-write channel?
+//
+// Named for what it actually tests, per round-2 review. It does NOT prove the
+// speaker was a technician rather than a manager: MANAGER_TOOLS includes
+// record_field_note and record_standing_fact, so a manager's own note lands
+// `technician_note` with the manager's ref and is stamped like anyone else's.
+// ACCEPTED, alongside the metric broadening the plan already records — telling
+// the two apart needs a roster/tier read, and this phase adds no read. The
+// evidence pool is job-scoped rather than person-scoped for the same reason,
+// so technician B's note may stamp a gap asked of technician A.
+//
+// What it DOES prove is that the words came in through a channel only a person's
+// own assistant writes, which is the part that keeps the pool's foreign rows out.
+//
+// A non-null `technician_ref` is NOT the test, and assuming it was is a live
+// trap this guard was written for: the phone worker stamps the sentinel
+// 'phone-line' on a customer's call (calls/worker.ts) and the mail ingest stamps
+// the MAILBOX OWNER's ref on a customer's emailed reply (email/ingest.ts), so
+// both arrive job-linked with a ref and neither is the technician answering.
+// Only the three channels a person's own assistant writes through are.
+//
+// This gates `evidenceCaptureIds` and therefore `answered_by_capture_id`, which
+// IS the definition of mv_gap_outcomes.closed_by_technician — a customer's email
+// stamped here would rewrite that metric silently. The evidence stays SHOWN to
+// the planner either way; only the stamp is withheld.
+const TECHNICIAN_SPOKEN_CHANNELS: ReadonlySet<string> = new Set([
+  'technician_note',
+  'technician_voice',
+  'technician_photo',
+]);
+const technicianSpoke = (c: JobEvidenceRow['capture']): boolean =>
+  !!c.technician_ref && TECHNICIAN_SPOKEN_CHANNELS.has(c.channel);
+
 // The evidence bound is CODE's, not the model's: only what landed after the ask,
 // on that gap's job. A planner that could decide for itself what counted as
 // evidence could mark a gap answered by something that predates the question.
@@ -437,6 +492,11 @@ export function buildGapView(
         .slice(-EVIDENCE_PER_GAP);
 
   const evidenceText = relevant.map((e) => flat(e.capture.raw_text ?? '', EVIDENCE_TEXT_CHARS));
+  // Same map, same order — the alignment IS the mechanism, so it is built here
+  // rather than reconstructed later from the strings.
+  const evidenceCaptureIds = relevant.map((e) =>
+    technicianSpoke(e.capture) ? e.capture.id : null,
+  );
 
   // Spine-side attribution (plan 2026-08-22, Phase 1). No new read and no new
   // parameter: the stamp is a column on the Nudge this function already holds.
@@ -598,6 +658,7 @@ export function buildGapView(
     nudge: n,
     jobId,
     evidenceText,
+    evidenceCaptureIds,
     recordFilled,
     moneyOnRecord,
     history,
@@ -927,6 +988,7 @@ export function validateDecisions(
     // SHOWED the model is refused — ambiguity defaults to open, because a
     // false-open is loud and cheap and a false-close is silent.
     let citation: string | null = null;
+    let answeredByCaptureId: string | null = null;
     let basis: 'evidence' | 'record' | undefined;
     if (action === 'close') {
       // A gap names a HOLE IN THE RECORD, and a hole can close two ways: somebody
@@ -969,7 +1031,16 @@ export function validateDecisions(
         continue;
       }
       const shown = view.evidenceText.map(norm);
-      if (!shown.some((text) => text.includes(wanted))) {
+      // findIndex, not some: the same check, but it keeps WHICH note matched so
+      // the close can stamp its own source (plan 2026-08-25, Phase 1).
+      //
+      // TIE-BREAK, known and fail-safe (round-2 review): when the same phrase
+      // appears on two shown lines this names the FIRST. If that one is foreign
+      // (a customer email quoting a figure the technician later repeats) the id
+      // is withheld and the close still stands — a missing link, never a wrong
+      // one, which is the direction this whole helper errs in.
+      const hit = shown.findIndex((text) => text.includes(wanted));
+      if (hit === -1) {
         push('close whose citation does not appear in the evidence');
         continue;
       }
@@ -989,6 +1060,9 @@ export function validateDecisions(
       }
       usedQuotes.add(wanted);
       citation = quote;
+      // Null when that capture has no technician_ref — the guard lives on the
+      // view, where the capture row was still in hand.
+      answeredByCaptureId = view.evidenceCaptureIds[hit] ?? null;
     }
 
     let notBefore: string | null = null;
@@ -1109,6 +1183,7 @@ export function validateDecisions(
       ...(handoffNote ? { handoffNote } : {}),
       ...(agentContext ? { agentContext } : {}),
       ...(questionDraft ? { questionDraft } : {}),
+      ...(answeredByCaptureId ? { answeredByCaptureId } : {}),
       confidence,
       reason,
     });
@@ -1166,6 +1241,7 @@ async function applyDecision(
   setSchedule: typeof setNudgeSchedule,
   markOutcome: typeof markNudgeOutcome,
   markQueued: typeof markNudgeQueued,
+  stampAnswer: typeof setNudgeAnsweredBy,
   // Code-printed, from the gap's own row (the caller holds the view). Empty when
   // the row cannot name itself — a thin row ships bare rather than fabricating.
   anchor: string,
@@ -1247,7 +1323,22 @@ async function applyDecision(
         d.basis === 'record'
           ? `closed on the record — ${d.citation}`
           : `answered — "${d.citation}"`;
-      return done(await markOutcome(d.nudgeId, tenantId, 'answered', resolution));
+      const closed = await markOutcome(d.nudgeId, tenantId, 'answered', resolution);
+      // The link the citation already proved, recorded AFTER the close actually
+      // moved the row — a close that lost its race has nothing to attribute.
+      // Best-effort and never allowed to fail the close: attributeAnswerToGap's
+      // own doctrine, and for the same reason ("a lost link is a lost link").
+      // setNudgeAnsweredBy is first-write-wins, so a record-time stamp already
+      // on the row wins and this is a no-op — which is exactly the composition
+      // the plan's keep-both decision rests on.
+      if (closed && d.answeredByCaptureId) {
+        try {
+          await stampAnswer(d.nudgeId, tenantId, d.answeredByCaptureId);
+        } catch (err) {
+          console.error(`[planner] ${d.nudgeId}: closed, but stamping its answer failed`, err);
+        }
+      }
+      return done(closed);
     }
   }
 }
@@ -1269,6 +1360,7 @@ export async function runPlanner(
   const setSchedule = deps.setSchedule ?? setNudgeSchedule;
   const markOutcome = deps.markOutcome ?? markNudgeOutcome;
   const markQueued = deps.markQueued ?? markNudgeQueued;
+  const stampAnswer = deps.stampAnswer ?? setNudgeAnsweredBy;
   const specs = deps.specs ?? NUDGE_KIND_SPECS;
   const sweepLive = deps.sweepLive ?? true;
   const tools = deps.tools ?? [];
@@ -1527,6 +1619,7 @@ export async function runPlanner(
             setSchedule,
             markOutcome,
             markQueued,
+            stampAnswer,
             gapRow ? anchorLine(gapRow) : '',
           );
         } catch (err) {

@@ -296,15 +296,16 @@ name in both cleanup lists.
 **`src/jobs/lifecycle.ts`** — Reflector step after summarize (the gate above owns dailiness).
 
 ### Automated verification
-- [ ] gates + tests: the full gate (hour, marker, thresholds — incl. a zero-proposal run still
-  writing its marker); forced-tool seam mocked (proposal → proposed row, evidence verified);
-  bogus evidence id refused + logged; mode contract incl. live-as-shadow
+- [x] gates + tests (9 reflector + lifecycle contract): each gate pinned INDEPENDENTLY (review
+  catch — the first fixtures let either gate produce the same skip); zero-proposal AND failed
+  calls write markers (failed = ok:false, bounding the day WITHOUT advancing the freshness
+  watermark); evidence refused whole; missing-table rethrow → lifecycle 'skipped' not
+  buried-ok:true; render-time flattening of everything crossing DB→prompt; live-as-shadow
 
 ### Live verification (agent-executable)
 - Prerequisites: pilot DB MCP; Render env `REFLECTOR_MODE=shadow` set by user; deploy.
-- [ ] pilot gate honestly SKIPS today (fewer than 15 summaries exist) — the skip is the
-  verification; the first real shadow proposals arrive as the corpus grows and are reviewed
-  then (a follow-up session reads them with the user)
+- [ ] pilot gate honestly SKIPS after deploy + REFLECTOR_MODE=shadow (7 summaries < 15 today);
+  first real shadow proposals reviewed with the user in a follow-up session
 
 ### Manual verification
 - [ ] you set `REFLECTOR_MODE=shadow` on lifecycle-heart (my env writes are classifier-blocked)
@@ -340,15 +341,16 @@ accept/retire verdicts) is deliberately the judge's interface, so the judge late
 the human without reshaping the store.
 
 ### Automated verification
-- [ ] gates + tests: LESSONS block renders for active lessons only; absent block for none;
-  prompt snapshot pins both additions; usage join in the report
+- [x] gates + tests: LESSONS renders for active only / absent for none (anti-drift lock holds
+  byte-for-byte with and without a block); prompt pins both additions; usage join tested in
+  SQL and executed via the real report; live/shadow citations counted apart (review ruling)
 
 ### Live verification (agent-executable)
 - Prerequisites: deploy; at least one shadow proposal reviewed and activated (may be a later
   session — the phase is complete when the machinery is verified with a TEST lesson on the
   local stack end-to-end; pilot activation waits for real proposals).
-- [ ] local-stack E2E: seeded summaries → hand-proposed lesson → activate → tick renders the
-  block → a mocked decision citing it appears in the usage report
+- [x] local-stack E2E incl. the DEFAULT seam (review catch — every other test stubbed it): a
+  real runPlanner tick against the real DB rendered a real activated lesson's text + short id
 
 ### Manual verification
 - [ ] first real pilot lesson: you read the shadow proposals with me and rule which (if any)

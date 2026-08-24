@@ -590,10 +590,22 @@ vulnerability instead of closing one:
 > **Elevated priority (2026-08-17):** this is no longer a one-off. Commit `cd8d904` records a
 > **second** live incident — PR #148's merge made migrations mandatory *immediately*, and every
 > 5-min lifecycle-cron run failed until they were applied (worse than 07-19: it silently degraded a
-> metric while marking the whole job failed). Two incidents in ~4 weeks = a recurring class; treat
-> this as high-priority and **consider pulling it forward** ahead of the rest of Phase 3 (its only
-> hard dependency is the CI gate, Step 3.1). It also pairs with the deploy-provenance work in
-> Phase 0 — both are "git ≠ what's live" failures.
+> metric while marking the whole job failed).
+>
+> **UPDATE 2026-08-24 — a THIRD incident, and it escalates this item.** `afa3e4b` (2026-08-22):
+> PR #164's code went live **12 minutes before its schema**, under the flat statement "deploy does
+> not migrate" — neither Render service invokes `supabase migration up` or `db push`. Worse, the
+> same commit records that **the pilot's migration ledger lies**: `list_migrations` reported two
+> applied migrations as missing. So the guard cannot read the ledger — it must diff **actual DB
+> objects** (`information_schema.columns`, `pg_get_constraintdef()`), and **CHECK constraints
+> specifically**: `afa3e4b` shows a missing CHECK silently rejecting up to 500 rows per chunk while
+> the tick still reported `ok: true`. Three incidents in ~5 weeks: **pull this forward**, its only
+> hard dependency is the CI gate (Step 3.1).
+>
+> It pairs with the provenance work in Phase 0 — both are "git ≠ what's live" failures. Note that
+> provenance is now `GET /health` + the fork-sync procedure in `docs/engineering-memory.md`, not a
+> standalone doc: `docs/deploy-provenance.md` was written and then deleted, because a
+> hand-maintained "what is live" table rots silently and was wrong within a day.
 
 - **Files**: `.github/workflows/ci.yml` job or n8n step; `scripts/check-pending-migrations.mjs` (new)
 - **Action**: A CI/n8n step that **fails a release if pending `supabase/migrations/` files have not

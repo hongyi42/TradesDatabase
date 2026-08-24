@@ -106,15 +106,101 @@ describe('runReflector', () => {
     expect(await markers(tenantA)).toEqual([{ proposed: 1 }]);
   });
 
-  test('the daily marker: a second run the same firm-local day is gated', async () => {
+  test('the daily marker gate, pinned independently of the freshness gate', async () => {
+    // Marker stamped to NOW's own firm-local day + plenty of fresh summaries:
+    // the ONLY thing gating is ranToday (review F5 — the original fixture let
+    // either gate produce the same skip).
+    await pg.query(`update reflector_runs set ran_at = $1 where tenant_id = $2`, [NOW, tenantA]);
+    await mintSummaries(tenantA, 6, 'fresh');
     const s = await runReflector(NOW, 'shadow', {
       listTenants: async () => [tenantA],
       run: async () => {
-        throw new Error('must not run twice in one day');
+        throw new Error('must not run twice in one firm-local day');
       },
     });
     expect(s.skippedGate).toBe(1);
-    expect(await markers(tenantA)).toHaveLength(1);
+  });
+
+  test('the freshness gate, pinned independently of the daily marker', async () => {
+    // Marker moved to the PREVIOUS firm-local day and stamped as the last
+    // SUCCESSFUL run AFTER the fresh summaries existed → <5 new since it.
+    await pg.query(
+      `update reflector_runs set ran_at = $1, ok = true where tenant_id = $2`,
+      ['2026-08-23T19:00:00Z', tenantA],
+    );
+    await pg.query(
+      `update gap_summaries set created_at = '2026-08-23T18:00:00Z' where tenant_id = $1`,
+      [tenantA],
+    );
+    const s = await runReflector(NOW, 'shadow', {
+      listTenants: async () => [tenantA],
+      run: async () => {
+        throw new Error('nothing new — must not re-run');
+      },
+    });
+    expect(s.skippedGate).toBe(1);
+  });
+
+  test('a FAILED call writes an ok=false marker that bounds the day but not the watermark', async () => {
+    // Yesterday's marker + fresh summaries → eligible; the model call throws.
+    await pg.query(`delete from reflector_runs where tenant_id = $1`, [tenantA]);
+    await pg.query(
+      `update gap_summaries set created_at = now() where tenant_id = $1`,
+      [tenantA],
+    );
+    const s = await runReflector(NOW, 'shadow', {
+      listTenants: async () => [tenantA],
+      run: async () => {
+        throw new Error('provider 429');
+      },
+    });
+    expect(s.tenantErrors).toBe(1);
+    const rows = await pg.query(
+      `select ok, proposed from reflector_runs where tenant_id = $1 order by ran_at desc limit 1`,
+      [tenantA],
+    );
+    expect(rows.rows[0].ok).toBe(false);
+    expect(rows.rows[0].proposed).toBe(0);
+    // The failure marker gates the rest of ITS day. The marker was stamped at
+    // the DB's real clock; pin it to NOW's firm-local day so the fixture's
+    // fixed NOW and the marker share a day (they always do in production —
+    // one run, one clock).
+    await pg.query(
+      `update reflector_runs set ran_at = $1 where tenant_id = $2 and ok = false`,
+      [NOW, tenantA],
+    );
+    const again = await runReflector(NOW, 'shadow', {
+      listTenants: async () => [tenantA],
+      run: async () => {
+        throw new Error('must be day-gated after a failed attempt');
+      },
+    });
+    expect(again.skippedGate).toBe(1);
+    // ...but tomorrow the unseen summaries still count as new: the watermark
+    // reads only ok=true markers, and none exists.
+  });
+
+  test('thin evidence is refused WHOLE, never trimmed', async () => {
+    // Own tenant: a marker written here must not day-gate or watermark-starve
+    // the zero-proposal test's tenant.
+    const tenantC = (await createTenant(`refl-c-${RUN}`, { managerSeats: 1 })).id;
+    await pg.query(`update tenants set timezone = $1 where id = $2`, [TZ, tenantC]);
+    const fresh = await mintSummaries(tenantC, MIN_SUMMARIES + 1, 'thin');
+    const s = await runReflector(NOW, 'shadow', {
+      listTenants: async () => [tenantC],
+      run: async () => ({
+        lessons: [
+          { text: 'Two-evidence rule.', evidence: fresh.slice(0, 2) },
+          { text: 'Mixed-type evidence.', evidence: [fresh[0], 42, fresh[1]] },
+        ],
+      }),
+    });
+    expect(s.ran).toBe(1);
+    expect(s.proposed).toBe(0);
+    expect(s.refused).toBe(2);
+    await pg.query(`delete from nudges where tenant_id = $1`, [tenantC]);
+    await pg.query(`delete from reflector_runs where tenant_id = $1`, [tenantC]);
+    await pg.query(`delete from tenants where id = $1`, [tenantC]);
   });
 
   test("a zero-proposal run STILL writes its marker (mode 'live' = shadow-equivalent)", async () => {

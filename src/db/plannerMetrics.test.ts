@@ -334,5 +334,6 @@ describe('the report script', () => {
     expect(stdout).toContain('Escalation judgment');
     expect(stdout).toContain('Whiplash');
     expect(stdout).toContain('NOT a benchmark');
+    expect(stdout).toContain('Lesson usage');
   });
 });

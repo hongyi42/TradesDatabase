@@ -30,7 +30,8 @@
     "spine-eval:gateway": "npm run build && node scripts/spine-eval/run-gateway.mjs",
     "spine-eval:gate": "npm run build && node scripts/spine-eval/gate.mjs",
     "decisions:index": "node scripts/decision-index.mjs",
-    "metrics:planner": "node -r dotenv/config scripts/planner-metrics/report.mjs"
+    "metrics:planner": "node -r dotenv/config scripts/planner-metrics/report.mjs",
+    "lessons:planner": "npm run build && node -r dotenv/config scripts/planner-metrics/lessons.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",

@@ -162,6 +162,33 @@ describe('the Curator', () => {
     expect(after.rows[0].text).toBe('Immutable rule text.');
   });
 
+  test('the usage join: a decision citing the short id counts against the lesson', async () => {
+    const l = await proposeLesson({ tenantId, text: 'Citable rule.', evidence: [evidenceIds[0]] });
+    const n = await pg.query(
+      `insert into nudges (tenant_id, kind, subject_ref, status, context, resolved_at)
+       values ($1, 'overdue_visit_gap', $2, 'answered', '{}'::jsonb, now()) returning id`,
+      [tenantId, `lessons-usage-${RUN}`],
+    );
+    await pg.query(
+      `insert into nudge_decisions (tenant_id, nudge_id, mode, action, confidence, reason, outcome)
+       values ($1, $2, 'live', 'extend', 'high', $3, 'applied')`,
+      [tenantId, n.rows[0].id, `waiting per firm lesson [${l.id.slice(0, 8)}]`],
+    );
+    const { rows } = await pg.query(
+      `select count(d.id)::int as uses,
+              count(d.id) filter (where nn.status = 'answered')::int as answered
+         from planner_lessons pl
+         left join nudge_decisions d
+           on d.tenant_id = pl.tenant_id
+          and d.reason like '%[' || substring(pl.id::text, 1, 8) || ']%'
+         left join nudges nn on nn.id = d.nudge_id
+        where pl.id = $1 group by pl.id`,
+      [l.id],
+    );
+    expect(rows[0].uses).toBe(1);
+    expect(rows[0].answered).toBe(1);
+  });
+
   test('text immutability: the typed layer exports no text setter', () => {
     const exported = Object.keys(lessonsModule);
     // The only mutators are the curator verbs; nothing updates `text`.

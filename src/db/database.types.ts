@@ -1426,18 +1426,21 @@ export type Database = {
       reflector_runs: {
         Row: {
           id: string
+          ok: boolean
           proposed: number
           ran_at: string
           tenant_id: string
         }
         Insert: {
           id?: string
+          ok?: boolean
           proposed?: number
           ran_at?: string
           tenant_id: string
         }
         Update: {
           id?: string
+          ok?: boolean
           proposed?: number
           ran_at?: string
           tenant_id?: string

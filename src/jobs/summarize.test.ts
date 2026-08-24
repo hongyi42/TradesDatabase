@@ -123,6 +123,9 @@ describe('runGapSummaries', () => {
     expect(rows[0].arc).toEqual({});
     expect(rows[0].considered).toBe(0);
     expect(rows[0].subject).toBe(`sum-bare-${RUN}`); // no context names → subject_ref
+    // A plain delivery failure with no citing item is NOT a manager handoff.
+    expect(rows[0].manager_fate).toBe('none');
+    expect(rows[0].escalated).toBe(false);
   });
 
   test('escalation holdback: an OPEN item defers the summary; resolution completes it', async () => {

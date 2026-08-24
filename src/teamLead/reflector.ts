@@ -1,10 +1,12 @@
 import { getClient } from '../db/client.js';
+import { isMissingCostLedger } from '../db/costs.js';
 import { runForcedTool, type ForcedToolSpec } from '../model/forcedTool.js';
 import { listRecentSummaries, countSummaries, type GapSummary } from '../db/gapSummaries.js';
 import { expireStaleProposals, listLessons, proposeLesson } from './lessons.js';
 import { listTenantIdsWithTelegramBindings } from '../db/technicians.js';
 import { getTenant } from '../db/tenants.js';
 import { TEAM_LEAD_REF } from './identity.js';
+import { flatten } from './composeCopy.js';
 
 // ⑤ Phase 4: the Reflector — the distiller, running DARK. One forced-tool
 // call per eligible firm per day reads recent gap-life summaries and PROPOSES
@@ -71,11 +73,19 @@ function renderSummary(s: GapSummary): string {
   const arc = Object.entries((s.arc ?? {}) as Record<string, number>)
     .map(([k, v]) => `${k}×${v}`)
     .join(' ');
+  // Flatten EVERYTHING that crosses DB → prompt (the Phase-3 composeCopy
+  // rail; review F3): subject derives from customer names, and
+  // manager_resolution is free text — embedded newlines could forge corpus
+  // lines or a fake ACTIVE section. Render-time on purpose: append-only rows
+  // already exist with raw text.
+  const subject = flatten(s.subject ?? '', 120);
+  const resolution = s.resolution ? flatten(s.resolution, 160) : null;
+  const managerRes = s.manager_resolution ? flatten(s.manager_resolution, 160) : null;
   const fate =
-    s.manager_fate === 'none' ? '' : ` manager:${s.manager_fate}${s.manager_resolution ? ` "${s.manager_resolution}"` : ''}`;
+    s.manager_fate === 'none' ? '' : ` manager:${s.manager_fate}${managerRes ? ` "${managerRes}"` : ''}`;
   return (
-    `- ${s.id} · ${s.kind} · ${s.subject} · ${s.status}` +
-    `${s.resolution ? ` ("${s.resolution}")` : ''} · open ${s.working_hours_open ?? '?'}wh` +
+    `- ${s.id} · ${s.kind} · ${subject} · ${s.status}` +
+    `${resolution ? ` ("${resolution}")` : ''} · open ${s.working_hours_open ?? '?'}wh` +
     ` · considered ${s.considered}${arc ? ` (${arc})` : ''}${fate}`
   );
 }
@@ -129,10 +139,14 @@ async function ranToday(tenantId: string, day: string, tz: string): Promise<bool
 }
 
 async function newSinceLastRun(tenantId: string): Promise<number> {
+  // Anchored on the last SUCCESSFUL run (review F2): a failure marker bounds
+  // billing for the day (ranToday counts it) but must not make the summaries
+  // the model never saw stop counting as new.
   const { data, error } = await getClient()
     .from('reflector_runs')
     .select('ran_at')
     .eq('tenant_id', tenantId)
+    .eq('ok', true)
     .order('ran_at', { ascending: false })
     .limit(1);
   if (error) throw new Error(`newSinceLastRun failed: ${error.message}`, { cause: error });
@@ -147,10 +161,10 @@ async function newSinceLastRun(tenantId: string): Promise<number> {
   return count ?? 0;
 }
 
-async function writeMarker(tenantId: string, proposed: number): Promise<void> {
+async function writeMarker(tenantId: string, proposed: number, ok: boolean): Promise<void> {
   const { error } = await getClient()
     .from('reflector_runs')
-    .insert({ tenant_id: tenantId, proposed });
+    .insert({ tenant_id: tenantId, proposed, ok });
   if (error) throw new Error(`writeMarker failed: ${error.message}`, { cause: error });
 }
 
@@ -207,6 +221,7 @@ export async function runReflector(
       // mid-proposals re-bills tomorrow at worst (the gate's day scope). One
       // billed attempt per firm per day is the bound either way.
       let proposedHere = 0;
+      let callOk = false;
       try {
         const args = await run(
           REFLECT_TOOL,
@@ -221,15 +236,30 @@ export async function runReflector(
           },
           { tenantId, technicianRef: TEAM_LEAD_REF },
         );
+        callOk = true;
         const list = Array.isArray(args.lessons) ? args.lessons : [];
         for (const raw of list.slice(0, 3)) {
           const text = (raw as { text?: unknown }).text;
           const evidence = (raw as { evidence?: unknown }).evidence;
+          // Refused WHOLE, never trimmed (review F4): providers honor
+          // minItems only as a hint, and silently dropping non-string
+          // entries would launder thin evidence past the Curator.
+          if (
+            !Array.isArray(evidence) ||
+            evidence.length < 3 ||
+            !evidence.every((e): e is string => typeof e === 'string')
+          ) {
+            summary.refused += 1;
+            console.error(
+              `[reflector] tenant ${tenantId}: proposal refused — evidence must be ≥3 summary ids`,
+            );
+            continue;
+          }
           try {
             const lesson = await propose({
               tenantId,
               text: typeof text === 'string' ? text : '',
-              evidence: Array.isArray(evidence) ? evidence.filter((e): e is string => typeof e === 'string') : [],
+              evidence,
             });
             proposedHere += 1;
             console.log(
@@ -241,11 +271,16 @@ export async function runReflector(
           }
         }
       } finally {
-        await writeMarker(tenantId, proposedHere);
+        await writeMarker(tenantId, proposedHere, callOk);
       }
       summary.ran += 1;
       summary.proposed += proposedHere;
     } catch (err) {
+      // A missing table is an ENVIRONMENT fact, not a tenant fact — rethrow
+      // so lifecycle's skip branch reports it once as 'skipped' instead of
+      // burying it as N tenantErrors under ok:true (review F1, the
+      // "tick still reports ok:true" trap).
+      if (isMissingCostLedger(err)) throw err;
       summary.tenantErrors += 1;
       console.error(`[reflector] tenant ${tenantId} failed`, err);
     }

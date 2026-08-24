@@ -2,7 +2,7 @@
 date: 2026-08-24
 task: the agentic planner eval at scale — multi-tick gap-life harness, ~60 scenarios, Opus 5 vs GLM
 research: thoughts/shared/research/2026-08-23-agentic-eval-estate.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 

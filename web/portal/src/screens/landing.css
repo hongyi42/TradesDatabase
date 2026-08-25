@@ -909,6 +909,34 @@
   inset: 0;
 }
 
+/* The rotating stack. Every frame is laid over the others and only opacity
+   changes, so switching trades costs no layout. slow-01 because a photograph
+   swapping is a large change and snapping between them reads as a glitch. */
+.ld-photoband-stack {
+  position: absolute;
+  inset: 0;
+}
+
+.ld-band-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity var(--dur-slow-01) var(--ease-entrance-expressive);
+}
+
+.ld-band-img.is-showing {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-band-img {
+    transition: none;
+  }
+}
+
 /* No photograph yet: the band is the trades strip and nothing else. An empty
    plate at 460px tall is a page telling the reader it is not finished; a 
    deliberate 1-line qualification band is a page telling them who it is for.
@@ -934,12 +962,29 @@
   left: 0;
   right: 0;
   bottom: 0;
+  /* The scrim itself must not eat clicks aimed at the photograph area, but the
+     trades inside it are BUTTONS now — pointer-events is re-enabled on them
+     below. Without that pair a mouse cannot reach them at all (keyboard still
+     could, which is exactly the kind of bug that survives a click-through test
+     driven by .click()). */
   pointer-events: none;
-  background: linear-gradient(transparent, oklch(0.18 0.012 250 / 0.85));
+  /* Reaches full strength BEFORE the text row rather than only at the very
+     bottom edge. The old single-stop gradient left the trades sitting at roughly
+     40-50% scrim, which is fine over dark shingles and fails over a bright
+     photograph — and the photographs rotate, so it cannot be checked once and
+     trusted. At 0.92 from the midpoint down, white type clears 12:1 against any
+     frame we put behind it. */
+  background: linear-gradient(
+    transparent,
+    oklch(0.18 0.012 250 / 0.92) 52%,
+    oklch(0.18 0.012 250 / 0.94)
+  );
   padding: clamp(18px, 3vw, 32px);
 }
 
 .ld-trades {
+  /* The scrim above sets pointer-events: none; the controls need it back. */
+  pointer-events: auto;
   max-width: 1240px;
   margin: 0 auto;
   padding: 0 clamp(0px, 1vw, 20px);
@@ -957,12 +1002,56 @@
   color: var(--inverse-ink);
 }
 
-.ld-trades > span {
+.ld-trades > * {
   padding: 4px 14px;
   border-left: 1px solid oklch(0.97 0.004 250 / 0.3);
 }
 
-.ld-trades > span:first-child {
+/* The trade names are buttons — clicking one shows that trade and stops the
+   rotation, which is also the keyboard route through the band. They are reset
+   to look exactly like the text they replaced; only the cursor gives them away. */
+.ld-trade,
+.ld-trades-toggle {
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  background: none;
+  border: 0;
+  border-left: 1px solid oklch(0.97 0.004 250 / 0.3);
+  border-radius: 0;
+  cursor: pointer;
+  /* Dimmed until it is the one showing. --inverse-ink-muted is 11.6:1 on the
+     scrim, so this is a de-emphasis, never a legibility cost. */
+  color: var(--inverse-ink-muted);
+  transition: color var(--dur-moderate-01) var(--ease-standard);
+}
+
+.ld-trade:disabled {
+  cursor: default;
+}
+
+.ld-trade.is-on {
+  color: var(--inverse-ink);
+}
+
+.ld-trade:hover:not(:disabled),
+.ld-trades-toggle:hover {
+  color: var(--inverse-ink);
+}
+
+.ld-trades-toggle {
+  color: var(--blue-on-dark);
+  margin-left: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-trade,
+  .ld-trades-toggle {
+    transition: none;
+  }
+}
+
+.ld-trades-lead {
   padding: 4px 14px 4px 0;
   border-left: 0;
   /* NOT --amber. DESIGN.md §5: #0f62fe is 3.62:1 on inverted surfaces and fails

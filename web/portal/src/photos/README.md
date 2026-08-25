@@ -11,10 +11,21 @@ there is no code to change.**
 
 | Filename | Where it lands |
 |---|---|
-| `photo-band.*` | The wide band under the hero, behind the "Built for" trades strip |
+| `trade-electrical.*` | The trades band under the hero — shown while "Electrical" is lit |
+| `trade-plumbing.*` | …while "Plumbing" is lit |
+| `trade-roofing.*` | …while "Roofing" is lit |
+| `trade-hvac.*` | …while "HVAC" is lit |
+| `trade-appliance-repair.*` | …while "Appliance repair" is lit |
 | `strip-1.*` | Truck doors open, first light |
 | `strip-2.*` | Hands, scuffed phone, finished panel |
 | `strip-3.*` | Kitchen table, 9pm, paperwork |
+
+The band rotates through whichever `trade-*` photographs exist, highlighting the
+matching word. A trade with no photograph still lists — it just sits out of the
+rotation. With none of them present the whole band collapses to the slim strip.
+
+Adding a sixth trade means adding it to `TRADES` in `Landing.tsx` as well; the
+filename is `trade-` plus the name lowercased with spaces as hyphens.
 
 `.jpg` `.jpeg` `.png` `.webp` `.avif` all work. Remove the file and the slot goes
 back to its honest "photo to shoot" plate — the two states are interchangeable at
@@ -25,6 +36,15 @@ any time, and a missing file is never an error.
 same traversal guard `/admin` and `/board` use). Vite resolves this directory
 with `import.meta.glob` and emits each file flat and content-hashed, e.g.
 `photo-band-gZFHmBQm.png`.
+
+## Alt text
+
+The **band** photographs need none — they are `aria-hidden`, because the trade
+names beside them are real text carrying the same meaning, and five alt strings
+would only make a screen reader read five near-identical descriptions of pictures
+that illustrate words already on the page.
+
+The **strip** photographs do need it, and that is the one thing you must still edit.
 
 ## Alt text — the one thing you must still edit
 

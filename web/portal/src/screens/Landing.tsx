@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { VideoPlaceholder } from '../components/VideoPlaceholder.js';
 import { ContactForm } from '../components/ContactForm.js';
 import { PRICE_CENTS, CURRENCY } from '../data/model.js';
@@ -48,7 +48,26 @@ const money = (n: number) =>
     maximumFractionDigits: 0,
   }).format(n);
 
-const TRADES = ['Electrical', 'Plumbing', 'Roofing', 'HVAC', 'Appliance repair'];
+// The trades band. Each trade carries a photograph, and the band rotates through
+// them highlighting the matching word — so the reader sees the work they do,
+// named. Drop trade-<slug>.jpg into src/photos/ to fill one; a trade with no
+// photograph still lists, it just sits out of the rotation. If NONE have one the
+// whole band collapses to the slim strip (see ld-photoband-slim).
+//
+// The photographs are DECORATIVE in the accessibility sense and are aria-hidden:
+// the trade names beside them are real text and carry the same meaning, so alt
+// text here would only make a screen reader read five near-identical
+// descriptions of pictures that illustrate words already on the page.
+const TRADES = [
+  { name: 'Electrical', slot: 'trade-electrical' },
+  { name: 'Plumbing', slot: 'trade-plumbing' },
+  { name: 'Roofing', slot: 'trade-roofing' },
+  { name: 'HVAC', slot: 'trade-hvac' },
+  { name: 'Appliance repair', slot: 'trade-appliance-repair' },
+];
+
+/** How long each trade holds before the band advances. */
+const TRADE_DWELL_MS = 4200;
 
 const QUOTES = [
   { quote: '“It’s all in the group chat somewhere.”', who: 'Owner · 11 trucks' },
@@ -281,8 +300,85 @@ function useFillOnce() {
   return { ref, className };
 }
 
+/** Drives the trades band: which trade is showing, and whether it is advancing.
+ *
+ *  Only trades that actually have a photograph take part — a trade with an empty
+ *  slot still lists, it just never becomes the active frame.
+ *
+ *  Auto-advancing content needs a way to stop (WCAG 2.2.2, Pause/Stop/Hide), so
+ *  there is a visible control, clicking a trade takes over manually, and pointer
+ *  or keyboard focus anywhere in the band holds it. It also stops while the band
+ *  is off screen: nobody is watching, and a timer that keeps firing behind the
+ *  fold is pure battery.
+ *
+ *  Under prefers-reduced-motion it never starts. The first available trade shows
+ *  and stays — a reader who asked for less motion should not be handed a slideshow
+ *  with an off switch. */
+function useTradeBand(available: number[]) {
+  const ref = useRef<HTMLElement | null>(null);
+  const [reduced] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+  );
+  const [index, setIndex] = useState(0);
+  const [wanted, setWanted] = useState(!reduced); // what the reader asked for
+  const [visible, setVisible] = useState(true); // whether the band is on screen
+  const [held, setHeld] = useState(false); // pointer or focus inside
+
+  const running = wanted && visible && !held && available.length > 1;
+
+  useEffect(() => {
+    if (!running) return;
+    const id = window.setInterval(() => {
+      setIndex((i) => {
+        const at = available.indexOf(i);
+        return available[(at + 1) % available.length] ?? i;
+      });
+    }, TRADE_DWELL_MS);
+    return () => window.clearInterval(id);
+  }, [running, available]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver((es) => setVisible(es.some((e) => e.isIntersecting)), {
+      threshold: 0.15,
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+
+  // Start on the first trade that actually has a photograph.
+  useEffect(() => {
+    if (available.length && !available.includes(index)) setIndex(available[0]);
+  }, [available, index]);
+
+  return {
+    ref,
+    index,
+    playing: wanted,
+    canRotate: !reduced && available.length > 1,
+    toggle: () => setWanted((p) => !p),
+    pick: (i: number) => {
+      setIndex(i);
+      setWanted(false); // a deliberate choice should not be snatched away
+    },
+    hold: () => setHeld(true),
+    release: () => setHeld(false),
+  };
+}
+
 export function Landing({ onSignIn }: { onSignIn: () => void }) {
   const proof = useFillOnce();
+
+  // Indices of the trades that have a photograph to show.
+  const tradesWithPhotos = useMemo(
+    () => TRADES.map((t, i) => (PHOTOS[t.slot] ? i : -1)).filter((i) => i >= 0),
+    [],
+  );
+  const band = useTradeBand(tradesWithPhotos);
 
   // The only stateful widget on the page.
   const [managers, setManagers] = useState(1);
@@ -369,26 +465,72 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
         </div>
       </section>
 
-      {/* ── Photo band ───────────────────────────────────────────────────────
-          The band is only tall when there is a photograph to be tall FOR. With
-          the slot empty it collapses to the trades strip alone — a slim, solid
-          qualification band that looks decided, instead of ~460px of hatch
-          announcing an unfinished page. Drop photo-band.jpg into src/photos/
-          and it expands back to the full bleed with the strip over the scrim;
-          no code change, see the PHOTOGRAPHS note above. */}
-      <section className={PHOTOS['photo-band'] ? 'ld-photoband' : 'ld-photoband ld-photoband-slim'}>
-        <PhotoPlate
-          slot="photo-band"
-          priority
-          brief="Roofer mid-job, laying asphalt shingles"
-          alt="A roofer laying asphalt shingles with a coil nailer, worn boots braced on the finished course."
-        />
+      {/* ── The trades band ───────────────────────────────────────────────
+          Rotates through one photograph per trade, highlighting the matching
+          word. The photographs stack and cross-fade; only opacity moves.
+
+          With no photographs at all the band collapses to the slim strip rather
+          than standing at ~460px of nothing — see ld-photoband-slim. */}
+      <section
+        ref={band.ref}
+        className={
+          tradesWithPhotos.length ? 'ld-photoband' : 'ld-photoband ld-photoband-slim'
+        }
+        onMouseEnter={band.hold}
+        onMouseLeave={band.release}
+        onFocusCapture={band.hold}
+        onBlurCapture={band.release}
+      >
+        {/* aria-hidden: these illustrate the trade names beside them, which are
+            real text. Five alt strings here would be five near-duplicates of
+            information the reader already has. */}
+        <div className="ld-photoband-stack" aria-hidden="true">
+          {TRADES.map((t, i) =>
+            PHOTOS[t.slot] ? (
+              <img
+                key={t.slot}
+                className={i === band.index ? 'ld-band-img is-showing' : 'ld-band-img'}
+                src={PHOTOS[t.slot]}
+                alt=""
+                /* The first frame is in or near the opening viewport; the rest
+                   are only needed once the band starts turning. */
+                loading={i === tradesWithPhotos[0] ? 'eager' : 'lazy'}
+                fetchPriority={i === tradesWithPhotos[0] ? 'high' : undefined}
+                decoding="async"
+              />
+            ) : null,
+          )}
+        </div>
+
         <div className="ld-photoband-plate">
           <div className="ld-trades">
-            <span>Built for</span>
-            {TRADES.map((t) => (
-              <span key={t}>{t}</span>
-            ))}
+            <span className="ld-trades-lead">Built for</span>
+            {TRADES.map((t, i) => {
+              const has = Boolean(PHOTOS[t.slot]);
+              const on = has && i === band.index;
+              return (
+                <button
+                  key={t.slot}
+                  type="button"
+                  className={on ? 'ld-trade is-on' : 'ld-trade'}
+                  aria-current={on ? 'true' : undefined}
+                  disabled={!has}
+                  onClick={() => band.pick(i)}
+                >
+                  {t.name}
+                </button>
+              );
+            })}
+            {band.canRotate && (
+              <button
+                type="button"
+                className="ld-trades-toggle"
+                onClick={band.toggle}
+                aria-label={band.playing ? 'Stop the trades slideshow' : 'Start the trades slideshow'}
+              >
+                {band.playing ? 'Pause' : 'Play'}
+              </button>
+            )}
           </div>
         </div>
       </section>

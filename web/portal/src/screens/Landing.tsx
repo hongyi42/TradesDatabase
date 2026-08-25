@@ -70,6 +70,9 @@ const TRADES = [
  *  reader who pauses on the band sees two or three trades without waiting. */
 const TRADE_DWELL_MS = 2600;
 
+/** The clock advances more slowly: each stop is a sentence, not a word. */
+const CLOCK_DWELL_MS = 2900;
+
 const QUOTES = [
   { quote: '“It’s all in the group chat somewhere.”', who: 'Owner · 11 trucks' },
   { quote: '“They won’t use another app.”', who: 'Owner · 6 trucks' },
@@ -101,12 +104,14 @@ const TIMELINE = [
     side: 'dn' as const,
     // The product's core claim, stated as a CONTRAST. Provenance is the one
     // thing no competitor in this category ships, so the line has to say so out
-    // loud; "evidence kept" read as a feature label and landed as nothing. It
-    // carries the accent — exactly one stop does, because marking all five
-    // would mark none.
+    // loud; "evidence kept" read as a feature label and landed as nothing.
+    //
+    // It used to carry a permanent accent as the single marked stop. That was
+    // dropped when the clock started highlighting in order: a stop that is
+    // always blue and a stop that is blue because it is its turn are the same
+    // signal saying two different things.
     title: 'It filed itself',
     body: 'Every field shows the message it came from. Ask your current software to do that.',
-    keystone: true,
   },
   {
     when: '18 months on',
@@ -323,25 +328,24 @@ function useFillOnce() {
   return { ref, className };
 }
 
-/** Drives the trades band: which trade is showing, and whether it is advancing.
+/** Rotates an index through `available`, forever, and hands back a ref to put on
+ *  the band it drives. Used by both the trades band and the clock.
  *
- *  Only trades that actually have a photograph take part — a trade with an empty
- *  slot still lists, it just never becomes the active frame.
+ *  ALWAYS ON, by owner decision. Picking an item jumps to it and the rotation
+ *  carries on from there — it does not pin. An earlier version stopped for good
+ *  on the first click, which is not what "always on" means.
  *
- *  WCAG 2.2.2 (Pause/Stop/Hide) wants a mechanism to stop auto-updating content.
- *  The owner asked for no play/pause control (2026-08-25), so the LABELLED one is
- *  gone; the mechanisms are not. Rotation stops when the reader picks a trade,
- *  while the pointer or keyboard focus is anywhere in the band, and while the
- *  band is off screen — and under prefers-reduced-motion it never starts at all,
- *  which covers the readers the criterion exists to protect.
+ *  WCAG 2.2.2 (Pause/Stop/Hide) wants a mechanism to stop auto-updating content
+ *  and there is no labelled control, also by owner decision. What remains:
+ *  rotation holds while the pointer or keyboard focus is inside the band, holds
+ *  while the band is off screen, and never starts at all under
+ *  prefers-reduced-motion — which covers the readers the criterion exists to
+ *  protect. What is lost is discoverability. Recorded in DESIGN.md §8 as an
+ *  exception not to be copied elsewhere.
  *
- *  What is genuinely lost is DISCOVERABILITY: a reader who wants it to stop has
- *  to hover it or click a trade rather than press something that says so. That is
- *  the trade being made, recorded here so it is a decision and not a drift.
- *
- *  Off-screen stopping is also just hygiene — a timer firing behind the fold is
+ *  Off-screen holding is also just hygiene: a timer firing behind the fold is
  *  battery nobody asked to spend. */
-function useTradeBand(available: number[]) {
+function useRotator(available: number[], dwellMs: number) {
   const ref = useRef<HTMLElement | null>(null);
   const [reduced] = useState(
     () =>
@@ -350,15 +354,10 @@ function useTradeBand(available: number[]) {
       window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   );
   const [index, setIndex] = useState(0);
-  const [pinned, setPinned] = useState(false); // reader chose a trade themselves
-  const [visible, setVisible] = useState(true); // whether the band is on screen
-  const [held, setHeld] = useState(false); // pointer or focus inside
+  const [visible, setVisible] = useState(true);
+  const [held, setHeld] = useState(false);
 
-  // No play/stop control by owner decision, so rotation runs whenever it
-  // legitimately can. What still stops it: reduced-motion (never starts),
-  // pointer or keyboard focus in the band, scrolling it out of view, and the
-  // reader picking a trade. See the note on WCAG 2.2.2 above.
-  const running = !reduced && !pinned && visible && !held && available.length > 1;
+  const running = !reduced && visible && !held && available.length > 1;
 
   useEffect(() => {
     if (!running) return;
@@ -367,9 +366,9 @@ function useTradeBand(available: number[]) {
         const at = available.indexOf(i);
         return available[(at + 1) % available.length] ?? i;
       });
-    }, TRADE_DWELL_MS);
+    }, dwellMs);
     return () => window.clearInterval(id);
-  }, [running, available]);
+  }, [running, available, dwellMs]);
 
   useEffect(() => {
     const el = ref.current;
@@ -381,7 +380,6 @@ function useTradeBand(available: number[]) {
     return () => io.disconnect();
   }, []);
 
-  // Start on the first trade that actually has a photograph.
   useEffect(() => {
     if (available.length && !available.includes(index)) setIndex(available[0]);
   }, [available, index]);
@@ -389,10 +387,7 @@ function useTradeBand(available: number[]) {
   return {
     ref,
     index,
-    pick: (i: number) => {
-      setIndex(i);
-      setPinned(true); // a deliberate choice should not be snatched away
-    },
+    pick: (i: number) => setIndex(i),
     hold: () => setHeld(true),
     release: () => setHeld(false),
   };
@@ -406,7 +401,12 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
     () => TRADES.map((t, i) => (PHOTOS[t.slot] ? i : -1)).filter((i) => i >= 0),
     [],
   );
-  const band = useTradeBand(tradesWithPhotos);
+  const band = useRotator(tradesWithPhotos, TRADE_DWELL_MS);
+
+  // The clock highlights its stops in order too — same rotator, slower, because
+  // each stop carries a sentence to read rather than a single word.
+  const clockStops = useMemo(() => TIMELINE.map((_, i) => i), []);
+  const clock = useRotator(clockStops, CLOCK_DWELL_MS);
 
   // The only stateful widget on the page.
   const [managers, setManagers] = useState(1);
@@ -690,14 +690,21 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
           {/* The clock. An ordered list, because it IS one — the stops are a
               sequence in time, and a screen reader should hear them that way
               even though the stagger puts them on two visual rows. */}
-          <ol className="ld-clock">
-            {TIMELINE.map((t) => (
+          <ol
+            className="ld-clock"
+            ref={clock.ref as React.RefObject<HTMLOListElement>}
+            onMouseEnter={clock.hold}
+            onMouseLeave={clock.release}
+            onFocusCapture={clock.hold}
+            onBlurCapture={clock.release}
+          >
+            {TIMELINE.map((t, i) => (
               <li
                 key={t.when}
                 className={[
                   'ld-stop',
                   t.side === 'up' ? 'ld-stop-up' : 'ld-stop-dn',
-                  t.keystone ? 'ld-stop-key' : '',
+                  i === clock.index ? 'is-now' : '',
                 ]
                   .filter(Boolean)
                   .join(' ')}
@@ -707,7 +714,13 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                 <p className="ld-stop-body">{t.body}</p>
               </li>
             ))}
-            <span className="ld-clock-rail" aria-hidden="true" />
+            <span className="ld-clock-rail" aria-hidden="true">
+              {/* Fills to the stop currently lit — the sequence, made visible. */}
+              <span
+                className="ld-clock-fill"
+                style={{ width: `${(clock.index / (TIMELINE.length - 1)) * 100}%` }}
+              />
+            </span>
           </ol>
         </div>
       </section>

@@ -228,11 +228,14 @@ that carry meaning. Most of this page is productive.
 | In-page anchors | `scroll-behavior: smooth` | browser default |
 | Proof band | The record writing itself — chat, then sheet rows, then the source rule | `120ms`–`2500ms`, once, on scroll into view |
 | Trades band | One photograph per trade, cross-faded, highlighting the matching word | `400ms` fade, `2600ms` dwell, continuous |
+| Claims clock | Each stop lit in turn, rail filling to it | `240ms` mark, `400ms` rail, `2900ms` dwell, continuous |
 
-**The trades band is the one exception to rule 3's spirit**, and it is deliberate:
-it carries no labelled pause control (owner decision, 2026-08-25). It still stops
-when the reader picks a trade, while the pointer or keyboard focus is inside it,
-and while it is off screen; under `prefers-reduced-motion` it never starts. What
+**The trades band and the claims clock are the exceptions to rule 3's spirit**,
+and both are deliberate: neither carries a labelled pause control, and neither
+stops when the reader picks an item — picking jumps there and the rotation
+carries on (owner decision, 2026-08-25). They still hold
+while the pointer or keyboard focus is inside them and while they are off screen;
+under `prefers-reduced-motion` neither starts at all. What
 is lost against WCAG 2.2.2 is *discoverability* — a reader who wants it to stop
 must hover or click rather than press something that says "pause". Do not copy
 this exception to anything else on the page.

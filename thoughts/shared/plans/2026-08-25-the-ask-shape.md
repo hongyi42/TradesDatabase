@@ -2,7 +2,7 @@
 date: 2026-08-25
 task: the ask shape — one message may cover several gaps, the answer keeps its link, and the seat agent can follow up
 research: thoughts/shared/research/2026-08-24-the-ask-shape.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -431,16 +431,151 @@ appears; a duplicate note returns `duplicate` and no `openQuestions`; a throwing
 returns `recorded`. The existing `attributeAnswerToGap` `toBeUndefined` pin still passes.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass
-- [ ] the six new server.test.ts cases pass
-- [ ] `src/mcp/server.test.ts`'s 14-tool count assertions (:175, :2309) still pass — no tool added
-- [ ] `md5 Box_Setup_Stuff/bootstrap-box.sh` recorded before any fleet refresh (copy-drift trap)
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass (2300 passed, 8
+      skipped; lint exits 0 — the one warning at planner.test.ts:1148 is pre-existing and outside
+      this diff)
+- [x] the new cases pass — ELEVEN in `server.test.ts` (the describe went 8 → 19) plus one new file,
+      `src/mcp/serverFollowUp.test.ts`, against the plan's six. Beyond the plan: a roster-less/no-job
+      fail-closed case mirroring `attributeAnswerToGap`'s own guard, three from round 1 (F2/F3/F5),
+      the resume-path case from round 2 (R2-D), and the `confirmed`-schema pin (R2-A). SEVEN were
+      mutation-checked, each failing only on the mutation named: dropping the `new Set` (grouped
+      case), re-throwing instead of swallowing (helper failure case), adding `nudgeId` to an entry
+      (two-gap case, via `toEqual` on whole entries), making the spread unconditional (absent-key
+      case), deleting the record-the-reply duty from the tool description (description case),
+      inlining an unguarded read in `commitNote` (`serverFollowUp.test.ts`, fails with
+      `Error: nudges read is down`), and — caught by the pre-existing `src/eval/doctrine.test.ts` —
+      the two-line §0k heading.
+- [x] `src/mcp/server.test.ts`'s 14-tool count assertions (:175, :2309) still pass — no tool added
+- [x] `md5 Box_Setup_Stuff/bootstrap-box.sh` = **`203d9ae2c05b103cb378092fc27ce4ed`** (recorded
+      before any fleet refresh — copy-drift trap). The earlier `caa229f2…` (pre-review draft) and
+      `199902b4…` (post-round-1) are SUPERSEDED and must not be what a refresh verifies against.
+- [x] §0k refresh idempotency proven mechanically, not by eye: replaying the block's own
+      delete-then-append `awk` (`bootstrap-box.sh:1019`) three times, and separately upgrading a
+      simulated seat carrying TODAY's 2026-08-23 block, both yield exactly one §0k heading, one
+      clause 1a, one clause 1b, and untouched neighbouring sections.
+- [x] **`src/eval/doctrine.test.ts` caught a real fleet bug in the first draft of this phase.** The
+      §0k heading was split across two `## ` lines; the block's own delete-then-append `awk`
+      (`bootstrap-box.sh:1019`) stops at the next `^## `, so every refresh would have orphaned a
+      stray heading line into all six seats' AGENTS.md, and `extractDoctrine`'s `nameOf` would have
+      read the section as empty. Fixed to a single-line heading.
+
+### Adversarial review (rounds 1–2) — ten findings, all resolved
+
+- **F1 (the one that mattered): clause 1a told the agent to ASK the follow-up but never to RECORD
+  the answer.** Clause 1's record-duty is keyed on *"when the person answers an office question"*,
+  and a follow-up the agent asks in its own words carries no `(re: …)` line — so on a literal
+  reading the reply was not an office answer and had nothing to file against. The gap would stay
+  `asked`, the planner would re-ask it next tick, and **the technician would be asked the very
+  thing they had just said** — worse than never following up, and it silently deletes the only
+  outcome that makes this phase worth building. Fixed by adding **§0k clause 1b** (and the same
+  duty to the tool description): their reply is an answer to an office question, record it with
+  `record_field_note` on the SAME job.
+- **F2: nothing pinned that no ids are returned.** The helper read only `.question`, so adding
+  `nudgeId` to each entry passed every test while gap uuids reached a technician's chat context —
+  the machine-artifact-in-a-human's-face failure the anchor exists to prevent. Fixed with `toEqual`
+  on whole entry objects; mutation-checked.
+- **F3: nothing pinned that the key is ABSENT when nothing is open.** The only `toBeUndefined` sat
+  on the `duplicate` branch, which returns before the lookup runs — so making the spread
+  unconditional (`openQuestions: []` on every note) passed. Fixed with a recorded-with-nothing-open
+  case; mutation-checked.
+- **F5: the tool description was unpinned**, and until the user-gated fleet refresh it is the ONLY
+  instruction the six live seats have. Fixed with assertions on the description text itself
+  (existing precedent in this file pins the `agentContext` clauses the same way).
+- **F6: production `question` values are `questionDraft + anchorLine(row)`**, so every entry ends
+  with the code-printed `(re: Customer — Job)`, while all fixtures passed bare strings. **Decision:
+  do NOT strip it.** Stripping would couple `src/mcp/server.ts` to the planner's anchor format, and
+  a silent format change would stop stripping while still reading as working. The real hazard is
+  the agent ECHOING it, which is closed in the instructions instead (§0k 1a + the description both
+  forbid repeating that line). A production-shaped fixture now pins the received shape, so this is
+  a recorded decision rather than an untested accident.
+- **F4 was accepted in round 1 and then FIXED in round 2.** The surviving mutation was "delete
+  `openQuestionsFor` and inline an unguarded read in `commitNote`", which throws AFTER the L1 append
+  and tells a technician their note did not land when it permanently did. Round 1's stated reason
+  for accepting it was wrong on the facts — I said a `REVOKE`-based injection would poison
+  *concurrently running* files, but `vitest.config.ts:11` sets `fileParallelism: false`, so nothing
+  runs concurrently; the real objection was always durability (a revoke whose restore is skipped
+  breaks the local stack for every later file and the next run). The half that WAS true is that no
+  per-row input can make the query raise: `technicianId` is the badge's roster uuid at all three
+  `commitNote` sites, `jobId` is minted by the write path, and `nudges.context` is `jsonb`, so a
+  malformed context makes `->>` return NULL rather than error. Round 2 supplied the missing route:
+  `src/mcp/serverFollowUp.test.ts` stubs the single db function with `vi.mock` (module-registry
+  scope is per-FILE, which is why it is its own file — `server.test.ts` needs the genuine one),
+  reaching `server.ts` through the `export * from './nudges.js'` barrel, and drives the REAL tool
+  against the local stack. Mutation-checked: the inline-unguarded-read mutation now fails with
+  `Error: nudges read is down`. The real-database-error property stays pinned on the helper too.
+
+**Round 2 (review of the round-1 fixes) — four more, all fixed:**
+
+- **R2-A: clause 1b told the agent to record "on the SAME job", which is not a lever it has.**
+  `record_field_note` takes no job or customer target; job selection is server-side from the
+  MATCHED CUSTOMER (`src/writePath/recordFieldNote.ts:250-264`). The only lever is identity, and
+  the schema pointed away from it — `confirmed` was documented as *"With confirmId: …"* even though
+  the dispatch reads `args.confirmed` at `server.ts:2415` and passes it to `matchIdentity` on the
+  NO-confirmId branch, which one-shot commits. Consequence in production: a follow-up reply is a
+  bare fragment ("about two hundred"), `matchIdentity` cannot resolve it, the tool answers
+  `needs_identity`, and **the assistant asks the technician which customer it was seconds after
+  recording one for them** — friction and abandonment, and if the agent gives up, F1 is back. No
+  corruption risk (a bare fragment never auto-matches). Fixed in three places: the `confirmed`
+  schema description now documents the standalone use, the tool description names it, and 1b says
+  to pass `confirmed: {customerId}` — the id the previous `recorded` result already returned.
+- **R2-B: 1a's stop condition pointed at the last message, but the list never shrinks.**
+  `setNudgeAnsweredBy` writes only `answered_by_capture_id` — status stays `asked` — and the
+  watcher's activity auto-close needs `soleGapOnJob` (`watchers.ts:796-799`), which is false in
+  exactly the 2+ gap case `openQuestions` exists for. So every subsequent note on that job returns
+  the SAME entries, and a literal reading of 1a ("read it against what the person said") re-asks
+  question 1 after recording the answer to question 2. Fixed: 1a now judges against everything said
+  **in this conversation**, and says outright that the list does not shrink.
+- **R2-C: nothing pinned the §0k clause CONTENT.** `doctrine.test.ts` catches a renamed or deleted
+  SECTION, not a deleted clause — so removing 1b failed no test, in the one artifact that actually
+  reaches the six seats. Fixed with a §0k body assertion (same precedent as the existing
+  `RECORDS ON THE FIRST CALL` pin), covering the record-duty, the `confirmed:{customerId}`
+  mechanism, the whole-conversation rule and both tone rules.
+- **R2-D: the RESUME path was untested.** All new cases used the one-shot branch, yet this file's
+  own attribution test calls resume *"the common answer path"* — and R2-A makes that truer still.
+  Fixed with a stage → `needs_identity` → resume case asserting `openQuestions` survives.
+- Two cosmetic drifts fixed alongside: the §0k heading stamp said "clause 1a" when 1a **and** 1b
+  shipped, and `Box_Setup_Stuff/doorman-nemoclaw-setup-guide.md:394` still described §0k as
+  record-only.
+- **Known, not fixed (efficiency only):** `commitNote` issues `listAskedNudgesForTechnicianJob`
+  twice per recorded note with identical arguments — once inside `attributeAnswerToGap`, once
+  inside `openQuestionsFor` — on the hottest technician write path. Halving it means having
+  attribution hand back what it read, which the `Promise<void>` pin (`server.test.ts:8241`) rules
+  out. Recorded as a known choice.
+- **Pre-existing hazard surfaced, not introduced here:** if the `docker exec … grep -q` at
+  `bootstrap-box.sh:1018` fails for a reason OTHER than the block's absence (a transient docker
+  error), the delete is skipped and the block DOUBLE-APPENDS. No repo test can see it —
+  `doctrine.ts` reads the script, not the seat. Worth a `grep -c` audit after any fleet refresh.
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack; MCP server reachable with a technician badge.
-- [ ] Call `record_field_note` with a badge holding two asked gaps on one job; confirm the result
-      carries `openQuestions` with both, and that a grouped pair yields one deduped entry. Capture
-      the full tool result.
+- [x] PASSED 2026-08-25, 4/4 (verification subagent, fresh context). Driven through the REAL
+      production entry — `createHttpServer()` on 127.0.0.1:8977 with a gateway-HMAC-signed
+      technician badge, real MCP JSON-RPC over SSE, live `defaultExtractor` (no stub) — and every
+      result confirmed by raw `psql` inside the Postgres container, out of process and bypassing
+      PostgREST entirely. Env pinned to `.env.test` through `assertLocalTestEnv()`; `.env` was
+      never loaded wholesale (one grepped line, `ANTHROPIC_API_KEY`), and the `supabase-test` MCP
+      was never touched.
+  * **Two separate asked gaps → both reported**, `ask_group_id` NULL on each and
+    `answered_by_capture_id` NULL on both (attribution correctly declined at 2+):
+    `openQuestions: [{"How did the visit go?"},{"What did the parts come to?"}]`.
+  * **Grouped ask → exactly ONE entry.** `markNudgeGroupQueued` moved 2 rows,
+    `markNudgeAskedGroup` moved 2 rows; SQL confirms two `asked` rows sharing one
+    `ask_group_id` (= the lead id) and one question text, and the payload carried
+    `[{"How did the visit go, and what did the parts come to?"}]`. The text dedupe is proven
+    against a real group, not a hand-made fixture.
+  * **Negative controls held** with four gaps on ONE job — mine `asked`, a stranger's `asked`,
+    one `pending`, one `queued`. Only mine came back.
+  * **Technician surface still exactly 14 tools** off the live `tools/list`.
+  * L1 read-back shows all three captures landed with matching `visits.source_capture_id`.
+  * Fixtures cleaned (8 nudges, 2 technicians deleted; nothing truncated). `raw_captures` left
+    in place — append-only by design.
+- **Live specimen worth recording (not a defect):** in the negative-control run the single asked
+  gap WAS stamped by `attributeAnswerToGap`, and `openQuestions` still reported it back. That is
+  the one case where a filter would be available, and it is still deliberately not applied: the
+  stamp fires whenever exactly one gap is asked, including for a note that answered nothing
+  ("dropped off a part"), so treating it as proof-of-answer would hide a genuinely open question
+  from the assistant and the office's question would go unanswered with no follow-up. A redundant
+  entry costs one doctrine comparison; a filtered-out entry costs the ask.
 
 ### Manual verification
 - [ ] Refresh §0k on **s2 first** (the canary seat), then the fleet; watch one real answer produce

@@ -1,10 +1,12 @@
+import type { QueuedNudgeForHost } from '../db/index.js';
 import {
   flagNudgeGap,
   reviewItemExistsFor,
   getQueuedNudgeForHost,
   isInactiveState,
   listQueuedNudgesForHost,
-  markNudgeAsked,
+  listQueuedNudgesInGroupForHost,
+  markNudgeAskedGroup,
   markNudgeOutcome,
   setNudgeDeliveryAttempts,
   setNudgeServeCount,
@@ -54,7 +56,8 @@ export interface NudgeQueueDeps {
   listQueued?: typeof listQueuedNudgesForHost;
   getQueued?: typeof getQueuedNudgeForHost;
   serveCount?: typeof setNudgeServeCount;
-  asked?: typeof markNudgeAsked;
+  asked?: typeof markNudgeAskedGroup;
+  groupMembers?: typeof listQueuedNudgesInGroupForHost;
   outcome?: typeof markNudgeOutcome;
   attempts?: typeof setNudgeDeliveryAttempts;
   flagNudge?: typeof flagNudgeGap;
@@ -79,45 +82,106 @@ export async function buildNudgeDelivery(
 
   const rows = await listQueued(hostId);
   const items: NudgeDeliveryItem[] = [];
+  // ONE ITEM PER GROUP (plan 2026-08-25, Phase 2). An ungrouped row is its own
+  // group of one, so the ungrouped path below is byte-for-byte what shipped
+  // before. Insertion order is preserved from `rows`, which arrives created_at
+  // ascending, so a group takes the position of its earliest member and the
+  // host's delivery order is unchanged.
+  // A delivery GROUP and the member that leads it, decided here so the serve
+  // loop below never has to ask again. An UNGROUPED row is its own group of one
+  // AND its own lead — that path stays byte-for-byte what shipped before.
+  type Group = { lead: QueuedNudgeForHost | null; members: QueuedNudgeForHost[] };
+  const groups: Group[] = [];
+  const byGroup = new Map<string, Group>();
   for (const row of rows) {
+    const g = row.ask_group_id;
+    if (!g) {
+      groups.push({ lead: row, members: [row] });
+      continue;
+    }
+    const seen = byGroup.get(g);
+    if (seen) {
+      seen.members.push(row);
+      // The lead names the group: `id = ask_group_id`, so it is self-identifying
+      // and no second column is needed to point at it.
+      if (row.id === g) seen.lead = row;
+      continue;
+    }
+    const fresh: Group = { lead: row.id === g ? row : null, members: [row] };
+    byGroup.set(g, fresh);
+    groups.push(fresh);
+  }
+  for (const { lead, members } of groups) {
+    // NO LEAD = FROZEN, never promoted (review finding). A group really can lose
+    // its lead: the sweep's pre-ask carve-out and `moot` both close ONE queued
+    // row and leave its siblings alone (watchers.ts), so an overdue-visit lead
+    // can close on a filed report while the cost member stays queued.
+    //
+    // Promoting a sibling looks harmless and is not. The delivery item id would
+    // change, and the box dedupes on exactly that id (`sent-<id>` in
+    // nudge-runner.sh) — so with no marker for the new id it would send the
+    // identical grouped text A SECOND TIME, including the question that was just
+    // answered. Both ledgers would restart from the new lead's zeros too, buying
+    // the group 2x MAX_SERVE_COUNT and 2x MAX_DELIVERY_ATTEMPTS.
+    //
+    // So this takes the tamper-freeze's treatment: never served, never failed
+    // here, and the 18h delivery deadline is the terminal exit — which now
+    // expires the whole group at once (watchers.ts, Phase 2).
+    if (!lead) {
+      // Re-logged on every 5-minute pull until the sweep takes it, the same
+      // shape the serve-cap branch calls out. Bounded: the group's earliest
+      // member crosses the 18h deadline and the expiry expands to the rest.
+      console.error(
+        `[nudgeQueue] ask-group ${members[0].ask_group_id} has no lead row (${members.length} ` +
+          'members still queued) — frozen rather than re-delivered; the 18h expiry will take it',
+      );
+      continue;
+    }
     try {
-      const tech = row.technicians;
+      const tech = lead.technicians;
       if (!tech || isInactiveState(tech.state) || !tech.sandbox_ref || !tech.telegram_user_id) {
         continue; // frozen, not failed — see the liveness note above
       }
-      if (!row.question) continue; // queued implies composed; tampered row stays frozen
-      if (row.serve_count >= MAX_SERVE_COUNT) {
+      if (!lead.question) continue; // queued implies composed; tampered row stays frozen
+      if (lead.serve_count >= MAX_SERVE_COUNT) {
         // NOT gated on the handoff landing — see the note in compose.ts's
         // decline path. `false` here means the row's evidence cannot build a
         // handoff at all, and freezing removes the only terminal exit a queued
         // row has: never re-served (this branch never reaches `items`) but
         // 'queued' forever, so every 5-minute pull re-reads and re-logs it.
-        await handToManager(row, flagNudge, reviewItemExists);
-        await outcome(
-          row.id,
-          row.tenant_id,
-          'failed',
-          `undeliverable: served ${row.serve_count}x with no delivery ack`,
-        );
+        //
+        // EVERY member, not just the lead: one message carried all of their
+        // questions, so one undeliverable message orphans all of their gaps.
+        for (const m of members) {
+          await handToManager(m, flagNudge, reviewItemExists);
+          await outcome(
+            m.id,
+            m.tenant_id,
+            'failed',
+            `undeliverable: served ${lead.serve_count}x with no delivery ack` +
+              (m.id === lead.id ? '' : ` (counted on the group's lead ${lead.id})`),
+          );
+        }
         continue;
       }
       // Count the serve BEFORE shipping it (at-most-N-serves, even if this
-      // response is lost). null = the row moved under us — drop it.
-      const served = await serveCount(row.id, row.tenant_id, row.serve_count + 1);
+      // response is lost). null = the row moved under us — drop it. The ledger
+      // is the LEAD's: one message, one serve.
+      const served = await serveCount(lead.id, lead.tenant_id, lead.serve_count + 1);
       if (!served) continue;
       items.push({
-        id: row.id,
+        id: lead.id,
         sandboxRef: tech.sandbox_ref,
         replyTo: tech.telegram_user_id,
-        sessionId: `nudge-${row.id}`,
+        sessionId: `nudge-${lead.id}`,
         directMessageB64: Buffer.from(
-          row.question.split(FOOTER_DELIMITER)[0],
+          lead.question.split(FOOTER_DELIMITER)[0],
           'utf8',
         ).toString('base64'),
       });
     } catch (err) {
-      // One poisoned row never blocks the host's other deliveries.
-      console.error(`[nudgeQueue] serve of ${row.id} failed`, err);
+      // One poisoned group never blocks the host's other deliveries.
+      console.error(`[nudgeQueue] serve of ${lead.id} failed`, err);
     }
   }
   return { nudges: items };
@@ -137,18 +201,50 @@ export async function completeNudgeDelivery(
   deps: NudgeQueueDeps = {},
 ): Promise<DeliveryReportResult> {
   const getQueued = deps.getQueued ?? getQueuedNudgeForHost;
-  const asked = deps.asked ?? markNudgeAsked;
+  const asked = deps.asked ?? markNudgeAskedGroup;
+  const groupMembers = deps.groupMembers ?? listQueuedNudgesInGroupForHost;
   const outcome = deps.outcome ?? markNudgeOutcome;
   const attempts = deps.attempts ?? setNudgeDeliveryAttempts;
   const flagNudge = deps.flagNudge ?? flagNudgeGap;
   const reviewItemExists = deps.reviewItemExists ?? reviewItemExistsFor;
 
   const row = await getQueued(id, hostId);
-  if (!row) return 'ignored'; // unknown id, wrong host, or already moved
+  if (!row) {
+    // The point-read wants a QUEUED row, and a group's lead can leave that state
+    // on its own: `moot` and the pre-ask carve-out each close one queued row and
+    // leave its siblings alone (watchers.ts). A delivered report arriving after
+    // that would otherwise be 'ignored' — and the survivors, which really were
+    // delivered inside the shared message, could then only exit through the 18h
+    // sweep, which tells the manager "never delivered" and re-asks a question
+    // the technician has already been asked. That is the false-claim class the
+    // escalation rules exist to prevent.
+    //
+    // The group id IS the lead's id, so the reported id addresses the group even
+    // once the lead is gone. Host-scoped, and no promotion happens.
+    if (report !== 'delivered') return 'ignored';
+    let survivors: QueuedNudgeForHost[] = [];
+    try {
+      survivors = await groupMembers(id, hostId);
+    } catch (err) {
+      console.error(`[nudgeQueue] group read for a closed lead ${id} failed`, err);
+      return 'ignored';
+    }
+    if (survivors.length === 0) return 'ignored'; // unknown id, wrong host, or truly moved
+    const moved = await asked(survivors[0].id, survivors[0].tenant_id, id);
+    return moved.length > 0 ? 'asked' : 'ignored';
+  }
 
   if (report === 'delivered') {
-    const moved = await asked(row.id, row.tenant_id);
-    return moved ? 'asked' : 'ignored';
+    // The whole group moves on one report, with one shared asked_at — they left
+    // in one message, so their escalation clocks start together.
+    //
+    // TENANT-scoped, not host-scoped (accepted, recorded): a PostgREST UPDATE
+    // cannot join, so the group move filters on tenant + group. What makes that
+    // safe is Phase 3's rail — every member of a group shares one technician, so
+    // one host owns all of them — plus the fact that `asked` is the honest state
+    // for a row whose message really did go out.
+    const moved = await asked(row.id, row.tenant_id, row.ask_group_id);
+    return moved.length > 0 ? 'asked' : 'ignored';
   }
 
   const next = row.attempts + 1;
@@ -159,12 +255,46 @@ export async function completeNudgeDelivery(
   // (flag-first, the F1 order). Ungated for the same reason as the serve cap
   // above — and now the handoff is KIND-AWARE, so a job-scoped gap actually
   // reaches the manager here instead of silently closing with no surface.
-  await handToManager(row, flagNudge, reviewItemExists);
-  await outcome(
-    row.id,
-    row.tenant_id,
-    'failed',
-    `delivery failed ${next}x${detail ? `: ${detail.slice(0, 300)}` : ''}`,
-  );
+  //
+  // EVERY member of the group, for the same reason as the serve cap: the failed
+  // message carried all of their questions. An UNGROUPED row skips the read
+  // entirely and falls back to the single row this path always handled.
+  //
+  // The read is WRAPPED: before Phase 2 this path needed no query at all, and an
+  // unwrapped throw here would skip the handoff entirely while `attempts` had
+  // already been bumped — the row would sit queued past its cap, re-entering
+  // this same branch on every later report. Falling back to the single row
+  // restores exactly the pre-Phase-2 guarantee.
+  let members: QueuedNudgeForHost[] = [];
+  if (row.ask_group_id) {
+    try {
+      members = await groupMembers(row.ask_group_id, hostId);
+    } catch (err) {
+      console.error(
+        `[nudgeQueue] group read for ${row.ask_group_id} failed — handing over the lead alone`,
+        err,
+      );
+    }
+  }
+  // The lead must be in the list even if the group read omitted it (its
+  // technician's host_id can change between the point-read and this read).
+  // Otherwise it is never handed over and never failed, and sits queued past its
+  // cap re-entering this branch on every later report.
+  const toFail =
+    members.length === 0
+      ? [row]
+      : members.some((m) => m.id === row.id)
+        ? members
+        : [row, ...members];
+  for (const m of toFail) {
+    await handToManager(m, flagNudge, reviewItemExists);
+    await outcome(
+      m.id,
+      m.tenant_id,
+      'failed',
+      `delivery failed ${next}x${detail ? `: ${detail.slice(0, 300)}` : ''}` +
+        (m.id === row.id ? '' : ` (counted on the group's lead ${row.id})`),
+    );
+  }
   return 'failed';
 }

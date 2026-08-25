@@ -2322,3 +2322,195 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
     expect(suggestion).not.toContain('Nothing is recorded');
   });
 });
+
+// ── plan 2026-08-25 Phase 2: one message, one fate ──────────────────────────
+describe('ask-groups expire together', () => {
+  const ctx = (jobId: string) => ({
+    customerName: 'Henderson',
+    jobTitle: 'Boiler swap',
+    technicianRef: 'ben-shelton',
+    technicianName: 'Ben Shelton',
+    jobId,
+    startsAtLocal: '2026-08-14T07:00:00.000Z',
+    endsAtLocal: '2026-08-14T08:00:00.000Z',
+  });
+
+  test('one member past the deadline expires the WHOLE group, young siblings included', async () => {
+    // Members of one message are minted at different times — a visit gap and a
+    // cost gap on one job can be days apart — but they only ever leave together.
+    // Expiring the elder alone would tell a manager "never delivered" about a
+    // question still being served inside the shared text, and would leave the
+    // group half-asked when the ack finally landed.
+    const flagged: string[] = [];
+    const resolved: Array<[string, string, string | null | undefined]> = [];
+    const summary = await runWatchers(
+      NOW,
+      'live',
+      baseDeps({
+        listNudges: async () => [
+          nudgeRow({
+            id: 'n-lead',
+            subject_ref: 'a-lead',
+            status: 'queued',
+            created_at: UNDELIVERED_PAST_DUE,
+            ask_group_id: 'n-lead',
+            context: ctx('j-grouped'),
+          }),
+          nudgeRow({
+            id: 'n-young',
+            subject_ref: 'a-young',
+            status: 'queued',
+            created_at: UNDELIVERED_YOUNG, // nowhere near its own deadline
+            ask_group_id: 'n-lead',
+            context: ctx('j-grouped'),
+          }),
+        ],
+        flagNudge: async (input) => {
+          flagged.push(input.subjectRef);
+          return openItem({ subject_ref: input.subjectRef });
+        },
+        resolveNudge: async (id, _t, status, resolution) => {
+          resolved.push([id, status, resolution]);
+          return nudgeRow({ id, status } as Partial<Nudge>);
+        },
+      }),
+      'live',
+    );
+    expect(summary.tenantErrors).toBe(0);
+    expect(flagged.sort()).toEqual(['a-lead', 'a-young']);
+    expect(resolved.map((r) => r[0]).sort()).toEqual(['n-lead', 'n-young']);
+    for (const r of resolved) {
+      expect(r[1]).toBe('failed');
+      expect(r[2]).toBe('never delivered — handed to the manager');
+    }
+    expect(summary.nudgesExpired).toBe(2);
+  });
+
+  test('an ASKED sibling is left alone — it owns its own escalation clock', async () => {
+    const resolved: string[] = [];
+    const summary = await runWatchers(
+      NOW,
+      'live',
+      baseDeps({
+        listNudges: async () => [
+          nudgeRow({
+            id: 'n-lead',
+            subject_ref: 'a-lead',
+            status: 'queued',
+            created_at: UNDELIVERED_PAST_DUE,
+            ask_group_id: 'n-lead',
+            context: ctx('j-mixed'),
+          }),
+          nudgeRow({
+            id: 'n-asked',
+            subject_ref: 'a-asked',
+            status: 'asked',
+            created_at: UNDELIVERED_PAST_DUE,
+            asked_at: hoursBeforeNow(1),
+            ask_group_id: 'n-lead',
+            context: ctx('j-mixed'),
+          }),
+        ],
+        flagNudge: async (input) => openItem({ subject_ref: input.subjectRef }),
+        resolveNudge: async (id, _t, status) => {
+          resolved.push(id);
+          return nudgeRow({ id, status } as Partial<Nudge>);
+        },
+      }),
+      'live',
+    );
+    expect(summary.tenantErrors).toBe(0);
+    expect(resolved).toEqual(['n-lead']);
+    expect(summary.nudgesExpired).toBe(1);
+  });
+
+  test('a sibling closed EARLIER in the same tick is not resurrected by the expansion', async () => {
+    // The expansion reads openNudgeGaps, whose in-memory rows still say
+    // 'queued' for a member `moot` closed seconds ago. Without closedThisTick
+    // that member is handed to a manager anyway — flagNudge runs BEFORE the
+    // ['pending','queued']-guarded resolveNudge returns null, so the item opens
+    // even though the row never moves.
+    const flagged: string[] = [];
+    const resolved: Array<[string, string]> = [];
+    const summary = await runWatchers(
+      NOW,
+      'live',
+      baseDeps({
+        listNudges: async () => [
+          nudgeRow({
+            id: 'n-lead',
+            subject_ref: 'a-lead',
+            status: 'queued',
+            created_at: UNDELIVERED_PAST_DUE,
+            ask_group_id: 'n-lead',
+            context: ctx('j-moot'),
+          }),
+          nudgeRow({
+            id: 'n-mooted',
+            subject_ref: 'a-mooted',
+            status: 'queued',
+            created_at: UNDELIVERED_YOUNG,
+            ask_group_id: 'n-lead',
+            context: { ...ctx('j-moot'), jobId: 'j-moot' },
+          }),
+        ],
+        // The sibling's visit was cancelled — `moot` closes it this tick.
+        listAssignments: async () => [
+          visit({ id: 'a-mooted', job_id: 'j-moot', status: 'cancelled' } as Partial<PlacedAssignment>),
+        ],
+        flagNudge: async (input) => {
+          flagged.push(input.subjectRef);
+          return openItem({ subject_ref: input.subjectRef });
+        },
+        resolveNudge: async (id, _t, status) => {
+          resolved.push([id, status]);
+          return nudgeRow({ id, status } as Partial<Nudge>);
+        },
+      }),
+      'live',
+    );
+    expect(summary.tenantErrors).toBe(0);
+    // The mooted sibling closed as cancelled and NEVER reached a manager.
+    expect(resolved).toEqual([
+      ['n-mooted', 'cancelled'],
+      ['n-lead', 'failed'],
+    ]);
+    expect(flagged).toEqual(['a-lead']);
+    expect(summary.nudgesExpired).toBe(1);
+  });
+
+  test('an UNGROUPED young row is still left alone (the control)', async () => {
+    const resolved: string[] = [];
+    const summary = await runWatchers(
+      NOW,
+      'live',
+      baseDeps({
+        listNudges: async () => [
+          nudgeRow({
+            id: 'n-old',
+            subject_ref: 'a-old',
+            status: 'queued',
+            created_at: UNDELIVERED_PAST_DUE,
+            context: ctx('j-solo-1'),
+          }),
+          nudgeRow({
+            id: 'n-young',
+            subject_ref: 'a-young',
+            status: 'queued',
+            created_at: UNDELIVERED_YOUNG,
+            context: ctx('j-solo-2'),
+          }),
+        ],
+        flagNudge: async (input) => openItem({ subject_ref: input.subjectRef }),
+        resolveNudge: async (id, _t, status) => {
+          resolved.push(id);
+          return nudgeRow({ id, status } as Partial<Nudge>);
+        },
+      }),
+      'live',
+    );
+    expect(summary.tenantErrors).toBe(0);
+    expect(resolved).toEqual(['n-old']);
+    expect(summary.nudgesExpired).toBe(1);
+  });
+});

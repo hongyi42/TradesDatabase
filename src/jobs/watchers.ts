@@ -608,6 +608,11 @@ export async function runWatchers(
       const openedByKind = { overdue: 0, cost: 0 };
       const escalations: typeof openNudgeGaps = [];
       const expired: typeof openNudgeGaps = [];
+      // Rows this tick already took terminal — the pre-ask carve-out and `moot`
+      // both close PENDING rows and `continue`. The group expansion below reads
+      // `openNudgeGaps`, whose in-memory rows still say 'pending', so without
+      // this a sibling closed seconds ago would be handed to a manager anyway.
+      const closedThisTick = new Set<string>();
 
       // When a row's deadline falls. ONE definition, used by the decision read
       // below and by the sweep loop — if the two ever disagreed, the loop could
@@ -719,6 +724,7 @@ export async function runWatchers(
           if (filledBeforeAsking) {
             const closed = await resolveNudge(x.n.id, tenantId, 'answered', filledBeforeAsking);
             if (closed) summary.nudgesResolved += 1;
+            closedThisTick.add(x.n.id);
             continue;
           }
         }
@@ -728,6 +734,7 @@ export async function runWatchers(
         if (moot) {
           const closed = await resolveNudge(x.n.id, tenantId, 'cancelled', moot);
           if (closed) summary.nudgesResolved += 1;
+          closedThisTick.add(x.n.id);
           continue;
         }
         // Rung 2. The deadline is now DATA (plan 2026-08-19, Phase 2): the
@@ -828,6 +835,38 @@ export async function runWatchers(
           (x.n.status === 'pending' || x.n.status === 'queued') &&
           Date.parse(x.n.created_at) <= nowMs - NUDGE_DELIVERY_DEADLINE_HOURS * 3_600_000
         ) {
+          expired.push(x);
+        }
+      }
+
+      // ONE MESSAGE, ONE FATE (plan 2026-08-25, Phase 2).
+      //
+      // The deadline above is per-row, against each row's own created_at — but
+      // members of an ask-group are minted at different times (a visit gap and a
+      // cost gap on one job can be days apart) and only leave together. So the
+      // OLDEST member crosses 18h first, and expiring it alone would be wrong
+      // twice over: its question is baked into the shared text the box is still
+      // serving, so the manager would be told "never delivered" about a question
+      // that really does go out; and markNudgeAskedGroup's queued-only guard
+      // would then silently omit the terminal row from the ack, leaving the
+      // group half-asked.
+      //
+      // Expanding from `expired` rather than re-deriving means the group's
+      // deadline IS its earliest member's, which is the conservative direction:
+      // the whole message expires the moment any part of it has waited too long.
+      if (expired.length > 0) {
+        const inExpired = new Set(expired.map((x) => x.n.id));
+        const expiringGroups = new Set(
+          expired.map((x) => x.n.ask_group_id).filter((v): v is string => !!v),
+        );
+        for (const x of expiringGroups.size > 0 ? openNudgeGaps : []) {
+          const g = x.n.ask_group_id;
+          if (!g || !expiringGroups.has(g)) continue;
+          if (inExpired.has(x.n.id) || closedThisTick.has(x.n.id)) continue;
+          // Only a row that never went out can expire as never-delivered. An
+          // asked sibling is on the escalation clock and owns its own fate.
+          if (x.n.status !== 'pending' && x.n.status !== 'queued') continue;
+          inExpired.add(x.n.id);
           expired.push(x);
         }
       }

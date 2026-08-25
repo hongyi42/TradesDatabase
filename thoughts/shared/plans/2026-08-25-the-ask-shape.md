@@ -252,19 +252,29 @@ those; `markNudgeAskedGroup` on an ungrouped row matches `markNudgeAsked`;
 gets its own manager item.
 
 ### Automated verification
-- [ ] `npx supabase migration up` applies on the local stack, then **`npm run gen:types:local`**
-      (never `gen:types` — see preflight) and `src/db/database.types.ts` shows `ask_group_id`
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass
-- [ ] the new nudgeQueue / nudges / watchers cases pass
-- [ ] `select column_name from information_schema.columns where table_name='nudges'` shows
-      `ask_group_id` (never `list_migrations` — the pilot's ledger lies)
+- [x] `npx supabase migration up` applied on the local stack, then `npm run gen:types:local` —
+      `database.types.ts` moved by EXACTLY 3 lines (Row/Insert/Update), confirming local, not the pilot
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass (2263 passed, 8
+      skipped, twice in a row). NOTE a PRE-EXISTING load-dependent flake at
+      `src/model/toolLoop.test.ts:490` (a 1ms wall-clock budget race) surfaced twice during this
+      phase; `toolLoop` is untouched by this branch and it failed 0/12 runs in isolation
+- [x] the new nudgeQueue / nudges / watchers cases pass, and each was mutation-checked — the
+      grouping, the leaderless freeze, the closedThisTick guard, the host filter, the late-ack
+      path, the lead-in-members fallback and the lead-membership guard each kill at least one test
+- [x] `information_schema` shows `ask_group_id` (never `list_migrations`), and `pg_indexes` shows
+      `idx_nudges_ask_group` as a partial index
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack; `psql` against it.
-- [ ] Seed three pending gaps on one job, group them with `markNudgeGroupQueued`, run
-      `buildNudgeDelivery`: exactly one item, `directMessageB64` decoding to the grouped text,
-      item id equal to the lead. Report one `'delivered'`; confirm all three read `status='asked'`
-      with identical `asked_at`. Capture before/after row states.
+- [x] PASSED 2026-08-24 on the local stack (verification subagent, fresh context). Three pending
+      gaps on job `job-phase2-live-0001` grouped under lead `4d991094-…`: `buildNudgeDelivery`
+      returned EXACTLY ONE item, `id` and `sessionId` = `nudge-4d991094-…`, and its
+      `directMessageB64` decoded byte-identical to the queued grouped text (em dash intact).
+      After one `'delivered'` report, CROSS-CHANNEL read-back via `docker exec … psql` (not the
+      typed layer that wrote it):
+      `rows=3 | distinct_asked_at=1 | distinct_status=1 (asked) | distinct_group=1`, with
+      `serve_count` 1 on the lead and 0 on both siblings. Scratch tenant rows deleted by id
+      afterwards (`nudges_total=0`, matching the pre-run state); the pilot MCP was never touched.
 
 ### Manual verification
 - [ ] none

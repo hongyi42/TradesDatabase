@@ -1145,7 +1145,6 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     ]);
     const sent = String((markQueued as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][2]);
     expect(sent).toContain('How did it go? Anything worth noting?');
-    // eslint-disable-next-line no-control-regex
     expect(/[\u0000-\u001f]/.test(sent.replace(/\n/g, ''))).toBe(false);
   });
 

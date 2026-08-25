@@ -59,11 +59,17 @@ export async function listRecentSummaries(tenantId: string, limit = 40): Promise
   return (data ?? []) as GapSummary[];
 }
 
-export async function countSummaries(tenantId: string): Promise<number> {
-  const { count, error } = await getClient()
+// `sinceIso` bounds the count to summaries that landed AFTER an instant — the
+// Reflector's "is there anything new to look at" gate. Omitted, this counts the
+// tenant's whole corpus (its other caller, the eligibility floor). A count, not
+// a page: PostgREST caps rows at 1000 and this must not silently stop growing.
+export async function countSummaries(tenantId: string, sinceIso?: string): Promise<number> {
+  let q = getClient()
     .from('gap_summaries')
     .select('id', { count: 'exact', head: true })
     .eq('tenant_id', tenantId);
+  if (sinceIso) q = q.gt('created_at', sinceIso);
+  const { count, error } = await q;
   if (error) throw new Error(`countSummaries failed: ${error.message}`, { cause: error });
   return count ?? 0;
 }

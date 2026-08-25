@@ -77,34 +77,56 @@ const QUOTES = [
   { quote: '“I do the paperwork on Sunday.”', who: 'Owner · 4 trucks' },
 ];
 
-const CLAIMS = [
+// The five claims, laid on a clock. Ordered by WHEN each one matters rather than
+// by feature, because the thing being sold is a record surviving time — and
+// because the old grid hid a dependency: "it filed itself" has to come before
+// "what did we do here?", since you cannot search what was never filed.
+//
+// `side` staggers the stops above and below the rail. Five stops at one height
+// crowded badly — two titles broke mid-phrase — and alternating halves how much
+// text sits side by side at any given height.
+//
+// The titles are narrative moments now ("The text arrives") rather than feature
+// labels ("No new app"). The BODIES keep the original words, including the dare
+// in the keystone, which is the sharpest line on the page.
+const TIMELINE = [
   {
-    title: 'No new app',
-    body: 'It’s the chat they’re already in all day.',
+    when: '14:52',
+    side: 'up' as const,
+    title: 'The text arrives',
+    body: 'It’s the chat they’re already in all day. Nobody installs anything.',
   },
   {
-    title: 'Search the address',
-    body: 'Every visit, photo and report for it, going back years.',
-  },
-  {
+    when: 'That evening',
+    side: 'dn' as const,
     // The product's core claim, stated as a CONTRAST. Provenance is the one
-    // thing no competitor in this category ships, so the line has to say so
-    // out loud; "evidence kept" read as a feature label and landed as nothing.
-    // `keystone` gives it the accent rule in the claims grid — exactly one of
-    // the five carries it, because marking all five would mark none.
-    title: 'Every field shows its source',
-    body: 'Tap a line, see the message it came from. Ask your current software to do that.',
+    // thing no competitor in this category ships, so the line has to say so out
+    // loud; "evidence kept" read as a feature label and landed as nothing. It
+    // carries the accent — exactly one stop does, because marking all five
+    // would mark none.
+    title: 'It filed itself',
+    body: 'Every field shows the message it came from. Ask your current software to do that.',
     keystone: true,
   },
   {
-    // The retiring-technician argument. ~25,000 experienced techs leave the US
-    // trades every year and nearly 30% of HVAC techs are over 55 — the single
-    // strongest reason this record is worth paying for, and it was missing.
-    title: 'It stays when they leave',
-    body: 'When your best tech retires, what he knew about your customers stays.',
+    when: '18 months on',
+    side: 'up' as const,
+    title: '“What did we do here?”',
+    body: 'Every visit, photo and report for the address, going back years.',
   },
   {
-    title: 'Yours to take',
+    when: 'Year three',
+    side: 'dn' as const,
+    // The retiring-technician argument. ~25,000 experienced techs leave the US
+    // trades every year and nearly 30% of HVAC techs are over 55 — the single
+    // strongest reason this record is worth paying for.
+    title: 'Your best tech retires',
+    body: 'What he knew about your customers stays.',
+  },
+  {
+    when: 'Whenever',
+    side: 'up' as const,
+    title: 'You walk away',
     body: 'Full export, any time. No exit fee, no hostage data.',
   },
 ];
@@ -665,20 +687,28 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
             </div>
           </div>
 
-          <div className="ld-claims">
-            {CLAIMS.map((c) => (
-              <div
-                key={c.title}
-                className={c.keystone ? 'ld-claim ld-claim-keystone' : 'ld-claim'}
+          {/* The clock. An ordered list, because it IS one — the stops are a
+              sequence in time, and a screen reader should hear them that way
+              even though the stagger puts them on two visual rows. */}
+          <ol className="ld-clock">
+            {TIMELINE.map((t) => (
+              <li
+                key={t.when}
+                className={[
+                  'ld-stop',
+                  t.side === 'up' ? 'ld-stop-up' : 'ld-stop-dn',
+                  t.keystone ? 'ld-stop-key' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
               >
-                {c.keystone && <p className="ld-claim-mark">The difference</p>}
-                <p className="ld-claim-title" style={{ margin: 0 }}>
-                  {c.title}
-                </p>
-                <p className="ld-claim-body">{c.body}</p>
-              </div>
+                <span className="ld-stop-when">{t.when}</span>
+                <p className="ld-stop-title">{t.title}</p>
+                <p className="ld-stop-body">{t.body}</p>
+              </li>
             ))}
-          </div>
+            <span className="ld-clock-rail" aria-hidden="true" />
+          </ol>
         </div>
       </section>
 

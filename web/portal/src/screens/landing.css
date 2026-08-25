@@ -1251,59 +1251,169 @@
   padding: 11px 14px;
 }
 
-/* Five claims as a divided grid rather than five loose text blocks. The
-   dividers are DESIGN.md §4's documented device — "1px gaps over a --hairline
-   background, not per-cell borders" — so the rules between cells are the grid
-   showing through, and no cell carries a border of its own. Costs nothing
-   visually and turns a paragraph soup into a readable table of claims. */
-.ld-claims {
+/* ── The clock ────────────────────────────────────────────────────────────
+   The five claims on a time axis, staggered above and below a single rail.
+
+   Why staggered: five stops at one height crowded badly — two titles broke
+   mid-phrase at 1280px. Alternating sides halves how much text sits side by
+   side at any given height and makes the row read as a timeline rather than as
+   five columns.
+
+   The DOT SITS ON THE RAIL with a stem dropping to its text. The first pass had
+   the rail below the dots, which left five stacked labels and a stray line: the
+   eye had nothing to track along. That connection is the whole device.
+
+   Marked up as an <ol> because it is genuinely ordered — a screen reader should
+   hear the sequence even though the stagger puts it on two visual rows. */
+.ld-clock {
+  list-style: none;
+  margin: clamp(30px, 4vw, 48px) 0 0;
+  padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1px;
-  background: var(--paper-line);
-  margin-top: clamp(26px, 3vw, 40px);
-  border-top: 1px solid var(--paper-line);
+  grid-template-columns: repeat(5, 1fr);
+  grid-template-rows: auto 1px auto;
+  column-gap: clamp(16px, 2.4vw, 34px);
 }
 
-.ld-claim {
-  background: var(--card);
-  padding: clamp(18px, 2vw, 24px) clamp(16px, 1.6vw, 20px);
+.ld-clock-rail {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  background: var(--paper-line);
+}
+
+.ld-stop {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 9px;
 }
 
-/* One of the five is the differentiator — provenance is the thing no competitor
-   ships — so it gets the accent rule the source block uses, and nothing else
-   does. Marking all five would mark none. */
-.ld-claim-keystone {
-  border-top: 2px solid var(--amber);
-  margin-top: -1px;
+/* Each stop owns its column explicitly. Without this, auto-placement fills row 1
+   with the three "up" stops (columns 1-2-3) and row 3 with the two "dn" stops
+   (columns 1-2), packing everything to the left instead of alternating along the
+   rail — the stagger only works if stop N sits in column N. */
+.ld-stop:nth-child(1) { grid-column: 1; }
+.ld-stop:nth-child(2) { grid-column: 2; }
+.ld-stop:nth-child(3) { grid-column: 3; }
+.ld-stop:nth-child(4) { grid-column: 4; }
+.ld-stop:nth-child(5) { grid-column: 5; }
+
+.ld-stop-up {
+  grid-row: 1;
+  justify-content: flex-end;
+  padding-bottom: 26px;
 }
 
-.ld-claim-mark {
+.ld-stop-dn {
+  grid-row: 3;
+  padding-top: 26px;
+}
+
+/* The dot, on the rail. */
+.ld-stop::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  width: 9px;
+  height: 9px;
+  background: var(--paper-line-strong);
+}
+
+.ld-stop-up::before {
+  bottom: -4px;
+}
+
+.ld-stop-dn::before {
+  top: -4px;
+}
+
+/* Exactly one stop carries the accent — provenance is the differentiator, and
+   marking all five would mark none. */
+.ld-stop-key::before {
+  background: var(--amber-fill);
+}
+
+/* The stem tying dot to text. */
+.ld-stop::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  width: 1px;
+  height: 22px;
+  background: var(--paper-line);
+}
+
+.ld-stop-up::after {
+  bottom: 0;
+}
+
+.ld-stop-dn::after {
+  top: 0;
+}
+
+.ld-stop-when {
   font-family: var(--mono);
   font-size: 12px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--amber);
-  margin: 0;
+  color: var(--paper-ink-2);
 }
 
-.ld-claim-title {
+.ld-stop-key .ld-stop-when {
+  color: var(--amber);
+}
+
+.ld-stop-title {
   font-family: var(--display);
   font-weight: 300;
-  font-size: 21px;
-  line-height: 1.15;
+  font-size: 19px;
+  line-height: 1.2;
   letter-spacing: -0.01em;
+  margin: 0;
+  /* Titles are phrases, not labels — let the browser break them where they
+     read rather than only where they happened to fit at one width. */
+  text-wrap: balance;
 }
 
-.ld-claim-body {
+.ld-stop-body {
   font-size: 14px;
   line-height: 1.5;
   color: var(--paper-ink-2);
   margin: 0;
+  text-wrap: pretty;
 }
+
+/* Below the stagger's useful width the clock becomes an ordinary vertical
+   sequence: rail hidden, every stop on its own row against a left rule. */
+@media (max-width: 900px) {
+  .ld-clock {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+  }
+
+  .ld-clock-rail {
+    display: none;
+  }
+
+  .ld-stop {
+    grid-column: 1 !important;
+    grid-row: auto !important;
+    padding: 16px 0 16px 22px;
+    border-left: 1px solid var(--paper-line);
+    gap: 6px;
+  }
+
+  .ld-stop::before {
+    top: 22px;
+    bottom: auto;
+    left: -5px;
+  }
+
+  .ld-stop::after {
+    display: none;
+  }
+}
+
 
 /* ---- provisioning ----------------------------------------------------- */
 

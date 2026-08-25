@@ -143,28 +143,28 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L3128 · L1 PINS L2: a stamped capture makes its customer permanently undeletable. _(2026-08-12)_
 - L3149 · A new tenant in the pilot silently enlists in the lifecycle cron.
 - L3200 · No reachable technician, so rung 1 can never mint a nudge. _(2026-08-19)_
-- L3206 · Nothing is fresh any more.
+- L3206 · Nothing is fresh any more, and nothing new is arriving. _(2026-08-24)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L3545 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L3567 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L3614 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L3648 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L3680 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L3685 · Every member row stores the FULL grouped message in question.
-- L3689 · The attribution stamp is an audit link, not a gate.
-- L3693 · The derived stamp requires a capture a badge-holder SPOKE
-- L3697 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L3703 · The follow-up loop has two halves and both had to be written down.
-- L3709 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L3552 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L3574 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L3621 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L3655 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L3687 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L3692 · Every member row stores the FULL grouped message in question.
+- L3696 · The attribution stamp is an audit link, not a gate.
+- L3700 · The derived stamp requires a capture a badge-holder SPOKE
+- L3704 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L3710 · The follow-up loop has two halves and both had to be written down.
+- L3716 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
 
 **7. Where the deep detail lives**
 
-- L3747 · Evals:
-- L3754 · Runbooks:
-- L3759 · Decision history with citations:
-- L3763 · This file
+- L3754 · Evals:
+- L3761 · Runbooks:
+- L3766 · Decision history with citations:
+- L3770 · This file
 
 <!-- INDEX:END -->
 

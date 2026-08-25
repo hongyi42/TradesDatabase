@@ -207,6 +207,112 @@ export async function markNudgeAsked(id: string, tenantId: string): Promise<Nudg
   return data as Nudge | null;
 }
 
+// ── one message, several gaps (plan 2026-08-25, Phase 2) ────────────────────
+
+// pending -> queued for EVERY member of one delivered message, in one guarded
+// UPDATE. The group's id IS the lead's own row id, set on every member
+// including the lead, so `ask_group_id = leadId` later selects the whole group
+// and `id = ask_group_id` identifies the lead without a second column.
+//
+// Returns the rows that ACTUALLY moved, not a boolean. There is no rollback
+// here — a partial move really does queue the movers, and they really will be
+// delivered — so the caller has to be able to record per-member outcomes rather
+// than one verdict for the group. Reporting `refused` for a gap whose question
+// went out is the same class of lie as reporting `applied` for one that did not.
+//
+// Same pending-only guard as markNudgeQueued, and the same attempts reset: the
+// column's ledger changes hands at queue time.
+export async function markNudgeGroupQueued(
+  ids: string[],
+  tenantId: string,
+  question: string,
+  leadId: string,
+): Promise<Nudge[]> {
+  if (ids.length === 0) return []; // PostgREST `in.()` with zero values errors
+  // The lead must BE a member, or no row satisfies `id = ask_group_id` and the
+  // group is leaderless from birth — which the serve loop then freezes forever.
+  // Phase 3's rails check this too; this is the layer that would have to survive
+  // a hand-written row.
+  if (!ids.includes(leadId)) {
+    throw new Error(`markNudgeGroupQueued: lead ${leadId} is not among its own members`);
+  }
+  const { data, error } = await getClient()
+    .from('nudges')
+    .update({
+      status: 'queued',
+      question,
+      ask_group_id: leadId,
+      attempts: 0,
+      queued_at: new Date().toISOString(),
+    })
+    .in('id', ids)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'pending')
+    .select();
+  if (error) throw new Error(`markNudgeGroupQueued failed: ${error.message}`);
+  return (data ?? []) as Nudge[];
+}
+
+// queued -> asked for a whole group on ONE delivery report. An ungrouped row
+// (groupId null) behaves exactly like markNudgeAsked, wrapped in an array.
+//
+// `groupId` is PASSED IN rather than looked up: every caller has just read the
+// row and already holds it, so a lookup here would be a second round-trip on
+// the common path — and on the far commoner UNGROUPED path it would be a query
+// asking a question whose answer the caller knew was null.
+//
+// Both filters are `.eq()`. Never `.or()` with an interpolated filter string:
+// `leadId` reaches completeNudgeDelivery straight out of an HTTP body, and an
+// `.or()` is the one construct here that would stop treating it as a bound
+// parameter.
+//
+// ONE `asked_at` for every member, by construction: they left in one message, so
+// their escalation clocks must start at the same instant. Two timestamps here
+// would mean the sweep could escalate half a message.
+export async function markNudgeAskedGroup(
+  leadId: string,
+  tenantId: string,
+  groupId: string | null = null,
+): Promise<Nudge[]> {
+  // DELEGATE for the ungrouped case rather than inlining it: two independent
+  // implementations of queued -> asked would have to be kept identical by hand,
+  // and markNudgeAsked is still the one every other reader has in mind.
+  if (!groupId) {
+    const one = await markNudgeAsked(leadId, tenantId);
+    return one ? [one] : [];
+  }
+  const { data, error } = await getClient()
+    .from('nudges')
+    .update({ status: 'asked', asked_at: new Date().toISOString() })
+    .eq('tenant_id', tenantId)
+    .eq('status', 'queued')
+    .eq('ask_group_id', groupId)
+    .select();
+  if (error) throw new Error(`markNudgeAskedGroup failed: ${error.message}`);
+  return (data ?? []) as Nudge[];
+}
+
+// Every still-queued member of a group, host-scoped like its siblings above.
+//
+// completeNudgeDelivery point-reads only the lead, but its terminal-failure path
+// has to hand EVERY member to the manager — an undeliverable question must not
+// orphan the gaps it was written for (the F1 doctrine), and handToManager needs
+// a full row per member to build the handoff from.
+export async function listQueuedNudgesInGroupForHost(
+  groupId: string,
+  hostId: string,
+): Promise<QueuedNudgeForHost[]> {
+  const { data, error } = await getClient()
+    .from('nudges')
+    .select(HOST_QUEUE_SELECT)
+    .eq('status', 'queued')
+    .eq('ask_group_id', groupId)
+    .eq('technicians.host_id', hostId)
+    .order('created_at', { ascending: true });
+  if (error) throw new Error(`listQueuedNudgesInGroupForHost failed: ${error.message}`);
+  return (data ?? []) as QueuedNudgeForHost[];
+}
+
 // Close an in-flight nudge with a terminal outcome. Only open rows move — a
 // terminal status never overwrites another (answered stays answered even if
 // an escalation sweep races the activity sweep). `fromStatuses` narrows the

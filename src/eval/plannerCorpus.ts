@@ -84,6 +84,12 @@ export interface ScenarioExpect {
     closedBy?: Offset;
     /** The gap must NOT show extend→escalate→extend whiplash (mv_whiplash). */
     noWhiplash?: boolean;
+    /** Grouping must be ALL-OR-NOTHING across the scenario's gaps (plan
+     *  2026-08-25, Phase 3). Whether to group is the planner's judgment, so
+     *  BOTH outcomes pass — what this rejects is a HALF-formed group: two
+     *  different group ids, or one row grouped while its sibling is not, which
+     *  is a message whose members disagree about what was sent. */
+    groupingCoherent?: boolean;
   };
 }
 
@@ -193,6 +199,25 @@ const twoGapWorld = (
     },
   ],
   ...extra,
+});
+
+// The same two-gap job, but NOTHING HAS GONE OUT YET. twoGapWorld seeds both
+// gaps 'asked', which is why every multi-gap scenario before this one graded the
+// CLOSE verb and none ever exercised SEND on a job with more than one hole.
+const pendingTwoGapWorld = (
+  customer: string,
+  job: string,
+  techRef: string,
+  techName: string,
+): ScenarioWorld => ({
+  customer: { name: customer },
+  job: { title: job, status: 'in_progress' },
+  technician: { ref: techRef, name: techName },
+  visit: { startsAt: '-27h', endsAt: '-25h' },
+  nudges: [
+    { key: 'visit', kind: 'overdue_visit_gap', status: 'pending', createdAt: '-2h' },
+    { key: 'cost', kind: 'job_cost_gap', status: 'pending', createdAt: '-2h' },
+  ],
 });
 
 const tick = (at: Offset): TimelineStep => ({ at, kind: 'tick' });
@@ -777,6 +802,23 @@ const MULTI_GAP: PlannerScenario[] = [
     expect: { arc: { maxCloses: 0 } },
   },
   {
+    id: 'MG-09',
+    family: 'multi-gap',
+    why: 'The SEND verb on a two-gap job — the shape no scenario exercised before the ask-shape work. Grouping is the planner\'s judgment, so either outcome passes; what is pinned is that the verb works and the rails do not refuse a legitimate group.',
+    world: pendingTwoGapWorld('Junia Kaur', 'Radiator rebalance', 'mg9-ben', 'Ben Shelton'),
+    timeline: oneTick,
+    // BOTH gaps must actually be SENT — `groupingCoherent` alone passes when
+    // nothing is grouped AND when nothing is sent at all, so on its own it
+    // cannot fail for the thing this scenario exists to pin. With the records
+    // fanned out per member, a grouped send writes an applied `send` row for
+    // each gap, so these two expectations grade true whichever one leads.
+    expect: [
+      { nudgeKey: 'visit', action: 'send' },
+      { nudgeKey: 'cost', action: 'send' },
+      { arc: { groupingCoherent: true } },
+    ],
+  },
+  {
     id: 'MG-08',
     family: 'multi-gap',
     why: 'The SHARED warning is rendered for both gaps: a decision citing the marked-for-the-other note is the misattribution.',
@@ -1009,7 +1051,7 @@ export const FAMILY_COUNTS = {
   premature: 8,
   'late-stuck': 8,
   'people-judgment': 8,
-  'multi-gap': 8,
+  'multi-gap': 9,
   lessons: 4,
   'window-edges': 6,
 } as const;

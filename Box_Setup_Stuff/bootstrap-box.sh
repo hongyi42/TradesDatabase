@@ -1013,14 +1013,14 @@ EOF
   # footer used to carry MUST live here — a seat wired without this block
   # would see office questions in its channel history with no standing rule
   # to record the answers.
-  log "office-questions block (§0k — record answers to office questions; agentContext briefings are agent-only; refreshed per run)"
+  log "office-questions block (§0k — record answers to office questions; follow up on what is still open on that job; agentContext briefings are agent-only; refreshed per run)"
   if [ -n "$cid" ]; then
     if docker exec "$cid" grep -q "Questions and items from the office" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
       docker exec -u sandbox "$cid" sh -c 'awk '\''/^## Questions and items from the office/{skip=1; next} skip && /^## /{skip=0} !skip'\'' /sandbox/.openclaw/workspace/AGENTS.md > /tmp/agents-md.tmp && cat /tmp/agents-md.tmp > /sandbox/.openclaw/workspace/AGENTS.md && rm -f /tmp/agents-md.tmp'
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Questions and items from the office (host-managed; refreshed; added 2026-08-23)
+## Questions and items from the office (host-managed; refreshed; added 2026-08-23; follow-up clauses 1a/1b added 2026-08-25)
 
 The office sends short work questions into this chat DIRECTLY — a message can appear in the
 conversation history that you did not write (for example "how did the visit go?" with a
@@ -1033,6 +1033,27 @@ names the job.
    record the answer with record_field_note for the job the "(re: …)" line names, so the
    office's record is complete. Record on the first call (the permanent-record rules apply),
    and never re-ask a question the office already asked and the person already answered.
+1a. That record_field_note call may come back with `openQuestions` — everything the office
+   still has open on that job. The list is NOT filtered: it can still include the very thing
+   they just told you, and one entry may be a single office message that carried several
+   questions at once. Read it against what the person actually said. Anything they covered is
+   answered — leave it alone. Judge against everything they have said in this conversation, not
+   just their last message: the list does NOT shrink as they answer, so the same entries come
+   back on every note you record for that job, and anything already covered earlier stays
+   covered. If something is genuinely untouched, ask ONE thing right now, while they are still
+   here, in your own words as part of the conversation. If they do not engage, drop it — do not
+   chase, and do not ask a second thing in the same breath. Never
+   mention the office, a queue, a list, or how many things are outstanding, and never repeat
+   the "(re: …)" line an entry may end with — that is the office's own bookkeeping, not
+   something a person should read twice. From where they sit this is you being thorough, not
+   the office following up.
+1b. When they answer THAT question, rule 1 still applies in full: their reply is an answer to
+   an office question, so record it with record_field_note on the SAME job. This is the whole
+   point of asking. A follow-up you ask and do not record leaves the office's question open,
+   and the office will ask the person the very thing they just told you.
+   Pass `confirmed: {customerId: <the customerId that call returned>}` with NO confirmId. A
+   short reply like "about two hundred" names no customer on its own, so without that you will
+   be sent back to ask them which customer it was — seconds after recording one for them.
 2. Open items in the office's review queue (list_pending_reviews, where you have it) may
    carry `agentContext` — a briefing from the office's planner written FOR YOU, not for the
    person: ids, what was already tried, what an answer would unblock. Use it to help them

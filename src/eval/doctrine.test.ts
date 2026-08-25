@@ -167,6 +167,33 @@ describe('buildSystemPrompt', () => {
     expect(section[0].body).not.toContain('confirm FIRST');
   });
 
+  it('§0k closes the follow-up loop — ask AND record', () => {
+    // The section-level checks above catch a rename or a deletion of §0k; they
+    // do not see a CLAUSE going missing. This block is the only instruction the
+    // six live seats have once the fleet refresh lands, and the follow-up leg
+    // has two halves that fail differently:
+    //   - drop the record-duty (1b) and the agent asks a question, gets an
+    //     answer, writes nothing — the gap stays `asked` and the office re-asks
+    //     the technician the very thing they just said;
+    //   - drop the confirmed:{customerId} instruction and the reply, which names
+    //     no customer on its own, bounces to needs_identity — so the agent asks
+    //     them WHICH customer seconds after recording one for them.
+    const section = extractDoctrine(script).filter(
+      (s) => s.name === 'Questions and items from the office',
+    );
+    expect(section).toHaveLength(1);
+    const body = section[0].body;
+    expect(body).toContain('openQuestions');
+    expect(body).toMatch(/record it with record_field_note on the SAME job/);
+    expect(body).toMatch(/confirmed: \{customerId/);
+    // The list does not shrink as gaps are answered, so "what they said" has to
+    // mean the whole conversation or the agent re-asks what it already covered.
+    expect(body).toMatch(/everything they have said in this conversation/);
+    // …and the two rules that keep a machine artifact out of a human's face.
+    expect(body).toMatch(/never repeat\s+the "\(re: …\)" line/);
+    expect(body).toMatch(/Never\s+mention the office/);
+  });
+
   it('carries no date outside the host-managed heading stamps', () => {
     // The companion check: every date in the prompt must be accounted for, so a
     // future edit that pastes a live date into the BODY is caught rather than

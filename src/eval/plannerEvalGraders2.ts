@@ -214,6 +214,24 @@ export function gradeScenario(row: GradableRow, t0Ms: number): GraderFinding[] {
           });
         }
       }
+      if (e.arc.groupingCoherent) {
+        // Read off the FINAL rows: ask_group_id holds the lead's own id, so a
+        // coherent group is one id shared by every target, and no grouping at
+        // all is equally fine.
+        const rows = last.nudgesAfter.filter((n) => targets.has(n.id));
+        const ids = new Set(
+          rows.map((n) => n.ask_group_id).filter((v): v is string => !!v),
+        );
+        const groupedCount = rows.filter((n) => n.ask_group_id).length;
+        if (ids.size > 1 || (ids.size === 1 && groupedCount !== rows.length)) {
+          findings.push({
+            kind: 'arc-grouping',
+            detail:
+              `${groupedCount}/${rows.length} gap(s) carry an ask_group_id across ` +
+              `${ids.size} group(s) — a group must cover all of them or none`,
+          });
+        }
+      }
       if (e.arc.closedBy) {
         const deadline = t0Ms + parseOffsetMs(e.arc.closedBy);
         const open = last.nudgesAfter.filter(

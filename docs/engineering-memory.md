@@ -147,24 +147,24 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L3552 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L3574 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L3621 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L3655 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L3687 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L3692 · Every member row stores the FULL grouped message in question.
-- L3696 · The attribution stamp is an audit link, not a gate.
-- L3700 · The derived stamp requires a capture a badge-holder SPOKE
-- L3704 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L3710 · The follow-up loop has two halves and both had to be written down.
-- L3716 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L3574 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L3596 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L3643 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L3677 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L3709 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L3714 · Every member row stores the FULL grouped message in question.
+- L3718 · The attribution stamp is an audit link, not a gate.
+- L3722 · The derived stamp requires a capture a badge-holder SPOKE
+- L3726 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L3732 · The follow-up loop has two halves and both had to be written down.
+- L3738 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
 
 **7. Where the deep detail lives**
 
-- L3798 · Evals:
-- L3805 · Runbooks:
-- L3810 · Decision history with citations:
-- L3814 · This file
+- L3820 · Evals:
+- L3827 · Runbooks:
+- L3832 · Decision history with citations:
+- L3836 · This file
 
 <!-- INDEX:END -->
 
@@ -3219,6 +3219,28 @@ a failure:
 Rule: **`list_logs` on `crn-d93iq7a8qa3s73ap6260` before diagnosing anything from table
 timestamps.** The tick summary names every lane's skip reason in one read; table timestamps cannot
 distinguish "not running" from "running and correctly idle".
+
+**The manager heads-up push has never fired — `BOARD_BOT_TOKEN` is unset on `lifecycle-heart`
+(found 2026-08-25).** `src/jobs/watchers.ts:321` gates the push on `!!process.env.BOARD_BOT_TOKEN`.
+Runtime proof rather than a config read: every tick that opened an item logs
+`"itemsOpened":1,"pushed":0,"pushSkipped":true`, and `"pushed":1` appears **zero times** across the
+full 30-day Render log window. The pilot currently holds **94 open `overdue_visit_gap` review
+items** and one resolved.
+
+Setting the variable does not clear the backlog, because **the push is once-only by design**:
+`if (opened > 0)` (watchers.ts:1274) fires only when something NEW opens, and the comment states the
+intent — "a quiet queue never re-pings on any cadence." A fix notifies about future items and stays
+silent about the 94 already sitting there.
+
+The deeper shape, and the reason this reads as a design gap rather than a missing env var: **rung 2
+has no ladder.** A technician gets ask → wait → escalate, re-examined every 30 minutes. A manager
+gets one count-only line with no names, and nothing ever follows up. The planner is the component
+that follows up, and it reads ONLY the `nudges` table — `grep review_items src/teamLead/planner.ts`
+returns nothing. (It can query `v_review_items` through `spine_read` once it is already running on
+some other gap, but a review item can never wake it.) So a gap routed to rung 2 — which is every
+gap, while no technician is reachable — has **no owner in software at all**. This is the mechanism
+behind "the manager's bucket has never drained" (§2, 2026-08-21); the batched end-of-day "record
+all" recorded there as the intended fix is still not built.
 
 ## 6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)
 

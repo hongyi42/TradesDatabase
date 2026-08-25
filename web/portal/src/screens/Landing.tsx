@@ -66,8 +66,9 @@ const TRADES = [
   { name: 'Appliance repair', slot: 'trade-appliance-repair' },
 ];
 
-/** How long each trade holds before the band advances. */
-const TRADE_DWELL_MS = 4200;
+/** How long each trade holds before the band advances. Short enough that a
+ *  reader who pauses on the band sees two or three trades without waiting. */
+const TRADE_DWELL_MS = 2600;
 
 const QUOTES = [
   { quote: '“It’s all in the group chat somewhere.”', who: 'Owner · 11 trucks' },
@@ -305,15 +306,19 @@ function useFillOnce() {
  *  Only trades that actually have a photograph take part — a trade with an empty
  *  slot still lists, it just never becomes the active frame.
  *
- *  Auto-advancing content needs a way to stop (WCAG 2.2.2, Pause/Stop/Hide), so
- *  there is a visible control, clicking a trade takes over manually, and pointer
- *  or keyboard focus anywhere in the band holds it. It also stops while the band
- *  is off screen: nobody is watching, and a timer that keeps firing behind the
- *  fold is pure battery.
+ *  WCAG 2.2.2 (Pause/Stop/Hide) wants a mechanism to stop auto-updating content.
+ *  The owner asked for no play/pause control (2026-08-25), so the LABELLED one is
+ *  gone; the mechanisms are not. Rotation stops when the reader picks a trade,
+ *  while the pointer or keyboard focus is anywhere in the band, and while the
+ *  band is off screen — and under prefers-reduced-motion it never starts at all,
+ *  which covers the readers the criterion exists to protect.
  *
- *  Under prefers-reduced-motion it never starts. The first available trade shows
- *  and stays — a reader who asked for less motion should not be handed a slideshow
- *  with an off switch. */
+ *  What is genuinely lost is DISCOVERABILITY: a reader who wants it to stop has
+ *  to hover it or click a trade rather than press something that says so. That is
+ *  the trade being made, recorded here so it is a decision and not a drift.
+ *
+ *  Off-screen stopping is also just hygiene — a timer firing behind the fold is
+ *  battery nobody asked to spend. */
 function useTradeBand(available: number[]) {
   const ref = useRef<HTMLElement | null>(null);
   const [reduced] = useState(
@@ -323,11 +328,15 @@ function useTradeBand(available: number[]) {
       window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   );
   const [index, setIndex] = useState(0);
-  const [wanted, setWanted] = useState(!reduced); // what the reader asked for
+  const [pinned, setPinned] = useState(false); // reader chose a trade themselves
   const [visible, setVisible] = useState(true); // whether the band is on screen
   const [held, setHeld] = useState(false); // pointer or focus inside
 
-  const running = wanted && visible && !held && available.length > 1;
+  // No play/stop control by owner decision, so rotation runs whenever it
+  // legitimately can. What still stops it: reduced-motion (never starts),
+  // pointer or keyboard focus in the band, scrolling it out of view, and the
+  // reader picking a trade. See the note on WCAG 2.2.2 above.
+  const running = !reduced && !pinned && visible && !held && available.length > 1;
 
   useEffect(() => {
     if (!running) return;
@@ -358,12 +367,9 @@ function useTradeBand(available: number[]) {
   return {
     ref,
     index,
-    playing: wanted,
-    canRotate: !reduced && available.length > 1,
-    toggle: () => setWanted((p) => !p),
     pick: (i: number) => {
       setIndex(i);
-      setWanted(false); // a deliberate choice should not be snatched away
+      setPinned(true); // a deliberate choice should not be snatched away
     },
     hold: () => setHeld(true),
     release: () => setHeld(false),
@@ -521,16 +527,6 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
                 </button>
               );
             })}
-            {band.canRotate && (
-              <button
-                type="button"
-                className="ld-trades-toggle"
-                onClick={band.toggle}
-                aria-label={band.playing ? 'Stop the trades slideshow' : 'Start the trades slideshow'}
-              >
-                {band.playing ? 'Pause' : 'Play'}
-              </button>
-            )}
           </div>
         </div>
       </section>

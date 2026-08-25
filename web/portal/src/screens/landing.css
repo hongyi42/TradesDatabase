@@ -990,10 +990,16 @@
   padding: 0 clamp(0px, 1vw, 20px);
   display: flex;
   flex-wrap: wrap;
-  font-family: var(--mono);
-  font-size: 12px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  align-items: baseline;
+  /* SANS, not mono. DESIGN.md §3 reserves mono for machine values — job refs,
+     bot handles, timestamps — and says outright that it is never used for words
+     one person wrote to another. Trade names are categories of human work, so
+     mono was the wrong family here from the start, and uppercase at 0.12em
+     tracking is the specific treatment that made the strip read as generated
+     rather than written. Sentence case, ordinary tracking, human font. */
+  font-family: var(--sans);
+  font-size: 15px;
+  letter-spacing: 0.16px;
   /* This strip sits on the photo band's dark scrim, so it is INVERSE type. It
      was --text (#161616) — near-black on an 85%-dark scrim — and only looked
      legible because the scrim was covering an empty light plate. The moment a
@@ -1010,19 +1016,19 @@
 /* The trade names are buttons — clicking one shows that trade and stops the
    rotation, which is also the keyboard route through the band. They are reset
    to look exactly like the text they replaced; only the cursor gives them away. */
-.ld-trade,
-.ld-trades-toggle {
+.ld-trade {
   font: inherit;
   letter-spacing: inherit;
-  text-transform: inherit;
   background: none;
   border: 0;
-  border-left: 1px solid oklch(0.97 0.004 250 / 0.3);
+  border-left: 1px solid oklch(0.97 0.004 250 / 0.22);
   border-radius: 0;
   cursor: pointer;
-  /* Dimmed until it is the one showing. --inverse-ink-muted is 11.6:1 on the
-     scrim, so this is a de-emphasis, never a legibility cost. */
-  color: var(--inverse-ink-muted);
+  position: relative;
+  /* Every trade stays at one readable brightness. The previous treatment swung
+     from #c6c6c6 to pure white, which made the change shout — and at 2.6s a
+     shout every 2.6s is what the eye ends up watching instead of the page. */
+  color: oklch(1 0 0 / 0.72);
   transition: color var(--dur-moderate-01) var(--ease-standard);
 }
 
@@ -1030,23 +1036,39 @@
   cursor: default;
 }
 
+/* The marker is a hairline, not a flash. A 2px accent rule under the active
+   word says which one it is without changing the weight of the strip. */
+.ld-trade::after {
+  content: '';
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: -3px;
+  height: 2px;
+  background: var(--blue-on-dark);
+  opacity: 0;
+  transform: scaleX(0.4);
+  transition:
+    opacity var(--dur-moderate-01) var(--ease-standard),
+    transform var(--dur-moderate-01) var(--ease-standard);
+}
+
 .ld-trade.is-on {
-  color: var(--inverse-ink);
+  color: oklch(1 0 0 / 0.96);
 }
 
-.ld-trade:hover:not(:disabled),
-.ld-trades-toggle:hover {
-  color: var(--inverse-ink);
+.ld-trade.is-on::after {
+  opacity: 1;
+  transform: scaleX(1);
 }
 
-.ld-trades-toggle {
-  color: var(--blue-on-dark);
-  margin-left: auto;
+.ld-trade:hover:not(:disabled) {
+  color: oklch(1 0 0 / 0.96);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .ld-trade,
-  .ld-trades-toggle {
+  .ld-trade::after {
     transition: none;
   }
 }
@@ -1054,6 +1076,7 @@
 .ld-trades-lead {
   padding: 4px 14px 4px 0;
   border-left: 0;
+  font-size: 13px;
   /* NOT --amber. DESIGN.md §5: #0f62fe is 3.62:1 on inverted surfaces and fails
      as text there; --blue-on-dark (#78a9ff) is 7.68:1. Same rule the footer and
      the manager card follow. */

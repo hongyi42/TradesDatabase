@@ -350,8 +350,14 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
         </div>
       </section>
 
-      {/* ── Photo band ───────────────────────────────────────────────────── */}
-      <section className="ld-photoband">
+      {/* ── Photo band ───────────────────────────────────────────────────────
+          The band is only tall when there is a photograph to be tall FOR. With
+          the slot empty it collapses to the trades strip alone — a slim, solid
+          qualification band that looks decided, instead of ~460px of hatch
+          announcing an unfinished page. Drop photo-band.jpg into src/photos/
+          and it expands back to the full bleed with the strip over the scrim;
+          no code change, see the PHOTOGRAPHS note above. */}
+      <section className={PHOTOS['photo-band'] ? 'ld-photoband' : 'ld-photoband ld-photoband-slim'}>
         <PhotoPlate
           slot="photo-band"
           brief="Electrician mid-job, phone in hand, open breaker panel behind"

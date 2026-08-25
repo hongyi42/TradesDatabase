@@ -909,6 +909,26 @@
   inset: 0;
 }
 
+/* No photograph yet: the band is the trades strip and nothing else. An empty
+   plate at 460px tall is a page telling the reader it is not finished; a 
+   deliberate 1-line qualification band is a page telling them who it is for.
+   The strip is already inverse type (it was written for the scrim), so on solid
+   --inverse-canvas it needs no colour changes at all. */
+.ld-photoband-slim {
+  height: auto;
+  background: var(--inverse-canvas);
+}
+
+.ld-photoband-slim .ld-plate {
+  display: none;
+}
+
+.ld-photoband-slim .ld-photoband-plate {
+  position: static;
+  background: none;
+  padding: 18px clamp(18px, 4vw, 44px);
+}
+
 .ld-photoband-plate {
   position: absolute;
   left: 0;

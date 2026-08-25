@@ -37,6 +37,16 @@ its brief describes.
 or the page describes an image that isn't there. Search for `STRIP` and for
 `slot="photo-band"` in that file.
 
+## The band shrinks when it is empty
+
+With no `photo-band.*` file the band collapses to the trades strip alone — a slim solid
+qualification bar. An empty plate at 460px tall is a page announcing it is unfinished; a
+one-line "Built for electrical, plumbing, roofing, HVAC, appliance repair" band is a page
+telling the reader who it is for. Drop the file in and it expands back to the full bleed.
+
+Nothing else on the page does this — the three strip plates still render as honest plates,
+because three small placeholders read as a deliberate grid where one enormous one reads as a hole.
+
 ## The photo band has one extra constraint
 
 Its image sits under a dark scrim carrying the "Built for" trades strip, so it

@@ -12,7 +12,9 @@ import {
   cleanHandoffNote,
   EVIDENCE_PER_GAP,
   PLANNER_ACTIONS,
+  questionCapFor,
   runPlanner,
+  UNMENTIONED,
   UNMENTIONED_CAP,
   validateDecisions,
   type PlannerDeps,
@@ -2547,5 +2549,266 @@ describe('the close-derived attribution stamp', () => {
     const { deps, stampAnswer } = liveClose();
     await runPlanner(NOW, 'shadow', deps);
     expect(stampAnswer).not.toHaveBeenCalled();
+  });
+});
+
+// ── plan 2026-08-25 Phase 3: one send may cover several gaps ────────────────
+describe('grouped sends', () => {
+  const NOW = '2026-08-15T18:00:00.000Z';
+  // Two PENDING gaps, same person, same job — the only shape a group may take.
+  const pend = (id: string, over: Partial<Nudge> = {}) =>
+    nudge({
+      id,
+      subject_ref: `s-${id}`,
+      status: 'pending',
+      asked_at: null,
+      question: null,
+      technician_id: 'tech-1',
+      ...over,
+    } as Partial<Nudge>);
+
+  const run = async (decisions: unknown[], over: Partial<PlannerDeps> = {}) => {
+    const recorded: Array<Record<string, unknown>> = [];
+    const queuedGroups: Array<{ ids: string[]; question: string; lead: string }> = [];
+    const queuedSingles: string[] = [];
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [pend('n1'), pend('n2')],
+      markQueued: (async (id: string, _t: string, question: string) => {
+        queuedSingles.push(id);
+        return pend(id, { status: 'queued', question } as Partial<Nudge>);
+      }) as NonNullable<PlannerDeps['markQueued']>,
+      markGroupQueued: (async (ids: string[], _t: string, question: string, lead: string) => {
+        queuedGroups.push({ ids, question, lead });
+        return ids.map((i) => pend(i, { status: 'queued', question } as Partial<Nudge>));
+      }) as NonNullable<PlannerDeps['markGroupQueued']>,
+      recordDecisions: async (rows) => {
+        recorded.push(...(rows as unknown as Record<string, unknown>[]));
+        return rows.length;
+      },
+      runLoop: loopReturning(decisions),
+      ...over,
+    }));
+    return { summary, recorded, queuedGroups, queuedSingles };
+  };
+
+  const send = (over: Record<string, unknown> = {}) => ({
+    nudgeId: 'n1',
+    action: 'send',
+    question: 'Two things on the Henderson job — how did it go, and what did parts run?',
+    confidence: 'high',
+    reason: 'both are quick and they are on the same visit',
+    ...over,
+  });
+
+  test('a two-gap group queues ONCE and records a row for each gap', async () => {
+    const { summary, recorded, queuedGroups, queuedSingles } = await run([
+      send({ nudgeIds: ['n1', 'n2'] }),
+    ]);
+    expect(queuedSingles).toEqual([]); // never the single-row writer
+    expect(queuedGroups).toHaveLength(1);
+    expect(queuedGroups[0].ids).toEqual(['n1', 'n2']);
+    expect(queuedGroups[0].lead).toBe('n1'); // the group id IS the lead's id
+    // ONE decision, so the summary counts one…
+    expect(summary.applied).toBe(1);
+    expect(summary.byAction.send).toBe(1);
+    // …and TWO rows, so each gap's own history shows its send.
+    const sends = recorded.filter((r) => r.action === 'send');
+    expect(sends.map((r) => r.nudgeId).sort()).toEqual(['n1', 'n2']);
+    for (const r of sends) expect(r.outcome).toBe('applied');
+    // Neither member collects an `unmentioned` tick.
+    expect(recorded.filter((r) => r.action === UNMENTIONED)).toEqual([]);
+  });
+
+  test('the anchor and the message come from the LEAD, once', async () => {
+    const { queuedGroups } = await run([send({ nudgeIds: ['n1', 'n2'] })]);
+    expect(queuedGroups[0].question).toContain('how did it go, and what did parts run?');
+    expect(queuedGroups[0].question).toContain('(re: Henderson — Furnace tune-up)');
+    expect(queuedGroups[0].question.match(/\(re: /g)).toHaveLength(1);
+  });
+
+  test.each([
+    [
+      'a different JOB',
+      { listNudges: async () => [pend('n1'), pend('n2', { context: { jobId: 'j2' } } as Partial<Nudge>)] },
+      'same person on the same job',
+    ],
+    [
+      'a different PERSON',
+      { listNudges: async () => [pend('n1'), pend('n2', { technician_id: 'tech-2' } as Partial<Nudge>)] },
+      'same person on the same job',
+    ],
+    [
+      'a gap already ASKED',
+      {
+        listNudges: async () => [
+          pend('n1'),
+          pend('n2', { status: 'asked', asked_at: '2026-08-15T12:00:00.000Z' } as Partial<Nudge>),
+        ],
+      },
+      'already gone out',
+    ],
+  ])('a group spanning %s is refused', async (_label, over, why) => {
+    const { summary, queuedGroups, recorded } = await run(
+      [send({ nudgeIds: ['n1', 'n2'] })],
+      over as Partial<PlannerDeps>,
+    );
+    expect(queuedGroups).toEqual([]);
+    expect(summary.dropped).toBe(1);
+    expect(summary.applied).toBe(0);
+    const refusal = recorded.find((r) => r.outcome === 'refused');
+    expect(String(refusal?.outcomeDetail)).toContain(why);
+  });
+
+  test('a group that does not name its own lead is refused', async () => {
+    // Without the lead in the list no row satisfies `id = ask_group_id`, and the
+    // serve loop freezes a leaderless group until the 18h expiry.
+    const { summary, queuedGroups } = await run([send({ nudgeIds: ['n2'] , nudgeId: 'n1' })]);
+    expect(queuedGroups).toEqual([]);
+    expect(summary.dropped).toBe(1);
+  });
+
+  test('a PARTIAL move records the truth per member, and refuses when the LEAD did not move', async () => {
+    // markNudgeGroupQueued has no rollback: the movers really are queued and
+    // really will be delivered — but with no lead the group is frozen, so
+    // nothing ships and the decision is honestly a refusal.
+    const { summary, recorded } = await run([send({ nudgeIds: ['n1', 'n2'] })], {
+      markGroupQueued: (async () => [
+        pend('n2', { status: 'queued' } as Partial<Nudge>),
+      ]) as NonNullable<PlannerDeps['markGroupQueued']>,
+    });
+    expect(summary.applied).toBe(0);
+    expect(summary.refusedAtApply).toBe(1);
+    const byId = Object.fromEntries(
+      recorded.filter((r) => r.action === 'send').map((r) => [r.nudgeId, r.outcome]),
+    );
+    expect(byId).toEqual({ n1: 'refused', n2: 'applied' });
+  });
+
+  test('SHADOW fans out too — no member is left looking un-considered', async () => {
+    const recorded: Array<Record<string, unknown>> = [];
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [pend('n1'), pend('n2')],
+      recordDecisions: async (rows) => {
+        recorded.push(...(rows as unknown as Record<string, unknown>[]));
+        return rows.length;
+      },
+      runLoop: loopReturning([send({ nudgeIds: ['n1', 'n2'] })]),
+    }));
+    const sends = recorded.filter((r) => r.action === 'send');
+    expect(sends.map((r) => r.nudgeId).sort()).toEqual(['n1', 'n2']);
+    for (const r of sends) expect(r.outcome).toBe('shadow');
+    expect(recorded.filter((r) => r.action === UNMENTIONED)).toEqual([]);
+  });
+
+  test('a send with NO nudgeIds is byte-for-byte what shipped before', async () => {
+    const { summary, queuedSingles, queuedGroups, recorded } = await run([send()]);
+    expect(queuedGroups).toEqual([]);
+    expect(queuedSingles).toEqual(['n1']);
+    expect(summary.applied).toBe(1);
+    expect(recorded.filter((r) => r.action === 'send')).toHaveLength(1);
+    // n2 was never mentioned, so it collects its tick mark exactly as before.
+    expect(recorded.filter((r) => r.action === UNMENTIONED && r.nudgeId === 'n2')).toHaveLength(1);
+  });
+
+  test('a member of a group cannot take a SECOND decision later in the plan', () => {
+    // Load-bearing, not belt-and-braces: after a grouped send the member sits at
+    // `queued`, which is inside OPEN_NUDGE_STATUSES — so a later `close` would
+    // sail through markNudgeOutcome's guard and close a gap whose question had
+    // just shipped.
+    const views = new Map([
+      ['n1', buildGapView(pend('n1'), Date.parse(NOW), [], false, new Set(), [], [], 'UTC')],
+      ['n2', buildGapView(pend('n2'), Date.parse(NOW), [], false, new Set(), [], [], 'UTC')],
+    ]);
+    const { decisions, dropped } = validateDecisions(
+      {
+        decisions: [
+          { ...send({ nudgeIds: ['n1', 'n2'] }) },
+          { nudgeId: 'n2', action: 'leave', confidence: 'low', reason: 'second bite' },
+        ],
+      },
+      views,
+      Date.parse(NOW),
+    );
+    expect(decisions).toHaveLength(1);
+    expect(dropped[0].why).toBe('a second decision for the same gap');
+  });
+
+  test('a gap already decided EARLIER in the plan cannot be grouped into a later send', () => {
+    const views = new Map([
+      ['n1', buildGapView(pend('n1'), Date.parse(NOW), [], false, new Set(), [], [], 'UTC')],
+      ['n2', buildGapView(pend('n2'), Date.parse(NOW), [], false, new Set(), [], [], 'UTC')],
+    ]);
+    const { decisions, dropped } = validateDecisions(
+      {
+        decisions: [
+          { nudgeId: 'n2', action: 'hold', notBefore: '2026-08-15T19:00:00.000Z', confidence: 'low', reason: 'later' },
+          { ...send({ nudgeIds: ['n1', 'n2'] }) },
+        ],
+      },
+      views,
+      Date.parse(NOW),
+    );
+    expect(decisions.map((d) => d.action)).toEqual(['hold']);
+    expect(dropped[0].why).toContain('already has its own decision');
+  });
+
+  test('a group of gaps whose job the record does not name is refused', () => {
+    const bare = (id: string) =>
+      buildGapView(
+        pend(id, { context: { technicianName: 'Ben' } } as Partial<Nudge>),
+        Date.parse(NOW),
+        [],
+        false,
+        new Set(),
+        [],
+        [],
+        'UTC',
+      );
+    const views = new Map([
+      ['n1', bare('n1')],
+      ['n2', bare('n2')],
+    ]);
+    const { decisions, dropped } = validateDecisions(
+      { decisions: [send({ nudgeIds: ['n1', 'n2'] })] },
+      views,
+      Date.parse(NOW),
+    );
+    expect(decisions).toEqual([]);
+    expect(dropped[0].why).toContain('does not name');
+  });
+
+  test('a REFUSED group records a row for every gap it named, not just its lead', async () => {
+    // The model looked at both. Without the fan-out the sibling falls through to
+    // the tick-mark filler and the log says nobody considered it.
+    const { recorded } = await run([send({ nudgeIds: ['n1', 'n2'] })], {
+      listNudges: async () => [pend('n1'), pend('n2', { technician_id: 'tech-2' } as Partial<Nudge>)],
+    });
+    const refusals = recorded.filter((r) => r.outcome === 'refused');
+    expect(refusals.map((r) => r.nudgeId).sort()).toEqual(['n1', 'n2']);
+    for (const r of refusals) expect(r.action).toBe('send');
+    expect(recorded.filter((r) => r.action === UNMENTIONED)).toEqual([]);
+  });
+
+  test('the cap is threaded from the GROUP, not assumed to be one gap', async () => {
+    // A 700-char message is over the single-gap cap. If validateDecisions did
+    // not pass the member count through, the date rail would null the question
+    // and refuse the whole group — there is no fallback author.
+    const long = `${'a'.repeat(690)} ok?`;
+    const { queuedGroups, summary } = await run([
+      send({ nudgeIds: ['n1', 'n2'], question: long }),
+    ]);
+    expect(summary.applied).toBe(1);
+    expect(queuedGroups).toHaveLength(1);
+    expect(queuedGroups[0].question).toContain(long);
+  });
+
+  test('the question cap scales with the group and is still bounded', () => {
+    expect(questionCapFor(1)).toBe(500);
+    expect(questionCapFor(2)).toBe(750);
+    expect(questionCapFor(10)).toBe(1200); // the ceiling, not an essay
+    // A 700-char message is refused for ONE gap and accepted for two.
+    const long = 'a'.repeat(700);
+    expect(cleanQuestionDraft(long, [], 1).note).toBeNull();
+    expect(cleanQuestionDraft(long, [], 2).note).toBe(long);
   });
 });

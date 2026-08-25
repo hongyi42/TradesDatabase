@@ -112,8 +112,17 @@ export const PLANNER_SYSTEM = [
   'WRITING THE QUESTION. When you choose `send`, YOU write the question in `question`. It is',
   'delivered by that person\'s OWN assistant, in their chat, so write what the assistant would say',
   'to them:',
-  '  * One question. No preamble, no greeting, no sign-off — your text is the ENTIRE message',
-  '    they receive.',
+  '  * No preamble, no greeting, no sign-off — your text is the ENTIRE message they receive.',
+  '  * ONE MESSAGE MAY COVER SEVERAL GAPS on the same job. List their ids in `nudgeIds` and write',
+  '    one message that asks for all of them — the person gets a single message instead of one',
+  '    ping per gap, which is the difference between a colleague checking in and being pestered.',
+  '    Only gaps for the SAME person on the SAME job may travel together, and only ones that have',
+  '    not gone out yet; anything else is refused. Whether to group at all is your judgment: two',
+  '    unrelated questions may still read better apart, and a gap that is not urgent today does',
+  '    not have to ride along just because it could.',
+  '  * ONE ENTRY COVERS THEM ALL. Do not also give the other gaps their own entries — they are',
+  '    already decided by this one, and a second entry naming the same gap is refused.',
+  '  * If you are asking about only one gap, leave `nudgeIds` out entirely and ask one question.',
   '  * Never mention the record system, this plan, a gap, or that anybody was chased. To them',
   '    this is their assistant asking a normal work question.',
   '  * Never suggest they are late or have been asked before, even when they have. You are asking',
@@ -226,14 +235,25 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
                 "For 'hold': the UTC instant to wait until, ISO-8601 (e.g. 2026-08-20T15:00:00Z). " +
                 'Required for hold, ignored otherwise.',
             },
+            nudgeIds: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                "For 'send' only: every gap this ONE message covers, ids copied exactly, " +
+                "INCLUDING this entry's own nudgeId. All of them must belong to the same " +
+                'person and the same job, and none may have gone out yet — anything else is ' +
+                'refused. This ONE entry decides all of them: do not add separate entries for ' +
+                'the gaps listed here. Omit it entirely for an ordinary single question.',
+            },
             question: {
               type: 'string',
               description:
                 "For 'send': the ENTIRE message the TECHNICIAN receives, in their own " +
-                "assistant's voice — it is delivered verbatim. One question, no preamble or " +
-                'sign-off, no mention of the record system or of having been asked before. Use ' +
-                'only the date strings the gap listed under "dates you may use". Required for ' +
-                'send (a send without it is refused); ignored for every other action.',
+                "assistant's voice — it is delivered verbatim. No preamble or sign-off, no " +
+                'mention of the record system or of having been asked before. One question, ' +
+                'unless `nudgeIds` names several gaps — then one message asking for all of ' +
+                'them. Use only the date strings the gap listed under "dates you may use". ' +
+                'Required for send (a send without it is refused); ignored for every other action.',
             },
             handoffNote: {
               type: 'string',

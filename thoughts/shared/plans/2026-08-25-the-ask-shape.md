@@ -221,8 +221,12 @@ one unit. Nothing writes `ask_group_id` yet, so production behavior is unchanged
   stubs `asked` returning one row and must be updated to return an array** (review finding 8), or
   every existing `completeNudgeDelivery` test fails to compile.
 - `buildNudgeDelivery` (:82-122): partition `rows` by `ask_group_id` (null = its own group of one).
-  Emit ONE item per group; the lead is the member whose `id === ask_group_id`, falling back to the
-  first row when no member matches (a group whose lead was expired out). Liveness skip, the
+  Emit ONE item per group; the lead is the member whose `id === ask_group_id`. **SUPERSEDED
+  DURING IMPLEMENTATION:** the plan said to fall back to the first row when no member matches;
+  review showed that a group really can lose its lead (`moot` and the pre-ask carve-out each close
+  ONE queued row), and promoting a sibling changes the delivery item id — which the box dedupes on
+  (`sent-<id>`) — so the whole message would be re-sent with both ledgers reset. A leaderless group
+  is FROZEN for the 18h expiry instead. Liveness skip, the
   `!row.question` freeze, `MAX_SERVE_COUNT` and the `serve_count` increment all evaluate on the LEAD.
 - Serve-cap and terminal-failure paths (:89-103, :158-168): `handToManager` + `markNudgeOutcome('failed', …)`
   run for EVERY member — an undeliverable question must not orphan the gaps it was written for
@@ -340,18 +344,34 @@ move records `applied` for movers and `refused` for the rest; no member of an ap
 `unmentioned` row, in live AND in shadow; a `send` with no `nudgeIds` behaves exactly as today.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass
-- [ ] the eight new planner.test.ts cases pass
-- [ ] `MG-09` runs in the simulator without harness error (`npm test -- plannerSim`)
-- [ ] the existing planner and `plannerEvalGraders` suites pass unchanged — the single-send path
-      must be byte-identical
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass (2279 passed, 8 skipped)
+- [x] the new planner.test.ts cases pass — THIRTEEN, not eight: review found four Phase-3 rails with
+      code but NO test (the member `seen.add` in both directions, the cap threading, the
+      refused-group record fan-out), each now mutation-checked to kill a test
+- [x] `MG-09` is in the corpus and the eval suite passes. Its expectation was TIGHTENED after
+      review: `groupingCoherent` alone passes when nothing is grouped AND when nothing is sent, so
+      it could not fail for the verb it exists to pin — it now also requires an applied `send` on
+      both gaps. The `groupingCoherent` grader itself gained the test every other arc check had
+- [x] the existing planner and `plannerEvalGraders` suites pass unchanged; a regression test pins
+      that a send with no `nudgeIds` is byte-for-byte the old path
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack; `ANTHROPIC_API_KEY` in `.env`.
-- [ ] Seed one tenant, two pending gaps, one job, one technician; run `runPlanner` live; read back
-      via a second client. If grouped: one `ask_group_id` equal to the lead's id, shared by both,
-      one `question`. If not: two ordinary queued rows. EITHER passes — the phase ships the verb,
-      not the policy. Capture the decision rows and nudge rows; delete the scratch tenant after.
+- [x] PASSED 2026-08-25 (verification subagent, fresh context, real paid model call). The planner
+      GROUPED on its first attempt. Cross-channel `docker exec … psql` read-back:
+      `rows=2 | distinct_group=1 | distinct_question=1 | ungrouped=0`, the group id equal to the
+      `overdue_visit_gap` row's own id (`is_lead=t` on exactly one row), both questions
+      byte-identical (same md5, 302 chars). Both gaps got their own applied `send` row in
+      `nudge_decisions`; ZERO `unmentioned` rows. Message delivered:
+      "Quick check-in on the water heater replacement for Phase3 Live Customer — two things needed
+      for the record: (1) Can you confirm the visit status? … (2) What were the materials or job
+      costs on this one?" followed by the code-printed
+      "(re: Phase3 Live Customer — Water heater replacement)".
+      Scratch rows deleted by id; the pilot MCP was never touched.
+      TWO OBSERVATIONS, neither a Phase-3 defect: (a) the model ALSO submitted a redundant separate
+      `send` for the sibling, correctly refused by the `seen` dedup — the prompt now says one entry
+      decides them all; (b) `ANTHROPIC_MODEL` was unset so the run used `claude-sonnet-4-6`, the
+      code default — which CONFIRMS the standing open question that the default is Sonnet, not Opus.
 
 ### Manual verification
 - [ ] Read the grouped message and judge whether it reads as one natural question to a technician

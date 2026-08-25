@@ -7,6 +7,7 @@ import {
   listNudgesByStatus,
   listTenantIdsWithTelegramBindings,
   markNudgeOutcome,
+  markNudgeGroupQueued,
   markNudgeQueued,
   OPEN_NUDGE_STATUSES,
   recordNudgeDecisions,
@@ -115,6 +116,11 @@ export interface PlannerDecision {
   // detail and is pulled via list_pending_reviews; NEVER rendered to a human.
   // Dropped whole by its rail; a bad briefing never blocks the handover.
   agentContext?: string | null;
+  // Every gap this ONE message covers, send only, INCLUDING nudgeId itself
+  // (plan 2026-08-25, Phase 3). Absent or length<=1 = an ordinary single ask.
+  // `nudgeId` stays the LEAD: its context prints the (re: …) anchor, and its id
+  // becomes the group id, the delivery item and the box's sent-marker.
+  nudgeIds?: string[];
   // The capture whose words closed this gap — DERIVED BY CODE from the citation
   // the rails already verified, never supplied by the model (plan 2026-08-25,
   // Phase 1). Close only, and only for basis 'evidence': a record-basis close
@@ -135,6 +141,11 @@ export interface DroppedDecision {
   // wanted to do and could not.
   confidence?: 'low' | 'medium' | 'high';
   reason?: string;
+  // The gaps a REFUSED grouped send named. Without it the siblings of a refused
+  // group fall through to the `unmentioned` filler — the same "considered and
+  // never seen collapse into one" defect the shadow fan-out exists to prevent,
+  // on the refusal path.
+  nudgeIds?: string[];
 }
 
 export interface PlannerTenantPlan {
@@ -182,6 +193,10 @@ export const EVIDENCE_TEXT_CHARS = 600;
 // Per gap, newest last. A technician who replied did so in the first message or
 // two; forty of them is a different problem than this one.
 export const EVIDENCE_PER_GAP = 6;
+// How much of a queued question is echoed back into the gap view. See the call
+// site: it must cover a grouped message plus its anchor, or the planner reads a
+// truncated version of its own ask.
+export const QUESTION_SHOWN_CHARS = 1450;
 
 // The per-turn output budget, and the think that has to fit inside it.
 //
@@ -225,6 +240,10 @@ export interface PlannerDeps {
   // the delivered message — the write compose used to own. Injected so tests
   // never touch the database.
   markQueued?: typeof markNudgeQueued;
+  // The grouped variant (plan 2026-08-25, Phase 3): one message, N rows, one
+  // guarded write. Injected like every other writer so the unit suite never
+  // touches the database.
+  markGroupQueued?: typeof markNudgeGroupQueued;
   // The capture->gap link a close derives from its own verified quote (plan
   // 2026-08-25, Phase 1). Injected like every other writer so a test never
   // touches the database.
@@ -563,7 +582,12 @@ export function buildGapView(
   ];
   if (n.asked_at) lines.push(`  asked: ${hoursBetween(n.asked_at, nowMs)}h ago`);
   else lines.push('  asked: not yet');
-  if (n.question) lines.push(`  the question asked: ${flat(n.question, 400)}`);
+  // Sized for the LARGEST message that can be queued, not for a single question:
+  // the grouped cap (1200) plus the anchor's own ceiling (customer 80 + job 120
+  // + framing). At 400 a grouped message would be shown to the planner with its
+  // last questions cut off — and it judges answers against what it thinks it
+  // asked.
+  if (n.question) lines.push(`  the question asked: ${flat(n.question, QUESTION_SHOWN_CHARS)}`);
   if (n.kind === 'job_cost_gap') {
     lines.push(
       recordFilled
@@ -837,11 +861,30 @@ export function anchorLine(n: Nudge): string {
  * (`compose.ts:263-268`) — a planner-written question is not more trusted than
  * a compose-written one, only cheaper.
  */
+// GROUPED SENDS GET MORE ROOM. 500 chars was sized for one question; a message
+// covering three would be refused for length alone, and a refused question
+// refuses the whole group (there is no fallback author). 250 per extra gap,
+// hard-capped: a technician's phone is not a report, and an unbounded cap would
+// make "one message" a way to send an essay.
+export const QUESTION_MAX_CHARS = 500;
+export const QUESTION_MAX_CHARS_PER_EXTRA_GAP = 250;
+export const QUESTION_MAX_CHARS_CEILING = 1200;
+export function questionCapFor(members: number): number {
+  return Math.min(
+    QUESTION_MAX_CHARS + QUESTION_MAX_CHARS_PER_EXTRA_GAP * Math.max(0, members - 1),
+    QUESTION_MAX_CHARS_CEILING,
+  );
+}
+
 export function cleanQuestionDraft(
   raw: unknown,
   dateLabels: string[],
+  members: number = 1,
 ): { note: string | null; why?: string } {
-  const base = cleanPlannerText(raw, dateLabels, { label: 'question', maxLen: 500 });
+  const base = cleanPlannerText(raw, dateLabels, {
+    label: 'question',
+    maxLen: questionCapFor(members),
+  });
   if (!base.note) return base;
   if (/note for the assistant/i.test(base.note)) {
     return { note: null, why: 'question tried to impersonate the assistant footer' };
@@ -886,7 +929,15 @@ export function validateDecisions(
         ? d.confidence
         : 'low';
     const reason = typeof d.reason === 'string' ? flat(d.reason, 300) : '';
-    const push = (why: string) => dropped.push({ nudgeId, action, why, confidence, reason });
+    const push = (why: string, members?: string[]) =>
+      dropped.push({
+        nudgeId,
+        action,
+        why,
+        confidence,
+        reason,
+        ...(members && members.length > 1 ? { nudgeIds: members } : {}),
+      });
 
     const view = views.get(nudgeId);
     if (!view) {
@@ -962,6 +1013,85 @@ export function validateDecisions(
                 'is nothing to release. Leave it out of your plan.',
         );
         continue;
+      }
+    }
+
+    // THE GROUP RAILS (plan 2026-08-25, Phase 3). Their own `action === 'send'`
+    // guard: the status branch above is SHARED with `hold`, and a hold naming
+    // nudgeIds means nothing.
+    //
+    // Code checks only that a group is COHERENT, never whether to form one —
+    // that is the planner's judgment, and the whole point of the verb. Coherence
+    // is not a preference: the anchor is printed from the LEAD's context and
+    // delivery goes to ONE person's chat, so a group spanning two jobs would
+    // ship a message anchored to the wrong record, and one spanning two people
+    // would mark somebody's gap asked on a message they never saw.
+    let groupIds: string[] | undefined;
+    if (action === 'send' && Array.isArray(d.nudgeIds)) {
+      const raw = d.nudgeIds.filter((v): v is string => typeof v === 'string');
+      const ids = [...new Set(raw)];
+      // The membership check runs whenever nudgeIds is present AT ALL, not only
+      // for a real group: `nudgeIds: ['n2']` on a decision whose nudgeId is 'n1'
+      // is the model naming a gap it is not deciding about, and treating that as
+      // an ordinary single send would silently ask the wrong question's gap.
+      if (ids.length > 0 && !ids.includes(nudgeId)) {
+        push(
+          'groups gaps without naming its own gap — nudgeIds must include this entry\'s own ' +
+            'nudgeId, which is the one whose customer and job the message is labelled with',
+        );
+        continue;
+      }
+      if (ids.length > 1) {
+        const leadTech = view.nudge.technician_id;
+        const leadJob = ctxStr(view.nudge, 'jobId');
+        // "No job" is not a job they share. Both null would otherwise satisfy
+        // the equality below while `anchorLine` prints the lead's customer
+        // alone, labelling the message with one record and asking about
+        // another. Unreachable from the shipped detectors (both always write
+        // jobId and technician_id) — this is the layer that has to survive one
+        // that does not.
+        if (!leadTech || !leadJob) {
+          push(
+            'groups gaps whose job or person the record does not name — a message can only be ' +
+              'anchored to a job it can identify',
+            ids,
+          );
+          continue;
+        }
+        let bad = false;
+        for (const memberId of ids) {
+          const member = views.get(memberId);
+          if (!member) {
+            push(`groups a gap that was not in this plan (${memberId})`, ids);
+            bad = true;
+            break;
+          }
+          if (seen.has(memberId)) {
+            push(`groups a gap that already has its own decision (${memberId})`, ids);
+            bad = true;
+            break;
+          }
+          if (member.nudge.status !== 'pending') {
+            push(
+              `groups ${memberId}, which has already gone out — only gaps still waiting to be ` +
+                'asked can share a message',
+              ids,
+            );
+            bad = true;
+            break;
+          }
+          if (member.nudge.technician_id !== leadTech || ctxStr(member.nudge, 'jobId') !== leadJob) {
+            push(
+              'groups gaps that are not the same person on the same job — one message can only ' +
+                'be anchored to one job and delivered to one person',
+              ids,
+            );
+            bad = true;
+            break;
+          }
+        }
+        if (bad) continue;
+        groupIds = ids;
       }
     }
 
@@ -1147,13 +1277,17 @@ export function validateDecisions(
     }
 
     seen.add(nudgeId);
+    // Every member is spoken for by THIS decision, so none of them collects an
+    // `unmentioned` tick mark and none can take a second decision later in the
+    // same plan.
+    for (const memberId of groupIds ?? []) seen.add(memberId);
     // Escalate only. A note on any other action would never be read: nothing
     // else in the ladder puts a sentence in front of a manager.
     // Send only. A question on any other action would be written, stored and
     // never read — compose only ever looks at an applied `send`.
     let questionDraft: string | null = null;
     if (action === 'send') {
-      const q = cleanQuestionDraft(d.question, view.dateLabels);
+      const q = cleanQuestionDraft(d.question, view.dateLabels, groupIds?.length ?? 1);
       questionDraft = q.note;
       if (q.why) noteDrops.push(`${nudgeId}: ${q.why}`);
     }
@@ -1183,6 +1317,7 @@ export function validateDecisions(
       ...(handoffNote ? { handoffNote } : {}),
       ...(agentContext ? { agentContext } : {}),
       ...(questionDraft ? { questionDraft } : {}),
+      ...(groupIds ? { nudgeIds: groupIds } : {}),
       ...(answeredByCaptureId ? { answeredByCaptureId } : {}),
       confidence,
       reason,
@@ -1241,11 +1376,12 @@ async function applyDecision(
   setSchedule: typeof setNudgeSchedule,
   markOutcome: typeof markNudgeOutcome,
   markQueued: typeof markNudgeQueued,
+  markGroupQueued: typeof markNudgeGroupQueued,
   stampAnswer: typeof setNudgeAnsweredBy,
   // Code-printed, from the gap's own row (the caller holds the view). Empty when
   // the row cannot name itself — a thin row ships bare rather than fabricating.
   anchor: string,
-): Promise<{ outcome: 'applied' | 'refused'; detail?: string }> {
+): Promise<{ outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[] }> {
   const moved = 'the gap changed state between the plan and the write — nothing was applied';
   const done = (row: Nudge | null): { outcome: 'applied' | 'refused'; detail?: string } =>
     row ? { outcome: 'applied' } : { outcome: 'refused', detail: moved };
@@ -1267,21 +1403,44 @@ async function applyDecision(
       }
       // The anchor rides along, code-printed: what is stored IS what is sent
       // (④b), and the technician's agent files the reply against the job this
-      // line names.
-      const queued = await markQueued(d.nudgeId, tenantId, `${d.questionDraft}${anchor}`);
+      // line names. For a GROUP it is the LEAD's anchor — which is exactly why
+      // the rails refuse a group spanning two jobs.
+      const message = `${d.questionDraft}${anchor}`;
+      const group = d.nudgeIds && d.nudgeIds.length > 1 ? d.nudgeIds : null;
+      const movedRows = group
+        ? await markGroupQueued(group, tenantId, message, d.nudgeId)
+        : [await markQueued(d.nudgeId, tenantId, message)].filter((r): r is Nudge => !!r);
+      const movedIds = movedRows.map((r) => r.id);
       // A hold this send overrides must be CLEARED, or the gap view keeps
       // telling the planner "currently held until …" about a question already
       // with the person. Best-effort and deliberately unguarded on its result:
       // the ask has landed either way, and a stale hold is a display defect, not
-      // a lost question — never fail an applied send on this.
-      if (queued && queued.not_before) {
+      // a lost question — never fail an applied send on this. Every member that
+      // moved, not just the lead: each carries its own not_before.
+      for (const row of movedRows) {
+        if (!row.not_before) continue;
         try {
-          await setSchedule(d.nudgeId, tenantId, { notBefore: null }, ['queued']);
+          await setSchedule(row.id, tenantId, { notBefore: null }, ['queued']);
         } catch (err) {
-          console.error(`[planner] ${d.nudgeId}: queued, but clearing its stale hold failed`, err);
+          console.error(`[planner] ${row.id}: queued, but clearing its stale hold failed`, err);
         }
       }
-      return done(queued);
+      // THE LEAD DECIDES THE VERDICT. buildNudgeDelivery serves a group only
+      // through the row that names it (`id = ask_group_id`) and freezes a
+      // leaderless group, so a partial move that lost the lead ships NOTHING —
+      // reporting that as applied would be the silent no-op these rails exist to
+      // make impossible. `movedIds` carries the per-member truth to the recorder.
+      if (!movedIds.includes(d.nudgeId)) {
+        return {
+          outcome: 'refused',
+          detail: group
+            ? `${movedRows.length}/${group.length} of the group moved, but its lead did not — ` +
+              moved
+            : moved,
+          movedIds,
+        };
+      }
+      return { outcome: 'applied', movedIds };
     }
     case 'hold':
       return done(
@@ -1360,6 +1519,7 @@ export async function runPlanner(
   const setSchedule = deps.setSchedule ?? setNudgeSchedule;
   const markOutcome = deps.markOutcome ?? markNudgeOutcome;
   const markQueued = deps.markQueued ?? markNudgeQueued;
+  const markGroupQueued = deps.markGroupQueued ?? markNudgeGroupQueued;
   const stampAnswer = deps.stampAnswer ?? setNudgeAnsweredBy;
   const specs = deps.specs ?? NUDGE_KIND_SPECS;
   const sweepLive = deps.sweepLive ?? true;
@@ -1588,11 +1748,16 @@ export async function runPlanner(
       let applied = 0;
       let refusedAtApply = 0;
       for (const d of decisions) {
-        const jobId = views.get(d.nudgeId)?.jobId ?? null;
-        const base = {
+        // ONE ROW PER GAP, even when one decision covered several (plan
+        // 2026-08-25, Phase 3). Each gap's own history has to show its own send,
+        // and `nudge_decisions.nudge_id` is NOT NULL with an FK — a single row
+        // for the group would leave every sibling looking un-considered, which
+        // is precisely the hole `unmentioned` exists to close.
+        const members = d.nudgeIds && d.nudgeIds.length > 1 ? d.nudgeIds : [d.nudgeId];
+        const rowFor = (nudgeId: string) => ({
           tenantId,
-          nudgeId: d.nudgeId,
-          jobId,
+          nudgeId,
+          jobId: views.get(nudgeId)?.jobId ?? null,
           mode,
           action: d.action,
           notBefore: d.notBefore ?? null,
@@ -1604,12 +1769,18 @@ export async function runPlanner(
           handoffNote: d.handoffNote ?? null,
           agentContext: d.agentContext ?? null,
           questionDraft: d.questionDraft ?? null,
-        };
+        });
+        // SHADOW FANS OUT TOO. Missing this would give every sibling an
+        // `unmentioned` tick in shadow and in every eval run — collapsing
+        // "considered" and "never seen" exactly where the corpus measures
+        // whether grouping happened at all.
         if (mode !== 'live') {
-          records.push({ ...base, mode: 'shadow', outcome: 'shadow' });
+          for (const memberId of members) {
+            records.push({ ...rowFor(memberId), mode: 'shadow', outcome: 'shadow' });
+          }
           continue;
         }
-        let res: { outcome: 'applied' | 'refused'; detail?: string };
+        let res: { outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[] };
         try {
           const gapRow = views.get(d.nudgeId)?.nudge;
           res = await applyDecision(
@@ -1619,6 +1790,7 @@ export async function runPlanner(
             setSchedule,
             markOutcome,
             markQueued,
+            markGroupQueued,
             stampAnswer,
             gapRow ? anchorLine(gapRow) : '',
           );
@@ -1630,9 +1802,34 @@ export async function runPlanner(
             detail: `write failed: ${err instanceof Error ? err.message : String(err)}`,
           };
         }
+        // The SUMMARY counts DECISIONS, not gaps — a grouped send is one
+        // decision, and keeping it that way is what makes these numbers
+        // comparable with the eval baseline taken before groups existed.
         if (res.outcome === 'applied') applied += 1;
         else refusedAtApply += 1;
-        records.push({ ...base, mode: 'live', outcome: res.outcome, outcomeDetail: res.detail });
+        // The RECORDS count gaps, with each member's own truth: a partial move
+        // really did queue the movers, and telling a moved gap's history it was
+        // refused is the same class of lie as the reverse.
+        const movedIds = res.movedIds;
+        for (const memberId of members) {
+          const memberOutcome =
+            movedIds === undefined
+              ? res.outcome
+              : movedIds.includes(memberId)
+                ? 'applied'
+                : 'refused';
+          records.push({
+            ...rowFor(memberId),
+            mode: 'live',
+            outcome: memberOutcome,
+            outcomeDetail:
+              memberOutcome === res.outcome
+                ? res.detail
+                : memberOutcome === 'applied'
+                  ? "queued with its group, though the group's lead did not move"
+                  : 'the gap changed state between the plan and the write — nothing was applied',
+          });
+        }
       }
       // Rail-refused decisions are recorded too — a refusal is the most
       // informative row in the log, being the one place we learn what the model
@@ -1643,17 +1840,23 @@ export async function runPlanner(
       for (const d of dropped) {
         if (!views.has(d.nudgeId)) continue;
         if (!(PLANNER_ACTIONS as readonly string[]).includes(d.action)) continue;
-        records.push({
-          tenantId,
-          nudgeId: d.nudgeId,
-          jobId: views.get(d.nudgeId)?.jobId ?? null,
-          mode,
-          action: d.action,
-          confidence: d.confidence ?? 'low',
-          reason: d.reason ?? '',
-          outcome: 'refused',
-          outcomeDetail: d.why,
-        });
+        // One row per gap the refused decision NAMED, not just its lead: the
+        // model looked at every member, and the tick-mark filler below would
+        // otherwise record the siblings as never considered.
+        for (const memberId of d.nudgeIds ?? [d.nudgeId]) {
+          if (!views.has(memberId)) continue;
+          records.push({
+            tenantId,
+            nudgeId: memberId,
+            jobId: views.get(memberId)?.jobId ?? null,
+            mode,
+            action: d.action,
+            confidence: d.confidence ?? 'low',
+            reason: d.reason ?? '',
+            outcome: 'refused',
+            outcomeDetail: d.why,
+          });
+        }
       }
 
       // THE THIRD SOURCE: every gap that was in the view and in NEITHER list.

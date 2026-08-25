@@ -276,11 +276,13 @@ const TOOLS = [
       'is fixed by recording the correction and then retract_capture. A recorded answer may come ' +
       'back with openQuestions — what the office still has open on that job, which MAY include ' +
       'the one they just answered. Judge from what the person actually said and ask ONE thing ' +
-      'they have genuinely not covered, now, in your own words, as your own question — never ' +
-      'naming the office, a queue or a list, and never repeating the "(re: …)" line the text may ' +
-      'end with. RECORD their reply to it with record_field_note, passing confirmed:{customerId} ' +
-      'from the answer you just recorded so it lands on the same record without asking them who ' +
-      'it was for. If they do not engage, drop it.',
+      'they have genuinely not covered, now. Send it as TWO messages: confirm what you recorded, ' +
+      'then the question as its OWN separate short message — a question tacked onto a ' +
+      'confirmation reads as a footer. Keep it plain and few words ("What did the parts cost?"). ' +
+      'It is YOUR question: never say it came from the office or anyone else, never mention a ' +
+      'queue or a list, and never repeat the "(re: …)" line the text may end with. RECORD their ' +
+      'reply with record_field_note, passing confirmed:{customerId} from the answer you just ' +
+      'recorded so it lands on the same record. If they do not engage, drop it.',
     inputSchema: {
       type: 'object',
       properties: {

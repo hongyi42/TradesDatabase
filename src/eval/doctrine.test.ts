@@ -190,8 +190,15 @@ describe('buildSystemPrompt', () => {
     // mean the whole conversation or the agent re-asks what it already covered.
     expect(body).toMatch(/everything they have said in this conversation/);
     // …and the two rules that keep a machine artifact out of a human's face.
-    expect(body).toMatch(/never repeat\s+the "\(re: …\)" line/);
-    expect(body).toMatch(/Never\s+mention the office/);
+    expect(body).toMatch(/never repeat the\s+"\(re: …\)" line/);
+    // The three form rules, all three learned from a live specimen (2026-08-25):
+    // the agent folded the ask onto the end of "Recorded. ✅", phrased it as
+    // "what the parts ran you on that freezer", and attributed it to the office.
+    expect(body).toMatch(/TWO messages, not one/);
+    expect(body).toMatch(/What did the parts cost\?/);
+    expect(body).toMatch(/the office was also asking/);
+    expect(body).toMatch(/Never say where it came from/);
+    expect(body).toMatch(/never mention a queue, a list/i);
   });
 
   it('carries no date outside the host-managed heading stamps', () => {

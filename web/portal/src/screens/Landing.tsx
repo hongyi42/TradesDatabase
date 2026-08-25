@@ -145,24 +145,30 @@ const PHOTOS: Record<string, string> = Object.fromEntries(
   ]),
 );
 
-// The three photographs in the strip. `slot` is the filename to drop in
-// src/photos/; `alt` describes the intended shot and must be updated if the
-// photograph you use differs from the brief.
+// The three photographs in the strip. `slot` is the filename in src/photos/;
+// `alt` describes what is ACTUALLY in the frame, which is not the same thing as
+// the brief — the shots we have were chosen for fit, not to match the briefs,
+// and alt text that describes an intended photograph rather than the real one
+// is simply wrong for anyone who cannot see it.
+//
+// `brief` is only rendered when a slot is EMPTY, so for these three it is dead
+// copy today. It is kept, and kept accurate to the shot we would still rather
+// have, so the plates say something true if a file is ever removed.
 const STRIP = [
   {
     slot: 'strip-1',
     brief: 'Truck doors open, first light',
-    alt: 'A work van with its rear doors open at dawn, tools racked inside.',
+    alt: 'The open rear doors of a van fitted out with timber panelling and storage, parked among trees.',
   },
   {
     slot: 'strip-2',
     brief: 'Hands, scuffed phone, finished panel',
-    alt: "A technician's hands holding a worn phone in front of a finished electrical panel.",
+    alt: 'A hand guiding a screwdriver into an open electrical panel, rows of breakers and coloured wiring behind.',
   },
   {
     slot: 'strip-3',
     brief: 'Kitchen table, 9pm, paperwork',
-    alt: 'Job paperwork spread across a kitchen table under a lamp at night.',
+    alt: 'An electrician in a hi-vis jacket and hard hat working inside an open outdoor electrical cabinet.',
   },
 ];
 
@@ -183,11 +189,17 @@ function PhotoPlate({
   brief,
   alt,
   className,
+  priority = false,
 }: {
   slot: string;
   brief: string;
   alt: string;
   className?: string;
+  /** The band sits directly under the hero and is in or near the first
+   *  viewport, so it loads eagerly — lazy-loading it produces a visible pop-in
+   *  on the second thing the reader sees. The strip plates are far enough down
+   *  to stay lazy. */
+  priority?: boolean;
 }) {
   const src = PHOTOS[slot];
   const cls = className ? `ld-plate ${className}` : 'ld-plate';
@@ -195,7 +207,14 @@ function PhotoPlate({
   if (src) {
     return (
       <div className={`${cls} ld-plate-shot`}>
-        <img className="ld-plate-img" src={src} alt={alt} loading="lazy" decoding="async" />
+        <img
+          className="ld-plate-img"
+          src={src}
+          alt={alt}
+          loading={priority ? 'eager' : 'lazy'}
+          fetchPriority={priority ? 'high' : undefined}
+          decoding="async"
+        />
       </div>
     );
   }
@@ -360,8 +379,9 @@ export function Landing({ onSignIn }: { onSignIn: () => void }) {
       <section className={PHOTOS['photo-band'] ? 'ld-photoband' : 'ld-photoband ld-photoband-slim'}>
         <PhotoPlate
           slot="photo-band"
-          brief="Electrician mid-job, phone in hand, open breaker panel behind"
-          alt="An electrician working at an open breaker panel, phone in hand."
+          priority
+          brief="Roofer mid-job, laying asphalt shingles"
+          alt="A roofer laying asphalt shingles with a coil nailer, worn boots braced on the finished course."
         />
         <div className="ld-photoband-plate">
           <div className="ld-trades">

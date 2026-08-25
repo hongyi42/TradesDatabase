@@ -10,6 +10,7 @@ import {
   buildPlannerUserMessage,
   cleanAgentContext,
   cleanHandoffNote,
+  clockLabel,
   EVIDENCE_PER_GAP,
   PLANNER_ACTIONS,
   questionCapFor,
@@ -2810,5 +2811,51 @@ describe('grouped sends', () => {
     const long = 'a'.repeat(700);
     expect(cleanQuestionDraft(long, [], 1).note).toBeNull();
     expect(cleanQuestionDraft(long, [], 2).note).toBe(long);
+  });
+});
+
+// The offset rule (handoff 2026-08-25). clockLabel builds the gap view's date
+// vocabulary, and cleanPlannerText then REFUSES any planner sentence carrying a
+// date outside it. The rail therefore proves the model copied the label — never
+// that the label was right, so a host-shifted label is laundered straight into
+// a confident sentence. Hence the invariance is tested here, not assumed.
+describe('clockLabel — the date vocabulary cannot move with the host machine', () => {
+  const underTZ = <T>(tz: string, fn: () => T): T => {
+    const prior = process.env.TZ;
+    process.env.TZ = tz;
+    try {
+      return fn();
+    } finally {
+      if (prior === undefined) delete process.env.TZ;
+      else process.env.TZ = prior;
+    }
+  };
+
+  test('a REAL-UTC instant renders in the firm zone, identically on any host', () => {
+    for (const tz of ['UTC', 'America/Los_Angeles', 'Asia/Tokyo']) {
+      // asked_at as the database returns it (midnight Monday in LA).
+      expect(
+        underTZ(tz, () => clockLabel('2026-08-24T07:00:00+00:00', 'America/Los_Angeles')),
+      ).toBe('Monday, Aug 24 at 12:00 AM');
+    }
+  });
+
+  test("a firm wall-clock string renders as-is, bare or `Z`-stamped", () => {
+    for (const tz of ['UTC', 'America/Los_Angeles', 'Asia/Tokyo']) {
+      // endsAtLocal, written by the watcher via naiveLocalISO.
+      expect(underTZ(tz, () => clockLabel('2026-08-24T07:00:00.000Z', 'UTC'))).toBe(
+        'Monday, Aug 24 at 7:00 AM',
+      );
+      // The bare shape: on a Tokyo host this named SUNDAY before the guard.
+      expect(underTZ(tz, () => clockLabel('2026-08-24T07:00:00', 'UTC'))).toBe(
+        'Monday, Aug 24 at 7:00 AM',
+      );
+    }
+  });
+
+  test('an unusable stamp yields no label rather than a wrong one', () => {
+    expect(clockLabel(null, 'UTC')).toBeNull();
+    expect(clockLabel('not a date', 'UTC')).toBeNull();
+    expect(clockLabel('2026-08-24T07:00:00.000Z', 'Not/A_Zone')).toBeNull();
   });
 });

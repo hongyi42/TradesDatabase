@@ -145,17 +145,17 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L3475 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L3497 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L3544 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L3578 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L3504 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L3526 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L3573 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L3607 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
 
 **7. Where the deep detail lives**
 
-- L3598 · Evals:
-- L3605 · Runbooks:
-- L3610 · Decision history with citations:
-- L3614 · This file
+- L3627 · Evals:
+- L3634 · Runbooks:
+- L3639 · Decision history with citations:
+- L3643 · This file
 
 <!-- INDEX:END -->
 
@@ -3142,6 +3142,35 @@ mechanism in [long-running-task-batching.md](long-running-task-batching.md).
   set. Generalises: **before adding a tenant to a live database, read what the cron sweeps over
   every tenant.** The other steps are safe by shape (pairing advancement, offboarding expiry and
   log ingestion all need Composio state a synthetic tenant does not have).
+
+**A date label built from an offset-less string is a wrong sentence the date rail cannot catch
+(guarded 2026-08-25).** Every human-facing time in the ladder comes from one of two formatters —
+`clockLabel` (`src/teamLead/planner.ts`) and `wallClockLabel` (`src/jobs/watchers.ts`) — which
+parse a string and format the result in a named zone. Per ECMA-262 a date-time **with** an offset
+is absolute, and one **without** is read on the host's clock, so an offset-less input silently
+means a different instant on a dev laptop than on Render: `2026-08-24T07:00:00` renders 7:00 AM in
+UTC, 2:00 PM from an LA host, and **Sunday 10:00 PM** from Tokyo. Nothing in the repo produced that
+shape — `naiveLocalISO` appends `.000Z` for exactly this reason, and PostgREST returns `+00:00` —
+so the convention held while being invisible at every call site. The names pointed the other way:
+the parameter was literally `naiveIso` and the header said "a naive-local string", which is
+precisely the input that shifts; a hand-built test harness reproduced the shift by believing them.
+
+Why it outranks a formatting nit: **these labels are the planner's date-safety mechanism.**
+`buildGapView` hands them to the model as the only date vocabulary it may use, and
+`cleanPlannerText` refuses any note containing a date outside that list. The rail therefore proves
+the model **copied** the string — never that the string was **right**. A shifted label is laundered
+into a confident, rail-approved sentence to a technician or a manager, and a one-day rollover is
+invisible to every existing check. This is the same shape as the humans-never-check-dates rule:
+date safety has to be machine-side on **both** ends.
+
+The rule is now explicit rather than conventional: `parseAsUtc` (`src/schedule/availability.ts`)
+reads an offset-less date-time as UTC and passes everything else — offset-stamped, date-only,
+unparseable — to `Date.parse` untouched. Both formatters and all three zone helpers
+(`localDateISO`, `localDayOfWeek`, `localTimeHHMM`) route through it, and the tests flip
+`process.env.TZ` across UTC / LA / Tokyo so the invariant fails on a UTC CI box too, not just on a
+non-UTC laptop. **Explicitly not affected, and left alone:** the naive-vs-naive comparisons in
+`watchers.ts` and `nudgeKinds.ts` parse both sides the same way so any offset cancels, and
+`MAX_UTC_OFFSET_MS` already absorbs ±14h of slop.
 
 ## 6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)
 

@@ -4,6 +4,8 @@ import {
   isTechnicianAvailableOn,
   localDateISO,
   localDayOfWeek,
+  localTimeHHMM,
+  parseAsUtc,
   summarizeWeeklyPattern,
 } from './availability.js';
 
@@ -159,5 +161,62 @@ describe('summarizeWeeklyPattern', () => {
       sun: [],
     } as unknown as WeeklyPattern;
     expect(summarizeWeeklyPattern(junk)).toBe('Not working any day');
+  });
+});
+
+// The offset rule (handoff 2026-08-25). These helpers feed every human-facing
+// date label in the ladder, and the labels are the only date vocabulary the
+// planner may quote — so a label that moves with the machine it runs on is a
+// wrong sentence to a technician that no downstream rail can catch. Render
+// runs UTC and every repo-produced stamp carries an offset, so this is a guard
+// on the shape of future inputs, not a fix for a live shift.
+describe('parseAsUtc — an offset-less stamp is UTC, never the host clock', () => {
+  const underTZ = <T>(tz: string, fn: () => T): T => {
+    const prior = process.env.TZ;
+    process.env.TZ = tz;
+    try {
+      return fn();
+    } finally {
+      if (prior === undefined) delete process.env.TZ;
+      else process.env.TZ = prior;
+    }
+  };
+
+  test('a bare date-time parses identically on any host', () => {
+    const expected = Date.parse('2026-08-24T07:00:00Z');
+    for (const tz of ['UTC', LA, 'Asia/Tokyo']) {
+      // Date.parse is the trap this exists to close: on Tokyo it reads the same
+      // characters as the previous DAY.
+      expect(underTZ(tz, () => parseAsUtc('2026-08-24T07:00:00'))).toBe(expected);
+    }
+    expect(underTZ('Asia/Tokyo', () => Date.parse('2026-08-24T07:00:00'))).not.toBe(expected);
+  });
+
+  test('anything already carrying an offset is passed through untouched', () => {
+    const noon = Date.parse('2026-08-24T12:00:00Z');
+    expect(parseAsUtc('2026-08-24T12:00:00Z')).toBe(noon);
+    expect(parseAsUtc('2026-08-24T12:00:00.000Z')).toBe(noon); // naiveLocalISO's form
+    expect(parseAsUtc('2026-08-24T12:00:00+00:00')).toBe(noon); // PostgREST's timestamptz
+    expect(parseAsUtc('2026-08-24T05:00:00-07:00')).toBe(noon);
+    expect(parseAsUtc('2026-08-24')).toBe(Date.parse('2026-08-24')); // date-only: UTC per spec
+    expect(Number.isNaN(parseAsUtc('not a date'))).toBe(true);
+  });
+
+  test('the seconds and space-separated shapes normalise too', () => {
+    const t = Date.parse('2026-08-24T07:00:00Z');
+    expect(parseAsUtc('2026-08-24T07:00')).toBe(t);
+    expect(parseAsUtc('2026-08-24T07:00:00.000')).toBe(t);
+    expect(parseAsUtc('2026-08-24 07:00:00')).toBe(t); // Postgres' own rendering
+  });
+
+  test('the zone formatters no longer move with the host', () => {
+    for (const tz of ['UTC', LA, 'Asia/Tokyo']) {
+      // 07:00 UTC = midnight Monday in LA. Read on a Tokyo host the bare
+      // string would be 22:00 UTC the day BEFORE — 3 PM Sunday in LA, so the
+      // weekday, the date and the time all move together and plausibly.
+      expect(underTZ(tz, () => localDateISO('2026-08-24T07:00:00', LA))).toBe('2026-08-24');
+      expect(underTZ(tz, () => localDayOfWeek('2026-08-24T07:00:00', LA))).toBe('mon');
+      expect(underTZ(tz, () => localTimeHHMM('2026-08-24T07:00:00', LA))).toBe('00:00');
+    }
   });
 });

@@ -32,7 +32,7 @@ import {
   NUDGE_ESCALATE_HOURS,
   NUDGE_ESCALATE_MAX_HOURS,
 } from '../jobs/watchers.js';
-import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
+import { localDateISO, localTimeHHMM, parseAsUtc } from '../schedule/availability.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
 import { TEAM_LEAD_REF } from './identity.js';
 
@@ -293,12 +293,15 @@ function hoursBetween(fromIso: string, toMs: number): number {
 // when there is none read as the same voice.
 //
 // `tz` is the firm's zone for a REAL-UTC instant (asked_at), and 'UTC' for a
-// naive-local string that is already in the firm's clock (endsAtLocal, written
-// that way by the watcher). Getting that backwards shifts every printed time,
-// so the two call sites below name which they are passing.
-function clockLabel(iso: string | null | undefined, tz: string): string | null {
+// firm wall-clock string already in the firm's clock (endsAtLocal, written that
+// way by the watcher and stamped `Z` by naiveLocalISO — it is offset-carrying,
+// not offset-less). Getting that backwards shifts every printed time, so the
+// two call sites below name which they are passing; parseAsUtc guards the other
+// half, that the string itself carries an offset at all (see its header in
+// schedule/availability.ts — a bare stamp is read on the HOST's clock).
+export function clockLabel(iso: string | null | undefined, tz: string): string | null {
   if (!iso) return null;
-  const d = new Date(iso);
+  const d = new Date(parseAsUtc(iso));
   if (Number.isNaN(d.getTime())) return null;
   try {
     const day = new Intl.DateTimeFormat('en-US', {

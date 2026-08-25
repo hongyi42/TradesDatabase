@@ -11,6 +11,7 @@ import {
   NUDGE_ESCALATE_HOURS,
   PLANNER_JUDGMENT_ACTIONS,
   runWatchers,
+  wallClockLabel,
   type WatcherDeps,
 } from './watchers.js';
 import { PLANNER_ACTIONS } from '../teamLead/planner.js';
@@ -2512,5 +2513,36 @@ describe('ask-groups expire together', () => {
     expect(summary.tenantErrors).toBe(0);
     expect(resolved).toEqual(['n-old']);
     expect(summary.nudgesExpired).toBe(1);
+  });
+});
+
+// The offset rule (handoff 2026-08-25). This label is the manager's and the
+// technician's only statement of WHEN — the escalation template prints it and
+// the planner may quote nothing else — so it must be a property of the stamp,
+// never of the machine that formatted it.
+describe('wallClockLabel — the same stamp reads the same on every host', () => {
+  const underTZ = <T>(tz: string, fn: () => T): T => {
+    const prior = process.env.TZ;
+    process.env.TZ = tz;
+    try {
+      return fn();
+    } finally {
+      if (prior === undefined) delete process.env.TZ;
+      else process.env.TZ = prior;
+    }
+  };
+
+  test('offset-carrying and bare stamps agree, in UTC and far from it', () => {
+    for (const tz of ['UTC', 'America/Los_Angeles', 'Asia/Tokyo']) {
+      // The shape naiveLocalISO actually writes.
+      expect(underTZ(tz, () => wallClockLabel('2026-08-15T16:00:00.000Z'))).toBe(
+        'Saturday, Aug 15 at 4:00 PM',
+      );
+      // The shape a hand-built caller would produce. Before the guard this
+      // read 9:00 AM in LA and rolled to Sunday 1:00 AM in Tokyo.
+      expect(underTZ(tz, () => wallClockLabel('2026-08-15T16:00:00'))).toBe(
+        'Saturday, Aug 15 at 4:00 PM',
+      );
+    }
   });
 });

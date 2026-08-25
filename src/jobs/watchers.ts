@@ -28,7 +28,7 @@ import {
   type NudgeKindSpec,
   type SweepFacts,
 } from './nudgeKinds.js';
-import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
+import { localDateISO, localTimeHHMM, parseAsUtc } from '../schedule/availability.js';
 import { naiveLocalISO } from '../schedule/booking.js';
 
 // The Stage-0 watcher (plan 2026-08-15 feature A): a DETERMINISTIC detector for
@@ -198,13 +198,18 @@ export const PLANNER_JUDGMENT_ACTIONS: ReadonlySet<string> = new Set([
 // floor no real timezone's UTC reading can undershoot.
 const MAX_UTC_OFFSET_MS = 14 * 3_600_000;
 
-// Human label for a naive-local timestamp: "Saturday, Aug 15 at 4:00 PM".
-// The input already IS the firm's wall clock (stored as if UTC), so we format
-// it in UTC — no timezone math — and the weekday comes from Intl over the
-// same string, so the weekday-date pair can never disagree (the weekday-guard
-// doctrine: fused derivation, not model arithmetic).
-export function wallClockLabel(naiveIso: string): string {
-  const d = new Date(Date.parse(naiveIso));
+// Human label for a firm wall-clock timestamp: "Saturday, Aug 15 at 4:00 PM".
+// The input already IS the firm's wall clock, carried in the storage form
+// booking.ts's naiveLocalISO writes — the wall clock stamped with a `Z`, NOT a
+// bare offset-less string. So we format it in UTC (no timezone math) and the
+// weekday comes from Intl over the same instant, so the weekday-date pair can
+// never disagree (the weekday-guard doctrine: fused derivation, not model
+// arithmetic). parseAsUtc guards the input's SHAPE: hand a caller's bare
+// `2026-08-15T16:00:00` to Date.parse and the host's zone decides what it
+// means, which on a non-UTC machine silently shifts every label — and on a
+// far-east one rolls the DAY. See its header in schedule/availability.ts.
+export function wallClockLabel(wallClockIso: string): string {
+  const d = new Date(parseAsUtc(wallClockIso));
   const day = new Intl.DateTimeFormat('en-US', {
     timeZone: 'UTC',
     weekday: 'long',

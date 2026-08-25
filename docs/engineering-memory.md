@@ -3203,11 +3203,18 @@ a failure:
   is the tell. With no nudges the planner hits its empty-queue gate every tick and never calls the
   model — which is why 2026-08-24 cost $0.08 across 2 ticks where 2026-08-23 cost $0.58 across the
   full 24.
-- **Nothing is fresh any more.** 47 open `overdue_visit_gap` review items have never been drained,
-  and the watcher only opens an item for a gap it has not already flagged. UNEXPLAINED and worth a
-  look: the newest flagged visit ends 08-23 15:30, yet confirmed visits with technicians assigned
-  ended 08-24 09:00/12:00/14:00/15:45 and `OVERDUE_HOURS` is only 3 — those should have been
-  flagged and were not.
+- **Nothing is fresh any more, and nothing new is arriving.** `fresh = gaps.filter(g =>
+  !everSurfaced.has(g.id))` (watchers.ts:526) excludes any gap already flagged OR nudged, and all
+  47 open `overdue_visit_gap` review items have never been drained. Meanwhile `gapsFound` decays
+  tick by tick — 28 → 26 → 24 → 21 → 18 → 15 → **13** across 2026-08-24 — because the 72h lookback
+  slides forward and old gaps age out with nothing entering behind them. The pilot tenant's demo
+  schedule simply ran out after 08-23.
+  *(Corrected 2026-08-25, same day it was written: this was first recorded as an UNEXPLAINED
+  possible detector bug — "confirmed visits with technicians ended 08-24 09:00/12:00/14:00/15:45
+  and were never flagged". They are not the pilot's. The sweep covers only tenants with Telegram
+  bindings — **one**, `Default Tenant` `82bbc6f8-…`, which had ZERO confirmed visits ending 08-24.
+  All four belong to `spine-eval-main`. **Scope every pilot query by tenant_id before calling
+  something a bug** — an unscoped count silently mixes the eval tenants in.)*
 
 Rule: **`list_logs` on `crn-d93iq7a8qa3s73ap6260` before diagnosing anything from table
 timestamps.** The tick summary names every lane's skip reason in one read; table timestamps cannot

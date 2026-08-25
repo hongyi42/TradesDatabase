@@ -161,10 +161,10 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 **7. Where the deep detail lives**
 
-- L3754 · Evals:
-- L3761 · Runbooks:
-- L3766 · Decision history with citations:
-- L3770 · This file
+- L3798 · Evals:
+- L3805 · Runbooks:
+- L3810 · Decision history with citations:
+- L3814 · This file
 
 <!-- INDEX:END -->
 
@@ -3742,9 +3742,53 @@ seat agent back `openQuestions`, so it can follow up while the technician is sti
    it means having `attributeAnswerToGap` return what it read, which its `Promise<void>` pin rules
    out.
 
-**Ship checklist for the fleet refresh (not yet done):** `md5 Box_Setup_Stuff/bootstrap-box.sh`
-must read `203d9ae2c05b103cb378092fc27ce4ed` — two earlier values in the plan are superseded
-drafts. Roll **s2 first** (the canary seat), then the fleet, then audit a NON-s2 seat.
+**FLEET REFRESH DONE 2026-08-25** — all six seats (s2, s3, s5, s6, s7, s8) carry §0k with clauses
+1a/1b, verified byte-identical to the canonical block (normalised section md5 `9ee678c4e62c`,
+40 lines, all six MATCH). s2 rolled first as canary; the audit ran across all six rather than only
+s2, per the rule that s2 being freshest is how drift hid last time. The `diff` against each seat's
+in-container `AGENTS.md.prev-20260825` backup shows ONLY the §0k block changed and the section
+count unchanged. No restarts, no config writes: `doorman.service` and all six
+`nemoclaw-agent-sN.service` stayed running with unchanged container uptimes, `nudge-runner.timer`
+and `badge-pull.timer` still waiting. Applied as the §0k step alone, NOT `wire` — wire also
+re-applies the egress policy, nine other blocks, the guard plugin and heartbeat/tool-trim config
+writes, which is disproportionate for a doctrine-text change (tool count unchanged at 14) and
+config writes have downed the gateway before.
+
+**THE COPY-DRIFT TRAP HAD RE-OPENED, in the worst possible copy (found + fixed 2026-08-25).**
+`/usr/local/sbin/bootstrap-box.sh` — the copy `recycle-sandbox.sh` actually runs
+(`BOOTSTRAP="${RECYCLER_BOOTSTRAP:-/usr/local/sbin/bootstrap-box.sh}"`, line 40) — was still at
+**2026-08-15** (`973afe2f…`, commit `c834fbd`), which predates §0k entirely. **Any sandbox
+recycled between 2026-08-23 and today would have come back with NO office-questions doctrine at
+all** — the seat would see office questions in its channel history with no standing rule to record
+the answers, which is the exact failure §0k was written to prevent. Nothing detects this: the
+recycler reports a wired blank as healthy, and `doctrine.ts` reads the repo script, never a seat.
+SIX copies now live on the box (memory previously said five). Current state after this pass:
+
+| path | before | after | note |
+|---|---|---|---|
+| `/usr/local/sbin/bootstrap-box.sh` | 2026-08-15 | **repo** | what the recycler runs — was the live defect |
+| `~/Box_Setup_Stuff/bootstrap-box.sh` | 2026-08-23 (`d4b0061`) | **repo** | the tree `wire` needs; why seats had the 08-23 block |
+| `~/bootstrap-box.sh` | 2026-08-15 | **repo** | the path a human types |
+| `~/bss-repo/`, `~/stage-deepinfra-retire/` | 2026-08-15 | untouched | unreferenced by any unit |
+| `~/deploy-recycler/` | older than 40 commits | untouched | unreferenced by any unit |
+
+Each updated path kept a `.prev-20260825` backup. **Add to the standing discipline: after changing
+any AGENTS.md block, md5 `/usr/local/sbin/bootstrap-box.sh` too — updating the seats without
+updating the recycler's copy means the next recycle silently reverts the fleet.**
+
+**Two artifacts of this pass worth knowing.** (1) The seats' old §0k was the 2026-08-23 text, which
+lacked the one-call-collapse paragraph ("the office's planner now writes those questions itself…")
+— so that paragraph reached the fleet for the first time today, a month-old change nobody had
+noticed was undelivered. (2) The delete-then-append idiom leaks ONE BLANK LINE per refresh: the
+appended heredoc begins with a blank line, and the `awk` deletes from `^## Questions…` onward,
+never the blank line before it. Cosmetic in markdown and pre-existing, but it accumulates — do not
+mistake it for corruption after N refreshes.
+
+**Still owed (human judgment, cannot be automated):** watch one real technician answer produce a
+follow-up in their own chat, and judge whether it reads as the assistant's own curiosity rather
+than the office chasing. If the agent does not follow up at all, record the observation rather
+than tightening the wording — that is the discipline question the observation pass exists to
+answer.
 Changing §0k also changes `doctrineFingerprint`, so tier-2 eval runs from 2026-08-25 are no longer
 directly comparable to earlier ones — nothing pins the hash, so nothing breaks silently, but a
 comparison across that date is measuring two different prompts.

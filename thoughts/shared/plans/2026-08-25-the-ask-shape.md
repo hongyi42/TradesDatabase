@@ -578,8 +578,18 @@ returns `recorded`. The existing `attributeAnswerToGap` `toBeUndefined` pin stil
   entry costs one doctrine comparison; a filtered-out entry costs the ask.
 
 ### Manual verification
-- [ ] Refresh §0k on **s2 first** (the canary seat), then the fleet; watch one real answer produce
-      a follow-up in the technician's own chat. User-gated — six live seats.
+- [x] **DONE 2026-08-25.** §0k refreshed on s2 first, then s3/s5/s6/s7/s8. All six audited against
+      the canonical block (normalised section md5 `9ee678c4e62c`, 40 lines — six of six MATCH), and
+      each seat's `diff` vs its in-container `AGENTS.md.prev-20260825` backup shows ONLY §0k changed
+      with the section count unchanged. Applied as the §0k step alone, not `wire`. Fleet healthy
+      after: `doorman.service` + all six `nemoclaw-agent-sN.service` running, container uptimes
+      unchanged, `nudge-runner.timer` waiting. **Found and fixed a live defect en route:**
+      `/usr/local/sbin/bootstrap-box.sh`, the copy the recycler runs, was at 2026-08-15 — predating
+      §0k — so any sandbox recycled since 2026-08-23 would have come back with no office-questions
+      doctrine at all. Three live copies updated to `203d9ae2c05b103cb378092fc27ce4ed`, each with a
+      `.prev-20260825` backup.
+- [ ] Watch one real answer produce a follow-up in the technician's own chat. STILL OWED — needs a
+      real technician answering a real question; cannot be manufactured.
 - [ ] Judge whether the follow-up reads as the assistant's own curiosity rather than the office
       chasing, and whether it correctly skips what the person already covered. If the agent does
       not follow up at all, record the observation rather than tightening the wording immediately —

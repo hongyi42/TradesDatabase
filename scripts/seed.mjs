@@ -189,6 +189,12 @@ async function truncateSpine(hasScheduling) {
         where table_schema = 'public' and table_name = 'reflector_runs'`,
     );
     if (rr.rows.length > 0) tables += ', reflector_runs';
+    // lifecycle_runs is DELIBERATELY EXCLUDED (eng-memory §1 asks that every new
+    // table be registered by name — this is its registration). It is the cron's
+    // own execution log, tenant-agnostic and holding no customer-derived text, so
+    // a reseed of the demo world must not erase the record of whether the
+    // heartbeat has been running. Nothing in it references a tenant, so nothing
+    // here can dangle.
     await client.query(`truncate table ${tables} cascade`);
   } finally {
     await client.end();

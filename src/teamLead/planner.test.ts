@@ -4,6 +4,7 @@ import { getClient } from '../db/client.js';
 import { createPendingNudge, listNudgesByStatus } from '../db/nudges.js';
 import { recordNudgeDecisions } from '../db/nudgeDecisions.js';
 import type { Nudge, NudgeDecision, Tenant, JobEvidenceRow, RawCapture } from '../db/index.js';
+import type { PlannerSummary, PlannerTenantPlan } from './planner.js';
 import {
   buildGapView,
   cleanQuestionDraft,
@@ -2856,5 +2857,96 @@ describe('clockLabel — the date vocabulary cannot move with the host machine',
     expect(clockLabel(null, 'UTC')).toBeNull();
     expect(clockLabel('not a date', 'UTC')).toBeNull();
     expect(clockLabel('2026-08-24T07:00:00.000Z', 'Not/A_Zone')).toBeNull();
+  });
+});
+
+// The record has to name WHICH firm was passed over, not just how many. The flat
+// counters are all-tenant totals — with four firms in a sweep, "skippedNoGaps: 2"
+// left the two silent ones anonymous, so "has this firm gone quiet because it has
+// no work, or because its ticks keep failing?" could not be answered from the
+// tick record at all.
+describe('every firm considered is named in the record', () => {
+  // Indexed by OUTCOME, never by position: once skipped firms get entries,
+  // plans[0] is no longer guaranteed to be a firm the model actually ran for.
+  const planFor = (summary: PlannerSummary, id: string): PlannerTenantPlan | undefined =>
+    summary.plans.find((p) => p.tenantId === id);
+
+  const threeTenants = (over: Partial<PlannerDeps> = {}) =>
+    baseDeps({
+      listTenants: async () => ['works', 'idle', 'asleep'],
+      getTenant: async (id: string) =>
+        ({
+          id,
+          // 'asleep' sits in a zone where NOW (12:00 UTC) is outside 7am-7pm.
+          timezone: id === 'asleep' ? 'Asia/Tokyo' : 'UTC',
+        }) as unknown as Tenant,
+      listNudges: async (tenantId: string) => (tenantId === 'idle' ? [] : [nudge()]),
+      ...over,
+    });
+
+  test('planned, no_gaps and out_of_window each get their own named entry', async () => {
+    // 21:00 Tokyo for 'asleep', 12:00 UTC for the other two.
+    const summary = await runPlanner('2026-08-16T12:00:00.000Z', 'shadow', threeTenants({
+      runLoop: loopReturning([]),
+    }));
+
+    expect(summary.plans).toHaveLength(3);
+    expect(summary.tenants).toBe(3);
+    expect(planFor(summary, 'works')?.outcome).toBe('planned');
+    expect(planFor(summary, 'idle')?.outcome).toBe('no_gaps');
+    expect(planFor(summary, 'asleep')?.outcome).toBe('out_of_window');
+
+    // The existing counters keep their exact meaning — this change is additive.
+    expect(summary.planned).toBe(1);
+    expect(summary.skippedNoGaps).toBe(1);
+    expect(summary.skippedWindow).toBe(1);
+    expect(summary.tenantErrors).toBe(0);
+  });
+
+  test('an idle firm reports zero gaps; a sleeping one reports the work it is sitting on', async () => {
+    const summary = await runPlanner('2026-08-16T12:00:00.000Z', 'shadow', threeTenants({
+      runLoop: loopReturning([]),
+    }));
+    // The distinction the outcome exists to draw: nothing to do vs wrong hours.
+    expect(planFor(summary, 'idle')?.gaps).toBe(0);
+    expect(planFor(summary, 'asleep')?.gaps).toBe(1);
+  });
+
+  test('a firm whose tick throws is NAMED as an error and still counted', async () => {
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listTenants: async () => ['t1'],
+      runLoop: (async () => {
+        throw new Error('provider down');
+      }) as unknown as NonNullable<PlannerDeps['runLoop']>,
+    }));
+    expect(summary.tenantErrors).toBe(1);
+    expect(planFor(summary, 't1')?.outcome).toBe('error');
+    expect(summary.plans).toHaveLength(1);
+  });
+
+  test('a non-planned entry carries empty work, never undefined', async () => {
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [],
+    }));
+    const plan = planFor(summary, 't1');
+    expect(plan).toMatchObject({
+      outcome: 'no_gaps',
+      decisions: [],
+      dropped: [],
+      applied: 0,
+      refusedAtApply: 0,
+      recorded: 0,
+      turns: 0,
+      toolCalls: 0,
+      ms: 0,
+    });
+  });
+
+  // The invariant the report leans on: one entry per firm the sweep looked at.
+  test('the entry count always equals the firm count', async () => {
+    const summary = await runPlanner('2026-08-16T12:00:00.000Z', 'shadow', threeTenants({
+      runLoop: loopReturning([]),
+    }));
+    expect(summary.plans).toHaveLength(summary.tenants);
   });
 });

@@ -85,6 +85,14 @@ export async function appendCostEvents(rows: CostEventInput[]): Promise<void> {
 export interface CostContext {
   tenantId: string;
   technicianRef?: string | null;
+  // WHICH part of the system caused this spend. The planner and the reflector
+  // both bill as TEAM_LEAD_REF — one is the ladder's model call, the other the
+  // nightly distiller — so `technician_ref = 'spine:team-lead'` returns the two
+  // added together and no filter could separate them. Written into
+  // cost_events.metadata (a column that already existed and was never used on
+  // model rows), so no migration and no change to what any existing column
+  // means. Optional: an unlabelled caller records exactly what it does today.
+  lane?: string | null;
 }
 
 // Injectable appender so the recorders are unit-testable with NO API key. The
@@ -195,6 +203,13 @@ export async function recordModelUsage(
       provider: skus.provider,
       unit: 'token',
       method: 'measured' as const,
+      // On EVERY row this call emits — input, cached-input, cache-write and
+      // output are four rows for one model call, and a lane that labelled only
+      // some of them would make a per-lane total quietly wrong rather than
+      // obviously missing. Safe to spread unconditionally: appendCostEvents
+      // always emits the metadata key (see its ?columns= note), so this cannot
+      // create the mixed-batch NULL hazard documented there.
+      metadata: ctx.lane ? { lane: ctx.lane } : null,
     };
     const rows: CostEventInput[] = [];
     // prompt_tokens INCLUDES cached tokens on OpenAI-compatible endpoints, so

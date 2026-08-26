@@ -96,6 +96,10 @@ console.log(`  span:   ${spec.span.from} → ${spec.span.to}`);
 // ── reset ──────────────────────────────────────────────────────────────────────
 // Only tables that actually exist are touched, so this same script works in a
 // worktree whose local stack is a migration or two behind.
+// lifecycle_runs is DELIBERATELY EXCLUDED from both lists below (eng-memory §1
+// registration): it is the cron's own tenant-agnostic execution log, holds no
+// customer-derived text and has no tenant FK to dangle, so rebuilding a world
+// must not erase the record of whether the heartbeat has been ticking.
 const RESET_TABLES = [
   'customers',
   'jobs',

@@ -211,7 +211,7 @@ export async function runReflector(
             label: 'reflector',
             reasoningEffort: 'none',
           },
-          { tenantId, technicianRef: TEAM_LEAD_REF },
+          { tenantId, technicianRef: TEAM_LEAD_REF, lane: 'reflector' },
         );
         callOk = true;
         const list = Array.isArray(args.lessons) ? args.lessons : [];

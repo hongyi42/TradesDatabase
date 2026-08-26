@@ -6,6 +6,8 @@ import {
   listTechniciansInStates,
   rollupCosts,
 } from '../db/index.js';
+import { insertLifecycleRun, pruneLifecycleRuns } from '../db/lifecycleRuns.js';
+import type { Json } from '../db/database.types.js';
 import { checkPairing } from '../composio/pairing.js';
 import { expireOffboarding, type ExpireResult } from '../composio/offboarding.js';
 import { ensurePersonSession } from '../composio/sessions.js';
@@ -75,6 +77,7 @@ export interface LifecycleDeps {
   runPlanner?: typeof runPlanner;
   summarize?: typeof runGapSummaries;
   reflect?: typeof runReflector;
+  prune?: typeof pruneLifecycleRuns;
   // Seam so the skip branch is testable without setting a real key.
   hasModelKey?: () => boolean;
 }
@@ -93,6 +96,13 @@ export interface LifecycleSummary {
   braveBackfill: { scanned: number; since: string } | { skipped: string } | { stepError: string };
   costRollup:
     | { months: string[]; rowsWritten: number; tenantsTouched: number; unpricedEvents: number }
+    | { skipped: string }
+    | { stepError: string };
+  // The 90-day prune of this cron's OWN run records. Reported like every other
+  // step so a prune that has been quietly failing is visible in the same place
+  // the rows it prunes are read from.
+  lifecycleRuns:
+    | { pruned: number; before: string }
     | { skipped: string }
     | { stepError: string };
   watchers: WatchersSummary | { skipped: string } | { stepError: string };
@@ -115,6 +125,70 @@ const BRAVE_OVERLAP_MS = 60 * 60 * 1000; // 1h
 // run after the migration lands. A fixed look-back window here would silently
 // bill only the last few hours and abandon every earlier search in web_requests.
 const BRAVE_BACKFILL_EPOCH = '2026-07-01T00:00:00.000Z';
+
+// How long a tick's own record is kept. Deliberately longer than Render's log
+// horizon (~30d on the starter plan) so the database outlives the log stream it
+// replaces, and short enough to bound the table: 288 ticks/day x 90 days is
+// ~26k rows. Env-overridable for an operator who wants a longer window; a
+// non-numeric or non-positive value falls back to the default rather than
+// deleting everything (fail-closed on the destructive axis).
+const DEFAULT_RUN_RETENTION_DAYS = 90;
+const runRetentionDays = (): number => {
+  const raw = Number(process.env.LIFECYCLE_RUN_RETENTION_DAYS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_RUN_RETENTION_DAYS;
+};
+
+// How much of a step's error text the run record keeps. The stdout line carries
+// it in full; this is a durable row, and an unbounded provider stack trace has
+// no business growing a JSONB column without limit.
+//
+// NOTE what this cap is and is not. It bounds SIZE; it does not redact. A step
+// error is a vendor or Postgres message, and those can incidentally echo values
+// — a 23505 quotes the conflicting key, a Composio 4xx can quote a payload — so
+// a run record MAY contain an identifier that arrived inside an error string.
+// Kept anyway, deliberately: an error you cannot read is a step you cannot fix,
+// and the same text already goes to stdout. What the row is guaranteed free of
+// is the planner's own free text (the question, the citation, the reasoning),
+// which is the bulk, is customer-authored, and is stripped structurally below.
+// The migration header states the guarantee in exactly these terms.
+const RECORD_STEP_ERROR_CHARS = 500;
+
+// Ceiling on the record write. Deliberately far below Render's 5-minute cadence
+// so a hung database can never delay the next tick.
+const RECORD_TIMEOUT_MS = 10_000;
+
+// What the run record is ALLOWED to hold. The tick summary's richest field —
+// teamLeadPlanner.plans[].decisions / .dropped — carries the question written to
+// a technician, the quoted words of their reply, and the model's reasoning. A
+// lifecycle_runs row has NO tenant_id (one tick sweeps every firm), so that text
+// would sit outside the tenant boundary and survive the firm being deleted. It
+// is already stored correctly, scoped to its firm, in nudge_decisions.
+//
+// So: arrays become their COUNTS, every other field passes through, and step
+// errors are capped. Anything added to LifecycleSummary later that carries free
+// text must be handled here too.
+export function redactForRecord(summary: LifecycleSummary): Json {
+  const copy = JSON.parse(JSON.stringify(summary)) as Record<string, unknown>;
+  for (const value of Object.values(copy)) {
+    if (!value || typeof value !== 'object') continue;
+    const step = value as { stepError?: unknown };
+    if (typeof step.stepError === 'string') {
+      step.stepError = step.stepError.slice(0, RECORD_STEP_ERROR_CHARS);
+    }
+  }
+  const planner = copy.teamLeadPlanner as { plans?: unknown } | null | undefined;
+  if (planner && Array.isArray(planner.plans)) {
+    planner.plans = (planner.plans as Record<string, unknown>[]).map((plan) => ({
+      ...plan,
+      // Guarded rather than a bare `.length`: if a future shape stops making
+      // these arrays, the field passes through unchanged instead of becoming
+      // undefined and vanishing from the JSON.
+      decisions: Array.isArray(plan.decisions) ? plan.decisions.length : plan.decisions,
+      dropped: Array.isArray(plan.dropped) ? plan.dropped.length : plan.dropped,
+    }));
+  }
+  return copy as Json;
+}
 
 const monthStart = (iso: string): string => `${iso.slice(0, 7)}-01`;
 const previousMonthStart = (iso: string): string => {
@@ -156,6 +230,7 @@ export async function runLifecycle(
   let logIngest: LifecycleSummary['logIngest'] = OFF_CADENCE;
   let braveBackfill: LifecycleSummary['braveBackfill'] = OFF_CADENCE;
   let costRollup: LifecycleSummary['costRollup'] = OFF_CADENCE;
+  let lifecycleRuns: LifecycleSummary['lifecycleRuns'] = OFF_CADENCE;
 
   if (heavyTick) {
   // 1. Pairing sweep — only rows a link was ever issued for (checkPairing
@@ -300,6 +375,28 @@ export async function runLifecycle(
   } catch (err) {
     costRollup = isMissingCostLedger(err)
       ? { skipped: 'cost ledger not migrated here yet' }
+      : { stepError: msg(err) };
+    if (!isMissingCostLedger(err)) ok = false;
+  }
+  // The run-record prune. Deliberately NOT renumbered into the step sequence:
+  // lifecycle.ts's header records that the JSON FIELD NAMES are the stable
+  // reference and that renumbering silently invalidates every runbook citing a
+  // step number (that is why the retired step 6 left a hole). It lives in the
+  // heavy block because it is a slow-moving sweep that gains nothing from
+  // running every five minutes — the same reasoning as steps 1-7.
+  //
+  // Missing table -> skipped, never red: this code can deploy before its
+  // migration is applied by hand (deploys do not migrate), and a heartbeat that
+  // goes red every 15 minutes for a self-resolving condition trains people to
+  // ignore it. The braveBackfill idiom, verbatim.
+  try {
+    const before = new Date(
+      Date.parse(nowIso) - runRetentionDays() * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    lifecycleRuns = { pruned: await (deps.prune ?? pruneLifecycleRuns)(before), before };
+  } catch (err) {
+    lifecycleRuns = isMissingCostLedger(err)
+      ? { skipped: 'lifecycle_runs not migrated here yet' }
       : { stepError: msg(err) };
     if (!isMissingCostLedger(err)) ok = false;
   }
@@ -490,6 +587,7 @@ export async function runLifecycle(
     logIngest,
     braveBackfill,
     costRollup,
+    lifecycleRuns,
     watchers,
     teamLeadPlanner,
     ...(ladderMute ? { ladderMute } : {}),
@@ -500,13 +598,54 @@ export async function runLifecycle(
 }
 
 async function main(): Promise<void> {
-  const summary = await runLifecycle(new Date().toISOString());
+  // Captured BEFORE the sweep and handed to both runLifecycle and the record, so
+  // the row's started_at is the exact instant the cadence gates read — not a
+  // second clock that could disagree with the decisions the tick made.
+  const startedAt = new Date().toISOString();
+  const summary = await runLifecycle(startedAt);
   // Drain stdout BEFORE exiting: on a pipe (Render cron logs) process.exit
   // tears the process down without flushing async writes, losing the one
   // diagnostic line exactly on the failed runs that need it (review finding).
   await new Promise<void>((resolve) => {
     process.stdout.write(JSON.stringify(summary) + '\n', () => resolve());
   });
+  // The durable record — written AFTER stdout and outside runLifecycle, in that
+  // order for two reasons. After stdout: a database that is down must not cost
+  // us the one diagnostic line, which is exactly what a failing tick needs.
+  // Outside runLifecycle: the summary has to be complete before it can be
+  // recorded, and keeping the write here leaves runLifecycle a pure function of
+  // its injected deps.
+  //
+  // NEVER changes the exit code. A failed record is a lost observation; a tick
+  // turned red by its own bookkeeping is a false alarm about the work itself,
+  // and the work already succeeded or failed on its own terms above.
+  try {
+    // TIMED OUT, not merely awaited. Render runs at most one lifecycle cron at a
+    // time and SKIPS an overlapping firing, so a Supabase that hangs rather than
+    // fails would hold this process open (undici's default is 300s = five whole
+    // ticks) and suppress the next runs — the bookkeeping write manufacturing
+    // the exact gap the record exists to expose. Losing one observation beats
+    // losing five ticks of work.
+    await Promise.race([
+      insertLifecycleRun({
+        startedAt,
+      // The app's clock at both ends — the same clock cost_events.occurred_at
+      // carries — so [started_at, finished_at] and the spend inside it are
+      // measured against one timeline. See the accessor for why.
+      finishedAt: new Date().toISOString(),
+        ok: summary.ok,
+        summary: redactForRecord(summary),
+      }),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`run record timed out after ${RECORD_TIMEOUT_MS}ms`)),
+          RECORD_TIMEOUT_MS,
+        ).unref(),
+      ),
+    ]);
+  } catch (err) {
+    console.error('[lifecycle] could not record this run', err);
+  }
   process.exit(summary.ok ? 0 : 1);
 }
 

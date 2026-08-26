@@ -119,6 +119,9 @@ if (!hasFlag('yes')) {
 // COPIED from scripts/spine-eval/world.mjs's RESET_TABLES (world.mjs exports
 // nothing and executes main() on import, so the list cannot be imported), plus
 // money_events, which that list clears only via the jobs cascade.
+// lifecycle_runs is DELIBERATELY EXCLUDED (eng-memory §1 registration): the
+// cron's own tenant-agnostic execution log, with no tenant FK to dangle. An eval
+// run must not erase the evidence of whether the heartbeat has been ticking.
 const RESET_TABLES = [
   'gap_summaries',
   'nudge_decisions',

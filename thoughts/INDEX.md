@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 168 documents · 164 live · 4 superseded.
+Regenerate with `npm run decisions:index`. 170 documents · 166 live · 4 superseded.
 
 ## Superseded — do not build on these
 
@@ -43,6 +43,8 @@ Regenerate with `npm run decisions:index`. 168 documents · 164 live · 4 supers
 
 ## Live
 
+- `2026-08-26` `plan` [2026-08-26-check-the-bill](shared/plans/2026-08-26-check-the-bill.md) `describes 1 deleted file` · _draft_ — Check our derived model spend against Anthropic's own usage and billing records
+- `2026-08-26` `plan` [2026-08-26-the-tick-leaves-a-trace](shared/plans/2026-08-26-the-tick-leaves-a-trace.md) — Give every lifecycle tick a durable record, name every firm it considered, and label which lane spent the mon…
 - `2026-08-25` `plan` [2026-08-25-the-ask-shape](shared/plans/2026-08-25-the-ask-shape.md) — the ask shape — one message may cover several gaps, the answer keeps its link, and the seat agent can follow…
 - `2026-08-25` `research` [2026-08-25-planner-tick-observability](shared/research/2026-08-25-planner-tick-observability.md) `landed` — The planner/cron observability gap — every surface that records a lifecycle tick, what each one cannot record…
 - `2026-08-24` `plan` [2026-08-24-agentic-planner-eval](shared/plans/2026-08-24-agentic-planner-eval.md) — the agentic planner eval at scale — multi-tick gap-life harness, ~60 scenarios, Opus 5 vs GLM

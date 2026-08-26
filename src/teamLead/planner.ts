@@ -148,9 +148,26 @@ export interface DroppedDecision {
   nudgeIds?: string[];
 }
 
+// What became of ONE firm on ONE tick. Every firm the sweep considered gets an
+// entry, not just the ones the model ran for — the flat skippedNoGaps /
+// skippedWindow / tenantErrors counters say HOW MANY were passed over but never
+// WHICH, so "has this firm gone quiet because it has no work, or because its
+// ticks have been failing?" was unanswerable from the record.
+export type PlannerTenantOutcome =
+  | 'planned' // the model ran for this firm
+  | 'no_gaps' // nothing open worth planning about
+  | 'out_of_window' // gaps open, but outside the firm's asking hours
+  | 'error'; // the tick failed for this firm
+
 export interface PlannerTenantPlan {
   tenantId: string;
+  outcome: PlannerTenantOutcome;
   gaps: number;
+  // REQUIRED even on non-planned outcomes (empty arrays / zeroes), never
+  // optional. Making them optional would push `possibly undefined` onto ~30
+  // existing assertions that read plans[0].dropped[0].why, turning an additive
+  // change into churn across the suite for no gain in expressiveness — the
+  // outcome field already says which entries carry real work.
   decisions: PlannerDecision[];
   dropped: DroppedDecision[];
   applied: number;
@@ -160,6 +177,25 @@ export interface PlannerTenantPlan {
   toolCalls: number;
   ms: number;
 }
+
+// The zero row for a firm the model never ran for.
+const idlePlan = (
+  tenantId: string,
+  outcome: PlannerTenantOutcome,
+  gaps: number,
+): PlannerTenantPlan => ({
+  tenantId,
+  outcome,
+  gaps,
+  decisions: [],
+  dropped: [],
+  applied: 0,
+  refusedAtApply: 0,
+  recorded: 0,
+  turns: 0,
+  toolCalls: 0,
+  ms: 0,
+});
 
 export interface PlannerSummary {
   mode: PlannerMode;
@@ -1563,6 +1599,16 @@ export async function runPlanner(
     // per-tenant — the declaration is inside this loop body, not above it — so a
     // tenant never sees the previous one's views.
     const views = new Map<string, GapView>();
+    // ONE entry per firm per tick, guaranteed — the invariant the tick record
+    // and its report lean on (plans.length === tenants). Without this flag a
+    // throw AFTER the planned push (the shadow logging block sits there) would
+    // add a second entry for the same firm, and a report grouping by tenantId
+    // would double-count it.
+    let named = false;
+    const name = (plan: PlannerTenantPlan) => {
+      named = true;
+      summary.plans.push(plan);
+    };
     try {
       // Registry-gated like every other ladder path: a kind with no spec is not
       // composed, not swept, and not planned for either.
@@ -1571,6 +1617,7 @@ export async function runPlanner(
       );
       if (open.length === 0) {
         summary.skippedNoGaps += 1;
+        name(idlePlan(tenantId, 'no_gaps', 0));
         continue;
       }
       // Outside the ask window nothing can go out, and closure can wait for the
@@ -1579,6 +1626,10 @@ export async function runPlanner(
       const tz = (await get(tenantId))?.timezone ?? 'UTC';
       if (!insideAskWindow(nowIso, tz)) {
         summary.skippedWindow += 1;
+        // `open.length`, not 0: this firm HAS work waiting — it is the hours
+        // that are wrong, and conflating the two is exactly the distinction
+        // this outcome exists to draw.
+        name(idlePlan(tenantId, 'out_of_window', open.length));
         continue;
       }
 
@@ -1717,7 +1768,7 @@ export async function runPlanner(
           if (!execute) throw new Error(`no executor for '${name}'`);
           return execute(tenantId, name, args);
         },
-        { tenantId, technicianRef: TEAM_LEAD_REF },
+        { tenantId, technicianRef: TEAM_LEAD_REF, lane: 'planner' },
       );
 
       const { decisions, dropped } = outcome;
@@ -1931,8 +1982,9 @@ export async function runPlanner(
       summary.refusedAtApply += refusedAtApply;
       summary.recorded += recorded;
 
-      summary.plans.push({
+      name({
         tenantId,
+        outcome: 'planned',
         gaps: open.length,
         decisions,
         dropped,
@@ -1970,6 +2022,11 @@ export async function runPlanner(
       // untouched: the sweep's constants still apply, so a dead planner degrades
       // to exactly the behaviour that shipped before it existed.
       summary.tenantErrors += 1;
+      // Named in the record, not just counted. `views.size` is the gap count the
+      // tick had actually built when it died — 0 when the failure came before the
+      // views were assembled, which is itself the honest number. `views` is
+      // declared outside the try precisely so this path can see it.
+      if (!named) name(idlePlan(tenantId, 'error', views.size));
       // …but it no longer leaves NO TRACE. This catch sits after runLoop, so a
       // ToolLoopLimitError or a provider outage used to write nothing at all —
       // making the failed tick indistinguishable from a tick that never ran, in

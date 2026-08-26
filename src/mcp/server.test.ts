@@ -8455,7 +8455,7 @@ describe('record_field_note — an answer remembers its question', () => {
     expect(desc).toMatch(/RECORD their reply/);
     // And the two tone rules that keep a machine artifact out of a human's face.
     expect(desc).toMatch(/never say it came from the office/);
-    expect(desc).toMatch(/TWO messages/);
+    expect(desc).toMatch(/TWO SHORT PARAGRAPHS/);
     expect(desc).toMatch(/\(re: …\)/);
     // The follow-up reply names no customer on its own. Without this the agent
     // is bounced to needs_identity and asks them WHICH customer, seconds after

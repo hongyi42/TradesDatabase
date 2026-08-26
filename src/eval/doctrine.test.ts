@@ -194,7 +194,17 @@ describe('buildSystemPrompt', () => {
     // The three form rules, all three learned from a live specimen (2026-08-25):
     // the agent folded the ask onto the end of "Recorded. ✅", phrased it as
     // "what the parts ran you on that freezer", and attributed it to the office.
-    expect(body).toMatch(/TWO messages, not one/);
+    expect(body).toMatch(/TWO SHORT PARAGRAPHS, not one block/);
+    // The blank line shapes the ONE message this runtime can send. Two separate
+    // texts are NOT reachable: `message` is a denied tool (~51s/turn) and the
+    // block chunker is size-triggered, so a ~60-char reply is always one block
+    // (verified against the OpenClaw docs, 2026-08-26). The doctrine must not
+    // promise the agent a split the channel will not perform.
+    expect(body).toMatch(/BLANK LINE/);
+    expect(body).not.toMatch(/arrive as two separate texts/);
+    // The tail that slipped through twice in production.
+    expect(body).toMatch(/on that one/);
+    expect(body).toMatch(/SIX WORDS OR FEWER/);
     expect(body).toMatch(/What did the parts cost\?/);
     expect(body).toMatch(/the office was also asking/);
     expect(body).toMatch(/Never say where it came from/);

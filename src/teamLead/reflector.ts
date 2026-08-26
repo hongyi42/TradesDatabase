@@ -1,7 +1,11 @@
-import { getClient } from '../db/client.js';
 import { isMissingCostLedger } from '../db/costs.js';
 import { runForcedTool, type ForcedToolSpec } from '../model/forcedTool.js';
 import { listRecentSummaries, countSummaries, type GapSummary } from '../db/gapSummaries.js';
+import {
+  insertReflectorRun,
+  latestReflectorRunAt,
+  latestSuccessfulReflectorRunAt,
+} from '../db/reflectorRuns.js';
 import { expireStaleProposals, listLessons, proposeLesson } from './lessons.js';
 import { listTenantIdsWithTelegramBindings } from '../db/technicians.js';
 import { getTenant } from '../db/tenants.js';
@@ -126,46 +130,19 @@ function localHourAndDay(nowIso: string, tz: string): { hour: number; day: strin
 
 async function ranToday(tenantId: string, day: string, tz: string): Promise<boolean> {
   // The marker's firm-local day: compare in code (one small read; markers are
-  // one row per tenant per day at most).
-  const { data, error } = await getClient()
-    .from('reflector_runs')
-    .select('ran_at')
-    .eq('tenant_id', tenantId)
-    .order('ran_at', { ascending: false })
-    .limit(1);
-  if (error) throw new Error(`ranToday failed: ${error.message}`, { cause: error });
-  if (!data || data.length === 0) return false;
-  return localHourAndDay(data[0].ran_at, tz).day === day;
+  // one row per tenant per day at most). ANY outcome closes the day — a failed
+  // attempt still bounds the day's billing.
+  const ranAt = await latestReflectorRunAt(tenantId);
+  return !!ranAt && localHourAndDay(ranAt, tz).day === day;
 }
 
 async function newSinceLastRun(tenantId: string): Promise<number> {
   // Anchored on the last SUCCESSFUL run (review F2): a failure marker bounds
   // billing for the day (ranToday counts it) but must not make the summaries
-  // the model never saw stop counting as new.
-  const { data, error } = await getClient()
-    .from('reflector_runs')
-    .select('ran_at')
-    .eq('tenant_id', tenantId)
-    .eq('ok', true)
-    .order('ran_at', { ascending: false })
-    .limit(1);
-  if (error) throw new Error(`newSinceLastRun failed: ${error.message}`, { cause: error });
-  const since = data?.[0]?.ran_at;
-  let q = getClient()
-    .from('gap_summaries')
-    .select('id', { count: 'exact', head: true })
-    .eq('tenant_id', tenantId);
-  if (since) q = q.gt('created_at', since);
-  const { count, error: cErr } = await q;
-  if (cErr) throw new Error(`newSinceLastRun failed: ${cErr.message}`, { cause: cErr });
-  return count ?? 0;
-}
-
-async function writeMarker(tenantId: string, proposed: number, ok: boolean): Promise<void> {
-  const { error } = await getClient()
-    .from('reflector_runs')
-    .insert({ tenant_id: tenantId, proposed, ok });
-  if (error) throw new Error(`writeMarker failed: ${error.message}`, { cause: error });
+  // the model never saw stop counting as new. No marker yet = the whole corpus
+  // is new, which is what an unbounded count returns.
+  const since = await latestSuccessfulReflectorRunAt(tenantId);
+  return countSummaries(tenantId, since ?? undefined);
 }
 
 export async function runReflector(
@@ -271,7 +248,7 @@ export async function runReflector(
           }
         }
       } finally {
-        await writeMarker(tenantId, proposedHere, callOk);
+        await insertReflectorRun(tenantId, proposedHere, callOk);
       }
       summary.ran += 1;
       summary.proposed += proposedHere;

@@ -374,9 +374,13 @@ move records `applied` for movers and `refused` for the rest; no member of an ap
       code default — which CONFIRMS the standing open question that the default is Sonnet, not Opus.
 
 ### Manual verification
-- [ ] Read the grouped message and judge whether it reads as one natural question to a technician
-      rather than three stapled together. The only check that cannot be codified, and the point of
-      the feature.
+- [x] **PASSED — five grouped asks in production, 2026-08-25/26.** Every one read as a single
+      natural question rather than stapled parts, e.g. *"How did the walk-in freezer at Ashgrove
+      Bakery end up — did you get the icing sorted out, and what did the parts run you on it?"* and
+      *"Did you get to the ice machine at Pinehurst Grill that wasn't filling? Let me know whether
+      it's sorted or needs another trip, and what the parts came to."* Both gaps in each pair shared
+      one `ask_group_id`, one `question`, and one `asked_at`, so the escalation clocks started
+      together as designed.
 
 ---
 *Pause after this phase — its Manual verification list is non-empty.*
@@ -588,12 +592,29 @@ returns `recorded`. The existing `attributeAnswerToGap` `toBeUndefined` pin stil
       §0k — so any sandbox recycled since 2026-08-23 would have come back with no office-questions
       doctrine at all. Three live copies updated to `203d9ae2c05b103cb378092fc27ce4ed`, each with a
       `.prev-20260825` backup.
-- [ ] Watch one real answer produce a follow-up in the technician's own chat. STILL OWED — needs a
-      real technician answering a real question; cannot be manufactured.
-- [ ] Judge whether the follow-up reads as the assistant's own curiosity rather than the office
-      chasing, and whether it correctly skips what the person already covered. If the agent does
-      not follow up at all, record the observation rather than tightening the wording immediately —
-      that is the discipline question the observation pass exists to answer.
+- [x] **PASSED — three follow-ups in production, 2026-08-25/26 (s5, a real Telegram chat).** The
+      technician answered only the visit half; `record_field_note` returned `openQuestions`; the
+      agent judged cost untouched and asked for it in its own words; the answer was recorded and
+      attributed. Full closure evidence: freezer job both gaps `answered` (cost stamped with
+      *"Parts cost $300 for the evaporator fan swap"* — the FOLLOW-UP's answer, which is the half
+      that fails silently); rooftop-AC job both gaps `answered` with **two different captures**,
+      which only the Phase-1 close-derived path can do since record-time attribution declines at 2+
+      asked; compressor job's cost gap correctly **escalated** after the follow-up went unanswered
+      overnight.
+- [x] **JUDGED, with findings — the form was wrong three ways and is now fixed** (user, 2026-08-26).
+      The agent did follow up, unprompted and correctly, but wrote:
+      *"Recorded. ✅ … The office was also asking what the parts ran you on that freezer …"*
+      (a) it named the office — which §0k already forbade, and the reason it lost is that the same
+      block uses "the office" throughout to explain where questions originate: **it taught the
+      phrase and banned it without saying why**, so the fix states the reason inline; (b) the ask
+      was folded onto the confirmation and read as a footer; (c) the question carried a tail
+      ("…on that one") that the rule had named as the bad example — an example did not beat a
+      habit, so it is now a bound: six words or fewer, stop at the question mark. Landed in #182.
+      **NOT fixed, and now known impossible:** delivering the confirmation and the question as two
+      separate texts. `message` is a denied tool (~51s/turn) and block streaming is size-triggered,
+      so a ~60-char reply is always one block — one turn is one Telegram message. The doctrine no
+      longer promises otherwise. Reaching it would need `maxChars` ≈ 40, which splits every reply;
+      that trade-off belongs to the message-splitting research, not here.
 
 ---
 *Pause after this phase — its Manual verification list is non-empty.*

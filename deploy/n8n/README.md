@@ -300,6 +300,28 @@ and the probe strengthens on its own the moment the deploy lands. Once you have 
 the code node to 200-only — 401 then means auth has moved in front of `/health`, which is a
 regression worth a red.
 
+Probe 2 is the **only** thing in the estate that can answer *is it doing its job*. From outside a
+worker, "zero rows processed because none arrived" and "zero rows processed because it is wedged"
+are the same observation — no platform API can tell them apart, because the information is not
+there. Only our own data separates them. One query, `select * from monitoring.health`, through a
+role that can read that view and nothing else (`supabase/migrations/20260827120000_…`):
+
+| limit | means |
+|---|---|
+| `calls_pending_oldest_s` > 15 min | Calls-worker stalled — work waiting, nothing taking it |
+| `calls_processing_oldest_s` > 30 min | Calls-worker **wedged** — a worker claimed the row and never finished. The strongest signal here, because an empty inbox cannot explain it. Wide grace: transcription legitimately takes minutes |
+| `calls_error_1h` > 3 | pipeline erroring |
+| `calls_max_attempts` > 4 | retry storm |
+| `calls_purge_backlog` > 0 | Calls-purge stopped — audio past its delete date. No threshold to tune: any non-zero value is a retention-promise breach |
+| `cost_rollup_age_s` > 1 h | lifecycle-heart stopped. It runs `*/5`, but heavy sweeps self-gate to quarter-hour ticks, so ~15 min is normal and one hour is four missed ticks |
+| `nudges_queued_oldest_s` > 1 h | nudge delivery stalled |
+| `nudges_asked_oldest_s` > 72 h | escalation sweep stalled. Deliberately **not** mirroring `NUDGE_ESCALATE_HOURS` — a monitor that tracks a code constant breaks quietly when the constant changes |
+| `l1_capture_age_s` > 48 h | L1 capture flow stopped. Wide on purpose: 24 h of silence was the very first reading we took on this pilot, so a tight limit would have paged on day one, and a monitor that cries wolf immediately gets muted. Tighten after a week of baseline |
+
+**NULL is not zero.** An empty set (no pending calls, no captures yet) returns NULL, and the code
+node treats it as "nothing to say". Comparing NULL numerically would read as `0` and turn every
+quiet period into a pass on a check that never really ran.
+
 ---
 
 ## Phase C — decommission n8n on the agent box

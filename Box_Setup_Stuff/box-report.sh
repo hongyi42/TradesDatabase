@@ -23,7 +23,7 @@
 # WHY IT DOES NOT SHELL OUT TO ops-report.sh. That script is shaped for a single
 # systemd unit: it collects a journal tail, an exit code, and — on every call —
 # runs `openshell inference get` to attach the live model route. None of that
-# fits `box:disk`, and eight invocations per tick would mean eight pointless
+# fits `box-disk`, and eight invocations per tick would mean eight pointless
 # route lookups and eight separate POSTs. The transport below is deliberately a
 # near-copy: same endpoint, same bearer token, same keys-only discipline, same
 # always-exit-0 rule. Keep the two in step if the /control/ops contract changes.
@@ -110,21 +110,35 @@ PY
   case "$code" in
     200) log "$service=$status" ;;
     401) log "$service=$status -> 401 UNAUTHORIZED: the host token in $ENV_FILE is not registered" ;;
+    # 400 means the collector REFUSED the row, so this check is not being
+    # recorded at all — the reporter looks healthy while monitoring nothing.
+    # Called out explicitly because it cost a full install cycle: service names
+    # must satisfy opsEvents.ts's SERVICE_RE, which is lowercase kebab-case only.
+    # No colons, no dots. The COLUMN is free text; the validator is not.
+    400) log "$service=$status -> 400 REJECTED: not recorded. Service name must be lowercase kebab-case ([a-z0-9-], <=64)" ;;
     000) log "$service=$status -> collector unreachable" ;;
     *)   log "$service=$status -> HTTP $code" ;;
   esac
   return 0
 }
 
+# Build a collector-legal service name from a systemd unit.
+#   doorman.service                 -> box-doorman
+#   badge-pull.timer                -> box-badge-pull-timer
+#   nemoclaw-inference-medic.timer  -> box-nemoclaw-inference-medic-timer
+# opsEvents.ts rejects anything outside ^[a-z0-9]+(-[a-z0-9]+)*$, so the dot in a
+# .timer unit and the colon of a namespace prefix are both illegal.
+svc_name() { printf 'box-%s' "$(printf '%s' "${1%.service}" | tr '._' '--')"; }
+
 # ── checks ───────────────────────────────────────────────────────────────────
 
 check_disk() {
   local line pct avail
   line="$(timeout 5 df -P / 2>/dev/null | awk 'NR==2 {print $5" "$4}')"
-  if [ -z "$line" ]; then report box:disk down reason=df-produced-no-output; return 0; fi
+  if [ -z "$line" ]; then report box-disk down reason=df-produced-no-output; return 0; fi
   pct="${line%% *}"; pct="${pct%\%}"
   avail="${line##* }"
-  case "$pct" in ''|*[!0-9]*) report box:disk down reason=unparseable-df-output; return 0 ;; esac
+  case "$pct" in ''|*[!0-9]*) report box-disk down reason=unparseable-df-output; return 0 ;; esac
   # A percentage above 100 means we read the wrong column, not that the disk is
   # 600% full. Caught in testing against a non-POSIX df whose layout differs:
   # the digits-only guard above passed and it would have reported a false
@@ -132,24 +146,24 @@ check_disk() {
   # real incident — a monitor that cries wolf gets muted, and a muted monitor is
   # the failure this whole pipeline exists to prevent.
   if [ "$pct" -gt 100 ]; then
-    report box:disk down reason=df-percentage-out-of-range usedPctRaw="$pct"
+    report box-disk down reason=df-percentage-out-of-range usedPctRaw="$pct"
     return 0
   fi
   if [ "$pct" -ge "$DISK_PCT_MAX" ]; then
-    report box:disk down usedPct="$pct" availKb="$avail" thresholdPct="$DISK_PCT_MAX"
+    report box-disk down usedPct="$pct" availKb="$avail" thresholdPct="$DISK_PCT_MAX"
   else
-    report box:disk ok usedPct="$pct" availKb="$avail"
+    report box-disk ok usedPct="$pct" availKb="$avail"
   fi
 }
 
 check_memory() {
   local mb
   mb="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null)"
-  case "$mb" in ''|*[!0-9]*) report box:memory down reason=could-not-read-meminfo; return 0 ;; esac
+  case "$mb" in ''|*[!0-9]*) report box-memory down reason=could-not-read-meminfo; return 0 ;; esac
   if [ "$mb" -lt "$MEM_AVAIL_MIN_MB" ]; then
-    report box:memory down availMb="$mb" thresholdMb="$MEM_AVAIL_MIN_MB"
+    report box-memory down availMb="$mb" thresholdMb="$MEM_AVAIL_MIN_MB"
   else
-    report box:memory ok availMb="$mb"
+    report box-memory ok availMb="$mb"
   fi
 }
 
@@ -158,13 +172,13 @@ check_docker() {
   # on some versions. Distinguishing reachability from function (system-design
   # Tier 4) — a daemon that answers but cannot list containers is still down.
   if ! timeout 12 docker info >/dev/null 2>&1; then
-    report box:docker down reason=docker-info-failed-or-timed-out
+    report box-docker down reason=docker-info-failed-or-timed-out
     return 0
   fi
   local running
   running="$(timeout 12 docker ps --quiet 2>/dev/null | wc -l | tr -d ' ')"
-  case "$running" in ''|*[!0-9]*) report box:docker down reason=docker-ps-failed; return 0 ;; esac
-  report box:docker ok running="$running"
+  case "$running" in ''|*[!0-9]*) report box-docker down reason=docker-ps-failed; return 0 ;; esac
+  report box-docker ok running="$running"
 }
 
 # Decide ok/down for one unit WITHOUT needing to know what kind it is:
@@ -207,7 +221,7 @@ check_units() {
   for u in $BOX_UNITS; do
     read -r verdict state <<<"$(unit_status "$u")"
     [ "$verdict" = skip ] && { log "$u not installed — skipping"; continue; }
-    svc="box:${u%.service}"
+    svc="$(svc_name "$u")"
     report "$svc" "$verdict" unit="$u" state="$state"
   done
 }
@@ -229,7 +243,7 @@ check_agents() {
   for u in $units; do
     read -r verdict state <<<"$(unit_status "$u")"
     [ "$verdict" = skip ] && continue
-    report "box:${u%.service}" "$verdict" unit="$u" state="$state"
+    report "$(svc_name "$u")" "$verdict" unit="$u" state="$state"
   done
 }
 

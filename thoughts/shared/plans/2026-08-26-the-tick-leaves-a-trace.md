@@ -175,11 +175,10 @@ log), so eng-memory §1 is satisfied by a decision, not an omission.
       — **DONE 2026-08-26**: all 6 columns present with the expected types/defaults; `relrowsecurity
       = true` and no grants to `anon`/`authenticated` (checked because this project still has
       `auto_expose_new_tables` on until its 2026-10-30 retirement).
-- [ ] **DEFERRED — needs a deploy.** After the next deploy, `select count(*), min(started_at),
-      max(started_at) from lifecycle_runs` ~30 min later: expect ~6 rows, evenly spaced.
-- [ ] **DEFERRED — needs a deploy.** `select summary from lifecycle_runs order by started_at desc
-      limit 1` and confirm **no** `questionDraft` / `citation` / `reason` key appears in it.
-      (The redaction itself is locked in by a codified test above; this confirms it end to end.)
+- [x] **VERIFIED IN PROD 2026-08-27.** 11 ticks recorded from 23:20:38Z, evenly spaced, **no gaps**,
+      median duration 3.3s, `last tick 1.6 min ago — currently alive`.
+- [x] **VERIFIED IN PROD 2026-08-27** on a row that genuinely had decisions to strip (the 00:00:35Z
+      planner tick): `leaks_free_text = false`, and `plans[0].decisions` is the NUMBER 1, not an array.
 
 ### Manual verification
 - [ ] none
@@ -225,9 +224,9 @@ errored firm is identifiable rather than an anonymous counter.
 
 ### Live verification (agent-executable)
 - Prerequisites: `mcp__supabase-test`
-- [ ] **DEFERRED — needs a deploy.** `select summary->'teamLeadPlanner' from lifecycle_runs` on a
-      half-hour tick: `jsonb_array_length(plans)` equals `tenants`. (Locked in by the codified
-      invariant test above; this confirms it against real firms.)
+- [x] **VERIFIED IN PROD 2026-08-27.** 00:00:35Z tick: `plans` length 1 = `tenants` 1, entry
+      `{tenantId: 82bbc6f8…, outcome: 'planned', gaps: 1, turns: 3, toolCalls: 5, ms: 19254,
+      decisions: 1, applied: 1, recorded: 1}`, `byAction: {leave: 1}`.
 
 ### Manual verification
 - [ ] none
@@ -286,9 +285,11 @@ phases read.
       `2026-08-23 fireworks $0.5972`. **`unpriced_cost_events_daily` returned ZERO rows** for the
       window — answering the research's standing open question for these days: priced totals have
       not been under-reporting.
-- [ ] **DEFERRED — needs a deploy.** After a planner tick on the new code:
-      `select lane, sum(cost_usd) from priced_cost_events_daily where day = current_date group by 1`
-      returns a `planner` row (and a `reflector` row on a day it runs).
+- [x] **VERIFIED IN PROD 2026-08-27.** Every post-deploy Anthropic row carries `lane = 'planner'`
+      across all three SKUs (`cached-input` 43,770 tok / `input` 6,349 / `output` 1,693 over 5 calls),
+      `technician_ref` still `spine:team-lead` — additive. Priced view splits it:
+      `2026-08-27 anthropic planner $0.0625`, `2026-08-26 anthropic planner $0.0334`, with
+      pre-deploy history correctly staying `(unlabelled)` at `$2.5410`.
 
 ### Manual verification
 - [ ] none
@@ -333,10 +334,10 @@ An operator report over `lifecycle_runs` — the thing that makes the table wort
 - [x] Confirmed read-only before running: zero `insert`/`update`/`delete`/`truncate` in the script.
 - [x] `npm run ticks` against the pilot — runs clean. Cost section reads real spend
       (`2026-08-26 anthropic $2.5031 / 706,141 units`; `2026-08-25 anthropic $1.5352`), unpriced 0.
-- [ ] **DEFERRED — needs a deploy.** The "Ran" line currently reads `saw 0`, which is correct: the
-      run-record code is not deployed. After deploy it must show ~288/day with no gaps, and the
-      Steps section must be cross-checked against the live Render env — any step the report calls
-      silently skipped is a real finding, not a report bug.
+- [x] **VERIFIED IN PROD 2026-08-27.** `npm run ticks -- --since 2h` reads true end to end.
+      **Steps cross-check: CLEAN** — every skip is `off-cadence tick` and the report flagged nothing
+      with `← check this is intended`. Notably `sessions` did NOT report `COMPOSIO_API_KEY unset` on
+      any of the 3 heavy ticks, so that key IS set on lifecycle-heart. No step is silently off.
 
 ### Manual verification
 - [x] Read the report once and confirm it answers "did it run, what did it skip, what did it cost"
@@ -388,7 +389,8 @@ reproducing the failure first**:
 
 ### Still open — needs a deploy
 
-Six live checks are marked `DEFERRED`, not passed. Both migrations were applied to the pilot during
+~~Six live checks are marked `DEFERRED`, not passed.~~ **SUPERSEDED — all six passed on 2026-08-27;
+see the post-deploy section at the end of this document.** Both migrations were applied to the pilot during
 verification (the safe order — deploys do not migrate), so the pilot holds the table and the two
 views but not yet the code that writes to them. Until a deploy:
 
@@ -403,4 +405,22 @@ the research's standing open question for that window: priced totals have not be
 Pilot spend over those days: anthropic `$1.5352` (08-25) → `$2.5410` (08-26), fireworks `$0.5972`
 (08-23) → under a cent (08-26). Which lane drove the Anthropic rise is exactly what the deployed
 label will answer.
+
+## Post-deploy verification — 2026-08-27 (all six deferred checks PASSED)
+
+Deploy `93baeb9` (squash of #183), `trigger: new_commit`, live 23:15:38Z — confirmed a real deploy,
+not a stale re-run of an older commit.
+
+Every check the plan deferred has now passed against the pilot. Two measurements worth keeping:
+
+- **Prompt caching is working hard.** The planner's Opus calls billed 43,770 cached-input tokens
+  against 6,349 fresh — an ~87% cache-read share. This is the direct evidence for the decision
+  recorded above to reject per-firm workspaces: prompt caches are isolated per workspace, so
+  splitting firms apart would have paid that prefix at 2x write price once per customer instead of
+  reading it at 0.1x.
+- **A planner tick costs roughly $0.03–$0.06.** 23:30Z billed $0.0334, 00:00Z billed $0.0625 — a
+  small sample and a 2x spread, now measurable per tick for the first time.
+
+A row is ~1,066 bytes, so 288/day is ~300 KB/day and the 90-day retention lands near 26 MB — inside
+the estimate the retention decision was made on.
 

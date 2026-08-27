@@ -22,7 +22,11 @@ marked `.ee.` or under `.ee/` need a separate Enterprise Licence. Stay on Commun
 |---|---|
 | `docker-compose.yml` | n8n only — loopback bind, pinned tag, prune, task runner. Read its header |
 | `.env.example` | copy to `.env`, fill in encryption key + tz |
+| `install-monitor-host.sh` | one-shot host setup (B2/B3), refuses to run on the agent box |
+| `monitor-health.sh` + `.service`/`.timer` | this host's own health → Healthchecks (B5) |
 | `backup-n8n.sh` | exports n8n's own workflows + credentials (cron this) |
+| `workflows/*.json` | tracked workflow definitions — see "Workflows live in git" |
+| `import-workflows.sh` | substitutes the ping URLs and imports/activates them |
 | `.gitignore` | keeps `.env` and `backups/` out of git |
 
 There is deliberately no `Caddyfile`. See "Why no TLS" below.
@@ -111,7 +115,11 @@ infrastructure and alarms on the silence.
 
 Firewall: **port 22 only.** Delete every other rule Lightsail adds by default, including 80/443.
 
-Turn on **automatic snapshots** (free, one toggle).
+Turn on **automatic snapshots**. Not free — $0.05/GB/month, billed on the incremental
+delta rather than the 60 GB disk, so realistically well under $1/mo for this host
+(https://aws.amazon.com/lightsail/pricing/). Attach a **static IP** too: a Lightsail instance's
+public IP changes across a stop/start, which would silently break every SSH alias and tunnel
+pointed at it. Static IPs are free while attached to a running instance.
 
 ### B2 · Docker
 
@@ -188,6 +196,60 @@ crontab -e
 The credential export is encrypted with `N8N_ENCRYPTION_KEY`, so the key must live off-host or the
 backups are unrestorable. Copy `backups/` off-host too — a backup that only exists on the machine
 it protects is a staging area, not a backup.
+
+---
+
+## Workflows live in git
+
+A workflow authored in the n8n UI exists in exactly one place: n8n's own database. It cannot be
+reviewed in a diff, cannot be rebuilt after a host loss, and its only copy sits on the same disk as
+the thing it monitors. So the definitions are tracked as JSON under `workflows/` and installed from
+there.
+
+A Healthchecks ping URL is a **write capability** — anyone holding it can mark the check up or
+down — so it never goes in git. The JSON carries `__UPPER_SNAKE__` placeholders instead, and
+`import-workflows.sh` substitutes them from `/etc/nemoclaw/monitor-health.env` (the same file
+`monitor-health.sh` and `backup-n8n.sh` read). An unresolved placeholder aborts the import: a
+workflow POSTing to the literal string `__PROBE_HEALTHCHECK_URL__` would look installed and alert
+nobody.
+
+```bash
+# on the monitor host, in the directory holding docker-compose.yml
+sudo ./import-workflows.sh                       # all of workflows/*.json
+sudo ./import-workflows.sh external-probes.json  # just one
+```
+
+`n8n update:workflow --active=true` writes the DB flag and prints "changes will not take effect if
+n8n is running" — the script's restart is what actually arms the trigger, and it reads the active
+list back afterwards rather than trusting the command's exit code.
+
+### `external-probes` — one check, N subjects
+
+Reaching outward is the one thing the box reporters cannot do for us: they answer "is this machine
+healthy", never "is the service our assistants talk to answering". This workflow probes from
+outside and folds every probe into a **single** verdict, so one Healthchecks check (`external-probes`,
+period 10 min, grace 10 min) covers all of them — the same argument as `box-report-ran` covering 17
+checks. Healthy → ping. Any probe failing → `POST …/fail` with the reason, which travels into the
+alert so a red says *what* broke.
+
+Adding a probe = one more HTTP Request node plus a branch in the `Evaluate probes` code node. No new
+check, no new alert routing.
+
+Probe 1, the web service (`https://tradesdatabase.onrender.com/health`), reads its own status code
+as a build fingerprint, because `/health` is unauthenticated and routed ahead of both the auth check
+and the IP allowlist:
+
+| code | meaning | verdict |
+|---|---|---|
+| `200` | current branch is live; body carries `{commit, checks.db}` | pass — and the probe has upgraded itself from *is it up* to *is it working* |
+| `401` | alive, but the deployed commit predates `/health`, so auth answered first | pass (liveness only) — this is the known commit drift |
+| `503` | `/health` ran and the DB round-trip failed | **fail** |
+| anything else, or no answer | | **fail** |
+
+Accepting both 200 and 401 is deliberate: it means deploying the branch does not trip a false alarm,
+and the probe strengthens on its own the moment the deploy lands. Once you have seen a 200, tighten
+the code node to 200-only — 401 then means auth has moved in front of `/health`, which is a
+regression worth a red.
 
 ---
 

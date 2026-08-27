@@ -1,0 +1,160 @@
+[
+  {
+    "id": "externalprobes",
+    "name": "external-probes",
+    "active": false,
+    "settings": {
+      "executionOrder": "v1",
+      "saveDataErrorExecution": "all",
+      "saveDataSuccessExecution": "none"
+    },
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "minutes",
+                "minutesInterval": 5
+              }
+            ]
+          }
+        },
+        "id": "e0000001-0000-4000-8000-000000000001",
+        "name": "Every 5 minutes",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [220, 300]
+      },
+      {
+        "parameters": {
+          "url": "https://tradesdatabase.onrender.com/health",
+          "options": {
+            "timeout": 25000,
+            "redirect": {
+              "redirect": {
+                "followRedirects": false
+              }
+            },
+            "response": {
+              "response": {
+                "fullResponse": true,
+                "neverError": true
+              }
+            }
+          }
+        },
+        "id": "e0000002-0000-4000-8000-000000000002",
+        "name": "Probe web /health",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [460, 300],
+        "alwaysOutputData": true,
+        "onError": "continueRegularOutput",
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 3000
+      },
+      {
+        "parameters": {
+          "jsCode": "// Fold every HTTP probe into ONE verdict, so one Healthchecks check covers N\n// subjects (the box-report-ran argument: 1 check, 17 things). The reason text\n// travels into the alert, so a red says WHAT broke without an SSH session.\n//\n// A probe that cannot answer at all must read as a problem, never as a pass —\n// `neverError` turns non-2xx into data, and `onError: continueRegularOutput`\n// turns a timeout/DNS failure into an item with no statusCode. Both land here.\nconst problems = [];\nconst notes = [];\n\n// ── web service (Render: TradesDatabase) ────────────────────────────────────\n// /health is unauthenticated and routed BEFORE the auth + IP allowlist, on\n// purpose: a health check that only answers while everything else is healthy is\n// not a health check. So the status code alone tells us which build is live:\n//   200 -> current branch is deployed; body carries {commit, checks.db}, and the\n//          probe has silently upgraded from \"is it up\" to \"is it working\".\n//   401 -> alive, but the deployed commit PREDATES /health, so auth answered\n//          first. Liveness only. Not an incident — it is the known commit drift.\n//   503 -> /health ran and the DB round-trip failed. Real incident.\nlet web = null;\ntry {\n  web = $('Probe web /health').first().json;\n} catch (err) {\n  web = null;\n}\nconst code = web && typeof web.statusCode === 'number' ? web.statusCode : null;\nif (code === null) {\n  const why = (web && (web.error || web.message)) || 'no response';\n  problems.push('web: unreachable (' + String(why).slice(0, 120) + ')');\n} else if (code === 200) {\n  const body = (web && web.body) || {};\n  const db = (body.checks && body.checks.db) || 'unknown';\n  const commit = String(body.commit || 'unknown').slice(0, 7);\n  if (db !== 'ok') {\n    problems.push('web: /health says db=' + db + ' (commit ' + commit + ')');\n  } else {\n    notes.push('web 200 db=ok commit=' + commit);\n  }\n} else if (code === 401) {\n  notes.push('web 401 (alive; deploy predates /health)');\n} else {\n  problems.push('web: HTTP ' + code);\n}\n\nconst ok = problems.length === 0;\nreturn [{ json: { ok: ok, detail: ok ? notes.join('; ') : problems.join('; ') } }];\n"
+        },
+        "id": "e0000003-0000-4000-8000-000000000003",
+        "name": "Evaluate probes",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [700, 300]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict",
+              "version": 2
+            },
+            "conditions": [
+              {
+                "id": "e0000004-cond-0001",
+                "leftValue": "={{ $json.ok }}",
+                "rightValue": "",
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true",
+                  "singleValue": true
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "e0000004-0000-4000-8000-000000000004",
+        "name": "All probes passed?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [940, 300]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "__PROBE_HEALTHCHECK_URL__",
+          "sendBody": true,
+          "contentType": "raw",
+          "rawContentType": "text/plain",
+          "body": "={{ $json.detail }}",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "id": "e0000005-0000-4000-8000-000000000005",
+        "name": "Ping OK",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [1200, 200],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 2000
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "__PROBE_HEALTHCHECK_URL__/fail",
+          "sendBody": true,
+          "contentType": "raw",
+          "rawContentType": "text/plain",
+          "body": "={{ $json.detail }}",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "id": "e0000006-0000-4000-8000-000000000006",
+        "name": "Report failure",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [1200, 400],
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 2000
+      }
+    ],
+    "connections": {
+      "Every 5 minutes": {
+        "main": [[{ "node": "Probe web /health", "type": "main", "index": 0 }]]
+      },
+      "Probe web /health": {
+        "main": [[{ "node": "Evaluate probes", "type": "main", "index": 0 }]]
+      },
+      "Evaluate probes": {
+        "main": [[{ "node": "All probes passed?", "type": "main", "index": 0 }]]
+      },
+      "All probes passed?": {
+        "main": [
+          [{ "node": "Ping OK", "type": "main", "index": 0 }],
+          [{ "node": "Report failure", "type": "main", "index": 0 }]
+        ]
+      }
+    }
+  }
+]

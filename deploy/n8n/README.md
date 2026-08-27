@@ -215,9 +215,14 @@ nobody.
 
 ```bash
 # on the monitor host, in the directory holding docker-compose.yml
-sudo ./import-workflows.sh                       # all of workflows/*.json
-sudo ./import-workflows.sh external-probes.json  # just one
+./import-workflows.sh                       # all of workflows/*.json
+./import-workflows.sh external-probes.json  # just one
 ```
+
+That env file is mode `0644`, not `0600`, and deliberately so: `backup-n8n.sh` reads it from
+`ubuntu`'s crontab, and tightening it would make the backup's ping stop without any other symptom.
+The cost is that any local account can read the ping URLs — acceptable here only because this host
+has one human account and holds no tenant data.
 
 `n8n update:workflow --active=true` writes the DB flag and prints "changes will not take effect if
 n8n is running" — the script's restart is what actually arms the trigger, and it reads the active

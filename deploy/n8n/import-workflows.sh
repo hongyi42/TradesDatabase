@@ -14,10 +14,13 @@
 # installed and alert nobody.
 #
 # Usage (on the monitor host, from the directory holding docker-compose.yml):
-#   sudo ./import-workflows.sh              # import + activate everything
-#   sudo ./import-workflows.sh external-probes.json
+#   ./import-workflows.sh                   # import + activate everything
+#   ./import-workflows.sh external-probes.json
 #
-# Root is required only to read the env file (mode 0600, holds the ping URLs).
+# No root needed: the env file is 0644 on purpose, because backup-n8n.sh reads it
+# from ubuntu's crontab and 0600 would make the backup's ping silently stop. The
+# tradeoff is that any local account can read the ping URLs, which is acceptable
+# only because this host has exactly one human account and no tenant data.
 set -uo pipefail
 
 cd "$(dirname "$0")"

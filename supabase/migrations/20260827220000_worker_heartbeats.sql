@@ -93,6 +93,10 @@ select
        and audio_deleted_at is null
        and not legal_hold)::bigint
     as calls_purge_backlog,
+  -- SECONDARY signal now, not the liveness one. lifecycle-heart ticks every 5
+  -- minutes but its heavy sweeps self-gate to quarter-hour ticks, so a stale
+  -- rollup while ticks keep succeeding means the HEAVY sweep specifically is
+  -- broken — a real and distinct failure, just not "the cron is dead".
   (select extract(epoch from (now() - max(computed_at)))::int
      from public.cost_rollup_monthly)
     as cost_rollup_age_s,
@@ -121,7 +125,25 @@ select
                                  else extract(epoch from (now() - work_at))::int end,
               'detail',     detail))
      from public.worker_heartbeats)
-    as workers;
+    as workers,
+
+  -- lifecycle-heart's own execution record (main, 2026-08-26). These REPLACE
+  -- cost_rollup_age_s as the liveness signal for that cron. A proxy answers the
+  -- question you asked only for as long as nothing else can move it, and the
+  -- rollup can go stale for reasons that have nothing to do with the cron
+  -- running — so cost_rollup_age_s stays, demoted to what it actually measures:
+  -- whether the quarter-hour HEAVY sweep is still landing.
+  --
+  -- Two columns, for the same reason worker_heartbeats has beat_at AND
+  -- last_ok_at: a tick that runs and fails still writes a row, so "when did it
+  -- last run" alone would report a cron failing every five minutes as perfectly
+  -- healthy. `ok` is the column that separates them.
+  (select extract(epoch from (now() - max(started_at)))::int
+     from public.lifecycle_runs)
+    as lifecycle_run_age_s,
+  (select extract(epoch from (now() - max(started_at)))::int
+     from public.lifecycle_runs where ok)
+    as lifecycle_ok_age_s;
 
 comment on view monitoring.health is
   'One row of aggregate worker-liveness metrics. Ages are seconds; NULL means the '

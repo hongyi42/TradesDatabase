@@ -322,6 +322,24 @@ role that can read that view and nothing else (`supabase/migrations/202608271200
 node treats it as "nothing to say". Comparing NULL numerically would read as `0` and turn every
 quiet period into a pass on a check that never really ran.
 
+Probe 3 is AssemblyAI's public Statuspage (`status.assemblyai.com/api/v2/status.json`) — no
+credential. It is **explanatory, not the impact signal**: transcription actually failing already
+shows up as `calls_error_1h` from our own data. What this adds is *"the call pipeline is erroring
+**and** the vendor has declared an outage"*, which turns a 2am page into a 2am decision. Only
+`major` and `critical` count as problems — a `minor` indicator is common, frequently unrelated to
+our endpoint, and paging on it would train the alert to be ignored while adding nothing, since
+anything that really breaks transcription is caught by our own error count regardless.
+
+Their status page being unreachable is recorded as a note, never as a pass. An absent verdict must
+look absent; that is the difference between "the vendor is fine" and "we did not ask".
+
+**SignalWire credit has no endpoint.** Checked live against their API and docs index: the
+compatibility API's account resource returns `status`/`type` but no balance, and their published
+endpoint list has no balance, billing, credit, or usage entry at all. The available substitute is
+`status != "active"` on the account, which catches suspension for any reason — billing failure,
+fraud hold, ToS — but only once calls are already broken. It is a **late** signal, not the early
+warning the gap asked for. Recorded rather than silently swapped in.
+
 ---
 
 ## Phase C — decommission n8n on the agent box

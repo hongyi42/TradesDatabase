@@ -89,14 +89,41 @@
       },
       {
         "parameters": {
-          "jsCode": "// Fold every probe into ONE verdict, so one Healthchecks check covers N\n// subjects (the box-report-ran argument: 1 check, 17 things). The reason text\n// travels into the alert, so a red says WHAT broke without an SSH session.\n//\n// A probe that cannot answer at all must read as a problem, never as a pass —\n// `neverError` turns non-2xx into data, and `onError: continueRegularOutput`\n// turns a timeout, a DNS failure or a refused login into an item with no\n// result. Both land here as problems rather than as silence.\n//\n// THRESHOLDS LIVE HERE, NOT IN SQL. monitoring.health returns raw counts and\n// ages on purpose: retuning a number in a view means running DDL against the\n// pilot database, which is expensive enough that nobody does it, and a monitor\n// nobody retunes gets muted instead. Every limit below is one edit away.\nconst problems = [];\nconst notes = [];\n\nconst mins = (s) => Math.round(s / 60) + 'm';\nconst hours = (s) => (s / 3600).toFixed(1) + 'h';\n\n// ── probe 1: the web service ────────────────────────────────────────────────\n// /health is unauthenticated and routed BEFORE the auth check and the IP\n// allowlist, on purpose: a health check that only answers while everything else\n// is healthy is not a health check. So the status code doubles as a build\n// fingerprint:\n//   200 -> current branch is deployed; body carries {commit, checks.db}, and\n//          the probe has silently upgraded from \"is it up\" to \"is it working\".\n//   401 -> alive, but the deployed commit PREDATES /health, so auth answered\n//          first. Liveness only. Not an incident — it is the known commit drift.\n//   503 -> /health ran and the DB round-trip failed. Real incident.\nlet web = null;\ntry {\n  web = $('Probe web /health').first().json;\n} catch (err) {\n  web = null;\n}\nconst code = web && typeof web.statusCode === 'number' ? web.statusCode : null;\nif (code === null) {\n  const why = (web && (web.error || web.message)) || 'no response';\n  problems.push('web: unreachable (' + String(why).slice(0, 120) + ')');\n} else if (code === 200) {\n  const body = (web && web.body) || {};\n  const db = (body.checks && body.checks.db) || 'unknown';\n  const commit = String(body.commit || 'unknown').slice(0, 7);\n  if (db !== 'ok') {\n    problems.push('web: /health says db=' + db + ' (commit ' + commit + ')');\n  } else {\n    notes.push('web 200 db=ok commit=' + commit);\n  }\n} else if (code === 401) {\n  notes.push('web 401 (alive; deploy predates /health)');\n} else {\n  problems.push('web: HTTP ' + code);\n}\n\n// ── probe 2: the workers, via monitoring.health ─────────────────────────────\n// This is the only probe that can answer \"is it DOING its job\". From outside a\n// worker, \"zero rows processed because none arrived\" and \"zero rows processed\n// because it is wedged\" are the same observation; only our own data separates\n// them.\nlet row = null;\ntry {\n  row = $('Query pilot DB').first().json;\n} catch (err) {\n  row = null;\n}\n\nif (!row || row.observed_at === undefined) {\n  const why = (row && (row.error || row.message)) || 'no row returned';\n  problems.push('db: monitoring.health unreadable (' + String(why).slice(0, 140) + ')');\n} else {\n  // NULL means the relevant set is EMPTY (no pending calls, no captures yet) —\n  // \"nothing to say\", never zero. Comparing null numerically would silently read\n  // as 0 and turn every quiet period into a pass on a check that never ran.\n  const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v));\n  const over = (v, limit, msg) => {\n    const n = num(v);\n    if (n !== null && Number.isFinite(n) && n > limit) problems.push(msg(n));\n  };\n\n  // Calls-worker stalled: something is waiting and nothing is taking it.\n  over(row.calls_pending_oldest_s, 900, (n) => 'calls-worker stalled: oldest pending ' + mins(n));\n\n  // The strongest wedge evidence there is — a worker CLAIMED this row and never\n  // finished, so it cannot be explained away by an empty inbox. Given a wide\n  // grace because transcription legitimately takes minutes.\n  over(row.calls_processing_oldest_s, 1800, (n) => 'calls-worker wedged: a row has been processing ' + mins(n));\n\n  over(row.calls_error_1h, 3, (n) => 'call pipeline erroring: ' + n + ' in the last hour');\n  over(row.calls_max_attempts, 4, (n) => 'retry storm: a call is on attempt ' + n);\n\n  // Any non-zero value is a retention-promise breach, so there is no threshold\n  // to tune: audio past its delete date, not deleted, not on legal hold.\n  over(row.calls_purge_backlog, 0, (n) => 'Calls-purge stopped: ' + n + ' recording(s) past their delete date');\n\n  // lifecycle-heart runs */5 but the heavy sweeps self-gate to quarter-hour\n  // ticks, so the rollup is ~15 min old in normal operation. One hour is four\n  // missed ticks — a stopped cron, not a slow one.\n  over(row.cost_rollup_age_s, 3600, (n) => 'lifecycle-heart stale: cost rollup ' + mins(n) + ' old');\n\n  over(row.nudges_queued_oldest_s, 3600, (n) => 'nudge delivery stalled: oldest queued ' + mins(n));\n\n  // The escalation sweep hands a nudge to the manager after 48h by default. 72h\n  // means the deadline passed a full day ago and nothing moved. Deliberately not\n  // mirroring NUDGE_ESCALATE_HOURS — a monitor that tracks a code constant\n  // breaks quietly when the constant changes.\n  over(row.nudges_asked_oldest_s, 259200, (n) => 'nudge escalation stalled: oldest asked ' + hours(n));\n\n  // Wide on purpose. This is a small pilot; 24h of silence was the FIRST reading\n  // we ever took, so a tight limit would have paged on day one, and a monitor\n  // that cries wolf immediately gets muted. Tighten once we have a week of\n  // baseline.\n  over(row.l1_capture_age_s, 172800, (n) => 'no L1 capture in ' + hours(n));\n\n  const pend = num(row.calls_pending);\n  const proc = num(row.calls_processing);\n  notes.push('db ok (calls ' + (pend === null ? 0 : pend) + 'p/' + (proc === null ? 0 : proc) + 'r)');\n}\n\nconst ok = problems.length === 0;\nreturn [{ json: { ok: ok, detail: ok ? notes.join('; ') : problems.join('; ') } }];\n"
+          "url": "https://status.assemblyai.com/api/v2/status.json",
+          "options": {
+            "timeout": 15000,
+            "response": {
+              "response": {
+                "fullResponse": true,
+                "neverError": true
+              }
+            }
+          }
+        },
+        "id": "e0000008-0000-4000-8000-000000000008",
+        "name": "Probe AssemblyAI status",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          940,
+          300
+        ],
+        "alwaysOutputData": true,
+        "onError": "continueRegularOutput",
+        "retryOnFail": true,
+        "maxTries": 2,
+        "waitBetweenTries": 3000
+      },
+      {
+        "parameters": {
+          "jsCode": "// Fold every probe into ONE verdict, so one Healthchecks check covers N\n// subjects (the box-report-ran argument: 1 check, 17 things). The reason text\n// travels into the alert, so a red says WHAT broke without an SSH session.\n//\n// A probe that cannot answer at all must read as a problem, never as a pass —\n// `neverError` turns non-2xx into data, and `onError: continueRegularOutput`\n// turns a timeout, a DNS failure or a refused login into an item with no\n// result. Both land here as problems rather than as silence.\n//\n// THRESHOLDS LIVE HERE, NOT IN SQL. monitoring.health returns raw counts and\n// ages on purpose: retuning a number in a view means running DDL against the\n// pilot database, which is expensive enough that nobody does it, and a monitor\n// nobody retunes gets muted instead. Every limit below is one edit away.\nconst problems = [];\nconst notes = [];\n\nconst mins = (s) => Math.round(s / 60) + 'm';\nconst hours = (s) => (s / 3600).toFixed(1) + 'h';\n\n// ── probe 1: the web service ────────────────────────────────────────────────\n// /health is unauthenticated and routed BEFORE the auth check and the IP\n// allowlist, on purpose: a health check that only answers while everything else\n// is healthy is not a health check. So the status code doubles as a build\n// fingerprint:\n//   200 -> current branch is deployed; body carries {commit, checks.db}, and\n//          the probe has silently upgraded from \"is it up\" to \"is it working\".\n//   401 -> alive, but the deployed commit PREDATES /health, so auth answered\n//          first. Liveness only. Not an incident — it is the known commit drift.\n//   503 -> /health ran and the DB round-trip failed. Real incident.\nlet web = null;\ntry {\n  web = $('Probe web /health').first().json;\n} catch (err) {\n  web = null;\n}\nconst code = web && typeof web.statusCode === 'number' ? web.statusCode : null;\nif (code === null) {\n  const why = (web && (web.error || web.message)) || 'no response';\n  problems.push('web: unreachable (' + String(why).slice(0, 120) + ')');\n} else if (code === 200) {\n  const body = (web && web.body) || {};\n  const db = (body.checks && body.checks.db) || 'unknown';\n  const commit = String(body.commit || 'unknown').slice(0, 7);\n  if (db !== 'ok') {\n    problems.push('web: /health says db=' + db + ' (commit ' + commit + ')');\n  } else {\n    notes.push('web 200 db=ok commit=' + commit);\n  }\n} else if (code === 401) {\n  notes.push('web 401 (alive; deploy predates /health)');\n} else {\n  problems.push('web: HTTP ' + code);\n}\n\n// ── probe 2: the workers, via monitoring.health ─────────────────────────────\n// This is the only probe that can answer \"is it DOING its job\". From outside a\n// worker, \"zero rows processed because none arrived\" and \"zero rows processed\n// because it is wedged\" are the same observation; only our own data separates\n// them.\nlet row = null;\ntry {\n  row = $('Query pilot DB').first().json;\n} catch (err) {\n  row = null;\n}\n\nif (!row || row.observed_at === undefined) {\n  const why = (row && (row.error || row.message)) || 'no row returned';\n  problems.push('db: monitoring.health unreadable (' + String(why).slice(0, 140) + ')');\n} else {\n  // NULL means the relevant set is EMPTY (no pending calls, no captures yet) —\n  // \"nothing to say\", never zero. Comparing null numerically would silently read\n  // as 0 and turn every quiet period into a pass on a check that never ran.\n  const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v));\n  const over = (v, limit, msg) => {\n    const n = num(v);\n    if (n !== null && Number.isFinite(n) && n > limit) problems.push(msg(n));\n  };\n\n  // Calls-worker stalled: something is waiting and nothing is taking it.\n  over(row.calls_pending_oldest_s, 900, (n) => 'calls-worker stalled: oldest pending ' + mins(n));\n\n  // The strongest wedge evidence there is — a worker CLAIMED this row and never\n  // finished, so it cannot be explained away by an empty inbox. Given a wide\n  // grace because transcription legitimately takes minutes.\n  over(row.calls_processing_oldest_s, 1800, (n) => 'calls-worker wedged: a row has been processing ' + mins(n));\n\n  over(row.calls_error_1h, 3, (n) => 'call pipeline erroring: ' + n + ' in the last hour');\n  over(row.calls_max_attempts, 4, (n) => 'retry storm: a call is on attempt ' + n);\n\n  // Any non-zero value is a retention-promise breach, so there is no threshold\n  // to tune: audio past its delete date, not deleted, not on legal hold.\n  over(row.calls_purge_backlog, 0, (n) => 'Calls-purge stopped: ' + n + ' recording(s) past their delete date');\n\n  // lifecycle-heart runs */5 but the heavy sweeps self-gate to quarter-hour\n  // ticks, so the rollup is ~15 min old in normal operation. One hour is four\n  // missed ticks — a stopped cron, not a slow one.\n  over(row.cost_rollup_age_s, 3600, (n) => 'lifecycle-heart stale: cost rollup ' + mins(n) + ' old');\n\n  over(row.nudges_queued_oldest_s, 3600, (n) => 'nudge delivery stalled: oldest queued ' + mins(n));\n\n  // The escalation sweep hands a nudge to the manager after 48h by default. 72h\n  // means the deadline passed a full day ago and nothing moved. Deliberately not\n  // mirroring NUDGE_ESCALATE_HOURS — a monitor that tracks a code constant\n  // breaks quietly when the constant changes.\n  over(row.nudges_asked_oldest_s, 259200, (n) => 'nudge escalation stalled: oldest asked ' + hours(n));\n\n  // Wide on purpose. This is a small pilot; 24h of silence was the FIRST reading\n  // we ever took, so a tight limit would have paged on day one, and a monitor\n  // that cries wolf immediately gets muted. Tighten once we have a week of\n  // baseline.\n  over(row.l1_capture_age_s, 172800, (n) => 'no L1 capture in ' + hours(n));\n\n  const pend = num(row.calls_pending);\n  const proc = num(row.calls_processing);\n  notes.push('db ok (calls ' + (pend === null ? 0 : pend) + 'p/' + (proc === null ? 0 : proc) + 'r)');\n}\n\n// ── probe 3: AssemblyAI (transcription vendor) ──────────────────────────────\n// Public Statuspage, no credential. This is EXPLANATORY, not the impact signal:\n// real transcription failures already surface as calls_error_1h from our own\n// data. What this adds is \"the calls pipeline is erroring AND the vendor has\n// declared an outage\", which turns a 2am page into a 2am decision.\n//\n// Only major/critical are treated as problems. A \"minor\" indicator is common,\n// often unrelated to our endpoint, and paging on it would train the alert to be\n// ignored — while costing nothing, because anything that actually breaks\n// transcription shows up in our own error count regardless.\nlet aai = null;\ntry {\n  aai = $('Probe AssemblyAI status').first().json;\n} catch (err) {\n  aai = null;\n}\nif (aai && aai.statusCode === 200 && aai.body && aai.body.status) {\n  const ind = String(aai.body.status.indicator || 'unknown');\n  const desc = String(aai.body.status.description || '').slice(0, 80);\n  if (ind === 'major' || ind === 'critical') {\n    problems.push('AssemblyAI ' + ind + ': ' + desc);\n  } else if (ind !== 'none') {\n    notes.push('AssemblyAI ' + ind);\n  }\n} else if (aai === null || aai.statusCode !== 200) {\n  // Their status page being unreachable is not our incident. Note it so the\n  // absence of an AssemblyAI verdict is visible rather than assumed healthy.\n  notes.push('AssemblyAI status unavailable');\n}\n\nconst ok = problems.length === 0;\nreturn [{ json: { ok: ok, detail: ok ? notes.join('; ') : problems.join('; ') } }];\n"
         },
         "id": "e0000003-0000-4000-8000-000000000003",
         "name": "Evaluate probes",
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
         "position": [
-          940,
+          1180,
           300
         ]
       },
@@ -130,7 +157,7 @@
         "type": "n8n-nodes-base.if",
         "typeVersion": 2.2,
         "position": [
-          1180,
+          1420,
           300
         ]
       },
@@ -151,7 +178,7 @@
         "type": "n8n-nodes-base.httpRequest",
         "typeVersion": 4.2,
         "position": [
-          1440,
+          1680,
           200
         ],
         "retryOnFail": true,
@@ -175,7 +202,7 @@
         "type": "n8n-nodes-base.httpRequest",
         "typeVersion": 4.2,
         "position": [
-          1440,
+          1680,
           400
         ],
         "retryOnFail": true,
@@ -207,6 +234,17 @@
         ]
       },
       "Query pilot DB": {
+        "main": [
+          [
+            {
+              "node": "Probe AssemblyAI status",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Probe AssemblyAI status": {
         "main": [
           [
             {

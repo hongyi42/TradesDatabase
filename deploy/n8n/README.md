@@ -228,6 +228,50 @@ has one human account and holds no tenant data.
 n8n is running" — the script's restart is what actually arms the trigger, and it reads the active
 list back afterwards rather than trusting the command's exit code.
 
+### Reaching Supabase from the container — two traps
+
+**IPv6.** `db.<ref>.supabase.co` has an **AAAA record only**. The monitor host has a global IPv6
+address, but the Docker network does not, so the direct connection resolves to nothing *inside the
+container* while working perfectly from the host shell — a difference that makes host-side testing
+actively misleading. Use the **session pooler** instead (Supabase dashboard → Connect → Direct tab
+→ Session pooler): IPv4, port 5432, and the username carries the project ref
+(`monitor_ro.<project-ref>`) because the pooler is shared across projects and that suffix is how it
+routes. Supabase sells a dedicated-IPv4 add-on that fixes the same problem for a monthly fee; the
+pooler is free.
+
+**A private CA.** Supabase's Postgres endpoints present a chain rooted at `Supabase Root 2021 CA`,
+which is in no public trust store, so Node rejects a verified connection with `self-signed
+certificate in certificate chain`. n8n offers an **Ignore SSL Issues** checkbox that makes this go
+away by keeping the encryption and discarding the authentication — the connection would then
+succeed against anyone able to answer on that address. Instead the real root is checked in at
+`certs/supabase-root-2021.crt`, bind-mounted **read-only** (n8n must never be able to add a trust
+anchor to itself) and pointed at by `NODE_EXTRA_CA_CERTS`.
+
+That file was fetched over public-CA-verified HTTPS and its SHA-256 confirmed identical to the root
+the server actually presented, so it is genuine rather than whatever a MITM would have offered:
+
+```
+80:70:25:AD:50:D4:ED:21:9D:2C:9C:7D:29:9C:00:4F:82:4E:B0:0C:F7:F6:5A:FE:F6:07:D0:7B:72:E6:CA:FA
+notAfter = Apr 26 2031
+```
+
+Verify the whole path from inside the container — this completes before any password is checked, so
+it needs no credential:
+
+```bash
+docker compose exec -T n8n node <<'JS'
+const net=require('net'),tls=require('tls');
+const host='aws-1-us-east-1.pooler.supabase.com';
+const s=net.connect(5432,host,()=>{const b=Buffer.alloc(8);b.writeInt32BE(8,0);b.writeInt32BE(80877103,4);s.write(b);});
+s.once('data',d=>{if(d[0]!==0x53)process.exit(1);
+  const t=tls.connect({socket:s,servername:host,rejectUnauthorized:true},()=>{
+    console.log('authorized='+t.authorized);process.exit(0);});
+  t.on('error',e=>{console.log('FAIL '+e.message);process.exit(1);});});
+JS
+```
+
+`authorized=true` means verification is real. Renew before April 2031, or when Supabase rotates.
+
 ### `external-probes` — one check, N subjects
 
 Reaching outward is the one thing the box reporters cannot do for us: they answer "is this machine

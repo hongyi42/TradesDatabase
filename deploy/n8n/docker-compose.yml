@@ -60,6 +60,15 @@ services:
       # No product telemetry from a host holding the fleet's credentials.
       - N8N_DIAGNOSTICS_ENABLED=false
       - N8N_VERSION_NOTIFICATIONS_ENABLED=true
+      # Supabase's Postgres endpoints present a chain rooted at a PRIVATE CA
+      # ("Supabase Root 2021 CA") that is in no public trust store, so Node
+      # rejects a verified connection with "self-signed certificate in
+      # certificate chain". The tempting fix is n8n's "Ignore SSL Issues"
+      # checkbox, which keeps the encryption and throws away the authentication —
+      # the connection then works against anyone who can answer on that address.
+      # This trusts the actual root instead, so verification stays ON.
+      # certs/ is a bind mount, checked in and reviewable; see its README note.
+      - NODE_EXTRA_CA_CERTS=/opt/certs/supabase-root-2021.crt
       - GENERIC_TIMEZONE=${TZ}
       - TZ=${TZ}
     ports:
@@ -69,6 +78,8 @@ services:
       - "127.0.0.1:5678:5678"
     volumes:
       - n8n_data:/home/node/.n8n
+      # Read-only: n8n must never be able to add a trust anchor to itself.
+      - ./certs:/opt/certs:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null 2>&1 || exit 1"]
       interval: 30s

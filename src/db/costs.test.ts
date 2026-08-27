@@ -409,6 +409,40 @@ describe('recordModelUsage', () => {
     ]);
   });
 
+  // The planner and the reflector both bill as 'spine:team-lead', so before the
+  // lane label one filter returned the two lanes added together with no way to
+  // separate them.
+  test('the lane rides on EVERY row a model call emits, not just the first', async () => {
+    const { seen, append } = capture();
+    await recordModelUsage(
+      'anthropic',
+      { inputTokens: 1000, cachedInputTokens: 400, cacheWriteTokens: 200, outputTokens: 50 },
+      { tenantId: tenantA, technicianRef: 'spine:team-lead', lane: 'planner' },
+      { append },
+    );
+    // Four rows for one call — a lane on only some of them would make a per-lane
+    // total quietly wrong rather than obviously missing.
+    expect(seen[0]).toHaveLength(4);
+    expect(seen[0].map((r) => r.sku)).toEqual([
+      'claude-opus-5-input',
+      'claude-opus-5-cached-input',
+      'claude-opus-5-cache-write-1h',
+      'claude-opus-5-output',
+    ]);
+    expect(seen[0].every((r) => JSON.stringify(r.metadata) === '{"lane":"planner"}')).toBe(true);
+  });
+
+  test('an unlabelled caller records exactly what it did before — metadata null', async () => {
+    const { seen, append } = capture();
+    await recordModelUsage(
+      'fireworks',
+      { inputTokens: 10, outputTokens: 5 },
+      { tenantId: tenantA },
+      { append },
+    );
+    expect(seen[0].every((r) => r.metadata === null)).toBe(true);
+  });
+
   test('with no cache figure reported, everything stays on the input line', async () => {
     const { seen, append } = capture();
     await recordModelUsage('fireworks', { inputTokens: 1000, outputTokens: 50 }, { tenantId: tenantA }, { append });
@@ -949,5 +983,143 @@ describe('readRollup', () => {
     const july = (await readRollup('2026-07-01')).filter((r) => r.provider === P);
     expect(july).toHaveLength(2);
     expect(july.map((r) => Number(r.cost_usd)).sort((a, b) => a - b)).toEqual([7.25, 12.5]);
+  });
+});
+
+// The daily/lane read side. These are VIEWS over the same cost_events +
+// cost_rates the monthly rollup reads, and their join predicate is a verbatim
+// copy of rollup_costs' — so the risk they carry is drift between the two, and
+// the risk the SECOND one carries is that a reader forgets it exists.
+describe('priced_cost_events_daily / unpriced_cost_events_daily', () => {
+  const DAY = '2026-08-20';
+  const at = (h: number) => `${DAY}T${String(h).padStart(2, '0')}:00:00.000Z`;
+
+  const event = (sku: string, quantity: number, lane: string | null, occurredAt: string) =>
+    appendCostEvents([
+      {
+        tenantId: tenantA,
+        technicianRef: 'spine:team-lead',
+        provider: P,
+        sku,
+        quantity,
+        unit: 'token',
+        method: 'measured',
+        occurredAt,
+        // Distinct source_ref per row: the (tenant, provider, sku, source_ref)
+        // key would otherwise dedup two rows that differ only by lane.
+        sourceRef: `${sku}-${lane}-${occurredAt}`,
+        metadata: lane ? { lane } : null,
+      },
+    ]);
+
+  beforeEach(cleanup);
+
+  test('spend splits by lane, priced at the rate in force that day', async () => {
+    await insertRate('priced-sku', '2026-08-01', null); // 0.000001 / token
+    await event('priced-sku', 1_000_000, 'planner', at(9));
+    await event('priced-sku', 400_000, 'reflector', at(10));
+
+    const { rows } = await pg.query(
+      `select lane, quantity::float8, cost_usd::float8
+         from priced_cost_events_daily
+        where provider = $1 and day = $2
+        order by lane`,
+      [P, DAY],
+    );
+    expect(rows).toEqual([
+      { lane: 'planner', quantity: 1_000_000, cost_usd: 1 },
+      { lane: 'reflector', quantity: 400_000, cost_usd: 0.4 },
+    ]);
+  });
+
+  test('two calls in the same lane on the same day collapse into one row', async () => {
+    await insertRate('priced-sku', '2026-08-01', null);
+    await event('priced-sku', 10, 'planner', at(9));
+    await event('priced-sku', 15, 'planner', at(17));
+
+    const { rows } = await pg.query(
+      `select lane, quantity::float8 from priced_cost_events_daily
+        where provider = $1 and day = $2`,
+      [P, DAY],
+    );
+    expect(rows).toEqual([{ lane: 'planner', quantity: 25 }]);
+  });
+
+  // The trap the second view exists for: an unrated sku does not show as $0, it
+  // VANISHES from the priced view — reading as "no spend" rather than "not
+  // priced". Silent under-reporting is the worst failure a ledger has.
+  test('an unrated event is absent from the priced view and PRESENT in the unpriced one', async () => {
+    await insertRate('priced-sku', '2026-08-01', null);
+    await event('priced-sku', 10, 'planner', at(9));
+    await event('no-rate-sku', 999, 'planner', at(9));
+
+    const priced = await pg.query(
+      `select sku from priced_cost_events_daily where provider = $1`,
+      [P],
+    );
+    expect(priced.rows.map((r) => r.sku)).toEqual(['priced-sku']);
+
+    const unpriced = await pg.query(
+      `select sku, lane, events::int, quantity::float8
+         from unpriced_cost_events_daily where provider = $1`,
+      [P],
+    );
+    expect(unpriced.rows).toEqual([
+      { sku: 'no-rate-sku', lane: 'planner', events: 1, quantity: 999 },
+    ]);
+  });
+
+  // The rate window is half-open [from, to). A rate closed on its successor's
+  // opening date must price that day ONCE — the same invariant the cost_rates
+  // exclusion constraint enforces, and the reason this predicate is copied from
+  // rollup_costs rather than rewritten.
+  test('a day covered by two adjoining rates is priced once, by the newer one', async () => {
+    await insertRate('priced-sku', '2026-08-01', DAY); // ends the day it starts
+    await pg.query(
+      `insert into cost_rates (provider, sku, unit, unit_cost_usd, effective_from)
+       values ($1, 'priced-sku', 'token', 0.000002, $2)`,
+      [P, DAY],
+    );
+    await event('priced-sku', 1_000_000, 'planner', at(9));
+
+    const { rows } = await pg.query(
+      `select cost_usd::float8 from priced_cost_events_daily
+        where provider = $1 and day = $2`,
+      [P, DAY],
+    );
+    expect(rows).toEqual([{ cost_usd: 2 }]); // the newer rate, and only once
+  });
+
+  // 'spine' is an allocation counter, not a billed vendor — unpriced BY DESIGN,
+  // and it must not pollute the "what did we fail to price" signal.
+  test("the 'spine' counter is not reported as unpriced", async () => {
+    await appendCostEvents([
+      {
+        tenantId: tenantA,
+        provider: 'spine',
+        sku: 'tool_call',
+        quantity: 1,
+        unit: 'call',
+        method: 'measured',
+        occurredAt: at(9),
+        sourceRef: 'spine-counter-1',
+      },
+    ]);
+    const { rows } = await pg.query(
+      `select 1 from unpriced_cost_events_daily where provider = 'spine'`,
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  // Rows written before the lane existed, and every unlabelled caller, carry
+  // NULL — an honest gap rather than a guessed attribution.
+  test('an unlabelled event still prices, with a null lane', async () => {
+    await insertRate('priced-sku', '2026-08-01', null);
+    await event('priced-sku', 10, null, at(9));
+    const { rows } = await pg.query(
+      `select lane, quantity::float8 from priced_cost_events_daily where provider = $1`,
+      [P],
+    );
+    expect(rows).toEqual([{ lane: null, quantity: 10 }]);
   });
 });

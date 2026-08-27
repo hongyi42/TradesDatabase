@@ -140,6 +140,42 @@ describe('gradeScenario — one fixture per failure kind', () => {
     expect(kinds(r, { arc: { minCloseTicks: 2 } })).toEqual(['arc-cross-credit']);
   });
 
+  test('arc groupingCoherent: all-or-nothing passes, a HALF-formed group fails', () => {
+    // Whether to group is the planner's judgment, so both clean outcomes pass.
+    // What this rejects is a group whose members disagree about what was sent —
+    // the shape a partial move leaves behind.
+    const build = (a: Partial<Nudge>, b: Partial<Nudge>) => {
+      const r = row({});
+      r.ticks[0].nudgesAfter = [nudge({ id: GAP, ...a }), nudge({ id: GAP2, ...b })];
+      r.seeded = { nudgeIds: { a: GAP, b: GAP2 } };
+      return r;
+    };
+    // Both grouped under one lead — fine.
+    expect(
+      kinds(build({ ask_group_id: GAP }, { ask_group_id: GAP }), {
+        arc: { groupingCoherent: true },
+      }),
+    ).toEqual([]);
+    // Neither grouped — equally fine.
+    expect(
+      kinds(build({ ask_group_id: null }, { ask_group_id: null }), {
+        arc: { groupingCoherent: true },
+      }),
+    ).toEqual([]);
+    // One grouped, one not — a message whose members disagree.
+    expect(
+      kinds(build({ ask_group_id: GAP }, { ask_group_id: null }), {
+        arc: { groupingCoherent: true },
+      }),
+    ).toEqual(['arc-grouping']);
+    // Two different groups across gaps the scenario says travel together.
+    expect(
+      kinds(build({ ask_group_id: GAP }, { ask_group_id: GAP2 }), {
+        arc: { groupingCoherent: true },
+      }),
+    ).toEqual(['arc-grouping']);
+  });
+
   test('arc closedBy: open past the deadline and late closes both fail', () => {
     const open = row({});
     open.ticks[0].nudgesAfter = [nudge({ status: 'asked', resolved_at: null })];

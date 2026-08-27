@@ -28,11 +28,19 @@ import {
   attributeAnswerToGap,
   createServer,
   dispatchForIdentity,
+  openQuestionsFor,
   safeEnvInt,
   TEAM_LEAD_TOOL_SCHEMAS,
   type ServerDeps,
 } from './server.js';
-import { createPendingNudge, listNudgesByStatus, markNudgeAsked, markNudgeQueued } from '../db/nudges.js';
+import {
+  createPendingNudge,
+  listNudgesByStatus,
+  markNudgeAsked,
+  markNudgeAskedGroup,
+  markNudgeGroupQueued,
+  markNudgeQueued,
+} from '../db/nudges.js';
 import { localDateISO } from '../schedule/availability.js';
 
 // Drive the MCP server over the SDK's in-memory transport (no network/stdio).
@@ -8083,7 +8091,7 @@ describe('record_field_note — an answer remembers its question', () => {
   });
 
   // An ASKED gap for `who` on this job — the state a real answer comes back to.
-  const askedGap = async (subjectRef: string, technicianId: string) => {
+  const askedGap = async (subjectRef: string, technicianId: string, question = 'How did it go?') => {
     const n = await createPendingNudge({
       tenantId,
       kind: 'overdue_visit_gap',
@@ -8092,7 +8100,7 @@ describe('record_field_note — an answer remembers its question', () => {
       context: { jobId },
     });
     if (!n) throw new Error('fixture nudge was not created');
-    await markNudgeQueued(n.id, tenantId, 'How did it go?');
+    await markNudgeQueued(n.id, tenantId, question);
     await markNudgeAsked(n.id, tenantId);
     return n;
   };
@@ -8238,5 +8246,225 @@ describe('record_field_note — an answer remembers its question', () => {
     ).resolves.toBeUndefined();
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
+  });
+
+  // ---- openQuestions: what the assistant is told is still open on this job ----
+
+  const clearGaps = async () =>
+    pg.query('update nudges set status = $1 where tenant_id = $2', ['answered', tenantId]);
+  const questionsOf = (data: unknown): string[] =>
+    ((data as { openQuestions?: { question: string }[] }).openQuestions ?? []).map(
+      (q) => q.question,
+    );
+
+  test('two asked gaps → the recorded answer carries BOTH, unfiltered', async () => {
+    // Deliberately NOT filtered to "the ones they didn't answer". Attribution
+    // declines to stamp at two-or-more asked, so the spine has no signal for
+    // which one this note closed — the agent judges it from what was said.
+    await clearGaps();
+    await askedGap('attr-oq-two-a', techMcpId, 'How did the visit go?');
+    await askedGap('attr-oq-two-b', techMcpId, 'What did the parts come to?');
+    const out = await call('record_field_note', {
+      text: 'swapped the igniter, ran it for ten minutes',
+      confirmed: { customerId },
+    });
+    expect(out.data.status).toBe('recorded');
+    // toEqual on the WHOLE entries, not just the texts: the payload must carry
+    // question and NOTHING else. No technician tool takes a gap id, and a ref in
+    // a person's face is the machine artifact the (re: …) anchor exists to keep
+    // out of the chat — so a leaked `nudgeId` has to fail here.
+    expect(
+      [...(out.data.openQuestions as { question: string }[])].sort((x, y) =>
+        x.question.localeCompare(y.question),
+      ),
+    ).toEqual([{ question: 'How did the visit go?' }, { question: 'What did the parts come to?' }]);
+  });
+
+  test('a grouped ask reads back as ONE question, not one per member', async () => {
+    // The batching case. Every member of an ask-group stores the same full
+    // grouped message, so a row-shaped payload would tell the agent it owed the
+    // person three follow-ups for one message it had already sent them.
+    await clearGaps();
+    const a = await createPendingNudge({
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef: 'attr-oq-grp-a',
+      technicianId: techMcpId,
+      context: { jobId },
+    });
+    const b = await createPendingNudge({
+      tenantId,
+      kind: 'job_cost_gap',
+      subjectRef: 'attr-oq-grp-b',
+      technicianId: techMcpId,
+      context: { jobId },
+    });
+    if (!a || !b) throw new Error('fixture nudges were not created');
+    const grouped = 'How did the visit go, and what did the parts come to?';
+    await markNudgeGroupQueued([a.id, b.id], tenantId, grouped, a.id);
+    await markNudgeAskedGroup(a.id, tenantId, a.id);
+
+    const out = await call('record_field_note', {
+      text: 'all done on site, will price the parts tomorrow',
+      confirmed: { customerId },
+    });
+    expect(out.data.status).toBe('recorded');
+    expect(questionsOf(out.data)).toEqual([grouped]);
+  });
+
+  test('another person’s asked gap on the same job is never reported', async () => {
+    await clearGaps();
+    await askedGap('attr-oq-mine', techMcpId, 'Did you need a second visit?');
+    await askedGap('attr-oq-theirs', strangerId, 'THEIR question — must not appear');
+    const out = await call('record_field_note', {
+      text: 'one trip was enough, customer signed off',
+      confirmed: { customerId },
+    });
+    expect(questionsOf(out.data)).toEqual(['Did you need a second visit?']);
+  });
+
+  test('a gap that has not gone out yet is never reported', async () => {
+    // pending and queued are both "the person has not seen this". Reporting one
+    // would have the assistant ask a question the office never sent.
+    await clearGaps();
+    await askedGap('attr-oq-sent', techMcpId, 'How long were you on site?');
+    const pending = await createPendingNudge({
+      tenantId,
+      kind: 'job_cost_gap',
+      subjectRef: 'attr-oq-pending',
+      technicianId: techMcpId,
+      context: { jobId },
+    });
+    const queued = await createPendingNudge({
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef: 'attr-oq-queued',
+      technicianId: techMcpId,
+      context: { jobId },
+    });
+    if (!pending || !queued) throw new Error('fixture nudges were not created');
+    await markNudgeQueued(queued.id, tenantId, 'QUEUED — not sent yet');
+
+    const out = await call('record_field_note', {
+      text: 'about two hours door to door',
+      confirmed: { customerId },
+    });
+    expect(questionsOf(out.data)).toEqual(['How long were you on site?']);
+  });
+
+  test('a duplicate note reports the duplicate and offers no follow-up', async () => {
+    // The second delivery wrote nothing, so there is no new answer to follow up
+    // on — and the follow-up already rode out with the delivery that landed.
+    await clearGaps();
+    await askedGap('attr-oq-dup', techMcpId, 'Anything outstanding on this one?');
+    const args = {
+      text: 'nothing outstanding, job is closed out',
+      confirmed: { customerId },
+    };
+    const first = await call('record_field_note', args);
+    expect(first.data.status).toBe('recorded');
+    expect(questionsOf(first.data)).toEqual(['Anything outstanding on this one?']);
+
+    const again = await call('record_field_note', args);
+    expect(again.data.status).toBe('duplicate');
+    expect(again.data.openQuestions).toBeUndefined();
+  });
+
+  test('a failure inside the follow-up lookup reports nothing and never throws', async () => {
+    // A REAL database error (a non-uuid technician id is rejected by Postgres),
+    // matching the attribution swallow above: by the time this runs the note is
+    // already in undeletable L1, so a lookup failure must cost the follow-up and
+    // nothing else.
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(
+      openQuestionsFor({ tenantId, technicianId: 'not-a-uuid', jobId }),
+    ).resolves.toEqual([]);
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  test('a ROSTER-LESS badge is offered no follow-up', async () => {
+    // Same fail-closed rule as attribution: no roster row, nothing to scope by.
+    await expect(openQuestionsFor({ tenantId, technicianId: null, jobId })).resolves.toEqual([]);
+    await expect(
+      openQuestionsFor({ tenantId, technicianId: techMcpId, jobId: undefined }),
+    ).resolves.toEqual([]);
+  });
+
+  test('nothing open → the key is ABSENT, not an empty list', async () => {
+    // The description and §0k both say a recorded answer MAY come back with
+    // openQuestions. Shipping `openQuestions: []` on every note contradicts that
+    // and hands the agent a field to reason about on the ordinary path, so the
+    // spread is conditional and this is what pins it. The duplicate case cannot
+    // pin it — that branch returns before the lookup ever runs.
+    await clearGaps();
+    const out = await call('record_field_note', {
+      text: 'topped up the refrigerant and checked the pressures',
+      confirmed: { customerId },
+    });
+    expect(out.data.status).toBe('recorded');
+    expect(out.data.openQuestions).toBeUndefined();
+    expect(Object.keys(out.data)).not.toContain('openQuestions');
+  });
+
+  test('a production-shaped question keeps its anchor — the agent is told not to echo it', async () => {
+    // Real `question` values are `questionDraft + anchorLine(row)` (planner.ts),
+    // so every entry ends with the code-printed "(re: Customer — Job)". The
+    // payload deliberately does NOT strip it: stripping would couple this module
+    // to the planner's anchor format, and a silent format change would stop
+    // stripping while still reading as working. The echo hazard is closed in the
+    // instructions instead — §0k clause 1a and the tool description both forbid
+    // repeating that line. This pins the shape the agent actually receives.
+    await clearGaps();
+    const production = 'How did the visit go?\n\n(re: Attribution Customer — Attribution job)';
+    await askedGap('attr-oq-anchored', techMcpId, production);
+    const out = await call('record_field_note', {
+      text: 'ran the system for twenty minutes, no faults',
+      confirmed: { customerId },
+    });
+    expect(questionsOf(out.data)).toEqual([production]);
+  });
+
+  test('the RESUME path carries openQuestions too — the common answer path', async () => {
+    // `commitNote` has THREE call sites and only the one-shot is covered above,
+    // yet this file's own attribution test calls resume "the common answer path:
+    // the note names no customer, the agent asks, they say which one". A change
+    // to the resume branch's result assembly could drop openQuestions on the
+    // path production actually uses with the suite still green.
+    await clearGaps();
+    await askedGap('attr-oq-resume', techMcpId, 'Did the part arrive?');
+    const staged = await call('record_field_note', { text: 'it turned up first thing' });
+    expect(staged.data.status).toBe('needs_identity');
+    const done = await call('record_field_note', {
+      confirmId: staged.data.confirmId,
+      confirmed: { customerId },
+    });
+    expect(done.data.status).toBe('recorded');
+    expect(questionsOf(done.data)).toEqual(['Did the part arrive?']);
+  });
+
+  test('the tool description carries the follow-up duty', async () => {
+    // Until the six live seats get their §0k refresh (manual, user-gated), this
+    // description is the ONLY instruction a seat agent has about openQuestions.
+    // Same pinning precedent as the agentContext clauses elsewhere in this file.
+    const tools = (await client.listTools()).tools;
+    const desc = tools.find((t) => t.name === 'record_field_note')?.description ?? '';
+    expect(desc).toContain('openQuestions');
+    // The loop-closer: asking without recording leaves the gap `asked` and the
+    // office re-asks the person what they just said.
+    expect(desc).toMatch(/RECORD their reply/);
+    // And the two tone rules that keep a machine artifact out of a human's face.
+    expect(desc).toMatch(/never say it came from the office/);
+    expect(desc).toMatch(/TWO SHORT PARAGRAPHS/);
+    expect(desc).toMatch(/\(re: …\)/);
+    // The follow-up reply names no customer on its own. Without this the agent
+    // is bounced to needs_identity and asks them WHICH customer, seconds after
+    // recording one for them — so the mechanism has to be named, not implied.
+    expect(desc).toMatch(/confirmed:\{customerId\}/);
+    const confirmedDesc =
+      (tools.find((t) => t.name === 'record_field_note')?.inputSchema as {
+        properties?: { confirmed?: { description?: string } };
+      })?.properties?.confirmed?.description ?? '';
+    expect(confirmedDesc).toMatch(/ALONE \(no confirmId\)/);
   });
 });

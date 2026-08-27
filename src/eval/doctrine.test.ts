@@ -167,6 +167,50 @@ describe('buildSystemPrompt', () => {
     expect(section[0].body).not.toContain('confirm FIRST');
   });
 
+  it('§0k closes the follow-up loop — ask AND record', () => {
+    // The section-level checks above catch a rename or a deletion of §0k; they
+    // do not see a CLAUSE going missing. This block is the only instruction the
+    // six live seats have once the fleet refresh lands, and the follow-up leg
+    // has two halves that fail differently:
+    //   - drop the record-duty (1b) and the agent asks a question, gets an
+    //     answer, writes nothing — the gap stays `asked` and the office re-asks
+    //     the technician the very thing they just said;
+    //   - drop the confirmed:{customerId} instruction and the reply, which names
+    //     no customer on its own, bounces to needs_identity — so the agent asks
+    //     them WHICH customer seconds after recording one for them.
+    const section = extractDoctrine(script).filter(
+      (s) => s.name === 'Questions and items from the office',
+    );
+    expect(section).toHaveLength(1);
+    const body = section[0].body;
+    expect(body).toContain('openQuestions');
+    expect(body).toMatch(/record it with record_field_note on the SAME job/);
+    expect(body).toMatch(/confirmed: \{customerId/);
+    // The list does not shrink as gaps are answered, so "what they said" has to
+    // mean the whole conversation or the agent re-asks what it already covered.
+    expect(body).toMatch(/everything they have said in this conversation/);
+    // …and the two rules that keep a machine artifact out of a human's face.
+    expect(body).toMatch(/never repeat the\s+"\(re: …\)" line/);
+    // The three form rules, all three learned from a live specimen (2026-08-25):
+    // the agent folded the ask onto the end of "Recorded. ✅", phrased it as
+    // "what the parts ran you on that freezer", and attributed it to the office.
+    expect(body).toMatch(/TWO SHORT PARAGRAPHS, not one block/);
+    // The blank line shapes the ONE message this runtime can send. Two separate
+    // texts are NOT reachable: `message` is a denied tool (~51s/turn) and the
+    // block chunker is size-triggered, so a ~60-char reply is always one block
+    // (verified against the OpenClaw docs, 2026-08-26). The doctrine must not
+    // promise the agent a split the channel will not perform.
+    expect(body).toMatch(/BLANK LINE/);
+    expect(body).not.toMatch(/arrive as two separate texts/);
+    // The tail that slipped through twice in production.
+    expect(body).toMatch(/on that one/);
+    expect(body).toMatch(/SIX WORDS OR FEWER/);
+    expect(body).toMatch(/What did the parts cost\?/);
+    expect(body).toMatch(/the office was also asking/);
+    expect(body).toMatch(/Never say where it came from/);
+    expect(body).toMatch(/never mention a queue, a list/i);
+  });
+
   it('carries no date outside the host-managed heading stamps', () => {
     // The companion check: every date in the prompt must be accounted for, so a
     // future edit that pastes a live date into the BODY is caught rather than

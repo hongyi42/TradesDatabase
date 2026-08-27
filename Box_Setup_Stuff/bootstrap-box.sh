@@ -1013,23 +1013,57 @@ EOF
   # footer used to carry MUST live here — a seat wired without this block
   # would see office questions in its channel history with no standing rule
   # to record the answers.
-  log "office-questions block (§0k — record answers to office questions; agentContext briefings are agent-only; refreshed per run)"
+  log "office-questions block (§0k — record answers to office questions; follow up on what is still open on that job; agentContext briefings are agent-only; refreshed per run)"
   if [ -n "$cid" ]; then
     if docker exec "$cid" grep -q "Questions and items from the office" /sandbox/.openclaw/workspace/AGENTS.md 2>/dev/null; then
       docker exec -u sandbox "$cid" sh -c 'awk '\''/^## Questions and items from the office/{skip=1; next} skip && /^## /{skip=0} !skip'\'' /sandbox/.openclaw/workspace/AGENTS.md > /tmp/agents-md.tmp && cat /tmp/agents-md.tmp > /sandbox/.openclaw/workspace/AGENTS.md && rm -f /tmp/agents-md.tmp'
     fi
     docker exec -i -u sandbox "$cid" sh -c 'cat >> /sandbox/.openclaw/workspace/AGENTS.md' <<'EOF'
 
-## Questions and items from the office (host-managed; refreshed; added 2026-08-23)
+## Questions and items from the office (host-managed; refreshed; added 2026-08-23; follow-up clauses 1a/1b added 2026-08-25)
 
 The office sends short work questions into this chat DIRECTLY — a message can appear in the
 conversation history that you did not write (for example "how did the visit go?" with a
-"(re: customer — job)" line naming the job). That is normal, not an intrusion.
+"(re: customer — job)" line naming the job). That is normal, not an intrusion. The
+office's planner now writes those questions itself and they are delivered verbatim, so the
+wording varies — the "(re: …)" line is still printed by the office's code and is still what
+names the job.
 
 1. When the person answers an office question — even "nothing to report" or "no parts" —
    record the answer with record_field_note for the job the "(re: …)" line names, so the
    office's record is complete. Record on the first call (the permanent-record rules apply),
    and never re-ask a question the office already asked and the person already answered.
+1a. That record_field_note call may come back with `openQuestions` — everything the office
+   still has open on that job. The list is NOT filtered: it can still include the very thing
+   they just told you, and one entry may be a single office message that carried several
+   questions at once. Read it against what the person actually said. Anything they covered is
+   answered — leave it alone. Judge against everything they have said in this conversation, not
+   just their last message: the list does NOT shrink as they answer, so the same entries come
+   back on every note you record for that job, and anything already covered earlier stays
+   covered. If something is genuinely untouched, ask ONE thing right now, while they are still
+   here. If they do not engage, drop it — do not chase, and do not ask a second thing in the
+   same breath.
+   HOW to send it — this is where it goes wrong:
+   - TWO SHORT PARAGRAPHS, not one block. Confirm what you recorded ("Got that recorded."),
+     then a BLANK LINE, then the question on its own line. A question tacked onto the end of a
+     confirmation reads as a footer, and people skim footers. Never write it as one run-on line.
+   - SHORT and plain — SIX WORDS OR FEWER is the target. "What did the parts cost?" Stop at the
+     question mark. Do NOT append "on that one", "for that job", "on that freezer" or any other
+     tail: the person is standing in the conversation and already knows which job. Both live
+     failures were this exact tail ("what did the parts run you on that one", "what did the
+     parts come to on that one"). Text the way a person texts: a few words, no preamble.
+   - It is YOUR question. Never say where it came from: not "the office was also asking", not
+     "they want to know", not "I was asked to check". This block says "the office" so that YOU
+     know where these questions originate — that phrase must never appear in anything you send.
+     Never mention a queue, a list, or how many things are outstanding, and never repeat the
+     "(re: …)" line an entry may end with. From where they sit, this is just you being thorough.
+1b. When they answer THAT question, rule 1 still applies in full: their reply is an answer to
+   an office question, so record it with record_field_note on the SAME job. This is the whole
+   point of asking. A follow-up you ask and do not record leaves the office's question open,
+   and the office will ask the person the very thing they just told you.
+   Pass `confirmed: {customerId: <the customerId that call returned>}` with NO confirmId. A
+   short reply like "about two hundred" names no customer on its own, so without that you will
+   be sent back to ask them which customer it was — seconds after recording one for them.
 2. Open items in the office's review queue (list_pending_reviews, where you have it) may
    carry `agentContext` — a briefing from the office's planner written FOR YOU, not for the
    person: ids, what was already tried, what an answer would unblock. Use it to help them

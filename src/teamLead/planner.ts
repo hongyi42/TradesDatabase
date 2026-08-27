@@ -7,8 +7,11 @@ import {
   listNudgesByStatus,
   listTenantIdsWithTelegramBindings,
   markNudgeOutcome,
+  markNudgeGroupQueued,
+  markNudgeQueued,
   OPEN_NUDGE_STATUSES,
   recordNudgeDecisions,
+  setNudgeAnsweredBy,
   setNudgeSchedule,
   type JobEvidenceRow,
   type MoneyEvent,
@@ -29,7 +32,7 @@ import {
   NUDGE_ESCALATE_HOURS,
   NUDGE_ESCALATE_MAX_HOURS,
 } from '../jobs/watchers.js';
-import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
+import { localDateISO, localTimeHHMM, parseAsUtc } from '../schedule/availability.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
 import { TEAM_LEAD_REF } from './identity.js';
 
@@ -103,14 +106,27 @@ export interface PlannerDecision {
   // Manager-facing copy, escalate only. Survives the rails or is dropped
   // whole; a bad note never blocks the handover.
   handoffNote?: string | null;
-  // Technician-facing question, send only. Compose uses it in place of its own
-  // model call; a dropped draft costs the draft, never the send.
+  // Technician-facing question, send only — the ENTIRE delivered message since
+  // the collapse (plan 2026-08-24): an applied send queues it verbatim. A
+  // missing or rail-dropped question refuses the send; no fallback author
+  // exists any more.
   questionDraft?: string | null;
   // Machine-facing briefing for the manager's ASSISTANT, escalate only (the
   // fourth audience, fourth rail — plan 2026-08-23). Rides the review item's
   // detail and is pulled via list_pending_reviews; NEVER rendered to a human.
   // Dropped whole by its rail; a bad briefing never blocks the handover.
   agentContext?: string | null;
+  // Every gap this ONE message covers, send only, INCLUDING nudgeId itself
+  // (plan 2026-08-25, Phase 3). Absent or length<=1 = an ordinary single ask.
+  // `nudgeId` stays the LEAD: its context prints the (re: …) anchor, and its id
+  // becomes the group id, the delivery item and the box's sent-marker.
+  nudgeIds?: string[];
+  // The capture whose words closed this gap — DERIVED BY CODE from the citation
+  // the rails already verified, never supplied by the model (plan 2026-08-25,
+  // Phase 1). Close only, and only for basis 'evidence': a record-basis close
+  // quotes the ledger, which no person spoke. Null when the quote's capture
+  // carries no technician_ref — see evidenceCaptureIds.
+  answeredByCaptureId?: string | null;
 }
 
 // A decision the code rails refused, kept so a shadow run reports what the model
@@ -125,11 +141,33 @@ export interface DroppedDecision {
   // wanted to do and could not.
   confidence?: 'low' | 'medium' | 'high';
   reason?: string;
+  // The gaps a REFUSED grouped send named. Without it the siblings of a refused
+  // group fall through to the `unmentioned` filler — the same "considered and
+  // never seen collapse into one" defect the shadow fan-out exists to prevent,
+  // on the refusal path.
+  nudgeIds?: string[];
 }
+
+// What became of ONE firm on ONE tick. Every firm the sweep considered gets an
+// entry, not just the ones the model ran for — the flat skippedNoGaps /
+// skippedWindow / tenantErrors counters say HOW MANY were passed over but never
+// WHICH, so "has this firm gone quiet because it has no work, or because its
+// ticks have been failing?" was unanswerable from the record.
+export type PlannerTenantOutcome =
+  | 'planned' // the model ran for this firm
+  | 'no_gaps' // nothing open worth planning about
+  | 'out_of_window' // gaps open, but outside the firm's asking hours
+  | 'error'; // the tick failed for this firm
 
 export interface PlannerTenantPlan {
   tenantId: string;
+  outcome: PlannerTenantOutcome;
   gaps: number;
+  // REQUIRED even on non-planned outcomes (empty arrays / zeroes), never
+  // optional. Making them optional would push `possibly undefined` onto ~30
+  // existing assertions that read plans[0].dropped[0].why, turning an additive
+  // change into churn across the suite for no gain in expressiveness — the
+  // outcome field already says which entries carry real work.
   decisions: PlannerDecision[];
   dropped: DroppedDecision[];
   applied: number;
@@ -139,6 +177,25 @@ export interface PlannerTenantPlan {
   toolCalls: number;
   ms: number;
 }
+
+// The zero row for a firm the model never ran for.
+const idlePlan = (
+  tenantId: string,
+  outcome: PlannerTenantOutcome,
+  gaps: number,
+): PlannerTenantPlan => ({
+  tenantId,
+  outcome,
+  gaps,
+  decisions: [],
+  dropped: [],
+  applied: 0,
+  refusedAtApply: 0,
+  recorded: 0,
+  turns: 0,
+  toolCalls: 0,
+  ms: 0,
+});
 
 export interface PlannerSummary {
   mode: PlannerMode;
@@ -172,6 +229,10 @@ export const EVIDENCE_TEXT_CHARS = 600;
 // Per gap, newest last. A technician who replied did so in the first message or
 // two; forty of them is a different problem than this one.
 export const EVIDENCE_PER_GAP = 6;
+// How much of a queued question is echoed back into the gap view. See the call
+// site: it must cover a grouped message plus its anchor, or the planner reads a
+// truncated version of its own ask.
+export const QUESTION_SHOWN_CHARS = 1450;
 
 // The per-turn output budget, and the think that has to fit inside it.
 //
@@ -211,6 +272,18 @@ export interface PlannerDeps {
   recordDecisions?: typeof recordNudgeDecisions;
   setSchedule?: typeof setNudgeSchedule;
   markOutcome?: typeof markNudgeOutcome;
+  // The collapse (plan 2026-08-24): `send` queues the planner's own question as
+  // the delivered message — the write compose used to own. Injected so tests
+  // never touch the database.
+  markQueued?: typeof markNudgeQueued;
+  // The grouped variant (plan 2026-08-25, Phase 3): one message, N rows, one
+  // guarded write. Injected like every other writer so the unit suite never
+  // touches the database.
+  markGroupQueued?: typeof markNudgeGroupQueued;
+  // The capture->gap link a close derives from its own verified quote (plan
+  // 2026-08-25, Phase 1). Injected like every other writer so a test never
+  // touches the database.
+  stampAnswer?: typeof setNudgeAnsweredBy;
   // The team lead's read tools and the door they dispatch through. Injected so a
   // test never needs the MCP server — and so the planner cannot reach any tool
   // its caller did not hand it.
@@ -256,12 +329,15 @@ function hoursBetween(fromIso: string, toMs: number): number {
 // when there is none read as the same voice.
 //
 // `tz` is the firm's zone for a REAL-UTC instant (asked_at), and 'UTC' for a
-// naive-local string that is already in the firm's clock (endsAtLocal, written
-// that way by the watcher). Getting that backwards shifts every printed time,
-// so the two call sites below name which they are passing.
-function clockLabel(iso: string | null | undefined, tz: string): string | null {
+// firm wall-clock string already in the firm's clock (endsAtLocal, written that
+// way by the watcher and stamped `Z` by naiveLocalISO — it is offset-carrying,
+// not offset-less). Getting that backwards shifts every printed time, so the
+// two call sites below name which they are passing; parseAsUtc guards the other
+// half, that the string itself carries an offset at all (see its header in
+// schedule/availability.ts — a bare stamp is read on the HOST's clock).
+export function clockLabel(iso: string | null | undefined, tz: string): string | null {
   if (!iso) return null;
-  const d = new Date(iso);
+  const d = new Date(parseAsUtc(iso));
   if (Number.isNaN(d.getTime())) return null;
   try {
     const day = new Intl.DateTimeFormat('en-US', {
@@ -328,6 +404,17 @@ export interface GapView {
   nudge: Nudge;
   jobId: string | null;
   evidenceText: string[]; // exactly the strings rendered into the prompt
+  // INDEX-ALIGNED with evidenceText: evidenceCaptureIds[i] is the capture that
+  // produced evidenceText[i]. This is what lets a verified citation name its own
+  // source without the model asserting anything (plan 2026-08-25, Phase 1).
+  //
+  // NULL for any capture a technician did not SPEAK — see
+  // TECHNICIAN_SPOKEN_CHANNELS. The evidence read is job-scoped, not
+  // person-scoped (listJobEvidenceSince), so this pool also holds customer
+  // phone calls, inbound email and manager notes. `answered_by_capture_id` is
+  // the whole definition of mv_gap_outcomes.closed_by_technician, so stamping
+  // one of those would silently rewrite what that metric counts.
+  evidenceCaptureIds: (string | null)[];
   // Whether the HOLE this gap names is closed in the record, as CODE sees it —
   // independent of whether anybody replied. Null when the kind has no
   // record-level test (a visit gap's hole is "no note", and the sweep already
@@ -405,6 +492,39 @@ function historyLine(history: NudgeDecision[], nowMs: number, tz: string): strin
   );
 }
 
+// Did a BADGE-HOLDER speak this capture through an assistant-write channel?
+//
+// Named for what it actually tests, per round-2 review. It does NOT prove the
+// speaker was a technician rather than a manager: MANAGER_TOOLS includes
+// record_field_note and record_standing_fact, so a manager's own note lands
+// `technician_note` with the manager's ref and is stamped like anyone else's.
+// ACCEPTED, alongside the metric broadening the plan already records — telling
+// the two apart needs a roster/tier read, and this phase adds no read. The
+// evidence pool is job-scoped rather than person-scoped for the same reason,
+// so technician B's note may stamp a gap asked of technician A.
+//
+// What it DOES prove is that the words came in through a channel only a person's
+// own assistant writes, which is the part that keeps the pool's foreign rows out.
+//
+// A non-null `technician_ref` is NOT the test, and assuming it was is a live
+// trap this guard was written for: the phone worker stamps the sentinel
+// 'phone-line' on a customer's call (calls/worker.ts) and the mail ingest stamps
+// the MAILBOX OWNER's ref on a customer's emailed reply (email/ingest.ts), so
+// both arrive job-linked with a ref and neither is the technician answering.
+// Only the three channels a person's own assistant writes through are.
+//
+// This gates `evidenceCaptureIds` and therefore `answered_by_capture_id`, which
+// IS the definition of mv_gap_outcomes.closed_by_technician — a customer's email
+// stamped here would rewrite that metric silently. The evidence stays SHOWN to
+// the planner either way; only the stamp is withheld.
+const TECHNICIAN_SPOKEN_CHANNELS: ReadonlySet<string> = new Set([
+  'technician_note',
+  'technician_voice',
+  'technician_photo',
+]);
+const technicianSpoke = (c: JobEvidenceRow['capture']): boolean =>
+  !!c.technician_ref && TECHNICIAN_SPOKEN_CHANNELS.has(c.channel);
+
 // The evidence bound is CODE's, not the model's: only what landed after the ask,
 // on that gap's job. A planner that could decide for itself what counted as
 // evidence could mark a gap answered by something that predates the question.
@@ -430,6 +550,11 @@ export function buildGapView(
         .slice(-EVIDENCE_PER_GAP);
 
   const evidenceText = relevant.map((e) => flat(e.capture.raw_text ?? '', EVIDENCE_TEXT_CHARS));
+  // Same map, same order — the alignment IS the mechanism, so it is built here
+  // rather than reconstructed later from the strings.
+  const evidenceCaptureIds = relevant.map((e) =>
+    technicianSpoke(e.capture) ? e.capture.id : null,
+  );
 
   // Spine-side attribution (plan 2026-08-22, Phase 1). No new read and no new
   // parameter: the stamp is a column on the Nudge this function already holds.
@@ -496,7 +621,12 @@ export function buildGapView(
   ];
   if (n.asked_at) lines.push(`  asked: ${hoursBetween(n.asked_at, nowMs)}h ago`);
   else lines.push('  asked: not yet');
-  if (n.question) lines.push(`  the question asked: ${flat(n.question, 400)}`);
+  // Sized for the LARGEST message that can be queued, not for a single question:
+  // the grouped cap (1200) plus the anchor's own ceiling (customer 80 + job 120
+  // + framing). At 400 a grouped message would be shown to the planner with its
+  // last questions cut off — and it judges answers against what it thinks it
+  // asked.
+  if (n.question) lines.push(`  the question asked: ${flat(n.question, QUESTION_SHOWN_CHARS)}`);
   if (n.kind === 'job_cost_gap') {
     lines.push(
       recordFilled
@@ -591,6 +721,7 @@ export function buildGapView(
     nudge: n,
     jobId,
     evidenceText,
+    evidenceCaptureIds,
     recordFilled,
     moneyOnRecord,
     history,
@@ -707,7 +838,14 @@ function cleanPlannerText(
 ): { note: string | null; why?: string } {
   if (raw === undefined || raw === null) return { note: null };
   if (typeof raw !== 'string') return { note: null, why: `${opts.label} was not a string` };
-  const note = raw.replace(/\s+/g, ' ').trim();
+  // Control characters strip too, not just whitespace runs: this text is queued
+  // verbatim and decoded on the box, and `\s` does not match NUL or most C0
+  // controls. Compose used to apply this via `flatten`; with compose gone the
+  // rail is the only crossing left.
+  const note = raw
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!note) return { note: null };
   if (note.length > opts.maxLen) {
     return { note: null, why: `${opts.label} over ${opts.maxLen} characters` };
@@ -723,6 +861,37 @@ function cleanPlannerText(
 }
 
 /**
+ * The ANCHOR line every delivered question carries: "(re: customer — job)".
+ *
+ * NOT decoration, and NOT a date frame (the collapse deleted that): this is the
+ * seam the technician's own agent keys on. Standing box doctrine — AGENTS.md
+ * §"Questions and items from the office", refreshed on all six seats 2026-08-23
+ * — tells that agent to file the reply with record_field_note "for the job the
+ * (re: …) line names", and to ASK rather than guess when it cannot tell. Ship a
+ * bare question and a "yeah, all done" reply resolves to no job, the answer is
+ * never filed, and the gap escalates telling a manager nobody responded — the
+ * false-claim class the escalation rules exist to prevent.
+ *
+ * Code-printed from the row's own context, never model-written, for the same
+ * reason the old frame was: it must be exact, and it must not cost the model a
+ * rail. Returns '' when the row cannot name itself, so a thin row is delivered
+ * bare rather than with a fabricated anchor.
+ */
+export function anchorLine(n: Nudge): string {
+  const customer = ctxStr(n, 'customerName');
+  const job = ctxStr(n, 'jobTitle');
+  if (!customer && !job) return '';
+  const flat = (v: string, max: number) =>
+    v
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, max);
+  const label = customer && job ? `${flat(customer, 80)} — ${flat(job, 120)}` : flat((customer ?? job)!, 120);
+  return `\n\n(re: ${label})`;
+}
+
+/**
  * The technician-facing question, or null.
  *
  * Same date rail as the handoff note, and higher stakes: this reaches a person
@@ -731,11 +900,30 @@ function cleanPlannerText(
  * (`compose.ts:263-268`) — a planner-written question is not more trusted than
  * a compose-written one, only cheaper.
  */
+// GROUPED SENDS GET MORE ROOM. 500 chars was sized for one question; a message
+// covering three would be refused for length alone, and a refused question
+// refuses the whole group (there is no fallback author). 250 per extra gap,
+// hard-capped: a technician's phone is not a report, and an unbounded cap would
+// make "one message" a way to send an essay.
+export const QUESTION_MAX_CHARS = 500;
+export const QUESTION_MAX_CHARS_PER_EXTRA_GAP = 250;
+export const QUESTION_MAX_CHARS_CEILING = 1200;
+export function questionCapFor(members: number): number {
+  return Math.min(
+    QUESTION_MAX_CHARS + QUESTION_MAX_CHARS_PER_EXTRA_GAP * Math.max(0, members - 1),
+    QUESTION_MAX_CHARS_CEILING,
+  );
+}
+
 export function cleanQuestionDraft(
   raw: unknown,
   dateLabels: string[],
+  members: number = 1,
 ): { note: string | null; why?: string } {
-  const base = cleanPlannerText(raw, dateLabels, { label: 'question', maxLen: 500 });
+  const base = cleanPlannerText(raw, dateLabels, {
+    label: 'question',
+    maxLen: questionCapFor(members),
+  });
   if (!base.note) return base;
   if (/note for the assistant/i.test(base.note)) {
     return { note: null, why: 'question tried to impersonate the assistant footer' };
@@ -780,7 +968,15 @@ export function validateDecisions(
         ? d.confidence
         : 'low';
     const reason = typeof d.reason === 'string' ? flat(d.reason, 300) : '';
-    const push = (why: string) => dropped.push({ nudgeId, action, why, confidence, reason });
+    const push = (why: string, members?: string[]) =>
+      dropped.push({
+        nudgeId,
+        action,
+        why,
+        confidence,
+        reason,
+        ...(members && members.length > 1 ? { nudgeIds: members } : {}),
+      });
 
     const view = views.get(nudgeId);
     if (!view) {
@@ -797,9 +993,10 @@ export function validateDecisions(
     }
 
     // `send` and `hold` only MEAN something on a row that has not gone out yet.
-    // Both write `not_before`, and `not_before` gates COMPOSE and nothing else
-    // (compose.ts:190) — the delivery pull does not read it and an asked row has
-    // no compose left to gate. Applying either to a queued or asked row would
+    // `send` QUEUES the question (the collapse) and `hold` writes `not_before`,
+    // which since the collapse is the planner's own pacing note and nothing
+    // else — the delivery pull does not read it. Applying either to a queued or
+    // asked row would
     // return the row happily and change nothing anybody could observe: the
     // silent no-op this phase exists to make impossible. Observed live
     // 2026-08-20, when the planner chose `send` on a row that had been asked
@@ -858,21 +1055,99 @@ export function validateDecisions(
       }
     }
 
-    // `leave` GETS A STATUS RAIL TOO (final-review finding). On a PENDING row it
-    // is a silent no-op with the opposite of its stated effect: it writes
-    // nothing, so `not_before` stays null, and compose — which runs at the next
-    // lifecycle step of the SAME tick and gates on `not_before` alone — sends the
-    // question immediately. The model would have said "I am waiting" and caused
-    // an ask, with `leave / applied` in the log. That is exactly the silent-no-op
-    // class the send/hold rail above exists to make impossible.
+    // THE GROUP RAILS (plan 2026-08-25, Phase 3). Their own `action === 'send'`
+    // guard: the status branch above is SHARED with `hold`, and a hold naming
+    // nudgeIds means nothing.
     //
-    // Queued and asked are both fine: nothing composes a queued row, and an asked
-    // row has already gone out, so "I looked and I am waiting" is true of both.
+    // Code checks only that a group is COHERENT, never whether to form one —
+    // that is the planner's judgment, and the whole point of the verb. Coherence
+    // is not a preference: the anchor is printed from the LEAD's context and
+    // delivery goes to ONE person's chat, so a group spanning two jobs would
+    // ship a message anchored to the wrong record, and one spanning two people
+    // would mark somebody's gap asked on a message they never saw.
+    let groupIds: string[] | undefined;
+    if (action === 'send' && Array.isArray(d.nudgeIds)) {
+      const raw = d.nudgeIds.filter((v): v is string => typeof v === 'string');
+      const ids = [...new Set(raw)];
+      // The membership check runs whenever nudgeIds is present AT ALL, not only
+      // for a real group: `nudgeIds: ['n2']` on a decision whose nudgeId is 'n1'
+      // is the model naming a gap it is not deciding about, and treating that as
+      // an ordinary single send would silently ask the wrong question's gap.
+      if (ids.length > 0 && !ids.includes(nudgeId)) {
+        push(
+          'groups gaps without naming its own gap — nudgeIds must include this entry\'s own ' +
+            'nudgeId, which is the one whose customer and job the message is labelled with',
+        );
+        continue;
+      }
+      if (ids.length > 1) {
+        const leadTech = view.nudge.technician_id;
+        const leadJob = ctxStr(view.nudge, 'jobId');
+        // "No job" is not a job they share. Both null would otherwise satisfy
+        // the equality below while `anchorLine` prints the lead's customer
+        // alone, labelling the message with one record and asking about
+        // another. Unreachable from the shipped detectors (both always write
+        // jobId and technician_id) — this is the layer that has to survive one
+        // that does not.
+        if (!leadTech || !leadJob) {
+          push(
+            'groups gaps whose job or person the record does not name — a message can only be ' +
+              'anchored to a job it can identify',
+            ids,
+          );
+          continue;
+        }
+        let bad = false;
+        for (const memberId of ids) {
+          const member = views.get(memberId);
+          if (!member) {
+            push(`groups a gap that was not in this plan (${memberId})`, ids);
+            bad = true;
+            break;
+          }
+          if (seen.has(memberId)) {
+            push(`groups a gap that already has its own decision (${memberId})`, ids);
+            bad = true;
+            break;
+          }
+          if (member.nudge.status !== 'pending') {
+            push(
+              `groups ${memberId}, which has already gone out — only gaps still waiting to be ` +
+                'asked can share a message',
+              ids,
+            );
+            bad = true;
+            break;
+          }
+          if (member.nudge.technician_id !== leadTech || ctxStr(member.nudge, 'jobId') !== leadJob) {
+            push(
+              'groups gaps that are not the same person on the same job — one message can only ' +
+                'be anchored to one job and delivered to one person',
+              ids,
+            );
+            bad = true;
+            break;
+          }
+        }
+        if (bad) continue;
+        groupIds = ids;
+      }
+    }
+
+    // `leave` GETS A STATUS RAIL TOO (final-review finding, re-grounded for the
+    // collapse). On a PENDING row "leave" records "I am waiting" with no horizon
+    // while nothing will ever send the question — the planner is the only author
+    // now, so an unowned wait is a gap drifting toward the 18h never-asked
+    // handoff with a log line claiming it was considered. Waiting on a pending
+    // row must be `hold` with a time; releasing it must be `send`.
+    //
+    // Queued and asked are both fine: a queued row is already on its way, and an
+    // asked row has already gone out, so "I looked and I am waiting" is true of
+    // both.
     if (action === 'leave' && view.nudge.status === 'pending') {
       push(
-        'leave on a gap that has NOT gone out yet — it would not hold anything, because a ' +
-          'pending question is sent as soon as it is composed. Use hold (with a time) to wait, ' +
-          'or send to release it now.',
+        'leave on a gap that has NOT gone out yet — nothing goes out until YOU send it, so ' +
+          '"leave" would let it drift. Use hold (with a time) to wait, or send to release it now.',
       );
       continue;
     }
@@ -882,6 +1157,7 @@ export function validateDecisions(
     // SHOWED the model is refused — ambiguity defaults to open, because a
     // false-open is loud and cheap and a false-close is silent.
     let citation: string | null = null;
+    let answeredByCaptureId: string | null = null;
     let basis: 'evidence' | 'record' | undefined;
     if (action === 'close') {
       // A gap names a HOLE IN THE RECORD, and a hole can close two ways: somebody
@@ -924,7 +1200,16 @@ export function validateDecisions(
         continue;
       }
       const shown = view.evidenceText.map(norm);
-      if (!shown.some((text) => text.includes(wanted))) {
+      // findIndex, not some: the same check, but it keeps WHICH note matched so
+      // the close can stamp its own source (plan 2026-08-25, Phase 1).
+      //
+      // TIE-BREAK, known and fail-safe (round-2 review): when the same phrase
+      // appears on two shown lines this names the FIRST. If that one is foreign
+      // (a customer email quoting a figure the technician later repeats) the id
+      // is withheld and the close still stands — a missing link, never a wrong
+      // one, which is the direction this whole helper errs in.
+      const hit = shown.findIndex((text) => text.includes(wanted));
+      if (hit === -1) {
         push('close whose citation does not appear in the evidence');
         continue;
       }
@@ -944,6 +1229,9 @@ export function validateDecisions(
       }
       usedQuotes.add(wanted);
       citation = quote;
+      // Null when that capture has no technician_ref — the guard lives on the
+      // view, where the capture row was still in hand.
+      answeredByCaptureId = view.evidenceCaptureIds[hit] ?? null;
     }
 
     let notBefore: string | null = null;
@@ -1028,13 +1316,17 @@ export function validateDecisions(
     }
 
     seen.add(nudgeId);
+    // Every member is spoken for by THIS decision, so none of them collects an
+    // `unmentioned` tick mark and none can take a second decision later in the
+    // same plan.
+    for (const memberId of groupIds ?? []) seen.add(memberId);
     // Escalate only. A note on any other action would never be read: nothing
     // else in the ladder puts a sentence in front of a manager.
     // Send only. A question on any other action would be written, stored and
     // never read — compose only ever looks at an applied `send`.
     let questionDraft: string | null = null;
     if (action === 'send') {
-      const q = cleanQuestionDraft(d.question, view.dateLabels);
+      const q = cleanQuestionDraft(d.question, view.dateLabels, groupIds?.length ?? 1);
       questionDraft = q.note;
       if (q.why) noteDrops.push(`${nudgeId}: ${q.why}`);
     }
@@ -1064,6 +1356,8 @@ export function validateDecisions(
       ...(handoffNote ? { handoffNote } : {}),
       ...(agentContext ? { agentContext } : {}),
       ...(questionDraft ? { questionDraft } : {}),
+      ...(groupIds ? { nudgeIds: groupIds } : {}),
+      ...(answeredByCaptureId ? { answeredByCaptureId } : {}),
       confidence,
       reason,
     });
@@ -1120,16 +1414,73 @@ async function applyDecision(
   nowIso: string,
   setSchedule: typeof setNudgeSchedule,
   markOutcome: typeof markNudgeOutcome,
-): Promise<{ outcome: 'applied' | 'refused'; detail?: string }> {
+  markQueued: typeof markNudgeQueued,
+  markGroupQueued: typeof markNudgeGroupQueued,
+  stampAnswer: typeof setNudgeAnsweredBy,
+  // Code-printed, from the gap's own row (the caller holds the view). Empty when
+  // the row cannot name itself — a thin row ships bare rather than fabricating.
+  anchor: string,
+): Promise<{ outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[] }> {
   const moved = 'the gap changed state between the plan and the write — nothing was applied';
   const done = (row: Nudge | null): { outcome: 'applied' | 'refused'; detail?: string } =>
     row ? { outcome: 'applied' } : { outcome: 'refused', detail: moved };
   switch (d.action) {
-    case 'send':
-      // `null` CLEARS the hold — the deliberate other half of setNudgeSchedule's
-      // undefined/null distinction ("forget what I said last tick"). Pending-only
-      // guard repeats the rail, because the row can move in between.
-      return done(await setSchedule(d.nudgeId, tenantId, { notBefore: null }, ['pending']));
+    case 'send': {
+      // The planner's words ARE the delivered message (the collapse, plan
+      // 2026-08-24): queueing them verbatim is the whole action. No surviving
+      // question — never written, or dropped by the date rail — means there is
+      // nothing to deliver and no fallback author exists any more, so the send
+      // is refused loudly and the model rewrites it next tick. Pending-only
+      // guard lives inside markNudgeQueued, because the row can move in between.
+      if (!d.questionDraft) {
+        return {
+          outcome: 'refused',
+          detail:
+            'send needs `question` — it was missing or the date rail dropped it; ' +
+            'rewrite it using only the dates you were given',
+        };
+      }
+      // The anchor rides along, code-printed: what is stored IS what is sent
+      // (④b), and the technician's agent files the reply against the job this
+      // line names. For a GROUP it is the LEAD's anchor — which is exactly why
+      // the rails refuse a group spanning two jobs.
+      const message = `${d.questionDraft}${anchor}`;
+      const group = d.nudgeIds && d.nudgeIds.length > 1 ? d.nudgeIds : null;
+      const movedRows = group
+        ? await markGroupQueued(group, tenantId, message, d.nudgeId)
+        : [await markQueued(d.nudgeId, tenantId, message)].filter((r): r is Nudge => !!r);
+      const movedIds = movedRows.map((r) => r.id);
+      // A hold this send overrides must be CLEARED, or the gap view keeps
+      // telling the planner "currently held until …" about a question already
+      // with the person. Best-effort and deliberately unguarded on its result:
+      // the ask has landed either way, and a stale hold is a display defect, not
+      // a lost question — never fail an applied send on this. Every member that
+      // moved, not just the lead: each carries its own not_before.
+      for (const row of movedRows) {
+        if (!row.not_before) continue;
+        try {
+          await setSchedule(row.id, tenantId, { notBefore: null }, ['queued']);
+        } catch (err) {
+          console.error(`[planner] ${row.id}: queued, but clearing its stale hold failed`, err);
+        }
+      }
+      // THE LEAD DECIDES THE VERDICT. buildNudgeDelivery serves a group only
+      // through the row that names it (`id = ask_group_id`) and freezes a
+      // leaderless group, so a partial move that lost the lead ships NOTHING —
+      // reporting that as applied would be the silent no-op these rails exist to
+      // make impossible. `movedIds` carries the per-member truth to the recorder.
+      if (!movedIds.includes(d.nudgeId)) {
+        return {
+          outcome: 'refused',
+          detail: group
+            ? `${movedRows.length}/${group.length} of the group moved, but its lead did not — ` +
+              moved
+            : moved,
+          movedIds,
+        };
+      }
+      return { outcome: 'applied', movedIds };
+    }
     case 'hold':
       return done(
         await setSchedule(d.nudgeId, tenantId, { notBefore: d.notBefore ?? null }, ['pending']),
@@ -1170,7 +1521,22 @@ async function applyDecision(
         d.basis === 'record'
           ? `closed on the record — ${d.citation}`
           : `answered — "${d.citation}"`;
-      return done(await markOutcome(d.nudgeId, tenantId, 'answered', resolution));
+      const closed = await markOutcome(d.nudgeId, tenantId, 'answered', resolution);
+      // The link the citation already proved, recorded AFTER the close actually
+      // moved the row — a close that lost its race has nothing to attribute.
+      // Best-effort and never allowed to fail the close: attributeAnswerToGap's
+      // own doctrine, and for the same reason ("a lost link is a lost link").
+      // setNudgeAnsweredBy is first-write-wins, so a record-time stamp already
+      // on the row wins and this is a no-op — which is exactly the composition
+      // the plan's keep-both decision rests on.
+      if (closed && d.answeredByCaptureId) {
+        try {
+          await stampAnswer(d.nudgeId, tenantId, d.answeredByCaptureId);
+        } catch (err) {
+          console.error(`[planner] ${d.nudgeId}: closed, but stamping its answer failed`, err);
+        }
+      }
+      return done(closed);
     }
   }
 }
@@ -1191,6 +1557,9 @@ export async function runPlanner(
   const recordDecisions = deps.recordDecisions ?? recordNudgeDecisions;
   const setSchedule = deps.setSchedule ?? setNudgeSchedule;
   const markOutcome = deps.markOutcome ?? markNudgeOutcome;
+  const markQueued = deps.markQueued ?? markNudgeQueued;
+  const markGroupQueued = deps.markGroupQueued ?? markNudgeGroupQueued;
+  const stampAnswer = deps.stampAnswer ?? setNudgeAnsweredBy;
   const specs = deps.specs ?? NUDGE_KIND_SPECS;
   const sweepLive = deps.sweepLive ?? true;
   const tools = deps.tools ?? [];
@@ -1230,6 +1599,16 @@ export async function runPlanner(
     // per-tenant — the declaration is inside this loop body, not above it — so a
     // tenant never sees the previous one's views.
     const views = new Map<string, GapView>();
+    // ONE entry per firm per tick, guaranteed — the invariant the tick record
+    // and its report lean on (plans.length === tenants). Without this flag a
+    // throw AFTER the planned push (the shadow logging block sits there) would
+    // add a second entry for the same firm, and a report grouping by tenantId
+    // would double-count it.
+    let named = false;
+    const name = (plan: PlannerTenantPlan) => {
+      named = true;
+      summary.plans.push(plan);
+    };
     try {
       // Registry-gated like every other ladder path: a kind with no spec is not
       // composed, not swept, and not planned for either.
@@ -1238,6 +1617,7 @@ export async function runPlanner(
       );
       if (open.length === 0) {
         summary.skippedNoGaps += 1;
+        name(idlePlan(tenantId, 'no_gaps', 0));
         continue;
       }
       // Outside the ask window nothing can go out, and closure can wait for the
@@ -1246,6 +1626,10 @@ export async function runPlanner(
       const tz = (await get(tenantId))?.timezone ?? 'UTC';
       if (!insideAskWindow(nowIso, tz)) {
         summary.skippedWindow += 1;
+        // `open.length`, not 0: this firm HAS work waiting — it is the hours
+        // that are wrong, and conflating the two is exactly the distinction
+        // this outcome exists to draw.
+        name(idlePlan(tenantId, 'out_of_window', open.length));
         continue;
       }
 
@@ -1384,7 +1768,7 @@ export async function runPlanner(
           if (!execute) throw new Error(`no executor for '${name}'`);
           return execute(tenantId, name, args);
         },
-        { tenantId, technicianRef: TEAM_LEAD_REF },
+        { tenantId, technicianRef: TEAM_LEAD_REF, lane: 'planner' },
       );
 
       const { decisions, dropped } = outcome;
@@ -1418,11 +1802,16 @@ export async function runPlanner(
       let applied = 0;
       let refusedAtApply = 0;
       for (const d of decisions) {
-        const jobId = views.get(d.nudgeId)?.jobId ?? null;
-        const base = {
+        // ONE ROW PER GAP, even when one decision covered several (plan
+        // 2026-08-25, Phase 3). Each gap's own history has to show its own send,
+        // and `nudge_decisions.nudge_id` is NOT NULL with an FK — a single row
+        // for the group would leave every sibling looking un-considered, which
+        // is precisely the hole `unmentioned` exists to close.
+        const members = d.nudgeIds && d.nudgeIds.length > 1 ? d.nudgeIds : [d.nudgeId];
+        const rowFor = (nudgeId: string) => ({
           tenantId,
-          nudgeId: d.nudgeId,
-          jobId,
+          nudgeId,
+          jobId: views.get(nudgeId)?.jobId ?? null,
           mode,
           action: d.action,
           notBefore: d.notBefore ?? null,
@@ -1434,14 +1823,31 @@ export async function runPlanner(
           handoffNote: d.handoffNote ?? null,
           agentContext: d.agentContext ?? null,
           questionDraft: d.questionDraft ?? null,
-        };
+        });
+        // SHADOW FANS OUT TOO. Missing this would give every sibling an
+        // `unmentioned` tick in shadow and in every eval run — collapsing
+        // "considered" and "never seen" exactly where the corpus measures
+        // whether grouping happened at all.
         if (mode !== 'live') {
-          records.push({ ...base, mode: 'shadow', outcome: 'shadow' });
+          for (const memberId of members) {
+            records.push({ ...rowFor(memberId), mode: 'shadow', outcome: 'shadow' });
+          }
           continue;
         }
-        let res: { outcome: 'applied' | 'refused'; detail?: string };
+        let res: { outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[] };
         try {
-          res = await applyDecision(tenantId, d, nowIso, setSchedule, markOutcome);
+          const gapRow = views.get(d.nudgeId)?.nudge;
+          res = await applyDecision(
+            tenantId,
+            d,
+            nowIso,
+            setSchedule,
+            markOutcome,
+            markQueued,
+            markGroupQueued,
+            stampAnswer,
+            gapRow ? anchorLine(gapRow) : '',
+          );
         } catch (err) {
           // One failed write must not abandon the rest of the firm's plan, and
           // it must not be silent either — it becomes a refusal WITH the reason.
@@ -1450,9 +1856,34 @@ export async function runPlanner(
             detail: `write failed: ${err instanceof Error ? err.message : String(err)}`,
           };
         }
+        // The SUMMARY counts DECISIONS, not gaps — a grouped send is one
+        // decision, and keeping it that way is what makes these numbers
+        // comparable with the eval baseline taken before groups existed.
         if (res.outcome === 'applied') applied += 1;
         else refusedAtApply += 1;
-        records.push({ ...base, mode: 'live', outcome: res.outcome, outcomeDetail: res.detail });
+        // The RECORDS count gaps, with each member's own truth: a partial move
+        // really did queue the movers, and telling a moved gap's history it was
+        // refused is the same class of lie as the reverse.
+        const movedIds = res.movedIds;
+        for (const memberId of members) {
+          const memberOutcome =
+            movedIds === undefined
+              ? res.outcome
+              : movedIds.includes(memberId)
+                ? 'applied'
+                : 'refused';
+          records.push({
+            ...rowFor(memberId),
+            mode: 'live',
+            outcome: memberOutcome,
+            outcomeDetail:
+              memberOutcome === res.outcome
+                ? res.detail
+                : memberOutcome === 'applied'
+                  ? "queued with its group, though the group's lead did not move"
+                  : 'the gap changed state between the plan and the write — nothing was applied',
+          });
+        }
       }
       // Rail-refused decisions are recorded too — a refusal is the most
       // informative row in the log, being the one place we learn what the model
@@ -1463,17 +1894,23 @@ export async function runPlanner(
       for (const d of dropped) {
         if (!views.has(d.nudgeId)) continue;
         if (!(PLANNER_ACTIONS as readonly string[]).includes(d.action)) continue;
-        records.push({
-          tenantId,
-          nudgeId: d.nudgeId,
-          jobId: views.get(d.nudgeId)?.jobId ?? null,
-          mode,
-          action: d.action,
-          confidence: d.confidence ?? 'low',
-          reason: d.reason ?? '',
-          outcome: 'refused',
-          outcomeDetail: d.why,
-        });
+        // One row per gap the refused decision NAMED, not just its lead: the
+        // model looked at every member, and the tick-mark filler below would
+        // otherwise record the siblings as never considered.
+        for (const memberId of d.nudgeIds ?? [d.nudgeId]) {
+          if (!views.has(memberId)) continue;
+          records.push({
+            tenantId,
+            nudgeId: memberId,
+            jobId: views.get(memberId)?.jobId ?? null,
+            mode,
+            action: d.action,
+            confidence: d.confidence ?? 'low',
+            reason: d.reason ?? '',
+            outcome: 'refused',
+            outcomeDetail: d.why,
+          });
+        }
       }
 
       // THE THIRD SOURCE: every gap that was in the view and in NEITHER list.
@@ -1545,8 +1982,9 @@ export async function runPlanner(
       summary.refusedAtApply += refusedAtApply;
       summary.recorded += recorded;
 
-      summary.plans.push({
+      name({
         tenantId,
+        outcome: 'planned',
         gaps: open.length,
         decisions,
         dropped,
@@ -1584,6 +2022,11 @@ export async function runPlanner(
       // untouched: the sweep's constants still apply, so a dead planner degrades
       // to exactly the behaviour that shipped before it existed.
       summary.tenantErrors += 1;
+      // Named in the record, not just counted. `views.size` is the gap count the
+      // tick had actually built when it died — 0 when the failure came before the
+      // views were assembled, which is itself the honest number. `views` is
+      // declared outside the try precisely so this path can see it.
+      if (!named) name(idlePlan(tenantId, 'error', views.size));
       // …but it no longer leaves NO TRACE. This catch sits after runLoop, so a
       // ToolLoopLimitError or a provider outage used to write nothing at all —
       // making the failed tick indistinguishable from a tick that never ran, in

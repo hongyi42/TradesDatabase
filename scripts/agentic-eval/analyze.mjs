@@ -9,6 +9,13 @@
 // dist, optionally asks the blind judge (block + note only — never the
 // verdict, never the scenario's why), prices the run off cost_rates, and
 // writes report.md + rows.json. Re-running is free: grading never re-spends.
+//
+// THE JUDGE IS A FRONTIER MODEL BY DEFAULT (user ruling 2026-08-24). The first
+// baseline used Haiku and the transcript-aware re-judge overturned 27 of its 34
+// failure verdicts — it graded notes against the gap block alone, so claims the
+// model had VERIFIED with its own reads counted as unsupported, and factual
+// silence reporting read as blame (docs/agentic-eval-rejudge-2026-08.md).
+// Override with EVAL_JUDGE_MODEL when comparing against an old run.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -18,6 +25,10 @@ import { judgeNote } from '../planner-eval/judge.mjs';
 import { callPlanner } from '../planner-eval/anthropic.mjs';
 
 const ROOT = new URL('../../', import.meta.url).pathname;
+
+// Read once, printed before any spend, so a dry run proves which judge would
+// grade without making a call.
+const JUDGE_MODEL = process.env.EVAL_JUDGE_MODEL ?? 'claude-opus-5';
 const DIST = join(ROOT, 'dist');
 requireLocalStack({ quiet: true });
 const { gradeScenario, investigationStats } = await import(`${DIST}/eval/plannerEvalGraders2.js`);
@@ -74,6 +85,7 @@ async function gradeRun(dir, { judge = false } = {}) {
   // a raw-file regex, and checked BEFORE any judge spend (review findings).
   const judgeKey = process.env.ANTHROPIC_API_KEY;
   if (judge && !judgeKey) throw new Error('--judge needs ANTHROPIC_API_KEY (.env or shell)');
+  if (judge) console.log(`[judge] model: ${JUDGE_MODEL}`);
   let judgeSpend = 0;
   const graded = [];
   for (const row of rows) {
@@ -99,7 +111,7 @@ async function gradeRun(dir, { judge = false } = {}) {
           const res = await judgeNote({
             block,
             note: d.handoff_note,
-            model: 'claude-haiku-4-5-20251001',
+            model: JUDGE_MODEL,
             apiKey: judgeKey,
             callPlanner,
           });

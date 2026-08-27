@@ -1,6 +1,6 @@
-import { afterAll, beforeEach, describe, expect, test } from 'vitest';
+import { afterAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { Technician } from '../db/technicians.js';
-import { runLifecycle } from './lifecycle.js';
+import { redactForRecord, runLifecycle } from './lifecycle.js';
 import type { PlannerDeps } from '../teamLead/planner.js';
 
 // Pure unit tests â€” every step injected. The exit-code contract is `ok`
@@ -13,7 +13,7 @@ const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
   // WATCHERS_MODE cleared for the same reason as COMPOSIO_API_KEY: .env may
   // carry it, and the default runWatchers dep would hit the real database.
-  for (const k of ['DEFAULT_TENANT_ID', 'COMPOSIO_API_KEY', 'WATCHERS_MODE', 'NUDGES_MODE', 'PLANNER_MODE', 'REFLECTOR_MODE'] as const) {
+  for (const k of ['DEFAULT_TENANT_ID', 'COMPOSIO_API_KEY', 'WATCHERS_MODE', 'NUDGES_MODE', 'PLANNER_MODE', 'REFLECTOR_MODE', 'LIFECYCLE_RUN_RETENTION_DAYS'] as const) {
     if (!(k in saved)) saved[k] = process.env[k];
     delete process.env[k];
   }
@@ -66,13 +66,16 @@ const INGEST_OK = {
   rowErrors: 0,
 };
 
-// The cost steps default to REAL database accessors, so every runLifecycle call
-// here must inject them. Otherwise this "pure unit tests" file quietly starts
-// writing to the database on each of the calls below.
+// The cost steps AND the run-record prune default to REAL database accessors, so
+// every runLifecycle call here must inject them. Otherwise this "pure unit tests"
+// file quietly starts writing to the database on each of the calls below.
 const COST_STUBS = {
   backfillBrave: async () => ({ scanned: 0 }),
   latestBrave: async () => null,
   rollup: async () => ({ rowsWritten: 0, tenantsTouched: 0, unpricedEvents: 0 }),
+  // Not a cost step, but the same hazard and the same fix: pruneLifecycleRuns
+  // is a real DELETE against whatever stack DATABASE_URL points at.
+  prune: async () => 0,
 };
 
 describe('runLifecycle', () => {
@@ -108,6 +111,80 @@ describe('runLifecycle', () => {
     // those would leave a green cron and an empty ledger forever.
     const missing = new Error('rollupCosts failed: …', { cause: { code: 'PGRST202' } });
     const missingTable = new Error('backfill failed: …', { cause: { code: '42P01' } });
+
+    // Same contract for the run-record prune: this code can deploy before its
+    // migration is applied by hand, and a heartbeat that goes red every 15
+    // minutes for a self-resolving condition trains people to ignore it.
+    test('a not-yet-migrated lifecycle_runs is SKIPPED, not an error', async () => {
+      const summary = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        listInStates: async () => [],
+        expire: async () => EXPIRE_OK,
+        prune: async () => {
+          throw missingTable;
+        },
+      });
+      expect(summary.lifecycleRuns).toEqual({ skipped: 'lifecycle_runs not migrated here yet' });
+      expect(summary.ok).toBe(true);
+    });
+
+    test('a REAL prune failure is loud', async () => {
+      const summary = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        listInStates: async () => [],
+        expire: async () => EXPIRE_OK,
+        prune: async () => {
+          throw new Error('connection reset');
+        },
+      });
+      expect(summary.lifecycleRuns).toEqual({ stepError: 'connection reset' });
+      expect(summary.ok).toBe(false);
+    });
+
+    test('the prune keeps the heavy-tick cadence — an off-cadence tick never deletes', async () => {
+      let pruned = 0;
+      const deps = {
+        ...COST_STUBS,
+        listInStates: async () => [],
+        expire: async () => EXPIRE_OK,
+        prune: async () => {
+          pruned += 1;
+          return 0;
+        },
+      };
+      await runLifecycle('2026-07-02T12:05:00.000Z', deps); // off-cadence
+      expect(pruned).toBe(0);
+      const on = await runLifecycle(NOW, deps);
+      expect(pruned).toBe(1);
+      expect(on.lifecycleRuns).toMatchObject({ pruned: 0 });
+    });
+
+    // 90 days back from the tick's own clock — not from "now", which on a
+    // replayed or delayed tick would silently prune a different window.
+    test('the cutoff is 90 days before the TICK, and is overridable', async () => {
+      const seen: string[] = [];
+      const deps = {
+        ...COST_STUBS,
+        listInStates: async () => [],
+        expire: async () => EXPIRE_OK,
+        prune: async (before: string) => {
+          seen.push(before);
+          return 0;
+        },
+      };
+      await runLifecycle(NOW, deps);
+      expect(seen[0]).toBe('2026-04-03T12:00:00.000Z');
+
+      process.env.LIFECYCLE_RUN_RETENTION_DAYS = '7';
+      await runLifecycle(NOW, deps);
+      expect(seen[1]).toBe('2026-06-25T12:00:00.000Z');
+
+      // A nonsense value must not widen the delete to everything.
+      process.env.LIFECYCLE_RUN_RETENTION_DAYS = 'soon';
+      await runLifecycle(NOW, deps);
+      expect(seen[2]).toBe('2026-04-03T12:00:00.000Z');
+      delete process.env.LIFECYCLE_RUN_RETENTION_DAYS;
+    });
 
     test('a not-yet-migrated ledger is SKIPPED, not an error', async () => {
       const summary = await runLifecycle(NOW, {
@@ -324,75 +401,87 @@ describe('runLifecycle', () => {
       expect(summary.ok).toBe(false);
     });
 
-    test('step 9 compose: gated on NUDGES_MODE=live, then on model credentials', async () => {
+    // The compose step retired with the collapse (plan 2026-08-24). What its
+    // gates used to protect is now a VISIBILITY problem: the planner is the only
+    // author of a question, so a live ladder with a non-live planner mints gaps
+    // nobody will ever ask about. That state must be reported, not silent — and
+    // never red, because rolling the planner back is a legitimate choice.
+    test('step 10 ladderMute: reported when the ladder can mint gaps but nothing can ask', async () => {
       process.env.WATCHERS_MODE = 'live';
-      const composeSentinel = async () => {
-        throw new Error('compose must not run behind its gates');
-      };
+      process.env.NUDGES_MODE = 'live';
+      process.env.PLANNER_MODE = 'live';
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-      // Ladder not live → skipped, regardless of key.
-      const off = await runLifecycle(NOW, {
+      // Both live → nothing to warn about. runPlanner is INJECTED: this case is
+      // the only one in the file that opens every planner gate at once, and an
+      // un-injected planner here would make a real billed call and apply real
+      // decisions from a unit test (the file's standing rule).
+      const healthy = await runLifecycle(NOW, {
         ...COST_STUBS,
         ...BASE,
-        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const }),
-        composeNudges: composeSentinel,
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
+        runPlanner: async () => ({
+          mode: 'live' as const,
+          tenants: 0,
+          planned: 0,
+          skippedNoGaps: 0,
+          skippedWindow: 0,
+          decisions: 0,
+          dropped: 0,
+          applied: 0,
+          refusedAtApply: 0,
+          recorded: 0,
+          tenantErrors: 0,
+          limitHits: { budget: 0, turns: 0 },
+          byAction: {},
+          plans: [],
+        }),
         hasModelKey: () => true,
       });
-      expect(off.teamLeadCompose).toEqual({ skipped: "NUDGES_MODE not 'live'" });
-      expect(off.ok).toBe(true);
+      expect(healthy.ladderMute).toBeUndefined();
+      expect(healthy.ok).toBe(true);
 
-      // Live ladder, no key → skipped cleanly (the step-3/4 idiom).
-      process.env.NUDGES_MODE = 'live';
+      // Ladder live, planner rolled back, sweep live → mute WITH the backstop.
+      process.env.PLANNER_MODE = 'off';
+      const mute = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
+        hasModelKey: () => true,
+      });
+      expect(mute.ladderMute).toContain('18h never-asked sweep');
+      expect(mute.ok).toBe(true); // a rollback is a choice, not a failure
+
+      // Sweep rolled back too → the harsher wording: no backstop at all.
+      process.env.WATCHERS_MODE = 'shadow';
+      const noFloor = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'shadow' as const, nudgeMode: 'live' as const }),
+        hasModelKey: () => true,
+      });
+      expect(noFloor.ladderMute).toContain('NO backstop sweep is running');
+      expect(noFloor.ok).toBe(true);
+
+      // The OTHER way to be voiceless — planner live, no credentials. It used to
+      // surface as compose's own credential skip; with compose gone the mute
+      // check is the only thing that names it.
+      process.env.WATCHERS_MODE = 'live';
+      process.env.PLANNER_MODE = 'live';
       const keyless = await runLifecycle(NOW, {
         ...COST_STUBS,
         ...BASE,
         runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
-        composeNudges: composeSentinel,
         hasModelKey: () => false,
       });
-      expect(keyless.teamLeadCompose).toEqual({ skipped: 'no inference credentials' });
+      expect(keyless.ladderMute).toContain('no inference credentials');
+      expect(keyless.teamLeadPlanner).toEqual({ skipped: 'no inference credentials' });
       expect(keyless.ok).toBe(true);
 
-      // Both gates open → the summary passes through.
-      const live = await runLifecycle(NOW, {
-        ...COST_STUBS,
-        ...BASE,
-        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
-        composeNudges: async () => ({
-          composed: 2,
-          cancelled: 1,
-          failed: 0,
-          rowErrors: 0,
-          handoffs: 0, draftedByPlanner: 0,
-          held: 0,
-          heldNotBefore: 0,
-        }),
-        hasModelKey: () => true,
-      });
-      expect(live.teamLeadCompose).toEqual({
-        composed: 2,
-        cancelled: 1,
-        failed: 0,
-        rowErrors: 0,
-        handoffs: 0, draftedByPlanner: 0,
-        held: 0,
-        heldNotBefore: 0,
-      });
-      expect(live.ok).toBe(true);
-
-      // A throwing compose is a stepError, red — other steps unaffected.
-      const thrown = await runLifecycle(NOW, {
-        ...COST_STUBS,
-        ...BASE,
-        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
-        composeNudges: async () => {
-          throw new Error('inference down');
-        },
-        hasModelKey: () => true,
-      });
-      expect(thrown.teamLeadCompose).toEqual({ stepError: 'inference down' });
-      expect(thrown.ok).toBe(false);
-      expect(thrown.watchers).toMatchObject({ mode: 'live' });
+      expect(spy.mock.calls.some((c: unknown[]) => String(c[0]).includes('LADDER IS MUTE'))).toBe(
+        true,
+      );
+      spy.mockRestore();
     });
 
     test('a throwing watcher is a stepError, red — the other steps still reported', async () => {
@@ -848,31 +937,114 @@ describe('the planner gate', () => {
     expect(opts[0]?.sweepLive).toBe(false);
   });
 
-  test('a throwing planner is a stepError, red — and never blocks compose', async () => {
+  test('a throwing planner is a stepError, red — and the tick keeps going', async () => {
     process.env.PLANNER_MODE = 'shadow';
     process.env.NUDGES_MODE = 'live';
-    const composed: string[] = [];
     const s = await runLifecycle('2026-07-02T12:00:00.000Z', {
       ...STUBS,
       runPlanner: async () => {
         throw new Error('provider down');
       },
-      composeNudges: async (nowIso: string) => {
-        composed.push(nowIso);
-        return {
-          composed: 0,
-          cancelled: 0,
-          failed: 0,
-          rowErrors: 0,
-          handoffs: 0, draftedByPlanner: 0,
-          held: 0,
-          heldNotBefore: 0,
-        };
-      },
     });
     expect(s.teamLeadPlanner).toEqual({ stepError: 'provider down' });
     expect(s.ok).toBe(false);
-    // The ladder must keep working when its planner does not.
-    expect(composed).toEqual(['2026-07-02T12:00:00.000Z']);
+    // Shadow planner + live ladder is a mute ladder, and the tick says so.
+    expect(s.ladderMute).toBeDefined();
+  });
+});
+
+// The record is written into a row with NO tenant_id (one tick sweeps every
+// firm), so anything customer-derived in it would sit outside the tenant
+// boundary and outlive that firm being deleted. These tests are the guard.
+describe('redactForRecord', () => {
+  const summaryWith = (planner: unknown): Parameters<typeof redactForRecord>[0] =>
+    ({
+      pairing: { skipped: 'x' },
+      offboarding: { skipped: 'x' },
+      sessions: { skipped: 'x' },
+      logIngest: { skipped: 'x' },
+      braveBackfill: { skipped: 'x' },
+      costRollup: { skipped: 'x' },
+      lifecycleRuns: { skipped: 'x' },
+      watchers: { skipped: 'x' },
+      teamLeadPlanner: planner,
+      gapSummaries: { skipped: 'x' },
+      reflector: { skipped: 'x' },
+      ok: true,
+    }) as unknown as Parameters<typeof redactForRecord>[0];
+
+  const PLANNER = {
+    mode: 'live',
+    tenants: 1,
+    planned: 1,
+    plans: [
+      {
+        tenantId: 't1',
+        gaps: 2,
+        turns: 3,
+        toolCalls: 5,
+        ms: 4200,
+        applied: 1,
+        refusedAtApply: 0,
+        recorded: 2,
+        decisions: [
+          {
+            nudgeId: 'n1',
+            action: 'send',
+            reason: 'Judy never named the part',
+            citation: 'put the new condenser in',
+            questionDraft: 'Hey Judy — quick one about the Hartley job on Maple St',
+          },
+        ],
+        dropped: [{ nudgeId: 'n2', why: 'no citation' }],
+      },
+    ],
+  };
+
+  test('per-decision arrays become counts; the numbers that matter survive', () => {
+    const out = redactForRecord(summaryWith(PLANNER)) as {
+      teamLeadPlanner: { plans: Record<string, unknown>[] };
+    };
+    const plan = out.teamLeadPlanner.plans[0];
+    expect(plan.decisions).toBe(1);
+    expect(plan.dropped).toBe(1);
+    expect(plan).toMatchObject({
+      tenantId: 't1',
+      gaps: 2,
+      turns: 3,
+      toolCalls: 5,
+      ms: 4200,
+      applied: 1,
+      refusedAtApply: 0,
+      recorded: 2,
+    });
+  });
+
+  test('no customer-derived text survives anywhere in the record', () => {
+    const json = JSON.stringify(redactForRecord(summaryWith(PLANNER)));
+    for (const leak of ['questionDraft', 'citation', 'reason', 'Hartley', 'condenser', 'Judy']) {
+      expect(json).not.toContain(leak);
+    }
+  });
+
+  test('the source summary is not mutated — stdout still prints the full shape', () => {
+    const summary = summaryWith(PLANNER);
+    redactForRecord(summary);
+    const plans = (summary.teamLeadPlanner as { plans: { decisions: unknown[] }[] }).plans;
+    expect(Array.isArray(plans[0].decisions)).toBe(true);
+  });
+
+  test('a planner that never ran passes through untouched', () => {
+    const out = redactForRecord(summaryWith({ skipped: "PLANNER_MODE 'off'" }));
+    expect((out as { teamLeadPlanner: unknown }).teamLeadPlanner).toEqual({
+      skipped: "PLANNER_MODE 'off'",
+    });
+  });
+
+  test('a step error is capped, never allowed to grow the row without bound', () => {
+    const summary = summaryWith({ skipped: 'x' });
+    (summary as unknown as { watchers: unknown }).watchers = { stepError: 'e'.repeat(2000) };
+    const out = redactForRecord(summary) as { watchers: { stepError: string } };
+    expect(out.watchers.stepError).toHaveLength(500);
   });
 });

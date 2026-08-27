@@ -833,6 +833,33 @@ export type Database = {
           },
         ]
       }
+      lifecycle_runs: {
+        Row: {
+          created_at: string
+          finished_at: string
+          id: string
+          ok: boolean
+          started_at: string
+          summary: Json
+        }
+        Insert: {
+          created_at?: string
+          finished_at?: string
+          id?: string
+          ok: boolean
+          started_at: string
+          summary: Json
+        }
+        Update: {
+          created_at?: string
+          finished_at?: string
+          id?: string
+          ok?: boolean
+          started_at?: string
+          summary?: Json
+        }
+        Relationships: []
+      }
       money_events: {
         Row: {
           actor_ref: string | null
@@ -1054,6 +1081,7 @@ export type Database = {
         Row: {
           actor_ref: string
           answered_by_capture_id: string | null
+          ask_group_id: string | null
           asked_at: string | null
           attempts: number
           context: Json
@@ -1076,6 +1104,7 @@ export type Database = {
         Insert: {
           actor_ref?: string
           answered_by_capture_id?: string | null
+          ask_group_id?: string | null
           asked_at?: string | null
           attempts?: number
           context?: Json
@@ -1098,6 +1127,7 @@ export type Database = {
         Update: {
           actor_ref?: string
           answered_by_capture_id?: string | null
+          ask_group_id?: string | null
           asked_at?: string | null
           attempts?: number
           context?: Json
@@ -2290,6 +2320,48 @@ export type Database = {
           },
           {
             foreignKeyName: "nudge_decisions_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      priced_cost_events_daily: {
+        Row: {
+          cost_usd: number | null
+          day: string | null
+          lane: string | null
+          method: string | null
+          provider: string | null
+          quantity: number | null
+          sku: string | null
+          tenant_id: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cost_events_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      unpriced_cost_events_daily: {
+        Row: {
+          day: string | null
+          events: number | null
+          lane: string | null
+          method: string | null
+          provider: string | null
+          quantity: number | null
+          sku: string | null
+          tenant_id: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cost_events_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
             referencedRelation: "tenants"

@@ -273,7 +273,17 @@ const TOOLS = [
       'again with confirmId + confirmed:{customerId|address}), and needs_confirmation (the ' +
       'answer would CREATE a new customer, so show the preview and call again with ONLY ' +
       'confirmId on their explicit yes). Recording is permanent — there is no delete; a mistake ' +
-      'is fixed by recording the correction and then retract_capture.',
+      'is fixed by recording the correction and then retract_capture. A recorded answer may come ' +
+      'back with openQuestions — what the office still has open on that job, which MAY include ' +
+      'the one they just answered. Judge from what the person actually said and ask ONE thing ' +
+      'they have genuinely not covered, now. Write it as TWO SHORT PARAGRAPHS: confirm what you ' +
+      'recorded, then a BLANK LINE, then the question on its own line — a question tacked onto a ' +
+      'confirmation reads as a footer. Keep it to six words or fewer and stop at the question ' +
+      'mark ("What did the parts cost?"): never append "on that one" or any similar tail. ' +
+      'It is YOUR question: never say it came from the office or anyone else, never mention a ' +
+      'queue or a list, and never repeat the "(re: …)" line the text may end with. RECORD their ' +
+      'reply with record_field_note, passing confirmed:{customerId} from the answer you just ' +
+      'recorded so it lands on the same record. If they do not engage, drop it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -288,7 +298,11 @@ const TOOLS = [
         },
         confirmed: {
           type: 'object',
-          description: 'With confirmId: the technician\'s answer to a needs_identity question.',
+          description:
+            'Which customer this note is for. With confirmId: the technician\'s answer to a ' +
+            'needs_identity question. ALONE (no confirmId): you already know the customer, so ' +
+            'the note records straight away instead of asking them who it was for — this is how ' +
+            'you file a reply to a follow-up you asked about a note you just recorded.',
           properties: { customerId: { type: 'string' }, address: { type: 'string' } },
         },
       },
@@ -2032,6 +2046,54 @@ export async function attributeAnswerToGap(input: {
   }
 }
 
+// What the office still has open on THIS job for THIS person, in the words the
+// person actually saw. Handed back on a recorded note so their assistant can
+// follow up while they are still holding the phone.
+//
+// This is the SEAT AGENT's own turn, not a second office turn. Waking the
+// planner on an answer was ruled out (2026-08-25): a planner-written sentence
+// dropping into a live conversation is two voices in one chat, and the planner
+// holds no technician write tools if it stayed. ④b's zero-inference rule binds
+// the ASK leg only — the seat agent already reasons freely once someone replies.
+//
+// The just-answered gap is NOT excluded, and cannot be: attributeAnswerToGap
+// declines to stamp at two-or-more asked — exactly the batched case — so no
+// "which one did they just close" signal exists to filter on. §0k clause 1a
+// carries it instead: the agent compares this list against what the person said.
+// Reporting what is open is honest; guessing which one they closed is not.
+//
+// Deduped by TEXT, not by row: every member of an ask-group stores the same full
+// grouped message in `question`, so ONE message covering three gaps must read
+// back as ONE thing the person was asked, not three.
+//
+// Never throws, for the same reason attributeAnswerToGap never throws: by the
+// time this runs the note is already in undeletable L1. A follow-up that cannot
+// be offered is a missed follow-up; a landed note reported as failed is a
+// permanent lie. Exported so a test can prove the swallow against a REAL
+// database error rather than a stub.
+export async function openQuestionsFor(input: {
+  tenantId: string;
+  // Null for a ROSTER-LESS badge, exactly as in attributeAnswerToGap — no roster
+  // row to scope gaps by, so there is nothing to report. Fail closed.
+  technicianId: string | null;
+  jobId: string | undefined;
+}): Promise<{ question: string }[]> {
+  const { tenantId, technicianId, jobId } = input;
+  if (!technicianId || !jobId) return [];
+  try {
+    const asked = await listAskedNudgesForTechnicianJob(tenantId, technicianId, jobId);
+    return [...new Set(asked.map((n) => n.question).filter((q): q is string => !!q))].map(
+      (question) => ({ question }),
+    );
+  } catch (err) {
+    console.error(
+      `[openQuestions] job ${jobId} lookup failed — ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
+  }
+}
+
 // The ONE commit for a field note, shared by all three paths that record one
 // (plan ②, 2026-08-21): the one-shot call, the identity resume, and the
 // legacy staged confirm. Sharing it is not tidiness — L1 is undeletable, so
@@ -2112,12 +2174,20 @@ async function commitNote(input: {
     jobId: result.jobId,
     captureId: result.captureId,
   });
+  const openQuestions = await openQuestionsFor({
+    tenantId: input.tenantId,
+    technicianId: input.answeredByTechnicianId,
+    jobId: result.jobId,
+  });
   return {
     status: 'recorded',
     captureId: result.captureId,
     customerId: result.customerId,
     jobId: result.jobId,
     visitId: result.visitId,
+    // No ids: no technician tool takes a gap id, and a ref in a person's face is
+    // the machine artifact the (re: …) anchor exists to keep out of the chat.
+    ...(openQuestions.length > 0 ? { openQuestions } : {}),
   };
 }
 

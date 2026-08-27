@@ -6,6 +6,9 @@ import {
   listNudgedSubjectRefs,
   listNudgesByStatus,
   markNudgeAsked,
+  listQueuedNudgesInGroupForHost,
+  markNudgeAskedGroup,
+  markNudgeGroupQueued,
   markNudgeOutcome,
   markNudgeQueued,
   listAskedNudgesForTechnicianJob,
@@ -24,6 +27,7 @@ const pg = new Client({ connectionString: process.env.DATABASE_URL });
 let tenantId: string;
 let tenantB: string | undefined;
 let techId: string;
+let hostId: string | undefined;
 
 beforeAll(async () => {
   await pg.connect();
@@ -46,6 +50,7 @@ afterAll(async () => {
   await pg.query('truncate table nudges cascade');
   await pg.query("delete from review_items where subject_ref like 'nudge-bt-%'");
   await pg.query('delete from technicians where id = $1', [techId]);
+  if (hostId) await pg.query('delete from hosts where id = $1', [hostId]);
   if (tenantB) await pg.query('delete from tenants where id = $1', [tenantB]);
   await pg.end();
 });
@@ -451,5 +456,111 @@ describe('attribution — an answer remembers its question', () => {
     await markNudgeOutcome(n.id, tenantId, 'answered', 'a note landed');
     const stamped = await setNudgeAnsweredBy(n.id, tenantId, CAP_1);
     expect(stamped?.answered_by_capture_id).toBe(CAP_1);
+  });
+});
+
+// ── plan 2026-08-25 Phase 2: the group writers ──────────────────────────────
+describe('ask-groups — one message, several rows', () => {
+  const pending = async (subjectRef: string) => {
+    const n = await createPendingNudge({
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef,
+      technicianId: techId,
+      context: { jobTitle: 'Boiler swap', jobId: 'j-group' },
+    });
+    if (!n) throw new Error(`could not seed ${subjectRef}`);
+    return n;
+  };
+
+  test('markNudgeGroupQueued moves only PENDING members and returns exactly those', async () => {
+    const a = await pending('grp-a1');
+    const b = await pending('grp-a2');
+    const c = await pending('grp-a3');
+    // c is already queued by another writer — the group write must not move it
+    // again, and must not claim it did.
+    await markNudgeQueued(c.id, tenantId, 'someone else got there first');
+
+    const moved = await markNudgeGroupQueued([a.id, b.id, c.id], tenantId, 'one message', a.id);
+    expect(moved.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+    for (const row of moved) {
+      expect(row.status).toBe('queued');
+      expect(row.question).toBe('one message');
+      // The group id IS the lead's own row id, so the lead is self-identifying.
+      expect(row.ask_group_id).toBe(a.id);
+      expect(row.queued_at).not.toBeNull();
+    }
+    const untouched = (await listNudgesByStatus(tenantId, ['queued'])).find((r) => r.id === c.id);
+    expect(untouched?.question).toBe('someone else got there first');
+    expect(untouched?.ask_group_id).toBeNull();
+  });
+
+  test('markNudgeAskedGroup moves the whole group on ONE shared asked_at', async () => {
+    const a = await pending('grp-b1');
+    const b = await pending('grp-b2');
+    await markNudgeGroupQueued([a.id, b.id], tenantId, 'one message', a.id);
+
+    const asked = await markNudgeAskedGroup(a.id, tenantId, a.id);
+    expect(asked.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+    // They left in one message, so their escalation clocks start together — two
+    // timestamps here would let the sweep escalate half a message.
+    expect(new Set(asked.map((r) => r.asked_at))).toHaveProperty('size', 1);
+    for (const row of asked) expect(row.status).toBe('asked');
+  });
+
+  test('markNudgeAskedGroup with a null group behaves exactly like markNudgeAsked', async () => {
+    const solo = await pending('grp-c1');
+    await markNudgeQueued(solo.id, tenantId, 'on its own');
+    const moved = await markNudgeAskedGroup(solo.id, tenantId, null);
+    expect(moved).toHaveLength(1);
+    expect(moved[0].id).toBe(solo.id);
+    expect(moved[0].status).toBe('asked');
+    // …and a second report finds nothing left to move (queued-only guard).
+    expect(await markNudgeAskedGroup(solo.id, tenantId, null)).toEqual([]);
+  });
+
+  test('listQueuedNudgesInGroupForHost is HOST-scoped and returns nothing for another host', async () => {
+    // The accessor whose tenantId parameter was dropped: scoping now rests
+    // entirely on the technicians!inner join, so it gets its own assertion.
+    const a = await pending('grp-e1');
+    const b = await pending('grp-e2');
+    await markNudgeGroupQueued([a.id, b.id], tenantId, 'one message', a.id);
+    const host = await pg.query<{ id: string }>(
+      `insert into hosts (name, token_hash) values ('nudge-test-host', 'nudge-test-hash') returning id`,
+    );
+    hostId = host.rows[0].id;
+    await pg.query('update technicians set host_id = $1 where id = $2', [hostId, techId]);
+
+    const mine = await listQueuedNudgesInGroupForHost(a.id, hostId);
+    expect(mine.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+
+    const theirs = await listQueuedNudgesInGroupForHost(
+      a.id,
+      '00000000-0000-0000-0000-0000000000ff',
+    );
+    expect(theirs).toEqual([]);
+  });
+
+  test('a lead that is not among its own members is REFUSED', async () => {
+    // Otherwise no row satisfies `id = ask_group_id`, the group is leaderless
+    // from birth, and the serve loop freezes it until the 18h expiry.
+    const a = await pending('grp-f1');
+    await expect(
+      markNudgeGroupQueued([a.id], tenantId, 'one message', '00000000-0000-0000-0000-0000000000aa'),
+    ).rejects.toThrow(/not among its own members/);
+    // …and nothing moved.
+    const after = await listNudgesByStatus(tenantId, ['pending']);
+    expect(after.some((r) => r.id === a.id)).toBe(true);
+  });
+
+  test('a group write is tenant-scoped', async () => {
+    const a = await pending('grp-d1');
+    const moved = await markNudgeGroupQueued(
+      [a.id],
+      '00000000-0000-0000-0000-0000000000ff',
+      'wrong tenant',
+      a.id,
+    );
+    expect(moved).toEqual([]);
   });
 });

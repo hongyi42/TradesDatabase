@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 178 documents · 178 live · 0 superseded.
+Regenerate with `npm run decisions:index`. 186 documents · 186 live · 0 superseded.
 
 ## Superseded — do not build on these
 
@@ -41,17 +41,17 @@ _None recorded yet._
 ## Live
 
 - `2026-08-17` `note` [2026-08-17-infrastructure-reliability-system-design](shared\research\2026-08-17-infrastructure-reliability-system-design.md) · _research_ — Infrastructure system design + reliability — prod-readiness (fleet hosting, failure model, outage detection)
-- `2026-08-12` `note` [2026-08-12-agent-pdf-output](shared\research\2026-08-12-agent-pdf-output.md) `landed` `drift 33` — Enabling agent-produced (output) PDF files — where PDF is handled today and what boundary a "generate a PDF"…
+- `2026-08-12` `note` [2026-08-12-agent-pdf-output](shared\research\2026-08-12-agent-pdf-output.md) `landed` `drift 35` — Enabling agent-produced (output) PDF files — where PDF is handled today and what boundary a "generate a PDF"…
 - `2026-08-10` `note` [2026-08-10-isolated-a2-agent-chat-notify](shared\plans\2026-08-10-isolated-a2-agent-chat-notify.md) `describes 1 deleted file` · _draft_ — Deliver manager notifications into the NemoClaw agent chat via an isolated box sidecar (A2), not the board bot
-- `2026-08-10` `note` [2026-08-10-agent-chat-notification-transport](shared\research\2026-08-10-agent-chat-notification-transport.md) `drift 25` · _research_ — Notification transport — deliver call/review notices into a manager's NemoClaw agent chat (not the board bot)
-- `2026-08-06` `note` [2026-08-06-prod-launch-legalities](shared\research\2026-08-06-prod-launch-legalities.md) `landed` `drift 36` — Legalities of going to production with real trades businesses (US) — company formation + the compliance surfa…
-- `2026-08-04` `note` [2026-08-04-hermes-agent-vs-nemoclaw](shared\research\2026-08-04-hermes-agent-vs-nemoclaw.md) `landed` `drift 34` — What Hermes Agent is, how it differs from the NemoClaw/OpenClaw runtime this repo uses, and what a migration…
+- `2026-08-10` `note` [2026-08-10-agent-chat-notification-transport](shared\research\2026-08-10-agent-chat-notification-transport.md) `drift 27` · _research_ — Notification transport — deliver call/review notices into a manager's NemoClaw agent chat (not the board bot)
+- `2026-08-06` `note` [2026-08-06-prod-launch-legalities](shared\research\2026-08-06-prod-launch-legalities.md) `landed` `drift 38` — Legalities of going to production with real trades businesses (US) — company formation + the compliance surfa…
+- `2026-08-04` `note` [2026-08-04-hermes-agent-vs-nemoclaw](shared\research\2026-08-04-hermes-agent-vs-nemoclaw.md) `landed` `drift 36` — What Hermes Agent is, how it differs from the NemoClaw/OpenClaw runtime this repo uses, and what a migration…
 - `2026-07-31` `note` [2026-07-31-skills-for-prod-scaling](shared\research\2026-07-31-skills-for-prod-scaling.md) `landed` — Which repo-authored skills to build next for the move to production, scaling, and expansion — ranked by impor…
-- `2026-07-30` `note` [2026-07-30-system-design-principles-for-skill](shared\research\2026-07-30-system-design-principles-for-skill.md) `landed` `drift 45` — System-design / DB-migration / production-change / failure-handling principles, distilled from this repo's do…
+- `2026-07-30` `note` [2026-07-30-system-design-principles-for-skill](shared\research\2026-07-30-system-design-principles-for-skill.md) `landed` `drift 47` — System-design / DB-migration / production-change / failure-handling principles, distilled from this repo's do…
 - `2026-07-22` `note` [2026-07-22-telegram-board-latency-p2-p3-p4-p6](shared\plans\2026-07-22-telegram-board-latency-p2-p3-p4-p6.md) `drift 47` — Telegram dispatch-board latency — P2 auth cache, P3 join, P4 drop version, P6 index
 - `2026-07-22` `note` [2026-07-22-telegram-board-latency-fix-surface](shared\research\2026-07-22-telegram-board-latency-fix-surface.md) `landed` `drift 62` — Telegram dispatch-board Mini App UI latency — fix surface for P2/P3/P4/P6 (+P7 investigation)
-- `2026-07-20` `note` [2026-07-20-model-cost-benchmark-and-cache-diagnosis](shared\plans\2026-07-20-model-cost-benchmark-and-cache-diagnosis.md) `drift 74` · _diagnosis complete; benchmark plan draf…_ — GLM-5.2 vs GPT-5.6 Luna cost/quality benchmark + agent prompt-cache diagnosis
-- `2026-06-23` `note` [2026-06-23-read-synthesis-layer](shared\plans\2026-06-23-read-synthesis-layer.md) `drift 137` — Build the synthesis layer — grounded, cited AI briefings + Q&A over a CustomerContext
+- `2026-07-20` `note` [2026-07-20-model-cost-benchmark-and-cache-diagnosis](shared\plans\2026-07-20-model-cost-benchmark-and-cache-diagnosis.md) `drift 76` · _diagnosis complete; benchmark plan draf…_ — GLM-5.2 vs GPT-5.6 Luna cost/quality benchmark + agent prompt-cache diagnosis
+- `2026-06-23` `note` [2026-06-23-read-synthesis-layer](shared\plans\2026-06-23-read-synthesis-layer.md) `drift 139` — Build the synthesis layer — grounded, cited AI briefings + Q&A over a CustomerContext
 - `????-??-??` `note` [build-schedule](shared\build-schedule.md)
 - `????-??-??` `note` [2026-06-19-technician-write-path](shared\plans\2026-06-19-technician-write-path.md)
 - `????-??-??` `note` [2026-06-19-three-layer-context-spine-basic-structure](shared\plans\2026-06-19-three-layer-context-spine-basic-structure.md)
@@ -127,6 +127,11 @@ _None recorded yet._
 - `????-??-??` `note` [2026-08-23-the-brain-can-look](shared\plans\2026-08-23-the-brain-can-look.md)
 - `????-??-??` `note` [2026-08-24-agentic-planner-eval](shared\plans\2026-08-24-agentic-planner-eval.md)
 - `????-??-??` `note` [2026-08-24-one-call-collapse](shared\plans\2026-08-24-one-call-collapse.md)
+- `????-??-??` `note` [2026-08-25-the-ask-shape](shared\plans\2026-08-25-the-ask-shape.md)
+- `????-??-??` `note` [2026-08-26-check-the-bill](shared\plans\2026-08-26-check-the-bill.md)
+- `????-??-??` `note` [2026-08-26-seat-capacity-and-overflow-safety](shared\plans\2026-08-26-seat-capacity-and-overflow-safety.md)
+- `????-??-??` `note` [2026-08-26-the-decline-verb](shared\plans\2026-08-26-the-decline-verb.md)
+- `????-??-??` `note` [2026-08-26-the-tick-leaves-a-trace](shared\plans\2026-08-26-the-tick-leaves-a-trace.md)
 - `????-??-??` `note` [2026-06-19-technician-write-path-nemoclaw-input-channel](shared\research\2026-06-19-technician-write-path-nemoclaw-input-channel.md)
 - `????-??-??` `note` [2026-06-19-three-layer-context-spine-structure](shared\research\2026-06-19-three-layer-context-spine-structure.md)
 - `????-??-??` `note` [2026-06-20-open-question-agent-row-level-access-control](shared\research\2026-06-20-open-question-agent-row-level-access-control.md)
@@ -218,3 +223,6 @@ _None recorded yet._
 - `????-??-??` `note` [2026-08-23-per-call-model-routing](shared\research\2026-08-23-per-call-model-routing.md)
 - `????-??-??` `note` [2026-08-23-the-brain-can-look](shared\research\2026-08-23-the-brain-can-look.md)
 - `????-??-??` `note` [2026-08-24-one-call-collapse](shared\research\2026-08-24-one-call-collapse.md)
+- `????-??-??` `note` [2026-08-24-the-ask-shape](shared\research\2026-08-24-the-ask-shape.md)
+- `????-??-??` `note` [2026-08-25-planner-tick-observability](shared\research\2026-08-25-planner-tick-observability.md)
+- `????-??-??` `note` [2026-08-26-the-decline-verb](shared\research\2026-08-26-the-decline-verb.md)

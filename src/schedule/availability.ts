@@ -5,6 +5,34 @@
 // fit within a day is Plan 3.
 import { WEEK_DAYS, type DayKey, type WeeklyPattern } from '../db/technicians.js';
 
+// Every timestamp this codebase formats or compares carries a UTC offset, and
+// that is load-bearing rather than incidental. Two shapes flow through here:
+// real instants read from the database (`…Z` / `…+00:00`), and the firm's wall
+// clock written by booking.ts's naiveLocalISO — which appends `.000Z` for
+// exactly this reason, so a wall-clock string stays an ABSOLUTE string.
+//
+// Per ECMA-262 a date-time string WITHOUT an offset is parsed on the host's
+// clock, so the same characters mean a different instant on a Tokyo laptop
+// than on a UTC server — `2026-08-24T07:00:00` renders as Sunday there and
+// Monday here. Nothing in the repo produces that shape today, but nothing
+// stops a caller from hand-building one either, and the labels these helpers
+// produce are the ONLY date vocabulary the planner is allowed to quote — a
+// shifted label is laundered into a confident sentence to a technician, and
+// no rail downstream can catch it (the rail checks that the model copied the
+// string, never that the string was right).
+//
+// So the rule is explicit here instead of conventional: an offset-less
+// date-time is read as UTC, never as host-local. Anything else — already
+// offset-stamped, date-only (UTC per spec), or unparseable — is handed to
+// Date.parse untouched, NaN and all.
+const UTC_OFFSET_RE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+const BARE_DATE_TIME_RE = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/;
+
+export function parseAsUtc(stamp: string): number {
+  const bare = UTC_OFFSET_RE.test(stamp) ? null : BARE_DATE_TIME_RE.exec(stamp);
+  return Date.parse(bare ? `${bare[1]}T${bare[2]}Z` : stamp);
+}
+
 // 'short' weekday in the target zone → 'mon'..'sun'. Intl owns the tz/DST math;
 // no offset arithmetic here (hand-rolled offsets are exactly what broke the
 // schedule_entries UTC-day read this module supersedes for new code).
@@ -12,7 +40,7 @@ export function localDayOfWeek(isoTimestamp: string, timezone: string): DayKey {
   const weekday = new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
     weekday: 'short',
-  }).format(new Date(isoTimestamp));
+  }).format(new Date(parseAsUtc(isoTimestamp)));
   return weekday.toLowerCase().slice(0, 3) as DayKey;
 }
 
@@ -25,7 +53,7 @@ export function localDateISO(isoTimestamp: string, timezone: string): string {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).format(new Date(isoTimestamp));
+  }).format(new Date(parseAsUtc(isoTimestamp)));
 }
 
 // The local wall-clock HH:MM in the zone — the fit engine's day-0 "now" clamp
@@ -37,7 +65,7 @@ export function localTimeHHMM(isoTimestamp: string, timezone: string): string {
     hour: '2-digit',
     minute: '2-digit',
     hourCycle: 'h23',
-  }).format(new Date(isoTimestamp));
+  }).format(new Date(parseAsUtc(isoTimestamp)));
 }
 
 export interface TimeOffRange {

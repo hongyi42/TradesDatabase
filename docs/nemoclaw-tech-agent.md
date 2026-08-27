@@ -414,7 +414,10 @@ register side-by-side in the gateway's `mcp.servers`.
   guide §10.
 - **Nudge delivery (2026-08-16 Stage 1 — the voice; v2 direct-send 2026-08-23, plan ④b):**
   the spine's watcher can queue ONE short work question for a technician (an unreported visit,
-  a missing job cost) after a hard-capped team-lead identity composes it; the box's
+  a missing job cost). Since the one-call collapse (2026-08-24) the team-lead PLANNER writes
+  that question itself and queues it in the same call — the separate compose turn is retired,
+  and code appends only the `(re: customer — job)` anchor the seat agent files replies
+  against. The box's
   `nudge-runner.timer` (5-min, root, reuses `/etc/doorman/badge-pull.env`) pulls
   `GET /control/nudges` and sends the served footer-less payload (`directMessageB64`) VERBATIM
   to the person's Telegram with `openclaw message send` (run inside the seat's container;
@@ -427,7 +430,29 @@ register side-by-side in the gateway's `mcp.servers`.
   item until acked — lost ticks self-heal, ~10 unacked serves and the server hands the gap to
   the manager instead). The technician's reply takes the ordinary `record_field_note` path —
   the seats' AGENTS.md "Questions and items from the office" block (bootstrap-box.sh §0k)
-  carries that record-duty, and that capture is what auto-closes the nudge. Pacing: NO
+  carries that record-duty, and that capture is what auto-closes the nudge. **The follow-up leg
+  (2026-08-25, the ask-shape plan):** a `recorded` result may now carry `openQuestions` — the
+  office's still-open questions on that job for that person, deduped by text (an ask-group's
+  members all hold the same grouped message, so a batched ask reads back as ONE entry) and
+  deliberately UNFILTERED, since attribution declines to stamp when two or more gaps are asked,
+  so the spine has no signal for which one was just answered. §0k clauses 1a/1b are what use it: the
+  agent compares the list against what the person actually said, asks ONE genuinely uncovered
+  thing in its own words (never naming the office or the queue, never repeating the `(re: …)`
+  line an entry may end with — production `question` values are `questionDraft + anchorLine`,
+  so they carry it), and then **records that reply with `record_field_note` on the same job**.
+  1b is not decoration: a follow-up asked and not recorded leaves the gap `asked`, and the
+  planner re-asks the person the very thing they just said (adversarial review, 2026-08-25).
+  **Two traps 1b has to name explicitly**, both found in review: (a) the reply to a follow-up is a
+  bare fragment ("about two hundred"), which `matchIdentity` cannot resolve, so 1b tells the agent
+  to pass `confirmed:{customerId}` with NO `confirmId` — the one-shot branch (`server.ts:2431`)
+  reads `confirmed` before the `confirmId` branch, and the schema now says so, because otherwise
+  the agent asks WHICH customer seconds after recording one for them; (b) `setNudgeAnsweredBy`
+  does not change `status`, and the watcher's activity auto-close needs `soleGapOnJob`, so with 2+
+  gaps — exactly the batched case — the list does NOT shrink as they answer. 1a therefore judges
+  against the whole conversation, not the last message, or it re-asks what it already covered. ZERO extra model calls
+  on the ASK leg — this is the seat agent's own reply turn, and the office is never woken by the
+  answer (ruled out 2026-08-25: a planner sentence landing mid-conversation is two voices in one
+  chat, and the planner holds no technician write tools). Pacing: NO
   per-person cap (2026-08-18 ruling — pace by urgency, earn the ask, batch the unimportant;
   the old ≤2-asks/day server cap was removed in PR #153); prolonged silence escalates to the
   manager's review queue via the planner. Kill switch on the box: `systemctl disable --now

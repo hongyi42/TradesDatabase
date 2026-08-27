@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { recordHeartbeat } from '../db/workerHeartbeats.js';
 import { setBoardMenuButton } from './boardBot.js';
 import { pollOnce } from './boardNotify.js';
 
@@ -18,13 +19,37 @@ export async function startBoardWorker(): Promise<void> {
   const rawMs = Number(process.env.BOARD_POLL_MS);
   const intervalMs = Number.isFinite(rawMs) && rawMs > 0 ? rawMs : 30_000;
   const lastSeen = new Map<string, number>();
+  let cycles = 0;
   for (;;) {
+    // `ok` exists because the catch below is a SILENT failure mode: a poll that
+    // throws every tick leaves this process up, this loop spinning, and
+    // notifications stopped, with the only evidence on a stderr stream nobody
+    // reads. "The loop cycled" and "the cycle worked" are different facts, and
+    // reporting only the first would call that outage healthy.
+    let ok = false;
+    let sent = 0;
     try {
-      const sent = await pollOnce(lastSeen);
+      sent = await pollOnce(lastSeen);
+      ok = true;
       if (sent > 0) console.error(`board worker: sent ${sent} notification(s)`);
     } catch (err) {
       // Never fatal — the next tick retries from the same cursors.
       console.error('board worker: poll failed (will retry):', err);
+    }
+    cycles++;
+    // Best effort, and it must stay that way: a monitoring write may never break
+    // the thing it measures. If these stop landing, the row goes stale and the
+    // monitor raises it, so a failure here is already covered — see
+    // monitoring.health in supabase/migrations/20260827220000_worker_heartbeats.
+    try {
+      await recordHeartbeat({
+        service: 'board-worker',
+        ok,
+        didWork: sent > 0,
+        detail: { sent, cycles, intervalMs },
+      });
+    } catch (err) {
+      console.error('board worker: heartbeat write failed (non-fatal):', err);
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }

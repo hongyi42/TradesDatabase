@@ -1,0 +1,28 @@
+[Unit]
+Description=Push this box's internal health to the Render control plane
+Documentation=file:///usr/local/sbin/box-report.sh
+# Needs the network up and dockerd reachable, but must NOT be ordered so tightly
+# that a docker problem prevents the reporter from running — reporting that
+# docker is down is precisely its job.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root: needs systemctl show on system units and the docker socket. The token
+# file is 0600 root:root, so systemd reads it here rather than the script having
+# to. The second file is optional (leading '-') and holds threshold overrides
+# and REPORTER_HEALTHCHECK_URL.
+EnvironmentFile=/etc/doorman/badge-pull.env
+EnvironmentFile=-/etc/nemoclaw/box-report.env
+ExecStart=/usr/local/sbin/box-report.sh
+# Hard ceiling well under the timer interval. Every command inside already has
+# its own timeout; this is the backstop that guarantees ticks can never pile up.
+TimeoutStartSec=120
+
+# The script always exits 0 by design, so there is no OnFailure= here on purpose
+# — there is nothing for it to fire on. A reporter that stops running entirely
+# is caught by REPORTER_HEALTHCHECK_URL going silent, not by systemd.
+
+[Install]
+WantedBy=multi-user.target

@@ -2154,6 +2154,30 @@ export type Database = {
           },
         ]
       }
+      worker_heartbeats: {
+        Row: {
+          beat_at: string
+          detail: Json
+          last_ok_at: string | null
+          service: string
+          work_at: string | null
+        }
+        Insert: {
+          beat_at?: string
+          detail?: Json
+          last_ok_at?: string | null
+          service: string
+          work_at?: string | null
+        }
+        Update: {
+          beat_at?: string
+          detail?: Json
+          last_ok_at?: string | null
+          service?: string
+          work_at?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       mv_escalation_fates: {

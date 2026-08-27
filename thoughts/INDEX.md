@@ -32,183 +32,197 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 173 documents · 169 live · 4 superseded.
+Regenerate with `npm run decisions:index`. 186 documents · 186 live · 0 superseded.
 
 ## Superseded — do not build on these
 
-- `2026-08-22` ~~[2026-08-22-brain-memory-foundations](shared/research/2026-08-22-brain-memory-foundations.md)~~ → **[2026-08-23-memory-architecture-substrate](shared/research/2026-08-23-memory-architecture-substrate.md)**
-- `2026-08-04` ~~[2026-08-04-query-spine-design](shared/plans/2026-08-04-query-spine-design.md)~~ → **[2026-08-23-the-brain-can-look](shared/plans/2026-08-23-the-brain-can-look.md)**
-- `2026-07-04` ~~[2026-07-04-feature-B-outbound-composio-actions](shared/plans/2026-07-04-feature-B-outbound-composio-actions.md)~~ → **[2026-07-04-feature-B-outbound-composio-sessions](shared/plans/2026-07-04-feature-B-outbound-composio-sessions.md)**
-- `2026-06-30` ~~[2026-06-30-phone-call-input-short-two-tier](shared/plans/2026-06-30-phone-call-input-short-two-tier.md)~~ → **[2026-08-04-phone-call-signalwire](shared/plans/2026-08-04-phone-call-signalwire.md)**
+_None recorded yet._
 
 ## Live
 
-- `2026-08-26` `plan` [2026-08-26-check-the-bill](shared/plans/2026-08-26-check-the-bill.md) `describes 1 deleted file` · _draft_ — Check our derived model spend against Anthropic's own usage and billing records
-- `2026-08-26` `plan` [2026-08-26-seat-capacity-and-overflow-safety](shared/plans/2026-08-26-seat-capacity-and-overflow-safety.md) · _proposed_ — Define the production box recipe and capacity-aware seat provisioning, from measured constants rather than pi…
-- `2026-08-26` `plan` [2026-08-26-the-decline-verb](shared/plans/2026-08-26-the-decline-verb.md) · _draft_ — Give the planner a seventh verb — `decline`: don't ask this person, hand it to a manager now
-- `2026-08-26` `plan` [2026-08-26-the-tick-leaves-a-trace](shared/plans/2026-08-26-the-tick-leaves-a-trace.md) — Give every lifecycle tick a durable record, name every firm it considered, and label which lane spent the mon…
-- `2026-08-26` `research` [2026-08-26-the-decline-verb](shared/research/2026-08-26-the-decline-verb.md) `not landed` — The decline verb — how the planner would say "do not ask the technician this, give it to a person" on a gap t…
-- `2026-08-25` `plan` [2026-08-25-the-ask-shape](shared/plans/2026-08-25-the-ask-shape.md) — the ask shape — one message may cover several gaps, the answer keeps its link, and the seat agent can follow…
-- `2026-08-25` `research` [2026-08-25-planner-tick-observability](shared/research/2026-08-25-planner-tick-observability.md) `landed` — The planner/cron observability gap — every surface that records a lifecycle tick, what each one cannot record…
-- `2026-08-24` `plan` [2026-08-24-agentic-planner-eval](shared/plans/2026-08-24-agentic-planner-eval.md) — the agentic planner eval at scale — multi-tick gap-life harness, ~60 scenarios, Opus 5 vs GLM
-- `2026-08-24` `plan` [2026-08-24-one-call-collapse](shared/plans/2026-08-24-one-call-collapse.md) — the one-call collapse — the planner queues its own sends; compose's model call retires
-- `2026-08-24` `research` [2026-08-24-one-call-collapse](shared/research/2026-08-24-one-call-collapse.md) `landed` — the one-call collapse — every model call left in the nudge pipeline, what context each sees, what compose sti…
-- `2026-08-24` `research` [2026-08-24-the-ask-shape](shared/research/2026-08-24-the-ask-shape.md) `landed` — The ask shape — batching several gaps into one message, follow-up asking on the response leg, and the attribu…
-- `2026-08-23` `plan` [2026-08-23-delivery-costs-nothing](shared/plans/2026-08-23-delivery-costs-nothing.md) `drift 19` — "④b delivery costs nothing — planner words reach people verbatim via openclaw message send; the relay turn di…
-- `2026-08-23` `plan` [2026-08-23-memory-architecture](shared/plans/2026-08-23-memory-architecture.md) `drift 24` — ⑤ memory architecture — baseline metrics, gap-life summaries, a lessons store, and a shadow Reflector
-- `2026-08-23` `plan` [2026-08-23-the-brain-can-look](shared/plans/2026-08-23-the-brain-can-look.md) — ④ The brain can look — v_captures, v_visits, v_nudges, v_review_items join the planner's read surface
-- `2026-08-23` `research` [2026-08-23-agentic-eval-estate](shared/research/2026-08-23-agentic-eval-estate.md) `landed` `drift 18` — the agentic-eval estate — every existing eval asset, how planner decisions are recorded and replayed, the gra…
-- `2026-08-23` `research` [2026-08-23-delivery-costs-nothing](shared/research/2026-08-23-delivery-costs-nothing.md) `landed` `drift 19` — "④b delivery costs nothing — how a planner-composed question reaches a person today, and every surface a zero…
-- `2026-08-23` `research` [2026-08-23-memory-architecture-substrate](shared/research/2026-08-23-memory-architecture-substrate.md) `landed` `drift 20` — ⑤ memory — every store, reader, and gap in the substrate as built (planner + seats)
-- `2026-08-23` `research` [2026-08-23-per-call-model-routing](shared/research/2026-08-23-per-call-model-routing.md) `landed` `drift 19` — per-call model routing — how MODEL_PROVIDER reaches each model call site, the two transports, cost-ledger SKU…
-- `2026-08-23` `research` [2026-08-23-the-brain-can-look](shared/research/2026-08-23-the-brain-can-look.md) `landed` — ④ The planner's read surface — what spine_read exposes, what the planner cannot reach and what substitutes, t…
-- `2026-08-22` `plan` [2026-08-22-planner-copy-eval](shared/plans/2026-08-22-planner-copy-eval.md) · _draft_ — Measure what the planner WRITES — the manager-facing handoff note — on Opus 5, with explicit prompt caching a…
-- `2026-08-22` `plan` [2026-08-22-planner-writes-the-question](shared/plans/2026-08-22-planner-writes-the-question.md) `drift 21` · _draft_ — The planner writes the technician's question for gaps it decides to send; compose becomes the fallback
-- `2026-08-22` `plan` [2026-08-22-the-brain-can-attribute](shared/plans/2026-08-22-the-brain-can-attribute.md) `drift 37` — Closing a gap becomes the planner's judgment; the sweep keeps the facts and a fail-safe
-- `2026-08-21` `plan` [2026-08-21-the-answer-return-path](shared/plans/2026-08-21-the-answer-return-path.md) `drift 38` · _draft_ — Close the ladder's return path — hold every manager-facing template to "assert nothing you were not given", l…
-- `2026-08-21` `plan` [2026-08-21-the-eyes-see-the-whole-record](shared/plans/2026-08-21-the-eyes-see-the-whole-record.md) `drift 58` — Let the planner see money and give it a way to postpone an escalation — the first of three plans splitting Gr…
-- `2026-08-21` `plan` [2026-08-21-the-mouth-stops-lying](shared/plans/2026-08-21-the-mouth-stops-lying.md) `drift 70` · _draft_ — Hold every manager-facing template to "assert nothing you were not given", and let a field note record in one…
-- `2026-08-21` `research` [2026-08-21-money-trio-reverify](shared/research/2026-08-21-money-trio-reverify.md) `landed` `drift 70` — The money trio re-verified — which "the ladder cannot see the money ledger" defects still exist after the wor…
-- `2026-08-21` `research` [2026-08-21-the-answer-return-path](shared/research/2026-08-21-the-answer-return-path.md) `landed` `drift 83` — The answer return path — seat-agent channel, capture-time funnel, and escalation copy
-- `2026-08-20` `research` [2026-08-20-continual-learning-for-the-planner](shared/research/2026-08-20-continual-learning-for-the-planner.md) `landed` — Continual learning — what the field is saying, and what it means for the team-lead planner
-- `2026-08-20` `research` [2026-08-20-planner-memory-surfaces](shared/research/2026-08-20-planner-memory-surfaces.md) `landed` `drift 41` — The planner's memory surfaces after Phase 4 — what stores agent experience, what reads it, and what would be…
-- `2026-08-19` `plan` [2026-08-19-multi-kind-ladder-and-cost-detector](shared/plans/2026-08-19-multi-kind-ladder-and-cost-detector.md) `drift 53` — Make the nudge ladder multi-kind, add a minimal cost store, and land cost-chasing as detector #2
-- `2026-08-19` `plan` [2026-08-19-team-lead-planner](shared/plans/2026-08-19-team-lead-planner.md) `drift 98` — Replace the ladder's per-gap sentence-writer with a team-lead planner — one agentic call per firm per half-ho…
-- `2026-08-19` `research` [2026-08-19-cross-tenant-coverage-audit](shared/research/2026-08-19-cross-tenant-coverage-audit.md) `landed` `describes 4 deleted files` `drift 44` — Cross-tenant coverage audit — what breaks first when a second firm exists
-- `2026-08-19` `research` [2026-08-19-nudge-money-answer-blindspot](shared/research/2026-08-19-nudge-money-answer-blindspot.md) `drift 24` · _live specimen open on the pilot; not fi…_ — "DEFECT — an answer recorded as MONEY does not close a nudge, and the field report is lost"
-- `2026-08-19` `research` [2026-08-19-nudge-pacing-planner-and-cost-detector](shared/research/2026-08-19-nudge-pacing-planner-and-cost-detector.md) `landed` `drift 36` — "The nudge pacing planner (post-cap) and cost-chasing as detector #2 — what the shipped code forces"
-- `2026-08-19` `research` [2026-08-19-nudge-pacing-replacement-design](shared/research/2026-08-19-nudge-pacing-replacement-design.md) · _design notes, nothing built_ — "Replacing the per-person nudge cap — design constraints derived against the shipped Stage-1 code"
-- `2026-08-19` `research` [2026-08-19-plan-b-nudge-pacing-planner](shared/research/2026-08-19-plan-b-nudge-pacing-planner.md) `landed` `drift 47` — "Plan B — the nudge pacing planner: what exists in the code today that its three parts must attach to"
-- `2026-08-19` `research` [2026-08-19-team-lead-planner-call](shared/research/2026-08-19-team-lead-planner-call.md) `landed` `drift 21` — "The team-lead planner: centralizing the ladder's judgment as an inference layer with read tools"
-- `2026-08-18` `plan` [2026-08-18-deepinfra-retirement](shared/plans/2026-08-18-deepinfra-retirement.md) `describes 1 deleted file` `drift 19` · _draft_ — Retire DeepInfra at level D — repoint the fleet to Fireworks, build an outage notifier, strip the code, delet…
-- `2026-08-18` `research` [2026-08-18-deepinfra-retirement](shared/research/2026-08-18-deepinfra-retirement.md) `landed` `describes 1 deleted file` `drift 16` — Retiring DeepInfra as the fleet's inference provider — box route + medic, Render services, and the repo code/…
-- `2026-08-18` `research` [2026-08-18-job-costing-money-ledger-gap](shared/research/2026-08-18-job-costing-money-ledger-gap.md) `landed` `drift 68` — Job costing — what exists today between the money ledger's revenue side and a revenue-minus-cost margin number
-- `2026-08-18` `research` [2026-08-18-telegram-bot-identity-router](shared/research/2026-08-18-telegram-bot-identity-router.md) `landed` — Decoupling Telegram bot identity from sandbox count — router feasibility, reply path, and the outbound-hook q…
-- `2026-08-18` `research` [2026-08-18-work-record-artifact](shared/research/2026-08-18-work-record-artifact.md) `landed` `describes 2 deleted files` `drift 40` — Work-record artifact — provable evidence of work performed. What the codebase can evidence today, what it can…
-- `2026-08-15` `plan` [2026-08-15-accounting-ingestion-direction](shared/plans/2026-08-15-accounting-ingestion-direction.md) · _direction_ — Part D direction — accounting-grade money via the firm's own books (QuickBooks/Stripe ingestion)
-- `2026-08-15` `plan` [2026-08-15-feature-A-intelligent-spine-stage0-watchers](shared/plans/2026-08-15-feature-A-intelligent-spine-stage0-watchers.md) `drift 70` — Feature A — Intelligent-spine Stage 0 ("the watchers"): deterministic gap detectors on the existing 15-minute…
-- `2026-08-15` `plan` [2026-08-15-feature-B-intelligent-spine-stage1-voice](shared/plans/2026-08-15-feature-B-intelligent-spine-stage1-voice.md) `describes 1 deleted file` `drift 105` — "Feature B — Intelligent spine Stage 1 (the voice): team-leader outreach through the person's own agent, capp…
-- `2026-08-15` `plan` [2026-08-15-firm-profile-v1](shared/plans/2026-08-15-firm-profile-v1.md) `drift 22` — Firm profile v1 — the tenant business-identity store (name, address, license numbers, disclosure footer) + th…
-- `2026-08-15` `plan` [2026-08-15-intelligent-spine-direction](shared/plans/2026-08-15-intelligent-spine-direction.md) · _direction_ — Direction — the intelligent spine (a spine-side "team leader" agent; fleet becomes a team)
-- `2026-08-15` `plan` [2026-08-15-invoice-creation-v1](shared/plans/2026-08-15-invoice-creation-v1.md) `describes 3 deleted files` `drift 27` · _draft_ — Invoice creation v1 — firm profile, ledger-drafted invoices, PDF render, delivery via the audited Gmail send,…
-- `2026-08-15` `plan` [2026-08-15-money-inference-v1](shared/plans/2026-08-15-money-inference-v1.md) `describes 2 deleted files` `drift 41` · _draft_ — Money ledger v1 (part B) — evidence-class-tiered money inference (email + notes), assert-only-cited reads, re…
-- `2026-08-15` `plan` [2026-08-15-money-ledger-v1](shared/plans/2026-08-15-money-ledger-v1.md) `drift 36` — Money ledger v1 (part A) — workflow-agnostic money event ledger, derived job money-state, manager tool + tier…
-- `2026-08-15` `research` [2026-08-15-feature-A-intelligent-spine-stage-0-watchers](shared/research/2026-08-15-feature-A-intelligent-spine-stage-0-watchers.md) `landed` `drift 46` — Feature A — Intelligent-spine Stage 0 ("the watchers"): deterministic gap detectors over the spine on the exi…
-- `2026-08-15` `research` [2026-08-15-feature-B-intelligent-spine-stage-1-team-leader-voice](shared/research/2026-08-15-feature-B-intelligent-spine-stage-1-team-leader-voice.md) `landed` `drift 43` — "Feature B — Intelligent spine Stage 1 (\"the voice\"): team-leader outreach delivered through a person's own…
-- `2026-08-15` `research` [2026-08-15-invoice-creation](shared/research/2026-08-15-invoice-creation.md) `landed` `drift 17` — Invoice creation — generating and delivering the customer-facing invoice on top of the planned money event le…
-- `2026-08-15` `research` [2026-08-15-pricing-invoicing-payment-loop](shared/research/2026-08-15-pricing-invoicing-payment-loop.md) `landed` `drift 42` — Pricing, invoicing, and payment tracking — closing the job lifecycle loop. Part 1 is domain research (how tra…
-- `2026-08-12` `plan` [2026-08-12-ops-alerting-render](shared/plans/2026-08-12-ops-alerting-render.md) · _PLAN — awaiting review, nothing impleme…_ — Ops alerting — a Render collector for box-side health events
-- `2026-08-12` `plan` [2026-08-12-spine-tool-eval](shared/plans/2026-08-12-spine-tool-eval.md) `drift 37` — Spine-tool eval — accuracy, per-leg latency, and safety across all 41 spine tools, on a world that cannot exp…
-- `2026-08-11` `research` [2026-08-11-composio-relay-per-request-latency](shared/research/2026-08-11-composio-relay-per-request-latency.md) `landed` `drift 44` — Composio relay per-request latency — what getSessionMcpUrl costs, what is cacheable, and what the security mo…
-- `2026-08-07` `plan` [2026-08-06-call-job-classifier](shared/plans/2026-08-06-call-job-classifier.md) — Inbound-call intent router — auto-create jobs for new-work calls; push manager reviews for reschedule/cancel/…
-- `2026-08-06` `research` [2026-08-06-call-transcript-job-classifier](shared/research/2026-08-06-call-transcript-job-classifier.md) `landed` `drift 22` — Adding a "is this a job?" classifier to the inbound phone-call worker, and how an unscheduled job/visit is re…
-- `2026-08-04` `plan` [2026-08-04-get-availability](shared/plans/2026-08-04-get-availability.md) `drift 32` — get_availability — expose the stored weekly working pattern, the one write with no read
-- `2026-08-04` `plan` [2026-08-04-phone-call-signalwire](shared/plans/2026-08-04-phone-call-signalwire.md) `drift 77` — Inbound phone-call capture via SignalWire (Compatibility/LaML) → AssemblyAI → spine. Supersedes the 2026-06-3…
-- `2026-07-31` `plan` [2026-07-31-doc-tool-count-drift](shared/plans/2026-07-31-doc-tool-count-drift.md) `drift 33` · _draft_ — Correct the stale manager tool-surface counts (and short enumerations) across four operator docs
-- `2026-07-31` `plan` [2026-07-31-route-deeplink-booked-order](shared/plans/2026-07-31-route-deeplink-booked-order.md) `drift 33` · _draft_ — Per-stop Google Maps links in booked order — drop route optimization from get_schedule (the manager-read half…
-- `2026-07-31` `research` [2026-07-31-manager-self-route-view](shared/research/2026-07-31-manager-self-route-view.md) `landed` `drift 33` — Manager self-route view as a mode on get_team_schedule (rather than restoring get_schedule for managers)
-- `2026-07-31` `research` [2026-07-31-run-resolve-e2e-findings](shared/research/2026-07-31-run-resolve-e2e-findings.md) · _Parts 0-6 complete (Part 7 cron optiona…_ — Phase 6 live E2E acceptance run of PR #91 (freeze / run_resolve / undo_run) against the deployed pilot
-- `2026-07-30` `plan` [2026-07-30-run-resolve-reoptimizer](shared/plans/2026-07-30-run-resolve-reoptimizer.md) `drift 43` · _draft_ — run_resolve — horizon-wide re-optimizer; unpinned placed visits become movable, promise ladder sets each visi…
-- `2026-07-30` `plan` [2026-07-30-unprice-brave-composio](shared/plans/2026-07-30-unprice-brave-composio.md) · _draft_ — Move Brave and Composio off per-unit list-rate pricing to counter + invoice
-- `2026-07-30` `research` [2026-07-30-brave-composio-bill-driven-costing](shared/research/2026-07-30-brave-composio-bill-driven-costing.md) `landed` `describes 1 deleted file` `drift 51` — Moving Brave and Composio from per-unit list-rate pricing to the bill-driven pattern
-- `2026-07-30` `research` [2026-07-30-plan-4c-customer-sender-foundations](shared/research/2026-07-30-plan-4c-customer-sender-foundations.md) `landed` `drift 51` — Plan 4c — shared system sender + customer nudges — everything a customer-facing notification pipeline would b…
-- `2026-07-30` `research` [2026-07-30-resolve-mode-foundations](shared/research/2026-07-30-resolve-mode-foundations.md) `landed` `drift 43` — Re-solve mode foundations — everything the horizon-wide re-optimizer (movable placed visits, promise-graded f…
-- `2026-07-30` `research` [2026-07-30-testing-to-production-fork](shared/research/2026-07-30-testing-to-production-fork.md) `landed` `describes 1 deleted file` `drift 58` — Testing → production fork — every environment-coupled surface, and what standing up a parallel production env…
-- `2026-07-27` `plan` [2026-07-27-freeze-proposal-board-view](shared/plans/2026-07-27-freeze-proposal-board-view.md) `drift 46` · _draft_ — Read-only freeze-proposal view on the dispatch board + chat-message shrink + resolve_review copy rider
-- `2026-07-27` `research` [2026-07-27-freeze-proposal-board-view](shared/research/2026-07-27-freeze-proposal-board-view.md) `landed` `drift 71` — Read-only freeze-proposal view on the Telegram Mini App dispatch board — map of everything a plan would build…
-- `2026-07-26` `plan` [2026-07-26-plan-4b3-freeze](shared/plans/2026-07-26-plan-4b3-freeze.md) `drift 71` — Plan 4b-3 — the freeze: human-privilege visit locks, geocoding, ROI-backed solve, manager-invoked run_freeze…
-- `2026-07-26` `research` [2026-07-26-plan-4b3-weekly-freeze-foundations](shared/research/2026-07-26-plan-4b3-weekly-freeze-foundations.md) `landed` `drift 81` — Plan 4b-3 — the weekly freeze (auto-placement of unplaced work). Delta map of everything the freeze builds on…
-- `2026-07-25` `plan` [2026-07-25-plan-cancel-vocabulary](shared/plans/2026-07-25-plan-cancel-vocabulary.md) `drift 110` · _draft_ — Cancel vocabulary — rename cancel_visit → unschedule_visit; add cancel_job (terminal, always confirmed)
-- `2026-07-25` `plan` [2026-07-25-plan-resolve-date-week-mode](shared/plans/2026-07-25-plan-resolve-date-week-mode.md) `drift 56` — resolve_date week mode — server-resolved week RANGES with Sat/Sun boundary ambiguity surfaced
-- `2026-07-24` `plan` [2026-07-24-inference-provider-registry-and-switch-readiness](shared/plans/2026-07-24-inference-provider-registry-and-switch-readiness.md) `describes 1 deleted file` `drift 20` · _draft_ — Make the inference provider declarative, gate any switch behind an acceptance suite, and baseline it on DeepI…
-- `2026-07-24` `plan` [2026-07-24-per-tenant-cost-dashboard](shared/plans/2026-07-24-per-tenant-cost-dashboard.md) `drift 128` · _draft (revised after adversarial review)_ — Per-tenant API cost ledger + internal operator dashboard (due 2026-08-01)
-- `2026-07-24` `plan` [2026-07-24-plan-4b1-duration-ladder](shared/plans/2026-07-24-plan-4b1-duration-ladder.md) `drift 119` — Plan 4b-1 — job-level duration from a fixed ladder, required at creation, never defaulted
-- `2026-07-24` `plan` [2026-07-24-plan-4b2-unplaced-visits](shared/plans/2026-07-24-plan-4b2-unplaced-visits.md) `drift 121` — Plan 4b-2 — unplaced visits: a visit may hold a day (or a range of days) with no time yet
-- `2026-07-24` `research` [2026-07-24-inference-provider-switching](shared/research/2026-07-24-inference-provider-switching.md) `landed` `drift 64` — re-derived at HEAD 5bb7981 after main advanced 29 commits from the e03eb12 baseline the first pass used; the…
-- `2026-07-24` `research` [2026-07-24-per-tenant-api-cost-tracking](shared/research/2026-07-24-per-tenant-api-cost-tracking.md) `landed` `drift 122` — re-derived at HEAD 5bb7981 after main advanced 29 commits from the e03eb12 baseline the first pass used; the…
-- `2026-07-24` `research` [2026-07-24-plan-4b-freeze-autonomy-time-tbd](shared/research/2026-07-24-plan-4b-freeze-autonomy-time-tbd.md) `landed` `drift 51` — Plan 4b — the weekly freeze (engine + staging + trigger), the per-tenant autonomy toggle, and time-TBD visits…
-- `2026-07-24` `research` [2026-07-24-roi-engine-live-pricing-verification](shared/research/2026-07-24-roi-engine-live-pricing-verification.md) `landed` — Plan 4b's first planning step — live verification of the Google Route Optimization API ("ROI") pricing, tieri…
-- `2026-07-23` `plan` [2026-07-23-plan-4a5-board-quick-edit](shared/plans/2026-07-23-plan-4a5-board-quick-edit.md) `drift 107` · _draft_ — 4a.5 — board quick-edit: tap-assign picker, detach/park verb, tray booking sheet, editable visit sheet, compr…
-- `2026-07-23` `research` [2026-07-23-plan-4a5-board-quick-edit-verbs](shared/research/2026-07-23-plan-4a5-board-quick-edit-verbs.md) `landed` `drift 112` — Plan 4a.5 — board quick-edit verbs; lanes/drop targets, drag-move flow, bucket tray, assign/detach verb seman…
-- `2026-07-22` `plan` [2026-07-22-plan-4a-loose-bucket-tray](shared/plans/2026-07-22-plan-4a-loose-bucket-tray.md) `drift 110` — Plan 4a — the loose bucket gets a visual home (board tray + always-visible count) + the technician visibility…
-- `2026-07-22` `plan` [2026-07-22-telegram-board-latency-p2-p3-p4-p6](shared/plans/2026-07-22-telegram-board-latency-p2-p3-p4-p6.md) `drift 47` — Telegram dispatch-board latency — P2 auth cache, P3 join, P4 drop version, P6 index
-- `2026-07-22` `research` [2026-07-22-plan-4-freeze-ritual-surfaces](shared/research/2026-07-22-plan-4-freeze-ritual-surfaces.md) `landed` `drift 142` — Plan 4 of the Telegram-schedule series (the freeze ritual — whole-day/week solve of the loose far-out bucket,…
-- `2026-07-22` `research` [2026-07-22-sonnet-call-sites-vs-agent-tool-catalog](shared/research/2026-07-22-sonnet-call-sites-vs-agent-tool-catalog.md) `landed` `drift 90` — Where the repo calls Anthropic Sonnet directly, what each call actually ships in its prompt, and how that dif…
-- `2026-07-22` `research` [2026-07-22-telegram-board-latency-fix-surface](shared/research/2026-07-22-telegram-board-latency-fix-surface.md) `landed` `drift 62` — Telegram dispatch-board Mini App UI latency — fix surface for P2/P3/P4/P6 (+P7 investigation)
-- `2026-07-20` `plan` [2026-07-20-model-cost-benchmark-and-cache-diagnosis](shared/plans/2026-07-20-model-cost-benchmark-and-cache-diagnosis.md) `drift 76` · _diagnosis complete; benchmark plan draf…_ — GLM-5.2 vs GPT-5.6 Luna cost/quality benchmark + agent prompt-cache diagnosis
-- `2026-07-20` `plan` [2026-07-20-plan-3a-schedule-input-verbs](shared/plans/2026-07-20-plan-3a-schedule-input-verbs.md) `drift 107` — Plan 3a — schedule-input verbs (availability, time off, durations, skills, priority home) so the fit-check ha…
-- `2026-07-20` `plan` [2026-07-20-plan-3b-find-slots](shared/plans/2026-07-20-plan-3b-find-slots.md) `drift 95` — Plan 3b — find_slots: the deterministic, horizon-aware, drive-aware feasible-slot finder (read-only, ranked,…
-- `2026-07-20` `research` [2026-07-20-flexible-scheduling-agent-toolset](shared/research/2026-07-20-flexible-scheduling-agent-toolset.md) `landed` — Deep research — the toolset a flexible AI scheduling agent needs, triangulated from (1) how human dispatchers…
-- `2026-07-20` `research` [2026-07-20-glm52-deepinfra-cache-optimization](shared/research/2026-07-20-glm52-deepinfra-cache-optimization.md) — Can we cut inference cost by raising the GLM-5.2 prompt-cache hit rate on DeepInfra?
-- `2026-07-20` `research` [2026-07-20-plan-3-auto-scheduler-surfaces](shared/research/2026-07-20-plan-3-auto-scheduler-surfaces.md) `landed` `drift 164` — Plan 3 of the Telegram-schedule series (the auto-scheduler) — every surface it would build on, as the code st…
-- `2026-07-19` `plan` [2026-07-19-seat-exempt-schedulable-person](shared/plans/2026-07-19-seat-exempt-schedulable-person.md) `drift 98` — Seat-exempt schedulable person — add a name to the schedule without occupying a technician seat
-- `2026-07-19` `research` [2026-07-19-seat-exempt-part-timer](shared/research/2026-07-19-seat-exempt-part-timer.md) `landed` `drift 182` — Seat-exempt schedulable person ("part-timer") — roster model, seat cap, assignability, readers, Telegram/badg…
-- `2026-07-17` `plan` [2026-07-17-feature-A-technician-optional-bookings-and-confirmation-policy](shared/plans/2026-07-17-feature-A-technician-optional-bookings-and-confirmation-policy.md) `drift 163` — "Feature A (FOUNDATION) — technician-optional bookings + reversibility-driven confirmation policy"
-- `2026-07-17` `plan` [2026-07-17-feature-B-plan-2-telegram-mini-app-dispatch-board](shared/plans/2026-07-17-feature-B-plan-2-telegram-mini-app-dispatch-board.md) `drift 172` — Feature B / Plan 2 — Telegram Mini App dispatch board (global non-AI board bot + hosted page)
-- `2026-07-17` `research` [2026-07-17-feature-A-technician-optional-bookings-and-confirmation-policy](shared/research/2026-07-17-feature-A-technician-optional-bookings-and-confirmation-policy.md) `landed` `drift 154` — "Feature A (FOUNDATION) — (1) technician-optional bookings, (2) reversibility-driven confirmation policy — th…
-- `2026-07-17` `research` [2026-07-17-feature-B-plan-2-mini-app-footprint-overlap](shared/research/2026-07-17-feature-B-plan-2-mini-app-footprint-overlap.md) `landed` `drift 159` — Feature B (Plan 2 — Telegram Mini App dispatch board) — concurrent-run footprint & overlap validation against…
-- `2026-07-17` `research` [2026-07-17-plan-2-telegram-mini-app-dispatch-board](shared/research/2026-07-17-plan-2-telegram-mini-app-dispatch-board.md) `landed` `describes 3 deleted files` `drift 130` — Plan 2 (Telegram Mini App dispatch board) — focused delta research after Plan 1 landed; what the schedule cor…
-- `2026-07-17` `research` [2026-07-17-technician-optional-and-confirmation-policy](shared/research/2026-07-17-technician-optional-and-confirmation-policy.md) `landed` `drift 153` — The two design fixes — (1) technician-optional bookings, (2) reversibility-driven confirmation policy — as th…
-- `2026-07-15` `research` [2026-07-15-date-reliability-eval](shared/research/2026-07-15-date-reliability-eval.md) `drift 94` — How reliably can the agent turn a spoken day ("this Friday") into a real date, and how much do grounding + a…
-- `2026-07-14` `plan` [2026-07-14-feature-cd-phase1-standing-facts](shared/plans/2026-07-14-feature-cd-phase1-standing-facts.md) `drift 134` — Feature C+D Phase 1 — confirm-gated, provenance-linked standing facts on customer/job rows (new spine tool)
-- `2026-07-14` `plan` [2026-07-14-retraction-fold-impact-preview](shared/plans/2026-07-14-retraction-fold-impact-preview.md) `drift 96` — Retraction fold-impact preview (server-computed) + confirmation-count reduction
-- `2026-07-14` `plan` [2026-07-14-schedule-core-on-assignments](shared/plans/2026-07-14-schedule-core-on-assignments.md) `describes 3 deleted files` `drift 194` · _draft_ — Schedule core on assignments — promise ladder, locks, versioning, manager chat booking tools; retire the Goog…
-- `2026-07-14` `research` [2026-07-14-scheduling-mini-app-gap-analysis](shared/research/2026-07-14-scheduling-mini-app-gap-analysis.md) `landed` `describes 3 deleted files` `drift 158` — Scheduling flow today vs the Telegram Mini App dispatch board — inventory of the two shipped scheduling PRs a…
-- `2026-07-13` `plan` [2026-07-13-glm-inference-swap](shared/plans/2026-07-13-glm-inference-swap.md) `describes 1 deleted file` `drift 122` · _draft_ — Swap the spine's four Claude call sites to GLM-5.2 (DeepInfra primary, NVIDIA failover); retire ANTHROPIC_API…
-- `2026-07-13` `research` [2026-07-13-feature-cd-l3-write-surface-and-agent-memory](shared/research/2026-07-13-feature-cd-l3-write-surface-and-agent-memory.md) `landed` `drift 160` — Feature C+D — per-tenant agent memory on a completed L3 write surface (current-state survey)
-- `2026-07-13` `research` [2026-07-13-glm-swap-anthropic-call-sites](shared/research/2026-07-13-glm-swap-anthropic-call-sites.md) `landed` `drift 126` — The four Anthropic/Claude call sites and everything a GLM-5.2 (DeepInfra + NVIDIA failover) swap would touch
-- `2026-07-12` `plan` [2026-07-12-sandbox-recycler-self-serve-lifecycle](shared/plans/2026-07-12-sandbox-recycler-self-serve-lifecycle.md) `drift 108` · _draft lines-note: ~350 lines, over the…_ — Sandbox recycler — self-serve member replacement (auto destroy + restock) and zero-operator badge install
-- `2026-07-12` `plan` [2026-07-12-web-search-fetch-hardened](shared/plans/2026-07-12-web-search-fetch-hardened.md) `drift 113` — Feature E — web_search + read_webpage as hardened trades-spine tools (Brave on Render, fetch with our-side ex…
-- `2026-07-12` `research` [2026-07-12-brave-search-configuration](shared/research/2026-07-12-brave-search-configuration.md) `landed` `drift 99` — Brave/web-search configuration surface (Feature E) — every switch, key path, egress layer, and the existing g…
-- `2026-07-11` `research` [2026-07-11-member-lifecycle-onboarding-offboarding-replacement](shared/research/2026-07-11-member-lifecycle-onboarding-offboarding-replacement.md) `landed` `drift 136` — Member lifecycle — onboarding, offboarding, and replacement flows (roster, sandbox pool, badge/binding delive…
-- `2026-07-06` `plan` [2026-07-06-composio-doorman-relay](shared/plans/2026-07-06-composio-doorman-relay.md) `drift 117` — "Composio doorman relay — badge-authenticated sandbox access to each person's Composio session, master key st…
-- `2026-07-06` `plan` [2026-07-06-day-route-deeplink](shared/plans/2026-07-06-day-route-deeplink.md) `describes 1 deleted file` `drift 124` — Technician day/week route tool — ordered stops via Google Routes API + Maps deep link, delivered through a ne…
-- `2026-07-06` `plan` [2026-07-06-note-lifecycle-confirm-gate-and-retractions](shared/plans/2026-07-06-note-lifecycle-confirm-gate-and-retractions.md) `drift 138` — Note lifecycle — stage→confirm gate on record_field_note + Option-B retraction rows with folded reads
-- `2026-07-06` `research` [2026-07-06-composio-doorman-relay](shared/research/2026-07-06-composio-doorman-relay.md) `landed` `drift 133` — Composio doorman relay — everything that exists today between a sandbox and a person's Composio session, as i…
-- `2026-07-06` `research` [2026-07-06-prod-rollout-manager-seat](shared/research/2026-07-06-prod-rollout-manager-seat.md) `landed` `drift 144` — Prod rollout for a manager seat — what exists today between a new seat on trades-box-1 and the TRUE prod Supa…
-- `2026-07-06` `research` [2026-07-06-route-optimization-deeplink-surfaces](shared/research/2026-07-06-route-optimization-deeplink-surfaces.md) `landed` `describes 2 deleted files` `drift 160` — Current surfaces for a Google route-optimization + Maps deep-link pipeline (technician day-route display)
-- `2026-07-05` `research` [2026-07-05-note-lifecycle-two-step-confirm-and-retraction-rows](shared/research/2026-07-05-note-lifecycle-two-step-confirm-and-retraction-rows.md) `landed` `drift 151` — Note lifecycle — two-step confirm on record_field_note + Option-B retraction rows (current state of the code…
-- `2026-07-04` `plan` [2026-07-04-feature-A-manager-telegram-binding](shared/plans/2026-07-04-feature-A-manager-telegram-binding.md) `drift 134` · _phases-1-4 implemented + verified (scra…_ — "Feature A — manager binds a new technician NemoClaw to a Telegram user id from chat, no operator"
-- `2026-07-04` `plan` [2026-07-04-feature-B-outbound-composio-sessions](shared/plans/2026-07-04-feature-B-outbound-composio-sessions.md) `drift 165` — "Feature B — Outbound Composio actions via NemoClaw: per-person Composio SESSIONS (tiered), spine send_email…
-- `2026-07-04` `research` [2026-07-04-feature-A-automatic-technician-telegram-binding-via-manager-nemoclaw](shared/research/2026-07-04-feature-A-automatic-technician-telegram-binding-via-manager-nemoclaw.md) `landed` `drift 148` — "Feature A — automatic technician onboarding: bind a new technician NemoClaw to a Telegram user id from the m…
-- `2026-07-04` `research` [2026-07-04-feature-B-outbound-composio-actions](shared/research/2026-07-04-feature-B-outbound-composio-actions.md) `landed` `drift 133` — "Feature B — Outbound Composio actions via NemoClaw (Gmail send/draft + per-tenant connectors), complementing…
-- `2026-07-03` `plan` [2026-07-03-local-test-stack-and-roster-safety](shared/plans/2026-07-03-local-test-stack-and-roster-safety.md) — Move the test suite onto a local Supabase stack and close the truncation → live-box outage path
-- `2026-07-03` `plan` [2026-07-03-scheduling-foundation](shared/plans/2026-07-03-scheduling-foundation.md) `drift 52` — Scheduling foundation — availability, areas, durations, timezone, assignments (Plan 1 of the auto-scheduling…
-- `2026-07-03` `research` [2026-07-03-auto-scheduling-current-surfaces](shared/research/2026-07-03-auto-scheduling-current-surfaces.md) `landed` `describes 3 deleted files` `drift 162` — Auto-scheduling technicians — every surface the codebase has today that a scheduler would build on (schedule…
-- `2026-07-03` `research` [2026-07-03-cold-sandbox-identity-injection](shared/research/2026-07-03-cold-sandbox-identity-injection.md) `landed` — Cold-sandbox identity injection — badge, Telegram sender binding, unbind at offboarding (pre-research for the…
-- `2026-07-03` `research` [2026-07-03-sales-role-surfaces](shared/research/2026-07-03-sales-role-surfaces.md) `landed` `describes 2 deleted files` `drift 152` — Sales role — every existing surface a third role (sales: per-technician transaction amounts, Excel reports, s…
-- `2026-07-03` `research` [2026-07-03-test-suite-cleanup-and-live-box-safety](shared/research/2026-07-03-test-suite-cleanup-and-live-box-safety.md) `landed` `drift 19` — Test suite — how tests use the shared test database, the TRUNCATE cleanup pattern, and the live-box roster se…
-- `2026-07-02` `plan` [2026-07-02-control-plane-lifecycle](shared/plans/2026-07-02-control-plane-lifecycle.md) `drift 204` — Control-plane lifecycle (Plan 2) — badge generate+pull, Composio pairing/offboarding automation, verify-after…
-- `2026-07-02` `plan` [2026-07-02-technicians-table-seat-management](shared/plans/2026-07-02-technicians-table-seat-management.md) `describes 2 deleted files` `drift 176` — Technicians table + manager seat-management MCP tools + loose ref enforcement (Plan 1 of the self-serve onboa…
-- `2026-07-02` `research` [2026-07-02-control-plane-lifecycle-surface](shared/research/2026-07-02-control-plane-lifecycle-surface.md) `not landed` `describes 1 deleted file` `drift 163` — Control-plane lifecycle (Plan 2) — the as-is state of everything Plan 2 will automate; badge lifecycle, Compo…
-- `2026-07-02` `research` [2026-07-02-self-serve-onboarding-technicians-table-surface](shared/research/2026-07-02-self-serve-onboarding-technicians-table-surface.md) `landed` `describes 2 deleted files` `drift 24` — Self-serve onboarding + technicians table — every surface that constitutes technician identity today (ref sto…
-- `2026-07-01` `plan` [2026-07-01-per-person-composio-identity](shared/plans/2026-07-01-per-person-composio-identity.md) `drift 45` — Per-person Composio pairing — composite user_id, person attribution on inbound captures, L1 technician_ref co…
-- `2026-07-01` `research` [2026-07-01-composio-identity-pairing-model](shared/research/2026-07-01-composio-identity-pairing-model.md) `landed` `drift 160` — Identity propagation for the Composio pairing model — how user_id / tenantId / technicianRef flow through the…
-- `2026-07-01` `research` [2026-07-01-repo-debt-audit](shared/research/2026-07-01-repo-debt-audit.md) `landed` `drift 56` — Repo-wide debt audit — rule violations and dead weight across 8 categories
-- `2026-06-30` `research` [2026-06-30-phone-call-input-feature](shared/research/2026-06-30-phone-call-input-feature.md) `landed` `drift 163` — Phone-call input feature — recording inbound customer calls, transcribing, and landing them in the three-laye…
-- `2026-06-29` `research` [2026-06-29-async-webhook-ingestion](shared/research/2026-06-29-async-webhook-ingestion.md) `landed` `describes 1 deleted file` `drift 160` — async webhook ingestion — how recordFieldNote couples the Composio webhook and email pull paths, what an appe…
-- `2026-06-25` `plan` [2026-06-25-composio-inbound-connector-seam](shared/plans/2026-06-25-composio-inbound-connector-seam.md) `drift 49` — Build the testable-now Composio inbound connector seam (capture idempotency + normalizer + webhook)
-- `2026-06-25` `research` [2026-06-25-composio-connector-layer](shared/research/2026-06-25-composio-connector-layer.md) `landed` `describes 2 deleted files` `drift 158` — Composio connector layer — existing integration surfaces (write-path, current connectors, identity seam) and…
-- `2026-06-23` `plan` [2026-06-23-centralized-mcp-server-architecture-a](shared/plans/2026-06-23-centralized-mcp-server-architecture-a.md) `drift 127` — Centralize the trades-spine MCP server (Architecture A — gateway-mediated trust)
-- `2026-06-23` `plan` [2026-06-23-read-synthesis-layer](shared/plans/2026-06-23-read-synthesis-layer.md) `drift 139` — Build the synthesis layer — grounded, cited AI briefings + Q&A over a CustomerContext
-- `2026-06-23` `research` [2026-06-23-centralized-mcp-server-architecture-a](shared/research/2026-06-23-centralized-mcp-server-architecture-a.md) `landed` `drift 157` — Centralized gateway-mediated MCP server (Architecture A) — current code, seams, and constraints
-- `2026-06-23` `research` [2026-06-23-read-synthesis-layer](shared/research/2026-06-23-read-synthesis-layer.md) `landed` `drift 158` — The read/synthesis layer — read-path features that surface spine data (overview build-order step 3)
-- `2026-06-20` `research` [2026-06-20-open-question-agent-row-level-access-control](shared/research/2026-06-20-open-question-agent-row-level-access-control.md) `drift 113` · _open — configure later_
-- `2026-06-19` `plan` [2026-06-19-technician-write-path](shared/plans/2026-06-19-technician-write-path.md) `describes 2 deleted files` `drift 175` — Stage 2 — technician write-path (voice/text note → spine) via a NemoClaw agent + custom MCP server
-- `2026-06-19` `plan` [2026-06-19-three-layer-context-spine-basic-structure](shared/plans/2026-06-19-three-layer-context-spine-basic-structure.md) `drift 53` — Build the three-layer context spine basic structure (schema + typed read/write access) on Supabase
-- `2026-06-19` `research` [2026-06-19-technician-write-path-nemoclaw-input-channel](shared/research/2026-06-19-technician-write-path-nemoclaw-input-channel.md) `landed` `drift 34` — Stage 2 — technician write-path; feasibility of NemoClaw/OpenClaw per-user agents as the input channel
-- `2026-06-19` `research` [2026-06-19-three-layer-context-spine-structure](shared/research/2026-06-19-three-layer-context-spine-structure.md) `landed` — Three-layer context spine — current repo structure and the design it prescribes
-- `????-??-??` `note` [build-schedule](shared/build-schedule.md)
-- `????-??-??` `plan` [2026-07-30-remaining-vendor-cost-coverage](shared/plans/2026-07-30-remaining-vendor-cost-coverage.md)
-- `????-??-??` `plan` [2026-08-06-weekday-guard-plugin](shared/plans/2026-08-06-weekday-guard-plugin.md)
-- `????-??-??` `plan` [2026-08-14-agent-turn-hardening](shared/plans/2026-08-14-agent-turn-hardening.md)
-- `????-??-??` `plan` [2026-08-15-fireworks-switch](shared/plans/2026-08-15-fireworks-switch.md)
-- `????-??-??` `research` [2026-07-04-third-party-automated-scheduling-software](shared/research/2026-07-04-third-party-automated-scheduling-software.md)
-- `????-??-??` `research` [2026-07-08-long-running-agent-tasks](shared/research/2026-07-08-long-running-agent-tasks.md)
-- `????-??-??` `research` [2026-07-31-agents-md-context-truncation](shared/research/2026-07-31-agents-md-context-truncation.md)
-- `????-??-??` `research` [2026-07-31-nemoclaw-device-scope-deadlock](shared/research/2026-07-31-nemoclaw-device-scope-deadlock.md)
-- `????-??-??` `research` [2026-08-14-glm-5.2-inference-provider-options](shared/research/2026-08-14-glm-5.2-inference-provider-options.md)
-- `????-??-??` `research` [2026-08-16-gemini-interactions-port-spec](shared/research/2026-08-16-gemini-interactions-port-spec.md)
-- `????-??-??` `research` [2026-08-16-n8n-platform-options](shared/research/2026-08-16-n8n-platform-options.md)
-- `????-??-??` `research` [2026-08-18-reddit-trades-pain-points](shared/research/2026-08-18-reddit-trades-pain-points.md)
-- `????-??-??` `research` [2026-08-18-segment-b-newly-solo-operators](shared/research/2026-08-18-segment-b-newly-solo-operators.md)
+- `2026-08-17` `note` [2026-08-17-infrastructure-reliability-system-design](shared\research\2026-08-17-infrastructure-reliability-system-design.md) · _research_ — Infrastructure system design + reliability — prod-readiness (fleet hosting, failure model, outage detection)
+- `2026-08-12` `note` [2026-08-12-agent-pdf-output](shared\research\2026-08-12-agent-pdf-output.md) `landed` `drift 35` — Enabling agent-produced (output) PDF files — where PDF is handled today and what boundary a "generate a PDF"…
+- `2026-08-10` `note` [2026-08-10-isolated-a2-agent-chat-notify](shared\plans\2026-08-10-isolated-a2-agent-chat-notify.md) `describes 1 deleted file` · _draft_ — Deliver manager notifications into the NemoClaw agent chat via an isolated box sidecar (A2), not the board bot
+- `2026-08-10` `note` [2026-08-10-agent-chat-notification-transport](shared\research\2026-08-10-agent-chat-notification-transport.md) `drift 27` · _research_ — Notification transport — deliver call/review notices into a manager's NemoClaw agent chat (not the board bot)
+- `2026-08-06` `note` [2026-08-06-prod-launch-legalities](shared\research\2026-08-06-prod-launch-legalities.md) `landed` `drift 38` — Legalities of going to production with real trades businesses (US) — company formation + the compliance surfa…
+- `2026-08-04` `note` [2026-08-04-hermes-agent-vs-nemoclaw](shared\research\2026-08-04-hermes-agent-vs-nemoclaw.md) `landed` `drift 36` — What Hermes Agent is, how it differs from the NemoClaw/OpenClaw runtime this repo uses, and what a migration…
+- `2026-07-31` `note` [2026-07-31-skills-for-prod-scaling](shared\research\2026-07-31-skills-for-prod-scaling.md) `landed` — Which repo-authored skills to build next for the move to production, scaling, and expansion — ranked by impor…
+- `2026-07-30` `note` [2026-07-30-system-design-principles-for-skill](shared\research\2026-07-30-system-design-principles-for-skill.md) `landed` `drift 47` — System-design / DB-migration / production-change / failure-handling principles, distilled from this repo's do…
+- `2026-07-22` `note` [2026-07-22-telegram-board-latency-p2-p3-p4-p6](shared\plans\2026-07-22-telegram-board-latency-p2-p3-p4-p6.md) `drift 47` — Telegram dispatch-board latency — P2 auth cache, P3 join, P4 drop version, P6 index
+- `2026-07-22` `note` [2026-07-22-telegram-board-latency-fix-surface](shared\research\2026-07-22-telegram-board-latency-fix-surface.md) `landed` `drift 62` — Telegram dispatch-board Mini App UI latency — fix surface for P2/P3/P4/P6 (+P7 investigation)
+- `2026-07-20` `note` [2026-07-20-model-cost-benchmark-and-cache-diagnosis](shared\plans\2026-07-20-model-cost-benchmark-and-cache-diagnosis.md) `drift 76` · _diagnosis complete; benchmark plan draf…_ — GLM-5.2 vs GPT-5.6 Luna cost/quality benchmark + agent prompt-cache diagnosis
+- `2026-06-23` `note` [2026-06-23-read-synthesis-layer](shared\plans\2026-06-23-read-synthesis-layer.md) `drift 139` — Build the synthesis layer — grounded, cited AI briefings + Q&A over a CustomerContext
+- `????-??-??` `note` [build-schedule](shared\build-schedule.md)
+- `????-??-??` `note` [2026-06-19-technician-write-path](shared\plans\2026-06-19-technician-write-path.md)
+- `????-??-??` `note` [2026-06-19-three-layer-context-spine-basic-structure](shared\plans\2026-06-19-three-layer-context-spine-basic-structure.md)
+- `????-??-??` `note` [2026-06-23-centralized-mcp-server-architecture-a](shared\plans\2026-06-23-centralized-mcp-server-architecture-a.md)
+- `????-??-??` `note` [2026-06-25-composio-inbound-connector-seam](shared\plans\2026-06-25-composio-inbound-connector-seam.md)
+- `????-??-??` `note` [2026-06-30-phone-call-input-short-two-tier](shared\plans\2026-06-30-phone-call-input-short-two-tier.md)
+- `????-??-??` `note` [2026-07-01-per-person-composio-identity](shared\plans\2026-07-01-per-person-composio-identity.md)
+- `????-??-??` `note` [2026-07-02-control-plane-lifecycle](shared\plans\2026-07-02-control-plane-lifecycle.md)
+- `????-??-??` `note` [2026-07-02-technicians-table-seat-management](shared\plans\2026-07-02-technicians-table-seat-management.md)
+- `????-??-??` `note` [2026-07-03-local-test-stack-and-roster-safety](shared\plans\2026-07-03-local-test-stack-and-roster-safety.md)
+- `????-??-??` `note` [2026-07-03-scheduling-foundation](shared\plans\2026-07-03-scheduling-foundation.md)
+- `????-??-??` `note` [2026-07-04-feature-A-manager-telegram-binding](shared\plans\2026-07-04-feature-A-manager-telegram-binding.md)
+- `????-??-??` `note` [2026-07-04-feature-B-outbound-composio-actions](shared\plans\2026-07-04-feature-B-outbound-composio-actions.md)
+- `????-??-??` `note` [2026-07-04-feature-B-outbound-composio-sessions](shared\plans\2026-07-04-feature-B-outbound-composio-sessions.md)
+- `????-??-??` `note` [2026-07-06-composio-doorman-relay](shared\plans\2026-07-06-composio-doorman-relay.md)
+- `????-??-??` `note` [2026-07-06-day-route-deeplink](shared\plans\2026-07-06-day-route-deeplink.md)
+- `????-??-??` `note` [2026-07-06-note-lifecycle-confirm-gate-and-retractions](shared\plans\2026-07-06-note-lifecycle-confirm-gate-and-retractions.md)
+- `????-??-??` `note` [2026-07-12-sandbox-recycler-self-serve-lifecycle](shared\plans\2026-07-12-sandbox-recycler-self-serve-lifecycle.md)
+- `????-??-??` `note` [2026-07-12-web-search-fetch-hardened](shared\plans\2026-07-12-web-search-fetch-hardened.md)
+- `????-??-??` `note` [2026-07-13-glm-inference-swap](shared\plans\2026-07-13-glm-inference-swap.md)
+- `????-??-??` `note` [2026-07-14-feature-cd-phase1-standing-facts](shared\plans\2026-07-14-feature-cd-phase1-standing-facts.md)
+- `????-??-??` `note` [2026-07-14-retraction-fold-impact-preview](shared\plans\2026-07-14-retraction-fold-impact-preview.md)
+- `????-??-??` `note` [2026-07-14-schedule-core-on-assignments](shared\plans\2026-07-14-schedule-core-on-assignments.md)
+- `????-??-??` `note` [2026-07-17-feature-A-technician-optional-bookings-and-confirmation-policy](shared\plans\2026-07-17-feature-A-technician-optional-bookings-and-confirmation-policy.md)
+- `????-??-??` `note` [2026-07-17-feature-B-plan-2-telegram-mini-app-dispatch-board](shared\plans\2026-07-17-feature-B-plan-2-telegram-mini-app-dispatch-board.md)
+- `????-??-??` `note` [2026-07-19-seat-exempt-schedulable-person](shared\plans\2026-07-19-seat-exempt-schedulable-person.md)
+- `????-??-??` `note` [2026-07-20-plan-3a-schedule-input-verbs](shared\plans\2026-07-20-plan-3a-schedule-input-verbs.md)
+- `????-??-??` `note` [2026-07-20-plan-3b-find-slots](shared\plans\2026-07-20-plan-3b-find-slots.md)
+- `????-??-??` `note` [2026-07-22-plan-4a-loose-bucket-tray](shared\plans\2026-07-22-plan-4a-loose-bucket-tray.md)
+- `????-??-??` `note` [2026-07-23-plan-4a5-board-quick-edit](shared\plans\2026-07-23-plan-4a5-board-quick-edit.md)
+- `????-??-??` `note` [2026-07-24-inference-provider-registry-and-switch-readiness](shared\plans\2026-07-24-inference-provider-registry-and-switch-readiness.md)
+- `????-??-??` `note` [2026-07-24-per-tenant-cost-dashboard](shared\plans\2026-07-24-per-tenant-cost-dashboard.md)
+- `????-??-??` `note` [2026-07-24-plan-4b1-duration-ladder](shared\plans\2026-07-24-plan-4b1-duration-ladder.md)
+- `????-??-??` `note` [2026-07-24-plan-4b2-unplaced-visits](shared\plans\2026-07-24-plan-4b2-unplaced-visits.md)
+- `????-??-??` `note` [2026-07-25-plan-cancel-vocabulary](shared\plans\2026-07-25-plan-cancel-vocabulary.md)
+- `????-??-??` `note` [2026-07-25-plan-resolve-date-week-mode](shared\plans\2026-07-25-plan-resolve-date-week-mode.md)
+- `????-??-??` `note` [2026-07-26-plan-4b3-freeze](shared\plans\2026-07-26-plan-4b3-freeze.md)
+- `????-??-??` `note` [2026-07-27-freeze-proposal-board-view](shared\plans\2026-07-27-freeze-proposal-board-view.md)
+- `????-??-??` `note` [2026-07-30-remaining-vendor-cost-coverage](shared\plans\2026-07-30-remaining-vendor-cost-coverage.md)
+- `????-??-??` `note` [2026-07-30-run-resolve-reoptimizer](shared\plans\2026-07-30-run-resolve-reoptimizer.md)
+- `????-??-??` `note` [2026-07-30-unprice-brave-composio](shared\plans\2026-07-30-unprice-brave-composio.md)
+- `????-??-??` `note` [2026-07-31-doc-tool-count-drift](shared\plans\2026-07-31-doc-tool-count-drift.md)
+- `????-??-??` `note` [2026-07-31-route-deeplink-booked-order](shared\plans\2026-07-31-route-deeplink-booked-order.md)
+- `????-??-??` `note` [2026-08-04-get-availability](shared\plans\2026-08-04-get-availability.md)
+- `????-??-??` `note` [2026-08-04-phone-call-signalwire](shared\plans\2026-08-04-phone-call-signalwire.md)
+- `????-??-??` `note` [2026-08-04-query-spine-design](shared\plans\2026-08-04-query-spine-design.md)
+- `????-??-??` `note` [2026-08-06-call-job-classifier](shared\plans\2026-08-06-call-job-classifier.md)
+- `????-??-??` `note` [2026-08-06-weekday-guard-plugin](shared\plans\2026-08-06-weekday-guard-plugin.md)
+- `????-??-??` `note` [2026-08-12-ops-alerting-render](shared\plans\2026-08-12-ops-alerting-render.md)
+- `????-??-??` `note` [2026-08-12-spine-tool-eval](shared\plans\2026-08-12-spine-tool-eval.md)
+- `????-??-??` `note` [2026-08-14-agent-turn-hardening](shared\plans\2026-08-14-agent-turn-hardening.md)
+- `????-??-??` `note` [2026-08-15-accounting-ingestion-direction](shared\plans\2026-08-15-accounting-ingestion-direction.md)
+- `????-??-??` `note` [2026-08-15-feature-A-intelligent-spine-stage0-watchers](shared\plans\2026-08-15-feature-A-intelligent-spine-stage0-watchers.md)
+- `????-??-??` `note` [2026-08-15-feature-B-intelligent-spine-stage1-voice](shared\plans\2026-08-15-feature-B-intelligent-spine-stage1-voice.md)
+- `????-??-??` `note` [2026-08-15-fireworks-switch](shared\plans\2026-08-15-fireworks-switch.md)
+- `????-??-??` `note` [2026-08-15-firm-profile-v1](shared\plans\2026-08-15-firm-profile-v1.md)
+- `????-??-??` `note` [2026-08-15-intelligent-spine-direction](shared\plans\2026-08-15-intelligent-spine-direction.md)
+- `????-??-??` `note` [2026-08-15-invoice-creation-v1](shared\plans\2026-08-15-invoice-creation-v1.md)
+- `????-??-??` `note` [2026-08-15-money-inference-v1](shared\plans\2026-08-15-money-inference-v1.md)
+- `????-??-??` `note` [2026-08-15-money-ledger-v1](shared\plans\2026-08-15-money-ledger-v1.md)
+- `????-??-??` `note` [2026-08-17-prod-devops-plan](shared\plans\2026-08-17-prod-devops-plan.md)
+- `????-??-??` `note` [2026-08-18-deepinfra-retirement](shared\plans\2026-08-18-deepinfra-retirement.md)
+- `????-??-??` `note` [2026-08-19-multi-kind-ladder-and-cost-detector](shared\plans\2026-08-19-multi-kind-ladder-and-cost-detector.md)
+- `????-??-??` `note` [2026-08-19-team-lead-planner](shared\plans\2026-08-19-team-lead-planner.md)
+- `????-??-??` `note` [2026-08-21-the-answer-return-path](shared\plans\2026-08-21-the-answer-return-path.md)
+- `????-??-??` `note` [2026-08-21-the-eyes-see-the-whole-record](shared\plans\2026-08-21-the-eyes-see-the-whole-record.md)
+- `????-??-??` `note` [2026-08-21-the-mouth-stops-lying](shared\plans\2026-08-21-the-mouth-stops-lying.md)
+- `????-??-??` `note` [2026-08-22-planner-copy-eval](shared\plans\2026-08-22-planner-copy-eval.md)
+- `????-??-??` `note` [2026-08-22-planner-writes-the-question](shared\plans\2026-08-22-planner-writes-the-question.md)
+- `????-??-??` `note` [2026-08-22-the-brain-can-attribute](shared\plans\2026-08-22-the-brain-can-attribute.md)
+- `????-??-??` `note` [2026-08-23-delivery-costs-nothing](shared\plans\2026-08-23-delivery-costs-nothing.md)
+- `????-??-??` `note` [2026-08-23-memory-architecture](shared\plans\2026-08-23-memory-architecture.md)
+- `????-??-??` `note` [2026-08-23-the-brain-can-look](shared\plans\2026-08-23-the-brain-can-look.md)
+- `????-??-??` `note` [2026-08-24-agentic-planner-eval](shared\plans\2026-08-24-agentic-planner-eval.md)
+- `????-??-??` `note` [2026-08-24-one-call-collapse](shared\plans\2026-08-24-one-call-collapse.md)
+- `????-??-??` `note` [2026-08-25-the-ask-shape](shared\plans\2026-08-25-the-ask-shape.md)
+- `????-??-??` `note` [2026-08-26-check-the-bill](shared\plans\2026-08-26-check-the-bill.md)
+- `????-??-??` `note` [2026-08-26-seat-capacity-and-overflow-safety](shared\plans\2026-08-26-seat-capacity-and-overflow-safety.md)
+- `????-??-??` `note` [2026-08-26-the-decline-verb](shared\plans\2026-08-26-the-decline-verb.md)
+- `????-??-??` `note` [2026-08-26-the-tick-leaves-a-trace](shared\plans\2026-08-26-the-tick-leaves-a-trace.md)
+- `????-??-??` `note` [2026-06-19-technician-write-path-nemoclaw-input-channel](shared\research\2026-06-19-technician-write-path-nemoclaw-input-channel.md)
+- `????-??-??` `note` [2026-06-19-three-layer-context-spine-structure](shared\research\2026-06-19-three-layer-context-spine-structure.md)
+- `????-??-??` `note` [2026-06-20-open-question-agent-row-level-access-control](shared\research\2026-06-20-open-question-agent-row-level-access-control.md)
+- `????-??-??` `note` [2026-06-23-centralized-mcp-server-architecture-a](shared\research\2026-06-23-centralized-mcp-server-architecture-a.md)
+- `????-??-??` `note` [2026-06-23-read-synthesis-layer](shared\research\2026-06-23-read-synthesis-layer.md)
+- `????-??-??` `note` [2026-06-25-composio-connector-layer](shared\research\2026-06-25-composio-connector-layer.md)
+- `????-??-??` `note` [2026-06-29-async-webhook-ingestion](shared\research\2026-06-29-async-webhook-ingestion.md)
+- `????-??-??` `note` [2026-06-30-phone-call-input-feature](shared\research\2026-06-30-phone-call-input-feature.md)
+- `????-??-??` `note` [2026-07-01-composio-identity-pairing-model](shared\research\2026-07-01-composio-identity-pairing-model.md)
+- `????-??-??` `note` [2026-07-01-repo-debt-audit](shared\research\2026-07-01-repo-debt-audit.md)
+- `????-??-??` `note` [2026-07-02-control-plane-lifecycle-surface](shared\research\2026-07-02-control-plane-lifecycle-surface.md)
+- `????-??-??` `note` [2026-07-02-self-serve-onboarding-technicians-table-surface](shared\research\2026-07-02-self-serve-onboarding-technicians-table-surface.md)
+- `????-??-??` `note` [2026-07-03-auto-scheduling-current-surfaces](shared\research\2026-07-03-auto-scheduling-current-surfaces.md)
+- `????-??-??` `note` [2026-07-03-cold-sandbox-identity-injection](shared\research\2026-07-03-cold-sandbox-identity-injection.md)
+- `????-??-??` `note` [2026-07-03-sales-role-surfaces](shared\research\2026-07-03-sales-role-surfaces.md)
+- `????-??-??` `note` [2026-07-03-test-suite-cleanup-and-live-box-safety](shared\research\2026-07-03-test-suite-cleanup-and-live-box-safety.md)
+- `????-??-??` `note` [2026-07-04-feature-A-automatic-technician-telegram-binding-via-manager-nemoclaw](shared\research\2026-07-04-feature-A-automatic-technician-telegram-binding-via-manager-nemoclaw.md)
+- `????-??-??` `note` [2026-07-04-feature-B-outbound-composio-actions](shared\research\2026-07-04-feature-B-outbound-composio-actions.md)
+- `????-??-??` `note` [2026-07-04-third-party-automated-scheduling-software](shared\research\2026-07-04-third-party-automated-scheduling-software.md)
+- `????-??-??` `note` [2026-07-05-note-lifecycle-two-step-confirm-and-retraction-rows](shared\research\2026-07-05-note-lifecycle-two-step-confirm-and-retraction-rows.md)
+- `????-??-??` `note` [2026-07-06-composio-doorman-relay](shared\research\2026-07-06-composio-doorman-relay.md)
+- `????-??-??` `note` [2026-07-06-prod-rollout-manager-seat](shared\research\2026-07-06-prod-rollout-manager-seat.md)
+- `????-??-??` `note` [2026-07-06-route-optimization-deeplink-surfaces](shared\research\2026-07-06-route-optimization-deeplink-surfaces.md)
+- `????-??-??` `note` [2026-07-08-long-running-agent-tasks](shared\research\2026-07-08-long-running-agent-tasks.md)
+- `????-??-??` `note` [2026-07-11-member-lifecycle-onboarding-offboarding-replacement](shared\research\2026-07-11-member-lifecycle-onboarding-offboarding-replacement.md)
+- `????-??-??` `note` [2026-07-12-brave-search-configuration](shared\research\2026-07-12-brave-search-configuration.md)
+- `????-??-??` `note` [2026-07-13-feature-cd-l3-write-surface-and-agent-memory](shared\research\2026-07-13-feature-cd-l3-write-surface-and-agent-memory.md)
+- `????-??-??` `note` [2026-07-13-glm-swap-anthropic-call-sites](shared\research\2026-07-13-glm-swap-anthropic-call-sites.md)
+- `????-??-??` `note` [2026-07-14-scheduling-mini-app-gap-analysis](shared\research\2026-07-14-scheduling-mini-app-gap-analysis.md)
+- `????-??-??` `note` [2026-07-15-date-reliability-eval](shared\research\2026-07-15-date-reliability-eval.md)
+- `????-??-??` `note` [2026-07-17-feature-A-technician-optional-bookings-and-confirmation-policy](shared\research\2026-07-17-feature-A-technician-optional-bookings-and-confirmation-policy.md)
+- `????-??-??` `note` [2026-07-17-feature-B-plan-2-mini-app-footprint-overlap](shared\research\2026-07-17-feature-B-plan-2-mini-app-footprint-overlap.md)
+- `????-??-??` `note` [2026-07-17-plan-2-telegram-mini-app-dispatch-board](shared\research\2026-07-17-plan-2-telegram-mini-app-dispatch-board.md)
+- `????-??-??` `note` [2026-07-17-technician-optional-and-confirmation-policy](shared\research\2026-07-17-technician-optional-and-confirmation-policy.md)
+- `????-??-??` `note` [2026-07-19-seat-exempt-part-timer](shared\research\2026-07-19-seat-exempt-part-timer.md)
+- `????-??-??` `note` [2026-07-20-flexible-scheduling-agent-toolset](shared\research\2026-07-20-flexible-scheduling-agent-toolset.md)
+- `????-??-??` `note` [2026-07-20-glm52-deepinfra-cache-optimization](shared\research\2026-07-20-glm52-deepinfra-cache-optimization.md)
+- `????-??-??` `note` [2026-07-20-plan-3-auto-scheduler-surfaces](shared\research\2026-07-20-plan-3-auto-scheduler-surfaces.md)
+- `????-??-??` `note` [2026-07-22-plan-4-freeze-ritual-surfaces](shared\research\2026-07-22-plan-4-freeze-ritual-surfaces.md)
+- `????-??-??` `note` [2026-07-22-sonnet-call-sites-vs-agent-tool-catalog](shared\research\2026-07-22-sonnet-call-sites-vs-agent-tool-catalog.md)
+- `????-??-??` `note` [2026-07-23-plan-4a5-board-quick-edit-verbs](shared\research\2026-07-23-plan-4a5-board-quick-edit-verbs.md)
+- `????-??-??` `note` [2026-07-24-inference-provider-switching](shared\research\2026-07-24-inference-provider-switching.md)
+- `????-??-??` `note` [2026-07-24-per-tenant-api-cost-tracking](shared\research\2026-07-24-per-tenant-api-cost-tracking.md)
+- `????-??-??` `note` [2026-07-24-plan-4b-freeze-autonomy-time-tbd](shared\research\2026-07-24-plan-4b-freeze-autonomy-time-tbd.md)
+- `????-??-??` `note` [2026-07-24-roi-engine-live-pricing-verification](shared\research\2026-07-24-roi-engine-live-pricing-verification.md)
+- `????-??-??` `note` [2026-07-26-plan-4b3-weekly-freeze-foundations](shared\research\2026-07-26-plan-4b3-weekly-freeze-foundations.md)
+- `????-??-??` `note` [2026-07-27-freeze-proposal-board-view](shared\research\2026-07-27-freeze-proposal-board-view.md)
+- `????-??-??` `note` [2026-07-30-brave-composio-bill-driven-costing](shared\research\2026-07-30-brave-composio-bill-driven-costing.md)
+- `????-??-??` `note` [2026-07-30-plan-4c-customer-sender-foundations](shared\research\2026-07-30-plan-4c-customer-sender-foundations.md)
+- `????-??-??` `note` [2026-07-30-resolve-mode-foundations](shared\research\2026-07-30-resolve-mode-foundations.md)
+- `????-??-??` `note` [2026-07-30-testing-to-production-fork](shared\research\2026-07-30-testing-to-production-fork.md)
+- `????-??-??` `note` [2026-07-31-agents-md-context-truncation](shared\research\2026-07-31-agents-md-context-truncation.md)
+- `????-??-??` `note` [2026-07-31-manager-self-route-view](shared\research\2026-07-31-manager-self-route-view.md)
+- `????-??-??` `note` [2026-07-31-nemoclaw-device-scope-deadlock](shared\research\2026-07-31-nemoclaw-device-scope-deadlock.md)
+- `????-??-??` `note` [2026-07-31-run-resolve-e2e-findings](shared\research\2026-07-31-run-resolve-e2e-findings.md)
+- `????-??-??` `note` [2026-08-06-call-transcript-job-classifier](shared\research\2026-08-06-call-transcript-job-classifier.md)
+- `????-??-??` `note` [2026-08-11-composio-relay-per-request-latency](shared\research\2026-08-11-composio-relay-per-request-latency.md)
+- `????-??-??` `note` [2026-08-14-glm-5.2-inference-provider-options](shared\research\2026-08-14-glm-5.2-inference-provider-options.md)
+- `????-??-??` `note` [2026-08-15-feature-A-intelligent-spine-stage-0-watchers](shared\research\2026-08-15-feature-A-intelligent-spine-stage-0-watchers.md)
+- `????-??-??` `note` [2026-08-15-feature-B-intelligent-spine-stage-1-team-leader-voice](shared\research\2026-08-15-feature-B-intelligent-spine-stage-1-team-leader-voice.md)
+- `????-??-??` `note` [2026-08-15-invoice-creation](shared\research\2026-08-15-invoice-creation.md)
+- `????-??-??` `note` [2026-08-15-pricing-invoicing-payment-loop](shared\research\2026-08-15-pricing-invoicing-payment-loop.md)
+- `????-??-??` `note` [2026-08-16-gemini-interactions-port-spec](shared\research\2026-08-16-gemini-interactions-port-spec.md)
+- `????-??-??` `note` [2026-08-16-n8n-platform-options](shared\research\2026-08-16-n8n-platform-options.md)
+- `????-??-??` `note` [2026-08-17-prod-devops-codebase](shared\research\2026-08-17-prod-devops-codebase.md)
+- `????-??-??` `note` [2026-08-17-prod-devops-external](shared\research\2026-08-17-prod-devops-external.md)
+- `????-??-??` `note` [2026-08-17-prod-devops-n8n](shared\research\2026-08-17-prod-devops-n8n.md)
+- `????-??-??` `note` [2026-08-17-prod-devops-research](shared\research\2026-08-17-prod-devops-research.md)
+- `????-??-??` `note` [2026-08-18-deepinfra-retirement](shared\research\2026-08-18-deepinfra-retirement.md)
+- `????-??-??` `note` [2026-08-18-job-costing-money-ledger-gap](shared\research\2026-08-18-job-costing-money-ledger-gap.md)
+- `????-??-??` `note` [2026-08-18-reddit-trades-pain-points](shared\research\2026-08-18-reddit-trades-pain-points.md)
+- `????-??-??` `note` [2026-08-18-segment-b-newly-solo-operators](shared\research\2026-08-18-segment-b-newly-solo-operators.md)
+- `????-??-??` `note` [2026-08-18-telegram-bot-identity-router](shared\research\2026-08-18-telegram-bot-identity-router.md)
+- `????-??-??` `note` [2026-08-18-work-record-artifact](shared\research\2026-08-18-work-record-artifact.md)
+- `????-??-??` `note` [2026-08-19-cross-tenant-coverage-audit](shared\research\2026-08-19-cross-tenant-coverage-audit.md)
+- `????-??-??` `note` [2026-08-19-nudge-money-answer-blindspot](shared\research\2026-08-19-nudge-money-answer-blindspot.md)
+- `????-??-??` `note` [2026-08-19-nudge-pacing-planner-and-cost-detector](shared\research\2026-08-19-nudge-pacing-planner-and-cost-detector.md)
+- `????-??-??` `note` [2026-08-19-nudge-pacing-replacement-design](shared\research\2026-08-19-nudge-pacing-replacement-design.md)
+- `????-??-??` `note` [2026-08-19-plan-b-nudge-pacing-planner](shared\research\2026-08-19-plan-b-nudge-pacing-planner.md)
+- `????-??-??` `note` [2026-08-19-team-lead-planner-call](shared\research\2026-08-19-team-lead-planner-call.md)
+- `????-??-??` `note` [2026-08-20-continual-learning-for-the-planner](shared\research\2026-08-20-continual-learning-for-the-planner.md)
+- `????-??-??` `note` [2026-08-20-planner-memory-surfaces](shared\research\2026-08-20-planner-memory-surfaces.md)
+- `????-??-??` `note` [2026-08-21-money-trio-reverify](shared\research\2026-08-21-money-trio-reverify.md)
+- `????-??-??` `note` [2026-08-21-the-answer-return-path](shared\research\2026-08-21-the-answer-return-path.md)
+- `????-??-??` `note` [2026-08-22-brain-memory-foundations](shared\research\2026-08-22-brain-memory-foundations.md)
+- `????-??-??` `note` [2026-08-23-agentic-eval-estate](shared\research\2026-08-23-agentic-eval-estate.md)
+- `????-??-??` `note` [2026-08-23-delivery-costs-nothing](shared\research\2026-08-23-delivery-costs-nothing.md)
+- `????-??-??` `note` [2026-08-23-memory-architecture-substrate](shared\research\2026-08-23-memory-architecture-substrate.md)
+- `????-??-??` `note` [2026-08-23-per-call-model-routing](shared\research\2026-08-23-per-call-model-routing.md)
+- `????-??-??` `note` [2026-08-23-the-brain-can-look](shared\research\2026-08-23-the-brain-can-look.md)
+- `????-??-??` `note` [2026-08-24-one-call-collapse](shared\research\2026-08-24-one-call-collapse.md)
+- `????-??-??` `note` [2026-08-24-the-ask-shape](shared\research\2026-08-24-the-ask-shape.md)
+- `????-??-??` `note` [2026-08-25-planner-tick-observability](shared\research\2026-08-25-planner-tick-observability.md)
+- `????-??-??` `note` [2026-08-26-the-decline-verb](shared\research\2026-08-26-the-decline-verb.md)

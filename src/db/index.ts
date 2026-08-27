@@ -1,4 +1,5 @@
 export { getClient } from './client.js';
+export { pingDb } from './health.js';
 export * from './tenants.js';
 export * from './droppedAudit.js';
 export * from './customers.js';

@@ -275,13 +275,32 @@ describe('RLS on the cost tables', () => {
     });
   }
 
-  // Without this the test above could pass for the wrong reason — e.g. if the
-  // role could read nothing at all, or the connection were already restricted.
-  test('the same role CAN still read a non-cost table (the probe is real)', async () => {
+  // Without this the denials above could pass for the wrong reason — e.g. if the
+  // role could execute nothing at all (a dead / globally-restricted connection).
+  // A table-less query proves the anon role is LIVE, so the 42501s above are real
+  // privilege denials. (This probed `customers` until deny-all extended past the
+  // cost tables — see the next test — so the probe is now table-less.)
+  test('the anon role is live, so the denials above are real (not a dead connection)', async () => {
     await pg.query('begin');
     try {
       await pg.query('set local role anon');
-      await expect(pg.query('select id from customers limit 1')).resolves.toBeDefined();
+      await expect(pg.query('select 1')).resolves.toBeDefined();
+    } finally {
+      await pg.query('rollback');
+    }
+  });
+
+  // Deny-all now reaches every business table, not just the cost ledger
+  // (20260824120000_rls_denyall_business_tables — prod-migration-checklist B1 ·
+  // Layer 1): the anon key that once read `customers` straight from PostgREST
+  // cannot any more. Same 42501 as the cost tables.
+  test('deny-all closes the business tables too (customers no longer anon-readable)', async () => {
+    await pg.query('begin');
+    try {
+      await pg.query('set local role anon');
+      await expect(pg.query('select id from customers limit 1')).rejects.toMatchObject({
+        code: '42501', // insufficient_privilege
+      });
     } finally {
       await pg.query('rollback');
     }

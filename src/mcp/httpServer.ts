@@ -16,6 +16,7 @@ import {
   clearSandboxAssignmentIfRef,
   completeSandboxRecycle,
   getHostByTokenHash,
+  pingDb,
 } from '../db/index.js';
 import { isValidService, recordOpsEvent } from '../db/opsEvents.js';
 import { notifyOpsTransition } from '../telegram/opsNotify.js';
@@ -498,8 +499,38 @@ async function handleOpsReport(req: http.IncomingMessage, res: http.ServerRespon
   }
 }
 
+// Liveness/health for external monitors AND Render's zero-downtime deploy gate
+// (which withholds traffic from a new instance until its health check answers
+// 2xx/3xx). Unauthenticated and routed BEFORE the IP allowlist for the same
+// reason the /control/ pull is: a health check that only answers while everything
+// else is healthy is not a health check, and Render's own probe carries no gateway
+// identity. It does a REAL DB round-trip (reachability != function, system-design
+// Tier 4) and reports the running commit so "what's in prod?" has a one-line,
+// curl-able answer (deploy provenance). The DEEP model-completion check is the
+// scheduled canary, deliberately not on this hot path (would burn tokens/flap).
+// GET only, no body. A failing DB → 503 so Render holds the old instance instead
+// of cutting traffic to a broken deploy.
+async function handleHealth(res: http.ServerResponse): Promise<void> {
+  const commit = process.env.RENDER_GIT_COMMIT ?? 'unknown';
+  const dbOk = await pingDb();
+  res.writeHead(dbOk ? 200 : 503, { 'content-type': 'application/json' });
+  res.end(
+    JSON.stringify({
+      status: dbOk ? 'ok' : 'degraded',
+      commit,
+      checks: { db: dbOk ? 'ok' : 'down' },
+    }),
+  );
+}
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
+    // Health/liveness first — cheapest path, unauthenticated, ahead of the IP
+    // allowlist (Render's deploy probe + any monitor carry no gateway identity).
+    if (req.method === 'GET' && (req.url ?? '').split('?')[0] === '/health') {
+      await handleHealth(res);
+      return;
+    }
     // Webhooks first — gated by HMAC, not by the gateway IP allowlist below.
     // SignalWire phone webhooks (their own X-SignalWire-Signature) route ahead of
     // the Composio /inbound/ handler.

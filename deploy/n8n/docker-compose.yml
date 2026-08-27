@@ -1,0 +1,90 @@
+# Hardened self-hosted n8n for its OWN dedicated host (prod-devops Phase 1b).
+#
+# WHY A DEDICATED HOST AND NOT THE AGENT BOX. n8n is the fleet's central monitor.
+# A monitor that shares a host with what it watches cannot report that host dying
+# — it dies with it. It also cannot honestly answer "is the box healthy" while
+# being one of the things consuming the box. Moving it off is what makes the
+# answer trustworthy; it is not a capacity decision (n8n measured 419 MiB / 0.20%
+# CPU on a box with 11 GiB free).
+#
+# WHY NO CADDY / NO TLS HERE. The previous revision of this file terminated TLS
+# with Caddy on 80/443. That is the right shape for a service with real users; it
+# is the wrong shape for this one. n8n holds Render, Supabase, Fireworks,
+# Anthropic, AWS and Telegram credentials behind a single encryption key, and its
+# CVE history is dominated by editor-reachable sandbox escapes that end in host
+# RCE (five advisories on 2026-08-19 alone). The editor has exactly one user. A
+# public TLS endpoint would buy convenience and pay for it in permanent internet
+# exposure of the highest-privilege system in the stack.
+#
+# So: n8n binds to 127.0.0.1 ONLY, and you reach it over an SSH tunnel:
+#     ssh -N -L 5678:127.0.0.1:5678 ubuntu@<n8n-host>
+#     then open http://localhost:5678
+# The host firewall opens port 22 and nothing else. This matches what is actually
+# deployed on the agent box today — the divergence between that box and the old
+# Caddy bundle is now resolved in favour of the stronger posture.
+#
+# CONSEQUENCE, STATED DELIBERATELY: n8n cannot RECEIVE webhooks. It makes
+# outbound calls only. Every workflow here is a Schedule trigger that polls or
+# pushes. If an inbound webhook is ever genuinely needed, that is a new decision
+# with a new threat model — do not quietly add a public port to get it.
+#
+# Bring up:  cp .env.example .env  &&  edit  &&  docker compose up -d
+
+services:
+  n8n:
+    # PINNED to a specific stable tag — never :latest, never a 2.36.x prerelease.
+    # 2.35.7 (2026-08-21) is the current stable and postdates the 2026-08-19
+    # advisory batch. Re-check https://github.com/n8n-io/n8n/security/advisories
+    # before bumping, and bump when a security release lands. See README.
+    image: n8nio/n8n:2.35.7
+    restart: unless-stopped
+    environment:
+      # Served over the tunnel as plain http on loopback. N8N_SECURE_COOKIE MUST
+      # be false for that: with it on, n8n refuses to set its auth cookie over a
+      # non-TLS origin and the login screen silently loops. This is safe here
+      # precisely because the socket never leaves loopback.
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_SECURE_COOKIE=false
+      # Single point of custody for EVERY stored credential. Back it up off-host
+      # (password manager). Lose it and every credential is unrecoverable; leak
+      # it and every credential is exposed.
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      # Execution history does not grow without bound. On from day one.
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=336   # hours = 14 days
+      # Run code/tool steps in the isolated task runner — the direct mitigation
+      # for the sandbox-escape CVE class above.
+      - N8N_RUNNERS_ENABLED=true
+      # No product telemetry from a host holding the fleet's credentials.
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_VERSION_NOTIFICATIONS_ENABLED=true
+      # Supabase's Postgres endpoints present a chain rooted at a PRIVATE CA
+      # ("Supabase Root 2021 CA") that is in no public trust store, so Node
+      # rejects a verified connection with "self-signed certificate in
+      # certificate chain". The tempting fix is n8n's "Ignore SSL Issues"
+      # checkbox, which keeps the encryption and throws away the authentication —
+      # the connection then works against anyone who can answer on that address.
+      # This trusts the actual root instead, so verification stays ON.
+      # certs/ is a bind mount, checked in and reviewable; see its README note.
+      - NODE_EXTRA_CA_CERTS=/opt/certs/supabase-root-2021.crt
+      - GENERIC_TIMEZONE=${TZ}
+      - TZ=${TZ}
+    ports:
+      # LOOPBACK ONLY. The 127.0.0.1 prefix is load-bearing — "5678:5678" would
+      # publish on 0.0.0.0 and put the editor on the public internet, which the
+      # host firewall would then be the only thing standing in front of.
+      - "127.0.0.1:5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      # Read-only: n8n must never be able to add a trust anchor to itself.
+      - ./certs:/opt/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  n8n_data:

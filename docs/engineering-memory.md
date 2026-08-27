@@ -1689,6 +1689,20 @@ were unreachable when those items were created, the per-tick routing cap deferre
   the Render dashboard's repo line (`Yu-C1 / TradesDatabase`) is the authority on what deploys.
   Corollary: the earlier note "the deploy log's Yu-C1 URL is presumably the same repo under a
   rename" was WRONG — the SHAs matched only because the fork happened to be synced at that moment.
+  Second corollary (2026-08-24): `origin` **was** separately renamed `hhesecured-web/TradesDatabase`
+  → `hongyi42/TradesDatabase` (a push to the old URL now answers `This repository moved`). That
+  rename is real and is a *different fact* from the fork — do not let confirming one look like
+  evidence about the other, which is how the wrong note above got written twice. GitHub's redirect
+  keeps stale remotes working, so nothing fails loudly; repoint them anyway, since the redirect
+  dies the moment anyone creates a repo at the old owner/name.
+  **The deploy procedure this implies — the durable part, unlike any state table:** merge to
+  `origin/main` → **sync the `Yu-C1` fork** (this is the step that actually deploys) → confirm the
+  running SHA at **`GET /health`** on the web service (`docs/control-plane.md`), because that is
+  the one check that reads the live system rather than a written record. For the two services with
+  Auto-Deploy OFF (see the Render estate table in §4) even a fork sync ships nothing — deploy them
+  by hand. Do NOT keep a separate provenance doc: a hand-maintained table of "what is live" rots
+  silently and gets trusted; the estate table in §4 is dated and re-verified in bulk, `/health` and
+  the `gh api` check above cannot go stale, and that is the whole answer.
 - **TRAP — a Render CRON env change does NOT reach SCHEDULED runs until you DEPLOY
   (2026-08-17, cost ~30 min of misdiagnosis during the watchers live-flip).** Scheduled runs
   execute the last *deployed* version with the env captured at deploy time; saving the variable

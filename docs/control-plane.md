@@ -190,6 +190,27 @@ Full watcher semantics + rollout state: engineering-memory §3.
   rolling back the mode stops new nudges, but queued rows keep serving until the box timer
   is pulled or the 24h delivery deadline hands them to the manager.
 
+## `GET /health` — what commit is actually live (no auth)
+
+The only unauthenticated route on the web service, because its two consumers cannot hold a
+token: Render's own zero-downtime deploy gate, and any external uptime monitor.
+
+```bash
+curl -s https://<web-service-host>/health
+# {"status":"ok","commit":"<sha>","checks":{"db":"ok"}}
+```
+
+- **`commit`** is `RENDER_GIT_COMMIT` — the exact SHA serving traffic. `"unknown"` means the var
+  was not injected (check the service env). This is the answer to "what code is running in
+  prod", and it is the *only* one that reads the live system instead of a written record.
+- **`status`/`checks.db`** come from a real `select` against the database, not a bare 200. A
+  liveness check that answers while the DB is unreachable would let Render cut traffic to a
+  broken deploy; `503` holds the old instance instead. Distinguish reachability from function.
+- **Read it back after every deploy.** Render's "Redeploy" re-runs the *old* commit, and the
+  services deploy from the **`Yu-C1` fork**, not from `origin` — so a merge on origin changes
+  nothing here until the fork is synced (`docs/engineering-memory.md`, §"Render deploys from a
+  FORK"). Compare this SHA against what you expect; the deploy button is not evidence.
+
 ## Badge rollout to a host (per host, one-time)
 
 1. Server side: `node -r dotenv/config scripts/assign-host.mjs create-host name=<host>` —

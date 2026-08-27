@@ -1,0 +1,20 @@
+[Unit]
+Description=Report the monitor host's own health to Healthchecks
+Documentation=file:///usr/local/sbin/monitor-health.sh
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root: needs the docker socket to inspect the n8n container.
+EnvironmentFile=-/etc/nemoclaw/monitor-health.env
+ExecStart=/usr/local/sbin/monitor-health.sh
+# Backstop only; every command inside already has its own timeout.
+TimeoutStartSec=90
+
+# No OnFailure= — the script always exits 0 by design, so there is nothing for
+# systemd to fire on. A script that stops running entirely is caught by the
+# Healthchecks ping going silent, which is the whole point of the design.
+
+[Install]
+WantedBy=multi-user.target

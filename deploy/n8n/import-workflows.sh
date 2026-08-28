@@ -99,11 +99,24 @@ echo "── restarting n8n so the schedule triggers re-register"
 
 # Read back what is actually running, rather than trusting the commands above.
 sleep 8
+
+# Captured ONCE into a variable, and matched without a pipe. Both details are
+# load-bearing under `set -o pipefail`:
+#   `docker compose exec … | grep -q "^${id}|"` reports FAILURE ON SUCCESS —
+#   grep -q exits the moment it matches, the closed pipe gives the upstream exec
+#   a SIGPIPE, and pipefail propagates that as the pipeline's status. It only
+#   shows up for an id that is NOT the last line of output, which is why it hid
+#   until a second workflow was added.
+# A verifier that cries wolf gets disabled, so this one must never false-alarm.
+ACTIVE="$( (cd "$COMPOSE_DIR" && docker compose exec -T n8n n8n list:workflow --active=true 2>/dev/null) || true )"
+
 echo "── active workflows now:"
-(cd "$COMPOSE_DIR" && docker compose exec -T n8n n8n list:workflow --active=true 2>/dev/null) | grep -v '^Failed to load'
+printf '%s\n' "$ACTIVE" | grep -v '^Failed to load' || true
 
 for id in "${IMPORTED[@]}"; do
-  (cd "$COMPOSE_DIR" && docker compose exec -T n8n n8n list:workflow --active=true 2>/dev/null) | grep -q "^${id}|" \
-    || die "$id imported but is NOT active — check the n8n log"
+  case "$ACTIVE" in
+    *"${id}|"*) ;;
+    *) die "$id imported but is NOT active — check the n8n log" ;;
+  esac
 done
 echo "ok — ${#IMPORTED[@]} workflow(s) imported and active"

@@ -1,0 +1,63 @@
+[
+  {
+    "id": "n8naliveheartbeat",
+    "name": "n8n-alive heartbeat",
+    "active": false,
+    "settings": {
+      "executionOrder": "v1",
+      "saveDataErrorExecution": "all",
+      "saveDataSuccessExecution": "none"
+    },
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "minutes",
+                "minutesInterval": 5
+              }
+            ]
+          }
+        },
+        "id": "a1111111-1111-4111-8111-111111111111",
+        "name": "Every 5 minutes",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          260,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "url": "__N8N_ALIVE_HEALTHCHECK_URL__",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "id": "b2222222-2222-4222-8222-222222222222",
+        "name": "Ping healthchecks",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          500,
+          300
+        ]
+      }
+    ],
+    "connections": {
+      "Every 5 minutes": {
+        "main": [
+          [
+            {
+              "node": "Ping healthchecks",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  }
+]

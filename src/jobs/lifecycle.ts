@@ -18,7 +18,7 @@ import { runWatchers, type WatchersSummary } from './watchers.js';
 import { runPlanner, type PlannerMode, type PlannerSummary } from '../teamLead/planner.js';
 import { TEAM_LEAD_REF } from '../teamLead/identity.js';
 import { dispatchForIdentity, TEAM_LEAD_TOOL_SCHEMAS } from '../mcp/server.js';
-import { hasModelCredentials } from '../model/forcedTool.js';
+import { hasModelCredentials, assertSpineModelAllowed } from '../model/forcedTool.js';
 
 // The lifecycle heartbeat — the ONE scheduled entrypoint (Render Cron Job,
 // */5 * * * *; Render guarantees at most one concurrent run). CADENCE GATE
@@ -465,8 +465,22 @@ export async function runLifecycle(
     : plannerModeRaw === 'off' || plannerModeRaw === 'shadow' || plannerModeRaw === 'live'
       ? plannerModeRaw
       : null;
+  // The spine's model is checked HERE as well as per-request (forcedTool.ts).
+  // Per-request is too late to be the whole answer: a throw inside runPlanner
+  // lands in its per-tenant catch and presents as `tenantErrors`, which reads as
+  // a provider outage rather than the config mistake it is. A stepError turns
+  // the heartbeat red, which is what a typo in INFERENCE_MODEL should look like.
+  let spineModelError: string | null = null;
+  try {
+    assertSpineModelAllowed(process.env.INFERENCE_MODEL || '');
+  } catch (err) {
+    spineModelError = err instanceof Error ? err.message : String(err);
+  }
   let teamLeadPlanner: LifecycleSummary['teamLeadPlanner'];
-  if (plannerMode === null) {
+  if (spineModelError) {
+    teamLeadPlanner = { stepError: spineModelError };
+    ok = false;
+  } else if (plannerMode === null) {
     teamLeadPlanner = {
       stepError: `PLANNER_MODE must be 'off', 'shadow' or 'live', got '${plannerModeRaw}'`,
     };

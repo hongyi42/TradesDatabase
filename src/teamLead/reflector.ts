@@ -209,7 +209,7 @@ export async function runReflector(
             // budgets truncate; 3 lessons + evidence uuids never fit 300.
             maxTokens: 2000,
             label: 'reflector',
-            reasoningEffort: 'none',
+            reasoningEffort: 'minimal',
           },
           { tenantId, technicianRef: TEAM_LEAD_REF, lane: 'reflector' },
         );

@@ -152,9 +152,54 @@ describe('runToolLoop', () => {
       { recordUsage },
     );
     expect(recordUsage).toHaveBeenCalledTimes(2);
-    expect(recordUsage.mock.calls[0][0]).toBe('fireworks'); // ledgerVendor, default base URL
+    expect(recordUsage.mock.calls[0][0]).toBe('openrouter'); // ledgerVendor, default base URL
     expect(recordUsage.mock.calls[0][1]).toMatchObject({ inputTokens: 10, outputTokens: 10 });
     expect(recordUsage.mock.calls[1][1]).toMatchObject({ inputTokens: 5, outputTokens: 5 });
+  });
+
+  test('carries the cache split through — OpenRouter reports reads AND writes', async () => {
+    // The ledger prices cached reads at $0.26/M against $1.40/M fresh, so a
+    // dropped split is a ~5x over-report on ~90% of the planner's input. The
+    // write tier is reported too; GLM 5.3 does not charge for it today, which is
+    // why its rate is seeded at $0 rather than omitted (an unpriced SKU is
+    // DROPPED by the rollup's inner join, not shown as zero).
+    serve({
+      choices: [{ finish_reason: 'stop', message: { content: 'ok' } }],
+      usage: {
+        prompt_tokens: 1000,
+        completion_tokens: 20,
+        prompt_tokens_details: { cached_tokens: 900, cache_write_tokens: 100 },
+      },
+    });
+    const recordUsage = vi.fn<typeof recordModelUsage>(async () => {});
+    await runToolLoop(
+      { system: 's', user: 'u', maxTokens: 128, label: 'test' },
+      [READ_TOOL],
+      async () => [],
+      { tenantId: 't', technicianRef: 'spine:team-lead' },
+      { recordUsage },
+    );
+    expect(recordUsage.mock.calls[0][1]).toMatchObject({
+      inputTokens: 1000, // TOTAL incl. cached — the ledger convention
+      cachedInputTokens: 900,
+      cacheWriteTokens: 100,
+    });
+  });
+
+  test('always names a reasoning effort, and never \'none\'', async () => {
+    // MEASURED 2026-08-28: z-ai/glm-5.3 on OpenRouter 400s on
+    // reasoning_effort 'none' — "Reasoning is mandatory for this endpoint and
+    // cannot be disabled." A request that omitted the field entirely would take
+    // the provider's own default, which is not a decision anybody made.
+    serve(finalBody('ok'));
+    await runToolLoop(
+      { system: 's', user: 'u', maxTokens: 128, label: 'test' },
+      [READ_TOOL],
+      async () => [],
+      { tenantId: 't', technicianRef: 'spine:team-lead' },
+      { recordUsage: vi.fn(async () => {}) },
+    );
+    expect(sent[0].reasoning_effort).toBe('medium');
   });
 
   test('stops at the turn ceiling and THROWS — a cut-off loop is not an answer', async () => {

@@ -299,10 +299,77 @@ describe('ledgerVendor host mapping', () => {
     ['https://api.deepinfra.com/v1/openai', 'api.deepinfra.com'],
     ['https://integrate.api.nvidia.com/v1', 'nvidia'],
     ['https://api.fireworks.ai/inference/v1', 'fireworks'],
+    // The 2026-08-28 switch target. Fireworks/NVIDIA stay mapped ABOVE it on
+    // purpose: this map is the write path, but the rollup prices HISTORY by
+    // joining cost_events to cost_rates, so a retired vendor must still resolve
+    // for its own old rows.
+    ['https://openrouter.ai/api/v1', 'openrouter'],
     ['https://api.tokenfactory.nebius.com/v1', 'api.tokenfactory.nebius.com'],
   ])('%s → %s', async (baseUrl, vendor) => {
     process.env.INFERENCE_BASE_URL = baseUrl;
     const { ledgerVendor } = await import('./forcedTool.js');
     expect(ledgerVendor()).toBe(vendor);
+  });
+});
+
+
+describe('the spine model guard — Gemini is a SEAT model, never the planner\'s', () => {
+  // User ruling 2026-08-28. INFERENCE_MODEL feeds the planner AND all four
+  // forced-tool callers, so one typo would put a seat model on the planner.
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of ['INFERENCE_MODEL', 'INFERENCE_API_KEY', 'OPENROUTER_API_KEY']) {
+      saved[k] = process.env[k];
+    }
+    process.env.INFERENCE_API_KEY = 'test-key';
+  });
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  test('a gemini id is refused, and the message says WHY rather than just "invalid"', async () => {
+    const { assertSpineModelAllowed } = await import('./forcedTool.js');
+    expect(() => assertSpineModelAllowed('google/gemini-3.7-flash')).toThrow(/SEAT model/);
+    // The suffix forms OpenRouter accepts must not slip past a naive equality check.
+    expect(() => assertSpineModelAllowed('google/gemini-3.7-flash:nitro')).toThrow(/SEAT model/);
+    expect(() => assertSpineModelAllowed('GOOGLE/GEMINI-3.7-FLASH')).toThrow(/SEAT model/);
+  });
+
+  test('the planner\'s own model passes', async () => {
+    const { assertSpineModelAllowed } = await import('./forcedTool.js');
+    expect(() => assertSpineModelAllowed('z-ai/glm-5.3')).not.toThrow();
+  });
+
+  test('resolveOpenAiEndpoint enforces it, so no caller can bypass the check', async () => {
+    const { resolveOpenAiEndpoint } = await import('./forcedTool.js');
+    process.env.INFERENCE_MODEL = 'google/gemini-3.7-flash';
+    expect(() => resolveOpenAiEndpoint()).toThrow(/SEAT model/);
+    process.env.INFERENCE_MODEL = 'z-ai/glm-5.3';
+    expect(resolveOpenAiEndpoint().model).toBe('z-ai/glm-5.3');
+  });
+
+  test('OPENROUTER_API_KEY is accepted when INFERENCE_API_KEY is unset', async () => {
+    const { resolveOpenAiEndpoint, hasModelCredentials } = await import('./forcedTool.js');
+    delete process.env.INFERENCE_API_KEY;
+    delete process.env.MODEL_PROVIDER;
+    process.env.OPENROUTER_API_KEY = 'or-key';
+    // hasModelCredentials must agree with the resolver, or the lifecycle would
+    // skip the planner for "no inference credentials" while the call would work.
+    expect(hasModelCredentials()).toBe(true);
+    expect(resolveOpenAiEndpoint().apiKey).toBe('or-key');
+  });
+});
+
+describe('reasoning effort — \'none\' is unreachable and medium is the default', () => {
+  // MEASURED 2026-08-28 against z-ai/glm-5.3 on OpenRouter: reasoning_effort
+  // 'none' returns 400 "Reasoning is mandatory for this endpoint and cannot be
+  // disabled"; 'minimal' succeeds with 0 reasoning tokens. The union no longer
+  // contains 'none', so this test guards the DEFAULT and the wire field.
+  test('a request naming no effort sends medium', async () => {
+    const { DEFAULT_REASONING_EFFORT } = await import('./forcedTool.js');
+    expect(DEFAULT_REASONING_EFFORT).toBe('medium');
   });
 });

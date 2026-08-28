@@ -8,16 +8,21 @@
 //                       (Option 1: hands the model the weekday, no tool)
 //   C  grounding+tool — B plus the resolve_date tool the model must call
 //                       (Options 1+2: the model parses, code does the math)
+//   D  tool ONLY       — A plus the tool: no weekday handed over, no "you are
+//                       unreliable" guard. Isolates what the TOOL is worth from
+//                       what the SCAFFOLDING around it is worth (added
+//                       2026-08-28: C bundles three interventions and cannot
+//                       attribute a win to any one of them).
 //
 // Ground truth is computed INDEPENDENTLY of src/schedule/dateResolve.ts (plain
 // JS Date here), so condition C is a real cross-check, not a tautology.
 //
 // Providers: OpenAI-compatible (the live bot: NVIDIA integrate / DeepInfra,
-// model accounts/fireworks/routers/glm-5p2-fast) or Anthropic. Select with EVAL_PROVIDER.
+// model z-ai/glm-5.3 via OpenRouter) or Anthropic. Select with EVAL_PROVIDER.
 //
 //   node -r dotenv/config scripts/eval-date-reliability.mjs
-//   EVAL_PROVIDER=openai EVAL_INFERENCE_API_KEY=… EVAL_MODEL=accounts/fireworks/routers/glm-5p2-fast \
-//     EVAL_INFERENCE_BASE_URL=https://api.fireworks.ai/inference/v1 \
+//   EVAL_PROVIDER=openai EVAL_INFERENCE_API_KEY=… EVAL_MODEL=z-ai/glm-5.3 \
+//     EVAL_INFERENCE_BASE_URL=https://openrouter.ai/api/v1 \
 //     node -r dotenv/config scripts/eval-date-reliability.mjs
 
 import { writeFileSync } from 'node:fs';
@@ -108,7 +113,17 @@ function runResolve(refDate, a0) {
 const SYS_BASE =
   'You are the scheduling assistant for a home-services company. The user names a day; you must determine the exact calendar date.';
 function systemFor(condition, refDate) {
-  if (condition === 'A') return `${SYS_BASE}\nCurrent date: ${refDate}.\nReply with ONLY the date as YYYY-MM-DD, nothing else.`;
+  const bare = `${SYS_BASE}\nCurrent date: ${refDate}.`;
+  if (condition === 'A') return `${bare}\nReply with ONLY the date as YYYY-MM-DD, nothing else.`;
+  // D isolates THE TOOL. C bundles three separate interventions — rich
+  // grounding, the "you are UNRELIABLE" guard, and the tool — so a C-beats-A
+  // result cannot say which of the three earned it. D is the bare prompt plus
+  // the tool and nothing else: no weekday handed over, no warning about the
+  // model's own arithmetic. C minus D is what the SCAFFOLDING is worth once the
+  // tool is present; D minus A is what the TOOL is worth on its own.
+  if (condition === 'D') {
+    return `${bare}\nCall resolve_date to convert the day into a date, then reply with ONLY that date as YYYY-MM-DD.`;
+  }
   const rich = `${SYS_BASE}\nRight now it is ${humanDay(refDate)}, in the America/Los_Angeles timezone.`;
   if (condition === 'B') return `${rich}\nReply with ONLY the date as YYYY-MM-DD, nothing else.`;
   return `${rich}\nYou are UNRELIABLE at date arithmetic — do not work dates out yourself. Call resolve_date to convert the day into a date, then reply with ONLY that date as YYYY-MM-DD.`;
@@ -117,8 +132,8 @@ const userFor = (phrase) => `The customer wants their visit ${phrase}. What is t
 
 // ─────────────────────────────────────────────────── provider adapters ──
 const PROVIDER = process.env.EVAL_PROVIDER || (process.env.EVAL_INFERENCE_API_KEY ? 'openai' : 'anthropic');
-const MODEL = process.env.EVAL_MODEL || (PROVIDER === 'openai' ? 'accounts/fireworks/routers/glm-5p2-fast' : 'claude-haiku-4-5-20251001');
-const OPENAI_BASE = process.env.EVAL_INFERENCE_BASE_URL || 'https://api.fireworks.ai/inference/v1';
+const MODEL = process.env.EVAL_MODEL || (PROVIDER === 'openai' ? 'z-ai/glm-5.3' : 'claude-haiku-4-5-20251001');
+const OPENAI_BASE = process.env.EVAL_INFERENCE_BASE_URL || 'https://openrouter.ai/api/v1';
 
 // Reasoning is ON BY DEFAULT for GLM-5.2 on DeepInfra — a bare request (no
 // reasoning field) returns a thinking trace and ~255 output tokens on a trivial
@@ -195,9 +210,10 @@ async function runCase(condition, c) {
   let usedTool = false;
   let meta = {};
   try {
-    const r = await callModel({ system, user, tools: condition === 'C' });
+    const toolArm = condition === 'C' || condition === 'D';
+    const r = await callModel({ system, user, tools: toolArm });
     meta = { truncated: !!r.truncated, outTokens: r.outTokens ?? null, reasoningChars: r.reasoningChars ?? 0 };
-    if (condition === 'C' && r.toolCall?.name === 'resolve_date') {
+    if (toolArm && r.toolCall?.name === 'resolve_date') {
       usedTool = true;
       answer = runResolve(c.refDate, r.toolCall.args); // the tool does the math
     }
@@ -209,28 +225,63 @@ async function runCase(condition, c) {
 }
 
 // simple concurrency pool
+// RATE-LIMITED pool. OpenRouter applies a per-model `new-account-rpm` cap that
+// a plain concurrency pool walks straight through: the first unpaced run here
+// lost 372 of 392 calls to 429s and reported 0% on three conditions, which
+// looks exactly like a catastrophic model result and is not one. Pacing is
+// therefore part of the harness, not a courtesy — an eval that can silently
+// report rate limiting as model failure is worse than no eval.
+//
+// EVAL_RPM caps the START rate (default 18, just under the observed 20).
 async function pool(items, n, fn) {
   const out = new Array(items.length);
+  const rpm = Number(process.env.EVAL_RPM || 18);
+  const minGapMs = rpm > 0 ? Math.ceil(60_000 / rpm) : 0;
   let i = 0;
+  let nextSlot = 0;
+  const takeSlot = async () => {
+    const now = Date.now();
+    const at = Math.max(now, nextSlot);
+    nextSlot = at + minGapMs;
+    if (at > now) await new Promise((r) => setTimeout(r, at - now));
+  };
   await Promise.all(Array.from({ length: n }, async () => {
-    while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); }
+    while (i < items.length) {
+      const k = i++;
+      await takeSlot();
+      out[k] = await fn(items[k], k);
+    }
   }));
   return out;
 }
 
 // ─────────────────────────────────────────────────────────── main ──
-const CONDITIONS = { A: 'bare date only', B: 'rich grounding (Option 1)', C: 'grounding + resolve_date (Options 1+2)' };
+const CONDITIONS = {
+  A: 'bare date only — no tool, no guard',
+  B: 'rich grounding, no tool',
+  C: 'grounding + guard + resolve_date',
+  D: 'bare date + resolve_date ONLY — the tool isolated',
+};
 const jobs = [];
-for (const cond of Object.keys(CONDITIONS)) for (const c of CASES) jobs.push({ cond, c });
+// EVAL_CONDITIONS=A,D runs a subset — the rate cap makes a full 4-condition
+// sweep a ~20 minute job, and the two-arm question (bare prompt vs the tool
+// isolated) is usually the one being asked.
+const WANT = (process.env.EVAL_CONDITIONS || Object.keys(CONDITIONS).join(','))
+  .split(',').map((x) => x.trim()).filter(Boolean);
+for (const bad of WANT.filter((c) => !CONDITIONS[c])) {
+  console.error(`unknown condition '${bad}' — known: ${Object.keys(CONDITIONS).join(', ')}`);
+  process.exit(2);
+}
+for (const cond of WANT) for (const c of CASES) jobs.push({ cond, c });
 
 console.log(`Provider: ${PROVIDER}  Model: ${MODEL}`);
 console.log(`reasoning_effort: ${REASONING_EFFORT ?? '(unset — GLM-5.2 on DeepInfra thinks by DEFAULT)'}   max_tokens: ${MAX_TOKENS}`);
-console.log(`${CASES.length} cases × ${Object.keys(CONDITIONS).length} conditions = ${jobs.length} model calls\n`);
+console.log(`${CASES.length} cases × ${WANT.length} condition(s) [${WANT.join(',')}] = ${jobs.length} model calls, paced at ${process.env.EVAL_RPM || 18} rpm\n`);
 
 const results = await pool(jobs, 6, ({ cond, c }) => runCase(cond, c));
 
 const byCond = {};
-for (const cond of Object.keys(CONDITIONS)) {
+for (const cond of WANT) {
   const rs = results.filter((r) => r.condition === cond);
   const correct = rs.filter((r) => r.correct).length;
   const errored = rs.filter((r) => r.error).length;
@@ -238,7 +289,7 @@ for (const cond of Object.keys(CONDITIONS)) {
 }
 
 console.log('=== ACCURACY BY CONDITION ===');
-for (const [cond, label] of Object.entries(CONDITIONS)) {
+for (const [cond, label] of Object.entries(CONDITIONS).filter(([k]) => WANT.includes(k))) {
   const s = byCond[cond];
   console.log(`  ${cond}  ${s.correct}/${s.n}  (${s.pct}%)  — ${label}${s.errored ? `  [${s.errored} API errors]` : ''}`);
 }
@@ -248,7 +299,7 @@ console.log(`\n  Condition C called resolve_date on ${toolUse}/${byCond.C.n} cas
 // Truncation is the confound to watch: with thinking on, a hit cap means the
 // answer was cut off by the trace, which reads as a wrong answer but isn't one.
 console.log('\n=== TRUNCATION / OUTPUT SIZE (hit max_tokens = answer cut off) ===');
-for (const cond of Object.keys(CONDITIONS)) {
+for (const cond of WANT) {
   const rs = byCond[cond].results.filter((r) => !r.error);
   const trunc = rs.filter((r) => r.truncated).length;
   const outs = rs.map((r) => r.outTokens).filter((n) => typeof n === 'number').sort((a, b) => a - b);
@@ -257,11 +308,14 @@ for (const cond of Object.keys(CONDITIONS)) {
   console.log(`  ${cond}  truncated ${trunc}/${rs.length}   median out=${med ?? '-'} tok   with-reasoning-trace ${reas}/${rs.length}`);
 }
 
-console.log('\n=== PER-TEMPLATE (condition A → B → C correct counts) ===');
+console.log(`\n=== PER-TEMPLATE (${WANT.join(' → ')} correct counts) ===`);
 for (const t of [...new Set(CASES.map((c) => c.template))]) {
   const cell = (cond) => byCond[cond].results.filter((r) => r.template === t && r.correct).length;
   const n = REF_DATES.length;
-  console.log(`  ${t.padEnd(22)} A ${cell('A')}/${n}   B ${cell('B')}/${n}   C ${cell('C')}/${n}`);
+  console.log(
+    `  ${t.padEnd(22)} ` +
+      WANT.map((k) => `${k} ${cell(k)}/${n}`).join('   '),
+  );
 }
 
 console.log('\n=== SAMPLE FAILURES (up to 20) ===');

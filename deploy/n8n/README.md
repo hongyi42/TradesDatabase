@@ -197,6 +197,65 @@ The credential export is encrypted with `N8N_ENCRYPTION_KEY`, so the key must li
 backups are unrestorable. Copy `backups/` off-host too — a backup that only exists on the machine
 it protects is a staging area, not a backup.
 
+### Restore drill — run this, don't assume it works
+
+Verification proves the export is not empty or truncated. It proves **nothing** about restorability.
+This drill does, and it costs nothing: a throwaway volume on the same host, no ports, no server, and
+the live n8n is never opened, restarted, or paused.
+
+```bash
+D=$(ls -1dt ~/n8n/backups/*/ | head -1)          # newest backup
+docker volume create restore_test
+rm -rf /tmp/restore_src && mkdir -p /tmp/restore_src && cp -r "$D"/. /tmp/restore_src/
+
+# workflows
+docker run --rm -v restore_test:/home/node/.n8n -v /tmp/restore_src:/src:ro \
+  --env-file ~/n8n/.env n8nio/n8n:2.35.7 \
+  import:workflow --input=/src/workflows.json
+
+# credentials — note --separate
+docker run --rm -v restore_test:/home/node/.n8n -v /tmp/restore_src:/src:ro \
+  --env-file ~/n8n/.env n8nio/n8n:2.35.7 \
+  import:credentials --separate --input=/src/credentials
+
+docker run --rm -v restore_test:/home/node/.n8n --env-file ~/n8n/.env \
+  n8nio/n8n:2.35.7 list:workflow
+
+docker volume rm restore_test && rm -rf /tmp/restore_src        # cleanup
+```
+
+**Two things the drill found that nobody would guess under pressure:**
+
+- **Do not prefix the command with `n8n`.** The image's ENTRYPOINT already is `n8n`, so
+  `docker run … n8nio/n8n import:workflow` is right and `… n8n import:workflow` fails with
+  `Error: Command "n8n" not found`.
+- **`import:credentials` needs `--separate`.** `backup-n8n.sh` exports with
+  `export:credentials --all --backup --output=<dir>`, which writes one file per credential, but
+  `--input` defaults to expecting a single FILE. Without `--separate` the import dies on
+  `EISDIR: illegal operation on a directory` — an error that says nothing about the missing flag.
+
+To confirm the credentials actually **decrypted** without printing any secret, export them decrypted
+inside the throwaway and check only the shape — field names and value lengths:
+
+```
+postgres       | host=35ch  user=31ch  password=32ch  maxConnections=1ch  ssl=7ch
+httpBasicAuth  | user=36ch  password=50ch
+```
+
+Lengths you can check against things you know independently (a project ref, a generated password) are
+proof enough; values never need to appear.
+
+**What this drill does NOT prove.** It decrypts using the key in `~/n8n/.env` — *on the host*. If the
+host is gone, you will be restoring with the copy in the password manager, and nothing here shows
+those match. Close that gap with a fingerprint, never by pasting the key:
+
+```bash
+grep '^N8N_ENCRYPTION_KEY=' ~/n8n/.env | cut -d= -f2- | tr -d '\r\n' | sha256sum | cut -c1-16
+```
+
+Compare to the same hash of your stored copy. Equal means a host loss is survivable; different means
+the backups are already decorative and you have not noticed.
+
 ---
 
 ## Workflows live in git

@@ -54,6 +54,12 @@ Decisions before the phases.
   So this build moves ONLY constants whose call-sites are entirely tenant-scoped —
   `OVERDUE_HOURS`, `LOOKBACK_HOURS`, `MAX_NEW_ITEMS_PER_TENANT_TICK`, `PLANNER_SILENCE_HOURS` —
   and the other two move in build 6 **together with their planner mirrors**, as one edit.
+- **`PLANNER_SILENCE_HOURS` is NOT wired either** (user, 2026-08-29: *"eventually the sweep will be
+  observatory only"*). It exists solely for the fail-safe's liveness check, which build 5 deletes
+  along with the fail-safe. A column for it would need a second migration to remove. So build 2
+  moves THREE constants: `OVERDUE_HOURS`, `LOOKBACK_HOURS`, `MAX_NEW_ITEMS_PER_TENANT_TICK` — all
+  three are DETECTION parameters, which survive build 5 (the sweep keeps detecting; it stops
+  acting) and live until build 7 retires minting.
 - **Only Tier A constants move** (mine, from the research's reachability tiers). Tier B (pure
   functions needing a threaded parameter) and Tier C (`PLANNER_SYSTEM`, a module-scope string built
   at import time, which would have to become a function of the firm) are **deferred to build 6**,
@@ -135,7 +141,6 @@ create table tenant_settings (
   overdue_hours           int check (overdue_hours          > 0),
   lookback_hours          int check (lookback_hours          > 0),
   max_new_per_tick        int check (max_new_per_tick        > 0),
-  planner_silence_hours   int check (planner_silence_hours   > 0),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -190,9 +195,8 @@ that is the whole test.
 `getTenant` call, then:
 - `:378-379` `LOOKBACK_HOURS` / `OVERDUE_HOURS` → `s.lookbackHours` / `s.overdueHours`
 - `:1106`, `:1206` → `s.maxNewPerTick`
-- `:680`, `:818` → `s.plannerSilenceHours`
-- **NOT `:632` (`NUDGE_ESCALATE_HOURS`) and NOT `:841`
-  (`NUDGE_DELIVERY_DEADLINE_HOURS`)** — see the Decisions. They stay global here.
+- **NOT `:632`, `:841`, `:680` or `:818`** — see the Decisions. Three constants move;
+  `NUDGE_ESCALATE_HOURS`, `NUDGE_DELIVERY_DEADLINE_HOURS` and `PLANNER_SILENCE_HOURS` stay global.
 - Add `getSettings` to `WatcherDeps` so tests inject it, matching every other collaborator there.
 
 **`src/teamLead/reflector.ts`** — `MIN_SUMMARIES`, `MIN_NEW_SINCE_LAST_RUN`, `REFLECT_FROM_HOUR`

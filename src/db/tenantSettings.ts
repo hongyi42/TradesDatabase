@@ -118,14 +118,35 @@ function patchToColumns(patch: TenantSettingsPatch): TenantSettingsUpdate {
   return cols;
 }
 
-/** The firm's settings row, or null if none has been recorded. */
+/**
+ * The firm's settings row, or null if none has been recorded.
+ *
+ * THROWS on a missing table, deliberately, and the caller decides what that
+ * means. An earlier draft answered `null` here — one predicate, in one place,
+ * and every consumer inherits the tolerance for free. It was the wrong place for
+ * two reasons the round-2 review made concrete:
+ *
+ *   - `42P01`/`PGRST205` names *a* relation, not *this* one. The safety of
+ *     swallowing it rests entirely on this query being EMBED-FREE. The day
+ *     someone writes `.select('*, tenants(name)')`, a missing `tenants` table
+ *     would also be answered "this firm has recorded nothing" — a silent lie
+ *     about a catastrophe. A rule whose correctness depends on nobody editing
+ *     the line above it is not a rule.
+ *   - An accessor that swallows cannot REPORT. The sweep can (see
+ *     `settingsTableMissing` on WatchersSummary), and a condition an operator
+ *     must eventually act on has to reach a summary, not just a log line.
+ *
+ * `{ cause }` carries the PostgrestError so the CODE survives the wrap — the
+ * costs.ts rule. Without it the caller's predicate has nothing but prose, and
+ * prose-matching is what made that predicate swallow real faults.
+ */
 export async function getTenantSettings(tenantId: string): Promise<TenantSettings | null> {
   const { data, error } = await getClient()
     .from('tenant_settings')
     .select()
     .eq('tenant_id', tenantId)
     .maybeSingle();
-  if (error) throw new Error(`getTenantSettings failed: ${error.message}`);
+  if (error) throw new Error(`getTenantSettings failed: ${error.message}`, { cause: error });
   return data;
 }
 

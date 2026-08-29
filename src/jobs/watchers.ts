@@ -17,12 +17,12 @@ import {
   listTeam,
   listTenantIdsWithTelegramBindings,
   listVisitTimesForJobs,
-  LOOKBACK_HOURS,
   markNudgeOutcome,
-  MAX_NEW_ITEMS_PER_TENANT_TICK,
-  OVERDUE_HOURS,
+  getTenantSettings,
+  resolveSettings,
   resolveOpenReviewItemFor,
 } from '../db/index.js';
+import { isMissingRelation } from '../db/costs.js';
 import { notifyManagers } from '../calls/notify.js';
 import {
   NUDGE_KIND_SPECS,
@@ -93,15 +93,23 @@ export type WatcherMode = 'shadow' | 'live';
 // watcher-shadow this function returns before every write path.
 export type NudgeMode = 'off' | 'shadow' | 'live';
 
-// THE THREE DETECTION PARAMETERS NOW LIVE IN src/db/tenantSettings.ts, where they
-// are the FALLBACKS for a firm that has recorded none of its own (plan 2026-08-29
-// "the firm is data"). They are re-exported here, with their full history, so
-// every existing importer and every reader of this file finds them where they
-// have always been — but there is exactly ONE definition.
+// THE THREE DETECTION PARAMETERS ARE NO LONGER READ HERE. They live in
+// src/db/tenantSettings.ts as the FALLBACKS a firm that has recorded none of its
+// own falls back to, and this sweep reads the RESOLVED per-firm values instead
+// (plan 2026-08-29 "the firm is data"). Re-exported with their full history so
+// every existing importer, and every reader of this file, still finds them where
+// they have always been — but there is exactly ONE definition.
 //
 // The declarations had to move DOWN rather than the fallbacks move UP: `src/db/`
 // is a leaf, and importing these from a job would have made the database layer
 // depend on one.
+//
+// These three moved and the neighbours below did NOT, and the rule is not taste:
+// a constant may become per-firm only when EVERY call-site that reads it holds a
+// tenant id. NUDGE_ESCALATE_HOURS and NUDGE_DELIVERY_DEADLINE_HOURS are also read
+// by currentDeadlineMs/holdCeilingMs in planner.ts — pure functions with no
+// tenant in scope — so moving only this side would let `extend` report success
+// while the sweep escalated on a different clock. They move as one edit, later.
 export {
   OVERDUE_HOURS,
   LOOKBACK_HOURS,
@@ -261,6 +269,10 @@ export interface WatcherDeps {
   // the decision log. Injected like every other collaborator — un-injected it
   // would make the existing escalation tests hit the database.
   listDecisions?: typeof listDecisionsForNudges;
+  // The firm's own detection thresholds. Injected like every other collaborator
+  // — un-injected, a fixture tenant id that is not a uuid throws 22P02 inside the
+  // per-tenant catch and every tenantErrors assertion in the suite fails.
+  getSettings?: typeof getTenantSettings;
   // The kind registry, injectable so a test can register a second detector
   // before one exists in production.
   specs?: NudgeKindSpec[];
@@ -298,6 +310,13 @@ export interface WatchersSummary {
   // cost pass counts its own candidates into byKind instead.) Read byKind, not
   // the totals, when judging one detector.
   byKind: Record<string, { gapsFound: number; nudgesCreated: number }>;
+  // tenant_settings has not been migrated to this database yet, so every firm ran
+  // on the global defaults. Present ONLY when true — an operator condition, not a
+  // routine counter. It does NOT make the tick unhealthy: the sweep is unaffected
+  // (see the read below), and turning the heartbeat red for a self-resolving
+  // deploy window is the alarm-fatigue failure the cost-ledger skip gates exist to
+  // avoid. It is here so the condition reaches a SUMMARY and not only a log line.
+  settingsTableMissing?: boolean;
 }
 
 export async function runWatchers(
@@ -329,6 +348,7 @@ export async function runWatchers(
   const listCostCandidates = deps.listCostCandidates ?? listCostGapCandidates;
   const listCostEvents = deps.listCostEvents ?? listJobIdsWithCostEvents;
   const listDecisions = deps.listDecisions ?? listDecisionsForNudges;
+  const getSettings = deps.getSettings ?? getTenantSettings;
 
   // listTenantIdsWithTelegramBindings, not listTenantSeats: it skips tenants
   // with nobody Telegram-reachable. Today that ALSO excludes the eval tenants
@@ -365,7 +385,40 @@ export async function runWatchers(
 
   for (const tenantId of tenantIds) {
     try {
-      const tz = (await get(tenantId))?.timezone ?? 'UTC';
+      // ONE read per firm per tick, not one per gap — paired with the tenant read
+      // it already pays for. An absent ROW is the common case and resolves to the
+      // global defaults, so an empty tenant_settings table is byte-for-byte the
+      // behaviour that shipped before this existed.
+      //
+      // AN ABSENT TABLE IS TOLERATED HERE, and this is the only place that
+      // decides so. Render deploys run NO migrations, so the window between
+      // merging this and applying the migration is a certainty. In that window
+      // the honest answer to "what has this firm recorded?" is "nothing", which
+      // resolves to exactly the pre-Phase-2 constants — so the sweep runs
+      // normally. Rethrowing would fail EVERY tenant, and since the read is the
+      // first statement of the loop body that means no detection, no escalation,
+      // no delivery fail-safe and no manager push for anyone, plus a heartbeat
+      // alarming every five minutes on a condition that fixes itself.
+      //
+      // Only the missing RELATION is tolerated. Every other failure — permission,
+      // a bad uuid, a dead connection — throws into the per-tenant catch below and
+      // keeps its containment.
+      const [tenantRow, settingsRow] = await Promise.all([
+        get(tenantId),
+        getSettings(tenantId).catch((err: unknown) => {
+          if (!isMissingRelation(err)) throw err;
+          if (!summary.settingsTableMissing) {
+            summary.settingsTableMissing = true;
+            console.warn(
+              '[watchers] tenant_settings is not migrated here yet — every firm is running on ' +
+                'the global defaults. Apply supabase/migrations/20260829120000_tenant_settings.sql.',
+            );
+          }
+          return null;
+        }),
+      ]);
+      const tz = tenantRow?.timezone ?? 'UTC';
+      const settings = resolveSettings(settingsRow);
       // Real-UTC instant → the firm's wall clock in the canonical naive-local
       // storage form (booking.ts owns the format). Minute precision.
       const naiveLocal = (iso: string): string =>
@@ -377,8 +430,8 @@ export async function runWatchers(
         return ms - (ms % 60_000);
       };
 
-      const from = naiveLocal(new Date(nowMs - LOOKBACK_HOURS * 3_600_000).toISOString());
-      const to = naiveLocal(new Date(nowMs - OVERDUE_HOURS * 3_600_000).toISOString());
+      const from = naiveLocal(new Date(nowMs - settings.lookbackHours * 3_600_000).toISOString());
+      const to = naiveLocal(new Date(nowMs - settings.overdueHours * 3_600_000).toISOString());
 
       const candidates = await listOverdue(tenantId, from, to);
       // EVERY registered kind (plan 2026-08-19, Phase 2). This read used to name
@@ -1058,7 +1111,8 @@ export async function runWatchers(
         }
       }
 
-      // Route fresh gaps — capped at MAX_NEW_ITEMS_PER_TENANT_TICK, oldest
+      // Route fresh gaps — capped at the FIRM's own max_new_per_tick (falling
+      // back to MAX_NEW_ITEMS_PER_TENANT_TICK), oldest
       // scheduled end first (candidates come ordered; the filters preserve
       // it). RUNG 1 when the ladder is live and the technician is reachable;
       // the manager item is the fallback. Every reachable fresh gap in `top`
@@ -1105,7 +1159,7 @@ export async function runWatchers(
           // spends its slot. That is exactly what the pre-registry
           // `slice(0, MAX_NEW_ITEMS_PER_TENANT_TICK)` metered; counting only
           // successful writes would quietly raise a firm's per-tick volume.
-          if (routedThisTick >= MAX_NEW_ITEMS_PER_TENANT_TICK) break;
+          if (routedThisTick >= settings.maxNewPerTick) break;
           routedThisTick += 1;
           const job = jobById.get(g.job_id);
           const title = job?.title ?? 'a job';
@@ -1204,8 +1258,9 @@ export async function runWatchers(
             const techById = new Map(teamRows.map((t) => [t.id, t]));
             for (const c of costTop) {
               // The SAME tenant-wide ceiling the visit pass spends from — a
-              // second detector must not raise a firm's per-tick volume.
-              if (routedThisTick >= MAX_NEW_ITEMS_PER_TENANT_TICK) break;
+              // second detector must not raise a firm's per-tick volume. Same
+              // per-FIRM number too: `settings` is resolved once for this tenant.
+              if (routedThisTick >= settings.maxNewPerTick) break;
               routedThisTick += 1;
               const tech = techById.get(c.technicianId);
               const reachable =

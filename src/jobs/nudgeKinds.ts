@@ -140,8 +140,11 @@ export interface NudgeKindSpec {
   // The per-detector runaway brake. The deleted per-person cap was incidentally
   // capping a MISFIRING detector; the user accepted that the backstop must move
   // per-detector (nudge-pacing-replacement-design §5). Max NEW nudges of this
-  // kind per tenant per tick — the tenant-wide MAX_NEW_ITEMS_PER_TENANT_TICK
-  // ceiling still applies across all kinds on top of this.
+  // kind per tenant per tick — the tenant-wide ceiling still applies across all
+  // kinds on top of this, and since plan 2026-08-29 that ceiling is the FIRM'S
+  // OWN (tenant_settings.max_new_per_tick, falling back to
+  // MAX_NEW_ITEMS_PER_TENANT_TICK). This per-kind brake stays global: a
+  // detector's blast radius is a property of the detector, not of the firm.
   maxNewPerTenantTick: number;
   // IS THIS GAP ANSWERABLE FROM THE RECORD? → the sentence saying so, or null.
   //

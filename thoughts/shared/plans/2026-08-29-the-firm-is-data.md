@@ -216,26 +216,40 @@ sense this build is about. Recorded here so the omission is deliberate, not forg
 the reasoning (the 48→24 retune, the 18h derivation). Deleting them would delete the record.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] **`watchers.test.ts:91` `baseDeps()` MUST gain a `getSettings` stub.** It stubs every
+- [x] `npm run typecheck` · `npm run lint` · `npm test` (111 files / 2380 tests) · `npm run build`
+- [x] **`watchers.test.ts:91` `baseDeps()` MUST gain a `getSettings` stub.** It stubs every
       collaborator and its fixture tenant id is the literal `'t1'` — a real uuid-keyed read throws
       `22P02`, the per-tenant catch swallows it, and every `expect(tenantErrors).toBe(0)` fails.
       **Measured by review: 76 of 92 watcher tests fail without the stub.** Adding it is the
       injection seam, NOT moved behaviour — do not read the edit as a regression. (A previous draft
       of this plan said "the suite passes UNCHANGED", which is unsatisfiable and would have trained
       the implementer to ignore the check.)
-- [ ] The real no-op check, stated correctly: **with the stub returning `null`, every existing
-      watcher assertion holds with its original expected values.** Only the deps literal changes.
-- [ ] New test: a tenant with `overdue_hours = 1` detects a visit 1h past its end that a
-      default-tenant run does not — same fixture, two tenants, different outcomes.
-- [ ] New test: settings are read ONCE per tenant per tick, not per gap (spy on the injected dep).
-- [ ] `src/eval/plannerSim.ts:431-442` also builds `WatcherDeps` inline, with REAL uuid tenants —
-      confirm it needs no stub.
+- [x] The real no-op check, stated correctly: **with the stub returning `null`, every existing
+      watcher assertion holds with its original expected values.** Only the deps literal changed;
+      all 92 pre-existing watcher tests kept their original expected values.
+- [x] New test: a tenant with `overdue_hours = 1` detects a visit 1h past its end that a
+      default-tenant run does not — same fixture, two tenants, different outcomes. Plus a control
+      (neither firm recording anything → zero), and the same for `lookback_hours` and
+      `max_new_per_tick`. All three mutation-tested: revert the wiring and the matching test reddens.
+- [x] New test: settings are read ONCE per tenant per tick, not per gap (spy on the injected dep).
+- [x] `src/eval/plannerSim.ts:431-442` also builds `WatcherDeps` inline, with REAL uuid tenants —
+      confirmed it needs no stub (real table, no row, resolves to defaults).
+- [x] **Added after review — the finding this phase nearly shipped.** `getTenantSettings` became the
+      FIRST statement of every tenant iteration, so on a database without the migration (the pilot
+      today; Render deploys run no migrations) every tenant threw → `tenantErrors === tenants` →
+      `lifecycle.ts:436` set `ok = false`: a red heartbeat every five minutes AND a wholly dark
+      sweep. Measured before and after with the table renamed away on the local stack:
+      `PRE-FIX tenantErrors=1 → ok=false` / `POST-FIX tenantErrors=0, gaps still detected`.
+      The sweep — not the accessor — now tolerates a missing RELATION only, reports it as
+      `settingsTableMissing` on the summary, and lets every other error keep its containment.
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack.
-- [ ] Seed two tenants, one with settings, one without; run one sweep; confirm they diverge only
-      where the settings differ. Evidence is both summaries.
+- [x] Seeded two real firms with identical fixtures (a confirmed visit that ended 2h ago) differing
+      by ONE settings row, and ran the real sweep against each:
+      `EAGER (overdue_hours = 1) gapsFound=1 freshGaps=1 tenantErrors=0` ·
+      `STANDARD (no settings row) gapsFound=0 freshGaps=0 tenantErrors=0`.
+      Same instant, same fixture, different cutoff. Probe firms cleaned up (0 remain).
 
 ### Manual verification
 - [ ] None.

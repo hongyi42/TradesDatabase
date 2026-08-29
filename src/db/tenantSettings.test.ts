@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
 import { getTenantSettings, patchTenantSettings, resolveSettings } from './tenantSettings.js';
+import { isMissingRelation } from './costs.js';
 // Imported from WATCHERS, not from the module under test, and deliberately: the
 // declarations moved down into src/db/ and watchers.ts now re-exports them, so
 // this is what pins the whole chain — the fallback resolveSettings hands out IS
@@ -17,8 +18,27 @@ import {
 const pg = new Client({ connectionString: process.env.DATABASE_URL });
 let tenantId: string;
 
+// Restore the table no matter how a test died — a rename left in place would
+// break every later run against this stack, not just this file.
+async function ensureTableRestored(): Promise<void> {
+  await pg.query(`do $$ begin
+    if to_regclass('public.tenant_settings_probe') is not null then
+      alter table tenant_settings_probe rename to tenant_settings;
+    end if;
+  end $$;`);
+  await pg.query("notify pgrst, 'reload schema'");
+}
+
+
 beforeAll(async () => {
   await pg.connect();
+  // BEFORE the truncate, not after: the absent-table test renames this table, and
+  // a run killed between the rename and its finally would leave it renamed. The
+  // next run's `truncate table tenant_settings` would then 42P01 and fail all 16
+  // tests — a red file that passes on rerun, which reads as a flake instead of the
+  // state problem it is. This is the file's existing "hermetic start" discipline
+  // (below) extended to the new failure mode.
+  await ensureTableRestored();
   // Hermetic start: a crashed prior run skips afterAll, and a stale row would
   // flip the first upsert onto the update path and fail the fresh-insert
   // assertions (the tenantProfiles review finding).
@@ -33,6 +53,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await ensureTableRestored();
   await pg.query('truncate table tenant_settings');
   await pg.end();
 });
@@ -127,6 +148,64 @@ describe('tenant_settings — the CHECK constraints are real', () => {
     await expect(patchTenantSettings(tenantId, { approxWorkStartHour: 24 })).rejects.toThrow(
       /approx_work_start_hour/,
     );
+  });
+});
+
+describe('an ABSENT table — the error shape the sweep\'s tolerance depends on', () => {
+  // Render deploys run NO migrations (engineering-memory), so the window between
+  // merging this and applying the migration is a certainty. runWatchers tolerates
+  // it and runs on the global defaults; that tolerance is keyed on the STRUCTURED
+  // code, so this is the test that proves the code actually survives the wrap.
+  // Only an integration test can: a hand-built error would assert my own guess
+  // about what PostgREST returns.
+  test('the accessor throws, and the PostgREST code survives on `cause`', async () => {
+    try {
+      await pg.query('alter table tenant_settings rename to tenant_settings_probe');
+      await pg.query("notify pgrst, 'reload schema'");
+      // PostgREST caches the schema; the reload is asynchronous.
+      await new Promise((r) => setTimeout(r, 1500));
+
+      const err = await getTenantSettings(tenantId).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toMatch(/getTenantSettings failed/);
+      // THE load-bearing assertion. Wrapped message-only, this is undefined and
+      // isMissingRelation returns false — which is exactly the defect round 1
+      // caught: every tenant erroring and the whole sweep going dark.
+      expect((err as { cause?: { code?: string } }).cause?.code).toBe('PGRST205');
+      expect(isMissingRelation(err)).toBe(true);
+
+      // A WRITE fails too, and keeps its code — so the state cannot hide from
+      // anything that tries to record a setting.
+      const werr = await patchTenantSettings(tenantId, { overdueHours: 4 }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(isMissingRelation(werr)).toBe(true);
+    } finally {
+      await ensureTableRestored();
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    // Proof the finally actually ran: a WRITE succeeds. A read returning null
+    // would prove nothing — an absent table reads null too, which is the whole
+    // point of the change.
+    await patchTenantSettings(tenantId, { overdueHours: 4 });
+    expect((await getTenantSettings(tenantId))?.overdue_hours).toBe(4);
+    await pg.query('truncate table tenant_settings');
+  }, 20_000);
+
+  test('a NON-schema error is not confusable with it — different code, still thrown', async () => {
+    // The tolerance is keyed on the code, never on prose, so a real fault keeps
+    // its per-tenant containment. An invalid uuid is the cheapest genuine
+    // PostgREST error to provoke (22P02).
+    const err = await getTenantSettings('not-a-uuid').then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect((err as { cause?: { code?: string } }).cause?.code).toBe('22P02');
+    expect(isMissingRelation(err)).toBe(false);
   });
 });
 

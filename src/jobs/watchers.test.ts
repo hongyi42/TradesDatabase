@@ -5,6 +5,7 @@ import type { Nudge } from '../db/nudges.js';
 import type { ReviewItem } from '../db/reviewItems.js';
 import type { Tenant } from '../db/tenants.js';
 import type { Technician } from '../db/technicians.js';
+import type { TenantSettings } from '../db/tenantSettings.js';
 import {
   MAX_NEW_ITEMS_PER_TENANT_TICK,
   NUDGE_DELIVERY_DEADLINE_HOURS,
@@ -112,6 +113,13 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     listNudges: async () => [],
     resolveNudge: async () => null,
     listDecisions: async () => new Map(),
+    // The injection seam, NOT moved behaviour: this fixture's tenant id is the
+    // literal 't1', so a real uuid-keyed settings read throws 22P02, the
+    // per-tenant catch swallows it, and every `expect(tenantErrors).toBe(0)` in
+    // this file fails. `null` = the firm has recorded nothing, which resolves to
+    // exactly the global constants — so every existing expectation below keeps
+    // its original expected value.
+    getSettings: async () => null,
     ...over,
   };
 }
@@ -162,6 +170,162 @@ function nudgeRow(over: Partial<Nudge>): Nudge {
     ...over,
   } as unknown as Nudge;
 }
+
+describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)', () => {
+  // A row shaped like tenant_settings, with only the named columns recorded.
+  const settingsRow = (over: Partial<TenantSettings>): TenantSettings =>
+    ({
+      tenant_id: 't1',
+      approx_work_start_hour: null,
+      approx_work_end_hour: null,
+      overdue_hours: null,
+      lookback_hours: null,
+      max_new_per_tick: null,
+      created_at: '2026-08-29T00:00:00.000Z',
+      updated_at: '2026-08-29T00:00:00.000Z',
+      ...over,
+    }) as TenantSettings;
+
+  // Ends 2h ago: INSIDE a 1h overdue window, OUTSIDE the default 3h one. The
+  // stub filters by the window it is handed, exactly as the SQL does — without
+  // that this test would pass no matter what the cutoffs were.
+  const ENDS_TWO_HOURS_AGO = '2026-08-16T10:00:00.000Z';
+  const windowFiltered = (t: string, from: string, to: string) =>
+    [visit({ id: `a-${t}`, job_id: `j-${t}`, ends_at: ENDS_TWO_HOURS_AGO })].filter(
+      // `.gte(from)` / `.lt(to)` — upper bound EXCLUSIVE, matching
+      // listOverdueConfirmedAssignments. `<=` would agree on today's fixture and
+      // silently disagree on one placed exactly on `to`.
+      (v) => v.ends_at! >= from && v.ends_at! < to,
+    );
+
+  test('overdue_hours is per FIRM: the same visit is a gap for one tenant and not the other', async () => {
+    const summary = await runWatchers(NOW, 'shadow', baseDeps({
+      listTenants: async () => ['t-default', 't-eager'],
+      listOverdue: async (t, from, to) => windowFiltered(t, from, to),
+      // Only the second firm has recorded anything.
+      getSettings: async (t) => (t === 't-eager' ? settingsRow({ overdue_hours: 1 }) : null),
+    }));
+    expect(summary.tenantErrors).toBe(0);
+    // ONE of the two. The default firm's cutoff (now−3h) has not reached this
+    // visit yet; the eager firm's (now−1h) has.
+    expect(summary.gapsFound).toBe(1);
+  });
+
+  test('…and with NEITHER firm recording anything, the same fixture yields zero', async () => {
+    // The control. Without it the test above could pass on a bug that made every
+    // tenant eager.
+    const summary = await runWatchers(NOW, 'shadow', baseDeps({
+      listTenants: async () => ['t-default', 't-other'],
+      listOverdue: async (t, from, to) => windowFiltered(t, from, to),
+    }));
+    expect(summary.gapsFound).toBe(0);
+  });
+
+  test('lookback_hours is per FIRM too — both cutoffs move together', async () => {
+    const windows: Record<string, [string, string]> = {};
+    await runWatchers(NOW, 'shadow', baseDeps({
+      listTenants: async () => ['t-default', 't-tight'],
+      listOverdue: async (t, from, to) => {
+        windows[t] = [from, to];
+        return [];
+      },
+      getSettings: async (t) =>
+        t === 't-tight' ? settingsRow({ lookback_hours: 6, overdue_hours: 2 }) : null,
+    }));
+    // now−72h / now−3h — the global fallbacks, unchanged.
+    expect(windows['t-default']).toEqual(['2026-08-13T12:00:00.000Z', '2026-08-16T09:00:00.000Z']);
+    // now−6h / now−2h — the firm's own.
+    expect(windows['t-tight']).toEqual(['2026-08-16T06:00:00.000Z', '2026-08-16T10:00:00.000Z']);
+  });
+
+  test('max_new_per_tick is per FIRM: a firm that wants 2 gets 2, not the global 5', async () => {
+    const flagged: string[] = [];
+    const seven = Array.from({ length: 7 }, (_, i) =>
+      visit({
+        id: `a${i}`,
+        job_id: `j${i}`,
+        starts_at: `2026-08-15T0${i}:00:00.000Z`,
+        ends_at: `2026-08-15T0${i + 1}:00:00.000Z`,
+      }),
+    );
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listOverdue: async () => seven,
+      listJobs: async (_t, ids) =>
+        ids.map((id) => ({ id, tenant_id: 't1', title: 'Furnace tune-up', customers: { name: 'Henderson' } }) as unknown as JobWithCustomer),
+      getSettings: async () => settingsRow({ max_new_per_tick: 2 }),
+      flagGap: async (input) => {
+        flagged.push(input.assignmentId);
+        return openItem({ subject_ref: input.assignmentId });
+      },
+    }));
+    expect(flagged).toEqual(['a0', 'a1']); // the firm's ceiling, oldest first
+    expect(summary.itemsOpened).toBe(2);
+    expect(MAX_NEW_ITEMS_PER_TENANT_TICK).toBe(5); // …and the global default is untouched
+  });
+
+  test('settings are read ONCE per tenant per tick — not once per gap', async () => {
+    const reads: string[] = [];
+    await runWatchers(NOW, 'shadow', baseDeps({
+      listTenants: async () => ['t-a', 't-b'],
+      // Three candidate gaps each, so a per-gap read would show six.
+      listOverdue: async (t) => [
+        visit({ id: `${t}-1`, job_id: `${t}-j1` }),
+        visit({ id: `${t}-2`, job_id: `${t}-j2` }),
+        visit({ id: `${t}-3`, job_id: `${t}-j3` }),
+      ],
+      getSettings: async (t) => {
+        reads.push(t);
+        return null;
+      },
+    }));
+    expect(reads).toEqual(['t-a', 't-b']);
+  });
+
+  test('an ABSENT settings table does not take the sweep dark — it runs on the defaults and SAYS so', async () => {
+    // The round-1 finding, locked shut. Before the fix this threw for every
+    // tenant, so tenantErrors === tenants, which lifecycle.ts reads as systemic
+    // and turns the heartbeat red — while detection, escalation, the delivery
+    // fail-safe and the manager push were all dark for everyone.
+    const pgrst205 = Object.assign(new Error('getTenantSettings failed: Could not find the table'), {
+      cause: { code: 'PGRST205' },
+    });
+    const summary = await runWatchers(NOW, 'shadow', baseDeps({
+      listTenants: async () => ['t-a', 't-b'],
+      listOverdue: async () => [visit({})],
+      getSettings: async () => {
+        throw pgrst205;
+      },
+    }));
+    expect(summary.tenantErrors).toBe(0);
+    // Detection still happened, on the global fallbacks, for BOTH firms.
+    expect(summary.gapsFound).toBe(2);
+    // …and the condition reaches the summary, not just a log line.
+    expect(summary.settingsTableMissing).toBe(true);
+  });
+
+  test('a healthy tick does not carry the missing-table marker at all', async () => {
+    // Present ONLY when true: an operator condition, never a routine field.
+    const summary = await runWatchers(NOW, 'shadow', baseDeps({}));
+    expect(summary.settingsTableMissing).toBeUndefined();
+  });
+
+  test('a settings read that fails for ANY OTHER reason is contained to its own firm', async () => {
+    // The read sits inside the per-tenant try, beside the tenant read it is
+    // paired with — so a firm whose row is unreadable must not take the sweep
+    // down for everyone else. Only a MISSING RELATION is tolerated (above); a
+    // permission error, a bad uuid or a dead connection still counts as a fault.
+    const summary = await runWatchers(NOW, 'shadow', baseDeps({
+      listTenants: async () => ['t-broken', 't-fine'],
+      listOverdue: async () => [visit({})],
+      getSettings: async (t) => {
+        if (t === 't-broken') throw new Error('settings read failed');
+        return null;
+      },
+    }));
+    expect(summary.tenantErrors).toBe(1);
+    expect(summary.gapsFound).toBe(1); // t-fine still swept
+  });
+});
 
 describe('runWatchers', () => {
   test('cutoffs: UTC tenant gets now−72h / now−3h, formatted naive-local', async () => {

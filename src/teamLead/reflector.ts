@@ -24,6 +24,13 @@ export type ReflectorMode = 'off' | 'shadow' | 'live';
 
 // Gate constants (plan-ruled): no distillation before a firm has a corpus,
 // and no re-run on unchanged input.
+//
+// DELIBERATELY NOT PER-FIRM (plan 2026-08-29 "the firm is data", Phase 2), so the
+// omission reads as a decision rather than an oversight: these three gate a
+// SHADOW-mode distiller whose output reaches no prompt. They are not statements
+// about how a firm operates — they are how much evidence WE want before spending
+// a call. The three that moved are detection parameters the firm's own work
+// shapes; these are ours.
 export const MIN_SUMMARIES = 15;
 export const MIN_NEW_SINCE_LAST_RUN = 5;
 export const REFLECT_FROM_HOUR = 2; // firm-local; re-checkable all day

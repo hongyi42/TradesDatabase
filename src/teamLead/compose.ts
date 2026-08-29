@@ -3,7 +3,6 @@ import {
   reviewItemExistsFor,
   type Nudge,
 } from '../db/index.js';
-import { localTimeHHMM } from '../schedule/availability.js';
 import { NUDGE_KIND_SPECS, specFor, type NudgeKindSpec } from '../jobs/nudgeKinds.js';
 
 // What survived the compose turn (the collapse, plan 2026-08-24).
@@ -14,37 +13,29 @@ import { NUDGE_KIND_SPECS, specFor, type NudgeKindSpec } from '../jobs/nudgeKind
 // own apply step, so the sweep, its per-kind prompts and its assembly templates
 // are gone. There is no model call anywhere in the ladder any more.
 //
-// Two things outlived it, both code, both still imported elsewhere: the ASK
-// WINDOW (the planner's own gate — it skips whole tenants outside it) and
-// `handToManager`, the rung-2 fallback for a gap that dies without its ask ever
-// landing (the delivery queue still needs it). The file keeps its name so those
-// importers do not churn.
-
-// The ask window (user ruling 2026-08-17): questions go out only between
-// 7 AM and 7 PM in the FIRM's timezone, seven days a week. Since the collapse
-// (plan 2026-08-24) the gate sits on the PLANNER, which skips whole tenants
-// outside the window (planner.ts) — nothing is written, so nothing can be
-// queued, and a gap noticed at 9 PM simply waits for the morning tick with its
-// question still unwritten. Detection is NOT gated (the watcher still notices
-// at 9 PM). The longest hold is one night (12h; 13h on a DST fall-back night),
-// safely inside NUDGE_DELIVERY_DEADLINE_HOURS (18h, watchers.ts) — a window
-// that ever excludes whole DAYS must move that deadline with it.
-export const ASK_WINDOW_START_HOUR = 7; // inclusive, firm-local
-export const ASK_WINDOW_END_HOUR = 19; // exclusive, firm-local
-
-export function insideAskWindow(nowIso: string, tz: string): boolean {
-  let hour: number;
-  try {
-    hour = Number(localTimeHHMM(nowIso, tz).slice(0, 2));
-  } catch (err) {
-    // An unknown zone must not block every OTHER tenant's sweep (the tenant
-    // loop has no per-tenant isolation). Judge by UTC; the per-row day-phrase
-    // call fails loudly on the same zone, so this never hides quietly.
-    console.error(`[teamLeadCompose] bad timezone '${tz}', judging ask window by UTC`, err);
-    hour = new Date(nowIso).getUTCHours();
-  }
-  return hour >= ASK_WINDOW_START_HOUR && hour < ASK_WINDOW_END_HOUR;
-}
+// ONE thing outlived it: `handToManager`, the rung-2 fallback for a gap that dies
+// without its ask ever landing (the delivery queue still needs it). The file
+// keeps its name so that importer does not churn.
+//
+// THE ASK WINDOW IS GONE (plan 2026-08-29 "the firm is data", Phase 3; user
+// ruling the same day). It lived here — 7am-7pm firm-local, seven days a week
+// (user, 2026-08-17) — and since the collapse it gated the PLANNER, skipping
+// whole tenants outside it. There is no send-timing gate anywhere now:
+//
+//   "if a message goes out outside of working hour, then the human gets a tick.
+//    Not the end of the world… And if the message doesn't get answered, then the
+//    planner will learn that messaging at that time is bad, and message at a
+//    different time. Of course there's going to be a learning process. But we
+//    don't want to constrain what the planner can do."
+//
+// What replaced it is NOT another gate: the planner now runs on a per-firm
+// CADENCE (planner.ts), which decides how often it THINKS, never whether it may
+// send. Two things that used to lean on the window and no longer can:
+//   - NUDGE_DELIVERY_DEADLINE_HOURS's 18h was derived from a 12h overnight hold.
+//     Nothing holds a gap overnight now; see its comment in watchers.ts.
+//   - the working-hours METRIC keeps a fixed 7-19 convention of its OWN, in
+//     jobs/workingHours.ts. It is a yardstick, not a claim about any firm, and it
+//     is pinned to a SQL twin and to stored gap_summaries rows.
 
 // The rung-2 fallback for a nudge that dies WITHOUT the ask ever landing
 // (model declined, compose gave up — review F1): the gap must still reach the

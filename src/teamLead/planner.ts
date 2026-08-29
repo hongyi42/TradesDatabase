@@ -22,7 +22,6 @@ import {
 import { runToolLoop, ToolLoopLimitError, type ToolLoopLimit } from '../model/toolLoop.js';
 import type { ForcedToolSpec } from '../model/forcedTool.js';
 import { NUDGE_KIND_SPECS, specFor, type NudgeKindSpec } from '../jobs/nudgeKinds.js';
-import { insideAskWindow } from './compose.js';
 import { renderLessonsBlock } from './lessons.js';
 // A plain const, read only inside functions — never at module-evaluation time.
 // watchers.ts and nudgeKinds.ts are a documented import cycle; this module sits
@@ -32,21 +31,29 @@ import {
   NUDGE_ESCALATE_HOURS,
   NUDGE_ESCALATE_MAX_HOURS,
 } from '../jobs/watchers.js';
+import { readSettingsTolerantly, type ResolvedTenantSettings } from '../db/tenantSettings.js';
 import { localDateISO, localTimeHHMM, parseAsUtc } from '../schedule/availability.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
 import { TEAM_LEAD_REF } from './identity.js';
 
 // The team-lead planner (plan 2026-08-19, Phase 3).
 //
-// ONE call per firm per half-hour that sees every open gap at once and decides
+// ONE call per firm per CADENCE TICK that sees every open gap at once and decides
 // timing and closure for all of them together. That "at once" is the whole
 // point: pacing is a judgment about a QUEUE, and the per-gap compose call — one
 // gap, one sentence, no memory of the others — structurally cannot make it.
+// (Half-hourly until 2026-08-29; now half-hourly inside a firm's own approximate
+// hours and 2-hourly outside them — see PLANNER_TICK_MINUTES below.)
 //
 // The division of labour, and it is deliberate:
-//   code   owns the guarantees — the ask window, the delivery deadline, the
-//          orphan doctrine, dedup, the runaway brakes, and the validation below
+//   code   owns the guarantees — the delivery deadline, the orphan doctrine,
+//          dedup, the runaway brakes, and the validation below
 //   model  owns the judgment inside them — when, how patient, is that an answer
+//
+// SEND TIMING MOVED SIDES on 2026-08-29. The ask window was in the first list;
+// there is no send gate at all now, and the planner chooses the hour. The cadence
+// that replaced it belongs to neither column — it is not a guarantee about
+// messages, only a budget on how often the model is asked.
 //
 // The planner NEVER acts. It returns decisions; the sweep performs them, and
 // every decision is re-checked in code first. In 'shadow' it does not even
@@ -150,13 +157,13 @@ export interface DroppedDecision {
 
 // What became of ONE firm on ONE tick. Every firm the sweep considered gets an
 // entry, not just the ones the model ran for — the flat skippedNoGaps /
-// skippedWindow / tenantErrors counters say HOW MANY were passed over but never
+// skippedCadence / tenantErrors counters say HOW MANY were passed over but never
 // WHICH, so "has this firm gone quiet because it has no work, or because its
 // ticks have been failing?" was unanswerable from the record.
 export type PlannerTenantOutcome =
   | 'planned' // the model ran for this firm
   | 'no_gaps' // nothing open worth planning about
-  | 'out_of_window' // gaps open, but outside the firm's asking hours
+  | 'off_cadence' // gaps open, but this firm is not due to think this tick
   | 'error'; // the tick failed for this firm
 
 export interface PlannerTenantPlan {
@@ -202,7 +209,10 @@ export interface PlannerSummary {
   tenants: number; // tenants considered
   planned: number; // tenants the model actually ran for
   skippedNoGaps: number;
-  skippedWindow: number; // outside the firm's ask window — nothing could be sent anyway
+  // Gaps open, but this firm was not due this tick. NOT a send gate — the planner
+  // owns send timing entirely (user, 2026-08-29). This only says how often it
+  // THINKS, and a firm that has recorded no hours is due every time.
+  skippedCadence: number;
   decisions: number;
   dropped: number;
   applied: number; // decisions the code actually performed — always 0 in shadow
@@ -218,6 +228,86 @@ export interface PlannerSummary {
   limitHits: Record<ToolLoopLimit, number>;
   byAction: Record<string, number>;
   plans: PlannerTenantPlan[];
+  // tenant_settings has not been migrated to this database yet, so every firm ran
+  // at the full rate. Present ONLY when true, and it does NOT make the tick
+  // unhealthy — the same contract as WatchersSummary.settingsTableMissing, and
+  // for the same reason: an accessor that swallows a condition cannot report it,
+  // so the consumer must. Without this the planner would run every firm 24/7 with
+  // no signal at all while the sweep beside it warned.
+  settingsTableMissing?: boolean;
+}
+
+// HOW OFTEN THE PLANNER THINKS ABOUT A FIRM (plan 2026-08-29 Phase 3). This
+// replaced the ask window, and it is a different KIND of thing: the window
+// decided whether a message could go out, this decides only how often we spend a
+// model call. The planner owns send timing outright now — "the planner should
+// just be able to choose when a message is sent, period" (user, 2026-08-29).
+export const PLANNER_TICK_MINUTES = 30;
+// Outside the firm's own approximate hours. Cheaper, not silent: a firm whose
+// technicians file notes at 9pm still gets thought about at 20:00 and 22:00.
+//
+// TWO INVARIANTS, and only the first is obvious. Both are pinned by a test.
+//
+//   1. MULTIPLE OF PLANNER_TICK_MINUTES. lifecycle.ts runs a coarse gate at the
+//      FULL rate so an off-cadence tick costs no database reads at all; if this
+//      were not a multiple, that gate would silently filter out ticks a firm was
+//      due for.
+//   2. A DIVISOR OF 1440 (minutes in a day). The grid is minutes-SINCE-MIDNIGHT,
+//      so it restarts at 00:00 — and if the rate does not divide the day evenly
+//      the last interval before midnight is short and the one across it is
+//      ragged. 210 satisfies rule 1 and leaves a 180-minute gap across midnight;
+//      50 breaks both. 120 satisfies both, which is why the discontinuity does
+//      not exist today and why the next person tuning this needs the rule
+//      written down rather than rediscovered.
+export const PLANNER_TICK_MINUTES_OFF_HOURS = 120;
+
+/**
+ * Is this firm due to think on this tick?
+ *
+ * MINUTES SINCE MIDNIGHT, never `getUTCMinutes() % everyMin`. getUTCMinutes()
+ * returns 0-59, so `% 120` fires on exactly the minutes `% 60` does — any rate at
+ * or above an hour silently collapses to hourly. The pre-existing gate was
+ * correct only because 30 < 60, which is the kind of accident that stops being
+ * true the moment somebody tunes a number.
+ *
+ * `< 5` tolerates a delayed cron firing, matching lifecycle's other stateless
+ * cadence gates: the minute IS the state, so nothing has to be remembered between
+ * runs. UTC-anchored on purpose — only the RATE is firm-dependent, and a
+ * firm-local phase would need per-firm state to stay stable across DST.
+ */
+export function plannerCadenceDue(nowIso: string, everyMinutes: number): boolean {
+  const now = new Date(nowIso);
+  const minutesSinceMidnight = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return minutesSinceMidnight % everyMinutes < 5;
+}
+
+/**
+ * The firm's own approximate hours, or true when it has recorded none.
+ *
+ * UNSET MEANS FULL RATE, never "think less". A firm we know nothing about is the
+ * firm we should be paying the most attention to, and the hours are approximate
+ * by the user's own framing — "we can just acknowledge that it's the firm's
+ * approximated working hours" — so an absent value must not quietly become a
+ * reason to look away.
+ */
+export function withinApproxHours(
+  nowIso: string,
+  tz: string,
+  settings: ResolvedTenantSettings,
+): boolean {
+  const { approxWorkStartHour: start, approxWorkEndHour: end } = settings;
+  if (start === null || end === null) return true;
+  let hour: number;
+  try {
+    hour = Number(localTimeHHMM(nowIso, tz).slice(0, 2));
+  } catch (err) {
+    // An unknown zone must not decide a firm's cadence by accident. Judging by
+    // UTC keeps the tick cheap-or-not decision sane, and the per-row day-phrase
+    // call fails loudly on the same zone, so this never hides quietly.
+    console.error(`[planner] bad timezone '${tz}', judging the firm's hours by UTC`, err);
+    hour = new Date(nowIso).getUTCHours();
+  }
+  return hour >= start && hour < end;
 }
 
 // How much of one capture the model sees. Evidence is model INPUT: it is billed,
@@ -257,6 +347,9 @@ export interface PlannerDeps {
   listTenants?: typeof listTenantIdsWithTelegramBindings;
   lessons?: typeof renderLessonsBlock;
   getTenant?: typeof getTenant;
+  // The firm's own approximate hours — cadence only. Injected like every other
+  // collaborator so a unit test never touches the database.
+  getSettings?: typeof readSettingsTolerantly;
   listNudges?: typeof listNudgesByStatus;
   listEvidence?: typeof listJobEvidenceSince;
   // The record-level test for cost gaps. Same reader the item sweep uses, so
@@ -421,10 +514,14 @@ export interface GapView {
   evidenceCaptureIds: (string | null)[];
   // Whether the HOLE this gap names is closed in the record, as CODE sees it —
   // independent of whether anybody replied. Null when the kind has no
-  // record-level test (a visit gap's hole is "no note", and the sweep already
-  // auto-closes those before the planner ever sees them). This is the only thing
-  // that may authorise a `record`-basis close, which is why it is computed here
-  // and never taken from the model.
+  // record-level test: a visit gap's hole is "no note", and a note is a person's
+  // WORDS, so the planner closes it with basis `evidence` and a quote rather than
+  // on a code-computed fact. (This used to say the sweep auto-closed those before
+  // the planner ever saw them. It did, until plan 2026-08-29 Phase 3 deleted that
+  // close — which is why the evidence bound above now reaches back to the gap's
+  // own creation, so a never-asked visit gap arrives WITH the note to quote.)
+  // This is the only thing that may authorise a `record`-basis close, which is
+  // why it is computed here and never taken from the model.
   recordFilled: string | null;
   // Money that landed on this job after the ask, stated as a FACT (plan
   // 2026-08-21 ①). Null when none did. It authorises a `record`-basis close the
@@ -547,10 +644,26 @@ export function buildGapView(
 ): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
-  const relevant = Number.isNaN(askedAtMs)
+  // WHAT COUNTS AS "SINCE" — the ask if there was one, otherwise the moment the
+  // gap was noticed.
+  //
+  // Pre-ask evidence used to be deliberately empty, and the reason was written at
+  // `recordFilled` below: the SWEEP auto-closed a never-asked visit gap whose job
+  // had gained a note, so the planner never saw one. That close is deleted (plan
+  // 2026-08-29 Phase 3), and deleting it without this change would have been
+  // strictly worse than leaving it: the planner would be handed a gap the record
+  // already answers, shown nothing, and left with `send` — asking a technician
+  // how a job went hours after they filed the report. Exactly the "mouth lying
+  // about what the record already knows" the carve-out existed to prevent.
+  //
+  // `created_at` is the right floor and not an approximation of one: the detector
+  // only mints a gap when the job has NO activity since the visit started, so
+  // everything after that instant is genuinely new information.
+  const sinceMs = Number.isNaN(askedAtMs) ? Date.parse(n.created_at) : askedAtMs;
+  const relevant = Number.isNaN(sinceMs)
     ? []
     : evidence
-        .filter((e) => e.jobId === jobId && Date.parse(e.capture.captured_at) > askedAtMs)
+        .filter((e) => e.jobId === jobId && Date.parse(e.capture.captured_at) > sinceMs)
         .slice(-EVIDENCE_PER_GAP);
 
   const evidenceText = relevant.map((e) => flat(e.capture.raw_text ?? '', EVIDENCE_TEXT_CHARS));
@@ -584,12 +697,12 @@ export function buildGapView(
       ? 'a cost is recorded against this job on the money ledger'
       : null;
 
-  // Money on THIS gap's job, bounded the same way the captures are: only what
-  // landed after the question went out, and nothing at all if it was never
-  // asked. `created_at`, not `occurred_at` — see the reader's own comment.
-  const moneyHere = Number.isNaN(askedAtMs)
+  // Money on THIS gap's job, bounded the same way the captures are — since the
+  // ask, or since the gap was noticed when nobody has been asked. `created_at`,
+  // not `occurred_at` — see the reader's own comment.
+  const moneyHere = Number.isNaN(sinceMs)
     ? []
-    : money.filter((m) => m.job_id === jobId && Date.parse(m.created_at) > askedAtMs);
+    : money.filter((m) => m.job_id === jobId && Date.parse(m.created_at) > sinceMs);
   // Cents to dollars, and NEVER summed and never signed: direction comes from
   // `kind` (moneyEvents.ts), and the standing rule is to aggregate the
   // summaries, never the rows. An amountless kind renders without a figure.
@@ -660,9 +773,17 @@ export function buildGapView(
   }
   const hist = historyLine(history, nowMs, tz);
   if (hist) lines.push(hist);
-  if (!n.asked_at) {
-    lines.push('  evidence since the ask: (nothing was asked yet, so there is none)');
-  } else {
+  // SHOWN WHETHER OR NOT ANYONE WAS ASKED (plan 2026-08-29 Phase 3). This block
+  // used to be skipped entirely for a never-asked gap, printing "nothing was
+  // asked yet, so there is none" — true of the ASK, and badly misleading about
+  // the RECORD, which may well hold the answer. The sweep used to close those
+  // before the planner saw them; it no longer does, so the planner is the only
+  // thing that can, and it needs the words to quote.
+  {
+    // "since the ask" is wrong for a gap nobody has been asked about. One phrase,
+    // used everywhere below, so the two branches cannot drift into describing
+    // different windows.
+    const since = n.asked_at ? 'the question went out' : 'this gap was noticed';
     // The warning sits ABOVE both blocks and outside the has-notes branch: two
     // gaps on one job share their money as well as their notes, and a job with
     // money but no notes used to fall straight past this.
@@ -689,9 +810,9 @@ export function buildGapView(
     if (relevant.length === 0) {
       // "notes", not "nothing has landed": money may be printed directly below,
       // and a blanket nothing-landed claim would contradict it on the next line.
-      lines.push('  notes since the ask: NO notes have landed on this job since the question went out');
+      lines.push(`  notes: NO notes have landed on this job since ${since}`);
     } else {
-      lines.push('  evidence since the ask:');
+      lines.push(`  evidence since ${since}:`);
       if (attributedHere) {
         // Say what the marker MEANS. An unexplained arrow is a machine artifact;
         // this states the fact behind it, in the same voice as THE RECORD line.
@@ -713,7 +834,7 @@ export function buildGapView(
     // `relevant`'s own index, so anything spliced in ahead of it silently
     // mislabels every note line.
     if (moneyShown.length > 0) {
-      lines.push('  money on this job since the question went out:');
+      lines.push(`  money on this job since ${since}:`);
       moneyShown.forEach((m, i) => lines.push(`    [${i + 1}] ${moneyLine(m)}`));
       lines.push(
         '  That is a fact from the ledger, not a quote from a person — weigh whether it answers ' +
@@ -1565,6 +1686,7 @@ export async function runPlanner(
   const markGroupQueued = deps.markGroupQueued ?? markNudgeGroupQueued;
   const stampAnswer = deps.stampAnswer ?? setNudgeAnsweredBy;
   const specs = deps.specs ?? NUDGE_KIND_SPECS;
+  const getSettings = deps.getSettings ?? readSettingsTolerantly;
   const sweepLive = deps.sweepLive ?? true;
   const tools = deps.tools ?? [];
   const execute = deps.execute;
@@ -1575,7 +1697,7 @@ export async function runPlanner(
     tenants: 0,
     planned: 0,
     skippedNoGaps: 0,
-    skippedWindow: 0,
+    skippedCadence: 0,
     decisions: 0,
     dropped: 0,
     applied: 0,
@@ -1624,23 +1746,51 @@ export async function runPlanner(
         name(idlePlan(tenantId, 'no_gaps', 0));
         continue;
       }
-      // Outside the ask window nothing can go out, and closure can wait for the
-      // morning — so the call is skipped ENTIRELY rather than made and ignored.
-      // This is the single largest lever on what the planner costs.
-      const tz = (await get(tenantId))?.timezone ?? 'UTC';
-      if (!insideAskWindow(nowIso, tz)) {
-        summary.skippedWindow += 1;
-        // `open.length`, not 0: this firm HAS work waiting — it is the hours
-        // that are wrong, and conflating the two is exactly the distinction
-        // this outcome exists to draw.
-        name(idlePlan(tenantId, 'out_of_window', open.length));
+      // The firm's clock and its own approximate hours, read together — one round
+      // trip each, and only for a firm that actually has open work.
+      const [tenantRow, read] = await Promise.all([get(tenantId), getSettings(tenantId)]);
+      const tz = tenantRow?.timezone ?? 'UTC';
+      if (read.tableMissing && !summary.settingsTableMissing) {
+        summary.settingsTableMissing = true;
+        console.warn(
+          '[planner] tenant_settings is not migrated here yet — every firm is running at the ' +
+            'full cadence. Apply supabase/migrations/20260829120000_tenant_settings.sql.',
+        );
+      }
+
+      // CADENCE, not a window. Full rate inside the firm's approximate hours,
+      // slower outside — and a firm that has recorded no hours runs at full rate
+      // always. This is the largest remaining lever on what the planner costs,
+      // and unlike the window it never withholds a message: it only decides how
+      // often we think.
+      const everyMinutes = withinApproxHours(nowIso, tz, read.settings)
+        ? PLANNER_TICK_MINUTES
+        : PLANNER_TICK_MINUTES_OFF_HOURS;
+      if (!plannerCadenceDue(nowIso, everyMinutes)) {
+        summary.skippedCadence += 1;
+        // `open.length`, not 0: this firm HAS work waiting — it is simply not due
+        // this tick, and conflating the two is exactly the distinction this
+        // outcome exists to draw.
+        //
+        // `name(...)` is LOAD-BEARING, not decoration. plans.length === tenants is
+        // the invariant the tick record and `npm run ticks` lean on, and the
+        // `if (!named)` backstop lives in the CATCH only — a bare `continue` here
+        // would leave this firm with no entry at all.
+        name(idlePlan(tenantId, 'off_cadence', open.length));
         continue;
       }
 
-      // ONE batched evidence read for the tenant, floored at the EARLIEST ask
-      // among its asked gaps — the per-gap bound is then applied in code.
+      // ONE batched evidence read for the tenant, floored at the EARLIEST bound
+      // any open gap needs — the per-gap bound is then applied in code.
+      //
+      // `asked_at ?? created_at`, not `asked_at` alone (plan 2026-08-29 Phase 3).
+      // A never-asked gap now needs the notes that landed since it was minted,
+      // and while THIS read was asked-only the floor could be null for a firm
+      // whose gaps had all been held — so buildGapView would filter an empty
+      // array and the fix above would be silently inert. The two bounds have to
+      // agree or the per-gap one is a lie.
       const askedAt = open
-        .map((n) => (n.asked_at ? Date.parse(n.asked_at) : NaN))
+        .map((n) => Date.parse(n.asked_at ?? n.created_at))
         .filter((ms) => !Number.isNaN(ms));
       const jobIds = [
         ...new Set(open.map((n) => ctxStr(n, 'jobId')).filter((v): v is string => !!v)),
@@ -1651,6 +1801,9 @@ export async function runPlanner(
         askedAt.length > 0 && jobIds.length > 0
           ? new Date(Math.min(...askedAt)).toISOString()
           : null;
+      // Bounded in practice, which is why this widening is affordable: an unasked
+      // row reaches the delivery deadline (18h) and an asked one its escalation
+      // ceiling (48h), so the floor cannot walk backwards indefinitely.
       const evidence = sinceIso ? await listEvidence(tenantId, jobIds, sinceIso) : [];
 
       // ONE ledger read per tenant, over the cost gaps' jobs only — the same
@@ -1668,10 +1821,9 @@ export async function runPlanner(
         costJobIds.length > 0 ? await listCostEvents(tenantId, costJobIds) : [],
       );
 
-      // ONE batched money read for the whole tick, bounded by the EARLIEST ask
-      // among these gaps; buildGapView narrows it per gap. Skipped entirely when
-      // nothing has been asked yet — an unasked gap can have no answer, so there
-      // is no window to read.
+      // ONE batched money read for the whole tick, on the same floor as the
+      // evidence read; buildGapView narrows it per gap. Skipped only when there
+      // is no floor at all (no open gap named a job).
       const money = sinceIso ? await listMoneySince(tenantId, jobIds, sinceIso) : [];
 
       // ONE batched read of the planner's own history for this tick's gaps —

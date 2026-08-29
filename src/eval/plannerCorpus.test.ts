@@ -3,15 +3,19 @@ import { Client } from 'pg';
 import { createTenant } from '../db/tenants.js';
 import { ALL_SCENARIOS, FAMILY_COUNTS, type ScenarioExpect } from './plannerCorpus.js';
 import { parseOffsetMs, seedScenario, simStartIso, SIM_TZ } from './plannerSim.js';
+import { plannerCadenceDue, PLANNER_TICK_MINUTES } from '../teamLead/planner.js';
 
 // The corpus's structural rails (plan Phase 3). These are AUTHORING tests:
 // they catch the scenario shapes that would grade the harness instead of the
-// planner — a tick outside the ask window records nothing, a gap already past
-// its deadline is escalated by the sweep before the planner sees it, and a
+// planner — a tick the planner skips records nothing, a gap already past its
+// deadline is escalated by the sweep before the planner sees it, and a
 // mixed-case mustNotClaim can never match the lowercase haystack.
 
 const HOUR = 3_600_000;
 const T0_HOUR = 10; // simStartIso(10) — the driver's anchor
+// The real instant t0 resolves to, so cadence can be judged on the same UTC
+// clock the planner uses rather than on a reconstructed local hour.
+const T0_MS = Date.parse(simStartIso(T0_HOUR));
 
 describe('corpus structure', () => {
   test('ids are unique and family counts are pinned', () => {
@@ -34,18 +38,28 @@ describe('corpus structure', () => {
     }
   });
 
-  test('every tick lands inside the 7:00-19:00 window unless it expects the skip', () => {
+  test("every tick lands on the planner's cadence grid unless it expects the skip", () => {
+    // Was "inside the 7:00-19:00 ask window". The window is deleted (plan
+    // 2026-08-29 Phase 3) so no tick is skipped for its HOUR any more — but the
+    // cadence still skips one for its MINUTE, and the failure is identical and
+    // just as silent: the planner records nothing and the scenario grades as a
+    // no-decision rather than as a broken scenario.
+    //
+    // The sim tenant records no approximate hours, so it runs at the FULL rate
+    // always — the grid is :00 and :30.
     for (const s of ALL_SCENARIOS) {
       for (const step of s.timeline) {
         if (step.kind !== 'tick') continue;
-        const hour = (((T0_HOUR + parseOffsetMs(step.at) / HOUR) % 24) + 24) % 24;
-        const inWindow = hour >= 7 && hour < 19;
-        if (step.expectWindowSkip) {
-          expect(inWindow, `${s.id} tick at ${step.at} declares a skip but is IN window`).toBe(
+        const onGrid = plannerCadenceDue(
+          new Date(T0_MS + parseOffsetMs(step.at)).toISOString(),
+          PLANNER_TICK_MINUTES,
+        );
+        if (step.expectCadenceSkip) {
+          expect(onGrid, `${s.id} tick at ${step.at} declares a skip but is ON the grid`).toBe(
             false,
           );
         } else {
-          expect(inWindow, `${s.id} tick at ${step.at} is outside the ask window`).toBe(true);
+          expect(onGrid, `${s.id} tick at ${step.at} is off the planner's cadence`).toBe(true);
         }
       }
     }
@@ -57,7 +71,7 @@ describe('corpus structure', () => {
     // planner decides — the scenario then grades the sweep, not the model.
     for (const s of ALL_SCENARIOS) {
       const tickOffsets = s.timeline
-        .filter((t) => t.kind === 'tick' && !t.expectWindowSkip)
+        .filter((t) => t.kind === 'tick' && !t.expectCadenceSkip)
         .map((t) => parseOffsetMs(t.at));
       if (tickOffsets.length === 0) continue;
       const lastTickMs = Math.max(...tickOffsets);

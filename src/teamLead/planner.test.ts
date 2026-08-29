@@ -14,6 +14,9 @@ import {
   clockLabel,
   EVIDENCE_PER_GAP,
   PLANNER_ACTIONS,
+  plannerCadenceDue,
+  PLANNER_TICK_MINUTES,
+  PLANNER_TICK_MINUTES_OFF_HOURS,
   questionCapFor,
   runPlanner,
   UNMENTIONED,
@@ -29,7 +32,9 @@ import {
 } from '../jobs/watchers.js';
 import { ToolLoopLimitError, type ToolLoopResult } from '../model/toolLoop.js';
 
-// NOW is inside the 7am–7pm UTC ask window for a UTC firm.
+// NOW is 12:00 — on the planner's cadence grid (720 minutes since midnight,
+// a multiple of both rates), so every test below actually reaches the model.
+// It used to be chosen for the 7am-7pm ask window, which no longer exists.
 const NOW = '2026-08-16T12:00:00.000Z';
 
 function nudge(over: Partial<Nudge> = {}): Nudge {
@@ -129,6 +134,22 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     // database. Tests that care about the memory or the writers override these.
     listDecisions: async () => new Map(),
     recordDecisions: async (rows) => rows.length,
+    // Phase 3 (2026-08-29): the same reason as listMoneySince above, and the same
+    // trap watchers.test.ts hit — this fixture's tenant id is the literal 't1',
+    // so the real settings reader returns 22P02, the per-tenant catch swallows
+    // it, and 119 tests in this file fail as tenantErrors instead of loudly.
+    // No recorded hours = the full rate always, which is what every test below
+    // that predates the cadence already assumes.
+    getSettings: async () => ({
+      settings: {
+        approxWorkStartHour: null,
+        approxWorkEndHour: null,
+        overdueHours: 3,
+        lookbackHours: 72,
+        maxNewPerTick: 5,
+      },
+      tableMissing: false,
+    }),
     runLoop: loopReturning([]),
     ...over,
   };
@@ -329,8 +350,23 @@ describe('the planner can see money (plan 2026-08-21 ①)', () => {
     expect(seen.user).not.toContain('money on this job');
   });
 
-  test('a never-asked gap is shown no money at all', async () => {
+  test('a never-asked gap IS shown money — bounded by when the gap was noticed', async () => {
+    // Reversed on 2026-08-29. It used to be shown nothing, which was right only
+    // while the SWEEP closed a never-asked gap whose job had gained activity.
+    // That close is deleted, so the planner is now the only thing that can close
+    // it and needs the same facts an asked gap gets.
     const seen = await withMoney([moneyRow('2026-08-15T13:00:00.000Z')], {
+      status: 'pending', asked_at: null, question: null,
+    });
+    expect(seen.user).toContain('money on this job since this gap was noticed');
+    expect(seen.user).toContain('payment_received $500.00');
+  });
+
+  test('…but not money from BEFORE it was noticed — the floor is created_at', async () => {
+    // The fixture gap is created 11:00 and asked 12:00. 10:30 predates the gap
+    // itself: the detector only mints when the job has no activity, so anything
+    // older is the booking-time noise the whole bound exists to exclude.
+    const seen = await withMoney([moneyRow('2026-08-15T10:30:00.000Z')], {
       status: 'pending', asked_at: null, question: null,
     });
     expect(seen.user).not.toContain('money on this job');
@@ -457,15 +493,37 @@ describe('runPlanner — what it is shown', () => {
     expect(seen.user).not.toContain('different job');
   });
 
-  test('a never-asked gap is shown no evidence at all — there is no question to answer yet', async () => {
+  test('a never-asked gap IS shown the note that landed since it was noticed', async () => {
+    // THE test for the second half of Phase 3's premise (plan 2026-08-29). The
+    // sweep no longer closes a never-asked gap whose job gained a report, and the
+    // justification given for deleting that close was "the planner sees the note
+    // at 8:05pm and closes the gap itself with a reason and a citation". That is
+    // only true if the note is actually in the prompt — it was not, and the
+    // planner would have been left with `send`, asking a technician how a job
+    // went hours after they filed the report.
     const seen: { user?: string } = {};
     await runPlanner(NOW, 'shadow', baseDeps({
       listNudges: async () => [nudge({ status: 'pending', asked_at: null, question: null })],
-      listEvidence: async () => [evidence('2026-08-15T13:00:00.000Z', 'a stray note')],
+      listEvidence: async () => [
+        evidence('2026-08-15T13:00:00.000Z', 'replaced the flame sensor, all good'),
+      ],
       runLoop: loopReturning([], seen),
     }));
-    expect(seen.user).toContain('nothing was asked yet');
-    expect(seen.user).not.toContain('a stray note');
+    expect(seen.user).toContain('evidence since this gap was noticed');
+    expect(seen.user).toContain('replaced the flame sensor, all good');
+    // The old copy said the opposite in as many words.
+    expect(seen.user).not.toContain('nothing was asked yet');
+  });
+
+  test('…and a note from BEFORE it was noticed is still excluded', async () => {
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge({ status: 'pending', asked_at: null, question: null })],
+      listEvidence: async () => [evidence('2026-08-15T10:30:00.000Z', 'booking-time chatter')],
+      runLoop: loopReturning([], seen),
+    }));
+    expect(seen.user).toContain('NO notes have landed on this job since this gap was noticed');
+    expect(seen.user).not.toContain('booking-time chatter');
   });
 
   test("the prompt is grounded in the FIRM's clock, not UTC", async () => {
@@ -474,16 +532,20 @@ describe('runPlanner — what it is shown', () => {
     // is exactly a judgment about whether this is a decent hour to bother
     // someone. Weekday and date come from one derivation so they cannot
     // disagree, and the zone is named so nobody reads it as UTC.
+    //
+    // 18:30, not the incident's 18:50: since 2026-08-29 the planner only runs on
+    // its cadence, and :50 is not a minute it is ever handed in production. The
+    // evening regime — the thing this test is about — is unchanged.
     const seen: { user?: string } = {};
-    await runPlanner('2026-08-20T01:50:00.000Z', 'shadow', baseDeps({
+    await runPlanner('2026-08-20T01:30:00.000Z', 'shadow', baseDeps({
       getTenant: async () =>
         ({ id: 't1', timezone: 'America/Los_Angeles' }) as unknown as Tenant,
       runLoop: loopReturning([], seen),
     }));
-    expect(seen.user).toContain('Wednesday, August 19, 2026 at 18:50');
+    expect(seen.user).toContain('Wednesday, August 19, 2026 at 18:30');
     expect(seen.user).toContain("this firm's own timezone (America/Los_Angeles)");
     // UTC is still stated, because that is what a notBefore must be written in.
-    expect(seen.user).toContain('2026-08-20T01:50:00.000Z');
+    expect(seen.user).toContain('2026-08-20T01:30:00.000Z');
   });
 
   test('an unreadable timezone says so plainly rather than printing a wrong local time', async () => {
@@ -510,26 +572,144 @@ describe('runPlanner — what it is shown', () => {
 });
 
 describe('runPlanner — when it runs at all', () => {
-  test('outside the firm ask window the model is NEVER invoked', async () => {
-    const loop = vi.fn(loopReturning([]));
-    const summary = await runPlanner('2026-08-16T04:00:00.000Z', 'shadow', baseDeps({
-      runLoop: loop as unknown as NonNullable<PlannerDeps['runLoop']>,
-    }));
-    expect(loop).not.toHaveBeenCalled();
-    expect(summary.skippedWindow).toBe(1);
-    expect(summary.planned).toBe(0);
+  // The ask window is DELETED (plan 2026-08-29 Phase 3). What decides whether a
+  // firm gets a model call is now a per-firm CADENCE: full rate inside its own
+  // approximate hours, slower outside, and full rate always for a firm that has
+  // recorded none. It never withholds a message — the planner owns send timing.
+  const withHours = (start: number | null, end: number | null): Partial<PlannerDeps> => ({
+    getSettings: async () => ({
+      settings: {
+        approxWorkStartHour: start,
+        approxWorkEndHour: end,
+        overdueHours: 3,
+        lookbackHours: 72,
+        maxNewPerTick: 5,
+      },
+      tableMissing: false,
+    }),
   });
 
-  test('the window is the FIRM\'s, not UTC', async () => {
+  test('a firm that has recorded NO hours runs at the full rate — including 03:00', async () => {
+    // Unset must never mean "think less about this firm". 03:00 is the hour the
+    // old window skipped outright.
     const loop = vi.fn(loopReturning([]));
-    // 04:00 UTC is 21:00 the previous day in Tokyo — still outside — but
-    // 12:00 UTC is 21:00 Tokyo too, so use a zone where the two disagree.
-    const summary = await runPlanner('2026-08-16T04:00:00.000Z', 'shadow', baseDeps({
-      getTenant: async () => ({ id: 't1', timezone: 'Asia/Tokyo' }) as unknown as Tenant, // 13:00
+    const summary = await runPlanner('2026-08-16T03:00:00.000Z', 'shadow', baseDeps({
       runLoop: loop as unknown as NonNullable<PlannerDeps['runLoop']>,
     }));
     expect(loop).toHaveBeenCalledTimes(1);
-    expect(summary.skippedWindow).toBe(0);
+    expect(summary.skippedCadence).toBe(0);
+    expect(summary.planned).toBe(1);
+  });
+
+  test('OFF-HOURS the firm drops to the 2-hourly rate: 02:00 and 04:00 run, 03:00 does not', async () => {
+    // THE test that distinguishes 120 from 60. `getUTCMinutes() % 120` fires on
+    // exactly the minutes `% 60` does, so a "skipped at 03:00, runs at 04:00"
+    // pair would pass under both and pin nothing. Three hours is what separates
+    // them.
+    const ran: string[] = [];
+    for (const hour of ['02', '03', '04']) {
+      const loop = vi.fn(loopReturning([]));
+      const summary = await runPlanner(`2026-08-16T${hour}:00:00.000Z`, 'shadow', baseDeps({
+        ...withHours(8, 16), // 02:00-04:00 UTC is outside 08-16 for a UTC firm
+        runLoop: loop as unknown as NonNullable<PlannerDeps['runLoop']>,
+      }));
+      if (summary.planned === 1) ran.push(hour);
+    }
+    expect(ran).toEqual(['02', '04']);
+  });
+
+  test('INSIDE its hours the same firm runs every half hour', async () => {
+    const ran: string[] = [];
+    for (const hhmm of ['09:00', '09:30', '09:45']) {
+      const summary = await runPlanner(`2026-08-16T${hhmm}:00.000Z`, 'shadow', baseDeps({
+        ...withHours(8, 16),
+        runLoop: loopReturning([]),
+      }));
+      if (summary.planned === 1) ran.push(hhmm);
+    }
+    expect(ran).toEqual(['09:00', '09:30']);
+  });
+
+  test('the hours are the FIRM\'s, not UTC', async () => {
+    // 04:00 UTC is 13:00 in Tokyo — inside 08-16 there, outside it in UTC.
+    const summary = await runPlanner('2026-08-16T04:00:00.000Z', 'shadow', baseDeps({
+      ...withHours(8, 16),
+      getTenant: async () => ({ id: 't1', timezone: 'Asia/Tokyo' }) as unknown as Tenant,
+      runLoop: loopReturning([]),
+    }));
+    // 04:00 UTC is on the 2-hourly grid too, so the rate alone cannot tell them
+    // apart — skippedCadence is what says which branch was taken.
+    expect(summary.skippedCadence).toBe(0);
+    expect(summary.planned).toBe(1);
+  });
+
+  test('an off-cadence firm still gets its named entry, carrying the work it is sitting on', async () => {
+    // plans.length === tenants is the invariant the tick record and `npm run
+    // ticks` lean on, and the `if (!named)` backstop lives in the CATCH only —
+    // a bare `continue` in the gate would leave no entry at all.
+    const summary = await runPlanner('2026-08-16T03:00:00.000Z', 'shadow', baseDeps({
+      ...withHours(8, 16),
+      runLoop: loopReturning([]),
+    }));
+    expect(summary.skippedCadence).toBe(1);
+    expect(summary.planned).toBe(0);
+    expect(summary.plans).toHaveLength(summary.tenants);
+    expect(summary.plans[0].outcome).toBe('off_cadence');
+    expect(summary.plans[0].gaps).toBe(1); // it HAS work — it is just not due
+  });
+
+  test('both cadence invariants hold — the coarse gate and the midnight boundary', () => {
+    // 1. lifecycle.ts runs a coarse gate at PLANNER_TICK_MINUTES so an
+    //    off-cadence tick costs no reads. A non-multiple would silently filter
+    //    out ticks a firm was due for.
+    expect(PLANNER_TICK_MINUTES_OFF_HOURS % PLANNER_TICK_MINUTES).toBe(0);
+    // 2. The grid is minutes-since-midnight, so it RESTARTS at 00:00. A rate that
+    //    does not divide the day leaves a ragged interval across midnight — 210
+    //    passes rule 1 and fails this one, which is exactly the tuning mistake
+    //    rule 1 alone would wave through.
+    expect(1440 % PLANNER_TICK_MINUTES_OFF_HOURS).toBe(0);
+    expect(1440 % PLANNER_TICK_MINUTES).toBe(0);
+  });
+
+  test('the grid is uniform across midnight — no double fire, no long gap', () => {
+    // Walk a whole day at the off-hours rate and check every consecutive pair.
+    const due: number[] = [];
+    for (let m = 0; m < 1440; m += 1) {
+      const iso = `2026-08-16T${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}:00.000Z`;
+      if (plannerCadenceDue(iso, PLANNER_TICK_MINUTES_OFF_HOURS)) due.push(m);
+    }
+    // Grouped into runs (the `< 5` tolerance makes each due window 5 minutes).
+    const starts = due.filter((m, i) => i === 0 || m - due[i - 1] > 1);
+    expect(starts).toEqual([0, 120, 240, 360, 480, 600, 720, 840, 960, 1080, 1200, 1320]);
+    // …and the wrap back to 00:00 is the same 120 minutes as every other step.
+    expect(1440 - starts[starts.length - 1]).toBe(PLANNER_TICK_MINUTES_OFF_HOURS);
+  });
+
+  test('a missing tenant_settings table is REPORTED, not just survived', () => {
+    // Same contract as WatchersSummary.settingsTableMissing. Without it the
+    // planner runs every firm at the full rate on an unmigrated database with no
+    // signal at all, while the sweep beside it warns.
+    return runPlanner(NOW, 'shadow', baseDeps({
+      getSettings: async () => ({
+        settings: {
+          approxWorkStartHour: null,
+          approxWorkEndHour: null,
+          overdueHours: 3,
+          lookbackHours: 72,
+          maxNewPerTick: 5,
+        },
+        tableMissing: true,
+      }),
+    })).then((summary) => {
+      expect(summary.settingsTableMissing).toBe(true);
+      expect(summary.planned).toBe(1); // and it still ran
+      expect(summary.tenantErrors).toBe(0);
+    });
+  });
+
+  test('a healthy tick does not carry the marker at all', async () => {
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({}));
+    expect(summary.settingsTableMissing).toBeUndefined();
   });
 
   test('no open gaps → no call, and no tenant read beyond the list', async () => {
@@ -2327,7 +2507,7 @@ describe('buildGapView — spine-side attribution', () => {
     const plain = nudge({ id: 'n1' });
     const view = buildGapView(plain, NOW_MS, shared, false, new Set(), [], [], 'UTC');
     expect(view.block).not.toContain('LINKED TO THIS GAP');
-    expect(view.block).toContain('evidence since the ask:');
+    expect(view.block).toContain('evidence since the question went out:');
   });
 });
 
@@ -2871,22 +3051,39 @@ describe('every firm considered is named in the record', () => {
   const planFor = (summary: PlannerSummary, id: string): PlannerTenantPlan | undefined =>
     summary.plans.find((p) => p.tenantId === id);
 
+  // NOW is 13:00 UTC, and the minute matters: 780 minutes since midnight is on
+  // the 30-minute grid (so the two full-rate firms run) and OFF the 2-hourly one
+  // (780 % 120 = 60), so 'asleep' skips. At 12:00 both grids fire and the
+  // fixture would prove nothing.
+  const THREE_TENANT_NOW = '2026-08-16T13:00:00.000Z';
   const threeTenants = (over: Partial<PlannerDeps> = {}) =>
     baseDeps({
       listTenants: async () => ['works', 'idle', 'asleep'],
       getTenant: async (id: string) =>
         ({
           id,
-          // 'asleep' sits in a zone where NOW (12:00 UTC) is outside 7am-7pm.
+          // 'asleep' is in a zone where NOW is 22:00 — outside the hours it
+          // recorded, so it drops to the slower rate.
           timezone: id === 'asleep' ? 'Asia/Tokyo' : 'UTC',
         }) as unknown as Tenant,
+      getSettings: async (tenantId: string) => ({
+        settings: {
+          approxWorkStartHour: tenantId === 'asleep' ? 8 : null,
+          approxWorkEndHour: tenantId === 'asleep' ? 16 : null,
+          overdueHours: 3,
+          lookbackHours: 72,
+          maxNewPerTick: 5,
+        },
+        tableMissing: false,
+      }),
       listNudges: async (tenantId: string) => (tenantId === 'idle' ? [] : [nudge()]),
       ...over,
     });
 
-  test('planned, no_gaps and out_of_window each get their own named entry', async () => {
-    // 21:00 Tokyo for 'asleep', 12:00 UTC for the other two.
-    const summary = await runPlanner('2026-08-16T12:00:00.000Z', 'shadow', threeTenants({
+  test('planned, no_gaps and off_cadence each get their own named entry', async () => {
+    // 22:00 Tokyo for 'asleep' (outside its hours → 2-hourly, and 13:00 UTC is
+    // off that grid), 13:00 UTC for the other two (no hours → full rate).
+    const summary = await runPlanner(THREE_TENANT_NOW, 'shadow', threeTenants({
       runLoop: loopReturning([]),
     }));
 
@@ -2894,20 +3091,20 @@ describe('every firm considered is named in the record', () => {
     expect(summary.tenants).toBe(3);
     expect(planFor(summary, 'works')?.outcome).toBe('planned');
     expect(planFor(summary, 'idle')?.outcome).toBe('no_gaps');
-    expect(planFor(summary, 'asleep')?.outcome).toBe('out_of_window');
+    expect(planFor(summary, 'asleep')?.outcome).toBe('off_cadence');
 
     // The existing counters keep their exact meaning — this change is additive.
     expect(summary.planned).toBe(1);
     expect(summary.skippedNoGaps).toBe(1);
-    expect(summary.skippedWindow).toBe(1);
+    expect(summary.skippedCadence).toBe(1);
     expect(summary.tenantErrors).toBe(0);
   });
 
   test('an idle firm reports zero gaps; a sleeping one reports the work it is sitting on', async () => {
-    const summary = await runPlanner('2026-08-16T12:00:00.000Z', 'shadow', threeTenants({
+    const summary = await runPlanner(THREE_TENANT_NOW, 'shadow', threeTenants({
       runLoop: loopReturning([]),
     }));
-    // The distinction the outcome exists to draw: nothing to do vs wrong hours.
+    // The distinction the outcome exists to draw: nothing to do vs not due yet.
     expect(planFor(summary, 'idle')?.gaps).toBe(0);
     expect(planFor(summary, 'asleep')?.gaps).toBe(1);
   });
@@ -2944,7 +3141,7 @@ describe('every firm considered is named in the record', () => {
 
   // The invariant the report leans on: one entry per firm the sweep looked at.
   test('the entry count always equals the firm count', async () => {
-    const summary = await runPlanner('2026-08-16T12:00:00.000Z', 'shadow', threeTenants({
+    const summary = await runPlanner(THREE_TENANT_NOW, 'shadow', threeTenants({
       runLoop: loopReturning([]),
     }));
     expect(summary.plans).toHaveLength(summary.tenants);

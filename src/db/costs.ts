@@ -552,7 +552,17 @@ export async function latestBraveCostEventAt(): Promise<string | null> {
 //   PGRST202 = no matching function · PGRST205 = table not in the schema cache
 const MISSING_LEDGER_CODES = new Set(['42883', '42P01', 'PGRST202', 'PGRST205']);
 
-export function isMissingCostLedger(err: unknown): boolean {
+/**
+ * "This relation/function has not been migrated HERE yet" — the general form.
+ *
+ * The implementation was always general (it reads structured codes and knows
+ * nothing about cost tables); only the name was specific. It is exported under
+ * both names because a second consumer arrived — tenantSettings.ts — and a table
+ * that is not the cost ledger should not have to call a predicate that says it
+ * is. ONE implementation, so the code set and the never-match-on-prose rule above
+ * cannot drift between them.
+ */
+export function isMissingRelation(err: unknown): boolean {
   // The accessors wrap PostgrestError in an Error, so the code travels on the
   // wrapped cause when present and on the raw object otherwise.
   const candidates = [err, (err as { cause?: unknown })?.cause];
@@ -562,11 +572,16 @@ export function isMissingCostLedger(err: unknown): boolean {
   }
   // Fallback for the wrapped-message case: require the code to appear as a
   // delimited token, so a message merely CONTAINING "does not exist" is not
-  // enough — the code must be there.
+  // enough — the code must be there. It only fires when the thrower forgot
+  // `{ cause }`; a wrap that carries the cause is matched structurally above.
   const text = err instanceof Error ? err.message : String(err);
   return [...MISSING_LEDGER_CODES].some((code) =>
     new RegExp(`(^|[^0-9A-Za-z])${code}([^0-9A-Za-z]|$)`).test(text),
   );
+}
+
+export function isMissingCostLedger(err: unknown): boolean {
+  return isMissingRelation(err);
 }
 
 export interface TenantCostDetailRow {

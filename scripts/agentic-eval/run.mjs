@@ -94,9 +94,9 @@ if (wanted) {
 }
 void SMOKE_SCENARIOS;
 
-// Model ticks only: an expectWindowSkip tick records nothing and spends nothing.
+// Model ticks only: an expectCadenceSkip tick records nothing and spends nothing.
 const totalTicks = scenarios.reduce(
-  (n, s) => n + s.timeline.filter((t) => t.kind === 'tick' && !t.expectWindowSkip).length,
+  (n, s) => n + s.timeline.filter((t) => t.kind === 'tick' && !t.expectCadenceSkip).length,
   0,
 );
 
@@ -152,6 +152,9 @@ const RESET_TABLES = [
   'customers',
   'technicians',
   'tenant_profiles',
+  // Registered BY NAME (eng-memory §1). Cascades from tenants, so omitting it
+  // fails SILENTLY — a stale row would change this firm's cadence mid-eval.
+  'tenant_settings',
   'sandbox_pool',
   'hosts',
 ];

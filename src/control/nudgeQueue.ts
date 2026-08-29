@@ -113,9 +113,11 @@ export async function buildNudgeDelivery(
   }
   for (const { lead, members } of groups) {
     // NO LEAD = FROZEN, never promoted (review finding). A group really can lose
-    // its lead: the sweep's pre-ask carve-out and `moot` both close ONE queued
-    // row and leave its siblings alone (watchers.ts), so an overdue-visit lead
-    // can close on a filed report while the cost member stays queued.
+    // its lead: the sweep's `moot` closes ONE queued row and leaves its siblings
+    // alone (watchers.ts), so an overdue-visit lead can close on a cancelled
+    // visit while the cost member stays queued. (There were two such paths until
+    // the pre-ask carve-out was deleted on 2026-08-29; one is enough for this to
+    // matter, and the planner's own `close` is a third.)
     //
     // Promoting a sibling looks harmless and is not. The delivery item id would
     // change, and the box dedupes on exactly that id (`sent-<id>` in
@@ -211,8 +213,8 @@ export async function completeNudgeDelivery(
   const row = await getQueued(id, hostId);
   if (!row) {
     // The point-read wants a QUEUED row, and a group's lead can leave that state
-    // on its own: `moot` and the pre-ask carve-out each close one queued row and
-    // leave its siblings alone (watchers.ts). A delivered report arriving after
+    // on its own: the sweep's `moot`, or the planner's own `close`, each close one
+    // queued row and leave its siblings alone (watchers.ts). A delivered report arriving after
     // that would otherwise be 'ignored' — and the survivors, which really were
     // delivered inside the shared message, could then only exit through the 18h
     // sweep, which tells the manager "never delivered" and re-asks a question

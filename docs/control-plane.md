@@ -153,9 +153,13 @@ Full watcher semantics + rollout state: engineering-memory §3.
      and half-hourly always for a firm that has recorded none. It bounds how often the model
      is ASKED, never whether a message may go out. Detection, escalation, and
      delivery of already-composed rows are NOT window-gated.
-     **Inference vars on this cron (OpenRouter, set 2026-08-28):** `INFERENCE_API_KEY`
-     (an OpenRouter key), `INFERENCE_BASE_URL=https://openrouter.ai/api/v1`,
-     `INFERENCE_MODEL=z-ai/glm-5.3`. Leave `MODEL_PROVIDER` UNSET — it is a SELECTOR
+     **Inference vars on this cron — LIVE ON OPENROUTER SINCE 2026-08-29 17:16 UTC:**
+     `INFERENCE_API_KEY` (an OpenRouter key), `INFERENCE_BASE_URL=https://openrouter.ai/api/v1`,
+     `INFERENCE_MODEL=z-ai/glm-5.3`, `MODEL_PROVIDER=openai`.
+     **The code shipped on 2026-08-29 04:56 and the planner kept running Opus for twelve more
+     hours**, because the env cutover is a SEPARATE step — seven successful ticks in that window
+     all billed `anthropic`. Deploying the code is not switching the model. `MODEL_PROVIDER` is a
+     SELECTOR
      (only the literal `anthropic` changes anything), NOT a key field; an API key pasted there
      does nothing. Set `INFERENCE_BASE_URL` explicitly anyway, so the service does not silently
      follow a code default that can change under it.

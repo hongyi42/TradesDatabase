@@ -171,10 +171,10 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 **7. Where the deep detail lives**
 
-- L3950 · Evals:
-- L3957 · Runbooks:
-- L3962 · Decision history with citations:
-- L3966 · This file
+- L4028 · Evals:
+- L4035 · Runbooks:
+- L4040 · Decision history with citations:
+- L4044 · This file
 
 <!-- INDEX:END -->
 
@@ -3944,6 +3944,84 @@ still holds Ben's OLD id — fix before that seat is reassigned.
 Changing §0k also changes `doctrineFingerprint`, so tier-2 eval runs from 2026-08-25 are no longer
 directly comparable to earlier ones — nothing pins the hash, so nothing breaks silently, but a
 comparison across that date is measuring two different prompts.
+
+### The OpenRouter switch — the spine only (2026-08-28)
+
+**The spine moved to OpenRouter on `z-ai/glm-5.3`; the FLEET did not.** Seat agents stay on
+Fireworks / `glm-5p2-fast` until the deferred seat plan lands. `docs/inference-recovery-runbook.md`
+now opens with that split — it covers the fleet only, and the first person to follow it during a
+spine outage would otherwise drive the wrong system.
+
+**Why OpenRouter:** failover stops being code we maintain. One model id resolves to ~10 upstream
+providers (`z-ai/glm-5.3`; Opus 5 has 9) and OpenRouter falls through on any error. Before this,
+`src/model/` resolved ONE endpoint with no retry and a provider outage became `tenantErrors` while
+the deterministic constants took over.
+
+**NO `provider` block is sent, and that is the cost decision.** OpenRouter sticky-routes a model to
+one upstream for ~10 min to keep its cache warm, and its docs state sticky routing is disabled by a
+manual provider order. MEASURED 2026-08-28: 5888/5892 input tokens cached on the second call,
+$0.00805 → $0.00155 — **5.2x**, on the ~90% of planner input that is stable doctrine prefix.
+Throughput-sorting would have bought marginal tps and paid that 5x for it.
+**`INFERENCE_CACHE_KEY` is now INERT** (`prompt_cache_key` is OpenAI-specific; OpenRouter ignores
+it). Caching needs no key here.
+**CAUTION reading a first call:** a cold sticky anchor always reports `cached_tokens: 0`. An
+instrumented probe showed 32/5892 and read as "caching is broken"; three controlled repeats showed
+99%. Never judge caching off call one.
+
+**`reasoning_effort: 'none'` IS GONE FROM THE TYPE.** GLM 5.3 rejects it —
+`400 "Reasoning is mandatory for this endpoint and cannot be disabled."` `minimal`, `low` and
+`medium` all succeed (`minimal` returns 0 reasoning tokens, so it IS the replacement). Removing
+`'none'` from the union rather than mapping it silently forced every caller to choose at compile
+time: the four forced-JSON callers took `minimal`, the planner went `low` → `medium`. Default is
+now `medium` and is always sent — an omitted field takes the provider's default, which is nobody's
+decision.
+
+**Gemini can never serve the spine** (user ruling): `INFERENCE_MODEL` feeds the planner AND all four
+forced-tool callers, so one typo would put a seat model on the planner. Enforced twice — per-request
+in `resolveOpenAiEndpoint`, and at the lifecycle's planner step where it becomes a `stepError`. The
+second is the point: a per-request throw lands in `runPlanner`'s per-tenant catch and presents as
+`tenantErrors`, a config typo wearing a provider outage's clothes.
+
+**Rate ceiling:** OpenRouter applies a per-model `new-account-rpm` cap, ~20 req/min observed. It is
+NOT the documented $10 lifetime-credit threshold — the account had **$35 purchased** and still hit
+it. 17 rpm sustained 196 consecutive calls cleanly. The planner at twice-an-hour-per-firm is nowhere
+near it; bursty callers are the exposure, and OpenRouter **429s rather than queues**.
+
+**Cost:** `openrouter` SKUs at list price, applied to the pilot by hand — Render deploys no
+migrations, and the monthly rollup INNER-joins `cost_rates`, so an unpriced SKU makes its rows
+VANISH from the rollup rather than show as zero (the 2026-08-06 NVIDIA failure). The cache-write row
+is seeded at **$0** for the same reason: OpenRouter publishes no `input_cache_write` for this model.
+
+**Rollback stays one variable:** `MODEL_PROVIDER=anthropic` on both Render services. The Anthropic
+SDK path was kept whole — it is the only bypass if OpenRouter ITSELF is down, which is the failure
+mode routing everything through one aggregator introduces.
+
+### resolve_date is a CONVENTION, not a crutch (measured 2026-08-28)
+
+`scripts/eval-date-reliability.mjs`, `z-ai/glm-5.3`, n=196, zero API errors, zero truncation:
+
+| condition | score |
+|---|---|
+| **A** bare prompt, no tool, no guard | **81/98 (82.7%)** |
+| **D** bare prompt + `resolve_date` ONLY (no grounding, no guard) | **98/98 (100%)** |
+
+**All 17 bare-prompt misses are disagreements about what an ambiguous English phrase MEANS** — 8×
+"next Monday" (GLM answers the coming Monday, the corpus wants the one after), 5× "this Friday" when
+today IS Friday, 4× "two weeks from this Monday" (+7 vs +14). **49/49 on every unambiguous
+template**, month-end / year-end / leap-adjacent included.
+
+So the tool is not compensating for weak arithmetic — it **imposes a convention on phrasing that has
+no single right answer**. Consequences: the prompt's *"You are UNRELIABLE at date arithmetic"* is
+measurably false and condition D proves it unnecessary; and **a better model will never make this
+tool removable**, because the ambiguity is in the language. Anyone who re-measures a future model,
+finds clean arithmetic and deletes the tool starts booking people for the wrong Monday — silently.
+Keep the tool, delete the scaffolding around it.
+
+**TWO HARNESS TRAPS that manufacture false model verdicts**, both now fixed in the script: an
+unpaced pool loses ~95% of calls to the rate cap and prints `0.0%`; and `max_tokens: 300` with
+reasoning unset lets the thinking trace eat the answer — the same artifact that once produced a
+false "GLM weaker than Haiku" verdict here. An 11% score was reported off both before the user
+pushed back. **Read errors and truncation BEFORE reading a date-eval number.**
 
 ## 7. Where the deep detail lives
 

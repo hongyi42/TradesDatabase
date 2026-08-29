@@ -2,7 +2,7 @@
 date: 2026-08-29
 task: Build 2 — a per-firm settings table, the send window deleted, and planner cadence informed by the firm's approximate hours
 research: thoughts/shared/research/2026-08-29-the-firm-is-data.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -413,9 +413,11 @@ asserted the window as live machinery (F10).
       03:00 and 04:00 at all is the window's deletion, proven.
 
 ### Manual verification
-- [ ] Read the amended doctrine paragraph. It now tells the planner it owns send timing — whether
-      that reads as permission or as pressure to send at 3am is a judgment about tone, and tone is
-      what evals do not catch.
+- [x] Read the amended doctrine paragraph — **APPROVED (user, 2026-08-29): "the doctrine seems
+      fine".** It now tells the planner it owns send timing outright, then adds one paragraph of
+      advice (a 3am question annoys somebody and still waits until morning to be read) explicitly
+      framed as judgement rather than prohibition. The open question put to the user was whether
+      that second paragraph reads as permission or as pressure; it stands.
 
 ---
 *Manual item present — STOP and wait for the user.*

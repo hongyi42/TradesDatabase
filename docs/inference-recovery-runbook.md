@@ -3,6 +3,28 @@
 **For:** whoever is on the hook when the agents stop answering. You do not need to have
 written any of this. Follow it top to bottom.
 
+> ### READ THIS FIRST (2026-08-28): the spine and the fleet are on DIFFERENT providers.
+>
+> | | provider | model | failover |
+> |---|---|---|---|
+> | **Seat agents** (the boxes) | Fireworks | `accounts/fireworks/routers/glm-5p2-fast` | **none, by design** |
+> | **Spine** (Render web + `lifecycle-heart` cron) | **OpenRouter** | **`z-ai/glm-5.3`** | ~10 upstream providers, automatic |
+>
+> **This runbook covers the FLEET only** — every command below drives the box gateway
+> (`openshell`, `nemoclaw-inference-medic`, the `fireworks-prod` provider). All of it is still
+> correct for the fleet.
+>
+> **If the SPINE is what is broken** — the planner is silent, `lifecycle-heart` is red, briefs
+> or classifications are failing — none of this applies. Go to `docs/control-plane.md`
+> (Render setup → inference vars). The spine's own failover is automatic and provider-level, so
+> a single upstream outage should never reach you; what CAN reach you is an OpenRouter account
+> problem (spend cap, key, or the per-model `new-account-rpm` ceiling), and the rollback is one
+> variable: set `MODEL_PROVIDER=anthropic` on both Render services.
+>
+> The seat half of the OpenRouter migration is deliberately deferred
+> (`thoughts/shared/plans/2026-08-28-openrouter-migration.md`). **Update this table when it
+> lands**, or the first person to follow this during a real outage will drive the wrong system.
+
 **The situation this covers:** the fleet runs on **one** inference provider (Fireworks) with
 **no fallback**. That is a deliberate choice, not an oversight — an unverified fallback is
 worse than none, because it fails exactly when you depend on it and reports success while

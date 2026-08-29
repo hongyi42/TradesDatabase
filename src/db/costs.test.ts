@@ -234,6 +234,14 @@ describe('cost_rates versioning', () => {
       // counted — "zero dollars with a token count" is data, absence is not.
       'nvidia/glm-5.2-input 0/token',
       'nvidia/glm-5.2-output 0/token',
+      // The 2026-08-28 OpenRouter switch (migration 20260828120000). The
+      // cache-write row is $0 for the same reason NVIDIA's rows are: OpenRouter
+      // publishes no input_cache_write price for GLM 5.3, and the rollup's
+      // INNER join would DROP an unpriced SKU rather than show it as zero.
+      'openrouter/glm-5.3-cache-write 0/token',
+      'openrouter/glm-5.3-cached-input 2.6e-7/token',
+      'openrouter/glm-5.3-input 0.0000014/token',
+      'openrouter/glm-5.3-output 0.0000044/token',
     ]);
     // Every rate must cite its vendor doc — CLAUDE.md's rule, and the only way a
     // future reader can re-verify a price that has gone stale.

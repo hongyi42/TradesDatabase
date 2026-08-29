@@ -868,6 +868,26 @@ describe('the planner gate', () => {
     expect(s.ok).toBe(false);
   });
 
+  test('a SEAT model in INFERENCE_MODEL turns the heartbeat red, not the planner quiet', async () => {
+    // User ruling 2026-08-28: Gemini is a seat model, never the spine's.
+    // forcedTool enforces it per-REQUEST too, but that throw lands in
+    // runPlanner's per-tenant catch and presents as `tenantErrors` — a config
+    // typo wearing a provider outage's clothes. This is the loud half.
+    const savedModel = process.env.INFERENCE_MODEL;
+    process.env.INFERENCE_MODEL = 'google/gemini-3.7-flash';
+    process.env.PLANNER_MODE = 'live';
+    try {
+      const { calls, deps } = planned();
+      const s = await runLifecycle('2026-07-02T12:00:00.000Z', deps);
+      expect(calls).toEqual([]); // the planner never ran
+      expect(s.teamLeadPlanner).toMatchObject({ stepError: expect.stringMatching(/SEAT model/) });
+      expect(s.ok).toBe(false);
+    } finally {
+      if (savedModel === undefined) delete process.env.INFERENCE_MODEL;
+      else process.env.INFERENCE_MODEL = savedModel;
+    }
+  });
+
   test('the half-hour cadence: :00 and :30 run, :10 and :40 skip', async () => {
     process.env.PLANNER_MODE = 'shadow';
     for (const [minute, shouldRun] of [

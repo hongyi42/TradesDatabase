@@ -2,7 +2,10 @@ import Anthropic from '@anthropic-ai/sdk';
 import { recordModelUsage, type CostContext } from '../db/index.js';
 import {
   activeProvider,
+  ATTRIBUTION_HEADERS,
+  DEFAULT_REASONING_EFFORT,
   cacheKeyFields,
+  type ReasoningEffort,
   coerceBySchema,
   ledgerVendor,
   resolveAnthropicEndpoint,
@@ -102,7 +105,7 @@ export interface ToolLoopRequest {
    */
   terminalTool?: string;
   /** Same meaning as ForcedToolRequest.reasoningEffort; ignored on the Anthropic path. */
-  reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
+  reasoningEffort?: ReasoningEffort;
 }
 
 /** One tool the model actually invoked, with what came back. Returned for the
@@ -308,12 +311,16 @@ function openAiTransport(req: ToolLoopRequest, tools: ForcedToolSpec[]): LoopTra
       const res = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         signal,
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${apiKey}`,
+          ...ATTRIBUTION_HEADERS,
+        },
         body: JSON.stringify({
           model,
           max_tokens: req.maxTokens,
           temperature: 0,
-          ...(req.reasoningEffort ? { reasoning_effort: req.reasoningEffort } : {}),
+          reasoning_effort: req.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
           ...cacheKeyFields(),
           messages: history,
           tools: tools.map((t) => ({
@@ -340,7 +347,7 @@ function openAiTransport(req: ToolLoopRequest, tools: ForcedToolSpec[]): LoopTra
         usage?: {
           prompt_tokens?: number;
           completion_tokens?: number;
-          prompt_tokens_details?: { cached_tokens?: number } | null;
+          prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number } | null;
         };
       };
       const choice = body.choices?.[0];
@@ -381,6 +388,8 @@ function openAiTransport(req: ToolLoopRequest, tools: ForcedToolSpec[]): LoopTra
           inputTokens: body.usage?.prompt_tokens,
           outputTokens: body.usage?.completion_tokens,
           cachedInputTokens: body.usage?.prompt_tokens_details?.cached_tokens,
+          // See forcedTool's twin: OpenRouter reports cache writes here.
+          cacheWriteTokens: body.usage?.prompt_tokens_details?.cache_write_tokens,
         },
         // Echoed as a KNOWN shape rather than the raw object: providers attach
         // their own fields (reasoning_content and friends) that no endpoint is

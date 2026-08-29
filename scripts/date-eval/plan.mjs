@@ -174,6 +174,11 @@ try {
     // providers — the gate compares EXACT strings, and every provider spells
     // the same model differently (DeepInfra 'zai-org/GLM-5.2', NVIDIA
     // 'z-ai/glm-5.2' — both have bitten us).
+    // DELIBERATELY STILL FIREWORKS/GLM-5.2. This asserts what the SEAT AGENTS
+    // are routed to, and the fleet did NOT move with the spine on 2026-08-28 —
+    // the seat half of that plan is deferred. Change this WITH the boxes, not
+    // before: the comment below records that a stale value here refuses every
+    // run and the refusal looks like a fleet problem.
     expectedModel: process.env.DATE_EVAL_EXPECT_MODEL || 'accounts/fireworks/routers/glm-5p2-fast',
     sandbox: process.env.DATE_EVAL_SANDBOX || 's2',
     facts: { dayCounts, techDayCounts, timeOff, windowJobs },

@@ -27,6 +27,11 @@ export interface JsonSchemaObject {
   additionalProperties?: boolean;
 }
 
+export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+// User ruling 2026-08-28. Applied whenever a caller names nothing.
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'medium';
+
 export interface ForcedToolSpec {
   name: string;
   description: string;
@@ -40,20 +45,53 @@ export interface ForcedToolRequest {
   // Prefixes the thrown error so a failure names the caller, not this module.
   label: string;
   /**
-   * Cap or disable the model's thinking on the OpenAI-compatible path
-   * (GLM-5.2 thinks BY DEFAULT; probed 2026-08-04: reasoning_effort 'none'
-   * collapses it to ~7 tokens). Opt-in PER CALLER: the synthesis tools set
-   * 'none' — a forced-JSON extraction gains nothing from a long think, and an
-   * unbounded one ran brief/full_history past the 90s tool timeout the same
-   * day the token ceiling stopped truncating it (2026-08-14, Q03). Ignored on
-   * the Anthropic path.
+   * How hard the model may think. OpenRouter's ladder, minus the bottom rung:
+   * `minimal | low | medium | high | xhigh | max`.
+   *
+   * `'none'` IS DELIBERATELY NOT IN THIS UNION. GLM 5.3 rejects it outright —
+   * `400 "Reasoning is mandatory for this endpoint and cannot be disabled."`
+   * (measured 2026-08-28 against z-ai/glm-5.3 on OpenRouter; `minimal`, `low`
+   * and `medium` all succeeded, `none` alone 400'd). Removing it from the type
+   * rather than mapping it silently means every caller that used to say
+   * "do not think" had to CHOOSE its replacement, at compile time.
+   *
+   * `minimal` is that replacement, and it is a true one: the same probe
+   * returned 0 reasoning tokens on `minimal`. The four forced-JSON callers use
+   * it — a schema-shaped extraction gains nothing from a long think, and an
+   * unbounded one ran brief/full_history past the 90s tool timeout (2026-08-14,
+   * Q03).
+   *
+   * DEFAULT IS `medium` (user ruling 2026-08-28: "default to medium with
+   * adjustable reasoning"), applied when a caller names nothing — which is why
+   * this is now always sent rather than conditionally spread.
    */
-  reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
+  reasoningEffort?: ReasoningEffort;
 }
 
-const DEFAULT_OPENAI_BASE_URL = 'https://api.fireworks.ai/inference/v1';
-const DEFAULT_OPENAI_MODEL = 'accounts/fireworks/routers/glm-5p2-fast';
+// OpenRouter (migration 2026-08-28, plan thoughts/shared/plans/2026-08-28-openrouter-migration.md).
+// The point is not the vendor, it is that ONE model id resolves to MANY upstream
+// providers — `z-ai/glm-5.3` is served by 10 — and OpenRouter falls through to
+// the next on any error. That is the failover this codebase never had: a
+// property of the request rather than a retry loop we maintain.
+//
+// NO `provider` block is sent, deliberately. OpenRouter keeps a cache warm by
+// STICKY ROUTING to the same upstream for ~10 min, and its docs state sticky
+// routing is not used when a manual provider order is given. The planner's
+// input is ~90% stable doctrine prefix, so cache hits are worth more than
+// marginal throughput. Failover is unaffected — it is on by default.
+// https://openrouter.ai/docs/features/prompt-caching
+// https://openrouter.ai/docs/features/provider-routing
+const DEFAULT_OPENAI_BASE_URL = 'https://openrouter.ai/api/v1';
+const DEFAULT_OPENAI_MODEL = 'z-ai/glm-5.3';
 const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6';
+
+// OpenRouter attributes usage to an app by these headers. Harmless on any other
+// OpenAI-compatible host (unknown headers are ignored), so they ride
+// unconditionally rather than being gated on the resolved base URL.
+export const ATTRIBUTION_HEADERS: Record<string, string> = {
+  'HTTP-Referer': 'https://github.com/hongyi42/TradesDatabase',
+  'X-Title': 'TradesDatabase spine',
+};
 
 // Endpoint resolution, exported so the MULTI-TURN transport (toolLoop.ts) reads
 // exactly the same env vars, defaults and cache-key fields as this one. Both
@@ -61,13 +99,43 @@ const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6';
 // file is how they drift — the same failure the truncation guard's comment
 // names, where a fix landed on one path and not the other.
 export function resolveOpenAiEndpoint(): { baseUrl: string; model: string; apiKey: string } {
-  const apiKey = process.env.INFERENCE_API_KEY;
+  // INFERENCE_API_KEY stays THE variable — it is what Render carries and it is
+  // provider-agnostic by design. OPENROUTER_API_KEY is accepted as a second
+  // source so the same secret need not be duplicated under two names locally.
+  // One-directional and vendor-NAMED, which is why it does not repeat the trap
+  // scripts/agentic-eval/run.mjs guards against: that one refused a fallback to
+  // a GENERIC key that might still hold a RETIRED provider's secret. A key
+  // called OPENROUTER_API_KEY cannot be a stale Fireworks key.
+  const apiKey = process.env.INFERENCE_API_KEY || process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error('INFERENCE_API_KEY is not set');
+  const model = process.env.INFERENCE_MODEL || DEFAULT_OPENAI_MODEL;
+  assertSpineModelAllowed(model);
   return {
     apiKey,
     baseUrl: (process.env.INFERENCE_BASE_URL || DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, ''),
-    model: process.env.INFERENCE_MODEL || DEFAULT_OPENAI_MODEL,
+    model,
   };
+}
+
+// Gemini is a SEAT model, never the spine's (user ruling 2026-08-28).
+//
+// The spine's INFERENCE_MODEL feeds the planner AND all four forced-tool
+// callers, so one env typo would put a seat model on the planner. Enforced in
+// code rather than documented, because the doc would be read after the fact.
+//
+// Called from TWO places on purpose. Here it is per-REQUEST, which is too late
+// to be the whole answer: a throw inside runPlanner lands in its per-tenant
+// catch (planner.ts) and presents as `tenantErrors` — a misconfiguration
+// wearing a provider outage's clothes. The lifecycle calls it too, where it
+// becomes a stepError and turns the heartbeat red, which is what a config
+// mistake should look like.
+export function assertSpineModelAllowed(model: string): void {
+  if (/^google\/gemini/i.test(model)) {
+    throw new Error(
+      `INFERENCE_MODEL '${model}' is a SEAT model and must never serve the spine — ` +
+        'the planner and the forced-tool callers share this variable',
+    );
+  }
 }
 
 export function resolveAnthropicEndpoint(): { model: string; apiKey: string } {
@@ -112,6 +180,10 @@ export function ledgerVendor(): string {
   }
   if (host.endsWith('nvidia.com')) return 'nvidia';
   if (host.endsWith('fireworks.ai')) return 'fireworks';
+  // Kept alongside the retired vendors above, not replacing them: this map is
+  // the WRITE path, but history is priced by joining cost_events to cost_rates,
+  // so a vendor that no longer serves must still resolve for its own old rows.
+  if (host.endsWith('openrouter.ai')) return 'openrouter';
   return host;
 }
 
@@ -121,7 +193,7 @@ export function ledgerVendor(): string {
 export function hasModelCredentials(): boolean {
   return activeProvider() === 'anthropic'
     ? !!process.env.ANTHROPIC_API_KEY
-    : !!process.env.INFERENCE_API_KEY;
+    : !!(process.env.INFERENCE_API_KEY || process.env.OPENROUTER_API_KEY);
 }
 
 // Models on OpenAI-compatible endpoints — GLM in particular — emit numbers and
@@ -296,12 +368,12 @@ async function callOpenAiCompatible(
   const { apiKey, baseUrl, model } = resolveOpenAiEndpoint();
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}`, ...ATTRIBUTION_HEADERS },
     body: JSON.stringify({
       model,
       max_tokens: req.maxTokens,
       temperature: 0,
-      ...(req.reasoningEffort ? { reasoning_effort: req.reasoningEffort } : {}),
+      reasoning_effort: req.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
       ...cacheKeyFields(),
       // No top-level `system` in this format — it is the first message.
       messages: [
@@ -332,7 +404,7 @@ async function callOpenAiCompatible(
     usage?: {
       prompt_tokens?: number;
       completion_tokens?: number;
-      prompt_tokens_details?: { cached_tokens?: number } | null;
+      prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number } | null;
     };
   };
   // TRUNCATION IS NOT A PARSE ERROR — check it before parsing, or it degrades
@@ -370,6 +442,9 @@ async function callOpenAiCompatible(
       inputTokens: body.usage?.prompt_tokens,
       outputTokens: body.usage?.completion_tokens,
       cachedInputTokens: body.usage?.prompt_tokens_details?.cached_tokens,
+      // OpenRouter reports cache WRITES here too; Fireworks did not. Absent
+      // reads as undefined, which recordModelUsage already folds into input.
+      cacheWriteTokens: body.usage?.prompt_tokens_details?.cache_write_tokens,
     },
   };
 }

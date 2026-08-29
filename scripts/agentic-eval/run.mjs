@@ -47,26 +47,34 @@ if (arm === 'opus') {
   process.env.ANTHROPIC_MODEL = 'claude-opus-5';
   modelLabel = process.env.ANTHROPIC_MODEL;
 } else {
-  // The GLM arm mirrors PRODUCTION, deliberately: Fireworks fast router, the
-  // provider the planner actually ran on. NOT lib/env.mjs's modelConfig() —
-  // its EVAL_INFERENCE_* values point at DeepInfra, retired 2026-08-18, whose
-  // host no longer maps to any ledger vendor (costs would be refused, and the
-  // arm would measure a provider nothing runs on).
-  // FIREWORKS_API_KEY ONLY — no INFERENCE_API_KEY fallback (review finding):
-  // a lingering retired-provider key would pass the gate here and then 401
-  // against Fireworks on every tick, after the world was already reset.
-  const key = process.env.FIREWORKS_API_KEY;
+  // The GLM arm mirrors PRODUCTION, deliberately — and production moved to
+  // OpenRouter + GLM 5.3 on 2026-08-28 (plan
+  // thoughts/shared/plans/2026-08-28-openrouter-migration.md). Repointed WITH
+  // production rather than left on Fireworks/GLM-5.2: an eval that measures the
+  // model production no longer runs reports a false pass, which is worse than
+  // no eval, because this arm IS the regression check for that switch.
+  //
+  // NOT lib/env.mjs's modelConfig() — its EVAL_INFERENCE_* values point at
+  // DeepInfra, retired 2026-08-18, whose host maps to no ledger vendor.
+  //
+  // OPENROUTER_API_KEY ONLY — no INFERENCE_API_KEY fallback (review finding,
+  // preserved through the repoint): a lingering retired-provider key would pass
+  // the gate here and then 401 on every tick, after the world was already
+  // reset. The variable is vendor-NAMED for exactly that reason.
+  const key = process.env.OPENROUTER_API_KEY;
   if (!key) {
-    console.error('FIREWORKS_API_KEY is not set (.env) — the glm arm cannot run.');
+    console.error('OPENROUTER_API_KEY is not set (.env) — the glm arm cannot run.');
     process.exit(2);
   }
   process.env.MODEL_PROVIDER = 'openai';
   process.env.INFERENCE_API_KEY = key;
-  process.env.INFERENCE_BASE_URL = 'https://api.fireworks.ai/inference/v1';
-  process.env.INFERENCE_MODEL = 'accounts/fireworks/routers/glm-5p2-fast';
-  // Cache affinity: without a stable key, Fireworks prefix-cache hits are
-  // replica routing luck (measured 2026-08-15).
-  process.env.INFERENCE_CACHE_KEY ??= 'agentic-eval';
+  process.env.INFERENCE_BASE_URL = 'https://openrouter.ai/api/v1';
+  process.env.INFERENCE_MODEL = 'z-ai/glm-5.3';
+  // NO INFERENCE_CACHE_KEY: `prompt_cache_key` is an OpenAI-specific field and
+  // OpenRouter ignores it. Caching there comes from STICKY ROUTING instead
+  // (measured 2026-08-28: 5824/5879 prompt tokens cached on the second
+  // identical call, 5x cheaper), which needs no key and would be DISABLED by a
+  // manual provider order — which is why no provider block is sent.
   modelLabel = process.env.INFERENCE_MODEL;
 }
 

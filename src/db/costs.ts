@@ -174,6 +174,23 @@ export const MODEL_SKUS: Record<string, { provider: string; input: string; outpu
     cachedInput: 'claude-opus-5-cached-input',
     cacheWrite: 'claude-opus-5-cache-write-1h',
   },
+  // The 2026-08-28 OpenRouter switch. Per-VENDOR like every entry here, so it
+  // assumes INFERENCE_MODEL=z-ai/glm-5.3 — a model change must re-edit these
+  // SKUs or the new model's traffic bills at GLM 5.3 rates.
+  //
+  // One honest imprecision, recorded rather than hidden: OpenRouter routes the
+  // SAME model id to any of ~10 upstream providers whose prices differ
+  // ($1.25-$1.40/M input on GLM 5.3, ~12%). These SKUs carry the list price. The
+  // spread stays small because the spine sends no `provider` block and
+  // OpenRouter sticky-routes, so the serving provider is stable in practice —
+  // and `usage.cost` on every response is the check if that ever stops holding.
+  openrouter: {
+    provider: 'openrouter',
+    input: 'glm-5.3-input',
+    output: 'glm-5.3-output',
+    cachedInput: 'glm-5.3-cached-input',
+    cacheWrite: 'glm-5.3-cache-write',
+  },
 };
 
 // Bill one spine model call: two events (input + output tokens).

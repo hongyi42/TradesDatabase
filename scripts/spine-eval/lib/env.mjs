@@ -123,8 +123,8 @@ export function requirePilotStack({ quiet = false } = {}) {
  */
 export function modelConfig({ mapIntoApp = true } = {}) {
   const key = process.env.EVAL_INFERENCE_API_KEY ?? '';
-  const baseUrl = process.env.EVAL_INFERENCE_BASE_URL ?? 'https://api.fireworks.ai/inference/v1';
-  const model = process.env.EVAL_MODEL ?? 'accounts/fireworks/routers/glm-5p2-fast';
+  const baseUrl = process.env.EVAL_INFERENCE_BASE_URL ?? 'https://openrouter.ai/api/v1';
+  const model = process.env.EVAL_MODEL ?? 'z-ai/glm-5.3';
   if (key && mapIntoApp) {
     process.env.INFERENCE_API_KEY ??= key;
     process.env.INFERENCE_BASE_URL ??= baseUrl;

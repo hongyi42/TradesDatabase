@@ -247,7 +247,11 @@ export const QUESTION_SHOWN_CHARS = 1450;
 // 'none' was chosen for. 'low' keeps the think and bounds it; the larger budget
 // leaves room for a plan covering many gaps at once.
 export const PLANNER_MAX_TOKENS = 8192;
-export const PLANNER_REASONING = 'low' as const;
+// 'low' -> 'medium' (user ruling 2026-08-28: medium is the default, adjustable).
+// The planner is the judgment-heavy caller — the one place a longer think is
+// the product rather than overhead — and GLM 5.3 costs ~1/3.5 of the Opus 5 it
+// replaces on input, so the extra reasoning tokens sit inside that headroom.
+export const PLANNER_REASONING = 'medium' as const;
 
 export interface PlannerDeps {
   listTenants?: typeof listTenantIdsWithTelegramBindings;

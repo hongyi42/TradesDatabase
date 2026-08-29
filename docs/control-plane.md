@@ -109,6 +109,13 @@ Full watcher semantics + rollout state: engineering-memory §3.
    recorded in `ops_events`, but nobody is told — which is precisely the gap that let eleven
    inference outages between 2026-08-13 and 2026-08-19 pass unnoticed. The recipient must
    have an existing 1:1 chat with the board bot or the send 403s.
+   **Inference vars (2026-08-28):** the web service runs the four forced-tool callers
+   (classify / extract / brief / answer), so it needs the SAME `INFERENCE_API_KEY`,
+   `INFERENCE_BASE_URL` and `INFERENCE_MODEL` as the cron below. This was undocumented before
+   the OpenRouter switch even though the requirement predates it.
+   `ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL` stay set on BOTH services: with
+   `MODEL_PROVIDER=anthropic` they are the one-variable rollback off OpenRouter entirely,
+   which is the failure mode routing everything through a single aggregator introduces.
 2. **New Cron Job service**, same repo/branch:
    - Build: `npm install && npm run build`
    - Command: `npm run job:lifecycle`
@@ -142,16 +149,28 @@ Full watcher semantics + rollout state: engineering-memory §3.
      evening holds as a pending nudge (`held` in the step summary) and is composed fresh —
      correct "yesterday" wording — on the first morning tick. Detection, escalation, and
      delivery of already-composed rows are NOT window-gated.
-     **Inference vars on this cron (Fireworks, set 2026-08-17):** `INFERENCE_API_KEY`,
-     `INFERENCE_BASE_URL=https://api.fireworks.ai/inference/v1`,
-     `INFERENCE_MODEL=accounts/fireworks/routers/glm-5p2-fast`,
-     `INFERENCE_CACHE_KEY=tradesdb-spine`. Leave `MODEL_PROVIDER` UNSET — it is a SELECTOR
+     **Inference vars on this cron (OpenRouter, set 2026-08-28):** `INFERENCE_API_KEY`
+     (an OpenRouter key), `INFERENCE_BASE_URL=https://openrouter.ai/api/v1`,
+     `INFERENCE_MODEL=z-ai/glm-5.3`. Leave `MODEL_PROVIDER` UNSET — it is a SELECTOR
      (only the literal `anthropic` changes anything), NOT a key field; an API key pasted there
-     does nothing. (Until 2026-08-19 an unset `INFERENCE_BASE_URL` defaulted to DeepInfra's
-     endpoint, where a Fireworks key failed auth; the default is now Fireworks, so an unset var
-     is no longer a trap — but set it explicitly anyway, so the service does not silently follow
-     a code default that can change under it.) `INFERENCE_CACHE_KEY` is what earns the $0.21/M cached
-     input instead of $2.10/M — Fireworks caches per replica, so keyless hits are routing luck.
+     does nothing. Set `INFERENCE_BASE_URL` explicitly anyway, so the service does not silently
+     follow a code default that can change under it.
+     **`INFERENCE_CACHE_KEY` IS NOW INERT and can be dropped.** It sent `prompt_cache_key`,
+     an OpenAI-specific field OpenRouter ignores. Caching there comes from STICKY ROUTING
+     instead — OpenRouter holds a model to one upstream for ~10 min to keep its cache warm,
+     which needs no key. MEASURED 2026-08-28: 5888 of 5892 input tokens cached on the second
+     call, $0.00805 -> $0.00155, a 5.2x reduction on the ~90% of planner input that is stable
+     doctrine prefix.
+     **NO `provider` block is sent, deliberately** — OpenRouter's docs state sticky routing is
+     disabled by a manual provider order, so throughput-sorting the planner would buy marginal
+     tps and cost that 5x. Failover is unaffected: one model id resolves to ~10 upstream
+     providers (`z-ai/glm-5.3`) and OpenRouter falls through on any error, which is the whole
+     reason for the move.
+     **Rate ceiling to know about:** OpenRouter applies a per-model `new-account-rpm` cap
+     (~20 req/min observed 2026-08-28; NOT cleared by the documented $10 lifetime-credit
+     threshold — the account had $35 purchased and still hit it). The planner at twice-an-hour
+     per firm is nowhere near it; bursty callers are the exposure, and OpenRouter 429s rather
+     than queues.
      **When `NUDGES_MODE=live`, the cron ALSO needs the model-provider key**
      (`MODEL_PROVIDER` + `INFERENCE_API_KEY`, or `ANTHROPIC_API_KEY`): lifecycle step 9
      composes each nudge's question on this job. Without the key the step reports

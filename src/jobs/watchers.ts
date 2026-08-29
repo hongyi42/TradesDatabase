@@ -18,11 +18,9 @@ import {
   listTenantIdsWithTelegramBindings,
   listVisitTimesForJobs,
   markNudgeOutcome,
-  getTenantSettings,
-  resolveSettings,
+  readSettingsTolerantly,
   resolveOpenReviewItemFor,
 } from '../db/index.js';
-import { isMissingRelation } from '../db/costs.js';
 import { notifyManagers } from '../calls/notify.js';
 import {
   NUDGE_KIND_SPECS,
@@ -153,18 +151,25 @@ export const NUDGE_ESCALATE_MAX_HOURS = 48;
 // by choice: a dead pipe was being treated exactly as patiently as a live
 // conversation.
 //
-// The floor is NOT zero. The compose ask window (7am-7pm firm-local) holds an
-// evening gap overnight — 12h, or 13h on a DST fall-back night — so anything
-// below ~14h starts expiring rows that were merely waiting for morning, and
-// tells the manager "never delivered" about a question that was seconds from
-// being asked. 18 keeps 5h of margin over that worst case and still surfaces
-// broken delivery 6h before silence escalates. Worked example: a gap found at
-// 7:01pm holds till 7am, composes, and still gets 6h of delivery attempts.
+// ITS DERIVATION IS GONE; THE NUMBER STAYS (plan 2026-08-29 Phase 3). 18 was
+// computed FROM the ask window: 12h of overnight hold (13h on a DST fall-back
+// night) + ~5h of margin, so a gap found at 7:01pm could hold till 7am, compose,
+// and still get 6h of delivery attempts. The window is deleted and nothing holds
+// a gap overnight any more, so none of that arithmetic applies.
 //
-// A window that ever excludes whole DAYS (a weekend rule, say) must lengthen
-// this deadline with it, or weekend-held rows expire to the manager without the
-// technician ever being asked. That constraint is tighter at 18 than it was
-// at 24 — move this number FIRST if the window ever grows.
+// What it is NOW is a plain broken-pipe timeout, and the question it asks is the
+// one two paragraphs up: how long before we admit the MACHINERY is broken. On the
+// current cadence 18h is ~36 planner ticks at the full rate (fewer for a firm
+// with recorded hours, since it drops to 2-hourly outside them) — a row still
+// unasked after that many chances is not waiting, it is stuck.
+//
+// The number was NOT re-tuned here, deliberately: re-deriving it is its own
+// decision with its own evidence, and changing a threshold in the same commit
+// that removes its rationale makes both harder to review. Treat 18 as inherited
+// until someone measures it.
+//
+// The old rider — "a window that ever excludes whole DAYS must lengthen this
+// deadline with it" — is retired with the window. There is no hold to outlast.
 export const NUDGE_DELIVERY_DEADLINE_HOURS = 18;
 
 // How long the planner may be silent about a gap before the sweep stops waiting
@@ -272,7 +277,7 @@ export interface WatcherDeps {
   // The firm's own detection thresholds. Injected like every other collaborator
   // — un-injected, a fixture tenant id that is not a uuid throws 22P02 inside the
   // per-tenant catch and every tenantErrors assertion in the suite fails.
-  getSettings?: typeof getTenantSettings;
+  getSettings?: typeof readSettingsTolerantly;
   // The kind registry, injectable so a test can register a second detector
   // before one exists in production.
   specs?: NudgeKindSpec[];
@@ -291,9 +296,10 @@ export interface WatchersSummary {
   nudgeMode: NudgeMode;
   nudgesWouldCreate: number; // nudge-shadow: gaps the live ladder would have asked about
   nudgesCreated: number;
-  // Closed by a FACT: a cancelled visit/job (`moot`), or a gap whose report
-  // arrived before anyone was asked (the pre-ask carve-out). Activity on an
-  // ALREADY-ASKED gap no longer counts — that close is the planner's.
+  // Closed by a FACT: a cancelled visit or job (`moot`). That is now the ONLY
+  // thing the sweep closes on — the pre-ask carve-out went with the ask window
+  // (plan 2026-08-29 Phase 3), so activity never closes a gap here, asked or
+  // not. Judging whether something answers the question is the planner's.
   nudgesResolved: number;
   // The fail-safe firing: an answered gap whose planner said nothing for a full
   // working day, closed by the sweep at its escalation deadline. Counted apart
@@ -348,7 +354,7 @@ export async function runWatchers(
   const listCostCandidates = deps.listCostCandidates ?? listCostGapCandidates;
   const listCostEvents = deps.listCostEvents ?? listJobIdsWithCostEvents;
   const listDecisions = deps.listDecisions ?? listDecisionsForNudges;
-  const getSettings = deps.getSettings ?? getTenantSettings;
+  const getSettings = deps.getSettings ?? readSettingsTolerantly;
 
   // listTenantIdsWithTelegramBindings, not listTenantSeats: it skips tenants
   // with nobody Telegram-reachable. Today that ALSO excludes the eval tenants
@@ -403,22 +409,16 @@ export async function runWatchers(
       // Only the missing RELATION is tolerated. Every other failure — permission,
       // a bad uuid, a dead connection — throws into the per-tenant catch below and
       // keeps its containment.
-      const [tenantRow, settingsRow] = await Promise.all([
-        get(tenantId),
-        getSettings(tenantId).catch((err: unknown) => {
-          if (!isMissingRelation(err)) throw err;
-          if (!summary.settingsTableMissing) {
-            summary.settingsTableMissing = true;
-            console.warn(
-              '[watchers] tenant_settings is not migrated here yet — every firm is running on ' +
-                'the global defaults. Apply supabase/migrations/20260829120000_tenant_settings.sql.',
-            );
-          }
-          return null;
-        }),
-      ]);
+      const [tenantRow, read] = await Promise.all([get(tenantId), getSettings(tenantId)]);
       const tz = tenantRow?.timezone ?? 'UTC';
-      const settings = resolveSettings(settingsRow);
+      const settings = read.settings;
+      if (read.tableMissing && !summary.settingsTableMissing) {
+        summary.settingsTableMissing = true;
+        console.warn(
+          '[watchers] tenant_settings is not migrated here yet — every firm is running on the ' +
+            'global defaults. Apply supabase/migrations/20260829120000_tenant_settings.sql.',
+        );
+      }
       // Real-UTC instant → the firm's wall clock in the canonical naive-local
       // storage form (booking.ts owns the format). Minute precision.
       const naiveLocal = (iso: string): string =>
@@ -668,8 +668,10 @@ export async function runWatchers(
       const openedByKind = { overdue: 0, cost: 0 };
       const escalations: typeof openNudgeGaps = [];
       const expired: typeof openNudgeGaps = [];
-      // Rows this tick already took terminal — the pre-ask carve-out and `moot`
-      // both close PENDING rows and `continue`. The group expansion below reads
+      // Rows this tick already took terminal — `moot` closes PENDING rows and
+      // `continue`s. (It was two paths until the pre-ask carve-out was deleted on
+      // 2026-08-29; the set is still load-bearing for the one that remains.) The
+      // group expansion below reads
       // `openNudgeGaps`, whose in-memory rows still say 'pending', so without
       // this a sibling closed seconds ago would be handed to a manager anyway.
       const closedThisTick = new Set<string>();
@@ -759,35 +761,22 @@ export async function runWatchers(
         // the fail-safe at the deadline, and (via buildGapView) by the planner.
         // What changed is its authority, not its truth.
         //
-        // PRE-ASK CARVE-OUT — the one place `filled` still closes, and it is NOT
-        // the case the ruling was about.
-        //
-        // On a row nobody has been asked yet there is no answer to judge; there
-        // is only the DETECTOR re-checking its own predicate — "is this still a
-        // gap?" — which is a fact, the same class as `moot`. Closing it needs no
-        // mind, and NOT closing it does active harm: compose reads pending rows
+        // THE PRE-ASK CARVE-OUT IS GONE (plan 2026-08-29 Phase 3). It closed a
+        // never-asked gap whose job had since gained activity, and its ONLY
+        // stated justification was the ask window: "compose reads pending rows
         // and never re-checks this, and its ask window holds an evening gap until
         // 7am. A report filed at 8pm would then be followed by us asking that
-        // technician at 7am how the job went. That is the mouth lying about what
-        // the record already knows — exactly what plan ② was built to stop.
+        // technician at 7am how the job went."
         //
-        // Without this the delivery deadline is the other victim: an undelivered
-        // row whose job HAS a report would sit until 18h and then hand a manager
-        // a gap the record already answers, opening an item that self-closes on
-        // the next tick. Churn, and a manager's attention spent on nothing.
+        // With no window there is no overnight hold, so there is no stale-question
+        // hazard to prevent. The planner sees the note at 8:05pm — the evidence is
+        // in its prompt — and closes the gap itself with a reason and a citation.
+        // Which is the ruling this ladder already made about ASKED gaps
+        // (2026-08-22): judging whether something answers the question is the
+        // planner's, and a fast deterministic sweep that keeps winning that race
+        // is backwards from the premise.
         //
-        // Only the visit spec can fire here; JOB_COST_GAP_SPEC.filled returns at
-        // its own `!n.asked_at` guard, correctly — a cost question's predicate is
-        // bounded by the ask and means nothing before it.
-        if (!x.n.asked_at) {
-          const filledBeforeAsking = spec.filled(x.n, facts);
-          if (filledBeforeAsking) {
-            const closed = await resolveNudge(x.n.id, tenantId, 'answered', filledBeforeAsking);
-            if (closed) summary.nudgesResolved += 1;
-            closedThisTick.add(x.n.id);
-            continue;
-          }
-        }
+        // `closedThisTick` below still earns its keep — `moot` populates it.
         // `moot` is untouched: a cancelled visit or job is a FACT, not a
         // judgment, and there is nothing left for anyone to decide about it.
         const moot = spec.moot(x.n, facts);
@@ -889,8 +878,15 @@ export async function runWatchers(
         // Never ASKED within the deadline (Phase-4 review F1): the row is
         // stuck in some way the serve path cannot see — liveness-skipped
         // forever, host-unbound after a recycle (invisible to every pull),
-        // or rollback-frozen pending. The activity/status paths above still
-        // win; past the deadline, the manager takes the gap.
+        // or rollback-frozen pending. The STATUS path above still wins (a
+        // cancelled visit is moot whatever the clock says); past the deadline,
+        // the manager takes the gap.
+        //
+        // ACTIVITY NO LONGER WINS HERE, and that reversed on 2026-08-29 with the
+        // pre-ask carve-out. A job that gained a report but whose question never
+        // went out still expires: 18h unasked means delivery is broken, which is
+        // exactly what this deadline is for, and the manager's item self-closes
+        // on the next sweep if the activity really did answer it.
         if (
           (x.n.status === 'pending' || x.n.status === 'queued') &&
           Date.parse(x.n.created_at) <= nowMs - NUDGE_DELIVERY_DEADLINE_HOURS * 3_600_000

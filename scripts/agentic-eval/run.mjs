@@ -94,9 +94,9 @@ if (wanted) {
 }
 void SMOKE_SCENARIOS;
 
-// Model ticks only: an expectWindowSkip tick records nothing and spends nothing.
+// Model ticks only: an expectCadenceSkip tick records nothing and spends nothing.
 const totalTicks = scenarios.reduce(
-  (n, s) => n + s.timeline.filter((t) => t.kind === 'tick' && !t.expectWindowSkip).length,
+  (n, s) => n + s.timeline.filter((t) => t.kind === 'tick' && !t.expectCadenceSkip).length,
   0,
 );
 

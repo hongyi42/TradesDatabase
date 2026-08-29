@@ -355,26 +355,62 @@ seeds the resolution string via `insertClosedNudge` and never runs the sweep.
 about the PROMPT, not the sweep. **Re-examine, do not reflexively delete.**
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] New test: a pending gap whose job gained a note is NOT closed by the sweep — it reaches the
-      planner with the note visible. The carve-out's defect, locked shut.
-- [ ] New test: the planner runs for a tenant at 03:00 firm-local and produces a plan.
-- [ ] **Cadence test that would actually catch finding 5:** a tenant with hours 08-16 must fire at
-      02:00 and 04:00 but NOT 03:00 under the 120-minute rate. A 60-minute rate fires at all three,
-      so this distinguishes them — the previous draft's "skipped at 03:00, runs at 04:00" passes
-      under both and is worthless.
-- [ ] New test: `summary.plans.length === summary.tenants` with an off-cadence tenant present.
-- [ ] `grep -rn "insideAskWindow\|ASK_WINDOW" src/` returns nothing outside `workingHours.ts`.
-- [ ] `grep -rn "out_of_window\|skippedWindow" src/ scripts/` returns nothing.
-- [ ] `FAMILY_COUNTS` matches the surviving scenario count.
-- [ ] `node scripts/ticks/report.mjs` runs and shows an off-cadence firm — it is `.mjs`, so no
-      other gate touches it.
+- [x] `npm run typecheck` · `npm run lint` · `npm test` (111 files / 2388 tests) · `npm run build`
+- [x] New test: a pending gap whose job gained a note is NOT closed by the sweep — it reaches the
+      planner with the note visible. **BOTH halves, and the second half was FALSE when first
+      written.** See the F1 note below: `buildGapView` bounded evidence by `asked_at`, so a
+      never-asked gap was shown nothing at all and the phase's own justification did not hold.
+- [x] New test: the planner runs for a tenant at 03:00 firm-local and produces a plan.
+- [x] **Cadence test that would actually catch finding 5:** a tenant with hours 08-16 fires at
+      02:00 and 04:00 but NOT 03:00 under the 120-minute rate.
+- [x] New test: `summary.plans.length === summary.tenants` with an off-cadence tenant present.
+- [x] `grep -rn "insideAskWindow\|ASK_WINDOW" src/` returns nothing outside `workingHours.ts`.
+- [x] `grep -rn "out_of_window\|skippedWindow" src/ scripts/` — every remaining hit is a comment or
+      the deliberate `LEGACY_OUTCOMES` alias in `report.mjs`, which is REQUIRED: `lifecycle_runs` is
+      a 90-day record and rows written before the rename are correct history. The gate as literally
+      written is unsatisfiable alongside that alias; the intent is met.
+- [x] `FAMILY_COUNTS` matches the surviving scenario count (66 total; `window-edges` renamed to
+      `day-edges`, same six scenarios).
+- [x] `node scripts/ticks/report.mjs` runs and reads the pilot correctly — it is `.mjs`, so no other
+      gate touches it: `planned 1 · no work 30 · not due 15 · errors 1`.
+
+### What the adversarial review caught — the phase shipped a broken premise
+
+**F1, blocking.** Three places in the diff asserted "the planner sees the note at 8:05pm and closes
+the gap itself". That was **false**. `planner.ts` bounded evidence AND money by `asked_at`, so a
+never-asked gap was shown nothing — and `recordFilled` is null for a visit gap. Its own comment said
+why: *"the sweep already auto-closes those before the planner ever sees them"* — the exact code this
+phase deletes. Deleting the carve-out without this would have been strictly WORSE than leaving it:
+the planner would be handed a gap the record answers, shown nothing, and left with `send` — asking a
+technician how a job went hours after they filed the report. Fixed by bounding pre-ask evidence and
+money at `created_at` (the detector only mints when the job has no activity, so everything after is
+new), and widening the batched read floor to match — without that second half the fix would have
+been silently inert. Verified live against the real planner:
+`evidence since this gap was noticed: [1] … Swapped the flame sensor, unit is running clean now.`,
+with a pre-mint note correctly excluded.
+
+Nine further findings, all fixed: the delivery deadline's comment still derived 18h from the window
+(F2); the planner dropped `tableMissing` while the sweep reported it (F3); the doctrine still said
+"every thirty minutes, all day" (F4); the cadence needed a SECOND invariant — a divisor of 1440, or
+the grid goes ragged across midnight (F5); six comments named the deleted carve-out (F6); the
+null-prototype guard in `report.mjs` was on the wrong object, so an outcome named `constructor` or
+`__proto__` bypassed the loud branch (F7); a `describe` header was lost (F8); a test comment said
+"~36 ticks" which is only true at the full rate this phase made variable (F9); three docs still
+asserted the window as live machinery (F10).
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack.
-- [ ] Drive sweep + planner ticks at simulated 02:00, 03:00 and 10:00 firm-local for two tenants
-      (one with hours, one without); confirm the cadence pattern and that every firm gets exactly
-      one plan entry per tick. Evidence is the tick records.
+- [x] Drove real planner ticks for two real firms differing only in recorded hours:
+      ```
+      hour   | firm w/ hours 08-16 | firm w/o hours | plans==tenants
+      02:00  | planned             | planned        | yes
+      03:00  | off_cadence         | planned        | yes   <- the distinguishing row
+      04:00  | planned             | planned        | yes
+      10:00  | planned             | planned        | yes
+      10:30  | planned             | planned        | yes
+      ```
+      03:00 is what separates a 120-minute rate from a 60-minute one. The planner running at 02:00,
+      03:00 and 04:00 at all is the window's deletion, proven.
 
 ### Manual verification
 - [ ] Read the amended doctrine paragraph. It now tells the planner it owns send timing — whether

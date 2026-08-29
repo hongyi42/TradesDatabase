@@ -1,5 +1,6 @@
 import type { Database } from './database.types.js';
 import { getClient } from './client.js';
+import { isMissingRelation } from './costs.js';
 import { wrapDbError } from './rawCaptures.js';
 
 export type TenantSettings = Database['public']['Tables']['tenant_settings']['Row'];
@@ -202,4 +203,35 @@ export function resolveSettings(row: TenantSettings | null): ResolvedTenantSetti
     lookbackHours: row?.lookback_hours ?? LOOKBACK_HOURS,
     maxNewPerTick: row?.max_new_per_tick ?? MAX_NEW_ITEMS_PER_TENANT_TICK,
   };
+}
+
+/**
+ * The firm's resolved settings, tolerating a database where the migration has
+ * not been applied yet.
+ *
+ * THE TOLERANCE IS IN THE NAME, deliberately. `getTenantSettings` above throws on
+ * a missing relation and explains at length why it must; this is the opposite
+ * choice, made explicit at every call site rather than hidden inside the default
+ * accessor. Both readers of settings — the sweep and the planner — want it,
+ * because for both of them "this database has no settings table" and "this firm
+ * has recorded nothing" have the same right answer: run on the global defaults.
+ *
+ * `tableMissing` comes back so the caller can REPORT it. That is the half an
+ * accessor could not do, and the reason this is a function rather than a flag on
+ * the one above.
+ *
+ * The caveat `getTenantSettings` records still applies here and is the thing to
+ * re-read before editing its query: `42P01`/`PGRST205` names *a* relation, not
+ * necessarily `tenant_settings`. The safety of this rests on that select staying
+ * EMBED-FREE.
+ */
+export async function readSettingsTolerantly(
+  tenantId: string,
+): Promise<{ settings: ResolvedTenantSettings; tableMissing: boolean }> {
+  try {
+    return { settings: resolveSettings(await getTenantSettings(tenantId)), tableMissing: false };
+  } catch (err) {
+    if (!isMissingRelation(err)) throw err;
+    return { settings: resolveSettings(null), tableMissing: true };
+  }
 }

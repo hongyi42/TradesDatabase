@@ -159,14 +159,16 @@ export interface NudgeKindSpec {
   // saw an answer at all. Closing now belongs to the planner, which reads the
   // words, writes a reason and cites the evidence.
   //
-  // It still CLOSES in exactly one place — a gap NOBODY HAS BEEN ASKED yet
-  // (watchers.ts, the pre-ask carve-out). That is not a judgment about an
-  // answer; it is the detector re-checking its own predicate, and it must stay:
-  // the planner decides about pending rows without re-checking this, and its
-  // ask window holds an evening gap till 7am, so removing it means asking a
-  // technician at 7am about a job they reported at 8pm.
+  // AS OF plan 2026-08-29 Phase 3 IT CLOSES NOTHING AT ALL. It used to close one
+  // last case — a gap NOBODY HAD BEEN ASKED yet, the detector re-checking its own
+  // predicate — and that carve-out's whole justification was the ask window: the
+  // window held an evening gap till 7am, so a report filed at 8pm would be
+  // followed by asking that technician at 7am how the job went. The window is
+  // deleted, nothing holds a gap overnight, and the planner sees the note at
+  // 8:05pm with the evidence in its prompt. So the pre-ask case became the same
+  // case as every other: the planner reads and decides.
   //
-  // It is otherwise READ-ONLY, feeding:
+  // It is now READ-ONLY everywhere, feeding:
   //   1. the sweep's fail-safe at the escalation deadline (watchers.ts) — the
   //      only way an ASKED gap still closes without the planner, and only when
   //      the planner has been silent for a full working day;

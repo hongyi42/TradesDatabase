@@ -144,10 +144,14 @@ Full watcher semantics + rollout state: engineering-memory §3.
      `BOARD_BOT_TOKEN` (live-mode manager pushes; absent = `pushSkipped`, never red).
      `NUDGES_MODE` (`shadow` | `live`; unset = the Stage-1 ladder is off and the watcher
      behaves exactly as Stage 0 — flip only per the Stage-1 rollout in the feature-B plan).
-     In live mode, questions are composed only inside the firm-local **ask window 7 AM–7 PM,
-     seven days a week** (`ASK_WINDOW_*` in `src/teamLead/compose.ts`): a gap detected in the
-     evening holds as a pending nudge (`held` in the step summary) and is composed fresh —
-     correct "yesterday" wording — on the first morning tick. Detection, escalation, and
+     **THE ASK WINDOW IS GONE** (2026-08-29). Until then, live-mode questions were composed
+     only inside a firm-local 7 AM–7 PM window and an evening gap held until morning. There
+     is no send-timing gate anywhere now: the PLANNER chooses the hour a message goes out.
+     What replaced the window is a per-firm CADENCE (`PLANNER_TICK_MINUTES` /
+     `PLANNER_TICK_MINUTES_OFF_HOURS` in `src/teamLead/planner.ts`) — half-hourly inside the
+     firm's own approximate hours (`tenant_settings.approx_work_*`), 2-hourly outside them,
+     and half-hourly always for a firm that has recorded none. It bounds how often the model
+     is ASKED, never whether a message may go out. Detection, escalation, and
      delivery of already-composed rows are NOT window-gated.
      **Inference vars on this cron (OpenRouter, set 2026-08-28):** `INFERENCE_API_KEY`
      (an OpenRouter key), `INFERENCE_BASE_URL=https://openrouter.ai/api/v1`,

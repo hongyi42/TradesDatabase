@@ -425,7 +425,7 @@ describe('runLifecycle', () => {
           tenants: 0,
           planned: 0,
           skippedNoGaps: 0,
-          skippedWindow: 0,
+          skippedCadence: 0,
           decisions: 0,
           dropped: 0,
           applied: 0,
@@ -832,7 +832,7 @@ describe('the planner gate', () => {
             tenants: 1,
             planned: 1,
             skippedNoGaps: 0,
-            skippedWindow: 0,
+            skippedCadence: 0,
             decisions: 0,
             dropped: 0,
             applied: 0,
@@ -888,7 +888,11 @@ describe('the planner gate', () => {
     }
   });
 
-  test('the half-hour cadence: :00 and :30 run, :10 and :40 skip', async () => {
+  test('the COARSE candidate gate: :00 and :30 run, :10 and :40 skip', async () => {
+    // This is no longer the whole cadence decision (plan 2026-08-29 Phase 3) —
+    // it is the cheap "could ANY firm be due?" check that keeps an off-cadence
+    // tick free of database reads. The per-firm rate lives in runPlanner, and it
+    // is only ever SLOWER, which is why a multiple-of check pins the pair.
     process.env.PLANNER_MODE = 'shadow';
     for (const [minute, shouldRun] of [
       ['00', true],
@@ -910,7 +914,7 @@ describe('the planner gate', () => {
       expect(calls.length, `minute :${minute}`).toBe(shouldRun ? 1 : 0);
       if (!shouldRun) {
         expect(s.teamLeadPlanner).toEqual({
-          skipped: 'off-cadence tick (planner runs on the half hour)',
+          skipped: 'off-cadence tick (no firm can be due this minute)',
         });
       }
     }

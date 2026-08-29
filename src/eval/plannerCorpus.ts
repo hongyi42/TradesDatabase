@@ -7,8 +7,13 @@
 // it fails.
 //
 // Authoring rails (enforced by plannerCorpus.test.ts):
-//   - every tick lands inside the 7:00–19:00 firm-local ask window (t0=10:00),
-//     unless it declares expectWindowSkip;
+//   - every tick lands on the planner's cadence grid — :00 or :30, since the sim
+//     tenant records no approximate hours and so runs at the full rate — unless
+//     it declares expectCadenceSkip. (This rail used to be "inside the 7:00-19:00
+//     ask window"; the window was deleted on 2026-08-29 and the planner now
+//     decides its own send timing. The rail survives because the FAILURE it
+//     catches survives: a tick the planner skips records nothing, and a scenario
+//     that silently records nothing grades as a no-decision.)
 //   - every seeded OPEN gap's deadline is LATER than the first tick (the sweep
 //     runs first and would escalate a stale gap before the planner sees it) —
 //     old asks therefore carry an explicit escalateAfter, reading as "a prior
@@ -33,8 +38,8 @@ export type TimelineStep =
   | {
       at: Offset;
       kind: 'tick';
-      /** Declared when a tick deliberately lands outside the ask window. */
-      expectWindowSkip?: boolean;
+      /** Declared when a tick deliberately lands off the planner's cadence. */
+      expectCadenceSkip?: boolean;
     }
   | { at: Offset; kind: 'capture'; text: string; fromTechnician?: boolean }
   | { at: Offset; kind: 'money'; moneyKind: SimMoneyKind; amountCents?: number | null }
@@ -883,12 +888,18 @@ const LESSONS: PlannerScenario[] = [
   },
 ];
 
-/** WINDOW / DAY EDGES — provenance: the date-eval arc (evening regime), S4,
- *  and the ask-window constants (compose.ts 7–19 firm-local). */
+/** DAY EDGES — provenance: the date-eval arc (evening regime) and S4.
+ *
+ *  This family was authored against the 7-19 ask window, which is gone (plan
+ *  2026-08-29 Phase 3). It is KEPT, and its subject is now sharper rather than
+ *  obsolete: the planner can act at any hour, so what these scenarios test is
+ *  whether it uses that freedom sensibly — the thing a window used to decide for
+ *  it. WD-02 in particular flipped from "records nothing by design" to a real
+ *  tick, which is the whole point of the change. */
 const WINDOW: PlannerScenario[] = [
   {
     id: 'WD-01',
-    family: 'window-edges',
+    family: 'day-edges',
     why: 'The 18:30 tick: last call of the working day — decisions here shape the overnight (specimen 2 territory).',
     world: visitWorld('Perry Uzoma', 'Boiler glycol top-up', 'wd1-ben', 'Ben Shelton', { askedAt: '+1h', createdAt: '+0.5h', escalateAfter: '+16h' }),
     timeline: [tick('+8.5h')],
@@ -896,19 +907,19 @@ const WINDOW: PlannerScenario[] = [
   },
   {
     id: 'WD-02',
-    family: 'window-edges',
-    why: 'Arc across the window: the 20:00 tick records NOTHING by design; the decision belongs to the morning.',
+    family: 'day-edges',
+    why: 'Arc across the evening: the 20:00 tick is REAL now (the window is gone), and the gap is not yet due — so the planner may think, and must still not escalate early.',
     world: visitWorld('Kit Devlin', 'Hydronic air purge', 'wd2-dee', 'Dee Marsh', { createdAt: '-3h', askedAt: '-2h', escalateAfter: '+24h' }),
     timeline: [
       tick('+0h'),
-      { at: '+10h', kind: 'tick', expectWindowSkip: true },
+      tick('+10h'),
       tick('+21h'),
     ],
     expect: { arc: { maxEscalations: 0 } },
   },
   {
     id: 'WD-03',
-    family: 'window-edges',
+    family: 'day-edges',
     why: 'The 7:00 edge tick: asked mid-afternoon yesterday, the gap slept through the night — dead air, not silence to punish.',
     world: visitWorld('Bree Fontaine', 'Mixing valve set', 'wd3-mo', 'Mo Reyes', { askedAt: '+5h', createdAt: '+4h', escalateAfter: '+30h' }),
     timeline: [tick('+21h')],
@@ -916,7 +927,7 @@ const WINDOW: PlannerScenario[] = [
   },
   {
     id: 'WD-04',
-    family: 'window-edges',
+    family: 'day-edges',
     why: 'A pending morning gap: 10:00 is prime asking time — release it (send), don’t sit on it.',
     world: visitWorld('Angus McPhee', 'Radiator valve pack', 'wd4-lena', 'Lena Ochoa', { status: 'pending', askedAt: undefined, createdAt: '-2h', escalateAfter: undefined }),
     timeline: oneTick,
@@ -924,7 +935,7 @@ const WINDOW: PlannerScenario[] = [
   },
   {
     id: 'WD-05',
-    family: 'window-edges',
+    family: 'day-edges',
     why: 'The extend ceiling meets the clock: at 46h a maximal extend buys under two hours — pick the honest verb.',
     world: visitWorld('Noor Habib', 'Unit heater service', 'wd5-ben', 'Ben Shelton', { askedAt: '-46h', createdAt: '-46.5h', escalateAfter: '+1.5h' }),
     timeline: [tick('+0h')],
@@ -932,7 +943,7 @@ const WINDOW: PlannerScenario[] = [
   },
   {
     id: 'WD-06',
-    family: 'window-edges',
+    family: 'day-edges',
     why: 'A hold must beat the delivery deadline (the hold-ceiling rail): the sane hold here is short.',
     world: visitWorld('Etta Kowalski', 'Boiler low-water cutoff', 'wd6-dee', 'Dee Marsh', { status: 'pending', askedAt: undefined, createdAt: '-12h', escalateAfter: undefined }),
     timeline: oneTick,
@@ -1053,7 +1064,9 @@ export const FAMILY_COUNTS = {
   'people-judgment': 8,
   'multi-gap': 9,
   lessons: 4,
-  'window-edges': 6,
+  // Renamed from 'window-edges' when the ask window was deleted (2026-08-29).
+  // Same six scenarios; the edges they probe are the DAY's, not a gate's.
+  'day-edges': 6,
 } as const;
 
 export const ALL_SCENARIOS: PlannerScenario[] = [

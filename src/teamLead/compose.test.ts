@@ -1,30 +1,18 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { Nudge } from '../db/index.js';
-import { handToManager, insideAskWindow } from './compose.js';
+import { handToManager } from './compose.js';
 import { flatten } from './composeCopy.js';
 
-// What is left of compose after the collapse (plan 2026-08-24): the ask WINDOW
-// (the planner's own gate) and `handToManager`, the rung-2 fallback for a gap
-// that dies without its ask ever landing. The sweep, its model call and its
-// assembly templates are gone, and so are their tests.
-
-describe('insideAskWindow', () => {
-  test('boundaries: 7:00 opens it, 7 PM closes it; the clock is the FIRM zone', () => {
-    expect(insideAskWindow('2026-08-16T06:59:00.000Z', 'UTC')).toBe(false);
-    expect(insideAskWindow('2026-08-16T07:00:00.000Z', 'UTC')).toBe(true);
-    expect(insideAskWindow('2026-08-16T18:59:00.000Z', 'UTC')).toBe(true);
-    expect(insideAskWindow('2026-08-16T19:00:00.000Z', 'UTC')).toBe(false);
-    // 19:00 UTC = noon in LA — wide open there (h23 via Intl, so DST rides along).
-    expect(insideAskWindow('2026-08-16T19:00:00.000Z', 'America/Los_Angeles')).toBe(true);
-    // The evening regime: 02:00 UTC = 7 PM PDT the previous day — closed.
-    expect(insideAskWindow('2026-08-16T02:00:00.000Z', 'America/Los_Angeles')).toBe(false);
-  });
-
-  test('an unknown zone falls back to the UTC clock instead of blocking the sweep', () => {
-    expect(insideAskWindow('2026-08-16T12:00:00.000Z', 'Not/A_Zone')).toBe(true);
-    expect(insideAskWindow('2026-08-16T02:00:00.000Z', 'Not/A_Zone')).toBe(false);
-  });
-});
+// What is left of compose after the collapse (plan 2026-08-24) and the window's
+// deletion (plan 2026-08-29 Phase 3): `handToManager` alone — the rung-2 fallback
+// for a gap that dies without its ask ever landing.
+//
+// The four `insideAskWindow` boundary assertions that stood here are DELETED, not
+// ported. Their subject no longer exists: there is no hour at which the planner
+// declines to act (user, 2026-08-29). What replaced the window is a per-firm
+// CADENCE, which is a different claim entirely — how often the planner thinks,
+// never whether a message may go out — and it is tested where it lives, in
+// planner.test.ts.
 
 describe('handToManager — the rung-2 fallback for an ask that never landed', () => {
   const nudge = (over: Partial<Nudge> = {}): Nudge =>

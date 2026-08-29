@@ -5,7 +5,7 @@ import type { Nudge } from '../db/nudges.js';
 import type { ReviewItem } from '../db/reviewItems.js';
 import type { Tenant } from '../db/tenants.js';
 import type { Technician } from '../db/technicians.js';
-import type { TenantSettings } from '../db/tenantSettings.js';
+import { resolveSettings, type TenantSettings } from '../db/tenantSettings.js';
 import {
   MAX_NEW_ITEMS_PER_TENANT_TICK,
   NUDGE_DELIVERY_DEADLINE_HOURS,
@@ -116,10 +116,10 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     // The injection seam, NOT moved behaviour: this fixture's tenant id is the
     // literal 't1', so a real uuid-keyed settings read throws 22P02, the
     // per-tenant catch swallows it, and every `expect(tenantErrors).toBe(0)` in
-    // this file fails. `null` = the firm has recorded nothing, which resolves to
-    // exactly the global constants — so every existing expectation below keeps
-    // its original expected value.
-    getSettings: async () => null,
+    // this file fails. A firm that has recorded nothing resolves to exactly the
+    // global constants — so every existing expectation below keeps its original
+    // expected value.
+    getSettings: async () => ({ settings: resolveSettings(null), tableMissing: false }),
     ...over,
   };
 }
@@ -173,6 +173,9 @@ function nudgeRow(over: Partial<Nudge>): Nudge {
 
 describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)', () => {
   // A row shaped like tenant_settings, with only the named columns recorded.
+  // readSettingsTolerantly's shape: the resolved values plus whether the table
+  // was there at all.
+  const read = (row: TenantSettings | null) => ({ settings: resolveSettings(row), tableMissing: false });
   const settingsRow = (over: Partial<TenantSettings>): TenantSettings =>
     ({
       tenant_id: 't1',
@@ -203,7 +206,7 @@ describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)
       listTenants: async () => ['t-default', 't-eager'],
       listOverdue: async (t, from, to) => windowFiltered(t, from, to),
       // Only the second firm has recorded anything.
-      getSettings: async (t) => (t === 't-eager' ? settingsRow({ overdue_hours: 1 }) : null),
+      getSettings: async (t) => read(t === 't-eager' ? settingsRow({ overdue_hours: 1 }) : null),
     }));
     expect(summary.tenantErrors).toBe(0);
     // ONE of the two. The default firm's cutoff (now−3h) has not reached this
@@ -229,8 +232,7 @@ describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)
         windows[t] = [from, to];
         return [];
       },
-      getSettings: async (t) =>
-        t === 't-tight' ? settingsRow({ lookback_hours: 6, overdue_hours: 2 }) : null,
+      getSettings: async (t) => read(t === 't-tight' ? settingsRow({ lookback_hours: 6, overdue_hours: 2 }) : null),
     }));
     // now−72h / now−3h — the global fallbacks, unchanged.
     expect(windows['t-default']).toEqual(['2026-08-13T12:00:00.000Z', '2026-08-16T09:00:00.000Z']);
@@ -252,7 +254,7 @@ describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)
       listOverdue: async () => seven,
       listJobs: async (_t, ids) =>
         ids.map((id) => ({ id, tenant_id: 't1', title: 'Furnace tune-up', customers: { name: 'Henderson' } }) as unknown as JobWithCustomer),
-      getSettings: async () => settingsRow({ max_new_per_tick: 2 }),
+      getSettings: async () => read(settingsRow({ max_new_per_tick: 2 })),
       flagGap: async (input) => {
         flagged.push(input.assignmentId);
         return openItem({ subject_ref: input.assignmentId });
@@ -275,7 +277,7 @@ describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)
       ],
       getSettings: async (t) => {
         reads.push(t);
-        return null;
+        return read(null);
       },
     }));
     expect(reads).toEqual(['t-a', 't-b']);
@@ -286,15 +288,10 @@ describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)
     // tenant, so tenantErrors === tenants, which lifecycle.ts reads as systemic
     // and turns the heartbeat red — while detection, escalation, the delivery
     // fail-safe and the manager push were all dark for everyone.
-    const pgrst205 = Object.assign(new Error('getTenantSettings failed: Could not find the table'), {
-      cause: { code: 'PGRST205' },
-    });
     const summary = await runWatchers(NOW, 'shadow', baseDeps({
       listTenants: async () => ['t-a', 't-b'],
       listOverdue: async () => [visit({})],
-      getSettings: async () => {
-        throw pgrst205;
-      },
+      getSettings: async () => ({ settings: resolveSettings(null), tableMissing: true }),
     }));
     expect(summary.tenantErrors).toBe(0);
     // Detection still happened, on the global fallbacks, for BOTH firms.
@@ -319,7 +316,7 @@ describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)
       listOverdue: async () => [visit({})],
       getSettings: async (t) => {
         if (t === 't-broken') throw new Error('settings read failed');
-        return null;
+        return read(null);
       },
     }));
     expect(summary.tenantErrors).toBe(1);
@@ -643,10 +640,11 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     // NUDGES_MODE. Silence must STILL escalate — otherwise a nudged gap reaches
     // neither surface, ever (its assignment is never fresh again in any mode).
     //
-    // Both halves survive the 2026-08-22 closing move, for different reasons.
-    // The QUEUED row was never asked, so its close is the PRE-ASK carve-out —
-    // the detector re-checking its own predicate, still a fact. The asked-and-
-    // silent row escalates exactly as before.
+    // The QUEUED row is here as the CONTROL, and its meaning changed on
+    // 2026-08-29: the pre-ask carve-out is deleted, so activity on its job no
+    // longer closes it. It is young enough not to have hit the delivery
+    // deadline either, so the sweep must leave it entirely alone — open, for the
+    // planner. The asked-and-silent row escalates exactly as before.
     const resolved: Array<[string, string]> = [];
     const flagged: string[] = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
@@ -666,7 +664,12 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
             endsAtLocal: '2026-08-14T08:00:00.000Z',
           },
         }),
-        nudgeRow({ id: 'n-rolled-filled', subject_ref: 'a-filled', status: 'queued' }),
+        nudgeRow({
+          id: 'n-rolled-filled',
+          subject_ref: 'a-filled',
+          status: 'queued',
+          created_at: UNDELIVERED_YOUNG,
+        }),
       ],
       listCaptureTimes: async () => [{ job_id: 'j1', captured_at: '2026-08-14T07:30:00.000Z' }],
       flagNudge: async (input) => {
@@ -678,12 +681,9 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
         return nudgeRow({ id, status } as Partial<Nudge>);
       },
     })); // nudgeMode defaults to 'off'
-    expect(resolved).toEqual([
-      ['n-rolled-filled', 'answered'],
-      ['n-rolled-silent', 'escalated'],
-    ]);
+    expect(resolved).toEqual([['n-rolled-silent', 'escalated']]);
     expect(flagged).toEqual(['a-silent']);
-    expect(summary.nudgesResolved).toBe(1); // the pre-ask close
+    expect(summary.nudgesResolved).toBe(0); // the sweep closes nothing on activity now
     expect(summary.nudgesAutoClosed).toBe(0);
     expect(summary.nudgesEscalated).toBe(1);
     expect(summary.itemsOpened).toBe(1);
@@ -794,16 +794,26 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(summary.itemsOpened).toBe(2);
   });
 
-  test('live ladder sweep: pre-ask activity closes; a cancelled visit cancels; asked-and-recent waits', async () => {
-    // The 2026-08-22 division. `moot` is a FACT and still closes. `filled` closes
-    // ONLY before anyone was asked (the detector re-checking itself); once a
-    // question has gone out, whether an answer answers it is the planner's
-    // judgment and the gap stays open for it.
+  test('live ladder sweep: a cancelled visit cancels; activity closes NOTHING, asked or not', async () => {
+    // The 2026-08-22 division, completed on 2026-08-29. `moot` is a FACT — a
+    // cancelled visit — and still closes. `filled` now closes NOTHING at all: it
+    // used to close a never-asked row, and that carve-out existed only because
+    // the ask window held an evening gap until 7am, so a report filed at 8pm
+    // would be followed by asking that technician at 7am how the job went. With
+    // no window the planner sees the note at 8:05pm and decides for itself.
+    //
+    // The queued row is young — past the delivery deadline it would reach the
+    // manager as never-delivered, which is a different path and its own test.
 
     const resolved: Array<[string, string, string | null | undefined]> = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listNudges: async () => [
-        nudgeRow({ id: 'n-filled', subject_ref: 'a-filled', status: 'queued' }),
+        nudgeRow({
+          id: 'n-filled',
+          subject_ref: 'a-filled',
+          status: 'queued',
+          created_at: UNDELIVERED_YOUNG,
+        }),
         nudgeRow({
           id: 'n-cancelled',
           subject_ref: 'a-cancelled',
@@ -833,11 +843,12 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
       },
     }), 'live');
     expect(summary.tenantErrors).toBe(0);
+    // n-filled is ABSENT, and that is the assertion: its job gained a note, and
+    // the sweep left it open for the planner to read.
     expect(resolved).toEqual([
-      ['n-filled', 'answered', 'a field report arrived — the gap filled itself'],
       ['n-cancelled', 'cancelled', 'the visit was cancelled — nothing left to ask'],
     ]);
-    expect(summary.nudgesResolved).toBe(2);
+    expect(summary.nudgesResolved).toBe(1);
     expect(summary.nudgesAutoClosed).toBe(0);
     expect(summary.nudgesEscalated).toBe(0);
   });
@@ -966,11 +977,20 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(summary.pushed).toBe(1);
   });
 
-  test('delivery deadline: arrived activity still wins over expiry; malformed context stays frozen', async () => {
+  test('delivery deadline: an undelivered row expires even when its job HAS activity; malformed context stays frozen', async () => {
+    // Reversed on 2026-08-29, deliberately. Activity used to win over expiry, via
+    // the pre-ask carve-out. It no longer does, and the reasoning is the
+    // deadline's own: 18h with no ask means the MACHINERY is broken — nobody is
+    // ignoring us, the question never went out. The planner has had dozens of
+    // ticks to act on this row — 36 at the full rate, ~21 for a firm with 8
+    // recorded working hours, since this same phase made the rate variable — and
+    // it is still queued. Handing it to the manager is what
+    // the deadline is for, and the manager's item self-closes on the next sweep
+    // if the activity really did answer it.
     const resolved: Array<[string, string]> = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listNudges: async () => [
-        // Old AND filled: activity answered it — expiry must not fire.
+        // Old AND filled: the activity is no longer a reason to hold the expiry.
         nudgeRow({
           id: 'n-old-filled',
           subject_ref: 'a-old-filled',
@@ -988,7 +1008,8 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
       ],
       listCaptureTimes: async () => [{ job_id: 'j1', captured_at: '2026-08-14T07:30:00.000Z' }],
       flagGap: async () => {
-        throw new Error('neither row may reach the manager here');
+        // The expiry path uses the kind-generic flagNudge, never this one.
+        throw new Error('the expired handoff must not go through the visit flagger');
       },
       resolveNudge: async (id, _t, status) => {
         resolved.push([id, status]);
@@ -996,8 +1017,10 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
       },
     }), 'live');
     expect(summary.tenantErrors).toBe(0);
-    expect(resolved).toEqual([['n-old-filled', 'answered']]);
-    expect(summary.nudgesExpired).toBe(0);
+    expect(resolved).toEqual([['n-old-filled', 'failed']]);
+    expect(summary.nudgesExpired).toBe(1);
+    // The thin row is unfit for handoff and stays frozen — no counter either way.
+    expect(resolved.map(([id]) => id)).not.toContain('n-old-thin');
   });
 
   test('rung 2 races: a null flag (assignment somehow already flagged) still marks the nudge escalated', async () => {

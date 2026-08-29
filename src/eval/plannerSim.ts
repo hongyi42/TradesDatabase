@@ -48,7 +48,7 @@ import { runPlanner, type PlannerSummary } from '../teamLead/planner.js';
 import { runToolLoop, type ToolLoopCall } from '../model/toolLoop.js';
 import { TEAM_LEAD_TOOL_SCHEMAS, dispatchForIdentity } from '../mcp/server.js';
 import { TEAM_LEAD_REF } from '../teamLead/identity.js';
-import { insideAskWindow } from '../teamLead/compose.js';
+import { plannerCadenceDue, PLANNER_TICK_MINUTES } from '../teamLead/planner.js';
 import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
 import { naiveLocalISO } from '../schedule/booking.js';
 
@@ -359,11 +359,16 @@ export interface TickOpts {
    *  execute('submit_plan', …)) — decisions exist only via validateDecisions
    *  inside that branch; a stub that merely returns records nothing. */
   runLoop?: typeof runToolLoop;
-  /** Ticks outside the 7:00–19:00 firm-local ask window record NOTHING (the
-   *  planner skips the tenant before building views). That is almost always a
-   *  scenario-authoring bug, so runTick throws unless the scenario declares
-   *  it expects the skip. */
-  expectWindowSkip?: boolean;
+  /** A tick that does not land on the planner's cadence grid records NOTHING
+   *  (the planner skips the tenant before building views). That is almost always
+   *  a scenario-authoring bug, so runTick throws unless the scenario declares it
+   *  expects the skip.
+   *
+   *  This replaced expectWindowSkip. The ask window is gone, so no tick is
+   *  skipped for being at the wrong HOUR any more — but the cadence can still
+   *  skip one for being at the wrong MINUTE, and that failure is silent in
+   *  exactly the same way the window's was. Same guard, new subject. */
+  expectCadenceSkip?: boolean;
   tz?: string;
 }
 
@@ -388,11 +393,17 @@ export async function runTick(
   nowIso: string,
   opts: TickOpts = {},
 ): Promise<TickRecord> {
-  const tz = opts.tz ?? SIM_TZ;
-  if (!opts.expectWindowSkip && !insideAskWindow(nowIso, tz)) {
+  // No `tz` needed here any more: the old guard asked whether this HOUR was
+  // inside the firm's ask window, which was firm-local. The cadence grid is
+  // UTC-anchored — only the RATE is firm-dependent — so the guard is zone-free.
+  // opts.tz survives for runArc, which still needs it for wall-clock seeding.
+  //
+  // The sim tenant records no approximate hours, so it runs at the FULL RATE
+  // always, which makes the grid a plain "on the hour or the half hour".
+  if (!opts.expectCadenceSkip && !plannerCadenceDue(nowIso, PLANNER_TICK_MINUTES)) {
     throw new Error(
-      `runTick at ${nowIso} falls outside the 7:00-19:00 ${tz} ask window — the planner ` +
-        'records nothing there. Move the tick, or declare expectWindowSkip.',
+      `runTick at ${nowIso} is off the planner's ${PLANNER_TICK_MINUTES}-minute cadence — the ` +
+        'planner records nothing there. Move the tick to :00 or :30, or declare expectCadenceSkip.',
     );
   }
   setSimClock(tenantId, nowIso);
@@ -664,7 +675,7 @@ export async function runArc(
         }
         const tick = await runTick(tenantId, atIso, {
           ...opts,
-          expectWindowSkip: step.expectWindowSkip,
+          expectCadenceSkip: step.expectCadenceSkip,
         });
         ticks.push(tick);
         steps.push({ atIso, kind: 'tick', detail: `decisions: ${tick.decisions.length}` });

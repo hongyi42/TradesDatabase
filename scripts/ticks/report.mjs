@@ -225,15 +225,45 @@ try {
   // simply had no work.
   lines.push('## Planner — per firm');
   const perFirm = new Map();
+  const unknownOutcomes = new Set();
+  // Renamed outcomes, old name -> current bucket. The ask window was deleted on
+  // 2026-08-29 and 'out_of_window' became 'off_cadence'; rows older than that
+  // rename are still in the 90-day window and are still true.
+  // Null prototype: a plain literal would resolve an outcome named 'constructor'
+  // or 'toString' to something inherited and truthy, and this reads a string that
+  // came out of a database column.
+  const LEGACY_OUTCOMES = Object.assign(Object.create(null), { out_of_window: 'off_cadence' });
   for (const r of runs) {
     const plans = r.summary?.teamLeadPlanner?.plans;
     if (!Array.isArray(plans)) continue;
     for (const p of plans) {
       const f = perFirm.get(p.tenantId) ?? {
-        planned: 0, no_gaps: 0, out_of_window: 0, error: 0,
+        planned: 0, no_gaps: 0, off_cadence: 0, error: 0, unknown: 0,
         turns: 0, toolCalls: 0, ms: 0, decisions: 0,
       };
-      if (f[p.outcome] !== undefined) f[p.outcome] += 1;
+      // LOUD, never silent. This accumulator hardcodes its buckets, and it used
+      // to drop anything it did not recognise on the floor — so renaming an
+      // outcome (out_of_window -> off_cadence, 2026-08-29) would have printed a
+      // permanent zero for the new one and nobody would have known. This file is
+      // .mjs, so neither tsc nor the suite would have caught it. An outcome the
+      // report has never heard of is exactly the thing worth showing.
+      //
+      // LEGACY names are read, not warned about: lifecycle_runs is a 90-day
+      // record, so rows written before a rename are correct history and must
+      // still be counted. Warning about them would train a reader to ignore the
+      // warning, which is what it is for.
+      const outcome = LEGACY_OUTCOMES[p.outcome] ?? p.outcome;
+      // Object.hasOwn, not `!== undefined`: `f` is a plain literal, so an outcome
+      // named 'constructor' or 'toString' resolves to something INHERITED and
+      // truthy, writes a garbage own key and bypasses the loud branch entirely —
+      // and '__proto__' vanishes without a trace. This reads a string out of a
+      // database column, and the whole point of the branch below is that nothing
+      // gets dropped silently.
+      if (Object.hasOwn(f, outcome)) f[outcome] += 1;
+      else {
+        f.unknown += 1;
+        unknownOutcomes.add(p.outcome);
+      }
       f.turns += p.turns ?? 0;
       f.toolCalls += p.toolCalls ?? 0;
       f.ms += p.ms ?? 0;
@@ -250,7 +280,8 @@ try {
   for (const [tenantId, f] of perFirm) {
     lines.push(
       `- ${tenantId}: planned ${f.planned} · no work ${f.no_gaps} · ` +
-        `out of hours ${f.out_of_window} · errors ${f.error}`,
+        `not due ${f.off_cadence} · errors ${f.error}` +
+        (f.unknown > 0 ? ` · ⚠ ${f.unknown} UNRECOGNISED` : ''),
     );
     if (f.planned > 0) {
       lines.push(
@@ -258,6 +289,12 @@ try {
           `${(f.ms / f.planned / 1000).toFixed(1)}s avg`,
       );
     }
+  }
+  if (unknownOutcomes.size > 0) {
+    lines.push(
+      `- ⚠ this report does not know the outcome(s) ${[...unknownOutcomes].join(', ')} — ` +
+        'someone added or renamed a PlannerTenantOutcome without updating scripts/ticks/report.mjs',
+    );
   }
   lines.push('');
 

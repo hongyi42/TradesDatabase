@@ -196,27 +196,54 @@ describe('runTick — production wiring, stubbed model', () => {
     );
   });
 
-  test('the window guard throws off-window and expectWindowSkip records the skip', async () => {
-    const t = await createTenant(`Eval PlannerSimWindow ${Date.now()}`);
+  test('the cadence guard throws off-grid, and expectCadenceSkip records the skip', async () => {
+    const t = await createTenant(`Eval PlannerSimCadence ${Date.now()}`);
     await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
     const t0Ms = Date.parse(simStartIso(10));
-    // Deadline pushed past the evening tick: the sweep runs on EVERY tick
-    // (window-free, as in production), so a due gap would be escalated before
-    // the planner could demonstrate its window skip.
+    // Deadline pushed past the late tick: the sweep runs on EVERY tick, so a due
+    // gap would be escalated before the planner could demonstrate the skip.
     const world = {
       ...SMOKE_SCENARIOS[0].world,
       nudges: SMOKE_SCENARIOS[0].world.nudges.map((n) => ({ ...n, escalateAfter: '+40h' })),
     };
     await seedScenario(t.id, world, t0Ms);
+
+    // 22:15 firm-local — a real hour, but off the 30-minute grid.
+    const offGrid = atOffset(t0Ms, '+12.25h');
+    await expect(runTick(t.id, offGrid)).rejects.toThrow(/cadence/);
+
+    const skipped = await runTick(t.id, offGrid, { expectCadenceSkip: true });
+    expect(skipped.planner.skippedCadence).toBe(1);
+    expect(skipped.planner.planned).toBe(0);
+    expect(skipped.userPrompt).toBeNull();
+    expect(skipped.decisions).toHaveLength(0);
+  });
+
+  test('22:00 is a NORMAL tick now — the ask window is gone', async () => {
+    // The counterpart, and the one that proves the deletion rather than the
+    // rename: this exact hour used to skip the tenant before the model call. A
+    // firm that has recorded no approximate hours runs at the full rate around
+    // the clock, so the planner thinks here like any other tick.
+    const t = await createTenant(`Eval PlannerSimEvening ${Date.now()}`);
+    await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
+    const t0Ms = Date.parse(simStartIso(10));
+    const world = {
+      ...SMOKE_SCENARIOS[0].world,
+      nudges: SMOKE_SCENARIOS[0].world.nudges.map((n) => ({ ...n, escalateAfter: '+40h' })),
+    };
+    await seedScenario(t.id, world, t0Ms);
+
+    // An EMPTY plan is a legitimate submission ("leave them all alone"), so this
+    // is the cheapest stub that still proves the model call HAPPENED.
+    const emptyPlan: typeof runToolLoop = async (_req, _tools, execute) => {
+      await execute('submit_plan', { decisions: [] });
+      return { text: '', turns: 1, calls: [] };
+    };
     const evening = atOffset(t0Ms, '+12h'); // 22:00 firm-local
-
-    await expect(runTick(t.id, evening)).rejects.toThrow(/ask window/);
-
-    const tick = await runTick(t.id, evening, { expectWindowSkip: true });
-    expect(tick.planner.skippedWindow).toBe(1);
-    expect(tick.planner.planned).toBe(0);
-    expect(tick.userPrompt).toBeNull();
-    expect(tick.decisions).toHaveLength(0);
+    const tick = await runTick(t.id, evening, { runLoop: emptyPlan });
+    expect(tick.planner.skippedCadence).toBe(0);
+    expect(tick.planner.planned).toBe(1);
+    expect(tick.userPrompt).not.toBeNull();
   });
 });
 

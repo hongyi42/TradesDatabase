@@ -15,7 +15,13 @@ import { runLogIngestion, type LogIngestSummary } from '../composio/logIngest.js
 import { runGapSummaries, type SummarizeSummary } from './summarize.js';
 import { runReflector, type ReflectorMode, type ReflectorSummary } from '../teamLead/reflector.js';
 import { runWatchers, type WatchersSummary } from './watchers.js';
-import { runPlanner, type PlannerMode, type PlannerSummary } from '../teamLead/planner.js';
+import {
+  plannerCadenceDue,
+  PLANNER_TICK_MINUTES,
+  runPlanner,
+  type PlannerMode,
+  type PlannerSummary,
+} from '../teamLead/planner.js';
 import { TEAM_LEAD_REF } from '../teamLead/identity.js';
 import { dispatchForIdentity, TEAM_LEAD_TOOL_SCHEMAS } from '../mcp/server.js';
 import { hasModelCredentials, assertSpineModelAllowed } from '../model/forcedTool.js';
@@ -440,12 +446,21 @@ export async function runLifecycle(
     }
   }
 
-  // 9. The team-lead PLANNER (plan 2026-08-19, Phase 3) — the half-hour tick,
-  // and since the collapse it writes and queues the question itself, so a send
-  // it decides is deliverable the moment the tick ends. Same stateless cadence
-  // trick as heavyTick above: the
-  // minute is the state, and `< 5` tolerates a delayed firing. On a */5 schedule
-  // that is :00 and :30, never twice.
+  // 9. The team-lead PLANNER (plan 2026-08-19, Phase 3) — and since the collapse
+  // it writes and queues the question itself, so a send it decides is deliverable
+  // the moment the tick ends. Same stateless cadence trick as heavyTick above:
+  // the minute is the state, and `< 5` tolerates a delayed firing. On a */5
+  // schedule that is :00 and :30, never twice.
+  //
+  // THIS IS A COARSE CANDIDATE CHECK, NOT THE DECISION (plan 2026-08-29 Phase 3).
+  // The real cadence is PER FIRM and depends on the firm's own approximate hours,
+  // which cannot be read here: this runs once per tick, outside any tenant loop,
+  // and reading every firm's settings just to decide whether to start would cost
+  // exactly what the gate exists to save. So this asks the cheaper question — is
+  // ANY firm possibly due? — at the FASTEST rate any firm can run, and runPlanner
+  // makes the per-firm call. PLANNER_TICK_MINUTES_OFF_HOURS is required to be a
+  // multiple of PLANNER_TICK_MINUTES precisely so this can never filter out a
+  // tick some firm was due for.
   //
   // PLANNER_MODE follows the NUDGES_MODE contract exactly: unset is a VALID
   // 'off' (a cron deployed before the var is chosen must not go red), and any
@@ -458,7 +473,7 @@ export async function runLifecycle(
   // escalate), not compose's creation gate. Consequence to hold: with the ladder
   // rolled back and PLANNER_MODE on, the planner still makes a billed call for
   // any tenant that still has open rows. It skips tenants with none.
-  const plannerTick = new Date(nowIso).getUTCMinutes() % 30 < 5;
+  const plannerTick = plannerCadenceDue(nowIso, PLANNER_TICK_MINUTES);
   const plannerModeRaw = process.env.PLANNER_MODE;
   const plannerMode: PlannerMode | null =
     !plannerModeRaw ? 'off'
@@ -488,7 +503,7 @@ export async function runLifecycle(
   } else if (plannerMode === 'off') {
     teamLeadPlanner = { skipped: "PLANNER_MODE 'off'" };
   } else if (!plannerTick) {
-    teamLeadPlanner = { skipped: 'off-cadence tick (planner runs on the half hour)' };
+    teamLeadPlanner = { skipped: 'off-cadence tick (no firm can be due this minute)' };
   } else if (!(deps.hasModelKey ?? hasModelCredentials)()) {
     teamLeadPlanner = { skipped: 'no inference credentials' };
   } else {

@@ -45,6 +45,15 @@ Decisions before the phases.
   `gap_summaries.working_hours_open` column all stay exactly as they are. It is a yardstick — like
   "business days" — not a claim about any firm. This drops the Tier D migration AND the
   stored-column-changes-meaning hazard out of the build entirely.
+- **TWO CONSTANTS ARE HELD BACK BECAUSE THEY ARE READ ON BOTH SIDES OF A MIRRORED RULE** (mine,
+  caught while writing the summary). `NUDGE_ESCALATE_HOURS` (watchers ×3, planner ×2) and
+  `NUDGE_DELIVERY_DEADLINE_HOURS` (watchers ×2, planner ×3) are read by the sweep — Tier A, which
+  moves — AND by `currentDeadlineMs`/`holdCeilingMs`, which are Tier B and deferred. Moving only
+  the sweep's side manufactures precisely the failure `planner.ts:762-766` warns about: *"If the
+  two disagreed, `extend` could report success while the sweep escalated on a different clock."*
+  So this build moves ONLY constants whose call-sites are entirely tenant-scoped —
+  `OVERDUE_HOURS`, `LOOKBACK_HOURS`, `MAX_NEW_ITEMS_PER_TENANT_TICK`, `PLANNER_SILENCE_HOURS` —
+  and the other two move in build 6 **together with their planner mirrors**, as one edit.
 - **Only Tier A constants move** (mine, from the research's reachability tiers). Tier B (pure
   functions needing a threaded parameter) and Tier C (`PLANNER_SYSTEM`, a module-scope string built
   at import time, which would have to become a function of the firm) are **deferred to build 6**,
@@ -121,11 +130,11 @@ create table tenant_settings (
   -- and NOT the working-hours METRIC, which keeps its own fixed 7-19 convention.
   approx_work_start_hour  int check (approx_work_start_hour between 0 and 23),
   approx_work_end_hour    int check (approx_work_end_hour   between 1 and 24),
+  -- ONLY constants whose call-sites are ALL tenant-scoped. See the Decisions:
+  -- escalate_hours and delivery_deadline_hours are deliberately ABSENT.
   overdue_hours           int check (overdue_hours          > 0),
   lookback_hours          int check (lookback_hours          > 0),
   max_new_per_tick        int check (max_new_per_tick        > 0),
-  escalate_hours          int check (escalate_hours          > 0),
-  delivery_deadline_hours int check (delivery_deadline_hours > 0),
   planner_silence_hours   int check (planner_silence_hours   > 0),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -180,9 +189,10 @@ that is the whole test.
 **`src/jobs/watchers.ts`** — one `getTenantSettings` per tenant per tick, beside the existing
 `getTenant` call, then:
 - `:378-379` `LOOKBACK_HOURS` / `OVERDUE_HOURS` → `s.lookbackHours` / `s.overdueHours`
-- `:632` and `:1106`, `:1206` → `s.escalateHours`, `s.maxNewPerTick`
+- `:1106`, `:1206` → `s.maxNewPerTick`
 - `:680`, `:818` → `s.plannerSilenceHours`
-- `:841` → `s.deliveryDeadlineHours`
+- **NOT `:632` (`NUDGE_ESCALATE_HOURS`) and NOT `:841`
+  (`NUDGE_DELIVERY_DEADLINE_HOURS`)** — see the Decisions. They stay global here.
 - Add `getSettings` to `WatcherDeps` so tests inject it, matching every other collaborator there.
 
 **`src/teamLead/reflector.ts`** — `MIN_SUMMARIES`, `MIN_NEW_SINCE_LAST_RUN`, `REFLECT_FROM_HOUR`

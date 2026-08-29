@@ -293,8 +293,14 @@ for (const [cond, label] of Object.entries(CONDITIONS).filter(([k]) => WANT.incl
   const s = byCond[cond];
   console.log(`  ${cond}  ${s.correct}/${s.n}  (${s.pct}%)  — ${label}${s.errored ? `  [${s.errored} API errors]` : ''}`);
 }
-const toolUse = byCond.C.results.filter((r) => r.usedTool).length;
-console.log(`\n  Condition C called resolve_date on ${toolUse}/${byCond.C.n} cases.`);
+// Tool USE is reported per tool-carrying arm that actually ran. Hardcoding C
+// here crashed a run that had already produced its numbers (EVAL_CONDITIONS=A,D),
+// which is the worst place to fail: the work was done and the report died.
+for (const cond of WANT.filter((c) => c === 'C' || c === 'D')) {
+  const s = byCond[cond];
+  const toolUse = s.results.filter((r) => r.usedTool).length;
+  console.log(`\n  Condition ${cond} called resolve_date on ${toolUse}/${s.n} cases.`);
+}
 
 // Truncation is the confound to watch: with thinking on, a hit cap means the
 // answer was cut off by the trace, which reads as a wrong answer but isn't one.

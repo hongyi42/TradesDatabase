@@ -189,6 +189,23 @@ async function truncateSpine(hasScheduling) {
         where table_schema = 'public' and table_name = 'reflector_runs'`,
     );
     if (rr.rows.length > 0) tables += ', reflector_runs';
+    // tenant_settings cascades from tenants, but is NAMED (eng-memory §1). The
+    // cascade means omitting it never errors — a stale row would just quietly
+    // give the reseeded firm someone else's detector thresholds.
+    //
+    // Cleared here alongside tenant_profiles, which is the precedent this
+    // follows. Note the CONSEQUENCE, because it is not obvious: this is the same
+    // truncate `npm run seed -- --hosted` runs, so a hosted reseed drops the
+    // pilot firm's own thresholds and cadence back to the code defaults. Harmless
+    // while nothing writes settings; it becomes a real loss the moment build 3
+    // gives the planner the write verb, and that build should decide whether
+    // config survives a demo reseed (spine-eval/world.mjs already argues it
+    // should, for its pilot path).
+    const ts = await client.query(
+      `select 1 from information_schema.tables
+        where table_schema = 'public' and table_name = 'tenant_settings'`,
+    );
+    if (ts.rows.length > 0) tables += ', tenant_settings';
     // lifecycle_runs is DELIBERATELY EXCLUDED (eng-memory §1 asks that every new
     // table be registered by name — this is its registration). It is the cron's
     // own execution log, tenant-agnostic and holding no customer-derived text, so

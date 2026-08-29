@@ -152,6 +152,9 @@ const RESET_TABLES = [
   'customers',
   'technicians',
   'tenant_profiles',
+  // Registered BY NAME (eng-memory §1). Cascades from tenants, so omitting it
+  // fails SILENTLY — a stale row would change this firm's cadence mid-eval.
+  'tenant_settings',
   'sandbox_pool',
   'hosts',
 ];

@@ -166,16 +166,25 @@ Every column nullable: absent means "use the code default", which is what keeps 
 `--linked` and points at the pilot).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] New test: `patchTenantSettings` writes only supplied fields; explicit `null` clears one
+- [x] `npm run typecheck` · `npm run lint` · `npm test` (111 files / 2370 tests) · `npm run build`
+- [x] New test: `patchTenantSettings` writes only supplied fields; explicit `null` clears one
       without touching its neighbours.
-- [ ] New test: `resolveSettings(null)` returns exactly today's constants — asserted against the
-      imported constants themselves, not copied literals, so a constant change cannot drift.
-- [ ] New test: a CHECK constraint rejects `approx_work_end_hour = 0` and a negative `overdue_hours`.
+- [x] New test: `resolveSettings(null)` returns exactly today's constants — asserted against the
+      constants IMPORTED FROM `watchers.js`, which also pins the re-export chain the move created.
+- [x] New test: a CHECK constraint rejects `approx_work_end_hour = 0`, `approx_work_start_hour = 24`
+      and a negative `overdue_hours` — verified to be the DATABASE rejecting them, not a TS guard.
+- [x] Added beyond the plan (review note): naming BOTH hours in one call with `start >= end` is
+      refused. No CHECK can express a two-column rule, and `resolveSettings` would discard the pair —
+      so the write would otherwise be echoed back as saved and then ignored by every reader.
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack.
-- [ ] Apply the migration locally, insert a partial row, read it back — evidence is the row.
+- [x] Applied locally; wrote a PARTIAL row (2 of 5 columns) through the app path (supabase-js /
+      PostgREST) and read it back through an INDEPENDENT channel (direct postgres). Evidence:
+      written `{approx_work_start_hour:8, approx_work_end_hour:16, overdue_hours:null,
+      lookback_hours:null, max_new_per_tick:null}`; raw psql returned the identical row;
+      `resolveSettings` → `{approxWorkStartHour:8, approxWorkEndHour:16, overdueHours:3,
+      lookbackHours:72, maxNewPerTick:5}`.
 
 ### Manual verification
 - [ ] None.
@@ -365,7 +374,7 @@ about the PROMPT, not the sweep. **Re-examine, do not reflexively delete.**
 
 Not a phase — a checklist that must be satisfied before Phase 1 is called done (review finding 10):
 
-- [ ] `tenant_settings` added **by name** to `scripts/spine-eval/world.mjs:113-133` `RESET_TABLES`,
+- [x] `tenant_settings` added **by name** to `scripts/spine-eval/world.mjs:113-133` `RESET_TABLES`,
       `scripts/agentic-eval/run.mjs:141-157` `RESET_TABLES`, and `scripts/seed.mjs:175-198`. Each
       carries a comment that new tables are registered by name; `world.mjs:126-128` names the
       `tenant_profiles` trap as why incidental cascade coverage is not enough. `on delete cascade`

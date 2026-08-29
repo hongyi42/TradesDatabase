@@ -119,6 +119,12 @@ const RESET_TABLES = [
   // ACTION — left out, one C10 run would pin the Eval tenants forever and the
   // reset's `delete from tenants` below would die on 23503 (review finding).
   'tenant_profiles',
+  // Same trap as tenant_profiles: references ONLY tenants. The FK IS `on delete
+  // cascade`, so the reset would not die on 23503 — the failure would be SILENT
+  // instead, a stale settings row surviving a world rebuild and quietly changing
+  // that firm's detector thresholds and planner cadence in the next eval run.
+  // Registered BY NAME (eng-memory §1).
+  'tenant_settings',
   // Cascade-reachable via technicians, but named anyway (eng-memory §1: every
   // new table gets registered BY NAME — incidental cascade coverage is how
   // tenant_profiles got missed).
@@ -168,6 +174,12 @@ async function reset() {
  *   sandbox_pool — shared infra the real control plane and badge pull read. The
  *                  cold-pool fixture exists for tier 1's bind_telegram case, and
  *                  tier 1 stays local.
+ *
+ * tenant_profiles and tenant_settings are absent DELIBERATELY, and for the same
+ * reason: both are firm CONFIGURATION, not demo data. A pilot rebuild replaces the
+ * world a firm works in; it must not silently forget the firm's own letterhead or
+ * its own detector thresholds. Both are in RESET_TABLES above, which is the
+ * throwaway-eval-tenant path, where forgetting them is exactly what you want.
  */
 const PILOT_TENANT_SCOPED = [
   'query_audit',

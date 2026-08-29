@@ -21,6 +21,7 @@ export * from './webRequests.js';
 export * from './costs.js';
 export * from './moneyEvents.js';
 export * from './tenantProfiles.js';
+export * from './tenantSettings.js';
 export * from './callNumbers.js';
 export * from './callIngest.js';
 export * from './nudges.js';

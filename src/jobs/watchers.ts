@@ -17,7 +17,10 @@ import {
   listTeam,
   listTenantIdsWithTelegramBindings,
   listVisitTimesForJobs,
+  LOOKBACK_HOURS,
   markNudgeOutcome,
+  MAX_NEW_ITEMS_PER_TENANT_TICK,
+  OVERDUE_HOURS,
   resolveOpenReviewItemFor,
 } from '../db/index.js';
 import { notifyManagers } from '../calls/notify.js';
@@ -90,24 +93,23 @@ export type WatcherMode = 'shadow' | 'live';
 // watcher-shadow this function returns before every write path.
 export type NudgeMode = 'off' | 'shadow' | 'live';
 
-// Tune at the shadow-volume review (user decision 2026-08-16: 3h/72h/5 stand).
-export const OVERDUE_HOURS = 3;
-export const LOOKBACK_HOURS = 72;
-export const MAX_NEW_ITEMS_PER_TENANT_TICK = 5;
-
-// Ladder tuning. There is NO per-person ask cap (user ruling 2026-08-18,
-// reversing the 2-asks/person/24h budget): pace by urgency, earn the ask by
-// self-serving first, batch the unimportant — none of which a counter can
-// express. Volume is bounded instead by uq_nudges_subject_ever (a subject is
-// asked about once, EVER) and by MAX_NEW_ITEMS_PER_TENANT_TICK above, which
-// stays as the per-tenant surge brake. 24h of post-ask silence escalates.
-// Code constants, not env (the OVERDUE_HOURS pattern: one tuning surface).
+// THE THREE DETECTION PARAMETERS NOW LIVE IN src/db/tenantSettings.ts, where they
+// are the FALLBACKS for a firm that has recorded none of its own (plan 2026-08-29
+// "the firm is data"). They are re-exported here, with their full history, so
+// every existing importer and every reader of this file finds them where they
+// have always been — but there is exactly ONE definition.
 //
-// The deleted counter was ALSO, incidentally, the brake on a misfiring
-// detector. That backstop must return per-detector: today's margin comes from
-// having exactly ONE well-tested detector, not from the design, so detector #2
-// must land with its own brake. See
-// thoughts/shared/research/2026-08-19-nudge-pacing-replacement-design.md (§5).
+// The declarations had to move DOWN rather than the fallbacks move UP: `src/db/`
+// is a leaf, and importing these from a job would have made the database layer
+// depend on one.
+export {
+  OVERDUE_HOURS,
+  LOOKBACK_HOURS,
+  MAX_NEW_ITEMS_PER_TENANT_TICK,
+} from '../db/tenantSettings.js';
+
+// Ladder tuning. 24h of post-ask silence escalates. Code constants, not env (the
+// OVERDUE_HOURS pattern: one tuning surface).
 //
 // 48 -> 24 (user decision 2026-08-20), and the evidence for it is unusual: the
 // PLANNER reached the same number on its own, three shadow ticks running,

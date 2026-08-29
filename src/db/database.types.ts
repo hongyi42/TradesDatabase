@@ -1994,6 +1994,47 @@ export type Database = {
           },
         ]
       }
+      tenant_settings: {
+        Row: {
+          approx_work_end_hour: number | null
+          approx_work_start_hour: number | null
+          created_at: string
+          lookback_hours: number | null
+          max_new_per_tick: number | null
+          overdue_hours: number | null
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          approx_work_end_hour?: number | null
+          approx_work_start_hour?: number | null
+          created_at?: string
+          lookback_hours?: number | null
+          max_new_per_tick?: number | null
+          overdue_hours?: number | null
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          approx_work_end_hour?: number | null
+          approx_work_start_hour?: number | null
+          created_at?: string
+          lookback_hours?: number | null
+          max_new_per_tick?: number | null
+          overdue_hours?: number | null
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tenant_settings_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: true
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tenants: {
         Row: {
           created_at: string

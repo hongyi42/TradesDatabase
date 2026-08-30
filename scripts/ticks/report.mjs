@@ -170,6 +170,22 @@ try {
       unexplained += 1;
       for (const [step, value] of Object.entries(r.summary)) {
         if (!value || typeof value !== 'object') continue;
+        // A LOOP-LIMIT hit gets its own diagnosis and pre-empts the generic
+        // one (build 1b). It also lands in tenantErrors, so without this branch
+        // a planner that ran out of clock would be reported as "every attempted
+        // row/tenant failed" — which names the wrong cause, and the wrong cause
+        // sends the reader to the provider status page instead of to the queue
+        // that outgrew the budget.
+        const lh = value.limitHits;
+        if (lh && ((lh.budget ?? 0) > 0 || (lh.turns ?? 0) > 0)) {
+          bump(
+            `${step}: hit the loop's OWN limits (budget ${lh.budget ?? 0}, turns ` +
+              `${lh.turns ?? 0}) — the work stopped fitting in the clock, NOT a provider ` +
+              'failure. Deterministic: it repeats every tick until the work or the rail changes.',
+            r.started_at,
+          );
+          continue;
+        }
         const rowErrors = value.rowErrors ?? 0;
         const tenantErrors = value.tenantErrors ?? 0;
         if (rowErrors === 0 && tenantErrors === 0) continue;

@@ -158,35 +158,35 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L3468 · MAX_TOOL_CALL_MS = 90_000
 - L3485 · Context exhaustion is now the de-facto outer limit.
 - L3489 · The model is NOT told its remaining time
-- L3548 · Is "reconcile first" doctrine or a code-enforced phase?
-- L3551 · Churn.
-- L3554 · Crowding out.
+- L3566 · Is "reconcile first" doctrine or a code-enforced phase?
+- L3569 · Churn.
+- L3572 · Crowding out.
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L3886 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L3908 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L3955 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L3989 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L4021 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L4026 · Every member row stores the FULL grouped message in question.
-- L4030 · The attribution stamp is an audit link, not a gate.
-- L4034 · The derived stamp requires a capture a badge-holder SPOKE
-- L4038 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L4044 · The follow-up loop has two halves and both had to be written down.
-- L4050 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L4124 · Batching works.
-- L4126 · The follow-up leg works, including the half that fails silently.
-- L4130 · Both attribution paths fired, each in its designed case.
-- L4134 · Escalation fired correctly
-- L4135 · The planner's group-aware pacing is the result worth keeping.
+- L3904 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L3926 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L3973 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L4007 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L4039 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L4044 · Every member row stores the FULL grouped message in question.
+- L4048 · The attribution stamp is an audit link, not a gate.
+- L4052 · The derived stamp requires a capture a badge-holder SPOKE
+- L4056 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L4062 · The follow-up loop has two halves and both had to be written down.
+- L4068 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L4142 · Batching works.
+- L4144 · The follow-up leg works, including the half that fails silently.
+- L4148 · Both attribution paths fired, each in its designed case.
+- L4152 · Escalation fired correctly
+- L4153 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L4257 · Evals:
-- L4264 · Runbooks:
-- L4269 · Decision history with citations:
-- L4273 · This file
+- L4275 · Evals:
+- L4282 · Runbooks:
+- L4287 · Decision history with citations:
+- L4291 · This file
 
 <!-- INDEX:END -->
 
@@ -3487,6 +3487,24 @@ durations on their own line, and `limitHits` is printed at all (it never was).
   (https://openrouter.ai/z-ai/glm-5.3). It lands in `tenantErrors`, not `limitHits` — a different
   signature. Model-dependent: a 128k-context model hits it far sooner.
 - **The model is NOT told its remaining time** (user choice) — build 6 rewrites doctrine anyway.
+
+**THE PLANNER GOT A SYSTEMIC DETECTOR** (user request, same day). It was the only lifecycle step
+without one: `runPlanner` catches per tenant, so it returns normally however badly a firm did, and a
+firm burning the whole clock every half hour left every `lifecycle_runs` row reading **`ok: true`** —
+green forever with nothing working. `ok` is what becomes `process.exit(1)`, which is what Render
+shows as a failed run and what `npm run ticks` groups under Failures, so a step that never sets it is
+a step nobody hears. Now: **any loop-limit hit** turns the tick red (deterministic — the clock is
+wall-clock and the input barely changes, so it repeats identically and never self-heals; one firm is
+enough, or a single runaway hides behind nine healthy ones), **or** every firm erroring, which is the
+watcher sweep's existing test. A lone provider blip stays green on purpose. The report names a limit
+hit with its own diagnosis rather than the generic "every attempted row/tenant failed", which would
+send the reader to the provider status page instead of to the queue that outgrew the budget.
+
+**Deliberately NOT built (user choice, 2026-08-29):** an end-to-end rehearsal of the alarm, and a
+clamp-down-only `PLANNER_BUDGET_MS` for inducing a real budget throw on a live tick. The alarm has
+unit coverage (mutation-checked) but **has never fired against a real runaway** — no runaway has ever
+been observed. Weigh that against [[manager-push-is-dead]], where an unexercised path was silently
+dead for 30 days.
 
 **BASELINE at the moment of the build — pilot last 24h, ATTRIBUTED BY PROVIDER** (`cost_events`
 inside each run's `[started_at, finished_at]`, never by date):

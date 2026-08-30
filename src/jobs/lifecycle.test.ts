@@ -401,6 +401,70 @@ describe('runLifecycle', () => {
       expect(summary.ok).toBe(false);
     });
 
+    // Build 1b. Until this existed the planner was the only step with no
+    // systemic detector: runPlanner catches per tenant, so it returns normally
+    // however badly a firm did, and a firm burning the whole 15-minute clock
+    // every half hour left every lifecycle row reading ok:true — green forever
+    // with nothing working. `ok` is what becomes exit 1, which is what Render
+    // shows as a failed run.
+    test('step 9: a planner LOOP-LIMIT hit turns the tick red; a lone blip does not', async () => {
+      process.env.WATCHERS_MODE = 'live';
+      process.env.NUDGES_MODE = 'live';
+      process.env.PLANNER_MODE = 'live';
+
+      const plannerSummary = (over: Record<string, unknown>) => ({
+        mode: 'live' as const,
+        tenants: 2,
+        planned: 0,
+        skippedNoGaps: 0,
+        skippedCadence: 0,
+        decisions: 0,
+        dropped: 0,
+        applied: 0,
+        refusedAtApply: 0,
+        recorded: 0,
+        tenantErrors: 0,
+        limitHits: { budget: 0, turns: 0 },
+        byAction: {},
+        plans: [],
+        ...over,
+      });
+      const run = (over: Record<string, unknown>) =>
+        runLifecycle(NOW, {
+          ...COST_STUBS,
+          ...BASE,
+          runWatchers: async () => ({
+            ...WATCH_OK,
+            mode: 'live' as const,
+            nudgeMode: 'live' as const,
+          }),
+          runPlanner: async () => plannerSummary(over),
+          hasModelKey: () => true,
+        });
+
+      // ONE budget hit out of two firms is enough. Waiting for all of them would
+      // let a single firm sit in a permanent runaway behind a healthy one.
+      const budget = await run({ limitHits: { budget: 1, turns: 0 }, tenantErrors: 1 });
+      expect(budget.ok).toBe(false);
+
+      // Same for a turns hit — structurally impossible while the planner passes
+      // maxTurns: null, so if it appears the ceiling came back.
+      const turns = await run({ limitHits: { budget: 0, turns: 1 }, tenantErrors: 1 });
+      expect(turns.ok).toBe(false);
+
+      // A lone provider blip is NOT systemic and must not cry wolf: an alarm
+      // that fires on a fault which fixed itself is one people learn to ignore.
+      const blip = await run({ tenantErrors: 1 });
+      expect(blip.ok).toBe(true);
+
+      // …but every firm failing is, on the same test the watcher sweep uses.
+      const allDown = await run({ tenantErrors: 2 });
+      expect(allDown.ok).toBe(false);
+
+      // And a clean planner stays green.
+      expect((await run({})).ok).toBe(true);
+    });
+
     // The compose step retired with the collapse (plan 2026-08-24). What its
     // gates used to protect is now a VISIBILITY problem: the planner is the only
     // author of a question, so a live ladder with a non-live planner mints gaps

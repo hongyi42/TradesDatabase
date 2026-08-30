@@ -508,7 +508,7 @@ export async function runLifecycle(
     teamLeadPlanner = { skipped: 'no inference credentials' };
   } else {
     try {
-      teamLeadPlanner = await (deps.runPlanner ?? runPlanner)(nowIso, plannerMode, {
+      const summary = await (deps.runPlanner ?? runPlanner)(nowIso, plannerMode, {
         tools: [...TEAM_LEAD_TOOL_SCHEMAS],
         // The planner's `escalate` only moves a deadline — the SWEEP inside
         // step 8 performs the handoff, and it reads nothing unless the watcher
@@ -522,6 +522,31 @@ export async function runLifecycle(
         execute: (tenantId, name, args) =>
           dispatchForIdentity(name, args, { tenantId, technicianRef: TEAM_LEAD_REF }),
       });
+      teamLeadPlanner = summary;
+      // THE PLANNER'S OWN SYSTEMIC DETECTOR (build 1b). Until this existed, the
+      // step above was the only one without one: runPlanner catches per tenant,
+      // so it returns normally however badly a firm did, and a firm burning the
+      // whole clock every half hour left every lifecycle row reading ok:true.
+      // Green forever, with nothing working. `ok` is what becomes exit 1, which
+      // is what Render shows as a failed run and what the ticks report groups
+      // under Failures — so a step that never sets it is a step nobody hears.
+      //
+      // TWO rules, because the two failures are not the same animal:
+      //
+      // A LOOP-LIMIT hit is deterministic. The clock is wall-clock and the input
+      // barely changes between ticks, so a firm whose work stopped fitting fails
+      // IDENTICALLY every 30 minutes and never recovers on its own. One is
+      // enough — waiting for all firms to do it would let a single firm sit in a
+      // permanent 15-minute runaway behind nine healthy ones.
+      // (`turns` is included though the planner opted out of that ceiling and
+      // cannot hit it: if it ever appears, somebody restored the ceiling, which
+      // is the same class of thing — deterministic and never self-healing.)
+      //
+      // A per-tenant ERROR is usually a blip — a provider 502, a transient
+      // database fault — and waited out. So it only counts as systemic when
+      // EVERY firm hit it, the same test the watcher sweep uses above.
+      if (summary.limitHits.budget > 0 || summary.limitHits.turns > 0) ok = false;
+      else if (summary.tenants > 0 && summary.tenantErrors === summary.tenants) ok = false;
     } catch (err) {
       teamLeadPlanner = { stepError: msg(err) };
       ok = false;

@@ -132,21 +132,21 @@ gen:types:local`.
 id, `status: 'queued'`, `queued_at`, question; 23505 → null (the race: send applied twice).
 
 ### Automated verification
-- [ ] `npx tsc --noEmit` · `npm run lint` · `npm test`
-- [ ] new `src/db/observations.test.ts`: round-trip; uq blocks re-notice in EVERY status; dismiss
+- [x] `npx tsc --noEmit` · `npm run lint` · `npm test`
+- [x] new `src/db/observations.test.ts`: round-trip; uq blocks re-notice in EVERY status; dismiss
       guard refuses on non-open; recover guard refuses on non-dismissed; RLS/grant posture probe
       (the `jobNotes.test.ts` `pg_constraint`/`has_table_privilege` pattern); decisions row with
       observation_id only satisfies the check; cascade from observations deletes its decisions
-- [ ] `createNudgeFromObservation` with a taken id returns null, does not throw
+- [x] `createNudgeFromObservation` with a taken id returns null, does not throw
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack (`npx supabase start`)
-- [ ] After `supabase db reset`: `\d observations` via psql shows the CHECKs; `select` on
+- [x] After `supabase db reset`: `\d observations` via psql shows the CHECKs; `select` on
       `v_observations` as `spine_reader` succeeds, as `anon` fails; TWO-TENANT probe — tenant B's
       `spine.tenant_id` setting sees zero of tenant A's observations (review F1)
 
 ### Manual verification
-- [ ] none
+- [x] none
 ---
 *No pause — automated checks suffice.*
 

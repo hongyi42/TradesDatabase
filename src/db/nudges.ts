@@ -52,6 +52,54 @@ export async function createPendingNudge(input: CreatePendingNudgeInput): Promis
   throw new Error(`createPendingNudge failed: ${error?.message ?? 'no row returned'}`);
 }
 
+// The send-time writer (plan 2026-08-31 "a gap is not an ask"): a question
+// comes into existence when the PLANNER sends, born 'queued' — there is no
+// pending stage left for new rows and no other author. The id is the
+// OBSERVATION'S OWN uuid (one gap, one id, two stages — the observations
+// migration header carries the design), so decision history and ask_group_id
+// semantics span both lives with no mapping.
+//
+// 23505 → null covers TWO races with one guard, both real: a send applied
+// twice (the same-id insert collides on the pk), and a subject with a
+// pre-split relic nudge (collides on uq_nudges_subject_ever — the subject was
+// asked once, ever, and stays asked). Either way the caller reports refused,
+// never a second question.
+export interface CreateNudgeFromObservationInput {
+  id: string; // the observation's uuid
+  tenantId: string;
+  kind: ReviewKind;
+  subjectRef: string;
+  technicianId: string | null;
+  context: Json;
+  question: string;
+  askGroupId?: string | null;
+}
+
+export async function createNudgeFromObservation(
+  input: CreateNudgeFromObservationInput,
+): Promise<Nudge | null> {
+  const { data, error } = await getClient()
+    .from('nudges')
+    .insert({
+      id: input.id,
+      tenant_id: input.tenantId,
+      kind: input.kind,
+      subject_ref: input.subjectRef,
+      technician_id: input.technicianId,
+      context: input.context,
+      question: input.question,
+      status: 'queued',
+      queued_at: new Date().toISOString(),
+      attempts: 0,
+      ask_group_id: input.askGroupId ?? null,
+    })
+    .select()
+    .single();
+  if (!error && data) return data;
+  if (isUniqueViolation(error)) return null; // sent already, or a relic owns the subject
+  throw new Error(`createNudgeFromObservation failed: ${error?.message ?? 'no row returned'}`);
+}
+
 export async function listNudgesByStatus(
   tenantId: string,
   statuses: NudgeStatus[],

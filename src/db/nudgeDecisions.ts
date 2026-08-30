@@ -149,9 +149,16 @@ export async function listDecisionsForNudges(
         .range(from, from + PAGE - 1);
       if (error) throw new Error(`listDecisionsForNudges failed: ${error.message}`);
       for (const row of (data ?? []) as NudgeDecision[]) {
-        const list = out.get(row.nudge_id);
+        // `?? observation_id` (plan 2026-08-31): pre-ask rows carry
+        // observation_id and a NULL nudge_id, and under the same-id design the
+        // two name ONE gap — grouping on nudge_id alone would file every
+        // pre-ask decision under null, where historyLine and the sweep's
+        // plannerAlive would never find it (review F9).
+        const key = row.nudge_id ?? row.observation_id;
+        if (!key) continue; // unreachable: nudge_decisions_subject_check
+        const list = out.get(key);
         if (list) list.push(row);
-        else out.set(row.nudge_id, [row]);
+        else out.set(key, [row]);
       }
       if (!data || data.length < PAGE) break;
     }

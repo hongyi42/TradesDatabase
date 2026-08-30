@@ -314,7 +314,7 @@ describe('query_spine — bounds', () => {
 });
 
 describe('query_spine — the view surface is closed', () => {
-  test('spine_reader holds SELECT on exactly the twelve views and nothing else', async () => {
+  test('spine_reader holds SELECT on exactly the thirteen views and nothing else', async () => {
     // A new table must not become readable by default. This is the test that
     // fails when someone adds a grant without thinking.
     // v_money_events added 2026-08-15 (money-ledger plan, manager-only money
@@ -322,6 +322,9 @@ describe('query_spine — the view surface is closed', () => {
     // v_firm_profile added 2026-08-15 (firm-profile plan, same tier logic).
     // v_captures/v_visits/v_nudges/v_review_items added 2026-08-23 (④ — the
     // planner's read surface; nudge_decisions is the deliberate exception).
+    // v_observations added 2026-08-31 ("a gap is not an ask" — dismissed rows
+    // must be findable or `recover` has nothing to act on; manager visibility
+    // through the shared catalog is the plan's recorded acceptance).
     const { rows } = await pg.query(
       `select table_name from information_schema.table_privileges
         where grantee = 'spine_reader' order by table_name`,
@@ -334,6 +337,7 @@ describe('query_spine — the view surface is closed', () => {
       'v_jobs',
       'v_money_events',
       'v_nudges',
+      'v_observations',
       'v_review_items',
       'v_schedule',
       'v_team',

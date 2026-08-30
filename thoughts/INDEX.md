@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 188 documents · 184 live · 4 superseded.
+Regenerate with `npm run decisions:index`. 190 documents · 186 live · 4 superseded.
 
 ## Superseded — do not build on these
 
@@ -43,6 +43,8 @@ Regenerate with `npm run decisions:index`. 188 documents · 184 live · 4 supers
 
 ## Live
 
+- `2026-08-30` `plan` [2026-08-30-job-notepads](shared/plans/2026-08-30-job-notepads.md) `describes 2 deleted files` · _draft_ — Per-job notepads — a place the planner writes what it understands about one job
+- `2026-08-30` `plan` [2026-08-30-retire-gap-summaries](shared/plans/2026-08-30-retire-gap-summaries.md) · _draft_ — Retire gap_summaries — the store whose only reader died with the Reflector
 - `2026-08-30` `plan` [2026-08-30-the-planners-memory](shared/plans/2026-08-30-the-planners-memory.md) `describes 3 deleted files` — Build 3 — the planner writes its own memory, reconciles it against the spine, and the lesson machinery retires
 - `2026-08-30` `research` [2026-08-30-per-object-notepads-on-the-spine](shared/research/2026-08-30-per-object-notepads-on-the-spine.md) `not landed` `describes 1 deleted file` — Per-object notepads on the spine — the ground a job-notepad build would stand on
 - `2026-08-29` `plan` [2026-08-29-the-firm-is-data](shared/plans/2026-08-29-the-firm-is-data.md) `describes 1 deleted file` — Build 2 — a per-firm settings table, the send window deleted, and planner cadence informed by the firm's appr…

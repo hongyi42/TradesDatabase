@@ -1,0 +1,36 @@
+{
+  "arm": "opus",
+  "model": "claude-opus-5",
+  "startedAt": "2026-08-24T10:28:33.080Z",
+  "t0": "2026-08-24T17:00:00.000Z",
+  "tenantId": "446fe6ba-7a46-4a71-a560-0448836c8fc9",
+  "scenarios": 65,
+  "harnessErrors": 0,
+  "ledger": [
+    {
+      "provider": "anthropic",
+      "sku": "claude-opus-5-cache-write-1h",
+      "tokens": "7718"
+    },
+    {
+      "provider": "anthropic",
+      "sku": "claude-opus-5-cached-input",
+      "tokens": "1944936"
+    },
+    {
+      "provider": "anthropic",
+      "sku": "claude-opus-5-input",
+      "tokens": "386691"
+    },
+    {
+      "provider": "anthropic",
+      "sku": "claude-opus-5-output",
+      "tokens": "119624"
+    },
+    {
+      "provider": "spine",
+      "sku": "tool_call",
+      "tokens": "342"
+    }
+  ]
+}

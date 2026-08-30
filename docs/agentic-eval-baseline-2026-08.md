@@ -1,5 +1,13 @@
 # Agentic planner eval — baseline, 2026-08-24
 
+> **STALE STRUCTURE — 2026-08-30.** These numbers were produced against a harness that
+> builds 4-7 of the rebuild are dismantling: detectors that mint asks, a sweep that decides,
+> and a fixed verb list that the graders score by name. **Do not score a future run against
+> them.** After the rebuild a lower number means the harness changed, not that the planner
+> got worse. The raw rows are archived at [`docs/eval-baselines/`](eval-baselines/README.md),
+> which explains what they are still good for; see also
+> [`thoughts/shared/research/2026-08-30-what-the-evals-observe.md`](../thoughts/shared/research/2026-08-30-what-the-evals-observe.md).
+
 The first at-scale run of the planner **as an agent**: 65 scenarios (62 graded + 3 harness
 smokes), each a seeded world run through the REAL tick (sweep → planner → its two read tools,
 spine_read + recall_decisions, through the real MCP dispatch) at simulated instants, graded deterministically with a blind judge on top.

@@ -1,0 +1,31 @@
+{
+  "arm": "glm",
+  "model": "accounts/fireworks/routers/glm-5p2-fast",
+  "startedAt": "2026-08-24T10:09:22.553Z",
+  "t0": "2026-08-24T17:00:00.000Z",
+  "tenantId": "0c266635-5219-4490-8513-975459641675",
+  "scenarios": 65,
+  "harnessErrors": 0,
+  "ledger": [
+    {
+      "provider": "fireworks",
+      "sku": "glm-5.2-fast-cached-input",
+      "tokens": "1302601"
+    },
+    {
+      "provider": "fireworks",
+      "sku": "glm-5.2-fast-input",
+      "tokens": "92948"
+    },
+    {
+      "provider": "fireworks",
+      "sku": "glm-5.2-fast-output",
+      "tokens": "157346"
+    },
+    {
+      "provider": "spine",
+      "sku": "tool_call",
+      "tokens": "297"
+    }
+  ]
+}

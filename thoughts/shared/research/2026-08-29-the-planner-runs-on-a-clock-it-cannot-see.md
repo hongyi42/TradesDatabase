@@ -116,21 +116,47 @@ constraint to examine, and the time budget is the safety net behind it.
 ## What firm count does affect
 
 Not the per-firm allowance — the **cadence of everything behind a long tick**.
-`lifecycle.ts:637-642` records the operational fact: *"Render runs at most one lifecycle cron at a
+`lifecycle.ts:651-668` records the operational fact: *"Render runs at most one lifecycle cron at a
 time and SKIPS an overlapping firing."* Tenants are planned sequentially, so a tick's wall clock is
 the sum over firms, and any tick longer than the 5-minute cron interval suppresses the firings
 behind it.
 
-Arithmetic at the proposed 15-minute bound, worst case (every firm using its whole budget):
+**Corrected 2026-08-29 (build 1b): Render DELAYS, it does not skip.** The docs are explicit —
+"Render delays the next scheduled run until the active run finishes", and "Render stops an active
+run after 12 hours" (https://render.com/docs/cronjobs, verified 2026-08-29). The 15-minute bound is
+now shipped rather than proposed.
 
-| firms at full budget | tick length | firings skipped | planner slot (`:00`/`:30`) |
+Arithmetic at the bound, worst case (every firm using its whole budget):
+
+| firms at full budget | tick length | `*/5` firings displaced | planner slot (`:00`/`:30`) |
 |---|---|---|---|
-| 1 | 15 min | 2 | survives — 14:00 → 14:15, next slot 14:30 intact |
-| 2 | 30 min | 5 | **missed** — a tick from 14:00 runs through 14:30 |
+| 1 | 15 min | 2, pushed later | survives — 14:00 → 14:15, next slot 14:30 intact |
+| 2 | 30 min | 5, pushed later | **missed** — a tick from 14:00 runs through 14:30 |
 
-So the 15-minute figure is safe for a single-firm pilot and starts eating the planner's own cadence
-at two firms, worst case. Typical ticks are 20-30 seconds, so this is a tail risk rather than the
-norm — but it is the reason the bound cannot simply keep growing as firms are added.
+The planner slot is lost either way, but by a different mechanism than this table first claimed: a
+delayed firing *does* run, just at an off-grid minute, and `plannerCadenceDue` (minutes since
+midnight % everyMinutes < 5) will not call it due. The every-tick sweep in step 8 is not on a grid,
+so it genuinely does run — merely late, which is immaterial against 18h and 24h deadlines.
+
+So the bound is safe for a single-firm pilot and starts eating the planner's own cadence at two
+firms, worst case.
+
+**MEASURED, pilot last 24h, ATTRIBUTED BY PROVIDER** — `cost_events.provider` inside each run's
+`[started_at, finished_at]`, never by date. The first version of this paragraph quoted the report's
+model-blind line (22 ticks, max 4 turns / 34.3s) as GLM's, and **both of those maxima are Opus 5**;
+the review caught it. That is the same misattribution this document was written to prevent, made in
+the document itself.
+
+| model | planned ticks | turns p50 / max | duration p50 / max |
+|---|---|---|---|
+| GLM 5.3 (`openrouter`) | 16 | 2 / **2** | 12.2s / **19.3s** |
+| Opus 5 (`anthropic`) | 7 | 3 / **4** | 16.4s / **34.3s** |
+
+GLM's worst observed tick is **19.3s against a 900s bound — 47× of headroom**, and its turn count
+has never varied from 2. Opus is the slower of the two on both axes. `npm run ticks` cannot make
+this split: it reads `lifecycle_runs` only and has no provider column, so its distribution line
+mixes every model in the window. This is a tail risk, not the norm; it is the reason the bound
+cannot simply keep growing as firms are added.
 
 The suppressed firings also delay the **watcher sweep**, which shares the process. That is far less
 serious than it sounds: the sweep's own deadlines (`NUDGE_ESCALATE_HOURS = 24`,
@@ -140,16 +166,18 @@ immaterial to every one of them.
 ## Constraints and invariants
 
 - **A caller may only ever ask for LESS.** Both ceilings are clamped, not defaulted
-  (`toolLoop.ts:433-437`) — a caller cannot raise them, only `MAX_TOOL_LOOP_*` can.
+  (`toolLoop.ts:476-480`) — a caller cannot raise them, only `MAX_TOOL_LOOP_*` can.
 - **The budget must keep riding into the request.** If it became a between-turn check only, a hung
   provider would hold the process past the next tick, which is the failure the abort signal exists
   to prevent.
 - **`budget` and `turns` limit hits are counted separately** (`PlannerSummary.limitHits`) and must
   stay separate: they call for opposite responses — a budget hit says the work grew, a turn hit says
   the model is looping.
-- **Whatever replaces the hard discard must not let a half-applied plan look like a whole one.**
-  Every decision already records its own `outcome` (`applied` / `refused`) per gap, so incremental
-  application has somewhere honest to land.
+- ~~**Whatever replaces the hard discard must not let a half-applied plan look like a whole one.**~~
+  **VOID — corrected 2026-08-29 (see decision point 3).** A half-applied plan is not reachable: the
+  terminal tool returns the loop on the first successful submission, so there is no state in which
+  some decisions were applied and the loop then threw. The per-gap `outcome` column is still the
+  right shape for recording what happened; there is simply no partial case for it to record here.
 
 ## Decision points
 
@@ -160,18 +188,31 @@ immaterial to every one of them.
 2. **Whether the model is told the clock.** Adding "you have N seconds left, submit now" to the
    prompt makes graceful degradation *possible*; it is also a doctrine change, which is build 6's
    territory. Doing it without build 6 means editing `PLANNER_SYSTEM` twice.
-3. **Whether a submitted plan survives a later throw.** `outcome` already holds it. Reading it in
-   the catch would convert total loss into partial application. The cost is that "the tick failed"
-   and "the tick partly succeeded" stop being the same record, and `PlannerTenantOutcome` has no
-   spelling for the second.
+3. ~~**Whether a submitted plan survives a later throw.**~~ **WRONG — corrected 2026-08-29 by
+   `thoughts/shared/plans/2026-08-29-the-planner-execution-envelope.md`. There is nothing to
+   salvage.** This said `outcome` already holds a submitted plan and that reading it in the catch
+   would convert total loss into partial application. It does not, and it would not.
+   `submit_plan` is the loop's TERMINAL tool (`toolLoop.ts:581`): the loop returns the instant it
+   succeeds, so a successful submission can never go on to hit a limit. The only path that records a
+   submission and keeps running is the wholly-refused one (`planner.ts:1930` — every decision
+   rejected by the rails), and there `outcome.decisions` is empty by construction. So `outcome` at
+   throw time is always either empty, or empty-plus-refusals. What a limit throw destroys is the
+   model's *reasoning* — the tool reads, the intermediate conclusions — which only ever existed in
+   the message array, and no change to the catch block can reach it. Cross-tick continuity is the
+   only mechanism that could, which is build 3's territory (see `docs/engineering-memory.md` §6a,
+   "reconcile against the spine BEFORE you plan").
 4. **Whether the turn ceiling moves.** Untouched by the ruling, and the actual limit on long-horizon
    work. Raising it without raising the budget does nothing; raising both compounds the tick-length
    effect in the table above.
 
 ## Open questions
 
-- **What GLM 5.3 actually costs per tick.** Unknown as of this writing: `cost_events` holds zero
-  `provider = 'openrouter'` rows, ever. The OpenRouter build went live on `lifecycle-heart` at
+- ~~**What GLM 5.3 actually costs per tick.**~~ **ANSWERED 2026-08-29.** Its first two real pilot
+  ticks (17:30:48Z and 18:00:37Z) ran **16.2s and 12.2s**, 2 turns and 2 tool calls each, one gap,
+  `planned` + 1 applied — so **5-9s per model call**. At that rate the 8-turn ceiling stopped the
+  loop near 64s and the 90s clock never fired, which is what build 1b acts on. Original text, kept
+  because the reasoning it records is what made the measurement necessary: Unknown as of this
+  writing: `cost_events` holds zero `provider = 'openrouter'` rows, ever. The OpenRouter build went live on `lifecycle-heart` at
   2026-08-29T04:56:49Z (`dep-da96cq8ae00c73advicg`, commit `8354733`) and no planner tick had run
   since — the ask window holds the planner overnight. **Every latency figure on the pilot to date is
   Opus 5.** Do not size this bound against a model that has not run.

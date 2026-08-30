@@ -11,7 +11,9 @@ vi.mock('@anthropic-ai/sdk', () => ({
   },
 }));
 import {
+  MAX_TOOL_CALL_MS,
   MAX_TOOL_CALLS_PER_TURN,
+  MAX_TOOL_LOOP_BUDGET_MS,
   MAX_TOOL_LOOP_TURNS,
   MAX_TOOL_RESULT_CHARS,
   runToolLoop,
@@ -220,6 +222,21 @@ describe('runToolLoop', () => {
     expect(MAX_TOOL_LOOP_TURNS).toBe(8);
     expect(execute).toHaveBeenCalledTimes(8);
     expect(recordUsage).toHaveBeenCalledTimes(8);
+  });
+
+  // The budget is the ONLY rail for an opted-out caller (build 1b), and nothing
+  // else in the suite would notice it moving: every budget-sensitive test passes
+  // an explicit budgetMs, so a silent revert to the old 90_000 — the headline
+  // change of this build — would leave the whole suite green. Pinned for the same
+  // reason MAX_TOOL_LOOP_TURNS is pinned above.
+  //
+  // The VALUE only, deliberately. The clamp that keeps it a ceiling is the same
+  // Math.min as the turn clamp, which 'a caller may ask for LESS than the
+  // ceiling, never more' already exercises — and observing the budget clamp
+  // behaviourally would mean waiting out the resolved budget, i.e. a
+  // fifteen-minute test.
+  test('the budget rail is fifteen minutes', () => {
+    expect(MAX_TOOL_LOOP_BUDGET_MS).toBe(900_000);
   });
 
   // The TYPE is the contract, not the message text. A caller has to tell "the
@@ -434,6 +451,117 @@ describe('runToolLoop', () => {
       ),
     ).rejects.toThrow(new RegExp(`${MAX_TOOL_LOOP_TURNS}-turn ceiling`));
     expect(execute).toHaveBeenCalledTimes(MAX_TOOL_LOOP_TURNS);
+  });
+
+  // Build 1b. `maxTurns: null` is the planner's opt-out. Eleven turns alone would
+  // not prove the ceiling is gone (a ceiling of twelve would pass it too) — what
+  // proves it is this test TOGETHER with 'a caller may ask for LESS than the
+  // ceiling, never more' below, which pins that no NUMBER can ever exceed
+  // MAX_TOOL_LOOP_TURNS. Something that runs past 8 therefore cannot be a number
+  // at all, which is exactly the categorical difference `null` encodes.
+  test('maxTurns: null removes the turn ceiling entirely — the clock is the only rail', async () => {
+    const calls = Array.from({ length: 10 }, () =>
+      toolCallBody('spine_read', { sql: 'select 1' }),
+    );
+    serve(...calls, finalBody('done'));
+    const execute = vi.fn(async () => []);
+
+    const res = await runToolLoop(
+      { system: 's', user: 'u', maxTokens: 128, label: 'planner', maxTurns: null },
+      [READ_TOOL],
+      execute,
+      undefined,
+      { recordUsage: async () => {} },
+    );
+
+    expect(res.text).toBe('done');
+    expect(res.turns).toBe(11);
+    expect(res.turns).toBeGreaterThan(MAX_TOOL_LOOP_TURNS);
+    expect(execute).toHaveBeenCalledTimes(10);
+  });
+
+  // The failure the floor exists for, and the reason it is not cosmetic: WITHOUT
+  // it, an opted-out caller's normal ending is a mid-request abort — a plain
+  // Error reading "the provider did not respond" — so a CAPACITY exhaustion gets
+  // booked as a provider OUTAGE, the exact pair ToolLoopLimitError exists to keep
+  // apart. This test discriminates: the pre-floor code reaches the abort and
+  // throws an untyped Error, so it fails on `name`, not merely on a message.
+  test('a turn the clock cannot pay for is a BUDGET hit, never a provider outage', async () => {
+    // Each model call costs 30ms against a 100ms budget, so the loop cannot
+    // finish a second turn — and with a real (slow) provider the pre-floor code
+    // would issue it anyway and abort mid-request.
+    //
+    // The stub HONOURS the abort signal, the way undici does. That is the whole
+    // experiment: a stub that ignores it never aborts, so the loop coasts to
+    // remaining <= 0 and throws a typed budget error either way — which is
+    // exactly how the first version of this test passed against the very code it
+    // was meant to catch.
+    globalThis.fetch = ((_url: unknown, init: { signal?: AbortSignal }) =>
+      new Promise((resolve, reject) => {
+        init.signal?.addEventListener('abort', () =>
+          reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })),
+        );
+        setTimeout(
+          () =>
+            resolve({
+              ok: true,
+              status: 200,
+              json: async () => toolCallBody('spine_read', { sql: 'select 1' }),
+            } as Response),
+          30,
+        );
+      })) as unknown as typeof fetch;
+
+    await expect(
+      runToolLoop(
+        {
+          system: 's',
+          user: 'u',
+          maxTokens: 128,
+          label: 'planner',
+          maxTurns: null,
+          budgetMs: 100,
+        },
+        [READ_TOOL],
+        vi.fn(async () => []),
+        undefined,
+        { recordUsage: vi.fn(async () => {}) },
+      ),
+    ).rejects.toMatchObject({ name: 'ToolLoopLimitError', limit: 'budget' });
+  });
+
+  // One hung I/O must not inherit the whole fifteen minutes. Pinned as a value:
+  // observing it would mean waiting out the deadline.
+  test('a single tool call has its own ceiling, not the loop’s', () => {
+    expect(MAX_TOOL_CALL_MS).toBe(90_000);
+    expect(MAX_TOOL_CALL_MS).toBeLessThan(MAX_TOOL_LOOP_BUDGET_MS);
+  });
+
+  // The other half of the same contract: opting out of the turn ceiling must not
+  // opt out of the budget. With no turn ceiling the clock is the ONLY thing that
+  // can stop a model that loops, so a regression here is unbounded, not merely
+  // wrong.
+  test('an opted-out loop still stops on the CLOCK, and still says which limit it was', async () => {
+    serve(toolCallBody('spine_read', { sql: 'select 1' })); // repeats forever
+    await expect(
+      runToolLoop(
+        {
+          system: 's',
+          user: 'u',
+          maxTokens: 128,
+          label: 'planner',
+          maxTurns: null,
+          budgetMs: 1,
+        },
+        [READ_TOOL],
+        vi.fn(async () => {
+          await new Promise((r) => setTimeout(r, 10));
+          return [];
+        }),
+        undefined,
+        { recordUsage: vi.fn(async () => {}) },
+      ),
+    ).rejects.toMatchObject({ name: 'ToolLoopLimitError', limit: 'budget' });
   });
 
   test('a provider that never responds is ABORTED — the budget rides into the request', async () => {

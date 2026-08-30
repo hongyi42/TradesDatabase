@@ -35,15 +35,38 @@ import {
 
 // Every rail in this module is a CEILING, not a target. The planner is a model
 // deciding when to bother people; a loop that can spin is a loop that can spend.
+//
+// A DEFAULT since build 1b, no longer a ceiling nobody can raise. It still binds
+// every caller that says nothing, and a numeric override may still only ask for
+// LESS — but `maxTurns: null` opts out of it entirely, and the planner does
+// (planner.ts). Kept at 8 for everyone else: a caller that suddenly makes eight
+// model calls where it used to make one is a defect, and this is what surfaces
+// it.
 export const MAX_TOOL_LOOP_TURNS = 8;
-// Named MAX, not DEFAULT: since callers are clamped rather than defaulted, no
-// caller can raise it — only this constant can. Sized against the fleet's
-// measured turn medians (Fireworks 6.3s, Nebius 7.8s, DeepInfra 14.1s in the
-// date-eval trajectories), so 8 turns leaves ~11s each. If Phase 3's shadow
-// latencies say that is tight, raise it HERE, and log a budget throw distinctly
-// from a model error — a healthy-but-slow planner that throws reads as a
-// silently skipped tick.
-export const MAX_TOOL_LOOP_BUDGET_MS = 90_000;
+// THE ONLY RAIL (build 1b, plan 2026-08-29). Hard-clamped, unlike the turn
+// ceiling above: no caller may raise this one, because for a caller that has
+// opted out of the turn ceiling it is the sole thing between a looping model and
+// a cron process that never returns.
+//
+// 15 minutes, per the user's ruling of 2026-08-29: "Planner model calls occur 30
+// minutes at a time, so it's ok if it does something truly long horizon. I would
+// not try to put a maximum number over the planner's head to constrain it.
+// Though I would try to keep it within 15 minutes or so for now." A SAFETY
+// BOUND, not a design target — sized so normal operation never reaches it.
+//
+// Why the old 90_000 was dead code. It was sized "8 turns leaves ~11s each"
+// against the fleet's turn medians, but the TURN ceiling always fired first.
+// MEASURED on the pilot, GLM 5.3, its first two real ticks (2026-08-29T17:30:48Z
+// and 18:00:37Z): 16.2s and 12.2s wall clock, 2 turns each, 5-9s per model call.
+// At ~8s a turn the 8-turn ceiling stopped the loop around 64s — so this clock
+// never once fired in production, and raising it alone would have changed
+// nothing. Do NOT re-size it against figures collected before 2026-08-29T17:16Z:
+// those are all Opus 5, whatever their date suggests.
+//
+// The platform is nowhere near binding: Render stops a cron run only after
+// TWELVE HOURS, and an overrunning run DELAYS the next firing rather than
+// dropping it (https://render.com/docs/cronjobs, verified 2026-08-29).
+export const MAX_TOOL_LOOP_BUDGET_MS = 900_000;
 // A tool result is model INPUT — it is billed, and it displaces the prompt. The
 // cap is generous enough for a 200-row spine read and small enough that a
 // runaway query cannot blow the context; overflow is announced IN the result
@@ -56,6 +79,29 @@ export const MAX_TOOL_RESULT_CHARS = 20_000;
 // cron tick. Calls past the ceiling still get a RESULT (both wire formats require
 // one per call, or the next request is malformed) — it just says no.
 export const MAX_TOOL_CALLS_PER_TURN = 8;
+// The loop must not START a turn the clock cannot pay for. Without this floor,
+// the NORMAL way an opted-out caller ends is not a budget throw at all: with the
+// turn ceiling gone, some turn eventually begins with a few hundred ms left, the
+// model call is issued against an AbortSignal that fires almost immediately, and
+// the loop reports "the provider did not respond" — a plain Error, not
+// ToolLoopLimitError('budget'). The caller then books a CAPACITY exhaustion as a
+// provider OUTAGE, which are the two things the typed error exists to separate.
+//
+// With the floor, the two are cleanly split: below it the loop stops and says
+// `budget`; above it an abort really does mean the provider failed to answer in
+// a workable amount of time. 15s is comfortably above the measured GLM 5.3 turn
+// (5-9s, pilot 2026-08-29), so a turn started above the floor has a real chance
+// to finish.
+//
+// NEVER pre-empts the FIRST turn: a caller that deliberately sets a tiny budget
+// (the tests, and any future probe) must still get one attempt, and the abort
+// path is what it is exercising.
+export const MIN_TURN_BUDGET_MS = 15_000;
+// A single TOOL call's ceiling, independent of the loop's. Before build 1b the
+// loop budget was 90s, so this was implicitly 90s too; deriving it from the loop
+// budget alone would have silently handed one hung spine read the full fifteen
+// minutes. The extra allowance is for long-horizon THINKING, not for one I/O.
+export const MAX_TOOL_CALL_MS = 90_000;
 
 /**
  * The loop gave up on ITS OWN limits — not the model, not the provider.
@@ -88,7 +134,20 @@ export interface ToolLoopRequest {
   maxTokens: number;
   /** Prefixes every thrown error so a failure names the caller, not this module. */
   label: string;
-  maxTurns?: number;
+  /**
+   * `undefined` — the default ceiling, MAX_TOOL_LOOP_TURNS.
+   * a NUMBER    — a lower ceiling; still clamped, so it can only ask for LESS.
+   * `null`      — NO turn ceiling: the budget is the only rail.
+   *
+   * The null case is build 1b's opt-out, and the planner is its only user (user
+   * ruling 2026-08-29: no maximum over the planner's head, and whether it needs
+   * a ceiling at all is a question for the evaluation phase rather than an
+   * assumption baked in now). A caller taking it inherits what the ceiling used
+   * to discharge: the CLOCK is then the only thing that stops a model which
+   * loops, and a `budget` limit hit stops being distinguishable from a `turns`
+   * one because the latter can no longer occur.
+   */
+  maxTurns?: number | null;
   budgetMs?: number;
   /**
    * Name of a tool that ENDS the loop the moment the model calls it.
@@ -195,7 +254,7 @@ async function withDeadline<T>(p: Promise<T>, ms: number, what: string): Promise
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expiry = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`${what} exceeded the loop's remaining ${ms}ms budget`)),
+      () => reject(new Error(`${what} exceeded its ${ms}ms deadline`)),
       ms,
     );
   });
@@ -433,7 +492,14 @@ export async function runToolLoop(
   // CLAMPED, not defaulted: this module's rails are ceilings, and a caller that
   // asks for 100 turns is exactly the caller they exist for. A caller may only
   // ever ask for LESS.
-  const maxTurns = Math.min(req.maxTurns ?? MAX_TOOL_LOOP_TURNS, MAX_TOOL_LOOP_TURNS);
+  // `null` is the explicit opt-out (build 1b): time is the only rail, and the
+  // turn count becomes the caller's business. A NUMBER is still clamped — a
+  // caller may only ever ask for LESS than the default — so the opt-out has to
+  // be its own value rather than a large number, which the clamp would eat.
+  const maxTurns =
+    req.maxTurns === null
+      ? Number.POSITIVE_INFINITY
+      : Math.min(req.maxTurns ?? MAX_TOOL_LOOP_TURNS, MAX_TOOL_LOOP_TURNS);
   const budgetMs = Math.min(req.budgetMs ?? MAX_TOOL_LOOP_BUDGET_MS, MAX_TOOL_LOOP_BUDGET_MS);
   const transport =
     activeProvider() === 'anthropic' ? anthropicTransport(req, tools) : openAiTransport(req, tools);
@@ -453,10 +519,13 @@ export async function runToolLoop(
       );
     }
     const remaining = budgetMs - (Date.now() - started);
-    if (remaining <= 0) {
+    // `turns > 0`: always attempt one turn, however small the budget.
+    const floor = turns > 0 ? Math.min(MIN_TURN_BUDGET_MS, budgetMs) : 0;
+    if (remaining <= 0 || remaining < floor) {
       throw new ToolLoopLimitError(
         'budget',
-        `${req.label}: tool loop exceeded its ${budgetMs}ms budget after ${turns} turns`,
+        `${req.label}: tool loop exceeded its ${budgetMs}ms budget after ${turns} turns ` +
+          `(${remaining}ms left, too little for another turn)`,
       );
     }
 
@@ -509,7 +578,8 @@ export async function runToolLoop(
           `error: this turn asked for ${step.toolCalls.length} tools at once; only the first ` +
           `${MAX_TOOL_CALLS_PER_TURN} were run. Ask for fewer, or ask again next turn.`;
       } else {
-        const left = budgetMs - (Date.now() - started);
+        // CAPPED independently of the loop (build 1b): see MAX_TOOL_CALL_MS.
+        const left = Math.min(budgetMs - (Date.now() - started), MAX_TOOL_CALL_MS);
         if (left <= 0) {
           raw = `error: the loop's ${budgetMs}ms budget is spent — no tool was run.`;
         } else {
@@ -534,7 +604,8 @@ export async function runToolLoop(
       calls.push({ turn: turns, name: call.name, args: call.args, ok, result: content });
       // The terminal tool ends the loop as soon as it RUNS — only on success, so
       // a rejected submission still gets its error relayed and the model gets to
-      // try again within the turn ceiling.
+      // try again on a later turn — within whichever rail the caller kept: the
+      // turn ceiling, or, for a `maxTurns: null` caller, the clock alone.
       if (ok && call.name === req.terminalTool) {
         return { text: step.text, turns, calls };
       }

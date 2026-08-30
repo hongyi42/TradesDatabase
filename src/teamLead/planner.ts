@@ -190,6 +190,12 @@ const idlePlan = (
   tenantId: string,
   outcome: PlannerTenantOutcome,
   gaps: number,
+  // Real elapsed loop time, for the ERROR case only (build 1b). Zero everywhere
+  // else, because a firm that was never due did not take any time. A tick that
+  // died on the clock is precisely the tick whose duration is worth seeing, and
+  // reporting it as 0 made the runaway invisible to the very instrument the
+  // build added to find it.
+  ms = 0,
 ): PlannerTenantPlan => ({
   tenantId,
   outcome,
@@ -201,7 +207,7 @@ const idlePlan = (
   recorded: 0,
   turns: 0,
   toolCalls: 0,
-  ms: 0,
+  ms,
 });
 
 export interface PlannerSummary {
@@ -225,6 +231,14 @@ export interface PlannerSummary {
   // twenty gaps in a firm that used to have two — and the ceiling or the
   // batching has to change. Rolled into tenantErrors as well, so the existing
   // ok=false alarm still fires.
+  //
+  // BOTH KEYS STAY, though `turns` is now structurally unreachable for the
+  // planner: it passes `maxTurns: null` (build 1b), so only `budget` can fire.
+  // This is not dead weight — the shape is asserted by lifecycle.test.ts:435 and
+  // :841, it rides into lifecycle_runs.summary untouched by redactForRecord, and
+  // the two limits still mean opposite things for any caller that keeps the
+  // default ceiling. A `turns` hit appearing here would mean somebody restored
+  // the ceiling, which is worth being able to see.
   limitHits: Record<ToolLoopLimit, number>;
   byAction: Record<string, number>;
   plans: PlannerTenantPlan[];
@@ -1731,6 +1745,11 @@ export async function runPlanner(
     // add a second entry for the same firm, and a report grouping by tenantId
     // would double-count it.
     let named = false;
+    // Hoisted for the CATCH, exactly like `views` above and for the same reason:
+    // a tick that died on the loop's clock is the one whose elapsed time matters
+    // most, and it is only knowable out here. Null until the loop actually
+    // starts, which correctly reports 0 for a failure that happened before it.
+    let loopStarted: number | null = null;
     const name = (plan: PlannerTenantPlan) => {
       named = true;
       summary.plans.push(plan);
@@ -1873,11 +1892,14 @@ export async function runPlanner(
       const user = buildPlannerUserMessage(nowIso, tz, [...views.values()], lessonsBlock);
 
       const started = Date.now();
+      loopStarted = started;
       // Validated INSIDE the executor on purpose. Validating after the loop
       // returns means a plan the rails refuse is simply gone — the model never
       // learns its citation was unusable, and the gap stays open with nobody the
       // wiser. Here a wholly-refused submission comes back as a tool error, and
-      // the model gets to fix it within the turn ceiling.
+      // the model gets to fix it on a later turn — bounded by the CLOCK, not by
+      // a turn ceiling, which this caller opted out of (build 1b, see the
+      // request below).
       let outcome: { decisions: PlannerDecision[]; dropped: DroppedDecision[] } = {
         decisions: [],
         dropped: [],
@@ -1890,6 +1912,19 @@ export async function runPlanner(
           label: 'teamLeadPlanner',
           reasoningEffort: PLANNER_REASONING,
           terminalTool: SUBMIT_PLAN_TOOL.name,
+          // NO TURN CEILING (build 1b, plan 2026-08-29). User ruling: "I would
+          // not try to put a maximum number over the planner's head to constrain
+          // it… we can see if the planner hits [15 minutes]." The clock is the
+          // only rail now, and whether a turn ceiling should come back is a
+          // question for the build order's evaluation phase — measured from the
+          // turns distribution `npm run ticks` reports — rather than an
+          // assumption baked in here.
+          //
+          // The cost of taking this: `limitHits.turns` can no longer occur for
+          // the planner, so a model that loops is indistinguishable from one
+          // that is merely slow until the clock throws. That is deliberate; the
+          // instrument is the distribution, not the counter.
+          maxTurns: null,
         },
         [...tools, SUBMIT_PLAN_TOOL],
         async (name, args) => {
@@ -2182,7 +2217,15 @@ export async function runPlanner(
       // tick had actually built when it died — 0 when the failure came before the
       // views were assembled, which is itself the honest number. `views` is
       // declared outside the try precisely so this path can see it.
-      if (!named) name(idlePlan(tenantId, 'error', views.size));
+      if (!named)
+        name(
+          idlePlan(
+            tenantId,
+            'error',
+            views.size,
+            loopStarted === null ? 0 : Date.now() - loopStarted,
+          ),
+        );
       // …but it no longer leaves NO TRACE. This catch sits after runLoop, so a
       // ToolLoopLimitError or a provider outage used to write nothing at all —
       // making the failed tick indistinguishable from a tick that never ran, in

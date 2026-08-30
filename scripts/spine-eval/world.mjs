@@ -133,6 +133,10 @@ const RESET_TABLES = [
   'planner_memory',
   'planner_memory_versions',
   'planner_runs',
+  // The planner's per-job notepads (build: job notepads, 2026-08-30). These DO
+  // cascade from jobs — named anyway (eng-memory §1).
+  'job_notes',
+  'job_note_versions',
   'nudges',
   // Cascades from nudges, named anyway (eng-memory §1).
   'nudge_decisions',
@@ -195,6 +199,10 @@ const PILOT_TENANT_SCOPED = [
   'planner_memory',
   'planner_memory_versions',
   'planner_runs',
+  // The planner's per-job notepads (build: job notepads, 2026-08-30). These DO
+  // cascade from jobs — named anyway (eng-memory §1).
+  'job_notes',
+  'job_note_versions',
   'nudges',
   'schedule_events',
   'dropped_audit',

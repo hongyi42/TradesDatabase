@@ -1567,6 +1567,26 @@ describe('live mode — the decision becomes a write, and the write becomes the 
   // budget, so a twenty-gap firm will hit the ceiling — and in the logs that
   // would look exactly like a provider outage. The two need opposite responses,
   // so they must never read the same.
+  // Build 1b, the other half of "runaways are measured, not policed": the
+  // measuring has to be able to SEE one. A tick that burns the clock and throws
+  // used to be recorded with ms: 0, so the duration distribution was computed
+  // over successes only and its max was capped at the longest tick that
+  // FINISHED — the instrument was structurally blind to the exact event it was
+  // added to detect.
+  test('a tick that dies on the clock records the time it burned, not zero', async () => {
+    const slowThenThrow = (async () => {
+      await new Promise((r) => setTimeout(r, 25));
+      throw new ToolLoopLimitError('budget', 'teamLeadPlanner: tool loop exceeded its budget');
+    }) as unknown as NonNullable<PlannerDeps['runLoop']>;
+
+    const summary = await runPlanner(NOW, 'live', baseDeps({ runLoop: slowThenThrow }));
+
+    expect(summary.limitHits).toEqual({ budget: 1, turns: 0 });
+    const plan = summary.plans[0];
+    expect(plan.outcome).toBe('error');
+    expect(plan.ms).toBeGreaterThan(0);
+  });
+
   // Build 1b. The opt-out is one word in a request literal, and nothing else in
   // this file would notice it disappearing — every other test stubs runLoop and
   // never inspects the request. Without this pin, restoring the 8-turn ceiling

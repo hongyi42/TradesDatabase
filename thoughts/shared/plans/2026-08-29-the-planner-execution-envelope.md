@@ -2,7 +2,7 @@
 date: 2026-08-29
 task: Build 1b — the planner's execution envelope: the clock becomes the only rail
 research: thoughts/shared/research/2026-08-29-the-planner-runs-on-a-clock-it-cannot-see.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -10,6 +10,28 @@ supersedes: nothing
 doc — decision point 3, "reading `outcome` in the catch would convert total loss into partial
 application." That is false, and the correction is Phase 3's job (see Decisions). The research
 document stands otherwise.
+
+## What the final review added, beyond this plan
+
+Implemented and landed with it; recorded here because the plan did not anticipate them and the next
+reader should not think they were unplanned drift.
+
+- **`MIN_TURN_BUDGET_MS = 15_000`** (`toolLoop.ts`). Removing the turn ceiling made the *typed*
+  budget error mostly unreachable: a turn would begin with a few hundred ms left, the model call
+  would abort, and the loop would throw a plain `Error` reading "the provider did not respond" — so
+  a capacity exhaustion was booked as a provider outage, defeating the distinction the whole
+  observability story rests on. Mutation-verified: without the floor the new test fails with exactly
+  that message.
+- **`MAX_TOOL_CALL_MS = 90_000`** (`toolLoop.ts`). The per-tool deadline was derived from the loop
+  budget, so raising the loop budget 10× silently handed one hung I/O the full fifteen minutes.
+- **`idlePlan` records real elapsed time on the error path** (`planner.ts`), and the report prints
+  failed-tick durations and `limitHits`. A tick that died on the clock was stamped `ms: 0`, so the
+  distribution this build added to catch runaways was computed over successes only.
+
+Four review findings were surfaced and NOT acted on — see the implementation report: the eval
+cannot observe production's turn tail, eval clock-cuts grade as planner failures, the planner step
+has no aggregate deadline (deliberate, per the user's ruling), and `plannerSim`'s catch loses
+`turns`.
 
 ## Overview
 

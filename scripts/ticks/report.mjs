@@ -228,7 +228,12 @@ try {
   // interpolation: with two data points an interpolated "p50" invents a number
   // that never happened, and at pilot scale two is a realistic sample size.
   // Callers guarantee a non-empty array (they are inside `if (f.planned > 0)`).
-  const pct = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)];
+  // The parameter is `frac`, NOT `q`: `q` is this module's only database helper
+  // (top of file), and shadowing it here would turn the very follow-up this
+  // section's comment asks for — attributing ticks by provider — into a runtime
+  // TypeError, in a .mjs file no gate covers.
+  const pct = (sorted, frac) =>
+    sorted[Math.min(sorted.length - 1, Math.ceil(frac * sorted.length) - 1)];
   const perFirm = new Map();
   const unknownOutcomes = new Set();
   // Renamed outcomes, old name -> current bucket. The ask window was deleted on
@@ -242,7 +247,16 @@ try {
   // adding it here — which is what the loud `unknown` branch below exists to
   // tell you about, rather than leaving you to notice a permanent zero.
   const OUTCOME_BUCKETS = new Set(['planned', 'no_gaps', 'off_cadence', 'error']);
+  const limitHits = { budget: 0, turns: 0 };
   for (const r of runs) {
+    // Tenant-agnostic, so it cannot go on a firm's line — but it is the only
+    // place a loop-limit hit is distinguishable from any other tenant error,
+    // and nothing printed it before build 1b.
+    const lh = r.summary?.teamLeadPlanner?.limitHits;
+    if (lh) {
+      limitHits.budget += lh.budget ?? 0;
+      limitHits.turns += lh.turns ?? 0;
+    }
     const plans = r.summary?.teamLeadPlanner?.plans;
     if (!Array.isArray(plans)) continue;
     for (const p of plans) {
@@ -253,7 +267,7 @@ try {
         // exists to ask — "does the planner need a turn ceiling?" — because a
         // sum hides the tail, and the tail IS the answer. One entry per PLANNED
         // tick; see the push below for why only planned ones.
-        turnsEach: [], msEach: [],
+        turnsEach: [], msEach: [], errMsEach: [],
       };
       // LOUD, never silent. This accumulator hardcodes its buckets, and it used
       // to drop anything it did not recognise on the floor — so renaming an
@@ -294,6 +308,15 @@ try {
       if (outcome === 'planned') {
         f.turnsEach.push(p.turns ?? 0);
         f.msEach.push(p.ms ?? 0);
+      } else if (outcome === 'error') {
+        // SEPARATELY, never folded into the planned distribution. A failed tick
+        // has no turn count to report (the throw does not carry one) and its
+        // duration is not comparable with a successful one — but it is the
+        // number that says whether a firm is burning the whole clock and
+        // getting nothing, which is the failure this whole build is watching
+        // for. Without this the max is capped at the longest tick that
+        // FINISHED, so "a max drifting toward the clock" could never fire.
+        f.errMsEach.push(p.ms ?? 0);
       }
       // Already a COUNT by the time it is stored — redactForRecord replaced the
       // array (which carried the technician's question and the model's reasoning)
@@ -322,6 +345,11 @@ try {
       // ceiling would have to be larger than, and a max drifting toward the
       // clock is the ratchet arriving.
       //
+      // `ms` is the FIRM's tick, not the loop's: planner.ts stamps it after
+      // applyDecision and recordDecisions have run, so it carries a write tail
+      // that grows with the gap count. Read it as an UPPER BOUND on loop time —
+      // the clock bounds only the part before those writes.
+      //
       // MODEL-BLIND, and that is a trap this report has already sprung once. A
       // window spanning a provider switch mixes two models' distributions into
       // one line, and the slower model owns the max — the first version of this
@@ -337,6 +365,25 @@ try {
           `(${f.planned} planned tick${f.planned === 1 ? '' : 's'})`,
       );
     }
+    // Only when there is something to say, and LOUD when there is: a firm whose
+    // ticks die after minutes is a different animal from one that fails fast,
+    // and `errors N` alone cannot tell them apart.
+    const burned = f.errMsEach.filter((ms) => ms > 0);
+    if (burned.length > 0) {
+      const worst = Math.max(...burned);
+      lines.push(
+        `    ⚠ ${burned.length} failed tick${burned.length === 1 ? '' : 's'} ` +
+          `burned time before dying — longest ${(worst / 1000).toFixed(1)}s`,
+      );
+    }
+  }
+  if (limitHits.budget > 0 || limitHits.turns > 0) {
+    lines.push(
+      `- ⚠ loop limits hit: ${limitHits.budget} budget · ${limitHits.turns} turns. ` +
+        'A BUDGET hit means the work stopped fitting in the clock, not that the provider ' +
+        'failed. A TURNS hit means somebody restored the turn ceiling the planner opted ' +
+        'out of in build 1b.',
+    );
   }
   if (unknownOutcomes.size > 0) {
     lines.push(

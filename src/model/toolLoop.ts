@@ -79,6 +79,29 @@ export const MAX_TOOL_RESULT_CHARS = 20_000;
 // cron tick. Calls past the ceiling still get a RESULT (both wire formats require
 // one per call, or the next request is malformed) — it just says no.
 export const MAX_TOOL_CALLS_PER_TURN = 8;
+// The loop must not START a turn the clock cannot pay for. Without this floor,
+// the NORMAL way an opted-out caller ends is not a budget throw at all: with the
+// turn ceiling gone, some turn eventually begins with a few hundred ms left, the
+// model call is issued against an AbortSignal that fires almost immediately, and
+// the loop reports "the provider did not respond" — a plain Error, not
+// ToolLoopLimitError('budget'). The caller then books a CAPACITY exhaustion as a
+// provider OUTAGE, which are the two things the typed error exists to separate.
+//
+// With the floor, the two are cleanly split: below it the loop stops and says
+// `budget`; above it an abort really does mean the provider failed to answer in
+// a workable amount of time. 15s is comfortably above the measured GLM 5.3 turn
+// (5-9s, pilot 2026-08-29), so a turn started above the floor has a real chance
+// to finish.
+//
+// NEVER pre-empts the FIRST turn: a caller that deliberately sets a tiny budget
+// (the tests, and any future probe) must still get one attempt, and the abort
+// path is what it is exercising.
+export const MIN_TURN_BUDGET_MS = 15_000;
+// A single TOOL call's ceiling, independent of the loop's. Before build 1b the
+// loop budget was 90s, so this was implicitly 90s too; deriving it from the loop
+// budget alone would have silently handed one hung spine read the full fifteen
+// minutes. The extra allowance is for long-horizon THINKING, not for one I/O.
+export const MAX_TOOL_CALL_MS = 90_000;
 
 /**
  * The loop gave up on ITS OWN limits — not the model, not the provider.
@@ -231,7 +254,7 @@ async function withDeadline<T>(p: Promise<T>, ms: number, what: string): Promise
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expiry = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`${what} exceeded the loop's remaining ${ms}ms budget`)),
+      () => reject(new Error(`${what} exceeded its ${ms}ms deadline`)),
       ms,
     );
   });
@@ -496,10 +519,13 @@ export async function runToolLoop(
       );
     }
     const remaining = budgetMs - (Date.now() - started);
-    if (remaining <= 0) {
+    // `turns > 0`: always attempt one turn, however small the budget.
+    const floor = turns > 0 ? Math.min(MIN_TURN_BUDGET_MS, budgetMs) : 0;
+    if (remaining <= 0 || remaining < floor) {
       throw new ToolLoopLimitError(
         'budget',
-        `${req.label}: tool loop exceeded its ${budgetMs}ms budget after ${turns} turns`,
+        `${req.label}: tool loop exceeded its ${budgetMs}ms budget after ${turns} turns ` +
+          `(${remaining}ms left, too little for another turn)`,
       );
     }
 
@@ -552,7 +578,8 @@ export async function runToolLoop(
           `error: this turn asked for ${step.toolCalls.length} tools at once; only the first ` +
           `${MAX_TOOL_CALLS_PER_TURN} were run. Ask for fewer, or ask again next turn.`;
       } else {
-        const left = budgetMs - (Date.now() - started);
+        // CAPPED independently of the loop (build 1b): see MAX_TOOL_CALL_MS.
+        const left = Math.min(budgetMs - (Date.now() - started), MAX_TOOL_CALL_MS);
         if (left <= 0) {
           raw = `error: the loop's ${budgetMs}ms budget is spent — no tool was run.`;
         } else {

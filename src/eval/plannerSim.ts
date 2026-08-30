@@ -59,9 +59,16 @@ export const SIM_TZ = 'America/Los_Angeles';
 // one stalled call would hold the run for a quarter of an hour.
 //
 // Deliberately divergent from production, and only on the CLOCK: `maxTurns` is
-// left alone so the eval reproduces production's turn behaviour exactly, which
-// is the thing under measurement. Short enough that a scenario needing more
-// than this is itself the finding.
+// left alone, so the eval applies no turn ceiling of its own.
+//
+// It does NOT thereby reproduce production's turn behaviour exactly, and it
+// cannot. With the clock as the sole rail, turns and time are the same variable:
+// a scenario that would take 40 turns over 300s in production is cut here at
+// roughly a third of that. So the corpus CANNOT observe the production tail, and
+// "where would a turn ceiling sit?" is not answerable from a corpus run alone —
+// it needs either the production budget on a small subset, or the cut recorded
+// per row so graders can exclude clock-truncated ticks. Neither is built; the
+// evaluation phase owns the choice.
 export const EVAL_LOOP_BUDGET_MS = 120_000;
 
 // ── offsets ──────────────────────────────────────────────────────────────────

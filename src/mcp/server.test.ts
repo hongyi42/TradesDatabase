@@ -44,6 +44,7 @@ import {
 import { localDateISO } from '../schedule/availability.js';
 import { TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
 import { MEMORY_FILE_MAX } from '../teamLead/memory.js';
+import { JOB_NOTE_MAX } from '../teamLead/jobNotes.js';
 
 // Drive the MCP server over the SDK's in-memory transport (no network/stdio).
 // The extractor is stubbed so record_field_note never calls the live model.
@@ -7998,6 +7999,8 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       'recall_decisions',
       'read_memory',
       'write_memory',
+      'read_job_note',
+      'write_job_note',
     ]);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
     // the catalog — twelve since ④ (2026-08-23); the count and the list must
@@ -8083,10 +8086,14 @@ describe("read_memory / write_memory — the planner's own notes", () => {
     >;
 
   beforeAll(async () => {
-    await pg.query('truncate table planner_memory, planner_memory_versions');
+    await pg.query(
+      'truncate table planner_memory, planner_memory_versions, job_notes, job_note_versions',
+    );
   });
   afterAll(async () => {
-    await pg.query('truncate table planner_memory, planner_memory_versions');
+    await pg.query(
+      'truncate table planner_memory, planner_memory_versions, job_notes, job_note_versions',
+    );
   });
 
   test('both tools dispatch for spine:team-lead, and round-trip', async () => {
@@ -8212,6 +8219,123 @@ describe("read_memory / write_memory — the planner's own notes", () => {
       expect(theirs.exists).toBe(false);
     } finally {
       await pg.query('delete from tenants where id = $1', [other.id]);
+    }
+  });
+
+  test('both job-note tools dispatch, and round-trip through the real table', async () => {
+    const customer = await createCustomer({ tenantId, name: `JobNote MCP ${Date.now()}` });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Descaling' });
+    try {
+      const saved = await call('write_job_note', {
+        jobId: job.id,
+        content: 'Marisol answers in the evening.',
+      });
+      expect(saved.action).toBe('saved');
+      const back = await call('read_job_note', { jobId: job.id });
+      expect(back.exists).toBe(true);
+      expect(back.content).toBe('Marisol answers in the evening.');
+      // Independent read-back: the tool agreeing with itself proves nothing.
+      const { rows } = await pg.query(
+        'select content from job_notes where tenant_id = $1 and job_id = $2',
+        [tenantId, job.id],
+      );
+      expect(rows[0].content).toBe('Marisol answers in the evening.');
+    } finally {
+      await pg.query('delete from customers where id = $1', [customer.id]);
+    }
+  });
+
+  test('a job with no note is an ANSWER, not an error', async () => {
+    const customer = await createCustomer({ tenantId, name: `JobNote Empty ${Date.now()}` });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Unwritten' });
+    try {
+      const out = await call('read_job_note', { jobId: job.id });
+      expect(out.exists).toBe(false);
+      expect(String(out.note)).toContain('not written a note');
+    } finally {
+      await pg.query('delete from customers where id = $1', [customer.id]);
+    }
+  });
+
+  test('an EMPTY note is refused, never treated as a delete', async () => {
+    // The deliberate divergence from write_memory. Refusing is what keeps this
+    // verb strictly non-destructive, which is how it clears the dispatch gate.
+    const customer = await createCustomer({ tenantId, name: `JobNote Blank ${Date.now()}` });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Keepme' });
+    try {
+      await call('write_job_note', { jobId: job.id, content: 'still here' });
+      for (const blank of ['', '   ', '\n']) {
+        await expect(call('write_job_note', { jobId: job.id, content: blank })).rejects.toThrow(
+          /cannot be deleted/,
+        );
+      }
+      expect((await call('read_job_note', { jobId: job.id })).content).toBe('still here');
+    } finally {
+      await pg.query('delete from customers where id = $1', [customer.id]);
+    }
+  });
+
+  test('over-budget content is refused THROUGH THE TOOL, with size and budget', async () => {
+    // Not only through validateJobNoteContent in isolation: a handler that
+    // forgot to call the rail would pass every other check in this file.
+    const customer = await createCustomer({ tenantId, name: `JobNote Big ${Date.now()}` });
+    const job = await createJob({ tenantId, customerId: customer.id, title: 'Toobig' });
+    try {
+      await expect(
+        call('write_job_note', { jobId: job.id, content: 'x'.repeat(JOB_NOTE_MAX + 1) }),
+      ).rejects.toThrow(new RegExp(`${JOB_NOTE_MAX + 1}.*${JOB_NOTE_MAX}`));
+      expect((await call('read_job_note', { jobId: job.id })).exists).toBe(false);
+    } finally {
+      await pg.query('delete from customers where id = $1', [customer.id]);
+    }
+  });
+
+  test('a CROSS-TENANT jobId reads as not-found and writes nothing', async () => {
+    // The FK proves a job exists; it never proves it belongs to the caller.
+    // getJob takes only an id, so without the handler's tenant check a note
+    // could be written against another firm's work.
+    const other = await createTenant(`jobnote-scope-${Date.now()}`);
+    const theirCustomer = await createCustomer({ tenantId: other.id, name: 'Theirs' });
+    const theirJob = await createJob({
+      tenantId: other.id,
+      customerId: theirCustomer.id,
+      title: 'Theirs',
+    });
+    try {
+      const read = await call('read_job_note', { jobId: theirJob.id });
+      expect(read.exists).toBe(false);
+      // Not-found, NOT a distinct error — a different message would confirm the
+      // id exists, which is an existence oracle across firms.
+      expect(String(read.note)).toContain('No such job on this firm');
+      const write = await call('write_job_note', { jobId: theirJob.id, content: 'intruding' });
+      expect(write.exists).toBe(false);
+      expect(write.action).toBeUndefined();
+      // Scoped to the JOB, not a global count. A global count made this test
+      // fail whenever another file left a note row behind — the phantom-moving-
+      // failure class. Scoping to `tenant_id = other.id` would NOT work either:
+      // without the guard the row lands under the CALLER's tenant carrying the
+      // other firm's job_id, so the job is the only key that catches it.
+      const { rows } = await pg.query(
+        'select count(*)::int as n from job_notes where job_id = $1',
+        [theirJob.id],
+      );
+      expect(rows[0].n).toBe(0);
+    } finally {
+      await pg.query('delete from customers where id = $1', [theirCustomer.id]);
+      await pg.query('delete from tenants where id = $1', [other.id]);
+    }
+  });
+
+  test('a MANAGER badge is refused both job-note tools', async () => {
+    for (const name of ['read_job_note', 'write_job_note']) {
+      await expect(
+        dispatchForIdentity(
+          name,
+          { jobId: '00000000-0000-0000-0000-000000000000' },
+          { tenantId, technicianRef: 'mgr-test' },
+          noCost,
+        ),
+      ).rejects.toThrow(/team lead's own tool/);
     }
   });
 

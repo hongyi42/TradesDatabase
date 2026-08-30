@@ -116,6 +116,9 @@ corrected per-scenario verdicts):
   discards these transcripts — the eval is currently the only place they exist).
 - Time travel holds: multi-tick arcs (deliver, mid-arc captures/money, manager_resolve, the
   ⑤ gap-summary epilogue) ran with zero harness errors across 130 scenario executions.
+  *(The ⑤ epilogue was REMOVED from `runArc` on 2026-08-30 with the gap_summaries retirement —
+  this line describes the harness as it stood for THIS baseline, and is left as the dated record
+  it is. A rerun today has no epilogue and reports no `summaries` count.)*
 - The honest four-tier Anthropic ledger works at scale: cache-write-1h 7.7k / cached 1.94M /
   fresh 387k / output 120k tokens, priced off cost_rates ($0.08/$0.97/$1.93/$2.99).
   Cache economics of the loop are visible: ~83% of Opus input tokens were cached reads.

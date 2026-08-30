@@ -133,8 +133,6 @@ const RESET_TABLES = [
   'planner_memory',
   'planner_memory_versions',
   'planner_runs',
-  // Cascades from nudges, named anyway (eng-memory §1).
-  'gap_summaries',
   'nudges',
   // Cascades from nudges, named anyway (eng-memory §1).
   'nudge_decisions',
@@ -197,8 +195,6 @@ const PILOT_TENANT_SCOPED = [
   'planner_memory',
   'planner_memory_versions',
   'planner_runs',
-  // Cascades from nudges, named anyway (eng-memory §1).
-  'gap_summaries',
   'nudges',
   'schedule_events',
   'dropped_audit',

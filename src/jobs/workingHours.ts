@@ -11,10 +11,17 @@
 //
 // Why it must stay fixed. It is a unit, like "business days": a metric whose
 // definition moves per firm cannot compare two firms, and one that moves over
-// time cannot compare a firm with its own past. Worse, it is STORED —
-// gap_summaries.working_hours_open holds numbers already computed under this
-// convention, so changing 7 or 19 silently restates every historical row rather
-// than recomputing it. And the SQL twin `working_hours_between` hardcodes
+// time cannot compare a firm with its own past.
+//
+// It USED to be stored as well — gap_summaries.working_hours_open held numbers
+// computed under this convention, so moving 7 or 19 would silently restate
+// every historical row. That table was dropped 2026-08-30 and the argument goes
+// with it: nothing persists a figure in these units any more. Two consequences
+// worth knowing before touching this file. The TS function now has NO
+// production caller (the deleted summarize sweep was its last one) and survives
+// as the pinned twin of the SQL `working_hours_between`, which the metrics views
+// DO use — src/db/plannerMetrics.test.ts is what holds the two identical. And
+// the "it is stored" half of the case above is now history, not a live reason. And the SQL twin `working_hours_between` hardcodes
 // `interval '7/19 hours'`: moving these without moving the migration breaks the
 // equality plannerMetrics.test.ts pins.
 //

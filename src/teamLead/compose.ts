@@ -35,7 +35,9 @@ import { NUDGE_KIND_SPECS, specFor, type NudgeKindSpec } from '../jobs/nudgeKind
 //     Nothing holds a gap overnight now; see its comment in watchers.ts.
 //   - the working-hours METRIC keeps a fixed 7-19 convention of its OWN, in
 //     jobs/workingHours.ts. It is a yardstick, not a claim about any firm, and it
-//     is pinned to a SQL twin and to stored gap_summaries rows.
+//     is pinned to a SQL twin. (It was also pinned to STORED gap_summaries rows
+//     until that table was dropped, 2026-08-30 — nothing persists a figure in
+//     these units now, so the twin is the whole of the pin.)
 
 // The rung-2 fallback for a nudge that dies WITHOUT the ask ever landing
 // (model declined, compose gave up — review F1): the gap must still reach the

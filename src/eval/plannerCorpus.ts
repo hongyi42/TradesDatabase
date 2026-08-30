@@ -32,8 +32,12 @@ import type { Offset, ScenarioWorld, SimMoneyKind } from './plannerSim.js';
 //                     a row to 'asked'; without this, send/hold arcs stall
 //                     until the 18h expiry.
 //   manager_resolve — the manager settles the review item citing the gap.
-//                     Also what lets an escalated arc's gap-summary epilogue
-//                     escape the 7-day holdback (summarize.ts:118-124).
+//                     CAVEAT since 2026-08-30: the deterministic graders are
+//                     pure over the results row and never read review_items,
+//                     and the ⑤ epilogue that surfaced the verdict retired with
+//                     gap_summaries — so a resolve and a dismiss currently
+//                     grade identically. The step still changes the world; it
+//                     is the OBSERVATION that is missing.
 export type TimelineStep =
   | {
       at: Offset;
@@ -72,7 +76,11 @@ export interface ScenarioExpect {
    *  grading — the thing no other harness measures). `argContains` matches the
    *  serialized args. */
   mustRead?: { tool: string; argContains?: string };
-  /** Arc-shape expectations, judged over ALL executed ticks + the epilogue. */
+  /** Arc-shape expectations, judged over ALL executed ticks **plus the final
+   *  tick's world state** (`nudgesAfter`) — the phrasing plannerEvalGraders2.ts
+   *  uses. Never the database: the graders are pure over the results row. (The
+   *  gap-summary epilogue sat beside this and retired 2026-08-30; it fed no
+   *  expectation here, so nothing this block grades changed.) */
   arc?: {
     /** Applied escalate decisions across the arc (0 = never escalate). */
     maxEscalations?: number;

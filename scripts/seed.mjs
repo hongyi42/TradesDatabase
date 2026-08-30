@@ -170,13 +170,6 @@ async function truncateSpine(hasScheduling) {
         where table_schema = 'public' and table_name = 'nudge_decisions'`,
     );
     if (ndd.rows.length > 0) tables += ', nudge_decisions';
-    // gap_summaries cascades from nudges, but is NAMED (eng-memory §1:
-    // incidental cascade coverage is how tenant_profiles got missed).
-    const gs = await client.query(
-      `select 1 from information_schema.tables
-        where table_schema = 'public' and table_name = 'gap_summaries'`,
-    );
-    if (gs.rows.length > 0) tables += ', gap_summaries';
     // The planner's own memory (build 3), which replaced planner_lessons and
     // reflector_runs (both dropped in migration 20260830130000). Same trap the
     // lessons table had — all three reference ONLY tenants, and

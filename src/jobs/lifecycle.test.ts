@@ -993,7 +993,6 @@ describe('redactForRecord', () => {
       lifecycleRuns: { skipped: 'x' },
       watchers: { skipped: 'x' },
       teamLeadPlanner: planner,
-      gapSummaries: { skipped: 'x' },
       ok: true,
     }) as unknown as Parameters<typeof redactForRecord>[0];
 

@@ -2,7 +2,7 @@
 date: 2026-08-30
 task: Retire gap_summaries — the store whose only reader died with the Reflector
 research: thoughts/shared/research/2026-08-30-per-object-notepads-on-the-spine.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -30,8 +30,29 @@ step, and the eval epilogue that graded it.
   trustworthy goes with them. **What survives:** the underlying facts. `v_review_items` still exposes
   `status`, `resolution` and `escalated_from_nudge`, and `nudge_decisions` holds every decision — so
   escalation outcomes stay derivable live. Only the rollup goes.
-- **`CLOSED_NUDGE_STATUSES` moves to `src/db/nudges.ts`**, beside `OPEN_NUDGE_STATUSES` (`:23`),
-  rather than dying with `gapSummaries.ts` — `src/eval/plannerSim.ts:46` still needs it.
+- **`CLOSED_NUDGE_STATUSES` was to move to `src/db/nudges.ts` — it was DELETED instead.** The plan
+  moved it because `src/eval/plannerSim.ts:46` needed it; review then pointed out that its only use
+  was inside the epilogue **this same change deletes**, leaving it with zero callers. A relocated
+  constant whose comment names a caller that no longer exists is exactly the residue this retirement
+  exists to remove. `NudgeStatus` already documents all seven statuses.
+- **`findItemForNudge` (`src/db/reviewItems.ts`) is deleted too** — collateral the plan did not
+  predict. Its only caller was the deleted sweep. `reviewItemExistsFor` survives (compose.ts and
+  control/nudgeQueue.ts call it) and **keeps the terminal-failure doctrine paragraph**, which the
+  first attempt at this deletion removed by accident — git shows the paragraph predates
+  `findItemForNudge` and documents `reviewItemExistsFor`.
+- **The epilogue's real cost is an OBSERVATION, not grading** — corrected after the final review
+  caught the same false claim repeated in three comments. The deterministic graders are pure
+  functions over the results row (`plannerEvalGraders2.ts:1-3`) and read only `decisions`,
+  `toolCalls` and `nudgesAfter` — never `review_items`, never a database. So no expectation was
+  ever graded from a gap summary and none is ungraded now. What IS lost: `manager_fate` was
+  surfaced into the results file by the epilogue and **nowhere else**, so a scenario ending in a
+  manager `resolved` now produces the same eval output as one ending `dismissed`. Recorded in
+  `plannerSim.ts`, `plannerSim.test.ts` and `plannerCorpus.ts` rather than fixed.
+- **The drop must be applied AFTER the code, never before.** The old lifecycle's step 11 reads
+  `nudges` with a PostgREST embed on `gap_summaries`; with the table gone that returns PGRST200,
+  which is not in `MISSING_LEDGER_CODES`, so `isMissingCostLedger` answers false and the cron goes
+  red on every tick forever. The step's own comment promised "missing table → skipped, never red";
+  that was never true for an embed. Written into the migration header.
 - **`drop table` with NO `cascade`.** Verified: the four planner-metrics views
   (`20260823230000`, `20260824020000`) touch only `nudges`, `nudge_decisions`, `review_items`,
   `raw_captures`, `visits`, `tenants`. If a dependant HAS appeared since, this must fail loudly
@@ -66,7 +87,10 @@ Removes the table, its typed layer, the sweep, the lifecycle step and the eval e
 **`supabase/migrations/20260831130000_drop_gap_summaries.sql`** — `drop table gap_summaries;`, no
 `cascade` (see Decisions). Header records what was given up and where the underlying facts still are.
 
-**`src/db/nudges.ts`** — receive `CLOSED_NUDGE_STATUSES` beside `OPEN_NUDGE_STATUSES` (`:23`).
+**`src/db/nudges.ts`** — no change in the end (see Decisions: `CLOSED_NUDGE_STATUSES` was deleted
+rather than relocated, once review showed it had no remaining caller).
+
+**`src/db/reviewItems.ts`** — delete `findItemForNudge`; its only caller was the deleted sweep.
 
 **`src/jobs/lifecycle.ts`** — remove the import (`:15`), `summarize?` (`:83`), the `gapSummaries`
 field (`:119`), step 11 (`:592-600`) and `gapSummaries,` from the return object (`:620`).
@@ -98,23 +122,29 @@ epilogue", and there is no epilogue after this.
 7-day holdback that made it trustworthy goes with it.
 
 ### Automated verification
-- [ ] `npx supabase db reset`, `npm run gen:types:local`, then `npx tsc --noEmit`, `npm run lint`,
+- [x] `npx supabase db reset`, `npm run gen:types:local`, then `npx tsc --noEmit`, `npm run lint`,
       `npm test`, `npm run build` pass
-- [ ] `grep -rn "gap_summaries\|GapSummary\|runGapSummaries\|HOLDBACK_DAYS" src scripts supabase`
+- [x] `grep -rn "gap_summaries\|GapSummary\|runGapSummaries\|HOLDBACK_DAYS" src scripts supabase`
       returns **no live code**. The deliberate tombstone comments that WILL remain, enumerated so the
       check is unambiguous: `src/db/lifecycleRuns.ts:12`, `src/jobs/workingHours.ts:15`,
-      `src/teamLead/compose.ts:38`, `src/teamLead/planner.ts:1849`, and three migration headers
-- [ ] the planner-metrics report still runs **against the LOCAL stack**, after the reset applies the
+      `src/teamLead/compose.ts:38`, `src/teamLead/planner.ts:1849`, three migration headers, and the
+      four tombstones this change itself writes (`src/jobs/lifecycle.ts`, `src/eval/plannerSim.ts`,
+      `src/eval/plannerSim.test.ts`, `src/eval/plannerCorpus.ts`)
+- [x] the planner-metrics report still runs **against the LOCAL stack**, after the reset applies the
       drop: `node -r dotenv/config scripts/planner-metrics/report.mjs dotenv_config_path=.env.test`.
       **Not `npm run metrics:planner`** — that resolves `DATABASE_URL` from `.env`, which is the
       pilot, where the table still exists, so it would prove nothing about the drop
-- [ ] `npm run decisions:index` regenerated and committed
+- [x] `npm run decisions:index` regenerated and committed
 
 ### Live verification (agent-executable)
 - Prerequisites: `.env` (`DATABASE_URL`) — already required by every `scripts/` tool. **Read-only.**
-- [ ] Confirm read-only against the pilot that nothing depends on `gap_summaries` before the drop is
+- [x] Confirm read-only against the pilot that nothing depends on `gap_summaries` before the drop is
       ever applied there — query `pg_depend` / `pg_rewrite` / `pg_constraint` for dependants.
       Evidence: the query output showing zero rows. The pilot is NOT migrated by this plan.
+      **Run 2026-08-30, read-only against `daqapdlkgxfrhquacprv`:** table present, **0 view/rule
+      dependants, 0 inbound foreign keys**. The no-cascade drop will succeed there when it is
+      eventually applied. Nothing was written. Locally, after the drop, the planner-metrics report
+      runs clean and all four `mv_*` views survive — the check that the drop took nothing with it.
 
 ### Manual verification — none
 

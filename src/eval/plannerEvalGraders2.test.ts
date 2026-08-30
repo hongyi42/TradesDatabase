@@ -111,13 +111,11 @@ describe('gradeScenario — one fixture per failure kind', () => {
     expect(kinds(r, { mustRead: { tool: 'spine_read' } })).toEqual(['missing-read']);
   });
 
-  test('lessonCited both directions', () => {
-    const cited = row({});
-    cited.ticks[0].decisions = [decision({ reason: 'batching per [abcd1234]' })];
-    expect(kinds(cited, { lessonCited: true })).toEqual([]);
-    expect(kinds(cited, { lessonCited: false })).toEqual(['lesson-cited-for-show']);
-    expect(kinds(row({}), { lessonCited: true })).toEqual(['lesson-not-cited']);
-  });
+  // The 'lessonCited both directions' test was deleted with the grader it
+  // covered (build 3, plan 2026-08-30, Phase 3). The [8-hex] citation stamp was
+  // the only mechanism that could measure whether a stored belief changed a
+  // decision, and nothing replaces it — logged in the corpus and owned by the
+  // evaluation phase.
 
   test('arc caps: escalations, closes, cross-credit spread', () => {
     const r = row({});

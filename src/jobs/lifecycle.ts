@@ -13,7 +13,6 @@ import { expireOffboarding, type ExpireResult } from '../composio/offboarding.js
 import { ensurePersonSession } from '../composio/sessions.js';
 import { runLogIngestion, type LogIngestSummary } from '../composio/logIngest.js';
 import { runGapSummaries, type SummarizeSummary } from './summarize.js';
-import { runReflector, type ReflectorMode, type ReflectorSummary } from '../teamLead/reflector.js';
 import { runWatchers, type WatchersSummary } from './watchers.js';
 import {
   plannerCadenceDue,
@@ -82,7 +81,6 @@ export interface LifecycleDeps {
   runWatchers?: typeof runWatchers;
   runPlanner?: typeof runPlanner;
   summarize?: typeof runGapSummaries;
-  reflect?: typeof runReflector;
   prune?: typeof pruneLifecycleRuns;
   // Seam so the skip branch is testable without setting a real key.
   hasModelKey?: () => boolean;
@@ -119,7 +117,6 @@ export interface LifecycleSummary {
   // healthy tick's report is unchanged.
   ladderMute?: string;
   gapSummaries: SummarizeSummary | { skipped: string } | { stepError: string };
-  reflector: ReflectorSummary | { skipped: string } | { stepError: string };
   ok: boolean;
 }
 
@@ -602,37 +599,12 @@ export async function runLifecycle(
     if (!isMissingCostLedger(err)) ok = false;
   }
 
-  // 12. The Reflector (⑤ Phase 4) — the distiller, dark. REFLECTOR_MODE
-  // follows the PLANNER_MODE contract verbatim: unset = 'off' silently (a
-  // cron deployed before the var is chosen must not go red), bad value =
-  // LOUD stepError. 'live' is shadow-equivalent in this plan (activation
-  // stays human); the per-tenant gate inside owns dailiness and thresholds.
-  const reflectorModeRaw = process.env.REFLECTOR_MODE;
-  const reflectorMode: ReflectorMode | null =
-    !reflectorModeRaw ? 'off'
-    : reflectorModeRaw === 'off' || reflectorModeRaw === 'shadow' || reflectorModeRaw === 'live'
-      ? reflectorModeRaw
-      : null;
-  let reflector: LifecycleSummary['reflector'];
-  if (reflectorMode === null) {
-    reflector = {
-      stepError: `REFLECTOR_MODE must be 'off', 'shadow' or 'live', got '${reflectorModeRaw}'`,
-    };
-    ok = false;
-  } else if (reflectorMode === 'off') {
-    reflector = { skipped: "REFLECTOR_MODE 'off'" };
-  } else if (!(deps.hasModelKey ?? hasModelCredentials)()) {
-    reflector = { skipped: 'no inference credentials' };
-  } else {
-    try {
-      reflector = await (deps.reflect ?? runReflector)(nowIso, reflectorMode);
-    } catch (err) {
-      reflector = isMissingCostLedger(err)
-        ? { skipped: 'reflector tables not migrated here yet' }
-        : { stepError: msg(err) };
-      if (!isMissingCostLedger(err)) ok = false;
-    }
-  }
+  // Step 12 was THE REFLECTOR (⑤ Phase 4) — the distiller that proposed
+  // planner_lessons rows for a human to activate. Retired whole in build 3
+  // (plan 2026-08-30, Phase 3): the planner now writes its own memory, so
+  // nothing distils on its behalf. REFLECTOR_MODE is no longer read anywhere;
+  // delete it from the lifecycle-heart Render service too, or a live variable
+  // will point at code that does not exist.
 
   return {
     pairing,
@@ -646,7 +618,6 @@ export async function runLifecycle(
     teamLeadPlanner,
     ...(ladderMute ? { ladderMute } : {}),
     gapSummaries,
-    reflector,
     ok,
   };
 }

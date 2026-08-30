@@ -2,7 +2,7 @@
 date: 2026-08-30
 task: Build 3 — the planner writes its own memory, reconciles it against the spine, and the lesson machinery retires
 research: thoughts/shared/research/2026-08-29-the-planners-memory-the-ground-it-stands-on.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -168,14 +168,14 @@ instant**, never `now()` — and `latestSuccessfulPlannerRunAt(tenantId)` readin
 Run `npm run gen:types:local` after applying — never `gen:types`, which is `--linked` (the pilot).
 
 ### Automated verification
-- [ ] `npx supabase db reset` applies cleanly, then `npm run gen:types:local`
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass
-- [ ] `src/db/plannerMemory.test.ts`: write to read round-trips; an overwrite versions the prior
+- [x] `npx supabase db reset` applies cleanly, then `npm run gen:types:local`
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` pass (2416 tests)
+- [x] `src/db/plannerMemory.test.ts`: write to read round-trips; an overwrite versions the prior
       content; the 11th write leaves exactly 10 versions; delete versions then removes;
       `listMemoryPaths` is path-ordered; a CHECK-violating path is rejected by the database
-- [ ] `src/db/plannerRuns.test.ts`: upsert keeps ONE row per tenant; `last_success_at` does not move
+- [x] `src/db/plannerRuns.test.ts`: upsert keeps ONE row per tenant; `last_success_at` does not move
       on `ok = false`; `latestSuccessfulPlannerRunAt` returns null when never successful
-- [ ] `anon` and `authenticated` hold **zero** grants on all three tables
+- [x] `anon` and `authenticated` hold **zero** grants on all three tables
 
 ### Live verification (agent-executable)
 - Prerequisites: none. Local-stack only — the pilot is untouched until the whole build order is
@@ -249,30 +249,37 @@ happened, your notes are what you concluded, and the record wins.
 `scripts/planner-eval/run.mjs:93`.
 
 ### Automated verification
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass
-- [ ] `src/teamLead/memory.test.ts`: a memory containing an absolute date is **accepted** (pinning
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` pass (2458 tests)
+- [x] `src/teamLead/memory.test.ts`: a memory containing an absolute date is **accepted** (pinning
       the deliberate absence of the rail); a bad path (`..`, `//`, uppercase) is refused with the reason; over-budget index and file writes are refused with
       the size AND the budget in the message; `escapeForPrompt` neutralises a forged `LESSONS:`-style
       heading and a forged `gap <uuid>` line while preserving ordinary newlines; `renderMemoryIndex`
       returns `''` for an empty firm, the index verbatim when nothing is orphaned, the footer **only**
       when a path is missing from the index text, capped at `ORPHANS_SHOWN` with a count of the rest
-- [ ] `src/teamLead/planner.test.ts`: the index appears **before** the clock line — assert ORDER, not
+- [x] `src/teamLead/planner.test.ts`: the index appears **before** the clock line — assert ORDER, not
       presence; the cache decision is the whole point. Plus: last-run lines render; first-run wording
       with no prior marker; a failing memory read leaves the tick intact; **`off_cadence` and
       `no_gaps` firms write NO marker** (the `finally` trap); a completed tick writes
       `last_success_at`, a throwing one moves `last_ran_at` only; a throwing marker write surfaces as
       one `tenantError` and the next firm still runs
-- [ ] `src/mcp/server.test.ts`: both tools dispatch for `spine:team-lead`, are refused for a manager
+- [x] `src/mcp/server.test.ts`: both tools dispatch for `spine:team-lead`, are refused for a manager
       badge, and `write_memory` with `content` **omitted** deletes exactly as `''` does
-- [ ] a test pinning that every `TEAM_LEAD_TOOL_NAMES` entry has a schema in `TEAM_LEAD_TOOL_SCHEMAS`
+- [x] a test pinning that every `TEAM_LEAD_TOOL_NAMES` entry has a schema in `TEAM_LEAD_TOOL_SCHEMAS`
       or is explicitly listed as known-unreachable — the drift the research found
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase + `.env` with an inference key; `scripts/agentic-eval/run.mjs` drives
   a real model through `plannerSim`.
-- [ ] One `runTick` on the local stack with a real model and one seeded memory file. Evidence: the
+- [x] One `runTick` on the local stack with a real model and one seeded memory file. Evidence: the
       captured user message showing the index before the clock, and a `select path, updated_at from
       planner_memory` read-back showing any write landed.
+      **Run 2026-08-30, GLM 5.3 via OpenRouter, SMOKE-1 world.** Offsets in the rendered message:
+      index `0` < last-run `187` < clock `324` < gaps `514`. The model's second tool call was
+      `read_memory {"path":"stray-note.md"}` — it followed the code-appended `not in your index:`
+      footer unprompted, which is the discovery mechanism working end to end. `planner_runs` stamped
+      the tick's SIMULATED instant `2026-08-29T17:00:00.000Z`, not wall-clock. **No memory write
+      this tick** (0 rows in `planner_memory_versions`): the planner read and did not record
+      anything. Whether it writes unprompted is a behaviour question for the evaluation phase.
 
 ### Manual verification — none
 
@@ -325,20 +332,30 @@ bin emerges. Add to `package.json`; remove `lessons:planner`.
 unbuilt-auditor hole.
 
 ### Automated verification
-- [ ] `npx supabase db reset`, `npm run gen:types:local`, then `npx tsc --noEmit`, `npm run lint`,
-      `npm test`, `npm run build` pass
-- [ ] `grep -rn "planner_lessons\|REFLECTOR_MODE\|lessonCited\|runReflector\|reflector_runs" src
-      scripts supabase` returns only the two original migrations and the drop migration.
+- [x] `npx supabase db reset`, `npm run gen:types:local`, then `npx tsc --noEmit`, `npm run lint`,
+      `npm test` (2437), `npm run build` pass
+- [x] `grep -rn "planner_lessons\|REFLECTOR_MODE\|lessonCited\|runReflector\|reflector_runs" src
+      scripts supabase` returns **no live code** — only the original migrations, the drop
+      migration, and deliberate tombstone COMMENTS. (As written the box overstated it: ~14 comment
+      hits remain and are meant to. What was verified is that no non-comment line survives.)
       **Do not grep bare `reflector`** — `cost_events.lane = 'reflector'` is live historical data
-      (`src/db/costs.ts:88`, `costs.test.ts:1028`) and must survive.
-- [ ] `npm run memory:planner -- --tenant <local uuid>` prints the tree for a seeded firm
-- [ ] `npm run decisions:index` regenerated and committed
+      (`costs.test.ts:1028`) and must survive; confirmed present.
+- [x] `npm run memory:planner -- --tenant <local uuid>` prints the tree for a seeded firm
+- [x] `npm run decisions:index` regenerated and committed
 
 ### Live verification (agent-executable)
 - Prerequisites: `.env` (`DATABASE_URL`) — already required by every `scripts/` tool. **Read-only.**
-- [ ] `npm run memory:planner` against the pilot returns cleanly with zero rows (nothing deployed),
+- [x] `npm run memory:planner` against the pilot returns cleanly with zero rows (nothing deployed),
       confirming the console works against the real schema. Evidence: the output and a
       `select count(*) from planner_memory` read-back.
+      **Run 2026-08-30, read-only against `daqapdlkgxfrhquacprv`.** Output:
+      `planner_memory is not on this database — build 3 has not been applied here.` Exit 0.
+      This was a REAL FINDING, not a formality: the console originally died on the Postgres
+      `42P01`, which reads as a broken tool and sends the next person hunting a bug that is not
+      there. It now tolerates the missing relation by name. Independent `information_schema`
+      read-back: the pilot has **neither** new table, and **still carries `planner_lessons` and
+      `reflector_runs`** — deploys do not migrate (§ engineering-memory), so the drop migration
+      must be applied deliberately whenever the build order ships. Nothing was written.
 
 ### Manual verification — none
 

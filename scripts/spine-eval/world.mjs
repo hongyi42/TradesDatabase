@@ -125,12 +125,14 @@ const RESET_TABLES = [
   // that firm's detector thresholds and planner cadence in the next eval run.
   // Registered BY NAME (eng-memory §1).
   'tenant_settings',
-  // Cascade-reachable via technicians, but named anyway (eng-memory §1: every
-  // new table gets registered BY NAME — incidental cascade coverage is how
-  // tenant_profiles got missed).
-  // References only tenants — no cascade reaches it (the tenant_profiles trap).
-  'planner_lessons',
-  'reflector_runs',
+  // The planner's memory (build 3), which replaced planner_lessons. Same trap as
+  // tenant_profiles above: tenants-only FKs, and planner_memory_versions hangs
+  // off no table at all, so NO cascade reaches any of the three. Registered BY
+  // NAME (eng-memory §1). A stale MEMORY.md surviving a rebuild would put the
+  // previous world's conclusions into the rebuilt firm's very first prompt.
+  'planner_memory',
+  'planner_memory_versions',
+  'planner_runs',
   // Cascades from nudges, named anyway (eng-memory §1).
   'gap_summaries',
   'nudges',
@@ -191,9 +193,10 @@ const PILOT_TENANT_SCOPED = [
   // (the once-ever dedup). Phase-1 review finding (2026-08-16).
   // Before nudges: explicit, though the cascade FK would also carry it.
   'nudge_decisions',
-  // References only tenants — no cascade reaches it (the tenant_profiles trap).
-  'planner_lessons',
-  'reflector_runs',
+  // The planner's memory (build 3) — see the note on the list above.
+  'planner_memory',
+  'planner_memory_versions',
+  'planner_runs',
   // Cascades from nudges, named anyway (eng-memory §1).
   'gap_summaries',
   'nudges',

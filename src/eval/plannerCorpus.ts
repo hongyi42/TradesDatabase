@@ -72,10 +72,6 @@ export interface ScenarioExpect {
    *  grading — the thing no other harness measures). `argContains` matches the
    *  serialized args. */
   mustRead?: { tool: string; argContains?: string };
-  /** ⑤ Phase-5 stamping: true = the graded decision's reason must cite an
-   *  active lesson's [8-hex] id; false = it must cite NONE (the
-   *  irrelevant-lesson control). */
-  lessonCited?: boolean;
   /** Arc-shape expectations, judged over ALL executed ticks + the epilogue. */
   arc?: {
     /** Applied escalate decisions across the arc (0 = never escalate). */
@@ -841,52 +837,12 @@ const MULTI_GAP: PlannerScenario[] = [
   },
 ];
 
-/** LESSONS — provenance: ⑤ Phase 5 (LESSONS block + [8-hex] stamping rail). */
-const LESSONS: PlannerScenario[] = [
-  {
-    id: 'LN-01',
-    family: 'lessons',
-    why: 'A pacing lesson that fits the moment: following it should stamp its id in the reason (the usage split).',
-    world: visitWorld('Rhea Solberg', 'Indirect tank flush', 'ln1-ben', 'Ben Shelton', { askedAt: '-3h', createdAt: '-4h', escalateAfter: '+21h' }, {
-      lessons: [{ text: 'This manager dismissed 4 of your last 5 same-day escalations — batch routine follow-ups and wait until the next morning before escalating.' }],
-    }),
-    timeline: oneTick,
-    expect: { actionNot: 'escalate', lessonCited: true },
-  },
-  {
-    id: 'LN-02',
-    family: 'lessons',
-    why: 'A lesson that argues FOR action: this firm resolves fast when asked before noon.',
-    world: visitWorld('Judd Pemberton', 'Oil burner nozzle', 'ln2-dee', 'Dee Marsh', { askedAt: '-27h', createdAt: '-28h', escalateAfter: '+6h' }, {
-      lessons: [{ text: 'Escalations sent before noon get resolved same-day at this firm; afternoon ones sit until tomorrow.' }],
-    }),
-    timeline: [tick('+0h')],
-    expect: { action: 'escalate' },
-  },
-  {
-    id: 'LN-03',
-    family: 'lessons',
-    why: 'The control: an IRRELEVANT lesson must not warp the decision or be cited for show.',
-    world: visitWorld('Mina Castellanos', 'Expansion valve', 'ln3-mo', 'Mo Reyes', { escalateAfter: '+4h' }, {
-      lessons: [{ text: 'When scheduling around the marina district, add 20 minutes for parking.' }],
-    }),
-    timeline: oneTick,
-    expect: { lessonCited: false },
-  },
-  {
-    id: 'LN-04',
-    family: 'lessons',
-    why: 'Guidance, never law (the prompt’s own words): a lesson urging patience yields to a LOUD contrary fact.',
-    world: visitWorld('Col Draper', 'Carbon monoxide alarm', 'ln4-lena', 'Lena Ochoa', { escalateAfter: '+4h' }, {
-      lessons: [{ text: 'This manager dislikes interruptions — hold routine items for the weekly batch.' }],
-      evidence: [
-        { at: '-1h', text: 'Customer says the CO alarm went off again this morning, they are worried.', fromTechnician: false },
-      ],
-    }),
-    timeline: [tick('+0h')],
-    expect: { action: 'escalate', mustName: ['draper'] },
-  },
-];
+// The LESSONS family (LN-01..LN-04) was DELETED in build 3, Phase 3 (plan
+// 2026-08-30) along with the machinery it tested. Four scenarios removed with
+// NO replacement, logged here rather than quietly: grading whether a memory
+// changed a decision needs a citation mechanism, and the [8-hex] stamp that
+// provided one retired with planner_lessons. The evaluation phase at the end of
+// the build order owns re-covering this.
 
 /** DAY EDGES — provenance: the date-eval arc (evening regime) and S4.
  *
@@ -1063,7 +1019,6 @@ export const FAMILY_COUNTS = {
   'late-stuck': 8,
   'people-judgment': 8,
   'multi-gap': 9,
-  lessons: 4,
   // Renamed from 'window-edges' when the ask window was deleted (2026-08-29).
   // Same six scenarios; the edges they probe are the DAY's, not a gate's.
   'day-edges': 6,
@@ -1077,6 +1032,5 @@ export const ALL_SCENARIOS: PlannerScenario[] = [
   ...LATE_STUCK,
   ...PEOPLE,
   ...MULTI_GAP,
-  ...LESSONS,
   ...WINDOW,
 ];

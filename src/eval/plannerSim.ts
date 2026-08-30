@@ -152,8 +152,6 @@ export interface ScenarioWorld {
     escalateAfter?: Offset;
     handoffNote?: string;
   }>;
-  /** ACTIVE lessons (⑤): rendered into the prompt's LESSONS block. */
-  lessons?: Array<{ text: string }>;
   /** SETTLED review items from PAST escalations about this technician — the
    *  dismissal-pattern substrate the planner's self-check reads
    *  (v_review_items where escalated_from_nudge is not null). The cited nudge
@@ -171,8 +169,6 @@ export interface SeededScenario {
   technicianRef: string;
   /** scenario nudge key → nudges.id */
   nudgeIds: Record<string, string>;
-  /** Seeded ACTIVE lesson ids — the strict referent for lessonCited grading. */
-  lessonIds: string[];
 }
 
 /**
@@ -308,24 +304,6 @@ export async function seedScenario(
     if (error) throw new Error(`seed decision history failed: ${error.message}`);
   }
 
-  const lessonIds: string[] = [];
-  for (const lesson of world.lessons ?? []) {
-    const evidence = Object.values(nudgeIds);
-    const { data: lrow, error } = await sb
-      .from('planner_lessons')
-      .insert({
-        tenant_id: tenantId,
-        text: lesson.text,
-        status: 'active',
-        evidence: (evidence.length > 0 ? evidence : ['seed']) as never,
-        activated_at: new Date(t0Ms).toISOString(),
-      })
-      .select('id')
-      .single();
-    if (error || !lrow) throw new Error(`seed lesson failed: ${error?.message}`);
-    lessonIds.push(lrow.id);
-  }
-
   for (const [i, item] of (world.priorItems ?? []).entries()) {
     const at = atOffset(t0Ms, item.at);
     const { error } = await sb.from('review_items').insert({
@@ -354,7 +332,6 @@ export async function seedScenario(
     technicianId: tech.id,
     technicianRef: tech.ref,
     nudgeIds,
-    lessonIds,
   };
 }
 
@@ -398,7 +375,8 @@ export interface TickRecord {
   /** The full loop transcript — what production discards. */
   toolCalls: ToolLoopCall[];
   turns: number;
-  /** The rendered prompt (gap blocks + lessons block) — the judge's evidence.
+  /** The rendered prompt (the memory index, the last-run lines and the gap
+   *  blocks) — the judge's evidence.
    *  Null when the planner skipped before the model call. */
   userPrompt: string | null;
   /** Every nudge on the tenant after the tick, any status. */

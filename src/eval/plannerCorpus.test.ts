@@ -4,6 +4,7 @@ import { createTenant } from '../db/tenants.js';
 import { ALL_SCENARIOS, FAMILY_COUNTS, type ScenarioExpect } from './plannerCorpus.js';
 import { parseOffsetMs, seedScenario, simStartIso, SIM_TZ } from './plannerSim.js';
 import { plannerCadenceDue, PLANNER_TICK_MINUTES } from '../teamLead/planner.js';
+import { TEAM_LEAD_TOOL_SCHEMAS } from '../mcp/server.js';
 
 // The corpus's structural rails (plan Phase 3). These are AUTHORING tests:
 // they catch the scenario shapes that would grade the harness instead of the
@@ -144,17 +145,16 @@ describe('corpus structure', () => {
     }
   });
 
-  test('lesson scenarios seed lessons; mustRead tools are real team-lead tools', () => {
-    // ONLY the schemas production hands the loop (TEAM_LEAD_TOOL_SCHEMAS = 2).
-    // The identity allowlist names two more, but a tool with no handed schema
-    // is unreachable — a mustRead on it would fail every run forever.
-    const TOOLS = new Set(['spine_read', 'recall_decisions']);
+  test('mustRead tools are real team-lead tools', () => {
+    // ONLY the schemas production hands the loop. DERIVED, not hand-listed: it
+    // was a literal two-name set until build 3 added the memory tools, and a
+    // hand-copy silently makes a legitimate mustRead unfailable-to-write. The
+    // identity allowlist names more than this — a tool with no handed schema is
+    // unreachable, and a mustRead on one would fail every run forever.
+    const TOOLS = new Set(TEAM_LEAD_TOOL_SCHEMAS.map((t) => t.name));
     for (const s of ALL_SCENARIOS) {
       const expects: ScenarioExpect[] = Array.isArray(s.expect) ? s.expect : s.expect ? [s.expect] : [];
       for (const e of expects) {
-        if (e.lessonCited) {
-          expect(s.world.lessons?.length ?? 0, `${s.id}: lessonCited without a seeded lesson`).toBeGreaterThan(0);
-        }
         if (e.mustRead) {
           expect(TOOLS.has(e.mustRead.tool), `${s.id}: mustRead names unknown tool`).toBe(true);
         }
@@ -185,7 +185,11 @@ describe('corpus seeds cleanly (loop, no model)', () => {
       await pg.query(`delete from nudges where tenant_id = $1`, [tenantId]);
       // money_events is APPEND-ONLY (ledger trigger) — rows stay; harmless,
       // every money read is job-scoped and each scenario seeds fresh jobs.
-      await pg.query(`delete from planner_lessons where tenant_id = $1`, [tenantId]);
+      // Build 3: memory and the run marker both reach the next scenario's
+      // PROMPT, so they leak in a way nudges do not — mirroring the driver.
+      await pg.query(`delete from planner_memory where tenant_id = $1`, [tenantId]);
+      await pg.query(`delete from planner_memory_versions where tenant_id = $1`, [tenantId]);
+      await pg.query(`delete from planner_runs where tenant_id = $1`, [tenantId]);
       const seeded = await seedScenario(tenantId, s.world, t0Ms);
       const { rows } = await pg.query(
         `select id, kind, subject_ref, status from nudges where tenant_id = $1`,

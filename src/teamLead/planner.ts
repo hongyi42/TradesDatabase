@@ -6,6 +6,8 @@ import {
   listLiveMoneyEventsForJobsSince,
   listNudgesByStatus,
   listTenantIdsWithTelegramBindings,
+  latestSuccessfulPlannerRunAt,
+  upsertPlannerRun,
   markNudgeOutcome,
   markNudgeGroupQueued,
   markNudgeQueued,
@@ -22,7 +24,7 @@ import {
 import { runToolLoop, ToolLoopLimitError, type ToolLoopLimit } from '../model/toolLoop.js';
 import type { ForcedToolSpec } from '../model/forcedTool.js';
 import { NUDGE_KIND_SPECS, specFor, type NudgeKindSpec } from '../jobs/nudgeKinds.js';
-import { renderLessonsBlock } from './lessons.js';
+import { renderMemoryIndex } from './memory.js';
 // A plain const, read only inside functions — never at module-evaluation time.
 // watchers.ts and nudgeKinds.ts are a documented import cycle; this module sits
 // outside it, so there is no temporal-dead-zone hazard here.
@@ -32,6 +34,7 @@ import {
   NUDGE_ESCALATE_MAX_HOURS,
 } from '../jobs/watchers.js';
 import { readSettingsTolerantly, type ResolvedTenantSettings } from '../db/tenantSettings.js';
+import { isMissingRelation } from '../db/costs.js';
 import { localDateISO, localTimeHHMM, parseAsUtc } from '../schedule/availability.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
 import { TEAM_LEAD_REF } from './identity.js';
@@ -249,6 +252,14 @@ export interface PlannerSummary {
   // so the consumer must. Without this the planner would run every firm 24/7 with
   // no signal at all while the sweep beside it warned.
   settingsTableMissing?: boolean;
+  // Same contract, for build 3's three tables. Deploys do NOT run migrations
+  // (docs/engineering-memory.md), so shipping this code before
+  // 20260830120000_planner_memory.sql is applied is a real ordering, not a
+  // hypothetical — and on a one-firm deployment an error per firm is an error
+  // for EVERY firm, which is exactly the condition lifecycle.ts turns red on.
+  // A planner that plans perfectly while its notebook is missing is degraded,
+  // not broken; it is REPORTED rather than counted as a failure.
+  memoryTableMissing?: boolean;
 }
 
 // HOW OFTEN THE PLANNER THINKS ABOUT A FIRM (plan 2026-08-29 Phase 3). This
@@ -359,7 +370,12 @@ export const PLANNER_REASONING = 'medium' as const;
 
 export interface PlannerDeps {
   listTenants?: typeof listTenantIdsWithTelegramBindings;
-  lessons?: typeof renderLessonsBlock;
+  // The planner's own notes (build 3): the index that rides in the prompt, the
+  // "when did I last run" read, and the marker write. Injected like every other
+  // collaborator so a unit test never touches the database.
+  memoryIndex?: typeof renderMemoryIndex;
+  lastRunAt?: typeof latestSuccessfulPlannerRunAt;
+  plannerRun?: typeof upsertPlannerRun;
   getTenant?: typeof getTenant;
   // The firm's own approximate hours — cadence only. Injected like every other
   // collaborator so a unit test never touches the database.
@@ -485,10 +501,10 @@ function elapsedLabel(fromIso: string | null, nowMs: number): string | null {
 // "Wednesday, August 19, 2026 at 6:50 PM in the firm's timezone (America/Los_Angeles)".
 // Weekday and date come from ONE derivation so they cannot disagree, and the
 // zone is named so the reader can tell this is not UTC.
-function firmClockLine(nowIso: string, tz: string): string {
+function firmStamp(iso: string, tz: string): string | null {
   try {
-    const day = localDateISO(nowIso, tz);
-    const hhmm = localTimeHHMM(nowIso, tz);
+    const day = localDateISO(iso, tz);
+    const hhmm = localTimeHHMM(iso, tz);
     const human = new Date(`${day}T00:00:00Z`).toLocaleDateString('en-US', {
       timeZone: 'UTC',
       weekday: 'long',
@@ -496,12 +512,73 @@ function firmClockLine(nowIso: string, tz: string): string {
       day: 'numeric',
       year: 'numeric',
     });
-    return `${human} at ${hhmm} in this firm's own timezone (${tz})`;
+    return `${human} at ${hhmm}`;
   } catch {
-    // An unknown zone must not take the tenant's whole plan down; say plainly
-    // that this is UTC rather than printing a wrong local time.
-    return `${nowIso}, in UTC (this firm's timezone '${tz}' could not be read)`;
+    return null;
   }
+}
+
+function firmClockLine(nowIso: string, tz: string): string {
+  const stamp = firmStamp(nowIso, tz);
+  // An unknown zone must not take the tenant's whole plan down; say plainly
+  // that this is UTC rather than printing a wrong local time.
+  return stamp
+    ? `${stamp} in this firm's own timezone (${tz})`
+    : `${nowIso}, in UTC (this firm's timezone '${tz}' could not be read)`;
+}
+
+/**
+ * "You last planned for this firm N ago" — the one thing that survives between
+ * ticks without being read out of the record (plan 2026-08-30).
+ *
+ * BOTH LINES OR NEITHER. Elapsed time is uninterpretable without the interval:
+ * five hours since the last run is unremarkable at an off-hours cadence and an
+ * outage at the in-hours one, and the planner cannot tell which without being
+ * told the rate it is supposed to run at.
+ */
+export function lastRunLines(
+  nowIso: string,
+  tz: string,
+  lastSuccessAt: string | null,
+  everyMinutes: number,
+  // True when this firm has recorded approximate hours, so its rate CHANGES
+  // across the working day. Without saying so, the first in-hours tick of every
+  // morning reads as three missed ticks: the elapsed time was measured over the
+  // 2-hourly off-hours rate and the interval printed beside it is the 30-minute
+  // in-hours one. The pair is what the planner reasons from, so the pair has to
+  // be honest about which rate produced which half.
+  ratesVary = false,
+): string[] {
+  const cadence =
+    `You are scheduled to think about it every ${everyMinutes} minutes right now` +
+    (ratesVary
+      ? ', though that rate is slower outside this firm\'s working hours — so a longer gap than ' +
+        'this is not necessarily a tick you missed.'
+      : '.');
+  if (!lastSuccessAt) {
+    return ['This is the first time you have planned for this firm.', cadence];
+  }
+  const ms = Date.parse(nowIso) - Date.parse(lastSuccessAt);
+  const when = firmStamp(lastSuccessAt, tz) ?? lastSuccessAt;
+  // Negative is possible and must not print as "-3m ago": the eval drives a
+  // simulated clock backwards between scenarios, and a marker written by a
+  // later scenario would otherwise read as the future.
+  const ago = Number.isFinite(ms) && ms >= 0 ? elapsedWords(ms) : 'an unknown time';
+  return [`You last planned for this firm at ${when}, ${ago} ago.`, cadence];
+}
+
+// Deliberately NOT `elapsedLabel` above, which serves the gap blocks: that one
+// floors to whole hours and says "yesterday" / "3 days ago" because it describes
+// when a person was last bothered. This one is a duration the planner does
+// arithmetic against ("2h 30m ago" vs "every 30 minutes"), so it keeps minutes.
+// Two formatters, two audiences — but if a third appears, collapse them.
+function elapsedWords(ms: number): string {
+  const mins = Math.round(ms / 60_000);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  if (hours < 48) return rem === 0 ? `${hours}h` : `${hours}h ${rem}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
 // Collapse to one line so a multi-line note cannot fake structure in the prompt.
@@ -1516,20 +1593,42 @@ export function buildPlannerUserMessage(
   nowIso: string,
   tz: string,
   views: GapView[],
-  lessonsBlock = '',
+  memoryIndex = '',
+  lastRun: {
+    lastSuccessAt: string | null;
+    everyMinutes: number;
+    ratesVary?: boolean;
+  } | null = null,
 ): string {
   return [
+    // THE INDEX GOES FIRST, and the reason is the cache, not the reading order.
+    // Measured 2026-08-30 on the OpenRouter/GLM path: the cacheable prefix is
+    // the system prompt plus the tool schemas, and the user message is the
+    // variable tail — so anything placed AFTER the gap blocks can never join a
+    // cross-tick hit, because the gaps change every tick. The index is the most
+    // stable thing in this message, so it belongs at the front of it.
+    // Provider-specific and free on the other path: the Anthropic rollback puts
+    // cache_control only on the last system block (toolLoop.ts:295-304), so
+    // nothing in the user message caches either way there.
+    ...(memoryIndex ? ['YOUR OWN NOTES — your index:', memoryIndex, ''] : []),
+    ...(lastRun
+      ? [
+          ...lastRunLines(
+            nowIso,
+            tz,
+            lastRun.lastSuccessAt,
+            lastRun.everyMinutes,
+            lastRun.ratesVary,
+          ),
+          '',
+        ]
+      : []),
     `Right now it is ${firmClockLine(nowIso, tz)}.`,
     `In UTC that instant is ${nowIso} — use UTC for any notBefore you write.`,
     '',
     `This firm has ${views.length} open gap(s).`,
     '',
     views.map((v) => v.block).join('\n\n'),
-    // ⑤ Phase 5: the firm's own distilled history, pushed (the briefing-probe
-    // finding: pull-only content goes unread). Empty until a human activates
-    // a lesson — zero cost until then. Bounded by LESSONS_BLOCK_BUDGET at
-    // activation time.
-    ...(lessonsBlock ? ['', "LESSONS (from this firm's own history):", lessonsBlock] : []),
   ].join('\n');
 }
 
@@ -1727,6 +1826,46 @@ export async function runPlanner(
   const tenantIds = await listTenants();
   summary.tenants = tenantIds.length;
 
+  /**
+   * Record that the planner ran for this firm, at THIS tick's instant.
+   *
+   * Its own try/catch, deliberately, rather than letting a marker failure fall
+   * through to the per-tenant catch. Two things would go wrong if it did: the
+   * catch writes an `unmentioned` / "tick failed" row for every gap in the view,
+   * so a tick whose decisions were all applied would have its own history say it
+   * failed — and in the catch's own call the failure would recurse. It still
+   * SURFACES as a tenantError, because next tick's prompt depends on this row
+   * and a silently missing marker reads as "the planner has never run here".
+   */
+  const stampRun = async (
+    tenantId: string,
+    ok: boolean,
+    opts: { alreadyCounted?: boolean } = {},
+  ): Promise<void> => {
+    try {
+      await (deps.plannerRun ?? upsertPlannerRun)(tenantId, nowIso, ok);
+    } catch (err) {
+      // AN UNMIGRATED DATABASE IS NOT A FAILED TICK. Every other table this
+      // codebase added is tolerated when absent (gap_summaries skips,
+      // tenant_settings reports `tableMissing`); without this the pilot would
+      // go red on every run, forever, while the planner was in fact working —
+      // and a permanently red heartbeat is a broken alarm, not a signal.
+      if (isMissingRelation(err)) {
+        if (!summary.memoryTableMissing) {
+          summary.memoryTableMissing = true;
+          console.warn(
+            '[planner] planner_runs is not migrated here yet — the planner cannot tell how long ' +
+              'it has been since it last planned. Apply ' +
+              'supabase/migrations/20260830120000_planner_memory.sql.',
+          );
+        }
+        return;
+      }
+      if (!opts.alreadyCounted) summary.tenantErrors += 1;
+      console.error(`[planner] tenant ${tenantId}: recording the run marker failed`, err);
+    }
+  };
+
   for (const tenantId of tenantIds) {
     // DECLARED OUTSIDE the try on purpose (plan 2026-08-22, Phase 3). The catch
     // below has to write one `unmentioned` row per gap the tick was ABOUT, and a
@@ -1750,6 +1889,9 @@ export async function runPlanner(
     // most, and it is only knowable out here. Null until the loop actually
     // starts, which correctly reports 0 for a failure that happened before it.
     let loopStarted: number | null = null;
+    // Whether this firm's tick got as far as a model call — the ONLY thing that
+    // counts as a "run" for the marker below. See where it is set.
+    let reachedModel = false;
     const name = (plan: PlannerTenantPlan) => {
       named = true;
       summary.plans.push(plan);
@@ -1881,18 +2023,51 @@ export async function runPlanner(
       // this is a reasonable hour to bother somebody. Same doctrine as the tool
       // results' `now` rider and the weekday guard: the model is never the thing
       // that converts a clock.
-      // A lessons-read failure must never cost the tick — the block is an
-      // enhancement, the gaps are the job.
-      let lessonsBlock = '';
+      // A MEMORY READ MUST NEVER COST THE TICK — the notes are an enhancement,
+      // the gaps are the job. Two separate try/catches, not one: a failing index
+      // read must not also cost the last-run line, and vice versa.
+      // STARTED TOGETHER, settled separately: they are independent reads, and
+      // awaiting one before the other adds a full round trip per firm per tick
+      // to a path that runs every 30 minutes for every tenant.
+      const indexRead = (deps.memoryIndex ?? renderMemoryIndex)(tenantId);
+      const lastRunRead = (deps.lastRunAt ?? latestSuccessfulPlannerRunAt)(tenantId);
+      let memoryIndex = '';
       try {
-        lessonsBlock = await (deps.lessons ?? renderLessonsBlock)(tenantId);
+        memoryIndex = await indexRead;
       } catch (err) {
-        console.error(`[planner] tenant ${tenantId}: lessons read failed — running without`, err);
+        console.error(`[planner] tenant ${tenantId}: memory read failed — running without`, err);
       }
-      const user = buildPlannerUserMessage(nowIso, tz, [...views.values()], lessonsBlock);
+      // NULL means two different things and only one of them is safe to print:
+      // "this firm has never been planned for" is a FACT, and "the read fell
+      // over" is an ABSENCE OF FACT. Collapsing them tells a firm the planner
+      // has served two hundred times that this is the first, on the strength of
+      // a transient database error — and the model would reasonably conclude
+      // nothing is queued and nothing has been chased. So a failed read drops
+      // BOTH lines rather than substituting the first-run wording for them.
+      let lastRun: {
+        lastSuccessAt: string | null;
+        everyMinutes: number;
+        ratesVary: boolean;
+      } | null = null;
+      try {
+        lastRun = {
+          lastSuccessAt: await lastRunRead,
+          everyMinutes,
+          ratesVary: read.settings.approxWorkStartHour !== null,
+        };
+      } catch (err) {
+        console.error(`[planner] tenant ${tenantId}: last-run read failed — saying nothing`, err);
+      }
+      const user = buildPlannerUserMessage(nowIso, tz, [...views.values()], memoryIndex, lastRun);
 
       const started = Date.now();
       loopStarted = started;
+      // A "run" is a tick that REACHED THE MODEL. Set here rather than in a
+      // `finally` on the per-tenant try, and that is not a style choice:
+      // `continue` executes `finally`, and both the no_gaps and off_cadence
+      // paths continue from inside this try — a naive finally would stamp a run
+      // for every firm the cadence skipped and make the prompt line false.
+      reachedModel = true;
       // Validated INSIDE the executor on purpose. Validating after the loop
       // returns means a plan the rails refuse is simply gone — the model never
       // learns its citation was unusable, and the gap stays open with nobody the
@@ -1972,22 +2147,6 @@ export async function runPlanner(
       // point: recording first would log an intention as an outcome, and the
       // whole reason this table exists is that "the planner decided X" and "X
       // happened" had become indistinguishable.
-      // The light lesson-usage rail (⑤ Phase 5): a reason naming a bracketed
-      // 8-hex id that is not an active lesson is LOGGED, never refused — the
-      // stamp exists for measurement, and refusing would teach the model to
-      // stop citing.
-      const knownShortIds = new Set(
-        [...lessonsBlock.matchAll(/\[([0-9a-f]{8})\]/g)].map((m) => m[1]),
-      );
-      for (const d of decisions) {
-        for (const m of d.reason.matchAll(/\[([0-9a-f]{8})\]/g)) {
-          if (!knownShortIds.has(m[1])) {
-            console.error(
-              `[planner] tenant ${tenantId}: decision on ${d.nudgeId} cites unknown lesson [${m[1]}]`,
-            );
-          }
-        }
-      }
       const records: NudgeDecisionInput[] = [];
       let cappedWarned = false; // one line per tenant per tick, not one per gap
       let applied = 0;
@@ -2187,10 +2346,20 @@ export async function runPlanner(
         ms: Date.now() - started,
       });
 
+      await stampRun(tenantId, true);
+
       // SHADOW TOUCHES NO NUDGE — not a schedule, not a resolution. It DOES
       // write nudge_decisions, which is the point: the corpus and the planner's
       // own memory start accumulating before anything is applied, so the effect
       // of having a memory can be watched in shadow rather than discovered live.
+      //
+      // Build 3 makes that literal and it is DELIBERATE, not an oversight:
+      // `write_memory` has no mode gate, so a shadow tick really does write
+      // planner_memory and really does stamp planner_runs. Shadow means "change
+      // nothing a person will see" — no message goes out, no gap moves — and it
+      // has always written the planner's own records. Gating memory would make
+      // shadow useless for the one question it exists to answer here: what does
+      // this planner's memory look like after a week of ticks?
       if (mode === 'shadow') {
         console.log(
           `[planner:shadow] tenant ${tenantId}: ${open.length} gaps → ` +
@@ -2213,6 +2382,11 @@ export async function runPlanner(
       // untouched: the sweep's constants still apply, so a dead planner degrades
       // to exactly the behaviour that shipped before it existed.
       summary.tenantErrors += 1;
+      // The marker still moves for a tick that REACHED the model and then died:
+      // `last_ran_at` advances, `last_success_at` does not. That asymmetry is
+      // what lets the next prompt say "you last completed a plan for this firm
+      // nine hours ago" while the cron has in fact been firing all along.
+      if (reachedModel) await stampRun(tenantId, false, { alreadyCounted: true });
       // Named in the record, not just counted. `views.size` is the gap count the
       // tick had actually built when it died — 0 when the failure came before the
       // views were assembled, which is itself the honest number. `views` is

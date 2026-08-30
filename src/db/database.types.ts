@@ -1202,51 +1202,91 @@ export type Database = {
           },
         ]
       }
-      planner_lessons: {
+      planner_memory: {
         Row: {
-          activated_at: string | null
-          evidence: Json
-          id: string
-          proposed_at: string
-          retired_at: string | null
-          retired_reason: string | null
-          scope: string
-          status: string
-          strikes: number
+          content: string
+          created_at: string
+          path: string
           tenant_id: string
-          text: string
+          updated_at: string
         }
         Insert: {
-          activated_at?: string | null
-          evidence: Json
-          id?: string
-          proposed_at?: string
-          retired_at?: string | null
-          retired_reason?: string | null
-          scope?: string
-          status?: string
-          strikes?: number
+          content: string
+          created_at?: string
+          path: string
           tenant_id: string
-          text: string
+          updated_at?: string
         }
         Update: {
-          activated_at?: string | null
-          evidence?: Json
-          id?: string
-          proposed_at?: string
-          retired_at?: string | null
-          retired_reason?: string | null
-          scope?: string
-          status?: string
-          strikes?: number
+          content?: string
+          created_at?: string
+          path?: string
           tenant_id?: string
-          text?: string
+          updated_at?: string
         }
         Relationships: [
           {
-            foreignKeyName: "planner_lessons_tenant_id_fkey"
+            foreignKeyName: "planner_memory_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      planner_memory_versions: {
+        Row: {
+          content: string
+          id: string
+          path: string
+          replaced_at: string
+          tenant_id: string
+        }
+        Insert: {
+          content: string
+          id?: string
+          path: string
+          replaced_at?: string
+          tenant_id: string
+        }
+        Update: {
+          content?: string
+          id?: string
+          path?: string
+          replaced_at?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "planner_memory_versions_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      planner_runs: {
+        Row: {
+          last_ran_at: string
+          last_success_at: string | null
+          tenant_id: string
+        }
+        Insert: {
+          last_ran_at: string
+          last_success_at?: string | null
+          tenant_id: string
+        }
+        Update: {
+          last_ran_at?: string
+          last_success_at?: string | null
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "planner_runs_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: true
             referencedRelation: "tenants"
             referencedColumns: ["id"]
           },
@@ -1449,38 +1489,6 @@ export type Database = {
             columns: ["visit_id"]
             isOneToOne: false
             referencedRelation: "visits"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      reflector_runs: {
-        Row: {
-          id: string
-          ok: boolean
-          proposed: number
-          ran_at: string
-          tenant_id: string
-        }
-        Insert: {
-          id?: string
-          ok?: boolean
-          proposed?: number
-          ran_at?: string
-          tenant_id: string
-        }
-        Update: {
-          id?: string
-          ok?: boolean
-          proposed?: number
-          ran_at?: string
-          tenant_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "reflector_runs_tenant_id_fkey"
-            columns: ["tenant_id"]
-            isOneToOne: false
-            referencedRelation: "tenants"
             referencedColumns: ["id"]
           },
         ]

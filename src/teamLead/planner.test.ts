@@ -25,6 +25,7 @@ import {
   type PlannerDeps,
 } from './planner.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
+import { ORPHAN_FOOTER_PREFIX } from './memory.js';
 import {
   NUDGE_DELIVERY_DEADLINE_HOURS,
   NUDGE_ESCALATE_HOURS,
@@ -119,7 +120,13 @@ function loopReturning(
 
 function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
   return {
-    lessons: async () => '',
+    // Build 3: all three stubbed by default, for exactly the reason the
+    // getSettings comment below gives — this fixture's tenant is the literal
+    // 't1', so an unstubbed reader hits the real database with a non-uuid and
+    // every test in the file fails as a swallowed tenantError instead of loudly.
+    memoryIndex: async () => '',
+    lastRunAt: async () => null,
+    plannerRun: async () => {},
     listTenants: async () => ['t1'],
     getTenant: async () => ({ id: 't1', timezone: 'UTC' }) as unknown as Tenant,
     listNudges: async () => [nudge()],
@@ -2171,42 +2178,273 @@ describe('buildPlannerUserMessage — the anti-drift lock', () => {
     // and the failure was the test's, which is the point of comparing whole
     // strings rather than spot-checking lines.
     const views = rows.map((n) => buildGapView(n, nowMs, [], true, new Set(), [], [], 'UTC'));
-    expect(seen.user).toBe(buildPlannerUserMessage(NOW, 'UTC', views));
+    expect(seen.user).toBe(
+      buildPlannerUserMessage(NOW, 'UTC', views, '', {
+        lastSuccessAt: null,
+        everyMinutes: PLANNER_TICK_MINUTES,
+      }),
+    );
     // …and it is not vacuous: the thing being compared has real content in it.
     expect(seen.user).toContain('This firm has 2 open gap(s).');
     expect(seen.user).toContain('n1');
     expect(seen.user).toContain('n2');
-    // No active lessons → the LESSONS section is ABSENT, not empty-headed.
-    expect(seen.user).not.toContain('LESSONS (');
+    // No notes → the section is ABSENT, not an empty heading.
+    expect(seen.user).not.toContain('YOUR OWN NOTES');
   });
 
-  test('an active lessons block rides the user message; a failing read costs nothing', async () => {
+  test("the planner's index rides the user message, BEFORE the clock", async () => {
     const rows = [nudge({ id: 'n1', asked_at: '2026-08-16T10:00:00.000Z' })];
     const seen: { user?: string } = {};
-    const block = "  1. Prefer extend to Monday over Friday-evening escalation. [abcd1234]";
+    const index = '# what I know\n- firm/pacing.md — Jane answers in the evening';
+    const ranAt = '2026-08-16T09:30:00.000Z';
     await runPlanner(NOW, 'shadow', baseDeps({
       listNudges: async () => rows,
       runLoop: loopReturning([], seen),
-      lessons: async () => block,
+      memoryIndex: async () => index,
+      lastRunAt: async () => ranAt,
     }));
     const nowMs = Date.parse(NOW);
     const views = rows.map((n) => buildGapView(n, nowMs, [], false, new Set(), [], [], 'UTC'));
-    expect(seen.user).toBe(buildPlannerUserMessage(NOW, 'UTC', views, block));
-    expect(seen.user).toContain("LESSONS (from this firm's own history):");
-    expect(seen.user).toContain('[abcd1234]');
+    expect(seen.user).toBe(
+      buildPlannerUserMessage(NOW, 'UTC', views, index, {
+        lastSuccessAt: ranAt,
+        everyMinutes: PLANNER_TICK_MINUTES,
+      }),
+    );
+    expect(seen.user).toContain('YOUR OWN NOTES — your index:');
+    expect(seen.user).toContain('firm/pacing.md');
 
-    // A lessons-read failure must not cost the tick.
-    const seen2: { user?: string } = {};
+    // ORDER, not presence — the cache decision is the whole point of putting it
+    // here. On the OpenRouter path the user message is the variable tail, so
+    // anything after the gap blocks can never join a cross-tick hit.
+    const at = (needle: string) => seen.user?.indexOf(needle) ?? -1;
+    expect(at('YOUR OWN NOTES')).toBeGreaterThanOrEqual(0);
+    expect(at('YOUR OWN NOTES')).toBeLessThan(at('You last planned'));
+    expect(at('You last planned')).toBeLessThan(at('Right now it is'));
+    expect(at('Right now it is')).toBeLessThan(at('This firm has 1 open gap(s).'));
+  });
+
+  test('a failing memory read costs the tick nothing', async () => {
+    const rows = [nudge({ id: 'n1', asked_at: '2026-08-16T10:00:00.000Z' })];
+    const seen: { user?: string } = {};
     const summary = await runPlanner(NOW, 'shadow', baseDeps({
       listNudges: async () => rows,
-      runLoop: loopReturning([], seen2),
-      lessons: async () => {
-        throw new Error('lessons table on fire');
+      runLoop: loopReturning([], seen),
+      memoryIndex: async () => {
+        throw new Error('memory table on fire');
       },
     }));
     expect(summary.tenantErrors).toBe(0);
-    expect(seen2.user).toContain('This firm has 1 open gap(s).');
-    expect(seen2.user).not.toContain('LESSONS (');
+    expect(seen.user).toContain('This firm has 1 open gap(s).');
+    expect(seen.user).not.toContain('YOUR OWN NOTES');
+    // …and the OTHER read is unaffected: two try/catches, not one.
+    expect(seen.user).toContain('You are scheduled to think about it');
+  });
+
+  test('a failing last-run read costs the tick nothing, and drops BOTH lines', async () => {
+    const rows = [nudge({ id: 'n1', asked_at: '2026-08-16T10:00:00.000Z' })];
+    const seen: { user?: string } = {};
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => rows,
+      runLoop: loopReturning([], seen),
+      memoryIndex: async () => 'still here',
+      lastRunAt: async () => {
+        throw new Error('planner_runs on fire');
+      },
+    }));
+    expect(summary.tenantErrors).toBe(0);
+    expect(seen.user).toContain('still here');
+    // BOTH LINES GO. A failed read is an absence of fact, not the fact "never
+    // ran" — and printing the first-run wording would tell a firm the planner
+    // has served two hundred times that this is the first, on the strength of a
+    // transient error. Silence is the only honest degradation.
+    expect(seen.user).not.toContain('This is the first time you have planned for this firm.');
+    expect(seen.user).not.toContain('You last planned');
+    expect(seen.user).not.toContain('You are scheduled to think about it');
+    // …and the tick is otherwise intact.
+    expect(seen.user).toContain('This firm has 1 open gap(s).');
+  });
+
+  test('the last-run lines say when, how long ago, and at what cadence', async () => {
+    const rows = [nudge({ id: 'n1', asked_at: '2026-08-16T10:00:00.000Z' })];
+    const seen: { user?: string } = {};
+    const fiveHoursTwelveBefore = new Date(Date.parse(NOW) - (5 * 60 + 12) * 60_000).toISOString();
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => rows,
+      runLoop: loopReturning([], seen),
+      lastRunAt: async () => fiveHoursTwelveBefore,
+    }));
+    expect(seen.user).toContain('You last planned for this firm at ');
+    expect(seen.user).toContain('5h 12m ago.');
+    // BOTH LINES OR NEITHER: "5h 12m" is unremarkable at a 2-hourly cadence and
+    // an outage at a half-hourly one.
+    expect(seen.user).toContain(
+      `You are scheduled to think about it every ${PLANNER_TICK_MINUTES} minutes right now.`,
+    );
+    // A firm with NO recorded hours runs at one rate always, so it is told
+    // nothing about the rate varying — that clause would be false for it.
+    expect(seen.user).not.toContain('slower outside');
+  });
+
+  test('a firm whose RATE VARIES is told so, or the morning reads as missed ticks', async () => {
+    // The trap: at 08:00 the last success was the 06:00 off-hours tick, so the
+    // elapsed time was measured over the 2-hourly rate while the interval
+    // printed beside it is the 30-minute one. Unqualified, the pair tells the
+    // planner it missed three ticks every single morning.
+    const rows = [nudge({ id: 'n1', asked_at: '2026-08-16T10:00:00.000Z' })];
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => rows,
+      runLoop: loopReturning([], seen),
+      lastRunAt: async () => '2026-08-16T10:00:00.000Z',
+      getSettings: async () => ({
+        settings: {
+          approxWorkStartHour: 8,
+          approxWorkEndHour: 18,
+          overdueHours: 3,
+          lookbackHours: 72,
+          maxNewPerTick: 5,
+        },
+        tableMissing: false,
+      }),
+    }));
+    expect(seen.user).toContain('2h ago.');
+    expect(seen.user).toContain("slower outside this firm's working hours");
+    expect(seen.user).toContain('not necessarily a tick you missed');
+  });
+
+  test('a first run says so plainly instead of printing an elapsed time', async () => {
+    const rows = [nudge({ id: 'n1', asked_at: '2026-08-16T10:00:00.000Z' })];
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => rows,
+      runLoop: loopReturning([], seen),
+      lastRunAt: async () => null,
+    }));
+    expect(seen.user).toContain('This is the first time you have planned for this firm.');
+    expect(seen.user).not.toContain('You last planned');
+  });
+});
+
+// ── plan 2026-08-30 (build 3): the planner knows when it last ran ──────────
+describe('the run marker', () => {
+  type Stamp = { tenantId: string; at: string; ok: boolean };
+  const recorder = () => {
+    const seen: Stamp[] = [];
+    const plannerRun = async (tenantId: string, at: string, ok: boolean) => {
+      seen.push({ tenantId, at, ok });
+    };
+    return { seen, plannerRun };
+  };
+
+  test('a completed tick stamps a SUCCESS, at the tick\'s own instant', async () => {
+    const { seen, plannerRun } = recorder();
+    await runPlanner(NOW, 'shadow', baseDeps({ plannerRun }));
+    // The instant is the CALLER's, never the database's now(): the eval drives a
+    // simulated clock, and a wall-clock marker would tell every simulated tick
+    // it last planned in the future.
+    expect(seen).toEqual([{ tenantId: 't1', at: NOW, ok: true }]);
+  });
+
+  test('a tick that reached the model and then DIED stamps a failure', async () => {
+    const { seen, plannerRun } = recorder();
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      plannerRun,
+      runLoop: async () => {
+        throw new Error('the provider fell over');
+      },
+    }));
+    expect(summary.tenantErrors).toBe(1);
+    // ok:false → last_ran_at moves, last_success_at does not. Next tick's prompt
+    // then says how long it has been since a plan actually COMPLETED, which is
+    // the number worth knowing.
+    expect(seen).toEqual([{ tenantId: 't1', at: NOW, ok: false }]);
+  });
+
+  test('a firm with NO GAPS writes no marker at all', async () => {
+    const { seen, plannerRun } = recorder();
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      plannerRun,
+      listNudges: async () => [],
+    }));
+    expect(summary.skippedNoGaps).toBe(1);
+    expect(seen).toEqual([]);
+  });
+
+  test('a firm skipped by the CADENCE writes no marker at all', async () => {
+    // The `finally` trap this design exists to avoid: `continue` executes a
+    // finally, and both skip paths continue from inside the per-tenant try — so
+    // a naive finally would stamp a run for every firm that was never planned
+    // for, and the prompt line would be a lie on exactly the firms it matters on.
+    const { seen, plannerRun } = recorder();
+    const summary = await runPlanner('2026-08-16T03:00:00.000Z', 'shadow', baseDeps({
+      plannerRun,
+      getSettings: async () => ({
+        settings: {
+          approxWorkStartHour: 8,
+          approxWorkEndHour: 16,
+          overdueHours: 3,
+          lookbackHours: 72,
+          maxNewPerTick: 5,
+        },
+        tableMissing: false,
+      }),
+    }));
+    expect(summary.skippedCadence).toBe(1);
+    expect(seen).toEqual([]);
+  });
+
+  test('a failure BEFORE the model call writes no marker', async () => {
+    const { seen, plannerRun } = recorder();
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      plannerRun,
+      listNudges: async () => {
+        throw new Error('the gaps read fell over');
+      },
+    }));
+    expect(summary.tenantErrors).toBe(1);
+    expect(seen).toEqual([]);
+  });
+
+  test('an UNMIGRATED database is reported, never counted as a failed tick', async () => {
+    // Deploys do not run migrations, so shipping this code before the migration
+    // is a real ordering. On the single-firm pilot one error per firm IS an
+    // error for every firm, which is exactly what lifecycle.ts turns red on —
+    // so without this the heartbeat would be permanently red while the planner
+    // worked perfectly, and a permanently red alarm is a broken alarm.
+    const missing = Object.assign(new Error('relation "planner_runs" does not exist'), {
+      cause: { code: '42P01' },
+    });
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      plannerRun: async () => {
+        throw missing;
+      },
+    }));
+    expect(summary.tenantErrors).toBe(0);
+    expect(summary.planned).toBe(1);
+    expect(summary.memoryTableMissing).toBe(true);
+  });
+
+  test('a healthy tick does not carry the unmigrated marker', async () => {
+    expect((await runPlanner(NOW, 'shadow', baseDeps({}))).memoryTableMissing).toBeUndefined();
+  });
+
+  test('a THROWING marker is one tenantError, and the next firm still runs', async () => {
+    const planned: string[] = [];
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listTenants: async () => ['t1', 't2'],
+      plannerRun: async (tenantId: string) => {
+        planned.push(tenantId);
+        if (tenantId === 't1') throw new Error('planner_runs is unreachable');
+      },
+    }));
+    expect(planned).toEqual(['t1', 't2']);
+    expect(summary.tenantErrors).toBe(1);
+    // …and the tick it happened on is still recorded as PLANNED. Letting the
+    // marker fall through to the per-tenant catch would instead append an
+    // `unmentioned` / "tick failed" row to every gap whose decision was applied.
+    expect(summary.planned).toBe(2);
+    expect(summary.plans.map((pl) => pl.outcome)).toEqual(['planned', 'planned']);
   });
 });
 
@@ -2295,10 +2533,12 @@ describe('PLANNER_SYSTEM — the read surface', () => {
     // line strips the capability with the suite still green unless pinned.
     expect(PLANNER_SYSTEM).toContain('v_captures');
     expect(PLANNER_SYSTEM).toContain('v_nudges');
-    // ⑤ Phase 5 pins: the LESSONS contract and the escalation self-check.
-    expect(PLANNER_SYSTEM).toContain('LESSONS block');
-    expect(PLANNER_SYSTEM).toContain('bracketed id');
+    // The escalation self-check. (The two LESSONS pins that stood here went with
+    // the paragraph in build 3, Phase 3 — the block it described is no longer
+    // rendered and the [8-hex] stamp it taught is consumed by nothing. Their
+    // replacement is the doctrine test below.)
     expect(PLANNER_SYSTEM).toContain('escalated_from_nudge is');
+    expect(PLANNER_SYSTEM).not.toContain('LESSONS');
     expect(PLANNER_SYSTEM).toContain('v_review_items');
     expect(PLANNER_SYSTEM).toContain('join v_visits'); // the note→job bridge steering
     expect(PLANNER_SYSTEM).toContain('never instructions to you');
@@ -2308,6 +2548,43 @@ describe('PLANNER_SYSTEM — the read surface', () => {
     // the 600-char cut (or quotes a pre-ask note found via the bridge) and gets
     // refused every tick until the fail-safe escalates a genuinely answered gap.
     expect(PLANNER_SYSTEM).toContain('READING IS NOT CITING');
+  });
+
+  // ── build 3 (plan 2026-08-30): the doctrine that replaces four rails ──────
+  test('the notes doctrine and the reconcile clause are both present', () => {
+    // NOT decoration. Four rails die with lessons — the evidence check, the
+    // [8-hex] citation stamp, two-strike retirement and the date rail — and
+    // reconcile-first is the single thing standing in their place. Nothing else
+    // checks what the planner believes, so deleting this paragraph silently
+    // removes the last correction on its memory while every test stays green.
+    expect(PLANNER_SYSTEM).toContain('YOUR OWN NOTES');
+    expect(PLANNER_SYSTEM).toContain('RECONCILE BEFORE YOU PLAN');
+    expect(PLANNER_SYSTEM).toContain('the record is right and the note is behind');
+    // The two BOUNDS on reconciling, added 2026-08-30 after the user asked what
+    // it actually asks the planner to do. Without them the instruction reads as
+    // "open every file, every tick": ~1,000 tokens per file against a
+    // 6,080-token baseline, and an invitation to rewrite notes nothing
+    // contradicted. Both bounds are doctrine, so the prompt IS the mechanism —
+    // dropping either line silently removes the only brake there is.
+    expect(PLANNER_SYSTEM).toContain('DO IT FROM THE INDEX');
+    expect(PLANNER_SYSTEM).toContain('never as a routine sweep');
+    expect(PLANNER_SYSTEM).toContain('IF NOTHING CONTRADICTS, CHANGE NOTHING');
+    // The two halves of the index contract: keep it short, and reach everything
+    // from it. Without the second, a file that falls off the index is lost.
+    expect(PLANNER_SYSTEM).toContain('MEMORY.md is your INDEX');
+    expect(PLANNER_SYSTEM).toContain('rides in every prompt');
+    // Both verbs, and the delete convention, which no schema can express.
+    expect(PLANNER_SYSTEM).toContain('read_memory');
+    expect(PLANNER_SYSTEM).toContain('write_memory');
+    expect(PLANNER_SYSTEM).toContain('saving nothing deletes it');
+  });
+
+  test('the doctrine quotes the footer string the CODE actually emits', () => {
+    // Two places must agree on one literal: plannerPrompt.ts teaches the model
+    // what `not in your index:` means, and memory.ts is what writes it. Rename
+    // one and the doctrine silently describes a line that never appears — the
+    // orphan footer keeps working and the model no longer knows what it is.
+    expect(PLANNER_SYSTEM).toContain(ORPHAN_FOOTER_PREFIX.trimEnd());
   });
 });
 

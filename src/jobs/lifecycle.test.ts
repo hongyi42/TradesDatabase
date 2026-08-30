@@ -13,7 +13,7 @@ const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
   // WATCHERS_MODE cleared for the same reason as COMPOSIO_API_KEY: .env may
   // carry it, and the default runWatchers dep would hit the real database.
-  for (const k of ['DEFAULT_TENANT_ID', 'COMPOSIO_API_KEY', 'WATCHERS_MODE', 'NUDGES_MODE', 'PLANNER_MODE', 'REFLECTOR_MODE', 'LIFECYCLE_RUN_RETENTION_DAYS'] as const) {
+  for (const k of ['DEFAULT_TENANT_ID', 'COMPOSIO_API_KEY', 'WATCHERS_MODE', 'NUDGES_MODE', 'PLANNER_MODE', 'LIFECYCLE_RUN_RETENTION_DAYS'] as const) {
     if (!(k in saved)) saved[k] = process.env[k];
     delete process.env[k];
   }
@@ -802,72 +802,9 @@ describe('runLifecycle', () => {
   });
 });
 
-// ── the team-lead planner (step 9, plan 2026-08-19 Phase 3) ────────────────
-describe('the reflector gate (⑤ Phase 4)', () => {
-  const STUBS2 = {
-    ...COST_STUBS,
-    listInStates: async () => [],
-    expire: async () => EXPIRE_OK,
-    ingestLogs: async () => INGEST_OK,
-    hasModelKey: () => true,
-  };
-  const reflected = (over: Record<string, unknown> = {}) => {
-    const calls: Array<[string, string]> = [];
-    return {
-      calls,
-      deps: {
-        ...STUBS2,
-        reflect: async (nowIso: string, mode: string) => {
-          calls.push([nowIso, mode]);
-          return {
-            tenants: 0, ran: 0, skippedGate: 0, proposed: 0, refused: 0, expired: 0,
-            tenantErrors: 0,
-          };
-        },
-        ...over,
-      },
-    };
-  };
-
-  test('unset REFLECTOR_MODE is a clean OFF (the PLANNER_MODE contract, verbatim)', async () => {
-    const { calls, deps } = reflected();
-    const s = await runLifecycle('2026-07-02T12:00:00.000Z', deps);
-    expect(calls).toEqual([]);
-    expect(s.reflector).toEqual({ skipped: "REFLECTOR_MODE 'off'" });
-    expect(s.ok).toBe(true);
-  });
-
-  test('a REFLECTOR_MODE typo is loud, never quietly off', async () => {
-    process.env.REFLECTOR_MODE = 'shaddow';
-    const { calls, deps } = reflected();
-    const s = await runLifecycle('2026-07-02T12:00:00.000Z', deps);
-    expect(calls).toEqual([]);
-    expect(s.reflector).toEqual({
-      stepError: "REFLECTOR_MODE must be 'off', 'shadow' or 'live', got 'shaddow'",
-    });
-    expect(s.ok).toBe(false);
-  });
-
-  test('shadow runs the reflector; a missing-table throw reports skipped, not red', async () => {
-    process.env.REFLECTOR_MODE = 'shadow';
-    const { calls, deps } = reflected();
-    const s = await runLifecycle('2026-07-02T12:00:00.000Z', deps);
-    expect(calls).toEqual([['2026-07-02T12:00:00.000Z', 'shadow']]);
-    expect(s.ok).toBe(true);
-
-    const err = Object.assign(new Error('relation "reflector_runs" does not exist'), {
-      cause: { code: '42P01' },
-    });
-    const { deps: deps2 } = reflected({
-      reflect: async () => {
-        throw err;
-      },
-    });
-    const s2 = await runLifecycle('2026-07-02T12:00:00.000Z', deps2);
-    expect(s2.reflector).toEqual({ skipped: 'reflector tables not migrated here yet' });
-    expect(s2.ok).toBe(true);
-  });
-});
+// The `describe('the reflector gate')` that stood here was deleted with the
+// Reflector itself (build 3, plan 2026-08-30, Phase 3). It tested REFLECTOR_MODE
+// parsing for a step that no longer exists; there is nothing to port.
 
 describe('the planner gate', () => {
   const STUBS = {
@@ -1057,7 +994,6 @@ describe('redactForRecord', () => {
       watchers: { skipped: 'x' },
       teamLeadPlanner: planner,
       gapSummaries: { skipped: 'x' },
-      reflector: { skipped: 'x' },
       ok: true,
     }) as unknown as Parameters<typeof redactForRecord>[0];
 

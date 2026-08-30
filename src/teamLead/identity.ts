@@ -46,6 +46,12 @@ export const TEAM_LEAD_TOOL_NAMES: ReadonlySet<string> = new Set([
   // an allowlist can silently rot into. A test now pins the pairing.
   'read_memory',
   'write_memory',
+  // Per-job notepads (plan 2026-08-30). The SECOND write verb, admitted on the
+  // same grounds as the first and one stronger: `write_job_note` cannot delete
+  // at all — an empty note is refused rather than treated as a clear — so the
+  // worst a bad call can do is replace prose that job_note_versions still holds.
+  'read_job_note',
+  'write_job_note',
   'get_customer_context',
   'resolve_date',
 ]);

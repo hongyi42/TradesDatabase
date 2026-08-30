@@ -127,6 +127,7 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     memoryIndex: async () => '',
     lastRunAt: async () => null,
     plannerRun: async () => {},
+    jobNotes: async () => new Map(),
     listTenants: async () => ['t1'],
     getTenant: async () => ({ id: 't1', timezone: 'UTC' }) as unknown as Tenant,
     listNudges: async () => [nudge()],
@@ -2326,6 +2327,102 @@ describe('buildPlannerUserMessage — the anti-drift lock', () => {
   });
 });
 
+// ── plan 2026-08-30: the job's own notepad, ANNOUNCED not inlined ──────────
+describe('the job-note line', () => {
+  const asked = () => [nudge({ id: 'n1', asked_at: '2026-08-16T10:00:00.000Z' })];
+
+  test('a job WITH a note says so, and names the tool', async () => {
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => asked(),
+      runLoop: loopReturning([], seen),
+      jobNotes: async () => new Map([['j1', '2026-08-16T09:00:00.000Z']]),
+    }));
+    expect(seen.user).toContain('you have a note on this job, last written 3h ago.');
+    expect(seen.user).toContain('Use read_job_note for it.');
+  });
+
+  test('a job with NO note says nothing at all', async () => {
+    // The historyLine contract. A standing "no note yet" on every gap would be
+    // a nudge to write one, which is the churn hazard memory already had to
+    // bound — and it would cost a line on every gap of every firm forever.
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => asked(),
+      runLoop: loopReturning([], seen),
+      jobNotes: async () => new Map(),
+    }));
+    expect(seen.user).not.toContain('read_job_note');
+    expect(seen.user).not.toContain('note on this job');
+  });
+
+  // TWO GAPS ON TWO DIFFERENT JOBS. Every other test in this describe puts both
+  // fixtures on j1, and that made them non-discriminating: mutating the call
+  // site to announce ANY note on EVERY gap passed the whole 2473-test suite.
+  const twoJobs = () => [
+    nudge({ id: 'n1', asked_at: '2026-08-16T10:00:00.000Z' }),
+    nudge({
+      id: 'n2',
+      subject_ref: 'a2',
+      asked_at: '2026-08-16T10:00:00.000Z',
+      context: {
+        ...(nudge().context as Record<string, unknown>),
+        jobId: 'j2',
+        jobTitle: 'Boiler service',
+      },
+    }),
+  ];
+
+  test('the line lands on the job that HAS the note, and on no other', async () => {
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => twoJobs(),
+      runLoop: loopReturning([], seen),
+      jobNotes: async () => new Map([['j2', '2026-08-16T09:00:00.000Z']]),
+    }));
+    const blocks = (seen.user ?? '').split('\n\n').filter((b) => b.startsWith('gap '));
+    expect(blocks).toHaveLength(2);
+    const withNote = blocks.filter((b) => b.includes('you have a note on this job'));
+    expect(withNote).toHaveLength(1);
+    // …and it is the j2 block, not whichever came first.
+    expect(withNote[0]).toContain('job id: j2');
+    expect(blocks.find((b) => b.includes('job id: j1'))).not.toContain('read_job_note');
+  });
+
+  test('the note read is ONE batched call carrying EVERY gap\'s job id', async () => {
+    // Not once per gap. The evidence, ledger, money and history reads are all
+    // batched for the same reason, and a per-gap regression here would be
+    // invisible in the rendered prompt. Two DISTINCT jobs, so a slice(0,1)
+    // regression fails here too.
+    const calls: Array<{ tenantId: string; jobIds: string[] }> = [];
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => twoJobs(),
+      runLoop: loopReturning([]),
+      jobNotes: async (tenantId: string, jobIds: string[]) => {
+        calls.push({ tenantId, jobIds });
+        return new Map();
+      },
+    }));
+    expect(calls).toHaveLength(1);
+    expect(calls[0].tenantId).toBe('t1');
+    expect([...calls[0].jobIds].sort()).toEqual(['j1', 'j2']);
+  });
+
+  test('a failing note read costs the tick nothing', async () => {
+    const seen: { user?: string } = {};
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => asked(),
+      runLoop: loopReturning([], seen),
+      jobNotes: async () => {
+        throw new Error('job_notes on fire');
+      },
+    }));
+    expect(summary.tenantErrors).toBe(0);
+    expect(seen.user).toContain('This firm has 1 open gap(s).');
+    expect(seen.user).not.toContain('read_job_note');
+  });
+});
+
 // ── plan 2026-08-30 (build 3): the planner knows when it last ran ──────────
 describe('the run marker', () => {
   type Stamp = { tenantId: string; at: string; ok: boolean };
@@ -2577,6 +2674,19 @@ describe('PLANNER_SYSTEM — the read surface', () => {
     expect(PLANNER_SYSTEM).toContain('read_memory');
     expect(PLANNER_SYSTEM).toContain('write_memory');
     expect(PLANNER_SYSTEM).toContain('saving nothing deletes it');
+  });
+
+  test('the job-note paragraph names both verbs and the two stores apart', () => {
+    // The whole risk with two note stores is that the planner conflates them,
+    // so the sentence that distinguishes them is the load-bearing one.
+    expect(PLANNER_SYSTEM).toContain('YOUR NOTES ON A JOB');
+    expect(PLANNER_SYSTEM).toContain('what you concluded about THE FIRM');
+    expect(PLANNER_SYSTEM).toContain('ONE piece of work');
+    expect(PLANNER_SYSTEM).toContain('read_job_note');
+    expect(PLANNER_SYSTEM).toContain('write_job_note');
+    // The convention no schema can express: unlike write_memory, this one has
+    // no delete.
+    expect(PLANNER_SYSTEM).toContain('CANNOT be deleted, only replaced');
   });
 
   test('the doctrine quotes the footer string the CODE actually emits', () => {

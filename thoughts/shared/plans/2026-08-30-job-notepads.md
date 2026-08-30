@@ -2,7 +2,7 @@
 date: 2026-08-30
 task: Per-job notepads — a place the planner writes what it understands about one job
 research: thoughts/shared/research/2026-08-30-per-object-notepads-on-the-spine.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -100,11 +100,17 @@ One table and its typed accessors, wired to nothing. The planner is unchanged.
 
 ### Changes required
 
-**`supabase/migrations/20260831120000_job_notes.sql`** (new)
+**`supabase/migrations/20260901120000_job_notes.sql`** (new — RENUMBERED from the plan's
+`20260831120000`: the gap_summaries retirement landed first at `20260831130000`, and a new
+migration must sort after an applied one)
 - `job_notes(tenant_id uuid not null references tenants(id) on delete cascade, job_id uuid not null
   references jobs(id) on delete cascade, content text not null, written_at timestamptz not null
   default now(), created_at timestamptz not null default now(), primary key (tenant_id, job_id))`.
   **One row per job** — see Decisions for why the append-only draft was rejected.
+  **`written_at` must be SET by the typed layer on every write, not left to the default** — found
+  in build, not planned: the default fires on INSERT only and this is an upsert, so on the conflict
+  path a note would report the instant it was FIRST written forever. Verified against PostgREST
+  directly: `DO UPDATE SET` covers payload columns only, so `created_at` correctly holds.
 - `job_note_versions(id uuid pk default gen_random_uuid(), tenant_id uuid not null references
   tenants(id) on delete cascade, job_id uuid not null references jobs(id) on delete cascade, content
   text not null, replaced_at timestamptz not null default now())`, index
@@ -155,19 +161,19 @@ structure, including the two fixes its own review produced:
 Run `npm run gen:types:local` after applying — never `gen:types`, which is `--linked` (the pilot).
 
 ### Automated verification
-- [ ] `npx supabase db reset` applies cleanly, then `npm run gen:types:local`
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass
-- [ ] `src/db/jobNotes.test.ts`: write→read round-trips; an overwrite keeps the PRIOR content as a
+- [x] `npx supabase db reset` applies cleanly, then `npm run gen:types:local`
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` pass (2461 tests)
+- [x] `src/db/jobNotes.test.ts`: write→read round-trips; an overwrite keeps the PRIOR content as a
       version (assert the content, not the count — archiving the incoming text instead would pass a
       count check); an unchanged rewrite archives nothing; the 12th write leaves exactly 10 versions
       with the OLDEST evicted and the newest retained (pruning from the wrong end keeps the same
       count, so assert both ends); pruning is per job; `listJobNoteMeta` returns one entry per noted
       job for a batch and omits jobs with no note; `readJobNote` is null for a job never written;
       deleting the JOB removes its note and its versions; deleting the TENANT removes both
-- [ ] `src/teamLead/jobNotes.test.ts`: empty and whitespace-only content refused with the reason;
+- [x] `src/teamLead/jobNotes.test.ts`: empty and whitespace-only content refused with the reason;
       over-budget refused with size AND budget in the message; exactly at budget accepted;
       `noteLine` returns null with no note and an elapsed-time line with one
-- [ ] `anon` and `authenticated` hold **zero** grants on `job_notes` AND `job_note_versions`, and RLS
+- [x] `anon` and `authenticated` hold **zero** grants on `job_notes` AND `job_note_versions`, and RLS
       is on for both (the build-3 ACL test pattern, `src/db/plannerMemory.test.ts:175`)
 
 ### Live verification (agent-executable)
@@ -244,32 +250,45 @@ error string is unchanged, and `plannerCorpus.test.ts:154` derives its tool set 
 `TEAM_LEAD_TOOL_SCHEMAS` rather than hard-listing it.
 
 ### Automated verification
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass
-- [ ] `src/teamLead/planner.test.ts`: the line appears in the block **only** when the job has a note;
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` pass (2474 tests)
+- [x] `src/teamLead/planner.test.ts`: the line appears in the block **only** when the job has a note;
       its absence does not otherwise change the block; a failing `listJobNoteMeta` leaves the tick
       intact (`tenantErrors === 0`) and the gaps still render; the batched read is called **once**
       per tick with every gap's job id, not once per gap
-- [ ] `src/mcp/server.test.ts`: both tools dispatch for `spine:team-lead` and are refused for a
+- [x] `src/mcp/server.test.ts`: both tools dispatch for `spine:team-lead` and are refused for a
       manager badge; a **cross-tenant jobId reads as not-found**, not as an error, and writes nothing
       (assert via direct SQL that the other tenant's note count is unchanged); empty and non-string
       content are refused and the existing note survives; the pairing test at :8218 still passes
-- [ ] `src/eval/toolCases.test.ts` and the `TEAM_LEAD_TOOL_SCHEMAS` pin both name four → six tools
-- [ ] over-budget content is refused **through the tool**, not only through `validateJobNoteContent`
+- [x] `src/eval/toolCases.test.ts` and the `TEAM_LEAD_TOOL_SCHEMAS` pin both name four → six tools
+- [x] over-budget content is refused **through the tool**, not only through `validateJobNoteContent`
       in isolation — a handler that forgets to call the size branch passes every other check here
-- [ ] a test asserting `PLANNER_SYSTEM` contains the job-note paragraph and both verb names — the
+- [x] a test asserting `PLANNER_SYSTEM` contains the job-note paragraph and both verb names — the
       prompt-drift lock, added to `describe('PLANNER_SYSTEM — the read surface')` at
       `src/teamLead/planner.test.ts:2529`, beside the build-3 memory pins at `:2560-2577`
-- [ ] `src/eval/plannerSim.test.ts`: a note written during a tick comes back stamped at the SIM
+- [x] `src/eval/plannerSim.test.ts`: a note written during a tick comes back stamped at the SIM
       instant, not the wall clock — the fix-up above, which nothing else would catch
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase + `.env` with `OPENROUTER_API_KEY`; `scripts/agentic-eval/run.mjs`
   drives a real model through `plannerSim`.
-- [ ] One `runTick` on the local stack with a real model and a seeded note on the gap's job.
+- [x] One `runTick` on the local stack with a real model and a seeded note on the gap's job.
       Evidence: the captured user message showing the note line, and a
       `select job_id, written_at from job_notes` read-back through **direct SQL** showing whether the
       model wrote one. Record honestly whether it read and whether it wrote — build 3's live tick
       read but did not write, and that is the number worth comparing against.
+      **Run 2026-08-30, GLM 5.3 via OpenRouter, SMOKE-1 world, note seeded 3h before the tick.**
+      The gap block carried `you have a note on this job, last written 3h ago. Use read_job_note
+      for it.` and the note's canary string appeared NOWHERE in the prompt — announced, not
+      inlined. **The model's FIRST tool call was `read_job_note`**, ahead of `recall_decisions`: it
+      followed the announcement unprompted, which is the mechanism working end to end. Direct-SQL
+      read-back: **no write this tick** (0 version rows, content unchanged) — the same
+      read-but-do-not-write result build 3's memory tick gave.
+
+**Recorded because the plan claimed the opposite:** the RECONCILE paragraph sits in the memory
+block and says *"delete it if it has stopped being true"*. Putting the job-note paragraph BEFORE it
+made that read as covering job notes, which **cannot** be deleted — the model could only discover
+the contradiction by burning a refused turn. The paragraph now sits after the whole memory block.
+Found by review, not by a test.
 
 ### Manual verification — none
 

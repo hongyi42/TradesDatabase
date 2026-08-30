@@ -2,12 +2,12 @@ import { describe, expect, test, vi } from 'vitest';
 import type { PlacedAssignment } from '../db/assignments.js';
 import type { JobWithCustomer } from '../db/jobs.js';
 import type { Nudge } from '../db/nudges.js';
+import type { Observation } from '../db/observations.js';
 import type { ReviewItem } from '../db/reviewItems.js';
 import type { Tenant } from '../db/tenants.js';
 import type { Technician } from '../db/technicians.js';
 import { resolveSettings, type TenantSettings } from '../db/tenantSettings.js';
 import {
-  MAX_NEW_ITEMS_PER_TENANT_TICK,
   NUDGE_DELIVERY_DEADLINE_HOURS,
   NUDGE_ESCALATE_HOURS,
   PLANNER_JUDGMENT_ACTIONS,
@@ -19,8 +19,8 @@ import { PLANNER_ACTIONS } from '../teamLead/planner.js';
 import {
   JOB_COST_GAP_SPEC,
   OVERDUE_VISIT_GAP_SPEC,
-  stage0Suggestion,
   type NudgeKindSpec,
+  stage0Suggestion,
 } from './nudgeKinds.js';
 
 // Pure unit tests — every collaborator injected (lifecycle.test.ts pattern).
@@ -100,7 +100,6 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     listJobs: async () => [],
     listEverFlagged: async () => [],
     listAssignments: async () => [],
-    flagGap: async () => null,
     flagNudge: async () => null,
     listCostCandidates: async () => [],
     listCostEvents: async () => [],
@@ -108,7 +107,8 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     resolveGap: async () => null,
     notify: async () => {},
     hasPushToken: () => true,
-    createNudge: async () => null,
+    createObservation: async () => null,
+    listObserved: async () => [],
     listNudged: async () => [],
     listNudges: async () => [],
     resolveNudge: async () => null,
@@ -137,6 +137,25 @@ const boundTech = (over: Partial<Technician> = {}): Technician =>
     tenant_id: 't1',
     ...over,
   }) as unknown as Technician;
+
+// The observation fixture (plan 2026-08-31) — what createObservation returns.
+function obsRow(over: Partial<Observation> = {}): Observation {
+  return {
+    id: 'o1',
+    tenant_id: 't1',
+    kind: 'overdue_visit_gap',
+    subject_ref: 'a1',
+    technician_id: null,
+    status: 'open',
+    context: {},
+    dismiss_reason: null,
+    dismissed_at: null,
+    not_before: null,
+    noticed_at: '2026-08-15T00:00:00.000Z',
+    updated_at: '2026-08-15T00:00:00.000Z',
+    ...over,
+  } as Observation;
+}
 
 function nudgeRow(over: Partial<Nudge>): Nudge {
   return {
@@ -240,8 +259,12 @@ describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)
     expect(windows['t-tight']).toEqual(['2026-08-16T06:00:00.000Z', '2026-08-16T10:00:00.000Z']);
   });
 
-  test('max_new_per_tick is per FIRM: a firm that wants 2 gets 2, not the global 5', async () => {
-    const flagged: string[] = [];
+  test('max_new_per_tick no longer meters detection — recording is uncapped (plan 2026-08-31)', async () => {
+    // The cap metered QUESTIONS — a scarce claim on a person's attention. An
+    // observation asks nobody anything, so even a firm that dialled its cap to
+    // 2 records every fresh finding. The setting stays declared (build 5 owns
+    // retiring it); this pins that it is UNREAD at mint.
+    const observed: string[] = [];
     const seven = Array.from({ length: 7 }, (_, i) =>
       visit({
         id: `a${i}`,
@@ -255,14 +278,14 @@ describe('runWatchers — the firm\'s OWN detection thresholds (plan 2026-08-29)
       listJobs: async (_t, ids) =>
         ids.map((id) => ({ id, tenant_id: 't1', title: 'Furnace tune-up', customers: { name: 'Henderson' } }) as unknown as JobWithCustomer),
       getSettings: async () => read(settingsRow({ max_new_per_tick: 2 })),
-      flagGap: async (input) => {
-        flagged.push(input.assignmentId);
-        return openItem({ subject_ref: input.assignmentId });
+      createObservation: async (input) => {
+        observed.push(input.subjectRef);
+        return obsRow({ subject_ref: input.subjectRef });
       },
     }));
-    expect(flagged).toEqual(['a0', 'a1']); // the firm's ceiling, oldest first
-    expect(summary.itemsOpened).toBe(2);
-    expect(MAX_NEW_ITEMS_PER_TENANT_TICK).toBe(5); // …and the global default is untouched
+    expect(observed).toEqual(['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6']); // ALL seven, oldest first
+    expect(summary.observationsCreated).toBe(7);
+    expect(summary.itemsOpened).toBe(0); // minting flags nobody's manager
   });
 
   test('settings are read ONCE per tenant per tick — not once per gap', async () => {
@@ -408,7 +431,7 @@ describe('runWatchers', () => {
       findOpenGaps: async () => {
         throw new Error('shadow must not read open items');
       },
-      flagGap: async () => {
+      createObservation: async () => {
         throw new Error('shadow must not write');
       },
       resolveGap: async () => {
@@ -429,35 +452,31 @@ describe('runWatchers', () => {
     });
   });
 
-  test('live: the cap meters FRESH gaps — ever-flagged assignments never occupy the slots', async () => {
-    // 7 gaps, the 3 oldest already flagged on earlier ticks (2 still open, 1
-    // dismissed). Without the pre-filter they would fill the cap and starve
-    // the fresh ones (final-review finding).
-    const flagged: string[] = [];
+  test('live: the pre-filter still excludes ever-surfaced subjects — and every fresh one is recorded', async () => {
+    // 7 gaps, the 3 oldest already flagged on earlier (pre-split) ticks. The
+    // fresh filter survives the split unchanged; what died is the cap behind
+    // it — all four fresh gaps become observations in one tick.
+    const observed: string[] = [];
     const seven = Array.from({ length: 7 }, (_, i) =>
       visit({ id: `a${i}`, job_id: `j${i}`, ends_at: `2026-08-15T0${i + 1}:00:00.000Z` }),
     );
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => seven,
       listEverFlagged: async (_t, _k, ids) => ids.filter((id) => ['a0', 'a1', 'a2'].includes(id)),
-      flagGap: async (input) => {
-        flagged.push(input.assignmentId);
-        return openItem({ subject_ref: input.assignmentId });
+      createObservation: async (input) => {
+        observed.push(input.subjectRef);
+        return obsRow({ subject_ref: input.subjectRef });
       },
     }));
-    expect(flagged).toEqual(['a3', 'a4', 'a5', 'a6']); // fresh only, oldest first, under the cap
+    expect(observed).toEqual(['a3', 'a4', 'a5', 'a6']); // fresh only, oldest first, NO cap
     expect(summary.gapsFound).toBe(7);
     expect(summary.freshGaps).toBe(4);
-    expect(summary.itemsOpened).toBe(4);
+    expect(summary.observationsCreated).toBe(4);
+    expect(summary.itemsOpened).toBe(0);
   });
 
-  test('live: opens at most the cap, oldest end first; suggestion carries job/customer; tech ref maps; start+end land in detail input', async () => {
-    const flagged: Array<{
-      assignmentId: string;
-      technicianRef: string | null;
-      startsAtLocal: string;
-      suggestion: string;
-    }> = [];
+  test('live: every fresh gap is recorded oldest first; context carries the whole story; tech is ADVISORY', async () => {
+    const observed: Array<{ subjectRef: string; technicianId: string | null; context: Record<string, unknown> }> = [];
     const seven = Array.from({ length: 7 }, (_, i) =>
       visit({
         id: `a${i}`,
@@ -469,7 +488,7 @@ describe('runWatchers', () => {
     );
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => seven,
-      listTeam: async () => [{ id: 'tech-1', ref: 'ben-shelton' } as unknown as Technician],
+      listTeam: async () => [{ id: 'tech-1', ref: 'ben-shelton', display_name: 'Ben Shelton' } as unknown as Technician],
       listJobs: async (_t, ids) =>
         ids.map((id) => ({
           id,
@@ -477,50 +496,54 @@ describe('runWatchers', () => {
           title: 'Furnace tune-up',
           customers: { name: 'Henderson' },
         }) as unknown as JobWithCustomer),
-      flagGap: async (input) => {
-        flagged.push({
-          assignmentId: input.assignmentId,
-          technicianRef: input.technicianRef,
-          startsAtLocal: input.startsAtLocal,
-          suggestion: input.suggestion,
+      createObservation: async (input) => {
+        observed.push({
+          subjectRef: input.subjectRef,
+          technicianId: input.technicianId,
+          context: input.context as Record<string, unknown>,
         });
-        return openItem({ subject_ref: input.assignmentId });
+        return obsRow({ subject_ref: input.subjectRef });
       },
     }));
-    expect(flagged.map((f) => f.assignmentId)).toEqual(['a0', 'a1', 'a2', 'a3', 'a4']); // cap, oldest first
-    expect(summary.itemsOpened).toBe(MAX_NEW_ITEMS_PER_TENANT_TICK);
-    expect(flagged[0].technicianRef).toBe('ben-shelton');
-    expect(flagged[1].technicianRef).toBeNull();
-    expect(flagged[0].startsAtLocal).toBe('2026-08-15T00:00:00.000Z');
-    expect(flagged[0].suggestion).toContain("'Furnace tune-up' (Henderson) was due to wrap up");
-    // a0's ends_at (2026-08-15T01:00 naive) as the warm wall-clock label —
-    // weekday and date come from one Intl derivation, so they can't disagree.
-    expect(flagged[0].suggestion).toContain('Saturday, Aug 15 at 1:00 AM');
-    expect(flagged[0].suggestion).not.toContain('Spine'); // operator jargon stays internal
+    expect(observed.map((o) => o.subjectRef)).toEqual(['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6']);
+    expect(summary.observationsCreated).toBe(7);
+    // The tech rides along ADVISORILY when known, and its absence is normal.
+    expect(observed[0].technicianId).toBe('tech-1');
+    expect(observed[0].context).toMatchObject({
+      customerName: 'Henderson',
+      jobTitle: 'Furnace tune-up',
+      technicianRef: 'ben-shelton',
+      technicianName: 'Ben Shelton',
+      jobId: 'j0',
+      startsAtLocal: '2026-08-15T00:00:00.000Z',
+      endsAtLocal: '2026-08-15T01:00:00.000Z',
+      // The warm wall-clock label — weekday and date from one Intl derivation.
+      visitEndLabel: 'Saturday, Aug 15 at 1:00 AM',
+    });
+    expect(observed[1].technicianId).toBeNull();
+    expect(observed[1].context).not.toHaveProperty('technicianRef'); // absent, not null
   });
 
-  test('live: a null from flagGap (concurrent flag) is not counted opened; no push when nothing opened', async () => {
-    const texts: string[] = [];
+  test('live: minting never opens items and never pushes; a null create (concurrent notice) is uncounted', async () => {
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => [visit({ id: 'a1' }), visit({ id: 'a2', job_id: 'j2' })],
-      flagGap: async (input) => (input.assignmentId === 'a1' ? openItem({ subject_ref: 'a1' }) : null),
-      notify: async (_t, text) => {
-        texts.push(text);
+      createObservation: async (input) =>
+        input.subjectRef === 'a1' ? obsRow({ subject_ref: 'a1' }) : null,
+      notify: async () => {
+        throw new Error('minting must not push the manager — nothing opened');
       },
     }));
-    expect(summary.itemsOpened).toBe(1);
+    expect(summary.observationsCreated).toBe(1); // a2 was noticed concurrently — not counted
     expect(summary.gapsFound).toBe(2);
-    expect(texts).toHaveLength(1); // pushed for the ONE tenant, once — not per item
-    // One item → the singular phrasing, not "1 visits".
-    expect(texts[0]).toBe(
-      'Heads-up: a recent visit has an open question on it — it’s waiting in your pending reviews whenever you have a minute.',
-    );
+    expect(summary.itemsOpened).toBe(0);
+    expect(summary.pushed).toBe(0);
+    expect(summary.tenantErrors).toBe(0); // the notify sentinel never fired
 
     const quiet = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => [visit({ id: 'a1' })],
       listEverFlagged: async (_t, _k, ids) => ids, // everything already flagged
-      flagGap: async () => {
-        throw new Error('ever-flagged gaps must not reach flagGap');
+      createObservation: async () => {
+        throw new Error('ever-flagged gaps must not be re-noticed');
       },
       notify: async () => {
         throw new Error('no NEW items → no push');
@@ -528,40 +551,88 @@ describe('runWatchers', () => {
     }));
     expect(quiet.itemsOpened).toBe(0);
     expect(quiet.freshGaps).toBe(0);
+    expect(quiet.observationsCreated).toBe(0);
     expect(quiet.pushed).toBe(0);
     // The throwing sentinels are swallowed by the per-tenant catch, so the
     // real assertion is that NO tenant errored — a call would have thrown.
     expect(quiet.tenantErrors).toBe(0);
   });
 
-  test('live: push text is the count-only line, sent once per tenant', async () => {
+  test('live: the push line survives, driven ONLY by sweep-opened items now', async () => {
+    // Minting no longer opens manager items, so the count-only line fires for
+    // the sweep's handoffs alone — here, an expired pending relic.
     const pushes: Array<[string, string]> = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
-      listOverdue: async () => [visit({ id: 'a1' }), visit({ id: 'a2', job_id: 'j2' })],
-      flagGap: async (input) => openItem({ subject_ref: input.assignmentId }),
+      listNudges: async () => [
+        nudgeRow({
+          id: 'n-exp', subject_ref: 'a-exp', status: 'pending',
+          created_at: '2026-08-15T09:00:00.000Z', // 19h before NOW — past the 18h deadline
+        }),
+      ],
+      flagNudge: async (input) => openItem({ subject_ref: input.subjectRef }),
+      resolveNudge: async (id, _t, status) => nudgeRow({ id, status } as Partial<Nudge>),
       notify: async (t, text) => {
         pushes.push([t, text]);
       },
-    }));
+    }), 'live');
     expect(pushes).toEqual([
       [
         't1',
-        'Heads-up: 2 recent visits have open questions on them — they’re waiting in your pending reviews whenever you have a minute.',
+        'Heads-up: a recent visit has an open question on it — it’s waiting in your pending reviews whenever you have a minute.',
       ],
     ]);
     expect(summary.pushed).toBe(1);
     expect(summary.pushSkipped).toBe(false);
   });
 
+  test('live: two sweep-opened items in one tick → the PLURAL line (its only test since mint stopped pushing)', async () => {
+    const pushes: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        nudgeRow({
+          id: 'n-exp-1', subject_ref: 'a-exp-1', status: 'pending',
+          created_at: '2026-08-15T09:00:00.000Z',
+        }),
+        nudgeRow({
+          id: 'n-exp-2', subject_ref: 'a-exp-2', status: 'pending',
+          created_at: '2026-08-15T08:00:00.000Z',
+          context: {
+            customerName: 'Okafor', jobTitle: 'Sump pump service',
+            technicianRef: 'ben-shelton', technicianName: 'Ben Shelton',
+            assignmentId: 'a-exp-2', jobId: 'j2',
+            startsAtLocal: '2026-08-14T07:00:00.000Z',
+            endsAtLocal: '2026-08-14T08:00:00.000Z',
+            visitEndLabel: 'Friday, Aug 14 at 8:00 AM',
+          },
+        }),
+      ],
+      flagNudge: async (input) => openItem({ subject_ref: input.subjectRef }),
+      resolveNudge: async (id, _t, status) => nudgeRow({ id, status } as Partial<Nudge>),
+      notify: async (_t, text) => {
+        pushes.push(text);
+      },
+    }), 'live');
+    expect(summary.itemsOpened).toBe(2);
+    expect(pushes).toEqual([
+      'Heads-up: 2 recent visits have open questions on them — they’re waiting in your pending reviews whenever you have a minute.',
+    ]);
+  });
+
   test('live: no push token → pushSkipped, items still open, nothing throws', async () => {
     const summary = await runWatchers(NOW, 'live', baseDeps({
-      listOverdue: async () => [visit({})],
-      flagGap: async () => openItem({}),
+      listNudges: async () => [
+        nudgeRow({
+          id: 'n-exp', subject_ref: 'a-exp', status: 'pending',
+          created_at: '2026-08-15T09:00:00.000Z',
+        }),
+      ],
+      flagNudge: async () => openItem({}),
+      resolveNudge: async (id, _t, status) => nudgeRow({ id, status } as Partial<Nudge>),
       hasPushToken: () => false,
       notify: async () => {
         throw new Error('must not push without a token');
       },
-    }));
+    }), 'live');
     expect(summary.itemsOpened).toBe(1);
     expect(summary.pushSkipped).toBe(true);
     expect(summary.pushed).toBe(0);
@@ -617,22 +688,28 @@ describe('runWatchers', () => {
 // technician through their own agent; the manager item becomes the fallback
 // (unreachable tech) and rung 2 (silence past the escalation default). Same pure-unit style.
 describe('runWatchers — the ladder (NUDGES_MODE)', () => {
-  test("default nudgeMode 'off': rung-1 creation never happens — a reachable tech still gets the manager fallback", async () => {
-    const flagged: string[] = [];
+  test("nudgeMode gates NOTHING at mint any more: 'off' still records the observation", async () => {
+    // The mode gated ASKING, and minting no longer asks. Recording what was
+    // noticed is mode-independent (plan 2026-08-31); the mode value still rides
+    // the summary for the operator's eyes.
+    const observed: string[] = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => [visit({ technician_id: 'tech-1' })],
       listTeam: async () => [boundTech()],
-      flagGap: async (input) => {
-        flagged.push(input.assignmentId);
-        return openItem({});
-      },
-      createNudge: async () => {
-        throw new Error('nudgeMode off must not create nudges');
+      createObservation: async (input) => {
+        observed.push(input.subjectRef);
+        return obsRow({ subject_ref: input.subjectRef });
       },
     }));
-    expect(flagged).toEqual(['a1']);
-    expect(summary.tenantErrors).toBe(0); // the creation sentinel never fired
-    expect(summary).toMatchObject({ nudgeMode: 'off', nudgesCreated: 0, nudgesWouldCreate: 0 });
+    expect(observed).toEqual(['a1']);
+    expect(summary.tenantErrors).toBe(0);
+    expect(summary).toMatchObject({
+      nudgeMode: 'off',
+      nudgesCreated: 0,
+      nudgesWouldCreate: 0,
+      observationsCreated: 1,
+      itemsOpened: 0,
+    });
   });
 
   test("rollback rescue (review F1): in-flight nudges keep their lifecycle at nudgeMode 'off'", async () => {
@@ -689,7 +766,7 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(summary.itemsOpened).toBe(1);
   });
 
-  test('live: a reachable tech gets a NUDGE — no manager item, no push; context carries the whole story', async () => {
+  test('live: a reachable tech gets an OBSERVATION — no nudge, no manager item, no push; context intact', async () => {
     const created: Array<Record<string, unknown>> = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => [
@@ -707,19 +784,20 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
           title: 'Furnace tune-up',
           customers: { name: 'Henderson' },
         }) as unknown as JobWithCustomer),
-      createNudge: async (input) => {
+      createObservation: async (input) => {
         created.push(input as unknown as Record<string, unknown>);
-        return nudgeRow({ subject_ref: input.subjectRef });
+        return obsRow({ subject_ref: input.subjectRef });
       },
-      flagGap: async () => {
-        throw new Error('a nudged gap must not also flag the manager');
+      flagNudge: async () => {
+        throw new Error('minting must not flag the manager');
       },
       notify: async () => {
-        throw new Error('rung 1 must not push the manager');
+        throw new Error('minting must not push the manager');
       },
     }), 'live');
     expect(summary.tenantErrors).toBe(0);
-    expect(summary.nudgesCreated).toBe(1);
+    expect(summary.nudgesCreated).toBe(0);
+    expect(summary.observationsCreated).toBe(1);
     expect(summary.itemsOpened).toBe(0);
     expect(summary.pushed).toBe(0);
     expect(created).toHaveLength(1);
@@ -737,8 +815,11 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     });
   });
 
-  test('live: an UNREACHABLE tech falls back to the manager item (deployed behavior)', async () => {
-    const flagged: string[] = [];
+  test('live: an UNREACHABLE tech gets the SAME observation — reachability is not consulted', async () => {
+    // The four unreachable shapes that used to route to the manager at mint.
+    // Now none of them changes anything: the observation is recorded with the
+    // tech attached ADVISORILY, and whether/whom to ask is the planner's call.
+    const observed: Array<{ subjectRef: string; technicianId: string | null }> = [];
     for (const tech of [
       boundTech({ sandbox_ref: null }),
       boundTech({ telegram_user_id: null }),
@@ -748,18 +829,40 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
       const summary = await runWatchers(NOW, 'live', baseDeps({
         listOverdue: async () => [visit({ technician_id: 'tech-1' })],
         listTeam: async () => [tech],
-        flagGap: async (input) => {
-          flagged.push(input.assignmentId);
-          return openItem({});
+        createObservation: async (input) => {
+          observed.push({ subjectRef: input.subjectRef, technicianId: input.technicianId });
+          return obsRow({ subject_ref: input.subjectRef });
         },
-        createNudge: async () => {
-          throw new Error('an unreachable tech must not be nudged');
+        flagNudge: async () => {
+          throw new Error('minting must not flag the manager, reachable or not');
         },
       }), 'live');
       expect(summary.tenantErrors).toBe(0);
-      expect(summary.nudgesCreated).toBe(0);
+      expect(summary.observationsCreated).toBe(1);
+      expect(summary.itemsOpened).toBe(0);
     }
-    expect(flagged).toEqual(['a1', 'a1', 'a1', 'a1']);
+    expect(observed.map((o) => o.subjectRef)).toEqual(['a1', 'a1', 'a1', 'a1']);
+    expect(observed.every((o) => o.technicianId === 'tech-1')).toBe(true); // advisory, always attached
+  });
+
+  test('an OBSERVED visit subject is not fresh — dismissed included (the store that owns once-ever)', async () => {
+    // The visit-side twin of the cost test below: drop observedRefs from the
+    // visit pass's everSurfaced union and THIS is the test that fails.
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listOverdue: async () => [visit({ id: 'a1' }), visit({ id: 'a2', job_id: 'j2' })],
+      listObserved: async (_t, kind, ids) =>
+        kind === 'overdue_visit_gap' ? ids.filter((id) => id === 'a1') : [],
+      createObservation: async (input) => {
+        if (input.subjectRef === 'a1') {
+          throw new Error('an already-observed (possibly dismissed) subject must not be re-noticed');
+        }
+        return obsRow({ subject_ref: input.subjectRef });
+      },
+    }));
+    expect(summary.gapsFound).toBe(2);
+    expect(summary.freshGaps).toBe(1);
+    expect(summary.observationsCreated).toBe(1); // a2 only
+    expect(summary.tenantErrors).toBe(0); // the a1 sentinel never fired
   });
 
   test('a nudged gap is not fresh: the second dedup store feeds the pre-filter in both modes', async () => {
@@ -771,27 +874,25 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     expect(summary.freshGaps).toBe(1); // a1 was nudged once, ever — never fresh again
   });
 
-  test("nudge-shadow: counts what live would ask, still flags the manager (safe observability)", async () => {
-    const flagged: string[] = [];
+  test("nudge-shadow: mints identically to every other mode — both gaps recorded, nothing counted as would-ask", async () => {
+    const observed: string[] = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => [
         visit({ id: 'a1', technician_id: 'tech-1' }),
-        visit({ id: 'a2', job_id: 'j2' }), // no tech — never countable
+        visit({ id: 'a2', job_id: 'j2' }), // no tech — recorded all the same
       ],
       listTeam: async () => [boundTech()],
-      flagGap: async (input) => {
-        flagged.push(input.assignmentId);
-        return openItem({ subject_ref: input.assignmentId });
-      },
-      createNudge: async () => {
-        throw new Error('nudge-shadow must not create nudges');
+      createObservation: async (input) => {
+        observed.push(input.subjectRef);
+        return obsRow({ subject_ref: input.subjectRef });
       },
     }), 'shadow');
     expect(summary.tenantErrors).toBe(0);
     expect(summary.nudgeMode).toBe('shadow');
-    expect(summary.nudgesWouldCreate).toBe(1); // the reachable one
-    expect(flagged).toEqual(['a1', 'a2']); // BOTH still reach the manager
-    expect(summary.itemsOpened).toBe(2);
+    expect(summary.nudgesWouldCreate).toBe(0); // retired at mint — nothing is "would" any more
+    expect(observed).toEqual(['a1', 'a2']);
+    expect(summary.observationsCreated).toBe(2);
+    expect(summary.itemsOpened).toBe(0);
   });
 
   test('live ladder sweep: a cancelled visit cancels; activity closes NOTHING, asked or not', async () => {
@@ -838,7 +939,7 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
         resolved.push([id, status, resolution]);
         return nudgeRow({ id, status } as Partial<Nudge>);
       },
-      flagGap: async () => {
+      flagNudge: async () => {
         throw new Error('nothing here is escalation-ripe');
       },
     }), 'live');
@@ -1007,10 +1108,6 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
         }),
       ],
       listCaptureTimes: async () => [{ job_id: 'j1', captured_at: '2026-08-14T07:30:00.000Z' }],
-      flagGap: async () => {
-        // The expiry path uses the kind-generic flagNudge, never this one.
-        throw new Error('the expired handoff must not go through the visit flagger');
-      },
       resolveNudge: async (id, _t, status) => {
         resolved.push([id, status]);
         return nudgeRow({ id, status } as Partial<Nudge>);
@@ -1034,7 +1131,7 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
           asked_at: '2026-08-13T11:00:00.000Z',
         }),
       ],
-      flagGap: async () => null,
+      // flagNudge's baseDeps default is null — the race IS the default here.
       resolveNudge: async (id, _t, status) => {
         resolved.push([id, status]);
         return nudgeRow({ id, status } as Partial<Nudge>);
@@ -1367,7 +1464,7 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
         resolveNudge: async () => {
           throw new Error('an unregistered kind must never be resolved');
         },
-        flagGap: async () => {
+        flagNudge: async () => {
           throw new Error('an unregistered kind must never reach the manager');
         },
       }), 'live');
@@ -1381,10 +1478,11 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
     }
   });
 
-  test('the per-kind brake caps creation below the tenant ceiling', async () => {
-    // Three fresh gaps, a kind brake of 1 → only one is routed, even though the
-    // tenant-wide ceiling (5) would have allowed all three. (Cross-KIND
-    // independence cannot be exercised until a second kind routes — Phase 4.)
+  test('the per-kind brake is UNREAD at mint — every fresh gap is recorded (plan 2026-08-31)', async () => {
+    // The brake was the runaway backstop on ASKING. Recording is deliberately
+    // unbounded (the record is unbounded — user direction); a misfiring
+    // detector now floods a table nobody is messaged from, and the planner's
+    // dismissal is the cleanup verb. Build 5 owns retiring the field.
     const created: string[] = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       specs: [{ ...OVERDUE_VISIT_GAP_SPEC, maxNewPerTenantTick: 1 }, secondSpec()],
@@ -1394,13 +1492,13 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
         visit({ id: 'a3', job_id: 'j3', technician_id: 'tech-1', ends_at: '2026-08-15T03:00:00.000Z' }),
       ],
       listTeam: async () => [boundTech()],
-      createNudge: async (input) => {
+      createObservation: async (input) => {
         created.push(input.subjectRef);
-        return nudgeRow({ subject_ref: input.subjectRef });
+        return obsRow({ subject_ref: input.subjectRef });
       },
     }), 'live');
-    expect(created).toEqual(['a1']); // oldest first, brake at 1
-    expect(summary.nudgesCreated).toBe(1);
+    expect(created).toEqual(['a1', 'a2', 'a3']); // ALL fresh, oldest first — brake of 1 unread
+    expect(summary.observationsCreated).toBe(3);
     expect(summary.tenantErrors).toBe(0);
   });
 
@@ -1414,32 +1512,29 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
       specs: [], // no spec for overdue_visit_gap
       listOverdue: async () => [visit({ id: 'a1', technician_id: 'tech-1' })],
       listTeam: async () => [boundTech()],
-      createNudge: async () => {
-        throw new Error('must not create a nudge for an unregistered kind');
-      },
-      flagGap: async () => {
-        throw new Error('an unregistered kind must not route at all');
+      createObservation: async () => {
+        throw new Error('must not record an observation for an unregistered kind');
       },
     }), 'live');
     expect(summary.tenantErrors).toBe(0);
-    expect(summary.nudgesCreated).toBe(0);
+    expect(summary.observationsCreated).toBe(0);
     expect(summary.itemsOpened).toBe(0);
   });
 
-  test('the tenant-wide ceiling still caps the tick even when a kind brake is higher', async () => {
-    // A detector may never raise a firm's per-tick volume above the surge brake.
+  test('the tenant-wide ceiling is UNREAD at mint too — nine fresh gaps, nine rows', async () => {
     const routed: string[] = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       specs: [{ ...OVERDUE_VISIT_GAP_SPEC, maxNewPerTenantTick: 99 }],
       listOverdue: async () => Array.from({ length: 9 }, (_, i) =>
         visit({ id: `a${i}`, job_id: `j${i}`, ends_at: `2026-08-15T0${i}:00:00.000Z` })),
-      flagGap: async (input) => {
-        routed.push(input.assignmentId);
-        return openItem({ subject_ref: input.assignmentId });
+      createObservation: async (input) => {
+        routed.push(input.subjectRef);
+        return obsRow({ subject_ref: input.subjectRef });
       },
     }), 'live');
-    expect(routed.length).toBe(MAX_NEW_ITEMS_PER_TENANT_TICK);
-    expect(summary.itemsOpened).toBe(MAX_NEW_ITEMS_PER_TENANT_TICK);
+    expect(routed.length).toBe(9);
+    expect(summary.observationsCreated).toBe(9);
+    expect(summary.itemsOpened).toBe(0);
   });
 
   test('escalation copy is byte-identical to the wording we chose', async () => {
@@ -1492,22 +1587,40 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
       ...over,
     });
 
-  test('a finished job with no cost recorded becomes a cost NUDGE, subject = the JOB', async () => {
+  test('a finished job with no cost recorded becomes a cost OBSERVATION, subject = the JOB', async () => {
     const created: Array<Record<string, unknown>> = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listCostCandidates: async () => [candidate()],
       listTeam: async () => [boundTech()],
-      createNudge: async (input) => {
+      createObservation: async (input) => {
         created.push({ ...input });
-        return costNudge({});
+        return obsRow({ kind: 'job_cost_gap', subject_ref: 'j-cost' });
       },
     }), 'live');
     expect(created).toHaveLength(1);
     expect(created[0]).toMatchObject({ kind: 'job_cost_gap', subjectRef: 'j-cost', technicianId: 'tech-1' });
-    // Context carries everything compose and the handoff will ever need — and
-    // NO visit window, because the subject is a job.
+    // Context carries everything the planner's view and a later send need —
+    // and NO visit window, because the subject is a job.
     expect(created[0].context).toMatchObject({ jobId: 'j-cost', jobTitle: 'Boiler swap', customerName: 'Henderson' });
-    expect(summary.byKind['job_cost_gap']).toEqual({ gapsFound: 1, nudgesCreated: 1 });
+    expect(summary.byKind['job_cost_gap']).toEqual({ gapsFound: 1, nudgesCreated: 0, observationsCreated: 1 });
+    expect(summary.tenantErrors).toBe(0);
+  });
+
+  test("cost observations are created with nudgeMode 'off' — the old wrapper gated the whole pass (review F2)", async () => {
+    // Left standing, `nudgeMode !== 'off'` would have silently produced ZERO
+    // cost observations under lifecycle's default. Detection gates on watcher
+    // mode alone now.
+    const created: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listCostCandidates: async () => [candidate()],
+      listTeam: async () => [boundTech()],
+      createObservation: async (input) => {
+        created.push(input.subjectRef);
+        return obsRow({ kind: 'job_cost_gap', subject_ref: input.subjectRef });
+      },
+    })); // nudgeMode defaulted — 'off'
+    expect(created).toEqual(['j-cost']);
+    expect(summary.byKind['job_cost_gap']).toEqual({ gapsFound: 1, nudgesCreated: 0, observationsCreated: 1 });
     expect(summary.tenantErrors).toBe(0);
   });
 
@@ -1516,25 +1629,39 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
       listCostCandidates: async () => [candidate()],
       listCostEvents: async () => ['j-cost'], // material_cost already exists
       listTeam: async () => [boundTech()],
-      createNudge: async () => {
-        throw new Error('a job with a cost recorded must not be asked about');
+      createObservation: async () => {
+        throw new Error('a job with a cost recorded must not be noticed as a gap');
       },
     }), 'live');
     expect(summary.byKind['job_cost_gap']?.gapsFound ?? 0).toBe(0);
     expect(summary.tenantErrors).toBe(0);
   });
 
-  test('ONCE-EVER is real: a job already nudged for cost is never asked again', async () => {
-    // The accepted limitation (user decision 2026-08-19): subject_ref is the
-    // job and uq_nudges_subject_ever asks once per subject FOREVER, so a second
-    // material purchase on a multi-day job is never chased. Asserted so it
-    // reads as a DECISION, not an oversight.
+  test('ONCE-EVER is real: a job already nudged (pre-split) for cost is never re-noticed', async () => {
+    // The accepted limitation (user decision 2026-08-19), store MOVED: noticed
+    // once per subject FOREVER. Pre-split nudge history still blocks.
     const summary = await runWatchers(NOW, 'live', baseDeps({
       listCostCandidates: async () => [candidate()],
       listNudged: async (_t, kind, ids) => (kind === 'job_cost_gap' ? ids : []),
       listTeam: async () => [boundTech()],
-      createNudge: async () => {
-        throw new Error('once-ever: this job was already asked about');
+      createObservation: async () => {
+        throw new Error('once-ever: this job was already surfaced');
+      },
+    }), 'live');
+    expect(summary.byKind['job_cost_gap']?.gapsFound ?? 0).toBe(0);
+    expect(summary.tenantErrors).toBe(0);
+  });
+
+  test('ONCE-EVER, the new store: an already-OBSERVED subject is never re-noticed — dismissed included', async () => {
+    // listObserved answers ANY status, so a dismissed observation keeps
+    // blocking re-notice — which is what makes "dismiss" mean "stop showing me
+    // this" rather than "show me again next tick".
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listCostCandidates: async () => [candidate()],
+      listObserved: async (_t, kind, ids) => (kind === 'job_cost_gap' ? ids : []),
+      listTeam: async () => [boundTech()],
+      createObservation: async () => {
+        throw new Error('once-ever: this subject is already in the record');
       },
     }), 'live');
     expect(summary.byKind['job_cost_gap']?.gapsFound ?? 0).toBe(0);
@@ -1644,28 +1771,29 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
       listCostCandidates: async () => [candidate()],
       listEverFlagged: async (_t, kind, ids) => (kind === 'job_cost_gap' ? ids : []),
       listTeam: async () => [boundTech()],
-      createNudge: async () => {
-        throw new Error('a flagged cost gap must not also become a nudge');
+      createObservation: async () => {
+        throw new Error('a flagged cost gap must not also be re-noticed');
       },
     }), 'live');
     expect(summary.byKind['job_cost_gap']?.gapsFound ?? 0).toBe(0);
     expect(summary.tenantErrors).toBe(0);
   });
 
-  test('the per-kind cost brake BINDS — the runaway backstop is real', async () => {
-    // The backstop that justifies removing the per-person cap. It must actually
-    // stop a misfiring detector, so make it bind with nothing else in the tick.
+  test('the per-kind cost brake is UNREAD at mint — nine candidates, nine observations', async () => {
+    // The backstop metered ASKS from a misfiring detector; recording is
+    // unbounded by ruling, and the planner's dismissal is the cleanup verb.
     const created: string[] = [];
     await runWatchers(NOW, 'live', baseDeps({
       listCostCandidates: async () =>
         Array.from({ length: 9 }, (_, i) => candidate({ jobId: `j-cost-${i}` })),
       listTeam: async () => [boundTech()],
-      createNudge: async (input) => {
+      createObservation: async (input) => {
         created.push(input.subjectRef);
-        return costNudge({ subject_ref: input.subjectRef });
+        return obsRow({ kind: 'job_cost_gap', subject_ref: input.subjectRef });
       },
     }), 'live');
-    expect(created).toHaveLength(JOB_COST_GAP_SPEC.maxNewPerTenantTick); // 3, not 9, not 5
+    expect(created).toHaveLength(9); // not 3 (the spec brake), not 5 (the tenant ceiling)
+    expect(JOB_COST_GAP_SPEC.maxNewPerTenantTick).toBe(3); // the field survives for build 5 to retire
   });
 
   test('the SAME-job limit is GONE: one note no longer closes both questions', async () => {
@@ -1718,21 +1846,24 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
     expect(summary.tenantErrors).toBe(0);
   });
 
-  test('the tenant ceiling is shared across kinds — a detector cannot raise per-tick volume', async () => {
+  test('both passes record everything in ONE tick — no ceiling starves the cost pass any more', async () => {
+    // The old shape: 5 visit gaps spent the whole ceiling and the cost pass got
+    // none. Now both record in full — the starvation the ceiling caused is gone
+    // with the ceiling.
     const created: string[] = [];
     await runWatchers(NOW, 'live', baseDeps({
       listOverdue: async () => Array.from({ length: 5 }, (_, i) =>
         visit({ id: `a${i}`, job_id: `j${i}`, technician_id: 'tech-1', ends_at: `2026-08-15T0${i}:00:00.000Z` })),
       listCostCandidates: async () => [candidate(), candidate({ jobId: 'j-cost-2' })],
       listTeam: async () => [boundTech()],
-      createNudge: async (input) => {
+      createObservation: async (input) => {
         created.push(input.subjectRef);
-        return nudgeRow({ subject_ref: input.subjectRef });
+        return obsRow({ subject_ref: input.subjectRef });
       },
     }), 'live');
-    // The visit pass spends all 5; the cost pass gets none — total stays 5.
-    expect(created).toHaveLength(MAX_NEW_ITEMS_PER_TENANT_TICK);
-    expect(created.every((r) => r.startsWith('a'))).toBe(true);
+    expect(created).toHaveLength(7); // 5 visit + 2 cost
+    expect(created.filter((r) => r.startsWith('a'))).toHaveLength(5);
+    expect(created.filter((r) => r.startsWith('j-cost'))).toHaveLength(2);
   });
 
   test('the cost spec is registered in production, not just in tests', async () => {
@@ -2341,12 +2472,14 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
     expect(suggestion).not.toContain('nothing has been recorded');
   });
 
-  // F1 from the Phase-1 review: the detector's unreachable-technician fallback
-  // had NO test touching its suggestion at all, so restoring the deleted
-  // conclusion there left the suite green.
-  test('the cost detector fallback states the ledger fact and draws no conclusion', async () => {
-    let suggestion = '';
-    await runWatchers(NOW, 'live', baseDeps({
+  // The mint-time unreachable-technician fallback — and its copy — DIED with
+  // plan 2026-08-31 ("a gap is not an ask"): an unreachable tech's cost gap is
+  // recorded as an observation like any other, and no manager item exists to
+  // carry a suggestion. The sweep's handoffs (expiry, escalation) still write
+  // manager copy, tested above. This pins that the old path stays dead.
+  test('an unreachable tech no longer produces a mint-time manager item for a cost gap', async () => {
+    const observed: string[] = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
       listCostCandidates: async () => [
         {
           jobId: 'j-cost',
@@ -2357,18 +2490,17 @@ describe('the manager copy asserts nothing it was not given (plan ② 2026-08-21
         } as never,
       ],
       listTeam: async () => [boundTech({ telegram_user_id: null })], // UNREACHABLE
-      flagNudge: async (input) => {
-        suggestion = input.suggestion;
-        return openItem({ subject_ref: input.subjectRef });
+      createObservation: async (input) => {
+        observed.push(input.subjectRef);
+        return obsRow({ kind: 'job_cost_gap', subject_ref: input.subjectRef });
+      },
+      flagNudge: async () => {
+        throw new Error('minting must not flag the manager, reachable or not');
       },
     }), 'live');
-    // Backed by this detector's own ledger filter (freshCost excludes withCost).
-    expect(suggestion).toBe(
-      "'Boiler swap' (Henderson) — nothing recorded yet about what it cost in parts or " +
-        "materials. Tell me the figure and I'll put it on the books.",
-    );
-    // The CONCLUSION is deleted: a job with no parts has complete costs.
-    expect(suggestion).not.toContain('incomplete');
+    expect(observed).toEqual(['j-cost']);
+    expect(summary.itemsOpened).toBe(0);
+    expect(summary.tenantErrors).toBe(0); // the flagNudge sentinel never fired
   });
 
   // F2 from the review: the per-tick push is a manager-facing template too, and

@@ -303,6 +303,7 @@ describe('runLifecycle', () => {
       nudgeMode: 'off' as const,
       nudgesWouldCreate: 0,
       nudgesCreated: 0,
+      observationsCreated: 0,
       nudgesResolved: 0,
       nudgesAutoClosed: 0,
       nudgesEscalated: 0,

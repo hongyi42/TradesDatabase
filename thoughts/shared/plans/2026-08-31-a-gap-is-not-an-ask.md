@@ -179,16 +179,16 @@ The mint sites write observations; cap, reachability check, mint-time manager fa
   per-firm settings read, `stage0Suggestion` (expiry handoff still uses it).
 
 ### Automated verification
-- [ ] gates; watcher tests rewritten: a fresh gap in live mode creates an observation and NO nudge,
+- [x] gates; watcher tests rewritten: a fresh gap in live mode creates an observation and NO nudge,
       NO review item, regardless of reachability; an unreachable-tech gap creates the same row; 8
       fresh gaps create 8 observations (the cap is dead); a dismissed observation's subject is not
       re-noticed; shadow mode still writes nothing; **cost observations created with nudgeMode
       `'off'`** (review F2)
-- [ ] existing escalation/expiry/moot tests pass unmodified (the sweep did not change)
+- [x] existing escalation/expiry/moot tests pass unmodified (the sweep did not change)
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack, `npm run seed:local`
-- [ ] Drive one live tick against a seeded overdue visit; read back via psql: 1 observation row,
+- [x] Drive one live tick against a seeded overdue visit; read back via psql: 1 observation row,
       0 new nudges, 0 new review_items
 ---
 *No pause.*

@@ -649,12 +649,34 @@ async function main(): Promise<void> {
   // turned red by its own bookkeeping is a false alarm about the work itself,
   // and the work already succeeded or failed on its own terms above.
   try {
-    // TIMED OUT, not merely awaited. Render runs at most one lifecycle cron at a
-    // time and SKIPS an overlapping firing, so a Supabase that hangs rather than
-    // fails would hold this process open (undici's default is 300s = five whole
-    // ticks) and suppress the next runs — the bookkeeping write manufacturing
-    // the exact gap the record exists to expose. Losing one observation beats
-    // losing five ticks of work.
+    // TIMED OUT, not merely awaited. Render runs at most one run of a cron job at
+    // a time and DELAYS the next scheduled firing until the active run finishes
+    // — it does not drop it, and it stops a run only after twelve hours
+    // (https://render.com/docs/cronjobs, verified 2026-08-29; this comment said
+    // "SKIPS" until build 1b, which is wrong about the mechanism though not
+    // about the consequence). So a Supabase that hangs rather than fails would
+    // hold this process open (undici's default is 300s = five whole ticks) and
+    // push the next run back — the bookkeeping write manufacturing the exact
+    // gap the record exists to expose. Losing one observation beats losing five
+    // ticks of work.
+    //
+    // Precisely what the docs say, and no more: at most one run active, and the
+    // NEXT scheduled run delayed. They are silent on the further firings a long
+    // run overlaps, so whether those queue or are dropped is UNVERIFIED — do not
+    // assert either.
+    //
+    // Delayed and skipped cost the same thing here, for two different reasons.
+    // The PLANNER runs on a cadence grid (`plannerCadenceDue`, minutes since
+    // midnight % everyMinutes < 5), so a firing pushed to an off-grid minute is
+    // not due and its slot is simply missed. The every-tick SWEEP in step 8 is
+    // not on a grid and does run when the delayed firing lands — it just runs
+    // late, which is immaterial against its own deadlines (18h delivery, 24h
+    // escalation).
+    //
+    // Build 1b makes the upstream case bigger, not this one: the planner's loop
+    // budget is now 15 minutes per firm and firms are planned sequentially, so a
+    // pathological tick can push the grid by tenants × 15 min. Still nowhere
+    // near Render's twelve-hour stop.
     await Promise.race([
       insertLifecycleRun({
         startedAt,

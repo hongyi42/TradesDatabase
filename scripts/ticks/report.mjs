@@ -224,6 +224,11 @@ try {
   // which two, so a firm that had gone quiet was indistinguishable from one that
   // simply had no work.
   lines.push('## Planner — per firm');
+  // Nearest-rank percentile on an ASCENDING array, no dependency and no
+  // interpolation: with two data points an interpolated "p50" invents a number
+  // that never happened, and at pilot scale two is a realistic sample size.
+  // Callers guarantee a non-empty array (they are inside `if (f.planned > 0)`).
+  const pct = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)];
   const perFirm = new Map();
   const unknownOutcomes = new Set();
   // Renamed outcomes, old name -> current bucket. The ask window was deleted on
@@ -233,6 +238,10 @@ try {
   // or 'toString' to something inherited and truthy, and this reads a string that
   // came out of a database column.
   const LEGACY_OUTCOMES = Object.assign(Object.create(null), { out_of_window: 'off_cadence' });
+  // Every PlannerTenantOutcome, and nothing else. Adding one to planner.ts means
+  // adding it here — which is what the loud `unknown` branch below exists to
+  // tell you about, rather than leaving you to notice a permanent zero.
+  const OUTCOME_BUCKETS = new Set(['planned', 'no_gaps', 'off_cadence', 'error']);
   for (const r of runs) {
     const plans = r.summary?.teamLeadPlanner?.plans;
     if (!Array.isArray(plans)) continue;
@@ -240,6 +249,11 @@ try {
       const f = perFirm.get(p.tenantId) ?? {
         planned: 0, no_gaps: 0, off_cadence: 0, error: 0, unknown: 0,
         turns: 0, toolCalls: 0, ms: 0, decisions: 0,
+        // Build 1b. The totals above cannot answer the question the build
+        // exists to ask — "does the planner need a turn ceiling?" — because a
+        // sum hides the tail, and the tail IS the answer. One entry per PLANNED
+        // tick; see the push below for why only planned ones.
+        turnsEach: [], msEach: [],
       };
       // LOUD, never silent. This accumulator hardcodes its buckets, and it used
       // to drop anything it did not recognise on the floor — so renaming an
@@ -253,13 +267,16 @@ try {
       // still be counted. Warning about them would train a reader to ignore the
       // warning, which is what it is for.
       const outcome = LEGACY_OUTCOMES[p.outcome] ?? p.outcome;
-      // Object.hasOwn, not `!== undefined`: `f` is a plain literal, so an outcome
-      // named 'constructor' or 'toString' resolves to something INHERITED and
-      // truthy, writes a garbage own key and bypasses the loud branch entirely —
-      // and '__proto__' vanishes without a trace. This reads a string out of a
-      // database column, and the whole point of the branch below is that nothing
-      // gets dropped silently.
-      if (Object.hasOwn(f, outcome)) f[outcome] += 1;
+      // An EXPLICIT allowlist, not `Object.hasOwn(f, outcome)`. The accumulator
+      // mixes outcome buckets with metric fields in one object, so hasOwn made
+      // every metric name reachable as a bucket: a row whose outcome read
+      // 'decisions' would have silently incremented the decision count. Build 1b
+      // added ARRAY-valued fields (turnsEach/msEach), which turns that from a
+      // skewed number into `[] + 1` — a string where a list should be — so the
+      // lookup can no longer be "any own key". An allowlist is also immune to
+      // the inherited-property hazard hasOwn was chosen for ('constructor',
+      // 'toString', '__proto__'), which is why it replaces rather than joins it.
+      if (OUTCOME_BUCKETS.has(outcome)) f[outcome] += 1;
       else {
         f.unknown += 1;
         unknownOutcomes.add(p.outcome);
@@ -267,6 +284,17 @@ try {
       f.turns += p.turns ?? 0;
       f.toolCalls += p.toolCalls ?? 0;
       f.ms += p.ms ?? 0;
+      // PLANNED ticks only. idlePlan() writes turns:0 / ms:0 for no_gaps,
+      // off_cadence and error, so including them would drag every percentile
+      // toward zero and report a healthy planner as an idle one. Not a rare
+      // case: the pilot's own last-24h line reads planned 22 / no work 10 / not
+      // due 16, so more than half the entries carry a placeholder zero.
+      // (`off_cadence` rows come from firms on the 120-minute off-hours cadence
+      // — step 9 is gated at 30 minutes, so a full-rate firm writes none.)
+      if (outcome === 'planned') {
+        f.turnsEach.push(p.turns ?? 0);
+        f.msEach.push(p.ms ?? 0);
+      }
       // Already a COUNT by the time it is stored — redactForRecord replaced the
       // array (which carried the technician's question and the model's reasoning)
       // before the row was written.
@@ -287,6 +315,26 @@ try {
       lines.push(
         `    ${f.decisions} decisions over ${f.turns} turns / ${f.toolCalls} tool calls, ` +
           `${(f.ms / f.planned / 1000).toFixed(1)}s avg`,
+      );
+      // Build 1b: the planner has NO turn ceiling any more, so the only thing
+      // that stops a tick is the 15-minute clock. These two are the instrument
+      // for deciding whether a ceiling should come back — the max is what a
+      // ceiling would have to be larger than, and a max drifting toward the
+      // clock is the ratchet arriving.
+      //
+      // MODEL-BLIND, and that is a trap this report has already sprung once. A
+      // window spanning a provider switch mixes two models' distributions into
+      // one line, and the slower model owns the max — the first version of this
+      // baseline recorded Opus 5's max as GLM 5.3's. Before quoting these,
+      // attribute the ticks: join cost_events.provider/sku inside each run's
+      // [started_at, finished_at]. Never infer the model from the date.
+      const turnsSorted = [...f.turnsEach].sort((a, b) => a - b);
+      const msSorted = [...f.msEach].sort((a, b) => a - b);
+      lines.push(
+        `    turns p50 ${pct(turnsSorted, 0.5)} / max ${turnsSorted[turnsSorted.length - 1]} · ` +
+          `duration p50 ${(pct(msSorted, 0.5) / 1000).toFixed(1)}s / ` +
+          `max ${(msSorted[msSorted.length - 1] / 1000).toFixed(1)}s ` +
+          `(${f.planned} planned tick${f.planned === 1 ? '' : 's'})`,
       );
     }
   }

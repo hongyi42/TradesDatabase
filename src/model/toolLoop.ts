@@ -577,7 +577,8 @@ export async function runToolLoop(
       calls.push({ turn: turns, name: call.name, args: call.args, ok, result: content });
       // The terminal tool ends the loop as soon as it RUNS — only on success, so
       // a rejected submission still gets its error relayed and the model gets to
-      // try again within the turn ceiling.
+      // try again on a later turn — within whichever rail the caller kept: the
+      // turn ceiling, or, for a `maxTurns: null` caller, the clock alone.
       if (ok && call.name === req.terminalTool) {
         return { text: step.text, turns, calls };
       }

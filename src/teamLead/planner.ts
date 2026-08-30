@@ -1885,7 +1885,9 @@ export async function runPlanner(
       // returns means a plan the rails refuse is simply gone — the model never
       // learns its citation was unusable, and the gap stays open with nobody the
       // wiser. Here a wholly-refused submission comes back as a tool error, and
-      // the model gets to fix it within the turn ceiling.
+      // the model gets to fix it on a later turn — bounded by the CLOCK, not by
+      // a turn ceiling, which this caller opted out of (build 1b, see the
+      // request below).
       let outcome: { decisions: PlannerDecision[]; dropped: DroppedDecision[] } = {
         decisions: [],
         dropped: [],

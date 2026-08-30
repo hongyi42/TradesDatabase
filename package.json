@@ -32,7 +32,7 @@
     "decisions:index": "node scripts/decision-index.mjs",
     "ticks": "npm run build && node -r dotenv/config scripts/ticks/report.mjs",
     "metrics:planner": "node -r dotenv/config scripts/planner-metrics/report.mjs",
-    "lessons:planner": "npm run build && node -r dotenv/config scripts/planner-metrics/lessons.mjs"
+    "memory:planner": "node -r dotenv/config scripts/planner-metrics/memory.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",

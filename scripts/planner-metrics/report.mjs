@@ -95,27 +95,12 @@ try {
   lines.push(`- still pending (deadline in the future — not counted above): ${pendingExtends[0]?.n ?? 0}`);
   lines.push('');
 
-  const usage = await q(`
-    select l.id, l.text, l.status,
-           count(d.id) filter (where d.mode = 'live')::int   as uses_live,
-           count(d.id) filter (where d.mode = 'shadow')::int as uses_shadow,
-           count(d.id) filter (where n.status = 'answered' and d.mode = 'live')::int as gap_answered
-      from planner_lessons l
-      left join nudge_decisions d
-        on d.tenant_id = l.tenant_id
-       and d.reason like '%[' || substring(l.id::text, 1, 8) || ']%'
-      left join nudges n on n.id = d.nudge_id
-     group by l.id, l.text, l.status
-     having count(d.id) > 0 or l.status = 'active'
-     order by uses_live desc, uses_shadow desc`);
-  lines.push('## Lesson usage (the keep/kill evidence — live citations only count; shadow shown apart)');
-  if (usage.length === 0) lines.push('- none yet');
-  for (const r of usage) {
-    lines.push(
-      `- [${r.id.slice(0, 8)}] (${r.status}) cited live ${r.uses_live}x / shadow ${r.uses_shadow}x, gap answered ${r.gap_answered}x — ${r.text}`,
-    );
-  }
-  lines.push('');
+  // The 'Lesson usage' section was DELETED in build 3 (plan 2026-08-30): it
+  // counted [8-hex] citations against planner_lessons, and both the table and
+  // the stamp are gone. Nothing replaces it here — `npm run memory:planner`
+  // prints what the planner has written, but no mechanism records whether a
+  // memory changed a decision. That measurement is owed, and the evaluation
+  // phase at the end of the build order owns it.
 
   const text = lines.join('\n');
   console.log(text);

@@ -28,7 +28,7 @@ export interface GraderFinding {
 export interface GradableRow {
   id: string;
   expect?: PlannerScenario['expect'];
-  seeded?: { nudgeIds: Record<string, string>; lessonIds?: string[] };
+  seeded?: { nudgeIds: Record<string, string> };
   ticks: Array<{
     nowIso: string;
     decisions: NudgeDecision[];
@@ -143,32 +143,6 @@ export function gradeScenario(row: GradableRow, t0Ms: number): GraderFinding[] {
             `never made a successful ${e.mustRead.tool}` +
             (e.mustRead.argContains ? ` touching '${e.mustRead.argContains}'` : '') +
             ` — calls: ${calls.map((c) => c.name).join(', ') || 'none'}`,
-        });
-      }
-    }
-
-    if (e.lessonCited !== undefined) {
-      // Strict when the row knows its seeded lesson ids: a fabricated
-      // [deadbeef] stamp must not count as reading the lesson (review
-      // finding). Shape-only fallback keeps older run dirs gradable.
-      const seededShort = (row.seeded?.lessonIds ?? []).map((id) => id.slice(0, 8));
-      const citedIds = graded.flatMap((d) => [...d.reason.matchAll(/\[([0-9a-f]{8})\]/g)].map((m) => m[1]));
-      const cited =
-        seededShort.length > 0
-          ? citedIds.some((id) => seededShort.includes(id))
-          : citedIds.length > 0;
-      if (e.lessonCited && !cited) {
-        findings.push({
-          kind: 'lesson-not-cited',
-          tick: lastIdx,
-          detail: 'no graded reason carries an [8-hex] lesson id',
-        });
-      }
-      if (!e.lessonCited && cited) {
-        findings.push({
-          kind: 'lesson-cited-for-show',
-          tick: lastIdx,
-          detail: 'a reason cites a lesson the scenario declared irrelevant',
         });
       }
     }

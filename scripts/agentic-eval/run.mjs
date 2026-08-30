@@ -134,8 +134,11 @@ const RESET_TABLES = [
   'gap_summaries',
   'nudge_decisions',
   'nudges',
-  'reflector_runs',
-  'planner_lessons',
+  // The planner's memory (build 3): tenants-only FKs, and the versions table
+  // hangs off nothing, so no cascade reaches any of them.
+  'planner_memory',
+  'planner_memory_versions',
+  'planner_runs',
   'review_items',
   'cost_events',
   'money_events',
@@ -221,7 +224,15 @@ for (const s of scenarios) {
   // money_events is APPEND-ONLY (ledger trigger; caught by the corpus test) —
   // rows persist across scenarios, harmlessly: money reads are JOB-scoped and
   // every scenario seeds fresh jobs. Run-start TRUNCATE still clears them.
-  await sql.query(`delete from planner_lessons where tenant_id = $1`, [tenant.id]);
+  // The planner's MEMORY, and the marker that says when it last ran (build 3).
+  // Both are tenant-scoped and both ride straight into the next scenario's
+  // PROMPT — memory as the index at the top of the user message, the marker as
+  // "you last planned N ago". Leaving either would make scenario N+1 read
+  // scenario N's conclusions as its own firm's history, which is the one thing
+  // a per-scenario corpus cannot tolerate.
+  await sql.query(`delete from planner_memory where tenant_id = $1`, [tenant.id]);
+  await sql.query(`delete from planner_memory_versions where tenant_id = $1`, [tenant.id]);
+  await sql.query(`delete from planner_runs where tenant_id = $1`, [tenant.id]);
   // Neutralize the PRIOR scenario's world for the live detectors: candidates
   // are CONFIRMED assignments in the 72h window, and every scenario shares one
   // t0 — without this, scenario N's visit re-flags as a fresh gap in every
@@ -240,7 +251,6 @@ for (const s of scenarios) {
     row.seeded = {
       nudgeIds: arc.seeded.nudgeIds,
       jobId: arc.seeded.jobId,
-      lessonIds: arc.seeded.lessonIds,
     };
     row.ticks = arc.ticks;
     row.steps = arc.steps;

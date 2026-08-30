@@ -1,0 +1,33 @@
+-- Build 3, Phase 3 (plan 2026-08-30): the lesson machinery retires.
+--
+-- WHAT IS BEING DROPPED, AND WHY IT COSTS NOTHING TO DROP. planner_lessons
+-- never reached a prompt: renderLessonsBlock returns '' unless a lesson is
+-- ACTIVE, activation was a human step through an operator CLI, and the pilot
+-- held 3 proposed rows and ZERO active ones on 2026-08-29. reflector_runs is
+-- the Reflector's own cadence ledger; the Reflector's only output was
+-- planner_lessons rows, so it goes with them.
+--
+-- Its replacement is planner_memory (migration 20260830120000): the same idea
+-- with the authorship inverted — the MODEL writes and the record corrects it
+-- every tick (reconcile-first), instead of a human gating every sentence.
+--
+-- FOUR RAILS GO WITH THIS TABLE, deliberately (see the plan's Decisions): the
+-- evidence check on every proposal, the [8-hex] citation stamp that was the
+-- only way to measure whether a lesson ever changed a decision, two-strike
+-- retirement, and the date rail. Reconcile-first is what replaces all four,
+-- which is why its paragraph in PLANNER_SYSTEM is load-bearing rather than
+-- advisory. The hole left unbuilt and named: reconcile-first only catches
+-- beliefs the record can CONTRADICT — "the manager prefers blunt messages" is
+-- unfalsifiable by any spine query and can sit wrong forever.
+--
+-- No view depends on either table (checked against pg_depend on the pilot and
+-- the local stack), so no `cascade` is needed and none is given: if a
+-- dependency HAS appeared since, this migration should fail loudly rather than
+-- quietly take the dependant with it.
+--
+-- NOT DROPPED: cost_events rows with lane = 'reflector'. That is live
+-- historical spend, the ledger is append-only, and the lane value is a string
+-- in a column the code still reads (src/db/costs.ts).
+
+drop table planner_lessons;
+drop table reflector_runs;

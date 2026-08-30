@@ -4,6 +4,11 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
+import {
+  MEMORY_INDEX_PATH,
+  validateMemoryContent,
+  validateMemoryPath,
+} from '../teamLead/memory.js';
 import { spineNowIso } from '../evalClock.js';
 import type { JsonSchemaObject } from '../model/forcedTool.js';
 import {
@@ -189,6 +194,9 @@ import {
   listJobsWithCustomerByIds,
   listDecisionsForNudge,
   listDecisionsForJob,
+  deleteMemoryFile,
+  readMemoryFile,
+  writeMemoryFile,
   type PromiseLevel,
 } from '../db/index.js';
 import { braveWebSearch } from '../web/braveSearch.js';
@@ -1753,6 +1761,53 @@ const TEAM_LEAD_TOOLS = [
       },
     },
   },
+  // The planner's OWN NOTES (build 3, plan 2026-08-30). The first write verb
+  // this identity has ever had — see the note in src/teamLead/identity.ts for
+  // why it passes the dispatch gate's stated rule rather than bending it.
+  {
+    name: 'read_memory',
+    description:
+      'Open one of YOUR OWN NOTES. Your index rides at the top of every prompt; this is how you ' +
+      'pull the file behind a line in it. Pass the path exactly as the index spells it. ' +
+      'A path you have never written comes back empty — that is an answer, not a failure.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'The file to open, e.g. "MEMORY.md" or "firm/pacing.md".',
+        },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'write_memory',
+    description:
+      'Save one of YOUR OWN NOTES, replacing whatever was at that path. These notes are yours: ' +
+      'organise them however serves you, in whatever folders you like. Paths are lowercase ' +
+      'letters, digits, "-", "_" and "/", ending in ".md"; "MEMORY.md" is your index and is the ' +
+      'one file that is always read to you. ' +
+      'Keep the index SHORT — it is in every prompt, so it should be pointers, not detail. ' +
+      'Sending empty content (or leaving content out) DELETES the file. ' +
+      'Nothing is lost by rewriting: the previous ten copies of every file are kept.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Where to save it, e.g. "MEMORY.md" or "firm/pacing.md".',
+        },
+        content: {
+          type: 'string',
+          description:
+            'The whole file, as markdown — this REPLACES what was there, it does not append. ' +
+            'Empty or omitted deletes the file.',
+        },
+      },
+      required: ['path'],
+    },
+  },
 ];
 
 // Handed to the team-lead loop as its tool schemas. Exported (the array itself is
@@ -2371,7 +2426,9 @@ async function dispatch(
   // admin-gate precedent) and before every tool body. tools/list is
   // untouched: discovery is cosmetic, dispatch is the gate.
   if (identity.technicianRef.startsWith('spine:') && !TEAM_LEAD_TOOL_NAMES.has(name)) {
-    throw new Error('the team-lead identity is capped to read/ask — tool not allowed');
+    throw new Error(
+      'the team-lead identity is capped to reading, asking and its own notes — tool not allowed',
+    );
   }
   // The INVERSE of that ceiling, and the reason spine_read can safely sit outside
   // ADMIN_TOOLS: it is refused to every badge that is not a spine: identity. A
@@ -5493,6 +5550,82 @@ async function dispatch(
           outcome: r.outcome,
           outcomeDetail: r.outcome_detail,
         })),
+      };
+    }
+    // The planner's own notes (build 3, plan 2026-08-30). Gated by
+    // TEAM_LEAD_ONLY_TOOL_NAMES above like recall_decisions, so these dispatch
+    // for the `spine:` namespace and nothing else — memory is FIRM-SCOPED and
+    // the firm is `tenantId` from the verified HMAC identity, never an argument.
+    case 'read_memory': {
+      const checked = validateMemoryPath(str('path'));
+      if ('refused' in checked) throw new Error(checked.refused);
+      const row = await readMemoryFile(tenantId, checked.path);
+      if (!row) {
+        // Absence is an ANSWER, said in words: an empty content field reads as a
+        // failed lookup and the model retries it, burning a turn.
+        return {
+          status: 'ok',
+          path: checked.path,
+          exists: false,
+          note: 'You have not written that file. Nothing is wrong — there is simply no such note.',
+        };
+      }
+      return {
+        status: 'ok',
+        path: checked.path,
+        exists: true,
+        updatedAt: row.updated_at,
+        content: row.content,
+      };
+    }
+    case 'write_memory': {
+      const checked = validateMemoryPath(str('path'));
+      if ('refused' in checked) throw new Error(checked.refused);
+      // OMITTED CONTENT DELETES, exactly as '' does. runToolLoop performs no
+      // JSON-Schema validation — coerceBySchema only coerces DECLARED types, so
+      // `required` is never enforced — which means an absent key reaches here as
+      // undefined and there is no signal to distinguish it from a deliberate
+      // empty string. Both delete.
+      //
+      // A content key that IS present but is not a string is a different case
+      // and is REFUSED, not treated as a delete. That is a deviation from the
+      // plan, which lumped "absent" and "non-string" together because `str()`
+      // answers undefined for both: sending `content: ["a","b"]` is a model
+      // mistake, and silently destroying the file over it is unrecoverable from
+      // the planner's side — it has no tool that can read planner_memory_versions.
+      if ('content' in args && args.content !== null && typeof args.content !== 'string') {
+        throw new Error(
+          'content must be text — send the whole file as a string, or leave it out to delete',
+        );
+      }
+      const content = str('content') ?? '';
+      // TRIMMED before the emptiness test, because the prompt promises "saving
+      // nothing deletes it" and a model clearing a file with "\n" or " " means
+      // exactly that. Untrimmed, it stored a one-character file, answered
+      // `action: 'saved'`, and left the path haunting the index and the orphan
+      // footer — the delete silently not happening while reporting success.
+      if (content.trim().length === 0) {
+        const existed = await deleteMemoryFile(tenantId, checked.path);
+        return {
+          status: 'ok',
+          path: checked.path,
+          action: 'deleted',
+          note: existed
+            ? 'Deleted. Its last content is kept as a version.'
+            : 'There was no such file, so nothing was deleted.',
+        };
+      }
+      const sized = validateMemoryContent(checked.path, content);
+      if ('refused' in sized) throw new Error(sized.refused);
+      await writeMemoryFile(tenantId, checked.path, sized.content);
+      return {
+        status: 'ok',
+        path: checked.path,
+        action: 'saved',
+        chars: sized.content.length,
+        ...(checked.path === MEMORY_INDEX_PATH
+          ? { note: 'This is your index — it is read to you at the top of every prompt.' }
+          : {}),
       };
     }
     case 'get_availability': {

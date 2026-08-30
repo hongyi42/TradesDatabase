@@ -42,6 +42,8 @@ import {
   markNudgeQueued,
 } from '../db/nudges.js';
 import { localDateISO } from '../schedule/availability.js';
+import { TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
+import { MEMORY_FILE_MAX } from '../teamLead/memory.js';
 
 // Drive the MCP server over the SDK's in-memory transport (no network/stdio).
 // The extractor is stubbed so record_field_note never calls the live model.
@@ -7856,7 +7858,7 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       ] as Array<[string, Record<string, unknown>]>) {
         const res = await callWith(name, args);
         expect(res.isError).toBe(true);
-        expect(res.text).toContain('the team-lead identity is capped to read/ask');
+        expect(res.text).toContain('the team-lead identity is capped to reading, asking and its own notes');
       }
     } finally {
       await c.close();
@@ -7868,7 +7870,7 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     try {
       const res = await callWith('record_field_note', { rawText: 'x' });
       expect(res.isError).toBe(true);
-      expect(res.text).toContain('capped to read/ask');
+      expect(res.text).toContain('capped to reading, asking and its own notes');
     } finally {
       await c.close();
     }
@@ -7979,7 +7981,7 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     try {
       const res = await callWith('query_spine', { sql: 'select 1 as one' });
       expect(res.isError).toBe(true);
-      expect(res.text).toContain('capped to read/ask');
+      expect(res.text).toContain('capped to reading, asking and its own notes');
     } finally {
       await c.close();
     }
@@ -7991,7 +7993,12 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
   // dropped `+` term would strip a rule with the suite still green — this pins
   // the ones that cost incidents.
   test('the spine_read schema carries the view catalog and the date doctrine', () => {
-    expect(TEAM_LEAD_TOOL_SCHEMAS.map((t) => t.name)).toEqual(['spine_read', 'recall_decisions']);
+    expect(TEAM_LEAD_TOOL_SCHEMAS.map((t) => t.name)).toEqual([
+      'spine_read',
+      'recall_decisions',
+      'read_memory',
+      'write_memory',
+    ]);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
     // the catalog — twelve since ④ (2026-08-23); the count and the list must
     // move together or the description lies to the model about what exists
@@ -8051,7 +8058,7 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
         { tenantId, technicianRef: 'spine:team-lead' },
         { recordCost: async () => {} },
       ),
-    ).rejects.toThrow(/capped to read\/ask/);
+    ).rejects.toThrow(/capped to reading, asking and its own notes/);
 
     await expect(
       dispatchForIdentity(
@@ -8061,6 +8068,168 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
         { recordCost: async () => {} },
       ),
     ).rejects.toThrow(/team lead's own tool/);
+  });
+});
+
+// ── build 3 (plan 2026-08-30): the planner's own notes ──────────────────────
+// The FIRST WRITE VERB on an identity that was read/ask only. See the note in
+// src/teamLead/identity.ts for why it passes the gate's stated rule.
+describe("read_memory / write_memory — the planner's own notes", () => {
+  const lead = { tenantId: '', technicianRef: 'spine:team-lead' };
+  const noCost = { recordCost: async () => {} };
+  const call = (name: string, args: Record<string, unknown>) =>
+    dispatchForIdentity(name, args, { ...lead, tenantId }, noCost) as Promise<
+      Record<string, unknown>
+    >;
+
+  beforeAll(async () => {
+    await pg.query('truncate table planner_memory, planner_memory_versions');
+  });
+  afterAll(async () => {
+    await pg.query('truncate table planner_memory, planner_memory_versions');
+  });
+
+  test('both tools dispatch for spine:team-lead, and round-trip', async () => {
+    const saved = await call('write_memory', {
+      path: 'firm/pacing.md',
+      content: 'Jane answers in the evening.',
+    });
+    expect(saved.status).toBe('ok');
+    expect(saved.action).toBe('saved');
+    const back = await call('read_memory', { path: 'firm/pacing.md' });
+    expect(back.exists).toBe(true);
+    expect(back.content).toBe('Jane answers in the evening.');
+    // Independent read-back channel: the tool agreeing with itself proves
+    // nothing about what landed in the table.
+    const { rows } = await pg.query(
+      'select content from planner_memory where tenant_id = $1 and path = $2',
+      [tenantId, 'firm/pacing.md'],
+    );
+    expect(rows[0].content).toBe('Jane answers in the evening.');
+  });
+
+  test('reading a file that was never written is an ANSWER, not an error', async () => {
+    const out = await call('read_memory', { path: 'never/written.md' });
+    expect(out.exists).toBe(false);
+    // Said in words: an empty content field reads as a failed lookup and the
+    // model burns a turn retrying it.
+    expect(String(out.note)).toContain('no such note');
+  });
+
+  test('empty content DELETES, and an OMITTED content key does exactly the same', async () => {
+    // runToolLoop enforces no `required`: coerceBySchema only coerces DECLARED
+    // types, so `str()` answers undefined for both "left it out" and "sent a
+    // number". Making deletion depend on that distinction would make it depend
+    // on something the transport does not reliably carry.
+    await call('write_memory', { path: 'a.md', content: 'one' });
+    expect((await call('write_memory', { path: 'a.md', content: '' })).action).toBe('deleted');
+    expect((await call('read_memory', { path: 'a.md' })).exists).toBe(false);
+
+    await call('write_memory', { path: 'b.md', content: 'two' });
+    expect((await call('write_memory', { path: 'b.md' })).action).toBe('deleted');
+    expect((await call('read_memory', { path: 'b.md' })).exists).toBe(false);
+
+    // …and both kept the last content as a version.
+    const { rows } = await pg.query(
+      'select path, content from planner_memory_versions where tenant_id = $1 order by path',
+      [tenantId],
+    );
+    expect(rows).toEqual([
+      { path: 'a.md', content: 'one' },
+      { path: 'b.md', content: 'two' },
+    ]);
+  });
+
+  test('WHITESPACE-ONLY content deletes, exactly as the prompt promises', async () => {
+    // PLANNER_SYSTEM says "saving nothing deletes it" and the tool description
+    // says empty content DELETES. Untrimmed, `content: "\n"` stored a
+    // one-character file, answered `action: 'saved'`, and left the path
+    // haunting the index and the orphan footer — the delete silently not
+    // happening while the model was told it had.
+    for (const blank of ['\n', ' ', '   \n\t ']) {
+      await call('write_memory', { path: 'blankable.md', content: 'real' });
+      expect((await call('write_memory', { path: 'blankable.md', content: blank })).action).toBe(
+        'deleted',
+      );
+      expect((await call('read_memory', { path: 'blankable.md' })).exists).toBe(false);
+    }
+  });
+
+  test('a NON-STRING content is refused, never treated as a delete', async () => {
+    // The deviation from the plan, and why: the planner has no tool that can
+    // read planner_memory_versions, so a file destroyed by a malformed argument
+    // is unrecoverable from its side. Absent still deletes; wrong-typed does not.
+    await call('write_memory', { path: 'keep.md', content: 'still here' });
+    await expect(call('write_memory', { path: 'keep.md', content: ['a', 'b'] })).rejects.toThrow(
+      /content must be text/,
+    );
+    expect((await call('read_memory', { path: 'keep.md' })).content).toBe('still here');
+    // …and null is still a delete: it is an explicit "nothing", not a type error.
+    expect((await call('write_memory', { path: 'keep.md', content: null })).action).toBe('deleted');
+  });
+
+  test('deleting a file that was never there is not an error', async () => {
+    const out = await call('write_memory', { path: 'ghost.md', content: '' });
+    expect(out.action).toBe('deleted');
+    expect(String(out.note)).toContain('no such file');
+  });
+
+  test('a bad path is refused with the RULE, before the database sees it', async () => {
+    await expect(call('write_memory', { path: '../escape.md', content: 'x' })).rejects.toThrow(
+      /"\.\."/,
+    );
+    await expect(call('write_memory', { path: 'a//b.md', content: 'x' })).rejects.toThrow(/\/\//);
+    await expect(call('read_memory', { path: 'Memory.md' })).rejects.toThrow(/lowercase/);
+  });
+
+  test('an over-budget write is refused with the size and the budget', async () => {
+    await expect(
+      call('write_memory', { path: 'big.md', content: 'x'.repeat(MEMORY_FILE_MAX + 1) }),
+    ).rejects.toThrow(new RegExp(`${MEMORY_FILE_MAX + 1}.*${MEMORY_FILE_MAX}`));
+    // …and nothing landed.
+    expect((await call('read_memory', { path: 'big.md' })).exists).toBe(false);
+  });
+
+  test('a MANAGER badge is refused both tools', async () => {
+    for (const name of ['read_memory', 'write_memory']) {
+      await expect(
+        dispatchForIdentity(name, { path: 'a.md' }, { tenantId, technicianRef: 'mgr-test' }, noCost),
+      ).rejects.toThrow(/team lead's own tool/);
+    }
+  });
+
+  test('memory is FIRM-SCOPED: the tenant comes from the badge, never from args', async () => {
+    const other = await createTenant(`memory-scope-${Date.now()}`);
+    try {
+      await call('write_memory', { path: 'scoped.md', content: 'ours' });
+      const theirs = (await dispatchForIdentity(
+        'read_memory',
+        // A tenantId in the ARGS must change nothing — the identity decides.
+        { path: 'scoped.md', tenantId },
+        { tenantId: other.id, technicianRef: 'spine:team-lead' },
+        noCost,
+      )) as Record<string, unknown>;
+      expect(theirs.exists).toBe(false);
+    } finally {
+      await pg.query('delete from tenants where id = $1', [other.id]);
+    }
+  });
+
+  test('every allowlisted team-lead name either has a schema or is known unreachable', () => {
+    // The drift the build-3 research found: get_customer_context and
+    // resolve_date sit on TEAM_LEAD_TOOL_NAMES with no entry in
+    // TEAM_LEAD_TOOL_SCHEMAS, so the planner is never handed them and cannot
+    // call them. That is a half-added tool, and nothing was pinning it. This
+    // test does not FIX it — it makes the next one deliberate.
+    const KNOWN_UNREACHABLE = new Set(['get_customer_context', 'resolve_date']);
+    const withSchema = new Set(TEAM_LEAD_TOOL_SCHEMAS.map((t) => t.name));
+    const unpaired = [...TEAM_LEAD_TOOL_NAMES].filter(
+      (n) => !withSchema.has(n) && !KNOWN_UNREACHABLE.has(n),
+    );
+    expect(unpaired, `allowlisted with no schema: ${unpaired.join(', ')}`).toEqual([]);
+    // …and the inverse: a schema the allowlist forgot cannot dispatch at all.
+    const unlisted = [...withSchema].filter((n) => !TEAM_LEAD_TOOL_NAMES.has(n));
+    expect(unlisted, `schema with no allowlist entry: ${unlisted.join(', ')}`).toEqual([]);
   });
 });
 

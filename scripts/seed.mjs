@@ -177,18 +177,22 @@ async function truncateSpine(hasScheduling) {
         where table_schema = 'public' and table_name = 'gap_summaries'`,
     );
     if (gs.rows.length > 0) tables += ', gap_summaries';
-    // planner_lessons references ONLY tenants — no cascade reaches it, and a
-    // stale ACTIVE lesson would haunt the fresh world's planner prompts.
-    const pl = await client.query(
-      `select 1 from information_schema.tables
-        where table_schema = 'public' and table_name = 'planner_lessons'`,
-    );
-    if (pl.rows.length > 0) tables += ', planner_lessons';
-    const rr = await client.query(
-      `select 1 from information_schema.tables
-        where table_schema = 'public' and table_name = 'reflector_runs'`,
-    );
-    if (rr.rows.length > 0) tables += ', reflector_runs';
+    // The planner's own memory (build 3), which replaced planner_lessons and
+    // reflector_runs (both dropped in migration 20260830130000). Same trap the
+    // lessons table had — all three reference ONLY tenants, and
+    // planner_memory_versions hangs off no table at all, so `truncate ...
+    // cascade` reaches none of them. A stale MEMORY.md surviving a rebuild
+    // would put a previous world's conclusions into the fresh firm's very first
+    // prompt, with a bigger blast radius than a lesson ever had (free text, not
+    // a 300-char rule).
+    for (const t of ['planner_memory', 'planner_memory_versions', 'planner_runs']) {
+      const probe = await client.query(
+        `select 1 from information_schema.tables
+          where table_schema = 'public' and table_name = $1`,
+        [t],
+      );
+      if (probe.rows.length > 0) tables += `, ${t}`;
+    }
     // tenant_settings cascades from tenants, but is NAMED (eng-memory §1). The
     // cascade means omitting it never errors — a stale row would just quietly
     // give the reseeded firm someone else's detector thresholds.

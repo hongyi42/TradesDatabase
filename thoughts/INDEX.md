@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 185 documents · 181 live · 4 superseded.
+Regenerate with `npm run decisions:index`. 186 documents · 182 live · 4 superseded.
 
 ## Superseded — do not build on these
 
@@ -47,6 +47,7 @@ Regenerate with `npm run decisions:index`. 185 documents · 181 live · 4 supers
 - `2026-08-29` `plan` [2026-08-29-the-planner-execution-envelope](shared/plans/2026-08-29-the-planner-execution-envelope.md) — Build 1b — the planner's execution envelope: the clock becomes the only rail
 - `2026-08-29` `research` [2026-08-29-the-firm-is-data](shared/research/2026-08-29-the-firm-is-data.md) `not landed` — Build 2 — every constant that encodes firm behaviour, whether a per-tenant value can reach its call-site, and…
 - `2026-08-29` `research` [2026-08-29-the-planner-runs-on-a-clock-it-cannot-see](shared/research/2026-08-29-the-planner-runs-on-a-clock-it-cannot-see.md) `not landed` — The planner's execution envelope — the 90s loop budget, what it actually bounds, and why exceeding it loses t…
+- `2026-08-29` `research` [2026-08-29-the-planners-memory-the-ground-it-stands-on](shared/research/2026-08-29-the-planners-memory-the-ground-it-stands-on.md) `landed` — Build 3 — the planner's memory: the ground it stands on (what it replaces, the write threshold, prompt cost,…
 - `2026-08-28` `note` [2026-08-28-planner-doctrine-rewrite](shared/design/2026-08-28-planner-doctrine-rewrite.md) · _draft for review_ — The planner's doctrine, rewritten to the 2026-08-28 harness ruling — role, attention framing, and navigation
 - `2026-08-28` `plan` [2026-08-28-openrouter-migration](shared/plans/2026-08-28-openrouter-migration.md) · _draft_ — Move the SPINE (planner + forced-tool callers) to OpenRouter on GLM 5.3, with same-model/different-provider f…
 - `2026-08-28` `research` [2026-08-28-the-harness-audit](shared/research/2026-08-28-the-harness-audit.md) `not landed` — The planner's harness — every constraint code imposes on the planner's decision space, where each came from,…

@@ -35,15 +35,38 @@ import {
 
 // Every rail in this module is a CEILING, not a target. The planner is a model
 // deciding when to bother people; a loop that can spin is a loop that can spend.
+//
+// A DEFAULT since build 1b, no longer a ceiling nobody can raise. It still binds
+// every caller that says nothing, and a numeric override may still only ask for
+// LESS — but `maxTurns: null` opts out of it entirely, and the planner does
+// (planner.ts). Kept at 8 for everyone else: a caller that suddenly makes eight
+// model calls where it used to make one is a defect, and this is what surfaces
+// it.
 export const MAX_TOOL_LOOP_TURNS = 8;
-// Named MAX, not DEFAULT: since callers are clamped rather than defaulted, no
-// caller can raise it — only this constant can. Sized against the fleet's
-// measured turn medians (Fireworks 6.3s, Nebius 7.8s, DeepInfra 14.1s in the
-// date-eval trajectories), so 8 turns leaves ~11s each. If Phase 3's shadow
-// latencies say that is tight, raise it HERE, and log a budget throw distinctly
-// from a model error — a healthy-but-slow planner that throws reads as a
-// silently skipped tick.
-export const MAX_TOOL_LOOP_BUDGET_MS = 90_000;
+// THE ONLY RAIL (build 1b, plan 2026-08-29). Hard-clamped, unlike the turn
+// ceiling above: no caller may raise this one, because for a caller that has
+// opted out of the turn ceiling it is the sole thing between a looping model and
+// a cron process that never returns.
+//
+// 15 minutes, per the user's ruling of 2026-08-29: "Planner model calls occur 30
+// minutes at a time, so it's ok if it does something truly long horizon. I would
+// not try to put a maximum number over the planner's head to constrain it.
+// Though I would try to keep it within 15 minutes or so for now." A SAFETY
+// BOUND, not a design target — sized so normal operation never reaches it.
+//
+// Why the old 90_000 was dead code. It was sized "8 turns leaves ~11s each"
+// against the fleet's turn medians, but the TURN ceiling always fired first.
+// MEASURED on the pilot, GLM 5.3, its first two real ticks (2026-08-29T17:30:48Z
+// and 18:00:37Z): 16.2s and 12.2s wall clock, 2 turns each, 5-9s per model call.
+// At ~8s a turn the 8-turn ceiling stopped the loop around 64s — so this clock
+// never once fired in production, and raising it alone would have changed
+// nothing. Do NOT re-size it against figures collected before 2026-08-29T17:16Z:
+// those are all Opus 5, whatever their date suggests.
+//
+// The platform is nowhere near binding: Render stops a cron run only after
+// TWELVE HOURS, and an overrunning run DELAYS the next firing rather than
+// dropping it (https://render.com/docs/cronjobs, verified 2026-08-29).
+export const MAX_TOOL_LOOP_BUDGET_MS = 900_000;
 // A tool result is model INPUT — it is billed, and it displaces the prompt. The
 // cap is generous enough for a 200-row spine read and small enough that a
 // runaway query cannot blow the context; overflow is announced IN the result
@@ -88,7 +111,20 @@ export interface ToolLoopRequest {
   maxTokens: number;
   /** Prefixes every thrown error so a failure names the caller, not this module. */
   label: string;
-  maxTurns?: number;
+  /**
+   * `undefined` — the default ceiling, MAX_TOOL_LOOP_TURNS.
+   * a NUMBER    — a lower ceiling; still clamped, so it can only ask for LESS.
+   * `null`      — NO turn ceiling: the budget is the only rail.
+   *
+   * The null case is build 1b's opt-out, and the planner is its only user (user
+   * ruling 2026-08-29: no maximum over the planner's head, and whether it needs
+   * a ceiling at all is a question for the evaluation phase rather than an
+   * assumption baked in now). A caller taking it inherits what the ceiling used
+   * to discharge: the CLOCK is then the only thing that stops a model which
+   * loops, and a `budget` limit hit stops being distinguishable from a `turns`
+   * one because the latter can no longer occur.
+   */
+  maxTurns?: number | null;
   budgetMs?: number;
   /**
    * Name of a tool that ENDS the loop the moment the model calls it.
@@ -433,7 +469,14 @@ export async function runToolLoop(
   // CLAMPED, not defaulted: this module's rails are ceilings, and a caller that
   // asks for 100 turns is exactly the caller they exist for. A caller may only
   // ever ask for LESS.
-  const maxTurns = Math.min(req.maxTurns ?? MAX_TOOL_LOOP_TURNS, MAX_TOOL_LOOP_TURNS);
+  // `null` is the explicit opt-out (build 1b): time is the only rail, and the
+  // turn count becomes the caller's business. A NUMBER is still clamped — a
+  // caller may only ever ask for LESS than the default — so the opt-out has to
+  // be its own value rather than a large number, which the clamp would eat.
+  const maxTurns =
+    req.maxTurns === null
+      ? Number.POSITIVE_INFINITY
+      : Math.min(req.maxTurns ?? MAX_TOOL_LOOP_TURNS, MAX_TOOL_LOOP_TURNS);
   const budgetMs = Math.min(req.budgetMs ?? MAX_TOOL_LOOP_BUDGET_MS, MAX_TOOL_LOOP_BUDGET_MS);
   const transport =
     activeProvider() === 'anthropic' ? anthropicTransport(req, tools) : openAiTransport(req, tools);

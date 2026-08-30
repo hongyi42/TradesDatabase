@@ -13,6 +13,7 @@ import {
   setSimClock,
   simStartIso,
   SIM_TZ,
+  EVAL_LOOP_BUDGET_MS,
   toNaiveLocal,
   type ScenarioWorld,
 } from './plannerSim.js';
@@ -143,7 +144,14 @@ describe('runTick — production wiring, stubbed model', () => {
 
     // The stub MUST drive the executor — decisions exist only via
     // validateDecisions inside the submit_plan branch (planner.ts).
+    // Build 1b: RECORDED here, ASSERTED after runTick returns. An expect() that
+    // throws inside this stub is caught by runPlanner's per-tenant try/catch and
+    // becomes tenantErrors — so the failure would surface as an unrelated
+    // "expected +0 to be 1" three assertions later, naming nothing about what
+    // actually broke.
+    let loopReq: { budgetMs?: number; maxTurns?: number | null } | undefined;
     const stubLoop: typeof runToolLoop = async (req, _tools, execute) => {
+      loopReq = req;
       expect(req.user).toContain(`gap ${gapId}`);
       const reply = (await execute('submit_plan', {
         decisions: [
@@ -167,6 +175,18 @@ describe('runTick — production wiring, stubbed model', () => {
     };
 
     const tick = await runTick(t.id, t0, { runLoop: stubLoop });
+
+    // FIRST, before anything else: the per-tenant catch turns a swallowed
+    // assertion into this counter, so a non-zero value means the expectations
+    // inside the stub above never really ran.
+    expect(tick.planner.tenantErrors).toBe(0);
+    expect(loopReq).toBeDefined();
+    // The sim overrides production's fifteen-minute clock on the way through
+    // wrapLoop, so one stalled call cannot hold an eval run for a quarter-hour.
+    expect(loopReq!.budgetMs).toBe(EVAL_LOOP_BUDGET_MS);
+    // The TURN behaviour is deliberately NOT overridden — the eval has to
+    // reproduce production's unbounded turns, which is the thing it measures.
+    expect(loopReq!.maxTurns).toBeNull();
 
     expect(tick.watchers.tenants).toBe(1);
     // The seeded gap is not fresh (subject_ref dedup) and not yet due — the

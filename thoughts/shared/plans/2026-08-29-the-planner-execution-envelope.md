@@ -181,8 +181,11 @@ budget per scenario.
   a ceiling at all is a question for the evaluation phase, not an assumption baked in now.
 - `PlannerSummary.limitHits` keeps **both** keys. `turns` becomes structurally unreachable for the
   planner and must stay in the shape anyway: `lifecycle.test.ts:435` and `:841` assert the object,
-  the report reads it, and the two limits still call for opposite responses if a future caller keeps
-  the default. Add a one-line comment saying so, or the next reader deletes it as dead.
+  it rides into `lifecycle_runs.summary` untouched by `redactForRecord`, and the two limits still call
+  for opposite responses if a future caller keeps the default. Add a one-line comment saying so, or
+  the next reader deletes it as dead. (`scripts/ticks/report.mjs` does NOT read it — an earlier draft
+  of this plan claimed it did, and the Phase 2 review caught the false claim propagating into a code
+  comment. A justification the next reader can disprove is worse than none.)
 
 **`src/eval/plannerSim.ts`**
 

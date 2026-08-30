@@ -225,6 +225,14 @@ export interface PlannerSummary {
   // twenty gaps in a firm that used to have two — and the ceiling or the
   // batching has to change. Rolled into tenantErrors as well, so the existing
   // ok=false alarm still fires.
+  //
+  // BOTH KEYS STAY, though `turns` is now structurally unreachable for the
+  // planner: it passes `maxTurns: null` (build 1b), so only `budget` can fire.
+  // This is not dead weight — the shape is asserted by lifecycle.test.ts:435 and
+  // :841, it rides into lifecycle_runs.summary untouched by redactForRecord, and
+  // the two limits still mean opposite things for any caller that keeps the
+  // default ceiling. A `turns` hit appearing here would mean somebody restored
+  // the ceiling, which is worth being able to see.
   limitHits: Record<ToolLoopLimit, number>;
   byAction: Record<string, number>;
   plans: PlannerTenantPlan[];
@@ -1890,6 +1898,19 @@ export async function runPlanner(
           label: 'teamLeadPlanner',
           reasoningEffort: PLANNER_REASONING,
           terminalTool: SUBMIT_PLAN_TOOL.name,
+          // NO TURN CEILING (build 1b, plan 2026-08-29). User ruling: "I would
+          // not try to put a maximum number over the planner's head to constrain
+          // it… we can see if the planner hits [15 minutes]." The clock is the
+          // only rail now, and whether a turn ceiling should come back is a
+          // question for the build order's evaluation phase — measured from the
+          // turns distribution `npm run ticks` reports — rather than an
+          // assumption baked in here.
+          //
+          // The cost of taking this: `limitHits.turns` can no longer occur for
+          // the planner, so a model that loops is indistinguishable from one
+          // that is merely slow until the clock throws. That is deliberate; the
+          // instrument is the distribution, not the counter.
+          maxTurns: null,
         },
         [...tools, SUBMIT_PLAN_TOOL],
         async (name, args) => {

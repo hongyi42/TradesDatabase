@@ -53,6 +53,16 @@ import { localDateISO, localTimeHHMM } from '../schedule/availability.js';
 import { naiveLocalISO } from '../schedule/booking.js';
 
 export const SIM_TZ = 'America/Los_Angeles';
+// The eval does NOT inherit production's fifteen-minute loop budget (build 1b).
+// A corpus run replays many scenarios against a real provider, and the planner
+// now passes `maxTurns: null` — so nothing but the clock stops a scenario, and
+// one stalled call would hold the run for a quarter of an hour.
+//
+// Deliberately divergent from production, and only on the CLOCK: `maxTurns` is
+// left alone so the eval reproduces production's turn behaviour exactly, which
+// is the thing under measurement. Short enough that a scenario needing more
+// than this is itself the finding.
+export const EVAL_LOOP_BUDGET_MS = 120_000;
 
 // ── offsets ──────────────────────────────────────────────────────────────────
 // Every instant in a scenario is an OFFSET from the scenario's t0 ("-30h",
@@ -477,7 +487,12 @@ export async function runTick(
       }
     };
     try {
-      const result = await inner(req, tools, spyExecute, ctx, loopDeps);
+      // CLAMPED, not replaced. Unconditional assignment would mean a caller
+      // asking for a SHORTER clock got a longer one here than it gets in
+      // production — the inverse of toolLoop's "a caller may only ever ask for
+      // LESS" rule. The planner sets none today; this keeps that from mattering.
+      const evalBudgetMs = Math.min(req.budgetMs ?? EVAL_LOOP_BUDGET_MS, EVAL_LOOP_BUDGET_MS);
+      const result = await inner({ ...req, budgetMs: evalBudgetMs }, tools, spyExecute, ctx, loopDeps);
       toolCalls = result.calls; // authoritative when the loop completes
       turns = result.turns;
       return result;
@@ -595,6 +610,7 @@ export async function runTick(
 import type { PlannerScenario } from './plannerCorpus.js';
 
 export const MAX_ARC_TICKS = 12;
+
 
 export interface ArcStepRecord {
   atIso: string;

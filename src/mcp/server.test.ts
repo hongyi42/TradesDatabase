@@ -7897,6 +7897,42 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     }
   });
 
+  test('spine_read answers over v_observations — dismissed rows included, tenant-scoped (plan 2026-08-31)', async () => {
+    // The recover loop's whole premise: dismissed observations are FINDABLE
+    // through the real dispatch, with the planner's own dismiss_reason on them.
+    const { data: seeded, error: seedErr } = await getClient()
+      .from('observations')
+      .insert({
+        tenant_id: tenantId,
+        kind: 'overdue_visit_gap',
+        subject_ref: `vobs-probe-${Date.now()}`,
+        technician_id: null,
+        status: 'dismissed',
+        dismiss_reason: 'probe: nothing riding on it',
+        dismissed_at: new Date().toISOString(),
+        context: {},
+      })
+      .select()
+      .single();
+    expect(seedErr).toBeNull();
+    const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+    try {
+      const res = await callWith('spine_read', {
+        sql: `select id, status, dismiss_reason from v_observations where id = '${seeded!.id}'`,
+      });
+      expect(res.isError).toBe(false);
+      expect(res.data.rowCount).toBe(1);
+      expect(res.data.rows[0]).toMatchObject({
+        id: seeded!.id,
+        status: 'dismissed',
+        dismiss_reason: 'probe: nothing riding on it',
+      });
+    } finally {
+      await c.close();
+      await getClient().from('observations').delete().eq('id', seeded!.id);
+    }
+  });
+
   // THE GUARD ON THE WHOLE DESIGN. spine_read is deliberately NOT in ADMIN_TOOLS
   // — that is what lets a badge-less identity reach it. If it ever were, this
   // call would fail with the manager-badge error instead of returning rows, so
@@ -8003,9 +8039,11 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       'write_job_note',
     ]);
     const desc = TEAM_LEAD_TOOL_SCHEMAS[0].description;
-    // the catalog — twelve since ④ (2026-08-23); the count and the list must
-    // move together or the description lies to the model about what exists
-    expect(desc).toContain('twelve views');
+    // the catalog — thirteen since v_observations (plan 2026-08-31); the count
+    // and the list must move together or the description lies to the model
+    expect(desc).toContain('thirteen views');
+    expect(desc).toContain('v_observations');
+    expect(desc).toContain("status='dismissed' rows are where `recover` ids come from");
     expect(desc).toContain('v_money_events');
     expect(desc).toContain('DIRECTION COMES FROM kind');
     // ④'s four, and the rules that keep them safe to read

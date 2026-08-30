@@ -427,6 +427,7 @@ describe('runLifecycle', () => {
         tenantErrors: 0,
         limitHits: { budget: 0, turns: 0 },
         byAction: {},
+      observationsStale: 0,
         plans: [],
         ...over,
       });
@@ -499,6 +500,7 @@ describe('runLifecycle', () => {
           tenantErrors: 0,
           limitHits: { budget: 0, turns: 0 },
           byAction: {},
+      observationsStale: 0,
           plans: [],
         }),
         hasModelKey: () => true,
@@ -843,6 +845,7 @@ describe('the planner gate', () => {
       limitHits: { budget: 0, turns: 0 },
             tenantErrors: 0,
             byAction: {},
+      observationsStale: 0,
             plans: [],
           };
         },

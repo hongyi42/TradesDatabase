@@ -119,6 +119,14 @@ export const UNMENTIONED = 'unmentioned';
 // planner keeps running — and there the filler would grow forever.
 export const UNMENTIONED_CAP = 200;
 
+// The AGING COUNTER (plan 2026-08-31, user choice: an alarm, never an actor).
+// Un-asked observations carry no clocks, so nothing guarantees a human ever
+// sees one — this is the watched number that says whether that freedom is
+// being neglected. An observation counts once it has sat open this long with
+// no applied decision beyond `leave` (looking is not acting). It NEVER reddens
+// a tick and forces nothing — the runaways-measured-not-policed posture.
+export const OBSERVATION_STALE_HOURS = 72;
+
 export interface PlannerDecision {
   nudgeId: string;
   action: PlannerAction;
@@ -207,6 +215,10 @@ export interface PlannerTenantPlan {
   turns: number;
   toolCalls: number;
   ms: number;
+  // Open observations older than OBSERVATION_STALE_HOURS the planner has never
+  // acted on (leave excluded — looking is not acting). A snapshot, not a
+  // running total: read the LATEST planned tick's value, never a sum.
+  observationsStale: number;
 }
 
 // The zero row for a firm the model never ran for.
@@ -232,6 +244,7 @@ const idlePlan = (
   turns: 0,
   toolCalls: 0,
   ms,
+  observationsStale: 0,
 });
 
 export interface PlannerSummary {
@@ -265,6 +278,9 @@ export interface PlannerSummary {
   // the ceiling, which is worth being able to see.
   limitHits: Record<ToolLoopLimit, number>;
   byAction: Record<string, number>;
+  // The aging counter, summed over this tick's PLANNED firms (each plan entry
+  // carries its own snapshot). Never reddens anything.
+  observationsStale: number;
   plans: PlannerTenantPlan[];
   // tenant_settings has not been migrated to this database yet, so every firm ran
   // at the full rate. Present ONLY when true, and it does NOT make the tick
@@ -2101,6 +2117,7 @@ export async function runPlanner(
     tenantErrors: 0,
     limitHits: { budget: 0, turns: 0 },
     byAction: {},
+    observationsStale: 0,
     plans: [],
   };
   if (mode === 'off') return summary;
@@ -2311,6 +2328,21 @@ export async function runPlanner(
         open.map((n) => n.id),
       );
 
+      // THE AGING COUNTER (plan 2026-08-31): open observations this old that
+      // the planner has never ACTED on. `leave` and the unmentioned filler are
+      // both excluded — one is looking, the other is silence — so the number
+      // survives a planner that dutifully leaves everything alone, which is
+      // exactly the neglect it exists to show.
+      const staleFloorMs = nowMs - OBSERVATION_STALE_HOURS * 3_600_000;
+      const observationsStale = open.filter(
+        (n) =>
+          n.status === 'noticed' &&
+          Date.parse(n.created_at) < staleFloorMs &&
+          !(historyByNudge.get(n.id) ?? []).some(
+            (d) => d.outcome === 'applied' && d.action !== 'leave' && d.action !== UNMENTIONED,
+          ),
+      ).length;
+
       // ONE batched read for the tick's notepads, on the jobIds already
       // derived above — the same discipline as the evidence, ledger and money
       // reads. METADATA ONLY: this decides whether each gap block carries the
@@ -2494,6 +2526,12 @@ export async function runPlanner(
           // Which table's FK this row hangs off (plan 2026-08-31). 'nudge' when
           // unknown: an id neither read returned cannot reach here — the rails
           // dropped it.
+          //
+          // KNOWN TRADE (phase-4 review F3): a `recover` decision's subject is
+          // deliberately not in `views` (the dismissed read is ids-only —
+          // fetching rows to stamp jobId here would undo that), so its record
+          // row carries jobId NULL and job-scoped recall misses it. Per-gap
+          // recall still finds it through observation_id.
           subject: stageById.get(nudgeId) ?? ('nudge' as const),
           jobId: views.get(nudgeId)?.jobId ?? null,
           mode,
@@ -2683,7 +2721,12 @@ export async function runPlanner(
         turns: result.turns,
         toolCalls: result.calls.length,
         ms: Date.now() - started,
+        observationsStale,
       });
+      // Summed only for PLANNED firms, after the loop survived — a tick that
+      // died on the clock names an idlePlan carrying 0, and the summary must
+      // agree with its own plans (phase-4 review F2).
+      summary.observationsStale += observationsStale;
 
       await stampRun(tenantId, true);
 

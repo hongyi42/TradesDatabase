@@ -268,11 +268,13 @@ The mint sites write observations; cap, reachability check, mint-time manager fa
 - **`scripts/ticks/report.mjs`**: print `stale observations: N` per firm when > 0.
 - **`src/mcp/server.ts`**: `v_observations(...)` column line in the view catalog (`:707` region,
   both tool descriptions that enumerate views).
-- **`src/db/nudgeDecisions.ts`**: confirm `listDecisionsForJob` needs nothing (job_id is stamped on
-  observation decisions too — writer sets it from context, same as today).
+- **`src/db/nudgeDecisions.ts`**: `listDecisionsForJob` needs nothing for in-view decisions
+  (job_id stamped from context). CORRECTED AT REVIEW: a `recover` row carries jobId NULL — its
+  subject is deliberately outside the view (the dismissed read is ids-only), so job-scoped recall
+  misses recover rows; per-gap recall finds them via observation_id. Recorded at the writer.
 
 ### Automated verification
-- [ ] gates; a seeded 80h-old untouched observation yields `observationsStale: 1` and `ok: true`;
+- [x] gates; a seeded 80h-old untouched observation yields `observationsStale: 1` and `ok: true`;
       catalog string test updated; `v_observations` answers through the real `spine_read` dispatch
       (the toolCases idiom)
 ---

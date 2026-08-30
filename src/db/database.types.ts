@@ -581,6 +581,126 @@ export type Database = {
         }
         Relationships: []
       }
+      job_note_versions: {
+        Row: {
+          content: string
+          id: string
+          job_id: string
+          replaced_at: string
+          tenant_id: string
+        }
+        Insert: {
+          content: string
+          id?: string
+          job_id: string
+          replaced_at?: string
+          tenant_id: string
+        }
+        Update: {
+          content?: string
+          id?: string
+          job_id?: string
+          replaced_at?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "job_note_versions_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "job_note_versions_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "job_note_versions_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "job_note_versions_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "job_note_versions_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      job_notes: {
+        Row: {
+          content: string
+          created_at: string
+          job_id: string
+          tenant_id: string
+          written_at: string
+        }
+        Insert: {
+          content: string
+          created_at?: string
+          job_id: string
+          tenant_id: string
+          written_at?: string
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          job_id?: string
+          tenant_id?: string
+          written_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "job_notes_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "job_notes_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_cancelled_visits"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "job_notes_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "job_notes_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "v_schedule"
+            referencedColumns: ["job_id"]
+          },
+          {
+            foreignKeyName: "job_notes_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       job_type_durations: {
         Row: {
           created_at: string

@@ -24,6 +24,7 @@ export * from './tenantProfiles.js';
 export * from './tenantSettings.js';
 export * from './plannerMemory.js';
 export * from './plannerRuns.js';
+export * from './jobNotes.js';
 export * from './callNumbers.js';
 export * from './callIngest.js';
 export * from './nudges.js';

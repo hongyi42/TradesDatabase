@@ -183,10 +183,10 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 **7. Where the deep detail lives**
 
-- L4299 · Evals:
-- L4306 · Runbooks:
-- L4311 · Decision history with citations:
-- L4315 · This file
+- L4334 · Evals:
+- L4341 · Runbooks:
+- L4346 · Decision history with citations:
+- L4350 · This file
 
 <!-- INDEX:END -->
 
@@ -4281,12 +4281,47 @@ mode routing everything through one aggregator introduces.
 today IS Friday, 4× "two weeks from this Monday" (+7 vs +14). **49/49 on every unambiguous
 template**, month-end / year-end / leap-adjacent included.
 
-So the tool is not compensating for weak arithmetic — it **imposes a convention on phrasing that has
-no single right answer**. Consequences: the prompt's *"You are UNRELIABLE at date arithmetic"* is
-measurably false and condition D proves it unnecessary; and **a better model will never make this
-tool removable**, because the ambiguity is in the language. Anyone who re-measures a future model,
-finds clean arithmetic and deletes the tool starts booking people for the wrong Monday — silently.
-Keep the tool, delete the scaffolding around it.
+So the tool is not compensating for weak arithmetic. The prompt's *"You are UNRELIABLE at date
+arithmetic"* is measurably false, and **49/49 on unambiguous templates is the finding that stands.**
+
+**CORRECTED 2026-08-30 — the rest of this entry was wrong, and in the opposite direction.** It said
+the tool "imposes a convention on phrasing that has no single right answer" and warned that deleting
+it "starts booking people for the wrong Monday." Both claims fail on inspection of the corpus:
+
+**1. The corpus's `next <weekday>` truth is indefensible on six of its seven anchors.** The rule is
+unconditional — `truth = comingOccurrence + 7` (`scripts/eval-date-reliability.mjs:61`), whatever
+today is:
+
+| today | corpus says "next Monday" is | days out |
+|---|---|---|
+| Wednesday | 2026-07-27 | **12** |
+| Friday | 2026-07-27 | **10** |
+| Sunday | 2026-07-27 | **8** |
+| Thursday | 2027-01-11 | **11** |
+| Monday | 2026-11-09 | 7 ✓ |
+
+Said on a Wednesday, "next Monday" does not mean twelve days out; it means the Monday five days
+away. Only the today-is-Monday anchor is defensible. **GLM was right on those cases and the corpus
+marked it wrong.** Of the 17 "misses", the `next <weekday>` class is corpus error; the "this Friday
+when today IS Friday" and "two weeks from this Monday" classes remain genuine ambiguity.
+
+**2. Condition D's 100% is circular.** The eval's ground truth and the eval's tool are the same
+expression — `addDays(comingOcc(r, wd), 7)` at `:61` versus `addDays(comingOcc(refDate, a.weekday),
+w * 7)` at `:106`. D cannot score below 100% as long as the model calls the tool with
+`weeksAhead: 1`. It measured *"did the model call the tool"*, never *"was the answer right"*. The
+tool agreeing with itself was recorded as the tool being correct.
+
+**3. Production is probably fine, and the eval scored a contract production does not use.** The real
+`resolve_date` (`src/mcp/server.ts:372-375`) carries a clause the trimmed eval copy dropped
+entirely: *"'next <weekday>' is genuinely ambiguous… resolve BOTH weeksAhead 0 and 1… ask which they
+mean before booking or moving anything."* That is the correct handling, and it covers exactly the
+class the eval called a model failure.
+
+**What to do with this:** keep the tool (the ambiguity clause is the reason, not the arithmetic), fix
+the corpus before quoting any `next <weekday>` number again, and never read a condition-D score as
+evidence about correctness while truth and tool share an implementation. **The planner is
+unaffected** — it never parses a phrase like this; it copies pre-rendered labels
+(see §"date rail proves copying").
 
 **TWO HARNESS TRAPS that manufacture false model verdicts**, both now fixed in the script: an
 unpaced pool loses ~95% of calls to the rate cap and prints `0.0%`; and `max_tokens: 300` with

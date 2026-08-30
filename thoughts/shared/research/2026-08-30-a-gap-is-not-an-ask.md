@@ -355,3 +355,33 @@ rank would need somewhere to live, and no column on `nudges` or `review_items` h
   discipline but nothing in the code names the relationship.
 - Whether `job_cost_gap`'s ask-once-per-job-forever is acceptable once observation is separable — it
   is recorded as an accepted limitation of the *ask*, not of noticing.
+
+## Addendum — 2026-08-31: a user direction reshapes the decision points
+
+Recorded the day after the survey; everything above is unchanged and still accurate at `a60af27`.
+The direction is recorded in full at `docs/engineering-memory.md` §6a entry 4. In one line: **the
+record grows without bound and is planner-kept** — dismiss stops the detector re-reporting a
+subject, recover un-dismisses it when stakes rise, detectors stay ours (they ARE the upweighting —
+the planner's eyes), and the detector must not be the only way a gap opens: the planner may read
+L1/L2 and open its own observation. A capability, not a doctrine push.
+
+What that does to each decision point:
+
+- **(a) own record vs column** — still formally open, but the direction adds an argument the
+  survey could not: a planner-opened observation must pass the dispatch gate ("nothing
+  irreversible or externally visible"), which an internal, reversible record passes cleanly and a
+  half-filled ask row does not.
+- **(b) deadline on an un-asked observation** — reframed. An observation the planner keeps carries
+  no delivery/answer clock; the open question is now what replaces the "every gap eventually
+  reaches a human" guarantee, not whether the ask clocks apply.
+- **(c) `uq_nudges_subject_ever`** — answered by the direction: "surfaced once" becomes the
+  planner's revisable dismissal rather than a permanent code decision made at first sight. The
+  store survives; its owner changes.
+- **(d) the decline-verb draft** — its symptom dissolves with the structure: an un-askable
+  observation simply stays un-asked. Formal supersession waits for build 4's plan.
+- **(e) eval seeding** — unchanged; still an open cost.
+- **(f) rank/score on the observation** — answered by the direction: the weighting IS the
+  detectors' existence and aim, not a rank column. No score lives anywhere.
+- **The cap's silent drop** (area 2) — reclassified from fact-to-preserve to defect-to-fix: the
+  user ruled the record unbounded. The 67/67 fire rate must not size anything — it is the pilot's
+  seeded schedule, where nobody reports (the never-size-from-the-pilot rule).

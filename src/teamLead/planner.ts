@@ -7,6 +7,7 @@ import {
   listNudgesByStatus,
   listTenantIdsWithTelegramBindings,
   latestSuccessfulPlannerRunAt,
+  listJobNoteMeta,
   upsertPlannerRun,
   markNudgeOutcome,
   markNudgeGroupQueued,
@@ -25,6 +26,7 @@ import { runToolLoop, ToolLoopLimitError, type ToolLoopLimit } from '../model/to
 import type { ForcedToolSpec } from '../model/forcedTool.js';
 import { NUDGE_KIND_SPECS, specFor, type NudgeKindSpec } from '../jobs/nudgeKinds.js';
 import { renderMemoryIndex } from './memory.js';
+import { noteLine } from './jobNotes.js';
 // A plain const, read only inside functions — never at module-evaluation time.
 // watchers.ts and nudgeKinds.ts are a documented import cycle; this module sits
 // outside it, so there is no temporal-dead-zone hazard here.
@@ -376,6 +378,9 @@ export interface PlannerDeps {
   memoryIndex?: typeof renderMemoryIndex;
   lastRunAt?: typeof latestSuccessfulPlannerRunAt;
   plannerRun?: typeof upsertPlannerRun;
+  // Which of this tick's jobs already carry a notepad. Metadata only — the
+  // content is pulled with read_job_note.
+  jobNotes?: typeof listJobNoteMeta;
   getTenant?: typeof getTenant;
   // The firm's own approximate hours — cadence only. Injected like every other
   // collaborator so a unit test never touches the database.
@@ -732,6 +737,11 @@ export function buildGapView(
   history: NudgeDecision[] = [],
   money: MoneyEvent[] = [],
   tz: string = 'UTC',
+  // When the planner last wrote a note on THIS gap's job, or null when it never
+  // has. Defaulted because the eval renderers and most tests call with fewer
+  // arguments — and because "no note" is the honest reading of a caller that
+  // does not know.
+  noteWrittenAt: string | null = null,
 ): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
@@ -864,6 +874,12 @@ export function buildGapView(
   }
   const hist = historyLine(history, nowMs, tz);
   if (hist) lines.push(hist);
+  // The job's own notepad, ANNOUNCED not inlined — the same doctrine historyLine
+  // states: push the keys and the existence, pull the content. Null when there
+  // is no note, so a firm that has never written one pays nothing and is not
+  // nudged into starting.
+  const note = noteLine(noteWrittenAt, nowMs);
+  if (note) lines.push(note);
   // SHOWN WHETHER OR NOT ANYONE WAS ASKED (plan 2026-08-29 Phase 3). This block
   // used to be skipped entirely for a never-asked gap, printing "nothing was
   // asked yet, so there is none" — true of the ASK, and badly misleading about
@@ -1995,6 +2011,19 @@ export async function runPlanner(
         open.map((n) => n.id),
       );
 
+      // ONE batched read for the tick's notepads, on the jobIds already
+      // derived above — the same discipline as the evidence, ledger and money
+      // reads. METADATA ONLY: this decides whether each gap block carries the
+      // "you have a note on this job" line, and the content is pulled with
+      // read_job_note. A failure here must never cost the tick, so it degrades
+      // to "no notes" exactly as the memory read degrades to no index.
+      let noteMeta = new Map<string, string>();
+      try {
+        noteMeta = await (deps.jobNotes ?? listJobNoteMeta)(tenantId, jobIds);
+      } catch (err) {
+        console.error(`[planner] tenant ${tenantId}: job-note read failed — running without`, err);
+      }
+
       const gapsPerJob = new Map<string, number>();
       for (const n of open) {
         const j = ctxStr(n, 'jobId');
@@ -2013,6 +2042,7 @@ export async function runPlanner(
             historyByNudge.get(n.id) ?? [],
             money,
             tz,
+            (j && noteMeta.get(j)) || null,
           ),
         );
       }

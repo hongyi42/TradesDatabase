@@ -267,6 +267,66 @@ describe('runTick — production wiring, stubbed model', () => {
   });
 });
 
+describe('the sim clock owns job-note stamps', () => {
+  test('a note written during a tick is stamped at SIM now, not the wall clock', async () => {
+    // write_job_note goes through MCP dispatch, which holds no nowIso, so it
+    // stamps written_at from the NODE clock. Unrewritten, the next tick renders
+    // "last written 8h ago" one tick after the note was written — or a future
+    // stamp on a run starting before 10:00 firm-local. Nothing else catches it:
+    // the fix-up is invisible in every prompt the tick itself produces.
+    const t = await createTenant(`Eval JobNoteClock ${Date.now()}`);
+    await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
+    const t0 = simStartIso(10);
+    const t0Ms = Date.parse(t0);
+    const seeded = await seedScenario(
+      t.id,
+      {
+        customer: { name: 'Clock Customer' },
+        job: { title: 'Clock job', status: 'in_progress' },
+        technician: { ref: 'clock-tech', name: 'Dee Marsh' },
+        visit: { startsAt: '-6h', endsAt: '-5h' },
+        nudges: [
+          {
+            key: 'gap',
+            kind: 'overdue_visit_gap',
+            status: 'asked',
+            createdAt: '-4h',
+            askedAt: '-3h',
+            question: 'How did it go?',
+          },
+        ],
+      },
+      t0Ms,
+    );
+    // The planner writes a note through the REAL tool, mid-tick.
+    await runTick(t.id, t0, {
+      runLoop: (async (_req: unknown, _tools: unknown, execute: never) => {
+        const run = execute as unknown as (n: string, a: Record<string, unknown>) => Promise<void>;
+        await run('write_job_note', { jobId: seeded.jobId, content: 'written mid-tick' });
+        await run('submit_plan', { decisions: [] });
+        return { text: '', turns: 1, calls: [] };
+      }) as never,
+    });
+    const { rows } = await pg.query(
+      'select written_at from job_notes where tenant_id = $1 and job_id = $2',
+      [t.id, seeded.jobId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(new Date(rows[0].written_at).toISOString()).toBe(t0);
+    clearSimClock();
+    // Take the NOTE with it. This file's afterAll only clears the sim clock, so
+    // a note left here leaks into every later file — and it did: an unscoped
+    // count in server.test.ts failed depending on run order.
+    //
+    // The rows, not the tenant: `technicians_tenant_id_fkey` is NO ACTION, so
+    // deleting the tenant needs the whole world torn down in FK order, and the
+    // tenant row itself leaks harmlessly (every eval test leaves one). It is
+    // the job_notes row that any other file can see.
+    await pg.query('delete from job_note_versions where tenant_id = $1', [t.id]);
+    await pg.query('delete from job_notes where tenant_id = $1', [t.id]);
+  });
+});
+
 describe('runArc — a scripted gap life (Phase 2)', () => {
   test('extend → mid-arc capture → escalate → sweep handoff → manager resolve', async () => {
     const t = await createTenant(`Eval PlannerSimArc ${Date.now()}`);

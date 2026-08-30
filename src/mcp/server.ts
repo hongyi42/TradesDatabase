@@ -9,6 +9,7 @@ import {
   validateMemoryContent,
   validateMemoryPath,
 } from '../teamLead/memory.js';
+import { validateJobNoteContent } from '../teamLead/jobNotes.js';
 import { spineNowIso } from '../evalClock.js';
 import type { JsonSchemaObject } from '../model/forcedTool.js';
 import {
@@ -197,6 +198,8 @@ import {
   deleteMemoryFile,
   readMemoryFile,
   writeMemoryFile,
+  readJobNote,
+  writeJobNote,
   type PromiseLevel,
 } from '../db/index.js';
 import { braveWebSearch } from '../web/braveSearch.js';
@@ -1806,6 +1809,46 @@ const TEAM_LEAD_TOOLS = [
         },
       },
       required: ['path'],
+    },
+  },
+  // The planner's per-job NOTEPADS (plan 2026-08-30). Addressed by the JOB, not
+  // through the memory index — see src/teamLead/jobNotes.ts for why the two
+  // stores are separate.
+  {
+    name: 'read_job_note',
+    description:
+      'Open YOUR NOTE on one job — what you worked out about this piece of work last time you ' +
+      'looked at it. A gap whose job has a note says so in its block; pass the `job id` printed ' +
+      'there. A job you have never written about comes back empty, which is an answer, not a ' +
+      'failure.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: "A job id, copied exactly from a gap's `job id`." },
+      },
+      required: ['jobId'],
+    },
+  },
+  {
+    name: 'write_job_note',
+    description:
+      'Save YOUR NOTE on one job, replacing whatever it said before. This is for what you ' +
+      'understand about ONE piece of work — who answers, what has already been chased, what you ' +
+      'are waiting on — as opposed to your MEMORY.md notes, which are about the firm as a whole. ' +
+      'Write what you would want to read the next time this job needs a decision. ' +
+      'A note cannot be deleted, only replaced, and the previous ten versions are kept — so ' +
+      'rewriting costs nothing, but there is no way to blank one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: "A job id, copied exactly from a gap's `job id`." },
+        content: {
+          type: 'string',
+          description:
+            'The whole note — this REPLACES what was there, it does not append. Plain prose.',
+        },
+      },
+      required: ['jobId', 'content'],
     },
   },
 ];
@@ -5556,6 +5599,63 @@ async function dispatch(
     // TEAM_LEAD_ONLY_TOOL_NAMES above like recall_decisions, so these dispatch
     // for the `spine:` namespace and nothing else — memory is FIRM-SCOPED and
     // the firm is `tenantId` from the verified HMAC identity, never an argument.
+    // The planner's per-job notepads (plan 2026-08-30). Gated by
+    // TEAM_LEAD_ONLY_TOOL_NAMES like the memory verbs, so they dispatch for the
+    // `spine:` namespace and nothing else.
+    //
+    // BOTH RESOLVE THE JOB AND CHECK ITS TENANT FIRST. The job_id foreign key
+    // proves a job EXISTS; it never proves it belongs to the caller's firm, and
+    // getJob takes only an id. Without this a note could be written against
+    // another firm's job — keyed to the caller so it could not leak, but still
+    // a row about work they do not own. Reads as NOT FOUND rather than as an
+    // error, the get_job posture: a distinct error would confirm the id exists.
+    case 'read_job_note':
+    case 'write_job_note': {
+      const jobId = str('jobId');
+      if (!jobId) throw new Error('jobId is required (copy it from the gap\'s `job id` line)');
+      const job = await getJob(jobId);
+      if (!job || job.tenant_id !== tenantId) {
+        return {
+          status: 'ok',
+          jobId,
+          exists: false,
+          note: 'No such job on this firm — check the id against the gap you are looking at.',
+        };
+      }
+      if (name === 'read_job_note') {
+        const row = await readJobNote(tenantId, jobId);
+        if (!row) {
+          // Absence said in words: an empty content field reads as a failed
+          // lookup and the model burns a turn retrying it (recall_decisions).
+          return {
+            status: 'ok',
+            jobId,
+            exists: false,
+            note: 'You have not written a note on this job yet.',
+          };
+        }
+        return {
+          status: 'ok',
+          jobId,
+          exists: true,
+          writtenAt: row.written_at,
+          content: row.content,
+        };
+      }
+      // The size/emptiness rail. Empty is REFUSED rather than treated as a
+      // delete — the deliberate divergence from write_memory, and what keeps
+      // this verb strictly non-destructive.
+      const checked = validateJobNoteContent(args.content);
+      if ('refused' in checked) throw new Error(checked.refused);
+      const saved = await writeJobNote(tenantId, jobId, checked.content);
+      return {
+        status: 'ok',
+        jobId,
+        action: 'saved',
+        chars: checked.content.length,
+        writtenAt: saved.written_at,
+      };
+    }
     case 'read_memory': {
       const checked = validateMemoryPath(str('path'));
       if ('refused' in checked) throw new Error(checked.refused);

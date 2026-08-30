@@ -178,7 +178,15 @@ async function truncateSpine(hasScheduling) {
     // would put a previous world's conclusions into the fresh firm's very first
     // prompt, with a bigger blast radius than a lesson ever had (free text, not
     // a 300-char rule).
-    for (const t of ['planner_memory', 'planner_memory_versions', 'planner_runs']) {
+    for (const t of [
+      'planner_memory',
+      'planner_memory_versions',
+      'planner_runs',
+      // The planner's per-job notepads (plan 2026-08-30). These DO cascade from
+      // jobs, unlike the three above — named anyway (eng-memory §1).
+      'job_notes',
+      'job_note_versions',
+    ]) {
       const probe = await client.query(
         `select 1 from information_schema.tables
           where table_schema = 'public' and table_name = $1`,

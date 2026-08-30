@@ -183,10 +183,10 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 **7. Where the deep detail lives**
 
-- L4275 · Evals:
-- L4282 · Runbooks:
-- L4287 · Decision history with citations:
-- L4291 · This file
+- L4299 · Evals:
+- L4306 · Runbooks:
+- L4311 · Decision history with citations:
+- L4315 · This file
 
 <!-- INDEX:END -->
 
@@ -3543,8 +3543,8 @@ when it fills — the answer is that the planner's ticks are **not one task**: t
 technician replies, a gap closes, evidence lands. A persisted transcript carries forward assertions
 that were true at 17:30 and false at 18:00, and compaction compresses the stale facts along with the
 fresh ones. (Two mechanical problems too: Render's FS is ephemeral so the transcript would live in
-the DB, and OpenRouter stickiness dies after ~10 min against a 30-min cadence, so it buys no cache
-discount either — see [[openrouter-caching-vs-cadence]].)
+the DB, and cross-tick caching is intermittent at a 30-min cadence — measured 2026-08-30, §4's
+OpenRouter entry — so it cannot be relied on to make a growing transcript cheap either.)
 
 **Reconcile-first is the answer to that, and it is the same relationship L3 already has to L1/L2:**
 the spine is authoritative, memory is an interpretation layer over it, and **on any conflict the
@@ -4214,6 +4214,30 @@ it). Caching needs no key here.
 **CAUTION reading a first call:** a cold sticky anchor always reports `cached_tokens: 0`. An
 instrumented probe showed 32/5892 and read as "caching is broken"; three controlled repeats showed
 99%. Never judge caching off call one.
+
+**CROSS-TICK CACHING IS INTERMITTENT — measured, 2026-08-30, and it corrects the assumption above.**
+The ~10-min sticky window implies a 30-min cadence gets no cross-tick reuse. Over the planner's first
+17 GLM 5.3 ticks it got plenty, and then none:
+
+| window | turn-1 input | cached | ticks |
+|---|---|---|---|
+| 17:31 (first call ever) | 6,529 fresh | 0 | 1 |
+| 18:00 – 22:00 | 451 fresh | **6,080 (93%)** | 10 |
+| 22:30 – 01:30 | 6,531 fresh | **0** | 7 |
+
+Identical prompt, identical total (451 + 6,080 = 6,531) — only the hit changed. Plan for neither
+"reliable" nor "absent". WITHIN a tick it is flawless: every turn 2 of all 17 ticks cached exactly
+6,528.
+
+**THE CACHED PREFIX IS THE SYSTEM PROMPT + TOOL SCHEMAS (6,080 tokens).** The user message (~451
+tokens for one gap) is the variable tail — so **prompt ORDER decides what can cache.** Anything
+appended AFTER the gap blocks can never join a cross-tick hit, because the gaps change every tick.
+`buildPlannerUserMessage` appends the lessons block last, which was free while it was always empty
+and is not free for anything real. Read this before deciding where build 3's memory index goes.
+
+**Measured cost:** a warm 2-turn tick is **0.74¢**, a cold one **1.6¢** — 18–38¢/day per firm at the
+pilot's ~24 planned ticks. Also settles a tokenisation question: the repo's 4-chars/token proxy
+over-estimated this prompt by ~6% (6,452 estimated vs 6,080 measured for system + schemas).
 
 **`reasoning_effort: 'none'` IS GONE FROM THE TYPE.** GLM 5.3 rejects it —
 `400 "Reasoning is mandatory for this endpoint and cannot be disabled."` `minimal`, `low` and

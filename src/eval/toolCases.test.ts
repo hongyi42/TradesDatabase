@@ -63,7 +63,14 @@ describe('tool cases — the corpus covers the surface', () => {
     const teamLead = teamLeadToolNames();
     // Pinned by NAME, not by count: adding a team-lead tool must be a decision
     // somebody made on purpose, because the same array feeds the dispatch gate.
-    expect(teamLead).toEqual(['spine_read', 'recall_decisions', 'read_memory', 'write_memory']);
+    expect(teamLead).toEqual([
+      'spine_read',
+      'recall_decisions',
+      'read_memory',
+      'write_memory',
+      'read_job_note',
+      'write_job_note',
+    ]);
     // A name in both lists would mean a tool the eval must cover AND a tool no
     // badge can call — a contradiction, and in practice the sign that spine_read
     // drifted into TOOLS/ADMIN_TOOLS.

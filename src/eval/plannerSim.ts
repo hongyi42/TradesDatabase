@@ -430,6 +430,18 @@ export async function runTick(
     .eq('tenant_id', tenantId);
   if (priorItemErr) throw new Error(`pre-tick item snapshot failed: ${priorItemErr.message}`);
   const priorItemStamps = new Map((priorItemRows ?? []).map((r) => [r.id, r.resolved_at]));
+  // job_notes too, and it is NOT optional: write_job_note stamps written_at
+  // from the NODE clock (it goes through MCP dispatch, which holds no nowIso).
+  // Left alone, a note written during this tick renders on the NEXT tick as
+  // "last written 8h ago" — or, on a run that starts before 10:00 firm-local,
+  // as a future stamp the line then refuses to age at all. Either way the eval
+  // would be measuring a line it had corrupted itself.
+  const { data: priorNoteRows, error: priorNoteErr } = await sb
+    .from('job_notes')
+    .select('job_id, written_at')
+    .eq('tenant_id', tenantId);
+  if (priorNoteErr) throw new Error(`pre-tick job-note snapshot failed: ${priorNoteErr.message}`);
+  const priorNoteStamps = new Map((priorNoteRows ?? []).map((r) => [r.job_id, r.written_at]));
 
   const listTenants = async (): Promise<string[]> => [tenantId];
   const watchers = await runWatchers(
@@ -515,6 +527,26 @@ export async function runTick(
       );
     if (error) throw new Error(`decided_at fix-up failed: ${error.message}`);
     for (const d of decisions) d.decided_at = nowIso;
+  }
+
+  // The same fix-up for any note this tick wrote. A VALUE diff, not an id diff:
+  // job_notes is keyed (tenant_id, job_id) and a rewrite updates in place, so a
+  // note the planner revised carries the same key and only its stamp moved.
+  const { data: notesAfter, error: noteErr } = await sb
+    .from('job_notes')
+    .select('job_id, written_at')
+    .eq('tenant_id', tenantId);
+  if (noteErr) throw new Error(`tick job-note read-back failed: ${noteErr.message}`);
+  const touchedJobs = (notesAfter ?? [])
+    .filter((r) => priorNoteStamps.get(r.job_id) !== r.written_at)
+    .map((r) => r.job_id);
+  if (touchedJobs.length > 0) {
+    const { error } = await sb
+      .from('job_notes')
+      .update({ written_at: nowIso })
+      .eq('tenant_id', tenantId)
+      .in('job_id', touchedJobs);
+    if (error) throw new Error(`job-note written_at fix-up failed: ${error.message}`);
   }
 
   const { data: after, error: afterErr } = await sb

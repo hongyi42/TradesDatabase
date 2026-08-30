@@ -32,10 +32,11 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 192 documents · 188 live · 4 superseded.
+Regenerate with `npm run decisions:index`. 193 documents · 188 live · 5 superseded.
 
 ## Superseded — do not build on these
 
+- `2026-08-26` ~~[2026-08-26-the-decline-verb](shared/plans/2026-08-26-the-decline-verb.md)~~ → **[2026-08-31-a-gap-is-not-an-ask](shared/plans/2026-08-31-a-gap-is-not-an-ask.md)**
 - `2026-08-22` ~~[2026-08-22-brain-memory-foundations](shared/research/2026-08-22-brain-memory-foundations.md)~~ → **[2026-08-23-memory-architecture-substrate](shared/research/2026-08-23-memory-architecture-substrate.md)**
 - `2026-08-04` ~~[2026-08-04-query-spine-design](shared/plans/2026-08-04-query-spine-design.md)~~ → **[2026-08-23-the-brain-can-look](shared/plans/2026-08-23-the-brain-can-look.md)**
 - `2026-07-04` ~~[2026-07-04-feature-B-outbound-composio-actions](shared/plans/2026-07-04-feature-B-outbound-composio-actions.md)~~ → **[2026-07-04-feature-B-outbound-composio-sessions](shared/plans/2026-07-04-feature-B-outbound-composio-sessions.md)**
@@ -43,6 +44,7 @@ Regenerate with `npm run decisions:index`. 192 documents · 188 live · 4 supers
 
 ## Live
 
+- `2026-08-31` `plan` [2026-08-31-a-gap-is-not-an-ask](shared/plans/2026-08-31-a-gap-is-not-an-ask.md) `describes 1 deleted file` · _draft_ — Build 4 — a gap is not an ask: detection writes an observation the planner keeps; asking is a decision, never…
 - `2026-08-30` `plan` [2026-08-30-job-notepads](shared/plans/2026-08-30-job-notepads.md) — Per-job notepads — a place the planner writes what it understands about one job
 - `2026-08-30` `plan` [2026-08-30-retire-gap-summaries](shared/plans/2026-08-30-retire-gap-summaries.md) `describes 2 deleted files` — Retire gap_summaries — the store whose only reader died with the Reflector
 - `2026-08-30` `plan` [2026-08-30-the-planners-memory](shared/plans/2026-08-30-the-planners-memory.md) `describes 3 deleted files` — Build 3 — the planner writes its own memory, reconciles it against the spine, and the lesson machinery retires
@@ -59,7 +61,6 @@ Regenerate with `npm run decisions:index`. 192 documents · 188 live · 4 supers
 - `2026-08-28` `research` [2026-08-28-the-harness-audit](shared/research/2026-08-28-the-harness-audit.md) `not landed` `describes 2 deleted files` — The planner's harness — every constraint code imposes on the planner's decision space, where each came from,…
 - `2026-08-26` `plan` [2026-08-26-check-the-bill](shared/plans/2026-08-26-check-the-bill.md) `describes 1 deleted file` · _draft_ — Check our derived model spend against Anthropic's own usage and billing records
 - `2026-08-26` `plan` [2026-08-26-seat-capacity-and-overflow-safety](shared/plans/2026-08-26-seat-capacity-and-overflow-safety.md) · _proposed_ — Define the production box recipe and capacity-aware seat provisioning, from measured constants rather than pi…
-- `2026-08-26` `plan` [2026-08-26-the-decline-verb](shared/plans/2026-08-26-the-decline-verb.md) `describes 1 deleted file` `drift 18` · _draft_ — Give the planner a seventh verb — `decline`: don't ask this person, hand it to a manager now
 - `2026-08-26` `plan` [2026-08-26-the-tick-leaves-a-trace](shared/plans/2026-08-26-the-tick-leaves-a-trace.md) `describes 1 deleted file` — Give every lifecycle tick a durable record, name every firm it considered, and label which lane spent the mon…
 - `2026-08-26` `research` [2026-08-26-the-decline-verb](shared/research/2026-08-26-the-decline-verb.md) `not landed` `drift 17` — The decline verb — how the planner would say "do not ask the technician this, give it to a person" on a gap t…
 - `2026-08-25` `plan` [2026-08-25-the-ask-shape](shared/plans/2026-08-25-the-ask-shape.md) `drift 17` — the ask shape — one message may cover several gaps, the answer keeps its link, and the seat agent can follow…

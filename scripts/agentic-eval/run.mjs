@@ -133,6 +133,11 @@ if (!hasFlag('yes')) {
 const RESET_TABLES = [
   'nudge_decisions',
   'nudges',
+  // The nudges trap exactly (eng-memory §1): registered BY NAME. Today the
+  // technicians cascade happens to reach observations, but that FK is
+  // advisory — dropped, leftover 'Eval %' rows would crash the tenant delete
+  // below on the non-cascading tenants FK (phase-5 review F1).
+  'observations',
   // The planner's memory (build 3): tenants-only FKs, and the versions table
   // hangs off nothing, so no cascade reaches any of them.
   'planner_memory',
@@ -222,6 +227,11 @@ for (const s of scenarios) {
   // the run's price source, summed since startedAt below.
   await sql.query(`delete from review_items where tenant_id = $1`, [tenant.id]);
   await sql.query(`delete from nudges where tenant_id = $1`, [tenant.id]);
+  // Observations (plan 2026-08-31): tenant-scoped like nudges, and the planner
+  // walks the tenant — without this, scenario N's open observations join
+  // scenario N+1's prompt and their pre-ask decision rows never cascade away
+  // (plan review F5).
+  await sql.query(`delete from observations where tenant_id = $1`, [tenant.id]);
   // money_events is APPEND-ONLY (ledger trigger; caught by the corpus test) —
   // rows persist across scenarios, harmlessly: money reads are JOB-scoped and
   // every scenario seeds fresh jobs. Run-start TRUNCATE still clears them.

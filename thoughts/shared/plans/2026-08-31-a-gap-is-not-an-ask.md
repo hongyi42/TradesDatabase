@@ -304,10 +304,10 @@ The mint sites write observations; cap, reachability check, mint-time manager fa
   (`:41`) with `'noticed'` so arc checks treat an unsent observation as open.
 
 ### Automated verification
-- [ ] gates; full `npm test` green twice (the flake discipline); a vitest smoke that SEEDS a
+- [x] gates; full `npm test` green twice (the flake discipline); a vitest smoke that SEEDS a
       pending-seed scenario world and runs one `runTick` through the injected eval caller,
       asserting no `harnessError` — `--dry` proves nothing, it exits before seeding
       (`run.mjs:103-115`, review F12)
-- [ ] `npm run decisions:index` regenerated and committed with the plan
+- [x] `npm run decisions:index` regenerated and committed with the plan
 ---
 *No pause. Build gates only — production deploy stays frozen until the whole order is evaluated.*

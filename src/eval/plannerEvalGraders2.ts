@@ -38,7 +38,9 @@ export interface GradableRow {
   harnessError?: string;
 }
 
-const OPEN = new Set(['pending', 'queued', 'asked']);
+// 'noticed' joined with the split (plan 2026-08-31): an unsent observation is
+// an OPEN gap to every arc check; 'dismissed' is terminal.
+const OPEN = new Set(['pending', 'queued', 'asked', 'noticed']);
 
 export function gradeScenario(row: GradableRow, t0Ms: number): GraderFinding[] {
   const findings: GraderFinding[] = [];

@@ -183,6 +183,7 @@ describe('corpus seeds cleanly (loop, no model)', () => {
       // Per-scenario isolation inside ONE tenant, mirroring the driver.
       await pg.query(`delete from review_items where tenant_id = $1`, [tenantId]);
       await pg.query(`delete from nudges where tenant_id = $1`, [tenantId]);
+      await pg.query(`delete from observations where tenant_id = $1`, [tenantId]); // review F5
       // money_events is APPEND-ONLY (ledger trigger) — rows stay; harmless,
       // every money read is job-scoped and each scenario seeds fresh jobs.
       // Build 3: memory and the run marker both reach the next scenario's
@@ -193,12 +194,32 @@ describe('corpus seeds cleanly (loop, no model)', () => {
       await pg.query(`delete from job_notes where tenant_id = $1`, [tenantId]);
       await pg.query(`delete from job_note_versions where tenant_id = $1`, [tenantId]);
       const seeded = await seedScenario(tenantId, s.world, t0Ms);
+      // BY STAGE since the split (plan 2026-08-31): a pending spec seeds an
+      // OBSERVATION (open, no nudge row); queued/asked specs seed a nudge PLUS
+      // an 'asked' observation under the same id.
+      const pendingSpecs = s.world.nudges.filter((n) => n.status === 'pending');
+      const askShaped = s.world.nudges.filter((n) => n.status !== 'pending');
       const { rows } = await pg.query(
         `select id, kind, subject_ref, status from nudges where tenant_id = $1`,
         [tenantId],
       );
-      expect(rows.length, s.id).toBe(s.world.nudges.length);
+      expect(rows.length, s.id).toBe(askShaped.length);
+      const { rows: obsRows } = await pg.query(
+        `select id, kind, subject_ref, status from observations where tenant_id = $1`,
+        [tenantId],
+      );
+      expect(obsRows.length, s.id).toBe(s.world.nudges.length);
+      expect(
+        obsRows.filter((r) => r.status === 'open').length,
+        `${s.id}: open observations = pending specs`,
+      ).toBe(pendingSpecs.length);
+      // Same-id coherence: every ask-shaped row's id exists as an 'asked'
+      // observation — one gap, one id, two stages.
+      const obsById = new Map(obsRows.map((r) => [r.id, r.status]));
       for (const row of rows) {
+        expect(obsById.get(row.id), `${s.id}: asked observation twin`).toBe('asked');
+      }
+      for (const row of [...rows, ...obsRows]) {
         const pin = row.kind === 'overdue_visit_gap' ? seeded.assignmentId : seeded.jobId;
         expect(row.subject_ref, `${s.id}: subject_ref pinned by kind`).toBe(pin);
       }

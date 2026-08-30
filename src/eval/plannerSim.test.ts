@@ -433,3 +433,94 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
     ).rejects.toThrow(/timeline regressed/);
   });
 });
+
+
+// ── plan 2026-08-31: the pre-ask world through one production-faithful tick ──
+describe('runTick over an observation-seeded world (plan 2026-08-31)', () => {
+  test('a pending-seed world becomes an observation; a stub-driven send creates the ask, same id', async () => {
+    const t = await createTenant(`Eval PlannerSimObs ${Date.now()}`);
+    await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
+    const t0 = simStartIso(10);
+    const t0Ms = Date.parse(t0);
+    const world: ScenarioWorld = {
+      customer: { name: 'Obs Smoke Co' },
+      job: { title: 'Water heater flush', status: 'in_progress' },
+      technician: { ref: `obs-smoke-${Date.now()}`, name: 'Sam Obs' },
+      visit: { startsAt: '-6h', endsAt: '-4h' },
+      nudges: [{ key: 'gap', kind: 'overdue_visit_gap', status: 'pending', createdAt: '-2h' }],
+    };
+    const seeded = await seedScenario(t.id, world, t0Ms);
+    const gapId = seeded.nudgeIds.gap;
+
+    // The seed really is an observation, not a relic nudge.
+    const pre = await pg.query(`select status from observations where id = $1`, [gapId]);
+    expect(pre.rows[0]?.status).toBe('open');
+    const preNudge = await pg.query(`select 1 from nudges where id = $1`, [gapId]);
+    expect(preNudge.rows).toHaveLength(0);
+
+    const stubLoop: typeof runToolLoop = async (req, _tools, execute) => {
+      expect(req.user).toContain(`gap ${gapId}`);
+      expect(req.user).toContain('state: noticed');
+      const reply = (await execute('submit_plan', {
+        decisions: [
+          {
+            nudgeId: gapId,
+            action: 'send',
+            question: 'How did the water heater flush go?',
+            confidence: 'high',
+            reason: 'stub: worth asking now',
+          },
+        ],
+      })) as { accepted: number };
+      expect(reply.accepted).toBe(1);
+      return {
+        text: '',
+        turns: 1,
+        calls: [{ turn: 1, name: 'submit_plan', args: {}, ok: true, result: JSON.stringify(reply) }],
+      };
+    };
+
+    const tick = await runTick(t.id, t0, { runLoop: stubLoop });
+    // The ask exists, born queued, SAME id — and the readback presents one
+    // id-space: the send decision carries the gap id in nudge_id.
+    const sent = tick.nudgesAfter.find((n) => n.id === gapId);
+    expect(sent?.status).toBe('queued');
+    const sendRow = tick.decisions.find((d) => d.action === 'send');
+    expect(sendRow?.nudge_id).toBe(gapId);
+    expect(sendRow?.outcome).toBe('applied');
+    // The observation is stamped asked and no pseudo-row shadows the nudge.
+    const post = await pg.query(`select status from observations where id = $1`, [gapId]);
+    expect(post.rows[0]?.status).toBe('asked');
+    expect(tick.nudgesAfter.filter((n) => n.id === gapId)).toHaveLength(1);
+  }, 60_000);
+
+  test('a dismissed observation joins nudgesAfter as a terminal pseudo-row and stops counting as open', async () => {
+    const t = await createTenant(`Eval PlannerSimDismiss ${Date.now()}`);
+    await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
+    const t0 = simStartIso(10);
+    const t0Ms = Date.parse(t0);
+    const world: ScenarioWorld = {
+      customer: { name: 'Dismiss Smoke Co' },
+      job: { title: 'Filter swap', status: 'in_progress' },
+      technician: { ref: `dis-smoke-${Date.now()}`, name: 'Dee Obs' },
+      visit: { startsAt: '-6h', endsAt: '-4h' },
+      nudges: [{ key: 'gap', kind: 'overdue_visit_gap', status: 'pending', createdAt: '-2h' }],
+    };
+    const seeded = await seedScenario(t.id, world, t0Ms);
+    const gapId = seeded.nudgeIds.gap;
+    const stubLoop: typeof runToolLoop = async (_req, _tools, execute) => {
+      await execute('submit_plan', {
+        decisions: [
+          { nudgeId: gapId, action: 'dismiss', confidence: 'high', reason: 'stub: routine, nothing riding' },
+        ],
+      });
+      return { text: '', turns: 1, calls: [] };
+    };
+    const tick = await runTick(t.id, t0, { runLoop: stubLoop });
+    const row = tick.nudgesAfter.find((n) => n.id === gapId);
+    expect(row?.status).toBe('dismissed');
+    // The dismissal's sim-clock fix-up landed: the stamp is sim-now, not wall-now.
+    const db = await pg.query(`select dismissed_at from observations where id = $1`, [gapId]);
+    expect(new Date(db.rows[0].dismissed_at).toISOString()).toBe(t0);
+  }, 60_000);
+});

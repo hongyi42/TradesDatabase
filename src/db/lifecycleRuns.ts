@@ -1,16 +1,20 @@
 import { getClient } from './client.js';
 import type { Database, Json } from './database.types.js';
 
-// The lifecycle cron's execution record, typed. One row per TICK — the only
-// per-run surface for the heartbeat itself (reflector_runs is per-run too, but
-// per TENANT and for billing control, not observability).
+// The lifecycle cron's execution record, typed. One row per TICK — and now the
+// ONLY per-run surface anywhere. (reflector_runs was per-run too, but per
+// TENANT and for billing control rather than observability; it was dropped with
+// the Reflector in build 3, 2026-08-30.)
 //
 // Tenant-agnostic on purpose: a tick sweeps every tenant. See the migration
 // header (20260826120000_lifecycle_runs.sql) for why that is safe — it is only
 // safe because redactForRecord strips every free-text field before the insert.
 //
-// Append-only by convention, like reflector_runs and gap_summaries: there is no
-// accessor here that rewrites a run. The one mutation is the whole-row prune.
+// Append-only by convention: there is no accessor here that rewrites a run, and
+// the one mutation is the whole-row prune. The convention used to be stated by
+// analogy to reflector_runs and gap_summaries — both dropped 2026-08-30, so it
+// stands on its own reason now: this table is read to answer "was the heartbeat
+// alive at time T", and a row rewritten in place cannot answer that.
 
 export type LifecycleRun = Database['public']['Tables']['lifecycle_runs']['Row'];
 

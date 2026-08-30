@@ -1,0 +1,40 @@
+-- Retire gap_summaries (plan 2026-08-30). The ⑤ Phase-2 sweep wrote one row per
+-- CLOSED gap as "the durable unit of planner experience" — reading material for
+-- the Reflector, which distilled it into planner_lessons.
+--
+-- BUILD 3 DELETED THE REFLECTOR. Since then this table has had NO production
+-- reader at all: listRecentSummaries and countSummaries have zero callers in
+-- src/ or scripts/, and only the eval harness touched the rows. The lifecycle
+-- kept writing one per closed gap on every tick, for nobody. That is the same
+-- condition the Reflector itself was retired for.
+--
+-- WHAT IS GIVEN UP, named rather than glossed:
+--   * manager_fate — what the manager ACTUALLY did with an escalation
+--     (resolved / dismissed / still_open / none). It was the only pre-computed
+--     answer to "does escalating work at this firm", and it was trustworthy
+--     ONLY because the sweep held a summary back for up to 7 days until the
+--     review item settled. That holdback goes with this table.
+--   * working_hours_open — a STORED figure under the fixed 7-19 convention.
+--
+-- WHAT SURVIVES, and is why the loss is affordable: the underlying facts.
+-- review_items (and v_review_items, which the planner can read) still carry
+-- status, resolution and escalated_from_nudge; nudge_decisions still holds every
+-- decision, is never pruned, and is readable per JOB. Escalation outcomes stay
+-- derivable live — only the rollup goes.
+--
+-- NO `cascade`, deliberately. The four planner-metrics views (20260823230000,
+-- 20260824020000) touch only nudges, nudge_decisions, review_items,
+-- raw_captures, visits and tenants — verified. If a dependant HAS appeared
+-- since, this must fail loudly rather than quietly take it along.
+
+-- DEPLOY ORDER IS NOT FREE HERE — apply this AFTER the code, never before.
+-- The old lifecycle's step 11 reads `nudges` with a PostgREST embed,
+-- `select('*, gap_summaries!left(nudge_id)')`. With the table dropped that
+-- returns PGRST200 ("could not find a relationship"), which is NOT in
+-- MISSING_LEDGER_CODES (src/db/costs.ts: 42883, 42P01, PGRST202, PGRST205) —
+-- so `isMissingCostLedger` answers false, the step records a stepError, `ok`
+-- goes false and the cron exits 1 on EVERY tick. The step's own comment used to
+-- promise "missing table → skipped, never red"; that was never true for an
+-- embed. A permanently red heartbeat is a broken alarm, not a signal.
+
+drop table gap_summaries;

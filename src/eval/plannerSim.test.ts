@@ -268,7 +268,7 @@ describe('runTick — production wiring, stubbed model', () => {
 });
 
 describe('runArc — a scripted gap life (Phase 2)', () => {
-  test('extend → mid-arc capture → escalate → sweep handoff → manager resolve → ⑤ epilogue', async () => {
+  test('extend → mid-arc capture → escalate → sweep handoff → manager resolve', async () => {
     const t = await createTenant(`Eval PlannerSimArc ${Date.now()}`);
     await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
     const t0 = simStartIso(10);
@@ -345,17 +345,16 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
     expect(items[0].status).toBe('resolved');
     expect(new Date(items[0].resolved_at).toISOString()).toBe(atOffset(t0Ms, '+6h'));
 
-    // The ⑤ epilogue escaped the holdback (item no longer open) and reads the arc.
-    expect(arc.epilogue.summaries).toHaveLength(1);
-    const s = arc.epilogue.summaries[0];
-    expect(s.escalated).toBe(true);
-    expect(s.status).toBe('escalated');
-    expect(s.manager_fate).toBe('resolved');
-    expect(s.manager_latency_wh).not.toBeNull();
-    expect(new Date(s.closed_at).toISOString()).toBe(arc.ticks[2].nowIso);
-    const arcCounts = s.arc as Record<string, number>;
-    expect(arcCounts.extend).toBe(1);
-    expect(arcCounts.escalate).toBe(1);
+    // The ⑤ epilogue assertions stood here — they read gap_summaries rows for
+    // the arc's escalated gap, and retired with that store (plan 2026-08-30).
+    // Everything the arc proves is now ABOVE: the extend applied, the capture
+    // landed mid-arc, the sweep handed off, and the manager resolved at +6h —
+    // read here from nudges, nudge_decisions and review_items directly.
+    //
+    // Note what this test can prove that the EVAL cannot: the deterministic
+    // graders are pure over the results row and never see review_items, so the
+    // manager's verdict is asserted here and observable nowhere in a real eval
+    // run. See the note in plannerSim.ts where the epilogue stood.
   });
 
   test('a backwards timeline throws before touching the world', async () => {

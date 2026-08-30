@@ -12,7 +12,6 @@ import { checkPairing } from '../composio/pairing.js';
 import { expireOffboarding, type ExpireResult } from '../composio/offboarding.js';
 import { ensurePersonSession } from '../composio/sessions.js';
 import { runLogIngestion, type LogIngestSummary } from '../composio/logIngest.js';
-import { runGapSummaries, type SummarizeSummary } from './summarize.js';
 import { runWatchers, type WatchersSummary } from './watchers.js';
 import {
   plannerCadenceDue,
@@ -80,7 +79,6 @@ export interface LifecycleDeps {
   rollup?: typeof rollupCosts;
   runWatchers?: typeof runWatchers;
   runPlanner?: typeof runPlanner;
-  summarize?: typeof runGapSummaries;
   prune?: typeof pruneLifecycleRuns;
   // Seam so the skip branch is testable without setting a real key.
   hasModelKey?: () => boolean;
@@ -116,7 +114,6 @@ export interface LifecycleSummary {
   // question since compose retired — is not. Present only when true, so a
   // healthy tick's report is unchanged.
   ladderMute?: string;
-  gapSummaries: SummarizeSummary | { skipped: string } | { stepError: string };
   ok: boolean;
 }
 
@@ -583,28 +580,20 @@ export async function runLifecycle(
     }
   }
 
-  // 11. Gap-life summaries (⑤ Phase 2): one code-written row per closed gap —
-  // the planner's experience corpus. AFTER the planner, so a gap that closed
-  // this very tick is summarizable next tick at the latest. Ungated by mode flags:
-  // it writes history, and history is wanted whether or not the ladder is
-  // live. Missing table → skipped, never red (the braveBackfill idiom: code
-  // can deploy before its migration on a lagging environment).
-  let gapSummaries: LifecycleSummary['gapSummaries'];
-  try {
-    gapSummaries = await (deps.summarize ?? runGapSummaries)(nowIso);
-  } catch (err) {
-    gapSummaries = isMissingCostLedger(err)
-      ? { skipped: 'gap_summaries not migrated here yet' }
-      : { stepError: msg(err) };
-    if (!isMissingCostLedger(err)) ok = false;
-  }
-
+  // Steps 11 and 12 both retired, and they went for the same reason.
+  //
   // Step 12 was THE REFLECTOR (⑤ Phase 4) — the distiller that proposed
   // planner_lessons rows for a human to activate. Retired whole in build 3
-  // (plan 2026-08-30, Phase 3): the planner now writes its own memory, so
-  // nothing distils on its behalf. REFLECTOR_MODE is no longer read anywhere;
-  // delete it from the lifecycle-heart Render service too, or a live variable
-  // will point at code that does not exist.
+  // (plan 2026-08-30 "the planner's memory"): the planner now writes its own
+  // memory, so nothing distils on its behalf. REFLECTOR_MODE is no longer read
+  // anywhere; delete it from the lifecycle-heart Render service at deploy time,
+  // or a live variable will point at code that does not exist.
+  //
+  // Step 11 was THE GAP-SUMMARY SWEEP (⑤ Phase 2) — one code-written row per
+  // closed gap, written as the Reflector's reading material. With the Reflector
+  // gone it had no reader at all and kept writing every tick, so it follows
+  // (plan 2026-08-30 "retire gap_summaries", migration 20260831130000). What
+  // was given up, and where the underlying facts still are, is in that header.
 
   return {
     pairing,
@@ -617,7 +606,6 @@ export async function runLifecycle(
     watchers,
     teamLeadPlanner,
     ...(ladderMute ? { ladderMute } : {}),
-    gapSummaries,
     ok,
   };
 }

@@ -42,8 +42,6 @@ import {
   type NudgeDecision,
 } from '../db/index.js';
 import { runWatchers, type WatchersSummary } from '../jobs/watchers.js';
-import { runGapSummaries, type SummarizeSummary } from '../jobs/summarize.js';
-import { CLOSED_NUDGE_STATUSES, type GapSummary } from '../db/gapSummaries.js';
 import { runPlanner, type PlannerSummary } from '../teamLead/planner.js';
 import { runToolLoop, type ToolLoopCall } from '../model/toolLoop.js';
 import { TEAM_LEAD_TOOL_SCHEMAS, dispatchForIdentity } from '../mcp/server.js';
@@ -615,11 +613,6 @@ export interface ArcRecord {
    *  Non-zero matters to grading: an expectation on "the final tick" grades
    *  the last EXECUTED tick, and steps[] records each skip. */
   ticksSkipped: number;
-  epilogue: {
-    summarize: SummarizeSummary;
-    /** This scenario's gap_summaries rows (absent for still-open gaps). */
-    summaries: GapSummary[];
-  };
 }
 
 export async function runArc(
@@ -663,9 +656,18 @@ export async function runArc(
     switch (step.kind) {
       case 'tick': {
         // Every gap closed → remaining TICKS are skipped (nothing left to
-        // decide, no model spend), but later EVENT steps still run — a
-        // manager_resolve after closure is exactly how an escalated arc's
-        // epilogue escapes the holdback.
+        // decide, no model spend), but later EVENT steps still run — they
+        // change the world, and `steps` records each one.
+        //
+        // BE PRECISE ABOUT WHAT A POST-CLOSURE manager_resolve NOW BUYS: it
+        // writes a real review_items row, but the deterministic graders are
+        // pure functions over the results row (plannerEvalGraders2.ts:1-3) and
+        // see only decisions, toolCalls and nudgesAfter. They never read
+        // review_items. The ⑤ epilogue was the one thing that surfaced the
+        // manager's verdict into the results file at all, and it retired with
+        // gap_summaries (plan 2026-08-30) — so `resolved` vs `dismissed` is
+        // currently visible NOWHERE in eval output. It was never GRADED; it is
+        // now not even observable. Recorded rather than fixed here.
         if (allClosed) {
           ticksSkipped += 1;
           steps.push({ atIso, kind: 'tick', detail: 'skipped — all gaps closed' });
@@ -767,38 +769,18 @@ export async function runArc(
     }
   }
 
-  // The ⑤ epilogue: express the arc in the gap-summary vocabulary. The clock
-  // is the arc's final instant — the holdback and every working-hours figure
-  // are judged from there, not from the real wall clock. The lister is
-  // TENANT-SCOPED (injected via SummarizeDeps): the default scan is global
-  // with a 200-row page ordered oldest-first, so foreign debris on a shared
-  // local stack could starve this tenant's rows — and our sim clock must
-  // never be the holdback clock for another tenant's gaps (review finding).
-  setSimClock(tenantId, finalNowIso);
-  const summarize = await runGapSummaries(finalNowIso, {
-    listClosed: async () => {
-      const { data, error } = await sb
-        .from('nudges')
-        .select('*, gap_summaries!left(nudge_id)')
-        .eq('tenant_id', tenantId)
-        .in('status', [...CLOSED_NUDGE_STATUSES])
-        .is('gap_summaries', null)
-        .order('resolved_at', { ascending: true })
-        .limit(200);
-      if (error) throw new Error(`epilogue closed-nudge read failed: ${error.message}`);
-      return (data ?? []).map((row) => {
-        const n = { ...row } as Record<string, unknown>;
-        delete n.gap_summaries; // the left-embed used only as the anti-join probe
-        return n as unknown as Nudge;
-      });
-    },
-  });
-  const { data: sums, error: sumErr } = await sb
-    .from('gap_summaries')
-    .select('*')
-    .eq('tenant_id', tenantId)
-    .in('nudge_id', [...scenarioNudgeIds]);
-  if (sumErr) throw new Error(`epilogue summary read failed: ${sumErr.message}`);
+  // The ⑤ EPILOGUE stood here: it ran the gap-summary sweep at the arc's final
+  // instant and read the rows back into `epilogue` on the results row. It
+  // retired with gap_summaries (plan 2026-08-30) — the store had no production
+  // reader after build 3 deleted the Reflector.
+  //
+  // WHAT THAT DID AND DID NOT COST. The deterministic graders never touched it:
+  // `GradableRow` (plannerEvalGraders2.ts:28-38) carries only ticks with their
+  // decisions, toolCalls and nudgesAfter, so no expectation was ever graded
+  // from a summary and none is ungraded now. What IS lost is an OBSERVATION:
+  // manager_fate — whether the manager resolved or dismissed an escalation —
+  // was written into the results file here and nowhere else. Scenarios ending
+  // in a manager_resolve now produce the same output whichever way it went.
 
   return {
     seeded,
@@ -806,6 +788,5 @@ export async function runArc(
     steps,
     finalNowIso,
     ticksSkipped,
-    epilogue: { summarize, summaries: (sums ?? []) as GapSummary[] },
   };
 }

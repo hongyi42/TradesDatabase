@@ -131,7 +131,6 @@ if (!hasFlag('yes')) {
 // cron's own tenant-agnostic execution log, with no tenant FK to dangle. An eval
 // run must not erase the evidence of whether the heartbeat has been ticking.
 const RESET_TABLES = [
-  'gap_summaries',
   'nudge_decisions',
   'nudges',
   // The planner's memory (build 3): tenants-only FKs, and the versions table
@@ -256,13 +255,11 @@ for (const s of scenarios) {
     row.steps = arc.steps;
     row.ticksSkipped = arc.ticksSkipped;
     row.finalNowIso = arc.finalNowIso;
-    row.epilogue = arc.epilogue;
     const last = row.ticks[row.ticks.length - 1];
     const actions = last ? last.decisions.map((d) => d.action).join(',') : 'none';
     console.log(
       `${row.ticks.length} tick(s)${arc.ticksSkipped ? ` (+${arc.ticksSkipped} skipped)` : ''} · ` +
-        `decisions: ${actions || 'none'} · ` +
-        `summaries: ${arc.epilogue.summaries.length} · ${Date.now() - wall}ms`,
+        `decisions: ${actions || 'none'} · ${Date.now() - wall}ms`,
     );
   } catch (err) {
     harnessErrors += 1;

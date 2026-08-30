@@ -220,26 +220,10 @@ export async function flagOverdueVisitGap(input: {
 // produced nothing — and the terminal-failure doctrine needs to tell them
 // apart: closing a nudge is only safe when the manager HAS the gap, and
 // "already flagged" means they do. Only read on the null path, which is rare.
-// ⑤ Phase 2: the summarize sweep's escalation join — the review item a nudge's
-// escalation opened, matched on the detail JSONB key (there is no column; the
-// writers spread camelCase `escalatedFromNudge` into detail). Any status: the
-// sweep needs to see 'open' to HOLD BACK the summary.
-export async function findItemForNudge(
-  tenantId: string,
-  nudgeId: string,
-): Promise<ReviewItem | null> {
-  const { data, error } = await getClient()
-    .from('review_items')
-    .select()
-    .eq('tenant_id', tenantId)
-    .eq('detail->>escalatedFromNudge', nudgeId)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw new Error(`findItemForNudge failed: ${error.message}`, { cause: error });
-  return (data as ReviewItem) ?? null;
-}
-
+//
+// (This paragraph sat above `findItemForNudge` for a while and was nearly lost
+// with it when that function retired on 2026-08-30 — it documents THIS one,
+// which compose.ts and control/nudgeQueue.ts both still call.)
 export async function reviewItemExistsFor(
   tenantId: string,
   kind: ReviewKind,

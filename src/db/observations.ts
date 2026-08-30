@@ -50,19 +50,32 @@ export async function createObservation(
   throw new Error(`createObservation failed: ${error?.message ?? 'no row returned'}`);
 }
 
+// PAGED past PostgREST's silent 1000-row cap (code-review): the open set is
+// unbounded BY DESIGN (the record grows; the planner curates), so an unpaged
+// read would silently show the planner only the oldest 1000 and hide every
+// newer observation with no error anywhere. The nudgeDecisions .range() idiom.
+const PAGE = 1000;
+
 export async function listObservationsByStatus(
   tenantId: string,
   statuses: ObservationStatus[],
 ): Promise<Observation[]> {
   if (statuses.length === 0) return []; // PostgREST `in.()` with zero values errors
-  const { data, error } = await getClient()
-    .from('observations')
-    .select()
-    .eq('tenant_id', tenantId)
-    .in('status', statuses)
-    .order('noticed_at', { ascending: true });
-  if (error) throw new Error(`listObservationsByStatus failed: ${error.message}`);
-  return (data ?? []) as Observation[];
+  const out: Observation[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await getClient()
+      .from('observations')
+      .select()
+      .eq('tenant_id', tenantId)
+      .in('status', statuses)
+      .order('noticed_at', { ascending: true })
+      .order('id', { ascending: true }) // deterministic paging tiebreak
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`listObservationsByStatus failed: ${error.message}`);
+    out.push(...((data ?? []) as Observation[]));
+    if (!data || data.length < PAGE) break;
+  }
+  return out;
 }
 
 // The detector's third dedup store (the listNudgedSubjectRefs twin): which of
@@ -90,13 +103,23 @@ export async function listObservedSubjectRefs(
 // jsonb included) for every tick would grow forever. The planner needs only
 // "may this id be recovered", which is the id set (phase-3 review F3).
 export async function listDismissedObservationIds(tenantId: string): Promise<string[]> {
-  const { data, error } = await getClient()
-    .from('observations')
-    .select('id')
-    .eq('tenant_id', tenantId)
-    .eq('status', 'dismissed');
-  if (error) throw new Error(`listDismissedObservationIds failed: ${error.message}`);
-  return (data ?? []).map((r) => r.id);
+  // Paged and ORDERED (code-review): dismissed rows are permanent, so >1000 is
+  // the designed steady state — unpaged, an arbitrary subset would decide which
+  // recovers silently drop (the F4 path leaves no record row).
+  const out: string[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await getClient()
+      .from('observations')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('status', 'dismissed')
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`listDismissedObservationIds failed: ${error.message}`);
+    out.push(...(data ?? []).map((r) => r.id));
+    if (!data || data.length < PAGE) break;
+  }
+  return out;
 }
 
 // One guarded writer for every state move (the setNudgeSchedule idiom): every

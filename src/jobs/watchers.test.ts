@@ -109,6 +109,8 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     hasPushToken: () => true,
     createObservation: async () => null,
     listObserved: async () => [],
+    listOpenObservations: async () => [],
+    setObservation: async () => null,
     listNudged: async () => [],
     listNudges: async () => [],
     resolveNudge: async () => null,
@@ -843,6 +845,36 @@ describe('runWatchers — the ladder (NUDGES_MODE)', () => {
     }
     expect(observed.map((o) => o.subjectRef)).toEqual(['a1', 'a1', 'a1', 'a1']);
     expect(observed.every((o) => o.technicianId === 'tech-1')).toBe(true); // advisory, always attached
+  });
+
+  test('MOOT reaches the pre-ask stage: a cancelled visit DISMISSES its open observation with the fact', async () => {
+    // The pre-split shape exactly: `moot` closed pending nudges on the
+    // cancellation FACT before anyone could ask about a visit that never
+    // happened. Post-split that stage lives in observations (code-review).
+    const dismissed: Array<[string, Record<string, unknown>, string[]]> = [];
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listOpenObservations: async () => [
+        obsRow({ id: 'ob-moot', subject_ref: 'a-cxl', context: { jobId: 'j1' } }),
+        obsRow({ id: 'ob-live', subject_ref: 'a-live', context: { jobId: 'j2' } }),
+      ],
+      listAssignments: async () => [
+        visit({ id: 'a-cxl', job_id: 'j1', status: 'cancelled' } as Partial<PlacedAssignment>),
+        visit({ id: 'a-live', job_id: 'j2' }), // still confirmed — not moot
+      ],
+      setObservation: async (id, _t, patch, from) => {
+        dismissed.push([id, patch as Record<string, unknown>, from]);
+        return obsRow({ id, status: 'dismissed' });
+      },
+    }), 'off'); // nudgeMode gates nothing — the sweep is watcher-mode's
+    expect(summary.tenantErrors).toBe(0);
+    expect(summary.observationsMooted).toBe(1);
+    expect(dismissed).toHaveLength(1);
+    expect(dismissed[0][0]).toBe('ob-moot');
+    expect(dismissed[0][1]).toMatchObject({
+      status: 'dismissed',
+      dismissReason: 'the visit was cancelled — nothing left to ask',
+    });
+    expect(dismissed[0][2]).toEqual(['open']);
   });
 
   test('an OBSERVED visit subject is not fresh — dismissed included (the store that owns once-ever)', async () => {

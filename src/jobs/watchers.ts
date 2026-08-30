@@ -1,5 +1,7 @@
 import {
   createObservation,
+  listObservationsByStatus,
+  setObservationStatus,
   listCostGapCandidates,
   listDecisionsForNudges,
   listJobIdsWithCostEvents,
@@ -57,8 +59,9 @@ import { naiveLocalISO } from '../schedule/booking.js';
 //   - the cap meters FRESH gaps only (ever-flagged assignments are filtered
 //     out via one batched read BEFORE capping — final-review fix: without it,
 //     stale flagged-but-unfilled gaps occupy the slots and starve new gaps);
-//   - once per assignment EVER (flagOverdueVisitGap's any-status dedup stays
-//     as the belt-and-suspenders behind the pre-filter);
+//   - once per assignment EVER (uq_observations_subject_ever owns this since
+//     plan 2026-08-31; the older nudge/item stores keep pre-split history from
+//     re-surfacing);
 //   - auto-resolve: an open item whose job gained activity since the visit
 //     started — or whose visit left 'confirmed' (cancelled/completed, the
 //     "status update" the item copy promises) — is closed by the watcher, so
@@ -270,6 +273,11 @@ export interface WatcherDeps {
   // Detection-records seams (plan 2026-08-31): the mint writes observations.
   createObservation?: typeof createObservation;
   listObserved?: typeof listObservedSubjectRefs;
+  // The moot sweep over the PRE-ASK stage (code-review): open observations
+  // whose visit/job was cancelled are dismissed on the FACT, exactly as the
+  // pre-split moot closed pending nudges.
+  listOpenObservations?: typeof listObservationsByStatus;
+  setObservation?: typeof setObservationStatus;
   listNudged?: typeof listNudgedSubjectRefs;
   listNudges?: typeof listNudgesByStatus;
   resolveNudge?: typeof markNudgeOutcome;
@@ -308,6 +316,11 @@ export interface WatchersSummary {
   // Detection's whole output now: fresh findings recorded as observations,
   // uncapped (the record is unbounded — user direction 2026-08-31).
   observationsCreated: number;
+  // Open observations the sweep dismissed on a FACT (cancelled visit/job) —
+  // the pre-ask twin of nudgesResolved's moot close. Code's dismissal, not the
+  // planner's: a cancelled visit is a fact, and there is nothing left for
+  // anyone to decide about it (the 2026-08-22 division).
+  observationsMooted: number;
   // Closed by a FACT: a cancelled visit or job (`moot`). That is now the ONLY
   // thing the sweep closes on — the pre-ask carve-out went with the ask window
   // (plan 2026-08-29 Phase 3), so activity never closes a gap here, asked or
@@ -359,6 +372,8 @@ export async function runWatchers(
   const hasPushToken = deps.hasPushToken ?? (() => !!process.env.BOARD_BOT_TOKEN);
   const createObs = deps.createObservation ?? createObservation;
   const listObserved = deps.listObserved ?? listObservedSubjectRefs;
+  const listOpenObs = deps.listOpenObservations ?? listObservationsByStatus;
+  const setObsStatus = deps.setObservation ?? setObservationStatus;
   const listNudged = deps.listNudged ?? listNudgedSubjectRefs;
   const listNudges = deps.listNudges ?? listNudgesByStatus;
   const resolveNudge = deps.resolveNudge ?? markNudgeOutcome;
@@ -391,6 +406,7 @@ export async function runWatchers(
     nudgesWouldCreate: 0,
     nudgesCreated: 0,
     observationsCreated: 0,
+    observationsMooted: 0,
     nudgesResolved: 0,
     nudgesAutoClosed: 0,
     nudgesEscalated: 0,
@@ -498,6 +514,11 @@ export async function runWatchers(
       // below is what skips it).
       const allOpenNudges =
         mode === 'live' ? await listNudges(tenantId, ['pending', 'queued', 'asked']) : [];
+      // The PRE-ASK stage joins the sweep's world (code-review): moot is a
+      // FACT-close, and the stage it used to protect (pending) now lives in
+      // observations — leaving it nudges-only would let the planner be shown,
+      // and ask about, a visit that was cancelled after detection.
+      const allOpenObs = mode === 'live' ? await listOpenObs(tenantId, ['open']) : [];
       // A kind with no spec is INVISIBLE to every path below — it can never be
       // answered, escalated or expired, and would sit open forever. That used
       // to be a silent hole (the kind was a literal here); now it is filtered
@@ -610,12 +631,22 @@ export async function runWatchers(
       // job-scoped kind's subject_ref is a JOB id: passing it here would be a
       // wasted `in()` element and, worse, a claim that the id means something it
       // does not.
+      const openObsGaps = allOpenObs
+        .filter((o) => !!specFor(o.kind, specs))
+        .map((o) => {
+          const c = (o.context ?? {}) as Record<string, unknown>;
+          return { o, jobId: typeof c.jobId === 'string' ? c.jobId : null };
+        });
       const statusSubjects = [
         ...new Set([
           ...openGaps.filter((g) => g.spec.subjectIsVisit).map((g) => g.item.subject_ref),
           ...openNudgeGaps
             .filter((x) => specFor(x.n.kind, specs)?.subjectIsVisit)
             .map((x) => x.n.subject_ref),
+          // Observations too — their moot reads the same status maps.
+          ...openObsGaps
+            .filter((x) => specFor(x.o.kind, specs)?.subjectIsVisit)
+            .map((x) => x.o.subject_ref),
         ]),
       ];
       const statusById = new Map(
@@ -630,6 +661,7 @@ export async function runWatchers(
         ...new Set([
           ...openNudgeGaps.map((x) => x.jobId).filter((v): v is string => !!v),
           ...openGaps.map((g) => g.jobId),
+          ...openObsGaps.map((x) => x.jobId).filter((v): v is string => !!v),
         ]),
       ];
       const jobStatusById = new Map<string, string>(
@@ -912,6 +944,32 @@ export async function runWatchers(
           Date.parse(x.n.created_at) <= nowMs - NUDGE_DELIVERY_DEADLINE_HOURS * 3_600_000
         ) {
           expired.push(x);
+        }
+      }
+
+      // ── MOOT REACHES THE PRE-ASK STAGE (code-review) ─────────────────────
+      // The same kind-generic fact test the nudge loop above runs, over open
+      // observations. The verdict is a code-authored DISMISSAL — the pre-split
+      // shape exactly: `moot` closed pending rows before compose could touch
+      // them, and a cancelled visit is a fact with nothing left to decide.
+      // dismiss_reason carries the fact's own sentence, so a reader can tell
+      // code's housekeeping from the planner's judgment by its wording.
+      for (const x of openObsGaps) {
+        const spec = specFor(x.o.kind, specs)!;
+        // moot reads only kind/subject_ref/context off the row — structurally
+        // shared with Nudge — plus the batched status maps.
+        const moot = spec.moot(x.o as unknown as Parameters<typeof spec.moot>[0], facts);
+        if (!moot) continue;
+        try {
+          const closed = await setObsStatus(
+            x.o.id,
+            tenantId,
+            { status: 'dismissed', dismissReason: moot, dismissedAt: new Date(nowMs).toISOString() },
+            ['open'],
+          );
+          if (closed) summary.observationsMooted += 1;
+        } catch (err) {
+          console.error(`[watchers] observation ${x.o.id} moot dismissal failed`, err);
         }
       }
 

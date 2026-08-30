@@ -2,7 +2,7 @@
 date: 2026-08-31
 task: Build 4 — a gap is not an ask: detection writes an observation the planner keeps; asking is a decision, never a birthright
 research: thoughts/shared/research/2026-08-30-a-gap-is-not-an-ask.md
-status: draft
+status: complete
 supersedes: thoughts/shared/plans/2026-08-26-the-decline-verb.md
 ---
 

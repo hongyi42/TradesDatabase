@@ -216,6 +216,11 @@ export async function seedScenario(
   }
 
   const nudgeIds: Record<string, string> = {};
+  // Which keys seeded as OBSERVATIONS (pre-ask) — the history writer below must
+  // key their rows to observation_id or the insert 23503s on the nudge FK
+  // (code-review: exactly the pre-ask-with-history worlds this build makes
+  // canonical).
+  const preAskKeys = new Set<string>();
   for (const spec of world.nudges) {
     if (spec.kind === 'overdue_visit_gap' && !assignmentId) {
       throw new Error(`nudge '${spec.key}': a visit gap needs a visit in the world`);
@@ -242,6 +247,7 @@ export async function seedScenario(
     // observation under the SAME id, so the once-ever store is coherent (a
     // world where a question exists is a world where it was noticed first).
     if (spec.status === 'pending') {
+      preAskKeys.add(spec.key);
       // A pre-ask world has no question and no ask clocks — production-faithful,
       // since a question exists only when the planner sends. A spec that DOES
       // carry them is an authoring error, refused loudly (the asked-needs-
@@ -334,9 +340,11 @@ export async function seedScenario(
   for (const h of world.history ?? []) {
     const nudgeId = nudgeIds[h.nudgeKey];
     if (!nudgeId) throw new Error(`history row names unknown nudge key '${h.nudgeKey}'`);
+    const preAsk = preAskKeys.has(h.nudgeKey);
     const { error } = await sb.from('nudge_decisions').insert({
       tenant_id: tenantId,
-      nudge_id: nudgeId,
+      nudge_id: preAsk ? null : nudgeId,
+      observation_id: preAsk ? nudgeId : null,
       mode: h.outcome === 'shadow' ? 'shadow' : 'live',
       action: h.action,
       outcome: h.outcome,

@@ -304,6 +304,7 @@ describe('runLifecycle', () => {
       nudgesWouldCreate: 0,
       nudgesCreated: 0,
       observationsCreated: 0,
+      observationsMooted: 0,
       nudgesResolved: 0,
       nudgesAutoClosed: 0,
       nudgesEscalated: 0,

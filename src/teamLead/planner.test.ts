@@ -2591,7 +2591,7 @@ describe('cleanQuestionDraft', () => {
 describe('validateDecisions — the question draft', () => {
   const view = (over: Record<string, unknown> = {}) =>
     ({
-      nudge: { id: 'n1', status: 'pending', asked_at: null },
+      nudge: { id: 'n1', status: 'pending', asked_at: null, technician_id: 'tech-1' },
       jobId: 'j1', evidenceText: [], recordFilled: null, moneyOnRecord: null,
       history: [], dateLabels: ['Tuesday, Aug 18 at 12:00 PM'], block: '',
       ...over,
@@ -3662,6 +3662,28 @@ describe('observations in the planner (plan 2026-08-31)', () => {
     expect(stamped).toEqual([['o1', { status: 'asked' }, ['open']]]);
   });
 
+  test('send on a PERSON-LESS observation is refused — a question needs an addressee (code-review)', async () => {
+    const recorded: NudgeDecisionInput[] = [];
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [],
+      listObservations: async (_t, st) =>
+        st.includes('open')
+          ? [obs({ technician_id: null }), obs({ id: 'o2', subject_ref: 'a2' })]
+          : [],
+      recordDecisions: async (rows) => {
+        recorded.push(...rows);
+        return rows.length;
+      },
+      runLoop: loopReturning([
+        D({ action: 'send', question: 'who would even receive this?' }),
+        D({ nudgeId: 'o2', action: 'leave', reason: 'watching' }),
+      ]),
+    }));
+    const refused = recorded.find((r) => r.action === 'send');
+    expect(refused?.outcome).toBe('refused');
+    expect(refused?.outcomeDetail).toContain('nobody to ask');
+  });
+
   test('the send race: a null create (sent already, or a relic owns the subject) refuses', async () => {
     const summary = await runPlanner(NOW, 'live', baseDeps({
       listNudges: async () => [],
@@ -3727,7 +3749,9 @@ describe('observations in the planner (plan 2026-08-31)', () => {
       ]),
     }));
     expect(writes).toEqual([
-      ['o-dis', { status: 'open', dismissReason: null, dismissedAt: null }, ['dismissed']],
+      // notBefore clears too — recover means stakes changed, and a stale hold
+      // would put the just-recovered gap straight back to sleep (code-review).
+      ['o-dis', { status: 'open', dismissReason: null, dismissedAt: null, notBefore: null }, ['dismissed']],
     ]);
     expect(summary.applied).toBe(2); // recover + extend
     // The hallucinated id left NO trace: not a decision, not a refusal, no row.

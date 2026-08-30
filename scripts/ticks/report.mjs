@@ -335,6 +335,12 @@ try {
         if (typeof p.observationsStale === 'number') {
           f.observationsStale = p.observationsStale; // last write wins — runs are ASC
         }
+      } else if (outcome === 'no_gaps') {
+        // A no_gaps tick truthfully means ZERO open observations, so it may
+        // reset the snapshot — otherwise a tick that cleared the backlog pins
+        // its pre-clear count on the report for the whole window
+        // (code-review). error/off_cadence ticks stay unknown and touch nothing.
+        f.observationsStale = 0;
       } else if (outcome === 'error') {
         // SEPARATELY, never folded into the planned distribution. A failed tick
         // has no turn count to report (the throw does not carry one) and its

@@ -997,7 +997,13 @@ export function buildGapView(
       moneyShown.forEach((m, i) => lines.push(`    [${i + 1}] ${moneyLine(m)}`));
       lines.push(
         '  That is a fact from the ledger, not a quote from a person — weigh whether it answers ' +
-          'THIS question. If it does, close with basis "record".',
+          'THIS question. ' +
+          // Stage-forked like THE RECORD line (code-review): close is refused
+          // on an observation, so teaching it here would loop the model
+          // instructed-then-refused.
+          (n.status === 'noticed'
+            ? 'If it settles the matter, nothing needs asking: dismiss this observation.'
+            : 'If it does, close with basis "record".'),
       );
     }
   }
@@ -1428,6 +1434,20 @@ export function validateDecisions(
       continue;
     }
 
+    // A question needs an ADDRESSEE. Observations are minted with the tech
+    // ADVISORY and possibly absent (an unassigned visit, a departed roster
+    // row); a send with technician_id null would create a queued nudge the
+    // host pull's technicians!inner join can never serve — an 18h silent
+    // black hole recorded as applied (code-review). The plan's recorded
+    // "send does not check reachability" stands: an unreachable PERSON still
+    // queues and rides the 18h clock; NO person is a different thing.
+    if (action === 'send' && !view.nudge.technician_id) {
+      push(
+        'send on a gap with nobody to ask — the record names no person for it. If someone ' +
+          'should be asked, that is a judgment for a handover; otherwise dismiss or leave it.',
+      );
+      continue;
+    }
     if (action === 'send' || action === 'hold') {
       const st = view.nudge.status;
       if (st !== 'pending' && st !== 'noticed') {
@@ -1922,8 +1942,17 @@ async function applyDecision(
             console.error(`[planner] ${memberId}: creating its ask failed`, err);
           }
           if (!created) {
-            // Raced (sent already) or a pre-split relic owns the subject
-            // (uq_nudges_subject_ever) — either way THIS member did not move.
+            // Raced (sent already) or a relic nudge owns the subject
+            // (uq_nudges_subject_ever) — either way THIS member did not move,
+            // AND the observation provably has a question somewhere, so stamp
+            // it 'asked' to heal the divergence: without this the row
+            // resurfaces as a 'noticed' ghost forever once its nudge resolves,
+            // inviting sends that can only ever 23505 (code-review).
+            try {
+              await setObservation(memberId, tenantId, { status: 'asked' }, ['open']);
+            } catch (err) {
+              console.error(`[planner] ${memberId}: healing its observation failed`, err);
+            }
             if (memberId === d.nudgeId) break; // no lead → no group at all
             continue;
           }
@@ -1940,9 +1969,13 @@ async function applyDecision(
         if (!movedIds.includes(d.nudgeId)) {
           return {
             outcome: 'refused',
-            detail: group
-              ? `the group's lead did not move — ${moved}`
-              : moved,
+            // NOT the generic race copy: on this path the usual cause is a
+            // question already existing for the subject (same id or a relic),
+            // and "changed state" would send the model chasing a race that
+            // never happened (code-review).
+            detail:
+              'a question for this gap already exists, or it was sent moments ago — nothing new ' +
+              'was created' + (group ? " (the group's lead did not move)" : ''),
             movedIds,
           };
         }
@@ -2009,11 +2042,14 @@ async function applyDecision(
         ),
       );
     case 'recover':
+      // notBefore clears too (code-review): recover means "stakes changed",
+      // and a recovered row wearing its old far-future hold would go straight
+      // back to sleep — the opposite of the verb.
       return done(
         await setObservation(
           d.nudgeId,
           tenantId,
-          { status: 'open', dismissReason: null, dismissedAt: null },
+          { status: 'open', dismissReason: null, dismissedAt: null, notBefore: null },
           ['dismissed'],
         ),
       );
@@ -2210,8 +2246,11 @@ export async function runPlanner(
         listNudges(tenantId, [...OPEN_NUDGE_STATUSES]),
         listObservations(tenantId, ['open']),
       ]);
-      for (const n of openNudges) stageById.set(n.id, 'nudge');
+      // OBSERVATIONS FIRST so the nudge label wins a same-id collision — the
+      // stage map must agree with the F7 view rule below, or decisions on the
+      // live ask get recorded under the observation FK (code-review).
       for (const o of openObs) stageById.set(o.id, 'observation');
+      for (const n of openNudges) stageById.set(n.id, 'nudge');
       // On an id collision the NUDGE row wins (phase-3 review F7): a failed
       // asked-stamp leaves the observation 'open' beside its own queued/asked
       // nudge, and showing the pre-ask ghost would double-count the gap and
@@ -2338,8 +2377,16 @@ export async function runPlanner(
         (n) =>
           n.status === 'noticed' &&
           Date.parse(n.created_at) < staleFloorMs &&
+          // Untouched WITHIN the window, not "never touched" (code-review):
+          // the printed copy says "untouched past the threshold", and the
+          // never-touched predicate let one ancient hold — or a recover
+          // itself — exempt a row from the alarm forever.
           !(historyByNudge.get(n.id) ?? []).some(
-            (d) => d.outcome === 'applied' && d.action !== 'leave' && d.action !== UNMENTIONED,
+            (d) =>
+              d.outcome === 'applied' &&
+              d.action !== 'leave' &&
+              d.action !== UNMENTIONED &&
+              Date.parse(d.decided_at) >= staleFloorMs,
           ),
       ).length;
 

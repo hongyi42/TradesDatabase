@@ -132,51 +132,56 @@ export async function listDecisionsForNudges(
   const out = new Map<string, NudgeDecision[]>();
   if (nudgeIds.length === 0) return out;
   for (let i = 0; i < nudgeIds.length; i += CHUNK) {
-    // Validated before interpolation: `.or()` stops treating input as a bound
-    // parameter (the markNudgeAskedGroup warning), so only uuid-shaped ids may
-    // enter the filter string. These come from our own rows, but the guard is
-    // what keeps that an implementation detail rather than a load-bearing fact.
-    const slice = nudgeIds.slice(i, i + CHUNK).filter((id) => UUID_RE.test(id));
-    if (slice.length === 0) continue;
-    const idList = slice.join(',');
-    for (let from = 0; ; from += PAGE) {
-      const { data, error } = await getClient()
-        .from('nudge_decisions')
-        .select('*')
-        .eq('tenant_id', tenantId)
-        // BOTH columns (plan 2026-08-31): pre-ask rows carry observation_id
-        // only, and under the same-id design one id list serves both stages.
-        .or(`nudge_id.in.(${idList}),observation_id.in.(${idList})`)
-        .order('decided_at', { ascending: true })
-        // TIEBREAK. `decided_at` defaults to now(), so every row from ONE insert
-        // shares a timestamp to the microsecond — a tick writes its decisions
-        // and its `unmentioned` filler in the same statement. Without a second
-        // key the order within a tick is not just arbitrary but UNSTABLE, so
-        // identical data could page differently between reads.
-        //
-        // What this buys and what it does not: `id` is a random uuid, so it is a
-        // DETERMINISTIC order, not insertion order. That is enough for every
-        // reader here — historyLine skips `unmentioned` outright and the rest are
-        // predicate scans — but it does NOT make "newest" meaningful between two
-        // real rows written by the same tick (a duplicate submission writes an
-        // applied row and a refused one at the same instant; which reads as later
-        // is arbitrary, just consistently so).
-        .order('id', { ascending: true })
-        .range(from, from + PAGE - 1);
-      if (error) throw new Error(`listDecisionsForNudges failed: ${error.message}`);
-      for (const row of (data ?? []) as NudgeDecision[]) {
-        // `?? observation_id` (plan 2026-08-31): pre-ask rows carry
-        // observation_id and a NULL nudge_id, and under the same-id design the
-        // two name ONE gap — grouping on nudge_id alone would file every
-        // pre-ask decision under null, where historyLine and the sweep's
-        // plannerAlive would never find it (review F9).
-        const key = row.nudge_id ?? row.observation_id;
-        if (!key) continue; // unreachable: nudge_decisions_subject_check
-        const list = out.get(key);
-        if (list) list.push(row);
-        else out.set(key, [row]);
+    const slice = nudgeIds.slice(i, i + CHUNK);
+    // TWO bound .in() reads, one per column, merged below — NOT one .or()
+    // (code-review): the .or() form interpolates the id list twice into a GET
+    // querystring (~39KB at CHUNK=500, past common proxy URL ceilings), has an
+    // injection grammar surface a bound .in() does not, and buys nothing —
+    // under the same-id design the two columns hold the same uuid space.
+    const readColumn = async (column: 'nudge_id' | 'observation_id'): Promise<NudgeDecision[]> => {
+      const rows: NudgeDecision[] = [];
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await getClient()
+          .from('nudge_decisions')
+          .select('*')
+          .eq('tenant_id', tenantId)
+          .in(column, slice)
+          .order('decided_at', { ascending: true })
+          // TIEBREAK. `decided_at` defaults to now(), so every row from ONE
+          // insert shares a timestamp to the microsecond. `id` is a random
+          // uuid: a DETERMINISTIC order, not insertion order — enough for
+          // every reader here (historyLine skips `unmentioned` outright and
+          // the rest are predicate scans).
+          .order('id', { ascending: true })
+          .range(from, from + PAGE - 1);
+        if (error) throw new Error(`listDecisionsForNudges failed: ${error.message}`);
+        rows.push(...((data ?? []) as NudgeDecision[]));
+        if (!data || data.length < PAGE) break;
       }
-      if (!data || data.length < PAGE) break;
+      return rows;
+    };
+    const [askRows, obsRows] = await Promise.all([
+      readColumn('nudge_id'),
+      readColumn('observation_id'),
+    ]);
+    // Merge in decided_at-then-id order — the same order each read came in.
+    // A row matches exactly ONE column (the writer sets one and nulls the
+    // other), so no dedup is needed.
+    const merged = [...askRows, ...obsRows].sort((a, b) => {
+      const at = Date.parse(a.decided_at) - Date.parse(b.decided_at);
+      return at !== 0 ? at : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+    for (const row of merged) {
+      // `?? observation_id` (plan 2026-08-31): pre-ask rows carry
+      // observation_id and a NULL nudge_id, and under the same-id design the
+      // two name ONE gap — grouping on nudge_id alone would file every
+      // pre-ask decision under null, where historyLine and the sweep's
+      // plannerAlive would never find it (review F9).
+      const key = row.nudge_id ?? row.observation_id;
+      if (!key) continue; // unreachable: nudge_decisions_subject_check
+      const list = out.get(key);
+      if (list) list.push(row);
+      else out.set(key, [row]);
     }
   }
   return out;
@@ -188,7 +193,10 @@ export async function listDecisionsForNudge(
   nudgeId: string,
   limit = 20,
 ): Promise<NudgeDecision[]> {
-  if (!UUID_RE.test(nudgeId)) return []; // guards the .or() interpolation below
+  // Guards the single-id .or() interpolation below — bounded (one uuid, never
+  // a list), so the URL-size hazard the LIST read was rebuilt around does not
+  // apply here; the guard is the injection fence.
+  if (!UUID_RE.test(nudgeId)) return [];
   const { data, error } = await getClient()
     .from('nudge_decisions')
     .select('*')

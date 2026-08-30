@@ -64,15 +64,24 @@ it last ran**, so "five hours have passed" is a fact it can act on.
   identically. `runToolLoop` performs no JSON-Schema validation (`toolLoop.ts:571-592`), so
   `required` is never enforced and `str()` returns `undefined` for both absent and non-string.
 - **Raw accessors in `src/db/`, rails and rendering in `src/teamLead/`** — `src/db/` is an import leaf.
-- **The date rail is carried over — `OPEN`, see below.**
+- **NO date rail on memory** (user, 2026-08-30, overriding the 2026-08-28 "code enforces the date
+  rail" direction). `cleanLessonText` dies with `lessons.ts` and nothing replaces it. The rail was
+  built for a 300-char sentence, where refusing on one bad date costs one rule; on a 4,000-char
+  document one stray date refuses the whole write, and a to-do file — the thing we want to watch for
+  — is exactly the file that carries dates. **Consequence, recorded rather than mitigated:** the
+  planner can now write `2026-08-14` into a memory and nothing stops that going stale except
+  reconcile-first. The principle *"a memory is a rule, not an event"* is deliberately abandoned; a
+  store that can hold to-dos is a store that holds events. It is NOT restated in the doctrine either
+  — that would reintroduce the rule-register bias the neutral wording exists to avoid.
 - **The Reflector is deleted, not repurposed.** Not a choice: it imports from `lessons.ts` and its
   only output is `planner_lessons` rows. "Reflector as auditor" was a recorded future role, never
   built, and would be a different program (it reads `gap_summaries`, not lessons). **Left unbuilt,
   hole named:** reconcile-first only catches beliefs the record can contradict. *"The manager prefers
   blunt messages"* is unfalsifiable by any spine query and can sit wrong forever.
-- **Three rails are lost with lessons, deliberately.** The evidence check, the `[8-hex]` citation
-  stamp (the only way to measure whether a memory ever changed a decision), and two-strike retirement
-  (no automatic feeder, so costs nothing). The first two are real; reconcile-first replaces them.
+- **Four rails are lost with lessons, deliberately.** The evidence check, the `[8-hex]` citation
+  stamp (the only way to measure whether a memory ever changed a decision), two-strike retirement (no
+  automatic feeder, so costs nothing), and the date rail above. Reconcile-first is what replaces all
+  of them, which is why its doctrine paragraph is load-bearing rather than advisory.
 - **The pilot's 3 proposed lessons are dropped, not migrated** — user: test data.
 - **The eval's `lessons` family (4 scenarios) retires with the machinery.** Porting needs a
   memory-citation mechanism that does not exist; evaluation is an end phase by standing ruling.
@@ -85,17 +94,6 @@ it last ran**, so "five hours have passed" is a fact it can act on.
   `finish_reason=length` throws out of `runLoop` and kills the whole firm's tick, not just the write.
   Over-budget writes are **refused with an instructive error** (the `activateLesson` precedent), never
   truncated and never auto-pruned.
-
-### OPEN — needs user input
-
-**Does the date rail apply to a whole memory file?** `cleanLessonText` refuses on a single
-`\d{4}-\d{2}-\d{2}` or month-and-day *anywhere* in the text. Proportionate for a 300-char rule; on a
-4,000-char document it means one stray date refuses the entire write — and a **to-do file, which you
-explicitly want to watch for, is exactly the file that carries dates**. Three options: (a) keep it
-whole-file and refuse, naming the offending substring so the planner can fix it; (b) apply it only to
-`MEMORY.md`, letting other files hold dates; (c) drop it for memory entirely. Your 2026-08-28
-direction said code enforces the date rail, so (a) is the faithful reading — but it may make a to-do
-bin unusable, which would answer your observation question by construction.
 
 ## Plain-language walkthrough
 
@@ -198,9 +196,7 @@ for Phase 3 means Phase 2 does not build.
 ### Changes required
 
 **`src/teamLead/memory.ts`** (new) — the constants above, plus:
-- `cleanMemoryText(raw)` — carried from `cleanLessonText` (`lessons.ts:33-44`), per the OPEN decision.
-  **Does NOT use `flatten`**: that collapses all whitespace including newlines, and a file is
-  multi-line by nature.
+- **No date rail** (see Decisions). Content validation is size and shape only.
 - `validateMemoryPath(path)` — the CHECK's regex mirrored in TS for an instructive error, plus
   explicit refusal of `..` and `//` (the CHECK does not catch `//`).
 - `escapeForPrompt(text)` — **specify it; do not point at `flatten`**: strip C0 controls except `\n`
@@ -254,8 +250,8 @@ happened, your notes are what you concluded, and the record wins.
 
 ### Automated verification
 - [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass
-- [ ] `src/teamLead/memory.test.ts`: the date rail behaves per the OPEN decision; a bad path (`..`,
-      `//`, uppercase) is refused with the reason; over-budget index and file writes are refused with
+- [ ] `src/teamLead/memory.test.ts`: a memory containing an absolute date is **accepted** (pinning
+      the deliberate absence of the rail); a bad path (`..`, `//`, uppercase) is refused with the reason; over-budget index and file writes are refused with
       the size AND the budget in the message; `escapeForPrompt` neutralises a forged `LESSONS:`-style
       heading and a forged `gap <uuid>` line while preserving ordinary newlines; `renderMemoryIndex`
       returns `''` for an empty firm, the index verbatim when nothing is orphaned, the footer **only**
@@ -299,7 +295,8 @@ drop table reflector_runs;`. No view depends on either, so no `cascade`.
 **`src/jobs/lifecycle.ts`** — remove the import (16), `reflect?` (85), the `reflector` field (122),
 step 12 (605-635), **and `reflector,` from the return object (649)**.
 
-**`src/teamLead/plannerPrompt.ts`** — delete the `LESSONS.` paragraph.
+**`src/teamLead/plannerPrompt.ts`** — delete the `LESSONS.` paragraph. `cleanLessonText` dies with
+`lessons.ts` and is deliberately not carried over (see Decisions).
 
 **Tests and scripts that break** — all must be updated in this phase:
 `src/jobs/lifecycle.test.ts:806-870` (an entire `describe('the reflector gate')`);

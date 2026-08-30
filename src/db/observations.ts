@@ -85,6 +85,20 @@ export async function listObservedSubjectRefs(
   return (data ?? []).map((r) => r.subject_ref);
 }
 
+// The recover-validation read: ids only, deliberately — dismissed rows are
+// permanent (no delete path) and monotonic, and pulling full rows (context
+// jsonb included) for every tick would grow forever. The planner needs only
+// "may this id be recovered", which is the id set (phase-3 review F3).
+export async function listDismissedObservationIds(tenantId: string): Promise<string[]> {
+  const { data, error } = await getClient()
+    .from('observations')
+    .select('id')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'dismissed');
+  if (error) throw new Error(`listDismissedObservationIds failed: ${error.message}`);
+  return (data ?? []).map((r) => r.id);
+}
+
 // One guarded writer for every state move (the setNudgeSchedule idiom): every
 // predicate in the WHERE clause, null when the row was not in the expected
 // state — the caller treats that as "someone else moved it" and drops the

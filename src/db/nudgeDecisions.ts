@@ -10,7 +10,12 @@ export type DecisionOutcome = 'shadow' | 'applied' | 'refused';
 
 export interface NudgeDecisionInput {
   tenantId: string;
+  // THE GAP'S id — which under the same-id design (plan 2026-08-31) names one
+  // gap across both stages. `subject` says which table's row this decision was
+  // about, and the writer keys nudge_id OR observation_id from it; the readers
+  // coalesce, so callers never care which stage a row landed in.
   nudgeId: string;
+  subject?: 'nudge' | 'observation';
   jobId?: string | null;
   mode: 'shadow' | 'live';
   action: string;
@@ -73,7 +78,10 @@ export async function recordNudgeDecisions(inputs: NudgeDecisionInput[]): Promis
   for (let i = 0; i < inputs.length; i += CHUNK) {
     const rows = inputs.slice(i, i + CHUNK).map((d) => ({
       tenant_id: d.tenantId,
-      nudge_id: d.nudgeId,
+      // Exactly one of the pair, keyed by stage (default: the ask). Both point
+      // at the same uuid for a sent gap; the FK decides which table must hold it.
+      nudge_id: d.subject === 'observation' ? null : d.nudgeId,
+      observation_id: d.subject === 'observation' ? d.nudgeId : null,
       job_id: safeJobId(d.jobId, d.nudgeId),
       mode: d.mode,
       action: d.action,
@@ -124,13 +132,21 @@ export async function listDecisionsForNudges(
   const out = new Map<string, NudgeDecision[]>();
   if (nudgeIds.length === 0) return out;
   for (let i = 0; i < nudgeIds.length; i += CHUNK) {
-    const slice = nudgeIds.slice(i, i + CHUNK);
+    // Validated before interpolation: `.or()` stops treating input as a bound
+    // parameter (the markNudgeAskedGroup warning), so only uuid-shaped ids may
+    // enter the filter string. These come from our own rows, but the guard is
+    // what keeps that an implementation detail rather than a load-bearing fact.
+    const slice = nudgeIds.slice(i, i + CHUNK).filter((id) => UUID_RE.test(id));
+    if (slice.length === 0) continue;
+    const idList = slice.join(',');
     for (let from = 0; ; from += PAGE) {
       const { data, error } = await getClient()
         .from('nudge_decisions')
         .select('*')
         .eq('tenant_id', tenantId)
-        .in('nudge_id', slice)
+        // BOTH columns (plan 2026-08-31): pre-ask rows carry observation_id
+        // only, and under the same-id design one id list serves both stages.
+        .or(`nudge_id.in.(${idList}),observation_id.in.(${idList})`)
         .order('decided_at', { ascending: true })
         // TIEBREAK. `decided_at` defaults to now(), so every row from ONE insert
         // shares a timestamp to the microsecond — a tick writes its decisions
@@ -172,11 +188,14 @@ export async function listDecisionsForNudge(
   nudgeId: string,
   limit = 20,
 ): Promise<NudgeDecision[]> {
+  if (!UUID_RE.test(nudgeId)) return []; // guards the .or() interpolation below
   const { data, error } = await getClient()
     .from('nudge_decisions')
     .select('*')
     .eq('tenant_id', tenantId)
-    .eq('nudge_id', nudgeId)
+    // Both stages of one gap (plan 2026-08-31) — recall by the gap's id must
+    // surface its pre-ask dismissals and holds too.
+    .or(`nudge_id.eq.${nudgeId},observation_id.eq.${nudgeId}`)
     // The tick marks are excluded here and KEPT in listDecisionsForNudges above.
     // That split is the design: the count of considerations belongs in the
     // pushed line, while a planner asking to READ its history wants the

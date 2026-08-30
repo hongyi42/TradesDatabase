@@ -54,6 +54,11 @@ Direction: `docs/engineering-memory.md` §6a entry 4 (user, 2026-08-31).
   with a retirement comment; `observationsCreated` + per-kind counts join.
 - **Eval re-levelling stays deferred** *(user ruling 2026-08-30)* — Phase 5 keeps the suite green,
   nothing more.
+- **Close-on-observation is refused; a filled un-asked hole is DISMISSED** *(implementation call,
+  recorded at review)* — the plan never said what closes a noticed cost gap whose ledger filled.
+  Dismiss is revisable and planner-owned; inventing a terminal observation status was the
+  alternative. THE RECORD line says "dismiss this observation" on noticed gaps, and the basis
+  "record" doctrine carries the stage qualifier.
 
 ## Plain-language walkthrough
 
@@ -245,12 +250,12 @@ The mint sites write observations; cap, reachability check, mint-time manager fa
 - CONTEXT section: name `v_observations` beside `v_nudges`.
 
 ### Automated verification
-- [ ] gates; planner tests: send-on-observation creates a queued nudge with the SAME id and stamps
+- [x] gates; planner tests: send-on-observation creates a queued nudge with the SAME id and stamps
       the observation asked; the race (observation asked between plan and write) refuses; dismiss
       hides from next view; recover restores; dismissed subject never re-noticed by Phase-2 sweep
       test; close/escalate on an observation refused with the state named; historyLine spans a
       dismiss (pre-ask) and an extend (post-ask) on one id
-- [ ] `submit_plan` schema snapshot updated; `PLANNER_JUDGMENT_ACTIONS` pin test updated
+- [x] `submit_plan` schema snapshot updated; `PLANNER_JUDGMENT_ACTIONS` pin test updated
 ---
 *No pause.*
 

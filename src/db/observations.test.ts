@@ -8,6 +8,11 @@ import {
   setObservationStatus,
 } from './observations.js';
 import { createNudgeFromObservation } from './nudges.js';
+import {
+  listDecisionsForNudge,
+  listDecisionsForNudges,
+  recordNudgeDecisions,
+} from './nudgeDecisions.js';
 
 // Writes go through the app path (supabase-js); direct pg is the INDEPENDENT
 // read-back channel and the cleanup — the jobNotes/plannerMemory convention.
@@ -231,6 +236,56 @@ describe('observations', () => {
       question: 'should not land',
     });
     expect(nudge).toBeNull(); // uq_nudges_subject_ever holds
+  });
+
+  test('ONE id, TWO stages, ONE history: pre-ask and post-ask decisions come back under one key', async () => {
+    // The same-id design's whole payoff (plan 2026-08-31): a dismiss recorded
+    // against the OBSERVATION and an extend recorded against the NUDGE — same
+    // uuid — are one gap's history. Written through the real writer, read
+    // through the real reader; no unit stub could prove the FK/or() plumbing.
+    const row = await mkObservation();
+    await recordNudgeDecisions([
+      {
+        tenantId,
+        nudgeId: row.id,
+        subject: 'observation',
+        mode: 'live',
+        action: 'dismiss',
+        confidence: 'high',
+        reason: 'pre-ask stage',
+        outcome: 'applied',
+      },
+    ]);
+    const sent = await createNudgeFromObservation({
+      id: row.id,
+      tenantId,
+      kind: 'overdue_visit_gap',
+      subjectRef: row.subject_ref,
+      technicianId: null,
+      context: row.context,
+      question: 'the ask stage begins',
+    });
+    expect(sent?.id).toBe(row.id);
+    await recordNudgeDecisions([
+      {
+        tenantId,
+        nudgeId: row.id,
+        mode: 'live',
+        action: 'extend',
+        confidence: 'high',
+        reason: 'post-ask stage',
+        outcome: 'applied',
+      },
+    ]);
+    const history = await listDecisionsForNudges(tenantId, [row.id]);
+    const rows = history.get(row.id) ?? [];
+    expect(rows.map((r) => r.action)).toEqual(['dismiss', 'extend']); // oldest first, ONE key
+    expect(rows[0].observation_id).toBe(row.id);
+    expect(rows[0].nudge_id).toBeNull();
+    expect(rows[1].nudge_id).toBe(row.id);
+    // And the recall path spans both stages too.
+    const recall = await listDecisionsForNudge(tenantId, row.id);
+    expect(recall.map((r) => r.action)).toEqual(['extend', 'dismiss']); // newest first
   });
 
   test('ACL posture: RLS on, anon/authenticated hold zero privileges', async () => {

@@ -206,6 +206,12 @@ export const PLANNER_JUDGMENT_ACTIONS: ReadonlySet<string> = new Set([
   'escalate',
   'extend',
   'leave',
+  // The pre-ask curation pair (plan 2026-08-31). They act on observations, so
+  // they can never be the newest decision on an ASKED gap in practice — but a
+  // planner that dismissed or recovered here is awake, and the fail-safe
+  // exists for one that is dead.
+  'dismiss',
+  'recover',
 ]);
 
 // UTC offsets span −12h..+14h; subtracting 14h from a wall-clock instant is a

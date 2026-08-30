@@ -5581,7 +5581,11 @@ async function dispatch(
           ? { note: 'No decisions recorded — you have not decided about this before.' }
           : {}),
         decisions: rows.map((r) => ({
-          gapId: r.nudge_id,
+          // Coalesced (plan 2026-08-31): pre-ask rows carry observation_id and
+          // a null nudge_id, and under the same-id design both name ONE gap —
+          // without this the job-scoped recall loses which gap a dismiss or a
+          // pre-ask send belonged to (phase-3 review F6).
+          gapId: r.nudge_id ?? r.observation_id,
           jobId: r.job_id,
           decidedAt: r.decided_at,
           action: r.action,

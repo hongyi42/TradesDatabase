@@ -2178,7 +2178,7 @@ describe('the deadline fail-safe', () => {
     // stops counting as liveness and the fail-safe starts firing under a planner
     // that is working fine.
     expect([...PLANNER_JUDGMENT_ACTIONS].sort()).toEqual([
-      'close', 'escalate', 'extend', 'hold', 'leave', 'send',
+      'close', 'dismiss', 'escalate', 'extend', 'hold', 'leave', 'recover', 'send',
     ]);
     for (const a of PLANNER_ACTIONS) expect(PLANNER_JUDGMENT_ACTIONS.has(a)).toBe(true);
     expect(PLANNER_JUDGMENT_ACTIONS.has('unmentioned')).toBe(false);

@@ -620,6 +620,12 @@ const LATE_STUCK: PlannerScenario[] = [
     expect: { actionNot: 'escalate' },
   },
   {
+    // 2026-08-31 (the split): the pending seed is now an OBSERVATION, so the
+    // mid-arc `deliver` fires only if the model chose `send` at tick 1 — a
+    // hold/leave records deliver as MISSED (fail-soft) and the arc grades a
+    // never-delivered gap. The "clock starts at delivery" premise became
+    // model-contingent; the expectation still expresses. Re-level at the
+    // evaluation phase (phase-5 review F4).
     id: 'LS-08',
     family: 'late-stuck',
     why: 'Arc: deliver mid-arc, then silence — the clock starts at DELIVERY, so the late judgment anchors there.',

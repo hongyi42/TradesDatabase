@@ -1007,7 +1007,8 @@ export type Database = {
           job_id: string | null
           mode: string
           not_before: string | null
-          nudge_id: string
+          nudge_id: string | null
+          observation_id: string | null
           outcome: string
           outcome_detail: string | null
           question_draft: string | null
@@ -1027,7 +1028,8 @@ export type Database = {
           job_id?: string | null
           mode: string
           not_before?: string | null
-          nudge_id: string
+          nudge_id?: string | null
+          observation_id?: string | null
           outcome: string
           outcome_detail?: string | null
           question_draft?: string | null
@@ -1047,7 +1049,8 @@ export type Database = {
           job_id?: string | null
           mode?: string
           not_before?: string | null
-          nudge_id?: string
+          nudge_id?: string | null
+          observation_id?: string | null
           outcome?: string
           outcome_detail?: string | null
           question_draft?: string | null
@@ -1081,6 +1084,20 @@ export type Database = {
             columns: ["nudge_id"]
             isOneToOne: false
             referencedRelation: "v_nudges"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "nudge_decisions_observation_id_fkey"
+            columns: ["observation_id"]
+            isOneToOne: false
+            referencedRelation: "observations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "nudge_decisions_observation_id_fkey"
+            columns: ["observation_id"]
+            isOneToOne: false
+            referencedRelation: "v_observations"
             referencedColumns: ["id"]
           },
           {
@@ -1172,6 +1189,66 @@ export type Database = {
           },
           {
             foreignKeyName: "nudges_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      observations: {
+        Row: {
+          context: Json
+          dismiss_reason: string | null
+          dismissed_at: string | null
+          id: string
+          kind: string
+          not_before: string | null
+          noticed_at: string
+          status: string
+          subject_ref: string
+          technician_id: string | null
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          context?: Json
+          dismiss_reason?: string | null
+          dismissed_at?: string | null
+          id?: string
+          kind: string
+          not_before?: string | null
+          noticed_at?: string
+          status?: string
+          subject_ref: string
+          technician_id?: string | null
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          context?: Json
+          dismiss_reason?: string | null
+          dismissed_at?: string | null
+          id?: string
+          kind?: string
+          not_before?: string | null
+          noticed_at?: string
+          status?: string
+          subject_ref?: string
+          technician_id?: string | null
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "observations_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "observations_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
             referencedRelation: "tenants"
@@ -2734,6 +2811,22 @@ export type Database = {
           resolution: string | null
           resolved_at: string | null
           serve_count: number | null
+          status: string | null
+          subject_ref: string | null
+          technician_name: string | null
+          technician_ref: string | null
+        }
+        Relationships: []
+      }
+      v_observations: {
+        Row: {
+          dismiss_reason: string | null
+          dismissed_at: string | null
+          id: string | null
+          job_id: string | null
+          kind: string | null
+          not_before: string | null
+          noticed_at: string | null
           status: string | null
           subject_ref: string | null
           technician_name: string | null

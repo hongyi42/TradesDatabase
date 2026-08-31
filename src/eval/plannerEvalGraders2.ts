@@ -38,7 +38,9 @@ export interface GradableRow {
   harnessError?: string;
 }
 
-const OPEN = new Set(['pending', 'queued', 'asked']);
+// 'noticed' joined with the split (plan 2026-08-31): an unsent observation is
+// an OPEN gap to every arc check; 'dismissed' is terminal.
+const OPEN = new Set(['pending', 'queued', 'asked', 'noticed']);
 
 export function gradeScenario(row: GradableRow, t0Ms: number): GraderFinding[] {
   const findings: GraderFinding[] = [];
@@ -56,22 +58,32 @@ export function gradeScenario(row: GradableRow, t0Ms: number): GraderFinding[] {
   if (!last) return [{ kind: 'no-ticks', detail: 'no tick executed — nothing to grade' }];
   const lastIdx = row.ticks.length - 1;
 
+  // Pre-ask decision rows carry observation_id with a NULL nudge_id; under the
+  // same-id design both name ONE gap, so graders key on whichever is set
+  // (plan 2026-08-31 — the readback also coalesces, this is the belt).
+  const gapIdOf = (d: { nudge_id: string | null; observation_id?: string | null }): string | null =>
+    d.nudge_id ?? d.observation_id ?? null;
+
   for (const e of expects) {
     const targets = new Set(
       e.nudgeKey ? [nudgeIds[e.nudgeKey]].filter(Boolean) : Object.values(nudgeIds),
     );
     const label = e.nudgeKey ?? 'any gap';
     // Real verbs only — 'unmentioned' is code's record of silence, not a decision.
-    const graded = last.decisions.filter(
-      (d) => targets.has(d.nudge_id) && d.action !== 'unmentioned',
-    );
+    const graded = last.decisions.filter((d) => {
+      const k = gapIdOf(d);
+      return k !== null && targets.has(k) && d.action !== 'unmentioned';
+    });
     // ACTIONS grade over ALL executed ticks (review finding): a planner-applied
     // escalate only pulls the deadline — the SWEEP performs the handoff on the
     // next tick, where the planner then sees no gap. Last-tick-only grading
     // would fail exactly the early-and-correct escalation. Claims stay
     // last-tick (an early tick may honestly describe a then-empty record).
     const allTicks = row.ticks.flatMap((t) =>
-      t.decisions.filter((d) => targets.has(d.nudge_id) && d.action !== 'unmentioned'),
+      t.decisions.filter((d) => {
+        const k = gapIdOf(d);
+        return k !== null && targets.has(k) && d.action !== 'unmentioned';
+      }),
     );
 
     if (e.action) {
@@ -150,7 +162,10 @@ export function gradeScenario(row: GradableRow, t0Ms: number): GraderFinding[] {
     if (e.arc) {
       const all = row.ticks.flatMap((t, i) =>
         t.decisions
-          .filter((d) => targets.has(d.nudge_id) && d.action !== 'unmentioned')
+          .filter((d) => {
+            const k = gapIdOf(d);
+            return k !== null && targets.has(k) && d.action !== 'unmentioned';
+          })
           .map((d) => ({ d, i })),
       );
       const applied = all.filter((x) => x.d.outcome === 'applied');

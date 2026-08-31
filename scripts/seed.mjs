@@ -162,6 +162,17 @@ async function truncateSpine(hasScheduling) {
         where table_schema = 'public' and table_name = 'nudges'`,
     );
     if (nd.rows.length > 0) tables += ', nudges';
+    // observations (build 4, "a gap is not an ask"): the SAME trap as nudges —
+    // it references only tenants/technicians, so no cascade above reaches it,
+    // and its subject_ref names assignment/job ids the truncate just deleted.
+    // Stale any-status rows would suppress fresh detections through
+    // uq_observations_subject_ever exactly the way stale nudges would (the
+    // once-ever dedup). Registered BY NAME at table creation (eng-memory §1).
+    const ob = await client.query(
+      `select 1 from information_schema.tables
+        where table_schema = 'public' and table_name = 'observations'`,
+    );
+    if (ob.rows.length > 0) tables += ', observations';
     // nudge_decisions cascades from nudges above, but is named explicitly:
     // incidental cascade coverage is exactly how tenant_profiles got missed
     // (eng-memory §1). Existence-probed like the two above.

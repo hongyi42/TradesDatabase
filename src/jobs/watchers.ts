@@ -1,11 +1,12 @@
 import {
-  createPendingNudge,
+  createObservation,
+  listObservationsByStatus,
+  setObservationStatus,
   listCostGapCandidates,
   listDecisionsForNudges,
   listJobIdsWithCostEvents,
   findOpenReviewItemsByKind,
   flagNudgeGap,
-  flagOverdueVisitGap,
   getTenant,
   listAssignmentsByIds,
   listEverFlaggedSubjectRefs,
@@ -13,6 +14,7 @@ import {
   listJobsWithCustomerByIds,
   listNudgedSubjectRefs,
   listNudgesByStatus,
+  listObservedSubjectRefs,
   listOverdueConfirmedAssignments,
   listTeam,
   listTenantIdsWithTelegramBindings,
@@ -25,7 +27,6 @@ import { notifyManagers } from '../calls/notify.js';
 import {
   NUDGE_KIND_SPECS,
   specFor,
-  stage0Suggestion,
   type NudgeKindSpec,
   type SweepFacts,
 } from './nudgeKinds.js';
@@ -58,8 +59,9 @@ import { naiveLocalISO } from '../schedule/booking.js';
 //   - the cap meters FRESH gaps only (ever-flagged assignments are filtered
 //     out via one batched read BEFORE capping — final-review fix: without it,
 //     stale flagged-but-unfilled gaps occupy the slots and starve new gaps);
-//   - once per assignment EVER (flagOverdueVisitGap's any-status dedup stays
-//     as the belt-and-suspenders behind the pre-filter);
+//   - once per assignment EVER (uq_observations_subject_ever owns this since
+//     plan 2026-08-31; the older nudge/item stores keep pre-split history from
+//     re-surfacing);
 //   - auto-resolve: an open item whose job gained activity since the visit
 //     started — or whose visit left 'confirmed' (cancelled/completed, the
 //     "status update" the item copy promises) — is closed by the watcher, so
@@ -207,6 +209,12 @@ export const PLANNER_JUDGMENT_ACTIONS: ReadonlySet<string> = new Set([
   'escalate',
   'extend',
   'leave',
+  // The pre-ask curation pair (plan 2026-08-31). They act on observations, so
+  // they can never be the newest decision on an ASKED gap in practice — but a
+  // planner that dismissed or recovered here is awake, and the fail-safe
+  // exists for one that is dead.
+  'dismiss',
+  'recover',
 ]);
 
 // UTC offsets span −12h..+14h; subtracting 14h from a wall-clock instant is a
@@ -255,15 +263,21 @@ export interface WatcherDeps {
   listJobs?: typeof listJobsWithCustomerByIds;
   listEverFlagged?: typeof listEverFlaggedSubjectRefs;
   listAssignments?: typeof listAssignmentsByIds;
-  flagGap?: typeof flagOverdueVisitGap;
-  // The kind-generic flagger, for gaps whose subject is not a visit.
+  // The kind-generic flagger — the SWEEP's handoffs only now (expiry,
+  // escalation); minting stopped flagging anything (plan 2026-08-31).
   flagNudge?: typeof flagNudgeGap;
   findOpenGaps?: typeof findOpenReviewItemsByKind;
   resolveGap?: typeof resolveOpenReviewItemFor;
   notify?: typeof notifyManagers;
   hasPushToken?: () => boolean;
-  // Stage-1 ladder seams
-  createNudge?: typeof createPendingNudge;
+  // Detection-records seams (plan 2026-08-31): the mint writes observations.
+  createObservation?: typeof createObservation;
+  listObserved?: typeof listObservedSubjectRefs;
+  // The moot sweep over the PRE-ASK stage (code-review): open observations
+  // whose visit/job was cancelled are dismissed on the FACT, exactly as the
+  // pre-split moot closed pending nudges.
+  listOpenObservations?: typeof listObservationsByStatus;
+  setObservation?: typeof setObservationStatus;
   listNudged?: typeof listNudgedSubjectRefs;
   listNudges?: typeof listNudgesByStatus;
   resolveNudge?: typeof markNudgeOutcome;
@@ -294,8 +308,19 @@ export interface WatchersSummary {
   pushSkipped: boolean; // true when items opened but no BOARD_BOT_TOKEN
   tenantErrors: number;
   nudgeMode: NudgeMode;
-  nudgesWouldCreate: number; // nudge-shadow: gaps the live ladder would have asked about
+  // RETIRED AT MINT (plan 2026-08-31): the watcher creates no nudges any more —
+  // the planner's send does. Both stay in the shape at 0 (lifecycle summary
+  // consumers and their tests pin it); build 5 owns removing them.
+  nudgesWouldCreate: number;
   nudgesCreated: number;
+  // Detection's whole output now: fresh findings recorded as observations,
+  // uncapped (the record is unbounded — user direction 2026-08-31).
+  observationsCreated: number;
+  // Open observations the sweep dismissed on a FACT (cancelled visit/job) —
+  // the pre-ask twin of nudgesResolved's moot close. Code's dismissal, not the
+  // planner's: a cancelled visit is a fact, and there is nothing left for
+  // anyone to decide about it (the 2026-08-22 division).
+  observationsMooted: number;
   // Closed by a FACT: a cancelled visit or job (`moot`). That is now the ONLY
   // thing the sweep closes on — the pre-ask carve-out went with the ask window
   // (plan 2026-08-29 Phase 3), so activity never closes a gap here, asked or
@@ -315,7 +340,7 @@ export interface WatchersSummary {
   // sum across detectors. (gapsFound/freshGaps remain visit-only, because the
   // cost pass counts its own candidates into byKind instead.) Read byKind, not
   // the totals, when judging one detector.
-  byKind: Record<string, { gapsFound: number; nudgesCreated: number }>;
+  byKind: Record<string, { gapsFound: number; nudgesCreated: number; observationsCreated: number }>;
   // tenant_settings has not been migrated to this database yet, so every firm ran
   // on the global defaults. Present ONLY when true — an operator condition, not a
   // routine counter. It does NOT make the tick unhealthy: the sweep is unaffected
@@ -340,13 +365,15 @@ export async function runWatchers(
   const listJobs = deps.listJobs ?? listJobsWithCustomerByIds;
   const listEverFlagged = deps.listEverFlagged ?? listEverFlaggedSubjectRefs;
   const listAssignments = deps.listAssignments ?? listAssignmentsByIds;
-  const flagGap = deps.flagGap ?? flagOverdueVisitGap;
   const flagNudge = deps.flagNudge ?? flagNudgeGap;
   const findOpenGaps = deps.findOpenGaps ?? findOpenReviewItemsByKind;
   const resolveGap = deps.resolveGap ?? resolveOpenReviewItemFor;
   const notify = deps.notify ?? notifyManagers;
   const hasPushToken = deps.hasPushToken ?? (() => !!process.env.BOARD_BOT_TOKEN);
-  const createNudge = deps.createNudge ?? createPendingNudge;
+  const createObs = deps.createObservation ?? createObservation;
+  const listObserved = deps.listObserved ?? listObservedSubjectRefs;
+  const listOpenObs = deps.listOpenObservations ?? listObservationsByStatus;
+  const setObsStatus = deps.setObservation ?? setObservationStatus;
   const listNudged = deps.listNudged ?? listNudgedSubjectRefs;
   const listNudges = deps.listNudges ?? listNudgesByStatus;
   const resolveNudge = deps.resolveNudge ?? markNudgeOutcome;
@@ -378,14 +405,20 @@ export async function runWatchers(
     nudgeMode,
     nudgesWouldCreate: 0,
     nudgesCreated: 0,
+    observationsCreated: 0,
+    observationsMooted: 0,
     nudgesResolved: 0,
     nudgesAutoClosed: 0,
     nudgesEscalated: 0,
     nudgesExpired: 0,
     byKind: {},
   };
-  const bumpKind = (kind: string, field: 'gapsFound' | 'nudgesCreated', by = 1): void => {
-    const row = (summary.byKind[kind] ??= { gapsFound: 0, nudgesCreated: 0 });
+  const bumpKind = (
+    kind: string,
+    field: 'gapsFound' | 'nudgesCreated' | 'observationsCreated',
+    by = 1,
+  ): void => {
+    const row = (summary.byKind[kind] ??= { gapsFound: 0, nudgesCreated: 0, observationsCreated: 0 });
     row[field] += by;
   };
 
@@ -481,6 +514,11 @@ export async function runWatchers(
       // below is what skips it).
       const allOpenNudges =
         mode === 'live' ? await listNudges(tenantId, ['pending', 'queued', 'asked']) : [];
+      // The PRE-ASK stage joins the sweep's world (code-review): moot is a
+      // FACT-close, and the stage it used to protect (pending) now lives in
+      // observations — leaving it nudges-only would let the planner be shown,
+      // and ask about, a visit that was cancelled after detection.
+      const allOpenObs = mode === 'live' ? await listOpenObs(tenantId, ['open']) : [];
       // A kind with no spec is INVISIBLE to every path below — it can never be
       // answered, escalated or expired, and would sit open forever. That used
       // to be a silent hole (the kind was a literal here); now it is filtered
@@ -573,11 +611,14 @@ export async function runWatchers(
       // the shadow→live flip decision needs, since it is exactly what live
       // would act on.
       const gapIds = gaps.map((g) => g.id);
-      const [flaggedRefs, nudgedRefs] = await Promise.all([
+      const [flaggedRefs, nudgedRefs, observedRefs] = await Promise.all([
         listEverFlagged(tenantId, 'overdue_visit_gap', gapIds),
         listNudged(tenantId, 'overdue_visit_gap', gapIds),
+        // The store that owns "noticed once, ever" from here on; the older two
+        // keep pre-split history from re-surfacing (plan 2026-08-31).
+        listObserved(tenantId, 'overdue_visit_gap', gapIds),
       ]);
-      const everSurfaced = new Set([...flaggedRefs, ...nudgedRefs]);
+      const everSurfaced = new Set([...flaggedRefs, ...nudgedRefs, ...observedRefs]);
       const fresh = gaps.filter((g) => !everSurfaced.has(g.id));
       summary.freshGaps += fresh.length;
 
@@ -590,12 +631,22 @@ export async function runWatchers(
       // job-scoped kind's subject_ref is a JOB id: passing it here would be a
       // wasted `in()` element and, worse, a claim that the id means something it
       // does not.
+      const openObsGaps = allOpenObs
+        .filter((o) => !!specFor(o.kind, specs))
+        .map((o) => {
+          const c = (o.context ?? {}) as Record<string, unknown>;
+          return { o, jobId: typeof c.jobId === 'string' ? c.jobId : null };
+        });
       const statusSubjects = [
         ...new Set([
           ...openGaps.filter((g) => g.spec.subjectIsVisit).map((g) => g.item.subject_ref),
           ...openNudgeGaps
             .filter((x) => specFor(x.n.kind, specs)?.subjectIsVisit)
             .map((x) => x.n.subject_ref),
+          // Observations too — their moot reads the same status maps.
+          ...openObsGaps
+            .filter((x) => specFor(x.o.kind, specs)?.subjectIsVisit)
+            .map((x) => x.o.subject_ref),
         ]),
       ];
       const statusById = new Map(
@@ -610,6 +661,7 @@ export async function runWatchers(
         ...new Set([
           ...openNudgeGaps.map((x) => x.jobId).filter((v): v is string => !!v),
           ...openGaps.map((g) => g.jobId),
+          ...openObsGaps.map((x) => x.jobId).filter((v): v is string => !!v),
         ]),
       ];
       const jobStatusById = new Map<string, string>(
@@ -895,6 +947,32 @@ export async function runWatchers(
         }
       }
 
+      // ── MOOT REACHES THE PRE-ASK STAGE (code-review) ─────────────────────
+      // The same kind-generic fact test the nudge loop above runs, over open
+      // observations. The verdict is a code-authored DISMISSAL — the pre-split
+      // shape exactly: `moot` closed pending rows before compose could touch
+      // them, and a cancelled visit is a fact with nothing left to decide.
+      // dismiss_reason carries the fact's own sentence, so a reader can tell
+      // code's housekeeping from the planner's judgment by its wording.
+      for (const x of openObsGaps) {
+        const spec = specFor(x.o.kind, specs)!;
+        // moot reads only kind/subject_ref/context off the row — structurally
+        // shared with Nudge — plus the batched status maps.
+        const moot = spec.moot(x.o as unknown as Parameters<typeof spec.moot>[0], facts);
+        if (!moot) continue;
+        try {
+          const closed = await setObsStatus(
+            x.o.id,
+            tenantId,
+            { status: 'dismissed', dismissReason: moot, dismissedAt: new Date(nowMs).toISOString() },
+            ['open'],
+          );
+          if (closed) summary.observationsMooted += 1;
+        } catch (err) {
+          console.error(`[watchers] observation ${x.o.id} moot dismissal failed`, err);
+        }
+      }
+
       // ONE MESSAGE, ONE FATE (plan 2026-08-25, Phase 2).
       //
       // The deadline above is per-row, against each row's own created_at — but
@@ -1107,121 +1185,65 @@ export async function runWatchers(
         }
       }
 
-      // Route fresh gaps — capped at the FIRM's own max_new_per_tick (falling
-      // back to MAX_NEW_ITEMS_PER_TENANT_TICK), oldest
-      // scheduled end first (candidates come ordered; the filters preserve
-      // it). RUNG 1 when the ladder is live and the technician is reachable;
-      // the manager item is the fallback. Every reachable fresh gap in `top`
-      // is asked about — there is no per-person gate any more (user ruling
-      // 2026-08-18); the per-tick slice is the only volume brake here.
-      // TWO brakes, deliberately both. The per-kind one is the RUNAWAY BACKSTOP
-      // the deleted per-person cap used to provide incidentally — a MISFIRING
-      // detector can only flood its own kind. The tenant-wide ceiling then caps
-      // the combined routed count across kinds, so adding a detector can never
-      // raise a firm's per-tick volume (5 stays 5, never 5+N).
+      // ── MINTING became RECORDING (plan 2026-08-31 "a gap is not an ask") ──
+      // Every fresh gap becomes an OBSERVATION — no cap, no reachability test,
+      // no manager fallback. The caps died WITH the ask-at-detection design:
+      // they metered questions (a scarce claim on a person's attention), and an
+      // observation asks nobody anything. Deciding which gaps deserve a message
+      // is now wholly the planner's, which is what the per-tick slice was a
+      // stand-in for all along ("Deciding WHICH gaps deserve a scarce slot is
+      // exactly the pacing planner's job" — the old comment here, now true).
+      // settings.maxNewPerTick and the per-kind brakes are left DECLARED but
+      // unread at mint (build 5 owns retiring them); the once-ever store is
+      // uq_observations_subject_ever, and dismissal — the planner's, revisable
+      // — is what stops re-surfacing.
       //
-      // NOT a fairness mechanism, and deliberately so: passes run in order, so
-      // a tick with 5 fresh visit gaps spends the whole ceiling and surfaces no
-      // cost gaps. They are picked up on a later tick (nothing is dropped — the
-      // once-ever stores keep them fresh until asked). Deciding WHICH gaps
-      // deserve a scarce slot is exactly the pacing planner's job, and it does
-      // not exist yet — see Plan B. Until then, first-come by pass order.
-      // Creation is REGISTRY-GATED: a kind with no spec must not be minted at
-      // all, because the sweep above cannot resolve, escalate or expire it —
-      // creating one would strand it open forever, which is the very failure
-      // this registry exists to prevent. Stranding is possible from BOTH ends;
-      // filtering the sweep alone would only close one of them.
+      // The technician lookup SURVIVES as context enrichment only: who the
+      // detector THINKS could answer rides along advisorily (observations
+      // migration header). Unreachable, unknown, or absent — the observation
+      // is recorded the same.
+      //
+      // Creation stays REGISTRY-GATED: a kind with no spec must not be minted
+      // at all (the sweep above cannot resolve, escalate or expire its asks).
       const overdueSpec = specFor('overdue_visit_gap', specs);
-      let routedThisTick = 0;
-      // Sliced by the PER-KIND brake only — the tenant-wide ceiling is enforced
-      // inside the loop, so it stays load-bearing when a second kind routes
-      // alongside this one (and so a kind brake above the ceiling cannot raise
-      // a firm's per-tick volume).
-      const top = overdueSpec ? fresh.slice(0, Math.max(0, overdueSpec.maxNewPerTenantTick)) : [];
-      if (overdueSpec && top.length > 0) {
+      if (overdueSpec && fresh.length > 0) {
         const [teamRows, jobRows] = await Promise.all([
           team(tenantId),
-          listJobs(tenantId, [...new Set(top.map((g) => g.job_id))]),
+          listJobs(tenantId, [...new Set(fresh.map((g) => g.job_id))]),
         ]);
         const techById = new Map(teamRows.map((t) => [t.id, t]));
         // The jobs read is tenant-scoped in the query; the re-check below is
-        // the id-only-FK belt-and-suspenders (boardRead pattern). Its customer
-        // embed carries no tenant_id to re-check — the job-level scope is the
-        // enforced guard for the name (noted at final review).
+        // the id-only-FK belt-and-suspenders (boardRead pattern).
         const jobById = new Map(jobRows.filter((j) => j.tenant_id === tenantId).map((j) => [j.id, j]));
-        for (const g of top) {
-          // Counts gaps ROUTED (attempted), not writes that landed — a gap
-          // whose create/flag returns null (someone else got there first) still
-          // spends its slot. That is exactly what the pre-registry
-          // `slice(0, MAX_NEW_ITEMS_PER_TENANT_TICK)` metered; counting only
-          // successful writes would quietly raise a firm's per-tick volume.
-          if (routedThisTick >= settings.maxNewPerTick) break;
-          routedThisTick += 1;
+        for (const g of fresh) {
           const job = jobById.get(g.job_id);
           const title = job?.title ?? 'a job';
           const customer = job?.customers?.name ?? 'unknown customer';
           const tech = g.technician_id ? techById.get(g.technician_id) : undefined;
-          // Reachable = someone a bot can actually message first: active,
-          // Telegram-bound, with a live sandbox on a known host.
-          const reachable =
-            !!tech &&
-            tech.state === 'active' &&
-            !!tech.telegram_user_id &&
-            !!tech.sandbox_ref &&
-            !!tech.host_id;
-          if (reachable && nudgeMode === 'shadow') {
-            // nudgesWouldCreate measures REACHABILITY — the shadow→live flip
-            // decision's number, and (since the per-person gate is gone)
-            // exactly what live would create from this tick's `top`.
-            summary.nudgesWouldCreate += 1;
-          }
-          if (reachable && nudgeMode === 'live') {
-            const nudge = await createNudge({
-              tenantId,
-              // From the SPEC, never a literal — this is the forget-spot the
-              // registry exists to remove.
-              kind: overdueSpec.kind,
-              subjectRef: g.id,
-              technicianId: tech.id,
-              // Everything compose and escalation will ever need — the model
-              // turn sees ONLY this, and rung 2's copy reads it back.
-              context: {
-                customerName: customer,
-                jobTitle: title,
-                technicianRef: tech.ref,
-                technicianName: tech.display_name,
-                assignmentId: g.id,
-                jobId: g.job_id,
-                startsAtLocal: g.starts_at,
-                endsAtLocal: g.ends_at,
-                visitEndLabel: wallClockLabel(g.ends_at),
-              },
-            });
-            if (nudge) {
-              summary.nudgesCreated += 1; // null = considered concurrently
-              bumpKind('overdue_visit_gap', 'nudgesCreated');
-            }
-            continue; // rung 1 owns this gap — no manager item, no push
-          }
-          const item = await flagGap({
+          const obs = await createObs({
             tenantId,
-            assignmentId: g.id,
-            jobId: g.job_id,
-            technicianRef: tech?.ref ?? null,
-            startsAtLocal: g.starts_at,
-            endsAtLocal: g.ends_at,
-            // Copy doctrine (user decision 2026-08-16): warm and professional,
-            // self-explaining, about the JOB never the person (direction
-            // constraint 5), and no operator jargon — managers have never
-            // heard the word "spine". The purpose clause ("so the job's
-            // record stays complete") is what makes this read as bookkeeping
-            // help rather than an audit.
-            // The detector's own filter at :452 IS !hasActivitySince.
-            suggestion: stage0Suggestion(title, customer, g.ends_at, true),
+            // From the SPEC, never a literal — the forget-spot the registry
+            // exists to remove.
+            kind: overdueSpec.kind,
+            subjectRef: g.id,
+            technicianId: tech?.id ?? null,
+            // Everything the planner's view and a later send will ever need —
+            // the same shape nudges.context has always carried; the send
+            // copies it across verbatim.
+            context: {
+              customerName: customer,
+              jobTitle: title,
+              ...(tech ? { technicianRef: tech.ref, technicianName: tech.display_name } : {}),
+              assignmentId: g.id,
+              jobId: g.job_id,
+              startsAtLocal: g.starts_at,
+              endsAtLocal: g.ends_at,
+              visitEndLabel: wallClockLabel(g.ends_at),
+            },
           });
-          if (item) {
-            opened += 1; // null = flagged concurrently — not new
-            openedByKind.overdue += 1;
+          if (obs) {
+            summary.observationsCreated += 1; // null = noticed concurrently
+            bumpKind('overdue_visit_gap', 'observationsCreated');
           }
         }
       }
@@ -1229,90 +1251,62 @@ export async function runWatchers(
       // ── DETECTOR #2: job cost (plan 2026-08-19) ──────────────────────────
       // Deliberately a SEPARATE pass, not a widened visit query: its subject is
       // the JOB, its window anchor is the assignment end only because that is
-      // what supplies a technician to ask, and its "fresh" test is a different
-      // question (does a cost exist?) than the visit one (did anything land?).
+      // what supplies a technician who might know, and its "fresh" test is a
+      // different question (does a cost exist?) than the visit one.
+      //
+      // UNGATED BY nudgeMode (plan 2026-08-31, review F2): the old wrapper
+      // `nudgeMode !== 'off'` gated the ENTIRE pass — candidates, dedup,
+      // fallback — because detection used to IMPLY an ask and the mode gated
+      // asking. Recording an observation asks nobody anything, so detection
+      // now gates on watcher mode alone (this code is unreachable in shadow —
+      // the `continue` above).
       const costSpec = specFor('job_cost_gap', specs);
-      if (costSpec && nudgeMode !== 'off') {
+      if (costSpec) {
         const costCandidates = await listCostCandidates(tenantId, from, to);
         if (costCandidates.length > 0) {
           const costJobIds = costCandidates.map((c) => c.jobId);
-          // Three filters, all batched: already has a cost, ever flagged, ever
-          // nudged. The last two are the same once-ever stores the visit
-          // detector uses — they already take a kind.
-          const [withCost, flaggedCost, nudgedCost] = await Promise.all([
+          // Four filters, all batched: already has a cost, ever flagged, ever
+          // nudged, ever OBSERVED — the last is the store that owns "noticed
+          // once, ever" from here on; the older two keep pre-split history
+          // from re-surfacing.
+          const [withCost, flaggedCost, nudgedCost, observedCost] = await Promise.all([
             listCostEvents(tenantId, costJobIds),
             listEverFlagged(tenantId, 'job_cost_gap', costJobIds),
             listNudged(tenantId, 'job_cost_gap', costJobIds),
+            listObserved(tenantId, 'job_cost_gap', costJobIds),
           ]);
-          const surfaced = new Set([...withCost, ...flaggedCost, ...nudgedCost]);
+          const surfaced = new Set([...withCost, ...flaggedCost, ...nudgedCost, ...observedCost]);
           const freshCost = costCandidates.filter((c) => !surfaced.has(c.jobId));
           bumpKind('job_cost_gap', 'gapsFound', freshCost.length);
 
-          const costTop = freshCost.slice(0, Math.max(0, costSpec.maxNewPerTenantTick));
-          if (costTop.length > 0) {
+          if (freshCost.length > 0) {
             const teamRows = await team(tenantId);
             const techById = new Map(teamRows.map((t) => [t.id, t]));
-            for (const c of costTop) {
-              // The SAME tenant-wide ceiling the visit pass spends from — a
-              // second detector must not raise a firm's per-tick volume. Same
-              // per-FIRM number too: `settings` is resolved once for this tenant.
-              if (routedThisTick >= settings.maxNewPerTick) break;
-              routedThisTick += 1;
+            for (const c of freshCost) {
+              // No cap, no reachability, no manager fallback — the visit
+              // pass's reasoning, verbatim (see the block above).
               const tech = techById.get(c.technicianId);
-              const reachable =
-                !!tech &&
-                tech.state === 'active' &&
-                !!tech.telegram_user_id &&
-                !!tech.sandbox_ref &&
-                !!tech.host_id;
               const title = c.jobTitle ?? 'a job';
               const customer = c.customerName ?? 'unknown customer';
-              if (reachable && nudgeMode === 'shadow') {
-                summary.nudgesWouldCreate += 1;
-              }
-              if (reachable && nudgeMode === 'live') {
-                const nudge = await createNudge({
-                  tenantId,
-                  kind: costSpec.kind,
-                  // The JOB, not the assignment — the only kind whose subject
-                  // is not a visit. uq_nudges_subject_ever therefore asks once
-                  // per job FOREVER (accepted limitation, see the spec).
-                  subjectRef: c.jobId,
-                  technicianId: c.technicianId,
-                  context: {
-                    customerName: customer,
-                    jobTitle: title,
-                    technicianRef: tech.ref,
-                    technicianName: tech.display_name,
-                    jobId: c.jobId,
-                    endsAtLocal: c.endsAtLocal,
-                  },
-                });
-                if (nudge) {
-                  summary.nudgesCreated += 1;
-                  bumpKind('job_cost_gap', 'nudgesCreated');
-                }
-                continue; // rung 1 owns it
-              }
-              // Unreachable technician → the manager takes it, same as rung 1's
-              // fallback. Job-scoped, so no visit window.
-              const item = await flagNudge({
+              const obs = await createObs({
                 tenantId,
                 kind: costSpec.kind,
+                // The JOB, not the assignment — the only kind whose subject is
+                // not a visit. uq_observations_subject_ever therefore notices
+                // once per job FOREVER (the accepted limitation moved store).
                 subjectRef: c.jobId,
-                jobId: c.jobId,
-                technicianRef: tech?.ref ?? null,
-                // The claim is backed by this detector's own filter: freshCost
-                // excludes every job already in withCost (the ledger read). The
-                // CONCLUSION "so the job's costs are incomplete" is deleted — a
-                // job with no parts has complete costs.
-                suggestion:
-                  `'${title}' (${customer}) — nothing recorded yet about what it cost in parts ` +
-                  `or materials. Tell me the figure and I'll put it on the books.`,
+                technicianId: tech?.id ?? null,
+                context: {
+                  customerName: customer,
+                  jobTitle: title,
+                  ...(tech ? { technicianRef: tech.ref, technicianName: tech.display_name } : {}),
+                  jobId: c.jobId,
+                  endsAtLocal: c.endsAtLocal,
+                },
               });
-              if (item) {
-                opened += 1;
-                openedByKind.cost += 1;
+              if (obs) {
+                summary.observationsCreated += 1;
+                bumpKind('job_cost_gap', 'observationsCreated');
               }
             }
           }

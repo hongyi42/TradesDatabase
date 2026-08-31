@@ -58,8 +58,9 @@ export interface OpenItemView {
 }
 
 // What a dying nudge hands the manager. The spec BUILDS this; the watcher
-// performs the write — so the injected flagGap seam every test relies on stays
-// intact, and specs stay pure.
+// performs the write (through the injected flagNudge seam — the visit-specific
+// flagGap seam died with mint-time flagging, plan 2026-08-31), and specs stay
+// pure.
 export interface HandoffPlan {
   subjectRef: string;
   jobId: string;

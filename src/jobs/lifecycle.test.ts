@@ -303,6 +303,8 @@ describe('runLifecycle', () => {
       nudgeMode: 'off' as const,
       nudgesWouldCreate: 0,
       nudgesCreated: 0,
+      observationsCreated: 0,
+      observationsMooted: 0,
       nudgesResolved: 0,
       nudgesAutoClosed: 0,
       nudgesEscalated: 0,
@@ -426,6 +428,7 @@ describe('runLifecycle', () => {
         tenantErrors: 0,
         limitHits: { budget: 0, turns: 0 },
         byAction: {},
+      observationsStale: 0,
         plans: [],
         ...over,
       });
@@ -498,6 +501,7 @@ describe('runLifecycle', () => {
           tenantErrors: 0,
           limitHits: { budget: 0, turns: 0 },
           byAction: {},
+      observationsStale: 0,
           plans: [],
         }),
         hasModelKey: () => true,
@@ -842,6 +846,7 @@ describe('the planner gate', () => {
       limitHits: { budget: 0, turns: 0 },
             tenantErrors: 0,
             byAction: {},
+      observationsStale: 0,
             plans: [],
           };
         },

@@ -660,7 +660,7 @@ const TOOLS = [
 // fix to the direction-comes-from-kind warning, lands on one tool and not the
 // other.
 const SPINE_VIEW_CATALOG =
-  'It CANNOT write, and it can only read these twelve views (nothing else exists to it): ' +
+  'It CANNOT write, and it can only read these thirteen views (nothing else exists to it): ' +
   'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, promise_level, ' +
   'promised_day, locked, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
   'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
@@ -710,7 +710,11 @@ const SPINE_VIEW_CATALOG =
   'each ended; resolution says who or what closed it; ' +
   'v_review_items(id, kind, status, subject_ref, suggestion, resolution, job_id, ' +
   'technician_ref, escalated_from_nudge, created_at, resolved_at) — the ' +
-  "manager's queue; status='open' is what nobody has acted on. ";
+  "manager's queue; status='open' is what nobody has acted on; " +
+  'v_observations(id, kind, status, subject_ref, technician_ref, technician_name, job_id, ' +
+  'dismiss_reason, dismissed_at, not_before, noticed_at) — everything the record has noticed, ' +
+  "the DISMISSED ones included: status='dismissed' rows are where `recover` ids come from, " +
+  'and dismiss_reason is what you said when you set one aside. ';
 
 const SPINE_DAY_RULES = GROUNDING_BARE
   ? // Bare keeps the SCHEMA facts (they are true of the data, not advice to a
@@ -5581,7 +5585,11 @@ async function dispatch(
           ? { note: 'No decisions recorded — you have not decided about this before.' }
           : {}),
         decisions: rows.map((r) => ({
-          gapId: r.nudge_id,
+          // Coalesced (plan 2026-08-31): pre-ask rows carry observation_id and
+          // a null nudge_id, and under the same-id design both name ONE gap —
+          // without this the job-scoped recall loses which gap a dismiss or a
+          // pre-ask send belonged to (phase-3 review F6).
+          gapId: r.nudge_id ?? r.observation_id,
           jobId: r.job_id,
           decidedAt: r.decided_at,
           action: r.action,

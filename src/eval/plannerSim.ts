@@ -40,9 +40,10 @@ import {
   insertTechnician,
   type Nudge,
   type NudgeDecision,
+  type Observation,
 } from '../db/index.js';
 import { runWatchers, type WatchersSummary } from '../jobs/watchers.js';
-import { runPlanner, type PlannerSummary } from '../teamLead/planner.js';
+import { observationAsGapRow, runPlanner, type PlannerSummary } from '../teamLead/planner.js';
 import { runToolLoop, type ToolLoopCall } from '../model/toolLoop.js';
 import { TEAM_LEAD_TOOL_SCHEMAS, dispatchForIdentity } from '../mcp/server.js';
 import { TEAM_LEAD_REF } from '../teamLead/identity.js';
@@ -215,6 +216,11 @@ export async function seedScenario(
   }
 
   const nudgeIds: Record<string, string> = {};
+  // Which keys seeded as OBSERVATIONS (pre-ask) — the history writer below must
+  // key their rows to observation_id or the insert 23503s on the nudge FK
+  // (code-review: exactly the pre-ask-with-history worlds this build makes
+  // canonical).
+  const preAskKeys = new Set<string>();
   for (const spec of world.nudges) {
     if (spec.kind === 'overdue_visit_gap' && !assignmentId) {
       throw new Error(`nudge '${spec.key}': a visit gap needs a visit in the world`);
@@ -234,6 +240,42 @@ export async function seedScenario(
     if (spec.status === 'asked' && !askedAt) {
       throw new Error(`nudge '${spec.key}': status 'asked' needs askedAt`);
     }
+    // THE SPLIT (plan 2026-08-31): a 'pending' spec is a world where something
+    // was NOTICED and nobody asked — that is an OBSERVATION now, and seeding a
+    // pending nudge would hand the planner a relic instead of the shape
+    // production mints. queued/asked specs stay nudges, PLUS an 'asked'
+    // observation under the SAME id, so the once-ever store is coherent (a
+    // world where a question exists is a world where it was noticed first).
+    if (spec.status === 'pending') {
+      preAskKeys.add(spec.key);
+      // A pre-ask world has no question and no ask clocks — production-faithful,
+      // since a question exists only when the planner sends. A spec that DOES
+      // carry them is an authoring error, refused loudly (the asked-needs-
+      // askedAt precedent above): dropping them silently would seed a
+      // different world than the scenario describes (phase-5 review F3).
+      if (spec.askedAt || spec.escalateAfter) {
+        throw new Error(
+          `nudge '${spec.key}': a pending spec seeds an OBSERVATION — askedAt/escalateAfter ` +
+            'have no home there. Move the spec to asked, or drop the clocks.',
+        );
+      }
+      const { data, error } = await sb
+        .from('observations')
+        .insert({
+          tenant_id: tenantId,
+          kind: spec.kind,
+          subject_ref: subjectRef,
+          technician_id: tech.id,
+          status: 'open',
+          context: context as never,
+          noticed_at: atOffset(t0Ms, spec.createdAt),
+        })
+        .select('id')
+        .single();
+      if (error || !data) throw new Error(`seed observation '${spec.key}' failed: ${error?.message}`);
+      nudgeIds[spec.key] = data.id;
+      continue;
+    }
     const { data, error } = await sb
       .from('nudges')
       .insert({
@@ -252,6 +294,17 @@ export async function seedScenario(
       .single();
     if (error || !data) throw new Error(`seed nudge '${spec.key}' failed: ${error?.message}`);
     nudgeIds[spec.key] = data.id;
+    const { error: obsErr } = await sb.from('observations').insert({
+      id: data.id,
+      tenant_id: tenantId,
+      kind: spec.kind,
+      subject_ref: subjectRef,
+      technician_id: tech.id,
+      status: 'asked',
+      context: context as never,
+      noticed_at: atOffset(t0Ms, spec.createdAt),
+    });
+    if (obsErr) throw new Error(`seed asked-observation '${spec.key}' failed: ${obsErr.message}`);
   }
 
   for (const ev of world.evidence ?? []) {
@@ -287,9 +340,11 @@ export async function seedScenario(
   for (const h of world.history ?? []) {
     const nudgeId = nudgeIds[h.nudgeKey];
     if (!nudgeId) throw new Error(`history row names unknown nudge key '${h.nudgeKey}'`);
+    const preAsk = preAskKeys.has(h.nudgeKey);
     const { error } = await sb.from('nudge_decisions').insert({
       tenant_id: tenantId,
-      nudge_id: nudgeId,
+      nudge_id: preAsk ? null : nudgeId,
+      observation_id: preAsk ? nudgeId : null,
       mode: h.outcome === 'shadow' ? 'shadow' : 'live',
       action: h.action,
       outcome: h.outcome,
@@ -424,6 +479,12 @@ export async function runTick(
   // resolver, which stamps a real-clock resolved_at) — summarize's
   // manager_latency_wh reads that stamp, and a real-clock value against a sim
   // closedAt inflates it or silently nulls it (review finding).
+  const { data: priorObsRows, error: priorObsErr } = await sb
+    .from('observations')
+    .select('id, dismissed_at')
+    .eq('tenant_id', tenantId);
+  if (priorObsErr) throw new Error(`pre-tick observation snapshot failed: ${priorObsErr.message}`);
+  const priorObsStamps = new Map((priorObsRows ?? []).map((r) => [r.id, r.dismissed_at]));
   const { data: priorItemRows, error: priorItemErr } = await sb
     .from('review_items')
     .select('id, resolved_at')
@@ -517,6 +578,13 @@ export async function runTick(
   const decisions = ((allDecisions ?? []) as NudgeDecision[]).filter(
     (d) => !priorDecisionIds.has(d.id),
   );
+  // ONE id-space for the graders (plan 2026-08-31): pre-ask rows carry
+  // observation_id with a null nudge_id, and under the same-id design both name
+  // one gap. The graders and the journal key on nudge_id; presenting the
+  // coalesced value keeps them stage-blind, which is the point.
+  for (const d of decisions) {
+    if (!d.nudge_id && d.observation_id) d.nudge_id = d.observation_id;
+  }
   if (decisions.length > 0) {
     const { error } = await sb
       .from('nudge_decisions')
@@ -603,6 +671,47 @@ export async function runTick(
     if (error) throw new Error(`item stamp fix-up failed: ${error.message}`);
   }
 
+  // Observation fix-up + the merged view (plan 2026-08-31). New rows (minted by
+  // this tick's detectors) get noticed_at = sim-now; a dismissal stamped this
+  // tick gets dismissed_at = sim-now. Then observation-only subjects join
+  // nudgesAfter as pseudo-rows in status 'noticed'/'dismissed', so the graders
+  // and runArc see the pre-ask world without learning about two tables.
+  const { data: obsAfter, error: obsAfterErr } = await sb
+    .from('observations')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('noticed_at', { ascending: true });
+  if (obsAfterErr) throw new Error(`post-tick observation read failed: ${obsAfterErr.message}`);
+  // updated_at is deliberately NOT rewritten (the plan names it): the
+  // set_updated_at BEFORE UPDATE trigger overwrites any supplied value with
+  // real now(), v_observations does not expose it, and nothing grades it —
+  // a rewrite would be both impossible and pointless (phase-5 review F2).
+  const nudgeIdsAfter = new Set(((after ?? []) as Nudge[]).map((n) => n.id));
+  const obsPseudo: Nudge[] = [];
+  for (const o of (obsAfter ?? []) as Observation[]) {
+    const patch: { noticed_at?: string; dismissed_at?: string } = {};
+    const prior = priorObsStamps.get(o.id);
+    if (prior === undefined) {
+      patch.noticed_at = nowIso;
+      o.noticed_at = nowIso;
+    }
+    if (o.dismissed_at && prior !== o.dismissed_at) {
+      patch.dismissed_at = nowIso;
+      o.dismissed_at = nowIso;
+    }
+    if (Object.keys(patch).length > 0) {
+      const { error } = await sb.from('observations').update(patch).eq('id', o.id);
+      if (error) throw new Error(`observation stamp fix-up failed: ${error.message}`);
+    }
+    // An 'asked' observation's gap lives in `after` under the same id; the
+    // pre-ask ones are the rows only this read can show.
+    if (nudgeIdsAfter.has(o.id) || o.status === 'asked') continue;
+    obsPseudo.push({
+      ...observationAsGapRow(o),
+      status: o.status === 'dismissed' ? 'dismissed' : 'noticed',
+    } as Nudge);
+  }
+
   return {
     nowIso,
     watchers,
@@ -611,7 +720,7 @@ export async function runTick(
     toolCalls,
     turns,
     userPrompt,
-    nudgesAfter: (after ?? []) as Nudge[],
+    nudgesAfter: [...((after ?? []) as Nudge[]), ...obsPseudo],
   };
 }
 
@@ -717,7 +826,13 @@ export async function runArc(
         const openLeft = tick.nudgesAfter.filter(
           (n) =>
             scenarioNudgeIds.has(n.id) &&
-            (n.status === 'pending' || n.status === 'queued' || n.status === 'asked'),
+            // 'noticed' is OPEN (plan review F3): a held pending-seed scenario
+            // would otherwise read as all-closed after tick 1 and lose every
+            // remaining scripted tick. 'dismissed' counts as closed.
+            (n.status === 'pending' ||
+              n.status === 'queued' ||
+              n.status === 'asked' ||
+              n.status === 'noticed'),
         );
         allClosed = openLeft.length === 0;
         break;

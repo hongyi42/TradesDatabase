@@ -3,7 +3,7 @@ import { Client } from 'pg';
 import { getClient } from '../db/client.js';
 import { createPendingNudge, listNudgesByStatus } from '../db/nudges.js';
 import { recordNudgeDecisions } from '../db/nudgeDecisions.js';
-import type { Nudge, NudgeDecision, Tenant, JobEvidenceRow, RawCapture } from '../db/index.js';
+import type { Nudge, NudgeDecision, NudgeDecisionInput, Observation, Tenant, JobEvidenceRow, RawCapture } from '../db/index.js';
 import type { PlannerSummary, PlannerTenantPlan } from './planner.js';
 import {
   buildGapView,
@@ -131,6 +131,14 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     listTenants: async () => ['t1'],
     getTenant: async () => ({ id: 't1', timezone: 'UTC' }) as unknown as Tenant,
     listNudges: async () => [nudge()],
+    // Plan 2026-08-31: the pre-ask half. Stubbed for the standing reason — 't1'
+    // is not a uuid, and the unstubbed readers fail every test as a swallowed
+    // tenantError. Empty = no observations, which is what every pre-split test
+    // already assumes; the observation tests override.
+    listObservations: async () => [],
+    listDismissedIds: async () => [],
+    setObservation: async () => null,
+    createFromObservation: async () => null,
     listEvidence: async () => [],
     listCostEvents: async () => [],
     // Plan ① 2026-08-21: stubbed for the same reason as listEvidence above.
@@ -2583,7 +2591,7 @@ describe('cleanQuestionDraft', () => {
 describe('validateDecisions — the question draft', () => {
   const view = (over: Record<string, unknown> = {}) =>
     ({
-      nudge: { id: 'n1', status: 'pending', asked_at: null },
+      nudge: { id: 'n1', status: 'pending', asked_at: null, technician_id: 'tech-1' },
       jobId: 'j1', evidenceText: [], recordFilled: null, moneyOnRecord: null,
       history: [], dateLabels: ['Tuesday, Aug 18 at 12:00 PM'], block: '',
       ...over,
@@ -3575,5 +3583,319 @@ describe('every firm considered is named in the record', () => {
       runLoop: loopReturning([]),
     }));
     expect(summary.plans).toHaveLength(summary.tenants);
+  });
+});
+
+
+// ── plan 2026-08-31 "a gap is not an ask": the pre-ask life ─────────────────
+describe('observations in the planner (plan 2026-08-31)', () => {
+  const obs = (over: Partial<Observation> = {}): Observation =>
+    ({
+      id: 'o1',
+      tenant_id: 't1',
+      kind: 'overdue_visit_gap',
+      subject_ref: 'a1',
+      technician_id: 'tech-1',
+      status: 'open',
+      context: {
+        customerName: 'Henderson',
+        jobTitle: 'Furnace tune-up',
+        technicianRef: 'ben-shelton',
+        technicianName: 'Ben Shelton',
+        assignmentId: 'a1',
+        jobId: 'j1',
+        startsAtLocal: '2026-08-15T07:00:00.000Z',
+        endsAtLocal: '2026-08-15T08:00:00.000Z',
+        visitEndLabel: 'Saturday, Aug 15 at 8:00 AM',
+      },
+      dismiss_reason: null,
+      dismissed_at: null,
+      not_before: null,
+      noticed_at: '2026-08-15T11:00:00.000Z',
+      updated_at: '2026-08-15T11:00:00.000Z',
+      ...over,
+    }) as Observation;
+
+  const D = (over: Record<string, unknown>) => ({
+    nudgeId: 'o1',
+    confidence: 'high',
+    reason: 'test',
+    ...over,
+  });
+
+  test('the view renders an observation as state "noticed" — no asked line, no clocks', async () => {
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [],
+      listObservations: async (_t, statuses) => (statuses.includes('open') ? [obs()] : []),
+      runLoop: loopReturning([], seen),
+    }));
+    expect(seen.user).toContain('gap o1');
+    expect(seen.user).toContain('state: noticed');
+    expect(seen.user).not.toContain('asked: not yet');
+    expect(seen.user).not.toContain('escalates automatically');
+  });
+
+  test('send CREATES the ask: queued nudge with the SAME id, observation stamped asked', async () => {
+    const created: Array<Record<string, unknown>> = [];
+    const stamped: Array<[string, Record<string, unknown>, string[]]> = [];
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [],
+      listObservations: async (_t, st) => (st.includes('open') ? [obs()] : []),
+      createFromObservation: async (input) => {
+        created.push(input as unknown as Record<string, unknown>);
+        return nudge({ id: input.id, status: 'queued', question: input.question });
+      },
+      setObservation: async (id, _t, patch, from) => {
+        stamped.push([id, patch as Record<string, unknown>, from]);
+        return obs({ id, status: 'asked' });
+      },
+      runLoop: loopReturning([D({ action: 'send', question: 'How did the tune-up go?' })]),
+    }));
+    expect(summary.applied).toBe(1);
+    expect(created).toHaveLength(1);
+    expect(created[0].id).toBe('o1'); // ONE GAP, ONE ID
+    expect(created[0].subjectRef).toBe('a1');
+    expect(created[0].technicianId).toBe('tech-1');
+    expect(String(created[0].question)).toContain('How did the tune-up go?');
+    expect(String(created[0].question)).toContain('(re:'); // the anchor rides along
+    expect(stamped).toEqual([['o1', { status: 'asked' }, ['open']]]);
+  });
+
+  test('send on a PERSON-LESS observation is refused — a question needs an addressee (code-review)', async () => {
+    const recorded: NudgeDecisionInput[] = [];
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [],
+      listObservations: async (_t, st) =>
+        st.includes('open')
+          ? [obs({ technician_id: null }), obs({ id: 'o2', subject_ref: 'a2' })]
+          : [],
+      recordDecisions: async (rows) => {
+        recorded.push(...rows);
+        return rows.length;
+      },
+      runLoop: loopReturning([
+        D({ action: 'send', question: 'who would even receive this?' }),
+        D({ nudgeId: 'o2', action: 'leave', reason: 'watching' }),
+      ]),
+    }));
+    const refused = recorded.find((r) => r.action === 'send');
+    expect(refused?.outcome).toBe('refused');
+    expect(refused?.outcomeDetail).toContain('nobody to ask');
+  });
+
+  test('the send race: a null create (sent already, or a relic owns the subject) refuses', async () => {
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [],
+      listObservations: async (_t, st) => (st.includes('open') ? [obs()] : []),
+      createFromObservation: async () => null,
+      setObservation: async () => {
+        throw new Error('a refused send must not stamp the observation');
+      },
+      runLoop: loopReturning([D({ action: 'send', question: 'How did it go?' })]),
+    }));
+    expect(summary.applied).toBe(0);
+    expect(summary.refusedAtApply).toBe(1);
+    expect(summary.tenantErrors).toBe(0); // the sentinel never fired
+  });
+
+  test('dismiss applies with the reason, guarded to open — and records with the model words', async () => {
+    const writes: Array<[string, Record<string, unknown>, string[]]> = [];
+    const recorded: NudgeDecisionInput[] = [];
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [],
+      listObservations: async (_t, st) => (st.includes('open') ? [obs()] : []),
+      setObservation: async (id, _t, patch, from) => {
+        writes.push([id, patch as Record<string, unknown>, from]);
+        return obs({ id, status: 'dismissed' });
+      },
+      recordDecisions: async (rows) => {
+        recorded.push(...rows);
+        return rows.length;
+      },
+      runLoop: loopReturning([D({ action: 'dismiss', reason: 'routine visit, nothing riding on it' })]),
+    }));
+    expect(summary.applied).toBe(1);
+    expect(writes).toHaveLength(1);
+    expect(writes[0][1]).toMatchObject({
+      status: 'dismissed',
+      dismissReason: 'routine visit, nothing riding on it',
+    });
+    expect(writes[0][2]).toEqual(['open']);
+    const row = recorded.find((r) => r.action === 'dismiss');
+    expect(row?.subject).toBe('observation'); // keyed to the observation FK
+  });
+
+  test('recover: a dismissed id applies; a hallucinated id is DROPPED with no record row (F4)', async () => {
+    const writes: Array<[string, Record<string, unknown>, string[]]> = [];
+    const recorded: NudgeDecisionInput[] = [];
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [nudge()], // something else keeps the tick alive
+      setSchedule: async (id) => nudge({ id }), // the extend's writer, stubbed for live mode
+      listObservations: async () => [],
+      listDismissedIds: async () => ['o-dis'], // the F3 ids-only read
+      setObservation: async (id, _t, patch, from) => {
+        writes.push([id, patch as Record<string, unknown>, from]);
+        return obs({ id, status: 'open' });
+      },
+      recordDecisions: async (rows) => {
+        recorded.push(...rows);
+        return rows.length;
+      },
+      runLoop: loopReturning([
+        D({ nudgeId: 'o-dis', action: 'recover' }),
+        D({ nudgeId: '00000000-dead-beef-0000-000000000000', action: 'recover' }),
+        D({ nudgeId: 'n1', action: 'extend', escalateAfter: '2026-08-17T00:00:00.000Z' }),
+      ]),
+    }));
+    expect(writes).toEqual([
+      // notBefore clears too — recover means stakes changed, and a stale hold
+      // would put the just-recovered gap straight back to sleep (code-review).
+      ['o-dis', { status: 'open', dismissReason: null, dismissedAt: null, notBefore: null }, ['dismissed']],
+    ]);
+    expect(summary.applied).toBe(2); // recover + extend
+    // The hallucinated id left NO trace: not a decision, not a refusal, no row.
+    expect(recorded.some((r) => r.nudgeId.includes('dead-beef'))).toBe(false);
+    const rec = recorded.find((r) => r.action === 'recover');
+    expect(rec?.subject).toBe('observation');
+  });
+
+  test('close and escalate on an observation are refused with the state named', async () => {
+    const recorded: NudgeDecisionInput[] = [];
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [],
+      listObservations: async (_t, st) =>
+        st.includes('open')
+          ? [obs(), obs({ id: 'o2', subject_ref: 'a2' }), obs({ id: 'o3', subject_ref: 'a3' })]
+          : [],
+      recordDecisions: async (rows) => {
+        recorded.push(...rows);
+        return rows.length;
+      },
+      // ONE submission carrying both: the refused close AND a valid leave —
+      // "the LAST submission stands", so a wholly-refused first attempt would
+      // be overwritten by its retry and the refusal never recorded.
+      runLoop: loopReturning([
+        D({ action: 'close', basis: 'evidence', citation: 'the whole job went fine today' }),
+        D({ nudgeId: 'o2', action: 'escalate', handoffNote: 'please take this over' }),
+        D({ nudgeId: 'o3', action: 'leave', reason: 'watching' }),
+      ]),
+    }));
+    expect(summary.planned).toBe(1);
+    const refused = recorded.find((r) => r.action === 'close');
+    expect(refused?.outcome).toBe('refused');
+    expect(refused?.outcomeDetail).toContain('observation');
+    expect(refused?.outcomeDetail).toContain('dismiss');
+    // Escalate gets ITS OWN copy — the generic pre-ask one promises "reaches
+    // the manager on its own", which is false for observations (review F5).
+    const esc = recorded.find((r) => r.action === 'escalate');
+    expect(esc?.outcome).toBe('refused');
+    expect(esc?.outcomeDetail).toContain('observation');
+    expect(esc?.outcomeDetail).not.toContain('reaches the manager on its own');
+  });
+
+  test('hold on an 80h-old observation APPLIES — the 18h ceiling is ask-shaped (F6)', async () => {
+    const writes: Array<[string, Record<string, unknown>, string[]]> = [];
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [],
+      listObservations: async (_t, st) =>
+        st.includes('open') ? [obs({ noticed_at: '2026-08-12T04:00:00.000Z' })] : [], // ~80h before NOW
+      setObservation: async (id, _t, patch, from) => {
+        writes.push([id, patch as Record<string, unknown>, from]);
+        return obs({ id });
+      },
+      runLoop: loopReturning([D({ action: 'hold', notBefore: '2026-08-16T18:00:00.000Z' })]),
+    }));
+    expect(summary.applied).toBe(1);
+    expect(writes).toEqual([['o1', { notBefore: '2026-08-16T18:00:00.000Z' }, ['open']]]);
+  });
+
+  test('a send group may not mix a relic pending nudge with an observation (F8)', async () => {
+    const recorded: NudgeDecisionInput[] = [];
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge({ id: 'n-relic', status: 'pending', asked_at: null, context: nudge().context })],
+      listObservations: async (_t, st) =>
+        st.includes('open') ? [obs(), obs({ id: 'o2', subject_ref: 'a2', context: { jobId: 'j9' } })] : [],
+      recordDecisions: async (rows) => {
+        recorded.push(...rows);
+        return rows.length;
+      },
+      // A valid sibling decision rides in the SAME submission (see the close
+      // test above for why a retry would erase the refusal).
+      runLoop: loopReturning([
+        D({ action: 'send', question: 'both at once?', nudgeIds: ['o1', 'n-relic'] }),
+        D({ nudgeId: 'o2', action: 'leave', reason: 'fine' }),
+      ]),
+    }));
+    const refused = recorded.find((r) => r.action === 'send' && r.outcome === 'refused');
+    expect(refused?.outcomeDetail).toContain('different machinery');
+  });
+
+  test('the aging counter: an 80h-old untouched observation counts; leave does not clear it', async () => {
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [],
+      listObservations: async (_t, st) =>
+        st.includes('open')
+          ? [
+              obs({ id: 'o-stale', noticed_at: '2026-08-13T00:00:00.000Z' }), // 84h before NOW
+              obs({ id: 'o-fresh', subject_ref: 'a-f', noticed_at: '2026-08-16T06:00:00.000Z' }),
+            ]
+          : [],
+      // o-stale has been LOOKED at (leave, applied) — looking is not acting,
+      // so it still counts. An applied dismiss/send/hold would clear it.
+      listDecisions: async () =>
+        new Map([
+          [
+            'o-stale',
+            [
+              {
+                action: 'leave',
+                outcome: 'applied',
+                decided_at: '2026-08-14T00:00:00.000Z',
+              } as unknown as NudgeDecision,
+            ],
+          ],
+        ]),
+      runLoop: loopReturning([]),
+    }));
+    expect(summary.observationsStale).toBe(1);
+    expect(summary.plans[0]?.observationsStale).toBe(1);
+    expect(summary.tenantErrors).toBe(0); // an alarm, never an error
+  });
+
+  test('the aging counter clears on an applied real verb (a hold counts as acting)', async () => {
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [],
+      listObservations: async (_t, st) =>
+        st.includes('open') ? [obs({ id: 'o-held', noticed_at: '2026-08-13T00:00:00.000Z' })] : [],
+      listDecisions: async () =>
+        new Map([
+          [
+            'o-held',
+            [
+              {
+                action: 'hold',
+                outcome: 'applied',
+                decided_at: '2026-08-14T00:00:00.000Z',
+              } as unknown as NudgeDecision,
+            ],
+          ],
+        ]),
+      runLoop: loopReturning([]),
+    }));
+    expect(summary.observationsStale).toBe(0);
+  });
+
+  test('a cost observation whose ledger filled says DISMISS, not close-on-record', async () => {
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [],
+      listObservations: async (_t, st) =>
+        st.includes('open') ? [obs({ kind: 'job_cost_gap', subject_ref: 'j1' })] : [],
+      listCostEvents: async () => ['j1'],
+      runLoop: loopReturning([], seen),
+    }));
+    expect(seen.user).toContain('dismiss this observation');
+    expect(seen.user).not.toContain('basis "record"');
   });
 });

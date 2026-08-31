@@ -28,5 +28,6 @@ export * from './jobNotes.js';
 export * from './callNumbers.js';
 export * from './callIngest.js';
 export * from './nudges.js';
+export * from './observations.js';
 export * from './nudgeDecisions.js';
 export type { Database, Json } from './database.types.js';

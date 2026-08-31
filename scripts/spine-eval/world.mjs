@@ -138,6 +138,12 @@ const RESET_TABLES = [
   'job_notes',
   'job_note_versions',
   'nudges',
+  // observations (build 4): the nudges trap exactly — tenants/technicians FKs
+  // only, no cascade reaches it, and stale any-status rows suppress fresh
+  // detections through the once-ever dedup. Registered BY NAME at creation
+  // (eng-memory §1). Its decision rows cascade FROM it, but nudge_decisions is
+  // named below anyway.
+  'observations',
   // Cascades from nudges, named anyway (eng-memory §1).
   'nudge_decisions',
   // Infra, but the eval registers its own cold pool for bind_telegram, so stale

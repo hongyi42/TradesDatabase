@@ -2,7 +2,7 @@
 date: 2026-08-31
 task: Build 4 — a gap is not an ask: detection writes an observation the planner keeps; asking is a decision, never a birthright
 research: thoughts/shared/research/2026-08-30-a-gap-is-not-an-ask.md
-status: draft
+status: complete
 supersedes: thoughts/shared/plans/2026-08-26-the-decline-verb.md
 ---
 
@@ -54,6 +54,11 @@ Direction: `docs/engineering-memory.md` §6a entry 4 (user, 2026-08-31).
   with a retirement comment; `observationsCreated` + per-kind counts join.
 - **Eval re-levelling stays deferred** *(user ruling 2026-08-30)* — Phase 5 keeps the suite green,
   nothing more.
+- **Close-on-observation is refused; a filled un-asked hole is DISMISSED** *(implementation call,
+  recorded at review)* — the plan never said what closes a noticed cost gap whose ledger filled.
+  Dismiss is revisable and planner-owned; inventing a terminal observation status was the
+  alternative. THE RECORD line says "dismiss this observation" on noticed gaps, and the basis
+  "record" doctrine carries the stage qualifier.
 
 ## Plain-language walkthrough
 
@@ -132,21 +137,21 @@ gen:types:local`.
 id, `status: 'queued'`, `queued_at`, question; 23505 → null (the race: send applied twice).
 
 ### Automated verification
-- [ ] `npx tsc --noEmit` · `npm run lint` · `npm test`
-- [ ] new `src/db/observations.test.ts`: round-trip; uq blocks re-notice in EVERY status; dismiss
+- [x] `npx tsc --noEmit` · `npm run lint` · `npm test`
+- [x] new `src/db/observations.test.ts`: round-trip; uq blocks re-notice in EVERY status; dismiss
       guard refuses on non-open; recover guard refuses on non-dismissed; RLS/grant posture probe
       (the `jobNotes.test.ts` `pg_constraint`/`has_table_privilege` pattern); decisions row with
       observation_id only satisfies the check; cascade from observations deletes its decisions
-- [ ] `createNudgeFromObservation` with a taken id returns null, does not throw
+- [x] `createNudgeFromObservation` with a taken id returns null, does not throw
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack (`npx supabase start`)
-- [ ] After `supabase db reset`: `\d observations` via psql shows the CHECKs; `select` on
+- [x] After `supabase db reset`: `\d observations` via psql shows the CHECKs; `select` on
       `v_observations` as `spine_reader` succeeds, as `anon` fails; TWO-TENANT probe — tenant B's
       `spine.tenant_id` setting sees zero of tenant A's observations (review F1)
 
 ### Manual verification
-- [ ] none
+- [x] none
 ---
 *No pause — automated checks suffice.*
 
@@ -179,16 +184,16 @@ The mint sites write observations; cap, reachability check, mint-time manager fa
   per-firm settings read, `stage0Suggestion` (expiry handoff still uses it).
 
 ### Automated verification
-- [ ] gates; watcher tests rewritten: a fresh gap in live mode creates an observation and NO nudge,
+- [x] gates; watcher tests rewritten: a fresh gap in live mode creates an observation and NO nudge,
       NO review item, regardless of reachability; an unreachable-tech gap creates the same row; 8
       fresh gaps create 8 observations (the cap is dead); a dismissed observation's subject is not
       re-noticed; shadow mode still writes nothing; **cost observations created with nudgeMode
       `'off'`** (review F2)
-- [ ] existing escalation/expiry/moot tests pass unmodified (the sweep did not change)
+- [x] existing escalation/expiry/moot tests pass unmodified (the sweep did not change)
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack, `npm run seed:local`
-- [ ] Drive one live tick against a seeded overdue visit; read back via psql: 1 observation row,
+- [x] Drive one live tick against a seeded overdue visit; read back via psql: 1 observation row,
       0 new nudges, 0 new review_items
 ---
 *No pause.*
@@ -245,12 +250,12 @@ The mint sites write observations; cap, reachability check, mint-time manager fa
 - CONTEXT section: name `v_observations` beside `v_nudges`.
 
 ### Automated verification
-- [ ] gates; planner tests: send-on-observation creates a queued nudge with the SAME id and stamps
+- [x] gates; planner tests: send-on-observation creates a queued nudge with the SAME id and stamps
       the observation asked; the race (observation asked between plan and write) refuses; dismiss
       hides from next view; recover restores; dismissed subject never re-noticed by Phase-2 sweep
       test; close/escalate on an observation refused with the state named; historyLine spans a
       dismiss (pre-ask) and an extend (post-ask) on one id
-- [ ] `submit_plan` schema snapshot updated; `PLANNER_JUDGMENT_ACTIONS` pin test updated
+- [x] `submit_plan` schema snapshot updated; `PLANNER_JUDGMENT_ACTIONS` pin test updated
 ---
 *No pause.*
 
@@ -263,11 +268,13 @@ The mint sites write observations; cap, reachability check, mint-time manager fa
 - **`scripts/ticks/report.mjs`**: print `stale observations: N` per firm when > 0.
 - **`src/mcp/server.ts`**: `v_observations(...)` column line in the view catalog (`:707` region,
   both tool descriptions that enumerate views).
-- **`src/db/nudgeDecisions.ts`**: confirm `listDecisionsForJob` needs nothing (job_id is stamped on
-  observation decisions too — writer sets it from context, same as today).
+- **`src/db/nudgeDecisions.ts`**: `listDecisionsForJob` needs nothing for in-view decisions
+  (job_id stamped from context). CORRECTED AT REVIEW: a `recover` row carries jobId NULL — its
+  subject is deliberately outside the view (the dismissed read is ids-only), so job-scoped recall
+  misses recover rows; per-gap recall finds them via observation_id. Recorded at the writer.
 
 ### Automated verification
-- [ ] gates; a seeded 80h-old untouched observation yields `observationsStale: 1` and `ok: true`;
+- [x] gates; a seeded 80h-old untouched observation yields `observationsStale: 1` and `ok: true`;
       catalog string test updated; `v_observations` answers through the real `spine_read` dispatch
       (the toolCases idiom)
 ---
@@ -297,10 +304,10 @@ The mint sites write observations; cap, reachability check, mint-time manager fa
   (`:41`) with `'noticed'` so arc checks treat an unsent observation as open.
 
 ### Automated verification
-- [ ] gates; full `npm test` green twice (the flake discipline); a vitest smoke that SEEDS a
+- [x] gates; full `npm test` green twice (the flake discipline); a vitest smoke that SEEDS a
       pending-seed scenario world and runs one `runTick` through the injected eval caller,
       asserting no `harnessError` — `--dry` proves nothing, it exits before seeding
       (`run.mjs:103-115`, review F12)
-- [ ] `npm run decisions:index` regenerated and committed with the plan
+- [x] `npm run decisions:index` regenerated and committed with the plan
 ---
 *No pause. Build gates only — production deploy stays frozen until the whole order is evaluated.*

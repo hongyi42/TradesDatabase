@@ -188,8 +188,13 @@ export async function flagNudgeGap(input: {
   });
 }
 
-// The visit-gap flagger, unchanged for every existing caller: a thin wrapper
-// that pins the kind and the assignment-as-subject convention.
+// The visit-gap flagger. DEAD IN PRODUCTION since plan 2026-08-31 ("a gap is
+// not an ask"): its last caller was the mint-time manager fallback, which the
+// split deleted — detection records observations and flags nobody. Kept for
+// its unit tests (which really exercise flagNudgeGap's dedup) until build 5's
+// cleanup deletes it; DO NOT wire a new detector through it — that would
+// reintroduce manager items at detection time, the exact thing the split
+// removed.
 export async function flagOverdueVisitGap(input: {
   tenantId: string;
   assignmentId: string;

@@ -295,21 +295,10 @@ describe('runLifecycle', () => {
       tenants: 1,
       gapsFound: 2,
       freshGaps: 1,
-      itemsOpened: 0,
       itemsResolved: 0,
-      pushed: 0,
-      pushSkipped: false,
       tenantErrors: 0,
-      nudgeMode: 'off' as const,
-      nudgesWouldCreate: 0,
-      nudgesCreated: 0,
       observationsCreated: 0,
-      observationsMooted: 0,
-      nudgesResolved: 0,
-      nudgesAutoClosed: 0,
-      nudgesEscalated: 0,
-      nudgesExpired: 0,
-        byKind: {},
+      byKind: {},
     };
     const BASE = {
       listInStates: async () => [],
@@ -346,15 +335,15 @@ describe('runLifecycle', () => {
       expect(summary.ok).toBe(false);
     });
 
-    test('shadow and live pass through to the dep with the run nowIso; unset NUDGES_MODE rides as off', async () => {
-      const calls: Array<[string, string, string]> = [];
+    test('shadow and live pass through to the dep with the run nowIso', async () => {
+      const calls: Array<[string, string]> = [];
       for (const mode of ['shadow', 'live'] as const) {
         process.env.WATCHERS_MODE = mode;
         const summary = await runLifecycle(NOW, {
           ...COST_STUBS,
           ...BASE,
-          runWatchers: async (nowIso, m, _deps, nudgeMode) => {
-            calls.push([nowIso, m, nudgeMode ?? 'MISSING']);
+          runWatchers: async (nowIso, m) => {
+            calls.push([nowIso, m]);
             return { ...WATCH_OK, mode };
           },
         });
@@ -362,45 +351,26 @@ describe('runLifecycle', () => {
         expect(summary.ok).toBe(true);
       }
       expect(calls).toEqual([
-        [NOW, 'shadow', 'off'],
-        [NOW, 'live', 'off'],
+        [NOW, 'shadow'],
+        [NOW, 'live'],
       ]);
     });
 
-    test('NUDGES_MODE gates the ladder: shadow/live pass through; a typo is a LOUD stepError', async () => {
+    test('NUDGES_MODE is RETIRED — any value is simply ignored (build 5)', async () => {
       process.env.WATCHERS_MODE = 'live';
-      const nudgeModes: string[] = [];
-      for (const nm of ['shadow', 'live'] as const) {
-        process.env.NUDGES_MODE = nm;
-        const summary = await runLifecycle(NOW, {
-          ...COST_STUBS,
-          ...BASE,
-          runWatchers: async (_nowIso, _m, _deps, nudgeMode) => {
-            nudgeModes.push(nudgeMode ?? 'MISSING');
-            return { ...WATCH_OK, mode: 'live' as const, nudgeMode: nm };
-          },
-        });
-        expect(summary.ok).toBe(true);
-      }
-      expect(nudgeModes).toEqual(['shadow', 'live']);
-
-      // The typo: watchers step errors, dep never called — a half-typed
-      // rollout must not silently run with the ladder off.
-      process.env.NUDGES_MODE = 'lvie';
+      process.env.NUDGES_MODE = 'lvie'; // the old loud-typo case: now inert
       let called = false;
       const summary = await runLifecycle(NOW, {
         ...COST_STUBS,
         ...BASE,
         runWatchers: async () => {
           called = true;
-          return WATCH_OK;
+          return { ...WATCH_OK, mode: 'live' as const };
         },
       });
-      expect(called).toBe(false);
-      expect(summary.watchers).toEqual({
-        stepError: "NUDGES_MODE must be 'shadow' or 'live' when set, got 'lvie'",
-      });
-      expect(summary.ok).toBe(false);
+      expect(called).toBe(true);
+      expect(summary.ok).toBe(true);
+      delete process.env.NUDGES_MODE;
     });
 
     // Build 1b. Until this existed the planner was the only step with no
@@ -439,7 +409,6 @@ describe('runLifecycle', () => {
           runWatchers: async () => ({
             ...WATCH_OK,
             mode: 'live' as const,
-            nudgeMode: 'live' as const,
           }),
           runPlanner: async () => plannerSummary(over),
           hasModelKey: () => true,
@@ -486,7 +455,7 @@ describe('runLifecycle', () => {
       const healthy = await runLifecycle(NOW, {
         ...COST_STUBS,
         ...BASE,
-        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const }),
         runPlanner: async () => ({
           mode: 'live' as const,
           tenants: 0,
@@ -509,27 +478,29 @@ describe('runLifecycle', () => {
       expect(healthy.ladderMute).toBeUndefined();
       expect(healthy.ok).toBe(true);
 
-      // Ladder live, planner rolled back, sweep live → mute WITH the backstop.
+      // Watcher live, planner rolled back → mute: observations recorded,
+      // nobody can EVER act on them (build 5 — no backstop sweep exists).
       process.env.PLANNER_MODE = 'off';
       const mute = await runLifecycle(NOW, {
         ...COST_STUBS,
         ...BASE,
-        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const }),
         hasModelKey: () => true,
       });
-      expect(mute.ladderMute).toContain('18h never-asked sweep');
+      expect(mute.ladderMute).toContain('no planner is running');
+      expect(mute.ladderMute).toContain('nothing else will');
       expect(mute.ok).toBe(true); // a rollback is a choice, not a failure
 
-      // Sweep rolled back too → the harsher wording: no backstop at all.
+      // Watcher rolled back too → nothing is even recorded; not mute, just off.
       process.env.WATCHERS_MODE = 'shadow';
-      const noFloor = await runLifecycle(NOW, {
+      const noWatch = await runLifecycle(NOW, {
         ...COST_STUBS,
         ...BASE,
-        runWatchers: async () => ({ ...WATCH_OK, mode: 'shadow' as const, nudgeMode: 'live' as const }),
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'shadow' as const }),
         hasModelKey: () => true,
       });
-      expect(noFloor.ladderMute).toContain('NO backstop sweep is running');
-      expect(noFloor.ok).toBe(true);
+      expect(noWatch.ladderMute).toBeUndefined();
+      expect(noWatch.ok).toBe(true);
 
       // The OTHER way to be voiceless — planner live, no credentials. It used to
       // surface as compose's own credential skip; with compose gone the mute
@@ -539,7 +510,7 @@ describe('runLifecycle', () => {
       const keyless = await runLifecycle(NOW, {
         ...COST_STUBS,
         ...BASE,
-        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const, nudgeMode: 'live' as const }),
+        runWatchers: async () => ({ ...WATCH_OK, mode: 'live' as const }),
         hasModelKey: () => false,
       });
       expect(keyless.ladderMute).toContain('no inference credentials');
@@ -955,7 +926,7 @@ describe('the planner gate', () => {
 
   test('a throwing planner is a stepError, red — and the tick keeps going', async () => {
     process.env.PLANNER_MODE = 'shadow';
-    process.env.NUDGES_MODE = 'live';
+    process.env.WATCHERS_MODE = 'live';
     const s = await runLifecycle('2026-07-02T12:00:00.000Z', {
       ...STUBS,
       runPlanner: async () => {
@@ -964,7 +935,7 @@ describe('the planner gate', () => {
     });
     expect(s.teamLeadPlanner).toEqual({ stepError: 'provider down' });
     expect(s.ok).toBe(false);
-    // Shadow planner + live ladder is a mute ladder, and the tick says so.
+    // Shadow planner + live watcher is a mute ladder, and the tick says so.
     expect(s.ladderMute).toBeDefined();
   });
 });

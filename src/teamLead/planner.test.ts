@@ -26,11 +26,7 @@ import {
 } from './planner.js';
 import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
 import { ORPHAN_FOOTER_PREFIX } from './memory.js';
-import {
-  NUDGE_DELIVERY_DEADLINE_HOURS,
-  NUDGE_ESCALATE_HOURS,
-  NUDGE_ESCALATE_MAX_HOURS,
-} from '../jobs/watchers.js';
+
 import { ToolLoopLimitError, type ToolLoopResult } from '../model/toolLoop.js';
 
 // NOW is 12:00 — on the planner's cadence grid (720 minutes since midnight,
@@ -200,157 +196,6 @@ const moneyRow = (
     occurred_at: occurredAt,
     corrects_event_id: null,
   }) as unknown as import('../db/index.js').MoneyEvent;
-
-describe('extend — the only way to move a deadline OUTWARD (plan 2026-08-21 ①)', () => {
-  // Two hours before NOW, deliberately: with asked_at exactly 24h back the
-  // DEFAULT deadline lands on NOW itself, and then "in the future but not later
-  // than the deadline" is an empty set — the later-than rail becomes untestable.
-  const ASKED = '2026-08-16T10:00:00.000Z';
-  const askedMs = Date.parse(ASKED);
-  const hrs = (n: number) => new Date(askedMs + n * 3_600_000).toISOString();
-
-  const run = async (over: Partial<Nudge>, escalateAfter: unknown) => {
-    const setSchedule = vi.fn<NonNullable<PlannerDeps['setSchedule']>>(async () => nudge());
-    const recorded: Record<string, unknown>[] = [];
-    const summary = await runPlanner(NOW, 'live', baseDeps({
-      listNudges: async () => [nudge({ asked_at: ASKED, ...over })],
-      setSchedule,
-      markOutcome: vi.fn<NonNullable<PlannerDeps['markOutcome']>>(async () => nudge()),
-      recordDecisions: async (rows) => {
-        recorded.push(...(rows as unknown as Record<string, unknown>[]));
-        return rows.length;
-      },
-      runLoop: loopReturning([
-        { nudgeId: 'n1', action: 'extend', escalateAfter, confidence: 'medium', reason: 'end of day' },
-      ]),
-    }));
-    return { summary, setSchedule, recorded };
-  };
-
-  // The model has to name an instant LATER than the deadline, so it has to be
-  // told the deadline. On a first extend nothing is stamped, so printing only
-  // the stamp gave it the number exactly when it already knew it.
-  // Drift guard. The prompt states the ceiling and the rail enforces it; if a
-  // future retune moves the constant and the prompt keeps an old literal, the
-  // model names instants the rail refuses — and a refusal only reaches it when
-  // EVERY decision was refused, so it would never learn why.
-  test('the prompt states the SAME ceiling the rail enforces', () => {
-    // Both places the number is stated to the model. It lives in the SYSTEM
-    // prompt, not the per-tick user message — the gap block carries each row's
-    // own deadline, the ceiling is a standing rule.
-    expect(PLANNER_SYSTEM).toContain(`no more than ${NUDGE_ESCALATE_MAX_HOURS} hours`);
-    // The tool schema too — that description is the other place the number is
-    // stated, and it is what the model reads when filling escalateAfter in.
-    expect(JSON.stringify(SUBMIT_PLAN_TOOL.inputSchema)).toContain(
-      `no more than ${NUDGE_ESCALATE_MAX_HOURS} hours`,
-    );
-  });
-
-  test('every asked gap states the instant it escalates at, stamped or not', async () => {
-    const seen: { user?: string } = {};
-    await runPlanner(NOW, 'shadow', baseDeps({
-      listNudges: async () => [nudge({ asked_at: ASKED, escalate_after: null })],
-      runLoop: loopReturning([], seen),
-    }));
-    expect(seen.user).toContain('escalates automatically at: 2026-08-17T10:00:00.000Z');
-    expect(seen.user).toContain('the default — nothing has moved it');
-
-    const seen2: { user?: string } = {};
-    await runPlanner(NOW, 'shadow', baseDeps({
-      listNudges: async () => [nudge({ asked_at: ASKED, escalate_after: hrs(30) })],
-      runLoop: loopReturning([], seen2),
-    }));
-    expect(seen2.user).toContain(`escalates automatically at: ${hrs(30)}`);
-    expect(seen2.user).not.toContain('the default');
-  });
-
-  test('moves the deadline out, status-guarded to asked', async () => {
-    const { setSchedule, summary, recorded } = await run({}, hrs(36));
-    expect(setSchedule).toHaveBeenCalledWith('n1', 't1', { escalateAfter: hrs(36) }, ['asked']);
-    expect(summary.applied).toBe(1);
-    expect(recorded[0].escalateAfter).toBe(hrs(36)); // the corpus records HOW FAR
-  });
-
-  test('is refused on a gap that has not been asked yet', async () => {
-    const { summary } = await run({ status: 'pending', asked_at: null }, hrs(36));
-    expect(summary.decisions).toBe(0);
-    expect(summary.plans[0].dropped[0].why).toContain('no usable ask time');
-  });
-
-  // The STATUS rail specifically. The test above trips the asked_at rail first
-  // (a pending row always has a null asked_at in practice), so without this the
-  // status check could be deleted and the suite would stay green.
-  test('is refused on a PENDING gap even when it carries an ask time', async () => {
-    const { summary, setSchedule } = await run({ status: 'pending' }, hrs(36));
-    expect(setSchedule).not.toHaveBeenCalled();
-    expect(summary.plans[0].dropped[0].why).toContain('no silence to wait through');
-  });
-
-  test('is refused when the instant has already passed', async () => {
-    // Reachable whenever the current deadline is itself in the past — an
-    // "extend" that shortens would otherwise pass every remaining rail.
-    const { summary, setSchedule } = await run(
-      { escalate_after: '2026-08-16T09:00:00.000Z' }, // already behind
-      '2026-08-16T11:00:00.000Z', // later than the stamp, but still before NOW
-    );
-    expect(setSchedule).not.toHaveBeenCalled();
-    expect(summary.plans[0].dropped[0].why).toContain('already passed');
-  });
-
-  // The fail-open bug: Date.parse(null) is NaN, and BOTH `>` and `<=` against
-  // NaN are false — so without an explicit finite check every rail below passes
-  // and an unbounded extend lands.
-  test('is refused when asked_at is unparseable, rather than sailing through every rail', async () => {
-    const { summary, setSchedule } = await run({ status: 'asked', asked_at: 'not-a-date' }, hrs(999));
-    expect(setSchedule).not.toHaveBeenCalled();
-    expect(summary.plans[0].dropped[0].why).toContain('no clock to move');
-  });
-
-  test(`is refused past the ${NUDGE_ESCALATE_MAX_HOURS}h ceiling, and the reason names it`, async () => {
-    const { summary, setSchedule } = await run({}, hrs(NUDGE_ESCALATE_MAX_HOURS + 1));
-    expect(setSchedule).not.toHaveBeenCalled();
-    expect(summary.plans[0].dropped[0].why).toContain(`${NUDGE_ESCALATE_MAX_HOURS}h limit`);
-  });
-
-  test('accepts exactly the ceiling — the bound is inclusive', async () => {
-    const { setSchedule } = await run({}, hrs(NUDGE_ESCALATE_MAX_HOURS));
-    expect(setSchedule).toHaveBeenCalled();
-  });
-
-  test('is refused when it would not actually be LATER than the current deadline', async () => {
-    // Otherwise extend is a no-op or an escalate-sooner wearing the wrong name.
-    const { summary, setSchedule } = await run({}, hrs(NUDGE_ESCALATE_HOURS - 1));
-    expect(setSchedule).not.toHaveBeenCalled();
-    expect(summary.plans[0].dropped[0].why).toContain('not LATER than the deadline');
-  });
-
-  test('measures against a STAMPED deadline when one exists', async () => {
-    const { summary } = await run({ escalate_after: hrs(40) }, hrs(38));
-    expect(summary.decisions).toBe(0); // 38h is earlier than the stamped 40h
-  });
-
-  test('an UNPARSEABLE stamp falls back to the constant, not to "stamped"', async () => {
-    // Mirrors the sweep's own fail-closed read; if the two disagreed, extend
-    // could report success while the sweep escalated on a different clock.
-    // Asserting REFUSAL is what makes this non-vacuous: under the bug the stamp
-    // parses to NaN, `at <= NaN` is false, and an accept-assertion would pass
-    // either way. Only the correct fallback refuses an instant inside the 24h.
-    const { setSchedule, summary } = await run(
-      { escalate_after: 'garbage' },
-      hrs(NUDGE_ESCALATE_HOURS - 1),
-    );
-    expect(setSchedule).not.toHaveBeenCalled();
-    expect(summary.plans[0].dropped[0].why).toContain('not LATER than the deadline');
-  });
-
-  test('repeated extends cannot walk a gap past the ceiling', async () => {
-    const { setSchedule } = await run(
-      { escalate_after: hrs(NUDGE_ESCALATE_MAX_HOURS) },
-      hrs(NUDGE_ESCALATE_MAX_HOURS + 1),
-    );
-    expect(setSchedule).not.toHaveBeenCalled();
-  });
-});
 
 describe('the planner can see money (plan 2026-08-21 ①)', () => {
   const withMoney = async (money: unknown[], over: Partial<Nudge> = {}) => {
@@ -934,12 +779,12 @@ describe('the code rails on what the model returns', () => {
     expect(s.plans[0].dropped[0].why).toContain('already passed');
   });
 
-  test('a hold past the delivery deadline is refused — it would hand the gap over, not hold it', async () => {
+  test('a far-future hold is ACCEPTED — the delivery-deadline ceiling died with the clock (build 5)', async () => {
     const s = await runPending([
       { nudgeId: 'n1', action: 'hold', notBefore: '2099-01-01T00:00:00Z', confidence: 'high', reason: 'x' },
     ]);
-    expect(s.decisions).toBe(0);
-    expect(s.plans[0].dropped[0].why).toContain(`past the ${NUDGE_DELIVERY_DEADLINE_HOURS}h delivery deadline`);
+    expect(s.decisions).toBe(1);
+    expect(s.plans[0].dropped).toEqual([]);
   });
 
   test('a WHOLLY refused plan comes back as a tool error the model can correct', async () => {
@@ -1087,10 +932,10 @@ describe('the state rails — no decision may be a silent no-op', () => {
     ]);
     expect(s.decisions).toBe(0);
     expect(s.plans[0].dropped[0].why).toContain('ALREADY been asked');
-    // The refusal must NOT tell the model that leaving a gap alone grants time —
-    // it does not; the escalation clock runs regardless. It must name `extend`.
-    expect(s.plans[0].dropped[0].why).toContain('use extend');
-    expect(s.plans[0].dropped[0].why).toContain('does NOT stop its escalation');
+    // Build 5: no clock runs, so the honest guidance is that waiting IS the
+    // way to grant time — nothing moves a gap but the planner.
+    expect(s.plans[0].dropped[0].why).toContain('simply wait');
+    expect(s.plans[0].dropped[0].why).toContain('nothing moves a gap but you');
   });
 
   test('hold on an already-asked gap is refused too — the question is already out', async () => {
@@ -3852,7 +3697,6 @@ describe('observations in the planner (plan 2026-08-31)', () => {
     const recorded: NudgeDecisionInput[] = [];
     const summary = await runPlanner(NOW, 'live', baseDeps({
       listNudges: async () => [nudge()], // something else keeps the tick alive
-      setSchedule: async (id) => nudge({ id }), // the extend's writer, stubbed for live mode
       listObservations: async () => [],
       listDismissedIds: async () => ['o-dis'], // the F3 ids-only read
       setObservation: async (id, _t, patch, from) => {
@@ -3866,7 +3710,7 @@ describe('observations in the planner (plan 2026-08-31)', () => {
       runLoop: loopReturning([
         D({ nudgeId: 'o-dis', action: 'recover' }),
         D({ nudgeId: '00000000-dead-beef-0000-000000000000', action: 'recover' }),
-        D({ nudgeId: 'n1', action: 'extend', escalateAfter: '2026-08-17T00:00:00.000Z' }),
+        D({ nudgeId: 'n1', action: 'leave', reason: 'watching' }),
       ]),
     }));
     expect(writes).toEqual([
@@ -3874,7 +3718,7 @@ describe('observations in the planner (plan 2026-08-31)', () => {
       // would put the just-recovered gap straight back to sleep (code-review).
       ['o-dis', { status: 'open', dismissReason: null, dismissedAt: null, notBefore: null }, ['dismissed']],
     ]);
-    expect(summary.applied).toBe(2); // recover + extend
+    expect(summary.applied).toBe(2); // recover + leave
     // The hallucinated id left NO trace: not a decision, not a refusal, no row.
     expect(recorded.some((r) => r.nudgeId.includes('dead-beef'))).toBe(false);
     const rec = recorded.find((r) => r.action === 'recover');

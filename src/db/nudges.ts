@@ -387,13 +387,11 @@ export async function markNudgeOutcome(
   return data as Nudge | null;
 }
 
-// The planner's ONE write onto a nudge's timing (plan 2026-08-19, Phase 2).
-//
-// Deliberately a SCHEDULE write and nothing else: the planner never escalates,
-// resolves or cancels a row directly. To escalate it sets escalate_after to now
-// and lets the sweep perform the handoff — so the rung-2 flag, the orphan
-// doctrine and the "flag first, close second" order stay in ONE place
-// (watchers.ts) rather than being re-implemented beside it.
+// The planner's write onto a nudge's timing — since build 5, a NOTBEFORE-ONLY
+// writer in practice: `hold` writes the planner's own pacing note (advisory —
+// nothing enforces it but the planner's next look), and no clock reads
+// escalate_after any more (the column is dormant; escalate performs its own
+// handoff at apply time in planner.ts).
 //
 // Status-guarded conditional UPDATE (the markNudgeQueued shape): open rows only,
 // null when the row moved under us. A planner call takes seconds, and a delivery

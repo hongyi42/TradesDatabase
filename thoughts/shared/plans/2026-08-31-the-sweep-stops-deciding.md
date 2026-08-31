@@ -301,16 +301,19 @@ tests deleted, hold-ceiling refusal test (:941) deleted, PLANNER_SYSTEM pins on 
 `NUDGE_ESCALATE_MAX_HOURS` copy (:231/:235) updated, verb pin self-syncs (:2861–2871).
 
 ### Automated verification
-- [ ] gates pass
-- [ ] pins: a silent asked gap past 24h is UNTOUCHED by the sweep; a cancelled visit's
+- [x] gates pass
+- [x] pins: a silent asked gap past 24h is UNTOUCHED by the sweep; a cancelled visit's
   observation stays `open` (no moot-dismiss); an 18h-old queued row stays `queued`;
   no review_items row is ever opened by `runWatchers` (item auto-resolve still closes them)
-- [ ] `PLANNER_ACTIONS`/schema pin passes with 7 verbs; PLANNER_JUDGMENT_ACTIONS pin updated
+- [x] `PLANNER_ACTIONS`/schema pin passes with 7 verbs; PLANNER_JUDGMENT_ACTIONS pin updated
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack
-- [ ] Full `runWatchers` over a seeded firm with one moot ask + one silent-past-24h ask:
+- [x] Full `runWatchers` over a seeded firm with one moot ask + one silent-past-24h ask:
   pg read-back shows both rows unmoved; observations minted; summary shape matches.
+  *(codified: plannerSim.test.ts "the sweep touches nothing" — real runWatchers live over a
+  30h-silent ask, a 20h queued relic and a cancelled-visit observation; pg reads all unmoved,
+  zero review items.)*
 
 ### Manual verification
 - [ ] none

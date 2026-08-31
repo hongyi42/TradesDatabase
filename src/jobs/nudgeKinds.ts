@@ -45,6 +45,15 @@ export interface OpenItemView {
   subjectRef: string;
   jobId: string;
   startsAtLocal: string | null;
+  // When the item was FLAGGED, firm wall clock — the anchor for "arrived
+  // after this was flagged". Null when the stamp cannot be parsed, and the
+  // activity path declines (fail-closed).
+  flaggedAtLocal: string | null;
+  // True for a planner-escalated item (detail.escalatedFromNudge). The visit
+  // STATUS path must not self-clean these: the archetype escalation is a
+  // completed visit with no report, and status-resolving it would eat the
+  // handover the moment it opened (build-5 final review).
+  escalated: boolean;
 }
 
 export interface NudgeKindSpec {
@@ -68,12 +77,17 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
   // The two closure paths, their resolution copy carried through every
   // refactor VERBATIM — these strings are manager-visible history.
   itemResolved(item, f) {
-    if (item.startsAtLocal && f.hasActivitySince(item.jobId, item.startsAtLocal)) {
+    // AFTER THE FLAG, literally (build-5 final review): the copy says so, and
+    // comparing against the visit start let pre-flag activity — which a
+    // planner escalates DESPITE — close a just-opened handover.
+    if (item.flaggedAtLocal && f.hasActivitySince(item.jobId, item.flaggedAtLocal)) {
       return 'field report arrived after this was flagged';
     }
-    const status = f.visitStatusById.get(item.subjectRef);
-    if (status === 'cancelled' || status === 'completed') {
-      return `visit was ${status} after this was flagged`;
+    if (!item.escalated) {
+      const status = f.visitStatusById.get(item.subjectRef);
+      if (status === 'cancelled' || status === 'completed') {
+        return `visit was ${status} after this was flagged`;
+      }
     }
     return null;
   },

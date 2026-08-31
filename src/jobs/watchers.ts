@@ -233,7 +233,12 @@ export interface WatchersSummary {
   // nothing fires on them and they never redden a tick. Totals across
   // tenants; the per-tenant detail is on stderr, and `npm run ticks` prints
   // the ⚠ line from the latest run.
-  alarms: {
+  //
+  // ABSENT, not zero, when the pass never ran (final review): a shadow-mode
+  // sweep computes nothing, and zeros indistinguishable from "measured quiet"
+  // would let a rollback run overwrite real standing counts in the report's
+  // last-write-wins scan with a false all-clear.
+  alarms?: {
     // Asked gaps ≥24h old with no applied planner judgment inside the window.
     asksUnattended: number;
     // pending/queued rows ≥18h old, or frozen at the serve/attempt caps.
@@ -241,6 +246,9 @@ export interface WatchersSummary {
     // Open observations ≥72h old, untouched (leave excluded) in the window.
     observationsStale: number;
   };
+  // The alarm pass threw for at least one tenant — its counts are a FLOOR,
+  // not the truth. Present only when true; fail toward saying so.
+  alarmsPartial?: boolean;
   // tenant_settings has not been migrated to this database yet, so every firm ran
   // on the global defaults. Present ONLY when true — an operator condition, not a
   // routine counter. It does NOT make the tick unhealthy: the sweep is unaffected
@@ -295,7 +303,10 @@ export async function runWatchers(
     tenantErrors: 0,
     observationsCreated: 0,
     byKind: {},
-    alarms: { asksUnattended: 0, deliveryStuck: 0, observationsStale: 0 },
+    // Live only — see the field's ABSENT-not-zero contract.
+    ...(mode === 'live'
+      ? { alarms: { asksUnattended: 0, deliveryStuck: 0, observationsStale: 0 } }
+      : {}),
   };
   const bumpKind = (
     kind: string,
@@ -380,7 +391,22 @@ export async function runWatchers(
           typeof d.startsAtLocal === 'string' && !Number.isNaN(Date.parse(d.startsAtLocal))
             ? d.startsAtLocal
             : null;
-        return jobId ? [{ item, spec, jobId, startsAtLocal }] : [];
+        // The FLAG time, firm wall clock — the anchor auto-resolve compares
+        // activity against (final-review build 5): "field report arrived after
+        // this was flagged" must mean AFTER THE FLAG. Anchoring on the visit
+        // start let activity that PREDATED the flag — exactly what a planner
+        // escalates DESPITE, having judged it non-answering — resolve a
+        // just-opened handover within one sweep, with the once-ever dedup
+        // blocking any re-flag. Fail-closed: an unparseable created_at yields
+        // null and the activity path declines.
+        const flaggedAtLocal = Number.isNaN(Date.parse(item.created_at))
+          ? null
+          : naiveLocal(item.created_at);
+        // A planner-escalated item must NOT self-clean on the visit's status:
+        // the archetype escalation IS a completed visit with no report, so the
+        // status test would eat the handover the moment it opened.
+        const escalated = typeof d.escalatedFromNudge === 'string';
+        return jobId ? [{ item, spec, jobId, startsAtLocal, flaggedAtLocal, escalated }] : [];
       });
 
       // THE OPEN-NUDGE AND OPEN-OBSERVATION SWEEPS ARE GONE (build 5): no
@@ -499,7 +525,13 @@ export async function runWatchers(
       // different question its item actually asks (did a cost get RECORDED).
       for (const g of openGaps) {
         const resolution = g.spec.itemResolved(
-          { subjectRef: g.item.subject_ref, jobId: g.jobId, startsAtLocal: g.startsAtLocal },
+          {
+            subjectRef: g.item.subject_ref,
+            jobId: g.jobId,
+            startsAtLocal: g.startsAtLocal,
+            flaggedAtLocal: g.flaggedAtLocal,
+            escalated: g.escalated,
+          },
           facts,
         );
         if (!resolution) continue;
@@ -535,8 +567,9 @@ export async function runWatchers(
       // migration header). Unreachable, unknown, or absent — the observation
       // is recorded the same.
       //
-      // Creation stays REGISTRY-GATED: a kind with no spec must not be minted
-      // at all (the sweep above cannot resolve, escalate or expire its asks).
+      // Creation stays REGISTRY-GATED: an unregistered kind's manager items
+      // could never self-clean (the item sweep iterates the registry), which
+      // is the one sweep judgment left for a spec to carry.
       const overdueSpec = specFor('overdue_visit_gap', specs);
       if (overdueSpec && fresh.length > 0) {
         const [teamRows, jobRows] = await Promise.all([
@@ -645,23 +678,45 @@ export async function runWatchers(
         }
       }
 
-      // ── THE ALARM PASS (build 5) ─────────────────────────────────────────
-      // What the acting clocks became: three counters that watch what the
-      // planner is neglecting and what delivery has broken, shouted to stderr
-      // and the tick record, acting on NOTHING. In the sweep so it survives
-      // planner death. Its own try/catch: a broken alarm must not cost the
-      // tenant its detection.
+    } catch (err) {
+      // One tenant's failure never blocks the siblings (lifecycle step idiom).
+      summary.tenantErrors += 1;
+      console.error(`[watchers] tenant ${tenantId} failed`, err);
+    }
+
+    // ── THE ALARM PASS (build 5) ───────────────────────────────────────────
+    // What the acting clocks became: three counters that watch what the
+    // planner is neglecting and what delivery has broken, shouted to stderr
+    // and the tick record, acting on NOTHING. In the sweep so it survives
+    // planner death — and OUTSIDE the detection try (final review), so a
+    // tenant whose detection is broken still gets its neglect counted: the
+    // watchdog must not share a failure domain with the thing it watches.
+    // Live only: `summary.alarms` exists exactly when this ran.
+    if (mode === 'live' && summary.alarms) {
       try {
         const [openNudges, openObs] = await Promise.all([
           listNudges(tenantId, ['pending', 'queued', 'asked']),
           listOpenObs(tenantId, ['open']),
         ]);
+        const heldPast = (notBefore: string | null): boolean =>
+          !!notBefore && Date.parse(notBefore) > nowMs;
         const deliveryStuckRows = openNudges.filter(
           (n) =>
             (n.status === 'pending' || n.status === 'queued') &&
-            (Date.parse(n.created_at) <= nowMs - DELIVERY_STUCK_ALARM_HOURS * 3_600_000 ||
-              n.serve_count >= MAX_SERVE_COUNT ||
-              n.attempts >= MAX_DELIVERY_ATTEMPTS),
+            // A row the planner explicitly HOLDS is being paced, not stuck
+            // (final review): holds are unbounded now, and a held relic
+            // alarming for its whole hold is the alarm-fatigue trap.
+            !heldPast(n.not_before) &&
+            // Age anchors on the QUEUE time when there is one — a relic sent
+            // after months of pending carries an ancient created_at and would
+            // otherwise alarm before its first delivery attempt.
+            (Date.parse(n.queued_at ?? n.created_at) <=
+              nowMs - DELIVERY_STUCK_ALARM_HOURS * 3_600_000 ||
+              // The cap triggers are DELIVERY ledgers, so they read only on
+              // queued rows — a pending row's attempts column still holds the
+              // retired compose ledger (final review).
+              (n.status === 'queued' &&
+                (n.serve_count >= MAX_SERVE_COUNT || n.attempts >= MAX_DELIVERY_ATTEMPTS))),
         );
         // Decisions are read for exactly the rows past a threshold — usually
         // zero — never for every open gap (the pre-hoist scoping discipline).
@@ -672,7 +727,9 @@ export async function runWatchers(
             Date.parse(n.asked_at) <= nowMs - ASK_UNATTENDED_ALARM_HOURS * 3_600_000,
         );
         const staleCandidates = openObs.filter(
-          (o) => Date.parse(o.noticed_at) <= nowMs - OBSERVATION_STALE_HOURS * 3_600_000,
+          (o) =>
+            Date.parse(o.noticed_at) <= nowMs - OBSERVATION_STALE_HOURS * 3_600_000 &&
+            !heldPast(o.not_before),
         );
         let decisions: Awaited<ReturnType<typeof listDecisions>> = new Map();
         let decisionsReadable = true;
@@ -687,13 +744,18 @@ export async function runWatchers(
             console.error(`[watchers] tenant ${tenantId}: alarm decisions read failed`, err);
           }
         }
+        // Historic verbs count as attention too (final review): `extend` left
+        // the live vocabulary with the clock, but an applied extend recorded
+        // BEFORE build 5 was a real judgment, and reclassifying old rows as
+        // neglect would shout about gaps the planner deliberately paced.
+        const attentionActions = new Set([...PLANNER_JUDGMENT_ACTIONS, 'extend']);
         const attendedWithin = (id: string, windowHours: number, leaveCounts: boolean): boolean => {
           if (!decisionsReadable) return false;
           const floor = nowMs - windowHours * 3_600_000;
           return (decisions.get(id) ?? []).some(
             (d) =>
               d.outcome === 'applied' &&
-              PLANNER_JUDGMENT_ACTIONS.has(d.action) &&
+              attentionActions.has(d.action) &&
               (leaveCounts || d.action !== 'leave') &&
               Date.parse(d.decided_at) >= floor,
           );
@@ -726,12 +788,10 @@ export async function runWatchers(
           );
         }
       } catch (err) {
+        // The counts so far are a FLOOR — say so rather than reading quiet.
+        summary.alarmsPartial = true;
         console.error(`[watchers] tenant ${tenantId}: alarm pass failed`, err);
       }
-    } catch (err) {
-      // One tenant's failure never blocks the siblings (lifecycle step idiom).
-      summary.tenantErrors += 1;
-      console.error(`[watchers] tenant ${tenantId} failed`, err);
     }
   }
 

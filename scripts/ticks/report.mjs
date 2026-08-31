@@ -420,13 +420,23 @@ try {
   // carrying an alarms object wins (last-write-wins; summing would multiply
   // the standing count by the window's tick count).
   let alarms = null;
+  let alarmsPartial = false;
   for (const r of runs) {
     const a = r.summary?.watchers?.alarms;
-    if (a && typeof a === 'object') alarms = a;
+    if (a && typeof a === 'object') {
+      alarms = a;
+      alarmsPartial = !!r.summary?.watchers?.alarmsPartial;
+    }
   }
   lines.push('## Alarms');
   if (!alarms) {
-    lines.push('- no alarm data in this window (pre-build-5 runs)');
+    lines.push('- no alarm data in this window (shadow-mode or pre-build-5 runs — NOT evidence of quiet)');
+  } else if (alarmsPartial) {
+    lines.push(
+      `- ⚠ INCOMPLETE (the pass failed for ≥1 tenant; these are a FLOOR): unattended asks: ` +
+        `${alarms.asksUnattended ?? 0} · stuck deliveries: ${alarms.deliveryStuck ?? 0} · ` +
+        `stale observations: ${alarms.observationsStale ?? 0}`,
+    );
   } else if ((alarms.asksUnattended ?? 0) + (alarms.deliveryStuck ?? 0) + (alarms.observationsStale ?? 0) === 0) {
     lines.push('- quiet');
   } else {

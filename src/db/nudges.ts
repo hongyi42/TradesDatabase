@@ -313,9 +313,10 @@ export async function markNudgeGroupQueued(
 // `.or()` is the one construct here that would stop treating it as a bound
 // parameter.
 //
-// ONE `asked_at` for every member, by construction: they left in one message, so
-// their escalation clocks must start at the same instant. Two timestamps here
-// would mean the sweep could escalate half a message.
+// ONE `asked_at` for every member, by construction: they left in one message,
+// so the asksUnattended alarm (build 5's successor to the escalation clock)
+// measures every member from the same instant — two timestamps would let half
+// a message read as neglected.
 export async function markNudgeAskedGroup(
   leadId: string,
   tenantId: string,
@@ -362,12 +363,11 @@ export async function listQueuedNudgesInGroupForHost(
 }
 
 // Close an in-flight nudge with a terminal outcome. Only open rows move — a
-// terminal status never overwrites another (answered stays answered even if
-// an escalation sweep races the activity sweep). `fromStatuses` narrows the
-// guard further when the RESOLUTION TEXT is only true of specific states
-// (final-review #3: the 24h expiry says "never delivered" — a delivery ack
-// landing between the sweep's read and this write moves the row to 'asked',
-// and the expiry must then LOSE, or the durable audit lies about the ask).
+// terminal status never overwrites another (answered stays answered whatever
+// races it). The racers since build 5 are the PLANNER's own apply pass and
+// the delivery ack: `fromStatuses` narrows the guard when the RESOLUTION TEXT
+// is only true of specific states, so a write whose claim went stale between
+// the read and the UPDATE loses rather than lying in the audit line.
 export async function markNudgeOutcome(
   id: string,
   tenantId: string,

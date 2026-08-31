@@ -150,6 +150,7 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     // both stubbed for the standing 't1'-is-not-a-uuid reason (flagNudge) and
     // so no test ever pushes a real Telegram line (notify).
     flagNudge: async () => null,
+    findOpenItem: async () => null,
     notify: async () => {},
     hasPushToken: () => false,
     // Build 5, ruling 2: the moot-fact status reads — stubbed empty ("nothing
@@ -959,7 +960,10 @@ describe('the state rails — no decision may be a silent no-op', () => {
   // gone — can be handed over deliberately.
   test('escalate on a PENDING relic is ALLOWED — a stuck row can be handed over', async () => {
     const s = await runOn({ status: 'pending', asked_at: null }, [
-      { nudgeId: 'n1', action: 'escalate', confidence: 'high', reason: 'manager should see this' },
+      {
+        nudgeId: 'n1', action: 'escalate', confidence: 'high', reason: 'manager should see this',
+        handoffNote: 'This one never reached anyone — needs a person.',
+      },
     ]);
     expect(s.decisions).toBe(1);
     expect(s.plans[0].dropped).toEqual([]);
@@ -967,7 +971,10 @@ describe('the state rails — no decision may be a silent no-op', () => {
 
   test('escalate on a stuck QUEUED relic is allowed too', async () => {
     const s = await runOn({ status: 'queued', asked_at: null }, [
-      { nudgeId: 'n1', action: 'escalate', confidence: 'high', reason: 'delivery looks broken' },
+      {
+        nudgeId: 'n1', action: 'escalate', confidence: 'high', reason: 'delivery looks broken',
+        handoffNote: 'Delivery looks broken on this one — never reached them.',
+      },
     ]);
     expect(s.decisions).toBe(1);
     expect(s.plans[0].dropped).toEqual([]);
@@ -987,7 +994,10 @@ describe('the state rails — no decision may be a silent no-op', () => {
   test('escalate on an ordinary asked row is allowed', async () => {
     const s = await runOn(
       { status: 'asked' },
-      [{ nudgeId: 'n1', action: 'escalate', confidence: 'high', reason: 'silent for a day' }],
+      [{
+        nudgeId: 'n1', action: 'escalate', confidence: 'high', reason: 'silent for a day',
+        handoffNote: 'Still nothing on the furnace job.',
+      }],
     );
     expect(s.decisions).toBe(1);
     expect(s.plans[0].dropped).toEqual([]);
@@ -1236,9 +1246,8 @@ describe('live mode — the decision becomes a write, and the write becomes the 
   });
 
   test('hold stamps the instant the model chose', async () => {
-    // created_at an hour ago, not a day: the hold ceiling is
-    // created_at + NUDGE_DELIVERY_DEADLINE_HOURS, and the default fixture is old
-    // enough that any future hold would be refused by THAT rail instead.
+    // (The old hold ceiling died in build 5 — the young created_at is just a
+    // plain fixture now.)
     const { setSchedule } = await live(
       { status: 'pending', asked_at: null, created_at: '2026-08-16T11:00:00.000Z' },
       [
@@ -1253,7 +1262,9 @@ describe('live mode — the decision becomes a write, and the write becomes the 
   // Build 5: escalate IS the handoff — flag first, mark second, no schedule
   // write and no sweep anywhere in the path.
   test('escalate flags the manager item with the planner\'s note and marks the row', async () => {
-    const flagNudge = vi.fn<NonNullable<PlannerDeps['flagNudge']>>(async () => null);
+    const flagNudge = vi.fn<NonNullable<PlannerDeps['flagNudge']>>(
+      async () => ({ id: 'ri1' }) as never,
+    );
     const { setSchedule, markOutcome } = await live({ status: 'asked' }, [
       {
         nudgeId: 'n1',
@@ -1281,9 +1292,9 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     expect(setSchedule).not.toHaveBeenCalled();
   });
 
-  // flagNudge returning null means the subject was ever-flagged — the manager
-  // HAS the gap — so the row is still marked (the mark-regardless precedent).
-  test('an ever-flagged subject still marks the row escalated', async () => {
+  // flagNudge null = the once-ever dedup, which holds across EVERY status —
+  // the disambiguator is whether an OPEN item exists (final review).
+  test('ever-flagged with an OPEN item still marks the row — the manager HAS the gap', async () => {
     const { markOutcome, summary } = await live({ status: 'asked' }, [
       {
         nudgeId: 'n1',
@@ -1292,9 +1303,28 @@ describe('live mode — the decision becomes a write, and the write becomes the 
         reason: 'no reply',
         handoffNote: 'Still nothing on the furnace job.',
       },
-    ], { flagNudge: async () => null });
+    ], {
+      flagNudge: async () => null,
+      findOpenItem: async () => ({ id: 'ri-open', status: 'open' }) as never,
+    });
     expect(markOutcome).toHaveBeenCalled();
     expect(summary.applied).toBe(1);
+  });
+
+  test('ever-flagged with the item SETTLED refuses — no handover can be filed, and the log says so', async () => {
+    const { markOutcome, summary, recorded } = await live({ status: 'asked' }, [
+      {
+        nudgeId: 'n1',
+        action: 'escalate',
+        confidence: 'high',
+        reason: 'no reply',
+        handoffNote: 'Still nothing on the furnace job.',
+      },
+    ], { flagNudge: async () => null, findOpenItem: async () => null });
+    expect(markOutcome).not.toHaveBeenCalled();
+    expect(summary.applied).toBe(0);
+    expect(summary.refusedAtApply).toBe(1);
+    expect(String(recorded[0].outcomeDetail)).toContain('settled');
   });
 
   test('an applied escalate RECORDS its briefing — the one link the other tests cannot see', async () => {
@@ -1310,7 +1340,7 @@ describe('live mode — the decision becomes a write, and the write becomes the 
         handoffNote: 'Still no write-up on the furnace job.',
         agentContext: 'Job j1: asked once; ledger empty; a figure unblocks the invoice.',
       },
-    ]);
+    ], { flagNudge: async () => ({ id: 'ri1' }) as never });
     expect(recorded).toHaveLength(1);
     expect(recorded[0].outcome).toBe('applied');
     expect(recorded[0].agentContext).toBe(
@@ -1320,9 +1350,11 @@ describe('live mode — the decision becomes a write, and the write becomes the 
   });
 
   // No fallback author exists (the send-needs-question pattern): an escalate
-  // whose note was missing — or dropped by the date rail — refuses at apply,
-  // touches nothing, and says so in the record.
-  test('escalate without a surviving handoffNote is refused and writes NOTHING', async () => {
+  // whose note was missing — or dropped by the date rail — refuses at
+  // VALIDATE (final review: shadow must record what live would refuse, and
+  // the model gets the within-tick signal to rewrite), touches nothing, and
+  // says so in the record.
+  test('escalate without a surviving handoffNote is refused at validate and writes NOTHING', async () => {
     const flagNudge = vi.fn<NonNullable<PlannerDeps['flagNudge']>>(async () => null);
     const { markOutcome, summary, recorded } = await live(
       { status: 'asked' },
@@ -1332,7 +1364,8 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     expect(flagNudge).not.toHaveBeenCalled();
     expect(markOutcome).not.toHaveBeenCalled();
     expect(summary.applied).toBe(0);
-    expect(summary.refusedAtApply).toBe(1);
+    expect(summary.decisions).toBe(0); // never a valid decision — dropped by the rail
+    expect(summary.dropped).toBe(1);
     expect(recorded).toHaveLength(1);
     expect(recorded[0].outcome).toBe('refused');
     expect(String(recorded[0].outcomeDetail)).toContain('escalate needs `handoffNote`');
@@ -1365,9 +1398,10 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     expect(lines[0]).not.toContain('Henderson'); // count-only — no names/PII
   });
 
-  test('an ever-flagged (null) item does NOT push — a quiet queue never re-pings', async () => {
+  test('a null flag never pushes — open-item marks quietly, settled refuses (build 5 review)', async () => {
+    // Open item exists: marks, no ping (a quiet queue never re-pings).
     const lines: string[] = [];
-    const { summary } = await live({ status: 'asked' }, [
+    const withOpen = await live({ status: 'asked' }, [
       {
         nudgeId: 'n1',
         action: 'escalate',
@@ -1376,11 +1410,12 @@ describe('live mode — the decision becomes a write, and the write becomes the 
         handoffNote: 'Still nothing on the furnace job.',
       },
     ], {
-      flagNudge: async () => null, // the manager already HAS this gap
+      flagNudge: async () => null,
+      findOpenItem: async () => ({ id: 'ri-open', status: 'open' }) as never,
       notify: async (_t, line) => { lines.push(line); },
       hasPushToken: () => true,
     });
-    expect(summary.applied).toBe(1); // the row still marks (mark-regardless)
+    expect(withOpen.summary.applied).toBe(1);
     expect(lines).toEqual([]);
   });
 
@@ -1771,7 +1806,10 @@ describe('shadow mode leaves the database untouched', () => {
         { nudgeId: planted[0], action: 'send', confidence: 'high', reason: 'go now' },
         { nudgeId: planted[1], action: 'hold', notBefore: '2026-08-16T18:00:00Z', confidence: 'high', reason: 'pace it' },
         { nudgeId: planted[2], action: 'close', citation: answer, confidence: 'high', reason: 'answered' },
-        { nudgeId: planted[3], action: 'escalate', confidence: 'low', reason: 'no reply' },
+        {
+          nudgeId: planted[3], action: 'escalate', confidence: 'low', reason: 'no reply',
+          handoffNote: 'Nothing has come back on this one — needs a person.',
+        },
       ]),
     });
     expect(summary.decisions).toBe(4);
@@ -2026,9 +2064,10 @@ describe('validateDecisions — the handoff note', () => {
     expect(noteDrops).toEqual([]);
   });
 
-  test('a bad note is dropped but the ESCALATION still stands', () => {
-    // The handover is the point; the sentence is decoration. A note that fails
-    // the rail must never cost the manager the gap.
+  test('a bad note REFUSES the escalate — no fallback author exists (build 5)', () => {
+    // The note IS the handover now: the sweep template that used to replace a
+    // dropped note died with the sweep, so a date-rail-dropped note refuses
+    // the whole decision — and the drop is still logged for the eval.
     const { decisions, dropped, noteDrops } = validateDecisions(
       {
         decisions: [
@@ -2044,10 +2083,9 @@ describe('validateDecisions — the handoff note', () => {
       views,
       NOW,
     );
-    expect(decisions).toHaveLength(1);
-    expect(decisions[0].action).toBe('escalate');
-    expect(decisions[0].handoffNote).toBeUndefined();
-    expect(dropped).toEqual([]); // the DECISION was not refused
+    expect(decisions).toEqual([]);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0].why).toContain('escalate needs `handoffNote`');
     expect(noteDrops).toEqual(['n1: handoff note used a date it was not given: "Monday"']);
   });
 
@@ -2086,6 +2124,7 @@ describe('validateDecisions — the handoff note', () => {
             action: 'escalate',
             confidence: 'high',
             reason: 'internal',
+            handoffNote: 'Still nothing on the furnace job.',
             agentContext: 'Job j1: asked once; ledger empty; an amount unblocks the invoice.',
           },
         ],
@@ -3894,15 +3933,27 @@ describe('moot becomes information (build 5)', () => {
     expect(summary.plans[0].dropped[0].why).toContain('record is not filled');
   });
 
-  test('a MONEY-authorised close still ends ANSWERED — mootClose never leaks', async () => {
+  test('moot OUTRANKS money: a gone subject ends CANCELLED whatever landed beside it', async () => {
+    // Final review: a refund or deposit return is common on exactly the
+    // cancellations that moot a gap, and it does not ANSWER anything.
+    const { outcomes } = await run(
+      { status: 'asked', ...MOOT_OVER },
+      [{ nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'moot' }],
+      {
+        listMoneySince: async () => [moneyRow('2026-08-15T13:00:00.000Z', 'payment_refunded', 50000, JID)] as never,
+        listAssignments: CANCELLED_VISIT,
+      },
+    );
+    expect(outcomes[0][1]).toBe('cancelled');
+    expect(String(outcomes[0][2])).toContain('the visit was cancelled');
+  });
+
+  test('money WITHOUT a moot fact still ends ANSWERED — the hole was filled', async () => {
     const { outcomes } = await run(
       { status: 'asked', ...MOOT_OVER },
       [{ nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'paid' }],
       {
         listMoneySince: async () => [moneyRow('2026-08-15T13:00:00.000Z', 'payment_received', 50000, JID)] as never,
-        // Even with the moot fact ALSO true, money is the more specific fact
-        // and the close stays 'answered' — the flag keys on moot ALONE.
-        listAssignments: CANCELLED_VISIT,
       },
     );
     expect(outcomes[0][1]).toBe('answered');

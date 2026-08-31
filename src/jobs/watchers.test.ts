@@ -26,7 +26,6 @@ import {
 } from './nudgeKinds.js';
 
 // Pure unit tests — every collaborator injected (lifecycle.test.ts pattern).
-// hasPushToken is always injected too, so nothing here reads process.env.
 //
 // Semantics under test: "filled" = job activity at-or-after the visit's START
 // (minute-floored); FRESH = never surfaced in any dedup store; detection
@@ -499,14 +498,18 @@ describe('runWatchers', () => {
 
 
 
-  test('live auto-resolve: arrived activity resolves; a status change resolves; malformed detail is dropped fail-closed', async () => {
+  test('live auto-resolve: activity AFTER the flag resolves; a status change resolves; jobId-less detail is dropped', async () => {
+    // The activity anchor is the FLAG time (final review, build 5): the copy
+    // says "after this was flagged", and a flag-time anchor needs no
+    // detail.startsAtLocal at all — created_at is a DB column, not
+    // watcher-written JSON.
     const resolved: Array<[string, string | null | undefined]> = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
       findOpenGaps: async () => [
         openItem({ subject_ref: 'a-filled', detail: { jobId: 'j9', startsAtLocal: '2026-08-15T10:00:00.000Z' } }),
         openItem({ subject_ref: 'a-still-open', detail: { jobId: 'j8', startsAtLocal: '2026-08-15T10:00:00.000Z' } }),
         openItem({ subject_ref: 'a-cancelled', detail: { jobId: 'j7', startsAtLocal: '2026-08-15T10:00:00.000Z' } }),
-        openItem({ subject_ref: 'a-malformed', detail: { jobId: 'j9' } }), // no startsAtLocal → dropped
+        openItem({ subject_ref: 'a-thin', detail: { jobId: 'j9' } }), // no visit window — still resolvable
       ],
       listCaptureTimes: async () => [{ job_id: 'j9', captured_at: '2026-08-15T11:00:00.000Z' }],
       listAssignments: async () => [
@@ -521,8 +524,55 @@ describe('runWatchers', () => {
     expect(resolved).toEqual([
       ['a-filled', 'field report arrived after this was flagged'],
       ['a-cancelled', 'visit was cancelled after this was flagged'],
+      ['a-thin', 'field report arrived after this was flagged'],
     ]);
-    expect(summary.itemsResolved).toBe(2);
+    expect(summary.itemsResolved).toBe(3);
+  });
+
+  test('a planner-ESCALATED item never self-cleans on pre-flag activity or the visit status (build 5)', async () => {
+    // The archetype escalation IS a completed visit with no report, and the
+    // planner escalates DESPITE activity it judged non-answering — resolving
+    // on either would eat the handover within one sweep, with the once-ever
+    // dedup blocking any re-flag.
+    const resolved: string[] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      findOpenGaps: async () => [
+        openItem({
+          subject_ref: 'a-esc',
+          created_at: '2026-08-16T10:00:00.000Z', // flagged at 10:00
+          detail: { jobId: 'j-esc', startsAtLocal: '2026-08-15T07:00:00.000Z', escalatedFromNudge: 'n-esc' },
+        } as Partial<ReviewItem>),
+      ],
+      // Activity BEFORE the flag (09:00 < 10:00) — what the planner escalated despite.
+      listCaptureTimes: async () => [{ job_id: 'j-esc', captured_at: '2026-08-16T09:00:00.000Z' }],
+      listAssignments: async () => [
+        visit({ id: 'a-esc', status: 'completed' } as Partial<PlacedAssignment>),
+      ],
+      resolveGap: async (_t, _k, subjectRef) => {
+        resolved.push(subjectRef);
+        return openItem({});
+      },
+    }));
+    expect(resolved).toEqual([]); // the handover stands
+
+    // …but genuinely NEW activity (after the flag) does resolve it — the
+    // manager's answer arriving is the self-clean the ruling kept.
+    const resolvedAfter: string[] = [];
+    await runWatchers(NOW, 'live', baseDeps({
+      findOpenGaps: async () => [
+        openItem({
+          subject_ref: 'a-esc',
+          created_at: '2026-08-16T10:00:00.000Z',
+          detail: { jobId: 'j-esc', escalatedFromNudge: 'n-esc' },
+        } as Partial<ReviewItem>),
+      ],
+      listCaptureTimes: async () => [{ job_id: 'j-esc', captured_at: '2026-08-16T11:30:00.000Z' }],
+      resolveGap: async (_t, _k, subjectRef) => {
+        resolvedAfter.push(subjectRef);
+        return openItem({});
+      },
+    }));
+    expect(resolvedAfter).toEqual(['a-esc']);
   });
 
   test('one tenant throwing never blocks the siblings; tenantErrors counted', async () => {
@@ -961,14 +1011,14 @@ describe('the alarm pass', () => {
       listNudges: async () => [askRow()],
       listDecisions: async () => new Map([['n-old', [applied('leave', 2)]]]),
     }));
-    expect(attended.alarms.asksUnattended).toBe(0); // leave counts for ASKS
+    expect(attended.alarms!.asksUnattended).toBe(0); // leave counts for ASKS
 
     const ancient = await runWatchers(NOW, 'live', baseDeps({
       listNudges: async () => [askRow()],
       listDecisions: async () =>
         new Map([['n-old', [applied('leave', ASK_UNATTENDED_ALARM_HOURS + 3)]]]),
     }));
-    expect(ancient.alarms.asksUnattended).toBe(1); // untouched WITHIN the window
+    expect(ancient.alarms!.asksUnattended).toBe(1); // untouched WITHIN the window
   });
 
   test('for observations, leave is looking, not acting (build 4 semantics, moved)', async () => {
@@ -976,13 +1026,13 @@ describe('the alarm pass', () => {
       listOpenObservations: async () => [obsOld()],
       listDecisions: async () => new Map([['o-old', [applied('leave', 2)]]]),
     }));
-    expect(left.alarms.observationsStale).toBe(1);
+    expect(left.alarms!.observationsStale).toBe(1);
 
     const held = await runWatchers(NOW, 'live', baseDeps({
       listOpenObservations: async () => [obsOld()],
       listDecisions: async () => new Map([['o-old', [applied('hold', 2)]]]),
     }));
-    expect(held.alarms.observationsStale).toBe(0); // a hold IS acting
+    expect(held.alarms!.observationsStale).toBe(0); // a hold IS acting
   });
 
   test('the serve and attempt caps count as deliveryStuck even on a young row', async () => {
@@ -994,7 +1044,7 @@ describe('the alarm pass', () => {
           created_at: hoursAgo(1), attempts: MAX_DELIVERY_ATTEMPTS }),
       ],
     }));
-    expect(summary.alarms.deliveryStuck).toBe(2); // one per trigger, age irrelevant
+    expect(summary.alarms!.deliveryStuck).toBe(2); // one per trigger, age irrelevant
   });
 
   test('a failed decisions read counts every candidate — fail TOWARD alarming', async () => {
@@ -1005,9 +1055,75 @@ describe('the alarm pass', () => {
         throw new Error('db blip');
       },
     }));
-    expect(summary.alarms.asksUnattended).toBe(1);
-    expect(summary.alarms.observationsStale).toBe(1);
+    expect(summary.alarms!.asksUnattended).toBe(1);
+    expect(summary.alarms!.observationsStale).toBe(1);
     expect(summary.tenantErrors).toBe(0); // and never reddens
+  });
+
+  test('a PLANNER-HELD row is being paced, not stuck — holds exempt both alarms (final review)', async () => {
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        askRow({ id: 'n-held', status: 'pending', asked_at: null,
+          created_at: hoursAgo(40), not_before: '2099-01-01T00:00:00.000Z' } as never),
+      ],
+      listOpenObservations: async () => [obsOld({ not_before: '2099-01-01T00:00:00.000Z' })],
+    }));
+    expect(summary.alarms!.deliveryStuck).toBe(0);
+    expect(summary.alarms!.observationsStale).toBe(0);
+  });
+
+  test('a freshly QUEUED relic anchors on queued_at — no alarm before delivery even starts', async () => {
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        askRow({ id: 'n-relic', status: 'queued', asked_at: null,
+          created_at: hoursAgo(400), queued_at: hoursAgo(1) } as never),
+      ],
+    }));
+    expect(summary.alarms!.deliveryStuck).toBe(0);
+  });
+
+  test('the cap triggers read QUEUED rows only — a pending attempts column is the retired compose ledger', async () => {
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        askRow({ id: 'n-compose', status: 'pending', asked_at: null,
+          created_at: hoursAgo(1), attempts: MAX_DELIVERY_ATTEMPTS } as never),
+      ],
+    }));
+    expect(summary.alarms!.deliveryStuck).toBe(0);
+  });
+
+  test('a HISTORIC applied extend counts as attention — old judgments are not reclassified', async () => {
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [askRow()],
+      listDecisions: async () => new Map([['n-old', [applied('extend', 2)]]]),
+    }));
+    expect(summary.alarms!.asksUnattended).toBe(0);
+  });
+
+  test('shadow mode carries NO alarms object — never-computed must not read as quiet', async () => {
+    const summary = await runWatchers(NOW, 'shadow', baseDeps({}));
+    expect(summary.alarms).toBeUndefined();
+  });
+
+  test('an alarm-pass failure marks the counts PARTIAL rather than reading quiet', async () => {
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => {
+        throw new Error('db blip');
+      },
+    }));
+    expect(summary.alarmsPartial).toBe(true);
+    expect(summary.tenantErrors).toBe(0); // still never an error
+  });
+
+  test('the alarm pass survives a DETECTION failure — separate failure domains (final review)', async () => {
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listOverdue: async () => {
+        throw new Error('detection is broken');
+      },
+      listNudges: async () => [askRow()],
+    }));
+    expect(summary.tenantErrors).toBe(1); // detection failed…
+    expect(summary.alarms!.asksUnattended).toBe(1); // …and the watchdog still counted
   });
 
   test('young rows alarm nothing', async () => {

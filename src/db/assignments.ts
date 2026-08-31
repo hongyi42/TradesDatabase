@@ -283,18 +283,35 @@ export async function getAssignmentForTenant(
 // getAssignmentForTenant round-trips (the listCustomersByIds precedent).
 // Unknown/cross-tenant ids simply don't come back; callers treat a miss
 // exactly like getAssignmentForTenant's null.
+//
+// CHUNKED + PAGED (build-5 final review): the planner's moot-fact read passes
+// every open gap's subject_ref, and the open set is unbounded by design now —
+// an unchunked .in() 400s past a few thousand ids and PostgREST's 1000-row
+// cap silently truncates the result either way. The jobs-reader idiom.
 export async function listAssignmentsByIds(
   tenantId: string,
   ids: string[],
 ): Promise<Assignment[]> {
   if (ids.length === 0) return [];
-  const { data, error } = await getClient()
-    .from('assignments')
-    .select()
-    .eq('tenant_id', tenantId)
-    .in('id', ids);
-  if (error) throw new Error(`listAssignmentsByIds failed: ${error.message}`);
-  return data ?? [];
+  const CHUNK = 200;
+  const PAGE = 1000;
+  const out: Assignment[] = [];
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const slice = ids.slice(i, i + CHUNK);
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await getClient()
+        .from('assignments')
+        .select()
+        .eq('tenant_id', tenantId)
+        .in('id', slice)
+        .order('id', { ascending: true }) // deterministic paging tiebreak
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`listAssignmentsByIds failed: ${error.message}`);
+      out.push(...(data ?? []));
+      if (!data || data.length < PAGE) break;
+    }
+  }
+  return out;
 }
 
 // Correct a visit's PROMISE record — what the customer was actually told —

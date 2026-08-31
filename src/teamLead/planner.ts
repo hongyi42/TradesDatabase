@@ -1,5 +1,6 @@
 import {
   createNudgeFromObservation,
+  findOpenReviewItem,
   flagNudgeGap,
   getTenant,
   listAssignmentsByIds,
@@ -251,6 +252,11 @@ export interface PlannerSummary {
   applied: number; // decisions the code actually performed — always 0 in shadow
   refusedAtApply: number; // accepted by the rails, then refused by the write
   recorded: number; // rows written to nudge_decisions
+  // Applied escalations opened items but BOARD_BOT_TOKEN was absent, so the
+  // count-only heads-up could not go out (final review: this instrument is
+  // what diagnosed the manager-push-is-dead live defect — it must survive the
+  // push's move here). Present only when true.
+  pushSkipped?: boolean;
   tenantErrors: number;
   // Tenants whose call died on the LOOP's own limits rather than on the model
   // or the provider. Counted apart because the two need opposite responses: a
@@ -370,8 +376,12 @@ export const EVIDENCE_TEXT_CHARS = 600;
 export const EVIDENCE_PER_GAP = 6;
 // How far back the tenant-wide evidence/money read may reach (build 5). Gaps
 // have no lifetime clocks any more, so the oldest open ask no longer bounds
-// this read — the window does. See the clamp at the read for the trade.
-export const EVIDENCE_FLOOR_MAX_DAYS = 30;
+// this read — the window does. A SAFETY bound, deliberately generous (final
+// review): evidence outside the window cannot be shown or CITED, so a tight
+// clamp would make an answered-then-neglected gap permanently uncloseable on
+// basis 'evidence'. At a year, reaching the bound means the unattended alarm
+// has been naming the gap for months.
+export const EVIDENCE_FLOOR_MAX_DAYS = 365;
 // How much of a queued question is echoed back into the gap view. See the call
 // site: it must cover a grouped message plus its anchor, or the planner reads a
 // truncated version of its own ask.
@@ -473,6 +483,11 @@ export interface PlannerDeps {
   // at apply time — the send-collapse pattern; the old sweepLive coupling died
   // with the sweep's escalation loop). Injected like every other writer.
   flagNudge?: typeof flagNudgeGap;
+  // The null-flag disambiguator (final review): flagNudge's once-ever dedup
+  // returns null for a subject flagged in ANY status — the manager may hold
+  // the item, or may have settled it long ago. Only an OPEN item justifies
+  // marking the gap handed over.
+  findOpenItem?: typeof findOpenReviewItem;
   // The count-only manager heads-up, moved here from the sweep (build 5): one
   // line per tenant per tick when this tick's applied escalations opened
   // items. Same token gate the sweep used; notifyManagers never throws.
@@ -909,7 +924,7 @@ export function buildGapView(
     // like the cost line above: an asked gap closes on the record; an
     // observation nobody was asked about is dismissed (revisable).
     lines.push(
-      `  THE RECORD: ${mootFact.replace(' — nothing left to ask', '')} — nothing left to ask. ` +
+      `  THE RECORD: ${mootFact}. ` +
         (n.status === 'noticed'
           ? 'Nothing needs asking: dismiss this observation.'
           : 'Close this gap with basis "record".'),
@@ -1204,10 +1219,10 @@ export function anchorLine(n: Nudge): string {
  * The technician-facing question, or null.
  *
  * Same date rail as the handoff note, and higher stakes: this reaches a person
- * OUTSIDE the office, in their own assistant's voice. The 500-char cap and the
- * footer-impersonation check mirror compose's own guards exactly
- * (`compose.ts:263-268`) — a planner-written question is not more trusted than
- * a compose-written one, only cheaper.
+ * OUTSIDE the office, in their own assistant's voice. Two guards of its own —
+ * the length cap below and the footer-impersonation check — since build 5 this
+ * file is the message's only author (compose, whose guards these once
+ * mirrored, is deleted).
  */
 // GROUPED SENDS GET MORE ROOM. 500 chars was sized for one question; a message
 // covering three would be refused for length alone, and a refused question
@@ -1526,12 +1541,11 @@ export function validateDecisions(
       }
     }
 
-    // `leave` GETS A STATUS RAIL TOO (final-review finding, re-grounded for the
-    // collapse). On a PENDING row "leave" records "I am waiting" with no horizon
-    // while nothing will ever send the question — the planner is the only author
-    // now, so an unowned wait is a gap drifting toward the 18h never-asked
-    // handoff with a log line claiming it was considered. Waiting on a pending
-    // row must be `hold` with a time; releasing it must be `send`.
+    // `leave` GETS A STATUS RAIL TOO. On a PENDING row "leave" records "I am
+    // waiting" with no horizon while nothing will ever send the question — and
+    // since build 5 NOTHING hands a never-sent gap anywhere, so an unowned
+    // wait sits forever with only the deliveryStuck alarm noticing. Waiting on
+    // a pending row must be `hold` with a time; releasing it must be `send`.
     //
     // Queued and asked are both fine: a queued row is already on its way, and an
     // asked row has already gone out, so "I looked and I am waiting" is true of
@@ -1563,19 +1577,23 @@ export function validateDecisions(
       // 2026-08-20). The authority is the code-computed fact on the view: the
       // model chooses the basis, code decides whether that basis holds.
       if (d.basis === 'record') {
-        // ANY code-computed fact authorises it, most specific first:
-        // recordFilled (the ledger's cost IS a cost gap's hole), then money on
-        // the job, then the moot fact (build 5 — the subject itself is gone).
+        // ANY code-computed fact authorises it. Precedence (final review):
+        // recordFilled first (the ledger's cost IS a cost gap's hole — the
+        // hole being filled outranks the subject being gone), then the MOOT
+        // fact, then money. Moot outranks money deliberately: a refund or
+        // deposit return is common on exactly the cancellations that moot a
+        // gap, and it does not ANSWER anything — a gone subject ends the gap
+        // 'cancelled' whatever incidental money landed beside it.
         // moneyOnRecord MUST stay in this chain (plan review finding 1).
-        const fact = view.recordFilled ?? view.moneyOnRecord ?? view.mootFact;
+        const fact = view.recordFilled ?? view.mootFact ?? view.moneyOnRecord;
         if (!fact) {
           push('close on the record when the record is not filled');
           continue;
         }
-        // Authorised by the moot fact ALONE → the gap ends 'cancelled', the
-        // status the sweep's moot wrote, keeping the audit row and
-        // mv_gap_outcomes honest about HOW it ended.
-        const mootClose = !view.recordFilled && !view.moneyOnRecord && !!view.mootFact;
+        // Authorised by the moot fact → the gap ends 'cancelled', the status
+        // the sweep's moot wrote, keeping the audit row and mv_gap_outcomes
+        // honest about HOW it ended.
+        const mootClose = !view.recordFilled && !!view.mootFact;
         basis = 'record';
         seen.add(nudgeId);
         decisions.push({
@@ -1674,11 +1692,19 @@ export function validateDecisions(
     if (action === 'escalate') {
       const cleaned = cleanHandoffNote(d.handoffNote, view.dateLabels);
       handoffNote = cleaned.note;
-      // Logged even though the escalate will now REFUSE at apply without the
-      // note (build 5 — no fallback author exists): without this line a dropped
-      // note is indistinguishable from one the model never wrote, and no eval
-      // could ever measure how often the date rail fires.
       if (cleaned.why) noteDrops.push(`${nudgeId}: ${cleaned.why}`);
+      // REFUSED HERE, at validate (final review — the plan's original seam):
+      // no fallback author exists, and an apply-only refusal would let shadow
+      // record as valid a decision live refuses, and would deny the live
+      // model the within-tick every-decision-refused signal to rewrite. The
+      // apply-time check stays as the belt.
+      if (!handoffNote) {
+        push(
+          'escalate needs `handoffNote` — it was missing or the date rail dropped it; ' +
+            'rewrite it using only the dates you were given',
+        );
+        continue;
+      }
       // The briefing rides the same boundary: railed alone, dropped alone —
       // its loss never blocks the escalate or the manager's sentence.
       const briefing = cleanAgentContext(d.agentContext, view.dateLabels);
@@ -1775,6 +1801,7 @@ async function applyDecision(
   setSchedule: typeof setNudgeSchedule,
   markOutcome: typeof markNudgeOutcome,
   flagNudge: typeof flagNudgeGap,
+  findOpenItem: typeof findOpenReviewItem,
   markQueued: typeof markNudgeQueued,
   markGroupQueued: typeof markNudgeGroupQueued,
   stampAnswer: typeof setNudgeAnsweredBy,
@@ -1976,11 +2003,7 @@ async function applyDecision(
       const n = getGap(d.nudgeId);
       if (!n) return { outcome: 'refused', detail: moved }; // rail-checked; unreachable
       // Flag FIRST: a throw here (caught by the apply loop) leaves the row
-      // open, and the retry converges on the once-ever dedup. A null return
-      // means the subject was ever-flagged — the manager HAS it — so the row
-      // is still marked (the sweep's mark-regardless precedent), but the
-      // heads-up must NOT count it: only a genuinely opened item may ping (the
-      // sweep's `if (item)` rule — a quiet queue never re-pings).
+      // open, and the retry converges on the once-ever dedup.
       const item = await flagNudge({
         tenantId,
         kind: n.kind as ReviewKind,
@@ -1993,6 +2016,23 @@ async function applyDecision(
         suggestion: d.handoffNote,
         ...(d.agentContext ? { agentContext: d.agentContext } : {}),
       });
+      // A null flag is the once-ever dedup, which holds across EVERY status —
+      // so it means one of two OPPOSITE things (final review): the manager
+      // still HAS an open item (safe to mark the gap handed over), or they
+      // settled one long ago (nothing exists, none can be created, and the
+      // planner's note was discarded). Only the first may claim a handover;
+      // the second refuses honestly and the gap stays the planner's.
+      if (!item) {
+        const openItem = await findOpenItem(tenantId, n.kind as ReviewKind, n.subject_ref);
+        if (!openItem) {
+          return {
+            outcome: 'refused',
+            detail:
+              'this subject was handed to the manager once before and that item is settled — ' +
+              'a second handover cannot be filed. The gap stays yours: close it, or leave it.',
+          };
+        }
+      }
       // Any open stage may be handed over (a stuck queued relic included); the
       // guard still loses to a racing terminal write, which is the honest
       // outcome — the gap already ended some other way.
@@ -2011,9 +2051,9 @@ async function applyDecision(
       // carried out — what it asked for was that nothing change. Recording it as
       // refused would make the corpus read as if a rail rejected it.
       //
-      // It counts as liveness for the sweep's fail-safe (PLANNER_JUDGMENT_ACTIONS),
-      // which is correct: a planner saying "I am waiting on this one" is awake
-      // and has an opinion, and the fail-safe exists for a planner that is dead.
+      // For the ALARM pass (the fail-safe's successor, build 5) a leave counts
+      // as attention on an ASKED gap and deliberately NOT on a stale
+      // observation — looking is not acting there. See watchers.ts.
       return { outcome: 'applied' };
     case 'close': {
       // The resolution is the durable audit line a manager may later read, so it
@@ -2078,6 +2118,7 @@ export async function runPlanner(
   const listJobs = deps.listJobs ?? listJobsWithCustomerByIds;
   const getSettings = deps.getSettings ?? readSettingsTolerantly;
   const flagNudge = deps.flagNudge ?? flagNudgeGap;
+  const findOpenItem = deps.findOpenItem ?? findOpenReviewItem;
   const notify = deps.notify ?? notifyManagers;
   const hasPushToken = deps.hasPushToken ?? (() => !!process.env.BOARD_BOT_TOKEN);
   const tools = deps.tools ?? [];
@@ -2276,13 +2317,13 @@ export async function runPlanner(
       // ONE derivation of the floor, shared by the evidence and money reads: two
       // copies of a bound that must stay identical is a defect waiting to happen.
       //
-      // CLAMPED (build 5). The old bound was the gap's own lifetime — 18h/48h
-      // clocks that no longer exist, so a gap can now live for months and the
-      // oldest open ask would drag every tick's evidence read back with it.
-      // The trade recorded with the clamp: for a gap older than the window,
-      // evidence that landed more than EVIDENCE_FLOOR_MAX_DAYS ago can no
-      // longer be shown or cited — the planner still reaches it via
-      // spine_read, and the alarm pass surfaces gaps left to get that old.
+      // CLAMPED (build 5), at a deliberately GENEROUS year. The old bound was
+      // the gap's own lifetime — clocks that no longer exist. The trade: for
+      // a gap older than the window, evidence past the bound can no longer be
+      // shown or cited, so an evidence-basis close becomes impossible — which
+      // is why this is a safety bound against a pathological read, never an
+      // efficiency clamp (final review: a 30-day version made a note answered
+      // on day 2 and neglected to day 35 permanently uncloseable).
       const floorMs = nowMs - EVIDENCE_FLOOR_MAX_DAYS * 24 * 3_600_000;
       const sinceIso =
         askedAt.length > 0 && jobIds.length > 0
@@ -2326,18 +2367,20 @@ export async function runPlanner(
       // entire tick. A filtered-out id simply contributes no fact.
       const uuidish = (v: string): boolean => UUID_ISH_RE.test(v);
       const subjectRefs = [...new Set(open.map((n) => n.subject_ref))].filter(uuidish);
-      const visitStatusById = new Map<string, string>(
-        subjectRefs.length === 0
-          ? []
-          : (await listAssignments(tenantId, subjectRefs)).map((a) => [a.id, a.status]),
-      );
       const statusJobIds = jobIds.filter(uuidish);
+      // Started together, settled together — independent reads, and a serial
+      // await would add a round trip per firm per tick (the memory-read idiom).
+      const [assignmentRows, jobRows] = await Promise.all([
+        subjectRefs.length === 0 ? Promise.resolve([]) : listAssignments(tenantId, subjectRefs),
+        statusJobIds.length === 0 ? Promise.resolve([]) : listJobs(tenantId, statusJobIds),
+      ]);
+      const visitStatusById = new Map<string, string>(
+        assignmentRows.map((a) => [a.id, a.status]),
+      );
       const jobStatusById = new Map<string, string>(
-        statusJobIds.length === 0
-          ? []
-          : (await listJobs(tenantId, statusJobIds))
-              .filter((j) => j.tenant_id === tenantId) // id-only-FK belt-and-suspenders
-              .map((j) => [j.id, j.status]),
+        jobRows
+          .filter((j) => j.tenant_id === tenantId) // id-only-FK belt-and-suspenders
+          .map((j) => [j.id, j.status]),
       );
       // The wording is the old specs' verbatim (nudgeKinds pre-build-5), so the
       // resolution a moot close writes reads the same as the sweep's did.
@@ -2591,6 +2634,7 @@ export async function runPlanner(
             setSchedule,
             markOutcome,
             flagNudge,
+            findOpenItem,
             markQueued,
             markGroupQueued,
             stampAnswer,
@@ -2739,15 +2783,25 @@ export async function runPlanner(
       // — same wording family, same token gate, still once-only by design: a
       // quiet queue never re-pings). No names/PII; the queue holds the detail.
       // notifyManagers never throws (its own contract), so no wrap is needed.
-      if (mode === 'live' && escalatedApplied > 0 && hasPushToken()) {
-        await notify(
-          tenantId,
-          escalatedApplied === 1
-            ? 'Heads-up: a recent job has an open question on it — it’s waiting in your ' +
-                'pending reviews whenever you have a minute.'
-            : `Heads-up: ${escalatedApplied} recent jobs have open questions on them — they’re ` +
-                'waiting in your pending reviews whenever you have a minute.',
-        );
+      if (mode === 'live' && escalatedApplied > 0) {
+        if (hasPushToken()) {
+          await notify(
+            tenantId,
+            escalatedApplied === 1
+              ? 'Heads-up: a recent job has an open question on it — it’s waiting in your ' +
+                  'pending reviews whenever you have a minute.'
+              : `Heads-up: ${escalatedApplied} recent jobs have open questions on them — they’re ` +
+                  'waiting in your pending reviews whenever you have a minute.',
+          );
+        } else {
+          // LOUD and recorded, never silent (final review): the unset token is
+          // a standing live defect, and this is the instrument that found it.
+          summary.pushSkipped = true;
+          console.error(
+            `[planner] tenant ${tenantId}: ${escalatedApplied} item(s) opened but BOARD_BOT_TOKEN ` +
+              'is unset — the manager was NOT pinged and the push is once-only by design',
+          );
+        }
       }
 
       name({

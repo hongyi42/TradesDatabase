@@ -548,9 +548,9 @@ export async function runTick(
   const planner = await runPlanner(nowIso, 'live', {
     listTenants,
     tools: [...TEAM_LEAD_TOOL_SCHEMAS],
-    // Load-bearing no-ops, the same reason as the watcher stubs above: an
+    // Load-bearing no-ops: .env carries a real BOARD_BOT_TOKEN, and an
     // applied escalate would otherwise push a real Telegram line (build 5
-    // moved the heads-up here from the sweep).
+    // moved the heads-up into the planner).
     notify: async () => {},
     hasPushToken: () => false,
     execute: (t, name, args) =>

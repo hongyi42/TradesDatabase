@@ -218,16 +218,19 @@ end a moot gap.
 RECORD line now also reports a cancelled/completed subject, same verb fork.
 
 ### Automated verification
-- [ ] gates pass
-- [ ] new tests: cancelled visit → view shows the line; close basis 'record' ACCEPTED on it
+- [x] gates pass
+- [x] new tests: cancelled visit → view shows the line; close basis 'record' ACCEPTED on it
   (citation = code's words); dismissed guidance on a noticed observation; completed visit same;
   cancelled job authorizes a cost gap's close; no moot → basis 'record' still refused
-- [ ] a gap of an unregistered kind now reaches the planner's view (filter-drop pin)
+- [x] a gap of an unregistered kind now reaches the planner's view (filter-drop pin)
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack
-- [ ] Scripted tick over a seeded cancelled-visit ask: model-free path check via
+- [x] Scripted tick over a seeded cancelled-visit ask: model-free path check via
   validate/apply unit harness + pg read-back of the close's resolution text.
+  *(codified: plannerSim.test.ts "the planner ends a moot gap on the record" — real status
+  reads + real markNudgeOutcome against the local stack; pg reads back status 'cancelled' and
+  the fact as resolution.)*
 
 ### Manual verification
 - [ ] none

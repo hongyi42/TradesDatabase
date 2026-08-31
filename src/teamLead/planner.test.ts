@@ -156,6 +156,10 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     flagNudge: async () => null,
     notify: async () => {},
     hasPushToken: () => false,
+    // Build 5, ruling 2: the moot-fact status reads — stubbed empty ("nothing
+    // is cancelled") for the standing 't1' reason; moot tests override.
+    listAssignments: async () => [],
+    listJobs: async () => [],
     // Phase 3 (2026-08-29): the same reason as listMoneySince above, and the same
     // trap watchers.test.ts hit — this fixture's tenant id is the literal 't1',
     // so the real settings reader returns 22P02, the per-tenant catch swallows
@@ -751,15 +755,6 @@ describe('runPlanner — when it runs at all', () => {
     expect(summary.tenants).toBe(0);
   });
 
-  test('a kind with no registered spec is invisible to the planner too', async () => {
-    const loop = vi.fn(loopReturning([]));
-    const summary = await runPlanner(NOW, 'shadow', baseDeps({
-      listNudges: async () => [nudge({ kind: 'unlinked_call' })],
-      runLoop: loop as unknown as NonNullable<PlannerDeps['runLoop']>,
-    }));
-    expect(loop).not.toHaveBeenCalled();
-    expect(summary.skippedNoGaps).toBe(1);
-  });
 
   test('one tenant failing does not stop the others', async () => {
     let call = 0;
@@ -4023,5 +4018,132 @@ describe('observations in the planner (plan 2026-08-31)', () => {
     }));
     expect(seen.user).toContain('dismiss this observation');
     expect(seen.user).not.toContain('basis "record"');
+  });
+});
+
+// ─── Build 5, ruling 2: moot becomes information ────────────────────────────
+// The sweep no longer closes on a cancelled visit/job — the fact reaches the
+// planner as a THE RECORD line, and a record-basis close it authorises ends
+// the gap 'cancelled' (the status the sweep's moot wrote), never 'answered'.
+describe('moot becomes information (build 5)', () => {
+  // Uuid-shaped ids, deliberately: the status reads drop non-uuid ids before
+  // the query (one malformed element would 400 the whole in()), so a fixture
+  // with literal 'a1' would never reach the stub at all.
+  const AID = '11111111-1111-4111-8111-111111111111';
+  const JID = '22222222-2222-4222-8222-222222222222';
+  const CANCELLED_VISIT = async () => [{ id: AID, status: 'cancelled' }] as never;
+  const MOOT_OVER: Partial<Nudge> = {
+    subject_ref: AID,
+    context: {
+      customerName: 'Henderson',
+      jobTitle: 'Furnace tune-up',
+      technicianRef: 'ben-shelton',
+      technicianName: 'Ben Shelton',
+      jobId: JID,
+      startsAtLocal: '2026-08-14T07:00:00.000Z',
+      endsAtLocal: '2026-08-14T08:00:00.000Z',
+    } as never,
+  };
+  const run = async (
+    over: Partial<Nudge>,
+    decisions: unknown[],
+    deps: Partial<PlannerDeps> = {},
+  ) => {
+    const outcomes: Array<[string, string, string | null | undefined]> = [];
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [nudge(over)],
+      runLoop: loopReturning(decisions),
+      markOutcome: async (id, _t, status, resolution) => {
+        outcomes.push([id, status, resolution]);
+        return nudge();
+      },
+      ...deps,
+    }));
+    return { summary, outcomes };
+  };
+
+  test('a cancelled visit authorises a record-basis close — and it ends CANCELLED', async () => {
+    const { summary, outcomes } = await run(
+      { status: 'asked', ...MOOT_OVER },
+      [{ nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'moot' }],
+      { listAssignments: CANCELLED_VISIT },
+    );
+    expect(summary.applied).toBe(1);
+    expect(outcomes).toEqual([
+      ['n1', 'cancelled', 'closed on the record — the visit was cancelled — nothing left to ask'],
+    ]);
+  });
+
+  test('a COMPLETED visit authorises it the same way', async () => {
+    const { outcomes } = await run(
+      { status: 'asked', ...MOOT_OVER },
+      [{ nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'moot' }],
+      { listAssignments: async () => [{ id: AID, status: 'completed' }] as never },
+    );
+    expect(outcomes[0][1]).toBe('cancelled');
+    expect(String(outcomes[0][2])).toContain('the visit was completed');
+  });
+
+  test('a cancelled JOB authorises a cost gap\'s close', async () => {
+    const { outcomes } = await run(
+      { status: 'asked', kind: 'job_cost_gap', ...MOOT_OVER, subject_ref: JID },
+      [{ nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'moot' }],
+      { listJobs: async () => [{ id: JID, tenant_id: 't1', status: 'cancelled' }] as never },
+    );
+    expect(outcomes[0][1]).toBe('cancelled');
+    expect(String(outcomes[0][2])).toContain('the job was cancelled');
+  });
+
+  test('with NO moot fact, a record-basis close is still refused', async () => {
+    const { summary } = await run(
+      { status: 'asked' },
+      [{ nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'hm' }],
+    );
+    expect(summary.applied).toBe(0);
+    expect(summary.plans[0].dropped[0].why).toContain('record is not filled');
+  });
+
+  test('a MONEY-authorised close still ends ANSWERED — mootClose never leaks', async () => {
+    const { outcomes } = await run(
+      { status: 'asked', ...MOOT_OVER },
+      [{ nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'paid' }],
+      {
+        listMoneySince: async () => [moneyRow('2026-08-15T13:00:00.000Z', 'payment_received', 50000, JID)] as never,
+        // Even with the moot fact ALSO true, money is the more specific fact
+        // and the close stays 'answered' — the flag keys on moot ALONE.
+        listAssignments: CANCELLED_VISIT,
+      },
+    );
+    expect(outcomes[0][1]).toBe('answered');
+  });
+
+  test('the gap view carries the RECORD line, stage-forked', async () => {
+    const asked = buildGapView(
+      nudge({ status: 'asked' }), Date.parse(NOW), [], false, new Set(), [], [], 'UTC', null,
+      'the visit was cancelled — nothing left to ask',
+    );
+    expect(asked.block).toContain('THE RECORD: the visit was cancelled — nothing left to ask.');
+    expect(asked.block).toContain('Close this gap with basis "record"');
+    const noticed = buildGapView(
+      nudge({ status: 'noticed', asked_at: null }), Date.parse(NOW), [], false, new Set(), [], [], 'UTC', null,
+      'the visit was cancelled — nothing left to ask',
+    );
+    expect(noticed.block).toContain('dismiss this observation');
+    expect(noticed.block).not.toContain('basis "record"');
+    expect(asked.mootFact).toBe('the visit was cancelled — nothing left to ask');
+  });
+
+  test('an UNREGISTERED kind now reaches the planner — the registry filter is gone', async () => {
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge({ kind: 'brand_new_gap_kind' })],
+      runLoop: loopReturning([]),
+    }));
+    expect(summary.planned).toBe(1);
+    expect(summary.plans[0].gaps).toBe(1);
+  });
+
+  test('the doctrine teaches the gone-subject case', () => {
+    expect(PLANNER_SYSTEM).toContain('or the thing it was about is GONE');
+    expect(PLANNER_SYSTEM).toContain('the visit itself cancelled or completed');
   });
 });

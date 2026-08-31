@@ -20,6 +20,9 @@ import {
 import type { TimelineStep } from './plannerCorpus.js';
 import type { runToolLoop } from '../model/toolLoop.js';
 import { localTimeHHMM, localDateISO } from '../schedule/availability.js';
+import { runPlanner } from '../teamLead/planner.js';
+import { TEAM_LEAD_REF } from '../teamLead/identity.js';
+import { dispatchForIdentity, TEAM_LEAD_TOOL_SCHEMAS } from '../mcp/server.js';
 
 // Integration test against the LOCAL stack (testEnvGuard enforces local-only).
 // The simulator is what the agentic eval trusts about time: offsets resolve,
@@ -324,6 +327,60 @@ describe('the sim clock owns job-note stamps', () => {
     // the job_notes row that any other file can see.
     await pg.query('delete from job_note_versions where tenant_id = $1', [t.id]);
     await pg.query('delete from job_notes where tenant_id = $1', [t.id]);
+  });
+});
+
+// Build 5, ruling 2 (moot becomes information), codified against the REAL
+// store: the planner — not the sweep — ends a cancelled-visit ask, on the
+// record, through the real status reads and the real markNudgeOutcome.
+// runPlanner directly (not runTick): the sweep still moots until build 5's
+// Phase 3 lands, and this test is about the PLANNER's path.
+describe('the planner ends a moot gap on the record (build 5)', () => {
+  test('cancelled visit → close basis record → row reads CANCELLED with the fact', async () => {
+    const t = await createTenant(`Eval PlannerMootClose ${Date.now()}`);
+    await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
+    const t0 = simStartIso(10);
+    const t0Ms = Date.parse(t0);
+    const seeded = await seedScenario(t.id, SMOKE_SCENARIOS[0].world, t0Ms);
+    const gapId = seeded.nudgeIds.gap;
+    const { rows: [gapRow] } = await pg.query(
+      'select subject_ref from nudges where id = $1', [gapId],
+    );
+    await pg.query("update assignments set status = 'cancelled' where id = $1", [
+      gapRow.subject_ref,
+    ]);
+
+    const stubLoop: typeof runToolLoop = async (req, _tools, execute) => {
+      // The fact reached the prompt — the whole point of ruling 2.
+      expect(req.user).toContain('THE RECORD: the visit was cancelled');
+      const reply = (await execute('submit_plan', {
+        decisions: [
+          { nudgeId: gapId, action: 'close', basis: 'record', confidence: 'high', reason: 'moot' },
+        ],
+      })) as { accepted: number };
+      expect(reply.accepted).toBe(1);
+      return { text: '', turns: 1, calls: [{ turn: 1, name: 'submit_plan', args: {}, ok: true, result: 'ok' }] };
+    };
+    const summary = await runPlanner(t0, 'live', {
+      listTenants: async () => [t.id],
+      tools: [...TEAM_LEAD_TOOL_SCHEMAS],
+      notify: async () => {},
+      hasPushToken: () => false,
+      execute: (tid, name, args) =>
+        dispatchForIdentity(name, args, { tenantId: tid, technicianRef: TEAM_LEAD_REF }),
+      runLoop: stubLoop,
+    });
+    expect(summary.applied).toBe(1);
+
+    // Cross-channel read-back: the durable row says CANCELLED (the status the
+    // sweep's moot wrote), with code's own words as the resolution.
+    const { rows: [after] } = await pg.query(
+      'select status, resolution from nudges where id = $1', [gapId],
+    );
+    expect(after.status).toBe('cancelled');
+    expect(after.resolution).toBe(
+      'closed on the record — the visit was cancelled — nothing left to ask',
+    );
   });
 });
 

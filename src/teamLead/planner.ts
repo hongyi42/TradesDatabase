@@ -2,9 +2,11 @@ import {
   createNudgeFromObservation,
   flagNudgeGap,
   getTenant,
+  listAssignmentsByIds,
   listDecisionsForNudges,
   listJobEvidenceSince,
   listJobIdsWithCostEvents,
+  listJobsWithCustomerByIds,
   listLiveMoneyEventsForJobsSince,
   listDismissedObservationIds,
   listNudgesByStatus,
@@ -32,7 +34,6 @@ import {
 import { notifyManagers } from '../calls/notify.js';
 import { runToolLoop, ToolLoopLimitError, type ToolLoopLimit } from '../model/toolLoop.js';
 import type { ForcedToolSpec } from '../model/forcedTool.js';
-import { NUDGE_KIND_SPECS, specFor, type NudgeKindSpec } from '../jobs/nudgeKinds.js';
 import { renderMemoryIndex } from './memory.js';
 import { noteLine } from './jobNotes.js';
 // A plain const, read only inside functions — never at module-evaluation time.
@@ -169,6 +170,12 @@ export interface PlannerDecision {
   // quotes the ledger, which no person spoke. Null when the quote's capture
   // carries no technician_ref — see evidenceCaptureIds.
   answeredByCaptureId?: string | null;
+  // VALIDATE-SET, never model-suppliable (validateDecisions builds its own
+  // checked objects field by field): this record-basis close was authorised by
+  // the MOOT fact alone, so apply ends the gap as 'cancelled' — the status the
+  // sweep's moot wrote — not 'answered' (build 5; a cancelled visit recorded
+  // as answered would silently rebucket mv_gap_outcomes).
+  mootClose?: boolean;
 }
 
 // A decision the code rails refused, kept so a shadow run reports what the model
@@ -475,7 +482,12 @@ export interface PlannerDeps {
     name: string,
     args: Record<string, unknown>,
   ) => Promise<unknown>;
-  specs?: NudgeKindSpec[];
+  // The moot FACTS (build 5, ruling 2: moot becomes information). The sweep
+  // no longer closes on a cancelled visit/job; these two batched status reads
+  // are how the fact reaches the planner's view instead. Injected for the
+  // standing 't1'-is-not-a-uuid reason.
+  listAssignments?: typeof listAssignmentsByIds;
+  listJobs?: typeof listJobsWithCustomerByIds;
   // The escalate handoff's writer (build 5: escalate performs its own handoff
   // at apply time — the send-collapse pattern; the old sweepLive coupling died
   // with the sweep's escalation loop). Injected like every other writer.
@@ -667,6 +679,11 @@ export interface GapView {
   // evidenceText: `evidence` means somebody's own words, and a money-close must
   // never write `answered — "..."` about a row no person spoke.
   moneyOnRecord: string | null;
+  // The subject is GONE (build 5, ruling 2): the visit was cancelled/completed
+  // or the job cancelled — computed by code from the status reads, never taken
+  // from the model. Third authoriser of a `record`-basis close; a close it
+  // authorises ends the gap as 'cancelled', the status the sweep's moot wrote.
+  mootFact: string | null;
   // Every decision already made about this gap, oldest first. Only its SHAPE
   // reaches the prompt (a count and the last action); the detail is pulled with
   // recall_decisions. Kept on the view so tests can assert both halves.
@@ -783,6 +800,10 @@ export function buildGapView(
   // arguments — and because "no note" is the honest reading of a caller that
   // does not know.
   noteWrittenAt: string | null = null,
+  // The moot FACT (build 5): "the visit was cancelled — nothing left to ask",
+  // or null. Code-computed by the caller from the batched status reads;
+  // defaulted for the eval renderers and tests, where "no fact" is honest.
+  mootFact: string | null = null,
 ): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
@@ -902,6 +923,17 @@ export function buildGapView(
         : '  THE RECORD: no cost is recorded against this job yet. The hole is still open.',
     );
   }
+  if (mootFact) {
+    // The moot fact gets a RECORD line for EVERY kind, stage-forked exactly
+    // like the cost line above: an asked gap closes on the record; an
+    // observation nobody was asked about is dismissed (revisable).
+    lines.push(
+      `  THE RECORD: ${mootFact.replace(' — nothing left to ask', '')} — nothing left to ask. ` +
+        (n.status === 'noticed'
+          ? 'Nothing needs asking: dismiss this observation.'
+          : 'Close this gap with basis "record".'),
+    );
+  }
   if (n.not_before) lines.push(`  currently held until: ${n.not_before}`);
   // The deadline is stated for EVERY asked gap, not only a stamped one. It is
   // the clock `extend` has to beat, and on a first extend there is no stamp — so
@@ -1011,6 +1043,7 @@ export function buildGapView(
     evidenceCaptureIds,
     recordFilled,
     moneyOnRecord,
+    mootFact,
     history,
     dateLabels,
     block: lines.join('\n'),
@@ -1052,6 +1085,11 @@ export function observationAsGapRow(o: Observation): Nudge {
 // Normalised for the citation check ONLY — a model that changes spacing or case
 // is quoting; a model that changes words is not.
 const norm = (s: string): string => s.replace(/\s+/g, ' ').trim().toLowerCase();
+
+// The uuid shape, for bounding `in()` reads over uuid columns (the
+// nudgeDecisions.safeJobId posture): one malformed element rejects the whole
+// PostgREST filter, so non-uuid ids are dropped from the READ, never sent.
+const UUID_ISH_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // A quote has to be worth something. `includes()` alone accepts "the", which
 // appears in almost any note — probed, and it closed a gap whose evidence said
@@ -1575,14 +1613,19 @@ export function validateDecisions(
       // 2026-08-20). The authority is the code-computed fact on the view: the
       // model chooses the basis, code decides whether that basis holds.
       if (d.basis === 'record') {
-        // EITHER code-computed fact authorises it. recordFilled wins where both
-        // exist: on a cost gap the ledger's cost IS the hole, and it is the more
-        // specific statement of the two.
-        const fact = view.recordFilled ?? view.moneyOnRecord;
+        // ANY code-computed fact authorises it, most specific first:
+        // recordFilled (the ledger's cost IS a cost gap's hole), then money on
+        // the job, then the moot fact (build 5 — the subject itself is gone).
+        // moneyOnRecord MUST stay in this chain (plan review finding 1).
+        const fact = view.recordFilled ?? view.moneyOnRecord ?? view.mootFact;
         if (!fact) {
           push('close on the record when the record is not filled');
           continue;
         }
+        // Authorised by the moot fact ALONE → the gap ends 'cancelled', the
+        // status the sweep's moot wrote, keeping the audit row and
+        // mv_gap_outcomes honest about HOW it ended.
+        const mootClose = !view.recordFilled && !view.moneyOnRecord && !!view.mootFact;
         basis = 'record';
         seen.add(nudgeId);
         decisions.push({
@@ -1592,6 +1635,7 @@ export function validateDecisions(
           citation: fact, // code's words, not the model's
           confidence,
           reason,
+          ...(mootClose ? { mootClose: true } : {}),
         });
         continue;
       }
@@ -2114,7 +2158,15 @@ async function applyDecision(
         d.basis === 'record'
           ? `closed on the record — ${d.citation}`
           : `answered — "${d.citation}"`;
-      const closed = await markOutcome(d.nudgeId, tenantId, 'answered', resolution);
+      // A moot-authorised close ends the gap as the sweep's moot did:
+      // 'cancelled', never 'answered' — nobody answered anything, the subject
+      // is gone (build 5; plan review finding 3).
+      const closed = await markOutcome(
+        d.nudgeId,
+        tenantId,
+        d.mootClose ? 'cancelled' : 'answered',
+        resolution,
+      );
       // The link the citation already proved, recorded AFTER the close actually
       // moved the row — a close that lost its race has nothing to attribute.
       // Best-effort and never allowed to fail the close: attributeAnswerToGap's
@@ -2157,7 +2209,8 @@ export async function runPlanner(
   const markQueued = deps.markQueued ?? markNudgeQueued;
   const markGroupQueued = deps.markGroupQueued ?? markNudgeGroupQueued;
   const stampAnswer = deps.stampAnswer ?? setNudgeAnsweredBy;
-  const specs = deps.specs ?? NUDGE_KIND_SPECS;
+  const listAssignments = deps.listAssignments ?? listAssignmentsByIds;
+  const listJobs = deps.listJobs ?? listJobsWithCustomerByIds;
   const getSettings = deps.getSettings ?? readSettingsTolerantly;
   const flagNudge = deps.flagNudge ?? flagNudgeGap;
   const notify = deps.notify ?? notifyManagers;
@@ -2263,8 +2316,7 @@ export async function runPlanner(
       summary.plans.push(plan);
     };
     try {
-      // Registry-gated like every other ladder path: a kind with no spec is not
-      // composed, not swept, and not planned for either. TWO sources since the
+      // TWO sources since the
       // split (plan 2026-08-31): the asks in flight, and the open observations
       // — worn as gap rows in state 'noticed'. Merged oldest-first so the
       // prompt reads as one list. The DISMISSED set rides along to validate
@@ -2283,12 +2335,14 @@ export async function runPlanner(
       // nudge, and showing the pre-ask ghost would double-count the gap and
       // invite a dismiss that orphans a live question.
       const nudgeIds = new Set(openNudges.map((n) => n.id));
+      // NO registry filter any more (build 5, rider 6): the planner sees every
+      // open gap of any kind — a kind with no NudgeKindSpec was invisible even
+      // to the component that would decide about it, exactly the constraint
+      // §6a entry 4 records against this build.
       const open = [
         ...openNudges,
         ...openObs.filter((o) => !nudgeIds.has(o.id)).map(observationAsGapRow),
-      ]
-        .filter((n) => !!specFor(n.kind, specs))
-        .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+      ].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
       if (open.length === 0) {
         summary.skippedNoGaps += 1;
         name(idlePlan(tenantId, 'no_gaps', 0));
@@ -2386,6 +2440,49 @@ export async function runPlanner(
       // is no floor at all (no open gap named a job).
       const money = sinceIso ? await listMoneySince(tenantId, jobIds, sinceIso) : [];
 
+      // THE MOOT FACTS (build 5, ruling 2). The sweep no longer closes on a
+      // cancelled visit or job — the fact is read here, batched like every
+      // other read, and printed into the gap view where the planner acts on
+      // it. Spec-free, and keyed exactly the way the sweep's moot was: the
+      // visit lookup is by SUBJECT_REF (a visit gap's subject IS its
+      // assignment id; a job-scoped subject simply matches no row), the job
+      // lookup by the context's jobId. A throw joins the per-tenant catch
+      // like the sibling reads — after Phase 3 this is the ONLY path a moot
+      // fact reaches anyone by, and a silently-degraded read would let the
+      // planner ask about a cancelled visit.
+      // UUID-shaped ids only: both columns are uuid, and PostgREST rejects the
+      // WHOLE `in()` when one element is malformed — a single tampered
+      // subject_ref (or a test fixture's literal) must not 400 the tenant's
+      // entire tick. A filtered-out id simply contributes no fact.
+      const uuidish = (v: string): boolean => UUID_ISH_RE.test(v);
+      const subjectRefs = [...new Set(open.map((n) => n.subject_ref))].filter(uuidish);
+      const visitStatusById = new Map<string, string>(
+        subjectRefs.length === 0
+          ? []
+          : (await listAssignments(tenantId, subjectRefs)).map((a) => [a.id, a.status]),
+      );
+      const statusJobIds = jobIds.filter(uuidish);
+      const jobStatusById = new Map<string, string>(
+        statusJobIds.length === 0
+          ? []
+          : (await listJobs(tenantId, statusJobIds))
+              .filter((j) => j.tenant_id === tenantId) // id-only-FK belt-and-suspenders
+              .map((j) => [j.id, j.status]),
+      );
+      // The wording is the old specs' verbatim (nudgeKinds pre-build-5), so the
+      // resolution a moot close writes reads the same as the sweep's did.
+      const mootFactFor = (n: Nudge): string | null => {
+        const vs = visitStatusById.get(n.subject_ref);
+        if (vs === 'cancelled' || vs === 'completed') {
+          return `the visit was ${vs} — nothing left to ask`;
+        }
+        const j = ctxStr(n, 'jobId');
+        if (j && jobStatusById.get(j) === 'cancelled') {
+          return 'the job was cancelled — nothing left to ask';
+        }
+        return null;
+      };
+
       // ONE batched read of the planner's own history for this tick's gaps —
       // the same discipline as the evidence and ledger reads above. Only its
       // shape reaches the prompt; the detail is pulled with recall_decisions.
@@ -2449,6 +2546,7 @@ export async function runPlanner(
             money,
             tz,
             (j && noteMeta.get(j)) || null,
+            mootFactFor(n),
           ),
         );
       }

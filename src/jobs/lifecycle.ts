@@ -504,13 +504,6 @@ export async function runLifecycle(
     try {
       const summary = await (deps.runPlanner ?? runPlanner)(nowIso, plannerMode, {
         tools: [...TEAM_LEAD_TOOL_SCHEMAS],
-        // The planner's `escalate` only moves a deadline — the SWEEP inside
-        // step 8 performs the handoff, and it reads nothing unless the watcher
-        // is live. Deliberately decoupling the planner's gate from the ladder
-        // (see above) means this combination is reachable: watcher rolled back
-        // to shadow, planner still on. Without this the escalation would write
-        // its row, log `applied`, and reach nobody.
-        sweepLive: watchersMode === 'live',
         // The identity is minted PER TENANT, from the tenant the planner is
         // currently walking — never bound once for the process.
         execute: (tenantId, name, args) =>

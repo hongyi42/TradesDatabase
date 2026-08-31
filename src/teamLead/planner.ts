@@ -1,5 +1,6 @@
 import {
   createNudgeFromObservation,
+  flagNudgeGap,
   getTenant,
   listDecisionsForNudges,
   listJobEvidenceSince,
@@ -26,7 +27,9 @@ import {
   type NudgeDecision,
   type Observation,
   type NudgeDecisionInput,
+  type ReviewKind,
 } from '../db/index.js';
+import { notifyManagers } from '../calls/notify.js';
 import { runToolLoop, ToolLoopLimitError, type ToolLoopLimit } from '../model/toolLoop.js';
 import type { ForcedToolSpec } from '../model/forcedTool.js';
 import { NUDGE_KIND_SPECS, specFor, type NudgeKindSpec } from '../jobs/nudgeKinds.js';
@@ -473,21 +476,15 @@ export interface PlannerDeps {
     args: Record<string, unknown>,
   ) => Promise<unknown>;
   specs?: NudgeKindSpec[];
-  // Will the SWEEP run this deployment? Not a seam for tests — a fact the
-  // caller owns and the planner cannot see, because `escalate` does not
-  // escalate: it brings the deadline forward and lets watchers.ts perform the
-  // handoff. The sweep reads open nudges only when WATCHERS_MODE is 'live'
-  // (watchers.ts:361), and step 8 is skipped entirely when it is unset — so
-  // with the watcher rolled back and PLANNER_MODE on, every escalate would
-  // write a real row, report `applied`, and reach nobody. Recording an
-  // escalation that never happened is worse than not escalating: the one place
-  // a manager would check says the handover was made.
-  //
-  // Defaults TRUE — the old behaviour — because the alternative fails in the
-  // worse direction: a caller that forgets to pass it would silently stop
-  // escalating in a healthy deployment. lifecycle.ts always passes it, and a
-  // test pins that wiring.
-  sweepLive?: boolean;
+  // The escalate handoff's writer (build 5: escalate performs its own handoff
+  // at apply time — the send-collapse pattern; the old sweepLive coupling died
+  // with the sweep's escalation loop). Injected like every other writer.
+  flagNudge?: typeof flagNudgeGap;
+  // The count-only manager heads-up, moved here from the sweep (build 5): one
+  // line per tenant per tick when this tick's applied escalations opened
+  // items. Same token gate the sweep used; notifyManagers never throws.
+  notify?: typeof notifyManagers;
+  hasPushToken?: () => boolean;
 }
 
 const ctxStr = (n: Nudge, k: string): string | null => {
@@ -1257,11 +1254,10 @@ export function validateDecisions(
   raw: unknown,
   views: Map<string, GapView>,
   nowMs: number = Date.now(),
-  sweepLive: boolean = true,
   // The tenant's DISMISSED observation ids — what `recover` may act on. A
   // recover naming any other unknown id is DROPPED, never recorded: keyed as
   // observation_id it would 23503 the FK and reject the tick's entire chunked
-  // decision insert (review F4). Defaulted empty for the 23 existing test call
+  // decision insert (review F4). Defaulted empty for the existing test call
   // sites; runPlanner always passes the real set.
   recoverable: Set<string> = new Set(),
 ): { decisions: PlannerDecision[]; dropped: DroppedDecision[]; noteDrops: string[] } {
@@ -1391,45 +1387,30 @@ export function validateDecisions(
     // because leaving an asked gap alone does not stop its clock. Inventing a
     // mapping from `hold` to `escalate_after` would be code doing the model's
     // judgment for it, which is the one thing this design does not do.
-    // Escalation is for silence AFTER a question went out: the sweep's handoff
-    // requires `status === 'asked' && asked_at` (watchers.ts:576), so bringing
-    // escalate_after forward on a pending row moves nothing. A gap nobody can
-    // even be asked already has its own path — the delivery deadline hands it
-    // to the manager as never-delivered.
-    // The SWEEP performs every escalation; this rail is the same principle as
-    // the send/hold ones below, one level up. There, an action is refused
-    // because the ROW cannot observe it; here, because the DEPLOYMENT cannot.
-    // Both are the silent no-op this phase exists to make impossible — and this
-    // one is the more dangerous of the two, since the write succeeds and the
-    // decision log would read `applied` for a handover nobody ever received.
-    //
-    // Refused, not skipped: the model's judgment was sound, so it is recorded
-    // with its own words and confidence. What failed is the machinery, and the
-    // reason says so rather than blaming the decision.
-    if (action === 'escalate' && !sweepLive) {
-      push(
-        'escalate while the watcher is not live — escalation is performed by the sweep, which ' +
-          'only runs when WATCHERS_MODE is live, so nothing would reach the manager. This is a ' +
-          'deployment state, not a fault in the decision.',
-      );
-      continue;
-    }
+    // `escalate` PERFORMS ITS OWN HANDOFF since build 5 (plan 2026-08-31 "the
+    // sweep stops deciding", user ruling 3): an applied escalate creates the
+    // manager's review item at apply time, the send-collapse pattern. So it is
+    // legal on ANY stage of an ask — asked (silence), and pending/queued relics
+    // (a stuck row the planner chooses to hand over deliberately; the 18h
+    // automatic handoff is gone and nothing else moves an undeliverable row).
     if (action === 'escalate' && view.nudge.status === 'noticed') {
-      // Its own copy, NOT the pre-ask one below: "reaches the manager on its
-      // own" is true of a relic pending row (the 18h handoff) and FALSE of an
-      // observation, which has no safety net — teaching the model otherwise
-      // would let un-askable gaps sit forever on a promise nothing keeps
-      // (phase-3 review F5).
+      // An observation has no manager surface: no nudges row exists to mark
+      // 'escalated', and inventing an observation state for "the manager owns
+      // it" is build-6 vocabulary work. Its own copy, honest about that —
+      // nothing hands an observation to anyone by itself.
       push(
-        'escalate on an observation — nobody was asked and nothing hands it to a manager by ' +
-          'itself. If it needs someone, send; if it does not, dismiss or leave it.',
+        'escalate on an observation — nobody was asked and it has no handover path yet. ' +
+          'If it needs someone, send; if it does not, dismiss or leave it.',
       );
       continue;
     }
-    if (action === 'escalate' && view.nudge.status !== 'asked') {
+    if (action === 'escalate' && !view.jobId) {
+      // flagNudgeGap requires a job id — a review item that cannot name its job
+      // is useless to the manager. Unreachable from the shipped detectors (both
+      // always write jobId); this is the layer that survives one that does not.
       push(
-        'escalate on a gap that has not been asked yet — escalation is for silence after a ' +
-          'question went out, and a gap that cannot be delivered reaches the manager on its own.',
+        'escalate on a gap whose record does not name its job — a manager item cannot be ' +
+          'filed without one. Leave it.',
       );
       continue;
     }
@@ -1767,10 +1748,10 @@ export function validateDecisions(
     if (action === 'escalate') {
       const cleaned = cleanHandoffNote(d.handoffNote, view.dateLabels);
       handoffNote = cleaned.note;
-      // Recorded as a NOTE on an applied decision, not a refusal: the escalate
-      // itself is fine and is going ahead. Without this line a dropped note is
-      // indistinguishable from one the model never wrote, and no eval could
-      // ever measure how often the date rail fires.
+      // Logged even though the escalate will now REFUSE at apply without the
+      // note (build 5 — no fallback author exists): without this line a dropped
+      // note is indistinguishable from one the model never wrote, and no eval
+      // could ever measure how often the date rail fires.
       if (cleaned.why) noteDrops.push(`${nudgeId}: ${cleaned.why}`);
       // The briefing rides the same boundary: railed alone, dropped alone —
       // its loss never blocks the escalate or the manager's sentence.
@@ -1857,10 +1838,10 @@ export function buildPlannerUserMessage(
  * a delivery ack, an auto-resolve, another sweep — which is a real event, not a
  * failure, and must not be recorded as success.
  *
- * The planner never escalates, resolves or cancels a row by hand. `escalate`
- * brings the deadline forward and lets the SWEEP perform the handoff, so the
- * rung-2 flag, the orphan doctrine and the flag-then-close ordering stay in one
- * place (watchers.ts) instead of being re-implemented beside it.
+ * `escalate` performs its own handoff HERE since build 5 (plan 2026-08-31 "the
+ * sweep stops deciding"): flag first, mark second — the F1 order the sweep's
+ * loop used, so a flag that throws leaves the row open and next tick's retry
+ * converges on flagNudgeGap's once-ever dedup.
  */
 async function applyDecision(
   tenantId: string,
@@ -1868,6 +1849,7 @@ async function applyDecision(
   nowIso: string,
   setSchedule: typeof setNudgeSchedule,
   markOutcome: typeof markNudgeOutcome,
+  flagNudge: typeof flagNudgeGap,
   markQueued: typeof markNudgeQueued,
   markGroupQueued: typeof markNudgeGroupQueued,
   stampAnswer: typeof setNudgeAnsweredBy,
@@ -1879,7 +1861,7 @@ async function applyDecision(
   getGap: (id: string) => Nudge | undefined = () => undefined,
   setObservation: typeof setObservationStatus = setObservationStatus,
   createFromObservation: typeof createNudgeFromObservation = createNudgeFromObservation,
-): Promise<{ outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[] }> {
+): Promise<{ outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[]; itemOpened?: boolean }> {
   const moved = 'the gap changed state between the plan and the write — nothing was applied';
   const done = (row: object | null): { outcome: 'applied' | 'refused'; detail?: string } =>
     row ? { outcome: 'applied' } : { outcome: 'refused', detail: moved };
@@ -2053,8 +2035,51 @@ async function applyDecision(
           ['dismissed'],
         ),
       );
-    case 'escalate':
-      return done(await setSchedule(d.nudgeId, tenantId, { escalateAfter: nowIso }, ['asked']));
+    case 'escalate': {
+      // The whole handoff, at apply time (build 5, user ruling 3). No fallback
+      // author exists any more — the sweep's template died with its loop — so a
+      // missing or date-rail-dropped note refuses the escalate loudly, the
+      // send-needs-question pattern exactly.
+      if (!d.handoffNote) {
+        return {
+          outcome: 'refused',
+          detail:
+            'escalate needs `handoffNote` — it was missing or the date rail dropped it; ' +
+            'rewrite it using only the dates you were given',
+        };
+      }
+      const n = getGap(d.nudgeId);
+      if (!n) return { outcome: 'refused', detail: moved }; // rail-checked; unreachable
+      // Flag FIRST: a throw here (caught by the apply loop) leaves the row
+      // open, and the retry converges on the once-ever dedup. A null return
+      // means the subject was ever-flagged — the manager HAS it — so the row
+      // is still marked (the sweep's mark-regardless precedent), but the
+      // heads-up must NOT count it: only a genuinely opened item may ping (the
+      // sweep's `if (item)` rule — a quiet queue never re-pings).
+      const item = await flagNudge({
+        tenantId,
+        kind: n.kind as ReviewKind,
+        subjectRef: n.subject_ref,
+        jobId: ctxStr(n, 'jobId')!,
+        technicianRef: ctxStr(n, 'technicianRef'),
+        startsAtLocal: ctxStr(n, 'startsAtLocal'),
+        endsAtLocal: ctxStr(n, 'endsAtLocal'),
+        escalatedFromNudge: n.id,
+        suggestion: d.handoffNote,
+        ...(d.agentContext ? { agentContext: d.agentContext } : {}),
+      });
+      // Any open stage may be handed over (a stuck queued relic included); the
+      // guard still loses to a racing terminal write, which is the honest
+      // outcome — the gap already ended some other way.
+      const marked = await markOutcome(
+        d.nudgeId,
+        tenantId,
+        'escalated',
+        'handed to the manager by the team lead',
+        ['pending', 'queued', 'asked'],
+      );
+      return { ...done(marked), ...(marked && item ? { itemOpened: true } : {}) };
+    }
     case 'extend':
       // The mirror image of escalate: the same column, pushed OUT instead of
       // pulled in. Status-guarded identically, so a row that got answered
@@ -2134,7 +2159,9 @@ export async function runPlanner(
   const stampAnswer = deps.stampAnswer ?? setNudgeAnsweredBy;
   const specs = deps.specs ?? NUDGE_KIND_SPECS;
   const getSettings = deps.getSettings ?? readSettingsTolerantly;
-  const sweepLive = deps.sweepLive ?? true;
+  const flagNudge = deps.flagNudge ?? flagNudgeGap;
+  const notify = deps.notify ?? notifyManagers;
+  const hasPushToken = deps.hasPushToken ?? (() => !!process.env.BOARD_BOT_TOKEN);
   const tools = deps.tools ?? [];
   const execute = deps.execute;
 
@@ -2513,7 +2540,7 @@ export async function runPlanner(
         [...tools, SUBMIT_PLAN_TOOL],
         async (name, args) => {
           if (name === SUBMIT_PLAN_TOOL.name) {
-            const checked = validateDecisions(args, views, nowMs, sweepLive, recoverable);
+            const checked = validateDecisions(args, views, nowMs, recoverable);
             outcome = checked; // the LAST submission stands, refusals included
             // A dropped note is not a refused decision, so it would otherwise
             // leave no trace anywhere — and "how often does the date rail fire"
@@ -2560,6 +2587,9 @@ export async function runPlanner(
       let cappedWarned = false; // one line per tenant per tick, not one per gap
       let applied = 0;
       let refusedAtApply = 0;
+      // Applied escalations = review items this tick opened; drives the one
+      // count-only manager heads-up below (moved here from the sweep, build 5).
+      let escalatedApplied = 0;
       for (const d of decisions) {
         // ONE ROW PER GAP, even when one decision covered several (plan
         // 2026-08-25, Phase 3). Each gap's own history has to show its own send,
@@ -2603,7 +2633,7 @@ export async function runPlanner(
           }
           continue;
         }
-        let res: { outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[] };
+        let res: { outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[]; itemOpened?: boolean };
         try {
           const gapRow = views.get(d.nudgeId)?.nudge;
           res = await applyDecision(
@@ -2612,6 +2642,7 @@ export async function runPlanner(
             nowIso,
             setSchedule,
             markOutcome,
+            flagNudge,
             markQueued,
             markGroupQueued,
             stampAnswer,
@@ -2633,6 +2664,9 @@ export async function runPlanner(
         // comparable with the eval baseline taken before groups existed.
         if (res.outcome === 'applied') applied += 1;
         else refusedAtApply += 1;
+        if (d.action === 'escalate' && res.outcome === 'applied' && res.itemOpened) {
+          escalatedApplied += 1; // only a genuinely OPENED item pings — never an ever-flagged null
+        }
         // The RECORDS count gaps, with each member's own truth: a partial move
         // really did queue the movers, and telling a moved gap's history it was
         // refused is the same class of lie as the reverse.
@@ -2755,6 +2789,22 @@ export async function runPlanner(
       summary.applied += applied;
       summary.refusedAtApply += refusedAtApply;
       summary.recorded += recorded;
+
+      // ONE count-only manager heads-up per tenant per tick, only when this
+      // tick's applied escalations opened items (moved from the sweep, build 5
+      // — same wording family, same token gate, still once-only by design: a
+      // quiet queue never re-pings). No names/PII; the queue holds the detail.
+      // notifyManagers never throws (its own contract), so no wrap is needed.
+      if (mode === 'live' && escalatedApplied > 0 && hasPushToken()) {
+        await notify(
+          tenantId,
+          escalatedApplied === 1
+            ? 'Heads-up: a recent job has an open question on it — it’s waiting in your ' +
+                'pending reviews whenever you have a minute.'
+            : `Heads-up: ${escalatedApplied} recent jobs have open questions on them — they’re ` +
+                'waiting in your pending reviews whenever you have a minute.',
+        );
+      }
 
       name({
         tenantId,

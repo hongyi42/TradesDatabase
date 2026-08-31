@@ -157,17 +157,19 @@ count-only push moves to the planner tick.
 describe pins the property this phase deletes — review finding 5).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] planner.test.ts: applied escalate → review_items row exists with the note as suggestion +
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass
+- [x] planner.test.ts: applied escalate → review_items row exists with the note as suggestion +
   `detail.escalatedFromNudge`; nudge `escalated`; works with NO sweep in the loop
-- [ ] escalate refused without a surviving handoffNote; refused on `noticed`; ACCEPTED on a
+- [x] escalate refused without a surviving handoffNote; refused on `noticed`; ACCEPTED on a
   stuck `queued` relic; ever-flagged subject (null flag) still marks the row escalated
-- [ ] push seam: one line when an escalate applies and token exists; none in shadow
+- [x] push seam: one line when an escalate applies and token exists; none in shadow
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack (`npx supabase start`, `.env.test`)
-- [ ] Through the real store: seed an asked nudge, run a scripted planner tick that escalates,
+- [x] Through the real store: seed an asked nudge, run a scripted planner tick that escalates,
   read review_items back via pg — item + status + decision row all present, sweep never ran.
+  *(codified: plannerSim.test.ts arc test — real flagNudgeGap/markNudgeOutcome against the local
+  stack, pg read-back of the item incl. the planner's note as suggestion + escalatedFromNudge.)*
 
 ### Manual verification
 - [ ] none

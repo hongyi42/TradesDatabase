@@ -353,8 +353,8 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
     const timeline: TimelineStep[] = [
       { at: '+0h', kind: 'tick' }, // stub extends to +26h
       { at: '+4h', kind: 'capture', text: 'Pilot is lit, swapped the thermocouple while I was there.' },
-      { at: '+5h', kind: 'tick' }, // stub escalates (brings deadline to now)
-      { at: '+5.5h', kind: 'tick' }, // sweep performs the handoff; stub sees zero gaps
+      { at: '+5h', kind: 'tick' }, // stub escalates — the handoff happens HERE (build 5)
+      { at: '+5.5h', kind: 'tick' }, // nothing left open — recorded as skipped
       { at: '+6h', kind: 'manager_resolve', nudgeKey: 'gap', outcome: 'resolved', note: 'thanked Dee' },
     ];
 
@@ -380,27 +380,30 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
     const arc = await runArc(t.id, { world, timeline }, t0Ms, { runLoop: stubLoop });
 
     // Tick 1: extend applied; the clock strictly advanced between ticks.
-    expect(arc.ticks).toHaveLength(3);
+    // TWO ticks run, not three: the escalate at tick 2 performs its own handoff
+    // (build 5), so the +5.5h tick finds nothing open and is recorded skipped.
+    expect(arc.ticks).toHaveLength(2);
+    expect(arc.ticksSkipped).toBe(1);
     expect(arc.ticks[0].decisions.map((d) => `${d.action}/${d.outcome}`)).toContain('extend/applied');
     expect(Date.parse(arc.ticks[1].nowIso)).toBeGreaterThan(Date.parse(arc.ticks[0].nowIso));
 
-    // Tick 2: escalate applied (deadline pulled to now) — the handoff itself
-    // happens on the NEXT sweep, which is the production shape.
+    // Tick 2: escalate applied — and applied MEANS handed off now: the row is
+    // 'escalated' in the same tick, through the real flagNudgeGap + markOutcome.
     expect(arc.ticks[1].decisions.map((d) => `${d.action}/${d.outcome}`)).toContain('escalate/applied');
     const afterTick2 = arc.ticks[1].nudgesAfter[0];
-    expect(afterTick2.status).toBe('asked');
-
-    // Tick 3: the sweep performed the handoff — status escalated, item open.
-    expect(arc.ticks[2].watchers.nudgesEscalated).toBe(1);
-    const afterTick3 = arc.ticks[2].nudgesAfter[0];
-    expect(afterTick3.status).toBe('escalated');
-    expect(new Date(afterTick3.resolved_at!).toISOString()).toBe(arc.ticks[2].nowIso); // sim-stamped
+    expect(afterTick2.status).toBe('escalated');
+    expect(new Date(afterTick2.resolved_at!).toISOString()).toBe(arc.ticks[1].nowIso); // sim-stamped
     const { rows: items } = await pg.query(
       `select status, resolved_at, detail->>'escalatedFromNudge' as from_nudge from review_items where tenant_id = $1`,
       [t.id],
     );
     expect(items).toHaveLength(1);
     expect(items[0].from_nudge).toBe(arc.seeded.nudgeIds.gap);
+    // The item's suggestion is the planner's OWN note — no template exists.
+    const { rows: sugg } = await pg.query(
+      `select suggestion from review_items where tenant_id = $1`, [t.id],
+    );
+    expect(sugg[0].suggestion).toContain('needs a decision on the thermocouple note');
     // The manager_resolve step settled it at sim +6h.
     expect(items[0].status).toBe('resolved');
     expect(new Date(items[0].resolved_at).toISOString()).toBe(atOffset(t0Ms, '+6h'));
@@ -408,7 +411,7 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
     // The ⑤ epilogue assertions stood here — they read gap_summaries rows for
     // the arc's escalated gap, and retired with that store (plan 2026-08-30).
     // Everything the arc proves is now ABOVE: the extend applied, the capture
-    // landed mid-arc, the sweep handed off, and the manager resolved at +6h —
+    // landed mid-arc, the planner handed off itself, and the manager resolved at +6h —
     // read here from nudges, nudge_decisions and review_items directly.
     //
     // Note what this test can prove that the EVAL cannot: the deterministic

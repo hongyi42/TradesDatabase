@@ -821,8 +821,7 @@ describe('the planner gate', () => {
 
   const planned = (over: Record<string, unknown> = {}) => {
     const calls: Array<[string, string]> = [];
-    // The third argument too: `sweepLive` rides in here, and the planner cannot
-    // work it out for itself.
+    // The third argument too — the pin below asserts what rides in it.
     const opts: Array<PlannerDeps | undefined> = [];
     return {
       calls,
@@ -942,29 +941,16 @@ describe('the planner gate', () => {
     expect(calls).toEqual([['2026-07-02T12:30:00.000Z', 'live']]);
   });
 
-  // The rail in validateDecisions is only real if this wiring is right: the
-  // planner's `escalate` is performed by the SWEEP in step 8, and the planner
-  // cannot see whether that sweep will run. Both directions are pinned, because
-  // a wiring that always said `true` would pass a one-sided test and quietly
-  // restore the defect.
-  test.each([
-    ['live', true],
-    ['shadow', false],
-  ] as const)('WATCHERS_MODE %s reaches the planner as sweepLive=%s', async (watchers, expected) => {
+  // sweepLive is GONE (build 5): escalate performs its own handoff at apply
+  // time, so the planner no longer needs to know whether the sweep will run.
+  // The pin is that the option is simply not passed any more.
+  test('the planner is not told about the sweep — no sweepLive option exists', async () => {
     process.env.PLANNER_MODE = 'live';
-    process.env.WATCHERS_MODE = watchers;
+    process.env.WATCHERS_MODE = 'shadow';
     const { opts, deps } = planned();
     await runLifecycle('2026-07-02T12:30:00.000Z', deps);
     expect(opts).toHaveLength(1);
-    expect(opts[0]?.sweepLive).toBe(expected);
-  });
-
-  test('an UNSET watcher also reads as sweepLive=false — step 8 never runs at all', async () => {
-    process.env.PLANNER_MODE = 'live';
-    delete process.env.WATCHERS_MODE;
-    const { opts, deps } = planned();
-    await runLifecycle('2026-07-02T12:30:00.000Z', deps);
-    expect(opts[0]?.sweepLive).toBe(false);
+    expect(opts[0] && 'sweepLive' in (opts[0] as object)).toBe(false);
   });
 
   test('a throwing planner is a stepError, red — and the tick keeps going', async () => {

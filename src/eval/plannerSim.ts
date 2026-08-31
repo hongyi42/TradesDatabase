@@ -561,7 +561,11 @@ export async function runTick(
   const planner = await runPlanner(nowIso, 'live', {
     listTenants,
     tools: [...TEAM_LEAD_TOOL_SCHEMAS],
-    sweepLive: true,
+    // Load-bearing no-ops, the same reason as the watcher stubs above: an
+    // applied escalate would otherwise push a real Telegram line (build 5
+    // moved the heads-up here from the sweep).
+    notify: async () => {},
+    hasPushToken: () => false,
     execute: (t, name, args) =>
       dispatchForIdentity(name, args, { tenantId: t, technicianRef: TEAM_LEAD_REF }),
     runLoop: wrapLoop,

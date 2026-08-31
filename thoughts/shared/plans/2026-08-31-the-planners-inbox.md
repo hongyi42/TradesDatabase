@@ -72,10 +72,16 @@ sticks — the outbound leg needs no gateway-config changes.
   excluded: an answer path would put one person's agent in the position of deciding what of
   its person's context it may reveal to another seat — the access-control surface the user
   declined. An inform has no answer, so there is nothing to gate; the receiving agent weighs
-  it (inform-never-directs applies between seats too). v1 rule: any ACTIVE seat may inform any
-  other active seat in the SAME tenant (tier rides as metadata; never yourself; the planner is
-  addressed via `inform_team_lead`, not this). Delivered turns name their true origin ("from
-  <name>'s assistant"), never "the office record system".
+  it (inform-never-directs applies between seats too). **Tier rule (user ruling, 2026-08-31):
+  at least one endpoint must be MANAGER-tier** — manager→tech and tech→manager allowed,
+  tech→tech refused. Rationale: every tech-to-tech candidate dissolves — job handoffs belong
+  on the RECORD, coordination belongs to the office, and peers have phones; lateral tech flow
+  that genuinely matters routes through the hub (tech informs the planner → the planner
+  judges → `inform_agent` to the other tech), keeping one judgment in the middle. The refusal
+  copy points there ("put it on the record, or inform the office"). Reopening is a one-line
+  validation change if crew coordination earns it in testing. Same tenant, active seats,
+  never yourself; the planner is addressed via `inform_team_lead`, not this. Delivered turns
+  name their true origin ("from <name>'s assistant"), never "the office record system".
 
 ## Plain-language walkthrough
 
@@ -357,7 +363,9 @@ plus `'ask_agent','inform_agent'` (fourth amendment; the third-amendment precede
 
 **`src/mcp/server.ts`** — seat tool `inform_teammate` (`{teammateRef: string, note: string,
 aboutJobId?: string}`): resolve the teammate (`getTechnician` by ref — same tenant, ACTIVE,
-not the caller, not a `spine:` ref; anything else refused with a plain reason); write
+not the caller, not a `spine:` ref; **and at least one endpoint manager-tier — a
+technician-tier caller may only name a manager-tier teammate; tech→tech refused with "for a
+teammate, put it on the record with a field note, or inform the office"**); write
 `createOfficeMessage({direction:'to_agent', kind:'inform', from_ref: caller ref,
 to_ref: teammateRef, technician_id: teammate.id, tier: caller.tier, body, status:'queued'})`.
 Job id folded into the body line (the inform_team_lead convention). Denied to `spine:`
@@ -380,8 +388,9 @@ way and record the answer as usual.` — origin-honest, never impersonating the 
 **Tests** — verb rails + apply (refused without message/technician; queue row shape; decisions
 row written); officeQueue serve/ack/freeze + the wrapper's two origin framings; officeQueue
 serves seat-sender and office-sender rows identically; `inform_teammate` refusals (inactive /
-cross-tenant / self / spine:); the three pinned equalities still hold (existing tests
-updated); httpServer route tests (auth, caps) following the `/control/nudges` family.
+cross-tenant / self / spine: / tech→tech with the pointer copy; manager→tech and tech→manager
+both pass); the three pinned equalities still hold (existing tests updated); httpServer route
+tests (auth, caps) following the `/control/nudges` family.
 
 ### Automated verification
 - [ ] `npm run typecheck` · `npm run lint` · `npm test` pass

@@ -111,11 +111,10 @@ export const UNMENTIONED = 'unmentioned';
 // How many decisions a single gap may accumulate before the tick-mark filler
 // stops being appended to it. Real decisions are never capped.
 //
-// Normally unreachable: a gap cannot outlive its 18h delivery deadline or its
-// 48h escalation ceiling, so at ~24 in-window ticks a day it collects a few
-// dozen rows at most. The configuration that escapes that is NUDGES_MODE
-// off/shadow with PLANNER_MODE live — the sweep stops closing gaps while the
-// planner keeps running — and there the filler would grow forever.
+// LOAD-BEARING since build 5, not an edge case: gaps have no lifetime clocks
+// any more, so a long-lived gap collecting one tick mark per look is the
+// designed steady state — without this cap the filler alone would grow
+// without bound on any gap the planner chooses to watch for weeks.
 export const UNMENTIONED_CAP = 200;
 
 export interface PlannerDecision {
@@ -2693,22 +2692,18 @@ export async function runPlanner(
       for (const [nudgeId, view] of views) {
         if (spokenFor.has(nudgeId)) continue;
         // GROWTH CAP. Rows accrue per open gap per in-window tick (~24/day),
-        // normally bounded by the gap's own lifetime (18h delivery deadline, 48h
-        // absolute escalation ceiling). One configuration escapes that bound:
-        // NUDGES_MODE off/shadow with PLANNER_MODE live, where the sweep does not
-        // close gaps but the planner still runs (deliberately — see
-        // lifecycle.ts). Filler must not grow without limit there.
+        // and since build 5 nothing bounds a gap's lifetime — a long watch is
+        // legitimate, so the filler must stop before it swamps the corpus.
         //
         // The cap deliberately does NOT stop `leave`, `close` or any real
-        // decision — only the tick marks. A gap this old is a stuck ladder
-        // showing through, and that is the bug to fix, not this write.
+        // decision — only the tick marks.
         if (view.history.length >= UNMENTIONED_CAP) {
           if (!cappedWarned) {
             cappedWarned = true;
             console.error(
               `[planner] tenant ${tenantId}: gap ${nudgeId} has ${view.history.length} decisions — ` +
-                `no longer appending '${UNMENTIONED}' filler past ${UNMENTIONED_CAP}. A gap this ` +
-                'old means the ladder is not closing it; fix that, not this cap.',
+                `no longer appending '${UNMENTIONED}' filler past ${UNMENTIONED_CAP}. The ` +
+                'unattended alarms are what watch a gap this old.',
             );
           }
           continue;

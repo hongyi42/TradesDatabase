@@ -3,9 +3,7 @@ import { Client } from 'pg';
 import { getClient } from './client.js';
 import {
   flagNudgeGap,
-  flagOverdueVisitGap,
   openCallActionReview,
-  reviewItemExistsFor,
   resolveReviewItem,
 } from './reviewItems.js';
 import { createTenant } from './tenants.js';
@@ -81,7 +79,7 @@ describe('openCallActionReview', () => {
 
 // Stage-0 watcher flag (plan 2026-08-15 feature A): once per assignment, EVER —
 // the dedup must hold across status changes, not just while the item is open.
-describe('flagOverdueVisitGap', () => {
+describe('flagNudgeGap — the visit-kind dedup (once per assignment, EVER)', () => {
   const GAP = {
     jobId: 'job-watch-1',
     technicianRef: 'ben-shelton',
@@ -91,7 +89,7 @@ describe('flagOverdueVisitGap', () => {
   };
 
   test('first flag opens; detail carries jobId/technicianRef/endsAtLocal', async () => {
-    const item = await flagOverdueVisitGap({ tenantId, assignmentId: 'asg-watch-1', ...GAP });
+    const item = await flagNudgeGap({ tenantId, kind: 'overdue_visit_gap', subjectRef: 'asg-watch-1', ...GAP });
     expect(item).not.toBeNull();
     expect(item?.kind).toBe('overdue_visit_gap');
     expect(item?.subject_ref).toBe('asg-watch-1');
@@ -111,7 +109,7 @@ describe('flagOverdueVisitGap', () => {
   });
 
   test('second flag on the same assignment returns null (not a second row)', async () => {
-    expect(await flagOverdueVisitGap({ tenantId, assignmentId: 'asg-watch-1', ...GAP })).toBeNull();
+    expect(await flagNudgeGap({ tenantId, kind: 'overdue_visit_gap', subjectRef: 'asg-watch-1', ...GAP })).toBeNull();
     const count = await pg.query<{ n: number }>(
       "select count(*)::int as n from review_items where tenant_id = $1 and kind = 'overdue_visit_gap' and subject_ref = 'asg-watch-1'",
       [tenantId],
@@ -120,10 +118,10 @@ describe('flagOverdueVisitGap', () => {
   });
 
   test('dedup holds ACROSS status: resolve, then re-flag → null (never re-opens)', async () => {
-    const item = await flagOverdueVisitGap({ tenantId, assignmentId: 'asg-watch-2', ...GAP });
+    const item = await flagNudgeGap({ tenantId, kind: 'overdue_visit_gap', subjectRef: 'asg-watch-2', ...GAP });
     expect(item).not.toBeNull();
     await resolveReviewItem(item!.id, tenantId, 'resolved', 'field report arrived');
-    expect(await flagOverdueVisitGap({ tenantId, assignmentId: 'asg-watch-2', ...GAP })).toBeNull();
+    expect(await flagNudgeGap({ tenantId, kind: 'overdue_visit_gap', subjectRef: 'asg-watch-2', ...GAP })).toBeNull();
     const open = await pg.query<{ n: number }>(
       "select count(*)::int as n from review_items where tenant_id = $1 and kind = 'overdue_visit_gap' and subject_ref = 'asg-watch-2' and status = 'open'",
       [tenantId],
@@ -134,7 +132,7 @@ describe('flagOverdueVisitGap', () => {
   test('the dedup is tenant-scoped: tenant B flags the SAME assignment id independently', async () => {
     tenantB = (await createTenant(`ri-tenant-b-${Date.now()}`)).id;
     // Tenant A flagged 'asg-watch-1' above — that must never suppress B's flag.
-    const item = await flagOverdueVisitGap({ tenantId: tenantB, assignmentId: 'asg-watch-1', ...GAP });
+    const item = await flagNudgeGap({ tenantId: tenantB, kind: 'overdue_visit_gap', subjectRef: 'asg-watch-1', ...GAP });
     expect(item).not.toBeNull();
     expect(item?.tenant_id).toBe(tenantB);
   });
@@ -190,9 +188,10 @@ describe('flagNudgeGap — the kind-generic flagger (plan 2026-08-19 Phase 4)', 
   test('the two kinds do not collide on the same subject id', async () => {
     // Subject namespaces differ per kind (assignment vs job), so the same
     // string under a different kind is a different gap.
-    const visit = await flagOverdueVisitGap({
+    const visit = await flagNudgeGap({
       tenantId,
-      assignmentId: 'job-cost-1',
+      kind: 'overdue_visit_gap',
+      subjectRef: 'job-cost-1',
       jobId: 'job-watch-1',
       technicianRef: 'ben-shelton',
       startsAtLocal: '2026-08-10T15:00:00.000Z',
@@ -203,12 +202,4 @@ describe('flagNudgeGap — the kind-generic flagger (plan 2026-08-19 Phase 4)', 
     expect(visit?.kind).toBe('overdue_visit_gap');
   });
 
-  test('reviewItemExistsFor distinguishes "already flagged" from "nothing there"', async () => {
-    // This is what lets the terminal-failure doctrine tell a dedup-null from a
-    // failed handoff.
-    expect(await reviewItemExistsFor(tenantId, 'job_cost_gap', 'job-cost-1')).toBe(true);
-    expect(await reviewItemExistsFor(tenantId, 'job_cost_gap', 'job-never-seen')).toBe(false);
-    // Kind-scoped and tenant-scoped.
-    expect(await reviewItemExistsFor(tenantId, 'unlinked_call', 'job-cost-1')).toBe(false);
-  });
 });

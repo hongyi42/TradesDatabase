@@ -100,11 +100,7 @@ export type WatcherMode = 'shadow' | 'live';
 // the future: a constant may become per-firm only when EVERY call-site that
 // reads it holds a tenant id. (The clock constants this note used to name died
 // with the acting clocks, build 5.)
-export {
-  OVERDUE_HOURS,
-  LOOKBACK_HOURS,
-  MAX_NEW_ITEMS_PER_TENANT_TICK,
-} from '../db/tenantSettings.js';
+export { OVERDUE_HOURS, LOOKBACK_HOURS } from '../db/tenantSettings.js';
 
 // THE ACTING CLOCKS ARE GONE (build 5, user ruling 1 — plan 2026-08-31
 // "the sweep stops deciding"). NUDGE_ESCALATE_HOURS (24), NUDGE_ESCALATE_MAX_
@@ -495,7 +491,6 @@ export async function runWatchers(
         hasActivitySince,
         visitStatusById: statusById,
         jobStatusById,
-        naiveLocal,
         jobsWithCostEvents,
       };
       // ONE resolve path for every kind. The two visit predicates that used to be
@@ -531,8 +526,7 @@ export async function runWatchers(
       // is now wholly the planner's, which is what the per-tick slice was a
       // stand-in for all along ("Deciding WHICH gaps deserve a scarce slot is
       // exactly the pacing planner's job" — the old comment here, now true).
-      // settings.maxNewPerTick and the per-kind brakes are left DECLARED but
-      // unread at mint (build 5 owns retiring them); the once-ever store is
+      // The caps are DELETED (build 5); the once-ever store is
       // uq_observations_subject_ever, and dismissal — the planner's, revisable
       // — is what stops re-surfacing.
       //

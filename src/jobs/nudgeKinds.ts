@@ -1,289 +1,72 @@
-import type { Nudge } from '../db/nudges.js';
 import type { ReviewKind } from '../db/reviewItems.js';
-import { wallClockLabel } from './watchers.js';
 
-// The ladder's kind registry (plan 2026-08-19, Phase 1). Before this, the one
-// gap archetype was a literal 'overdue_visit_gap' in four places — and the
-// dangerous one is the resolve/escalate sweep, which fails SILENTLY: a nudge of
-// an unregistered kind is simply never swept, so it can never be answered,
-// escalated or expired. It sits open forever with nothing logged. A registry
-// makes "every kind is swept" structural rather than remembered.
+// The ladder's kind registry — SLIMMED TO THE ITEM SWEEP'S HALF (build 5,
+// plan 2026-08-31 "the sweep stops deciding").
+//
+// What this used to be: five per-kind members binding detection to judgment —
+// `filled` (is the gap answerable), `moot` (is the subject gone), `handoff`
+// (the manager copy), `stage0Suggestion` and a per-kind mint brake. Every one
+// of those judgments moved to the planner or died with the acting sweep:
+// moot facts are computed spec-free in planner.ts and printed into the gap
+// view; the manager line is the planner's own handoffNote; nothing is capped
+// at mint; nothing auto-closes.
+//
+// What remains is the ONE judgment the sweep kept (user ruling 5): the
+// manager-queue self-clean. `itemResolved` answers "has the thing this REVIEW
+// ITEM asked the manager for been done?" — a different question per kind (a
+// visit item closes on a field report or a status change; a cost item closes
+// only when the LEDGER gains the cost), which is why a registry survives at
+// all. `subjectIsVisit` routes each kind's subjects into the right batched
+// status read.
 //
 // The predicates are PURE functions over facts the sweep has already fetched
 // (SweepFacts) — never a DB client. That is deliberate: the sweep does ONE
-// batched activity/status read per tenant per tick, and a spec that could query
-// would quietly turn it into a per-row read.
-//
-// IMPORT DIRECTION: this module imports `wallClockLabel` from watchers.ts,
-// which imports this module back. That cycle is safe ONLY because
-// wallClockLabel is a hoisted `function` declaration and nothing here CALLS it
-// at module-evaluation time. Do not import a `const` from watchers.ts here (it
-// would be in the temporal dead zone), and do not move wallClockLabel to an
-// arrow function.
+// batched activity/status read per tenant per tick, and a spec that could
+// query would quietly turn it into a per-row read.
 
 // Everything a spec may know about the world this tick, pre-fetched by the
 // sweep. Keyed the way the batched reads already key: activity by job,
-// assignment status by the nudge's subject_ref, job status by job id.
+// assignment status by the item's subject_ref, job status by job id.
 export interface SweepFacts {
   hasActivitySince: (jobId: string, sinceLocal: string) => boolean;
   visitStatusById: Map<string, string>;
-  // Unused by the overdue spec; the cost spec's `moot` needs it (a cancelled
-  // job has nothing left to ask). Populated from the same batched pre-fetch.
+  // The cost item's closure test reads the job's status (a cancelled job has
+  // nothing left to record). Populated from the same batched pre-fetch.
   jobStatusById: Map<string, string>;
-  // Real-UTC instant → the firm's wall clock, the per-tenant closure. The cost
-  // spec compares activity against the ASK time (asked_at, real UTC) while the
-  // activity map is naive-local, so it cannot convert without this.
-  naiveLocal: (utcIso: string) => string;
-  // Jobs that HAVE a live (non-negated) cost on the money ledger. Added for the
-  // ITEM sweep (plan 2026-08-19, Phase 2), which needs to know when a manager
-  // has done the thing their queue item asked for.
-  //
-  // Deliberately NOT consumed by any `filled` predicate. Since 2026-08-22 that
-  // matters far less than it did: `filled` no longer closes an ASKED nudge, and
-  // the planner reads the ledger directly (buildGapView's THE RECORD line, plus
-  // moneyOnRecord) and may close on basis 'record'. So the money-blindness that
-  // was a HOLE in the sweep is now simply the sweep declining to judge, which is
-  // the correct division. Wiring it in here would put the judgment back.
+  // Jobs that HAVE a live (non-negated) cost on the money ledger — what says
+  // a manager has done the thing their cost item asked for.
   jobsWithCostEvents: Set<string>;
 }
 
-// The manager-queue twin of SweepFacts' subject: what the item sweep knows about
-// ONE open review item, parsed fail-closed at the boundary the way nudge context
-// is. `jobId` is required (every gap is about a job); the visit bounds are null
-// for a job-scoped kind, and a spec that needs them returns null.
+// The manager-queue view of ONE open review item, parsed fail-closed at the
+// boundary. `jobId` is required (every gap is about a job); the visit bounds
+// are null for a job-scoped kind, and a spec that needs them returns null.
 export interface OpenItemView {
   subjectRef: string;
   jobId: string;
   startsAtLocal: string | null;
 }
 
-// What a dying nudge hands the manager. The spec BUILDS this; the watcher
-// performs the write (through the injected flagNudge seam — the visit-specific
-// flagGap seam died with mint-time flagging, plan 2026-08-31), and specs stay
-// pure.
-export interface HandoffPlan {
-  subjectRef: string;
-  jobId: string;
-  technicianRef: string | null;
-  // Null for kinds whose subject is not a visit (a job-scoped cost gap has no
-  // visit window) — flagNudgeGap treats them as optional.
-  startsAtLocal: string | null;
-  endsAtLocal: string | null;
-  suggestion: string;
-  // The planner's briefing for the manager's ASSISTANT, carried through to the
-  // item's detail UNRENDERED — it must never enter `suggestion` (human copy).
-  agentContext?: string | null;
-}
-
-// What the CALLER has already checked, handed to a template so its copy can say
-// it. The rule every manager-facing string here obeys (user, 2026-08-21): a
-// template may render data it was given and may carry instructions, but must
-// NEVER assert a fact it did not receive as an argument. Each field below is
-// therefore named after the PREDICATE that produces it, never after the
-// conclusion a reader might draw — a later caller must not be able to reach for
-// one of these to justify a wider claim than the predicate supports.
-export interface HandoffContext {
-  // The manager-facing line the PLANNER wrote when it escalated this gap, or
-  // null when the sweep escalated on its own (it has no model). When present it
-  // IS the message — the templates below are the fallback, not the frame (user,
-  // 2026-08-22). Its dates are rail-checked against labels the planner was
-  // handed, which is why code can hand a model-written sentence to a manager at
-  // all; everything else about it is measured by eval, not enforced here.
-  plannerNote?: string | null;
-  // The planner's machine-facing briefing from the same applied escalate.
-  // Passed through to the plan verbatim; templates must never render it.
-  agentContext?: string | null;
-  // The sentence `filled` produced, when this gap IS answerable from the record
-  // (plan 2026-08-22, final review). Null when it is not.
-  //
-  // Named after the PREDICATE like everything else here. It exists because
-  // Phase 2 made a new shape reachable: an answered gap whose planner is alive
-  // and did not close it escalates anyway. Before that, an escalating gap always
-  // had `filled` false, so the closing ask — "Tell me how it went and I'll put
-  // it on the record" — was safe by construction. It is not any more: with a
-  // report sitting on the job, that sentence asks a manager for a datum the
-  // record already holds, and the stage0 doctrine's own premise ("the RECORD
-  // does not know it") is exactly what this flag falsifies.
-  answerableFromRecord?: string | null;
-  // Backs ONE clause with ONE wording: "no field note and no status change".
-  // That clause has TWO halves and the caller owes a predicate for EACH — a
-  // caller that has only run hasActivitySince may NOT pass this flag:
-  //   * "no field note" ← hasActivitySince was false. It reads raw_captures and
-  //     visits.created_at ONLY.
-  //   * "no status change" ← something else established that the subject has not
-  //     left 'confirmed'. hasActivitySince cannot see that; watchers.ts's module
-  //     header names it as a SEPARATE path ("or whose visit left 'confirmed'").
-  //     At the escalation site that half comes from OVERDUE_VISIT_GAP_SPEC.moot
-  //     having returned null; at the detector fallback, from the candidate
-  //     query's own status filter.
-  // It does NOT back "nothing is on the record" — hasActivitySince reads two
-  // tables and is blind to money_events, which is exactly how the 2026-08-20
-  // specimen told a manager nothing had happened on a job the customer had
-  // already paid for.
-  // NOT passed on the EXPIRED path: JOB_COST_GAP_SPEC.filled short-circuits on
-  // `!n.asked_at` (:298) and an expired row was never asked, so the predicate is
-  // never evaluated there for that kind.
-  noNoteOrStatusChange?: boolean;
-  // TRUE only when the caller has checked the money ledger for this job and
-  // found no live material_cost. Backs "nothing is recorded for it yet". It does
-  // NOT back "the job's costs are incomplete" — a job with no parts has complete
-  // costs, and that conclusion is nobody's to draw from this predicate.
-  noCostOnLedger?: boolean;
-}
-
 export interface NudgeKindSpec {
   kind: ReviewKind;
   // Does subject_ref name a VISIT (an assignment id), or something else? The
-  // sweep uses this to decide which batched status read a kind's subjects belong
-  // in — a job-scoped kind's subject is a job id, and looking it up in the
-  // assignments table is both wasted work and a lie about what the id means.
+  // sweep uses this to decide which batched status read a kind's subjects
+  // belong in — a job-scoped kind's subject is a job id, and looking it up in
+  // the assignments table is both wasted work and a lie about what the id
+  // means.
   subjectIsVisit: boolean;
-  // The per-detector runaway brake. The deleted per-person cap was incidentally
-  // capping a MISFIRING detector; the user accepted that the backstop must move
-  // per-detector (nudge-pacing-replacement-design §5). Max NEW nudges of this
-  // kind per tenant per tick — the tenant-wide ceiling still applies across all
-  // kinds on top of this, and since plan 2026-08-29 that ceiling is the FIRM'S
-  // OWN (tenant_settings.max_new_per_tick, falling back to
-  // MAX_NEW_ITEMS_PER_TENANT_TICK). This per-kind brake stays global: a
-  // detector's blast radius is a property of the detector, not of the firm.
-  maxNewPerTenantTick: number;
-  // IS THIS GAP ANSWERABLE FROM THE RECORD? → the sentence saying so, or null.
-  //
-  // THIS PREDICATE NO LONGER CLOSES AN ASKED GAP (plan 2026-08-22, Phase 2 —
-  // user ruling). Read that twice before wiring it into a resolve path, because
-  // its name still sounds like a verdict and re-connecting it is a one-line
-  // change that would silently undo the whole phase.
-  //
-  // "Did this answer the question?" is a JUDGMENT, and the sweep is the wrong
-  // organ for it: it runs every 5 minutes against a planner that runs every 30,
-  // so the fast deterministic thing always won the race and the planner never
-  // saw an answer at all. Closing now belongs to the planner, which reads the
-  // words, writes a reason and cites the evidence.
-  //
-  // AS OF plan 2026-08-29 Phase 3 IT CLOSES NOTHING AT ALL. It used to close one
-  // last case — a gap NOBODY HAD BEEN ASKED yet, the detector re-checking its own
-  // predicate — and that carve-out's whole justification was the ask window: the
-  // window held an evening gap till 7am, so a report filed at 8pm would be
-  // followed by asking that technician at 7am how the job went. The window is
-  // deleted, nothing holds a gap overnight, and the planner sees the note at
-  // 8:05pm with the evidence in its prompt. So the pre-ask case became the same
-  // case as every other: the planner reads and decides.
-  //
-  // It is now READ-ONLY everywhere, feeding:
-  //   1. the sweep's fail-safe at the escalation deadline (watchers.ts) — the
-  //      only way an ASKED gap still closes without the planner, and only when
-  //      the planner has been silent for a full working day;
-  //   2. the escalation copy's "no field note" clause, which needs this false
-  //      before it may be claimed;
-  //   3. the planner's own gap view, via buildGapView.
-  // Its truth did not change. Its authority over an asked gap did.
-  filled(n: Nudge, f: SweepFacts): string | null;
-  // Nothing left to ask → resolution text, or null.
-  moot(n: Nudge, f: SweepFacts): string | null;
   // How an open MANAGER REVIEW ITEM of this kind closes itself → resolution
-  // text, or null to leave it open.
-  //
-  // Separate from `filled`/`moot` because the QUESTION is different. A nudge asks
-  // the technician and closes when they answer; an item asks the MANAGER and
-  // closes when the manager has done the thing it asked for. For a visit gap
-  // those coincide (a field report). For a cost gap they do not: the item asks a
-  // manager to RECORD the cost, and only the ledger can say whether they did.
-  //
-  // Before this existed the sweep read one hardcoded kind, so a cost item never
-  // left the queue — it could not be resolved by anything except a human
-  // dismissing it. That is the gap escalate-then-close depends on.
+  // text, or null to leave it open. The one judgment the sweep kept (build 5):
+  // an item asks the MANAGER for something, and this says whether they did it.
   itemResolved(item: OpenItemView, f: SweepFacts): string | null;
-  // `naiveLocal` is a PER-TENANT closure built from that tenant's timezone
-  // (watchers.ts). OPTIONAL because the delivery queue hands rows to the
-  // manager too and has no timezone to build one from — it only ever uses
-  // 'expired', which prints no timestamp. A spec whose 'escalated' copy needs
-  // one must return null when it is absent (fail-closed, never a wrong time).
-  // `ctx` is OPTIONAL for the same reason `naiveLocal` is: the delivery queue
-  // hands rows to the manager too, and it has checked nothing.
-  // A spec must therefore omit every factual clause when it is absent — that
-  // path asserts nothing because it knows nothing.
-  handoff(
-    n: Nudge,
-    mode: 'escalated' | 'expired',
-    naiveLocal?: (utcIso: string) => string,
-    ctx?: HandoffContext,
-  ): HandoffPlan | null;
 }
-
-// The ONE manager-item copy for a plain unreported visit (user-approved
-// 2026-08-16). Used by the routing fallback and the expired-nudge handoff —
-// deliberately NOT the escalation copy, which
-// claims "their assistant asked": an expired nudge's ask never landed, and the
-// manager must never be told it did (Phase-4 review F1/F3).
-//
-// THE CLOSING LINE ASKS FOR THE DATUM, NEVER OFFERS AN EXIT (user, 2026-08-21).
-// Every one of these used to end "if it's already handled, just dismiss this",
-// which reads as: if you know the answer, don't bother telling us. That is
-// backwards. The job was almost certainly handled in the real world — the whole
-// reason this item exists is that the RECORD does not know it. The handled case
-// is the case where the information EXISTS and we most want it, so "dismiss" is
-// the one thing the copy must not invite. The manager can still dismiss from
-// the queue; it just stops being the offer.
-//
-// Kept SHORT and unqualified (user, 2026-08-21: "these are easy questions with
-// easy answers"). In particular the cost ask does not spell out that zero is
-// acceptable — it is, and verifiably so (money_events.amount_cents is
-// `check (… >= 0)`, and both the detector filter and itemResolved key on
-// kind='material_cost' with no amount predicate, so a zero closes the gap like
-// any other figure) — but saying it out loud is clutter on a question the
-// manager already knows how to answer.
-export const stage0Suggestion = (
-  title: string,
-  customer: string,
-  endsAtLocal: string,
-  // See HandoffContext.noNoteOrStatusChange. Absent = the caller checked
-  // nothing, so the clause is omitted rather than softened.
-  noNoteOrStatusChange?: boolean,
-): string =>
-  `'${title}' (${customer}) was due to wrap up ${wallClockLabel(endsAtLocal)}` +
-  (noNoteOrStatusChange ? ` — no note or status update on it yet` : '') +
-  `. Tell me how it went and I'll put it on the record.`;
-
-// Nudge context is watcher-written JSON, read fail-closed at every boundary.
-const str = (c: Record<string, unknown>, k: string): string | null =>
-  typeof c[k] === 'string' && (c[k] as string).length > 0 ? (c[k] as string) : null;
-
-const ctxOf = (n: Nudge): Record<string, unknown> =>
-  (n.context ?? {}) as Record<string, unknown>;
-
-// Display fields keep the pre-registry semantics EXACTLY: any string (including
-// '') passes through, only a non-string falls back. `str` above is for the
-// structural fields, where '' was already treated as absent.
-const disp = <T>(c: Record<string, unknown>, k: string, fallback: T): string | T =>
-  typeof c[k] === 'string' ? (c[k] as string) : fallback;
 
 export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
   kind: 'overdue_visit_gap',
   subjectIsVisit: true,
-  // Matches the tenant-wide per-tick cap: with one detector this brake never
-  // binds before the tenant ceiling does, which is exactly today's behaviour.
-  maxNewPerTenantTick: 5,
 
-  filled(n, f) {
-    const c = ctxOf(n);
-    const jobId = str(c, 'jobId');
-    const startsAtLocal = str(c, 'startsAtLocal');
-    if (!jobId || !startsAtLocal || Number.isNaN(Date.parse(startsAtLocal))) return null;
-    return f.hasActivitySince(jobId, startsAtLocal)
-      ? 'a field report arrived — the gap filled itself'
-      : null;
-  },
-
-  moot(n, f) {
-    const status = f.visitStatusById.get(n.subject_ref);
-    return status === 'cancelled' || status === 'completed'
-      ? `the visit was ${status} — nothing left to ask`
-      : null;
-  },
-
-  // The two paths that were inlined in the sweep before the registry reached
-  // review items, with their resolution copy carried over VERBATIM — this move
-  // must not change a single manager-visible string.
+  // The two closure paths, their resolution copy carried through every
+  // refactor VERBATIM — these strings are manager-visible history.
   itemResolved(item, f) {
     if (item.startsAtLocal && f.hasActivitySince(item.jobId, item.startsAtLocal)) {
       return 'field report arrived after this was flagged';
@@ -294,124 +77,16 @@ export const OVERDUE_VISIT_GAP_SPEC: NudgeKindSpec = {
     }
     return null;
   },
-
-  handoff(n, mode, naiveLocal, ctx) {
-    const c = ctxOf(n);
-    const jobId = str(c, 'jobId');
-    const startsAtLocal = str(c, 'startsAtLocal');
-    const endsAtLocal = str(c, 'endsAtLocal');
-    if (!jobId || !startsAtLocal || !endsAtLocal) return null;
-    const title = disp(c, 'jobTitle', 'a job');
-    const customer = disp(c, 'customerName', 'unknown customer');
-    const base = {
-      subjectRef: n.subject_ref,
-      jobId,
-      technicianRef: disp(c, 'technicianRef', null),
-      startsAtLocal,
-      endsAtLocal,
-    };
-    if (mode === 'expired') {
-      // The ask never landed → the Stage-0 copy, never the escalation copy.
-      return {
-        ...base,
-        suggestion: stage0Suggestion(title, customer, endsAtLocal, ctx?.noNoteOrStatusChange),
-      };
-    }
-    // Escalation copy quotes the ask time, so it needs both a real asked_at
-    // and a way to render it in the firm's clock.
-    if (!n.asked_at || !naiveLocal) return null;
-    const techName = disp(c, 'technicianName', 'the technician');
-    // `filled` returns at its own parse guard (:230) when startsAtLocal is a
-    // non-empty but UNPARSEABLE string — hasActivitySince never ran, so the
-    // caller's flag describes nothing. The base guard above only requires a
-    // non-empty string, so re-check rather than trust it. Escalation still
-    // proceeds; only the CLAIM is dropped.
-    const activityChecked =
-      !!ctx?.noNoteOrStatusChange && !Number.isNaN(Date.parse(startsAtLocal));
-    // The JOB leads, never the person: "your technician is unresponsive" is not
-    // the ask and not something we can even know (user, 2026-08-21 — the first
-    // draft put the technician in the subject position and read as blame).
-    // "hasn't heard back" stays DELETED: no reply-side datum exists anywhere in
-    // the system, so nothing could ever back it.
-    //
-    // "since the visit" is the window hasActivitySince ACTUALLY uses for this
-    // kind (`filled` bounds on startsAtLocal, :230). The first draft put the
-    // clause straight after the ask time, which read as "nothing since we
-    // asked" — a different, narrower window than the one we checked.
-    // The closing line changes when the record can already answer this. Asking
-    // "tell me how it went" with a field report on the job wastes the manager's
-    // attention on something they would only have to look up — and the queue
-    // item's whole justification is that the record does NOT know.
-    const template =
-      `'${title}' (${customer})` +
-      (activityChecked ? ` — no note or status update since the visit` : '') +
-      `. We asked ${techName} on ${wallClockLabel(naiveLocal(n.asked_at))}. ` +
-      (ctx?.answerableFromRecord
-        ? `Something has landed on the job since — worth a look to see if it covers it.`
-        : `Tell me how it went and I'll put it on the record.`);
-    // When the planner escalated this gap it wrote the manager's line itself,
-    // and that line IS the message (user, 2026-08-22). The template is the
-    // fallback for a clock-driven escalation, where no model was in the loop.
-    return {
-      ...base,
-      ...(ctx?.agentContext ? { agentContext: ctx.agentContext } : {}),
-      suggestion: ctx?.plannerNote ?? template,
-    };
-  },
 };
 
-// Detector #2 (plan 2026-08-19): the work is done, nothing says what it cost.
-//
-// Squarely `ask` class — a $40 condensate pump exists nowhere but the
-// technician's memory, so there is no derivation to attempt. Its urgency
-// profile is deliberately DIFFERENT from the visit question, which is why it
-// was chosen: a receipt amount does not decay, but it blocks the books.
-//
-// TWO limits, both accepted deliberately and both visible here rather than
-// buried:
-//  1. subject_ref is the JOB id, and uq_nudges_subject_ever asks once per
-//     subject FOREVER — so only the FIRST cost gap on a job is ever asked.
-//     Later purchases on a multi-day job are never chased (user decision
-//     2026-08-19, taken to keep "ask once, ever" a database guarantee).
-//  2. The answer closes the nudge but does NOT become a countable number: the
-//     technician's agent cannot write money (record_money_event is
-//     manager-only), so the amount lands as PROSE on the job and a manager must
-//     record it. Nothing chases the manager yet — that is the next plan.
+// A cost item asks the MANAGER to record what the job cost, so the ledger is
+// the only thing that can say it is done — not a note, and not any other
+// activity on the job.
 export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
   kind: 'job_cost_gap',
-  // The only kind whose subject is a JOB — see the note above.
+  // The only kind whose subject is a JOB.
   subjectIsVisit: false,
-  // Tighter than the visit brake: cost gaps arrive in bursts when a batch of
-  // jobs completes, and this is a brand-new detector — the runaway backstop
-  // matters most before it has a track record.
-  maxNewPerTenantTick: 3,
 
-  filled(n, f) {
-    // The bound is the ASK time, NOT the visit end. A completed job almost
-    // always already has a field note (that is usually what completed it), so
-    // comparing against the visit would mark every cost nudge answered the
-    // instant it was created, without anyone answering anything.
-    if (!n.asked_at) return null; // not asked yet — nothing can have answered it
-    const jobId = str(ctxOf(n), 'jobId');
-    if (!jobId) return null;
-    return f.hasActivitySince(jobId, f.naiveLocal(n.asked_at))
-      ? 'the technician answered — a note landed on the job'
-      : null;
-  },
-
-  moot(n, f) {
-    const status = f.jobStatusById.get(str(ctxOf(n), 'jobId') ?? '');
-    return status === 'cancelled' ? 'the job was cancelled — nothing left to ask' : null;
-  },
-
-  // A cost item asks the MANAGER to record what the job cost, so the ledger is
-  // the only thing that can say it is done — not a note, and not any other
-  // activity on the job. This is the ITEM half, and it is UNCHANGED by the
-  // 2026-08-22 closing move: a manager's queue item is not a question put to a
-  // person through the ladder, and nothing about it is a judgment the planner
-  // was handed. `filled` above still ignores the ledger (see
-  // SweepFacts.jobsWithCostEvents) — and now that it no longer closes anything,
-  // the planner reads the ledger itself through buildGapView's THE RECORD line.
   itemResolved(item, f) {
     if (f.jobsWithCostEvents.has(item.jobId)) {
       return 'a cost was recorded for this job after it was flagged';
@@ -421,49 +96,11 @@ export const JOB_COST_GAP_SPEC: NudgeKindSpec = {
     }
     return null;
   },
-
-  handoff(n, mode, _naiveLocal, ctx) {
-    const c = ctxOf(n);
-    const jobId = str(c, 'jobId');
-    if (!jobId) return null;
-    const title = disp(c, 'jobTitle', 'a job');
-    const customer = disp(c, 'customerName', 'unknown customer');
-    const techName = disp(c, 'technicianName', 'the technician');
-    return {
-      subjectRef: n.subject_ref,
-      jobId,
-      technicianRef: disp(c, 'technicianRef', null),
-      ...(ctx?.agentContext ? { agentContext: ctx.agentContext } : {}),
-      // A job-scoped gap has NO visit window — the flagger takes these as
-      // optional and omits the keys rather than storing nulls.
-      startsAtLocal: null,
-      endsAtLocal: null,
-      // Neither copy prints a timestamp, so this kind never needs naiveLocal.
-      // The expired lead-in is the ONLY place this copy names the job, the
-      // customer and the topic, and handToManager reaches it with NO ctx — so
-      // the subject is rendered data and stays unconditional, and only the
-      // ledger CLAIM is gated. Gating the whole sentence shipped a manager item
-      // that said merely "Worth asking Ben what they picked up for it."
-      // Expired never has a planner note — nothing was ever asked, so nothing
-      // was ever planned. Escalated takes the planner's line when there is one.
-      suggestion:
-        mode === 'expired'
-          ? `'${title}' (${customer}) — open question about what it cost in parts or materials` +
-            (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
-            `. ${techName} would know. Tell me the figure and I'll put it on the books.`
-          : (ctx?.plannerNote ??
-            `'${title}' (${customer}) — we asked ${techName} what it cost in parts and materials` +
-              (ctx?.noCostOnLedger ? `, nothing recorded for it yet` : '') +
-              (ctx?.answerableFromRecord
-                ? `. Something has landed on the job since — worth a look for the figure.`
-                : `. Tell me the figure and I'll put it on the books.`)),
-    };
-  },
-
 };
 
-// Every kind the ladder knows how to carry. Adding one here is what makes it
-// detected, swept and escalated — there is no second place to edit.
+// Every kind whose review items self-clean, and whose detector may mint.
+// Adding one here is what makes it detected and its items swept — there is no
+// second place to edit.
 export const NUDGE_KIND_SPECS: NudgeKindSpec[] = [OVERDUE_VISIT_GAP_SPEC, JOB_COST_GAP_SPEC];
 
 export function specFor(

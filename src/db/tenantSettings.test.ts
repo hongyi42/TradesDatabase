@@ -3,15 +3,13 @@ import { Client } from 'pg';
 import { getClient } from './client.js';
 import { getTenantSettings, patchTenantSettings, resolveSettings } from './tenantSettings.js';
 import { isMissingRelation } from './costs.js';
-// Imported from WATCHERS, not from the module under test, and deliberately: the
-// declarations moved down into src/db/ and watchers.ts now re-exports them, so
-// this is what pins the whole chain — the fallback resolveSettings hands out IS
-// the constant every existing call-site still reads.
-import {
-  LOOKBACK_HOURS,
-  MAX_NEW_ITEMS_PER_TENANT_TICK,
-  OVERDUE_HOURS,
-} from '../jobs/watchers.js';
+// The two live detection thresholds imported from WATCHERS deliberately: the
+// declarations live in src/db/ and watchers.ts re-exports them, so this pins
+// the whole chain. The cap is imported from HERE — its watchers re-export died
+// with the caps' readers (build 5); the constant survives only as the dormant
+// column's fallback.
+import { LOOKBACK_HOURS, OVERDUE_HOURS } from '../jobs/watchers.js';
+import { MAX_NEW_ITEMS_PER_TENANT_TICK } from './tenantSettings.js';
 
 // Writes via the app path (supabase-js); direct pg is the independent read-back
 // channel and cleanup (the tenantProfiles.test.ts convention).

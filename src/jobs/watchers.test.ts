@@ -700,23 +700,18 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
   const secondSpec = (over: Partial<NudgeKindSpec> = {}): NudgeKindSpec => ({
     kind: 'call_action' as NudgeKindSpec['kind'], // any registered ReviewKind
     subjectIsVisit: false,
-    maxNewPerTenantTick: 2,
-    filled: () => null,
-    moot: () => null,
     itemResolved: () => null,
-    handoff: () => null,
     ...over,
   });
 
 
-  test('the per-kind brake is UNREAD at mint — every fresh gap is recorded (plan 2026-08-31)', async () => {
-    // The brake was the runaway backstop on ASKING. Recording is deliberately
-    // unbounded (the record is unbounded — user direction); a misfiring
-    // detector now floods a table nobody is messaged from, and the planner's
-    // dismissal is the cleanup verb. Build 5 owns retiring the field.
+  test('recording is UNCAPPED — every fresh gap becomes a row (the caps are deleted, build 5)', async () => {
+    // Recording is deliberately unbounded (the record is unbounded — user
+    // direction); a misfiring detector floods a table nobody is messaged
+    // from, and the planner's dismissal is the cleanup verb.
     const created: string[] = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
-      specs: [{ ...OVERDUE_VISIT_GAP_SPEC, maxNewPerTenantTick: 1 }, secondSpec()],
+      specs: [OVERDUE_VISIT_GAP_SPEC, secondSpec()],
       listOverdue: async () => [
         visit({ id: 'a1', job_id: 'j1', technician_id: 'tech-1', ends_at: '2026-08-15T01:00:00.000Z' }),
         visit({ id: 'a2', job_id: 'j2', technician_id: 'tech-1', ends_at: '2026-08-15T02:00:00.000Z' }),
@@ -754,7 +749,7 @@ describe('the kind registry (plan 2026-08-19 Phase 1)', () => {
   test('the tenant-wide ceiling is UNREAD at mint too — nine fresh gaps, nine rows', async () => {
     const routed: string[] = [];
     const summary = await runWatchers(NOW, 'live', baseDeps({
-      specs: [{ ...OVERDUE_VISIT_GAP_SPEC, maxNewPerTenantTick: 99 }],
+      specs: [OVERDUE_VISIT_GAP_SPEC],
       listOverdue: async () => Array.from({ length: 9 }, (_, i) =>
         visit({ id: `a${i}`, job_id: `j${i}`, ends_at: `2026-08-15T0${i}:00:00.000Z` })),
       createObservation: async (input) => {
@@ -892,8 +887,7 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
         return obsRow({ kind: 'job_cost_gap', subject_ref: input.subjectRef });
       },
     }));
-    expect(created).toHaveLength(9); // not 3 (the spec brake), not 5 (the tenant ceiling)
-    expect(JOB_COST_GAP_SPEC.maxNewPerTenantTick).toBe(3); // the field survives for build 5 to retire
+    expect(created).toHaveLength(9); // no brake, no ceiling — nine rows
   });
 
 
@@ -920,7 +914,7 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
 
   test('the cost spec is registered in production, not just in tests', async () => {
     expect(JOB_COST_GAP_SPEC.kind).toBe('job_cost_gap');
-    expect(JOB_COST_GAP_SPEC.maxNewPerTenantTick).toBe(3);
+    expect(JOB_COST_GAP_SPEC.subjectIsVisit).toBe(false);
   });
 });
 

@@ -188,67 +188,11 @@ export async function flagNudgeGap(input: {
   });
 }
 
-// The visit-gap flagger. DEAD IN PRODUCTION since plan 2026-08-31 ("a gap is
-// not an ask"): its last caller was the mint-time manager fallback, which the
-// split deleted — detection records observations and flags nobody. Kept for
-// its unit tests (which really exercise flagNudgeGap's dedup) until build 5's
-// cleanup deletes it; DO NOT wire a new detector through it — that would
-// reintroduce manager items at detection time, the exact thing the split
-// removed.
-export async function flagOverdueVisitGap(input: {
-  tenantId: string;
-  assignmentId: string;
-  jobId: string;
-  technicianRef: string | null;
-  startsAtLocal: string;
-  endsAtLocal: string;
-  suggestion: string;
-  escalatedFromNudge?: string;
-  agentContext?: string | null;
-}): Promise<ReviewItem | null> {
-  return flagNudgeGap({
-    tenantId: input.tenantId,
-    kind: 'overdue_visit_gap',
-    subjectRef: input.assignmentId,
-    jobId: input.jobId,
-    technicianRef: input.technicianRef,
-    startsAtLocal: input.startsAtLocal,
-    endsAtLocal: input.endsAtLocal,
-    suggestion: input.suggestion,
-    ...(input.escalatedFromNudge ? { escalatedFromNudge: input.escalatedFromNudge } : {}),
-    ...(input.agentContext ? { agentContext: input.agentContext } : {}),
-  });
-}
-
-// Is this gap ALREADY on a manager surface? flagNudgeGap returns null for two
-// opposite reasons — the once-ever dedup found an existing item, or the insert
-// produced nothing — and the terminal-failure doctrine needs to tell them
-// apart: closing a nudge is only safe when the manager HAS the gap, and
-// "already flagged" means they do. Only read on the null path, which is rare.
-//
-// (This paragraph sat above `findItemForNudge` for a while and was nearly lost
-// with it when that function retired on 2026-08-30 — it documents THIS one,
-// which compose.ts and control/nudgeQueue.ts both still call.)
-export async function reviewItemExistsFor(
-  tenantId: string,
-  kind: ReviewKind,
-  subjectRef: string,
-): Promise<boolean> {
-  const { data, error } = await getClient()
-    .from('review_items')
-    .select('id')
-    .eq('tenant_id', tenantId)
-    .eq('kind', kind)
-    .eq('subject_ref', subjectRef)
-    .limit(1);
-  if (error) throw new Error(`reviewItemExistsFor failed: ${error.message}`);
-  return (data ?? []).length > 0;
-}
 
 // The watcher's batched cap pre-filter (final-review finding): which of these
 // subjects were EVER flagged, any status? Without it, stale flagged-but-
 // unfilled gaps re-enter the 72h candidate window every tick and permanently
-// occupy the per-tick cap — flagOverdueVisitGap's per-item dedup would return
+// occupy detection — flagNudgeGap's per-item dedup would return
 // null, but only AFTER the cap already spent its slots on them, starving
 // genuinely new gaps for up to three days. Bounded: `in()` over the caller's
 // candidate ids, never a tenant-wide scan.

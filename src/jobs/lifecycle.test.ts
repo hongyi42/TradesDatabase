@@ -396,7 +396,6 @@ describe('runLifecycle', () => {
     // shows as a failed run.
     test('step 9: a planner LOOP-LIMIT hit turns the tick red; a lone blip does not', async () => {
       process.env.WATCHERS_MODE = 'live';
-      process.env.NUDGES_MODE = 'live';
       process.env.PLANNER_MODE = 'live';
 
       const plannerSummary = (over: Record<string, unknown>) => ({
@@ -458,7 +457,6 @@ describe('runLifecycle', () => {
     // never red, because rolling the planner back is a legitimate choice.
     test('step 10 ladderMute: reported when the ladder can mint gaps but nothing can ask', async () => {
       process.env.WATCHERS_MODE = 'live';
-      process.env.NUDGES_MODE = 'live';
       process.env.PLANNER_MODE = 'live';
       const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
 

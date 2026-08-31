@@ -431,14 +431,17 @@ Deletes the dead surface and writes the record.
   `npm run decisions:index`.
 
 ### Automated verification
-- [ ] gates + `npm run build` pass; full suite green twice
-- [ ] grep pins: no reference to `NUDGES_MODE` outside docs/history; no `flagOverdueVisitGap`;
+- [x] gates + `npm run build` pass; full suite green twice
+- [x] grep pins: no reference to `NUDGES_MODE` outside docs/history; no `flagOverdueVisitGap`;
   no `handToManager`; no `spec.moot`/`spec.filled`/`spec.handoff` call sites
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack
-- [ ] One full `runLifecycle` against the seeded local stack: summary shape, no stepError,
+- [x] One full `runLifecycle` against the seeded local stack: summary shape, no stepError,
   observations minted, alarms present, no items opened by the sweep.
+  *(evidence: `node dist/jobs/lifecycle.js` on the local stack — live watchers with the slim
+  shape + alarms object, planner skipped, the new ladderMute on stderr, exit healthy;
+  minting/alarms with real rows proven by the plannerSim real-store tests.)*
 
 ### Manual verification
 - [ ] none

@@ -72,9 +72,7 @@ function baseDeps(over: Partial<NudgeQueueDeps> = {}): NudgeQueueDeps {
     // whole ask-group, so the writer returns every row it moved.
     asked: async () => [queuedRow({ status: 'asked' })],
     groupMembers: async () => [],
-    outcome: async () => queuedRow({ status: 'failed' }),
     attempts: async (_id, _t, n) => queuedRow({ attempts: n }),
-    flagNudge: async () => null,
     ...over,
   };
 }
@@ -132,36 +130,29 @@ describe('buildNudgeDelivery', () => {
         serveCount: async () => {
           throw new Error('a skipped row must not be serve-counted');
         },
-        outcome: async () => {
-          throw new Error('a skipped row must not be failed');
-        },
       }));
       expect(nudges).toEqual([]);
     }
   });
 
-  test('the serve cap: a poison item hands to the manager and fails instead of serving', async () => {
-    const flagged: string[] = [];
-    const outcomes: Array<[string, string, string | null | undefined]> = [];
+  test('the serve cap FREEZES: no serve, no manager item, no terminal status (build 5)', async () => {
     const { nudges } = await buildNudgeDelivery('host-1', baseDeps({
       listQueued: async () => [queuedRow({ serve_count: MAX_SERVE_COUNT })],
-      flagNudge: async (input) => {
-        flagged.push(input.subjectRef);
-        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>>;
-      },
-      outcome: async (id, _t, status, resolution) => {
-        outcomes.push([id, status, resolution]);
-        return queuedRow({ status: 'failed' });
-      },
       serveCount: async () => {
         throw new Error('a capped row must not be served again');
       },
     }));
+    expect(nudges).toEqual([]); // frozen — a broken pipe is the OPERATOR's, via the alarms
+  });
+
+  test('the attempt cap freezes the serve too — a thrice-failed message is never re-sent', async () => {
+    const { nudges } = await buildNudgeDelivery('host-1', baseDeps({
+      listQueued: async () => [queuedRow({ attempts: MAX_DELIVERY_ATTEMPTS })],
+      serveCount: async () => {
+        throw new Error('an attempts-capped row must not be served again');
+      },
+    }));
     expect(nudges).toEqual([]);
-    expect(flagged).toEqual(['a1']); // the gap reached the manager (F1 doctrine)
-    expect(outcomes).toEqual([
-      ['n1', 'failed', `undeliverable: served ${MAX_SERVE_COUNT}x with no delivery ack`],
-    ]);
   });
 
   test('a row that moved under us (serve write returns null) is dropped; one bad row never blocks the rest', async () => {
@@ -191,135 +182,27 @@ describe('completeNudgeDelivery', () => {
     ).toBe('ignored');
   });
 
-  test('failed below the cap → retry (bump only); at the cap → manager handoff + terminal failed', async () => {
+  test('failed below the cap → retry (bump only); at the cap → the BOX stops, the row stays queued', async () => {
     const bumps: number[] = [];
     const first = await completeNudgeDelivery('host-1', 'n1', 'failed', 'CLI timeout', baseDeps({
       attempts: async (_id, _t, n) => {
         bumps.push(n);
         return queuedRow({ attempts: n });
       },
-      outcome: async () => {
-        throw new Error('below the cap must not be terminal');
-      },
-      flagNudge: async () => {
-        throw new Error('below the cap must not hand off');
-      },
     }));
     expect(first).toBe('retry');
     expect(bumps).toEqual([1]);
 
-    const flagged: string[] = [];
-    const outcomes: string[] = [];
+    // At the cap: 'failed' tells the BOX to stop retrying — but the row
+    // freezes rather than going terminal, and NOTHING reaches a manager
+    // (build 5: broken pipes are the operator's, via the alarms).
     const last = await completeNudgeDelivery('host-1', 'n1', 'failed', 'CLI timeout', baseDeps({
       getQueued: async () => queuedRow({ attempts: MAX_DELIVERY_ATTEMPTS - 1 }),
-      flagNudge: async (input) => {
-        flagged.push(input.subjectRef);
-        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>>;
-      },
-      outcome: async (_id, _t, status, resolution) => {
-        outcomes.push(`${status}: ${resolution}`);
-        return queuedRow({ status: 'failed' });
-      },
     }));
     expect(last).toBe('failed');
-    expect(flagged).toEqual(['a1']);
-    expect(outcomes).toEqual([
-      [`failed: delivery failed ${MAX_DELIVERY_ATTEMPTS}x: CLI timeout`],
-    ].flat());
   });
 });
 
-describe('terminal-failure doctrine regressions (plan 2026-08-19 Phase 2)', () => {
-  test('delivery give-up + LANDED handoff → failed, as before', async () => {
-    const outcomes: string[] = [];
-    const result = await completeNudgeDelivery('host-1', 'n1', 'failed', 'boom', {
-      getQueued: async () => queuedRow({ attempts: MAX_DELIVERY_ATTEMPTS - 1 }),
-      attempts: async () => queuedRow({ attempts: MAX_DELIVERY_ATTEMPTS }),
-      flagNudge: async () =>
-        ({ id: 'ri1' }) as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>>,
-      outcome: async (_id, _t, status) => {
-        outcomes.push(status);
-        return null;
-      },
-    });
-    expect(result).toBe('failed');
-    expect(outcomes).toEqual(['failed']);
-  });
-});
-
-describe('a JOB-SCOPED gap reaches the manager (plan 2026-08-19 Phase 4)', () => {
-  // The orphan Phase 2 deferred. handToManager used to read visit-shaped fields
-  // straight off the context, so a cost row — no startsAtLocal, no endsAtLocal
-  // — could never be handed over, and the row closed with NO manager surface at
-  // all. Now the KIND's spec builds the handoff.
-  const costRow = (over: Partial<QueuedNudgeForHost> = {}) =>
-    queuedRow({
-      kind: 'job_cost_gap',
-      subject_ref: 'j-cost',
-      context: {
-        customerName: 'Henderson',
-        jobTitle: 'Boiler swap',
-        technicianRef: 'ben-shelton',
-        technicianName: 'Ben Shelton',
-        jobId: 'j-cost',
-      },
-      ...over,
-    });
-
-  test('delivery gives up on a cost nudge → the manager gets it, with cost copy', async () => {
-    const flagged: Array<Record<string, unknown>> = [];
-    const outcomes: string[] = [];
-    const result = await completeNudgeDelivery('host-1', 'n1', 'failed', 'boom', {
-      getQueued: async () => costRow({ attempts: MAX_DELIVERY_ATTEMPTS - 1 }),
-      attempts: async () => costRow({ attempts: MAX_DELIVERY_ATTEMPTS }),
-      flagNudge: async (input) => {
-        flagged.push({ ...input });
-        return { id: 'ri1' } as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>>;
-      },
-      outcome: async (_id, _t, status) => {
-        outcomes.push(status);
-        return null;
-      },
-    });
-    expect(result).toBe('failed');
-    expect(outcomes).toEqual(['failed']);
-    // The gap DID reach a manager surface, as the right kind, keyed on the job.
-    expect(flagged).toHaveLength(1);
-    expect(flagged[0]).toMatchObject({
-      kind: 'job_cost_gap',
-      subjectRef: 'j-cost',
-      jobId: 'j-cost',
-      startsAtLocal: null,
-      endsAtLocal: null,
-    });
-    expect(String(flagged[0].suggestion)).toContain('cost in parts');
-  });
-
-  test('"already flagged" counts as ON A SURFACE, not as a failed handoff', async () => {
-    // flagNudgeGap returns null for two opposite reasons — the once-ever dedup
-    // found an existing item, or nothing landed. Conflating them would refuse
-    // to close rows the manager already has.
-    let probed: string[] = [];
-    const result = await completeNudgeDelivery('host-1', 'n1', 'failed', 'boom', {
-      getQueued: async () => costRow({ attempts: MAX_DELIVERY_ATTEMPTS - 1 }),
-      attempts: async () => costRow({ attempts: MAX_DELIVERY_ATTEMPTS }),
-      flagNudge: async () => null, // dedup: an item already exists
-      reviewItemExists: async (_t, kind, subjectRef) => {
-        probed = [kind, subjectRef];
-        return true;
-      },
-      outcome: async () => null,
-    });
-    expect(result).toBe('failed'); // safe to close — the manager HAS the gap
-    expect(probed).toEqual(['job_cost_gap', 'j-cost']);
-  });
-});
-
-// ── plan 2026-08-25 Phase 2: one message may cover several gaps ─────────────
-//
-// The transport half. Nothing WRITES a group yet (that is Phase 3), so these
-// seed `ask_group_id` by hand — which is also the point: the pipes must carry a
-// group before anything forms one.
 describe('ask-groups in the transport', () => {
   // The lead is the row that NAMES the group (id === ask_group_id), and here it
   // is deliberately NOT the earliest-created row — the two rules disagree
@@ -371,7 +254,6 @@ describe('ask-groups in the transport', () => {
   });
 
   test('an inactive technician freezes the WHOLE group — no item, no failure', async () => {
-    const outcomes: string[] = [];
     const { nudges } = await buildNudgeDelivery(
       'host-1',
       baseDeps({
@@ -380,58 +262,35 @@ describe('ask-groups in the transport', () => {
             ...r,
             technicians: { ...r.technicians!, state: 'offboarded' },
           })) as unknown as QueuedNudgeForHost[],
-        outcome: async (_id, _t, status) => {
-          outcomes.push(status);
-          return null;
-        },
       }),
     );
-    expect(nudges).toEqual([]);
-    expect(outcomes).toEqual([]); // frozen, not failed — a rebind may heal them
+    expect(nudges).toEqual([]); // frozen, not failed — a rebind may heal them
   });
 
   test('a group whose LEAD carries no question stays frozen', async () => {
     // The tamper-freeze is the only thing between a malformed row and an
     // infinite re-serve loop; grouping must not open a hole in it.
-    const outcomes: string[] = [];
     const { nudges } = await buildNudgeDelivery(
       'host-1',
       baseDeps({
         listQueued: async () => [group('n1'), group('n2', { question: null }), group('n3')],
-        outcome: async (_id, _t, status) => {
-          outcomes.push(status);
-          return null;
-        },
       }),
     );
     expect(nudges).toEqual([]);
-    expect(outcomes).toEqual([]);
   });
 
-  test('serve-cap exhaustion hands EVERY member to the manager and fails all three', async () => {
-    // One undeliverable message orphans all of the gaps it was written for.
-    const flagged: string[] = [];
-    const failed: string[] = [];
+  test('serve-cap exhaustion FREEZES the whole group — nothing served, nothing failed (build 5)', async () => {
     const { nudges } = await buildNudgeDelivery(
       'host-1',
       baseDeps({
         listQueued: async () =>
           trio().map((r) => ({ ...r, serve_count: MAX_SERVE_COUNT })) as QueuedNudgeForHost[],
-        flagNudge: async (input) => {
-          flagged.push((input as { subjectRef: string }).subjectRef);
-          return { id: 'ri' } as unknown as Awaited<
-            ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>
-          >;
-        },
-        outcome: async (id, _t, status) => {
-          failed.push(`${id}:${status}`);
-          return null;
+        serveCount: async () => {
+          throw new Error('a capped group must not be served');
         },
       }),
     );
-    expect(nudges).toEqual([]);
-    expect(flagged).toHaveLength(3);
-    expect(failed).toEqual(['n1:failed', 'n2:failed', 'n3:failed']);
+    expect(nudges).toEqual([]); // the alarm counters carry it from here
   });
 
   test('one delivery report moves the whole group, and passes the group id through', async () => {
@@ -448,32 +307,16 @@ describe('ask-groups in the transport', () => {
     expect(seen).toEqual([[LEAD, 't1', LEAD]]);
   });
 
-  test('terminal delivery failure hands every member over', async () => {
-    const flagged: string[] = [];
-    const failed: string[] = [];
+  test('terminal delivery failure freezes — the box stops, no member goes anywhere (build 5)', async () => {
     const result = await completeNudgeDelivery('host-1', LEAD, 'failed', 'boom', {
       ...baseDeps(),
       getQueued: async () => group(LEAD, { attempts: MAX_DELIVERY_ATTEMPTS - 1 }),
       attempts: async () => queuedRow({ attempts: MAX_DELIVERY_ATTEMPTS }),
-      groupMembers: async (groupId, hostId) => {
-        expect(groupId).toBe(LEAD);
-        expect(hostId).toBe('host-1');
-        return trio();
-      },
-      flagNudge: async (input) => {
-        flagged.push((input as { subjectRef: string }).subjectRef);
-        return { id: 'ri' } as unknown as Awaited<
-          ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>
-        >;
-      },
-      outcome: async (id, _t, status) => {
-        failed.push(`${id}:${status}`);
-        return null;
+      groupMembers: async () => {
+        throw new Error('the failure path reads no group any more — nothing is handed over');
       },
     });
-    expect(result).toBe('failed');
-    expect(flagged).toHaveLength(3);
-    expect(failed).toEqual(['n1:failed', 'n2:failed', 'n3:failed']);
+    expect(result).toBe('failed'); // tells the BOX to stop retrying, nothing more
   });
 
   test('an UNGROUPED row skips the group read entirely', async () => {
@@ -487,28 +330,24 @@ describe('ask-groups in the transport', () => {
         called = true;
         return [];
       },
-      flagNudge: async () =>
-        ({ id: 'ri' }) as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>>,
-      outcome: async () => null,
     });
     expect(result).toBe('failed');
-    expect(called).toBe(false);
+    expect(called).toBe(false); // build 5: the failure path reads no group at all
   });
 });
 
 describe('a group that lost its lead is FROZEN, never re-delivered', () => {
-  // The sweep's pre-ask carve-out and `moot` each close ONE queued row and leave
-  // its siblings alone, so a group really can end up with no self-identifying
-  // member. Promoting a sibling would change the delivery item id — and the box
-  // dedupes on exactly that id — so the whole message would be sent again,
-  // including the question that was just answered.
+  // The planner's own `close` (or a moot-fact close) can end ONE queued row
+  // and leave its siblings alone, so a group really can end up with no
+  // self-identifying member. Promoting a sibling would change the delivery
+  // item id — and the box dedupes on exactly that id — so the whole message
+  // would be sent again, including the question that was just answered.
   const orphaned = () => [
     queuedRow({ id: 'n2', ask_group_id: 'n-gone', question: 'grouped text' }),
     queuedRow({ id: 'n3', ask_group_id: 'n-gone', question: 'grouped text' }),
   ];
 
   test('no item is served, and nothing is failed either', async () => {
-    const outcomes: string[] = [];
     const serves: string[] = [];
     const { nudges } = await buildNudgeDelivery(
       'host-1',
@@ -518,15 +357,12 @@ describe('a group that lost its lead is FROZEN, never re-delivered', () => {
           serves.push(id);
           return queuedRow({ serve_count: n });
         },
-        outcome: async (_id, _t, status) => {
-          outcomes.push(status);
-          return null;
-        },
       }),
     );
     expect(nudges).toEqual([]);
     expect(serves).toEqual([]); // no ledger touched — nothing was sent
-    expect(outcomes).toEqual([]); // the 18h expiry is the terminal exit
+    // build 5: no expiry exists any more — the alarm counters carry it, and
+    // the planner may escalate the members deliberately.
   });
 
   test('a healthy group alongside it is still served', async () => {
@@ -540,37 +376,6 @@ describe('a group that lost its lead is FROZEN, never re-delivered', () => {
       }),
     );
     expect(nudges.map((n) => n.id)).toEqual(['ok']);
-  });
-});
-
-describe('a group member says which ledger failed it', () => {
-  // The lead owns serve_count and attempts, so a member's own columns read 0
-  // while its resolution says "served 10x". The text names the lead rather than
-  // leaving a psql reader to reconcile a row against itself.
-  test('serve-cap resolutions point non-lead members at the lead', async () => {
-    const failed: string[] = [];
-    await buildNudgeDelivery(
-      'host-1',
-      baseDeps({
-        listQueued: async () => [
-          queuedRow({ id: 'lead', ask_group_id: 'lead', serve_count: MAX_SERVE_COUNT }),
-          queuedRow({ id: 'other', ask_group_id: 'lead', serve_count: 0 }),
-        ],
-        flagNudge: async () =>
-          ({ id: 'ri' }) as unknown as Awaited<
-            ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>
-          >,
-        outcome: async (id, _t, _s, resolution) => {
-          failed.push(`${id}=${resolution}`);
-          return null;
-        },
-      }),
-    );
-    expect(failed[0]).toBe(`lead=undeliverable: served ${MAX_SERVE_COUNT}x with no delivery ack`);
-    // The sibling's own serve_count is 0; the text says whose ledger counted.
-    expect(failed[1]).toBe(
-      `other=undeliverable: served ${MAX_SERVE_COUNT}x with no delivery ack (counted on the group's lead lead)`,
-    );
   });
 });
 
@@ -621,71 +426,6 @@ describe('the guards round-2 review found untested', () => {
     expect(called).toBe(false);
   });
 
-  test('a throwing group read still hands the lead over (the F1 doctrine)', async () => {
-    // Before Phase 2 this path needed no read at all. An unwrapped throw would
-    // skip the handoff entirely with attempts already bumped.
-    const flagged: string[] = [];
-    const failed: string[] = [];
-    const result = await completeNudgeDelivery('host-1', 'n1', 'failed', 'boom', {
-      ...baseDeps(),
-      getQueued: async () => queuedRow({ ask_group_id: 'n1', attempts: MAX_DELIVERY_ATTEMPTS - 1 }),
-      attempts: async () => queuedRow({ attempts: MAX_DELIVERY_ATTEMPTS }),
-      groupMembers: async () => {
-        throw new Error('database is on fire');
-      },
-      flagNudge: async (input) => {
-        flagged.push((input as { subjectRef: string }).subjectRef);
-        return { id: 'ri' } as unknown as Awaited<
-          ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>
-        >;
-      },
-      outcome: async (id, _t, status) => {
-        failed.push(`${id}:${status}`);
-        return null;
-      },
-    });
-    expect(result).toBe('failed');
-    expect(flagged).toHaveLength(1); // the lead alone, but handed over
-    expect(failed).toEqual(['n1:failed']);
-  });
 
-  test('a group read that OMITS the lead still fails the lead', async () => {
-    const failed: string[] = [];
-    await completeNudgeDelivery('host-1', 'n1', 'failed', 'boom', {
-      ...baseDeps(),
-      getQueued: async () => queuedRow({ id: 'n1', ask_group_id: 'n1', attempts: MAX_DELIVERY_ATTEMPTS - 1 }),
-      attempts: async () => queuedRow({ attempts: MAX_DELIVERY_ATTEMPTS }),
-      groupMembers: async () => [queuedRow({ id: 'sibling', ask_group_id: 'n1' })],
-      flagNudge: async () =>
-        ({ id: 'ri' }) as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>>,
-      outcome: async (id, _t, status) => {
-        failed.push(`${id}:${status}`);
-        return null;
-      },
-    });
-    expect(failed).toEqual(['n1:failed', 'sibling:failed']);
-  });
 
-  test('the delivery-failure resolution names the lead for non-lead members', async () => {
-    const failed: string[] = [];
-    await completeNudgeDelivery('host-1', 'lead', 'failed', null, {
-      ...baseDeps(),
-      getQueued: async () => queuedRow({ id: 'lead', ask_group_id: 'lead', attempts: MAX_DELIVERY_ATTEMPTS - 1 }),
-      attempts: async () => queuedRow({ attempts: MAX_DELIVERY_ATTEMPTS }),
-      groupMembers: async () => [
-        queuedRow({ id: 'lead', ask_group_id: 'lead' }),
-        queuedRow({ id: 'other', ask_group_id: 'lead' }),
-      ],
-      flagNudge: async () =>
-        ({ id: 'ri' }) as unknown as Awaited<ReturnType<NonNullable<NudgeQueueDeps['flagNudge']>>>,
-      outcome: async (id, _t, _s, resolution) => {
-        failed.push(`${id}=${resolution}`);
-        return null;
-      },
-    });
-    expect(failed[0]).toBe(`lead=delivery failed ${MAX_DELIVERY_ATTEMPTS}x`);
-    expect(failed[1]).toBe(
-      `other=delivery failed ${MAX_DELIVERY_ATTEMPTS}x (counted on the group's lead lead)`,
-    );
-  });
 });

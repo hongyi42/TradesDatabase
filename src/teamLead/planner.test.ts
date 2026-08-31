@@ -3796,60 +3796,7 @@ describe('observations in the planner (plan 2026-08-31)', () => {
     expect(refused?.outcomeDetail).toContain('different machinery');
   });
 
-  test('the aging counter: an 80h-old untouched observation counts; leave does not clear it', async () => {
-    const summary = await runPlanner(NOW, 'shadow', baseDeps({
-      listNudges: async () => [],
-      listObservations: async (_t, st) =>
-        st.includes('open')
-          ? [
-              obs({ id: 'o-stale', noticed_at: '2026-08-13T00:00:00.000Z' }), // 84h before NOW
-              obs({ id: 'o-fresh', subject_ref: 'a-f', noticed_at: '2026-08-16T06:00:00.000Z' }),
-            ]
-          : [],
-      // o-stale has been LOOKED at (leave, applied) — looking is not acting,
-      // so it still counts. An applied dismiss/send/hold would clear it.
-      listDecisions: async () =>
-        new Map([
-          [
-            'o-stale',
-            [
-              {
-                action: 'leave',
-                outcome: 'applied',
-                decided_at: '2026-08-14T00:00:00.000Z',
-              } as unknown as NudgeDecision,
-            ],
-          ],
-        ]),
-      runLoop: loopReturning([]),
-    }));
-    expect(summary.observationsStale).toBe(1);
-    expect(summary.plans[0]?.observationsStale).toBe(1);
-    expect(summary.tenantErrors).toBe(0); // an alarm, never an error
-  });
 
-  test('the aging counter clears on an applied real verb (a hold counts as acting)', async () => {
-    const summary = await runPlanner(NOW, 'shadow', baseDeps({
-      listNudges: async () => [],
-      listObservations: async (_t, st) =>
-        st.includes('open') ? [obs({ id: 'o-held', noticed_at: '2026-08-13T00:00:00.000Z' })] : [],
-      listDecisions: async () =>
-        new Map([
-          [
-            'o-held',
-            [
-              {
-                action: 'hold',
-                outcome: 'applied',
-                decided_at: '2026-08-14T00:00:00.000Z',
-              } as unknown as NudgeDecision,
-            ],
-          ],
-        ]),
-      runLoop: loopReturning([]),
-    }));
-    expect(summary.observationsStale).toBe(0);
-  });
 
   test('a cost observation whose ledger filled says DISMISS, not close-on-record', async () => {
     const seen: { user?: string } = {};

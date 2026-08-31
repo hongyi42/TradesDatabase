@@ -1,6 +1,7 @@
 import {
   createObservation,
   listCostGapCandidates,
+  listDecisionsForNudges,
   listJobIdsWithCostEvents,
   findOpenReviewItemsByKind,
   getTenant,
@@ -9,6 +10,8 @@ import {
   listJobStampedCaptureTimes,
   listJobsWithCustomerByIds,
   listNudgedSubjectRefs,
+  listNudgesByStatus,
+  listObservationsByStatus,
   listObservedSubjectRefs,
   listOverdueConfirmedAssignments,
   listTeam,
@@ -23,6 +26,8 @@ import {
   type NudgeKindSpec,
   type SweepFacts,
 } from './nudgeKinds.js';
+// No cycle: nudgeQueue imports only from src/db and composeCopy.
+import { MAX_DELIVERY_ATTEMPTS, MAX_SERVE_COUNT } from '../control/nudgeQueue.js';
 import { localDateISO, localTimeHHMM, parseAsUtc } from '../schedule/availability.js';
 import { naiveLocalISO } from '../schedule/booking.js';
 
@@ -105,9 +110,22 @@ export {
 // "the sweep stops deciding"). NUDGE_ESCALATE_HOURS (24), NUDGE_ESCALATE_MAX_
 // HOURS (48), NUDGE_DELIVERY_DEADLINE_HOURS (18) and PLANNER_SILENCE_HOURS
 // (24) all fired handoffs or closes from here; nothing escalates, expires or
-// auto-closes on a clock any more — the planner ends every gap, and what
-// replaced the clocks is the ALARM pass below (watch thresholds inheriting
-// the same numbers, acting on nothing).
+// auto-closes on a clock any more — the planner ends every gap. What replaced
+// them is the ALARM pass below: WATCH thresholds inheriting the dead
+// deadlines' numbers, chosen not re-derived, firing NOTHING. Alarm, never
+// actor — and never `ok = false` (a permanently stuck row reddening every
+// five minutes forever is the alarm-fatigue trap; `npm run ticks` and stderr
+// are the operator surface).
+//
+// The pass lives in the SWEEP so it survives planner death — the one thing an
+// alarm about planner neglect must do (the build-4 stale counter lived inside
+// the planner and went dark exactly when the planner did).
+export const ASK_UNATTENDED_ALARM_HOURS = 24;
+export const DELIVERY_STUCK_ALARM_HOURS = 18;
+// Moved here from planner.ts (same value, new home — build 4's counter,
+// re-homed): open observations this old with no applied decision beyond
+// `leave` inside the window. Looking is not acting.
+export const OBSERVATION_STALE_HOURS = 72;
 
 // What counts as the planner having DECIDED something about a gap.
 //
@@ -185,6 +203,11 @@ export interface WatcherDeps {
   // Detector #2 seams
   listCostCandidates?: typeof listCostGapCandidates;
   listCostEvents?: typeof listJobIdsWithCostEvents;
+  // The ALARM pass's reads (build 5): open asks, open observations, and the
+  // decision log for exactly the rows past a threshold.
+  listNudges?: typeof listNudgesByStatus;
+  listOpenObservations?: typeof listObservationsByStatus;
+  listDecisions?: typeof listDecisionsForNudges;
   // The firm's own detection thresholds. Injected like every other collaborator
   // — un-injected, a fixture tenant id that is not a uuid throws 22P02 inside the
   // per-tenant catch and every tenantErrors assertion in the suite fails.
@@ -210,6 +233,18 @@ export interface WatchersSummary {
   // readable. (gapsFound/freshGaps remain visit-only, because the cost pass
   // counts its own candidates into byKind instead.)
   byKind: Record<string, { gapsFound: number; observationsCreated: number }>;
+  // THE ALARMS (build 5): what the acting clocks became. Counters only —
+  // nothing fires on them and they never redden a tick. Totals across
+  // tenants; the per-tenant detail is on stderr, and `npm run ticks` prints
+  // the ⚠ line from the latest run.
+  alarms: {
+    // Asked gaps ≥24h old with no applied planner judgment inside the window.
+    asksUnattended: number;
+    // pending/queued rows ≥18h old, or frozen at the serve/attempt caps.
+    deliveryStuck: number;
+    // Open observations ≥72h old, untouched (leave excluded) in the window.
+    observationsStale: number;
+  };
   // tenant_settings has not been migrated to this database yet, so every firm ran
   // on the global defaults. Present ONLY when true — an operator condition, not a
   // routine counter. It does NOT make the tick unhealthy: the sweep is unaffected
@@ -241,6 +276,9 @@ export async function runWatchers(
   const specs = deps.specs ?? NUDGE_KIND_SPECS;
   const listCostCandidates = deps.listCostCandidates ?? listCostGapCandidates;
   const listCostEvents = deps.listCostEvents ?? listJobIdsWithCostEvents;
+  const listNudges = deps.listNudges ?? listNudgesByStatus;
+  const listOpenObs = deps.listOpenObservations ?? listObservationsByStatus;
+  const listDecisions = deps.listDecisions ?? listDecisionsForNudges;
   const getSettings = deps.getSettings ?? readSettingsTolerantly;
 
   // listTenantIdsWithTelegramBindings, not listTenantSeats: it skips tenants
@@ -261,6 +299,7 @@ export async function runWatchers(
     tenantErrors: 0,
     observationsCreated: 0,
     byKind: {},
+    alarms: { asksUnattended: 0, deliveryStuck: 0, observationsStale: 0 },
   };
   const bumpKind = (
     kind: string,
@@ -610,6 +649,90 @@ export async function runWatchers(
             }
           }
         }
+      }
+
+      // ── THE ALARM PASS (build 5) ─────────────────────────────────────────
+      // What the acting clocks became: three counters that watch what the
+      // planner is neglecting and what delivery has broken, shouted to stderr
+      // and the tick record, acting on NOTHING. In the sweep so it survives
+      // planner death. Its own try/catch: a broken alarm must not cost the
+      // tenant its detection.
+      try {
+        const [openNudges, openObs] = await Promise.all([
+          listNudges(tenantId, ['pending', 'queued', 'asked']),
+          listOpenObs(tenantId, ['open']),
+        ]);
+        const deliveryStuckRows = openNudges.filter(
+          (n) =>
+            (n.status === 'pending' || n.status === 'queued') &&
+            (Date.parse(n.created_at) <= nowMs - DELIVERY_STUCK_ALARM_HOURS * 3_600_000 ||
+              n.serve_count >= MAX_SERVE_COUNT ||
+              n.attempts >= MAX_DELIVERY_ATTEMPTS),
+        );
+        // Decisions are read for exactly the rows past a threshold — usually
+        // zero — never for every open gap (the pre-hoist scoping discipline).
+        const askCandidates = openNudges.filter(
+          (n) =>
+            n.status === 'asked' &&
+            !!n.asked_at &&
+            Date.parse(n.asked_at) <= nowMs - ASK_UNATTENDED_ALARM_HOURS * 3_600_000,
+        );
+        const staleCandidates = openObs.filter(
+          (o) => Date.parse(o.noticed_at) <= nowMs - OBSERVATION_STALE_HOURS * 3_600_000,
+        );
+        let decisions: Awaited<ReturnType<typeof listDecisions>> = new Map();
+        let decisionsReadable = true;
+        const candidateIds = [...askCandidates.map((n) => n.id), ...staleCandidates.map((o) => o.id)];
+        if (candidateIds.length > 0) {
+          try {
+            decisions = await listDecisions(tenantId, candidateIds);
+          } catch (err) {
+            // Fail TOWARD alarming: a missing read is not evidence of
+            // attention, so every candidate counts.
+            decisionsReadable = false;
+            console.error(`[watchers] tenant ${tenantId}: alarm decisions read failed`, err);
+          }
+        }
+        const attendedWithin = (id: string, windowHours: number, leaveCounts: boolean): boolean => {
+          if (!decisionsReadable) return false;
+          const floor = nowMs - windowHours * 3_600_000;
+          return (decisions.get(id) ?? []).some(
+            (d) =>
+              d.outcome === 'applied' &&
+              PLANNER_JUDGMENT_ACTIONS.has(d.action) &&
+              (leaveCounts || d.action !== 'leave') &&
+              Date.parse(d.decided_at) >= floor,
+          );
+        };
+        const asksUnattended = askCandidates.filter(
+          (n) => !attendedWithin(n.id, ASK_UNATTENDED_ALARM_HOURS, true),
+        );
+        // Build 4's semantics, moved verbatim: `leave` is looking, not acting.
+        const observationsStale = staleCandidates.filter(
+          (o) => !attendedWithin(o.id, OBSERVATION_STALE_HOURS, false),
+        );
+        summary.alarms.asksUnattended += asksUnattended.length;
+        summary.alarms.deliveryStuck += deliveryStuckRows.length;
+        summary.alarms.observationsStale += observationsStale.length;
+        const name5 = (rows: Array<{ id: string }>): string =>
+          rows.slice(0, 5).map((r) => r.id).join(', ') + (rows.length > 5 ? ', …' : '');
+        if (asksUnattended.length + deliveryStuckRows.length + observationsStale.length > 0) {
+          console.error(
+            `[watchers] ALARMS for tenant ${tenantId}: ` +
+              (asksUnattended.length > 0
+                ? `${asksUnattended.length} ask(s) unattended ≥${ASK_UNATTENDED_ALARM_HOURS}h ` +
+                  `(${name5(asksUnattended)}); `
+                : '') +
+              (deliveryStuckRows.length > 0
+                ? `${deliveryStuckRows.length} delivery-stuck row(s) (${name5(deliveryStuckRows)}); `
+                : '') +
+              (observationsStale.length > 0
+                ? `${observationsStale.length} stale observation(s) (${name5(observationsStale)})`
+                : ''),
+          );
+        }
+      } catch (err) {
+        console.error(`[watchers] tenant ${tenantId}: alarm pass failed`, err);
       }
     } catch (err) {
       // One tenant's failure never blocks the siblings (lifecycle step idiom).

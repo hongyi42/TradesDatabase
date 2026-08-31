@@ -7,11 +7,17 @@ import type { Tenant } from '../db/tenants.js';
 import type { Technician } from '../db/technicians.js';
 import { resolveSettings, type TenantSettings } from '../db/tenantSettings.js';
 import {
+  ASK_UNATTENDED_ALARM_HOURS,
+  DELIVERY_STUCK_ALARM_HOURS,
+  OBSERVATION_STALE_HOURS,
   PLANNER_JUDGMENT_ACTIONS,
   runWatchers,
   wallClockLabel,
   type WatcherDeps,
 } from './watchers.js';
+import { MAX_DELIVERY_ATTEMPTS, MAX_SERVE_COUNT } from '../control/nudgeQueue.js';
+import type { Nudge } from '../db/nudges.js';
+import type { NudgeDecision } from '../db/nudgeDecisions.js';
 import { PLANNER_ACTIONS } from '../teamLead/planner.js';
 import {
   JOB_COST_GAP_SPEC,
@@ -84,6 +90,11 @@ function baseDeps(over: Partial<WatcherDeps> = {}): WatcherDeps {
     listAssignments: async () => [],
     listCostCandidates: async () => [],
     listCostEvents: async () => [],
+    // The alarm pass's reads — stubbed empty ('t1' is not a uuid; the standing
+    // reason). Alarm tests override.
+    listNudges: async () => [],
+    listOpenObservations: async () => [],
+    listDecisions: async () => new Map(),
     findOpenGaps: async () => [],
     resolveGap: async () => null,
     createObservation: async () => null,
@@ -917,6 +928,106 @@ describe('detector #2 — job cost gaps (plan 2026-08-19 Phase 4)', () => {
 // Build 5: the sweep decides nothing — the vocabulary pin survives because the
 // ALARM pass (Phase 4) is PLANNER_JUDGMENT_ACTIONS' consumer now: "unattended"
 // means no applied action from that set inside the window.
+// ── The alarm pass (build 5, Phase 4) ────────────────────────────────────────
+// Alarm, never actor: three counters, nothing fired, never ok=false.
+describe('the alarm pass', () => {
+  const hoursAgo = (h: number): string => new Date(Date.parse(NOW) - h * 3_600_000).toISOString();
+  const askRow = (over: Partial<Nudge> = {}): Nudge =>
+    ({
+      id: 'n-old', tenant_id: 't1', kind: 'overdue_visit_gap', subject_ref: 'a-old',
+      status: 'asked', asked_at: hoursAgo(ASK_UNATTENDED_ALARM_HOURS + 6),
+      created_at: hoursAgo(ASK_UNATTENDED_ALARM_HOURS + 7), context: {},
+      serve_count: 0, attempts: 0,
+      ...over,
+    }) as unknown as Nudge;
+  const obsOld = (over: Record<string, unknown> = {}) =>
+    ({
+      id: 'o-old', tenant_id: 't1', kind: 'overdue_visit_gap', subject_ref: 'a-obs',
+      status: 'open', noticed_at: hoursAgo(OBSERVATION_STALE_HOURS + 12), context: {},
+      ...over,
+    }) as never;
+  const applied = (action: string, hAgo: number): NudgeDecision =>
+    ({ action, outcome: 'applied', decided_at: hoursAgo(hAgo) }) as unknown as NudgeDecision;
+
+  test('unattended ask, stuck delivery and stale observation each count once', async () => {
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        askRow(),
+        askRow({ id: 'n-stuck', subject_ref: 'a-stuck', status: 'queued', asked_at: null,
+          created_at: hoursAgo(DELIVERY_STUCK_ALARM_HOURS + 2) }),
+      ],
+      listOpenObservations: async () => [obsOld()],
+    }));
+    expect(summary.alarms).toEqual({ asksUnattended: 1, deliveryStuck: 1, observationsStale: 1 });
+    expect(summary.tenantErrors).toBe(0); // an alarm is never an error
+  });
+
+  test('an applied judgment inside the window clears the ask alarm; outside it does not', async () => {
+    const attended = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [askRow()],
+      listDecisions: async () => new Map([['n-old', [applied('leave', 2)]]]),
+    }));
+    expect(attended.alarms.asksUnattended).toBe(0); // leave counts for ASKS
+
+    const ancient = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [askRow()],
+      listDecisions: async () =>
+        new Map([['n-old', [applied('leave', ASK_UNATTENDED_ALARM_HOURS + 3)]]]),
+    }));
+    expect(ancient.alarms.asksUnattended).toBe(1); // untouched WITHIN the window
+  });
+
+  test('for observations, leave is looking, not acting (build 4 semantics, moved)', async () => {
+    const left = await runWatchers(NOW, 'live', baseDeps({
+      listOpenObservations: async () => [obsOld()],
+      listDecisions: async () => new Map([['o-old', [applied('leave', 2)]]]),
+    }));
+    expect(left.alarms.observationsStale).toBe(1);
+
+    const held = await runWatchers(NOW, 'live', baseDeps({
+      listOpenObservations: async () => [obsOld()],
+      listDecisions: async () => new Map([['o-old', [applied('hold', 2)]]]),
+    }));
+    expect(held.alarms.observationsStale).toBe(0); // a hold IS acting
+  });
+
+  test('the serve and attempt caps count as deliveryStuck even on a young row', async () => {
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        askRow({ id: 'n-poison', subject_ref: 'a-p1', status: 'queued', asked_at: null,
+          created_at: hoursAgo(1), serve_count: MAX_SERVE_COUNT }),
+        askRow({ id: 'n-refused', subject_ref: 'a-p2', status: 'queued', asked_at: null,
+          created_at: hoursAgo(1), attempts: MAX_DELIVERY_ATTEMPTS }),
+      ],
+    }));
+    expect(summary.alarms.deliveryStuck).toBe(2); // one per trigger, age irrelevant
+  });
+
+  test('a failed decisions read counts every candidate — fail TOWARD alarming', async () => {
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [askRow()],
+      listOpenObservations: async () => [obsOld()],
+      listDecisions: async () => {
+        throw new Error('db blip');
+      },
+    }));
+    expect(summary.alarms.asksUnattended).toBe(1);
+    expect(summary.alarms.observationsStale).toBe(1);
+    expect(summary.tenantErrors).toBe(0); // and never reddens
+  });
+
+  test('young rows alarm nothing', async () => {
+    const summary = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        askRow({ asked_at: hoursAgo(2), created_at: hoursAgo(3) }),
+        askRow({ id: 'n-q', status: 'queued', asked_at: null, created_at: hoursAgo(2) }),
+      ],
+      listOpenObservations: async () => [obsOld({ noticed_at: hoursAgo(2) })],
+    }));
+    expect(summary.alarms).toEqual({ asksUnattended: 0, deliveryStuck: 0, observationsStale: 0 });
+  });
+});
+
 describe('build 5 — the judgment vocabulary', () => {
   test('PLANNER_JUDGMENT_ACTIONS equals the planner verb list exactly, and never the filler', () => {
     expect([...PLANNER_JUDGMENT_ACTIONS].sort()).toEqual([...PLANNER_ACTIONS].sort());

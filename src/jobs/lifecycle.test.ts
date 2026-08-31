@@ -299,6 +299,7 @@ describe('runLifecycle', () => {
       tenantErrors: 0,
       observationsCreated: 0,
       byKind: {},
+      alarms: { asksUnattended: 0, deliveryStuck: 0, observationsStale: 0 },
     };
     const BASE = {
       listInStates: async () => [],
@@ -356,6 +357,20 @@ describe('runLifecycle', () => {
       ]);
     });
 
+    test('nonzero ALARMS never redden the tick — alarm, not actor (build 5)', async () => {
+      process.env.WATCHERS_MODE = 'live';
+      const summary = await runLifecycle(NOW, {
+        ...COST_STUBS,
+        ...BASE,
+        runWatchers: async () => ({
+          ...WATCH_OK,
+          mode: 'live' as const,
+          alarms: { asksUnattended: 7, deliveryStuck: 3, observationsStale: 12 },
+        }),
+      });
+      expect(summary.ok).toBe(true);
+    });
+
     test('NUDGES_MODE is RETIRED — any value is simply ignored (build 5)', async () => {
       process.env.WATCHERS_MODE = 'live';
       process.env.NUDGES_MODE = 'lvie'; // the old loud-typo case: now inert
@@ -398,7 +413,6 @@ describe('runLifecycle', () => {
         tenantErrors: 0,
         limitHits: { budget: 0, turns: 0 },
         byAction: {},
-      observationsStale: 0,
         plans: [],
         ...over,
       });
@@ -470,7 +484,6 @@ describe('runLifecycle', () => {
           tenantErrors: 0,
           limitHits: { budget: 0, turns: 0 },
           byAction: {},
-      observationsStale: 0,
           plans: [],
         }),
         hasModelKey: () => true,
@@ -816,7 +829,6 @@ describe('the planner gate', () => {
       limitHits: { budget: 0, turns: 0 },
             tenantErrors: 0,
             byAction: {},
-      observationsStale: 0,
             plans: [],
           };
         },

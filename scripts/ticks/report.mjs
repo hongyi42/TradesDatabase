@@ -284,14 +284,6 @@ try {
         // sum hides the tail, and the tail IS the answer. One entry per PLANNED
         // tick; see the push below for why only planned ones.
         turnsEach: [], msEach: [], errMsEach: [],
-        // Plan 2026-08-31: a SNAPSHOT, not a total — each planned tick carries
-        // the count of open observations sitting untouched past the stale
-        // threshold, so the LATEST tick's value is the truth and summing would
-        // multiply it by the window's tick count. The runs query is ascending
-        // (oldest first), so LAST-write-wins is what keeps the latest — the
-        // first draft assumed the opposite order and would have pinned a
-        // days-old alarm for the whole window (phase-4 review F1).
-        observationsStale: null,
       };
       // LOUD, never silent. This accumulator hardcodes its buckets, and it used
       // to drop anything it did not recognise on the floor — so renaming an
@@ -332,15 +324,6 @@ try {
       if (outcome === 'planned') {
         f.turnsEach.push(p.turns ?? 0);
         f.msEach.push(p.ms ?? 0);
-        if (typeof p.observationsStale === 'number') {
-          f.observationsStale = p.observationsStale; // last write wins — runs are ASC
-        }
-      } else if (outcome === 'no_gaps') {
-        // A no_gaps tick truthfully means ZERO open observations, so it may
-        // reset the snapshot — otherwise a tick that cleared the backlog pins
-        // its pre-clear count on the report for the whole window
-        // (code-review). error/off_cadence ticks stay unknown and touch nothing.
-        f.observationsStale = 0;
       } else if (outcome === 'error') {
         // SEPARATELY, never folded into the planned distribution. A failed tick
         // has no turn count to report (the throw does not carry one) and its
@@ -372,11 +355,7 @@ try {
         `    ${f.decisions} decisions over ${f.turns} turns / ${f.toolCalls} tool calls, ` +
           `${(f.ms / f.planned / 1000).toFixed(1)}s avg`,
       );
-      // The aging counter (plan 2026-08-31): an ALARM line, printed only when
-      // it has something to say. Zero and pre-build rows stay silent.
-      if (f.observationsStale > 0) {
-        lines.push(`    ⚠ stale observations: ${f.observationsStale} open and untouched past the threshold`);
-      }
+
       // Build 1b: the planner has NO turn ceiling any more, so the only thing
       // that stops a tick is the 15-minute clock. These two are the instrument
       // for deciding whether a ceiling should come back — the max is what a
@@ -435,6 +414,30 @@ try {
   // Deliberately never rolled up: this string names an operational state (gaps
   // being minted with nobody to write the questions) and its exact wording says
   // whether a backstop sweep is running.
+  // ── The alarms (build 5) ───────────────────────────────────────────────────
+  // What the acting clocks became: sweep-computed counters that fire nothing.
+  // A SNAPSHOT, not a total — the runs query is ascending, so the LATEST run
+  // carrying an alarms object wins (last-write-wins; summing would multiply
+  // the standing count by the window's tick count).
+  let alarms = null;
+  for (const r of runs) {
+    const a = r.summary?.watchers?.alarms;
+    if (a && typeof a === 'object') alarms = a;
+  }
+  lines.push('## Alarms');
+  if (!alarms) {
+    lines.push('- no alarm data in this window (pre-build-5 runs)');
+  } else if ((alarms.asksUnattended ?? 0) + (alarms.deliveryStuck ?? 0) + (alarms.observationsStale ?? 0) === 0) {
+    lines.push('- quiet');
+  } else {
+    lines.push(
+      `- ⚠ unattended asks: ${alarms.asksUnattended ?? 0} · stuck deliveries: ` +
+        `${alarms.deliveryStuck ?? 0} · stale observations: ${alarms.observationsStale ?? 0}`,
+    );
+    lines.push('  (latest run; ids are on the lifecycle stderr — nothing acts on these)');
+  }
+  lines.push('');
+
   const muted = runs.filter((r) => r.summary?.ladderMute);
   lines.push('## Ladder mute');
   if (muted.length === 0) {

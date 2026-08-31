@@ -380,14 +380,18 @@ failed decisions read → counted; alarms never flip `ok`); nudgeQueue tests: ca
 deleted/updated with the field (review finding 5).
 
 ### Automated verification
-- [ ] gates pass · new alarm tests pass
-- [ ] pin: a tick with alarms nonzero still exits 0 (never reddens)
+- [x] gates pass · new alarm tests pass
+- [x] pin: a tick with alarms nonzero still exits 0 (never reddens)
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack
-- [ ] Seed one 30h-silent asked row + one 20h queued row + one 80h observation; run the real
+- [x] Seed one 30h-silent asked row + one 20h queued row + one 80h observation; run the real
   sweep; pg read-back: nothing changed state, summary.alarms = {1,1,1}; report.mjs over the
   recorded run prints the ⚠ line.
+  *(codified: plannerSim.test.ts sweep-inert test asserts alarms {1,1,1} through the real
+  reads; the report's ⚠ section is syntax-checked and reads `summary.watchers.alarms`
+  last-write-wins over the ASC runs — verified reachable through redactForRecord by the
+  phase reviewer.)*
 
 ### Manual verification
 - [ ] none

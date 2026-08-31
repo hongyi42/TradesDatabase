@@ -360,8 +360,19 @@ describe('the sweep touches nothing (build 5)', () => {
       [gapId],
     );
 
+    // Make the reopened observation genuinely STALE (>72h) so the alarm's
+    // third counter is exercised through the real reads too — and clear the
+    // smoke world's seeded history (its -22h `leave` counts as attention,
+    // correctly, and this test wants a genuinely NEGLECTED ask).
+    await pg.query('update observations set noticed_at = $2 where id = $1', [
+      gapId, atOffset(t0Ms, '-80h'),
+    ]);
+    await pg.query('delete from nudge_decisions where tenant_id = $1', [t.id]);
+
     const watchers = await runWatchers(t0, 'live', { listTenants: async () => [t.id] });
     expect(watchers.tenantErrors).toBe(0);
+    // THE ALARMS see all three conditions — and still, nothing moved (below).
+    expect(watchers.alarms).toEqual({ asksUnattended: 1, deliveryStuck: 1, observationsStale: 1 });
 
     const { rows: after } = await pg.query(
       'select id, status from nudges where id = any($1::uuid[])', [[gapId, q.id]],

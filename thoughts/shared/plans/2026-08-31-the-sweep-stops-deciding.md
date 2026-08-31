@@ -2,7 +2,7 @@
 date: 2026-08-31
 task: "Build 5 — the sweep stops deciding: clocks become alarms, moot becomes information, escalate performs its own handoff"
 research: thoughts/shared/research/2026-08-30-the-sweep-stops-deciding.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 

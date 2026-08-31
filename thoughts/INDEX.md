@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 194 documents · 189 live · 5 superseded.
+Regenerate with `npm run decisions:index`. 195 documents · 190 live · 5 superseded.
 
 ## Superseded — do not build on these
 
@@ -45,6 +45,7 @@ Regenerate with `npm run decisions:index`. 194 documents · 189 live · 5 supers
 ## Live
 
 - `2026-08-31` `plan` [2026-08-31-a-gap-is-not-an-ask](shared/plans/2026-08-31-a-gap-is-not-an-ask.md) — Build 4 — a gap is not an ask: detection writes an observation the planner keeps; asking is a decision, never…
+- `2026-08-31` `plan` [2026-08-31-the-sweep-stops-deciding](shared/plans/2026-08-31-the-sweep-stops-deciding.md) · _draft_ — "Build 5 — the sweep stops deciding: clocks become alarms, moot becomes information, escalate performs its ow…
 - `2026-08-30` `plan` [2026-08-30-job-notepads](shared/plans/2026-08-30-job-notepads.md) — Per-job notepads — a place the planner writes what it understands about one job
 - `2026-08-30` `plan` [2026-08-30-retire-gap-summaries](shared/plans/2026-08-30-retire-gap-summaries.md) `describes 2 deleted files` — Retire gap_summaries — the store whose only reader died with the Reflector
 - `2026-08-30` `plan` [2026-08-30-the-planners-memory](shared/plans/2026-08-30-the-planners-memory.md) `describes 3 deleted files` — Build 3 — the planner writes its own memory, reconciles it against the spine, and the lesson machinery retires

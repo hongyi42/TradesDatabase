@@ -178,33 +178,33 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L3910 · Booking.
 - L3923 · Build 6 (vocabulary): _(2026-09-01)_
 - L3928 · Build 7 (detectors report):
-- L3934 · Open, not decided:
+- L3934 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L4269 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L4292 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L4339 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L4376 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L4408 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L4413 · Every member row stores the FULL grouped message in question.
-- L4417 · The attribution stamp is an audit link, not a gate.
-- L4421 · The derived stamp requires a capture a badge-holder SPOKE
-- L4425 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L4431 · The follow-up loop has two halves and both had to be written down.
-- L4437 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L4511 · Batching works.
-- L4513 · The follow-up leg works, including the half that fails silently.
-- L4517 · Both attribution paths fired, each in its designed case.
-- L4521 · Escalation fired correctly
-- L4522 · The planner's group-aware pacing is the result worth keeping.
+- L4271 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L4294 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L4341 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L4378 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L4410 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L4415 · Every member row stores the FULL grouped message in question.
+- L4419 · The attribution stamp is an audit link, not a gate.
+- L4423 · The derived stamp requires a capture a badge-holder SPOKE
+- L4427 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L4433 · The follow-up loop has two halves and both had to be written down.
+- L4439 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L4513 · Batching works.
+- L4515 · The follow-up leg works, including the half that fails silently.
+- L4519 · Both attribution paths fired, each in its designed case.
+- L4523 · Escalation fired correctly
+- L4524 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L4703 · Evals:
-- L4710 · Runbooks:
-- L4715 · Decision history with citations:
-- L4719 · This file
+- L4705 · Evals:
+- L4712 · Runbooks:
+- L4717 · Decision history with citations:
+- L4721 · This file
 
 <!-- INDEX:END -->
 
@@ -3931,10 +3931,12 @@ candidates recorded so the two builds can choose deliberately rather than by acc
   derived key (`job_id` + window). Whichever is chosen, `uq_observations_subject_ever` dedupes on
   `subject_ref`, so a visit-scoped subject makes the once-ever store collapse the duplicate for
   free.
-- **Open, not decided:** whether a crew has a LEAD. If one person answers for the pair, the record
-  must say who spoke and who was merely present — that touches the attribution rule
-  (`answered_by_capture_id`, which links a note to a gap only when it was the only question open
-  for that person on that job).
+- **SETTLED 2026-09-01 (user): a crew has NO LEAD.** Everyone on a visit is equal — do not build a
+  lead/helper distinction, a primary-technician column, or an "answered on behalf of" role. The
+  consequence to hold: one person's note satisfies the visit for EVERYONE on it, which is already
+  how the job-scoped freshness test behaves, so this ruling RATIFIES the existing accident rather
+  than asking for new machinery. Attribution (`answered_by_capture_id`) still records WHO spoke —
+  that is provenance, not rank, and it stays.
 
 ## 6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)
 

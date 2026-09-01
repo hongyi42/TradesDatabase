@@ -72,22 +72,46 @@ echo "wrote $OUT ($(grep -c '^OPENSHELL' "$OUT") OPENSHELL_* variables)" >&2
 
 cat >&2 <<'NEXT'
 
-Next, in a window — this briefly interrupts every seat on the box:
+STEP 1 — install the unit and PROVE the environment, starting nothing:
 
   sudo install -m 0644 openshell-gateway.service /etc/systemd/system/
   sudo systemctl daemon-reload
-  # Adopt the ALREADY-RUNNING process's job: stop it, then start under systemd.
+  ./verify-gateway-env.sh          # diffs systemd's env against the live process
+
+An installed-but-unstarted unit does nothing, and daemon-reload starts nothing.
+Do NOT skip the diff: it is the whole safety argument. It proves systemd would
+hand the binary byte-identical configuration, which is the only thing that can
+go wrong here — and it proves it while the working process is still running to
+compare against.
+
+STEP 2 — adopt, in a window. This briefly interrupts every seat:
+
   sudo pkill -x openshell-gatew
   sudo systemctl enable --now openshell-gateway.service
 
 Verify:
-  systemctl show openshell-gateway.service -p Restart --value      # -> always
   ss -tlnp | grep 8080     # BOTH 127.0.0.1:8080 and the docker bridge gateway
   docker exec <a sandbox> getent hosts host.openshell.internal     # still resolves
   cat /proc/$(pgrep -x openshell-gatew)/oom_score_adj              # -> -500
   sudo pkill -x openshell-gatew && sleep 15 && systemctl is-active openshell-gateway
 
-The bind check is the one that matters: if only 127.0.0.1 is listening, the
-sandboxes cannot reach it and the box is down. Roll back by killing the unit and
-running `nemoclaw <sandbox> gateway restart` the old way.
+The BIND check is the one that matters: 127.0.0.1-only means the sandboxes
+cannot reach it and the box is down.
+
+ROLLBACK — do NOT use `nemoclaw <sandbox> gateway restart`.
+That is the documented path and it does not work. On trades-box-1 it was run on
+2026-08-25 and six days later had restarted nothing: the gateway still predated
+it by 49 days, the command was still hung, and twelve orphaned `tail -F` log
+followers had accumulated, one per attempt. It hangs because its pipeline waits
+on a `tail -6` that never receives EOF — a log follower it spawns keeps the
+write end of the pipe open forever.
+
+Roll back by starting the binary directly, which is what this env file is FOR:
+
+  sudo systemctl disable --now openshell-gateway.service
+  sudo -u ubuntu env $(grep ^OPENSHELL /etc/nemoclaw/openshell-gateway.env | xargs) \
+    /home/ubuntu/.local/bin/openshell-gateway &
+
+That path depends on nothing but the binary and this file, so it works whether
+or not systemd, nemoclaw or the doctor are behaving.
 NEXT

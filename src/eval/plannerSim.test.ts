@@ -214,6 +214,36 @@ describe('runTick — production wiring, stubbed model', () => {
     expect(after?.status).toBe('asked');
   });
 
+  test('a seat inform rides the tick prompt and is marked read (build 5.5)', async () => {
+    const t = await createTenant(`Eval PlannerSimOffice ${Date.now()}`);
+    await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
+    const t0 = simStartIso(10);
+    const t0Ms = Date.parse(t0);
+    const world: ScenarioWorld = {
+      ...SMOKE_SCENARIOS[0].world,
+      officeMessages: [{ at: '-2h', body: 'Ben is on leave this week — nothing urgent should go to him' }],
+    };
+    await seedScenario(t.id, world, t0Ms);
+
+    const stubLoop: typeof runToolLoop = async (req, _tools, execute) => {
+      // An EMPTY plan is a legitimate choice — this test is about the READ.
+      await execute('submit_plan', { decisions: [] });
+      return { text: '', turns: 1, calls: [] };
+    };
+    const tick = await runTick(t.id, t0, { runLoop: stubLoop });
+
+    expect(tick.planner.tenantErrors).toBe(0);
+    // The inform reached the deciding planner, framed as information.
+    expect(tick.userPrompt).toContain('OFFICE MESSAGES');
+    expect(tick.userPrompt).toContain('information not instruction');
+    expect(tick.userPrompt).toContain('Ben is on leave this week');
+    // …and the successful tick drained it: read, with the read stamp at sim-now
+    // (markOfficeMessagesRead takes the tick's own nowIso).
+    const inform = tick.officeAfter.find((m) => m.kind === 'inform');
+    expect(inform?.status).toBe('read');
+    expect(new Date(inform!.read_at!).toISOString()).toBe(t0);
+  });
+
   test('the cadence guard throws off-grid, and expectCadenceSkip records the skip', async () => {
     const t = await createTenant(`Eval PlannerSimCadence ${Date.now()}`);
     await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);

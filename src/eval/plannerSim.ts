@@ -39,6 +39,7 @@ import {
   type Nudge,
   type NudgeDecision,
   type Observation,
+  type OfficeMessage,
 } from '../db/index.js';
 import { runWatchers, type WatchersSummary } from '../jobs/watchers.js';
 import { observationAsGapRow, runPlanner, type PlannerSummary } from '../teamLead/planner.js';
@@ -154,6 +155,10 @@ export interface ScenarioWorld {
    *  (v_review_items where escalated_from_nudge is not null). The cited nudge
    *  is synthetic: the column is JSONB detail, not an FK. */
   priorItems?: Array<{ at: Offset; status: 'dismissed' | 'resolved'; note?: string }>;
+  /** Unread seat informs already in the bucket at t0 (build 5.5): to_planner
+   *  rows the first tick reads and organizes. fromRef defaults to the world's
+   *  technician. */
+  officeMessages?: Array<{ at: Offset; body: string; fromRef?: string; tier?: string }>;
 }
 
 export interface SeededScenario {
@@ -335,6 +340,20 @@ export async function seedScenario(
     if (error) throw new Error(`seed money event failed: ${error.message}`);
   }
 
+  for (const m of world.officeMessages ?? []) {
+    const { error } = await sb.from('office_messages').insert({
+      tenant_id: tenantId,
+      direction: 'to_planner',
+      kind: 'inform',
+      from_ref: m.fromRef ?? tech.ref,
+      to_ref: 'spine:team-lead',
+      tier: m.tier ?? 'technician',
+      body: m.body,
+      created_at: atOffset(t0Ms, m.at),
+    });
+    if (error) throw new Error(`seed office message failed: ${error.message}`);
+  }
+
   for (const h of world.history ?? []) {
     const nudgeId = nudgeIds[h.nudgeKey];
     if (!nudgeId) throw new Error(`history row names unknown nudge key '${h.nudgeKey}'`);
@@ -432,6 +451,10 @@ export interface TickRecord {
   userPrompt: string | null;
   /** Every nudge on the tenant after the tick, any status. */
   nudgesAfter: Nudge[];
+  /** Every office message on the tenant after the tick, any status — the
+   *  bucket read-back (build 5.5): what the tick read, marked read, or
+   *  queued outbound. New rows get created_at rewritten to sim-now. */
+  officeAfter: OfficeMessage[];
 }
 
 export async function runTick(
@@ -489,6 +512,15 @@ export async function runTick(
     .eq('tenant_id', tenantId);
   if (priorItemErr) throw new Error(`pre-tick item snapshot failed: ${priorItemErr.message}`);
   const priorItemStamps = new Map((priorItemRows ?? []).map((r) => [r.id, r.resolved_at]));
+  // office_messages too (build 5.5): a row the tick QUEUES (ask_agent /
+  // inform_agent) is stamped by the real clock; the read-back below rewrites
+  // new rows to sim-now so a later tick's block ages them honestly.
+  const { data: priorOfficeRows, error: priorOfficeErr } = await sb
+    .from('office_messages')
+    .select('id')
+    .eq('tenant_id', tenantId);
+  if (priorOfficeErr) throw new Error(`pre-tick office snapshot failed: ${priorOfficeErr.message}`);
+  const priorOfficeIds = new Set((priorOfficeRows ?? []).map((r) => r.id));
   // job_notes too, and it is NOT optional: write_job_note stamps written_at
   // from the NODE clock (it goes through MCP dispatch, which holds no nowIso).
   // Left alone, a note written during this tick renders on the NEXT tick as
@@ -703,6 +735,29 @@ export async function runTick(
     } as Nudge);
   }
 
+  // The bucket read-back (build 5.5). read_at needs no fix-up — the planner
+  // marks read with the tick's own nowIso — but a row the tick CREATED carries
+  // the real clock in created_at.
+  const { data: officeRows, error: officeErr } = await sb
+    .from('office_messages')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('created_at', { ascending: true });
+  if (officeErr) throw new Error(`post-tick office read-back failed: ${officeErr.message}`);
+  const officeAfter = (officeRows ?? []) as OfficeMessage[];
+  const newOffice = officeAfter.filter((m) => !priorOfficeIds.has(m.id));
+  if (newOffice.length > 0) {
+    const { error } = await sb
+      .from('office_messages')
+      .update({ created_at: nowIso })
+      .in(
+        'id',
+        newOffice.map((m) => m.id),
+      );
+    if (error) throw new Error(`office created_at fix-up failed: ${error.message}`);
+    for (const m of newOffice) m.created_at = nowIso;
+  }
+
   return {
     nowIso,
     watchers,
@@ -712,6 +767,7 @@ export async function runTick(
     turns,
     userPrompt,
     nudgesAfter: [...((after ?? []) as Nudge[]), ...obsPseudo],
+    officeAfter,
   };
 }
 
@@ -840,6 +896,23 @@ export async function runArc(
         });
         if (error) throw new Error(`timeline capture failed: ${error.message}`);
         steps.push({ atIso, kind: 'capture', detail: step.text.slice(0, 80) });
+        break;
+      }
+      case 'office_inform': {
+        // A seat agent informs the office (build 5.5): a plain to_planner
+        // bucket write — no model call fires; the next tick reads it.
+        const { error } = await sb.from('office_messages').insert({
+          tenant_id: tenantId,
+          direction: 'to_planner',
+          kind: 'inform',
+          from_ref: step.fromRef ?? seeded.technicianRef,
+          to_ref: 'spine:team-lead',
+          tier: step.tier ?? 'technician',
+          body: step.body,
+          created_at: atIso,
+        });
+        if (error) throw new Error(`timeline office inform failed: ${error.message}`);
+        steps.push({ atIso, kind: 'office_inform', detail: step.body.slice(0, 80) });
         break;
       }
       case 'money': {

@@ -41,6 +41,9 @@ export const EXPECTED_SECTIONS = [
   // to carry — record the answer, briefings are agent-only — moved into the
   // standing doctrine when delivery went verbatim (zero-inference send).
   'Questions and items from the office',
+  // Added 2026-08-31 (build 5.5, the planner's inbox): injected OFFICE
+  // QUESTION/NOTE turns, the three office tools, teammate-note handling.
+  'Messages to and from the office',
 ] as const;
 
 /** Strip the "(host-managed; …)" bookkeeping so a heading reads as a name. */

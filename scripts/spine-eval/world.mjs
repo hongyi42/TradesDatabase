@@ -144,6 +144,12 @@ const RESET_TABLES = [
   // (eng-memory §1). Its decision rows cascade FROM it, but nudge_decisions is
   // named below anyway.
   'observations',
+  // office_messages (build 5.5, the planner's inbox): tenants/technicians FKs
+  // only — the technicians truncate above WOULD cascade-wipe it incidentally,
+  // which is exactly the coverage eng-memory §1 forbids relying on. Named so a
+  // fresh world never inherits a previous run's unread informs (W14 writes one
+  // per run) and the wipe is a decision, not an accident.
+  'office_messages',
   // Cascades from nudges, named anyway (eng-memory §1).
   'nudge_decisions',
   // Infra, but the eval registers its own cold pool for bind_telegram, so stale
@@ -205,6 +211,14 @@ const PILOT_TENANT_SCOPED = [
   'planner_memory',
   'planner_memory_versions',
   'planner_runs',
+  // observations (build 4) and office_messages (build 5.5): the nudges trap
+  // exactly — both carry NO ACTION technician FKs, so the roster delete below
+  // would 23503 and roll the whole rebuild back the moment either holds a row
+  // (office_messages' addressee CHECK makes that certain for any to_agent
+  // message). observations was MISSED at build 4 and is registered here as
+  // the catch-up (final review, 2026-08-31).
+  'observations',
+  'office_messages',
   // The planner's per-job notepads (build: job notepads, 2026-08-30). These DO
   // cascade from jobs — named anyway (eng-memory §1).
   'job_notes',

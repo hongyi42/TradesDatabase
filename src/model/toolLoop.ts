@@ -302,11 +302,19 @@ function anthropicTransport(req: ToolLoopRequest, tools: ForcedToolSpec[]): Loop
               cache_control: { type: 'ephemeral' as const, ttl: '1h' as const },
             },
           ],
-          tools: tools.map((t) => ({
-            name: t.name,
-            description: t.description,
-            input_schema: t.inputSchema as Anthropic.Tool['input_schema'],
-          })),
+          // Omitted when empty, matching the OpenAI transport (final review):
+          // the Anthropic API tolerates `tools: []`, but the desk's tool-less
+          // path runs on THIS transport in production (the web service's
+          // MODEL_PROVIDER) — omit on both wires so neither can regress.
+          ...(tools.length > 0
+            ? {
+                tools: tools.map((t) => ({
+                  name: t.name,
+                  description: t.description,
+                  input_schema: t.inputSchema as Anthropic.Tool['input_schema'],
+                })),
+              }
+            : {}),
           messages: history as Anthropic.MessageParam[],
         },
         { signal },
@@ -382,13 +390,23 @@ function openAiTransport(req: ToolLoopRequest, tools: ForcedToolSpec[]): LoopTra
           reasoning_effort: req.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
           ...cacheKeyFields(),
           messages: history,
-          tools: tools.map((t) => ({
-            type: 'function',
-            function: { name: t.name, description: t.description, parameters: t.inputSchema },
-          })),
-          // 'auto', never forced: the loop ENDS when the model stops calling
-          // tools, so forcing a call here would make termination impossible.
-          tool_choice: 'auto',
+          // OMITTED ENTIRELY when the caller brought no tools (build 5.5 review
+          // F3): serializing `tools: []` is a provider 400 on some OpenAI-
+          // compatible endpoints, and the desk's technician path is the first
+          // caller that legitimately runs tool-less. Both keys go together —
+          // `tool_choice` without `tools` is its own 400.
+          ...(tools.length > 0
+            ? {
+                tools: tools.map((t) => ({
+                  type: 'function',
+                  function: { name: t.name, description: t.description, parameters: t.inputSchema },
+                })),
+                // 'auto', never forced: the loop ENDS when the model stops
+                // calling tools, so forcing a call here would make termination
+                // impossible.
+                tool_choice: 'auto',
+              }
+            : {}),
         }),
       });
       if (!res.ok) {

@@ -142,6 +142,11 @@ export const PLANNER_JUDGMENT_ACTIONS: ReadonlySet<string> = new Set([
   'leave',
   'dismiss',
   'recover',
+  // The office verbs (build 5.5 Phase 3): an applied ask_agent/inform_agent
+  // is the planner attending to the gap — the alarm pass must count it as
+  // attention, or asking an agent about a gap would read as neglecting it.
+  'ask_agent',
+  'inform_agent',
 ]);
 
 // UTC offsets span −12h..+14h; subtracting 14h from a wall-clock instant is a

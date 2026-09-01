@@ -3,10 +3,11 @@ import { Client } from 'pg';
 import { getClient } from '../db/client.js';
 import { createPendingNudge, listNudgesByStatus } from '../db/nudges.js';
 import { recordNudgeDecisions } from '../db/nudgeDecisions.js';
-import type { Nudge, NudgeDecision, NudgeDecisionInput, Observation, Tenant, JobEvidenceRow, RawCapture } from '../db/index.js';
+import type { Nudge, NudgeDecision, NudgeDecisionInput, Observation, OfficeMessage, Tenant, JobEvidenceRow, RawCapture } from '../db/index.js';
 import type { PlannerSummary, PlannerTenantPlan } from './planner.js';
 import {
   buildGapView,
+  buildOfficeMessagesBlock,
   cleanQuestionDraft,
   buildPlannerUserMessage,
   cleanAgentContext,
@@ -135,6 +136,14 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     listDismissedIds: async () => [],
     setObservation: async () => null,
     createFromObservation: async () => null,
+    // Build 5.5: the inbox reads/writes — stubbed for the standing reason
+    // ('t1' is not a uuid; an unstubbed real accessor 22P02s every runPlanner
+    // test in this file as a swallowed tenantError). Empty = no messages,
+    // which is what every pre-inbox test assumes; the inbox tests override.
+    listOfficeMessages: async () => [],
+    markMessagesRead: async () => 0,
+    listDeskTranscripts: async () => [],
+    listMessagesByIds: async () => [],
     listEvidence: async () => [],
     listCostEvents: async () => [],
     // Plan ① 2026-08-21: stubbed for the same reason as listEvidence above.
@@ -614,6 +623,278 @@ describe('runPlanner — when it runs at all', () => {
     }));
     expect(summary.tenantErrors).toBe(1);
     expect(summary.planned).toBe(1);
+  });
+});
+
+describe("the planner's inbox (plan 2026-08-31, build 5.5 Phase 1)", () => {
+  function officeMsg(over: Partial<OfficeMessage> = {}): OfficeMessage {
+    return {
+      id: 'm1',
+      tenant_id: 't1',
+      direction: 'to_planner',
+      kind: 'inform',
+      from_ref: 'ben-shelton',
+      to_ref: 'spine:team-lead',
+      technician_id: null,
+      body: 'Ben is on leave this week',
+      tier: 'technician',
+      nudge_id: null,
+      in_reply_to: null,
+      status: 'unread',
+      serve_count: 0,
+      attempts: 0,
+      created_at: '2026-08-16T09:00:00.000Z', // 3h before NOW
+      updated_at: '2026-08-16T09:00:00.000Z',
+      read_at: null,
+      delivered_at: null,
+      ...over,
+    } as unknown as OfficeMessage;
+  }
+
+  test('the block renders sender, tier and age — and pins the doctrine line', () => {
+    const block = buildOfficeMessagesBlock([officeMsg()], Date.parse(NOW));
+    expect(block).toContain('OFFICE MESSAGES');
+    // The doctrine line: everything on this channel is weighed, never obeyed.
+    expect(block).toContain('information not instruction');
+    expect(block).toContain('they never close or fill anything by themselves');
+    expect(block).toContain('[m1] 3 hours ago, from ben-shelton (technician): Ben is on leave this week');
+  });
+
+  test('no messages → no block, and the user message is byte-identical to before', () => {
+    expect(buildOfficeMessagesBlock([], Date.parse(NOW))).toBe('');
+    const without = buildPlannerUserMessage(NOW, 'UTC', []);
+    const withEmpty = buildPlannerUserMessage(NOW, 'UTC', [], '', null, '');
+    expect(withEmpty).toBe(without);
+    expect(without).not.toContain('OFFICE MESSAGES');
+  });
+
+  test('unread messages ride the prompt AFTER the gap blocks (the variable tail)', async () => {
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listOfficeMessages: async () => [officeMsg()],
+      runLoop: loopReturning([], seen),
+    }));
+    expect(seen.user).toContain('OFFICE MESSAGES');
+    expect(seen.user!.indexOf('OFFICE MESSAGES')).toBeGreaterThan(seen.user!.indexOf('gap n1'));
+  });
+
+  test('a GAPLESS firm with unread messages PLANS instead of skipping (review F2)', async () => {
+    const seen: { user?: string } = {};
+    const loop = vi.fn(loopReturning([], seen));
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [],
+      listObservations: async () => [],
+      listOfficeMessages: async () => [officeMsg()],
+      runLoop: loop as unknown as NonNullable<PlannerDeps['runLoop']>,
+    }));
+    expect(loop).toHaveBeenCalled();
+    expect(summary.skippedNoGaps).toBe(0);
+    expect(summary.plans[0].outcome).toBe('planned');
+    expect(summary.plans[0].gaps).toBe(0);
+    expect(seen.user).toContain('This firm has 0 open gap(s).');
+    expect(seen.user).toContain('OFFICE MESSAGES');
+  });
+
+  test('no gaps AND no messages still skips — the quiet firm costs nothing new', async () => {
+    const loop = vi.fn(loopReturning([]));
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [],
+      listObservations: async () => [],
+      listOfficeMessages: async () => [],
+      runLoop: loop as unknown as NonNullable<PlannerDeps['runLoop']>,
+    }));
+    expect(loop).not.toHaveBeenCalled();
+    expect(summary.skippedNoGaps).toBe(1);
+  });
+
+  test('shown messages are marked read AFTER a successful tick, with exactly their ids', async () => {
+    const markRead = vi.fn(async () => 2);
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listOfficeMessages: async () => [officeMsg(), officeMsg({ id: 'm2' })],
+      markMessagesRead: markRead as unknown as NonNullable<PlannerDeps['markMessagesRead']>,
+    }));
+    expect(markRead).toHaveBeenCalledTimes(1);
+    expect(markRead).toHaveBeenCalledWith('t1', ['m1', 'm2'], NOW);
+  });
+
+  test('a FAILED tick leaves the messages unread — re-shown, never dropped', async () => {
+    const markRead = vi.fn(async () => 0);
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listOfficeMessages: async () => [officeMsg()],
+      markMessagesRead: markRead as unknown as NonNullable<PlannerDeps['markMessagesRead']>,
+      runLoop: (async () => {
+        throw new Error('provider down');
+      }) as unknown as NonNullable<PlannerDeps['runLoop']>,
+    }));
+    expect(summary.tenantErrors).toBe(1);
+    expect(markRead).not.toHaveBeenCalled();
+  });
+
+  test('a mark-read failure is survived — the tick stays healthy', async () => {
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listOfficeMessages: async () => [officeMsg()],
+      markMessagesRead: (async () => {
+        throw new Error('db hiccup');
+      }) as unknown as NonNullable<PlannerDeps['markMessagesRead']>,
+    }));
+    expect(summary.tenantErrors).toBe(0);
+    expect(summary.planned).toBe(1);
+  });
+
+  test('answered desk pairs render as the said-in-your-name appendix, capped at 5', () => {
+    const pairs = Array.from({ length: 7 }, (_, i) => ({
+      asker: 'ben-shelton',
+      question: `question ${i}`,
+      answer: `answer ${i}`,
+    }));
+    const block = buildOfficeMessagesBlock([], Date.parse(NOW), pairs);
+    expect(block).toContain('OFFICE MESSAGES');
+    expect(block).toContain('said in YOUR name');
+    // Newest kept: 2..6 shown, 0 and 1 sliced off.
+    expect(block).toContain('ben-shelton asked "question 6" → "answer 6"');
+    expect(block).toContain('question 2');
+    expect(block).not.toContain('question 1');
+    // No pairs and no rows → no block at all.
+    expect(buildOfficeMessagesBlock([], Date.parse(NOW), [])).toBe('');
+  });
+
+  test('the tick reads desk transcripts since its last run and joins the questions', async () => {
+    const seen: { user?: string } = {};
+    const listDeskTranscripts = vi.fn(async () => [
+      officeMsg({
+        id: 'd1',
+        kind: 'desk',
+        from_ref: 'spine:team-lead',
+        to_ref: 'ben-shelton',
+        in_reply_to: 'a1',
+        body: 'nothing is open for you',
+        status: 'read',
+      }),
+    ]);
+    const listMessagesByIds = vi.fn(async () => [
+      officeMsg({ id: 'a1', kind: 'ask', body: 'am I square?', status: 'read' }),
+    ]);
+    await runPlanner(NOW, 'shadow', baseDeps({
+      lastRunAt: async () => '2026-08-16T11:00:00.000Z',
+      listDeskTranscripts: listDeskTranscripts as unknown as NonNullable<PlannerDeps['listDeskTranscripts']>,
+      listMessagesByIds: listMessagesByIds as unknown as NonNullable<PlannerDeps['listMessagesByIds']>,
+      runLoop: loopReturning([], seen),
+    }));
+    expect(listDeskTranscripts).toHaveBeenCalledWith('t1', '2026-08-16T11:00:00.000Z');
+    expect(listMessagesByIds).toHaveBeenCalledWith('t1', ['a1']);
+    expect(seen.user).toContain('ben-shelton asked "am I square?" → "nothing is open for you"');
+  });
+
+  test('a desk-transcript read failure degrades to no appendix — the tick stays healthy', async () => {
+    const seen: { user?: string } = {};
+    const summary = await runPlanner(NOW, 'shadow', baseDeps({
+      listDeskTranscripts: (async () => {
+        throw new Error('db hiccup');
+      }) as unknown as NonNullable<PlannerDeps['listDeskTranscripts']>,
+      runLoop: loopReturning([], seen),
+    }));
+    expect(summary.tenantErrors).toBe(0);
+    expect(summary.planned).toBe(1);
+    expect(seen.user).not.toContain('said in YOUR name');
+  });
+
+  test('ask_agent/inform_agent rails: message required, date-railed, addressee required', () => {
+    const view = buildGapView(nudge(), Date.parse(NOW), [], false, new Set());
+    const views = new Map([[view.nudge.id, view]]);
+    // Missing message → refused with the rewrite teaching.
+    let out = validateDecisions(
+      { decisions: [{ nudgeId: 'n1', action: 'ask_agent', confidence: 'high', reason: 'r' }] },
+      views, Date.parse(NOW),
+    );
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('needs `agentMessage`');
+    // Invented date → refused (the one rule every model-written surface rides).
+    out = validateDecisions(
+      { decisions: [{ nudgeId: 'n1', action: 'inform_agent', agentMessage: 'Ben is out until Monday', confidence: 'high', reason: 'r' }] },
+      views, Date.parse(NOW),
+    );
+    expect(out.decisions).toHaveLength(0);
+    // No addressee → refused.
+    const orphanView = buildGapView(nudge({ technician_id: null } as never), Date.parse(NOW), [], false, new Set());
+    out = validateDecisions(
+      { decisions: [{ nudgeId: 'n1', action: 'ask_agent', agentMessage: 'was he around?', confidence: 'high', reason: 'r' }] },
+      new Map([[orphanView.nudge.id, orphanView]]), Date.parse(NOW),
+    );
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain("nobody's assistant");
+    // A clean message on an ASKED gap passes — asking the assistant about an
+    // in-flight ask is the flagship use.
+    out = validateDecisions(
+      { decisions: [{ nudgeId: 'n1', action: 'ask_agent', agentMessage: 'has Ben mentioned the Henderson job at all?', confidence: 'medium', reason: 'silence' }] },
+      views, Date.parse(NOW),
+    );
+    expect(out.decisions).toHaveLength(1);
+    expect(out.decisions[0]).toMatchObject({ action: 'ask_agent', agentMessage: 'has Ben mentioned the Henderson job at all?' });
+  });
+
+  test('an applied ask_agent queues the bucket row addressed off the GAP (live)', async () => {
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+      runLoop: loopReturning([
+        { nudgeId: 'n1', action: 'ask_agent', agentMessage: 'has Ben mentioned this job?', confidence: 'medium', reason: 'r' },
+      ]),
+    }));
+    expect(summary.applied).toBe(1);
+    expect(createOffice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: 't1',
+        direction: 'to_agent',
+        kind: 'ask',
+        fromRef: 'spine:team-lead',
+        toRef: 'ben-shelton', // the gap context's technicianRef
+        technicianId: 'tech-1', // the FK the host pull joins on
+        nudgeId: 'n1',
+        body: 'has Ben mentioned this job?',
+        status: 'queued',
+      }),
+    );
+    expect(summary.byAction['ask_agent']).toBe(1);
+  });
+
+  test('inform_agent queues kind=inform; shadow queues NOTHING', async () => {
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    await runPlanner(NOW, 'live', baseDeps({
+      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+      runLoop: loopReturning([
+        { nudgeId: 'n1', action: 'inform_agent', agentMessage: 'the office closed the cost question', confidence: 'high', reason: 'r' },
+      ]),
+    }));
+    expect(createOffice).toHaveBeenCalledWith(expect.objectContaining({ kind: 'inform' }));
+    createOffice.mockClear();
+    const shadow = await runPlanner(NOW, 'shadow', baseDeps({
+      createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+      runLoop: loopReturning([
+        { nudgeId: 'n1', action: 'inform_agent', agentMessage: 'a shadow note', confidence: 'high', reason: 'r' },
+      ]),
+    }));
+    expect(createOffice).not.toHaveBeenCalled();
+    expect(shadow.decisions).toBe(1); // recorded, not performed
+  });
+
+  test('a REPLY renders attached to its ask in the block', () => {
+    const block = buildOfficeMessagesBlock(
+      [officeMsg({ kind: 'reply', nudge_id: 'n1', body: 'Ben says all done' })],
+      Date.parse(NOW),
+    );
+    expect(block).toContain('in reply to your ask on gap n1');
+    expect(block).toContain('Ben says all done');
+  });
+
+  test('a message id cannot take a decision — the rails drop it as unknown', () => {
+    const view = buildGapView(nudge(), Date.parse(NOW), [], false, new Set());
+    const { decisions, dropped } = validateDecisions(
+      { decisions: [{ nudgeId: 'm1', action: 'close', confidence: 'high', reason: 'done' }] },
+      new Map([[view.nudge.id, view]]),
+      Date.parse(NOW),
+    );
+    expect(decisions).toHaveLength(0);
+    expect(dropped[0].why).toContain('not in this plan');
   });
 });
 

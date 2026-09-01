@@ -162,7 +162,7 @@ async function clientFor(
 }
 
 describe('MCP server', () => {
-  test('lists the technician tool surface (exactly 14 tools)', async () => {
+  test('lists the technician tool surface (exactly 17 tools)', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
     expect(names).toEqual(
@@ -181,9 +181,12 @@ describe('MCP server', () => {
         'retract_capture',
         'record_standing_fact',
         'get_schedule',
+        'inform_team_lead', // the planner's inbox, inbound half (build 5.5)
+        'ask_team_lead', // the Q&A desk (build 5.5 Phase 2)
+        'inform_teammate', // seat-to-seat informs (build 5.5 Phase 3)
       ]),
     );
-    expect(names).toHaveLength(14);
+    expect(names).toHaveLength(17);
   });
 
   test('EVAL_FAKE_NOW anchors resolve_date for ONE tenant only (date-eval any-hour regime)', async () => {
@@ -2037,7 +2040,10 @@ describe('offboarding lifecycle tools (Composio seams stubbed)', () => {
       expect(mgrTools).toContain('query_spine'); // ad-hoc read fallback (2026-08-06)
       expect(mgrTools).toContain('record_money_event'); // the money ledger (2026-08-15)
       expect(mgrTools).toContain('set_firm_profile'); // firm identity (2026-08-15)
-      expect(mgrTools).toHaveLength(43);
+      expect(mgrTools).toContain('inform_team_lead'); // the planner's inbox (build 5.5)
+      expect(mgrTools).toContain('ask_team_lead'); // the Q&A desk (build 5.5 Phase 2)
+      expect(mgrTools).toContain('inform_teammate'); // seat-to-seat informs (build 5.5 Phase 3)
+      expect(mgrTools).toHaveLength(46);
 
       // pair-probe is active w/ a recorded pairing (from the pairing suite).
       // Give it an open verification item to prove deactivation closes it.
@@ -2314,10 +2320,10 @@ describe('send_email tool (outbound seam stubbed)', () => {
       stubs,
     );
     try {
-      // Technician surface count including send_email: exactly 14.
+      // Technician surface count including send_email: exactly 17.
       const tools = (await techClient.listTools()).tools.map((t) => t.name);
       expect(tools).toContain('send_email');
-      expect(tools).toHaveLength(14);
+      expect(tools).toHaveLength(17);
 
       // Staging requires the full payload.
       const missing = await callWith('send_email', { to: 'cust@example.com' });
@@ -2440,7 +2446,7 @@ describe('send_email tool (outbound seam stubbed)', () => {
       );
       try {
         const mgrTools = (await mgrClient.listTools()).tools.map((t) => t.name);
-        expect(mgrTools).toHaveLength(43); // base minus get_schedule + 30 admin
+        expect(mgrTools).toHaveLength(46); // base minus get_schedule + 30 admin
         const fakeResolve = await mgrCall('resolve_review', {
           reviewItemId: s6.data.confirmId,
           resolution: 'resolved',
@@ -7874,6 +7880,235 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
       expect(res.text).toContain('capped to reading, asking and its own notes');
     } finally {
       await c.close();
+    }
+  });
+
+  // ── inform_team_lead: the planner's inbox, inbound half (build 5.5) ────────
+
+  test('inform_team_lead writes a to_planner bucket row with the caller\'s ref and tier', async () => {
+    const marker = `inbox-test-${Date.now()}`;
+    const res = await call('inform_team_lead', {
+      note: `  ${marker}   Ben is\nout this week  `,
+      aboutJobId: '11111111-1111-1111-1111-111111111111',
+    });
+    expect(res.isError).toBe(false);
+    expect(res.data.status).toBe('noted');
+    // Read back through the independent channel: the write IS the delivery.
+    const { rows } = await pg.query(
+      'select * from office_messages where tenant_id = $1 and body like $2',
+      [tenantId, `%${marker}%`],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].direction).toBe('to_planner');
+    expect(rows[0].kind).toBe('inform');
+    expect(rows[0].status).toBe('unread');
+    expect(rows[0].from_ref).toBe('tech-mcp');
+    expect(rows[0].to_ref).toBe('spine:team-lead');
+    expect(rows[0].tier).toBe('technician'); // metadata, from the roster row
+    expect(rows[0].technician_id).toBeNull(); // the ADDRESSEE column — planner rows carry none
+    // Whitespace flattened; the job id folded into the body, not a column.
+    expect(rows[0].body).toBe(
+      `${marker} Ben is out this week (about job 11111111-1111-1111-1111-111111111111)`,
+    );
+    await pg.query('delete from office_messages where id = $1', [rows[0].id]);
+  });
+
+  test('inform_team_lead refuses an empty note and an over-long one', async () => {
+    const empty = await call('inform_team_lead', { note: '   \n  ' });
+    expect(empty.isError).toBe(true);
+    expect(empty.text).toContain('note is required');
+    const long = await call('inform_team_lead', { note: 'x'.repeat(2001) });
+    expect(long.isError).toBe(true);
+    expect(long.text).toContain('too long');
+  });
+
+  test('inform_team_lead is denied to spine: identities — the planner cannot inform itself', async () => {
+    const { client: c, callWith } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+    try {
+      const res = await callWith('inform_team_lead', { note: 'talking to myself' });
+      expect(res.isError).toBe(true);
+      expect(res.text).toContain('capped to reading, asking and its own notes');
+    } finally {
+      await c.close();
+    }
+  });
+
+  // ── ask_team_lead: the Q&A desk (build 5.5 Phase 2) ────────────────────────
+
+  test('ask_team_lead threads the caller identity through to the desk, stubbed', async () => {
+    const deskAnswer = vi.fn(async () => ({ answer: 'you are square', askId: 'a1' }));
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'tech-mcp' },
+      { deskAnswer: deskAnswer as unknown as ServerDeps['deskAnswer'] },
+    );
+    try {
+      const res = await callWith('ask_team_lead', { question: '  am I\nsquare?  ' });
+      expect(res.isError).toBe(false);
+      expect(res.data.status).toBe('answered');
+      expect(res.data.answer).toBe('you are square');
+      expect(deskAnswer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tenantId,
+          askerRef: 'tech-mcp',
+          askerTier: 'technician',
+          managerDesk: false, // the capability is the ACTIVE-manager predicate (review F-A)
+          askerTechnicianId: techMcpId,
+          question: 'am I square?', // hygiene: whitespace flattened
+        }),
+        expect.anything(),
+      );
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('ask_team_lead relays the honest degrade when the desk cannot answer', async () => {
+    const deskAnswer = vi.fn(async () => ({
+      answer: null,
+      note: 'the desk could not answer right now',
+      askId: 'a1',
+    }));
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'tech-mcp' },
+      { deskAnswer: deskAnswer as unknown as ServerDeps['deskAnswer'] },
+    );
+    try {
+      const res = await callWith('ask_team_lead', { question: 'anything for me?' });
+      expect(res.isError).toBe(false);
+      expect(res.data.status).toBe('kept_for_the_office');
+      expect(res.data.note).toContain('could not answer');
+    } finally {
+      await c.close();
+    }
+  });
+
+  test('ask_team_lead refuses an empty or over-long question, and spine: identities', async () => {
+    const deskAnswer = vi.fn(async () => ({ answer: 'x', askId: 'a1' }));
+    const { client: c, callWith } = await clientFor(
+      { tenantId, technicianRef: 'tech-mcp' },
+      { deskAnswer: deskAnswer as unknown as ServerDeps['deskAnswer'] },
+    );
+    try {
+      const empty = await callWith('ask_team_lead', { question: '   ' });
+      expect(empty.isError).toBe(true);
+      expect(empty.text).toContain('question is required');
+      const long = await callWith('ask_team_lead', { question: 'x'.repeat(501) });
+      expect(long.isError).toBe(true);
+      expect(long.text).toContain('too long');
+      expect(deskAnswer).not.toHaveBeenCalled();
+    } finally {
+      await c.close();
+    }
+    const { client: s, callWith: spineCall } = await clientFor({ tenantId, technicianRef: 'spine:team-lead' });
+    try {
+      const res = await spineCall('ask_team_lead', { question: 'asking myself' });
+      expect(res.isError).toBe(true);
+      expect(res.text).toContain('capped to reading, asking and its own notes');
+    } finally {
+      await s.close();
+    }
+  });
+
+  // ── inform_teammate: seat-to-seat informs (build 5.5 Phase 3) ──────────────
+
+  test('inform_teammate queues a to_agent row both allowed directions; tech→tech is refused', async () => {
+    const marker = `teammate-test-${Date.now()}`;
+    // tech → manager: allowed (one endpoint is a manager).
+    const up = await call('inform_teammate', {
+      teammateRef: 'mgr-test',
+      note: `${marker} the customer asked us to hold off`,
+    });
+    expect(up.isError).toBe(false);
+    expect(up.data.status).toBe('queued');
+    // manager → tech: allowed.
+    const { client: m, callWith: mgrCall } = await clientFor({ tenantId, technicianRef: 'mgr-test' });
+    try {
+      const down = await mgrCall('inform_teammate', {
+        teammateRef: 'tech-mcp',
+        note: `${marker} please have them asked about the marina visit`,
+      });
+      expect(down.isError).toBe(false);
+    } finally {
+      await m.close();
+    }
+    const { rows } = await pg.query(
+      'select from_ref, to_ref, direction, kind, status, technician_id from office_messages ' +
+        'where tenant_id = $1 and body like $2 order by created_at',
+      [tenantId, `${marker}%`],
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ from_ref: 'tech-mcp', to_ref: 'mgr-test', direction: 'to_agent', kind: 'inform', status: 'queued' });
+    expect(rows[0].technician_id).not.toBeNull(); // the addressee FK the host pull joins on
+    expect(rows[1]).toMatchObject({ from_ref: 'mgr-test', to_ref: 'tech-mcp' });
+    await pg.query('delete from office_messages where tenant_id = $1 and body like $2', [tenantId, `${marker}%`]);
+
+    // tech → tech: refused with the pointer copy (the tier rule). A second
+    // technician-tier seat, seat-exempt so no seat is consumed.
+    const peer = await insertTechnician({ tenantId, ref: 'teammate-peer', displayName: 'Peer Tech', seatExempt: true });
+    try {
+      const lateral = await call('inform_teammate', { teammateRef: 'teammate-peer', note: 'a lateral note' });
+      expect(lateral.isError).toBe(true);
+      expect(lateral.text).toContain('put it on the record with a field note, or inform the office');
+    } finally {
+      await pg.query('delete from technicians where id = $1', [peer.id]);
+    }
+  });
+
+  test('inform_teammate refuses self, spine:, and unknown or inactive teammates', async () => {
+    const self = await call('inform_teammate', { teammateRef: 'tech-mcp', note: 'to myself' });
+    expect(self.isError).toBe(true);
+    expect(self.text).toContain('your own seat');
+    const spine = await call('inform_teammate', { teammateRef: 'spine:team-lead', note: 'to the office' });
+    expect(spine.isError).toBe(true);
+    expect(spine.text).toContain('use inform_team_lead');
+    const ghost = await call('inform_teammate', { teammateRef: 'nobody-here', note: 'hello?' });
+    expect(ghost.isError).toBe(true);
+    expect(ghost.text).toContain('no active teammate');
+  });
+
+  test('inform_team_lead replyToMessageId validates-or-degrades (review F8)', async () => {
+    const marker = `reply-test-${Date.now()}`;
+    // A real ask row to reply to, with a gap id to carry over.
+    const ask = await pg.query<{ id: string }>(
+      `insert into office_messages (tenant_id, direction, kind, from_ref, to_ref, technician_id, body, status, nudge_id)
+       select $1, 'to_agent', 'ask', 'spine:team-lead', 'tech-mcp', t.id, 'how did it go?', 'delivered', '99999999-9999-4999-8999-999999999999'
+         from technicians t where t.ref = 'tech-mcp' returning id`,
+      [tenantId],
+    );
+    const askId = ask.rows[0].id;
+    try {
+      const good = await call('inform_team_lead', {
+        note: `${marker} all done, nothing owed`,
+        replyToMessageId: askId,
+      });
+      expect(good.isError).toBe(false);
+      const { rows } = await pg.query(
+        'select kind, in_reply_to, nudge_id from office_messages where tenant_id = $1 and body like $2',
+        [tenantId, `${marker}%`],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].kind).toBe('reply');
+      expect(rows[0].in_reply_to).toBe(askId);
+      expect(rows[0].nudge_id).toBe('99999999-9999-4999-8999-999999999999'); // copied off the ask
+      await pg.query('delete from office_messages where tenant_id = $1 and body like $2', [tenantId, `${marker}%`]);
+
+      // A bad id degrades to a plain inform with the id noted — never a 23503.
+      const bad = await call('inform_team_lead', {
+        note: `${marker} degraded reply`,
+        replyToMessageId: '00000000-0000-4000-8000-000000000000',
+      });
+      expect(bad.isError).toBe(false);
+      const { rows: degraded } = await pg.query(
+        'select kind, in_reply_to, body from office_messages where tenant_id = $1 and body like $2',
+        [tenantId, `${marker} degraded%`],
+      );
+      expect(degraded).toHaveLength(1);
+      expect(degraded[0].kind).toBe('inform');
+      expect(degraded[0].in_reply_to).toBeNull();
+      expect(degraded[0].body).toContain('(in reply to message 00000000-0000-4000-8000-000000000000)');
+      await pg.query('delete from office_messages where tenant_id = $1 and body like $2', [tenantId, `${marker}%`]);
+    } finally {
+      await pg.query('delete from office_messages where id = $1', [askId]);
     }
   });
 

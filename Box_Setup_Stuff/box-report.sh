@@ -280,13 +280,23 @@ check_agents() {
 # field rather than losing the tick. The docker calls stay out here, under hard
 # timeouts, because they are the only part that can hang.
 report_metrics() {
-  local containers payload code
+  local containers payload code collect stamp
   # One inspect for every container, not one per container: six sandboxes would
   # otherwise be twelve docker round trips on a daemon that may already be sick.
   containers="$(timeout 12 docker ps --quiet 2>/dev/null \
     | timeout 12 xargs -r docker inspect --format '{{.Name}} {{.State.Pid}}' 2>/dev/null)"
 
-  payload="$(printf '%s\n' "$containers" | python3 - <<'PY' 2>/dev/null
+  # The program is captured into a variable and passed with `python3 -c`, NOT run
+  # as `python3 - <<'PY'`. A heredoc IS stdin: with `python3 -` the interpreter
+  # consumes it as the program text, so the piped container list never arrives
+  # and sys.stdin.read() returns nothing. That silently produced an empty
+  # `sandboxes` object and made the stamping step below fail outright. `-c`
+  # leaves stdin free for the pipe.
+  #
+  # The sibling report() above uses the heredoc form safely ONLY because it
+  # passes its data through argv and never reads stdin. Do not copy its shape
+  # into anything that needs piped input.
+  collect="$(cat <<'PY'
 import json, os, re, sys
 
 def read(path):
@@ -399,6 +409,7 @@ if sandboxes:
 print(json.dumps(out))
 PY
 )"
+  payload="$(printf '%s\n' "$containers" | python3 -c "$collect" 2>/dev/null)"
 
   if [ -z "$payload" ]; then log "could not build a metrics payload — skipping"; return 0; fi
 
@@ -415,7 +426,8 @@ PY
   pct="$(timeout 5 df -P / 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}')"
   now="$(date -u +%FT%TZ)"
 
-  payload="$(printf '%s' "$payload" | python3 - "$now" "${seats:-}" "${pct:-}" <<'PY' 2>/dev/null
+  # `-c` again, for the same reason: this one reads the payload from stdin.
+  stamp="$(cat <<'PY'
 import json, sys
 doc = json.load(sys.stdin)
 doc['observedAt'] = sys.argv[1]
@@ -425,6 +437,8 @@ for key, raw in (('seats', sys.argv[2]), ('diskUsedPct', sys.argv[3])):
 print(json.dumps(doc))
 PY
 )"
+  payload="$(printf '%s' "$payload" \
+    | python3 -c "$stamp" "$now" "${seats:-}" "${pct:-}" 2>/dev/null)"
   if [ -z "$payload" ]; then log "could not stamp the metrics payload — skipping"; return 0; fi
 
   code="$(curl -sS -m 8 --connect-timeout 4 -o /dev/null -w '%{http_code}' \

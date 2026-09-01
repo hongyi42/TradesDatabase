@@ -17,7 +17,7 @@
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join, relative, basename } from 'node:path';
+import { join, relative, basename, sep } from 'node:path';
 
 const ROOT = process.cwd();
 const THOUGHTS = join(ROOT, 'thoughts');
@@ -52,7 +52,11 @@ function walk(dir) {
  * of a line that starts with a bare key and treat anything else as a continuation.
  */
 function parseFrontmatter(text) {
-  const lines = text.split('\n');
+  // CRLF-tolerant: the value regex below is line-ANCHORED, and in JS `$` does not
+  // match before a \r while `.` excludes it as a line terminator. Splitting on a
+  // bare '\n' therefore made every CRLF-checkout file parse to {} — on Windows
+  // that silently blanked every date, kind and supersedes link in the index.
+  const lines = text.split(/\r?\n/);
   if (lines[0]?.trim() !== '---') return {};
   const fm = {};
   let key = null;
@@ -199,11 +203,17 @@ function memoryWithoutToc() {
   const a = text.indexOf(TOC_BEGIN);
   const b = text.indexOf(TOC_END);
   if (a === -1 || b === -1) return text;
-  return text.slice(0, a) + text.slice(b + TOC_END.length).replace(/^\n{1,2}/, '');
+  // CRLF-tolerant: `^\n{1,2}` never matched a `\r\n`, so the blank lines the map
+  // is re-inserted with were not stripped and TWO more accumulated on every run —
+  // shifting every `L<line>` reference below it by 2 each time.
+  return text.slice(0, a) + text.slice(b + TOC_END.length).replace(/^(?:\r?\n){1,2}/, '');
 }
 
 function parseMemoryEntries(text) {
-  const lines = text.split('\n');
+  // CRLF-tolerant for the same reason as parseFrontmatter: the entry-heading
+  // regex below ends in `$`, so on a CRLF checkout it never matched and this
+  // returned zero entries from a file full of them.
+  const lines = text.split(/\r?\n/);
   const entries = [];
   let section = '';
   let current = null;
@@ -288,13 +298,16 @@ function prosePathRules() {
     { file: 'CLAUDE.md', kind: 'rule' },
     ...readdirSync(join(ROOT, 'docs'))
       .filter((f) => f.endsWith('.md') && f !== 'engineering-memory.md')
-      .map((f) => ({ file: join('docs', f), kind: 'doc' })),
+      // `docs/${f}`, not join() — this string is emitted into by-file.json for the
+      // hook to display, so it must stay POSIX-shaped on every platform.
+      .map((f) => ({ file: `docs/${f}`, kind: 'doc' })),
   ];
   const out = [];
   for (const { file, kind } of sources) {
     const abs = join(ROOT, file);
     if (!existsSync(abs)) continue;
-    const lines = readFileSync(abs, 'utf8').split('\n');
+    // CRLF-tolerant so a trailing \r does not ride along into the quoted rule text.
+    const lines = readFileSync(abs, 'utf8').split(/\r?\n/);
     const claimed = new Set();
     lines.forEach((line, i) => {
       for (const m of line.matchAll(/\bsrc\/[a-zA-Z0-9_/-]+\.ts\b/g)) {
@@ -334,7 +347,7 @@ const docs = walk(THOUGHTS)
   .map((abs) => {
     const text = readFileSync(abs, 'utf8');
     const fm = parseFrontmatter(text);
-    const path = relative(ROOT, abs);
+    const path = relative(ROOT, abs).split(sep).join('/');
     return {
       path,
       slug: basename(path, '.md'),
@@ -398,7 +411,10 @@ for (const d of docs) {
 const superseded = docs.filter((d) => d.statusClass === 'superseded');
 const live = docs.filter((d) => d.statusClass !== 'superseded');
 
-const link = (d) => `[${d.slug}](${relative(THOUGHTS, join(ROOT, d.path))})`;
+// `relative()` returns backslashes on Windows, which are not valid markdown link
+// separators — normalise, or every regenerated link breaks for the next reader.
+const link = (d) =>
+  `[${d.slug}](${relative(THOUGHTS, join(ROOT, d.path)).split(sep).join('/')})`;
 const trim = (s, n) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 
 const md = [

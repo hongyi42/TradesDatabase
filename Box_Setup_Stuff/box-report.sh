@@ -76,7 +76,14 @@ MEM_AVAIL_MIN_MB="${MEM_AVAIL_MIN_MB:-400}"
 # too would open a second incident for one outage. Its TIMER is present, because
 # nothing else notices a stopped timer — a medic that never runs never reports,
 # and silence from it is indistinguishable from health.
-BOX_UNITS="${BOX_UNITS:-doorman.service badge-pull.timer badge-pull.service nudge-runner.timer nudge-runner.service sandbox-token-medic.service sandbox-recycler.service nemoclaw-inference-medic.timer}"
+#
+# sysstat-collect.timer is here because capacity work now RELIES on it: it is the
+# only thing keeping whole-host CPU/memory history on the box, and a stopped
+# timer loses that silently — the failure looks exactly like a quiet month.
+# Unlike openshell-gateway (which has no unit at all and would therefore be
+# skipped here without a word), this one is `loaded` wherever it is installed,
+# so the line does what it looks like it does.
+BOX_UNITS="${BOX_UNITS:-doorman.service badge-pull.timer badge-pull.service nudge-runner.timer nudge-runner.service sandbox-token-medic.service sandbox-recycler.service nemoclaw-inference-medic.timer sysstat-collect.timer}"
 
 FAILED=0   # count of checks reporting down, for the closing log line only
 

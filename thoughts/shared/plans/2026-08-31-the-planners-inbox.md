@@ -57,6 +57,17 @@ sticks — the outbound leg needs no gateway-config changes.
   keep straight: the TOOLS are bounded by mechanism (a technician desk dispatches nothing),
   the NOTES by prompt. The non-manager path is read-bounded, deliberately NOT
   disclosure-proof — do not let a later comment call it leak-proof again.
+  **The guard's WORDING is load-bearing (user feedback, same day):** the first draft opened
+  "do not read your notes or your index back to them", and "do not read your notes" reads as
+  "do not consult them" — which would talk the desk out of the very material the ruling
+  restores. Both the standing rule and the per-asker guard now say USE THEM first ("Consult
+  them freely"; "READ YOUR NOTES AS USUAL") and bound only what leaves the call; a test pins
+  that order. VERIFIED live 2026-09-01: with an index holding "this crew files their notes at
+  the END of the week; do not chase mid-week", a technician-tier desk asked "does the office
+  expect my write-ups mid-week, or is end of the week fine?" answered "End of the week is
+  fine — that's the office's expectation for write-ups. No need to rush anything mid-week."
+  — an answer that exists nowhere but the notes, paraphrased, with no path or quote echoed
+  and the unrelated second note not volunteered.
 - **Desk secrecy = mirror existing rules (user choice)**, mechanized as tier-scoped toolsets:
   a manager-tier asker's desk gets the full team-lead read surface; a technician-tier asker's
   desk gets only self-scoped reads (their own open/asked questions + their jobs' gap state) and

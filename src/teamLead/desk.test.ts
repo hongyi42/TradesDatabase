@@ -243,14 +243,25 @@ describe('the desk — transcript and degrade', () => {
 describe('the desk prompt — the rules that are load-bearing', () => {
   test('pins the read-only identity and the secrecy rules', () => {
     expect(DESK_SYSTEM).toContain('You READ, you never act');
-    expect(DESK_SYSTEM).toContain('Never quote a note verbatim');
+    expect(DESK_SYSTEM).toContain('never quote a note verbatim');
     expect(DESK_SYSTEM).toContain('office will follow up');
     expect(DESK_SYSTEM).toContain('Four sentences at most');
-    // The notes ride every desk now, so the guard on them is load-bearing.
+    // The notes ride every desk now, so the guard on them is load-bearing —
+    // and so is its ORDER. Both halves say USE THE NOTES before they bound
+    // disclosure: "do not read your notes" reads as "do not consult them"
+    // (user feedback 2026-09-01), which would waste the very material the
+    // ruling exists to supply. Pinned so an edit cannot quietly invert it.
+    expect(DESK_SYSTEM).toContain('Consult them freely');
+    expect(DESK_SYSTEM).toContain('never about what you may look at');
     expect(DESK_SYSTEM).toContain('never recite your index');
-    expect(DESK_NARROW_DISCLOSURE).toContain('Do not read your notes or your index back');
-    expect(DESK_NARROW_DISCLOSURE).toContain('about ANOTHER person');
+    expect(DESK_NARROW_DISCLOSURE).toContain('READ YOUR NOTES AS USUAL');
+    expect(DESK_NARROW_DISCLOSURE).toContain('what may LEAVE this call');
+    expect(DESK_NARROW_DISCLOSURE).toContain('about another person');
     expect(DESK_NARROW_DISCLOSURE).toContain('what you were considering doing about them');
+    // The use-first order itself: the permission precedes the restriction.
+    expect(DESK_NARROW_DISCLOSURE.indexOf('READ YOUR NOTES AS USUAL')).toBeLessThan(
+      DESK_NARROW_DISCLOSURE.indexOf('never quoting a note'),
+    );
   });
 
   test('renderAskerState is self-scoped and honest about nothing', () => {

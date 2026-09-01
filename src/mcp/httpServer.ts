@@ -19,6 +19,7 @@ import {
   pingDb,
 } from '../db/index.js';
 import { isValidService, recordOpsEvent } from '../db/opsEvents.js';
+import { recordHostMetrics } from '../db/hostMetrics.js';
 import { notifyOpsTransition } from '../telegram/opsNotify.js';
 import { handleComposioRelay, isRelayPath } from '../composio/relayHandler.js';
 import { handleBoardRequest, isBoardPath } from '../telegram/boardApi.js';
@@ -499,6 +500,100 @@ async function handleOpsReport(req: http.IncomingMessage, res: http.ServerRespon
   }
 }
 
+// The box's capacity reading: "here are my counters right now".
+//
+// WHY A SEPARATE ROUTE FROM /control/ops, which the same reporter already calls
+// with the same token. That handler's entire contract is recordOpsEvent's
+// incident folding, where a HEALTHY observation is deliberately discarded —
+// `ok` with nothing open writes no row at all. Capacity is made of exactly those
+// healthy observations. Routing them through the ops path would either lose them
+// or require teaching the one handler that alerting depends on to behave two
+// different ways. It stays a time series, written raw, next door.
+//
+// Same posture as its sibling: host identity from the TOKEN, bare 401, a capped
+// body, and any failure answers 5xx and lets the reporter move on. A monitor
+// must never be able to break — or delay — the thing it monitors.
+async function handleMetricsReport(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
+    const host = m ? await getHostByTokenHash(sha256hex(m[1].trim())) : null;
+    if (!host) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    // CAPPED. The `sandboxes` object grows with seat count, so unlike a fixed
+    // payload this one has no natural ceiling — and an unbounded read lets one
+    // box balloon the shared process that serves every tenant. 64 KiB is ~40x a
+    // 40-seat report.
+    let body: unknown;
+    try {
+      const raw = await readRawBody(req, 64 * 1024);
+      body = raw.length ? JSON.parse(raw) : undefined;
+    } catch (err) {
+      if ((err as { code?: string }).code === 'BODY_TOO_LARGE') {
+        json(413, { error: 'body too large' });
+        return;
+      }
+      json(400, { error: 'malformed JSON body' });
+      return;
+    }
+    const b = (body ?? {}) as Record<string, unknown>;
+
+    // observed_at is the axis every derived rate divides by, so a missing or
+    // unparseable one must be refused rather than defaulted to now(): silently
+    // substituting the server's clock would attribute a delayed batch of ticks
+    // to the wrong minutes and quietly corrupt the series.
+    const observedAt = typeof b.observedAt === 'string' ? b.observedAt : '';
+    const parsed = observedAt ? Date.parse(observedAt) : NaN;
+    if (!Number.isFinite(parsed)) {
+      json(400, { error: 'observedAt must be an ISO-8601 timestamp' });
+      return;
+    }
+
+    // Every counter is optional and independently validated: a box that cannot
+    // read one file still gets the rest of its tick stored. Anything that is
+    // not a finite number becomes null — "cannot say" — never 0, which would be
+    // a measurement claiming nothing happened.
+    const num = (v: unknown): number | null =>
+      typeof v === 'number' && Number.isFinite(v) ? v : null;
+    const sandboxes =
+      b.sandboxes && typeof b.sandboxes === 'object' && !Array.isArray(b.sandboxes)
+        ? (b.sandboxes as Record<string, unknown>)
+        : undefined;
+
+    const outcome = await recordHostMetrics({
+      hostId: host.id,
+      observedAt: new Date(parsed).toISOString(),
+      memAvailMb: num(b.memAvailMb),
+      memTotalMb: num(b.memTotalMb),
+      diskUsedPct: num(b.diskUsedPct),
+      seats: num(b.seats),
+      cpuCores: num(b.cpuCores),
+      load5: num(b.load5),
+      oomKills: num(b.oomKills),
+      cpuUsageUsec: num(b.cpuUsageUsec),
+      psiMemSomeUs: num(b.psiMemSomeUs),
+      psiMemFullUs: num(b.psiMemFullUs),
+      psiCpuSomeUs: num(b.psiCpuSomeUs),
+      sandboxes,
+    });
+    json(200, outcome);
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
 // Liveness/health for external monitors AND Render's zero-downtime deploy gate
 // (which withholds traffic from a new instance until its health check answers
 // 2xx/3xx). Unauthenticated and routed BEFORE the IP allowlist for the same
@@ -572,6 +667,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // everything else is healthy is not an alerting path.
     if (req.url === '/control/ops' && req.method === 'POST') {
       await handleOpsReport(req, res);
+      return;
+    }
+    // Box capacity metrics — same host-token gate and same placement rule as the
+    // ops report above: this is the box calling in, so it must route BEFORE the
+    // IP allowlist.
+    if (req.url === '/control/metrics' && req.method === 'POST') {
+      await handleMetricsReport(req, res);
       return;
     }
     // Dispatch-board Mini App — self-authenticated by Telegram initData (board

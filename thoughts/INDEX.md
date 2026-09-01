@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 199 documents · 194 live · 5 superseded.
+Regenerate with `npm run decisions:index`. 200 documents · 195 live · 5 superseded.
 
 ## Superseded — do not build on these
 
@@ -45,6 +45,7 @@ Regenerate with `npm run decisions:index`. 199 documents · 194 live · 5 supers
 ## Live
 
 - `2026-09-01` `plan` [2026-09-01-intent-verbs-and-the-doctrine](shared/plans/2026-09-01-intent-verbs-and-the-doctrine.md) · _draft_ — "Build 6 — intent verbs + the doctrine: escalate and leave are deleted, dismiss/recover reach every stage, ho…
+- `2026-09-01` `research` [2026-09-01-one-send-verb](shared/research/2026-09-01-one-send-verb.md) `landed` — "Build 6.5 ground — one send verb: the gap-keyed decision shape, the three delivery paths, the attribution ma…
 - `2026-08-31` `plan` [2026-08-31-a-gap-is-not-an-ask](shared/plans/2026-08-31-a-gap-is-not-an-ask.md) — Build 4 — a gap is not an ask: detection writes an observation the planner keeps; asking is a decision, never…
 - `2026-08-31` `plan` [2026-08-31-the-planners-inbox](shared/plans/2026-08-31-the-planners-inbox.md) `drift 17` — "Build 5.5 — the planner's inbox: the Q&A desk, the office_messages bucket with ask/inform both directions, a…
 - `2026-08-31` `plan` [2026-08-31-the-sweep-stops-deciding](shared/plans/2026-08-31-the-sweep-stops-deciding.md) `describes 1 deleted file` — "Build 5 — the sweep stops deciding: clocks become alarms, moot becomes information, escalate performs its ow…

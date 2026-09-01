@@ -136,13 +136,12 @@ export async function listNudgedSubjectRefs(
   return (data ?? []).map((r) => r.subject_ref);
 }
 
-// pending -> queued, carrying the composed question. Status-guarded
+// pending -> queued, carrying the planner's question. Status-guarded
 // conditional UPDATE (the resolveOpenReviewItemFor shape): every predicate in
 // the WHERE clause, null when the row was not in the expected state — the
 // caller treats that as "someone else moved it" and drops the write.
-// attempts resets to 0: the column's ledger changes hands here (compose
-// attempts before, DELIVERY attempts after) and each stage gets its full
-// allowance.
+// attempts resets to 0: from here the column is the DELIVERY attempts ledger,
+// and each stage gets its full allowance.
 export async function markNudgeQueued(
   id: string,
   tenantId: string,
@@ -314,9 +313,10 @@ export async function markNudgeGroupQueued(
 // `.or()` is the one construct here that would stop treating it as a bound
 // parameter.
 //
-// ONE `asked_at` for every member, by construction: they left in one message, so
-// their escalation clocks must start at the same instant. Two timestamps here
-// would mean the sweep could escalate half a message.
+// ONE `asked_at` for every member, by construction: they left in one message,
+// so the asksUnattended alarm (build 5's successor to the escalation clock)
+// measures every member from the same instant — two timestamps would let half
+// a message read as neglected.
 export async function markNudgeAskedGroup(
   leadId: string,
   tenantId: string,
@@ -342,10 +342,11 @@ export async function markNudgeAskedGroup(
 
 // Every still-queued member of a group, host-scoped like its siblings above.
 //
-// completeNudgeDelivery point-reads only the lead, but its terminal-failure path
-// has to hand EVERY member to the manager — an undeliverable question must not
-// orphan the gaps it was written for (the F1 doctrine), and handToManager needs
-// a full row per member to build the handoff from.
+// completeNudgeDelivery point-reads only the lead; this read serves the
+// closed-lead survivors path — a delivered report must still move siblings
+// whose lead already ended some other way (build 5: it is the ONLY group read
+// left in the queue; the old terminal-failure handoff died with the manager
+// handoffs).
 export async function listQueuedNudgesInGroupForHost(
   groupId: string,
   hostId: string,
@@ -362,12 +363,11 @@ export async function listQueuedNudgesInGroupForHost(
 }
 
 // Close an in-flight nudge with a terminal outcome. Only open rows move — a
-// terminal status never overwrites another (answered stays answered even if
-// an escalation sweep races the activity sweep). `fromStatuses` narrows the
-// guard further when the RESOLUTION TEXT is only true of specific states
-// (final-review #3: the 24h expiry says "never delivered" — a delivery ack
-// landing between the sweep's read and this write moves the row to 'asked',
-// and the expiry must then LOSE, or the durable audit lies about the ask).
+// terminal status never overwrites another (answered stays answered whatever
+// races it). The racers since build 5 are the PLANNER's own apply pass and
+// the delivery ack: `fromStatuses` narrows the guard when the RESOLUTION TEXT
+// is only true of specific states, so a write whose claim went stale between
+// the read and the UPDATE loses rather than lying in the audit line.
 export async function markNudgeOutcome(
   id: string,
   tenantId: string,
@@ -387,13 +387,11 @@ export async function markNudgeOutcome(
   return data as Nudge | null;
 }
 
-// The planner's ONE write onto a nudge's timing (plan 2026-08-19, Phase 2).
-//
-// Deliberately a SCHEDULE write and nothing else: the planner never escalates,
-// resolves or cancels a row directly. To escalate it sets escalate_after to now
-// and lets the sweep perform the handoff — so the rung-2 flag, the orphan
-// doctrine and the "flag first, close second" order stay in ONE place
-// (watchers.ts) rather than being re-implemented beside it.
+// The planner's write onto a nudge's timing — since build 5, a NOTBEFORE-ONLY
+// writer in practice: `hold` writes the planner's own pacing note (advisory —
+// nothing enforces it but the planner's next look), and no clock reads
+// escalate_after any more (the column is dormant; escalate performs its own
+// handoff at apply time in planner.ts).
 //
 // Status-guarded conditional UPDATE (the markNudgeQueued shape): open rows only,
 // null when the row moved under us. A planner call takes seconds, and a delivery
@@ -435,30 +433,6 @@ export async function setNudgeSchedule(
   return data as Nudge | null;
 }
 
-// Write back a failed COMPOSE attempt count. A literal SET (not an increment
-// expression — PostgREST has none): the caller read the row this tick and the
-// cron is the only writer (Render guarantees one concurrent run). The guard
-// is PENDING-only (Phase-3 review F3): if markNudgeQueued's UPDATE committed
-// but its response was lost, the row is already 'queued' — this write must
-// then land nowhere, so the compose catch cannot destroy a successfully
-// queued deliverable by marking it failed. Phase 4's delivery attempts get
-// their own helper with their own guard.
-export async function setNudgeAttempts(
-  id: string,
-  tenantId: string,
-  attempts: number,
-): Promise<Nudge | null> {
-  const { data, error } = await getClient()
-    .from('nudges')
-    .update({ attempts })
-    .eq('id', id)
-    .eq('tenant_id', tenantId)
-    .eq('status', 'pending')
-    .select()
-    .maybeSingle();
-  if (error) throw new Error(`setNudgeAttempts failed: ${error.message}`);
-  return data as Nudge | null;
-}
 
 // Which questions THIS person has actually been ASKED about THIS job — the
 // attribution lookup (plan 2026-08-22, Phase 1). Called at record_field_note
@@ -472,12 +446,12 @@ export async function setNudgeAttempts(
 // 'asked' ALONE, not OPEN_NUDGE_STATUSES — deliberately narrower than the plan's
 // wording, because the wider read defeats the plan's own purpose in two reachable
 // ways (both found at review):
-//   1. A pending gap can sit for hours (`not_before` gates compose only, and the
-//      planner's `hold` may push it out to the 18h delivery ceiling). Any routine
-//      note in that window would be stamped as the ANSWER to a question nobody
-//      has been asked yet — and the stamp is first-write-wins, so the real answer
-//      could never claim it afterwards. Attribution would fail silently, forever,
-//      on exactly the gap it exists to serve.
+//   1. A pending gap can sit indefinitely (nothing sends it but the planner,
+//      and its `hold` is unbounded since build 5). Any routine note in that
+//      window would be stamped as the ANSWER to a question nobody has been
+//      asked yet — and the stamp is first-write-wins, so the real answer
+//      could never claim it afterwards. Attribution would fail silently,
+//      forever, on exactly the gap it exists to serve.
 //   2. A brand-new pending cost gap on the same job would make the count 2 and
 //      block attribution of the answer to the one question that WAS asked.
 // A person can only answer a question they were asked. Anything earlier is a

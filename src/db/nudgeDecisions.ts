@@ -20,19 +20,18 @@ export interface NudgeDecisionInput {
   mode: 'shadow' | 'live';
   action: string;
   notBefore?: string | null;
-  // What an `extend` moved the deadline TO. Null for every other action, the
-  // way notBefore is null for everything but a hold. Without it the corpus
-  // records THAT a deadline was postponed but never how far, so no eval can
-  // ask whether the planner postpones sensibly.
+  // HISTORIC (build 5): what an `extend` moved the deadline to, back when the
+  // verb and the clock existed. No writer passes it any more; the field stays
+  // so old rows keep their meaning and the column its docs.
   escalateAfter?: string | null;
   // The manager-facing sentence the planner wrote for an APPLIED escalate, or
   // null when the sweep escalated on its own (it has no model). Deliberately
   // separate from `reason`: that one is diagnostic, is written for refusals
   // too, and is the corpus — this one is product copy and is read by a person.
   handoffNote?: string | null;
-  // The TECHNICIAN-facing question the planner wrote for an applied `send`.
-  // Compose uses it instead of making its own model call. Third audience,
-  // third rail — see the migration header.
+  // The TECHNICIAN-facing question the planner wrote for an applied `send` —
+  // the delivered message itself since the collapse. Third audience, third
+  // rail — see the migration header.
   questionDraft?: string | null;
   // The briefing for the manager's ASSISTANT on an applied `escalate` — the
   // fourth audience, fourth rail. Machine context; never shown to a human.
@@ -115,15 +114,11 @@ export async function recordNudgeDecisions(inputs: NudgeDecisionInput[]): Promis
  * is exactly what the pushed history line is for, so filtering them here would
  * make that number a lie. The two `recall_decisions` lookups below drop them.
  *
- * Growth: while the ladder is live a gap cannot outlive its escalation or
- * delivery deadline, so at one tick per 30 minutes it accumulates a few dozen
- * decisions at most (now including one tick mark per in-window tick, capped per
- * gap by UNMENTIONED_CAP in planner.ts). That bound is the SWEEP's, not this table's — with
- * NUDGES_MODE rolled back the planner still runs (deliberately, see
- * lifecycle.ts) and nothing closes the gap, so rows accrue at ~24/day for as
- * long as that lasts. The paging keeps this correct rather than silently short;
- * a gap with thousands of decisions is the stuck ladder showing through, and
- * that is the bug to fix, not this read.
+ * Growth: since build 5 a gap has no lifetime clocks, so a long-lived gap is
+ * a designed state, not a defect. The filler is capped per gap
+ * (UNMENTIONED_CAP in planner.ts); real decisions accrue only as fast as the
+ * planner makes them. The paging keeps this read correct rather than silently
+ * short either way.
  */
 export async function listDecisionsForNudges(
   tenantId: string,

@@ -22,13 +22,11 @@
 //
 // THE SIM-TIME FIX-UP, and why it is not optional: rows the tick itself writes
 // (nudge_decisions.decided_at, nudges.resolved_at/queued_at) are stamped by the
-// database's real clock. In an arc whose simulated clock has advanced more than
-// 24h past the first tick, watchers' `plannerAlive` check compares those REAL
-// stamps against sim-now − PLANNER_SILENCE_HOURS and reads a planner that
-// decided "ten sim-hours ago" as a full day silent — firing the auto-close
-// fail-safe mid-arc and corrupting exactly the late/stuck arcs the corpus
-// exists to grade. So after every tick, that tick's new time stamps are
-// rewritten to sim-now.
+// database's real clock, while the arc's clock is simulated — so without the
+// rewrite, every duration-derived thing downstream (the history line's "Nh
+// ago", the alarm pass's unattended windows, the graders' closedBy bounds)
+// would measure real seconds against sim hours. After every tick, that tick's
+// new time stamps are rewritten to sim-now.
 
 import { randomUUID } from 'node:crypto';
 import { getClient } from '../db/client.js';
@@ -505,18 +503,7 @@ export async function runTick(
   const priorNoteStamps = new Map((priorNoteRows ?? []).map((r) => [r.job_id, r.written_at]));
 
   const listTenants = async (): Promise<string[]> => [tenantId];
-  const watchers = await runWatchers(
-    nowIso,
-    'live',
-    {
-      listTenants,
-      // Load-bearing no-ops: .env carries a real BOARD_BOT_TOKEN, and an
-      // un-stubbed item-opening tick would message a real Telegram chat.
-      notify: async () => {},
-      hasPushToken: () => false,
-    },
-    'live',
-  );
+  const watchers = await runWatchers(nowIso, 'live', { listTenants });
 
   let userPrompt: string | null = null;
   let toolCalls: ToolLoopCall[] = [];
@@ -561,7 +548,11 @@ export async function runTick(
   const planner = await runPlanner(nowIso, 'live', {
     listTenants,
     tools: [...TEAM_LEAD_TOOL_SCHEMAS],
-    sweepLive: true,
+    // Load-bearing no-ops: .env carries a real BOARD_BOT_TOKEN, and an
+    // applied escalate would otherwise push a real Telegram line (build 5
+    // moved the heads-up into the planner).
+    notify: async () => {},
+    hasPushToken: () => false,
     execute: (t, name, args) =>
       dispatchForIdentity(name, args, { tenantId: t, technicianRef: TEAM_LEAD_REF }),
     runLoop: wrapLoop,

@@ -55,6 +55,23 @@ export const PLANNER_SYSTEM = [
   '             record keeps it, and you can bring it back — say why in `reason`.',
   '  recover  — bring a dismissed one back, when stakes changed. Find dismissed',
   '             observations with spine_read over v_observations and name the id.',
+  '  ask_agent    — ask the PERSON\'S ASSISTANT something, not the person. Write it in',
+  '                 `agentMessage`. The assistant answers from what it already knows and only',
+  '                 involves its person if it judges it must; the reply reaches you in OFFICE',
+  '                 MESSAGES on a later look. Use it when the assistant may know what the',
+  '                 record does not — was the person around, did they mention this already.',
+  '  inform_agent — tell the person\'s assistant something it should know, in `agentMessage`.',
+  '                 No reply comes; the assistant weighs it and carries on.',
+  '',
+  'TALKING TO THE ASSISTANTS. ask_agent and inform_agent reach a piece of software, not a',
+  'person — nobody\'s phone buzzes, and the assistant decides for itself whether its person ever',
+  'hears about it. Three rules. An assistant\'s answer INFORMS your judgment and never fills the',
+  'record: a gap still closes only on the record\'s own facts or on a person\'s recorded words —',
+  'never on what an assistant told you. You may ask and you may tell; you never assign work —',
+  'an assistant is not yours to task, and a message that reads as an order will simply be',
+  'weighed and set aside. And pace yourself: a reply arrives on a later look, so asking again',
+  'next tick because none has come yet is chasing — your history line shows what you already',
+  'sent.',
   '',
   '`leave` IS NOT THE DEFAULT, and you do not need it to be. Every gap you were shown is already',
   'recorded as considered, whether or not you name it — so plain silence is safe and costs nothing.',
@@ -299,11 +316,23 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
             },
             action: {
               type: 'string',
-              enum: ['send', 'hold', 'close', 'escalate', 'leave', 'dismiss', 'recover'],
+              enum: ['send', 'hold', 'close', 'escalate', 'leave', 'dismiss', 'recover',
+                     'ask_agent', 'inform_agent'],
               description:
                 'What should happen to this gap. dismiss (observations only): stop showing it — ' +
                 'say why in `reason`; the record keeps it. recover: bring back a DISMISSED ' +
-                'observation by id, found via spine_read over v_observations.',
+                'observation by id, found via spine_read over v_observations. ' +
+                "ask_agent/inform_agent: a message to the PERSON'S ASSISTANT about this gap — " +
+                'put it in `agentMessage`; replies arrive in OFFICE MESSAGES on a later look.',
+            },
+            agentMessage: {
+              type: 'string',
+              description:
+                "For 'ask_agent'/'inform_agent': the message the person's ASSISTANT receives — " +
+                'software, not the person. Plain prose, information or a question, never an ' +
+                'order. Use only the date strings the gap listed under "dates you may use". ' +
+                'Required for both verbs (missing or date-railed means the action is refused); ' +
+                'ignored for every other action.',
             },
             notBefore: {
               type: 'string',

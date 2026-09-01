@@ -2,7 +2,7 @@
 date: 2026-08-31
 task: "Build 5.5 — the planner's inbox: the Q&A desk, the office_messages bucket with ask/inform both directions, and the CLI-door outbound leg"
 research: thoughts/shared/research/2026-08-31-the-planners-inbox.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -217,14 +217,21 @@ exactly-14 technician tool-surface pins and the two 43 manager pins move to 16/4
 phases 1–2 (review F5 — this phase moves them to 15/44, phase 2 to 16/45).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] new officeMessages + planner-block tests pass
-- [ ] `npm run seed:local && npx supabase db reset` applies the migration cleanly
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass (2463/2463, 2026-08-31)
+- [x] new officeMessages + planner-block tests pass (8 db + 9 planner + 4 server)
+- [x] `npx supabase db reset && npm run seed:local` applies the migration cleanly
+      (note: reset-then-seed is the working order; the seed rebuilds the playground)
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack only.
-- [ ] insert an inform via the accessor, run `runPlanner` live-mode with stub loop → block
+- [x] insert an inform via the accessor, run `runPlanner` live-mode with stub loop → block
       appears in the captured user prompt; row flips to `read` (read back via pg).
+      Evidence 2026-08-31: prompt tail carried `This firm has 0 open gap(s).` + the OFFICE
+      MESSAGES block with `from tech-jane (technician)`; pg read-back
+      `{"status":"read","read_at":"2026-08-31T12:00:00.000Z"}` — the gapless-tenant path (F2)
+      exercised live. Extra pin found during implementation: `src/eval/toolCases.test.ts`
+      derives the badge surface from server.ts source (44→45) and requires a tier-1 case per
+      tool — W14 added to `src/eval/toolCases.ts`.
 
 ### Manual verification
 - [ ] none
@@ -294,13 +301,25 @@ written; prompt pins: "never quote", "you READ, you never act"); an integration 
 stubbed loop; a key-gated live-model smoke (skips without keys, the planner-eval idiom).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] new desk tests pass incl. the tier-toolset pins
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass (2481/2481, 2026-08-31)
+- [x] new desk tests pass incl. the tier-toolset pins (11 desk + 3 server + 3 planner-appendix
+      + the toolLoop empty-tools F3 unit test)
 
 ### Live verification (agent-executable)
 - Prerequisites: `.env` model keys (already required).
-- [ ] key-gated: `answerDeskQuestion` against the local stack answers a seeded "am I square"
+- [x] key-gated: `answerDeskQuestion` against the local stack answers a seeded "am I square"
       question grounded in seeded asks; transcript rows verified by pg read-back.
+      Evidence 2026-08-31 (live GLM call, ~1s): answer = "There's one open item on your
+      record — a pending flag about an overdue visit gap — but no question has been written
+      for it yet, so nothing is being asked of you at the moment. The office will follow up
+      if anything is needed from you." — grounded in the seeded pending nudge, honest that
+      no question went out; pg read-back showed kinds [ask, desk], both read, in_reply_to set.
+      F6 RESOLVED by probe (s2, 2026-08-31): the gateway MCP client passes
+      `{ timeout: session.requestTimeoutMs }` per call; trades-spine sets no
+      requestTimeoutMs/timeout key, so DEFAULT_REQUEST_TIMEOUT_MS = 60_000ms governs;
+      DESK_BUDGET_MS sized 40_000 and the derivation recorded in deskPrompt.ts. Also added:
+      a `deskAnswer` ServerDeps seam (the brief/answer synthesizer precedent) so dispatch
+      tests never call the live model; eval case X09 (requires 'model'); pins now 16/45/46.
 
 ### Manual verification
 - [ ] none
@@ -393,15 +412,20 @@ both pass); the three pinned equalities still hold (existing tests updated); htt
 tests (auth, caps) following the `/control/nudges` family.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] verb-equality pins green (`PLANNER_ACTIONS` == enum == `PLANNER_JUDGMENT_ACTIONS`)
-- [ ] migration applies on a reset local stack
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass (2504/2504, 2026-08-31)
+- [x] verb-equality pins green (`PLANNER_ACTIONS` == enum == `PLANNER_JUDGMENT_ACTIONS` —
+      watchers.test + planner.test + toolCases all pass at 17/46/47)
+- [x] migration applies on a reset local stack (both 20260901* replayed by `db reset`;
+      `nudge_decisions_action_check` read back with ask_agent + inform_agent)
 
 ### Live verification (agent-executable)
 - Prerequisites: ssh `tradesbox` (proven 2026-08-31); local stack for the spine side.
-- [ ] on s2: stage a fake delivery item through `office-runner.sh`'s send path (the probe
-      command shape) and confirm session recall of the injected note — the probe re-run as
-      the shipped script. Evidence: `--json` output + recall turn text.
+- [x] on s2: staged the OFFICE NOTE payload via the runner's exact staging step
+      (`cat > /tmp/office-e2e-test.txt` in-sandbox, 218 bytes), injected with the shipped
+      command shape (`openclaw agent --session-key main --message-file … --json`) — real
+      GLM turn, `"result":"success"`, `stopReason:"stop"`; a later recall turn with no
+      tools quoted it verbatim: `[office-runner-e2e-0831] — "The harvest-moon lantern
+      order is confirmed for pier nine."` (2026-08-31).
 
 ### Manual verification
 - [ ] none — fleet rollout of the runner waits for the whole-order deploy (harness stays in
@@ -437,16 +461,50 @@ a box rollout, s2 first; joins the 4–7 evaluation train). Build table row adde
 
 **Wrap-up** — `npm run decisions:index`; memory file update rides the session.
 
+**Final-review fixes folded (2026-08-31, /code-review on the full diff — 15 findings, the
+correctness ones fixed):** missing-table tolerance on the tick's office read
+(`officeTableMissing`, the planner_runs contract); bounded render + bounded drain
+(`OFFICE_MESSAGES_SHOWN = 30`, oldest-first, only shown ids marked read — a flood can no
+longer fail every tick before mark-read); the block header teaches "a message id takes no
+decision entry"; observation-stage gaps gained a legal age label (`asked_at ?? created_at`)
+so agent messages/questions about them stop being refused with dates that were never given;
+`replyToMessageId` now requires a to_agent row ADDRESSED TO the caller (an echoed foreign id
+can no longer attach a reply to someone else's question) and the degrade suffix is cleaned +
+capped and rides the accessor's cut instead of refusing the note; `inform_teammate` uses the
+active-manager predicate on BOTH endpoints (the F-A class), refuses seat-exempt addressees,
+and is honest about a temporarily seatless one; the desk toolset became an ALLOWLIST
+(`DESK_READ_TOOLS`, fail-closed) and the planner's memory index now rides the MANAGER desk
+only; desk answers are capped at the transcript limit so asker and auditor read one text;
+the anthropic transport omits `tools` when empty too; the host queue read is paged +
+direction-filtered and desk transcripts keep the NEWEST under the cap; `office_messages` (+
+the missed-at-build-4 `observations`) joined world.mjs PILOT_TENANT_SCOPED; the runner's CLI
+timeout moved above the gateway's 600s turn clock (630s) so a slow turn is not reported
+failed and re-injected; `spine:team-lead` literals became `TEAM_LEAD_REF` and the three
+hygiene strips one `cleanOfficeText`. Surfaced, deliberately NOT built (design calls for the
+user): a deliveryStuck-style alarm for frozen office rows; recording `agentMessage` in
+nudge_decisions (shadow-mode evals cannot see the text — live/sim evals can, via the bucket);
+a rate limit on `ask_team_lead`/`inform_team_lead`; the desk's `recall_decisions` reach for
+managers (plan-sanctioned but colliding with the dispatch gate's recorded rationale); the
+serve-count race and per-box marker semantics shared with the nudge twin.
+
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass (full gate —
-      last phase before PR)
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build` pass (full gate,
+      2026-08-31; 2505 tests after registering the new AGENTS.md section in
+      `src/eval/doctrine.ts` EXPECTED_SECTIONS — a fifth pin the plan missed)
 
 ### Live verification (agent-executable)
 - Prerequisites: ssh `tradesbox`; local stack; model keys.
-- [ ] the full loop on the local stack: seed → `inform_team_lead` (dispatch) → tick shows
-      block → `ask_agent` applied → queue row → (s2) runner send → recall → simulated reply
-      via `inform_team_lead(replyToMessageId)` → next tick shows the reply attached. Evidence:
-      prompts + pg read-backs at each hop.
+- [x] the full loop, evidence at every hop (2026-08-31): `inform_team_lead` via real dispatch
+      → tick 1 prompt carried OFFICE MESSAGES + the inform, `ask_agent` applied
+      (byAction ask_agent=1) → pg read-back: to_agent queued row with technician_id + nudge_id
+      → `buildOfficeDelivery` served `OFFICE QUESTION (from the office record system, not a
+      person): … mention this id: <uuid>` → `completeOfficeDelivery` delivered →
+      `inform_team_lead(replyToMessageId)` wrote kind=reply with nudge_id copied → tick 2
+      prompt rendered `in reply to your ask on gap <gapId>: …pump is swapped and running` →
+      final pg read-back `[inform:read, reply:read]`. The s2 injection+recall hop was proven
+      in Phase 3's live check with an OFFICE NOTE payload — deliberately: an OFFICE QUESTION
+      on s2 would teach a reply tool the pilot's deployed spine does not carry until the
+      whole-order deploy (harness stays in testing).
 
 ### Manual verification
 - [ ] user reviews the desk's answer tone on one real question from s2's chat (judgment call

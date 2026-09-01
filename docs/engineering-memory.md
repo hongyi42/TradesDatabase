@@ -18,181 +18,185 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 
 ## What is in here
 
-150 entries — the map this file never had. Jump by line number, or grep the title.
+154 entries — the map this file never had. Jump by line number, or grep the title.
 
 **1. How we work (process rules)**
 
-- L201 · Every code change goes through a PR before main _(2026-07-12)_
-- L206 · RPI workflow
-- L209 · Box_Setup_Stuff/ is not documentation — it's the only context a host-side Claude gets
-- L213 · Decision briefs follow ONE layout _(2026-08-26)_
-- L223 · Verify vendor claims against live docs, cite URLs
-- L225 · Never paste badge plaintext anywhere _(2026-07-03)_
-- L227 · Concurrent sessions share a checkout at their peril _(2026-08-15)_
-- L233 · A new table that references ONLY tenants escapes every cleanup cascade _(2026-08-15)_
+- L205 · Every code change goes through a PR before main _(2026-07-12)_
+- L210 · RPI workflow
+- L213 · Box_Setup_Stuff/ is not documentation — it's the only context a host-side Claude gets
+- L217 · Decision briefs follow ONE layout _(2026-08-26)_
+- L227 · Verify vendor claims against live docs, cite URLs
+- L229 · Never paste badge plaintext anywhere _(2026-07-03)_
+- L231 · Concurrent sessions share a checkout at their peril _(2026-08-15)_
+- L237 · A new table that references ONLY tenants escapes every cleanup cascade _(2026-08-15)_
 
 **2. Product principles (user decisions — don't re-litigate, do cite when relevant)**
 
-- L245 · Agent-first framing + the intelligent-spine direction _(2026-08-15)_
-- L273 · Nudge frequency is paced by URGENCY, never capped _(2026-08-18)_
-- L328 · The spine is not the books _(2026-08-15)_
-- L341 · The money layer is workflow-agnostic — never pilot-fitted _(2026-08-15)_
-- L351 · Telegram is the entire UI _(2026-07-03)_
-- L361 · A schedule READ renders the booked order; it never re-derives one _(2026-07-31)_
-- L380 · Vocabulary must track what actually gates _(2026-07-23)_
-- L387 · Two access tiers, manager and technician _(2026-07-02)_
-- L394 · Seat-based licensing _(2026-07-02)_
-- L398 · EXPLORATORY direction — software-for-physical-data exchange _(2026-07-26)_
-- L415 · Spine scope boundary _(2026-07-06)_
-- L420 · Confirmation doctrine _(2026-07-17)_
-- L431 · REJECTED direction — do not propose again: _(2026-07-15)_
-- L435 · Agent model: _(2026-08-15)_
-- L504 · Candidate seat model, MEASURED but NOT adopted (2026-08-24) — Gemini 3.7 Flash. _(2026-08-24)_
-- L645 · Homogeneous memory collapses retrieval
-- L648 · Context collapse / brevity bias
-- L652 · Hint leakage
-- L683 · Push the keys, pull the content.
-- L689 · Only accumulate what something can later falsify.
-- L693 · Traces are not memory.
-- L696 · Append-only, never model-rewritten.
-- L698 · Keep it out of the record.
-- L706 · Field notes record one-shot; standing facts still confirm _(2026-08-21)_
-- L741 · A mixed batch confirms as a whole _(2026-08-21)_
-- L841 · Independent rollback of the technician-facing voice.
-- L843 · Per-gap failure isolation.
-- L879 · ONE ask.
-- L881 · The queue is the resting place, not a staging area.
-- L883 · escalated presumes a second party.
-- L886 · Detection is one query:
+- L249 · Agent-first framing + the intelligent-spine direction _(2026-08-15)_
+- L277 · Nudge frequency is paced by URGENCY, never capped _(2026-08-18)_
+- L332 · The spine is not the books _(2026-08-15)_
+- L345 · The money layer is workflow-agnostic — never pilot-fitted _(2026-08-15)_
+- L355 · Telegram is the entire UI _(2026-07-03)_
+- L365 · A schedule READ renders the booked order; it never re-derives one _(2026-07-31)_
+- L384 · Vocabulary must track what actually gates _(2026-07-23)_
+- L391 · Two access tiers, manager and technician _(2026-07-02)_
+- L398 · Seat-based licensing _(2026-07-02)_
+- L402 · EXPLORATORY direction — software-for-physical-data exchange _(2026-07-26)_
+- L419 · Spine scope boundary _(2026-07-06)_
+- L424 · Confirmation doctrine _(2026-07-17)_
+- L435 · REJECTED direction — do not propose again: _(2026-07-15)_
+- L439 · Agent model: _(2026-08-15)_
+- L508 · Candidate seat model, MEASURED but NOT adopted (2026-08-24) — Gemini 3.7 Flash. _(2026-08-24)_
+- L649 · Homogeneous memory collapses retrieval
+- L652 · Context collapse / brevity bias
+- L656 · Hint leakage
+- L687 · Push the keys, pull the content.
+- L693 · Only accumulate what something can later falsify.
+- L697 · Traces are not memory.
+- L700 · Append-only, never model-rewritten.
+- L702 · Keep it out of the record.
+- L710 · Field notes record one-shot; standing facts still confirm _(2026-08-21)_
+- L745 · A mixed batch confirms as a whole _(2026-08-21)_
+- L845 · Independent rollback of the technician-facing voice.
+- L847 · Per-gap failure isolation.
+- L883 · ONE ask.
+- L885 · The queue is the resting place, not a staging area.
+- L887 · escalated presumes a second party.
+- L890 · Detection is one query:
 
 **3. Environments & infrastructure**
 
-- L964 · A CRON service cannot be deployed by commit id at all. _(2026-08-20)_
-- L972 · Nothing auto-applies DB migrations to the pilot.
-- L976 · Deploy-before-migration _(2026-07-19)_
-- L979 · A new tool surface silently bypasses whatever doctrine rule did not name it — twice now. _(2026-08-06)_
-- L1009 · local_weekday did not close it — resolve_date week ranges were the real hole (2026-08-06). _(2026-08-06)_
-- L1027 · A HOOK plugin is not installed until the GATEWAY's startup line says so (2026-08-06). _(2026-08-06)_
-- L1038 · openclaw plugins install — the VENDOR's own CLI — trips the config-hash trap (2026-08-06). _(2026-08-06)_
-- L1046 · gateway restart does NOT re-render config from sandboxes.json _(2026-08-19)_
-- L1053 · DOCTRINE — the manager is NEVER a verification layer for dates (owner decision, 2026-08-11). _(2026-08-11)_
-- L1081 · WHY the guard was deaf, and proof the version upgrade fixes it (2026-08-12). _(2026-08-12)_
-- L1142 · Guard v0.3.0 fixes both eval-found detector defects (2026-08-12, PR #124). _(2026-08-12)_
-- L1309 · Eval truth-set conventions (2026-08-13 adjudication, five grader bugs): _(2026-08-13)_
-- L1377 · medic v4+v5 are DEPLOYED as of 2026-08-13 19:54:23Z — the NVIDIA failover can no longer fire. _(2026-08-13)_
-- L1456 · Ops alerting: the verdict now leaves the box (2026-08-12). _(2026-08-12)_
-- L1526 · The ladder cannot see the MONEY LEDGER — and a money-only answer leaves the nudge open _(2026-08-19)_
-- L1598 · Stage-1 shadow CONFIRMED on the pilot (2026-08-18T00:05Z). _(2026-08-18)_
-- L1630 · USER DECISION 2026-08-18 — DeepInfra is being RETIRED; Fireworks replaces its inference key. _(2026-08-18)_
-- L1657 · Stage 1 is PROVEN END TO END IN PRODUCTION (2026-08-18 23:10-23:17Z, first clean run). _(2026-08-18)_
-- L1785 · nemoclaw list shows the ONBOARDING RECORD, not the live inference route (2026-08-06). _(2026-08-06)_
-- L1817 · revoke ... from public does NOT revoke anon/authenticated on a new function. _(2026-08-06)_
+- L968 · A CRON service cannot be deployed by commit id at all. _(2026-08-20)_
+- L976 · Nothing auto-applies DB migrations to the pilot.
+- L980 · Deploy-before-migration _(2026-07-19)_
+- L983 · A new tool surface silently bypasses whatever doctrine rule did not name it — twice now. _(2026-08-06)_
+- L1013 · local_weekday did not close it — resolve_date week ranges were the real hole (2026-08-06). _(2026-08-06)_
+- L1031 · A HOOK plugin is not installed until the GATEWAY's startup line says so (2026-08-06). _(2026-08-06)_
+- L1042 · openclaw plugins install — the VENDOR's own CLI — trips the config-hash trap (2026-08-06). _(2026-08-06)_
+- L1050 · gateway restart does NOT re-render config from sandboxes.json _(2026-08-19)_
+- L1057 · DOCTRINE — the manager is NEVER a verification layer for dates (owner decision, 2026-08-11). _(2026-08-11)_
+- L1085 · WHY the guard was deaf, and proof the version upgrade fixes it (2026-08-12). _(2026-08-12)_
+- L1146 · Guard v0.3.0 fixes both eval-found detector defects (2026-08-12, PR #124). _(2026-08-12)_
+- L1313 · Eval truth-set conventions (2026-08-13 adjudication, five grader bugs): _(2026-08-13)_
+- L1381 · medic v4+v5 are DEPLOYED as of 2026-08-13 19:54:23Z — the NVIDIA failover can no longer fire. _(2026-08-13)_
+- L1460 · Ops alerting: the verdict now leaves the box (2026-08-12). _(2026-08-12)_
+- L1530 · The ladder cannot see the MONEY LEDGER — and a money-only answer leaves the nudge open _(2026-08-19)_
+- L1602 · Stage-1 shadow CONFIRMED on the pilot (2026-08-18T00:05Z). _(2026-08-18)_
+- L1634 · USER DECISION 2026-08-18 — DeepInfra is being RETIRED; Fireworks replaces its inference key. _(2026-08-18)_
+- L1661 · Stage 1 is PROVEN END TO END IN PRODUCTION (2026-08-18 23:10-23:17Z, first clean run). _(2026-08-18)_
+- L1789 · nemoclaw list shows the ONBOARDING RECORD, not the live inference route (2026-08-06). _(2026-08-06)_
+- L1821 · revoke ... from public does NOT revoke anon/authenticated on a new function. _(2026-08-06)_
 
 **4. Live-state snapshot (as of 2026-08-24 — verify before relying)**
 
-- L1861 · The ladder is complete through ⑤ — all five stages merged AND deployed (2026-08-24). _(2026-08-24)_
-- L1870 · Model routing differs BY RENDER SERVICE (verified 2026-08-24). _(2026-08-24)_
-- L1895 · The Render estate — six services, two of them behind main (API-read 2026-08-24). _(2026-08-24)_
-- L1930 · What the brain has produced on the pilot: proven machinery, empty corpus (2026-08-24). _(2026-08-24)_
-- L1941 · In flight, NOT on main: the one-call collapse _(2026-08-24)_
-- L1946 · Tenants on the pilot DB — FOUR, not two (2026-08-24). _(2026-08-24)_
-- L1958 · The demo schedule has run out — re-shift before the next demo (2026-08-24). _(2026-08-24)_
-- L1964 · Roster: 31 technician rows, and the flag is a STATE, not a boolean (2026-08-24). _(2026-08-24)_
-- L1971 · Sandbox map on trades-box-1 (2026-08-24) _(2026-08-24)_
-- L1984 · sandbox_pool is a partial ledger, not the pool — never answer "which seats exist" from it.
-- L1989 · Board:
-- L2002 · Live: _(2026-07-20)_
-- L2346 · Deferred / backlog (each has an owner-stated reason — check before resurrecting): _(2026-07-25)_
-- L2586 · FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema. _(2026-07-30)_
-- L2658 · Dated debts (reviewed 2026-08-24): _(2026-08-24)_
-- L2681 · Pending human tests:
-- L2738 · Money's structure in the spine is load-bearing for FUTURE BUSINESS ANALYTICS _(2026-08-19)_
+- L1865 · The ladder is complete through ⑤ — all five stages merged AND deployed (2026-08-24). _(2026-08-24)_
+- L1874 · Model routing differs BY RENDER SERVICE (verified 2026-08-24). _(2026-08-24)_
+- L1899 · The Render estate — six services, two of them behind main (API-read 2026-08-24). _(2026-08-24)_
+- L1934 · What the brain has produced on the pilot: proven machinery, empty corpus (2026-08-24). _(2026-08-24)_
+- L1945 · In flight, NOT on main: the one-call collapse _(2026-08-24)_
+- L1950 · Tenants on the pilot DB — FOUR, not two (2026-08-24). _(2026-08-24)_
+- L1962 · The demo schedule has run out — re-shift before the next demo (2026-08-24). _(2026-08-24)_
+- L1968 · Roster: 31 technician rows, and the flag is a STATE, not a boolean (2026-08-24). _(2026-08-24)_
+- L1975 · Sandbox map on trades-box-1 (2026-08-24) _(2026-08-24)_
+- L1988 · sandbox_pool is a partial ledger, not the pool — never answer "which seats exist" from it.
+- L1993 · Board:
+- L2006 · Live: _(2026-07-20)_
+- L2350 · Deferred / backlog (each has an owner-stated reason — check before resurrecting): _(2026-07-25)_
+- L2590 · FIXED 2026-07-30 — agent turns took 60–80s; cause was ONE tool's schema. _(2026-07-30)_
+- L2662 · Dated debts (reviewed 2026-08-24): _(2026-08-24)_
+- L2685 · Pending human tests:
+- L2742 · Money's structure in the spine is load-bearing for FUTURE BUSINESS ANALYTICS _(2026-08-19)_
 
 **5. The walls — traps by the time you'd hit them**
 
-- L2783 · md5 a box-local bootstrap-box.sh against the repo before running it
-- L2786 · wire needs the WHOLE Box_Setup_Stuff/ tree
-- L2788 · 4 of the 9 AGENTS.md blocks are append-once
-- L2791 · s2 is the canary and must stay the most up-to-date seat
-- L2810 · Concurrent local stacks are the top cause of phantom test failures on this machine.
-- L2835 · Retuning a constant is retroactive.
-- L2838 · TEST ROT — hit three times in one day.
-- L2858 · A tool DESCRIPTION change is not deploy-only; a result-side field is. _(2026-07-31)_
-- L2880 · A sandbox can hold a badge the doorman no longer knows — and nothing says so. _(2026-08-04)_
-- L2908 · Credentials inject into a sandbox's process env at container launch ONLY.
-- L2926 · NEVER change a sandbox's openclaw.json with openclaw config patch. _(2026-07-30)_
-- L2964 · nemoclaw rebuild can destroy the sandbox's device private key
-- L2969 · The placeholder versioning trap:
-- L2973 · nemoclaw onboard/rebuild resets the gateway inference route
-- L2976 · Tool VOCABULARY lives in three places, and one of them self-reapplies. _(2026-07-25)_
-- L2984 · There is NO per-tool allowlist file
-- L2989 · The Telegram sender allowlist lives in TWO places
-- L2992 · Never health-check via nemoclaw <s> agent
-- L2995 · Trust box evidence over vendor status pages
-- L2997 · DeepInfra balance runs out roughly monthly and NOTHING alerts on it _(2026-07-11)_
-- L3010 · A deactivated seat's bot goes silent but alive
-- L3015 · Don't verify badges by extracting them from /proc/<pid>/environ
-- L3029 · CLI chat probes run on the EMBEDDED agent, not the gateway _(2026-07-23)_
-- L3057 · /hooks/agent (the gateway's HTTP webhook) CANNOT drive an agent turn on this box.
-- L3083 · A status gate outlives its truth — date it, or delete it. _(2026-08-06)_
-- L3093 · Resolve merge state with merge-base, never by eyeballing git log on a feature branch. _(2026-08-06)_
-- L3102 · When inbound email "stops working", check the webhook subscription FIRST
-- L3142 · npm test truncates the local stack, and that wipes the spine-eval world.
-- L3148 · An eval's own fixtures collide unless each scenario owns its rows AND its people. _(2026-08-12)_
-- L3155 · Fixture data must look like customer data.
-- L3160 · A missing BOARD_BOT_HANDLE makes the agent invent board links. _(2026-07-22)_
-- L3167 · resolve_date now has calendar-PERIOD modes _(2026-08-12)_
-- L3248 · Design consequence worth reusing: make the cheap tier the control group.
-- L3252 · The pilot DB is an accepted test-write target (user decision, 2026-08-12) _(2026-08-12)_
-- L3262 · L1 PINS L2: a stamped capture makes its customer permanently undeletable. _(2026-08-12)_
-- L3283 · A new tenant in the pilot silently enlists in the lifecycle cron.
-- L3334 · No reachable technician, so rung 1 can never mint a nudge. _(2026-08-19)_
-- L3340 · Nothing is fresh any more, and nothing new is arriving. _(2026-08-24)_
+- L2787 · md5 a box-local bootstrap-box.sh against the repo before running it
+- L2790 · wire needs the WHOLE Box_Setup_Stuff/ tree
+- L2792 · 4 of the 9 AGENTS.md blocks are append-once
+- L2795 · s2 is the canary and must stay the most up-to-date seat
+- L2814 · Concurrent local stacks are the top cause of phantom test failures on this machine.
+- L2839 · Retuning a constant is retroactive.
+- L2842 · TEST ROT — hit three times in one day.
+- L2862 · A tool DESCRIPTION change is not deploy-only; a result-side field is. _(2026-07-31)_
+- L2884 · A sandbox can hold a badge the doorman no longer knows — and nothing says so. _(2026-08-04)_
+- L2912 · Credentials inject into a sandbox's process env at container launch ONLY.
+- L2930 · NEVER change a sandbox's openclaw.json with openclaw config patch. _(2026-07-30)_
+- L2968 · nemoclaw rebuild can destroy the sandbox's device private key
+- L2973 · The placeholder versioning trap:
+- L2977 · nemoclaw onboard/rebuild resets the gateway inference route
+- L2980 · Tool VOCABULARY lives in three places, and one of them self-reapplies. _(2026-07-25)_
+- L2988 · There is NO per-tool allowlist file
+- L2993 · The Telegram sender allowlist lives in TWO places
+- L2996 · Never health-check via nemoclaw <s> agent
+- L2999 · Trust box evidence over vendor status pages
+- L3001 · DeepInfra balance runs out roughly monthly and NOTHING alerts on it _(2026-07-11)_
+- L3014 · A deactivated seat's bot goes silent but alive
+- L3019 · Don't verify badges by extracting them from /proc/<pid>/environ
+- L3033 · CLI chat probes run on the EMBEDDED agent, not the gateway _(2026-07-23)_
+- L3061 · /hooks/agent (the gateway's HTTP webhook) CANNOT drive an agent turn on this box.
+- L3087 · A status gate outlives its truth — date it, or delete it. _(2026-08-06)_
+- L3097 · Resolve merge state with merge-base, never by eyeballing git log on a feature branch. _(2026-08-06)_
+- L3106 · When inbound email "stops working", check the webhook subscription FIRST
+- L3146 · npm test truncates the local stack, and that wipes the spine-eval world.
+- L3152 · An eval's own fixtures collide unless each scenario owns its rows AND its people. _(2026-08-12)_
+- L3159 · Fixture data must look like customer data.
+- L3164 · A missing BOARD_BOT_HANDLE makes the agent invent board links. _(2026-07-22)_
+- L3171 · resolve_date now has calendar-PERIOD modes _(2026-08-12)_
+- L3252 · Design consequence worth reusing: make the cheap tier the control group.
+- L3256 · The pilot DB is an accepted test-write target (user decision, 2026-08-12) _(2026-08-12)_
+- L3266 · L1 PINS L2: a stamped capture makes its customer permanently undeletable. _(2026-08-12)_
+- L3287 · A new tenant in the pilot silently enlists in the lifecycle cron.
+- L3338 · No reachable technician, so rung 1 can never mint a nudge. _(2026-08-19)_
+- L3344 · Nothing is fresh any more, and nothing new is arriving. _(2026-08-24)_
 
 **6a. The build order — the harness rebuild (2026-08-28 → )**
 
-- L3439 · The turn ceiling binds before the clock.
-- L3442 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
-- L3482 · MIN_TURN_BUDGET_MS = 15_000
-- L3487 · MAX_TOOL_CALL_MS = 90_000
-- L3504 · Context exhaustion is now the de-facto outer limit.
-- L3508 · The model is NOT told its remaining time
-- L3595 · Doctrine, not a code-enforced phase
-- L3597 · Churn: no brake
-- L3599 · Crowding out: watched, not prevented.
-- L3664 · No cap on the NUMBER of memory files, or on total bytes per firm.
-- L3670 · write_memory has NO mode gate
-- L3700 · The record grows without bound.
-- L3705 · The planner curates it.
-- L3710 · Detectors stay ours, and that is the point.
-- L3714 · The detector must not be the only way a gap opens.
-- L3772 · NUDGES_MODE is RETIRED
+- L3444 · The turn ceiling binds before the clock.
+- L3447 · A 15-minute tick eats the cadence behind it. _(2026-08-29)_
+- L3487 · MIN_TURN_BUDGET_MS = 15_000
+- L3492 · MAX_TOOL_CALL_MS = 90_000
+- L3509 · Context exhaustion is now the de-facto outer limit.
+- L3513 · The model is NOT told its remaining time
+- L3600 · Doctrine, not a code-enforced phase
+- L3602 · Churn: no brake
+- L3604 · Crowding out: watched, not prevented.
+- L3669 · No cap on the NUMBER of memory files, or on total bytes per firm.
+- L3675 · write_memory has NO mode gate
+- L3705 · The record grows without bound.
+- L3710 · The planner curates it.
+- L3715 · Detectors stay ours, and that is the point.
+- L3719 · The detector must not be the only way a gap opens.
+- L3777 · NUDGES_MODE is RETIRED
+- L3812 · agent informs the office
+- L3818 · agent asks the office
+- L3829 · the office reaches an agent
+- L3840 · seat-to-seat informs
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L4124 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L4147 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L4194 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L4231 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L4263 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L4268 · Every member row stores the FULL grouped message in question.
-- L4272 · The attribution stamp is an audit link, not a gate.
-- L4276 · The derived stamp requires a capture a badge-holder SPOKE
-- L4280 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L4286 · The follow-up loop has two halves and both had to be written down.
-- L4292 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L4366 · Batching works.
-- L4368 · The follow-up leg works, including the half that fails silently.
-- L4372 · Both attribution paths fired, each in its designed case.
-- L4376 · Escalation fired correctly
-- L4377 · The planner's group-aware pacing is the result worth keeping.
+- L4188 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L4211 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L4258 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L4295 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L4327 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L4332 · Every member row stores the FULL grouped message in question.
+- L4336 · The attribution stamp is an audit link, not a gate.
+- L4340 · The derived stamp requires a capture a badge-holder SPOKE
+- L4344 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L4350 · The follow-up loop has two halves and both had to be written down.
+- L4356 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L4430 · Batching works.
+- L4432 · The follow-up leg works, including the half that fails silently.
+- L4436 · Both attribution paths fired, each in its designed case.
+- L4440 · Escalation fired correctly
+- L4441 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L4558 · Evals:
-- L4565 · Runbooks:
-- L4570 · Decision history with citations:
-- L4574 · This file
+- L4622 · Evals:
+- L4629 · Runbooks:
+- L4634 · Decision history with citations:
+- L4638 · This file
 
 <!-- INDEX:END -->
 
@@ -3404,6 +3408,7 @@ what to do. Attention curation is a WEIGHTING, never a gate (user, 2026-08-28).
 3  the planner's memory           .md files it organises itself, firm-scoped  [BUILT 2026-08-30]
 4  a gap is not an ask            detection stops implying a question         [MERGED #193, 245378b]
 5  the sweep stops deciding       it observes; every judgment is the planner's [BUILT 2026-08-31; §5 below]
+5.5 the planner's inbox           agent<->planner comms: desk, bucket, verbs    [BUILT 2026-08-31; §5.5 below]
 6  intent verbs + the doctrine    the list becomes a SUGGESTION, not a state machine
 7  the detectors report           they stop minting; the record is planner-kept
 ```
@@ -3790,6 +3795,65 @@ whole in build 2, and what replaced it is not another gate:
 
 The working-hours METRIC keeps a fixed 7–19 convention of its own in `jobs/workingHours.ts` — a
 yardstick pinned to a SQL twin, not a claim about any firm.
+
+
+### 5.5 The planner's inbox — the office channel (BUILT 2026-08-31)
+
+Inserted by the user on 2026-08-31 ("build the inbox first — central intelligence needs comms
+lines"). Plan: `thoughts/shared/plans/2026-08-31-the-planners-inbox.md` (research beside it).
+**The goal is the planner's INFORMATION LOOP** — everything on the channel informs judgment;
+NOT orchestration (the planner never tasks agents), NOT a second record (no L1 echo; an
+assistant's answer never fills a gap — the ledger still closes a cost gap).
+
+**One table, `office_messages`** (operational, RLS deny-all, NOT L1 — the agentContext
+precedent; registered by name in seed.mjs truncateSpine + world.mjs RESET_TABLES at creation,
+§1's rule). Four flows:
+
+- **agent informs the office** — `inform_team_lead`: a plain bucket write, NO model call on
+  receipt; the next tick reads unread rows in an OFFICE MESSAGES block (after the gap blocks —
+  cache tail), marks them read only after a successful apply+record pass (a dead tick re-shows,
+  never drops). **A gapless firm with unread messages PLANS instead of skipping** (review
+  blocker F2). Everything on the channel is "information not instruction" — tier rides as
+  metadata, never authority.
+- **agent asks the office** — `ask_team_lead`, the Q&A DESK: a synchronous, READ-ONLY
+  reconstitution of the planner (its memory index + a desk prompt) answering inside the asker's
+  own tool call. **"Answering is not waking"** — the recorded carve-out from wake-on-event.
+  Tier is the toolset: an ACTIVE manager's desk gets the team-lead read surface (writes
+  excluded, dispatched under `spine:team-lead`); everyone else — technicians, roster-less,
+  invited managers (review F-A: the capability is `isActiveManager`'s predicate, not tier) —
+  gets ZERO dispatched tools with their own open questions inlined. Transcripts land as bucket
+  rows (`ask` + `desk`, desk born read); the next tick's block shows answered pairs "said in
+  YOUR name". Failure keeps the ask unread — the tick sees it. `DESK_BUDGET_MS = 40_000`,
+  PROBED: the gateway MCP client's per-call timeout is DEFAULT_REQUEST_TIMEOUT_MS = 60s
+  (s2, OpenClaw 2026.6.34 — `MAX_TOOL_CALL_MS` does NOT govern that path).
+- **the office reaches an agent** — planner verbs `ask_agent`/`inform_agent` (gap-tied,
+  `agentMessage` date-railed, addressee = the gap's technician_id — the FK the host pull's
+  `technicians!inner` join needs; fourth amendment of `nudge_decisions_action_check`). Queued
+  rows ride a second host-pull queue (`GET/POST /control/office`, nudgeQueue freeze doctrine)
+  and `Box_Setup_Stuff/office-runner.sh` injects each as an agent turn via THE CLI DOOR:
+  `openclaw agent --session-key main --message-file … --json`, **no --deliver** — probed live
+  on s2: the turn runs via the gateway, lands in the Telegram chat's main session, and is
+  recalled by later turns (decays on idle rotation — that IS the design). `gateway.hooks` is
+  absent fleet-wide; the HTTP hook door was skipped entirely. Replies come back through
+  `inform_team_lead(replyToMessageId)` — validated tenant-scoped or degraded to a plain inform
+  (never a 23503) — and render attached to their gap in the next block.
+- **seat-to-seat informs** — `inform_teammate` (user ruling: inform yes, ask NO — an answer
+  path is the access-control surface the user declined). **TIER RULE: at least one endpoint
+  must be a MANAGER**; tech→tech is refused with "put it on the record with a field note, or
+  inform the office" (lateral flow routes through the hub: tech informs planner →
+  `inform_agent`). Delivered turns are origin-honest: "NOTE FROM <name>'s assistant", never
+  the office's voice.
+
+Seats' doctrine: bootstrap-box.sh §0l "Messages to and from the office" (sync rule honoured).
+plannerSim: world seed `officeMessages` + timeline step `office_inform` + `officeAfter`
+read-back. Eval: tier-1 cases W14/W15/X09; tool surface 17/46/47.
+
+**Deploy notes (the rebuild is still NOT deployed):** migrations 20260901150000 +
+20260901160000 BEFORE code; office-runner is a box rollout — s2 first, fleet only with the
+whole-order deploy; a hosted reseed now clears the pilot's office_messages like its siblings.
+Joins the 4–7 evaluation train. Deferred by ruling: re-ask (the once-ever index), escalate =
+ask(manager) semantics (build 6 decision 2 — `nudge_id` on the bucket is its hook), unread-
+aging alarms (the tick drains the bucket; tick-death is already alarmed).
 
 ## 6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)
 

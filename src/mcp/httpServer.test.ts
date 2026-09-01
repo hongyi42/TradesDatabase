@@ -608,3 +608,96 @@ describe('/control/nudges', () => {
     expect(((await dupe.json()) as { result: string }).result).toBe('ignored');
   });
 });
+
+describe('/control/office (build 5.5 Phase 3)', () => {
+  let messageId: string;
+
+  beforeAll(async () => {
+    const r = await pg.query<{ id: string }>(
+      `insert into office_messages (tenant_id, direction, kind, from_ref, to_ref, technician_id, body, status, nudge_id)
+       select $1, 'to_agent', 'ask', 'spine:team-lead', 'pull-probe', t.id,
+              'how did the furnace tune-up go?', 'queued', gen_random_uuid()
+         from technicians t where t.ref = 'pull-probe'
+       returning id`,
+      [tenantId],
+    );
+    messageId = r.rows[0].id;
+  });
+
+  afterAll(async () => {
+    await pg.query('delete from office_messages where id = $1', [messageId]);
+  });
+
+  test('bad or missing token → bare 401, both methods', async () => {
+    const noAuthGet = await fetch(`${base}/control/office`);
+    expect(noAuthGet.status).toBe(401);
+    expect(await noAuthGet.text()).toBe('');
+    const wrongPost = await fetch(`${base}/control/office`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer nope', 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'x', outcome: 'delivered' }),
+    });
+    expect(wrongPost.status).toBe(401);
+  });
+
+  test('GET serves the wrapped queued message with a counted serve; POST delivered moves it', async () => {
+    const pull = await fetch(`${base}/control/office`, {
+      headers: { authorization: `Bearer ${hostToken}` },
+    });
+    expect(pull.status).toBe(200);
+    const body = (await pull.json()) as {
+      messages: Array<{ id: string; sandboxRef: string; kind: string; directMessageB64: string }>;
+    };
+    const item = body.messages.find((x) => x.id === messageId);
+    expect(item).toBeDefined();
+    expect(item!.sandboxRef).toBe('s1');
+    expect(item!.kind).toBe('ask');
+    const decoded = Buffer.from(item!.directMessageB64, 'base64').toString('utf8');
+    expect(decoded).toContain('OFFICE QUESTION (from the office record system, not a person)');
+    expect(decoded).toContain('how did the furnace tune-up go?');
+    expect(decoded).toContain(`mention this id: ${messageId}`);
+
+    const served = await pg.query<{ serve_count: number }>(
+      'select serve_count from office_messages where id = $1',
+      [messageId],
+    );
+    expect(served.rows[0].serve_count).toBe(1);
+
+    // Malformed report bodies are 400s, not row movement.
+    const badId = await fetch(`${base}/control/office`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'not-a-uuid', outcome: 'delivered' }),
+    });
+    expect(badId.status).toBe(400);
+    const badOutcome = await fetch(`${base}/control/office`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ id: messageId, outcome: 'lost' }),
+    });
+    expect(badOutcome.status).toBe(400);
+
+    const ack = await fetch(`${base}/control/office`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ id: messageId, outcome: 'delivered' }),
+    });
+    expect(ack.status).toBe(200);
+    expect(((await ack.json()) as { result: string }).result).toBe('delivered');
+
+    const row = await pg.query<{ status: string; delivered_at: string | null }>(
+      'select status, delivered_at from office_messages where id = $1',
+      [messageId],
+    );
+    expect(row.rows[0].status).toBe('delivered');
+    expect(row.rows[0].delivered_at).not.toBeNull();
+
+    // A duplicate/late report lands on a row that already moved → ignored.
+    const dupe = await fetch(`${base}/control/office`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ id: messageId, outcome: 'failed' }),
+    });
+    expect(((await dupe.json()) as { result: string }).result).toBe('ignored');
+  });
+});

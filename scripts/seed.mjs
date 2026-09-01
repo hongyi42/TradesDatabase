@@ -173,6 +173,17 @@ async function truncateSpine(hasScheduling) {
         where table_schema = 'public' and table_name = 'observations'`,
     );
     if (ob.rows.length > 0) tables += ', observations';
+    // office_messages (build 5.5, the planner's inbox): the SAME trap again —
+    // it references only tenants/technicians, so the default (roster-kept)
+    // path has no cascade that reaches it, and stale UNREAD to_planner rows
+    // would make the fresh world's first tick plan about messages whose jobs
+    // no longer exist (the gapless-tenant path reads them unconditionally).
+    // Registered BY NAME at table creation (eng-memory §1).
+    const om = await client.query(
+      `select 1 from information_schema.tables
+        where table_schema = 'public' and table_name = 'office_messages'`,
+    );
+    if (om.rows.length > 0) tables += ', office_messages';
     // nudge_decisions cascades from nudges above, but is named explicitly:
     // incidental cascade coverage is exactly how tenant_profiles got missed
     // (eng-memory §1). Existence-probed like the two above.

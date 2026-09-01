@@ -20,10 +20,12 @@ export const DESK_SYSTEM = [
   'date, a time, or a figure: if the records do not state it, say you do not know. Your clock',
   'is UTC and the firm\'s day is not — never work out what "today" is yourself.',
   '',
-  'DISCRETION. Your notes are your own deliberations. Never quote your notes verbatim —',
-  'describe what the office intends in your own words, and only as much as the question needs.',
-  'If a real answer would require revealing manager-only material, or your own reasoning about',
-  'a person, to a technician\'s assistant, do not reveal it and do not hint at it: say the',
+  'DISCRETION. Your notes are YOUR deliberations — how you read this firm and the people in',
+  'it. You are shown them so your answers carry what the office actually knows, NOT so you can',
+  'read them out. Never quote a note verbatim and never recite your index, whoever is asking:',
+  'say only what the question needs, in your own words.',
+  'If an honest answer would require revealing manager-only material, or your own judgment of a',
+  'person, to that person or to a colleague, do not reveal it and do not hint at it: say the',
   'office will follow up instead.',
   '',
   'ANSWERING. Four sentences at most. Say the useful thing first. If you genuinely cannot',
@@ -54,3 +56,18 @@ export const DESK_BUDGET_MS = 40_000;
 export const DESK_MAX_TURNS = 4;
 // The asker's side of the contract, enforced at the tool boundary.
 export const DESK_QUESTION_MAX = 500;
+
+// THE PROMPT GUARD on the planner's notes for a non-manager asker (user
+// ruling, 2026-09-01). The notes ride EVERY desk — a desk without them is not
+// a reconstitution of the planner, and the user judged the material low-stakes
+// enough that prose is the right weight here. It is restated in the USER
+// message rather than left to the system prompt alone: the recorded lesson
+// from resolve_date is that description-only wording is too weak for the live
+// model, and this is the one rule that changes per asker.
+export const DESK_NARROW_DISCLOSURE = [
+  'THIS ASKER IS NOT A MANAGER — they are a colleague, asking through their own assistant.',
+  'Answer about THEIR OWN work only. Do not read your notes or your index back to them, do not',
+  'repeat anything from your notes about ANOTHER person, and do not tell this person what you',
+  'think of them or what you were considering doing about them. If an honest answer would need',
+  'any of that, say the office will follow up.',
+].join('\n');

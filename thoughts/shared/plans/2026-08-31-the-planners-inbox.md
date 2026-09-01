@@ -47,6 +47,16 @@ sticks — the outbound leg needs no gateway-config changes.
   fleet-wide, so the HTTP hook would need config surgery + restarts — skipped entirely. Session
   ids rotate on OpenClaw's default idle expiry, so informs decay like chat context (accepted:
   that IS the design).
+- **The planner's notes ride EVERY desk; the guard is the PROMPT (user ruling, 2026-09-01)** —
+  the final review had me withhold the memory index from non-manager askers (mechanism, not
+  prose). The user reversed it: *"if the desk gets no MEMORY.md, then it's not really an
+  accurate representation of the planner. This is not a high stakes item."* So the index is
+  read for every asker, and disclosure is guarded by DESK_SYSTEM's discretion rules plus
+  `DESK_NARROW_DISCLOSURE`, restated in the user message beside a non-manager's question (the
+  resolve_date lesson: description-only wording is too weak for the live model). The split to
+  keep straight: the TOOLS are bounded by mechanism (a technician desk dispatches nothing),
+  the NOTES by prompt. The non-manager path is read-bounded, deliberately NOT
+  disclosure-proof — do not let a later comment call it leak-proof again.
 - **Desk secrecy = mirror existing rules (user choice)**, mechanized as tier-scoped toolsets:
   a manager-tier asker's desk gets the full team-lead read surface; a technician-tier asker's
   desk gets only self-scoped reads (their own open/asked questions + their jobs' gap state) and
@@ -473,8 +483,8 @@ can no longer attach a reply to someone else's question) and the degrade suffix 
 capped and rides the accessor's cut instead of refusing the note; `inform_teammate` uses the
 active-manager predicate on BOTH endpoints (the F-A class), refuses seat-exempt addressees,
 and is honest about a temporarily seatless one; the desk toolset became an ALLOWLIST
-(`DESK_READ_TOOLS`, fail-closed) and the planner's memory index now rides the MANAGER desk
-only; desk answers are capped at the transcript limit so asker and auditor read one text;
+(`DESK_READ_TOOLS`, fail-closed) — and the index restriction that shipped beside it was
+REVERSED the next day by the user (see Decisions); desk answers are capped at the transcript limit so asker and auditor read one text;
 the anthropic transport omits `tools` when empty too; the host queue read is paged +
 direction-filtered and desk transcripts keep the NEWEST under the cap; `office_messages` (+
 the missed-at-build-4 `observations`) joined world.mjs PILOT_TENANT_SCOPED; the runner's CLI

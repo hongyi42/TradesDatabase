@@ -14,6 +14,7 @@ import {
   DESK_BUDGET_MS,
   DESK_MAX_TOKENS,
   DESK_MAX_TURNS,
+  DESK_NARROW_DISCLOSURE,
   DESK_REASONING,
   DESK_SYSTEM,
 } from './deskPrompt.js';
@@ -35,12 +36,19 @@ import {
 // TIER IS THE TOOLSET (user choice "mirror existing rules", mechanized):
 // an ACTIVE manager's desk gets the full team-lead READ surface (the repo's
 // one manager predicate — isActiveManager's, decided by the caller); everyone
-// else's desk gets NO dispatched tools at all — the handler
-// pre-reads the asker's own open questions and inlines them, and the
-// planner's memory index stays out of the prompt entirely, so nothing the
-// model does or is shown reaches beyond that asker's own state. It serves
-// the flagship "am I square with the office?" case. A roster-less asker
-// gets the technician treatment (least privilege).
+// else's desk gets NO dispatched tools at all — the handler pre-reads the
+// asker's own open questions and inlines them, so the model cannot READ past
+// that asker's own state. It serves the flagship "am I square with the
+// office?" case. A roster-less asker gets the technician treatment.
+//
+// THE NOTES ARE THE EXCEPTION, and knowing which half is mechanism matters:
+// the planner's memory index rides EVERY desk (user ruling, 2026-09-01 —
+// "if the desk gets no MEMORY.md then it's not really an accurate
+// representation of the planner… this is not a high stakes item"). So the
+// TOOLS are bounded by mechanism and the NOTES by prompt (DESK_SYSTEM's
+// discretion rules plus DESK_NARROW_DISCLOSURE, restated per non-manager
+// asker in the user message). Do not describe the non-manager path as
+// leak-proof: it is read-bounded, deliberately not disclosure-proof.
 
 // The desk's toolset is an ALLOWLIST, not a denylist (final review): the
 // team-lead surface grows a write verb per build, and a denylist would hand
@@ -155,20 +163,20 @@ export async function answerDeskQuestion(
   });
 
   try {
-    // The planner's own notes ride the MANAGER desk only (final review): the
-    // technician toolset deliberately excludes read_memory, and inlining the
-    // index's CONTENT would hand the same material back with only prompt
-    // prose guarding it. Degrade to '' on failure — the notes are an
-    // enhancement, the records are the job.
+    // The planner's own notes, for EVERY asker (user ruling — see the header):
+    // without them the desk answers as a stranger wearing the planner's name.
+    // Degrade to '' on failure: the notes are an enhancement, the records are
+    // the job (the planner's own memory-read posture).
     let index = '';
+    try {
+      index = await memoryIndex(tenantId);
+    } catch (err) {
+      console.error(`[desk] tenant ${tenantId}: memory read failed — answering without`, err);
+    }
+
     let tools: ForcedToolSpec[] = [];
     let askerState = '';
     if (managerDesk) {
-      try {
-        index = await memoryIndex(tenantId);
-      } catch (err) {
-        console.error(`[desk] tenant ${tenantId}: memory read failed — answering without`, err);
-      }
       tools = (deps.toolSchemas ?? []).filter((t) => DESK_READ_TOOLS.has(t.name));
     } else {
       // Self-scoped pre-read, inlined: the technician desk gets no dispatched
@@ -180,6 +188,10 @@ export async function answerDeskQuestion(
     const user = [
       ...(index ? ['THE OFFICE\'S OWN NOTES — the index:', index, ''] : []),
       ...(askerState ? [askerState, ''] : []),
+      // Restated HERE, next to the question, for a non-manager asker: this is
+      // the one rule that varies per call, and the notes above are in front of
+      // the model either way.
+      ...(managerDesk ? [] : [DESK_NARROW_DISCLOSURE, '']),
       `QUESTION from ${askerRef}${askerTier ? ` (${askerTier})` : ''}: ${question}`,
     ].join('\n');
 

@@ -14,7 +14,7 @@ import {
   renderAskerState,
   type DeskDeps,
 } from './desk.js';
-import { DESK_SYSTEM } from './deskPrompt.js';
+import { DESK_NARROW_DISCLOSURE, DESK_SYSTEM } from './deskPrompt.js';
 import { TEAM_LEAD_REF } from './identity.js';
 
 // ── hermetic unit tests: every collaborator stubbed ─────────────────────────
@@ -188,7 +188,7 @@ describe('the desk — transcript and degrade', () => {
     expect(deps.markRead).not.toHaveBeenCalled();
   });
 
-  test('a memory-read failure degrades to answering without the notes (manager desk)', async () => {
+  test('a memory-read failure degrades to answering without the notes', async () => {
     const seen: SeenLoop = {};
     const deps = stubDeps(
       {
@@ -198,31 +198,59 @@ describe('the desk — transcript and degrade', () => {
       },
       seen,
     );
-    const res = await answerDeskQuestion({ ...baseInput, askerTier: 'manager', managerDesk: true }, deps);
+    const res = await answerDeskQuestion(baseInput, deps);
     expect(res.answer).toBeTruthy();
     expect(seen.req!.user).not.toContain("THE OFFICE'S OWN NOTES");
   });
 
-  test("the planner's notes ride the MANAGER desk only (final review)", async () => {
+  test("the planner's notes ride EVERY desk — a desk without them is not the planner", async () => {
+    // User ruling 2026-09-01, reversing the final review's mechanism fix: the
+    // notes are what make the desk a reconstitution rather than a stranger in
+    // the planner's name, and the material is low-stakes enough for a prompt
+    // guard. The TOOLS stay mechanism-bounded (asserted above).
     const seen: SeenLoop = {};
     const memoryIndex = vi.fn(async () => '- firm/pacing.md — patience notes');
     let deps = stubDeps({ memoryIndex }, seen);
     await answerDeskQuestion(baseInput, deps); // technician desk
-    expect(memoryIndex).not.toHaveBeenCalled();
-    expect(seen.req!.user).not.toContain("THE OFFICE'S OWN NOTES");
-    deps = stubDeps({ memoryIndex }, seen);
-    await answerDeskQuestion({ ...baseInput, askerTier: 'manager', managerDesk: true }, deps);
     expect(memoryIndex).toHaveBeenCalled();
     expect(seen.req!.user).toContain("THE OFFICE'S OWN NOTES");
+    expect(seen.req!.user).toContain('- firm/pacing.md — patience notes');
+    deps = stubDeps({ memoryIndex }, seen);
+    await answerDeskQuestion({ ...baseInput, askerTier: 'manager', managerDesk: true }, deps);
+    expect(seen.req!.user).toContain("THE OFFICE'S OWN NOTES");
+  });
+
+  test('a non-manager asker carries the narrow-disclosure guard beside the question', async () => {
+    const seen: SeenLoop = {};
+    let deps = stubDeps({}, seen);
+    await answerDeskQuestion(baseInput, deps);
+    expect(seen.req!.user).toContain(DESK_NARROW_DISCLOSURE);
+    // …and it sits AFTER the notes, next to the question it governs.
+    expect(seen.req!.user.indexOf(DESK_NARROW_DISCLOSURE)).toBeGreaterThan(
+      seen.req!.user.indexOf("THE OFFICE'S OWN NOTES"),
+    );
+    // A roster-less badge is a non-manager too.
+    deps = stubDeps({}, seen);
+    await answerDeskQuestion({ ...baseInput, askerTier: null, askerTechnicianId: null }, deps);
+    expect(seen.req!.user).toContain(DESK_NARROW_DISCLOSURE);
+    // The manager desk does not carry it.
+    deps = stubDeps({}, seen);
+    await answerDeskQuestion({ ...baseInput, askerTier: 'manager', managerDesk: true }, deps);
+    expect(seen.req!.user).not.toContain(DESK_NARROW_DISCLOSURE);
   });
 });
 
 describe('the desk prompt — the rules that are load-bearing', () => {
   test('pins the read-only identity and the secrecy rules', () => {
     expect(DESK_SYSTEM).toContain('You READ, you never act');
-    expect(DESK_SYSTEM).toContain('Never quote your notes verbatim');
+    expect(DESK_SYSTEM).toContain('Never quote a note verbatim');
     expect(DESK_SYSTEM).toContain('office will follow up');
     expect(DESK_SYSTEM).toContain('Four sentences at most');
+    // The notes ride every desk now, so the guard on them is load-bearing.
+    expect(DESK_SYSTEM).toContain('never recite your index');
+    expect(DESK_NARROW_DISCLOSURE).toContain('Do not read your notes or your index back');
+    expect(DESK_NARROW_DISCLOSURE).toContain('about ANOTHER person');
+    expect(DESK_NARROW_DISCLOSURE).toContain('what you were considering doing about them');
   });
 
   test('renderAskerState is self-scoped and honest about nothing', () => {

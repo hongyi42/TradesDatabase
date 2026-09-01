@@ -168,35 +168,35 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L3719 · The detector must not be the only way a gap opens.
 - L3777 · NUDGES_MODE is RETIRED
 - L3812 · agent informs the office
-- L3818 · agent asks the office
-- L3829 · the office reaches an agent
-- L3840 · seat-to-seat informs
+- L3818 · agent asks the office _(2026-09-01)_
+- L3833 · the office reaches an agent
+- L3844 · seat-to-seat informs
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L4188 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L4211 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L4258 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L4295 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L4327 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L4332 · Every member row stores the FULL grouped message in question.
-- L4336 · The attribution stamp is an audit link, not a gate.
-- L4340 · The derived stamp requires a capture a badge-holder SPOKE
-- L4344 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L4350 · The follow-up loop has two halves and both had to be written down.
-- L4356 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L4430 · Batching works.
-- L4432 · The follow-up leg works, including the half that fails silently.
-- L4436 · Both attribution paths fired, each in its designed case.
-- L4440 · Escalation fired correctly
-- L4441 · The planner's group-aware pacing is the result worth keeping.
+- L4192 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L4215 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L4262 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L4299 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L4331 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L4336 · Every member row stores the FULL grouped message in question.
+- L4340 · The attribution stamp is an audit link, not a gate.
+- L4344 · The derived stamp requires a capture a badge-holder SPOKE
+- L4348 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L4354 · The follow-up loop has two halves and both had to be written down.
+- L4360 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L4434 · Batching works.
+- L4436 · The follow-up leg works, including the half that fails silently.
+- L4440 · Both attribution paths fired, each in its designed case.
+- L4444 · Escalation fired correctly
+- L4445 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L4622 · Evals:
-- L4629 · Runbooks:
-- L4634 · Decision history with citations:
-- L4638 · This file
+- L4626 · Evals:
+- L4633 · Runbooks:
+- L4638 · Decision history with citations:
+- L4642 · This file
 
 <!-- INDEX:END -->
 
@@ -3821,8 +3821,12 @@ precedent; registered by name in seed.mjs truncateSpine + world.mjs RESET_TABLES
   Tier is the toolset: an ACTIVE manager's desk gets the team-lead read surface (writes
   excluded, dispatched under `spine:team-lead`); everyone else — technicians, roster-less,
   invited managers (review F-A: the capability is `isActiveManager`'s predicate, not tier) —
-  gets ZERO dispatched tools with their own open questions inlined. Transcripts land as bucket
-  rows (`ask` + `desk`, desk born read); the next tick's block shows answered pairs "said in
+  gets ZERO dispatched tools with their own open questions inlined. **The planner's NOTES are
+  the exception (user ruling 2026-09-01, reversing a final-review fix):** the memory index
+  rides every desk — "a desk with no MEMORY.md is not an accurate representation of the
+  planner… not a high stakes item" — so TOOLS are bounded by mechanism and NOTES by prompt
+  (`DESK_NARROW_DISCLOSURE`, restated per non-manager asker). Read-bounded, not
+  disclosure-proof. Transcripts land as bucket rows (`ask` + `desk`, desk born read); the next tick's block shows answered pairs "said in
   YOUR name". Failure keeps the ask unread — the tick sees it. `DESK_BUDGET_MS = 40_000`,
   PROBED: the gateway MCP client's per-call timeout is DEFAULT_REQUEST_TIMEOUT_MS = 60s
   (s2, OpenClaw 2026.6.34 — `MAX_TOOL_CALL_MS` does NOT govern that path).

@@ -805,14 +805,16 @@ const SPINE_VIEW_CATALOG =
   'v_nudges(id, kind, status, subject_ref, technician_ref, technician_name, job_id, question, ' +
   'resolution, answered_by_capture_id, not_before, escalate_after, created_at, queued_at, ' +
   'asked_at, resolved_at, serve_count, attempts) — questions the assistant has asked and how ' +
-  'each ended; resolution says who or what closed it; ' +
+  "each ended; resolution says who or what closed it; status='dismissed' rows are questions " +
+  'the assistant set aside and can bring back, and they are one of the two places `recover` ' +
+  'ids come from; ' +
   'v_review_items(id, kind, status, subject_ref, suggestion, resolution, job_id, ' +
   'technician_ref, escalated_from_nudge, created_at, resolved_at) — the ' +
   "manager's queue; status='open' is what nobody has acted on; " +
   'v_observations(id, kind, status, subject_ref, technician_ref, technician_name, job_id, ' +
   'dismiss_reason, dismissed_at, not_before, noticed_at) — everything the record has noticed, ' +
-  "the DISMISSED ones included: status='dismissed' rows are where `recover` ids come from, " +
-  'and dismiss_reason is what you said when you set one aside. ';
+  "the DISMISSED ones included: status='dismissed' rows are the OTHER place `recover` ids " +
+  'come from, and dismiss_reason is what you said when you set one aside. ';
 
 const SPINE_DAY_RULES = GROUNDING_BARE
   ? // Bare keeps the SCHEMA facts (they are true of the data, not advice to a

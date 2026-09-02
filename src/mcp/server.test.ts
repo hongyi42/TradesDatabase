@@ -8286,7 +8286,12 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     // and the list must move together or the description lies to the model
     expect(desc).toContain('thirteen views');
     expect(desc).toContain('v_observations');
-    expect(desc).toContain("status='dismissed' rows are where `recover` ids come from");
+    // BOTH dismissed sets since build 6 Phase 3 — a question can be dismissed
+    // too, and the catalog is the only place the model learns where to look for
+    // a `recover` id. Naming one view and not the other would leave half the
+    // recoverable gaps unfindable.
+    expect(desc).toContain("status='dismissed' rows are questions the assistant set aside");
+    expect(desc).toContain("status='dismissed' rows are the OTHER place `recover` ids come from");
     expect(desc).toContain('v_money_events');
     expect(desc).toContain('DIRECTION COMES FROM kind');
     // ④'s four, and the rules that keep them safe to read

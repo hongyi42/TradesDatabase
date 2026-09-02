@@ -1122,6 +1122,7 @@ export type Database = {
           id: string
           kind: string
           not_before: string | null
+          prior_status: string | null
           question: string | null
           queued_at: string | null
           resolution: string | null
@@ -1145,6 +1146,7 @@ export type Database = {
           id?: string
           kind: string
           not_before?: string | null
+          prior_status?: string | null
           question?: string | null
           queued_at?: string | null
           resolution?: string | null
@@ -1168,6 +1170,7 @@ export type Database = {
           id?: string
           kind?: string
           not_before?: string | null
+          prior_status?: string | null
           question?: string | null
           queued_at?: string | null
           resolution?: string | null

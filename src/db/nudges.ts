@@ -16,10 +16,21 @@ export type NudgeStatus =
   | 'answered'
   | 'escalated'
   | 'cancelled'
-  | 'failed';
+  | 'failed'
+  // The planner's revisable ending for a question (build 6 Phase 3). NOT a
+  // terminal outcome like the four above it: `recover` puts the row back where
+  // it was, which is why it carries `prior_status` and why it is absent from
+  // mv_gap_outcomes' terminal list. See 20260902120000_nudges_dismissed.sql.
+  | 'dismissed';
 
 // A nudge still in flight — what auto-resolve sweeps and what a terminal
 // outcome may close.
+//
+// 'dismissed' IS DELIBERATELY ABSENT, and that absence is load-bearing: it is
+// what makes a dismissed question invisible to the planner's own gap read, the
+// delivery host pull, the sweep's alarm pass and every guarded terminal write,
+// without one of them having to learn the new status. The migration's header
+// carries the full list.
 export const OPEN_NUDGE_STATUSES: NudgeStatus[] = ['pending', 'queued', 'asked'];
 
 export interface CreatePendingNudgeInput {
@@ -385,6 +396,152 @@ export async function markNudgeOutcome(
     .maybeSingle();
   if (error) throw new Error(`markNudgeOutcome failed: ${error.message}`);
   return data as Nudge | null;
+}
+
+/**
+ * DISMISS a question: the planner's revisable "stop showing me this" (build 6
+ * Phase 3, user ruling 2026-09-01 — "it should have full control on its gaps").
+ *
+ * Deliberately NOT `markNudgeOutcome(..., 'cancelled')`, which is the shape it
+ * most resembles. A cancelled gap is one the WORLD ended — the visit was called
+ * off, nothing is left to ask — and mv_gap_outcomes counts it as such. A
+ * dismissed one is a judgment the planner made and can take back, which is the
+ * whole property the curation design turns on. Collapsing the two would make
+ * "the subject disappeared" and "I decided to stop chasing this" the same row.
+ *
+ * RACE-FREE, and the read is not what makes it so — the GUARD is. `prior_status`
+ * has to hold whatever `status` held, and PostgREST cannot express a
+ * column-to-column copy in an update payload, so the status is read first. If
+ * anything moves the row in between (a delivery ack, a close racing from
+ * another path), the UPDATE's `.eq('status', observed)` matches nothing and this
+ * returns null — the caller reports "the gap changed state", which is true.
+ * The one thing that cannot happen is a `prior_status` that disagrees with the
+ * status the row actually had.
+ *
+ * THE COST of that choice, and it is not free: a BENIGN forward transition
+ * between the read and the write — a delivery ack moving queued→asked — also
+ * loses, and the caller reports "the gap changed state" about a dismissal that
+ * would have been perfectly fine either way. Recoverable on the next tick, and
+ * cheaper than the alternative, which is a prior_status recording a stage the
+ * row was never in.
+ */
+export async function dismissNudge(
+  id: string,
+  tenantId: string,
+  reason: string | null,
+  fromStatuses: NudgeStatus[] = OPEN_NUDGE_STATUSES,
+): Promise<Nudge | null> {
+  const client = getClient();
+  const { data: row, error: readErr } = await client
+    .from('nudges')
+    .select('status')
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (readErr) throw new Error(`dismissNudge failed: ${readErr.message}`);
+  const observed = row?.status as NudgeStatus | undefined;
+  if (!observed || !fromStatuses.includes(observed)) return null;
+  // NEVER dismiss a dismissed row, whatever a caller passes in `fromStatuses`.
+  // `prior_status` is unconstrained text (the CHECK covers `status` only), so
+  // this would store prior_status='dismissed' — and recoverNudge would then
+  // write status='dismissed', prior_status=null, leaving the row permanently
+  // unrecoverable with nothing to say so. Guarded here rather than trusted to
+  // every caller, because the failure is silent.
+  if (observed === 'dismissed') return null;
+  const { data, error } = await client
+    .from('nudges')
+    .update({
+      status: 'dismissed',
+      prior_status: observed,
+      resolution: reason ?? null,
+      resolved_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .eq('status', observed) // the guard, not the read, is the race protection
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`dismissNudge failed: ${error.message}`);
+  return data as Nudge | null;
+}
+
+/**
+ * RECOVER a dismissed question, back to exactly the stage it was dismissed from
+ * (user ruling 2026-09-01: "recover restores it to prior_status").
+ *
+ * Restoring to a FIXED stage would be wrong in a way that is hard to see later:
+ * 'pending' and 'asked' differ in whether a person is currently holding a
+ * question, and a recovered-to-pending row that had really been asked would
+ * invite a second send that `uq_nudges_subject_ever` refuses outright.
+ *
+ * A NULL `prior_status` is refused rather than guessed. It means the row was
+ * dismissed before that column existed, so nothing knows what it was — and an
+ * unrecoverable row is a much smaller problem than one silently restored to the
+ * wrong stage. Same guarded-update shape as its twin above.
+ */
+export async function recoverNudge(id: string, tenantId: string): Promise<Nudge | null> {
+  const client = getClient();
+  const { data: row, error: readErr } = await client
+    .from('nudges')
+    .select('prior_status')
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'dismissed')
+    .maybeSingle();
+  if (readErr) throw new Error(`recoverNudge failed: ${readErr.message}`);
+  const prior = row?.prior_status as NudgeStatus | null | undefined;
+  if (!prior) return null; // not dismissed, or dismissed before prior_status existed
+  const { data, error } = await client
+    .from('nudges')
+    .update({
+      status: prior,
+      prior_status: null,
+      // The dismissal's own audit line goes with it — a recovered row is open
+      // again, and an open row carrying a resolution reads as settled.
+      resolution: null,
+      resolved_at: null,
+      // AND THE HOLD, for the same reason the observation branch clears it:
+      // recover means "stakes changed, look at this now", and a row that came
+      // back wearing a far-future `not_before` would go straight back to sleep
+      // — the opposite of the verb. Since build 6 Phase 2 that is not merely
+      // cosmetic: `askCandidates` exempts a held row from `asksUnattended`, the
+      // only operator-visible alarm on an asked gap, so a recovered question
+      // with a stale hold would be silently unwatched for the hold's duration.
+      not_before: null,
+    })
+    .eq('id', id)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'dismissed')
+    .eq('prior_status', prior)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`recoverNudge failed: ${error.message}`);
+  return data as Nudge | null;
+}
+
+/**
+ * The recover-validation read for QUESTIONS — the twin of
+ * listDismissedObservationIds, and paged for the same reason: a dismissed row is
+ * permanent (there is no delete path) so >1000 is a designed steady state, and
+ * an unpaged read would let an arbitrary subset decide which recovers silently
+ * drop. Ids only: the planner needs "may this id be recovered", not the row.
+ */
+export async function listDismissedNudgeIds(tenantId: string): Promise<string[]> {
+  const out: string[] = [];
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await getClient()
+      .from('nudges')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('status', 'dismissed')
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`listDismissedNudgeIds failed: ${error.message}`);
+    out.push(...(data ?? []).map((r) => r.id));
+    if (!data || data.length < PAGE) break;
+  }
+  return out;
 }
 
 // The planner's write onto a nudge's timing — since build 5, a NOTBEFORE-ONLY

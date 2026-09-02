@@ -1,5 +1,6 @@
 import {
   createNudgeFromObservation,
+  dismissNudge,
   getTenant,
   listAssignmentsByIds,
   listDecisionsForNudges,
@@ -7,6 +8,7 @@ import {
   listJobIdsWithCostEvents,
   listJobsWithCustomerByIds,
   listLiveMoneyEventsForJobsSince,
+  listDismissedNudgeIds,
   listDismissedObservationIds,
   listNudgesByStatus,
   listObservationsByStatus,
@@ -25,6 +27,7 @@ import {
   markNudgeQueued,
   OPEN_NUDGE_STATUSES,
   recordNudgeDecisions,
+  recoverNudge,
   setNudgeAnsweredBy,
   setNudgeSchedule,
   setObservationStatus,
@@ -482,6 +485,12 @@ export interface PlannerDeps {
   // Phase 3: the outbound writer — an applied ask_agent/inform_agent queues
   // its message row here. Injected for the standing 't1' reason.
   createOffice?: typeof createOfficeMessage;
+  // Build 6 Phase 3: dismiss/recover on a QUESTION. `listDismissedNudges` joins
+  // `listDismissedIds` in validating recover — the two sets are merged, since
+  // the rails cannot tell an observation id from a nudge id and do not need to.
+  dismissGap?: typeof dismissNudge;
+  recoverGap?: typeof recoverNudge;
+  listDismissedNudges?: typeof listDismissedNudgeIds;
   listEvidence?: typeof listJobEvidenceSince;
   // The record-level test for cost gaps. Same reader the item sweep uses, so
   // "the ledger says this is filled" means one thing across the whole ladder.
@@ -956,29 +965,28 @@ export function buildGapView(
   // last questions cut off — and it judges answers against what it thinks it
   // asked.
   if (n.question) lines.push(`  the question asked: ${flat(n.question, QUESTION_SHOWN_CHARS)}`);
+  // THE RECORD lines, no longer stage-forked (build 6 Phase 3). They used to
+  // say "dismiss this observation" on the pre-ask stage and "close this gap" on
+  // every other one, because `close` was REFUSED on an observation and teaching
+  // it there would have looped the model instructed-then-refused. Both verbs
+  // now work on both stages — a close on an observation is written as its
+  // dismissal, carrying the citation — so the fork was teaching a distinction
+  // that no longer exists. One instruction, and it is the true one: the record
+  // says the hole is filled, and `close` with basis "record" is how a gap ends
+  // on a fact rather than on somebody's words.
+  const closeOnTheRecord =
+    'Close it with basis "record" — no quote needed, and do not invent one.';
   if (n.kind === 'job_cost_gap') {
-    // A filled hole ends differently per stage: an ASKED gap closes (basis
-    // "record"); an observation nobody was asked about is simply no longer
-    // worth attention — dismiss, which is the planner's revisable verb.
     lines.push(
       recordFilled
         ? `  THE RECORD: ${recordFilled}. The hole this gap names is CLOSED — whoever filled it. ` +
-          (n.status === 'noticed'
-            ? 'Nothing needs asking: dismiss this observation.'
-            : 'Close this gap with basis "record".')
+          closeOnTheRecord
         : '  THE RECORD: no cost is recorded against this job yet. The hole is still open.',
     );
   }
   if (mootFact) {
-    // The moot fact gets a RECORD line for EVERY kind, stage-forked exactly
-    // like the cost line above: an asked gap closes on the record; an
-    // observation nobody was asked about is dismissed (revisable).
-    lines.push(
-      `  THE RECORD: ${mootFact}. ` +
-        (n.status === 'noticed'
-          ? 'Nothing needs asking: dismiss this observation.'
-          : 'Close this gap with basis "record".'),
-    );
+    // The moot fact gets a RECORD line for EVERY kind, on the same terms.
+    lines.push(`  THE RECORD: ${mootFact}. ${closeOnTheRecord}`);
   }
   if (n.not_before) lines.push(`  currently held until: ${n.not_before}`);
   if (dateLabels.length > 0) {
@@ -1068,13 +1076,7 @@ export function buildGapView(
       moneyShown.forEach((m, i) => lines.push(`    [${i + 1}] ${moneyLine(m)}`));
       lines.push(
         '  That is a fact from the ledger, not a quote from a person — weigh whether it answers ' +
-          'THIS question. ' +
-          // Stage-forked like THE RECORD line (code-review): close is refused
-          // on an observation, so teaching it here would loop the model
-          // instructed-then-refused.
-          (n.status === 'noticed'
-            ? 'If it settles the matter, nothing needs asking: dismiss this observation.'
-            : 'If it does, close with basis "record".'),
+          'THIS question. If it does, close with basis "record".',
       );
     }
   }
@@ -1338,9 +1340,13 @@ export function validateDecisions(
       });
 
     // `recover` FIRST, before the view lookup: its subject is deliberately NOT
-    // in the view — a dismissed observation is hidden, and recover is the one
-    // verb that reaches into the hidden set (found via spine_read over
-    // v_observations). Validated against the dismissed ids the caller read.
+    // in the view — a dismissed gap is hidden, and recover is the one verb that
+    // reaches into the hidden set. Validated against the dismissed ids the
+    // caller read, which since build 6 Phase 3 covers BOTH stages: dismissed
+    // observations (v_observations) and dismissed questions (v_nudges — no
+    // status filter on that view, so a dismissed row really is findable there).
+    // The rails below cannot tell the two apart and do not need to; apply forks
+    // on which set the id came from.
     if (action === 'recover') {
       if (views.get(nudgeId)) {
         push('recover on a gap that is not dismissed — it is already in front of you');
@@ -1375,35 +1381,41 @@ export function validateDecisions(
       continue;
     }
 
-    // The pre-ask curation verb. Only an OPEN observation can be dismissed —
-    // a question that exists (any nudges status, relic pending included) is a
-    // different object with its own verbs, and dismissing it would strand a
-    // row the delivery machinery still owns.
-    if (action === 'dismiss' && view.nudge.status !== 'noticed') {
-      push(
-        'dismiss on a question that already exists — dismiss is for observations nobody has ' +
-          'been asked about. An asked gap ends with close.',
-      );
-      continue;
-    }
+    // DISMISS REACHES EVERY STAGE (build 6 Phase 3, user ruling 2026-09-01).
+    //
+    // It was observations-only, refused on a question with: "dismissing it
+    // would strand a row the delivery machinery still owns". That reason was
+    // wrong twice over. The write path existed all along (markNudgeOutcome
+    // moves any open row), and 'dismissed' is absent from OPEN_NUDGE_STATUSES,
+    // so a dismissed question is invisible to the delivery pull rather than
+    // stranded in it. What the rail actually protected was the STORY that an
+    // ask ends by being answered or handed over.
+    //
+    // Deleting it was not optional once `escalate` went (Phase 1). An asked gap
+    // nobody will answer, whose record will never fill, had no ending at all:
+    // `close` needs a code-computed fact or a quoted answer, and a question
+    // that went nowhere has neither. It would have sat open forever, counted as
+    // neglect, with the planner unable to act. See the migration header.
     if (action === 'dismiss') {
       seen.add(nudgeId);
       decisions.push({ nudgeId, action: 'dismiss', confidence, reason });
       continue;
     }
 
-    // close acts on the ASK's lifecycle, which an observation does not have.
-    // It needs its own rail here because its basis checks would otherwise run
-    // — and a cost observation whose RECORD line says the hole closed should
-    // be DISMISSED (revisable, planner-owned), not closed into a nudges
-    // status no row will ever hold.
-    if (action === 'close' && view.nudge.status === 'noticed') {
-      push(
-        'close on an observation — nobody was asked, so there is nothing to close. If the ' +
-          'hole is filled or not worth chasing, dismiss it.',
-      );
-      continue;
-    }
+    // (`close` on an observation was refused here — "nobody was asked, so
+    // there is nothing to close". Build 6 Phase 3 TRANSLATES it instead: the
+    // basis rails below still run in full, and apply writes the observation's
+    // own dismissal with the verified citation as its reason.
+    //
+    // THE ONE TRANSLATION THIS BUILD ACCEPTS, and it is worth being uneasy
+    // about — everywhere else this design refuses rather than remaps, because
+    // inventing a mapping is code doing the model's judgment for it. What makes
+    // this one different is that there is no judgment to do: on a stage where
+    // nobody was asked, "the hole is filled" and "this no longer needs
+    // attention" are the SAME claim about the record, and the model is required
+    // to prove it either way — the close rails do not soften. All that differs
+    // is which table takes the write. Refusing it taught the model that a fact
+    // it had proved was the wrong shape of fact.)
 
     // (Two blocks of doctrine stood here and are deliberately not preserved:
     // escalate's two rails, deleted with the verb in build 6 Phase 1, and the
@@ -1949,6 +1961,10 @@ async function applyDecision(
   setObservation: typeof setObservationStatus = setObservationStatus,
   createFromObservation: typeof createNudgeFromObservation = createNudgeFromObservation,
   createOffice: typeof createOfficeMessage = createOfficeMessage,
+  // Build 6 Phase 3's two writers, injected like every other one so a unit test
+  // never touches the database.
+  dismissGap: typeof dismissNudge = dismissNudge,
+  recoverGap: typeof recoverNudge = recoverNudge,
 ): Promise<{ outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[] }> {
   const moved = 'the gap changed state between the plan and the write — nothing was applied';
   const done = (row: object | null): { outcome: 'applied' | 'refused'; detail?: string } =>
@@ -2112,29 +2128,78 @@ async function applyDecision(
       );
     case 'dismiss':
       // The planner's judgment, REVISABLE — which is the property the whole
-      // curation design turns on. The detector stops re-noticing the subject
-      // (uq_observations_subject_ever holds whatever the status), so this is
-      // "stop showing me this", never a delete.
-      return done(
-        await setObservation(
-          d.nudgeId,
-          tenantId,
-          { status: 'dismissed', dismissReason: d.reason || null, dismissedAt: nowIso },
-          ['open'],
-        ),
-      );
-    case 'recover':
+      // curation design turns on. Never a delete: the record keeps the row, the
+      // detector stops re-noticing the subject either way (both once-ever
+      // indexes hold whatever the status), and `recover` puts it back.
+      //
+      // STAGE-FORKED since build 6 Phase 3. Same verb, same meaning, two
+      // tables: an observation's dismissal lives on its own row, a question's
+      // is a nudges status carrying `prior_status` so recover knows where to
+      // put it. The fork is decided by the stage the VIEW showed, exactly as
+      // hold's is.
+      if (getGap(d.nudgeId)?.status === 'noticed') {
+        return done(
+          await setObservation(
+            d.nudgeId,
+            tenantId,
+            { status: 'dismissed', dismissReason: d.reason || null, dismissedAt: nowIso },
+            ['open'],
+          ),
+        );
+      }
+      return done(await dismissGap(d.nudgeId, tenantId, d.reason || null));
+    case 'recover': {
       // notBefore clears too (code-review): recover means "stakes changed",
       // and a recovered row wearing its old far-future hold would go straight
       // back to sleep — the opposite of the verb.
-      return done(
-        await setObservation(
+      //
+      // THE FORK CANNOT READ THE VIEW HERE. A dismissed gap is hidden by
+      // definition, so `getGap` returns nothing for either stage — which is why
+      // this is the one apply case that decides by TRYING the observation write
+      // and falling through. Observations first because that is the older,
+      // denser set; a nudge id simply matches no observation row and returns
+      // null, which is indistinguishable from a race and costs one round trip.
+      //
+      // The observation attempt is WRAPPED, and that is not defensive noise:
+      // setObservationStatus throws on any PostgREST error, and an unwrapped
+      // throw here escapes to the apply loop's catch BEFORE recoverGap is ever
+      // tried — so a transient fault on the observations table would make every
+      // dismissed QUESTION unrecoverable for as long as it lasted. Falling
+      // through on a throw costs nothing when the id really is an observation
+      // (the nudge write then matches no row and returns null).
+      let asObservation: Awaited<ReturnType<typeof setObservation>> = null;
+      try {
+        asObservation = await setObservation(
           d.nudgeId,
           tenantId,
           { status: 'open', dismissReason: null, dismissedAt: null, notBefore: null },
           ['dismissed'],
-        ),
-      );
+        );
+      } catch (err) {
+        console.error(`[planner] ${d.nudgeId}: recover as an observation failed — trying it as a question`, err);
+      }
+      if (asObservation) return done(asObservation);
+      // …otherwise it is a dismissed QUESTION, restored to the stage it was
+      // dismissed from.
+      const asNudge = await recoverGap(d.nudgeId, tenantId);
+      if (asNudge) return { outcome: 'applied' };
+      // ITS OWN COPY, not the shared race message (the send-on-observation
+      // precedent). Both writes missing means one of two DIFFERENT things, and
+      // only one of them is a race: the gap moved since the plan, or it is a
+      // question dismissed before `prior_status` existed, which recoverNudge
+      // refuses rather than restoring to a guessed stage. This string is what
+      // `recall_decisions` shows the planner next time, so telling it "the gap
+      // changed state" about a row that is simply unrecoverable would send it
+      // back to retry something that can never work.
+      return {
+        outcome: 'refused',
+        detail:
+          'nothing was recovered — either this gap moved between the plan and the write, or ' +
+          'it is a question that was dismissed before the record kept track of which stage it ' +
+          'came from, and restoring it to a guessed stage would be worse than leaving it. Do ' +
+          'not retry this one.',
+      };
+    }
     // (`case 'escalate'` stood here: it filed the manager's review item with the
     // planner's own sentence, disambiguated flagNudgeGap's once-ever null, then
     // marked the row 'escalated'. Deleted whole in build 6 Phase 1 — see
@@ -2185,6 +2250,24 @@ async function applyDecision(
         d.basis === 'record'
           ? `closed on the record — ${d.citation}`
           : `answered — "${d.citation}"`;
+      // A CLOSE ON AN OBSERVATION IS A DISMISSAL (build 6 Phase 3). Nobody was
+      // asked, so there is no nudges row to mark — markOutcome would match
+      // nothing and record `refused` for a decision whose evidence the rails
+      // already verified. The citation rides along as the dismiss reason, so
+      // the record keeps WHY, and `stampAnswer` is skipped: `answered_by_capture
+      // _id` is a column on `nudges`, and it is the whole definition of
+      // mv_gap_outcomes.closed_by_technician — there is no row to stamp and no
+      // metric this belongs in.
+      if (getGap(d.nudgeId)?.status === 'noticed') {
+        return done(
+          await setObservation(
+            d.nudgeId,
+            tenantId,
+            { status: 'dismissed', dismissReason: resolution, dismissedAt: nowIso },
+            ['open'],
+          ),
+        );
+      }
       // A moot-authorised close ends the gap as the sweep's moot did:
       // 'cancelled', never 'answered' — nobody answered anything, the subject
       // is gone (build 5; plan review finding 3).
@@ -2223,6 +2306,9 @@ export async function runPlanner(
   const listNudges = deps.listNudges ?? listNudgesByStatus;
   const listObservations = deps.listObservations ?? listObservationsByStatus;
   const listDismissedIds = deps.listDismissedIds ?? listDismissedObservationIds;
+  const listDismissedNudges = deps.listDismissedNudges ?? listDismissedNudgeIds;
+  const dismissGap = deps.dismissGap ?? dismissNudge;
+  const recoverGap = deps.recoverGap ?? recoverNudge;
   const setObservation = deps.setObservation ?? setObservationStatus;
   const createFromObservation = deps.createFromObservation ?? createNudgeFromObservation;
   const listOffice = deps.listOfficeMessages ?? listOfficeMessagesByStatus;
@@ -2439,12 +2525,40 @@ export async function runPlanner(
       // only, since dismissed rows are permanent and monotonic (review F3). A
       // failed read degrades to "nothing recoverable" rather than a dead tick:
       // recover is the rarest verb, and refusing it beats refusing the firm.
-      let recoverable = new Set<string>();
+      // BOTH STAGES since build 6 Phase 3: dismissed observations AND dismissed
+      // questions. Read and degraded SEPARATELY, not in one try — a failure on
+      // either side must not cost the other its recovers, and the two are
+      // independent tables. `stageById` is what keeps their decision rows keyed
+      // to the right FK, so it is set per-source rather than for the union.
+      //
+      // NEVER OVERWRITE A LABEL THE OPEN READS ALREADY SET (`if (!has)` on both
+      // loops). The open reads ran above and describe the object this tick is
+      // actually SHOWING; the dismissed sets describe hidden ones. They can
+      // collide, because a sent gap wears its observation's own uuid: if
+      // stamping that observation 'asked' ever failed — a throw the send path
+      // deliberately only logs — an OPEN observation sits beside its own nudge,
+      // and dismissing the nudge would then relabel the open observation
+      // 'nudge'. No FK error follows (the dismissed nudges row exists), so
+      // every decision and every tick mark for that observation would be
+      // written against the wrong object, silently, forever.
+      const recoverable = new Set<string>();
       try {
-        recoverable = new Set(await listDismissedIds(tenantId));
-        for (const id of recoverable) stageById.set(id, 'observation');
+        for (const id of await listDismissedIds(tenantId)) {
+          recoverable.add(id);
+          if (!stageById.has(id)) stageById.set(id, 'observation');
+        }
       } catch (err) {
-        console.error(`[planner] tenant ${tenantId}: dismissed-ids read failed`, err);
+        console.error(`[planner] tenant ${tenantId}: dismissed-observation-ids read failed`, err);
+      }
+      try {
+        for (const id of await listDismissedNudges(tenantId)) {
+          recoverable.add(id);
+          // Observations first among the DISMISSED, matching the apply fork,
+          // which tries the observation write before the question's.
+          if (!stageById.has(id)) stageById.set(id, 'nudge');
+        }
+      } catch (err) {
+        console.error(`[planner] tenant ${tenantId}: dismissed-question-ids read failed`, err);
       }
 
       // ONE batched evidence read for the tenant, floored at the EARLIEST bound
@@ -2841,6 +2955,8 @@ export async function runPlanner(
             setObservation,
             createFromObservation,
             createOffice,
+            dismissGap,
+            recoverGap,
           );
         } catch (err) {
           // One failed write must not abandon the rest of the firm's plan, and

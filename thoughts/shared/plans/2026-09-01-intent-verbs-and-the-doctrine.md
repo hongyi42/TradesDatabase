@@ -58,6 +58,38 @@ review found an earlier draft's *apply-half* citations stale by ~160 lines.
   `nudges.ts:371`, any open status). Without this, deleting `escalate` leaves an asked gap that
   nobody will answer and whose record never fills with **no ending at all** — `close` needs a
   code-computed fact or an evidence quote (`planner.ts:1668-1671`).
+  - *Decided at implementation:* `dismissNudge` reads the status then guards the UPDATE on that
+    exact value, rather than the plan's preferred single-statement column copy — PostgREST cannot
+    express `prior_status = status` in an update payload. The GUARD, not the read, is what makes it
+    race-free. Cost, now stated in the accessor: a benign forward transition (a delivery ack moving
+    queued→asked) also loses and reports "the gap changed state".
+  - *Found in review, fixed:* **`recoverNudge` did not clear `not_before`** while the fork's own
+    comment said it did — so a recovered question could come back wearing a stale far-future hold
+    and, since Phase 2, be exempt from `asksUnattended`, the only alarm on an asked gap.
+  - *Found in review, fixed:* the dismissed-id loops **overwrote stage labels set by the open
+    reads**. A same-id collision (an observation whose 'asked' stamp failed, beside its own nudge)
+    would have keyed every decision and tick mark for the OPEN observation to `nudge_id` — no FK
+    error, so silent and permanent. Both loops now write only when the id is unlabelled.
+  - *Found in review, fixed:* the recover fork called `setObservationStatus` unwrapped, and it
+    THROWS on any error — so a transient fault on `observations` made every dismissed QUESTION
+    unrecoverable until it cleared. It now falls through on a throw as well as on null.
+  - *Found in review, fixed:* `dismissNudge` now refuses an already-dismissed row outright. Nothing
+    at the database level constrains `prior_status` (the CHECK covers `status` only), so a caller
+    passing `['dismissed']` would have stored `prior_status='dismissed'` and made the row
+    permanently unrecoverable, silently.
+  - *Found in live verification, fixed:* the unrecoverable-row refusal reported the generic
+    "the gap changed state between the plan and the write". Nothing raced — and that string is what
+    `recall_decisions` shows the planner next tick, so it would send it back to retry a row that can
+    never work. It now has its own copy ending "Do not retry this one."
+- **The close-on-an-observation TRANSLATION** — the one remapping this build accepts, and worth
+  being uneasy about, since everywhere else it refuses rather than remaps. What makes it different:
+  on a stage where nobody was asked, "the hole is filled" and "this no longer needs attention" are
+  the SAME claim about the record; the close rails do not soften (basis, the ≥12-char/≥2-word floor,
+  evidence membership, one-quote-one-gap all still run); only the target table differs. `stampAnswer`
+  is skipped because `answered_by_capture_id` is a column on `nudges` and there is no row to stamp.
+- **Discovered, not fixed (pre-existing):** `runPlanner` skips a firm with no open gaps BEFORE it
+  reads the dismissed sets, so a recover-only tick is unreachable — every recover has to ride along
+  with a tick that had other business. True of observations before this build too.
 - **`recover` restores `prior_status`** — USER 2026-09-01. A dismissed ask was `pending`, `queued`
   or `asked`; a new nullable `prior_status` column on `nudges` records which, set on dismiss and
   cleared on recover. Observations need none — their prior is always `open`.
@@ -372,23 +404,36 @@ new outcome it does not know. Leave it — a dismissed ask simply falls outside 
 it for the eval phase rather than amending a view this build otherwise leaves alone.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] One test per KEPT rail, its title naming the harm.
-- [ ] close on an observation records **`applied`** and writes `dismissed` + citation.
-- [ ] dismiss on an `asked` row writes `status='dismissed'`, `prior_status='asked'`, the reason;
+- [x] `npm run typecheck` · `npm run lint` · `npm test` (2550 passed) · `npm run build`
+- [x] One test per KEPT rail, its title naming the harm — as an executable `test.each` table
+      (`describe('the rails that REMAIN, and the harm each one prevents')`), checked exhaustive
+      against every `push(...)` in `validateDecisions`. Round 1 found four rails missing from it,
+      one of which (`groups gaps whose job or person the record does not name`) had **no test
+      anywhere in the repo**. A companion test asserts the three DELETED rails now accept.
+- [x] close on an observation records **`applied`** and writes `dismissed` + citation, with
+      neither nudges-table writer firing.
+- [x] dismiss on an `asked` row writes `status='dismissed'`, `prior_status='asked'`, the reason;
       it vanishes from the planner's next gap list, the host pull, and every alarm.
-- [ ] recover on it restores `status='asked'`, clears `prior_status`; recover on a row with null
-      `prior_status` is refused; recover on a queued row returns it to the host pull.
-- [ ] The pinned equalities hold at seven, plus the DB-CHECK superset check.
+- [x] recover on it restores `status='asked'`, clears `prior_status` **and `not_before`**; recover
+      on a row with null `prior_status` is refused, with its OWN refusal copy rather than the
+      generic race message; recover on a queued row returns it to the host pull.
+- [x] The pinned equalities hold at seven, plus the DB-CHECK superset check (every historic value
+      still writes; a bad one is refused by name).
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack.
-- [ ] Through `runPlanner`: dismiss an asked gap, read the row back, recover it next tick, read it
-      back — both statuses and `prior_status` at each step via `psql`.
+- [x] Through `runPlanner` with real accessors, raw-SQL read-back, 11/11: dismiss an asked gap
+      (`asked → dismissed, prior_status='asked'`), recover it (`→ asked`, prior/resolution/
+      resolved_at all null), same for a queued row returning to the host pull, the null-prior row
+      refused and byte-identical, and a close on an observation writing
+      `dismiss_reason = 'answered — "…"'` with **no** nudges row created. All 26 decision rows
+      keyed to the right FK. The alarm proof used a CONTROL row flipped to `dismissed` by raw SQL
+      with **zero** decision rows (`asksUnattended 2 → 1`), because an end-to-end dismiss is
+      exempt for two reasons at once — status AND the fresh applied decision counting as attention.
 
 ### Manual verification
-- [ ] **Judgment call:** read the final KEEP/DELETE table — no kept rail is lifecycle, no deleted
-      rail is world.
+- [ ] **Judgment call (OPEN — for the user):** read the final KEEP/DELETE table — no kept rail is
+      lifecycle, no deleted rail is world.
 
 ---
 

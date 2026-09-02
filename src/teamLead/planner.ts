@@ -122,8 +122,10 @@ export type PlannerMode = 'off' | 'shadow' | 'live';
 // reading), and `escalate` counts as ATTENTION in the sweep's alarm pass
 // (watchers.ts) so gaps the planner handed over last week do not now read as
 // neglected. The manager's review queue keeps every item ever filed; nothing
-// files a new one. The planner temporarily cannot reach a manager at all —
-// accepted, deliberately: nothing is deployed and evaluation is an end phase.
+// files a new one. The planner can still reach a manager the gap NAMES, by
+// either verb; what it lost is reaching one the gap does NOT name — accepted,
+// deliberately: nothing is deployed and evaluation is an end phase, and build
+// 6.5's generalized send is what restores it.
 export const PLANNER_ACTIONS = [
   'send',
   'hold',

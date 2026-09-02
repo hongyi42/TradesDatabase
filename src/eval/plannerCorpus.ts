@@ -39,7 +39,7 @@
 // would be guessing at the answer the evaluation exists to produce.
 //
 // AND A SECOND, QUIETER CASUALTY the action count does not capture. The claim
-// graders — 22 `mustNotClaim` clauses and 1 `mustName`, most of them on
+// graders — 23 `mustNotClaim` clauses and 1 `mustName`, most of them on
 // scenarios that never mentioned escalate at all — read the planner's
 // MANAGER-FACING copy. plannerEvalGraders2.ts builds their haystack from
 // `[handoff_note, reason]`, and `handoff_note` is now never written. They still
@@ -48,7 +48,7 @@
 // too), not product copy read by a person. A blame-phrase check over `reason`
 // is measuring a different thing than the one these clauses were authored
 // against. The evaluation phase should read this note as its inventory: 24
-// action expectations that cannot be met or missed, plus 23 claim clauses whose
+// action expectations that cannot be met or missed, plus 24 claim clauses whose
 // subject no longer exists. (The separate scripts/planner-eval/ harness gates
 // wholly on the note and so grades nothing at all now — but its scenarios live
 // in scripts/planner-eval/scenarios.mjs, not here.)

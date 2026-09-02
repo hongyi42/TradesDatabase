@@ -19,6 +19,39 @@ nobody has watched fire is a push path that does not exist.
 
 ---
 
+## 2. The planner can drain the broken-pipe counter (noticed 2026-09-02, build 6 review)
+
+**What goes wrong.** `alarms.deliveryStuck` is the only signal that a box has stopped pulling.
+Build 6 Phase 3 made `dismiss` legal on a `queued` gap and Phase 5's doctrine steers the planner
+toward ending stuck questions — and `'dismissed'` is deliberately absent from
+`OPEN_NUDGE_STATUSES`, so a dismissed row leaves every open reader at once, the alarm pass
+included. Row by row, a planner doing exactly what it is told drains the counter to zero **while
+the pipe is still down**, and `npm run ticks` reads all-clear.
+
+```
+box stops pulling  ─►  questions age past 18h  ─►  alarms.deliveryStuck counts them
+                                                          │
+                       doctrine: "FROZEN … close it or DISMISS it"
+                                                          ▼
+                                            each dismiss  −1  ─►  0, pipe still down
+```
+
+**Why it is not simply a bug.** Ending an undeliverable question IS the right call for the RECORD
+— the gap cannot be answered and should not sit open forever. The defect is that one action
+carries two meanings: "this question is over" and "stop counting this broken pipe". Nothing
+separates them today.
+
+**What a fix would have to be.** Count the pipe, not the question — a deliveryStuck signal derived
+from rows that FAILED TO SERVE this pull (`buildNudgeDelivery` already knows, and logs it), rather
+than from open rows ageing. That survives any planner decision, because it is a fact about the
+pull and not about the backlog. Note this is the same place entry 1 wants its transition hook.
+
+**Related and now fixed:** the doctrine told the planner *"a broken pipe is an operator problem
+too, and they are told separately"* — false, and the exact reassurance that would make dismissing
+comfortable. Corrected on the build-6 branch to say no alarm reaches anybody automatically.
+
+---
+
 ## 1. A FROZEN delivery tells nobody (noticed 2026-09-02, build 6 Phase 5)
 
 **What goes wrong.** A queued question stops being deliverable. Two causes reach

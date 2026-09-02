@@ -329,25 +329,27 @@ asserts the map exactly and the total, so omitting it fails `npm test`. Note in 
 that, like every action expectation here, it grades only under the key-gated live runner.
 
 ### Automated verification
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test`, `npm run build` pass
-- [ ] **doctrine pinned BOTH directions** with a CONTIGUOUS single-line phrase — `PLANNER_SYSTEM` and
-      the office header are joined arrays, so a pin spanning a line break can never match (§6a entry
-      6, lesson 2). Assert the new clause present AND *"takes no decision entry"* absent
-- [ ] the two surviving clauses still render (their existing pins must stay green)
-- [ ] `plannerCorpus.test.ts` passes, `FAMILY_COUNTS` included
-- [ ] new tests: the source line renders only when `fromOfficeMessageId` is set; a `fromMessageId`
-      not among this tick's unread messages is REFUSED; `fromRef` never comes from the model
-- [ ] **render `PLANNER_SYSTEM` and the office block and READ them** before claiming the phase done —
-      an edit script's exit code is not evidence it landed ([[read-the-rendered-artifact]])
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` (**2635**), `npm run build` pass
+- [x] **doctrine pinned BOTH directions**, contiguous phrases. Rendered and READ before claiming
+      it landed — which caught a wrap bug ("It is not a / message") no assertion would have
+- [x] both surviving clauses render; their pre-existing pins stayed green throughout
+- [x] `plannerCorpus.test.ts` passes with `build7: 1`. `anyAction` verified non-vacuous by the
+      reviewer driving `gradeScenario` directly: an applied observe passes; silence, a pre-build-7
+      send, and a REFUSED observe each produce a finding
+- [x] those, plus TWO END-TO-END tests the review's findings forced: deleting either wiring hop
+      (the map at the call site, the context spread in apply) previously passed all 2632 tests.
+      Both mutations now fail. Plus null-as-absent for `fromMessageId`/`jobId`
+- [x] rendered and read, twice — after the first write and again after the review's scoping fix
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack; a model key in `.env` optional (without it, drive an injected
   loop as in Phase 2 — a fresh worktree has no `.env` and those tests skip, which is expected).
-- [ ] Seed a `to_planner` inform, run one tick, and confirm through a **separate read** that (a) the
-      inform was marked read and (b) an observation exists carrying `context.fromOfficeMessageId`
-      equal to that message's id. Run a second tick and confirm the observation is still on the list
-      while the inform is gone from the block — that persistence past the drain is the entire point
-      of the build. Capture both ticks' rendered prompts.
+- [x] Three real ticks, local stack, only `runLoop` injected, read back via `psql`. Tick 1: header
+      correct (both trust clauses intact), message drained to `status='read'`, observation written
+      with `fromOfficeMessageId` + `fromRef='p3-tech'` taken off the ROW. Tick 2: **no OFFICE
+      MESSAGES block at all** while the observation stands as a `noticed` gap carrying
+      `from: something p3-tech said`. Tick 3 (adversarial, with a REAL second message in the map so
+      the rail had to discriminate): a never-shown id REFUSED, nothing written, refusal recorded.
 
 ### Manual verification
 - [ ] Read the rewritten office header and the `observe` doctrine as a person would: does a seat's

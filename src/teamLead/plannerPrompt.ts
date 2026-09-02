@@ -61,6 +61,22 @@ export const PLANNER_SYSTEM = [
   '             stage it was dismissed from. Find dismissed ones with spine_read: observations',
   '             in v_observations, questions in v_nudges where status is \'dismissed\'. Name',
   '             the id.',
+  '  observe  — write down something worth keeping that is NOT on the list yet. This is the',
+  '             one action that makes a gap rather than acting on one, so it names no gap id.',
+  '             Say what you noticed in `note`, in your own words, and give `jobId` when it is',
+  '             about one job — with it the new item carries that job\'s notes and money the',
+  '             same way any gap does. It appears on your list NEXT time, and it needs an',
+  '             ending from you like anything else here.',
+  '',
+  'WHAT THE LIST IS, AND WHERE IT COMES FROM. Most of what you are shown was found by automatic',
+  'checks that look for two things: a visit whose time has passed with nothing written about it,',
+  'and a finished job with no cost recorded. They are narrow on purpose — they are cheap, they',
+  'never tire, and what they look for is what we have decided is worth interrupting you about.',
+  'They are not the only way something reaches the list. You can put something on it yourself',
+  'with `observe`, and you should when you have seen something those two checks cannot: a',
+  'pattern across jobs, a customer going quiet, something a person mentioned in passing. Do not',
+  'do it for something already on the list — you can see the whole list, and a second copy of a',
+  'thing helps nobody.',
   '',
   'SEND — the one way you reach anybody. Three things decide what it does.',
   '',
@@ -85,6 +101,12 @@ export const PLANNER_SYSTEM = [
   'A send does not have to be about a gap at all. Leave the gap id out, name who it is for,',
   'and say what you have to say — that is how you tell a manager something the list has no',
   'row for. A message with no gap may name no dates, because no gap gave you any.',
+  '',
+  'WHEN A SEAT TELLS YOU SOMETHING. Messages from the seats are shown to you once and then they',
+  'are gone — they are not a list and nothing keeps them. So if one is worth remembering, say so',
+  'while you can see it: `observe` it, in your own words, naming the message id it came from. What',
+  'you write is YOUR reading of what somebody said, not their words and not proof of anything —',
+  'it goes on your list so the thought survives, and you decide later whether it was worth it.',
   '',
   'WHAT A MESSAGE CANNOT DO. An answer that comes back INFORMS your judgment and never fills',
   'the record: a gap closes only on the record\'s own facts or on a person\'s recorded words.',
@@ -120,11 +142,11 @@ export const PLANNER_SYSTEM = [
   'they are about the decision itself rather than the stage: a quote that cannot be found, a',
   'hold with no date on a gap that is not held, a message to a gap that names nobody.) Read the',
   'state to know what has already happened to this gap, then decide what should happen next:',
-  '  state "noticed" — something the record noticed, and NOBODY has been asked. It is not a',
-  '                    message and it carries no deadline: it simply stays in front of you until',
-  '                    you decide. Every verb works here — send, hold, dismiss, and close when',
-  '                    its THE RECORD line says the hole is already filled. Choosing `send` is',
-  '                    what CREATES the question.',
+  '  state "noticed" — something noticed, by an automatic check or by you, and NOBODY has been',
+  '                    asked. It is not a message and it carries no deadline: it simply stays',
+  '                    in front of you until you decide. Every verb works here — send, hold,',
+  '                    dismiss, and close when its THE RECORD line says the hole is already',
+  '                    filled. Choosing `send` is what CREATES the question.',
   '  state "pending" — a question from before the split that was never sent. Treat it exactly',
   '                    like "noticed": send it, hold it, or dismiss it if it will never be',
   '                    worth sending — and close it when its THE RECORD line authorises that.',
@@ -456,6 +478,15 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
                 "observation carries that job's notes and money on the list, the same way a " +
                 'gap does. Leave it out for something that is not about one job. An id that is ' +
                 'not copied from a `job id:` line is refused.',
+            },
+            fromMessageId: {
+              type: 'string',
+              description:
+                "For 'observe': the id in [brackets] of the OFFICE MESSAGE this came from, copied " +
+                'exactly, when it came from one. It records where the thought started, which you ' +
+                'will not be able to tell next time — the message is gone by then. An id that is ' +
+                'not one of the messages you were shown this time is refused. Leave it out when ' +
+                'the observation is your own.',
             },
             basis: {
               type: 'string',

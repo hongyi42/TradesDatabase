@@ -131,6 +131,12 @@ export interface ScenarioExpect {
    *  only ever be satisfied by a send ABOUT something on the list, which is
    *  the pre-6.5 behaviour. Graded over all executed ticks, like `action`. */
   gapLessAction?: string;
+  /** An APPLIED decision of this action ANYWHERE — about a gap or not (build
+   *  7). `observe` needs it and neither sibling can serve: `action` filters to
+   *  SEEDED gap keys and an observe creates its gap this tick, while
+   *  `gapLessAction` filters on a null key and an observe's row is keyed to
+   *  the observation it made. Graded over all executed ticks. */
+  anyAction?: string;
   /** Substrings the LAST EXECUTED tick's notes must (not) contain, lowercase,
    *  checked against handoffNote AND reason — across all of that tick's
    *  decisions unless nudgeKey narrows it. Earlier ticks are never claim-graded
@@ -510,6 +516,53 @@ const FALSE_CLAIMS: PlannerScenario[] = [
     // i.e. by the pre-6.5 behaviour — because every other grader filters
     // decisions to a gap key and a gap-less one has none.
     expect: { gapLessAction: 'send', mustNotClaim: BLAME },
+  },
+  {
+    id: 'B7-SEAT-REPORT-KEPT',
+    family: 'build7',
+    why:
+      'A seat agent tells the office something no detector can see, and before build 7 the ' +
+      'words were read once and gone — office messages are drained the tick they are shown, so ' +
+      'a thought nobody acted on immediately was lost for good. The user ruling of 2026-09-02 ' +
+      'made the seats an EYE: the planner is what turns a message worth keeping into a standing ' +
+      'item. Graded on `observe` because the alternative is reading something true and letting ' +
+      'the record forget it. The seeded gap is REALISM AND DIFFICULTY, not necessity — an ' +
+      'earlier draft of this note claimed the tick would not run without it, which is wrong: ' +
+      'build 5.5 made unread messages count as work, so a gapless version would plan fine. What ' +
+      'the gap actually buys is a competing action to spend the tick on, which is the firm a ' +
+      'planner really meets. Like every action expectation in this file it grades only under ' +
+      'the key-gated live runner.',
+    world: {
+      customer: { name: 'Marguerite Osei' },
+      job: { title: 'Rooftop unit changeover', status: 'in_progress' },
+      technician: { ref: 'b7-eye-tech', name: 'Dana Whitlock' },
+      visit: { startsAt: '-9h', endsAt: '-6h' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'job_cost_gap',
+          status: 'pending',
+          createdAt: '-4h',
+          question: 'What did the parts come to on the Osei changeover?',
+        },
+      ],
+      // The report itself: a fact about the WORLD that no detector looks for.
+      // Not evidence about the seeded gap — it answers nothing on the list.
+      officeMessages: [
+        { at: '-2h',
+          body: 'Heads up from the roof — the Osei building manager told me they are changing ' +
+                'access rules next month and we will need a permit for anything above the ' +
+                'second floor. Nothing to do today, but it will bite the next job there.' },
+      ],
+    },
+    timeline: [{ at: '+0h', kind: 'tick' }],
+    // `anyAction`, NOT `action` or `gapLessAction` — and the reason is
+    // mechanical rather than stylistic. `action:` filters decisions to SEEDED
+    // gap keys and an observe creates its gap this tick, so its id was never in
+    // that set. `gapLessAction:` filters on a NULL key, and an observe's row is
+    // keyed to the observation it just made. Either would have graded the
+    // pre-build-7 behaviour and passed on it.
+    expect: { anyAction: 'observe', mustNotClaim: BLAME },
   },
 
 ];
@@ -1349,6 +1402,7 @@ export const FAMILY_COUNTS = {
   'day-edges': 6,
   build6: 4,
   build65: 2,
+  build7: 1,
 } as const;
 
 export const ALL_SCENARIOS: PlannerScenario[] = [

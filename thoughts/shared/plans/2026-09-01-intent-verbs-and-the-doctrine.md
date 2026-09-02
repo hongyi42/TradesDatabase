@@ -140,7 +140,25 @@ review found an earlier draft's *apply-half* citations stale by ~160 lines.
   *is* `closed_by_technician` — never what is shown. A looked-up citation stamps **no** capture id.
 - **Phase 4 requires a `toolLoop.ts` change.** The executor receives `raw: unknown` (`:610`); the
   shown string is built by the module-private `stringifyResult` at `:620`. The loop must hand
-  results back.
+  results back. Done as an `onResult` hook.
+  - *Found in live verification, fixed:* **the planner could cite its own writing.** `onResult`
+    saw every tool result, and the surface includes two write verbs whose readers hand the text
+    straight back — `write_job_note` → `read_job_note` → close on basis `evidence` was ACCEPTED,
+    laundering a sentence the planner wrote into `nudges.resolution`, the durable audit line a
+    manager reads, under a basis meaning "a person's own words". The haystack is now an ALLOWLIST
+    (`CITABLE_TOOLS` = `spine_read`, `get_customer_context`) plus a `call.ok` guard, which also
+    keeps a refused `submit_plan`'s error text — it echoes the model's own rejected quote — out.
+  - *Accepted residue, recorded not guarded:* `query_spine` requires no FROM clause, so
+    `select 'words I made up'` returns quotable text. No allowlist closes that, and no shape check
+    would either (`select 'x' from v_jobs limit 1` defeats a require-a-view rule; banning string
+    literals bans every legitimate `like '%…%'`). Bounded by: no capture id is stamped, so the
+    technician metric is untouched; every query is written to `query_audit` with its SQL, so a
+    manufactured citation names itself; and it takes SQL whose only purpose is to fabricate.
+  - **THE PLAN'S ORDERING CLAIM WAS BACKWARDS, and so was the doctrine written from it.** The
+    terminal-tool early return sits INSIDE the per-call loop, so tools run in the order the model
+    lists them: `[spine_read, submit_plan]` WORKS (the read runs, `onResult` fires, the plan
+    validates against it) and only `[submit_plan, spine_read]` fails. The doctrine now states the
+    true rule — your tools run in the order you list them, and `submit_plan` ends the turn.
 - **Frozen becomes a printed fact, not a status** — USER 2026-09-01. No schema change.
 - **`open_gap` moves whole to build 7** — USER 2026-09-01.
 - **`review_items` needs no action here** — USER 2026-09-01. Its 2 gap kinds stop being written when
@@ -432,8 +450,15 @@ it for the eval phase rather than amending a view this build otherwise leaves al
       exempt for two reasons at once — status AND the fresh applied decision counting as attention.
 
 ### Manual verification
-- [ ] **Judgment call (OPEN — for the user):** read the final KEEP/DELETE table — no kept rail is
-      lifecycle, no deleted rail is world.
+- [x] **Judgment call — RESOLVED by the user 2026-09-02.** The KEEP/DELETE table was read and the
+      classification stands. The one product question inside it was raised explicitly: the
+      once-ever rail means a technician who never answers can never be asked again, and the
+      planner's only remaining moves are wait, close or dismiss. **USER RULING: re-asking and
+      multiple sends belong to build 6.5, not here.** Deleting the rail now would not buy
+      re-asking — it would let the planner believe it re-asked while the technician's phone stayed
+      silent, because `uq_nudges_subject_ever` blocks the second row at the database. The
+      companion rail (no mixed-stage grouping, so the planner occasionally sends two messages
+      where one would do) stands for the same reason: cosmetic cost, real crash if removed.
 
 ---
 
@@ -469,19 +494,32 @@ Rule (5) has no pin; `SPINE_VIEW_CATALOG` is shared by `query_spine` (`:1318`) a
 (`:1818`), so the edit cold-writes both prompt caches.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] A close citing a `spine_read` result from this tick is ACCEPTED with no capture id; text from
-      nowhere is REFUSED; a pushed evidence line still stamps its capture id; **a quote from beyond
-      the 20,000-char truncation point is REFUSED** (proves the hook hands over the truncated string).
+- [x] `npm run typecheck` · `npm run lint` · `npm run build`. `npm test`: **2561 passed, 1 failed**
+      — `recordFieldNote.test.ts` "an unmatched note proposes the scheduled address". PRE-EXISTING
+      and NOT this build's: it fails identically on `main` with this branch's work stashed, and in
+      isolation, on a freshly `npm run seed:local`-ed stack. Left for a separate fix rather than
+      absorbed into this diff. Every other file is green.
+- [x] A close citing a `spine_read` result from this tick is ACCEPTED with no capture id; text from
+      nowhere is REFUSED; a pushed evidence line still stamps its capture id (asserted in the HARD
+      case, where the quote is in BOTH places, so an implementation consulting `readText` first
+      would fail); **a quote from beyond the 20,000-char truncation point is REFUSED** — proved in
+      `toolLoop.test.ts` against the REAL loop, since a stubbed loop could only assert about itself.
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack.
-- [ ] Seed a gap whose answer exists only in a record the briefing does not print; drive
-      `runPlanner`; read back `basis='evidence'`, `answered_by_capture_id IS NULL`, and the
-      `nudge_decisions` row carrying the citation.
+- [x] 5/5, driven through the REAL `runToolLoop` against a local OpenAI-compatible server (only
+      `listTenants` stubbed): the answer seeded where the briefing does not print it (the gap block
+      shows `notes: NO notes have landed`), a real two-turn read-then-close, and raw-SQL read-back
+      showing `status='answered'`, the resolution carrying the quote, and
+      **`answered_by_capture_id IS NULL`**. Plus: the ordering limit is real, and cross-tenant
+      isolation holds.
+      - *Note for the next reader:* the plan suggested seeding the answer behind the visit bridge.
+        That does not work — `listJobEvidenceSince` already reaches through
+        `visits.source_capture_id`, so a visit-bridged note IS printed. The bound that genuinely
+        excludes a record is TIME (`captured_at > asked_at`).
 
 ### Manual verification
-- [ ] None.
+- [x] None.
 
 ---
 

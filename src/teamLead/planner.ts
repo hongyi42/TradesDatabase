@@ -1148,6 +1148,55 @@ export const MIN_CITATION_CHARS = 12;
 export const MIN_CITATION_WORDS = 2;
 
 /**
+ * WHOSE WORDS MAY BE QUOTED (build 6 Phase 4, closed after live verification).
+ *
+ * Phase 4 let a close cite what the planner looked up. Its first cut fed EVERY
+ * tool result into the citation haystack, and a live probe found the hole that
+ * opens: the planner's tool surface includes two WRITE verbs whose readers hand
+ * the same text straight back.
+ *
+ *   write_job_note("ben confirmed the flue liner was replaced")
+ *   read_job_note(...)            → those words come back as a tool result
+ *   close, basis 'evidence', citing them  → ACCEPTED
+ *
+ * Two turns launder a sentence the planner wrote into `nudges.resolution` — the
+ * durable audit line a manager may later read — under a basis that means "a
+ * person's own words". The metric guard held (a looked-up citation stamps no
+ * capture id, so `closed_by_technician` was untouched), but the audit line is
+ * the part a human reads, and it would have carried a quote with nobody behind
+ * it. The same shape works through write_memory → read_memory.
+ *
+ * So the haystack is an ALLOWLIST, not everything: only tools that return THE
+ * RECORD — what people and the world put there — never tools that return the
+ * planner's own prose. Deny-by-default, the TEAM_LEAD_TOOL_NAMES posture: a new
+ * read tool is uncitable until somebody decides it holds other people's words.
+ *
+ * Not citable, and each for its own reason: `read_job_note`/`write_job_note` and
+ * `read_memory`/`write_memory` are the planner's own writing; `recall_decisions`
+ * returns its own past `reason` prose (a past CITATION in there was verified
+ * once, but nothing distinguishes the two fields at quote time);
+ * `resolve_date` is arithmetic, not testimony; and `submit_plan`'s own result —
+ * including the refusal text, which echoes the model's rejected quote back at it
+ * — is a message from the machinery, not evidence.
+ *
+ * WHAT THIS DOES NOT CLOSE, stated rather than left to be discovered. `spine_read`
+ * runs model-composed SQL, and `query_spine` requires no FROM clause
+ * (20260806120000_query_spine_reader.sql) — so `select 'words I made up'`
+ * returns those words as a "lookup" and they become quotable. No allowlist can
+ * fix that, and a shape check would not either: `select 'words' from v_jobs
+ * limit 1` defeats any require-a-view rule, and a rule against string literals
+ * would ban every legitimate `where raw_text like '%…%'`. Three things bound
+ * it, and they are the honest answer rather than a guard: an evidence-basis
+ * close from a looked-up quote still stamps NO capture id, so the
+ * closed_by_technician metric is untouched; every query is written to
+ * `query_audit` with its SQL, so a manufactured citation leaves a trail that
+ * names itself; and doing this requires the model to compose SQL whose only
+ * purpose is to manufacture evidence, which is a different act from
+ * mis-reading one. Worth re-examining if the evaluation phase ever sees it.
+ */
+export const CITABLE_TOOLS: ReadonlySet<string> = new Set(['spine_read', 'get_customer_context']);
+
+/**
  * The code rails, applied to every decision before it can reach a writer. These
  * run in shadow too: a shadow run that reported an invalid plan as valid would
  * measure the wrong thing.
@@ -1297,6 +1346,20 @@ export function validateDecisions(
   // decision insert (review F4). Defaulted empty for the existing test call
   // sites; runPlanner always passes the real set.
   recoverable: Set<string> = new Set(),
+  // WHAT THE MODEL LOOKED UP THIS TICK — exactly the strings the tool loop
+  // handed it, truncation notes and all (build 6 Phase 4, user ruling
+  // 2026-09-01: "the planner should be able to cite what it looked up").
+  //
+  // Until now a citation had to come from the gap's own pushed evidence lines,
+  // so an answer that existed only in a record the briefing does not print —
+  // an emailed reply extracted into the job, a note reached through the visit
+  // bridge — could be READ and then not cited, and the gap stayed open with the
+  // planner able to see the answer and unable to use it.
+  //
+  // The rail's SHAPE is unchanged and that is the point: a quote must still
+  // appear verbatim in text the model was actually shown. All that widens is
+  // what counts as shown. Defaulted empty for the existing call sites.
+  readText: string[] = [],
 ): { decisions: PlannerDecision[]; dropped: DroppedDecision[]; noteDrops: string[] } {
   const decisions: PlannerDecision[] = [];
   const dropped: DroppedDecision[] = [];
@@ -1305,6 +1368,10 @@ export function validateDecisions(
   // DECISION was refused — a rejected note refuses nothing.
   const noteDrops: string[] = [];
   const usedQuotes = new Set<string>();
+  // Normalized ONCE per call, not once per close whose quote missed the
+  // evidence: the model may submit several plans in a tick, each with several
+  // closes, and this array holds every tool result the tick has seen.
+  const readNorm = readText.map(norm);
   const list = Array.isArray((raw as { decisions?: unknown })?.decisions)
     ? ((raw as { decisions: unknown[] }).decisions as Record<string, unknown>[])
     : [];
@@ -1680,8 +1747,17 @@ export function validateDecisions(
       // is withheld and the close still stands — a missing link, never a wrong
       // one, which is the direction this whole helper errs in.
       const hit = shown.findIndex((text) => text.includes(wanted));
-      if (hit === -1) {
-        push('close whose citation does not appear in the evidence');
+      // THE EVIDENCE LINES FIRST, then what the model looked up (build 6
+      // Phase 4). Order matters: only the pushed lines carry a capture id, so
+      // checking them first keeps every close that COULD be attributed
+      // attributed, and falls back to the read text only when the words are
+      // nowhere in the gap's own block.
+      const readHit = hit === -1 && readNorm.some((text) => text.includes(wanted));
+      if (hit === -1 && !readHit) {
+        push(
+          'close whose citation appears neither in the evidence nor in anything you read this ' +
+            'tick — quote the words exactly as they were shown to you',
+        );
         continue;
       }
       // ONE quote may close ONE gap. Two gaps on the same job share one evidence
@@ -1702,7 +1778,17 @@ export function validateDecisions(
       citation = quote;
       // Null when that capture has no technician_ref — the guard lives on the
       // view, where the capture row was still in hand.
-      answeredByCaptureId = view.evidenceCaptureIds[hit] ?? null;
+      //
+      // AND NULL FOR EVERY LOOKED-UP CITATION (`hit === -1`), deliberately.
+      // `answered_by_capture_id` is the whole definition of
+      // mv_gap_outcomes.closed_by_technician, and it means one specific thing:
+      // the spine matched this capture to THIS gap at record time, because it
+      // was the only question open for that person on that job. A row the model
+      // found by running a query has no such link — it may not even be a
+      // person's words. Widening what may be CITED must not widen what may be
+      // STAMPED, or a query result would silently start counting as a
+      // technician's answer. TECHNICIAN_SPOKEN_CHANNELS is untouched.
+      answeredByCaptureId = hit === -1 ? null : (view.evidenceCaptureIds[hit] ?? null);
     }
 
     // `hold` NOW HAS TWO FORMS (build 6 Phase 2): a date pauses the gap, and no
@@ -2405,6 +2491,14 @@ export async function runPlanner(
     // per-tenant — the declaration is inside this loop body, not above it — so a
     // tenant never sees the previous one's views.
     const views = new Map<string, GapView>();
+    // WHAT THE MODEL LOOKED UP THIS TICK (build 6 Phase 4), filled by the tool
+    // loop's onResult hook and read by validateDecisions when it checks a
+    // citation. Declared HERE, per tenant, for the same reason `views` is: one
+    // firm's query results must never be citable in another firm's plan.
+    //
+    // Bounded by the loop's own MAX_TOOL_RESULT_CHARS per call and by the
+    // 15-minute clock overall; it is dropped when the tenant's iteration ends.
+    const readText: string[] = [];
     // Hoisted for the CATCH like `views`: the failed-tick trace must key each
     // row to its stage, or an observation-staged row keyed nudge_id 23503s and
     // the whole trace is silently discarded (phase-3 review F1).
@@ -2841,11 +2935,28 @@ export async function runPlanner(
           // that is merely slow until the clock throws. That is deliberate; the
           // instrument is the distribution, not the counter.
           maxTurns: null,
+          // Build 6 Phase 4: every tool result, as the MODEL saw it, the moment
+          // it saw it. `result.calls` carries the same objects, but arrives one
+          // turn too late — submit_plan is validated inside the executor below.
+          //
+          // submit_plan's own result is appended too and that is harmless: it
+          // is this loop's terminal tool, so nothing is validated after it.
+          onResult: (call) => {
+            // ALLOWLISTED (see CITABLE_TOOLS): the planner's own notes and
+            // memory come back through this hook too, and quoting those would
+            // let it launder its own prose into an evidence-basis close.
+            //
+            // `call.ok` as well: a FAILED call's result is an error string from
+            // the machinery — and for a refused submit_plan it echoes the
+            // model's own rejected text back at it, which must never become
+            // quotable on the retry.
+            if (call.ok && CITABLE_TOOLS.has(call.name)) readText.push(call.result);
+          },
         },
         [...tools, SUBMIT_PLAN_TOOL],
         async (name, args) => {
           if (name === SUBMIT_PLAN_TOOL.name) {
-            const checked = validateDecisions(args, views, nowMs, recoverable);
+            const checked = validateDecisions(args, views, nowMs, recoverable, readText);
             outcome = checked; // the LAST submission stands, refusals included
             // A dropped note is not a refused decision, so it would otherwise
             // leave no trace anywhere — and "how often does the date rail fire"

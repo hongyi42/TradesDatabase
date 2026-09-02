@@ -798,8 +798,10 @@ const SPINE_VIEW_CATALOG =
   'the DIRECT stamp and is usually NULL by design — the durable link from a note to its job is ' +
   'the visit: join v_visits on v_visits.source_capture_id = v_captures.id. Filtering v_captures ' +
   'by job_id alone reads as "nobody said anything" on exactly the jobs where somebody did. ' +
-  '(5) Reading here is not citing: closing a gap still requires quoting from that gap\'s own ' +
-  'evidence lines — text found in this view is not accepted as a citation; ' +
+  '(5) These are the words people actually said, so they may be QUOTED — copied exactly as they ' +
+  'came back, never tidied up. (For the assistant that closes gaps: a quote must be findable in ' +
+  "either these results or the gap's own evidence lines, and a lookup you list AFTER your " +
+  'decision has not run yet — read first.) ' +
   'v_visits(id, job_id, source_capture_id, technician_name, labor_hours, created_at) — the ' +
   'trips notes belong to; the note-to-job bridge; ' +
   'v_nudges(id, kind, status, subject_ref, technician_ref, technician_name, job_id, question, ' +
@@ -1813,8 +1815,10 @@ const TEAM_LEAD_TOOLS = [
     description:
       "Read this firm's own records with ONE read-only SQL SELECT. This is how you get the " +
       'context behind a gap: what the job is, who the customer is, what has been billed, what ' +
-      'else that technician has open. Use it when the answer would change your decision — not ' +
-      'to browse. ' +
+      'else that technician has open. Use it when the answer would change your decision, and ' +
+      'when a gap may already be answered somewhere its own block does not print — what you ' +
+      'read here IS quotable. Filter by the job id the gap gives you rather than browsing: a ' +
+      'name search misses and costs you a turn. ' +
       'You are deciding about gaps in the record, so ABSENCE is usually what you are testing ' +
       'for: a query that returns no rows is an answer, not a failure. ' +
       SPINE_VIEW_CATALOG +

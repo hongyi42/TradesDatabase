@@ -165,6 +165,28 @@ export interface ToolLoopRequest {
   terminalTool?: string;
   /** Same meaning as ForcedToolRequest.reasoningEffort; ignored on the Anthropic path. */
   reasoningEffort?: ReasoningEffort;
+  /**
+   * Called as each tool result is handed to the model, with EXACTLY the string
+   * the model receives (build 6 Phase 4).
+   *
+   * The same `ToolLoopCall` objects come back in `result.calls`, so this exists
+   * for one reason: a caller that needs them BEFORE the loop returns. The
+   * planner is that caller — it validates a submitted plan inside the executor,
+   * on the same turn, and part of that validation is checking a quote against
+   * what the model was actually shown. Reading `result.calls` afterwards would
+   * be too late by one turn.
+   *
+   * WHY THE STRING AND NOT THE RAW VALUE. `stringifyResult` truncates at
+   * MAX_TOOL_RESULT_CHARS and appends a note saying so, so what the model saw
+   * and what the executor returned are DIFFERENT for any large result. A caller
+   * verifying "did the model see these words" has to be given the model's copy,
+   * or it would accept a quote from past the cut — text no model ever read.
+   *
+   * Never allowed to break the loop: a throwing hook is caught and logged. This
+   * is an observation channel, and a caller's bookkeeping bug must not lose a
+   * plan the model has already produced.
+   */
+  onResult?: (call: ToolLoopCall) => void;
 }
 
 /** One tool the model actually invoked, with what came back. Returned for the
@@ -619,7 +641,18 @@ export async function runToolLoop(
       }
       const content = stringifyResult(raw);
       results.push({ id: call.id, name: call.name, content, isError: !ok });
-      calls.push({ turn: turns, name: call.name, args: call.args, ok, result: content });
+      const record: ToolLoopCall = { turn: turns, name: call.name, args: call.args, ok, result: content };
+      calls.push(record);
+      // Handed over the moment it exists, because the caller may need it before
+      // this loop returns — see onResult's own header. Wrapped: a caller's
+      // bookkeeping must never cost a plan the model already produced.
+      if (req.onResult) {
+        try {
+          req.onResult(record);
+        } catch (err) {
+          console.error(`[toolLoop] ${req.label}: onResult threw — continuing`, err);
+        }
+      }
       // The terminal tool ends the loop as soon as it RUNS — only on success, so
       // a rejected submission still gets its error relayed and the model gets to
       // try again on a later turn — within whichever rail the caller kept: the

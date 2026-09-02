@@ -206,6 +206,14 @@ export interface PlannerDecision {
   // 5.5 Phase 3). Date-railed like every other model-written surface; a
   // missing or dropped message refuses the action — there is no other author.
   agentMessage?: string | null;
+  // WHO THIS MESSAGE IS FOR, when the planner named somebody (build 6.5 Phase
+  // 2). Absent means the gap's own person, which is what every message did
+  // before this build. VALIDATE-SET from the roster, never copied raw off the
+  // model: the ref is checked against the list the planner was shown, and the
+  // FK is what apply actually addresses — so a hallucinated name cannot become
+  // an office row pointed at nobody.
+  toRef?: string | null;
+  toTechnicianId?: string | null;
 }
 
 // A decision the code rails refused, kept so a shadow run reports what the model
@@ -1689,6 +1697,26 @@ export function validateDecisions(
   // appear verbatim in text the model was actually shown. All that widens is
   // what counts as shown. Defaulted empty for the existing call sites.
   readText: string[] = [],
+  // THE ROSTER THIS TICK BUILT (build 6.5 Phase 2), keyed by ref AND by
+  // technician id. A `to` is resolved against THIS, not against a fresh
+  // database read: the question is whether the addressee is somebody this
+  // firm's roster actually holds, and resolving it here also canonicalises —
+  // whatever the model wrote, the row is addressed by `a.ref` and `a.id`.
+  //
+  // BOTH KEYS ARE INTENTIONAL, not an artefact of the double keying. A ref is
+  // what THE TEAM block prints and is the expected form; an id is what a
+  // `spine_read` of `v_team` returns, and refusing a planner that looked
+  // somebody up properly would be teaching it not to look things up. Either
+  // way the map is per-tenant (`listTeam` is tenant-scoped and `roster` is
+  // declared inside the per-tenant loop), so neither form can reach another
+  // firm.
+  //
+  // Defaulted empty, and an empty map makes every `to` unknown — including
+  // when the roster read FAILED, which is the right direction: refuse to guess
+  // an addressee rather than send to somebody unverified. The office verbs
+  // without a `to` are unaffected, which is what keeps the existing call sites
+  // honest.
+  reachable: Map<string, Addressee> = new Map(),
 ): { decisions: PlannerDecision[]; dropped: DroppedDecision[]; noteDrops: string[] } {
   const decisions: PlannerDecision[] = [];
   const dropped: DroppedDecision[] = [];
@@ -1826,10 +1854,84 @@ export function validateDecisions(
     // addressee for the same technicians!inner reason `send` does, and the
     // message survives the same date rail every model-written surface rides.
     if (action === 'ask_agent' || action === 'inform_agent') {
-      if (!view.nudge.technician_id) {
+      // WHO IT IS FOR (build 6.5 Phase 2). No `to` means the gap's own person,
+      // byte-for-byte what this verb did before — so every existing decision
+      // keeps its meaning and the corpus does not move.
+      // PRESENCE FIRST, THEN VALIDITY (the `notBefore` absent-vs-null
+      // precedent, and this function's own boundary rule at the top: a
+      // malformed entry is refused, never dereferenced).
+      //
+      // The earlier draft tested `typeof d.to === 'string' && length > 0`, so
+      // `to: 42`, `to: ['sam-ortiz']` or `to: '   '` all read as ABSENT and
+      // the message went to the gap's own person — applied, recorded as
+      // success, with nothing anywhere saying the addressee had been
+      // discarded. The model asked for Sam and Ben got it. That is the one
+      // failure this whole build cannot afford, so a `to` that is present and
+      // unusable is refused. `null` alone is read as absent, because that is
+      // how a provider spells "no value".
+      const wantsTo = 'to' in d && d.to !== null && d.to !== undefined;
+      let toRef: string | null = null;
+      let toTechnicianId: string | null = null;
+      if (wantsTo) {
+        if (typeof d.to !== 'string' || d.to.trim().length === 0) {
+          push(
+            `${action} whose \`to\` is not a name — it must be one name, copied exactly from ` +
+              "THE TEAM. Leave it out entirely to reach the gap's own person.",
+          );
+          continue;
+        }
+        const want = d.to.trim();
+        const a = reachable.get(want);
+        if (!a) {
+          push(
+            `${action} to '${want}' — there is nobody by that name on THE TEAM. Copy a name ` +
+              'exactly from that list; it is the only place names come from.',
+          );
+          continue;
+        }
+        // THE DEPARTURE IS ITS OWN REFUSAL, and not folded into "no assistant".
+        // "They have left" is a fact about the world that changes what to do
+        // next — somebody still here has to answer this — while "no assistant"
+        // is an operator fix somebody could make tomorrow.
+        if (isInactiveState(a.state)) {
+          // NO DATE, and not because the block has it. THE TEAM prints a
+          // departed person only when a gap in this tick names them, while
+          // the resolution map holds every row — so the case that produces
+          // THIS refusal (a name the model had from memory or a `spine_read`,
+          // belonging to somebody no current gap names) is exactly the case
+          // where the block is silent. The honest reasons are that validate
+          // has no timezone to render one with, and that `v_roster_events` is
+          // one lookup away if the date matters.
+          push(
+            `${action} to '${want}' — they are no longer on the team, so a message reaches ` +
+              'nobody. If this still needs answering, somebody who is still here has to ' +
+              'answer it.',
+          );
+          continue;
+        }
+        if (!a.assistant) {
+          // `limitationOf` is total and both reachable branches were excluded
+          // above, so the fallback is a belt on a hand-built Addressee, not a
+          // live path. The corrective clause matters as much as the reason:
+          // its two sibling refusals both say what to do instead, and this one
+          // used to state a fact and stop.
+          push(
+            `${action} to '${want}' — ${limitationOf(a) ?? 'they cannot be reached'}. Name ` +
+              'somebody else from THE TEAM, or leave `to` out to reach the gap\'s own person.',
+          );
+          continue;
+        }
+        toRef = a.ref;
+        toTechnicianId = a.technicianId;
+      } else if (!view.nudge.technician_id) {
+        // Unchanged, and now narrower than it reads: this refuses only when
+        // NOBODY was named — by the gap or by the planner. Naming a manager on
+        // a gap the record cannot attribute is exactly what build 6.5 exists
+        // to allow, so the guard must not fire on that.
         push(
           `${action} on a gap with nobody's assistant to reach — the record names no person ` +
-            'for it.',
+            'for it. Name somebody from THE TEAM with `to` if this should reach a person ' +
+            'the record does not.',
         );
         continue;
       }
@@ -1850,6 +1952,10 @@ export function validateDecisions(
         nudgeId,
         action: action as PlannerAction,
         agentMessage: msg.note,
+        // Gated on the ID, not the ref: nothing forbids an empty `ref` on a
+        // roster row, and gating on the string would silently drop BOTH fields
+        // and re-address the message to the gap's person.
+        ...(toTechnicianId ? { toRef, toTechnicianId } : {}),
         confidence,
         reason,
       });
@@ -2643,7 +2749,48 @@ async function applyDecision(
         };
       }
       const n = getGap(d.nudgeId);
-      if (!n || !n.technician_id) return { outcome: 'refused', detail: moved };
+      // THE GAP MUST STILL EXIST — the message names it. But its person is
+      // required only when NOBODY ELSE was named (build 6.5 Phase 2): with an
+      // explicit addressee the record's own attribution is irrelevant, which
+      // is the whole point of being able to ask a manager about a gap the
+      // record cannot attribute.
+      if (!n) return { outcome: 'refused', detail: moved };
+      // THE PAIR TRAVELS TOGETHER OR NOT AT ALL — the belt for a hand-built
+      // decision object, which this switch keeps for every other field too.
+      // Validate always sets both from one Addressee, but a decision carrying
+      // only `toRef` would write a row whose `to_ref` and `technician_id` name
+      // DIFFERENT people: the host pull joins on the id, so it would deliver
+      // to one person while `inform_team_lead`'s reply guard
+      // (server.ts, `to_ref === identity.technicianRef`) refused to thread
+      // their answer — the reply would degrade to a plain inform and lose the
+      // gap id. Silent, and only visible as an answer that never lands.
+      //
+      // NOT UNIT-TESTED, and that is a deliberate admission rather than an
+      // oversight: validate always sets the pair together, so this is
+      // unreachable from the live path, and the only way to exercise it would
+      // be to export a fifteen-argument internal function for one assertion.
+      // A test that drove the ordinary path and called itself a belt test
+      // would be worse than none — it would report coverage it does not have.
+      if (d.toRef && !d.toTechnicianId) {
+        return {
+          outcome: 'refused',
+          detail:
+            `${d.action} names '${d.toRef}' with no resolved roster row — an addressee must be ` +
+            'a person the roster holds, not a name alone',
+        };
+      }
+      const toTechnicianId = d.toTechnicianId ?? n.technician_id;
+      // NOT `moved`: nothing changed state here, there was never a person.
+      // That string is what recall_decisions hands the planner next tick, so a
+      // wrong one teaches it to expect a race that did not happen.
+      if (!toTechnicianId) {
+        return {
+          outcome: 'refused',
+          detail:
+            `${d.action} on a gap the record names nobody for, and no \`to\` was given — ` +
+            'there is no assistant to reach',
+        };
+      }
       // createOfficeMessage THROWS on failure; the apply loop's catch records
       // it as a refusal with the reason — same contract as every writer here.
       await createOffice({
@@ -2651,8 +2798,13 @@ async function applyDecision(
         direction: 'to_agent',
         kind: d.action === 'ask_agent' ? 'ask' : 'inform',
         fromRef: TEAM_LEAD_REF,
-        toRef: ctxStr(n, 'technicianRef') ?? n.technician_id,
-        technicianId: n.technician_id,
+        // Derived from the SAME source as technicianId above: with an explicit
+        // addressee both come off the resolved row, otherwise both come off
+        // the gap. They can never name different people.
+        toRef: d.toTechnicianId
+          ? (d.toRef ?? d.toTechnicianId)
+          : (ctxStr(n, 'technicianRef') ?? toTechnicianId),
+        technicianId: toTechnicianId,
         nudgeId: d.nudgeId,
         body: d.agentMessage,
         status: 'queued',
@@ -3355,7 +3507,7 @@ export async function runPlanner(
         [...tools, SUBMIT_PLAN_TOOL],
         async (name, args) => {
           if (name === SUBMIT_PLAN_TOOL.name) {
-            const checked = validateDecisions(args, views, nowMs, recoverable, readText);
+            const checked = validateDecisions(args, views, nowMs, recoverable, readText, roster);
             outcome = checked; // the LAST submission stands, refusals included
             // A dropped note is not a refused decision, so it would otherwise
             // leave no trace anywhere — and "how often does the date rail fire"

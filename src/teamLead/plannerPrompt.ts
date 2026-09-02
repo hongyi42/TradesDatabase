@@ -364,6 +364,17 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
                 'Required for both verbs (missing or date-railed means the action is refused); ' +
                 'ignored for every other action.',
             },
+            to: {
+              type: 'string',
+              description:
+                "For 'ask_agent'/'inform_agent': WHOSE assistant receives this — a name copied " +
+                'exactly from THE TEAM. Leave it out to reach the person the gap itself names, ' +
+                'which is what happens by default. Naming somebody is how you reach a person ' +
+                'the gap does not: a manager about a technician\'s gap, or anyone whose help ' +
+                'the record cannot ask for. A name that is not on that list is refused, and so ' +
+                'is one belonging to somebody who has left or who has no assistant. Ignored for ' +
+                'every other action.',
+            },
             notBefore: {
               type: ['string', 'null'],
               description:

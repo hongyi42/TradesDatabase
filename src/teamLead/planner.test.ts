@@ -5085,6 +5085,164 @@ describe('the roster the planner is given', () => {
     expect(roster.get('tech-1')!.leftAt).toBe('2026-08-12T15:00:00.000Z');
   });
 
+  test('`to` names somebody the gap does not — the hole build 6 left open', () => {
+    // Since build 6 deleted `escalate` the planner has had no way to reach a
+    // human the gap does not name. This is that way back.
+    const roster = buildRoster(
+      [
+        person(),
+        person({ id: 't9', ref: 'sam-ortiz', display_name: 'Sam', tier: 'manager' }),
+        person({ id: 't8', ref: 'helper-joy', seat_exempt: true, sandbox_ref: null }),
+        person({ id: 't7', ref: 'gone-gary', state: 'offboarded' }),
+      ],
+      [],
+    );
+    const view = buildGapView(nudge(), Date.parse(NOW), [], false, new Set());
+    const views = new Map([[view.nudge.id, view]]);
+    const ask = (to?: string) => ({
+      decisions: [
+        {
+          nudgeId: 'n1',
+          action: 'ask_agent',
+          agentMessage: 'did anyone get to the Henderson job?',
+          ...(to === undefined ? {} : { to }),
+          confidence: 'high',
+          reason: 'r',
+        },
+      ],
+    });
+
+    // A manager, named explicitly: accepted, and the ADDRESSEE is resolved to
+    // the roster row rather than copied raw off the model.
+    let out = validateDecisions(ask('sam-ortiz'), views, Date.parse(NOW), new Set(), [], roster);
+    expect(out.decisions).toHaveLength(1);
+    expect(out.decisions[0].toRef).toBe('sam-ortiz');
+    expect(out.decisions[0].toTechnicianId).toBe('t9');
+
+    // A name nobody has: refused, and the refusal REPEATS the name so the
+    // model can see what it invented.
+    out = validateDecisions(ask('sam-oritz'), views, Date.parse(NOW), new Set(), [], roster);
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain("'sam-oritz'");
+    expect(out.dropped[0].why).toContain('THE TEAM');
+
+    // Somebody who has left: refused as its own thing, not as "unreachable" —
+    // the answer is that a person still here has to take it.
+    out = validateDecisions(ask('gone-gary'), views, Date.parse(NOW), new Set(), [], roster);
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('no longer on the team');
+    expect(out.dropped[0].why).toContain('still here');
+
+    // Somebody with no assistant: refused with the reason, before any write.
+    out = validateDecisions(ask('helper-joy'), views, Date.parse(NOW), new Set(), [], roster);
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('schedule only');
+
+    // NO `to` at all: byte-for-byte the pre-6.5 behaviour — the gap's person,
+    // and no addressee carried on the decision.
+    out = validateDecisions(ask(), views, Date.parse(NOW), new Set(), [], roster);
+    expect(out.decisions).toHaveLength(1);
+    expect(out.decisions[0].toRef).toBeUndefined();
+  });
+
+  test('a `to` that is PRESENT but unusable is refused — never silently redirected', () => {
+    // THE REVIEW FOUND THIS ONE LIVE. The first draft tested
+    // `typeof d.to === 'string' && length > 0`, so a malformed value read as
+    // ABSENT: the message went to the gap's own person, was applied, and was
+    // recorded as success. The model asks for Sam, Ben gets it, and nothing
+    // anywhere says the addressee was discarded.
+    const roster = buildRoster([person(), person({ id: 't9', ref: 'sam-ortiz' })], []);
+    const view = buildGapView(nudge(), Date.parse(NOW), [], false, new Set());
+    const views = new Map([[view.nudge.id, view]]);
+    const ask = (to: unknown) => ({
+      decisions: [
+        { nudgeId: 'n1', action: 'ask_agent', agentMessage: 'anything on this?', to, confidence: 'high', reason: 'r' },
+      ],
+    });
+    for (const bad of [42, ['sam-ortiz'], { ref: 'sam-ortiz' }, '   ', '']) {
+      const out = validateDecisions(ask(bad), views, Date.parse(NOW), new Set(), [], roster);
+      expect(out.decisions).toHaveLength(0);
+      expect(out.dropped[0].why).toContain('not a name');
+    }
+    // `null` alone reads as absent — that is how a provider spells "no value" —
+    // so it falls through to the gap's own person, deliberately.
+    const nulled = validateDecisions(ask(null), views, Date.parse(NOW), new Set(), [], roster);
+    expect(nulled.decisions).toHaveLength(1);
+    expect(nulled.decisions[0].toRef).toBeUndefined();
+  });
+
+  test('a gap the record cannot attribute is still reachable — with `to`, not without', () => {
+    // The rail that refuses "the record names no person for it" must NOT fire
+    // when the planner named somebody itself. That combination — an orphan gap
+    // plus a manager to ask about it — is precisely what 6.5 exists to allow.
+    const roster = buildRoster([person({ id: 't9', ref: 'sam-ortiz', tier: 'manager' })], []);
+    const orphan = buildGapView(
+      nudge({ technician_id: null } as never),
+      Date.parse(NOW),
+      [],
+      false,
+      new Set(),
+    );
+    const views = new Map([[orphan.nudge.id, orphan]]);
+    const ask = (to?: string) => ({
+      decisions: [
+        {
+          nudgeId: 'n1',
+          action: 'ask_agent',
+          agentMessage: 'nobody is on this one — should it go to anybody?',
+          ...(to === undefined ? {} : { to }),
+          confidence: 'high',
+          reason: 'r',
+        },
+      ],
+    });
+    expect(
+      validateDecisions(ask('sam-ortiz'), views, Date.parse(NOW), new Set(), [], roster).decisions,
+    ).toHaveLength(1);
+    // Without a `to` it is still refused, and the refusal now TEACHES the way out.
+    const out = validateDecisions(ask(), views, Date.parse(NOW), new Set(), [], roster);
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('`to`');
+  });
+
+  test('an applied ask_agent with `to` addresses the NAMED person, not the gap\'s', async () => {
+    // The end-to-end proof for Phase 2: validate resolves the name, apply
+    // writes that person's FK, and the gap's own person is nowhere in the row
+    // except as the subject it is about.
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const summary = await runPlanner(
+      NOW,
+      'live',
+      baseDeps({
+        listTeam: async () => [
+          person(),
+          person({ id: 't9', ref: 'sam-ortiz', display_name: 'Sam', tier: 'manager' }),
+        ],
+        listNudges: async () => [nudge()],
+        createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+        runLoop: loopReturning([
+          {
+            nudgeId: 'n1',
+            action: 'ask_agent',
+            to: 'sam-ortiz',
+            agentMessage: 'Ben has not answered — do you know if this was done?',
+            confidence: 'medium',
+            reason: 'r',
+          },
+        ]),
+      }),
+    );
+    expect(summary.applied).toBe(1);
+    expect(createOffice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toRef: 'sam-ortiz', // the manager, NOT the gap's ben-shelton
+        technicianId: 't9', // the FK the host pull joins on
+        nudgeId: 'n1', // still about the technician's gap
+        kind: 'ask',
+      }),
+    );
+  });
+
   test('runPlanner actually RENDERS the roster into the prompt — the wiring, not just the builders', async () => {
     // THE COVERAGE GAP THE REVIEW FOUND. Every other test here calls
     // buildRoster/buildGapView directly, and `baseDeps` stubs the readers

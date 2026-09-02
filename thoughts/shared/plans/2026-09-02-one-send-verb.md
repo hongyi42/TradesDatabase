@@ -338,17 +338,17 @@ message goes to, ref copied exactly from THE TEAM. Leave it out to reach the gap
 person."
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] new: `to` naming an unknown ref is REFUSED, with the ref in the detail
-- [ ] new: `to` naming a seat-exempt person is REFUSED before any write
-- [ ] new: `to` naming somebody who has LEFT is REFUSED, naming the departure
-- [ ] new: no `to` still addresses the gap's person (the four existing office-verb tests at
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] new: `to` naming an unknown ref is REFUSED, with the ref in the detail
+- [x] new: `to` naming a seat-exempt person is REFUSED before any write
+- [x] new: `to` naming somebody who has LEFT is REFUSED, naming the departure
+- [x] new: no `to` still addresses the gap's person (the four existing office-verb tests at
       `planner.test.ts:808-880` and `:4456-4458` must pass unchanged)
-- [ ] new: an `ask_agent` with `to` on a gap whose `technician_id` is NULL is now ACCEPTED
+- [x] new: an `ask_agent` with `to` on a gap whose `technician_id` is NULL is now ACCEPTED
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack, `npm run seed:local`
-- [ ] Seed a firm with a technician gap and a separate manager; drive one tick; read back the
+- [x] Seed a firm with a technician gap and a separate manager; drive one tick; read back the
       `office_messages` row and confirm `technician_id` is the MANAGER's roster id while
       `nudge_id` is the technician's gap — the cross-channel check the send cannot fake
 

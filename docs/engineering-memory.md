@@ -3995,6 +3995,19 @@ Joins the 4–7 evaluation train. Deferred by ruling: re-ask (the once-ever inde
 ask(manager) semantics (build 6 decision 2 — `nudge_id` on the bucket is its hook), unread-
 aging alarms (the tick drains the bucket; tick-death is already alarmed).
 
+**TRAP, hit 2026-09-02 while building 6.5 Phase 1: `npm run gen:types` reads the PILOT.** The
+script is `npx supabase gen types typescript --linked`, and `--linked` is the hosted project
+`daqapdlkgxfrhquacprv` — the deployed pilot's live DB, which is BEHIND main because deploys run no
+migrations. Run it after adding a LOCAL migration and it does not add your table: it overwrites
+`src/db/database.types.ts` with the pilot's schema (measured: 202 insertions, **374 deletions**,
+and the `observations` table — on main since 2026-09-01, never migrated to the pilot — simply
+disappears). Typecheck then fails somewhere unrelated. No guard fires, because it is a READ:
+`testEnvGuard` protects the suite, not a codegen script. **Use
+`npx supabase gen types typescript --local > src/db/database.types.ts`**, and check
+`git diff --stat src/db/database.types.ts` is ADDITIVE — any large deletion count means the pilot's
+schema just landed in the repo. The script itself is unchanged (flagged to the user, outside build
+6.5's plan scope).
+
 ### 6.5 One send verb — escalate dies (USER RULING 2026-09-01, NOT BUILT)
 
 **The ruling.** *"I think we should get rid of escalate and we should look into having a generalized

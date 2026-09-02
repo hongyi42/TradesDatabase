@@ -31,6 +31,11 @@ import {
   setNudgeAnsweredBy,
   setNudgeSchedule,
   setObservationStatus,
+  // The roster (build 6.5 Phase 1). `isInactiveState` is the ONE definition of
+  // "this row no longer participates" — the planner must not grow a second.
+  isInactiveState,
+  listTeam,
+  listRosterEvents,
   type JobEvidenceRow,
   type MoneyEvent,
   type Nudge,
@@ -38,6 +43,9 @@ import {
   type Observation,
   type OfficeMessage,
   type NudgeDecisionInput,
+  type RosterEvent,
+  type Technician,
+  type TechnicianState,
 } from '../db/index.js';
 import { runToolLoop, ToolLoopLimitError, type ToolLoopLimit } from '../model/toolLoop.js';
 import { MAX_DELIVERY_ATTEMPTS, MAX_SERVE_COUNT } from '../control/nudgeQueue.js';
@@ -542,6 +550,12 @@ export interface PlannerDeps {
   // standing 't1'-is-not-a-uuid reason.
   listAssignments?: typeof listAssignmentsByIds;
   listJobs?: typeof listJobsWithCustomerByIds;
+  // The roster and its trail (build 6.5 Phase 1). Injected for the standing
+  // 't1'-is-not-a-uuid reason, and this one is not optional in practice: a
+  // live `listTeam('t1')` is a PostgREST 22P02 that would turn every planner
+  // unit test into a `tenantError`.
+  listTeam?: typeof listTeam;
+  listRosterEvents?: typeof listRosterEvents;
   // (`flagNudge`, `findOpenItem`, `notify` and `hasPushToken` were escalate's
   // four collaborators — the review-item writer, its once-ever-null
   // disambiguator, and the count-only manager heads-up its applied items
@@ -833,6 +847,225 @@ const TECHNICIAN_SPOKEN_CHANNELS: ReadonlySet<string> = new Set([
 const technicianSpoke = (c: JobEvidenceRow['capture']): boolean =>
   !!c.technician_ref && TECHNICIAN_SPOKEN_CHANNELS.has(c.channel);
 
+// ONE PERSON, AS THE ROSTER KNOWS THEM RIGHT NOW (build 6.5 Phase 1, user
+// ruling 2026-09-02: "if the planner is the central intelligence of the firm,
+// then it should know the roster of the team actively").
+//
+// Until this build the planner was never told who worked at the firm. It saw
+// gaps, each carrying a `technicianName` STAMPED INTO CONTEXT WHEN THE GAP WAS
+// FOUND (watchers.ts) and never refreshed — so it knew the people who had
+// problems, by a name it could not address, which might no longer be their
+// name and might belong to somebody who had left months ago.
+export interface Addressee {
+  ref: string;
+  technicianId: string;
+  displayName: string;
+  tier: string;
+  state: TechnicianState;
+  seatExempt: boolean;
+  // Reachability is a PROPERTY OF THE TRANSPORT, not of the person's rank.
+  // BOTH legs need a HOST and a sandbox: every delivery starts from a host
+  // pull that filters `technicians.host_id` (nudges.ts:192, officeMessages.ts
+  // :158), so a person with a sandbox and no host never reaches the serve-time
+  // skips at all. On top of that, a verbatim text is sent by `openclaw message
+  // send` from inside the recipient's own container to their Telegram id, so it
+  // needs the binding too; an injected agent turn does not.
+  // (`seat_exempt` is ours, not the transports': they never read it. It is
+  // included because a schedule-only person has no container to send from —
+  // conservative in the same direction.)
+  chat: boolean;
+  assistant: boolean;
+  // When the CURRENT departure began, or null for anyone still here — and also
+  // null for somebody who left before roster_events existed, which is why the
+  // caller must be able to say "date unknown" rather than substituting a
+  // column that means something else (see the migration header).
+  leftAt: string | null;
+}
+
+// The most recent departure THAT STILL STANDS, or null. Walked oldest-first so
+// a person who left, came back and left again reports the LAST leaving; the
+// streak's FIRST event is the answer, because 'offboarding' is already
+// unreachable and the later 'offboarded' is only its confirmation.
+function currentDeparture(events: RosterEvent[]): string | null {
+  let leftAt: string | null = null;
+  for (const e of [...events].sort((a, b) => a.occurred_at.localeCompare(b.occurred_at))) {
+    if (!isInactiveState(e.to_state)) {
+      leftAt = null;
+      continue;
+    }
+    // Already inactive and staying inactive — the streak began earlier.
+    if (e.from_state && isInactiveState(e.from_state)) continue;
+    leftAt = e.occurred_at;
+  }
+  return leftAt;
+}
+
+/**
+ * The roster, keyed by BOTH ref and technician id.
+ *
+ * Two keys because the two readers hold different halves: a gap holds the
+ * person's `technician_id` FK, and a decision the model writes will hold the
+ * `ref` it copied off the block. Keying only one would force a scan on the
+ * other.
+ *
+ * EVERY ROW, not just the reachable ones — offboarded and seat-exempt people
+ * included. Without them a gap whose person has left is indistinguishable from
+ * a gap naming somebody who never existed, and those two want opposite
+ * responses from the planner.
+ */
+export function buildRoster(team: Technician[], events: RosterEvent[] = []): Map<string, Addressee> {
+  const byPerson = new Map<string, RosterEvent[]>();
+  for (const e of events) {
+    const list = byPerson.get(e.technician_id);
+    if (list) list.push(e);
+    else byPerson.set(e.technician_id, [e]);
+  }
+  const out = new Map<string, Addressee>();
+  for (const t of team) {
+    const gone = isInactiveState(t.state);
+    const a: Addressee = {
+      ref: t.ref,
+      technicianId: t.id,
+      displayName: t.display_name,
+      tier: t.tier,
+      state: t.state,
+      seatExempt: !!t.seat_exempt,
+      chat: !gone && !t.seat_exempt && !!t.host_id && !!t.sandbox_ref && !!t.telegram_user_id,
+      assistant: !gone && !t.seat_exempt && !!t.host_id && !!t.sandbox_ref,
+      leftAt: gone ? currentDeparture(byPerson.get(t.id) ?? []) : null,
+    };
+    out.set(t.ref, a);
+    out.set(t.id, a);
+  }
+  return out;
+}
+
+// "August 12, 2026" in the FIRM's timezone (the standing rule: every
+// chat-facing time is firm-local, never UTC). Null when the zone or the
+// instant cannot be read — the caller says "date unknown" rather than
+// printing a wrong day.
+function departureDate(iso: string, tz: string): string | null {
+  try {
+    const day = localDateISO(iso, tz);
+    return new Date(`${day}T00:00:00Z`).toLocaleDateString('en-US', {
+      timeZone: 'UTC',
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  } catch {
+    return null;
+  }
+}
+
+// ONE classification of how a person can be reached, because it is rendered in
+// TWO places — the roster block and every gap's person line — and two parallel
+// branch chains would eventually disagree about the same human.
+//
+// The four unreachable cases are deliberately DIFFERENT, because they want
+// different responses: "no phone linked" and "not set up yet" are operator
+// fixes (and the second is a NEW HIRE, not a permanent state — the review
+// caught this line calling them "schedule only", which is the opposite of the
+// truth); "schedule only" is how the firm deliberately set that person up; and
+// "no longer on the team" means the question will never be answered by them.
+type Reach = 'both' | 'assistant' | 'schedule-only' | 'not-set-up' | 'gone';
+
+function reachOf(a: Addressee): Reach {
+  if (isInactiveState(a.state)) return 'gone';
+  if (a.chat) return 'both';
+  if (a.assistant) return 'assistant';
+  return a.seatExempt ? 'schedule-only' : 'not-set-up';
+}
+
+// The roster block's right-hand column.
+function reachLabel(a: Addressee): string {
+  switch (reachOf(a)) {
+    case 'both':
+      return 'chat, assistant';
+    case 'assistant':
+      return 'assistant only (no phone linked)';
+    case 'schedule-only':
+      return 'UNREACHABLE (schedule only)';
+    default:
+      return 'UNREACHABLE (not set up yet)';
+  }
+}
+
+// The tail of a gap's person line.
+function standingOf(a: Addressee, tz: string): string {
+  switch (reachOf(a)) {
+    case 'gone': {
+      const when = a.leftAt ? departureDate(a.leftAt, tz) : null;
+      return ` — NO LONGER ON THE TEAM, left ${when ?? '(date unknown)'}`;
+    }
+    case 'both':
+      return '';
+    case 'assistant':
+      return ' — assistant only, no phone linked';
+    case 'schedule-only':
+      return ' — no assistant and no phone; nobody to ask here';
+    default:
+      return ' — not set up yet; nobody to ask here';
+  }
+}
+
+// How a gap names its person. The FK is the key, never the stamped ref: a
+// person can be re-reffed and the context would keep the old string, while
+// `technician_id` is the row itself. `unknown` when the record names nobody —
+// a real state (an unassigned visit, a departed roster row that predates the
+// FK) that `send` refuses on.
+function personLine(n: Nudge, roster: Map<string, Addressee>, tz: string): string {
+  const a = n.technician_id ? roster.get(n.technician_id) : undefined;
+  if (!a) {
+    // No roster (the eval renderers, most unit tests) or no row for this id:
+    // the stamped name is all anybody has, and saying it is better than
+    // saying nothing. Deliberately carries NO standing — we do not know it.
+    return ctxStr(n, 'technicianName') ?? 'unknown';
+  }
+  return `${a.displayName} (${a.ref})${standingOf(a, tz)}`;
+}
+
+/**
+ * WHO YOU CAN REACH — the firm's team, as a list the planner copies from.
+ *
+ * A ref is COPIED, never invented: the same discipline as gap ids and the
+ * "dates you may use" rail. The block is what makes a `to` writable at all.
+ *
+ * DEPARTED PEOPLE APPEAR ONLY WHEN A GAP IN FRONT OF THE PLANNER NAMES ONE
+ * (`namedDeparted`). A roster row is never deleted, so the alumni list only
+ * grows; printing all of it every tick would spend the firm's context on
+ * people nobody is asking about. The ones that matter are exactly the ones
+ * attached to something the planner is being asked to decide.
+ */
+export function buildReachableBlock(
+  roster: Addressee[],
+  namedDeparted: Addressee[] = [],
+  tz = 'UTC',
+): string {
+  const here = roster
+    .filter((a) => !isInactiveState(a.state))
+    // Stable, name-independent order so the block does not churn between ticks.
+    .sort((a, b) => a.ref.localeCompare(b.ref));
+  if (here.length === 0 && namedDeparted.length === 0) return '';
+  const lines = [
+    'WHO YOU CAN REACH — copy a `to` exactly from this list. Skills and where they work are not ' +
+      'here; look those up if you need them.',
+  ];
+  for (const a of here) {
+    lines.push(`  ${a.ref}  ${a.displayName}  ${a.tier}  — ${reachLabel(a)}`);
+  }
+  if (namedDeparted.length > 0) {
+    lines.push(
+      'NO LONGER HERE — these people are named by gaps below and cannot be reached at all:',
+    );
+    for (const a of [...namedDeparted].sort((x, y) => x.ref.localeCompare(y.ref))) {
+      const when = a.leftAt ? departureDate(a.leftAt, tz) : null;
+      lines.push(`  ${a.ref}  ${a.displayName} — left ${when ?? '(date unknown)'}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 // The evidence bound is CODE's, not the model's: only what landed after the ask,
 // on that gap's job. A planner that could decide for itself what counted as
 // evidence could mark a gap answered by something that predates the question.
@@ -871,6 +1104,11 @@ export function buildGapView(
   //                  will read 0/0 and mean nothing.
   //   null         — an ordinary ungrouped gap; its own row is the ledger.
   groupLead: Nudge | 'leaderless' | null = null,
+  // THE ROSTER AS IT IS NOW (build 6.5 Phase 1), keyed by ref and by id.
+  // Defaulted empty for the eval renderers and the existing tests, where the
+  // honest reading is "we were not told" — an empty map falls back to the
+  // stamped name exactly as before, so no call site changes meaning.
+  roster: Map<string, Addressee> = new Map(),
 ): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
@@ -967,7 +1205,12 @@ export function buildGapView(
     // `customer_name LIKE '%Okafor%'` and burned turns on queries that returned
     // nothing — it had the words but not the key.
     ...(jobId ? [`  job id: ${jobId}   (filter by this id, never by name)`] : []),
-    `  person: ${ctxStr(n, 'technicianName') ?? 'unknown'}`,
+    // THE PERSON, RESOLVED LIVE — not the name stamped into context when this
+    // gap was found. Looked up by `technician_id` so a rename resolves, and
+    // carrying their CURRENT standing so a question addressed to somebody who
+    // left says so instead of reading like any other open gap. Falls back to
+    // the stamped name when the roster was not supplied or the row is gone.
+    `  person: ${personLine(n, roster, tz)}`,
     `  state: ${n.status}`,
     `  noticed: ${hoursBetween(n.created_at, nowMs)}h ago`,
   ];
@@ -2051,6 +2294,12 @@ export function buildPlannerUserMessage(
   // where variable content belongs (the cache-order constraint the memory
   // index's own comment records).
   officeBlock = '',
+  // WHO YOU CAN REACH (build 6.5 Phase 1), or '' — the default keeps every
+  // existing call site and test byte-identical. Rendered BEFORE the gaps and
+  // not after: the gap blocks name people, and a reader meets the team before
+  // it meets their problems. It is also the most stable content here, which is
+  // where the cache-order note above says stable content belongs.
+  reachableBlock = '',
 ): string {
   return [
     // THE INDEX GOES FIRST, and the reason is the cache, not the reading order.
@@ -2078,6 +2327,7 @@ export function buildPlannerUserMessage(
     `Right now it is ${firmClockLine(nowIso, tz)}.`,
     `In UTC that instant is ${nowIso} — use UTC for any notBefore you write.`,
     '',
+    ...(reachableBlock ? [reachableBlock, ''] : []),
     `This firm has ${views.length} open gap(s).`,
     '',
     views.map((v) => v.block).join('\n\n'),
@@ -2482,6 +2732,8 @@ export async function runPlanner(
   const stampAnswer = deps.stampAnswer ?? setNudgeAnsweredBy;
   const listAssignments = deps.listAssignments ?? listAssignmentsByIds;
   const listJobs = deps.listJobs ?? listJobsWithCustomerByIds;
+  const readTeam = deps.listTeam ?? listTeam;
+  const readRosterEvents = deps.listRosterEvents ?? listRosterEvents;
   const getSettings = deps.getSettings ?? readSettingsTolerantly;
   const tools = deps.tools ?? [];
   const execute = deps.execute;
@@ -2846,6 +3098,35 @@ export async function runPlanner(
         console.error(`[planner] tenant ${tenantId}: job-note read failed — running without`, err);
       }
 
+      // THE ROSTER (build 6.5 Phase 1). Read before the views are built,
+      // because every gap's person line resolves through it.
+      //
+      // A ROSTER READ MUST NEVER COST THE TICK — same doctrine as the memory
+      // index above: the team is context, the gaps are the job. On failure the
+      // map stays empty and every person line falls back to the stamped name,
+      // which is exactly the pre-6.5 behaviour.
+      //
+      // The trail read is bounded by the ids this tick actually holds, and is
+      // asked for ONLY when a gap names somebody who has left — nobody else's
+      // departure date can appear anywhere, so reading it would be waste.
+      let roster = new Map<string, Addressee>();
+      try {
+        const team = await readTeam(tenantId);
+        const gone = new Set(
+          open
+            .map((n) => n.technician_id)
+            .filter((id): id is string => !!id)
+            .filter((id) => {
+              const t = team.find((row) => row.id === id);
+              return !!t && isInactiveState(t.state);
+            }),
+        );
+        const events = gone.size > 0 ? await readRosterEvents(tenantId, [...gone]) : [];
+        roster = buildRoster(team, events);
+      } catch (err) {
+        console.error(`[planner] tenant ${tenantId}: roster read failed — running without`, err);
+      }
+
       const gapsPerJob = new Map<string, number>();
       for (const n of open) {
         const j = ctxStr(n, 'jobId');
@@ -2884,6 +3165,7 @@ export async function runPlanner(
             (j && noteMeta.get(j)) || null,
             mootFactFor(n),
             leadFor(n),
+            roster,
           ),
         );
       }
@@ -2979,6 +3261,19 @@ export async function runPlanner(
           nowMs,
           deskPairs,
           unreadMessages.length - unreadShown.length,
+        ),
+        // Departed people are listed ONLY when a gap in this tick names one —
+        // deduped by id, because two gaps can name the same person.
+        buildReachableBlock(
+          [...new Set(roster.values())],
+          [
+            ...new Set(
+              open
+                .map((n) => (n.technician_id ? roster.get(n.technician_id) : undefined))
+                .filter((a): a is Addressee => !!a && isInactiveState(a.state)),
+            ),
+          ],
+          tz,
         ),
       );
 

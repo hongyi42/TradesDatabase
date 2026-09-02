@@ -462,3 +462,40 @@ export async function setTechnicianServiceCities(
 export function isInactiveState(state: TechnicianState): boolean {
   return state === 'offboarding' || state === 'offboarded';
 }
+
+export type RosterEvent = Database['public']['Tables']['roster_events']['Row'];
+
+/**
+ * The roster trail for these people, newest first (build 6.5 Phase 1).
+ *
+ * Written ENTIRELY by the `technicians_record_roster_event` trigger
+ * (20260903110000) — there is no app-side writer, and adding one would
+ * double-count. The trigger is what makes this complete: state changes reach
+ * `technicians` through `casTechnician` and `updateTechnician` as well as the
+ * test-only `setTechnicianState`, so a hook on any one function would have
+ * recorded a fraction of the truth.
+ *
+ * BOUNDED BY IDS, never a tenant scan: the caller is the planner's per-tick
+ * roster read and it already knows which people it cares about. `tenant_id` is
+ * still filtered — the ids come from a tenant-scoped read, and a cross-tenant
+ * id would otherwise leak one firm's departure dates into another's briefing.
+ *
+ * THE TRAIL STARTS EMPTY. Nothing here can be backfilled (see the migration
+ * header: `technicians.updated_at` is bumped by any edit and is not a
+ * departure date), so a person who left before this shipped has NO row and the
+ * caller must say "date unknown" rather than reaching for a substitute.
+ */
+export async function listRosterEvents(
+  tenantId: string,
+  technicianIds: string[],
+): Promise<RosterEvent[]> {
+  if (technicianIds.length === 0) return []; // PostgREST `in.()` with zero values errors
+  const { data, error } = await getClient()
+    .from('roster_events')
+    .select()
+    .eq('tenant_id', tenantId)
+    .in('technician_id', technicianIds)
+    .order('occurred_at', { ascending: false });
+  if (error) throw new Error(`listRosterEvents failed: ${error.message}`);
+  return (data ?? []) as RosterEvent[];
+}

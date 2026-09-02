@@ -3,10 +3,12 @@ import { Client } from 'pg';
 import { getClient } from '../db/client.js';
 import { createPendingNudge, listNudgesByStatus } from '../db/nudges.js';
 import { recordNudgeDecisions } from '../db/nudgeDecisions.js';
-import type { Nudge, NudgeDecision, NudgeDecisionInput, Observation, OfficeMessage, Tenant, JobEvidenceRow, RawCapture } from '../db/index.js';
+import type { Nudge, NudgeDecision, NudgeDecisionInput, Observation, OfficeMessage, Tenant, JobEvidenceRow, RawCapture, RosterEvent, Technician } from '../db/index.js';
 import type { PlannerSummary, PlannerTenantPlan } from './planner.js';
 import {
   buildGapView,
+  buildRoster,
+  buildReachableBlock,
   buildOfficeMessagesBlock,
   cleanQuestionDraft,
   buildPlannerUserMessage,
@@ -127,6 +129,13 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     lastRunAt: async () => null,
     plannerRun: async () => {},
     jobNotes: async () => new Map(),
+    // Build 6.5: the roster readers, stubbed for the SAME reason as the three
+    // above — 't1' is not a uuid, so a live listTeam is a PostgREST 22P02 that
+    // the tick swallows, and every test here would silently exercise the
+    // degraded "no roster" path. Empty by default so the anti-drift locks stay
+    // byte-identical; the roster's own wiring test supplies a real one.
+    listTeam: async () => [],
+    listRosterEvents: async () => [],
     listTenants: async () => ['t1'],
     getTenant: async () => ({ id: 't1', timezone: 'UTC' }) as unknown as Tenant,
     listNudges: async () => [nudge()],
@@ -4869,5 +4878,236 @@ describe('the DELIVERY line (build 6 Phase 5)', () => {
     // `ask_agent` does not ride this pipe, so it still works when the message
     // does not — the one thing the planner can still DO here.
     expect(PLANNER_SYSTEM).toContain('reach the person through `ask_agent`');
+  });
+});
+
+// THE FIRM'S ROSTER (build 6.5 Phase 1, user ruling 2026-09-02: "the planner
+// should probably have a record of the firm's roster (with history)").
+//
+// What these lock in is the difference between a gap that names somebody and a
+// gap that names somebody WHO IS STILL HERE. Before this build the person line
+// printed a name stamped into the gap's context when it was found and never
+// refreshed — so a departed person's gap read exactly like a live one, and the
+// planner had no way to tell that the question would never be answered.
+describe('the roster the planner is given', () => {
+  const person = (over: Partial<Technician> = {}): Technician =>
+    ({
+      id: 'tech-1',
+      tenant_id: 't1',
+      ref: 'ben-shelton',
+      display_name: 'Ben Shelton',
+      tier: 'technician',
+      state: 'active',
+      seat_exempt: false,
+      // BOTH legs start from a host pull that filters technicians.host_id, so a
+      // person with a sandbox and no host is reachable by neither (the review
+      // caught the reachability comment claiming otherwise).
+      host_id: 'h1',
+      sandbox_ref: 'sb-1',
+      telegram_user_id: '5501',
+      skills: [],
+      service_cities: [],
+      created_at: NOW,
+      updated_at: NOW,
+      ...over,
+    }) as unknown as Technician;
+
+  const event = (over: Partial<RosterEvent> = {}): RosterEvent =>
+    ({
+      id: 'e1',
+      tenant_id: 't1',
+      technician_id: 'tech-1',
+      from_state: 'active',
+      to_state: 'offboarding',
+      actor_ref: null,
+      reason: null,
+      occurred_at: '2026-08-12T15:00:00.000Z',
+      ...over,
+    }) as RosterEvent;
+
+  test('reachability is a property of the transport, not the rank', () => {
+    const block = buildReachableBlock(
+      [
+        ...new Set(
+          buildRoster([
+            person(),
+            person({ id: 't2', ref: 'judy-ramirez', display_name: 'Judy', telegram_user_id: null }),
+            person({ id: 't3', ref: 'helper-joy', display_name: 'Joy', seat_exempt: true, sandbox_ref: null }),
+            person({ id: 't4', ref: 'sam-ortiz', display_name: 'Sam', tier: 'manager' }),
+          ]).values(),
+        ),
+      ],
+      [],
+      'America/Los_Angeles',
+    );
+    // A verbatim text needs a sandbox AND a phone; an injected agent turn needs
+    // only the sandbox. A manager is reached exactly like anyone else.
+    expect(block).toContain('ben-shelton  Ben Shelton  technician  — chat, assistant');
+    expect(block).toContain('judy-ramirez  Judy  technician  — assistant only (no phone linked)');
+    expect(block).toContain('helper-joy  Joy  technician  — UNREACHABLE (schedule only)');
+    expect(block).toContain('sam-ortiz  Sam  manager  — chat, assistant');
+    // Refs are COPIED from this list, never invented — say so.
+    expect(block).toContain('copy a `to` exactly from this list');
+  });
+
+  test('departed people are listed ONLY when a gap names them', () => {
+    const roster = buildRoster(
+      [person(), person({ id: 't5', ref: 'gone-gary', display_name: 'Gary', state: 'offboarded' })],
+      [event({ technician_id: 't5', from_state: 'active', to_state: 'offboarding' })],
+    );
+    const all = [...new Set(roster.values())];
+
+    // Nobody named: Gary is absent entirely. A roster row is never deleted, so
+    // printing every alumnus would grow the block forever.
+    const quiet = buildReachableBlock(all, [], 'America/Los_Angeles');
+    expect(quiet).not.toContain('gone-gary');
+    expect(quiet).not.toContain('NO LONGER HERE');
+
+    // Named by a gap: he appears, with the date he actually left.
+    const named = buildReachableBlock(all, [roster.get('t5')!], 'America/Los_Angeles');
+    expect(named).toContain('NO LONGER HERE');
+    expect(named).toContain('gone-gary  Gary — left August 12, 2026');
+  });
+
+  test('a departure with no trail row says so, and never guesses a date', () => {
+    // The trail cannot be backfilled: anyone who left before it existed has no
+    // row. Reaching for technicians.updated_at would print a skills edit as a
+    // departure date, which is the trap the whole table exists to avoid.
+    const roster = buildRoster([person({ state: 'offboarded' })], []);
+    const block = buildReachableBlock([], [roster.get('tech-1')!], 'America/Los_Angeles');
+    expect(block).toContain('left (date unknown)');
+  });
+
+  test('a gap shows its person AS THEY ARE NOW — id-keyed, so a rename resolves', () => {
+    // The gap's context says "Ben Shelton"; the roster says he is now recorded
+    // under a different display name. The roster wins: it is the row, the
+    // context is a snapshot.
+    const roster = buildRoster([person({ display_name: 'Benjamin Shelton' })], []);
+    const view = buildGapView(nudge(), Date.parse(NOW), [], false, new Set(), [], [], 'UTC', null, null, null, roster);
+    expect(view.block).toContain('person: Benjamin Shelton (ben-shelton)');
+    expect(view.block).not.toContain('person: Ben Shelton');
+  });
+
+  test('a gap whose person has LEFT says so, with the date', () => {
+    const roster = buildRoster([person({ state: 'offboarded' })], [event()]);
+    const view = buildGapView(nudge(), Date.parse(NOW), [], false, new Set(), [], [], 'America/Los_Angeles', null, null, null, roster);
+    expect(view.block).toContain('NO LONGER ON THE TEAM, left August 12, 2026');
+  });
+
+  test('the three unreachable cases read as three different problems', () => {
+    // "no phone linked" is an operator fix, "schedule only" is how the firm set
+    // them up, and "no longer on the team" means this question will never be
+    // answered. One phrase for all three would make them one problem.
+    const noPhone = buildRoster([person({ telegram_user_id: null })], []);
+    const exempt = buildRoster([person({ seat_exempt: true, sandbox_ref: null })], []);
+    expect(
+      buildGapView(nudge(), Date.parse(NOW), [], false, new Set(), [], [], 'UTC', null, null, null, noPhone).block,
+    ).toContain('assistant only, no phone linked');
+    expect(
+      buildGapView(nudge(), Date.parse(NOW), [], false, new Set(), [], [], 'UTC', null, null, null, exempt).block,
+    ).toContain('nobody to ask here');
+  });
+
+  test('a NEW HIRE is not "schedule only" — the four unreachable cases are four different things', () => {
+    // The review caught this: every `invited`/`pending_verification` row has no
+    // sandbox yet, and the block called them "UNREACHABLE (schedule only)" —
+    // the opposite of the truth. A new hire is mid-setup; a seat-exempt helper
+    // is how the firm meant it.
+    const newHire = buildRoster([person({ state: 'invited', sandbox_ref: null, host_id: null })], []);
+    const exempt = buildRoster([person({ seat_exempt: true, sandbox_ref: null })], []);
+    expect(buildReachableBlock([newHire.get('tech-1')!])).toContain('UNREACHABLE (not set up yet)');
+    expect(buildReachableBlock([exempt.get('tech-1')!])).toContain('UNREACHABLE (schedule only)');
+    expect(
+      buildGapView(nudge(), Date.parse(NOW), [], false, new Set(), [], [], 'UTC', null, null, null, newHire).block,
+    ).toContain('not set up yet; nobody to ask here');
+    // A host with no sandbox, and a sandbox with no host, are both unreachable.
+    const hostless = buildRoster([person({ host_id: null })], []);
+    expect(buildReachableBlock([hostless.get('tech-1')!])).toContain('UNREACHABLE (not set up yet)');
+  });
+
+  test('no roster supplied — the person line is exactly what it was before 6.5', () => {
+    // Every eval renderer and most tests call buildGapView without a roster.
+    // "We were not told" must fall back to the stamped name and claim NOTHING
+    // about their standing.
+    const view = buildGapView(nudge(), Date.parse(NOW), [], false, new Set());
+    expect(view.block).toContain('person: Ben Shelton');
+    expect(view.block).not.toContain('NO LONGER ON THE TEAM');
+    expect(view.block).not.toContain('(ben-shelton)');
+  });
+
+  test('the current departure is the LAST leaving, not the first', () => {
+    // Left, came back, left again: the date that matters is the one that still
+    // stands. And 'offboarding' is already unreachable, so the streak's FIRST
+    // event is the answer — the later 'offboarded' only confirms it.
+    const roster = buildRoster(
+      [person({ state: 'offboarded' })],
+      [
+        event({ id: 'a', from_state: 'active', to_state: 'offboarding', occurred_at: '2026-06-01T00:00:00.000Z' }),
+        event({ id: 'b', from_state: 'offboarding', to_state: 'active', occurred_at: '2026-07-01T00:00:00.000Z' }),
+        event({ id: 'c', from_state: 'active', to_state: 'offboarding', occurred_at: '2026-08-12T15:00:00.000Z' }),
+        event({ id: 'd', from_state: 'offboarding', to_state: 'offboarded', occurred_at: '2026-08-20T00:00:00.000Z' }),
+      ],
+    );
+    expect(roster.get('tech-1')!.leftAt).toBe('2026-08-12T15:00:00.000Z');
+  });
+
+  test('runPlanner actually RENDERS the roster into the prompt — the wiring, not just the builders', async () => {
+    // THE COVERAGE GAP THE REVIEW FOUND. Every other test here calls
+    // buildRoster/buildGapView directly, and `baseDeps` stubs the readers
+    // empty — so before this test nothing proved runPlanner ever reaches
+    // buildReachableBlock at all. It had been silently taking the degraded
+    // "roster read failed" path in the whole suite.
+    const seen: { user?: string } = {};
+    const gapPerson = person({ id: 'tech-1', ref: 'ben-shelton', state: 'offboarded' });
+    const summary = await runPlanner(
+      NOW,
+      'shadow',
+      baseDeps({
+        listTeam: async () => [
+          gapPerson,
+          person({ id: 't9', ref: 'sam-ortiz', display_name: 'Sam', tier: 'manager' }),
+        ],
+        listRosterEvents: async () => [event({ technician_id: 'tech-1' })],
+        listNudges: async () => [nudge()],
+        runLoop: loopReturning([], seen),
+      }),
+    );
+    expect(summary.tenantErrors).toBe(0);
+    // The block reached the model...
+    expect(seen.user).toContain('WHO YOU CAN REACH');
+    expect(seen.user).toContain('sam-ortiz  Sam  manager  — chat, assistant');
+    // ...the departed person is NOT offered as reachable...
+    expect(seen.user).not.toMatch(/ {2}ben-shelton {2}Ben Shelton {2}technician {2}— chat/);
+    // ...but IS named, because a gap in this tick names them...
+    expect(seen.user).toContain('NO LONGER HERE');
+    // ...and the gap's own person line agrees with the block.
+    expect(seen.user).toContain('NO LONGER ON THE TEAM, left August 12, 2026');
+  });
+
+  test('a firm whose roster read fails still plans — the tick is never the roster\'s hostage', async () => {
+    const seen: { user?: string } = {};
+    const summary = await runPlanner(
+      NOW,
+      'shadow',
+      baseDeps({
+        listTeam: async () => {
+          throw new Error('db hiccup');
+        },
+        listNudges: async () => [nudge()],
+        runLoop: loopReturning([], seen),
+      }),
+    );
+    expect(summary.tenantErrors).toBe(0);
+    expect(summary.planned).toBe(1);
+    // Degraded EXACTLY to pre-6.5: the stamped name, no standing claimed.
+    expect(seen.user).not.toContain('WHO YOU CAN REACH');
+    expect(seen.user).toContain('person: Ben Shelton');
+    expect(seen.user).not.toContain('NO LONGER ON THE TEAM');
+  });
+
+  test('the roster is keyed by BOTH ref and id — the two readers hold different halves', () => {
+    const roster = buildRoster([person()], []);
+    // A gap holds the FK; a decision the model writes holds the ref it copied.
+    expect(roster.get('tech-1')).toBe(roster.get('ben-shelton'));
   });
 });

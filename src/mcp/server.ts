@@ -758,7 +758,7 @@ const TOOLS = [
 // fix to the direction-comes-from-kind warning, lands on one tool and not the
 // other.
 const SPINE_VIEW_CATALOG =
-  'It CANNOT write, and it can only read these thirteen views (nothing else exists to it): ' +
+  'It CANNOT write, and it can only read these fourteen views (nothing else exists to it): ' +
   'v_schedule(assignment_id, local_day, local_weekday, starts_at, ends_at, status, promise_level, ' +
   'promised_day, locked, earliest_date, latest_date, technician_ref, technician_name, job_id, ' +
   'job_title, job_type, job_status, customer_id, customer_name, city, postal_code) — the ' +
@@ -816,7 +816,17 @@ const SPINE_VIEW_CATALOG =
   'v_observations(id, kind, status, subject_ref, technician_ref, technician_name, job_id, ' +
   'dismiss_reason, dismissed_at, not_before, noticed_at) — everything the record has noticed, ' +
   "the DISMISSED ones included: status='dismissed' rows are the OTHER place `recover` ids " +
-  'come from, and dismiss_reason is what you said when you set one aside. ';
+  'come from, and dismiss_reason is what you said when you set one aside; ' +
+  // The roster TRAIL (build 6.5 Phase 1). v_team says who is here NOW; this
+  // says how the team got that way — and it is the only honest source for
+  // when somebody left, because technicians.updated_at is bumped by any edit.
+  'v_roster_events(id, technician_ref, technician_name, tier, from_state, to_state, ' +
+  'occurred_at) — the roster TRAIL: one row per change to a person\'s standing (joined, went ' +
+  'active, offboarding, offboarded, came back). ORDER BY occurred_at yourself — this view has ' +
+  'no order of its own. v_team is who is here now; this ' +
+  'is how that came to be, and the ONLY place a departure has a date. It STARTS IN SEPTEMBER ' +
+  '2026 and cannot be backfilled, so somebody who left before that has no row here at all — ' +
+  'that means "we do not know when", never "they never left". ';
 
 const SPINE_DAY_RULES = GROUNDING_BARE
   ? // Bare keeps the SCHEMA facts (they are true of the data, not advice to a

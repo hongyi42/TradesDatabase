@@ -48,7 +48,10 @@ consequence of the collapse rather than as machinery of its own.
   on every ordinary gap ask would regress the most-used verb and orphan four corpus expectations,
   for no gain. Absent `to` = today's behaviour exactly.
 - **The planner is shown a roster** so a `to` is COPIED from a list, never invented. It carries
-  per-person reachability: chat needs a seat AND a phone; the assistant needs only a seat.
+  per-person reachability, and the predicate is what the TRANSPORTS require, not what rank someone
+  holds: both legs need a HOST and a sandbox (every delivery starts from a host pull filtering
+  `technicians.host_id` — `nudges.ts:192`, `officeMessages.ts:158`), and chat needs the Telegram
+  binding on top. Corrected after the Phase 1 review, which caught the claim omitting `host_id`.
 - **The roster is firm state, not an addressing aid** (user 2026-09-02: "if the planner is the
   central intelligence of the firm, it should know the roster of the team actively"). What exists
   today is a per-gap `person: <display name>` line (`buildGapView`) — so the planner knows the
@@ -76,15 +79,26 @@ consequence of the collapse rather than as machinery of its own.
 - **A FULL ROSTER TRAIL, not just a departure date** (user ruling 2026-09-02, choosing between the
   two: *"the planner should probably have a record of the firm's roster (with history) … so it
   doesn't have to go looking for record that proves a person was offboarded"*). New
-  `roster_events` table — joined / left / came back, when, and who did it. Two facts made this
-  cheap and made the alternative dishonest: every state change already funnels through ONE
-  function (`setTechnicianState`, `technicians.ts:321`; the only other write of `state` is the
-  insert at `:169`), and `technicians.updated_at` is bumped by ANY edit, so it can never answer
-  "when did they leave". **The trail cannot be backfilled** — it starts empty, and a departure
-  that predates it must render `date unknown` rather than a guess. Written app-side rather than by
-  a DB trigger because a trigger cannot see WHO made the change, and the actor is exactly the half
-  a bare timestamp cannot give; the single-funnel property is what makes app-side safe, so a test
-  pins it.
+  `roster_events` table — joined / left / came back, and when. `technicians.updated_at` is bumped
+  by ANY edit, so it can never answer "when did they leave", and **the trail cannot be
+  backfilled** — it starts empty, and a departure predating it renders `date unknown`, never a
+  guess.
+- **CAPTURED BY A DATABASE TRIGGER, and `actor_ref` stays empty** (user ruling 2026-09-02, after
+  the plan's premise was found false at implementation time). This plan first said state changes
+  "funnel through ONE function, `setTechnicianState`", and hooked it app-side to carry the actor.
+  **`setTechnicianState` has NO production runtime callers** — only the test suite and two scripts
+  (`scripts/seed.mjs:266`, `scripts/spine-eval/world.mjs:388`). Every real
+  transition goes through `casTechnician` (`server.ts:5443` deactivate, `:5539` reactivate,
+  `:7904` pairing-verified, `composio/pairing.ts:123,291`, `composio/offboarding.ts:86`) or
+  `updateTechnician` (`server.ts:5744`), both of which take a patch OBJECT — which is why a grep
+  for an inline `state:` literal missed them, and `casTechnician`'s own comment says so outright:
+  *"Every lifecycle transition goes through this."* The planned design would have produced a trail
+  that is FULL IN TESTS AND EMPTY IN PRODUCTION — the worst failure available, because every test
+  would have proved it working. A trigger catches all four writers and any fifth added later.
+  The cost, accepted: a trigger cannot see WHO acted, and no mechanism exists to pass one down
+  (`spine.tenant_id`, this codebase's only session setting, is set inside SQL and has no
+  TypeScript caller). `actor_ref` stays a nullable column, always empty, so attribution can be
+  added later without redesign.
 - **Departures are shown only when a gap names them.** The roster block lists everyone reachable
   plus any departed person the tick's own gaps mention. An unbounded alumni list would grow
   forever and spend context every tick on people nobody is asking about; `v_roster_events` is
@@ -201,14 +215,17 @@ row is never deleted — who used to be here and when they left. No verb, schema
   `grant select on v_roster_events to spine_reader` (the `v_nudges` posture, `20260823120000:121-123`).
 - DEPLOY ORDER header: apply BEFORE the code.
 
+- **The capture is a TRIGGER, not an app-side write** (see Decisions — `setTechnicianState` is a
+  test-only helper and the production paths are `casTechnician`/`updateTechnician`):
+  `after insert or update on technicians for each row`, writing an event when `tg_op = 'INSERT'`
+  (`from_state` null — "we started watching here") or when
+  `new.state is distinct from old.state`. Columns take the `technician_state` ENUM, not text, so
+  a bad value cannot land. No app-side writer is added anywhere.
+
 **`src/db/technicians.ts`**
-- `setTechnicianState` (`:321`) — **the ONE funnel every state change already passes through**
-  (verified: the only other write of `state` is the insert at `:169`) — reads the row first and
-  appends a `roster_events` row with `from_state`/`to_state`, gaining optional `actorRef` and
-  `reason` params. App-side rather than a DB trigger, deliberately: a trigger cannot see WHO made
-  the change, and the actor is the half a bare timestamp cannot give. The single-funnel property
-  is what makes app-side safe, so it gets a test that pins it.
-- New `listRosterEvents(tenantId, technicianIds)` — bounded by ids, never a tenant scan.
+- New `listRosterEvents(tenantId, technicianIds)` — bounded by ids, never a tenant scan. This is
+  the ONLY change to this file; no existing function is touched, which is the point of the
+  trigger.
 
 **`src/teamLead/planner.ts`**
 - `interface Addressee { ref: string; technicianId: string; displayName: string; tier: string;
@@ -247,23 +264,27 @@ sharing the catalog with `query_spine` is acceptable — record that acceptance 
 `v_observations`' was.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] migration applies to the local stack and is re-runnable (run it twice)
-- [ ] new: `setTechnicianState` appends exactly one `roster_events` row per change, carrying the
-      previous state; a no-op re-set of the same state appends nothing
-- [ ] new: a structural test pinning `setTechnicianState` as the only writer of `technicians.state`
-- [ ] new: `buildReachableBlock` renders all four reachability states, omits offboarded rows from
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] migration applies to the local stack and is re-runnable (run it twice)
+- [x] new: the trigger appends exactly one `roster_events` row per state change, carrying the
+      previous state; an update that does NOT change state appends nothing; inserting a
+      technician appends one row with `from_state` null
+- [x] new: **the trigger fires for `casTechnician` AND `updateTechnician`, not just
+      `setTechnicianState`** — this is the finding that changed the design, so it gets its own
+      test naming all three paths. Without it the suite would pass on the test-only helper while
+      production wrote nothing.
+- [x] new: `buildReachableBlock` renders all four reachability states, omits offboarded rows from
       the reachable list, and lists a departure ONLY when a gap names that person
-- [ ] new: a gap whose person is `offboarded` renders `NO LONGER ON THE TEAM`; one whose person is
+- [x] new: a gap whose person is `offboarded` renders `NO LONGER ON THE TEAM`; one whose person is
       seat-exempt renders `nobody to ask here` — both from the roster, NOT from the stale
       `technicianName` in `context`
-- [ ] new: a gap whose person was RENAMED since it was minted renders the CURRENT name
-- [ ] new: a departure with no `roster_events` row renders `date unknown`, never a guess
-- [ ] the two view-count pins updated: `server.test.ts:8287`, `querySpine.test.ts:317`
+- [x] new: a gap whose person was RENAMED since it was minted renders the CURRENT name
+- [x] new: a departure with no `roster_events` row renders `date unknown`, never a guess
+- [x] the two view-count pins updated: `server.test.ts:8287`, `querySpine.test.ts:317`
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack (`npx supabase start`, `.env.test`), `npm run seed:local`
-- [ ] Offboard a seeded technician who holds an open gap through the real tool path, then drive one
+- [x] Offboard a seeded technician who holds an open gap through the real tool path, then drive one
       tick and read the RENDERED user message back: the gap must say `NO LONGER ON THE TEAM` with
       the date, and `roster_events` must hold the `active → offboarded` row. Cross-channel: the
       prompt text and the table, not one inferred from the other.

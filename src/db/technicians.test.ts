@@ -12,6 +12,8 @@ import {
   setTechnicianSkills,
   listTechniciansInStates,
   listTenantIdsWithTelegramBindings,
+  listRosterEvents,
+  casTechnician,
   setTechnicianState,
   updateTechnician,
 } from './technicians.js';
@@ -399,5 +401,130 @@ describe('technician skills (Plan 3a)', () => {
     // Full-replace semantics: a second set does not merge.
     const replaced = await setTechnicianSkills(tech.id, ['NATE-Certified']);
     expect(replaced.skills).toEqual(['nate-certified']);
+  });
+});
+
+// THE ROSTER TRAIL (build 6.5 Phase 1). These tests exist because the PLAN WAS
+// WRONG: it specified an app-side write inside `setTechnicianState`, on the
+// stated grounds that every state change funnels through it. It does not —
+// that function has NO production runtime callers at all (only this suite and
+// two scripts, seed.mjs:266 and spine-eval/world.mjs:388), while real
+// transitions go through `casTechnician` (deactivate, reactivate, the pairing
+// and expiry sweeps) and `updateTechnician`. An app-side hook would
+// have produced a trail that was FULL IN TESTS AND EMPTY IN PRODUCTION, and a
+// suite that only exercised the helper would have proved it working.
+//
+// So the capture is a DB trigger, and the load-bearing test is the one that
+// drives all three paths.
+describe('roster_events — the trail behind who is on the team', () => {
+  let trailTech: string;
+
+  beforeAll(async () => {
+    // Room to move people through states without meeting the seat cap; the
+    // file's afterAll restores the seed capacity.
+    await setTenantSeats(tenantId, { managerSeats: 5, technicianSeats: 20 });
+  });
+
+  test('an INSERT opens the trail, with no from_state', async () => {
+    const t = await insertTechnician({ tenantId, ref: 'trail-tom', displayName: 'Trail Tom' });
+    trailTech = t.id;
+    const events = await listRosterEvents(tenantId, [t.id]);
+    expect(events).toHaveLength(1);
+    // null from_state means "we started watching here" — never "they came
+    // from nowhere" (the migration header).
+    expect(events[0].from_state).toBeNull();
+    expect(events[0].to_state).toBe('invited');
+  });
+
+  test('EVERY writer is captured — casTechnician and updateTechnician, not just the helper', async () => {
+    // THE TEST THAT WOULD HAVE CAUGHT THE PLAN'S ERROR. Each of the three
+    // paths must leave a row; production only ever uses the first two.
+    await casTechnician(trailTech, 'invited', { state: 'active' }); // deactivate/reactivate/sweeps
+    await updateTechnician(trailTech, { state: 'offboarding' }); // the field patch
+    await setTechnicianState(trailTech, 'offboarded'); // the test-only helper
+
+    const events = await listRosterEvents(tenantId, [trailTech]);
+    // Newest first, and every hop is present with the state it came from.
+    expect(events.map((e) => [e.from_state, e.to_state])).toEqual([
+      ['offboarding', 'offboarded'],
+      ['active', 'offboarding'],
+      ['invited', 'active'],
+      [null, 'invited'],
+    ]);
+  });
+
+  test('a write that does not change state records nothing', async () => {
+    const before = await listRosterEvents(tenantId, [trailTech]);
+    // A field patch with no state in it...
+    await updateTechnician(trailTech, { telegram_user_id: '55501' });
+    // ...and a re-set of the state the row already holds. `is distinct from`
+    // is what makes the second one silent.
+    await setTechnicianState(trailTech, 'offboarded');
+    const after = await listRosterEvents(tenantId, [trailTech]);
+    expect(after).toHaveLength(before.length);
+  });
+
+  test('leaving, coming back and leaving again keeps both departures', async () => {
+    const t = await insertTechnician({ tenantId, ref: 'trail-rita', displayName: 'Trail Rita' });
+    await casTechnician(t.id, 'invited', { state: 'active' });
+    await casTechnician(t.id, 'active', { state: 'offboarding' });
+    await casTechnician(t.id, 'offboarding', { state: 'active' }); // reactivated
+    await casTechnician(t.id, 'active', { state: 'offboarding' }); // and left again
+
+    const events = await listRosterEvents(tenantId, [t.id]);
+    const departures = events.filter((e) => e.to_state === 'offboarding');
+    expect(departures).toHaveLength(2);
+    // The trail is what lets a reader tell "left once" from "left twice" — a
+    // single state_changed_at column could not.
+    expect(events[0].to_state).toBe('offboarding');
+    expect(events[0].from_state).toBe('active');
+  });
+
+  test('actor_ref is always null, and that is recorded, not forgotten', async () => {
+    // A trigger cannot see who acted, and this codebase has no way to pass one
+    // down. The column exists so attribution can be added without a second
+    // migration over live rows (user ruling 2026-09-02).
+    const events = await listRosterEvents(tenantId, [trailTech]);
+    expect(events.every((e) => e.actor_ref === null)).toBe(true);
+  });
+
+  test('ACL posture: RLS on, and the VIEW is revoked too — not just the table', async () => {
+    // THE REVIEW CAUGHT THIS ONE SHIPPING OPEN. `auto_expose_new_tables`
+    // (supabase/config.toml) grants the publishable keys everything on every
+    // new entity, VIEWS INCLUDED, and a revoke on the base table does not
+    // cover its view. v_roster_events was created with SELECT/INSERT/UPDATE/
+    // DELETE for anon and authenticated while v_nudges and v_observations had
+    // none — exactly the outlier 20260901130000:110-114 warned against. This
+    // probe is why that cannot happen silently again.
+    const rls = await pg.query(
+      `select relrowsecurity from pg_class where relname = 'roster_events'`,
+    );
+    expect(rls.rows[0]?.relrowsecurity).toBe(true);
+    const priv = await pg.query(
+      `select has_table_privilege('anon', 'public.roster_events', 'SELECT') as a_sel,
+              has_table_privilege('anon', 'public.roster_events', 'INSERT') as a_ins,
+              has_table_privilege('authenticated', 'public.roster_events', 'SELECT') as u_sel,
+              has_table_privilege('authenticated', 'public.roster_events', 'UPDATE') as u_upd`,
+    );
+    expect(Object.values(priv.rows[0]).some(Boolean)).toBe(false);
+    const view = await pg.query(
+      `select has_table_privilege('spine_reader', 'public.v_roster_events', 'SELECT') as r,
+              has_table_privilege('anon', 'public.v_roster_events', 'SELECT') as a,
+              has_table_privilege('authenticated', 'public.v_roster_events', 'SELECT') as u`,
+    );
+    expect(view.rows[0].r).toBe(true);
+    expect(view.rows[0].a).toBe(false);
+    expect(view.rows[0].u).toBe(false);
+  });
+
+  test('the read is tenant-scoped and id-bounded', async () => {
+    expect(await listRosterEvents(tenantId, [])).toEqual([]);
+    const { rows } = await pg.query('select id from tenants where name = $1', ['Default Tenant']);
+    expect(rows).toHaveLength(1);
+    // A cross-tenant id must not leak one firm's departure dates into
+    // another's briefing: the tenant filter is not decoration.
+    const other = await createTenant('Roster Scope Tenant');
+    expect(await listRosterEvents(other.id, [trailTech])).toEqual([]);
+    await pg.query("delete from tenants where name = 'Roster Scope Tenant'");
   });
 });

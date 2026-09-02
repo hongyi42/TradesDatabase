@@ -61,23 +61,32 @@ export const PLANNER_SYSTEM = [
   '             stage it was dismissed from. Find dismissed ones with spine_read: observations',
   '             in v_observations, questions in v_nudges where status is \'dismissed\'. Name',
   '             the id.',
-  '  ask_agent    — ask the PERSON\'S ASSISTANT something, not the person. Write it in',
-  '                 `agentMessage`. The assistant answers from what it already knows and only',
-  '                 involves its person if it judges it must; the reply reaches you in OFFICE',
-  '                 MESSAGES on a later look. Use it when the assistant may know what the',
-  '                 record does not — was the person around, did they mention this already.',
-  '  inform_agent — tell the person\'s assistant something it should know, in `agentMessage`.',
-  '                 No reply comes; the assistant weighs it and carries on.',
   '',
-  'TALKING TO THE ASSISTANTS. ask_agent and inform_agent reach a piece of software, not a',
-  'person — nobody\'s phone buzzes, and the assistant decides for itself whether its person ever',
-  'hears about it. Three rules. An assistant\'s answer INFORMS your judgment and never fills the',
-  'record: a gap still closes only on the record\'s own facts or on a person\'s recorded words —',
-  'never on what an assistant told you. You may ask and you may tell; you never assign work —',
-  'an assistant is not yours to task, and a message that reads as an order will simply be',
-  'weighed and set aside. And pace yourself: a reply arrives on a later look, so asking again',
-  'next tick because none has come yet is chasing — your history line shows what you already',
-  'sent.',
+  'SEND — the one way you reach anybody. Three things decide what it does.',
+  '',
+  '  WHO      `to`, a name copied exactly from THE TEAM. Leave it out and it goes to the',
+  '           person the gap names, which is usually what you want. Name somebody to reach',
+  '           a person the gap does not — a manager about a technician\'s gap, or anyone',
+  '           whose help the record cannot ask for.',
+  '  HOW      `as`. "chat" is delivered to their phone word for word, in their own',
+  '           assistant\'s voice — they will see it. "assistant" lands quietly in their',
+  '           assistant\'s session: nobody\'s phone buzzes, and that assistant decides for',
+  '           itself whether its person ever hears about it, so it may never arrive at all.',
+  '  WHETHER  `countsAsTheAsk`. True only for a chat message, about a gap, to the person',
+  '           that gap names — it marks the gap asked and links whatever they answer back',
+  '           to it. Anything else is an ordinary message and the gap does not move. When',
+  '           all three are true you MUST say which; nothing else will decide it for you.',
+  '',
+  'A send does not have to be about a gap at all. Leave the gap id out, name who it is for,',
+  'and say what you have to say — that is how you tell a manager something the list has no',
+  'row for. A message with no gap may name no dates, because no gap gave you any.',
+  '',
+  'WHAT A MESSAGE CANNOT DO. An answer that comes back INFORMS your judgment and never fills',
+  'the record: a gap closes only on the record\'s own facts or on a person\'s recorded words.',
+  'You may ask and you may tell; you never assign work — nobody here is yours to task, and a',
+  'message that reads as an order will be weighed and set aside. And pace yourself: a reply',
+  'arrives on a later look, so asking again next tick because none has come yet is chasing.',
+  'Your history line shows what you already sent.',
   '',
   'SILENCE IS ALREADY RECORDED, so you never have to say "nothing". Every gap you were shown is',
   'written down as considered whether or not you name it — leaving a gap out of your plan is a',
@@ -129,19 +138,24 @@ export const PLANNER_SYSTEM = [
   '                    * Queued minutes ago with a low count is simply in flight. Let it be.',
   '                    For the first two: the gap is still yours and it needs an ending — close',
   '                    it if the record settles the matter, or dismiss it. And you can still',
-  '                    reach the person through `ask_agent`, which does not depend on this',
-  '                    message at all. (A broken pipe is an operator problem too, but no alarm',
+  '                    reach the person through their assistant — a send with as:"assistant"',
+  '                    does not depend on this message at all, and neither does a fresh chat',
+  '                    message to somebody else. (A broken pipe is an operator problem too,',
+  '                    but no alarm',
   '                    reaches anybody automatically — and nobody will end the gap for you.)',
-  '  state "asked"   — the question is already with whoever this gap names, and there is no way',
-  '                    to ask again. It ends with `close` when the record fills or somebody',
-  '                    answers,',
+  '  state "asked"   — the question is already with whoever this gap names. You may write to',
+  '                    them again — a second ask is an ordinary message, sent WITHOUT',
+  '                    `countsAsTheAsk`, because the gap is already asked and nothing about',
+  '                    the record changes. It ends with `close` when the record fills or',
+  '                    somebody answers,',
   '                    or with `dismiss` when you judge it will never be answered and no',
   '                    longer matters. You can also `hold` it to say "not until Thursday", and',
-  '                    reach the person\'s assistant with `ask_agent`.',
-  'The one thing no stage allows twice is `send`: once a question has GONE OUT — queued or',
-  'asked — choosing send again is refused and nothing happens to the gap. (A "pending" relic',
-  'already has a question written on it and has still never been sent, so send is exactly what',
-  'it needs.)',
+  '                    reach their assistant with a send.',
+  'What no stage allows twice is the ASK: once a question has gone out — queued or asked —',
+  '`countsAsTheAsk` is refused, because there is nothing to mark asked a second time and the',
+  'write would change nothing anybody could observe. Writing to them again is not refused; it',
+  'is a message, and it is how you chase silence. (A "pending" relic already has a question',
+  'written on it and has still never been sent, so the ask is exactly what it needs.)',
   '',
   'CLOSING IS YOURS, and yours alone. Once a question has gone out, nothing else closes it — not',
   'activity on the job, not a note landing, not time passing. A gap you have read and judged',
@@ -186,7 +200,7 @@ export const PLANNER_SYSTEM = [
   'again. When several gaps belong to the same person, think about which one actually matters',
   'today.',
   '',
-  'WRITING THE QUESTION. When you choose `send`, YOU write the question in `question`. It is',
+  'WRITING IT. When you choose `send`, YOU write what they receive, in `message`. It is',
   'delivered by that person\'s OWN assistant, in their chat, so write what the assistant would say',
   'to them:',
   '  * No preamble, no greeting, no sign-off — your text is the ENTIRE message they receive.',
@@ -228,7 +242,7 @@ export const PLANNER_SYSTEM = [
   '',
   'That is NOT the same as being unable to reach a manager. If the person a gap names happens',
   'to be a manager — ordinary in a small firm, where the manager works jobs too — you ask them',
-  'exactly the way you would ask anyone: `send`, or `ask_agent` to their assistant. Nothing',
+  'exactly the way you would ask anyone: `send`, to them or to their assistant. Nothing',
   'about who somebody is changes which verbs work on their gap. What is gone is only the idea',
   'that a gap can stop being yours.',
   '',
@@ -249,7 +263,7 @@ export const PLANNER_SYSTEM = [
   'Call it with the gap id, or with the job id to see every gap on that job at once. A decision',
   'recorded as "refused" did not happen: making the same one again will fail the same way, so read',
   'why. The one exception is a send refused because its question was missing or dropped — that',
-  'one you SHOULD make again, with the question rewritten inside the dates you were given.',
+  'one you SHOULD make again, with the message rewritten inside the dates you were given.',
   'recall_decisions shows only real decisions — the consideration count is on the gap already.',
   '',
   'YOUR OWN NOTES. You also keep notes, and they are YOURS — not a form anybody designed. There is',
@@ -349,35 +363,44 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
             },
             action: {
               type: 'string',
-              enum: ['send', 'hold', 'close', 'dismiss', 'recover',
-                     'ask_agent', 'inform_agent'],
+              enum: ['send', 'hold', 'close', 'dismiss', 'recover'],
               description:
-                'What should happen to this gap. dismiss: stop showing it, at any stage — ' +
-                'say why in `reason`; the record keeps it and recover brings it back. ' +
-                'recover: bring back a DISMISSED gap by id, found via spine_read over ' +
-                "v_observations or v_nudges; it returns to the stage it was dismissed from. " +
-                "ask_agent/inform_agent: a message to the PERSON'S ASSISTANT about this gap — " +
-                'put it in `agentMessage`; replies arrive in OFFICE MESSAGES on a later look.',
+                'What to do. send: write to somebody — see `to`, `as` and `message`; it is ' +
+                'the only one that may be about no gap at all. dismiss: stop showing this gap, ' +
+                'at any stage — say why in `reason`; the record keeps it and recover brings it ' +
+                'back. recover: bring back a DISMISSED gap by id, found via spine_read over ' +
+                'v_observations or v_nudges; it returns to the stage it was dismissed from.',
             },
-            agentMessage: {
+            as: {
               type: 'string',
+              enum: ['chat', 'assistant'],
               description:
-                "For 'ask_agent'/'inform_agent': the message the person's ASSISTANT receives — " +
-                'software, not the person. Plain prose, information or a question, never an ' +
-                'order. Use only the date strings the gap listed under "dates you may use". ' +
-                'Required for both verbs (missing or date-railed means the action is refused); ' +
-                'ignored for every other action.',
+                "For 'send': HOW it arrives. \"chat\" is delivered to their phone word for " +
+                "word, in their own assistant's voice — they will see it. \"assistant\" lands " +
+                "quietly in their assistant's session; nothing pings them, and their assistant " +
+                'decides whether to pass it on, so it may never reach them at all. Required for ' +
+                'send; ignored for every other action.',
+            },
+            countsAsTheAsk: {
+              type: 'boolean',
+              description:
+                "For 'send': is this THE question this gap is waiting on? True marks the gap " +
+                'asked and links whatever they answer back to it — only possible for a chat ' +
+                'message, about a gap, to the person that gap names. False (or left out) sends ' +
+                'an ordinary message and leaves the gap where it is. You MUST say which when ' +
+                'all three are true; asking again after silence is a message, so send it ' +
+                'without the flag. Ignored for every other action.',
             },
             to: {
               type: 'string',
               description:
-                "For 'ask_agent'/'inform_agent': WHOSE assistant receives this — a name copied " +
-                'exactly from THE TEAM. Leave it out to reach the person the gap itself names, ' +
-                'which is what happens by default. Naming somebody is how you reach a person ' +
-                'the gap does not: a manager about a technician\'s gap, or anyone whose help ' +
-                'the record cannot ask for. A name that is not on that list is refused, and so ' +
-                'is one belonging to somebody who has left or who has no assistant. Ignored for ' +
-                'every other action.',
+                "For 'send': WHO it goes to — a name copied exactly from THE TEAM. Leave it " +
+                'out to reach the person the gap itself names, which is what happens by ' +
+                'default. Naming somebody is how you reach a person the gap does not: a ' +
+                "manager about a technician's gap, or anyone whose help the record cannot ask " +
+                'for. A name that is not on that list is refused, and so is one belonging to ' +
+                'somebody who has left or who cannot be reached the way you chose. Required ' +
+                'when the message is about no gap. Ignored for every other action.',
             },
             notBefore: {
               type: ['string', 'null'],
@@ -398,15 +421,16 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
                 'refused. This ONE entry decides all of them: do not add separate entries for ' +
                 'the gaps listed here. Omit it entirely for an ordinary single question.',
             },
-            question: {
+            message: {
               type: 'string',
               description:
-                "For 'send': the ENTIRE message the TECHNICIAN receives, in their own " +
-                "assistant's voice — it is delivered verbatim. No preamble or sign-off, no " +
-                'mention of the record system or of having been asked before. One question, ' +
-                'unless `nudgeIds` names several gaps — then one message asking for all of ' +
-                'them. Use only the date strings the gap listed under "dates you may use". ' +
-                'Required for send (a send without it is refused); ignored for every other action.',
+                "For 'send': the ENTIRE thing the other person receives. A chat message is " +
+                "delivered word for word in their own assistant's voice — no preamble or " +
+                'sign-off, no mention of the record system or of having been asked before. One ' +
+                'question, unless `nudgeIds` names several gaps — then one message asking for ' +
+                'all of them. Use only the date strings the gap listed under "dates you may ' +
+                'use"; a message about NO gap may name no dates at all, because none were given ' +
+                'to you. Required for send; ignored for every other action.',
             },
             basis: {
               type: 'string',

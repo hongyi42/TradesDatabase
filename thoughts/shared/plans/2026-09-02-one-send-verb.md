@@ -487,25 +487,25 @@ is injected as an agent turn as well as texted.
 `listQueuedOfficeMessagesForHost` gains a `via` filter.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] both migrations applied; re-runnable
-- [ ] the pins, each named: `planner.test.ts:3021-3031` (enum == actions),
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] both migrations applied; re-runnable
+- [x] the pins, each named: `planner.test.ts:3021-3031` (enum == actions),
       `watchers.test.ts:1227` (judgment set) and **`:1234` (`toHaveLength(7)` → 5)**
-- [ ] new: a chat send with `countsAsTheAsk` queues a NUDGE and no office row; without it, an
+- [x] new: a chat send with `countsAsTheAsk` queues a NUDGE and no office row; without it, an
       office row with `via='chat'` and no nudge movement
-- [ ] new: the ambiguity rail refuses when the flag is ABSENT, and accepts `false`
-- [ ] new: `countsAsTheAsk` on an already-`asked` gap is refused
-- [ ] new: `buildNudgeDelivery` returns a nudge item and a `via='chat'` item for one host;
+- [x] new: the ambiguity rail refuses when the flag is ABSENT, and accepts `false`
+- [x] new: `countsAsTheAsk` on an already-`asked` gap is refused
+- [x] new: `buildNudgeDelivery` returns a nudge item and a `via='chat'` item for one host;
       `completeNudgeDelivery` settles each on the correct table, and a `failed` report bumps the
       office row's `attempts`
-- [ ] new: `buildOfficeDelivery` never returns a `via='chat'` row
+- [x] new: `buildOfficeDelivery` never returns a `via='chat'` row
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack; the HTTP server startable locally with a seeded host token
-- [ ] Drive a real pull against `/control/nudges`, confirm the response carries BOTH kinds of item,
+- [x] Drive a real pull against `/control/nudges`, confirm the response carries BOTH kinds of item,
       POST `delivered` for each id, and read both tables back: the nudge is `asked`, the office
       row is `delivered`. Capture the raw JSON both ways.
-- [ ] POST `failed` for a chat id three times and confirm the row freezes on attempts, not serves
+- [x] POST `failed` for a chat id three times and confirm the row freezes on attempts, not serves
 
 ### Manual verification
 - [ ] Read the rendered `SUBMIT_PLAN_TOOL` and `PLANNER_SYSTEM` end to end (per

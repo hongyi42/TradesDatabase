@@ -22,8 +22,12 @@ export interface NudgeDecisionInput {
   // cannot return one; the corpus reads see them all.
   nudgeId?: string | null;
   subject?: 'nudge' | 'observation';
-  // WHO a gap-less message was addressed to, as a roster ref. Null on every
-  // decision about a gap — those are addressed by the gap itself.
+  // WHO a message was addressed to, as a roster ref. Null unless the planner
+  // NAMED somebody: a send that falls back to the gap's own person leaves this
+  // empty, because the gap already says who that is. Set on gap-less messages
+  // (which have nothing else to say it) and on gap-bound ones with an explicit
+  // `to` — asking a manager about a technician's gap is exactly the case where
+  // the subject and the addressee are different people.
   toRef?: string | null;
   // How it was sent. Null until Phase 4 gives `send` its two legs; the field
   // lands with the column so the log's shape stops moving.

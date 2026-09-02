@@ -114,11 +114,16 @@ export type PlannerMode = 'off' | 'shadow' | 'live';
 // Phase 2 is the verb rework that note anticipated, and the pacing intent came
 // back as `hold` — legal on every open stage now, with a release, so "give them
 // until Thursday" is one verb rather than a deadline nothing read.
-// `ask_agent` and `inform_agent` joined 2026-08-31 (build 5.5 Phase 3): the
-// outbound half of the planner's inbox — a message to the PERSON'S ASSISTANT
-// about a gap, queued in office_messages and injected as an agent turn by the
-// office runner. Gap-tied in 5.5 like every other action; general messages
-// wait for build 6.5's schema rework.
+// `ask_agent` and `inform_agent` DELETED 2026-09-02 (build 6.5 Phase 4, user
+// ruling 2026-09-01). They differed from `send` in three things only — which
+// table the row lands in, how the box delivers it, and what the recipient
+// needs to receive it — and none of those is a different INTENT. One verb now
+// carries all three: `send(to?, as, message, about?, countsAsTheAsk?)`, where
+// `as` picks the leg. NO MIGRATION: nudge_decisions_action_check is a superset
+// and every historic ask_agent/inform_agent row still reads, while
+// `attentionActions` in watchers.ts keeps counting them as attention so gaps
+// the planner messaged about last week do not now read as neglected — build
+// 6's pattern for `escalate` and `leave`, third time it has been needed.
 //
 // `escalate` DELETED 2026-09-01 (build 6 Phase 1, user ruling). It was the most
 // lifecycle-shaped verb in the vocabulary — "the person has had their chance"
@@ -134,15 +139,7 @@ export type PlannerMode = 'off' | 'shadow' | 'live';
 // either verb; what it lost is reaching one the gap does NOT name — accepted,
 // deliberately: nothing is deployed and evaluation is an end phase, and build
 // 6.5's generalized send is what restores it.
-export const PLANNER_ACTIONS = [
-  'send',
-  'hold',
-  'close',
-  'dismiss',
-  'recover',
-  'ask_agent',
-  'inform_agent',
-] as const;
+export const PLANNER_ACTIONS = ['send', 'hold', 'close', 'dismiss', 'recover'] as const;
 export type PlannerAction = (typeof PLANNER_ACTIONS)[number];
 
 // CODE'S OWN verb, and deliberately NOT in PLANNER_ACTIONS: the model must never
@@ -184,11 +181,26 @@ export interface PlannerDecision {
   // Diagnostic, for the log and for continual learning. NEVER shown to a
   // manager — it is written for refusals too, where it reads as machinery.
   reason: string;
-  // Technician-facing question, send only — the ENTIRE delivered message since
-  // the collapse (plan 2026-08-24): an applied send queues it verbatim. A
-  // missing or rail-dropped question refuses the send; no fallback author
-  // exists any more.
-  questionDraft?: string | null;
+  // THE WHOLE MESSAGE, whichever leg carries it (build 6.5 Phase 4 merged this
+  // with the office verbs' `agentMessage`). One text field is the point: two
+  // would make the model pick a field name per leg, which is the class of
+  // error this collapse removes. A missing or rail-dropped message refuses the
+  // send — no fallback author exists any more (the 2026-08-24 collapse).
+  // Recorded in the `question_draft` COLUMN, which keeps its name the way
+  // `handoff_note` did: columns are historic-stable, field names are not.
+  message?: string | null;
+  // WHICH LEG (build 6.5 Phase 4). 'chat' reaches the person's phone verbatim,
+  // in their own assistant's voice, and needs a sandbox AND a Telegram
+  // binding. 'assistant' lands a silent turn in their agent's session and
+  // needs only the sandbox — nothing pings the human, and the agent decides
+  // whether to pass it on.
+  as?: 'chat' | 'assistant';
+  // WHETHER THIS MESSAGE IS THE QUESTION OF RECORD (user ruling 2026-09-02: a
+  // flag the planner sets, not something derived). True routes the send down
+  // the nudges path — the gap flips to `asked`, and the person's next note can
+  // be attributed to it. False (or a message to anyone else, or about nothing)
+  // is an office row: delivered, recorded, but not the ask.
+  countsAsTheAsk?: boolean;
   // Every gap this ONE message covers, send only, INCLUDING nudgeId itself
   // (plan 2026-08-25, Phase 3). Absent or length<=1 = an ordinary single ask.
   // `nudgeId` stays the LEAD: its context prints the (re: …) anchor, and its id
@@ -206,10 +218,7 @@ export interface PlannerDecision {
   // sweep's moot wrote — not 'answered' (build 5; a cancelled visit recorded
   // as answered would silently rebucket mv_gap_outcomes).
   mootClose?: boolean;
-  // The message to the person's ASSISTANT, ask_agent/inform_agent only (build
-  // 5.5 Phase 3). Date-railed like every other model-written surface; a
-  // missing or dropped message refuses the action — there is no other author.
-  agentMessage?: string | null;
+
   // WHO THIS MESSAGE IS FOR, when the planner named somebody (build 6.5 Phase
   // 2). Absent means the gap's own person, which is what every message did
   // before this build. VALIDATE-SET from the roster, never copied raw off the
@@ -1863,10 +1872,27 @@ export function validateDecisions(
     // reachable, too: this phase removed `nudgeId` from the schema's
     // `required`.
     if (!nudgeId) {
-      if (action !== 'ask_agent' && action !== 'inform_agent') {
+      if (action !== 'send') {
         push(
           `${action} with no gap — copy the id of the gap it acts on from the list you were ` +
             'given. Only a message may be about nothing.',
+        );
+        continue;
+      }
+      const as = d.as === 'chat' || d.as === 'assistant' ? d.as : null;
+      if (!as) {
+        push(
+          'send without `as` — say how it should arrive: "chat" reaches their phone in their ' +
+            "assistant's voice, \"assistant\" lands quietly in their assistant's session and " +
+            'may never be passed on.',
+        );
+        continue;
+      }
+      // COUNTS AS THE ASK IS MEANINGLESS HERE — there is no gap to mark asked.
+      if ('countsAsTheAsk' in d && d.countsAsTheAsk === true) {
+        push(
+          'countsAsTheAsk on a message about no gap — there is no question for it to be. Send ' +
+            'it without the flag, or name the gap it is about.',
         );
         continue;
       }
@@ -1883,20 +1909,32 @@ export function validateDecisions(
         );
         continue;
       }
+      // CAN THEY BE REACHED THE WAY YOU CHOSE? `resolveTo` only proves they
+      // have an assistant; the chat leg needs a phone as well. Without this a
+      // gap-less chat send to somebody unbound is ACCEPTED, written via='chat',
+      // and then skipped forever by the serve loop — and no alarm sees it,
+      // because deliveryStuck counts open NUDGES and this is an office row.
+      // Silent forever is the one outcome these rails exist to prevent, and
+      // `SUBMIT_PLAN_TOOL.to` already promises the refusal.
+      const chatless = reachable.get(to.ref);
+      if (as === 'chat' && chatless && !chatless.chat) {
+        push(
+          `send to '${to.ref}' as a chat message — ${limitationOf(chatless) ?? 'no phone is linked'}. ` +
+            'Send it to their assistant instead, or name somebody else.',
+        );
+        continue;
+      }
       // NO ALLOWED DATES. `dateLabels` are computed per gap — the ask's date,
       // the visit's — and a message about nothing has no gap to draw them
       // from. So the rail admits no date at all here, and says so when it
       // refuses one. That is the safe direction: the planner may not name a
       // day it cannot show it was given.
-      const msg = cleanPlannerText(d.agentMessage, [], {
-        label: 'agent message',
-        maxLen: 500,
-      });
+      const msg = cleanPlannerText(d.message, [], { label: 'message', maxLen: 500 });
       if (msg.why) noteDrops.push(`(no gap): ${msg.why}`);
       if (!msg.note) {
         push(
-          `${action} needs \`agentMessage\` — it was missing, over length, carried a link, or ` +
-            'named a date. A message that is not about a gap has no dates it may use.',
+          'send needs `message` — it was missing, over length, carried a link, or named a ' +
+            'date. A message that is not about a gap has no dates it may use.',
           undefined,
           // The addressee RESOLVED before this rail refused the message, and
           // it is the only thing that makes the refusal legible in the corpus.
@@ -1910,8 +1948,9 @@ export function validateDecisions(
       // 2026-09-02: "the planner can just send the same message to all three").
       decisions.push({
         nudgeId: null,
-        action: action as PlannerAction,
-        agentMessage: msg.note,
+        action: 'send',
+        as,
+        message: msg.note,
         toRef: to.ref,
         toTechnicianId: to.technicianId,
         confidence,
@@ -2004,130 +2043,142 @@ export function validateDecisions(
     // split them — see the send rail below for what survived of that argument
     // and why `hold` no longer belongs to it.)
 
-    // THE OFFICE VERBS (build 5.5 Phase 3): a message to the person's
-    // ASSISTANT about this gap. Legal on ANY stage the view shows — asking
-    // the assistant about a queued/asked gap is the flagship use, and a
-    // noticed observation with an advisory technician works too. Needs an
-    // addressee for the same technicians!inner reason `send` does, and the
-    // message survives the same date rail every model-written surface rides.
-    if (action === 'ask_agent' || action === 'inform_agent') {
+    // ── ONE SEND (build 6.5 Phase 4) ──────────────────────────────────────────
+    // `send`, `ask_agent` and `inform_agent` were three verbs that differed in
+    // which table the row lands in, how the box delivers it, and what the
+    // recipient needs to receive it. None of those is a different INTENT, and
+    // making the model choose between them was making it choose an
+    // IMPLEMENTATION. Now it says who, how, and what — and whether this is the
+    // question of record.
+    if (action === 'send') {
       const to = resolveTo(d, action, true);
       if (to.kind === 'bad') {
         push(to.why);
         continue;
       }
-      let toRef: string | null = null;
-      let toTechnicianId: string | null = null;
+      // WHICH LEG. Required — there is no safe default: guessing 'chat' would
+      // text somebody the planner meant to reach quietly, and guessing
+      // 'assistant' would leave a question it meant to be seen sitting in an
+      // agent session nobody opens.
+      const as = d.as === 'chat' || d.as === 'assistant' ? d.as : null;
+      if (!as) {
+        push(
+          'send without `as` — say how it should arrive: "chat" reaches their phone in their ' +
+            'assistant\'s voice, "assistant" lands quietly in their assistant\'s session and ' +
+            'may never be passed on.',
+        );
+        continue;
+      }
+      // WHO. An explicit `to` wins; otherwise the gap's own person, which is
+      // what every send did before this build.
+      const addressee =
+        to.kind === 'ok'
+          ? { ref: to.ref, technicianId: to.technicianId }
+          : view.nudge.technician_id
+            ? { ref: ctxStr(view.nudge, 'technicianRef') ?? view.nudge.technician_id,
+                technicianId: view.nudge.technician_id }
+            : null;
+      if (!addressee) {
+        // The plan's recorded "send does not check reachability" stands: an
+        // unreachable PERSON still queues and rides the delivery clock. NO
+        // person is a different thing.
+        push(
+          'send on a gap with nobody to ask — the record names no person for it. Name somebody ' +
+            'from THE TEAM with `to`, dismiss it, or say nothing and let it wait.',
+        );
+        continue;
+      }
+      // CAN THIS PERSON RECEIVE IT THIS WAY? Only checked for an explicitly
+      // named addressee: resolveTo already refused an unreachable one, and the
+      // gap's own person keeps the pre-6.5 behaviour of queueing regardless.
       if (to.kind === 'ok') {
-        toRef = to.ref;
-        toTechnicianId = to.technicianId;
-      } else if (!view.nudge.technician_id) {
-        // Unchanged, and narrower than it reads: this refuses only when NOBODY
-        // was named — by the gap or by the planner. Naming a manager on a gap
-        // the record cannot attribute is exactly what build 6.5 exists to
-        // allow, so the guard must not fire on that.
+        const a = reachable.get(to.ref);
+        if (as === 'chat' && a && !a.chat) {
+          push(
+            `send to '${to.ref}' as a chat message — ${limitationOf(a) ?? 'no phone is linked'}. ` +
+              'Send it to their assistant instead, or name somebody else.',
+          );
+          continue;
+        }
+      }
+      // IS THIS THE QUESTION OF RECORD? The user's ruling is that the planner
+      // says so rather than code deriving it — so the flag is real, and the
+      // rail below makes forgetting it loud instead of silent.
+      const gapNames = (v: GapView, id: string) => v.nudge.technician_id === id;
+      const wouldBeTheAsk =
+        as === 'chat' && !!nudgeId && gapNames(view, addressee.technicianId);
+      // TYPED, not truthy. `'countsAsTheAsk' in d` is what makes the rail work
+      // at all (a provider that drops false-valued keys would otherwise make it
+      // inert), but presence alone is not an answer: `countsAsTheAsk: "true"`
+      // would satisfy it, fail the `=== true` test, and silently send the
+      // question of record as an ordinary message. That is exactly the silent
+      // wrong-turn this rail exists to prevent, so a present-but-unusable value
+      // is refused like a present-but-unusable `to`.
+      const saidSo = 'countsAsTheAsk' in d && d.countsAsTheAsk !== null;
+      if (saidSo && typeof d.countsAsTheAsk !== 'boolean') {
         push(
-          `${action} on a gap with nobody's assistant to reach — the record names no person ` +
-            'for it. Name somebody from THE TEAM with `to` if this should reach a person ' +
-            'the record does not.',
+          '`countsAsTheAsk` must be true or false — it decides whether this message IS the ' +
+            'question this gap is waiting on, and anything else cannot be read as either.',
         );
         continue;
       }
-      const msg = cleanPlannerText(d.agentMessage, view.dateLabels, {
-        label: 'agent message',
-        maxLen: 500,
-      });
-      if (msg.why) noteDrops.push(`${nudgeId}: ${msg.why}`);
-      if (!msg.note) {
+      const counts = saidSo && d.countsAsTheAsk === true;
+      // THE AMBIGUITY RAIL. A chat message to a gap's OWN person ABOUT that gap
+      // is the one shape that could mean either thing, and the difference is
+      // invisible afterwards: one flips the gap to `asked` and lets their reply
+      // be attributed to it, the other is just a message. Detected with `in`,
+      // never `?? false` — a provider that drops false-valued keys would make
+      // this inert (the `notBefore` absent-vs-null precedent).
+      if (wouldBeTheAsk && !saidSo) {
         push(
-          `${action} needs \`agentMessage\` — it was missing or the date rail dropped it; ` +
-            'rewrite it using only the dates you were given',
+          'send to the very person this gap is waiting on, by chat, without saying whether it ' +
+            'IS the question. Set `countsAsTheAsk` true if this is what you are asking them — ' +
+            'the gap then counts as asked and their answer attaches to it — or false if it is ' +
+            'anything else.',
         );
         continue;
       }
-      seen.add(nudgeId);
-      decisions.push({
-        nudgeId,
-        action: action as PlannerAction,
-        agentMessage: msg.note,
-        // Gated on the ID, not the ref: nothing forbids an empty `ref` on a
-        // roster row, and gating on the string would silently drop BOTH fields
-        // and re-address the message to the gap's person.
-        ...(toTechnicianId ? { toRef, toTechnicianId } : {}),
-        confidence,
-        reason,
-      });
-      continue;
-    }
-
-    // A question needs an ADDRESSEE. Observations are minted with the tech
-    // ADVISORY and possibly absent (an unassigned visit, a departed roster
-    // row); a send with technician_id null would create a queued nudge the
-    // host pull's technicians!inner join can never serve — an 18h silent
-    // black hole recorded as applied (code-review). The plan's recorded
-    // "send does not check reachability" stands: an unreachable PERSON still
-    // queues and rides the 18h clock; NO person is a different thing.
-    if (action === 'send' && !view.nudge.technician_id) {
-      push(
-        'send on a gap with nobody to ask — the record names no person for it, so there is ' +
-          'nobody for a question to reach. Dismiss it, or say nothing and let it wait.',
-      );
-      continue;
-    }
-    // SEND ONLY since build 6 Phase 2. This rail was shared with `hold`, and
-    // that pairing was the single most lifecycle-shaped refusal in the file:
-    // `hold` writes `not_before`, which since the collapse is the planner's own
-    // pacing note and NOTHING ELSE reads (the delivery pull does not, see
-    // listQueuedNudgesForHost) — so refusing it on a queued or asked row
-    // protected nothing in the world, only our story about how a gap goes.
-    // "Pause the question I already sent until Thursday" is a real intent with
-    // a real write behind it, and it is now legal on every open stage.
-    //
-    // `send` KEEPS the rail, and it is world-protecting: an applied send on an
-    // asked row would return the row happily and change nothing anybody could
-    // observe (observed live 2026-08-20), and `uq_nudges_subject_ever` forbids
-    // a second question for the subject outright. A silent no-op recorded as
-    // applied is the exact class these rails exist to make impossible.
-    if (action === 'send') {
-      const st = view.nudge.status;
-      if (st !== 'pending' && st !== 'noticed') {
+      if (counts && !wouldBeTheAsk) {
         push(
-          st === 'asked'
-            ? 'send on a gap that has ALREADY been asked — the question is with the person ' +
-                'now, and there is no way to ask a second time. To give them more room, hold ' +
-                'it: nothing moves a gap but you.'
-            : 'send on a gap that is already composed and on its way — there is nothing to ' +
-                'send twice, and nothing you decide can recall it. Close it when the record ' +
-                'settles the matter. A hold here stops nothing and hides nothing; it writes ' +
-                'down when you meant to come back, and you will still be shown the gap every ' +
-                'time until you end it.',
+          'countsAsTheAsk on a message that cannot be the question: it only means something ' +
+            "for a chat message, about a gap, to the person that gap names. Send it without " +
+            'the flag.',
         );
         continue;
       }
-    }
-
-    // THE GROUP RAILS (plan 2026-08-25, Phase 3), behind their own
-    // `action === 'send'` guard.
-    //
-    // THAT GUARD IS LOAD-BEARING, and its original reason is not the current
-    // one: it used to say "the status branch above is SHARED with `hold`", and
-    // build 6 Phase 2 split those. It stays because `nudgeIds` means nothing on
-    // any other verb and letting one through would do real damage — the block
-    // below `seen.add`s every member (see the loop after it), which suppresses
-    // their `unmentioned` rows and blocks any decision of their own, while
-    // apply writes the LEAD only. A grouped `hold` would silently swallow its
-    // siblings' whole tick.
-    //
-    // Code checks only that a group is COHERENT, never whether to form one —
-    // that is the planner's judgment, and the whole point of the verb. Coherence
-    // is not a preference: the anchor is printed from the LEAD's context and
-    // delivery goes to ONE person's chat, so a group spanning two jobs would
-    // ship a message anchored to the wrong record, and one spanning two people
-    // would mark somebody's gap asked on a message they never saw.
-    let groupIds: string[] | undefined;
-    if (action === 'send' && Array.isArray(d.nudgeIds)) {
-      const raw = d.nudgeIds.filter((v): v is string => typeof v === 'string');
-      const ids = [...new Set(raw)];
+      // ALREADY ASKED. World-protecting, and the reason it survives build 6's
+      // cull: markNudgeQueued is pending-only, so an applied re-send would
+      // return nothing and change nothing anybody could observe — a silent
+      // no-op recorded as applied. Asking again is a MESSAGE (send it without
+      // the flag), which is a real write to a real person.
+      if (counts && view.nudge.status !== 'pending' && view.nudge.status !== 'noticed') {
+        push(
+          view.nudge.status === 'asked'
+            ? 'countsAsTheAsk on a gap that has ALREADY been asked — that question is with ' +
+                'them now. To ask again, send it without the flag: a second ask is a message, ' +
+                'not a change to the record — nothing moves a gap but you.'
+            : 'countsAsTheAsk on a gap that is already composed and on its way — there is ' +
+                'nothing to send twice, and nothing you decide can recall it. You will still be ' +
+                'shown the gap every time until you end it.',
+        );
+        continue;
+      }
+      let groupIds: string[] | undefined;
+      // GROUPS ARE THE ASK'S ALONE. `nudgeIds` means "one message, several
+      // gaps, all of them asked by it" — a shape only the nudges path can
+      // express (one row per member, one shared ask_group_id). A grouped
+      // message that is not the question of record would `seen`-swallow its
+      // siblings' whole tick and write nothing for them.
+      if (Array.isArray(d.nudgeIds) && d.nudgeIds.length > 1 && !counts) {
+        push(
+          'groups gaps on a message that is not the question of record — only the ask itself ' +
+            'can cover several gaps at once.',
+        );
+        continue;
+      }
+      if (Array.isArray(d.nudgeIds)) {
+        const raw = d.nudgeIds.filter((v): v is string => typeof v === 'string');
+        const ids = [...new Set(raw)];
       // The membership check runs whenever nudgeIds is present AT ALL, not only
       // for a real group: `nudgeIds: ['n2']` on a decision whose nudgeId is 'n1'
       // is the model naming a gap it is not deciding about, and treating that as
@@ -2205,13 +2256,46 @@ export function validateDecisions(
         if (bad) continue;
         groupIds = ids;
       }
+      }
+      // THE MESSAGE. The ask keeps `cleanQuestionDraft` — its grouped length
+      // ladder and its footer-impersonation check exist because that text is
+      // delivered verbatim to a person as their own assistant. Everything else
+      // rides the ordinary text rail at the office cap.
+      // KEYED ON THE LEG, not on the flag. `cleanQuestionDraft` carries the
+      // grouped length ladder AND the footer-impersonation guard, and that
+      // guard exists "because this reaches a person OUTSIDE the office, in
+      // their own assistant's voice" — which is true of EVERY chat message,
+      // including a re-ask sent without the flag. Keying it on `counts` (the
+      // first draft) would have dropped the guard on exactly the message this
+      // build added. Grouping is refused when `!counts`, so the ladder's
+      // argument is 1 there and the caps agree either way.
+      const cleaned =
+        as === 'chat'
+          ? cleanQuestionDraft(d.message, view.dateLabels, groupIds?.length ?? 1)
+          : cleanPlannerText(d.message, view.dateLabels, { label: 'message', maxLen: 500 });
+      if (cleaned.why) noteDrops.push(`${nudgeId}: ${cleaned.why}`);
+      if (!cleaned.note) {
+        push(
+          'send needs `message` — it was missing, over length, carried a link, or named a date ' +
+            'it was not given. There is no other author: rewrite it.',
+        );
+        continue;
+      }
+      seen.add(nudgeId);
+      for (const memberId of groupIds ?? []) seen.add(memberId);
+      decisions.push({
+        nudgeId,
+        action: 'send',
+        as,
+        message: cleaned.note,
+        ...(counts ? { countsAsTheAsk: true } : {}),
+        ...(to.kind === 'ok' ? { toRef: addressee.ref, toTechnicianId: addressee.technicianId } : {}),
+        ...(groupIds ? { nudgeIds: groupIds } : {}),
+        confidence,
+        reason,
+      });
+      continue;
     }
-
-    // (`leave`'s own status rail stood here — it refused `leave` on a PENDING
-    // row, where "I am waiting" with no horizon meant a question nothing would
-    // ever send drifting forever. The verb is deleted in build 6 Phase 2; the
-    // intent it served on a pending row was always `hold` with a time, which
-    // is what the rail said.)
 
     // ASSERT-ONLY-CITED, in code. The prompt asks for a verbatim quote; this is
     // what makes it true. A close whose quote is absent from what we actually
@@ -2381,22 +2465,12 @@ export function validateDecisions(
     }
 
 
+    // WHAT REACHES HERE, since build 6.5 Phase 4 gave `send` its own branch:
+    // `hold` and evidence-basis `close` only. `recover`, `dismiss` and `send`
+    // each return above, and a record-basis `close` returns earlier still —
+    // so this tail carries `notBefore` for the one and basis/citation/
+    // answeredByCaptureId for the other.
     seen.add(nudgeId);
-    // Every member is spoken for by THIS decision, so none of them collects an
-    // `unmentioned` tick mark and none can take a second decision later in the
-    // same plan.
-    for (const memberId of groupIds ?? []) seen.add(memberId);
-    // Send only. A question on any other action would be written, stored and
-    // never read — compose only ever looks at an applied `send`.
-    //
-    // (The handoff note and the manager's-assistant briefing were railed here
-    // beside it, escalate-only. Both left with the verb in build 6 Phase 1.)
-    let questionDraft: string | null = null;
-    if (action === 'send') {
-      const q = cleanQuestionDraft(d.question, view.dateLabels, groupIds?.length ?? 1);
-      questionDraft = q.note;
-      if (q.why) noteDrops.push(`${nudgeId}: ${q.why}`);
-    }
     decisions.push({
       nudgeId,
       action: action as PlannerAction,
@@ -2409,8 +2483,6 @@ export function validateDecisions(
       ...(action === 'hold' ? { notBefore } : {}),
       ...(basis ? { basis } : {}),
       ...(citation ? { citation } : {}),
-      ...(questionDraft ? { questionDraft } : {}),
-      ...(groupIds ? { nudgeIds: groupIds } : {}),
       ...(answeredByCaptureId ? { answeredByCaptureId } : {}),
       confidence,
       reason,
@@ -2601,33 +2673,85 @@ async function applyDecision(
   // field. Narrowed HERE rather than in five separate cases so the switch stays
   // exhaustive over PLANNER_ACTIONS — that exhaustiveness is what makes adding
   // a verb without a case a typecheck failure, and it is worth keeping.
-  if (d.action !== 'ask_agent' && d.action !== 'inform_agent' && !d.nudgeId) {
+  if (d.action !== 'send' && !d.nudgeId) {
     return { outcome: 'refused', detail: `${d.action} needs the gap it acts on` };
   }
-  // Empty only on the office paths, which never read it — they use d.nudgeId
-  // directly, because for them null is a legal, meaningful value.
+  // Empty only on a gap-less send, which never reads it — that path uses
+  // d.nudgeId directly, because for it null is a legal, meaningful value.
   const gapId = d.nudgeId ?? '';
   switch (d.action) {
     case 'send': {
       // The planner's words ARE the delivered message (the collapse, plan
       // 2026-08-24): queueing them verbatim is the whole action. No surviving
-      // question — never written, or dropped by the date rail — means there is
+      // message — never written, or dropped by the date rail — means there is
       // nothing to deliver and no fallback author exists any more, so the send
-      // is refused loudly and the model rewrites it next tick. Pending-only
-      // guard lives inside markNudgeQueued, because the row can move in between.
-      if (!d.questionDraft) {
+      // is refused loudly and the model rewrites it next tick.
+      if (!d.message) {
         return {
           outcome: 'refused',
           detail:
-            'send needs `question` — it was missing or the date rail dropped it; ' +
+            'send needs `message` — it was missing or the date rail dropped it; ' +
             'rewrite it using only the dates you were given',
         };
+      }
+      // ── THE FORK (build 6.5 Phase 4) ─────────────────────────────────────
+      // `countsAsTheAsk` decides which machinery carries this, and the two are
+      // genuinely different acts rather than two spellings of one:
+      //
+      //   true  — the NUDGES path. The gap flips to `asked`, `asked_at` starts,
+      //           and the person's next note can be attributed to it. This is
+      //           the question of record, and only a chat message to the gap's
+      //           own person can be one (validate's ambiguity rail).
+      //   false — an office row. Delivered and recorded, but the gap does not
+      //           move: it is a message, not the ask. `via` picks the leg —
+      //           'chat' rides the nudge pull to the person's phone, verbatim;
+      //           'assistant' rides the office pull as a silent injected turn.
+      if (!d.countsAsTheAsk) {
+        const n = d.nudgeId ? getGap(d.nudgeId) : null;
+        if (d.nudgeId && !n) return { outcome: 'refused', detail: moved };
+        const toTechnicianId = d.toTechnicianId ?? n?.technician_id ?? null;
+        if (!toTechnicianId) {
+          return {
+            outcome: 'refused',
+            detail: 'send with nobody to reach — no `to`, and the record names no person',
+          };
+        }
+        if (d.toRef && !d.toTechnicianId) {
+          // The pair travels together or not at all: a row whose `to_ref` and
+          // `technician_id` named different people would DELIVER (the host
+          // pull joins on the id) while the recipient's reply failed to thread.
+          return {
+            outcome: 'refused',
+            detail: `send names '${d.toRef}' with no resolved roster row`,
+          };
+        }
+        await createOffice({
+          tenantId,
+          direction: 'to_agent',
+          // The two office KINDS were the ask/inform distinction the deleted
+          // verbs carried. With one verb there is no such distinction to make
+          // — the planner writes prose and the recipient reads it — so every
+          // row is an 'inform'. `wrapOfficeMessage` frames an ask with "reply
+          // via inform_team_lead"; a message that is not a question should not
+          // instruct anybody to answer it.
+          kind: 'inform',
+          fromRef: TEAM_LEAD_REF,
+          toRef: d.toTechnicianId
+            ? (d.toRef ?? d.toTechnicianId)
+            : ((n && ctxStr(n, 'technicianRef')) ?? toTechnicianId),
+          technicianId: toTechnicianId,
+          nudgeId: d.nudgeId ?? null,
+          body: d.message,
+          status: 'queued',
+          via: d.as ?? 'assistant',
+        });
+        return { outcome: 'applied' };
       }
       // The anchor rides along, code-printed: what is stored IS what is sent
       // (④b), and the technician's agent files the reply against the job this
       // line names. For a GROUP it is the LEAD's anchor — which is exactly why
       // the rails refuse a group spanning two jobs.
-      const message = `${d.questionDraft}${anchor}`;
+      const message = `${d.message}${anchor}`;
       const group = d.nudgeIds && d.nudgeIds.length > 1 ? d.nudgeIds : null;
       // SEND ON AN OBSERVATION CREATES THE ASK (plan 2026-08-31): the nudge is
       // born queued with the observation's own uuid — one gap, one id, two
@@ -2842,96 +2966,14 @@ async function applyDecision(
     // planner's own sentence, disambiguated flagNudgeGap's once-ever null, then
     // marked the row 'escalated'. Deleted whole in build 6 Phase 1 — see
     // PLANNER_ACTIONS. Historic 'escalated' rows are untouched and still read.)
-    case 'ask_agent':
-    case 'inform_agent': {
-      // The outbound office verbs (build 5.5 Phase 3): the message row in the
-      // bucket IS the durable record — queued for the host pull, injected as
-      // an agent turn by the office runner, never a ping to the person. The
-      // nudge_decisions row rides the ordinary recorder (the action string is
-      // in the amended CHECK), so nothing extra is written here.
-      if (!d.agentMessage) {
-        // Rail-checked; the belt for a hand-built decision object.
-        return {
-          outcome: 'refused',
-          detail:
-            `${d.action} needs \`agentMessage\` — it was missing or the date rail dropped it; ` +
-            'rewrite it using only the dates you were given',
-        };
-      }
-      // THE ONE VERB PAIR THAT MAY BE ABOUT NOTHING (build 6.5 Phase 3). A
-      // null id here is not a missing subject, it is the message not being
-      // about a gap at all — so the gap is looked up only when one was named.
-      const n = d.nudgeId ? getGap(d.nudgeId) : null;
-      // A NAMED gap must still exist — the message says it is about that gap,
-      // and a gap that moved between the plan and the write makes the claim
-      // false. A message about NOTHING has no such claim to keep.
-      if (d.nudgeId && !n) return { outcome: 'refused', detail: moved };
-      // Its PERSON is required only when nobody else was named (build 6.5
-      // Phase 2): with an explicit addressee the record's own attribution is
-      // irrelevant, which is the whole point of being able to ask a manager
-      // about a gap the record cannot attribute — or about no gap at all.
-      if (!n && !d.toTechnicianId) {
-        return {
-          outcome: 'refused',
-          detail: `${d.action} about no gap needs a \`to\` — there is nobody else to infer`,
-        };
-      }
-      // THE PAIR TRAVELS TOGETHER OR NOT AT ALL — the belt for a hand-built
-      // decision object, which this switch keeps for every other field too.
-      // Validate always sets both from one Addressee, but a decision carrying
-      // only `toRef` would write a row whose `to_ref` and `technician_id` name
-      // DIFFERENT people: the host pull joins on the id, so it would deliver
-      // to one person while `inform_team_lead`'s reply guard
-      // (server.ts, `to_ref === identity.technicianRef`) refused to thread
-      // their answer — the reply would degrade to a plain inform and lose the
-      // gap id. Silent, and only visible as an answer that never lands.
-      //
-      // NOT UNIT-TESTED, and that is a deliberate admission rather than an
-      // oversight: validate always sets the pair together, so this is
-      // unreachable from the live path, and the only way to exercise it would
-      // be to export a fifteen-argument internal function for one assertion.
-      // A test that drove the ordinary path and called itself a belt test
-      // would be worse than none — it would report coverage it does not have.
-      if (d.toRef && !d.toTechnicianId) {
-        return {
-          outcome: 'refused',
-          detail:
-            `${d.action} names '${d.toRef}' with no resolved roster row — an addressee must be ` +
-            'a person the roster holds, not a name alone',
-        };
-      }
-      const toTechnicianId = d.toTechnicianId ?? n?.technician_id ?? null;
-      // NOT `moved`: nothing changed state here, there was never a person.
-      // That string is what recall_decisions hands the planner next tick, so a
-      // wrong one teaches it to expect a race that did not happen.
-      if (!toTechnicianId) {
-        return {
-          outcome: 'refused',
-          detail:
-            `${d.action} on a gap the record names nobody for, and no \`to\` was given — ` +
-            'there is no assistant to reach',
-        };
-      }
-      // createOfficeMessage THROWS on failure; the apply loop's catch records
-      // it as a refusal with the reason — same contract as every writer here.
-      await createOffice({
-        tenantId,
-        direction: 'to_agent',
-        kind: d.action === 'ask_agent' ? 'ask' : 'inform',
-        fromRef: TEAM_LEAD_REF,
-        // Derived from the SAME source as technicianId above: with an explicit
-        // addressee both come off the resolved row, otherwise both come off
-        // the gap. They can never name different people.
-        toRef: d.toTechnicianId
-          ? (d.toRef ?? d.toTechnicianId)
-          : ((n && ctxStr(n, 'technicianRef')) ?? toTechnicianId),
-        technicianId: toTechnicianId,
-        nudgeId: d.nudgeId,
-        body: d.agentMessage,
-        status: 'queued',
-      });
-      return { outcome: 'applied' };
-    }
+    // (`case 'ask_agent'` / `case 'inform_agent'` stood here — the outbound
+    // office verbs of build 5.5 Phase 3, which queued a message to a person's
+    // ASSISTANT about a gap. Deleted with the verbs in build 6.5 Phase 4: a
+    // send that is not the question of record now writes the same office row,
+    // with `via` choosing whether it lands as a silent agent turn or as a text
+    // on the person's phone. Historic rows keep their `kind` and still read;
+    // `attentionActions` in watchers.ts keeps counting the historic ACTIONS as
+    // attention.)
     // (`case 'leave'` stood here, a deliberate no-op returning 'applied' — the
     // planner really did decide, and what it decided was that nothing change.
     // Deleted with the verb in build 6 Phase 2. Its alarm-pass semantics live
@@ -3752,7 +3794,12 @@ export async function runPlanner(
           // the claim graders in plannerEvalGraders2.ts. `recall_decisions` does
           // NOT project either one and never did (mcp/server.ts), so the model
           // has never seen them.
-          questionDraft: d.questionDraft ?? null,
+          // The COLUMN keeps its name (the `handoff_note` precedent: columns
+          // are historic-stable, field names are not) while the field became
+          // `message` when one verb absorbed three.
+          questionDraft: d.message ?? null,
+          toRef: d.toRef ?? null,
+          via: d.as ?? null,
         });
         // SHADOW FANS OUT TOO. Missing this would give every sibling an
         // `unmentioned` tick in shadow and in every eval run — collapsing

@@ -68,11 +68,29 @@ describe('wrapOfficeMessage — the two origin framings', () => {
     expect(wrapped).toContain('reply via inform_team_lead and mention this id: m1');
   });
 
-  test('an office NOTE teaches verify-then-carry-on, never a reply obligation', () => {
+  test('an office NOTE OFFERS a reply and never demands one', () => {
+    // CHANGED IN BUILD 6.5 PHASE 4, and the reason matters. This used to pin
+    // "never a reply obligation" as the literal ABSENCE of the reply
+    // instruction — which was safe while the planner had two verbs and put
+    // every question on the 'ask' framing. One `send` absorbed them, every
+    // planner message is now kind 'inform', and the absence silently removed
+    // the reply channel for ALL of them: inform_team_lead's replyToMessageId
+    // is "the id that question told you to mention", so `in_reply_to` would
+    // never be set again and the doctrine's "a reply arrives on a later look"
+    // would be a promise nothing could keep.
+    //
+    // Mislabelling every note an OFFICE QUESTION would have bought the id back
+    // at the cost of a lie in the framing. So the note now carries the id under
+    // a CONDITION — the invariant it was really protecting is that nothing is
+    // demanded, and that still holds.
     const wrapped = wrapOfficeMessage(queuedRow({ kind: 'inform' }), null);
     expect(wrapped).toContain('OFFICE NOTE');
     expect(wrapped).toContain('verify against the record with your tools');
-    expect(wrapped).not.toContain('reply via inform_team_lead');
+    // The reply is available, and conditional...
+    expect(wrapped).toContain('If there is something to say back');
+    expect(wrapped).toContain('m1');
+    // ...never the bare instruction an OFFICE QUESTION gives.
+    expect(wrapped).not.toContain('reply via inform_team_lead and mention this id');
   });
 
   test("a seat-sender row is origin-honest: the SENDER's assistant, never the office", () => {
@@ -92,6 +110,20 @@ describe('wrapOfficeMessage — the two origin framings', () => {
 });
 
 describe('buildOfficeDelivery', () => {
+  test('NEVER serves a chat row — that leg belongs to the nudge pull', async () => {
+    // Build 6.5 Phase 4. Without the filter the same words would arrive twice
+    // by two routes: injected here as a silent agent turn AND texted to the
+    // person's phone by the nudge runner.
+    const asked: string[] = [];
+    await buildOfficeDelivery('host-1', baseDeps({
+      listQueued: (async (_h: string, via: string) => {
+        asked.push(via);
+        return [];
+      }) as never,
+    }));
+    expect(asked).toEqual(['assistant']);
+  });
+
   test('serves a queued row: serve counted BEFORE shipping, payload wrapped + base64', async () => {
     const serveCount = vi.fn(async (_id: string, _t: string, n: number) => queuedRow({ serve_count: n }));
     const { messages } = await buildOfficeDelivery('host-1', baseDeps({ serveCount }));

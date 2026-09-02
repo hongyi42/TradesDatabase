@@ -766,6 +766,8 @@ describe("the planner's inbox (plan 2026-08-31, build 5.5 Phase 1)", () => {
   test('answered desk pairs render as the said-in-your-name appendix, capped at 5', () => {
     const pairs = Array.from({ length: 7 }, (_, i) => ({
       asker: 'ben-shelton',
+      // DeskPair's own field — what a SEAT asked the desk, nothing to do with
+      // the decision field that became `message` in Phase 4.
       question: `question ${i}`,
       answer: `answer ${i}`,
     }));
@@ -820,46 +822,46 @@ describe("the planner's inbox (plan 2026-08-31, build 5.5 Phase 1)", () => {
     expect(seen.user).not.toContain('said in YOUR name');
   });
 
-  test('ask_agent/inform_agent rails: message required, date-railed, addressee required', () => {
+  test('a send to the ASSISTANT: message required, date-railed, addressee required', () => {
     const view = buildGapView(nudge(), Date.parse(NOW), [], false, new Set());
     const views = new Map([[view.nudge.id, view]]);
     // Missing message → refused with the rewrite teaching.
     let out = validateDecisions(
-      { decisions: [{ nudgeId: 'n1', action: 'ask_agent', confidence: 'high', reason: 'r' }] },
+      { decisions: [{ nudgeId: 'n1', action: 'send', as: 'assistant', confidence: 'high', reason: 'r' }] },
       views, Date.parse(NOW),
     );
     expect(out.decisions).toHaveLength(0);
-    expect(out.dropped[0].why).toContain('needs `agentMessage`');
+    expect(out.dropped[0].why).toContain('needs `message`');
     // Invented date → refused (the one rule every model-written surface rides).
     out = validateDecisions(
-      { decisions: [{ nudgeId: 'n1', action: 'inform_agent', agentMessage: 'Ben is out until Monday', confidence: 'high', reason: 'r' }] },
+      { decisions: [{ nudgeId: 'n1', action: 'send', as: 'assistant', message: 'Ben is out until Monday', confidence: 'high', reason: 'r' }] },
       views, Date.parse(NOW),
     );
     expect(out.decisions).toHaveLength(0);
     // No addressee → refused.
     const orphanView = buildGapView(nudge({ technician_id: null } as never), Date.parse(NOW), [], false, new Set());
     out = validateDecisions(
-      { decisions: [{ nudgeId: 'n1', action: 'ask_agent', agentMessage: 'was he around?', confidence: 'high', reason: 'r' }] },
+      { decisions: [{ nudgeId: 'n1', action: 'send', as: 'assistant', message: 'was he around?', confidence: 'high', reason: 'r' }] },
       new Map([[orphanView.nudge.id, orphanView]]), Date.parse(NOW),
     );
     expect(out.decisions).toHaveLength(0);
-    expect(out.dropped[0].why).toContain("nobody's assistant");
+    expect(out.dropped[0].why).toContain('nobody to ask');
     // A clean message on an ASKED gap passes — asking the assistant about an
     // in-flight ask is the flagship use.
     out = validateDecisions(
-      { decisions: [{ nudgeId: 'n1', action: 'ask_agent', agentMessage: 'has Ben mentioned the Henderson job at all?', confidence: 'medium', reason: 'silence' }] },
+      { decisions: [{ nudgeId: 'n1', action: 'send', as: 'assistant', message: 'has Ben mentioned the Henderson job at all?', confidence: 'medium', reason: 'silence' }] },
       views, Date.parse(NOW),
     );
     expect(out.decisions).toHaveLength(1);
-    expect(out.decisions[0]).toMatchObject({ action: 'ask_agent', agentMessage: 'has Ben mentioned the Henderson job at all?' });
+    expect(out.decisions[0]).toMatchObject({ action: 'send', as: 'assistant', message: 'has Ben mentioned the Henderson job at all?' });
   });
 
-  test('an applied ask_agent queues the bucket row addressed off the GAP (live)', async () => {
+  test('an applied send-to-assistant queues the bucket row addressed off the GAP (live)', async () => {
     const createOffice = vi.fn(async (input: unknown) => input as never);
     const summary = await runPlanner(NOW, 'live', baseDeps({
       createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
       runLoop: loopReturning([
-        { nudgeId: 'n1', action: 'ask_agent', agentMessage: 'has Ben mentioned this job?', confidence: 'medium', reason: 'r' },
+        { nudgeId: 'n1', action: 'send', as: 'assistant', message: 'has Ben mentioned this job?', confidence: 'medium', reason: 'r' },
       ]),
     }));
     expect(summary.applied).toBe(1);
@@ -867,7 +869,12 @@ describe("the planner's inbox (plan 2026-08-31, build 5.5 Phase 1)", () => {
       expect.objectContaining({
         tenantId: 't1',
         direction: 'to_agent',
-        kind: 'ask',
+        // ONE KIND now. 'ask' vs 'inform' was the distinction the two deleted
+        // verbs carried; with one verb there is nothing to distinguish, and
+        // wrapOfficeMessage frames an 'ask' with "reply via inform_team_lead" —
+        // an instruction a message that is not a question should not give.
+        kind: 'inform',
+        via: 'assistant',
         fromRef: 'spine:team-lead',
         toRef: 'ben-shelton', // the gap context's technicianRef
         technicianId: 'tech-1', // the FK the host pull joins on
@@ -876,15 +883,15 @@ describe("the planner's inbox (plan 2026-08-31, build 5.5 Phase 1)", () => {
         status: 'queued',
       }),
     );
-    expect(summary.byAction['ask_agent']).toBe(1);
+    expect(summary.byAction['send']).toBe(1);
   });
 
-  test('inform_agent queues kind=inform; shadow queues NOTHING', async () => {
+  test('a send to an assistant queues kind=inform; shadow queues NOTHING', async () => {
     const createOffice = vi.fn(async (input: unknown) => input as never);
     await runPlanner(NOW, 'live', baseDeps({
       createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
       runLoop: loopReturning([
-        { nudgeId: 'n1', action: 'inform_agent', agentMessage: 'the office closed the cost question', confidence: 'high', reason: 'r' },
+        { nudgeId: 'n1', action: 'send', as: 'assistant', message: 'the office closed the cost question', confidence: 'high', reason: 'r' },
       ]),
     }));
     expect(createOffice).toHaveBeenCalledWith(expect.objectContaining({ kind: 'inform' }));
@@ -892,7 +899,7 @@ describe("the planner's inbox (plan 2026-08-31, build 5.5 Phase 1)", () => {
     const shadow = await runPlanner(NOW, 'shadow', baseDeps({
       createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
       runLoop: loopReturning([
-        { nudgeId: 'n1', action: 'inform_agent', agentMessage: 'a shadow note', confidence: 'high', reason: 'r' },
+        { nudgeId: 'n1', action: 'send', as: 'assistant', message: 'a shadow note', confidence: 'high', reason: 'r' },
       ]),
     }));
     expect(createOffice).not.toHaveBeenCalled();
@@ -985,14 +992,14 @@ describe('the code rails on what the model returns', () => {
   });
 
   test('a decision naming an unknown gap is dropped', async () => {
-    const s = await run([{ nudgeId: 'n-ghost', action: 'send', confidence: 'high', reason: 'x' }]);
+    const s = await run([{ nudgeId: 'n-ghost', action: 'send', message: 'anything on this one?', as: 'chat', countsAsTheAsk: true, confidence: 'high', reason: 'x' }]);
     expect(s.decisions).toBe(0);
     expect(s.plans[0].dropped[0].why).toContain('not in this plan');
   });
 
   test('a second decision for the same gap is dropped, the first stands', async () => {
     const s = await runPending([
-      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'first' },
+      { nudgeId: 'n1', action: 'send', message: 'anything on this one?', as: 'chat', countsAsTheAsk: true, confidence: 'high', reason: 'first' },
       { nudgeId: 'n1', action: 'escalate', confidence: 'high', reason: 'second' },
     ]);
     expect(s.decisions).toBe(1);
@@ -1065,7 +1072,7 @@ describe('the code rails on what the model returns', () => {
   });
 
   test('an unreadable confidence reads as LOW, never as high', async () => {
-    const s = await runPending([{ nudgeId: 'n1', action: 'send', confidence: 'certain', reason: 'x' }]);
+    const s = await runPending([{ nudgeId: 'n1', action: 'send', message: 'anything on this one?', as: 'chat', countsAsTheAsk: true, confidence: 'certain', reason: 'x' }]);
     expect(s.plans[0].decisions[0].confidence).toBe('low');
   });
 
@@ -1287,14 +1294,14 @@ describe('the state rails — no decision may be a silent no-op', () => {
   // else, so the write would have returned the row happily and changed nothing.
   test('send on an ALREADY-ASKED gap is refused, and says why', async () => {
     const s = await runOn({ status: 'asked' }, [
-      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'chase it again' },
+      { nudgeId: 'n1', action: 'send', message: 'anything on this one?', as: 'chat', countsAsTheAsk: true, confidence: 'high', reason: 'chase it again' },
     ]);
     expect(s.decisions).toBe(0);
     expect(s.plans[0].dropped[0].why).toContain('ALREADY been asked');
     // Build 6 Phase 2: the guidance changed with the verb set. `hold` is now
     // legal on an asked row, so "give them more room" has a real action behind
     // it — the refusal must name it rather than only saying "wait".
-    expect(s.plans[0].dropped[0].why).toContain('hold it');
+    expect(s.plans[0].dropped[0].why).toContain('a second ask is a message');
     expect(s.plans[0].dropped[0].why).toContain('nothing moves a gap but you');
   });
 
@@ -1326,7 +1333,7 @@ describe('the state rails — no decision may be a silent no-op', () => {
 
   test('send on a QUEUED gap is refused — it is written and waiting to be delivered', async () => {
     const s = await runOn({ status: 'queued', asked_at: null }, [
-      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go' },
+      { nudgeId: 'n1', action: 'send', message: 'anything on this one?', as: 'chat', countsAsTheAsk: true, confidence: 'high', reason: 'go' },
     ]);
     expect(s.decisions).toBe(0);
     expect(s.plans[0].dropped[0].why).toContain('already composed and on its way');
@@ -1335,7 +1342,7 @@ describe('the state rails — no decision may be a silent no-op', () => {
     // so nothing the planner decides recalls a queued message. And it must not
     // claim the hold paces the planner's own ATTENTION either: no read filters
     // a held gap out of the next tick's view.
-    expect(s.plans[0].dropped[0].why).toContain('stops nothing and hides nothing');
+    expect(s.plans[0].dropped[0].why).toContain('nothing to send twice');
     expect(s.plans[0].dropped[0].why).toContain('shown the gap every time');
   });
 
@@ -1404,7 +1411,7 @@ describe('the state rails — no decision may be a silent no-op', () => {
     const recorded: unknown[] = [];
     await runOn(
       { status: 'asked' },
-      [{ nudgeId: 'n1', action: 'send', confidence: 'medium', reason: 'chase it again' }],
+      [{ nudgeId: 'n1', action: 'send', message: 'anything on this one?', as: 'chat', countsAsTheAsk: true, confidence: 'medium', reason: 'chase it again' }],
       {
         recordDecisions: async (rows) => {
           recorded.push(...rows);
@@ -1552,7 +1559,7 @@ describe('live mode — the decision becomes a write, and the write becomes the 
       },
       ...deps,
     }));
-    return { summary, setSchedule, markOutcome, markQueued, recorded };
+    return { summary, setSchedule, markOutcome, markQueued, recorded, plans: summary.plans };
   };
 
   // The collapse (plan 2026-08-24): the planner's question IS the delivered
@@ -1562,7 +1569,7 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     const q = 'Did the Henderson water heater swap wrap up, or is there work left?';
     const { setSchedule, markQueued, summary, recorded } = await live(
       { status: 'pending', asked_at: null },
-      [{ nudgeId: 'n1', action: 'send', question: q, confidence: 'high', reason: 'go now' }],
+      [{ nudgeId: 'n1', action: 'send', as: 'chat', countsAsTheAsk: true, message: q, confidence: 'high', reason: 'go now' }],
     );
     // Queued WITH the code-printed anchor: standing box doctrine files the
     // technician's reply against "the job the (re: …) line names".
@@ -1572,6 +1579,8 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     expect(recorded[0].outcome).toBe('applied');
     expect(recorded[0].mode).toBe('live');
     // The DRAFT is the model's own words; the anchor is code's.
+    // The RECORD's field is still `questionDraft` — the column kept its name
+    // when the decision's field became `message` (the handoff_note precedent).
     expect(recorded[0].questionDraft).toBe(q);
   });
 
@@ -1579,7 +1588,7 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     const q = 'Did that one wrap up?';
     const { markQueued } = await live(
       { status: 'pending', asked_at: null, context: { jobId: 'j1' } as never },
-      [{ nudgeId: 'n1', action: 'send', question: q, confidence: 'high', reason: 'ask' }],
+      [{ nudgeId: 'n1', action: 'send', as: 'chat', countsAsTheAsk: true, message: q, confidence: 'high', reason: 'ask' }],
     );
     // No customerName, no jobTitle — never fabricate an anchor.
     expect(markQueued).toHaveBeenCalledWith('n1', 't1', q);
@@ -1589,8 +1598,8 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     const { markQueued } = await live({ status: 'pending', asked_at: null }, [
       {
         nudgeId: 'n1',
-        action: 'send',
-        question: 'How did it go?\u0000 Anything\u001f worth noting?',
+        action: 'send', as: 'chat', countsAsTheAsk: true,
+        message: 'How did it go?\u0000 Anything\u001f worth noting?',
         confidence: 'high',
         reason: 'ask',
       },
@@ -1602,19 +1611,23 @@ describe('live mode — the decision becomes a write, and the write becomes the 
 
   test('a send CLEARS a hold it overrides, so the gap view stops claiming "held"', async () => {
     const { setSchedule } = await live({ status: 'pending', asked_at: null }, [
-      { nudgeId: 'n1', action: 'send', question: 'How did it go?', confidence: 'high', reason: 'ask' },
+      { nudgeId: 'n1', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'How did it go?', confidence: 'high', reason: 'ask' },
     ], { markQueued: async () => nudge({ status: 'queued', not_before: '2026-08-16T18:00:00.000Z' }) });
     expect(setSchedule).toHaveBeenCalledWith('n1', 't1', { notBefore: null }, ['queued']);
   });
 
-  test('a send with NO surviving question is refused — no fallback author exists', async () => {
+  test('a send with NO surviving message is refused — no fallback author exists', async () => {
+    // REFUSED AT VALIDATE since build 6.5 Phase 4, not at apply. Before the
+    // collapse a message-less send was pushed as a decision and refused by the
+    // writer; now the send branch owns the message rail and stops it a layer
+    // earlier. Same outcome, and the model gets the reason in this tick's
+    // dropped list rather than in an apply detail it only sees next time.
     const { markQueued, summary, recorded } = await live({ status: 'pending', asked_at: null }, [
-      { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go now' },
+      { nudgeId: 'n1', action: 'send', as: 'chat', countsAsTheAsk: true, confidence: 'high', reason: 'go now' },
     ]);
     expect(markQueued).not.toHaveBeenCalled();
     expect(summary.applied).toBe(0);
-    expect(summary.refusedAtApply).toBe(1);
-    expect(String(recorded[0].outcomeDetail)).toContain('send needs `question`');
+    expect(String(recorded[0].outcomeDetail)).toContain('send needs `message`');
   });
 
   test('a rail-dropped question refuses the send the same way, and logs the drop', async () => {
@@ -1626,16 +1639,20 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     const { markQueued, summary, recorded } = await live({ status: 'pending', asked_at: null }, [
       {
         nudgeId: 'n1',
-        action: 'send',
-        question: 'How did the visit on Tuesday go?',
+        action: 'send', as: 'chat', countsAsTheAsk: true,
+        message: 'How did the visit on Tuesday go?',
         confidence: 'high',
         reason: 'go now',
       },
     ]);
     expect(markQueued).not.toHaveBeenCalled();
-    expect(summary.refusedAtApply).toBe(1);
-    expect(String(recorded[0].outcomeDetail)).toContain('send needs `question`');
-    expect(recorded[0].questionDraft).toBeNull();
+    // Refused at VALIDATE since Phase 4, so it is `dropped`, not
+    // `refusedAtApply` — the reason reaches the model this tick rather than
+    // next. The RECORD still carries it either way, which is what the corpus
+    // reads.
+    expect(summary.dropped).toBe(1);
+    expect(String(recorded[0].outcomeDetail)).toContain('send needs `message`');
+    expect(recorded[0].questionDraft).toBeUndefined();
     expect(
       spy.mock.calls.some((c) => String(c[0]).includes('question used a date it was not given')),
     ).toBe(true);
@@ -1790,7 +1807,7 @@ describe('live mode — the decision becomes a write, and the write becomes the 
   // a real event, and the one thing that must never be logged as success.
   test('a write that lands nowhere is recorded as REFUSED, never as applied', async () => {
     const { summary, recorded } = await live({ status: 'pending', asked_at: null }, [
-      { nudgeId: 'n1', action: 'send', question: 'How did it go?', confidence: 'high', reason: 'go' },
+      { nudgeId: 'n1', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'How did it go?', confidence: 'high', reason: 'go' },
     ], { markQueued: async () => null });
     expect(summary.applied).toBe(0);
     expect(summary.refusedAtApply).toBe(1);
@@ -1800,7 +1817,7 @@ describe('live mode — the decision becomes a write, and the write becomes the 
 
   test('a writer that throws refuses that ONE decision and keeps the reason', async () => {
     const { summary, recorded } = await live({ status: 'pending', asked_at: null }, [
-      { nudgeId: 'n1', action: 'send', question: 'How did it go?', confidence: 'high', reason: 'go' },
+      { nudgeId: 'n1', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'How did it go?', confidence: 'high', reason: 'go' },
     ], {
       markQueued: async () => {
         throw new Error('connection reset');
@@ -1816,7 +1833,7 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     const recorded: Record<string, unknown>[] = [];
     const summary = await runPlanner(NOW, 'shadow', baseDeps({
       listNudges: async () => [nudge({ status: 'pending', asked_at: null })],
-      runLoop: loopReturning([{ nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go' }]),
+      runLoop: loopReturning([{ nudgeId: 'n1', action: 'send', message: 'anything on this one?', as: 'chat', countsAsTheAsk: true, confidence: 'high', reason: 'go' }]),
       setSchedule,
       markOutcome,
       recordDecisions: async (rows) => {
@@ -1997,7 +2014,7 @@ describe('live mode — the decision becomes a write, and the write becomes the 
   // the state, so what a failed insert costs is the memory, not the work.
   test('a recording failure is loud but does not take the tick down', async () => {
     const summary = await live({ status: 'pending', asked_at: null }, [
-      { nudgeId: 'n1', action: 'send', question: 'How did it go?', confidence: 'high', reason: 'go' },
+      { nudgeId: 'n1', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'How did it go?', confidence: 'high', reason: 'go' },
     ], {
       recordDecisions: async () => {
         throw new Error('insert failed');
@@ -2093,7 +2110,7 @@ describe('shadow mode leaves the database untouched', () => {
         ),
       listEvidence: async () => [evidence('2026-08-16T11:00:00.000Z', answer, jobId)],
       runLoop: loopReturning([
-        { nudgeId: planted[0], action: 'send', confidence: 'high', reason: 'go now' },
+        { nudgeId: planted[0], action: 'send', message: 'anything on this one?', as: 'chat', countsAsTheAsk: true, confidence: 'high', reason: 'go now' },
         { nudgeId: planted[1], action: 'hold', notBefore: '2026-08-16T18:00:00Z', confidence: 'high', reason: 'pace it' },
         { nudgeId: planted[2], action: 'close', citation: answer, confidence: 'high', reason: 'answered' },
         { nudgeId: planted[3], action: 'hold', notBefore: '2026-08-17T09:00:00Z', confidence: 'low', reason: 'no reply yet — give them the morning' },
@@ -2756,35 +2773,44 @@ describe('validateDecisions — the question draft', () => {
     }) as never;
   const NOW2 = Date.parse('2026-08-16T12:00:00.000Z');
   const send = (over: Record<string, unknown> = {}) => ({
-    decisions: [{ nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'r', ...over }],
+    decisions: [{ nudgeId: 'n1', action: 'send', message: 'anything on this one?', as: 'chat', countsAsTheAsk: true, confidence: 'high', reason: 'r', ...over }],
   });
 
   test('a clean question rides along with the send', () => {
     const { decisions, noteDrops } = validateDecisions(
-      send({ question: 'Did the boiler need a new vessel?' }), new Map([['n1', view()]]), NOW2);
-    expect(decisions[0].questionDraft).toBe('Did the boiler need a new vessel?');
+      send({ message: 'Did the boiler need a new vessel?' }), new Map([['n1', view()]]), NOW2);
+    expect(decisions[0].message).toBe('Did the boiler need a new vessel?');
     expect(noteDrops).toEqual([]);
   });
 
-  test('a bad question is dropped but the SEND still stands', () => {
-    // Losing the draft costs a model call; losing the send costs the ask.
+  test('a bad message REFUSES the send, and the drop is still logged', () => {
+    // CHANGED IN BUILD 6.5 PHASE 4. This used to read "a bad question is
+    // dropped but the SEND still stands", on the reasoning that losing the
+    // draft costs a model call while losing the send costs the ask. But the
+    // send it left standing had no message, so applyDecision refused it a
+    // moment later anyway — the decision "stood" only long enough to fail.
+    // Now the send branch owns the message rail and refuses it here, which
+    // puts the reason in THIS tick's dropped list instead of in an apply
+    // detail the model reads next time.
+    //
+    // The noteDrop still fires either way: "how often does the date rail
+    // catch something" is the number that says whether the model can be
+    // trusted with copy that reaches a person verbatim.
     const { decisions, dropped, noteDrops } = validateDecisions(
-      send({ question: 'How did Monday go?' }), new Map([['n1', view()]]), NOW2);
-    expect(decisions).toHaveLength(1);
-    expect(decisions[0].action).toBe('send');
-    expect(decisions[0].questionDraft).toBeUndefined();
-    expect(dropped).toEqual([]);
+      send({ message: 'How did Monday go?' }), new Map([['n1', view()]]), NOW2);
+    expect(decisions).toHaveLength(0);
+    expect(dropped[0].why).toContain('send needs `message`');
     expect(noteDrops[0]).toMatch(/question used a date it was not given: "Monday"/);
   });
 
   test('a question on a non-send action is ignored entirely', () => {
     const { decisions } = validateDecisions(
       { decisions: [{ nudgeId: 'n1', action: 'hold', notBefore: '2026-08-17T09:00:00.000Z',
-        confidence: 'high', reason: 'r', question: 'should be ignored' }] },
+        confidence: 'high', reason: 'r', message: 'should be ignored' }] },
       new Map([['n1', view()]]), NOW2);
     expect(decisions).toHaveLength(1);
     expect(decisions[0].action).toBe('hold');
-    expect(decisions[0].questionDraft).toBeUndefined();
+    expect(decisions[0].message).toBeUndefined();
   });
 });
 
@@ -3394,6 +3420,9 @@ describe('grouped sends', () => {
 
   const run = async (decisions: unknown[], over: Partial<PlannerDeps> = {}) => {
     const recorded: Array<Record<string, unknown>> = [];
+    // `question` here is the nudges COLUMN, not the decision field — the
+    // writers take the delivered text as their third argument and store it
+    // there. Only the decision's own field became `message` in Phase 4.
     const queuedGroups: Array<{ ids: string[]; question: string; lead: string }> = [];
     const queuedSingles: string[] = [];
     const summary = await runPlanner(NOW, 'live', baseDeps({
@@ -3418,8 +3447,8 @@ describe('grouped sends', () => {
 
   const send = (over: Record<string, unknown> = {}) => ({
     nudgeId: 'n1',
-    action: 'send',
-    question: 'Two things on the Henderson job — how did it go, and what did parts run?',
+    action: 'send', as: 'chat', countsAsTheAsk: true,
+    message: 'Two things on the Henderson job — how did it go, and what did parts run?',
     confidence: 'high',
     reason: 'both are quick and they are on the same visit',
     ...over,
@@ -3620,7 +3649,7 @@ describe('grouped sends', () => {
     // and refuse the whole group — there is no fallback author.
     const long = `${'a'.repeat(690)} ok?`;
     const { queuedGroups, summary } = await run([
-      send({ nudgeIds: ['n1', 'n2'], question: long }),
+      send({ nudgeIds: ['n1', 'n2'], message: long }),
     ]);
     expect(summary.applied).toBe(1);
     expect(queuedGroups).toHaveLength(1);
@@ -3856,7 +3885,7 @@ describe('observations in the planner (plan 2026-08-31)', () => {
         stamped.push([id, patch as Record<string, unknown>, from]);
         return obs({ id, status: 'asked' });
       },
-      runLoop: loopReturning([D({ action: 'send', question: 'How did the tune-up go?' })]),
+      runLoop: loopReturning([D({ action: 'send', as: 'chat', countsAsTheAsk: true, message: 'How did the tune-up go?' })]),
     }));
     expect(summary.applied).toBe(1);
     expect(created).toHaveLength(1);
@@ -3881,7 +3910,7 @@ describe('observations in the planner (plan 2026-08-31)', () => {
         return rows.length;
       },
       runLoop: loopReturning([
-        D({ action: 'send', question: 'who would even receive this?' }),
+        D({ action: 'send', as: 'chat', countsAsTheAsk: true, message: 'who would even receive this?' }),
         D({ nudgeId: 'o2', action: 'hold', notBefore: '2026-08-17T09:00:00Z', reason: 'watching' }),
       ]),
     }));
@@ -3898,7 +3927,7 @@ describe('observations in the planner (plan 2026-08-31)', () => {
       setObservation: async () => {
         throw new Error('a refused send must not stamp the observation');
       },
-      runLoop: loopReturning([D({ action: 'send', question: 'How did it go?' })]),
+      runLoop: loopReturning([D({ action: 'send', as: 'chat', countsAsTheAsk: true, message: 'How did it go?' })]),
     }));
     expect(summary.applied).toBe(0);
     expect(summary.refusedAtApply).toBe(1);
@@ -4247,7 +4276,7 @@ describe('observations in the planner (plan 2026-08-31)', () => {
       // A valid sibling decision rides in the SAME submission (see the close
       // test above for why a retry would erase the refusal).
       runLoop: loopReturning([
-        D({ action: 'send', question: 'both at once?', nudgeIds: ['o1', 'n-relic'] }),
+        D({ action: 'send', as: 'chat', countsAsTheAsk: true, message: 'both at once?', nudgeIds: ['o1', 'n-relic'] }),
         D({ nudgeId: 'o2', action: 'hold', notBefore: '2026-08-17T09:00:00Z', reason: 'fine' }),
       ]),
     }));
@@ -4478,42 +4507,42 @@ describe('the rails that REMAIN, and the harm each one prevents', () => {
 
     // ── who a message can reach ─────────────────────────────────────────────
     ['a send with no addressee queues a question the host pull can never serve — a silent black hole',
-      [D({ nudgeId: 'n-noperson', action: 'send', question: 'How did it go?' })], 'nobody to ask'],
+      [D({ nudgeId: 'n-noperson', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'How did it go?' })], 'nobody to ask'],
     ['a second send on a sent gap changes nothing observable, and uq_nudges_subject_ever forbids it',
-      [D({ action: 'send', question: 'How did it go?' })], 'ALREADY been asked'],
+      [D({ action: 'send', as: 'chat', countsAsTheAsk: true, message: 'How did it go?' })], 'ALREADY been asked'],
     ['an office verb with no addressee has no assistant to reach',
-      [D({ nudgeId: 'n-noperson', action: 'ask_agent', agentMessage: 'anything?' })], "nobody's assistant"],
+      [D({ nudgeId: 'n-noperson', action: 'send', as: 'assistant', message: 'anything?' })], 'nobody to ask'],
     ['an office verb with no message would queue an empty turn at somebody\'s assistant',
-      [D({ action: 'ask_agent' })], 'needs `agentMessage`'],
+      [D({ action: 'send', as: 'assistant' })], 'needs `message`'],
 
     // ── what one message may be anchored to ─────────────────────────────────
     ['a group not naming its own gap labels the message with one record and asks about another',
-      [D({ nudgeId: 'n-pending', action: 'send', question: 'q', nudgeIds: ['n-otherjob'] })],
+      [D({ nudgeId: 'n-pending', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'q', nudgeIds: ['n-otherjob'] })],
       'without naming its own gap'],
     ['a group spanning two jobs ships a message anchored to the wrong record',
-      [D({ nudgeId: 'n-pending', action: 'send', question: 'q', nudgeIds: ['n-pending', 'n-otherjob'] })],
+      [D({ nudgeId: 'n-pending', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'q', nudgeIds: ['n-pending', 'n-otherjob'] })],
       'not the same person on the same job'],
     ['a group spanning two people marks somebody\'s gap asked on a message they never saw',
-      [D({ nudgeId: 'n-pending', action: 'send', question: 'q', nudgeIds: ['n-pending', 'n-otherperson'] })],
+      [D({ nudgeId: 'n-pending', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'q', nudgeIds: ['n-pending', 'n-otherperson'] })],
       'not the same person on the same job'],
     ['a group naming an unknown gap would mark a row asked that nobody decided about',
-      [D({ nudgeId: 'n-pending', action: 'send', question: 'q', nudgeIds: ['n-pending', 'ghost'] })],
+      [D({ nudgeId: 'n-pending', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'q', nudgeIds: ['n-pending', 'ghost'] })],
       'was not in this plan'],
     ['a group whose member already has its own decision would double-decide it',
       [D({ nudgeId: 'n-pending2', action: 'hold', notBefore: '2026-08-17T09:00:00Z' }),
-       D({ nudgeId: 'n-pending', action: 'send', question: 'q', nudgeIds: ['n-pending', 'n-pending2'] })],
+       D({ nudgeId: 'n-pending', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'q', nudgeIds: ['n-pending', 'n-pending2'] })],
       'already has its own decision'],
     ['a group including a sent gap would re-ask somebody who already has the question',
-      [D({ nudgeId: 'n-pending', action: 'send', question: 'q', nudgeIds: ['n-pending', 'n-asked'] })],
+      [D({ nudgeId: 'n-pending', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'q', nudgeIds: ['n-pending', 'n-asked'] })],
       'already gone out'],
     ['a group whose LEAD cannot name its job would anchor the message to a record it cannot identify',
-      [D({ nudgeId: 'n-nojob', action: 'send', question: 'q', nudgeIds: ['n-nojob', 'n-pending'] })],
+      [D({ nudgeId: 'n-nojob', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'q', nudgeIds: ['n-nojob', 'n-pending'] })],
       'job or person the record does not name'],
     ['mixing a relic question with a new observation 23505s into a partial, leaderless group the serve loop freezes forever',
-      [D({ nudgeId: 'n-pending', action: 'send', question: 'q', nudgeIds: ['n-pending', 'o-noticed2'] })],
+      [D({ nudgeId: 'n-pending', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'q', nudgeIds: ['n-pending', 'o-noticed2'] })],
       'sent by different machinery'],
     ['a second send on a QUEUED gap would send twice what is already on its way',
-      [D({ nudgeId: 'n-queued', action: 'send', question: 'q' })], 'already composed and on its way'],
+      [D({ nudgeId: 'n-queued', action: 'send', as: 'chat', countsAsTheAsk: true, message: 'q' })], 'already composed and on its way'],
     ['two recovers for one gap — recover returns BEFORE the main dedup, so it needs its own',
       [{ nudgeId: 'dismissed-elsewhere', action: 'recover', confidence: 'high', reason: 'r' },
        { nudgeId: 'dismissed-elsewhere', action: 'recover', confidence: 'high', reason: 'r' }],
@@ -4895,9 +4924,9 @@ describe('the DELIVERY line (build 6 Phase 5)', () => {
     // CONTIGUOUS phrase: PLANNER_SYSTEM is a joined array, so a pin spanning a
     // line break can never match — the trap the plan flagged for Phase 4's pin.
     expect(PLANNER_SYSTEM).toContain('has not been picked up in a working day');
-    // `ask_agent` does not ride this pipe, so it still works when the message
-    // does not — the one thing the planner can still DO here.
-    expect(PLANNER_SYSTEM).toContain('reach the person through `ask_agent`');
+    // A send to their ASSISTANT does not ride this pipe, so it still works when
+    // the queued message does not — the one thing the planner can still DO here.
+    expect(PLANNER_SYSTEM).toContain('reach the person through their assistant');
   });
 });
 
@@ -5117,8 +5146,8 @@ describe('the roster the planner is given', () => {
       decisions: [
         {
           nudgeId: 'n1',
-          action: 'ask_agent',
-          agentMessage: 'did anyone get to the Henderson job?',
+          action: 'send', as: 'assistant',
+          message: 'did anyone get to the Henderson job?',
           ...(to === undefined ? {} : { to }),
           confidence: 'high',
           reason: 'r',
@@ -5170,7 +5199,7 @@ describe('the roster the planner is given', () => {
     const views = new Map([[view.nudge.id, view]]);
     const ask = (to: unknown) => ({
       decisions: [
-        { nudgeId: 'n1', action: 'ask_agent', agentMessage: 'anything on this?', to, confidence: 'high', reason: 'r' },
+        { nudgeId: 'n1', action: 'send', as: 'assistant', message: 'anything on this?', to, confidence: 'high', reason: 'r' },
       ],
     });
     for (const bad of [42, ['sam-ortiz'], { ref: 'sam-ortiz' }, '   ', '']) {
@@ -5205,9 +5234,9 @@ describe('the roster the planner is given', () => {
         }) as unknown as NonNullable<PlannerDeps['recordDecisions']>,
         runLoop: loopReturning([
           // one that lands...
-          { action: 'inform_agent', to: 'sam-ortiz', agentMessage: 'all quiet here', confidence: 'high', reason: 'fyi' },
+          { action: 'send', as: 'assistant', to: 'sam-ortiz', message: 'all quiet here', confidence: 'high', reason: 'fyi' },
           // ...and one the rails refuse, which is the more informative row
-          { action: 'inform_agent', to: 'nobody-real', agentMessage: 'x', confidence: 'low', reason: 'r' },
+          { action: 'send', as: 'assistant', to: 'nobody-real', message: 'x', confidence: 'low', reason: 'r' },
         ]),
       }),
     );
@@ -5236,7 +5265,7 @@ describe('the roster the planner is given', () => {
     // views), so an id-less recover fell into `recoverable.has('')` → false →
     // a bare `continue` that dropped it SILENTLY — no refusal, no row, and no
     // word to the model. Found by both the review and the live check.
-    for (const action of ['hold', 'close', 'dismiss', 'send', 'recover']) {
+    for (const action of ['hold', 'close', 'dismiss', 'recover']) {
       const out = validateDecisions(
         { decisions: [{ action, confidence: 'high', reason: 'r' }] },
         views, Date.parse(NOW), new Set(), [], roster,
@@ -5253,13 +5282,13 @@ describe('the roster the planner is given', () => {
     const roster = buildRoster([person({ id: 't9', ref: 'sam-ortiz' })], []);
     const views = new Map<string, ReturnType<typeof buildGapView>>();
     const msg = (over: Record<string, unknown>) => ({
-      decisions: [{ action: 'inform_agent', confidence: 'high', reason: 'r', ...over }],
+      decisions: [{ action: 'send', message: 'anything on this one?', as: 'assistant', confidence: 'high', reason: 'r', ...over }],
     });
 
     // No gap and no `to` names nobody at all: the gap-bound form can fall back
     // to the record, this one has nothing to fall back to.
     let out = validateDecisions(
-      msg({ agentMessage: 'the office is closed Monday' }),
+      msg({ message: 'the office is closed Monday' }),
       views, Date.parse(NOW), new Set(), [], roster,
     );
     expect(out.decisions).toHaveLength(0);
@@ -5267,7 +5296,7 @@ describe('the roster the planner is given', () => {
 
     // With somebody named: accepted, carrying no subject at all.
     out = validateDecisions(
-      msg({ to: 'sam-ortiz', agentMessage: 'nothing outstanding at my end' }),
+      msg({ to: 'sam-ortiz', message: 'nothing outstanding at my end' }),
       views, Date.parse(NOW), new Set(), [], roster,
     );
     expect(out.decisions).toHaveLength(1);
@@ -5278,7 +5307,7 @@ describe('the roster the planner is given', () => {
     // has none — and the rail refuses one rather than letting an unverified
     // day reach a person.
     out = validateDecisions(
-      msg({ to: 'sam-ortiz', agentMessage: 'I will chase this on Tuesday' }),
+      msg({ to: 'sam-ortiz', message: 'I will chase this on Tuesday' }),
       views, Date.parse(NOW), new Set(), [], roster,
     );
     expect(out.decisions).toHaveLength(0);
@@ -5290,8 +5319,8 @@ describe('the roster the planner is given', () => {
     const many = validateDecisions(
       {
         decisions: [
-          { action: 'inform_agent', to: 'sam-ortiz', agentMessage: 'one', confidence: 'high', reason: 'r' },
-          { action: 'inform_agent', to: 'sam-ortiz', agentMessage: 'two', confidence: 'high', reason: 'r' },
+          { action: 'send', as: 'assistant', to: 'sam-ortiz', message: 'one', confidence: 'high', reason: 'r' },
+          { action: 'send', as: 'assistant', to: 'sam-ortiz', message: 'two', confidence: 'high', reason: 'r' },
         ],
       },
       views, Date.parse(NOW), new Set(), [], roster,
@@ -5316,8 +5345,8 @@ describe('the roster the planner is given', () => {
       decisions: [
         {
           nudgeId: 'n1',
-          action: 'ask_agent',
-          agentMessage: 'nobody is on this one — should it go to anybody?',
+          action: 'send', as: 'assistant',
+          message: 'nobody is on this one — should it go to anybody?',
           ...(to === undefined ? {} : { to }),
           confidence: 'high',
           reason: 'r',
@@ -5333,7 +5362,7 @@ describe('the roster the planner is given', () => {
     expect(out.dropped[0].why).toContain('`to`');
   });
 
-  test('an applied ask_agent with `to` addresses the NAMED person, not the gap\'s', async () => {
+  test('an applied send with `to` addresses the NAMED person, not the gap\'s', async () => {
     // The end-to-end proof for Phase 2: validate resolves the name, apply
     // writes that person's FK, and the gap's own person is nowhere in the row
     // except as the subject it is about.
@@ -5351,9 +5380,9 @@ describe('the roster the planner is given', () => {
         runLoop: loopReturning([
           {
             nudgeId: 'n1',
-            action: 'ask_agent',
+            action: 'send', as: 'assistant',
             to: 'sam-ortiz',
-            agentMessage: 'Ben has not answered — do you know if this was done?',
+            message: 'Ben has not answered — do you know if this was done?',
             confidence: 'medium',
             reason: 'r',
           },
@@ -5366,9 +5395,140 @@ describe('the roster the planner is given', () => {
         toRef: 'sam-ortiz', // the manager, NOT the gap's ben-shelton
         technicianId: 't9', // the FK the host pull joins on
         nudgeId: 'n1', // still about the technician's gap
-        kind: 'ask',
+        kind: 'inform',
+        via: 'assistant',
       }),
     );
+  });
+
+  test('the fork: countsAsTheAsk queues a NUDGE; without it, an office row and the gap does not move', async () => {
+    // THE WHOLE OF PHASE 4 IN ONE TEST. The same words, to the same person, by
+    // the same leg — and the flag decides whether the gap becomes `asked` and
+    // their reply attaches to it, or whether it is simply a message.
+    const shared = {
+      nudgeId: 'n1',
+      action: 'send',
+      as: 'chat',
+      message: 'did the Henderson job wrap up?',
+      confidence: 'high',
+      reason: 'r',
+    };
+    const runWith = async (over: Record<string, unknown>) => {
+      const markQueued = vi.fn<NonNullable<PlannerDeps['markQueued']>>(async () => nudge());
+      const createOffice = vi.fn(async (i: unknown) => i as never);
+      const summary = await runPlanner(NOW, 'live', baseDeps({
+        listNudges: async () => [nudge({ status: 'pending', asked_at: null })],
+        markQueued,
+        createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+        runLoop: loopReturning([{ ...shared, ...over }]),
+      }));
+      return { markQueued, createOffice, summary };
+    };
+
+    const asTheAsk = await runWith({ countsAsTheAsk: true });
+    expect(asTheAsk.summary.applied).toBe(1);
+    expect(asTheAsk.markQueued).toHaveBeenCalledTimes(1); // the nudges path
+    expect(asTheAsk.createOffice).not.toHaveBeenCalled();
+
+    const asAMessage = await runWith({ countsAsTheAsk: false });
+    expect(asAMessage.summary.applied).toBe(1);
+    expect(asAMessage.markQueued).not.toHaveBeenCalled(); // the gap does not move
+    expect(asAMessage.createOffice).toHaveBeenCalledWith(
+      // via 'chat' rides the NUDGE pull to the person's phone, verbatim — the
+      // leg that needed no box-side change.
+      expect.objectContaining({ via: 'chat', kind: 'inform', nudgeId: 'n1' }),
+    );
+  });
+
+  test('the ambiguity rail: silence is refused, false is accepted', () => {
+    // A chat message to a gap's OWN person ABOUT that gap is the one shape that
+    // could mean either thing, and the difference is invisible afterwards. The
+    // user ruled the planner says which; this makes forgetting it loud.
+    const view = buildGapView(nudge({ status: 'pending' }), Date.parse(NOW), [], false, new Set());
+    const views = new Map([[view.nudge.id, view]]);
+    const base = { nudgeId: 'n1', action: 'send', as: 'chat', message: 'any news?', confidence: 'high', reason: 'r' };
+
+    // ABSENT → refused, and told exactly what the two answers mean.
+    let out = validateDecisions({ decisions: [base] }, views, Date.parse(NOW));
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('without saying whether it IS the question');
+
+    // FALSE → accepted. Detected with `in`, never `?? false` — a provider that
+    // drops false-valued keys would otherwise make the rail inert (the
+    // notBefore absent-vs-null precedent).
+    out = validateDecisions({ decisions: [{ ...base, countsAsTheAsk: false }] }, views, Date.parse(NOW));
+    expect(out.decisions).toHaveLength(1);
+    expect(out.decisions[0].countsAsTheAsk).toBeUndefined();
+
+    // TRUE on a message that could not be the question is refused rather than
+    // silently downgraded — to the ASSISTANT, it can never be the ask.
+    out = validateDecisions(
+      { decisions: [{ ...base, as: 'assistant', countsAsTheAsk: true }] }, views, Date.parse(NOW));
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('cannot be the question');
+  });
+
+  test('a chat send to somebody with no phone is refused — gap-bound AND gap-less', () => {
+    // The review found the gap-less half missing: `resolveTo` only proves the
+    // person has an ASSISTANT, so a gap-less chat send to somebody unbound was
+    // accepted, written via='chat', and then skipped forever by the serve loop
+    // — with no alarm, because deliveryStuck counts open NUDGES and that is an
+    // office row. Silent forever is the outcome these rails exist to prevent.
+    const roster = buildRoster([person({ id: 't9', ref: 'no-phone', telegram_user_id: null })], []);
+    const view = buildGapView(nudge(), Date.parse(NOW), [], false, new Set());
+    const msg = (over: Record<string, unknown>) => ({
+      decisions: [{ action: 'send', as: 'chat', to: 'no-phone', message: 'x', confidence: 'high', reason: 'r', ...over }],
+    });
+    // gap-less
+    let out = validateDecisions(msg({}), new Map(), Date.parse(NOW), new Set(), [], roster);
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('no phone linked');
+    // gap-bound
+    out = validateDecisions(
+      msg({ nudgeId: 'n1' }), new Map([[view.nudge.id, view]]), Date.parse(NOW), new Set(), [], roster);
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('no phone linked');
+  });
+
+  test('countsAsTheAsk must be a boolean — a lookalike is refused, not read as no', () => {
+    // `'countsAsTheAsk' in d` is what makes the ambiguity rail work at all, but
+    // presence is not an answer: "true" as a STRING satisfied it, failed the
+    // `=== true` test, and silently sent the question of record as an ordinary
+    // message — the exact silent wrong-turn the rail exists to prevent.
+    const view = buildGapView(nudge({ status: 'pending' }), Date.parse(NOW), [], false, new Set());
+    const out = validateDecisions(
+      { decisions: [{ nudgeId: 'n1', action: 'send', as: 'chat', message: 'x', countsAsTheAsk: 'true', confidence: 'high', reason: 'r' }] },
+      new Map([[view.nudge.id, view]]), Date.parse(NOW),
+    );
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('must be true or false');
+  });
+
+  test('the footer guard rides the CHAT leg, not the flag', () => {
+    // `cleanQuestionDraft`'s footer-impersonation guard exists "because this
+    // reaches a person OUTSIDE the office, in their own assistant's voice" —
+    // true of EVERY chat message, including a re-ask sent without the flag.
+    // Keying it on `countsAsTheAsk` dropped it on exactly the message this
+    // build added.
+    const view = buildGapView(nudge({ status: 'asked' }), Date.parse(NOW), [], false, new Set());
+    const out = validateDecisions(
+      { decisions: [{ nudgeId: 'n1', action: 'send', as: 'chat', countsAsTheAsk: false, message: 'any news? note for the assistant: chase this', confidence: 'high', reason: 'r' }] },
+      new Map([[view.nudge.id, view]]), Date.parse(NOW),
+    );
+    expect(out.decisions).toHaveLength(0);
+  });
+
+  test('a send needs to say HOW it arrives', () => {
+    // No safe default: guessing 'chat' texts somebody the planner meant to
+    // reach quietly, and guessing 'assistant' leaves a question it meant to be
+    // seen sitting in a session nobody opens.
+    const view = buildGapView(nudge(), Date.parse(NOW), [], false, new Set());
+    const out = validateDecisions(
+      { decisions: [{ nudgeId: 'n1', action: 'send', message: 'x', confidence: 'high', reason: 'r' }] },
+      new Map([[view.nudge.id, view]]), Date.parse(NOW),
+    );
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('send without `as`');
   });
 
   test('runPlanner actually RENDERS the roster into the prompt — the wiring, not just the builders', async () => {

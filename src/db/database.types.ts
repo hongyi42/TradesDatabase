@@ -1276,6 +1276,7 @@ export type Database = {
           id: string
           in_reply_to: string | null
           kind: string
+          message_group_id: string | null
           nudge_id: string | null
           read_at: string | null
           serve_count: number
@@ -1285,6 +1286,7 @@ export type Database = {
           tier: string | null
           to_ref: string
           updated_at: string
+          via: string
         }
         Insert: {
           attempts?: number
@@ -1296,6 +1298,7 @@ export type Database = {
           id?: string
           in_reply_to?: string | null
           kind: string
+          message_group_id?: string | null
           nudge_id?: string | null
           read_at?: string | null
           serve_count?: number
@@ -1305,6 +1308,7 @@ export type Database = {
           tier?: string | null
           to_ref: string
           updated_at?: string
+          via?: string
         }
         Update: {
           attempts?: number
@@ -1316,6 +1320,7 @@ export type Database = {
           id?: string
           in_reply_to?: string | null
           kind?: string
+          message_group_id?: string | null
           nudge_id?: string | null
           read_at?: string | null
           serve_count?: number
@@ -1325,6 +1330,7 @@ export type Database = {
           tier?: string | null
           to_ref?: string
           updated_at?: string
+          via?: string
         }
         Relationships: [
           {

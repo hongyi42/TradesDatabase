@@ -37,7 +37,18 @@ export interface CreateOfficeMessageInput {
   nudgeId?: string | null;
   inReplyTo?: string | null;
   status?: OfficeMessageStatus;
+  // WHICH PULL SERVES THIS ROW (build 6.5 Phase 4): 'assistant' is a silent
+  // injected agent turn through the office pull; 'chat' is verbatim to the
+  // person's phone through the NUDGE pull, which needs no box-side change
+  // because the runner never asks what table an id came from. Defaults to
+  // 'assistant' at the column, which is what every pre-6.5 row is.
+  via?: OfficeMessageVia;
 }
+
+// Reserved for build 8 (one message, several people) and deliberately NOT on
+// the input type: nothing writes `message_group_id` in 6.5, and an optional
+// field nobody sets is an invitation to set it wrongly.
+export type OfficeMessageVia = 'assistant' | 'chat';
 
 export async function createOfficeMessage(
   input: CreateOfficeMessageInput,
@@ -60,6 +71,7 @@ export async function createOfficeMessage(
       tier: input.tier ?? null,
       nudge_id: input.nudgeId ?? null,
       in_reply_to: input.inReplyTo ?? null,
+      ...(input.via ? { via: input.via } : {}),
       ...(input.status ? { status: input.status } : {}),
     })
     .select()
@@ -141,6 +153,11 @@ const HOST_QUEUE_SELECT =
 
 export async function listQueuedOfficeMessagesForHost(
   hostId: string,
+  // WHICH LEG IS ASKING (build 6.5 Phase 4). The two pulls share this read and
+  // must not serve each other's rows: an unfiltered office pull would inject a
+  // chat message as an agent turn AS WELL AS texting it, and an unfiltered
+  // nudge pull would text a message meant to land silently.
+  via: OfficeMessageVia = 'assistant',
 ): Promise<QueuedOfficeMessageForHost[]> {
   // PAGED (final review): frozen rows deliberately KEEP status 'queued' and
   // sort first (oldest-first), so an unpaged read under PostgREST's silent
@@ -155,6 +172,7 @@ export async function listQueuedOfficeMessagesForHost(
       .select(HOST_QUEUE_SELECT)
       .eq('status', 'queued')
       .eq('direction', 'to_agent')
+      .eq('via', via)
       .eq('technicians.host_id', hostId)
       .order('created_at', { ascending: true })
       .order('id', { ascending: true }) // deterministic paging tiebreak

@@ -72,10 +72,22 @@ import { TEAM_LEAD_REF } from './identity.js';
 
 export type PlannerMode = 'off' | 'shadow' | 'live';
 
-// Everything the MODEL may submit. `leave` joined 2026-08-22 (Phase 3): it means
-// "I looked at this and I am waiting", takes a reason, and changes nothing.
-// Without it the only way to say "deliberately nothing" was to omit the gap, and
-// an omission is indistinguishable from never having looked at it.
+// Everything the MODEL may submit.
+//
+// `leave` DELETED 2026-09-01 (build 6 Phase 2, user ruling). It joined on
+// 2026-08-22 meaning "I looked at this and I am waiting", took a reason, and
+// changed NOTHING — the only verb here that moved no part of the record. The
+// hole it filled was real at the time: omitting a gap was indistinguishable
+// from never having looked at it. That hole was closed from the other side by
+// the `unmentioned` tick mark, which records silence for every gap in the view
+// whether or not the model names it — so `leave` had been saying, at the cost
+// of a verb, what code already recorded for free.
+//
+// What replaces it is `hold`, which now works on ANY open stage and takes a
+// RELEASE (see the rails below). Every legitimate "do nothing" has a verb that
+// acts on the record: waiting is `hold` with a date, not pursuing is `dismiss`,
+// done is `close`, a thought worth keeping with no action attached is
+// `write_job_note`, and having nothing to say is silence — already recorded.
 //
 // Adding a verb here means adding it to PLANNER_JUDGMENT_ACTIONS in watchers.ts
 // too, or the sweep's fail-safe stops counting it as liveness and starts firing
@@ -86,9 +98,10 @@ export type PlannerMode = 'off' | 'shadow' | 'live';
 // by code after the loop, NOT dispatched tools, so the team-lead identity's
 // allowlist and the dispatch gate are untouched.
 // `extend` RETIRED with the escalation clock (build 5): with nothing firing
-// automatically, "move the deadline out" moved a number nothing read. Pacing
-// an asked gap is now `leave` (or silence) plus the planner's own judgment on
-// a later look; build 6 may reintroduce a pacing intent with the verb rework.
+// automatically, "move the deadline out" moved a number nothing read. Build 6
+// Phase 2 is the verb rework that note anticipated, and the pacing intent came
+// back as `hold` — legal on every open stage now, with a release, so "give them
+// until Thursday" is one verb rather than a deadline nothing read.
 // `ask_agent` and `inform_agent` joined 2026-08-31 (build 5.5 Phase 3): the
 // outbound half of the planner's inbox — a message to the PERSON'S ASSISTANT
 // about a gap, queued in office_messages and injected as an agent turn by the
@@ -111,7 +124,6 @@ export const PLANNER_ACTIONS = [
   'send',
   'hold',
   'close',
-  'leave',
   'dismiss',
   'recover',
   'ask_agent',
@@ -1393,26 +1405,11 @@ export function validateDecisions(
       continue;
     }
 
-    // `send` and `hold` only MEAN something on a row that has not gone out yet.
-    // `send` QUEUES the question (the collapse) and `hold` writes `not_before`,
-    // which since the collapse is the planner's own pacing note and nothing
-    // else — the delivery pull does not read it. Applying either to a queued or
-    // asked row would
-    // return the row happily and change nothing anybody could observe: the
-    // silent no-op this phase exists to make impossible. Observed live
-    // 2026-08-20, when the planner chose `send` on a row that had been asked
-    // hours earlier.
-    //
-    // Refused rather than translated. "Give them more time" needs no verb at
-    // all since build 5: nothing escalates on a clock, so an asked gap left
-    // alone simply waits for the planner's next judgment. Inventing a mapping
-    // from `hold` to some other write would be code doing the model's
-    // judgment for it, which is the one thing this design does not do.
-    //
-    // (Escalate's two rails stood here — one refusing it on an observation
-    // that has no manager surface, one refusing it on a gap whose record
-    // cannot name the job a review item would have to file against. Both went
-    // with the verb in build 6 Phase 1.)
+    // (Two blocks of doctrine stood here and are deliberately not preserved:
+    // escalate's two rails, deleted with the verb in build 6 Phase 1, and the
+    // paragraph explaining why `send` and `hold` SHARED a stage rail. Phase 2
+    // split them — see the send rail below for what survived of that argument
+    // and why `hold` no longer belongs to it.)
 
     // THE OFFICE VERBS (build 5.5 Phase 3): a message to the person's
     // ASSISTANT about this gap. Legal on ANY stage the view shows — asking
@@ -1461,29 +1458,53 @@ export function validateDecisions(
     if (action === 'send' && !view.nudge.technician_id) {
       push(
         'send on a gap with nobody to ask — the record names no person for it, so there is ' +
-          'nobody for a question to reach. Dismiss it, or leave it.',
+          'nobody for a question to reach. Dismiss it, or say nothing and let it wait.',
       );
       continue;
     }
-    if (action === 'send' || action === 'hold') {
+    // SEND ONLY since build 6 Phase 2. This rail was shared with `hold`, and
+    // that pairing was the single most lifecycle-shaped refusal in the file:
+    // `hold` writes `not_before`, which since the collapse is the planner's own
+    // pacing note and NOTHING ELSE reads (the delivery pull does not, see
+    // listQueuedNudgesForHost) — so refusing it on a queued or asked row
+    // protected nothing in the world, only our story about how a gap goes.
+    // "Pause the question I already sent until Thursday" is a real intent with
+    // a real write behind it, and it is now legal on every open stage.
+    //
+    // `send` KEEPS the rail, and it is world-protecting: an applied send on an
+    // asked row would return the row happily and change nothing anybody could
+    // observe (observed live 2026-08-20), and `uq_nudges_subject_ever` forbids
+    // a second question for the subject outright. A silent no-op recorded as
+    // applied is the exact class these rails exist to make impossible.
+    if (action === 'send') {
       const st = view.nudge.status;
       if (st !== 'pending' && st !== 'noticed') {
         push(
           st === 'asked'
-            ? `${action} on a gap that has ALREADY been asked — the question is with the person ` +
-                'now, so only close or leave mean anything. To give them more time, ' +
-                'simply wait: nothing moves a gap but you.'
-            : `${action} on a gap that is already composed and waiting to be delivered — there ` +
-                'is nothing to release. If it has been stuck for hours, close it when the record ' +
-                'settles it; otherwise leave it out of your plan.',
+            ? 'send on a gap that has ALREADY been asked — the question is with the person ' +
+                'now, and there is no way to ask a second time. To give them more room, hold ' +
+                'it: nothing moves a gap but you.'
+            : 'send on a gap that is already composed and on its way — there is nothing to ' +
+                'send twice, and nothing you decide can recall it. Close it when the record ' +
+                'settles the matter. A hold here stops nothing and hides nothing; it writes ' +
+                'down when you meant to come back, and you will still be shown the gap every ' +
+                'time until you end it.',
         );
         continue;
       }
     }
 
-    // THE GROUP RAILS (plan 2026-08-25, Phase 3). Their own `action === 'send'`
-    // guard: the status branch above is SHARED with `hold`, and a hold naming
-    // nudgeIds means nothing.
+    // THE GROUP RAILS (plan 2026-08-25, Phase 3), behind their own
+    // `action === 'send'` guard.
+    //
+    // THAT GUARD IS LOAD-BEARING, and its original reason is not the current
+    // one: it used to say "the status branch above is SHARED with `hold`", and
+    // build 6 Phase 2 split those. It stays because `nudgeIds` means nothing on
+    // any other verb and letting one through would do real damage — the block
+    // below `seen.add`s every member (see the loop after it), which suppresses
+    // their `unmentioned` rows and blocks any decision of their own, while
+    // apply writes the LEAD only. A grouped `hold` would silently swallow its
+    // siblings' whole tick.
     //
     // Code checks only that a group is COHERENT, never whether to form one —
     // that is the planner's judgment, and the whole point of the verb. Coherence
@@ -1574,25 +1595,11 @@ export function validateDecisions(
       }
     }
 
-    // `leave` GETS A STATUS RAIL TOO. On a PENDING row "leave" records "I am
-    // waiting" with no horizon while nothing will ever send the question — and
-    // since build 5 NOTHING hands a never-sent gap anywhere, so an unowned
-    // wait sits forever with only the deliveryStuck alarm noticing. Waiting on
-    // a pending row must be `hold` with a time; releasing it must be `send`.
-    //
-    // Queued and asked are both fine: a queued row is already on its way, and an
-    // asked row has already gone out, so "I looked and I am waiting" is true of
-    // both.
-    // 'noticed' is deliberately ABSENT here: an observation has no delivery
-    // deadline to drift toward, so "I looked and I am waiting" is as true of it
-    // as of an asked row (plan 2026-08-31 — the aging counter is the watcher).
-    if (action === 'leave' && view.nudge.status === 'pending') {
-      push(
-        'leave on a gap that has NOT gone out yet — nothing goes out until YOU send it, so ' +
-          '"leave" would let it drift. Use hold (with a time) to wait, or send to release it now.',
-      );
-      continue;
-    }
+    // (`leave`'s own status rail stood here — it refused `leave` on a PENDING
+    // row, where "I am waiting" with no horizon meant a question nothing would
+    // ever send drifting forever. The verb is deleted in build 6 Phase 2; the
+    // intent it served on a pending row was always `hold` with a time, which
+    // is what the rail said.)
 
     // ASSERT-ONLY-CITED, in code. The prompt asks for a verbatim quote; this is
     // what makes it true. A close whose quote is absent from what we actually
@@ -1686,11 +1693,49 @@ export function validateDecisions(
       answeredByCaptureId = view.evidenceCaptureIds[hit] ?? null;
     }
 
+    // `hold` NOW HAS TWO FORMS (build 6 Phase 2): a date pauses the gap, and no
+    // date at all RELEASES it — clears `not_before` and puts it back in the
+    // ordinary flow. Without the release, a hold was one-way: the planner could
+    // pause a gap for a week and had no way to change its mind on Tuesday.
+    //
+    // ABSENT means release; PRESENT-BUT-UNUSABLE is still an error. Those are
+    // different mistakes and only one of them is a mistake at all. A model that
+    // omits the field, or sends an explicit `null` (the schema now advertises
+    // both, and providers vary on whether a null-valued key survives
+    // serialization), is saying "no date" — an intent. A model that sends
+    // "next Thursday" or a number TRIED to give a date and failed, which is
+    // worth refusing loudly so it can rewrite the decision this same tick.
+    // A RELEASE NEEDS A HOLD TO RELEASE. Without this, `hold` with no date on a
+    // gap whose `not_before` is already null writes null over null, the guarded
+    // update returns the row, and apply reports `applied` — a silent no-op
+    // recorded as a decision, the exact class every rail in this function
+    // exists to prevent (`recover` has the same rail one screen up: "recover on
+    // a gap that is not dismissed").
+    //
+    // It also catches the likeliest way this verb gets misused. A model that
+    // MEANT "hold until Thursday" and dropped the field now lands on the
+    // release path, and before this build that mistake was a loud refusal. This
+    // gives it back its refusal in the only case where a release could not have
+    // been meant — there was nothing held — while leaving a real release alone.
+    if (
+      action === 'hold' &&
+      (d.notBefore === undefined || d.notBefore === null) &&
+      !view.nudge.not_before
+    ) {
+      push(
+        'hold with no date on a gap that is not being held — a hold with no date RELEASES an ' +
+          'earlier hold, and there is none here. To pause it, give the date to wait until.',
+      );
+      continue;
+    }
     let notBefore: string | null = null;
-    if (action === 'hold') {
+    if (action === 'hold' && d.notBefore !== undefined && d.notBefore !== null) {
       const at = typeof d.notBefore === 'string' ? Date.parse(d.notBefore) : NaN;
       if (Number.isNaN(at)) {
-        push('hold without a usable notBefore');
+        push(
+          'hold whose notBefore is not a usable date — write it as a UTC instant like ' +
+            '2026-08-20T15:00:00Z, or leave it out entirely to RELEASE a hold you set earlier',
+        );
         continue;
       }
       if (at <= nowMs) {
@@ -1724,7 +1769,13 @@ export function validateDecisions(
     decisions.push({
       nudgeId,
       action: action as PlannerAction,
-      ...(notBefore ? { notBefore } : {}),
+      // A HOLD ALWAYS CARRIES THE KEY, null included — `notBefore: null` IS the
+      // release, and saying so in the data beats the alternative the first
+      // draft had, where a release was the ABSENCE of the key and only cleared
+      // the column because apply happened to write `d.notBefore ?? null`. That
+      // is a coupling across two files that no type would catch if either side
+      // moved. Every other action still omits it.
+      ...(action === 'hold' ? { notBefore } : {}),
       ...(basis ? { basis } : {}),
       ...(citation ? { citation } : {}),
       ...(questionDraft ? { questionDraft } : {}),
@@ -2036,16 +2087,28 @@ async function applyDecision(
       return { outcome: 'applied', movedIds };
     }
     case 'hold':
-      // An observation's hold lives on ITS row (advisory not_before); a relic
-      // pending nudge keeps the old schedule write. Same guarded-update shape,
-      // different table — decided by the stage the view showed.
+      // An observation's hold lives on ITS row (advisory not_before); a nudge
+      // keeps the schedule write. Same guarded-update shape, different table —
+      // decided by the stage the view showed.
+      //
+      // OPEN_NUDGE_STATUSES, not ['pending'] — and this is the line that makes
+      // Phase 2 do anything at all. Widening the RAIL while this still passed
+      // ['pending'] would have left a hold on a queued or asked row matching no
+      // row, returning null, and recording *refused — "the gap changed state"*:
+      // the planner would be told it may pause an asked question, do it, and
+      // watch nothing happen. A silent no-op dressed as a race.
       if (getGap(d.nudgeId)?.status === 'noticed') {
         return done(
           await setObservation(d.nudgeId, tenantId, { notBefore: d.notBefore ?? null }, ['open']),
         );
       }
       return done(
-        await setSchedule(d.nudgeId, tenantId, { notBefore: d.notBefore ?? null }, ['pending']),
+        await setSchedule(
+          d.nudgeId,
+          tenantId,
+          { notBefore: d.notBefore ?? null },
+          [...OPEN_NUDGE_STATUSES],
+        ),
       );
     case 'dismiss':
       // The planner's judgment, REVISABLE — which is the property the whole
@@ -2109,16 +2172,11 @@ async function applyDecision(
       });
       return { outcome: 'applied' };
     }
-    case 'leave':
-      // Deliberately a no-op WRITE-side, and `applied` rather than some third
-      // outcome: the planner really did decide this, and the decision really was
-      // carried out — what it asked for was that nothing change. Recording it as
-      // refused would make the corpus read as if a rail rejected it.
-      //
-      // For the ALARM pass (the fail-safe's successor, build 5) a leave counts
-      // as attention on an ASKED gap and deliberately NOT on a stale
-      // observation — looking is not acting there. See watchers.ts.
-      return { outcome: 'applied' };
+    // (`case 'leave'` stood here, a deliberate no-op returning 'applied' — the
+    // planner really did decide, and what it decided was that nothing change.
+    // Deleted with the verb in build 6 Phase 2. Its alarm-pass semantics live
+    // on in watchers.ts for HISTORIC rows: a leave counted as attention on an
+    // asked gap and deliberately not on a stale observation.)
     case 'close': {
       // The resolution is the durable audit line a manager may later read, so it
       // says WHERE the answer came from. A record-basis close quotes code's own
@@ -2858,10 +2916,13 @@ export async function runPlanner(
       // seen" were the same empty history, and the planner had no way to know it
       // had been here before. `unmentioned` is silence, RECORDED.
       //
-      // Distinguishable from `leave` by design: `leave` carries the model's own
-      // reason and is a decision it made; this carries none and is an observation
-      // code made. Both say "nothing changed"; only one says anybody thought
-      // about it.
+      // This used to be distinguishable from `leave` by design: that verb
+      // carried the model's own reason and was a decision it made, while this
+      // carries none and is an observation code made. Build 6 Phase 2 deleted
+      // `leave` — and the reason it could go is written right here. Both said
+      // "nothing changed", and this one already said "somebody thought about
+      // it", for free, for every gap in the view. The verb was paying for what
+      // the filler recorded anyway.
       // Built from the rows ACTUALLY PUSHED, not from `decisions`/`dropped`.
       // Those two lists are not the same thing as "a row was written": the
       // dropped loop deliberately skips entries whose action is not a known verb
@@ -2877,7 +2938,7 @@ export async function runPlanner(
         // and since build 5 nothing bounds a gap's lifetime — a long watch is
         // legitimate, so the filler must stop before it swamps the corpus.
         //
-        // The cap deliberately does NOT stop `leave`, `close` or any real
+        // The cap deliberately does NOT stop `close`, `hold` or any real
         // decision — only the tick marks.
         if (view.history.length >= UNMENTIONED_CAP) {
           if (!cappedWarned) {

@@ -154,6 +154,14 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     // database. Tests that care about the memory or the writers override these.
     listDecisions: async () => new Map(),
     recordDecisions: async (rows) => rows.length,
+    // The schedule WRITER, stubbed for the same standing reason as the readers
+    // above and newly load-bearing in build 6 Phase 2: `hold` works on every
+    // open stage now, so far more tests reach this writer than did when it was
+    // pending-only. Unstubbed it hits the real database with the literal 't1',
+    // throws inside applyDecision's catch, and every one of them fails as a
+    // quiet `refused` instead of loudly. Tests that assert on the write pass
+    // their own spy (see `live`).
+    setSchedule: async () => nudge(),
     // (Build 5 stubbed four escalate collaborators here — flagNudge/findOpenItem
     // for the standing 't1'-is-not-a-uuid reason, notify/hasPushToken so no test
     // ever pushed a real Telegram line. All four left with the verb in build 6
@@ -901,11 +909,16 @@ describe('the code rails on what the model returns', () => {
       runLoop: loopReturning(decisions),
     }));
 
-  // `send` and `hold` only mean anything on a PENDING row — the state rail fires
-  // before every other check, so the tests for their OTHER rails need a pending
-  // fixture or the rail under test is never reached. (This is the test-rot shape
-  // the constants retune already cost us once: a fixture that quietly stops
-  // exercising the thing its name claims.)
+  // `send` only means anything on a PENDING or NOTICED row — its state rail
+  // fires before every other check, so the tests for its OTHER rails need a
+  // pending fixture or the rail under test is never reached. (This is the
+  // test-rot shape the constants retune already cost us once: a fixture that
+  // quietly stops exercising the thing its name claims.)
+  //
+  // `hold` lost that constraint in build 6 Phase 2 and works on every open
+  // stage, so its tests no longer NEED this fixture — but they keep using it,
+  // because a pending row is the one stage where a hold has always been legal
+  // and so isolates the rail each test is actually about.
   const runPending = async (decisions: unknown[]) =>
     runPlanner(NOW, 'shadow', baseDeps({
       listNudges: async () => [nudge({ status: 'pending', asked_at: null, question: null })],
@@ -975,12 +988,62 @@ describe('the code rails on what the model returns', () => {
     expect(s.plans[0].dropped[0].why).toContain("unknown action 'delete'");
   });
 
-  test('hold without a usable notBefore is dropped — a hold with no end is a silence', async () => {
+  // ABSENT vs PRESENT-BUT-UNUSABLE (build 6 Phase 2). A hold with no date is a
+  // RELEASE now, so the refusal narrows to the case where the model TRIED to
+  // give a date and failed — which is worth refusing loudly, because it can
+  // rewrite the decision this same tick.
+  test('a hold whose notBefore is unusable is dropped — it tried to name a date', async () => {
     const s = await runPending([
       { nudgeId: 'n1', action: 'hold', notBefore: 'later', confidence: 'high', reason: 'x' },
     ]);
     expect(s.decisions).toBe(0);
-    expect(s.plans[0].dropped[0].why).toContain('without a usable notBefore');
+    expect(s.plans[0].dropped[0].why).toContain('not a usable date');
+    // The refusal must TEACH the release, or a model that meant "no longer on
+    // hold" and wrote a vague phrase learns only that it was wrong.
+    expect(s.plans[0].dropped[0].why).toContain('RELEASE');
+  });
+
+  test.each([
+    ['omitted entirely', {}],
+    ['an explicit null', { notBefore: null }],
+  ])('a hold with notBefore %s RELEASES a gap that IS held', async (_label, over) => {
+    // Both spellings, deliberately: the schema advertises ['string','null'] and
+    // providers differ on whether a null-valued key survives serialization, so
+    // a release that only worked one way would be a coin flip in production.
+    //
+    // The fixture must actually BE held — see the test below for why.
+    const s = await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [
+        nudge({ status: 'pending', asked_at: null, question: null,
+                not_before: '2099-01-01T00:00:00.000Z' }),
+      ],
+      runLoop: loopReturning([
+        { nudgeId: 'n1', action: 'hold', ...over, confidence: 'high', reason: 'stakes changed' },
+      ]),
+    }));
+    expect(s.plans[0].dropped).toEqual([]);
+    expect(s.decisions).toBe(1);
+    // The release is DATA, not the absence of a key — see validateDecisions.
+    expect(s.plans[0].decisions[0].notBefore).toBeNull();
+  });
+
+  test('a release on a gap that is NOT held is refused — it would be a silent no-op', async () => {
+    // Writing null over null returns the row and reports `applied`: a decision
+    // in the log, `last: hold` in the history line, and nothing changed. The
+    // same class `recover`-on-a-non-dismissed-gap is refused for.
+    //
+    // It also gives back the loud refusal for the likeliest model error. Before
+    // this build a hold whose date was missing was always refused; now it is a
+    // release — so a model that MEANT "hold until Thursday" and dropped the
+    // field would quietly get a no-op. This catches exactly that case, and only
+    // where a release could not have been intended.
+    const s = await runPending([
+      { nudgeId: 'n1', action: 'hold', confidence: 'high', reason: 'meant to give a date' },
+    ]);
+    expect(s.decisions).toBe(0);
+    expect(s.plans[0].dropped[0].why).toContain('not being held');
+    // The refusal has to TEACH, or the model repeats it next tick.
+    expect(s.plans[0].dropped[0].why).toContain('give the date to wait until');
   });
 
   test('an unreadable confidence reads as LOW, never as high', async () => {
@@ -1210,18 +1273,37 @@ describe('the state rails — no decision may be a silent no-op', () => {
     ]);
     expect(s.decisions).toBe(0);
     expect(s.plans[0].dropped[0].why).toContain('ALREADY been asked');
-    // Build 5: no clock runs, so the honest guidance is that waiting IS the
-    // way to grant time — nothing moves a gap but the planner.
-    expect(s.plans[0].dropped[0].why).toContain('simply wait');
+    // Build 6 Phase 2: the guidance changed with the verb set. `hold` is now
+    // legal on an asked row, so "give them more room" has a real action behind
+    // it — the refusal must name it rather than only saying "wait".
+    expect(s.plans[0].dropped[0].why).toContain('hold it');
     expect(s.plans[0].dropped[0].why).toContain('nothing moves a gap but you');
   });
 
-  test('hold on an already-asked gap is refused too — the question is already out', async () => {
+  // BUILD 6 PHASE 2, and this is the headline: `hold` used to share `send`'s
+  // stage rail and was refused on anything already sent. That refusal protected
+  // nothing in the world — `not_before` is the planner's own pacing note and
+  // the delivery pull does not read it — it only enforced our story that a sent
+  // question cannot be paced. "Give Judy until Thursday" is a real intent.
+  test.each(['queued', 'asked'] as const)(
+    'hold on a %s gap is ACCEPTED — pausing a sent question is a real intent',
+    async (status) => {
+      const s = await runOn(
+        { status, asked_at: status === 'asked' ? undefined : null },
+        [{ nudgeId: 'n1', action: 'hold', notBefore: '2099-01-01T00:00:00Z',
+           confidence: 'high', reason: 'give them until Thursday' }],
+      );
+      expect(s.plans[0].dropped).toEqual([]);
+      expect(s.decisions).toBe(1);
+    },
+  );
+
+  test('a hold in the past is STILL refused on an asked gap — the rail narrowed, it did not vanish', async () => {
     const s = await runOn({ status: 'asked' }, [
-      { nudgeId: 'n1', action: 'hold', notBefore: '2099-01-01T00:00:00Z', confidence: 'high', reason: 'wait' },
+      { nudgeId: 'n1', action: 'hold', notBefore: '2020-01-01T00:00:00Z', confidence: 'high', reason: 'wait' },
     ]);
     expect(s.decisions).toBe(0);
-    expect(s.plans[0].dropped[0].why).toContain('ALREADY been asked');
+    expect(s.plans[0].dropped[0].why).toContain('already passed');
   });
 
   test('send on a QUEUED gap is refused — it is written and waiting to be delivered', async () => {
@@ -1229,7 +1311,14 @@ describe('the state rails — no decision may be a silent no-op', () => {
       { nudgeId: 'n1', action: 'send', confidence: 'high', reason: 'go' },
     ]);
     expect(s.decisions).toBe(0);
-    expect(s.plans[0].dropped[0].why).toContain('waiting to be delivered');
+    expect(s.plans[0].dropped[0].why).toContain('already composed and on its way');
+    // Build 6 Phase 2: `hold` IS legal here now, so the refusal must not offer
+    // it as a way to pace the delivery — the host pull never reads not_before,
+    // so nothing the planner decides recalls a queued message. And it must not
+    // claim the hold paces the planner's own ATTENTION either: no read filters
+    // a held gap out of the next tick's view.
+    expect(s.plans[0].dropped[0].why).toContain('stops nothing and hides nothing');
+    expect(s.plans[0].dropped[0].why).toContain('shown the gap every time');
   });
 
   // Build 6 Phase 1: the verb is GONE, not merely unavailable on some stage.
@@ -1250,6 +1339,20 @@ describe('the state rails — no decision may be a silent no-op', () => {
       expect(s.plans[0].dropped[0].why).toContain("unknown action 'escalate'");
     },
   );
+
+  test('leave on any open stage is refused as an UNKNOWN action — the verb is deleted', async () => {
+    // Build 6 Phase 2, the twin of escalate's pin above. `leave` is not merely
+    // illegal somewhere; it is not a word the vocabulary contains, and the
+    // failure this guards is a revert that restores it to PLANNER_ACTIONS
+    // without restoring anything that would carry it out.
+    for (const status of ['pending', 'queued', 'asked'] as const) {
+      const s = await runOn({ status, asked_at: status === 'asked' ? undefined : null }, [
+        { nudgeId: 'n1', action: 'leave', confidence: 'high', reason: 'watching this one' },
+      ]);
+      expect(s.decisions).toBe(0);
+      expect(s.plans[0].dropped[0].why).toContain("unknown action 'leave'");
+    }
+  });
 
   test('a decision naming escalate applies nothing, and leaves no refusal row', async () => {
     // The point of the refusal being at VALIDATE: apply never runs, so no
@@ -1531,8 +1634,44 @@ describe('live mode — the decision becomes a write, and the write becomes the 
       ],
     );
     expect(setSchedule).toHaveBeenCalledWith(
-      'n1', 't1', { notBefore: '2026-08-16T18:00:00.000Z' }, ['pending'],
+      'n1', 't1', { notBefore: '2026-08-16T18:00:00.000Z' }, ['pending', 'queued', 'asked'],
     );
+  });
+
+  // THE BUG THIS PHASE ALMOST SHIPPED WITH. Widening the validate rail while
+  // apply still passed ['pending'] would have made a hold on an asked row match
+  // no row, return null, and record *refused — "the gap changed state"*: the
+  // planner told it may pause a sent question, doing it, and watching nothing
+  // happen. A silent no-op wearing a race's clothes. Asserted on the WRITE and
+  // on the recorded outcome, because either alone would still pass.
+  test('hold on an ASKED row really writes not_before, and records applied', async () => {
+    const { setSchedule, summary, recorded } = await live({ status: 'asked' }, [
+      { nudgeId: 'n1', action: 'hold', notBefore: '2026-08-18T09:00:00Z',
+        confidence: 'high', reason: 'give them the morning' },
+    ]);
+    expect(setSchedule).toHaveBeenCalledWith(
+      'n1', 't1', { notBefore: '2026-08-18T09:00:00.000Z' }, ['pending', 'queued', 'asked'],
+    );
+    expect(summary.applied).toBe(1);
+    expect(summary.refusedAtApply).toBe(0);
+    expect(recorded[0]).toMatchObject({ action: 'hold', outcome: 'applied' });
+    expect(recorded[0].notBefore).toBe('2026-08-18T09:00:00.000Z');
+  });
+
+  test('a RELEASE clears not_before on a held asked row, and is recorded as null', async () => {
+    // The other half of the coupling: `notBefore: null` must survive validate,
+    // the decision object, apply's write AND the recorder. Any one of them
+    // turning null into undefined leaves the hold in place while the log says
+    // it was lifted.
+    const { setSchedule, summary, recorded } = await live(
+      { status: 'asked', not_before: '2099-01-01T00:00:00.000Z' },
+      [{ nudgeId: 'n1', action: 'hold', confidence: 'high', reason: 'stakes changed, look now' }],
+    );
+    expect(setSchedule).toHaveBeenCalledWith(
+      'n1', 't1', { notBefore: null }, ['pending', 'queued', 'asked'],
+    );
+    expect(summary.applied).toBe(1);
+    expect(recorded[0]).toMatchObject({ action: 'hold', outcome: 'applied', notBefore: null });
   });
 
   // ── build 6 Phase 1: escalate is deleted ─────────────────────────────────
@@ -1898,13 +2037,12 @@ describe('shadow mode leaves the database untouched', () => {
     const rows = await listNudgesByStatus(tenantId, ['pending']);
     // asked_at must exist for evidence to be in bounds; these rows are pending,
     // so the close is fed through a row that has one.
-    // BOTH rows must be ASKED, and both for their own reason: `close` needs an
-    // asked_at for the evidence bound, and `leave` is REFUSED on a pending row
-    // (planner.ts's leave rail — "nothing goes out until YOU send it"). The
-    // second row carried the escalate this plan used to test; the verb died in
-    // build 6 Phase 1 and `leave` took its place, which is equally write-free
-    // but has the same stage requirement. Reverting either to pending breaks
-    // the test.
+    // The FIRST of these must be ASKED — `close` needs an asked_at for the
+    // evidence bound. The second carried the escalate this plan used to test
+    // (deleted, build 6 Phase 1) and then a `leave` (deleted, Phase 2); it is
+    // now a `hold` on an asked row, which is legal only since Phase 2 and is
+    // therefore worth keeping ASKED: it proves shadow writes nothing even for
+    // the newly-widened verb.
     await pg.query(
       "update nudges set status='asked', asked_at=now() - interval '2 hours' where id = any($1)",
       [[planted[2], planted[3]]],
@@ -1926,7 +2064,7 @@ describe('shadow mode leaves the database untouched', () => {
         { nudgeId: planted[0], action: 'send', confidence: 'high', reason: 'go now' },
         { nudgeId: planted[1], action: 'hold', notBefore: '2026-08-16T18:00:00Z', confidence: 'high', reason: 'pace it' },
         { nudgeId: planted[2], action: 'close', citation: answer, confidence: 'high', reason: 'answered' },
-        { nudgeId: planted[3], action: 'leave', confidence: 'low', reason: 'no reply yet — watching' },
+        { nudgeId: planted[3], action: 'hold', notBefore: '2026-08-17T09:00:00Z', confidence: 'low', reason: 'no reply yet — give them the morning' },
       ]),
     });
     expect(summary.decisions).toBe(4);
@@ -1945,7 +2083,7 @@ describe('shadow mode leaves the database untouched', () => {
       'select action, outcome, mode, job_id from nudge_decisions where tenant_id=$1 order by action',
       [tenantId],
     );
-    expect(logged.rows.map((r) => r.action)).toEqual(['close', 'hold', 'leave', 'send']);
+    expect(logged.rows.map((r) => r.action)).toEqual(['close', 'hold', 'hold', 'send']);
     expect(logged.rows.every((r) => r.outcome === 'shadow' && r.mode === 'shadow')).toBe(true);
     // Denormalised so history can be recalled by JOB, not only by gap.
     expect(logged.rows.every((r) => r.job_id === jobId)).toBe(true);
@@ -2716,11 +2854,11 @@ describe('unmentioned — silence, recorded', () => {
 
   test('3 open gaps, the model names 1 → THREE rows, not one', async () => {
     const { recorded } = await run(gaps(3), [
-      { nudgeId: 'n1', action: 'leave', confidence: 'high', reason: 'waiting on the morning' },
+      { nudgeId: 'n1', action: 'hold', notBefore: '2026-08-17T09:00:00Z', confidence: 'high', reason: 'waiting on the morning' },
     ]);
     expect(recorded).toHaveLength(3);
     const byId = new Map(recorded.map((r) => [r.nudgeId, r]));
-    expect(byId.get('n1')).toMatchObject({ action: 'leave', outcome: 'applied' });
+    expect(byId.get('n1')).toMatchObject({ action: 'hold', outcome: 'applied' });
     expect(byId.get('n2')).toMatchObject({ action: 'unmentioned', outcome: 'applied' });
     expect(byId.get('n3')).toMatchObject({ action: 'unmentioned', outcome: 'applied' });
   });
@@ -2745,26 +2883,34 @@ describe('unmentioned — silence, recorded', () => {
     expect(n1[0]).toMatchObject({ action: 'close', outcome: 'refused' });
   });
 
-  test('leave records the model’s reason; unmentioned records none', async () => {
+  test('a real decision records the model’s reason; unmentioned records none', async () => {
     const { recorded } = await run(gaps(2), [
-      { nudgeId: 'n1', action: 'leave', confidence: 'medium', reason: 'the tech is mid-shift' },
+      { nudgeId: 'n1', action: 'hold', notBefore: '2026-08-17T09:00:00Z',
+        confidence: 'medium', reason: 'the tech is mid-shift' },
     ]);
     const byId = new Map(recorded.map((r) => [r.nudgeId, r]));
     expect(byId.get('n1')).toMatchObject({ reason: 'the tech is mid-shift', confidence: 'medium' });
     expect(byId.get('n2')).toMatchObject({ reason: '', confidence: 'low' });
   });
 
-  test('leave changes NOTHING about the row', async () => {
+  // (`leave changes NOTHING about the row` stood here — it pinned the one verb
+  // that was applied while writing nothing. Deleted with the verb in build 6
+  // Phase 2. The property that replaced it is the opposite one, and it is the
+  // point of the whole build: EVERY surviving verb touches the record, so
+  // "I looked and did nothing" is expressed by silence, which code already
+  // records. The test below is what now covers that ground.)
+  test('waiting is a hold now — a WRITE, where leave was an applied no-op', async () => {
     const setSchedule = vi.fn<NonNullable<PlannerDeps['setSchedule']>>(async () => nudge());
     const markOutcome = vi.fn<NonNullable<PlannerDeps['markOutcome']>>(async () => nudge());
     const { summary } = await run(
       gaps(1),
-      [{ nudgeId: 'n1', action: 'leave', confidence: 'high', reason: 'waiting' }],
+      [{ nudgeId: 'n1', action: 'hold', notBefore: '2026-08-17T09:00:00Z',
+         confidence: 'high', reason: 'waiting' }],
       { setSchedule, markOutcome },
     );
-    expect(setSchedule).not.toHaveBeenCalled();
-    expect(markOutcome).not.toHaveBeenCalled();
-    expect(summary.applied).toBe(1); // it WAS carried out — what it asked for was nothing
+    expect(setSchedule).toHaveBeenCalled(); // the wait is now a WRITE
+    expect(markOutcome).not.toHaveBeenCalled(); // …and only that write
+    expect(summary.applied).toBe(1);
   });
 
   test('the model may NOT submit unmentioned — it is code’s word for having said nothing', async () => {
@@ -2822,29 +2968,22 @@ describe('unmentioned — silence, recorded', () => {
     spy.mockRestore();
   });
 
-  test('leave on a PENDING gap is REFUSED — it would send, not wait', async () => {
-    // The silent no-op the rail exists for: `leave` writes nothing, so not_before
-    // stays null, and compose runs at the next lifecycle step of the SAME tick
-    // and gates on not_before alone. The model would say "I am waiting" and cause
-    // the question to go out, with `leave / applied` in the log.
-    const { recorded } = await run(
-      [nudge({ id: 'n1', status: 'pending', asked_at: null })],
-      [{ nudgeId: 'n1', action: 'leave', confidence: 'high', reason: 'waiting for morning' }],
-    );
-    expect(recorded).toHaveLength(1);
-    expect(recorded[0]).toMatchObject({ action: 'leave', outcome: 'refused' });
-    expect(String(recorded[0].outcomeDetail)).toContain('has NOT gone out yet');
-  });
-
-  test('leave on a QUEUED or ASKED gap is accepted — both have really gone out', async () => {
-    for (const status of ['queued', 'asked'] as const) {
+  // (Two `leave` stage tests stood here — refused on pending, accepted on
+  // queued/asked. Both went with the verb in build 6 Phase 2. `hold` inherited
+  // the intent and works on EVERY open stage, which is what this replaces them
+  // with: the stage fork that survives is the TABLE the write lands in, not
+  // whether the verb is allowed.)
+  test.each(['pending', 'queued', 'asked'] as const)(
+    'hold is applied on a %s gap — every open stage takes a wait',
+    async (status) => {
       const { recorded } = await run(
         [nudge({ id: 'n1', status, asked_at: status === 'asked' ? '2026-08-16T09:00:00.000Z' : null })],
-        [{ nudgeId: 'n1', action: 'leave', confidence: 'high', reason: 'still waiting' }],
+        [{ nudgeId: 'n1', action: 'hold', notBefore: '2026-08-17T09:00:00Z',
+           confidence: 'high', reason: 'still waiting' }],
       );
-      expect(recorded[0]).toMatchObject({ action: 'leave', outcome: 'applied' });
-    }
-  });
+      expect(recorded[0]).toMatchObject({ action: 'hold', outcome: 'applied' });
+    },
+  );
 
   test('the tool schema and PLANNER_ACTIONS name the SAME verbs', () => {
     // The other unpinned pair (review finding). PLANNER_ACTIONS is pinned against
@@ -2859,6 +2998,22 @@ describe('unmentioned — silence, recorded', () => {
     expect([...enumed].sort()).toEqual([...PLANNER_ACTIONS].sort());
   });
 
+  test('the schema advertises a NULLABLE notBefore, and says what null means', () => {
+    // Build 6 Phase 2. Without this the release is unreachable in production
+    // while every test stays green: the tests call validateDecisions directly
+    // and never go through the JSON schema, so a revert to `type: 'string'`
+    // would only ever fail at the provider, silently, on a live tick.
+    const props = (
+      SUBMIT_PLAN_TOOL.inputSchema.properties as {
+        decisions: { items: { properties: Record<string, { type?: unknown; description: string }> } };
+      }
+    ).decisions.items.properties;
+    expect(props.notBefore.type).toEqual(['string', 'null']);
+    // And the model has to be TOLD, or a capability it cannot guess at is one
+    // it will never use.
+    expect(props.notBefore.description).toContain('RELEASE');
+  });
+
   test('the cap never stops a REAL decision', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const long = Array.from({ length: UNMENTIONED_CAP + 50 }, () =>
@@ -2866,11 +3021,12 @@ describe('unmentioned — silence, recorded', () => {
     );
     const { recorded } = await run(
       gaps(1),
-      [{ nudgeId: 'n1', action: 'leave', confidence: 'high', reason: 'still waiting' }],
+      [{ nudgeId: 'n1', action: 'hold', notBefore: '2026-08-17T09:00:00Z',
+         confidence: 'high', reason: 'still waiting' }],
       { listDecisions: async () => new Map([['n1', long]]) },
     );
     expect(recorded).toHaveLength(1);
-    expect(recorded[0]).toMatchObject({ action: 'leave' });
+    expect(recorded[0]).toMatchObject({ action: 'hold' });
     spy.mockRestore();
   });
 });
@@ -3330,7 +3486,7 @@ describe('grouped sends', () => {
       {
         decisions: [
           { ...send({ nudgeIds: ['n1', 'n2'] }) },
-          { nudgeId: 'n2', action: 'leave', confidence: 'low', reason: 'second bite' },
+          { nudgeId: 'n2', action: 'hold', notBefore: '2026-08-17T09:00:00Z', confidence: 'low', reason: 'second bite' },
         ],
       },
       views,
@@ -3664,7 +3820,7 @@ describe('observations in the planner (plan 2026-08-31)', () => {
       },
       runLoop: loopReturning([
         D({ action: 'send', question: 'who would even receive this?' }),
-        D({ nudgeId: 'o2', action: 'leave', reason: 'watching' }),
+        D({ nudgeId: 'o2', action: 'hold', notBefore: '2026-08-17T09:00:00Z', reason: 'watching' }),
       ]),
     }));
     const refused = recorded.find((r) => r.action === 'send');
@@ -3732,7 +3888,7 @@ describe('observations in the planner (plan 2026-08-31)', () => {
       runLoop: loopReturning([
         D({ nudgeId: 'o-dis', action: 'recover' }),
         D({ nudgeId: '00000000-dead-beef-0000-000000000000', action: 'recover' }),
-        D({ nudgeId: 'n1', action: 'leave', reason: 'watching' }),
+        D({ nudgeId: 'n1', action: 'hold', notBefore: '2026-08-17T09:00:00Z', reason: 'watching' }),
       ]),
     }));
     expect(writes).toEqual([
@@ -3740,7 +3896,7 @@ describe('observations in the planner (plan 2026-08-31)', () => {
       // would put the just-recovered gap straight back to sleep (code-review).
       ['o-dis', { status: 'open', dismissReason: null, dismissedAt: null, notBefore: null }, ['dismissed']],
     ]);
-    expect(summary.applied).toBe(2); // recover + leave
+    expect(summary.applied).toBe(2); // recover + hold
     // The hallucinated id left NO trace: not a decision, not a refusal, no row.
     expect(recorded.some((r) => r.nudgeId.includes('dead-beef'))).toBe(false);
     const rec = recorded.find((r) => r.action === 'recover');
@@ -3765,7 +3921,7 @@ describe('observations in the planner (plan 2026-08-31)', () => {
       runLoop: loopReturning([
         D({ action: 'close', basis: 'evidence', citation: 'the whole job went fine today' }),
         D({ nudgeId: 'o2', action: 'escalate', handoffNote: 'please take this over' }),
-        D({ nudgeId: 'o3', action: 'leave', reason: 'watching' }),
+        D({ nudgeId: 'o3', action: 'hold', notBefore: '2026-08-17T09:00:00Z', reason: 'watching' }),
       ]),
     }));
     expect(summary.planned).toBe(1);
@@ -3782,6 +3938,31 @@ describe('observations in the planner (plan 2026-08-31)', () => {
     // observation — review F5. Nothing reaches a manager now, from any stage.)
     expect(recorded.some((r) => r.action === 'escalate')).toBe(false);
     expect(recorded.find((r) => r.nudgeId === 'o2')?.action).toBe(UNMENTIONED);
+  });
+
+  test('a RELEASE on a held observation clears its not_before — the pre-ask half of build 6 Phase 2', async () => {
+    // The release rail reads `view.nudge.not_before`, which for an observation
+    // exists ONLY because observationAsGapRow maps `o.not_before` onto the worn
+    // gap row. Nothing else pins that mapping: drop it and every release on a
+    // held observation is refused as "not being held" while the hold-with-a-date
+    // test below stays green.
+    const writes: Array<[string, Record<string, unknown>, string[]]> = [];
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [],
+      listObservations: async (_t, st) =>
+        st.includes('open') ? [obs({ not_before: '2099-01-01T00:00:00.000Z' })] : [],
+      setObservation: async (id, _t, patch, from) => {
+        writes.push([id, patch as Record<string, unknown>, from as string[]]);
+        return {} as never;
+      },
+      runLoop: loopReturning([
+        D({ action: 'hold', reason: 'stakes changed — look at it now' }),
+      ]),
+    }));
+    expect(summary.applied).toBe(1);
+    // An explicit null, on the OBSERVATIONS table — not undefined, which
+    // setObservationStatus reads as "leave the column alone".
+    expect(writes).toEqual([['o1', { notBefore: null }, ['open']]]);
   });
 
   test('hold on an 80h-old observation APPLIES — the 18h ceiling is ask-shaped (F6)', async () => {
@@ -3814,7 +3995,7 @@ describe('observations in the planner (plan 2026-08-31)', () => {
       // test above for why a retry would erase the refusal).
       runLoop: loopReturning([
         D({ action: 'send', question: 'both at once?', nudgeIds: ['o1', 'n-relic'] }),
-        D({ nudgeId: 'o2', action: 'leave', reason: 'fine' }),
+        D({ nudgeId: 'o2', action: 'hold', notBefore: '2026-08-17T09:00:00Z', reason: 'fine' }),
       ]),
     }));
     const refused = recorded.find((r) => r.action === 'send' && r.outcome === 'refused');

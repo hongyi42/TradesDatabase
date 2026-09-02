@@ -1007,33 +1007,90 @@ describe('the alarm pass', () => {
   });
 
   test('an applied judgment inside the window clears the ask alarm; outside it does not', async () => {
+    // Driven with `close`, a LIVE verb, deliberately. It used to be `leave` —
+    // which still works, because a historic leave counts as attention — but
+    // that made the WINDOW's only pin depend on the deleted-verb carve-out
+    // below: revisit that carve-out and this test fails for an unrelated
+    // reason, and the window loses its pin silently.
     const attended = await runWatchers(NOW, 'live', baseDeps({
       listNudges: async () => [askRow()],
-      listDecisions: async () => new Map([['n-old', [applied('leave', 2)]]]),
+      listDecisions: async () => new Map([['n-old', [applied('close', 2)]]]),
     }));
-    expect(attended.alarms!.asksUnattended).toBe(0); // leave counts for ASKS
+    expect(attended.alarms!.asksUnattended).toBe(0);
 
     const ancient = await runWatchers(NOW, 'live', baseDeps({
       listNudges: async () => [askRow()],
       listDecisions: async () =>
-        new Map([['n-old', [applied('leave', ASK_UNATTENDED_ALARM_HOURS + 3)]]]),
+        new Map([['n-old', [applied('close', ASK_UNATTENDED_ALARM_HOURS + 3)]]]),
     }));
     expect(ancient.alarms!.asksUnattended).toBe(1); // untouched WITHIN the window
   });
 
-  // ── build 6 Phase 1: a DELETED verb must not become retrospective neglect ──
-  test('a historic escalate still counts as attention, though the verb is gone', async () => {
+  // ── build 6 Phase 2: a hold must not switch off a BROKEN-DELIVERY alarm ───
+  test('a held QUEUED row still alarms as delivery-stuck; a held PENDING one does not', async () => {
+    // The exemption below `deliveryStuckRows` was written when `hold` was
+    // pending-only, so a queued row could never carry a live not_before. Phase 2
+    // made that reachable — and a queued row is out of the planner's hands:
+    // listQueuedNudgesForHost selects on status alone and never reads
+    // not_before, so the hold cannot pace the delivery. All it could do is
+    // silence the operator's only signal that the box has stopped collecting.
+    const stuckQueued = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        askRow({ id: 'n-q', subject_ref: 'a-q', status: 'queued', asked_at: null,
+          created_at: hoursAgo(DELIVERY_STUCK_ALARM_HOURS + 2),
+          not_before: hoursAgo(-6) }), // held six hours out
+      ],
+    }));
+    expect(stuckQueued.alarms!.deliveryStuck).toBe(1);
+
+    // PENDING keeps the exemption, and keeps it for a real reason: nothing
+    // serves a pending row, so the planner really is the only thing that would
+    // move it and its hold is the whole story.
+    const heldPending = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [
+        askRow({ id: 'n-p', subject_ref: 'a-p', status: 'pending', asked_at: null,
+          created_at: hoursAgo(DELIVERY_STUCK_ALARM_HOURS + 2),
+          not_before: hoursAgo(-6) }),
+      ],
+    }));
+    expect(heldPending.alarms!.deliveryStuck).toBe(0);
+  });
+
+  // ── build 6 Phase 2: a paused question is paced, not neglected ────────────
+  test('a HELD asked gap is exempt, and re-enters the moment the hold lapses', async () => {
+    // Newly reachable: until Phase 2 `hold` was refused on an asked row, so an
+    // asked gap could never carry a live not_before and this filter had nothing
+    // to skip. Now that pausing a sent question is a real intent, the alarm has
+    // to honour it — otherwise the planner's own decision reads back to the
+    // operators as neglect 24 hours later.
+    const held = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [askRow({ not_before: hoursAgo(-6) })], // six hours out
+    }));
+    expect(held.alarms!.asksUnattended).toBe(0);
+
+    // A hold that has PASSED is not a hold. The row is back in front of the
+    // planner, so it is back in front of the alarm too.
+    const lapsed = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [askRow({ not_before: hoursAgo(1) })],
+    }));
+    expect(lapsed.alarms!.asksUnattended).toBe(1);
+  });
+
+  // ── build 6: a DELETED verb must not become retrospective neglect ─────────
+  test.each(['escalate', 'leave'] as const)(
+    'a historic %s still counts as attention on an ask, though the verb is gone',
+    async (verb) => {
     // `escalate` left PLANNER_JUDGMENT_ACTIONS when it was deleted, and joined
     // `attentionActions` in the same change — exactly as `extend` did when the
     // escalation clock died. An applied escalate recorded last week WAS a real
     // judgment (it handed the gap to a person), so reclassifying those rows as
     // neglect would have the alarm shout about every gap the planner handed
     // over before this build landed.
-    const escalated = await runWatchers(NOW, 'live', baseDeps({
+    const attended = await runWatchers(NOW, 'live', baseDeps({
       listNudges: async () => [askRow()],
-      listDecisions: async () => new Map([['n-old', [applied('escalate', 2)]]]),
+      listDecisions: async () => new Map([['n-old', [applied(verb, 2)]]]),
     }));
-    expect(escalated.alarms!.asksUnattended).toBe(0);
+    expect(attended.alarms!.asksUnattended).toBe(0);
 
     // The control: a word that was never a verb still alarms, which is what
     // proves the line above is the carve-out and not a broken read.
@@ -1044,7 +1101,11 @@ describe('the alarm pass', () => {
     expect(nonsense.alarms!.asksUnattended).toBe(1);
   });
 
-  test('for observations, leave is looking, not acting (build 4 semantics, moved)', async () => {
+  // Build 4 semantics, and they outlive the verb: `leaveCounts` still governs
+  // which alarm a HISTORIC leave row exempts. The verb is deleted (build 6
+  // Phase 2) but the rows are not, and an observation the planner only ever
+  // LOOKED at must keep aging.
+  test('for observations, a historic leave is looking, not acting', async () => {
     const left = await runWatchers(NOW, 'live', baseDeps({
       listOpenObservations: async () => [obsOld()],
       listDecisions: async () => new Map([['o-old', [applied('leave', 2)]]]),
@@ -1166,11 +1227,11 @@ describe('build 5 — the judgment vocabulary', () => {
     expect([...PLANNER_JUDGMENT_ACTIONS].sort()).toEqual([...PLANNER_ACTIONS].sort());
     expect(PLANNER_JUDGMENT_ACTIONS.has('unmentioned')).toBe(false);
     expect(PLANNER_JUDGMENT_ACTIONS.has('extend')).toBe(false); // retired with the clock
-    // Build 6 Phase 1. The COUNT is pinned as well as the equality: two sets
-    // that drift together are still equal, and eight is the number this build
-    // arrives at with escalate deleted.
-    expect(PLANNER_JUDGMENT_ACTIONS.has('escalate')).toBe(false); // deleted, build 6
-    expect(PLANNER_ACTIONS).toHaveLength(8);
+    // Build 6. The COUNT is pinned as well as the equality: two sets that drift
+    // together are still equal, and seven is the number this build arrives at.
+    expect(PLANNER_JUDGMENT_ACTIONS.has('escalate')).toBe(false); // deleted, Phase 1
+    expect(PLANNER_JUDGMENT_ACTIONS.has('leave')).toBe(false); // deleted, Phase 2
+    expect(PLANNER_ACTIONS).toHaveLength(7);
   });
 });
 

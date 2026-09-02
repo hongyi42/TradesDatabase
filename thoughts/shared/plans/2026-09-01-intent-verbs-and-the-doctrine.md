@@ -74,6 +74,35 @@ review found an earlier draft's *apply-half* citations stale by ~160 lines.
   `notBefore: null`. Three things an earlier draft got wrong and this one fixes: the apply call site
   passes `['pending']` explicitly, the tool schema types `notBefore` as a plain string, and
   `asksUnattended` has **no** hold exemption today.
+  - *Decided at implementation (Phase 2):* **both an omitted key and an explicit `null` release.**
+    The plan said "explicit null" in one bullet and "null/omitted" in another. Both release, because
+    providers differ on whether a null-valued key survives serialization and a release that worked
+    only one way would be a coin flip. A **present-but-unusable** value ("next Thursday", a number)
+    is still refused loudly — that is a model that TRIED to give a date and failed, and it can
+    rewrite the decision the same tick.
+  - *Decided at implementation:* a hold decision **always carries the `notBefore` key, null
+    included**. The plan had a release work by the ABSENCE of the key, clearing the column only
+    because apply wrote `d.notBefore ?? null` — a coupling across two files that no type would
+    catch if either side moved. Better removed than pinned.
+  - *Found in review, fixed:* a release on a gap that was **never held** is refused. Writing null
+    over null returns the row and reports `applied` — a silent no-op recorded as a decision, the
+    class every rail here exists to prevent (`recover` has the same rail). It also restores the loud
+    refusal for the likeliest model error: meaning "hold until Thursday" and dropping the field.
+  - *Found in review, fixed:* **a hold on a QUEUED row must not silence the delivery-stuck alarm.**
+    `listQueuedNudgesForHost` selects on status alone and never reads `not_before`, so a hold cannot
+    pace or recall a queued message — but `deliveryStuckRows` exempted any held row, so it would
+    have switched off the operator's only signal that delivery is broken. That exemption was written
+    when hold was pending-only and so was unreachable on queued rows; it is now narrowed to
+    `pending`. The refusal copy that offered the hold as pacing was corrected too.
+  - *Recorded, not fixed:* an **unbounded** hold on an asked row silences `asksUnattended` — the
+    only operator-visible watch on an asked gap — for as long as the date says, since a held row is
+    filtered out before its decisions are read. Holds have had no ceiling since build 5, deliberately.
+    Capping the verb would be code overruling the pacing judgment build 5 handed the planner, so the
+    question "does it choose sane horizons?" belongs to the evaluation phase; if the answer is no,
+    the fix is a separate held-gap counter, not a cap.
+  - *Doc drift, deliberately not fixed:* `20260821180000_nudge_decisions_extend.sql:26` says
+    "not_before is null for everything but a hold", which a release makes imprecise. Applied
+    migrations are immutable — editing one would diverge from what actually ran.
 - **The planner may cite what it looked up** — USER 2026-09-01. **The stamp gate STAYS:**
   `TECHNICIAN_SPOKEN_CHANNELS` (`planner.ts:807-811`) gates only `answered_by_capture_id` — which
   *is* `closed_by_technician` — never what is shown. A looked-up citation stamps **no** capture id.
@@ -246,22 +275,30 @@ phase, because `hold` is its replacement and the alarm's mechanism shifts from "
   about for `extend`.)
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] hold+future date on an `asked` row **writes `not_before` and records `applied`** (the
-      assertion that catches the `['pending']` bug).
-- [ ] `notBefore: null` on a held `asked` row clears it; hold on `queued` works; a passed date is
-      refused; `send` on `asked` is refused; `leave` is refused as unknown.
-- [ ] A held asked gap is exempt from `asksUnattended` and re-enters once released; a historic
+- [x] `npm run typecheck` · `npm run lint` · `npm test` (2503 passed) · `npm run build`
+- [x] hold+future date on an `asked` row **writes `not_before` and records `applied`** (asserted on
+      the write AND the recorded outcome — either alone still passes).
+- [x] `notBefore: null` on a held `asked` row clears it; hold on `queued` works; a passed date is
+      refused; `send` on `asked` is refused; `leave` is refused as unknown (all three stages).
+- [x] A held asked gap is exempt from `asksUnattended` and re-enters once released; a historic
       `leave` row still counts as attention on an ask and not on an observation.
-- [ ] The schema advertises a nullable `notBefore`; the pinned equalities agree at seven.
+- [x] The schema advertises a nullable `notBefore` **and documents the release** (a revert to
+      `type: 'string'` would otherwise pass green — the tests never go through the JSON schema);
+      the pinned equalities agree at seven, count included.
+- [x] **Added after review:** a release on a gap that is NOT held is refused; a held QUEUED row
+      still alarms as delivery-stuck while a held PENDING one does not.
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack.
-- [ ] Hold-then-release an asked gap through `runPlanner`; read `not_before` back via `psql` at
-      both steps, both decisions `applied`.
+- [x] Hold-then-release an asked gap through `runPlanner`, real accessors, raw-SQL read-back:
+      `not_before` null → `2026-09-04T16:00:00.000Z` → null, `applied:1 refusedAtApply:0` at every
+      step, both release spellings (key omitted / explicit `null`). The alarm carve-out was proved
+      with a same-age control and **zero decision rows** on either gap — holding through the
+      planner would have written an applied `hold`, which `attendedWithin` counts as attention on
+      its own, making the `not_before` carve-out unprovable.
 
 ### Manual verification
-- [ ] None.
+- [x] None.
 
 ---
 

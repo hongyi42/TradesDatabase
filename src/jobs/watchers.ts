@@ -119,8 +119,10 @@ export { OVERDUE_HOURS, LOOKBACK_HOURS } from '../db/tenantSettings.js';
 export const ASK_UNATTENDED_ALARM_HOURS = 24;
 export const DELIVERY_STUCK_ALARM_HOURS = 18;
 // Moved here from planner.ts (same value, new home — build 4's counter,
-// re-homed): open observations this old with no applied decision beyond
-// `leave` inside the window. Looking is not acting.
+// re-homed): open observations this old with no applied decision inside the
+// window. HISTORIC `leave` rows are the exception and still do not count here
+// — looking is not acting on an observation — which is what `leaveCounts`
+// below governs. The verb itself was deleted in build 6 Phase 2.
 export const OBSERVATION_STALE_HOURS = 72;
 
 // What counts as the planner having DECIDED something about a gap.
@@ -133,14 +135,14 @@ export const OBSERVATION_STALE_HOURS = 72;
 //
 // Adding a new planner action means adding it HERE too. Exported so a test pins
 // exactly that, rather than trusting a future reader to remember. `extend`
-// left the set when the verb retired with the escalation clock (build 5), and
-// `escalate` when the verb was deleted (build 6 Phase 1) — both live on in
-// `attentionActions` below, which is where HISTORIC rows are read.
+// left the set when the verb retired with the escalation clock (build 5),
+// `escalate` when the verb was deleted (build 6 Phase 1), and `leave` in
+// Phase 2 — all three live on in `attentionActions` below, which is where
+// HISTORIC rows are read.
 export const PLANNER_JUDGMENT_ACTIONS: ReadonlySet<string> = new Set([
   'send',
   'hold',
   'close',
-  'leave',
   'dismiss',
   'recover',
   // The office verbs (build 5.5 Phase 3): an applied ask_agent/inform_agent
@@ -709,10 +711,30 @@ export async function runWatchers(
         const deliveryStuckRows = openNudges.filter(
           (n) =>
             (n.status === 'pending' || n.status === 'queued') &&
-            // A row the planner explicitly HOLDS is being paced, not stuck
-            // (final review): holds are unbounded now, and a held relic
-            // alarming for its whole hold is the alarm-fatigue trap.
-            !heldPast(n.not_before) &&
+            // A PENDING row the planner explicitly holds is being paced, not
+            // stuck (final review): holds are unbounded, and a held relic
+            // alarming for its whole hold is the alarm-fatigue trap. Nothing
+            // serves a pending row, so the planner really is the only thing
+            // that would move it — its hold is the whole story.
+            //
+            // NARROWED TO PENDING in build 6 Phase 2, and this is a correction
+            // rather than a preference. A QUEUED row is out of the planner's
+            // hands: listQueuedNudgesForHost selects on status alone and never
+            // reads not_before, so a hold cannot pace it and cannot recall it.
+            // What the hold WOULD do is silence the 18h broken-delivery alarm —
+            // the operator's only signal that the box has stopped collecting —
+            // for however long the planner named. Delivery being broken is an
+            // OPERATOR condition (the broken-pipe doctrine, nudgeQueue.ts), and
+            // no planner decision may switch off the alarm for one.
+            //
+            // Phase 2 made this the COMMON case, not the first one. `hold` was
+            // refused on queued before it, and an applied send clears a stale
+            // hold as it queues — but that clear is best-effort inside a
+            // try/catch that only logs (planner.ts), so a pending→held→send
+            // whose clear threw already left a queued row carrying a live
+            // not_before, silently exempt. Rare, and reachable: the unqualified
+            // exemption was wrong before this phase too, just harder to hit.
+            !(n.status === 'pending' && heldPast(n.not_before)) &&
             // Age anchors on the QUEUE time when there is one — a relic sent
             // after months of pending carries an ancient created_at and would
             // otherwise alarm before its first delivery attempt.
@@ -730,6 +752,33 @@ export async function runWatchers(
           (n) =>
             n.status === 'asked' &&
             !!n.asked_at &&
+            // A row the planner explicitly HOLDS is being paced, not neglected
+            // — the carve-out `staleCandidates` has for observations, and the
+            // one `deliveryStuckRows` keeps for PENDING rows only (see its own
+            // note above: Phase 2 narrowed that one). It becomes REACHABLE here
+            // in build 6 Phase 2:
+            // until then `hold` was refused on an asked row, so an asked gap
+            // could never carry a live not_before. Now that pausing a sent
+            // question is a real intent, the alarm has to honour it or the
+            // planner's own decision reads back as neglect 24h later.
+            //
+            // THE COST, stated rather than discovered later: this is the ONLY
+            // operator-visible watch on an asked gap, holds have had no ceiling
+            // since build 5 (deliberately — nothing converts a held gap into a
+            // manager item behind the planner's back), and a held row is
+            // filtered out BEFORE its decisions are read. So one hold with a
+            // hallucinated far-future date silences this alarm for that gap for
+            // as long as the date says, with no other ALARM watching. (The
+            // planner itself still sees the gap every tick — nothing filters a
+            // held row out of its read — carrying the `currently held until`
+            // line, which is the only reason a bad hold is recoverable at
+            // all.) Accepted
+            // here because the alternative is a ceiling, which is code
+            // overruling the planner's pacing — the exact judgment build 5 gave
+            // it. The evaluation phase is where "do its holds have sane
+            // horizons?" gets measured; if they do not, the answer is a
+            // separate held-gap counter, not a cap on the verb.
+            !heldPast(n.not_before) &&
             Date.parse(n.asked_at) <= nowMs - ASK_UNATTENDED_ALARM_HOURS * 3_600_000,
         );
         const staleCandidates = openObs.filter(
@@ -754,10 +803,18 @@ export async function runWatchers(
         // the live vocabulary with the clock, but an applied extend recorded
         // BEFORE build 5 was a real judgment, and reclassifying old rows as
         // neglect would shout about gaps the planner deliberately paced.
-        // `escalate` joined it in build 6 Phase 1 for exactly that reason —
-        // an applied escalate handed the gap to a person, and a deleted verb
-        // must not turn last week's handovers into this week's neglect.
-        const attentionActions = new Set([...PLANNER_JUDGMENT_ACTIONS, 'extend', 'escalate']);
+        // `escalate` joined it in build 6 Phase 1 and `leave` in Phase 2, for
+        // exactly that reason — an applied escalate handed the gap to a person
+        // and an applied leave was the planner saying it had looked, and a
+        // deleted verb must not turn last week's judgments into this week's
+        // neglect. `leaveCounts` below still governs WHICH of those a historic
+        // leave counts for.
+        const attentionActions = new Set([
+          ...PLANNER_JUDGMENT_ACTIONS,
+          'extend',
+          'escalate',
+          'leave',
+        ]);
         const attendedWithin = (id: string, windowHours: number, leaveCounts: boolean): boolean => {
           if (!decisionsReadable) return false;
           const floor = nowMs - windowHours * 3_600_000;

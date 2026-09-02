@@ -160,8 +160,12 @@ describe('runTick — production wiring, stubbed model', () => {
       const reply = (await execute('submit_plan', {
         decisions: [
           {
+            // `hold` since build 6 Phase 2 — `leave` is deleted, and hold with
+            // a date is what "give it the afternoon" now means. The gap is
+            // ASKED, a stage hold reaches only since that phase.
             nudgeId: gapId,
-            action: 'leave',
+            action: 'hold',
+            notBefore: atOffset(t0Ms, '+6h'),
             confidence: 'high',
             reason: 'stub: morning is young, give it the afternoon',
           },
@@ -197,14 +201,14 @@ describe('runTick — production wiring, stubbed model', () => {
     expect(tick.userPrompt).toContain('open gap');
     expect(tick.toolCalls.map((c) => c.name)).toContain('submit_plan');
 
-    const leave = tick.decisions.find((d) => d.action === 'leave');
-    expect(leave).toBeDefined();
-    expect(leave!.outcome).toBe('applied');
+    const held = tick.decisions.find((d) => d.action === 'hold');
+    expect(held).toBeDefined();
+    expect(held!.outcome).toBe('applied');
     // THE FIX-UP: the DB stamped the real wall clock; the record must read
     // sim-now, or any >24h arc misreads its own history.
-    expect(new Date(leave!.decided_at).toISOString()).toBe(t0);
+    expect(new Date(held!.decided_at).toISOString()).toBe(t0);
     const { rows } = await pg.query(`select decided_at from nudge_decisions where id = $1`, [
-      leave!.id,
+      held!.id,
     ]);
     expect(new Date(rows[0].decided_at).toISOString()).toBe(t0);
 
@@ -475,13 +479,16 @@ describe('the planner ends a moot gap on the record (build 5)', () => {
 });
 
 describe('runArc — a scripted gap life (Phase 2)', () => {
-  // BUILD 6 PHASE 1 rewrote this arc's ending. It used to run
+  // BUILD 6 rewrote this arc at both ends. It used to run
   // leave → capture → ESCALATE (its own handoff) → manager_resolve, and every
   // one of those last three hops died with the verb. The arc's real subject was
   // never escalation: it is that a capture landing BETWEEN two ticks reaches the
   // second tick's prompt and can end the gap. So the ending is now the honest
-  // one — the planner reads the note it was waiting for and CLOSES on it.
-  test('leave → mid-arc capture → close on the words that landed', async () => {
+  // one — the planner reads the note it was waiting for and CLOSES on it. The
+  // OPENING moved too: `leave` was deleted in Phase 2, and the hold that
+  // replaces it says the same thing with a horizon and a write behind it —
+  // note the hold lapses at +4.5h, before the +5h tick that closes.
+  test('hold → mid-arc capture → close on the words that landed', async () => {
     const t = await createTenant(`Eval PlannerSimArc ${Date.now()}`);
     await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
     const t0 = simStartIso(10);
@@ -505,7 +512,7 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
     };
     const CAPTURE = 'Pilot is lit, swapped the thermocouple while I was there.';
     const timeline: TimelineStep[] = [
-      { at: '+0h', kind: 'tick' }, // stub leaves (watching)
+      { at: '+0h', kind: 'tick' }, // stub HOLDS it (watching, with a horizon)
       { at: '+4h', kind: 'capture', text: CAPTURE },
       { at: '+5h', kind: 'tick' }, // stub closes on the capture — the gap ends HERE
       { at: '+5.5h', kind: 'tick' }, // nothing left open — recorded as skipped
@@ -520,7 +527,7 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
       }
       const plan =
         tickNo === 1
-          ? { decisions: [{ nudgeId: reqGapId(req.user), action: 'leave', confidence: 'high', reason: 'stub wait' }] }
+          ? { decisions: [{ nudgeId: reqGapId(req.user), action: 'hold', notBefore: atOffset(t0Ms, '+4.5h'), confidence: 'high', reason: 'stub wait' }] }
           : tickNo === 2
             ? { decisions: [{ nudgeId: reqGapId(req.user), action: 'close', basis: 'evidence', citation: CAPTURE, confidence: 'high', reason: 'stub: the note answers it' }] }
             : { decisions: [] };
@@ -532,12 +539,12 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
 
     const arc = await runArc(t.id, { world, timeline }, t0Ms, { runLoop: stubLoop });
 
-    // Tick 1: leave applied; the clock strictly advanced between ticks.
+    // Tick 1: the hold applied; the clock strictly advanced between ticks.
     // TWO ticks run, not three: the close at tick 2 ends the gap, so the +5.5h
     // tick finds nothing open and is recorded skipped.
     expect(arc.ticks).toHaveLength(2);
     expect(arc.ticksSkipped).toBe(1);
-    expect(arc.ticks[0].decisions.map((d) => `${d.action}/${d.outcome}`)).toContain('leave/applied');
+    expect(arc.ticks[0].decisions.map((d) => `${d.action}/${d.outcome}`)).toContain('hold/applied');
     expect(Date.parse(arc.ticks[1].nowIso)).toBeGreaterThan(Date.parse(arc.ticks[0].nowIso));
 
     // Tick 2: the close applied, and the row really ended — 'answered', with

@@ -441,7 +441,7 @@ describe('roster_events — the trail behind who is on the team', () => {
     // paths must leave a row; production only ever uses the first two.
     await casTechnician(trailTech, 'invited', { state: 'active' }); // deactivate/reactivate/sweeps
     await updateTechnician(trailTech, { state: 'offboarding' }); // the field patch
-    await setTechnicianState(trailTech, 'offboarded'); // the test-only helper
+    await setTechnicianState(trailTech, 'offboarded'); // the helper (seed.mjs uses it too)
 
     const events = await listRosterEvents(tenantId, [trailTech]);
     // Newest first, and every hop is present with the state it came from.

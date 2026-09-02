@@ -471,8 +471,9 @@ export type RosterEvent = Database['public']['Tables']['roster_events']['Row'];
  * Written ENTIRELY by the `technicians_record_roster_event` trigger
  * (20260903110000) — there is no app-side writer, and adding one would
  * double-count. The trigger is what makes this complete: state changes reach
- * `technicians` through `casTechnician` and `updateTechnician` as well as the
- * test-only `setTechnicianState`, so a hook on any one function would have
+ * `technicians` through `casTechnician` and `updateTechnician` as well as
+ * `setTechnicianState` (no production runtime callers, but seed.mjs and the
+ * spine-eval world script both use it), so a hook on any one function would have
  * recorded a fraction of the truth.
  *
  * BOUNDED BY IDS, never a tenant scan: the caller is the planner's per-tick

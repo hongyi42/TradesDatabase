@@ -88,9 +88,9 @@ consequence of the collapse rather than as machinery of its own.
   "funnel through ONE function, `setTechnicianState`", and hooked it app-side to carry the actor.
   **`setTechnicianState` has NO production runtime callers** — only the test suite and two scripts
   (`scripts/seed.mjs:266`, `scripts/spine-eval/world.mjs:388`). Every real
-  transition goes through `casTechnician` (`server.ts:5443` deactivate, `:5539` reactivate,
-  `:7904` pairing-verified, `composio/pairing.ts:123,291`, `composio/offboarding.ts:86`) or
-  `updateTechnician` (`server.ts:5744`), both of which take a patch OBJECT — which is why a grep
+  transition goes through `casTechnician` (`server.ts:5444` deactivate, `:5540` reactivate,
+  `:7905` pairing-verified, `composio/pairing.ts:123,291`, `composio/offboarding.ts:86`) or
+  `updateTechnician` (`server.ts:5745`), both of which take a patch OBJECT — which is why a grep
   for an inline `state:` literal missed them, and `casTechnician`'s own comment says so outright:
   *"Every lifecycle transition goes through this."* The planned design would have produced a trail
   that is FULL IN TESTS AND EMPTY IN PRODUCTION — the worst failure available, because every test
@@ -215,8 +215,9 @@ row is never deleted — who used to be here and when they left. No verb, schema
   `grant select on v_roster_events to spine_reader` (the `v_nudges` posture, `20260823120000:121-123`).
 - DEPLOY ORDER header: apply BEFORE the code.
 
-- **The capture is a TRIGGER, not an app-side write** (see Decisions — `setTechnicianState` is a
-  test-only helper and the production paths are `casTechnician`/`updateTechnician`):
+- **The capture is a TRIGGER, not an app-side write** (see Decisions — `setTechnicianState` has no
+  production runtime callers and the production paths are
+  `casTechnician`/`updateTechnician`):
   `after insert or update on technicians for each row`, writing an event when `tg_op = 'INSERT'`
   (`from_state` null — "we started watching here") or when
   `new.state is distinct from old.state`. Columns take the `technician_state` ENUM, not text, so

@@ -9,6 +9,7 @@ import {
   buildGapView,
   buildRoster,
   buildReachableBlock,
+  reachLabel,
   buildOfficeMessagesBlock,
   cleanQuestionDraft,
   buildPlannerUserMessage,
@@ -136,6 +137,11 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     // byte-identical; the roster's own wiring test supplies a real one.
     listTeam: async () => [],
     listRosterEvents: async () => [],
+    // PRE-EXISTING, found by the Phase 1 review while checking the two above:
+    // unstubbed, this read throws 22P02 on 't1' and ~40 tests here silently
+    // exercise the "no dismissed gaps" degraded path. Behaviourally identical
+    // (the failure already yielded an empty set) — but silent.
+    listDismissedNudges: async () => [],
     listTenants: async () => ['t1'],
     getTenant: async () => ({ id: 't1', timezone: 'UTC' }) as unknown as Tenant,
     listNudges: async () => [nudge()],
@@ -4994,10 +5000,11 @@ describe('the roster the planner is given', () => {
     expect(view.block).toContain('NO LONGER ON THE TEAM, left August 12, 2026');
   });
 
-  test('the three unreachable cases read as three different problems', () => {
-    // "no phone linked" is an operator fix, "schedule only" is how the firm set
-    // them up, and "no longer on the team" means this question will never be
-    // answered. One phrase for all three would make them one problem.
+  test('the unreachable cases read as different problems, not one', () => {
+    // "no phone linked" still reaches them through their assistant; "schedule
+    // only" is how the firm set them up; "no longer on the team" means this
+    // question will never be answered. One phrase for all of them would make
+    // three different situations look like one problem.
     const noPhone = buildRoster([person({ telegram_user_id: null })], []);
     const exempt = buildRoster([person({ seat_exempt: true, sandbox_ref: null })], []);
     expect(
@@ -5008,21 +5015,33 @@ describe('the roster the planner is given', () => {
     ).toContain('nobody to ask here');
   });
 
-  test('a NEW HIRE is not "schedule only" — the four unreachable cases are four different things', () => {
-    // The review caught this: every `invited`/`pending_verification` row has no
-    // sandbox yet, and the block called them "UNREACHABLE (schedule only)" —
-    // the opposite of the truth. A new hire is mid-setup; a seat-exempt helper
-    // is how the firm meant it.
+  test('somebody with no assistant set up is not "schedule only"', () => {
+    // The review caught the block calling these people "schedule only", which
+    // is the opposite of the truth: a seat-exempt helper was set up that way on
+    // purpose, while this person simply has no assistant — either nobody has
+    // bound them one yet, or a previous sandbox was recycled (server.ts:5592).
+    // NOTE the state is NOT the test: `bind_telegram` writes host/sandbox/
+    // telegram without touching `state` (server.ts:5745), so an `invited` row
+    // routinely IS reachable. Having no sandbox is what decides it.
     const newHire = buildRoster([person({ state: 'invited', sandbox_ref: null, host_id: null })], []);
     const exempt = buildRoster([person({ seat_exempt: true, sandbox_ref: null })], []);
-    expect(buildReachableBlock([newHire.get('tech-1')!])).toContain('UNREACHABLE (not set up yet)');
+    expect(buildReachableBlock([newHire.get('tech-1')!])).toContain('UNREACHABLE (no assistant set up)');
     expect(buildReachableBlock([exempt.get('tech-1')!])).toContain('UNREACHABLE (schedule only)');
     expect(
       buildGapView(nudge(), Date.parse(NOW), [], false, new Set(), [], [], 'UTC', null, null, null, newHire).block,
-    ).toContain('not set up yet; nobody to ask here');
+    ).toContain('no assistant set up; nobody to ask here');
     // A host with no sandbox, and a sandbox with no host, are both unreachable.
     const hostless = buildRoster([person({ host_id: null })], []);
-    expect(buildReachableBlock([hostless.get('tech-1')!])).toContain('UNREACHABLE (not set up yet)');
+    expect(buildReachableBlock([hostless.get('tech-1')!])).toContain('UNREACHABLE (no assistant set up)');
+    // And the label is TOTAL. buildReachableBlock filters departed people out
+    // before labelling, so this has to be asserted on reachLabel itself — the
+    // point of the fix is that the function does not DEPEND on that filter.
+    // A second definition of "gone" in the caller is exactly the duplication
+    // `reachOf` was introduced to remove. (My first attempt asserted this
+    // through the block and failed on an empty string, which is the block
+    // behaving correctly — recorded because the distinction is the finding.)
+    const gone = buildRoster([person({ state: 'offboarded' })], []);
+    expect(reachLabel(gone.get('tech-1')!)).toBe('UNREACHABLE (no longer on the team)');
   });
 
   test('no roster supplied — the person line is exactly what it was before 6.5', () => {

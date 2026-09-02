@@ -962,12 +962,14 @@ function departureDate(iso: string, tz: string): string | null {
 // TWO places — the roster block and every gap's person line — and two parallel
 // branch chains would eventually disagree about the same human.
 //
-// The four unreachable cases are deliberately DIFFERENT, because they want
-// different responses: "no phone linked" and "not set up yet" are operator
-// fixes (and the second is a NEW HIRE, not a permanent state — the review
-// caught this line calling them "schedule only", which is the opposite of the
-// truth); "schedule only" is how the firm deliberately set that person up; and
-// "no longer on the team" means the question will never be answered by them.
+// THREE of the five are unreachable, and they are deliberately DIFFERENT
+// sentences because they want different responses: "no assistant set up" is an
+// operator fix (nobody has bound them a sandbox, or a previous one was
+// recycled — server.ts:5592-5596); "schedule only" is how the firm
+// deliberately set that person up and is nobody's bug; and "no longer on the
+// team" means the question will never be answered by them, whatever anybody
+// fixes. The fourth state, "assistant only", IS reachable — one leg of two —
+// which is why it carries no UNREACHABLE marker.
 type Reach = 'both' | 'assistant' | 'schedule-only' | 'not-set-up' | 'gone';
 
 function reachOf(a: Addressee): Reach {
@@ -977,8 +979,9 @@ function reachOf(a: Addressee): Reach {
   return a.seatExempt ? 'schedule-only' : 'not-set-up';
 }
 
-// The roster block's right-hand column.
-function reachLabel(a: Addressee): string {
+// The roster block's right-hand column. Exported for the totality test — it
+// must not depend on the caller filtering `gone` out first.
+export function reachLabel(a: Addressee): string {
   switch (reachOf(a)) {
     case 'both':
       return 'chat, assistant';
@@ -986,8 +989,14 @@ function reachLabel(a: Addressee): string {
       return 'assistant only (no phone linked)';
     case 'schedule-only':
       return 'UNREACHABLE (schedule only)';
+    // TOTAL on purpose. `gone` is unreachable here only because
+    // buildReachableBlock filters departed people out before calling this —
+    // and a second definition of "gone" living in the caller is exactly the
+    // duplication `reachOf` exists to prevent. Say it here too.
+    case 'gone':
+      return 'UNREACHABLE (no longer on the team)';
     default:
-      return 'UNREACHABLE (not set up yet)';
+      return 'UNREACHABLE (no assistant set up)';
   }
 }
 
@@ -1005,7 +1014,7 @@ function standingOf(a: Addressee, tz: string): string {
     case 'schedule-only':
       return ' — no assistant and no phone; nobody to ask here';
     default:
-      return ' — not set up yet; nobody to ask here';
+      return ' — no assistant set up; nobody to ask here';
   }
 }
 

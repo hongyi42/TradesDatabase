@@ -59,9 +59,9 @@ create index if not exists idx_roster_events_technician on roster_events (techni
 -- function, setTechnicianState" — they do not: that function has NO production
 -- runtime callers at all (only the test suite and two scripts, seed.mjs:266 and
 -- spine-eval/world.mjs:388). Every real transition goes
--- through `casTechnician` (mcp/server.ts:5443 deactivate, :5539 reactivate,
--- :7904 pairing-verified, composio/pairing.ts:123,291,
--- composio/offboarding.ts:86) or `updateTechnician` (mcp/server.ts:5744), both
+-- through `casTechnician` (mcp/server.ts:5444 deactivate, :5540 reactivate,
+-- :7905 pairing-verified, composio/pairing.ts:123,291,
+-- composio/offboarding.ts:86) or `updateTechnician` (mcp/server.ts:5745), both
 -- of which take a patch OBJECT — which is why a grep for an inline `state:`
 -- literal missed them. An app-side hook on the named helper would have
 -- produced a trail that is FULL IN TESTS AND EMPTY IN PRODUCTION: the worst

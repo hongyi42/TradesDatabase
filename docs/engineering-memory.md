@@ -176,42 +176,42 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L3954 · agent asks the office _(2026-09-01)_
 - L3969 · the office reaches an agent
 - L3980 · seat-to-seat informs
-- L4040 · Durability.
-- L4042 · Observability.
-- L4119 · A technician's seat agent has NO scheduling verb at any tier.
-- L4122 · Live specimen in the pilot _(2026-09-01)_
-- L4132 · Counting.
-- L4134 · Detection.
-- L4138 · Booking.
-- L4151 · Build 6 (vocabulary): _(2026-09-01)_
-- L4156 · Build 7 (detectors report):
-- L4162 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L4053 · Durability.
+- L4055 · Observability.
+- L4132 · A technician's seat agent has NO scheduling verb at any tier.
+- L4135 · Live specimen in the pilot _(2026-09-01)_
+- L4145 · Counting.
+- L4147 · Detection.
+- L4151 · Booking.
+- L4164 · Build 6 (vocabulary): _(2026-09-01)_
+- L4169 · Build 7 (detectors report):
+- L4175 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L4499 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L4522 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L4569 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L4606 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L4638 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L4643 · Every member row stores the FULL grouped message in question.
-- L4647 · The attribution stamp is an audit link, not a gate.
-- L4651 · The derived stamp requires a capture a badge-holder SPOKE
-- L4655 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L4661 · The follow-up loop has two halves and both had to be written down.
-- L4667 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L4741 · Batching works.
-- L4743 · The follow-up leg works, including the half that fails silently.
-- L4747 · Both attribution paths fired, each in its designed case.
-- L4751 · Escalation fired correctly
-- L4752 · The planner's group-aware pacing is the result worth keeping.
+- L4512 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L4535 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L4582 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L4619 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L4651 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L4656 · Every member row stores the FULL grouped message in question.
+- L4660 · The attribution stamp is an audit link, not a gate.
+- L4664 · The derived stamp requires a capture a badge-holder SPOKE
+- L4668 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L4674 · The follow-up loop has two halves and both had to be written down.
+- L4680 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L4754 · Batching works.
+- L4756 · The follow-up leg works, including the half that fails silently.
+- L4760 · Both attribution paths fired, each in its designed case.
+- L4764 · Escalation fired correctly
+- L4765 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L4933 · Evals:
-- L4940 · Runbooks:
-- L4945 · Decision history with citations:
-- L4949 · This file
+- L4946 · Evals:
+- L4953 · Runbooks:
+- L4958 · Decision history with citations:
+- L4962 · This file
 
 <!-- INDEX:END -->
 
@@ -4008,7 +4008,7 @@ disappears). Typecheck then fails somewhere unrelated. No guard fires, because i
 schema just landed in the repo. The script itself is unchanged (flagged to the user, outside build
 6.5's plan scope).
 
-### 6.5 One send verb — escalate dies (USER RULING 2026-09-01, NOT BUILT)
+### 6.5 One send verb — escalate dies (USER RULING 2026-09-01; PHASE 1 BUILT 2026-09-02, phases 2-5 open)
 
 **The ruling.** *"I think we should get rid of escalate and we should look into having a generalized
 send verb where the planner can send a message to anyone, the agents, managers, technicians, etc.

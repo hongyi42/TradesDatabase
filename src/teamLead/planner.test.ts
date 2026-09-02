@@ -2019,7 +2019,14 @@ describe('shadow mode leaves the database untouched', () => {
     const { data, error } = await getClient().from('tenants').select('id').order('created_at', { ascending: true }).limit(1).single();
     if (error || !data) throw new Error(`could not load seed tenant: ${error?.message ?? 'none'}`);
     tenantId = data.id;
-    await pg.query('truncate table nudges cascade');
+    // OBSERVATIONS TOO, and that is not belt-and-braces. This suite asserts
+    // exact decision COUNTS, and since build 4 a gap can live in either table —
+    // so a single stray observation in the seed tenant adds a view, an
+    // `unmentioned` filler row, and an off-by-one that looks like a logic bug.
+    // Found the hard way: a live-verification run left one behind and this file
+    // failed with "expected 5 to be 4" in a test that touches no observation
+    // path (same class as build 6's unordered-tenant `limit(1)` flake).
+    await pg.query('truncate table nudges, observations cascade');
     const tech = await pg.query<{ id: string }>(
       `insert into technicians (tenant_id, ref, display_name, tier, state, seat_exempt)
        values ($1, 'planner-shadow-tech', 'Planner Shadow Tech', 'technician', 'active', true)
@@ -2030,7 +2037,14 @@ describe('shadow mode leaves the database untouched', () => {
   });
 
   afterAll(async () => {
-    await pg.query('truncate table nudges cascade');
+    // OBSERVATIONS TOO, and that is not belt-and-braces. This suite asserts
+    // exact decision COUNTS, and since build 4 a gap can live in either table —
+    // so a single stray observation in the seed tenant adds a view, an
+    // `unmentioned` filler row, and an off-by-one that looks like a logic bug.
+    // Found the hard way: a live-verification run left one behind and this file
+    // failed with "expected 5 to be 4" in a test that touches no observation
+    // path (same class as build 6's unordered-tenant `limit(1)` flake).
+    await pg.query('truncate table nudges, observations cascade');
     await pg.query('delete from technicians where id = $1', [techId]);
     await pg.end();
   });
@@ -3946,7 +3960,7 @@ describe('observations in the planner (plan 2026-08-31)', () => {
     ]);
     expect(summary.applied).toBe(2); // recover + hold
     // The hallucinated id left NO trace: not a decision, not a refusal, no row.
-    expect(recorded.some((r) => r.nudgeId.includes('dead-beef'))).toBe(false);
+    expect(recorded.some((r) => r.nudgeId?.includes('dead-beef'))).toBe(false);
     const rec = recorded.find((r) => r.action === 'recover');
     expect(rec?.subject).toBe('observation');
   });
@@ -5169,6 +5183,120 @@ describe('the roster the planner is given', () => {
     const nulled = validateDecisions(ask(null), views, Date.parse(NOW), new Set(), [], roster);
     expect(nulled.decisions).toHaveLength(1);
     expect(nulled.decisions[0].toRef).toBeUndefined();
+  });
+
+  test('a gap-less decision reaches the LOG with both subjects null — applied and refused', async () => {
+    // The corpus is the reason this row exists at all. The evals read
+    // nudge_decisions; a send that never lands here is a send nobody can
+    // grade, and the one class of action this build adds would be the one
+    // class invisible to the safety budget that replaced the rails.
+    const recorded: NudgeDecisionInput[] = [];
+    const createOffice = vi.fn(async (input: unknown) => input as never);
+    const summary = await runPlanner(
+      NOW,
+      'live',
+      baseDeps({
+        listTeam: async () => [person({ id: 't9', ref: 'sam-ortiz', display_name: 'Sam' })],
+        listNudges: async () => [nudge()],
+        createOffice: createOffice as unknown as NonNullable<PlannerDeps['createOffice']>,
+        recordDecisions: (async (rows: NudgeDecisionInput[]) => {
+          recorded.push(...rows);
+          return rows.length;
+        }) as unknown as NonNullable<PlannerDeps['recordDecisions']>,
+        runLoop: loopReturning([
+          // one that lands...
+          { action: 'inform_agent', to: 'sam-ortiz', agentMessage: 'all quiet here', confidence: 'high', reason: 'fyi' },
+          // ...and one the rails refuse, which is the more informative row
+          { action: 'inform_agent', to: 'nobody-real', agentMessage: 'x', confidence: 'low', reason: 'r' },
+        ]),
+      }),
+    );
+    expect(summary.applied).toBe(1);
+    const gapless = recorded.filter((r) => !r.nudgeId);
+    expect(gapless).toHaveLength(2);
+    expect(gapless.map((r) => r.outcome).sort()).toEqual(['applied', 'refused']);
+    // NO JOB EITHER — listDecisionsForJob selects on job_id alone and
+    // recall_decisions maps `gapId: nudge_id ?? observation_id`, so a
+    // job-stamped gap-less row would reach the model with a null gap id.
+    expect(gapless.every((r) => r.jobId === null)).toBe(true);
+    expect(gapless.find((r) => r.outcome === 'applied')?.toRef).toBe('sam-ortiz');
+    expect(gapless.find((r) => r.outcome === 'refused')?.outcomeDetail).toContain('nobody-real');
+    // And it really was delivered to somebody.
+    expect(createOffice).toHaveBeenCalledWith(
+      expect.objectContaining({ toRef: 'sam-ortiz', technicianId: 't9', nudgeId: null }),
+    );
+  });
+
+  test('the four gap verbs are refused without a gap; only a message may be about nothing', () => {
+    const roster = buildRoster([person({ id: 't9', ref: 'sam-ortiz' })], []);
+    const view = buildGapView(nudge(), Date.parse(NOW), [], false, new Set());
+    const views = new Map([[view.nudge.id, view]]);
+    // `recover` INCLUDED, and it is the one that was broken: it is handled
+    // before the gap-less branch (its subject is deliberately hidden from the
+    // views), so an id-less recover fell into `recoverable.has('')` → false →
+    // a bare `continue` that dropped it SILENTLY — no refusal, no row, and no
+    // word to the model. Found by both the review and the live check.
+    for (const action of ['hold', 'close', 'dismiss', 'send', 'recover']) {
+      const out = validateDecisions(
+        { decisions: [{ action, confidence: 'high', reason: 'r' }] },
+        views, Date.parse(NOW), new Set(), [], roster,
+      );
+      expect(out.decisions).toHaveLength(0);
+      expect(out.dropped).toHaveLength(1); // refused, never silently dropped
+      expect(out.dropped[0].why).toContain('with no gap');
+      // Recorded against NO gap — an empty string would read as an id nobody has.
+      expect(out.dropped[0].nudgeId).toBeNull();
+    }
+  });
+
+  test('a message about nothing needs somebody to be for, and may name no dates', () => {
+    const roster = buildRoster([person({ id: 't9', ref: 'sam-ortiz' })], []);
+    const views = new Map<string, ReturnType<typeof buildGapView>>();
+    const msg = (over: Record<string, unknown>) => ({
+      decisions: [{ action: 'inform_agent', confidence: 'high', reason: 'r', ...over }],
+    });
+
+    // No gap and no `to` names nobody at all: the gap-bound form can fall back
+    // to the record, this one has nothing to fall back to.
+    let out = validateDecisions(
+      msg({ agentMessage: 'the office is closed Monday' }),
+      views, Date.parse(NOW), new Set(), [], roster,
+    );
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('neither a gap nor a `to`');
+
+    // With somebody named: accepted, carrying no subject at all.
+    out = validateDecisions(
+      msg({ to: 'sam-ortiz', agentMessage: 'nothing outstanding at my end' }),
+      views, Date.parse(NOW), new Set(), [], roster,
+    );
+    expect(out.decisions).toHaveLength(1);
+    expect(out.decisions[0].nudgeId).toBeNull();
+    expect(out.decisions[0].toRef).toBe('sam-ortiz');
+
+    // NO DATES. dateLabels are computed per gap, so a message about nothing
+    // has none — and the rail refuses one rather than letting an unverified
+    // day reach a person.
+    out = validateDecisions(
+      msg({ to: 'sam-ortiz', agentMessage: 'I will chase this on Tuesday' }),
+      views, Date.parse(NOW), new Set(), [], roster,
+    );
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('no dates it may use');
+
+    // SEVERAL messages in one tick is the ordinary case — `seen` holds one
+    // decision per GAP, and these have none (user 2026-09-02: "the planner can
+    // just send the same message to all three").
+    const many = validateDecisions(
+      {
+        decisions: [
+          { action: 'inform_agent', to: 'sam-ortiz', agentMessage: 'one', confidence: 'high', reason: 'r' },
+          { action: 'inform_agent', to: 'sam-ortiz', agentMessage: 'two', confidence: 'high', reason: 'r' },
+        ],
+      },
+      views, Date.parse(NOW), new Set(), [], roster,
+    );
+    expect(many.decisions).toHaveLength(2);
   });
 
   test('a gap the record cannot attribute is still reachable — with `to`, not without', () => {

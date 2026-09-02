@@ -1014,6 +1014,8 @@ export type Database = {
           question_draft: string | null
           reason: string
           tenant_id: string
+          to_ref: string | null
+          via: string | null
         }
         Insert: {
           action: string
@@ -1035,6 +1037,8 @@ export type Database = {
           question_draft?: string | null
           reason?: string
           tenant_id: string
+          to_ref?: string | null
+          via?: string | null
         }
         Update: {
           action?: string
@@ -1056,6 +1060,8 @@ export type Database = {
           question_draft?: string | null
           reason?: string
           tenant_id?: string
+          to_ref?: string | null
+          via?: string | null
         }
         Relationships: [
           {

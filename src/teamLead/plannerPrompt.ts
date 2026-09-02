@@ -341,7 +341,11 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
           properties: {
             nudgeId: {
               type: 'string',
-              description: 'The gap id, copied exactly from the list you were given.',
+              description:
+                'The gap id, copied exactly from the list you were given. Required for hold, ' +
+                'close, dismiss, recover and send. Leave it out ONLY for a message that is not ' +
+                'about any gap — then `to` says who it is for, and the message may name no ' +
+                'dates, because there is no gap to have given you any.',
             },
             action: {
               type: 'string',
@@ -436,7 +440,7 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
                 'why, in plain words.',
             },
           },
-          required: ['nudgeId', 'action', 'confidence', 'reason'],
+          required: ['action', 'confidence', 'reason'],
         },
       },
     },

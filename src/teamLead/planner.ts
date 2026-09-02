@@ -167,7 +167,11 @@ export const UNMENTIONED = 'unmentioned';
 export const UNMENTIONED_CAP = 200;
 
 export interface PlannerDecision {
-  nudgeId: string;
+  // NULL means the decision is about NOBODY'S GAP (build 6.5 Phase 3): a
+  // message to a person that the record never raised. Every gap verb still
+  // requires one — the rails refuse them without it — so a null here can only
+  // reach the two office verbs, and only when `toRef` names who it is for.
+  nudgeId: string | null;
   action: PlannerAction;
   notBefore?: string | null;
   // WHY this close is allowed to stand. 'evidence' = somebody answered, and
@@ -219,7 +223,11 @@ export interface PlannerDecision {
 // A decision the code rails refused, kept so a shadow run reports what the model
 // got wrong rather than quietly showing a shorter plan.
 export interface DroppedDecision {
-  nudgeId: string;
+  // Null for a refused gap-less message (build 6.5 Phase 3). The recorder
+  // writes it with both subject ids null rather than dropping it: a refusal is
+  // the one place we learn what the model wanted to do and could not, and a
+  // gap-less send is the newest thing it can get wrong.
+  nudgeId: string | null;
   action: string;
   why: string;
   // Carried so a refused decision can be RECORDED with the model's own
@@ -228,6 +236,12 @@ export interface DroppedDecision {
   // wanted to do and could not.
   confidence?: 'low' | 'medium' | 'high';
   reason?: string;
+  // WHO a refused message was for (build 6.5 Phase 3). A gap-less refusal is
+  // reachable by NO other reader — no gapId and no jobId means recall_decisions
+  // cannot serve it, so the corpus is its only audience and "somebody was
+  // messaged" is not enough to learn from. Set whenever the addressee resolved
+  // before a later rail refused the decision.
+  toRef?: string | null;
   // The gaps a REFUSED grouped send named. Without it the siblings of a refused
   // group fall through to the `unmentioned` filler — the same "considered and
   // never seen collapse into one" defect the shadow fan-out exists to prevent,
@@ -1725,6 +1739,77 @@ export function validateDecisions(
   // DECISION was refused — a rejected note refuses nothing.
   const noteDrops: string[] = [];
   const usedQuotes = new Set<string>();
+  // ONE RESOLUTION OF `to`, used by a gap-bound office verb and by a message
+  // about nothing. Two copies would drift, and the copy that drifts is always
+  // the one that forgets a refusal — the same argument that collapsed
+  // reachLabel and standingOf into a single `reachOf` in Phase 1.
+  type ToResult =
+    | { kind: 'absent' }
+    | { kind: 'bad'; why: string }
+    | { kind: 'ok'; ref: string; technicianId: string };
+  const resolveTo = (d: Record<string, unknown>, action: string, hasGap: boolean): ToResult => {
+    // The corrective advice differs by caller: a gap-bound entry can drop `to`
+    // and fall back to the record, a gap-less one has nothing to fall back to.
+    const orDrop = hasGap
+      ? " Leave it out entirely to reach the gap's own person."
+      : ' A message that is not about a gap must name somebody.';
+    // PRESENCE FIRST, THEN VALIDITY (the `notBefore` absent-vs-null
+    // precedent). An earlier draft tested `typeof d.to === 'string' && length
+    // > 0`, so `to: 42`, `to: ['sam-ortiz']` or `to: '   '` all read as ABSENT
+    // and the message went to the gap's own person, applied and recorded as
+    // success — the model asks for Sam and Ben gets it. `null` alone reads as
+    // absent, because that is how a provider spells "no value".
+    if (!('to' in d) || d.to === null || d.to === undefined) return { kind: 'absent' };
+    if (typeof d.to !== 'string' || d.to.trim().length === 0) {
+      return {
+        kind: 'bad',
+        why:
+          `${action} whose \`to\` is not a name — it must be one name, copied exactly from ` +
+          `THE TEAM.${orDrop}`,
+      };
+    }
+    const want = d.to.trim();
+    const a = reachable.get(want);
+    if (!a) {
+      return {
+        kind: 'bad',
+        why:
+          `${action} to '${want}' — there is nobody by that name on THE TEAM. Copy a name ` +
+          'exactly from that list; it is the only place names come from.',
+      };
+    }
+    // THE DEPARTURE IS ITS OWN REFUSAL, not folded into "no assistant". "They
+    // have left" is a fact about the world that changes what to do next —
+    // somebody still here has to answer this — while "no assistant" is an
+    // operator fix somebody could make tomorrow.
+    //
+    // NO DATE, and not because THE TEAM has it: that block prints a departed
+    // person only when a gap in this tick names them, while this map holds
+    // every row — so the case that produces THIS refusal is the case where the
+    // block is silent. validate also has no timezone to render one with, and
+    // `v_roster_events` is one lookup away if the date matters.
+    if (isInactiveState(a.state)) {
+      return {
+        kind: 'bad',
+        why:
+          `${action} to '${want}' — they are no longer on the team, so a message reaches ` +
+          'nobody. If this still needs answering, somebody who is still here has to answer it.',
+      };
+    }
+    if (!a.assistant) {
+      // `limitationOf` is total and both reachable branches were excluded
+      // above, so the fallback is a belt on a hand-built Addressee. The
+      // corrective clause matters as much as the reason: its two siblings both
+      // say what to do instead, and this one used to state a fact and stop.
+      return {
+        kind: 'bad',
+        why:
+          `${action} to '${want}' — ${limitationOf(a) ?? 'they cannot be reached'}. Name ` +
+          `somebody else from THE TEAM.${orDrop}`,
+      };
+    }
+    return { kind: 'ok', ref: a.ref, technicianId: a.technicianId };
+  };
   // Normalized ONCE per call, not once per close whose quote missed the
   // evidence: the model may submit several plans in a tick, each with several
   // closes, and this array holds every tool result the tick has seen.
@@ -1753,15 +1838,87 @@ export function validateDecisions(
         ? d.confidence
         : 'low';
     const reason = typeof d.reason === 'string' ? flat(d.reason, 300) : '';
-    const push = (why: string, members?: string[]) =>
+    const push = (why: string, members?: string[], toRef?: string | null) =>
       dropped.push({
-        nudgeId,
+        // `nudgeId` is '' when the entry named no gap; the log wants a real
+        // NULL there, not an empty string that would read as an id nobody has.
+        nudgeId: nudgeId || null,
         action,
         why,
         confidence,
         reason,
+        ...(toRef ? { toRef } : {}),
         ...(members && members.length > 1 ? { nudgeIds: members } : {}),
       });
+
+    // A MESSAGE ABOUT NOBODY'S GAP (build 6.5 Phase 3). Everything below this
+    // point is keyed by a gap; this is the one shape that has none.
+    //
+    // FIRST, ahead of `recover` — which the review caught. `recover` runs
+    // before the view lookup because its subject is deliberately hidden, and
+    // an id-less recover fell into it: `recoverable.has('')` is false, so it
+    // was DROPPED SILENTLY with no refusal and no row. That silent path was
+    // written for a hallucinated id (which must not be keyed as an FK), and
+    // it is the wrong answer for a verb that simply named no gap. Newly
+    // reachable, too: this phase removed `nudgeId` from the schema's
+    // `required`.
+    if (!nudgeId) {
+      if (action !== 'ask_agent' && action !== 'inform_agent') {
+        push(
+          `${action} with no gap — copy the id of the gap it acts on from the list you were ` +
+            'given. Only a message may be about nothing.',
+        );
+        continue;
+      }
+      const to = resolveTo(d, action, false);
+      if (to.kind === 'bad') {
+        push(to.why);
+        continue;
+      }
+      if (to.kind === 'absent') {
+        // No gap AND no addressee names nobody at all. The gap-bound form can
+        // fall back to the record; this one has nothing to fall back to.
+        push(
+          `${action} with neither a gap nor a \`to\` — name who it is for, from THE TEAM.`,
+        );
+        continue;
+      }
+      // NO ALLOWED DATES. `dateLabels` are computed per gap — the ask's date,
+      // the visit's — and a message about nothing has no gap to draw them
+      // from. So the rail admits no date at all here, and says so when it
+      // refuses one. That is the safe direction: the planner may not name a
+      // day it cannot show it was given.
+      const msg = cleanPlannerText(d.agentMessage, [], {
+        label: 'agent message',
+        maxLen: 500,
+      });
+      if (msg.why) noteDrops.push(`(no gap): ${msg.why}`);
+      if (!msg.note) {
+        push(
+          `${action} needs \`agentMessage\` — it was missing, over length, carried a link, or ` +
+            'named a date. A message that is not about a gap has no dates it may use.',
+          undefined,
+          // The addressee RESOLVED before this rail refused the message, and
+          // it is the only thing that makes the refusal legible in the corpus.
+          to.ref,
+        );
+        continue;
+      }
+      // NOT ADDED TO `seen`: that set holds one decision per GAP, and several
+      // messages to several people in one tick is the ordinary case — it is
+      // how the planner tells three managers the same thing (user ruling
+      // 2026-09-02: "the planner can just send the same message to all three").
+      decisions.push({
+        nudgeId: null,
+        action: action as PlannerAction,
+        agentMessage: msg.note,
+        toRef: to.ref,
+        toTechnicianId: to.technicianId,
+        confidence,
+        reason,
+      });
+      continue;
+    }
 
     // `recover` FIRST, before the view lookup: its subject is deliberately NOT
     // in the view — a dismissed gap is hidden, and recover is the one verb that
@@ -1854,80 +2011,21 @@ export function validateDecisions(
     // addressee for the same technicians!inner reason `send` does, and the
     // message survives the same date rail every model-written surface rides.
     if (action === 'ask_agent' || action === 'inform_agent') {
-      // WHO IT IS FOR (build 6.5 Phase 2). No `to` means the gap's own person,
-      // byte-for-byte what this verb did before — so every existing decision
-      // keeps its meaning and the corpus does not move.
-      // PRESENCE FIRST, THEN VALIDITY (the `notBefore` absent-vs-null
-      // precedent, and this function's own boundary rule at the top: a
-      // malformed entry is refused, never dereferenced).
-      //
-      // The earlier draft tested `typeof d.to === 'string' && length > 0`, so
-      // `to: 42`, `to: ['sam-ortiz']` or `to: '   '` all read as ABSENT and
-      // the message went to the gap's own person — applied, recorded as
-      // success, with nothing anywhere saying the addressee had been
-      // discarded. The model asked for Sam and Ben got it. That is the one
-      // failure this whole build cannot afford, so a `to` that is present and
-      // unusable is refused. `null` alone is read as absent, because that is
-      // how a provider spells "no value".
-      const wantsTo = 'to' in d && d.to !== null && d.to !== undefined;
+      const to = resolveTo(d, action, true);
+      if (to.kind === 'bad') {
+        push(to.why);
+        continue;
+      }
       let toRef: string | null = null;
       let toTechnicianId: string | null = null;
-      if (wantsTo) {
-        if (typeof d.to !== 'string' || d.to.trim().length === 0) {
-          push(
-            `${action} whose \`to\` is not a name — it must be one name, copied exactly from ` +
-              "THE TEAM. Leave it out entirely to reach the gap's own person.",
-          );
-          continue;
-        }
-        const want = d.to.trim();
-        const a = reachable.get(want);
-        if (!a) {
-          push(
-            `${action} to '${want}' — there is nobody by that name on THE TEAM. Copy a name ` +
-              'exactly from that list; it is the only place names come from.',
-          );
-          continue;
-        }
-        // THE DEPARTURE IS ITS OWN REFUSAL, and not folded into "no assistant".
-        // "They have left" is a fact about the world that changes what to do
-        // next — somebody still here has to answer this — while "no assistant"
-        // is an operator fix somebody could make tomorrow.
-        if (isInactiveState(a.state)) {
-          // NO DATE, and not because the block has it. THE TEAM prints a
-          // departed person only when a gap in this tick names them, while
-          // the resolution map holds every row — so the case that produces
-          // THIS refusal (a name the model had from memory or a `spine_read`,
-          // belonging to somebody no current gap names) is exactly the case
-          // where the block is silent. The honest reasons are that validate
-          // has no timezone to render one with, and that `v_roster_events` is
-          // one lookup away if the date matters.
-          push(
-            `${action} to '${want}' — they are no longer on the team, so a message reaches ` +
-              'nobody. If this still needs answering, somebody who is still here has to ' +
-              'answer it.',
-          );
-          continue;
-        }
-        if (!a.assistant) {
-          // `limitationOf` is total and both reachable branches were excluded
-          // above, so the fallback is a belt on a hand-built Addressee, not a
-          // live path. The corrective clause matters as much as the reason:
-          // its two sibling refusals both say what to do instead, and this one
-          // used to state a fact and stop.
-          push(
-            `${action} to '${want}' — ${limitationOf(a) ?? 'they cannot be reached'}. Name ` +
-              'somebody else from THE TEAM, or leave `to` out to reach the gap\'s own person.',
-          );
-          continue;
-        }
-        toRef = a.ref;
-        toTechnicianId = a.technicianId;
+      if (to.kind === 'ok') {
+        toRef = to.ref;
+        toTechnicianId = to.technicianId;
       } else if (!view.nudge.technician_id) {
-        // Unchanged, and now narrower than it reads: this refuses only when
-        // NOBODY was named — by the gap or by the planner. Naming a manager on
-        // a gap the record cannot attribute is exactly what build 6.5 exists
-        // to allow, so the guard must not fire on that.
+        // Unchanged, and narrower than it reads: this refuses only when NOBODY
+        // was named — by the gap or by the planner. Naming a manager on a gap
+        // the record cannot attribute is exactly what build 6.5 exists to
+        // allow, so the guard must not fire on that.
         push(
           `${action} on a gap with nobody's assistant to reach — the record names no person ` +
             'for it. Name somebody from THE TEAM with `to` if this should reach a person ' +
@@ -2497,6 +2595,18 @@ async function applyDecision(
   const moved = 'the gap changed state between the plan and the write — nothing was applied';
   const done = (row: object | null): { outcome: 'applied' | 'refused'; detail?: string } =>
     row ? { outcome: 'applied' } : { outcome: 'refused', detail: moved };
+  // EVERY VERB BUT THE OFFICE PAIR ACTS ON A GAP (build 6.5 Phase 3, which made
+  // `nudgeId` nullable). Validate guarantees the id; this is the belt for a
+  // hand-built decision object, the same one this switch keeps for every other
+  // field. Narrowed HERE rather than in five separate cases so the switch stays
+  // exhaustive over PLANNER_ACTIONS — that exhaustiveness is what makes adding
+  // a verb without a case a typecheck failure, and it is worth keeping.
+  if (d.action !== 'ask_agent' && d.action !== 'inform_agent' && !d.nudgeId) {
+    return { outcome: 'refused', detail: `${d.action} needs the gap it acts on` };
+  }
+  // Empty only on the office paths, which never read it — they use d.nudgeId
+  // directly, because for them null is a legal, meaningful value.
+  const gapId = d.nudgeId ?? '';
   switch (d.action) {
     case 'send': {
       // The planner's words ARE the delivered message (the collapse, plan
@@ -2524,14 +2634,14 @@ async function applyDecision(
       // stages — and the observation is stamped 'asked' best-effort after.
       // The rails guaranteed a group is stage-pure (review F8), so the lead's
       // stage decides the whole branch.
-      if (getGap(d.nudgeId)?.status === 'noticed') {
-        const memberIds = group ?? [d.nudgeId];
+      if (getGap(gapId)?.status === 'noticed') {
+        const memberIds = group ?? [gapId];
         const movedIds: string[] = [];
         // THE LEAD FIRST, and abort if it does not land: members carry
         // ask_group_id = the lead's id, and a group whose lead row does not
         // exist is leaderless from birth — the serve loop freezes it forever
         // (markNudgeGroupQueued's own warning, inverted for creation).
-        for (const memberId of [d.nudgeId, ...memberIds.filter((m) => m !== d.nudgeId)]) {
+        for (const memberId of [gapId, ...memberIds.filter((m) => m !== gapId)]) {
           const row = getGap(memberId);
           if (!row) continue; // rail-checked; unreachable in practice
           // Per-member guard (phase-3 review F2): a THROW here after the lead
@@ -2550,7 +2660,7 @@ async function applyDecision(
               technicianId: row.technician_id,
               context: row.context,
               question: message,
-              askGroupId: group ? d.nudgeId : null,
+              askGroupId: group ? gapId : null,
             });
           } catch (err) {
             console.error(`[planner] ${memberId}: creating its ask failed`, err);
@@ -2567,7 +2677,7 @@ async function applyDecision(
             } catch (err) {
               console.error(`[planner] ${memberId}: healing its observation failed`, err);
             }
-            if (memberId === d.nudgeId) break; // no lead → no group at all
+            if (memberId === gapId) break; // no lead → no group at all
             continue;
           }
           movedIds.push(memberId);
@@ -2580,7 +2690,7 @@ async function applyDecision(
             console.error(`[planner] ${memberId}: sent, but stamping its observation failed`, err);
           }
         }
-        if (!movedIds.includes(d.nudgeId)) {
+        if (!movedIds.includes(gapId)) {
           return {
             outcome: 'refused',
             // NOT the generic race copy: on this path the usual cause is a
@@ -2596,8 +2706,8 @@ async function applyDecision(
         return { outcome: 'applied', movedIds };
       }
       const movedRows = group
-        ? await markGroupQueued(group, tenantId, message, d.nudgeId)
-        : [await markQueued(d.nudgeId, tenantId, message)].filter((r): r is Nudge => !!r);
+        ? await markGroupQueued(group, tenantId, message, gapId)
+        : [await markQueued(gapId, tenantId, message)].filter((r): r is Nudge => !!r);
       const movedIds = movedRows.map((r) => r.id);
       // A hold this send overrides must be CLEARED, or the gap view keeps
       // telling the planner "currently held until …" about a question already
@@ -2618,7 +2728,7 @@ async function applyDecision(
       // leaderless group, so a partial move that lost the lead ships NOTHING —
       // reporting that as applied would be the silent no-op these rails exist to
       // make impossible. `movedIds` carries the per-member truth to the recorder.
-      if (!movedIds.includes(d.nudgeId)) {
+      if (!movedIds.includes(gapId)) {
         return {
           outcome: 'refused',
           detail: group
@@ -2641,14 +2751,14 @@ async function applyDecision(
       // row, returning null, and recording *refused — "the gap changed state"*:
       // the planner would be told it may pause an asked question, do it, and
       // watch nothing happen. A silent no-op dressed as a race.
-      if (getGap(d.nudgeId)?.status === 'noticed') {
+      if (getGap(gapId)?.status === 'noticed') {
         return done(
-          await setObservation(d.nudgeId, tenantId, { notBefore: d.notBefore ?? null }, ['open']),
+          await setObservation(gapId, tenantId, { notBefore: d.notBefore ?? null }, ['open']),
         );
       }
       return done(
         await setSchedule(
-          d.nudgeId,
+          gapId,
           tenantId,
           { notBefore: d.notBefore ?? null },
           [...OPEN_NUDGE_STATUSES],
@@ -2665,17 +2775,17 @@ async function applyDecision(
       // is a nudges status carrying `prior_status` so recover knows where to
       // put it. The fork is decided by the stage the VIEW showed, exactly as
       // hold's is.
-      if (getGap(d.nudgeId)?.status === 'noticed') {
+      if (getGap(gapId)?.status === 'noticed') {
         return done(
           await setObservation(
-            d.nudgeId,
+            gapId,
             tenantId,
             { status: 'dismissed', dismissReason: d.reason || null, dismissedAt: nowIso },
             ['open'],
           ),
         );
       }
-      return done(await dismissGap(d.nudgeId, tenantId, d.reason || null));
+      return done(await dismissGap(gapId, tenantId, d.reason || null));
     case 'recover': {
       // notBefore clears too (code-review): recover means "stakes changed",
       // and a recovered row wearing its old far-future hold would go straight
@@ -2698,18 +2808,18 @@ async function applyDecision(
       let asObservation: Awaited<ReturnType<typeof setObservation>> = null;
       try {
         asObservation = await setObservation(
-          d.nudgeId,
+          gapId,
           tenantId,
           { status: 'open', dismissReason: null, dismissedAt: null, notBefore: null },
           ['dismissed'],
         );
       } catch (err) {
-        console.error(`[planner] ${d.nudgeId}: recover as an observation failed — trying it as a question`, err);
+        console.error(`[planner] ${gapId}: recover as an observation failed — trying it as a question`, err);
       }
       if (asObservation) return done(asObservation);
       // …otherwise it is a dismissed QUESTION, restored to the stage it was
       // dismissed from.
-      const asNudge = await recoverGap(d.nudgeId, tenantId);
+      const asNudge = await recoverGap(gapId, tenantId);
       if (asNudge) return { outcome: 'applied' };
       // ITS OWN COPY, not the shared race message (the send-on-observation
       // precedent). Both writes missing means one of two DIFFERENT things, and
@@ -2748,13 +2858,24 @@ async function applyDecision(
             'rewrite it using only the dates you were given',
         };
       }
-      const n = getGap(d.nudgeId);
-      // THE GAP MUST STILL EXIST — the message names it. But its person is
-      // required only when NOBODY ELSE was named (build 6.5 Phase 2): with an
-      // explicit addressee the record's own attribution is irrelevant, which
-      // is the whole point of being able to ask a manager about a gap the
-      // record cannot attribute.
-      if (!n) return { outcome: 'refused', detail: moved };
+      // THE ONE VERB PAIR THAT MAY BE ABOUT NOTHING (build 6.5 Phase 3). A
+      // null id here is not a missing subject, it is the message not being
+      // about a gap at all — so the gap is looked up only when one was named.
+      const n = d.nudgeId ? getGap(d.nudgeId) : null;
+      // A NAMED gap must still exist — the message says it is about that gap,
+      // and a gap that moved between the plan and the write makes the claim
+      // false. A message about NOTHING has no such claim to keep.
+      if (d.nudgeId && !n) return { outcome: 'refused', detail: moved };
+      // Its PERSON is required only when nobody else was named (build 6.5
+      // Phase 2): with an explicit addressee the record's own attribution is
+      // irrelevant, which is the whole point of being able to ask a manager
+      // about a gap the record cannot attribute — or about no gap at all.
+      if (!n && !d.toTechnicianId) {
+        return {
+          outcome: 'refused',
+          detail: `${d.action} about no gap needs a \`to\` — there is nobody else to infer`,
+        };
+      }
       // THE PAIR TRAVELS TOGETHER OR NOT AT ALL — the belt for a hand-built
       // decision object, which this switch keeps for every other field too.
       // Validate always sets both from one Addressee, but a decision carrying
@@ -2779,7 +2900,7 @@ async function applyDecision(
             'a person the roster holds, not a name alone',
         };
       }
-      const toTechnicianId = d.toTechnicianId ?? n.technician_id;
+      const toTechnicianId = d.toTechnicianId ?? n?.technician_id ?? null;
       // NOT `moved`: nothing changed state here, there was never a person.
       // That string is what recall_decisions hands the planner next tick, so a
       // wrong one teaches it to expect a race that did not happen.
@@ -2803,7 +2924,7 @@ async function applyDecision(
         // the gap. They can never name different people.
         toRef: d.toTechnicianId
           ? (d.toRef ?? d.toTechnicianId)
-          : (ctxStr(n, 'technicianRef') ?? toTechnicianId),
+          : ((n && ctxStr(n, 'technicianRef')) ?? toTechnicianId),
         technicianId: toTechnicianId,
         nudgeId: d.nudgeId,
         body: d.agentMessage,
@@ -2832,10 +2953,10 @@ async function applyDecision(
       // _id` is a column on `nudges`, and it is the whole definition of
       // mv_gap_outcomes.closed_by_technician — there is no row to stamp and no
       // metric this belongs in.
-      if (getGap(d.nudgeId)?.status === 'noticed') {
+      if (getGap(gapId)?.status === 'noticed') {
         return done(
           await setObservation(
-            d.nudgeId,
+            gapId,
             tenantId,
             { status: 'dismissed', dismissReason: resolution, dismissedAt: nowIso },
             ['open'],
@@ -2846,7 +2967,7 @@ async function applyDecision(
       // 'cancelled', never 'answered' — nobody answered anything, the subject
       // is gone (build 5; plan review finding 3).
       const closed = await markOutcome(
-        d.nudgeId,
+        gapId,
         tenantId,
         d.mootClose ? 'cancelled' : 'answered',
         resolution,
@@ -2860,9 +2981,9 @@ async function applyDecision(
       // the plan's keep-both decision rests on.
       if (closed && d.answeredByCaptureId) {
         try {
-          await stampAnswer(d.nudgeId, tenantId, d.answeredByCaptureId);
+          await stampAnswer(gapId, tenantId, d.answeredByCaptureId);
         } catch (err) {
-          console.error(`[planner] ${d.nudgeId}: closed, but stamping its answer failed`, err);
+          console.error(`[planner] ${gapId}: closed, but stamping its answer failed`, err);
         }
       }
       return done(closed);
@@ -3555,6 +3676,49 @@ export async function runPlanner(
       let applied = 0;
       let refusedAtApply = 0;
       for (const d of decisions) {
+        // A MESSAGE ABOUT NOBODY'S GAP (build 6.5 Phase 3). No members, no
+        // view, no subject id — one row carrying who it went to. Handled first
+        // because everything below this point is keyed by a gap that does not
+        // exist here.
+        if (!d.nudgeId) {
+          const base: NudgeDecisionInput = {
+            tenantId,
+            nudgeId: null,
+            // NO JOB EITHER, and that is an invariant rather than an omission:
+            // listDecisionsForJob selects on job_id ALONE, and recall_decisions
+            // maps `gapId: nudge_id ?? observation_id` — so a job-stamped
+            // gap-less row would come back to the model with a null gap id and
+            // read as a decision about a gap it cannot find.
+            jobId: null,
+            mode,
+            action: d.action,
+            toRef: d.toRef ?? null,
+            confidence: d.confidence,
+            reason: d.reason,
+            outcome: mode === 'live' ? 'applied' : 'shadow',
+          };
+          if (mode !== 'live') {
+            records.push({ ...base, mode: 'shadow', outcome: 'shadow' });
+            continue;
+          }
+          let res: { outcome: 'applied' | 'refused'; detail?: string };
+          try {
+            res = await applyDecision(
+              tenantId, d, nowIso, setSchedule, markOutcome, markQueued, markGroupQueued,
+              stampAnswer, '', (id) => views.get(id)?.nudge, setObservation,
+              createFromObservation, createOffice, dismissGap, recoverGap,
+            );
+          } catch (err) {
+            res = {
+              outcome: 'refused',
+              detail: `write failed: ${err instanceof Error ? err.message : String(err)}`,
+            };
+          }
+          if (res.outcome === 'applied') applied += 1;
+          else refusedAtApply += 1;
+          records.push({ ...base, outcome: res.outcome, outcomeDetail: res.detail ?? null });
+          continue;
+        }
         // ONE ROW PER GAP, even when one decision covered several (plan
         // 2026-08-25, Phase 3). Each gap's own history has to show its own send,
         // and `nudge_decisions.nudge_id` is NOT NULL with an FK — a single row
@@ -3664,8 +3828,28 @@ export async function runPlanner(
       // model's citation is deliberately NOT stored on a refused close, or a
       // quote the rails rejected as unfindable would be preserved as evidence.
       for (const d of dropped) {
-        if (!views.has(d.nudgeId)) continue;
         if (!(PLANNER_ACTIONS as readonly string[]).includes(d.action)) continue;
+        // A REFUSED MESSAGE ABOUT NOBODY'S GAP still earns its row (build 6.5
+        // Phase 3). There is no gap whose history could carry it, which is
+        // exactly why it would otherwise vanish — and a refused gap-less send
+        // is the newest thing the model can get wrong, so it is the row the
+        // evaluation phase most needs to find.
+        if (!d.nudgeId) {
+          records.push({
+            tenantId,
+            nudgeId: null,
+            jobId: null,
+            mode,
+            action: d.action,
+            toRef: d.toRef ?? null,
+            confidence: d.confidence ?? 'low',
+            reason: d.reason ?? '',
+            outcome: 'refused',
+            outcomeDetail: d.why,
+          });
+          continue;
+        }
+        if (!views.has(d.nudgeId)) continue;
         // One row per gap the refused decision NAMED, not just its lead: the
         // model looked at every member, and the tick-mark filler below would
         // otherwise record the siblings as never considered.

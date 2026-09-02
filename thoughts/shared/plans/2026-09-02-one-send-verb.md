@@ -383,6 +383,14 @@ tolerate a null nudgeId in its log line. Fix the now-false comment at `:182-183`
 "Required for hold, close, dismiss and recover. For send, include it only when the message is
 ABOUT a gap."
 
+**ADAPTATION MADE AT IMPLEMENTATION TIME (2026-09-02).** This phase's text was written imagining
+Phase 4's collapsed `send` as the gap-less verb — but `send` does not exist in that form until the
+NEXT phase, and every gap-less rail here would have had no producer and no end-to-end test. So the
+gap-less shape is carried by the two OFFICE VERBS, which Phase 2 just taught to name an addressee:
+`inform_agent`/`ask_agent` with a `to` and no `nudgeId` is "a message to a person about nothing",
+which is precisely this phase's stated purpose. Phase 4's collapse inherits it unchanged. `send`
+still requires a gap here, and is refused without one alongside the other three.
+
 **`src/teamLead/planner.ts`**
 - `PlannerDecision.nudgeId` / `DroppedDecision.nudgeId` → `string | null`.
 - `validateDecisions`: `hold|close|dismiss|recover` without a `nudgeId` refused ("<verb> needs the
@@ -397,16 +405,16 @@ asserting exactly the constraint this phase removes; rewrite it to assert the ne
 null is now legal; the row is a message, not a gap decision).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] migration applies to the local stack and is re-runnable (run it twice)
-- [ ] new: each of the four gap verbs is refused without a `nudgeId`
-- [ ] new: `recordNudgeDecisions` writes a both-null row; `listDecisionsForNudges` returns it for
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] migration applies to the local stack and is re-runnable (run it twice)
+- [x] new: each of the four gap verbs is refused without a `nudgeId`
+- [x] new: `recordNudgeDecisions` writes a both-null row; `listDecisionsForNudges` returns it for
       no gap
-- [ ] new: a REFUSED gap-less send is still recorded
+- [x] new: a REFUSED gap-less send is still recorded
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack
-- [ ] Insert a both-null decision through the real writer **carrying a job_id**, then
+- [x] Insert a both-null decision through the real writer **carrying a job_id**, then
       `select * from mv_whiplash` and `select * from mv_gap_outcomes` (plain SELECT — these are
       views) and confirm neither gains a row and neither errors. The job_id is what makes this
       test the partition fix rather than a pass on the pre-existing `r.job_id is not null` filter.

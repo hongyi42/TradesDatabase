@@ -1207,6 +1207,7 @@ export type Database = {
       }
       observations: {
         Row: {
+          author: string
           context: Json
           dismiss_reason: string | null
           dismissed_at: string | null
@@ -1221,6 +1222,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          author?: string
           context?: Json
           dismiss_reason?: string | null
           dismissed_at?: string | null
@@ -1235,6 +1237,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          author?: string
           context?: Json
           dismiss_reason?: string | null
           dismissed_at?: string | null
@@ -2940,6 +2943,7 @@ export type Database = {
       }
       v_observations: {
         Row: {
+          author: string | null
           dismiss_reason: string | null
           dismissed_at: string | null
           id: string | null

@@ -59,7 +59,18 @@ export type ReviewKind =
   // Detector #2 (plan 2026-08-19): a job whose work is done but whose parts
   // cost was never recorded. subject_ref is the JOB id, not an assignment —
   // the only kind so far whose subject is not a visit.
-  | 'job_cost_gap';
+  | 'job_cost_gap'
+  // THE PLANNER'S OWN (build 7, plan 2026-09-02). The one kind no detector
+  // mints: it is written by `observe`, and by the planner turning a seat's
+  // inform into something that keeps standing. Deliberately absent from
+  // NUDGE_KIND_SPECS — a spec is what makes a kind DETECTED and its manager
+  // items swept (nudgeKinds.ts), and neither applies here, so the sweep can
+  // never create or touch one.
+  //
+  // It is also the one kind outside `uq_observations_subject_ever`, which is
+  // partial on author='detector' since 20260904110000. Its subject_ref is a
+  // LABEL, not a dedup key — see createObservation.
+  | 'planner_observation';
 
 export interface UpsertOpenReviewItemInput {
   tenantId: string;

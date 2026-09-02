@@ -151,20 +151,31 @@ sweep can never mint it.
 
 **`src/db/database.types.ts`** — regenerate with `--local`.
 
+**`v_observations` + `src/mcp/server.ts:816` — ADDED DURING IMPLEMENTATION, not in the plan.**
+The Phase-1 verification made the omission plain: the view is `spine_reader`'s ONLY window on this
+table — the surface doctrine points the planner at to find dismissed rows — and it could not say who
+authored a row, in the phase whose title is "the record learns who wrote it". `author` is appended
+LAST (what `create or replace view` requires), grants re-asserted, and the `SPINE_VIEW_CATALOG`
+string the planner is actually SHOWN now lists it. Worded neutrally on purpose: Phase 1 must not
+advertise a verb Phase 2 has not built yet.
+
 ### Automated verification
-- [ ] `npx supabase migration up` applies clean; re-applying is a no-op
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass — **unchanged**, nothing writes `'planner'` yet
-- [ ] new `observations.test.ts`: two `createObservation` calls with the same `(kind, subject_ref)`
+- [x] `npx supabase migration up` applies clean; re-applying is a clean 3-NOTICE no-op (replayed the file directly 3x)
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` pass — **2620** (2618 + 2 new); no existing test changed behaviour
+- [x] new `observations.test.ts`: two `createObservation` calls with the same `(kind, subject_ref)`
       and `author:'planner'` both succeed with distinct ids; the same pair at the default author
-      returns a row then `null`
-- [ ] ACL probe (the existing Phase-1 pattern): `observations` and `v_observations` stay revoked
-      from `anon` / `authenticated` after the migration
+      returns a row then `null`. **Mutation-checked both ways by the round-2 reviewer:** whole index
+      → both new tests fail; `.eq('author','detector')` removed → the detector's-memory test fails
+- [x] ACL probe: `observations` and `v_observations` stay revoked from `anon` / `authenticated`
+      after the migration AND after the `create or replace view` (grants re-asserted in the file)
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack only.
-- [ ] Read `pg_indexes` back and confirm `indexdef` contains `WHERE (author = 'detector'::text)`, and
-      that the CHECK exists. **Never** `supabase migration list` — that ledger has drifted from real
-      schema before ([[deploy-does-not-migrate]]). Capture the `indexdef` string as evidence.
+- [x] `indexdef` = `CREATE UNIQUE INDEX uq_observations_subject_ever ON public.observations USING
+      btree (tenant_id, kind, subject_ref) WHERE (author = 'detector'::text)`; `pg_constraint` lookup
+      returns 0 rows; CHECK = `((author = ANY (ARRAY['detector'::text, 'planner'::text])))`.
+      **Behaviour tested, not inferred** (rolled-back txn): 2 planner rows on one triple both insert;
+      2 detector rows → 2nd raises 23505; a detector + 2 planner rows coexist; 0 rows left behind.
 
 ### Manual verification
 None.

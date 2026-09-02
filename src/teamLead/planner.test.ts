@@ -9,7 +9,7 @@ import {
   buildGapView,
   buildRoster,
   buildReachableBlock,
-  reachLabel,
+  limitationOf,
   buildOfficeMessagesBlock,
   cleanQuestionDraft,
   buildPlannerUserMessage,
@@ -4948,12 +4948,19 @@ describe('the roster the planner is given', () => {
     );
     // A verbatim text needs a sandbox AND a phone; an injected agent turn needs
     // only the sandbox. A manager is reached exactly like anyone else.
-    expect(block).toContain('ben-shelton  Ben Shelton  technician  — chat, assistant');
-    expect(block).toContain('judy-ramirez  Judy  technician  — assistant only (no phone linked)');
-    expect(block).toContain('helper-joy  Joy  technician  — UNREACHABLE (schedule only)');
-    expect(block).toContain('sam-ortiz  Sam  manager  — chat, assistant');
-    // Refs are COPIED from this list, never invented — say so.
-    expect(block).toContain('copy a `to` exactly from this list');
+    //
+    // SHAPE: a reachable person costs ONE line and carries no explanation —
+    // only a limitation earns a second line. The user read the first draft (a
+    // three-column table) and said it was not readable.
+    expect(block).toContain('  ben-shelton — Ben Shelton, technician');
+    // A reachable person's line is NOT followed by an indented explanation —
+    // that is what "only the exceptions earn a second line" means.
+    expect(block).not.toContain('Ben Shelton, technician\n      ');
+    expect(block).toContain('  sam-ortiz — Sam, manager');
+    expect(block).toContain('      no phone linked, so only their assistant can be reached');
+    expect(block).toContain('      schedule only, and cannot be reached at all');
+    // Names are COPIED from this list, never invented — say so.
+    expect(block).toContain('copy a name exactly when you write to somebody');
   });
 
   test('departed people are listed ONLY when a gap names them', () => {
@@ -4967,12 +4974,15 @@ describe('the roster the planner is given', () => {
     // printing every alumnus would grow the block forever.
     const quiet = buildReachableBlock(all, [], 'America/Los_Angeles');
     expect(quiet).not.toContain('gone-gary');
-    expect(quiet).not.toContain('NO LONGER HERE');
+    expect(quiet).not.toContain('left the team');
 
     // Named by a gap: he appears, with the date he actually left.
     const named = buildReachableBlock(all, [roster.get('t5')!], 'America/Los_Angeles');
-    expect(named).toContain('NO LONGER HERE');
-    expect(named).toContain('gone-gary  Gary — left August 12, 2026');
+    // A sentence, not a table row — and carrying NO pronoun, because a name
+    // does not tell anybody theirs.
+    expect(named).toContain(
+      'Gary (gone-gary) left the team on August 12, 2026, and a gap below still names them.',
+    );
   });
 
   test('a departure with no trail row says so, and never guesses a date', () => {
@@ -4981,7 +4991,8 @@ describe('the roster the planner is given', () => {
     // departure date, which is the trap the whole table exists to avoid.
     const roster = buildRoster([person({ state: 'offboarded' })], []);
     const block = buildReachableBlock([], [roster.get('tech-1')!], 'America/Los_Angeles');
-    expect(block).toContain('left (date unknown)');
+    expect(block).toContain('left the team (date unknown)');
+    expect(block).not.toMatch(/left the team on/);
   });
 
   test('a gap shows its person AS THEY ARE NOW — id-keyed, so a rename resolves', () => {
@@ -5025,23 +5036,27 @@ describe('the roster the planner is given', () => {
     // routinely IS reachable. Having no sandbox is what decides it.
     const newHire = buildRoster([person({ state: 'invited', sandbox_ref: null, host_id: null })], []);
     const exempt = buildRoster([person({ seat_exempt: true, sandbox_ref: null })], []);
-    expect(buildReachableBlock([newHire.get('tech-1')!])).toContain('UNREACHABLE (no assistant set up)');
-    expect(buildReachableBlock([exempt.get('tech-1')!])).toContain('UNREACHABLE (schedule only)');
+    expect(buildReachableBlock([newHire.get('tech-1')!])).toContain(
+      'no assistant set up, so there is nobody to reach here',
+    );
+    expect(buildReachableBlock([exempt.get('tech-1')!])).toContain(
+      'schedule only, and cannot be reached at all',
+    );
     expect(
       buildGapView(nudge(), Date.parse(NOW), [], false, new Set(), [], [], 'UTC', null, null, null, newHire).block,
     ).toContain('no assistant set up; nobody to ask here');
     // A host with no sandbox, and a sandbox with no host, are both unreachable.
     const hostless = buildRoster([person({ host_id: null })], []);
-    expect(buildReachableBlock([hostless.get('tech-1')!])).toContain('UNREACHABLE (no assistant set up)');
-    // And the label is TOTAL. buildReachableBlock filters departed people out
-    // before labelling, so this has to be asserted on reachLabel itself — the
+    expect(buildReachableBlock([hostless.get('tech-1')!])).toContain('no assistant set up');
+    // And it is TOTAL. buildReachableBlock filters departed people out before
+    // calling it, so this has to be asserted on limitationOf itself — the
     // point of the fix is that the function does not DEPEND on that filter.
     // A second definition of "gone" in the caller is exactly the duplication
     // `reachOf` was introduced to remove. (My first attempt asserted this
     // through the block and failed on an empty string, which is the block
     // behaving correctly — recorded because the distinction is the finding.)
     const gone = buildRoster([person({ state: 'offboarded' })], []);
-    expect(reachLabel(gone.get('tech-1')!)).toBe('UNREACHABLE (no longer on the team)');
+    expect(limitationOf(gone.get('tech-1')!)).toBe('no longer on the team');
   });
 
   test('no roster supplied — the person line is exactly what it was before 6.5', () => {
@@ -5093,12 +5108,12 @@ describe('the roster the planner is given', () => {
     );
     expect(summary.tenantErrors).toBe(0);
     // The block reached the model...
-    expect(seen.user).toContain('WHO YOU CAN REACH');
-    expect(seen.user).toContain('sam-ortiz  Sam  manager  — chat, assistant');
+    expect(seen.user).toContain('THE TEAM');
+    expect(seen.user).toContain('  sam-ortiz — Sam, manager');
     // ...the departed person is NOT offered as reachable...
-    expect(seen.user).not.toMatch(/ {2}ben-shelton {2}Ben Shelton {2}technician {2}— chat/);
+    expect(seen.user).not.toContain('  ben-shelton — Ben Shelton, technician');
     // ...but IS named, because a gap in this tick names them...
-    expect(seen.user).toContain('NO LONGER HERE');
+    expect(seen.user).toContain('left the team on August 12, 2026');
     // ...and the gap's own person line agrees with the block.
     expect(seen.user).toContain('NO LONGER ON THE TEAM, left August 12, 2026');
   });
@@ -5119,7 +5134,7 @@ describe('the roster the planner is given', () => {
     expect(summary.tenantErrors).toBe(0);
     expect(summary.planned).toBe(1);
     // Degraded EXACTLY to pre-6.5: the stamped name, no standing claimed.
-    expect(seen.user).not.toContain('WHO YOU CAN REACH');
+    expect(seen.user).not.toContain('THE TEAM');
     expect(seen.user).toContain('person: Ben Shelton');
     expect(seen.user).not.toContain('NO LONGER ON THE TEAM');
   });

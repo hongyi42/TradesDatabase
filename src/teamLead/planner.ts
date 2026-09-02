@@ -979,24 +979,25 @@ function reachOf(a: Addressee): Reach {
   return a.seatExempt ? 'schedule-only' : 'not-set-up';
 }
 
-// The roster block's right-hand column. Exported for the totality test — it
-// must not depend on the caller filtering `gone` out first.
-export function reachLabel(a: Addressee): string {
+// What stops a message reaching this person, as a sentence — or null when
+// nothing does. Null is the common case and costs no line at all, which is the
+// point: a firm where everybody is reachable pays one short line per person.
+//
+// Exported for the totality test. TOTAL on purpose: `gone` is filtered out by
+// buildReachableBlock before this is called, but a second definition of "gone"
+// living in the caller is exactly the duplication `reachOf` exists to prevent.
+export function limitationOf(a: Addressee): string | null {
   switch (reachOf(a)) {
     case 'both':
-      return 'chat, assistant';
+      return null;
     case 'assistant':
-      return 'assistant only (no phone linked)';
+      return 'no phone linked, so only their assistant can be reached';
     case 'schedule-only':
-      return 'UNREACHABLE (schedule only)';
-    // TOTAL on purpose. `gone` is unreachable here only because
-    // buildReachableBlock filters departed people out before calling this —
-    // and a second definition of "gone" living in the caller is exactly the
-    // duplication `reachOf` exists to prevent. Say it here too.
+      return 'schedule only, and cannot be reached at all';
     case 'gone':
-      return 'UNREACHABLE (no longer on the team)';
+      return 'no longer on the team';
     default:
-      return 'UNREACHABLE (no assistant set up)';
+      return 'no assistant set up, so there is nobody to reach here';
   }
 }
 
@@ -1035,7 +1036,7 @@ function personLine(n: Nudge, roster: Map<string, Addressee>, tz: string): strin
 }
 
 /**
- * WHO YOU CAN REACH — the firm's team, as a list the planner copies from.
+ * THE TEAM — the firm's people, as a list the planner copies names from.
  *
  * A ref is COPIED, never invented: the same discipline as gap ids and the
  * "dates you may use" rail. The block is what makes a `to` writable at all.
@@ -1056,21 +1057,28 @@ export function buildReachableBlock(
     // Stable, name-independent order so the block does not churn between ticks.
     .sort((a, b) => a.ref.localeCompare(b.ref));
   if (here.length === 0 && namedDeparted.length === 0) return '';
-  const lines = [
-    'WHO YOU CAN REACH — copy a `to` exactly from this list. Skills and where they work are not ' +
-      'here; look those up if you need them.',
-  ];
+  // SHAPE, after the user read the first draft and said it was not readable
+  // (2026-09-02). It was a three-column table whose columns did not line up —
+  // names vary in width — carrying jargon ("chat, assistant") in a document
+  // that is otherwise `key: value` lines and plain sentences. Now: one short
+  // line per person, and a second line ONLY for somebody a message cannot
+  // fully reach, so the exceptions are what stand out rather than the grid.
+  const lines = ['THE TEAM — copy a name exactly when you write to somebody.'];
   for (const a of here) {
-    lines.push(`  ${a.ref}  ${a.displayName}  ${a.tier}  — ${reachLabel(a)}`);
+    lines.push(`  ${a.ref} — ${a.displayName}, ${a.tier}`);
+    const why = limitationOf(a);
+    if (why) lines.push(`      ${why}`);
   }
-  if (namedDeparted.length > 0) {
+  // Departures read as sentences, not rows: there are usually none, often one,
+  // and a table of one row is a table for no reason. NOTE the wording carries
+  // no pronoun — a name does not tell us anybody's.
+  for (const a of [...namedDeparted].sort((x, y) => x.ref.localeCompare(y.ref))) {
+    const when = a.leftAt ? departureDate(a.leftAt, tz) : null;
     lines.push(
-      'NO LONGER HERE — these people are named by gaps below and cannot be reached at all:',
+      '',
+      `${a.displayName} (${a.ref}) left the team ${when ? `on ${when}` : '(date unknown)'}, ` +
+        'and a gap below still names them.',
     );
-    for (const a of [...namedDeparted].sort((x, y) => x.ref.localeCompare(y.ref))) {
-      const when = a.leftAt ? departureDate(a.leftAt, tz) : null;
-      lines.push(`  ${a.ref}  ${a.displayName} — left ${when ?? '(date unknown)'}`);
-    }
   }
   return lines.join('\n');
 }
@@ -2303,7 +2311,7 @@ export function buildPlannerUserMessage(
   // where variable content belongs (the cache-order constraint the memory
   // index's own comment records).
   officeBlock = '',
-  // WHO YOU CAN REACH (build 6.5 Phase 1), or '' — the default keeps every
+  // THE TEAM (build 6.5 Phase 1), or '' — the default keeps every
   // existing call site and test byte-identical. Rendered BEFORE the gaps and
   // not after: the gap blocks name people, and a reader meets the team before
   // it meets their problems. It is also the most stable content here, which is

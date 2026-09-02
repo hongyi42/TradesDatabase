@@ -4075,7 +4075,7 @@ is a per-gap `person: <display name>` line (`buildGapView`, `planner.ts`), so th
 people who currently have problems and nobody else, and knows them by a name it cannot address.
 `v_team` has always been in its `spine_read` catalog (`server.ts:772`) — never a gate, only an
 absence, because until 6.5 every verb's destination was decided by the record and a name was
-unusable. 6.5 pushes a WHO YOU CAN REACH block and prints the REF beside the name on every gap,
+unusable. 6.5 pushes a THE TEAM block and prints the REF beside the name on every gap,
 for the reason the same function already prints a job id beside the customer name (`planner.ts:
 125-128`: *"it had the words but not the key"*).
 

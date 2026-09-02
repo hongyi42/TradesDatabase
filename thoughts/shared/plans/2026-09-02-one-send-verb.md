@@ -103,6 +103,22 @@ consequence of the collapse rather than as machinery of its own.
   plus any departed person the tick's own gaps mention. An unbounded alumni list would grow
   forever and spend context every tick on people nobody is asking about; `v_roster_events` is
   there for the rest.
+- **THE BRIEFING CARRIES A SUMMARY, NOT THE TRAIL** (user ruling 2026-09-02, asked directly
+  whether the planner sees the whole history: *"Leave it as it is"*). Three layers, and only the
+  third reaches the model: `roster_events` STORES every transition forever; a tick READS events
+  only for people who are both departed AND named by an open gap; and one DERIVED date is
+  rendered (`currentDeparture` — the start of the departure that still stands). Everything else —
+  who joined when, who left and came back, a seat that churned — is a `spine_read` on
+  `v_roster_events` the planner makes when it wants it. **Accepted cost, named at ruling time:** a
+  gap's evidence lines carry technician refs, so a note written by somebody who has since left
+  reads as though they are still around; only the person the gap's `technician_id` points at gets
+  the departure line.
+- **The block's SHAPE was rewritten after the user read the first draft** (2026-09-02: "This
+  doesn't seem very readable"). The draft was a three-column table whose columns did not align —
+  names vary in width — carrying jargon ("chat, assistant") in a document that is otherwise
+  `key: value` lines and plain sentences. Now one short line per person, a second indented line
+  ONLY for somebody a message cannot fully reach, and departures as sentences. Header is
+  `THE TEAM`, not `WHO YOU CAN REACH`.
 - **Gap-less sends stay in `decisions` with `nudgeId` optional**, not a second `messages` array —
   the model should not pick a container before it picks an act.
 - **A gap-less decision IS recorded in `nudge_decisions`** (subject CHECK relaxed, `to_ref`/`via`
@@ -232,7 +248,7 @@ row is never deleted — who used to be here and when they left. No verb, schema
 - `interface Addressee { ref: string; technicianId: string; displayName: string; tier: string;
   state: TechnicianState; chat: boolean; assistant: boolean; leftAt: string | null }` and
   `buildReachableBlock(team: Technician[], departures: Map<string, string>): string` rendering
-  `WHO YOU CAN REACH — copy a \`to\` exactly from this list.` plus one line per non-inactive row:
+  `THE TEAM — copy a name exactly when you write to somebody.` plus one line per non-inactive row:
   `  <ref>  <display_name>  <tier>  — chat, assistant | assistant only (no phone linked) |
   UNREACHABLE (schedule only)`. `chat` = `sandbox_ref && telegram_user_id`; `assistant` =
   `sandbox_ref`; `seat_exempt` or `isInactiveState` → neither. Skills/cities are NOT printed.
@@ -291,7 +307,7 @@ sharing the catalog with `query_spine` is acceptable — record that acceptance 
       prompt text and the table, not one inferred from the other.
 
 ### Manual verification
-- [ ] The roster block reads like something a person would write, and leaks nothing a manager
+- [x] The roster block reads like something a person would write, and leaks nothing a manager
       would not want the planner repeating
 
 ---
@@ -318,7 +334,7 @@ delivery paths unchanged.
 - `applyDecision` (`:2360`): address the resolved person when `toRef` is set.
 
 **`src/teamLead/plannerPrompt.ts`** — `SUBMIT_PLAN_TOOL` (`:328`) gains `to`: "the person this
-message goes to, ref copied exactly from WHO YOU CAN REACH. Leave it out to reach the gap's own
+message goes to, ref copied exactly from THE TEAM. Leave it out to reach the gap's own
 person."
 
 ### Automated verification
@@ -511,7 +527,7 @@ is told in one document how five verbs and two legs work.
   plus the count of chat messages sent about this gap since. This is what makes asking again a
   judgment rather than a guess.
 
-**`src/teamLead/plannerPrompt.ts`** — the doctrine as ONE document: five verbs; WHO YOU CAN REACH
+**`src/teamLead/plannerPrompt.ts`** — the doctrine as ONE document: five verbs; THE TEAM
 and how to copy a ref; the two legs and what each costs (a chat message arrives in their own
 assistant's voice and pings them; an assistant message lands silently and may not be passed on);
 what makes a message the question of record; when to ask again, and that asking again is a message

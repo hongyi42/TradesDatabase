@@ -1068,6 +1068,152 @@ export const SMOKE_SCENARIOS: PlannerScenario[] = [
   },
 ];
 
+// ── build 6: the verbs the rebuild added ─────────────────────────────────────
+// One scenario per capability, each stating the JUDGMENT it grades rather than
+// the mechanism — the mechanism has unit tests; what a corpus measures is
+// whether the planner reaches for the right verb when the situation calls for
+// it. These are also the first scenarios that could not have been WRITTEN
+// before their build: hold was refused on an asked gap, dismiss could not reach
+// a question, and a frozen delivery ledger was not seedable.
+const BUILD6: PlannerScenario[] = [
+  {
+    id: 'B6-HOLD-ASKED',
+    family: 'build6',
+    why:
+      'Build 6 Phase 2 (user ruling 2026-09-01): `hold` reaches an ASKED gap. Before the ' +
+      'rebuild it shared `send`\'s stage rail and was refused there, so "give them until ' +
+      'Thursday" had no verb — the planner could only wait silently, which reads to the ' +
+      'operators as neglect 24h later. Graded on the VERB because that is the capability: a ' +
+      'gap whose person has just said they are away is the clearest case for pacing it.',
+    world: {
+      customer: { name: 'Priya Raman' },
+      job: { title: 'Zone valve replacement', status: 'in_progress' },
+      technician: { ref: 'b6-hold-tech', name: 'Dana Ruiz' },
+      visit: { startsAt: '-27h', endsAt: '-25.5h' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'overdue_visit_gap',
+          status: 'asked',
+          createdAt: '-25h',
+          askedAt: '-24.5h',
+          escalateAfter: '+2h',
+          question: 'How did the zone valve swap at Priya Raman go?',
+        },
+      ],
+      evidence: [
+        { at: '-2h', fromTechnician: true,
+          text: 'Heads up, I am driving to the depot and back all day and slow to reply.' },
+      ],
+    },
+    timeline: [{ at: '+0h', kind: 'tick' }],
+    // APPLIED hold, in some tick. Silence fails this — which is the point: the
+    // old failure mode here was doing nothing and calling it patience.
+    expect: { action: 'hold', mustNotClaim: BLAME },
+  },
+  {
+    id: 'B6-DISMISS-ASKED',
+    family: 'build6',
+    why:
+      'Build 6 Phase 3 (user ruling 2026-09-01, "full control on its gaps"): an asked gap ' +
+      'whose subject is GONE has an ending again. Deleting escalate (Phase 1) left this shape ' +
+      'with none — close needs a fact or a quote, and a question that went nowhere has ' +
+      'neither. Graded on the ARC, not the verb: close (the job is cancelled, so THE RECORD ' +
+      'line authorises it) and dismiss are both honest here, and what is being measured is ' +
+      'that the gap ENDS rather than sitting open forever.',
+    world: {
+      customer: { name: 'Owen Carty' },
+      job: { title: 'Attic duct seal', status: 'cancelled' },
+      technician: { ref: 'b6-dis-tech', name: 'Sam Vale' },
+      visit: { startsAt: '-30h', endsAt: '-28h', status: 'proposed' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'overdue_visit_gap',
+          status: 'asked',
+          createdAt: '-27h',
+          askedAt: '-26h',
+          escalateAfter: '+2h',
+          question: 'How did the duct seal at Owen Carty go?',
+        },
+      ],
+    },
+    timeline: [{ at: '+0h', kind: 'tick' }],
+    expect: { actionNot: 'send', arc: { closedBy: '+0h' } },
+  },
+  {
+    id: 'B6-FROZEN-DELIVERY',
+    family: 'build6',
+    why:
+      'Build 6 Phase 5: a queued gap past MAX_SERVE_COUNT renders a FROZEN delivery line. ' +
+      'Before it, a message frozen after ten attempts and one queued forty seconds ago read ' +
+      'identically — and the doctrine told the planner to escalate both, a verb that no ' +
+      'longer exists. Two things graded: the gap must END (silence is the failure this ' +
+      'replaces), and nothing written about it may claim the person was asked, because a ' +
+      'frozen question was almost certainly never delivered.',
+    world: {
+      customer: { name: 'Lena Okafor' },
+      job: { title: 'Boiler pressure fault', status: 'in_progress' },
+      technician: { ref: 'b6-frozen-tech', name: 'Tomas Bell' },
+      visit: { startsAt: '-30h', endsAt: '-28h' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'overdue_visit_gap',
+          status: 'queued',
+          createdAt: '-26h',
+          question: 'How did the boiler pressure fault at Lena Okafor go?',
+          // Past the cap: the serve loop has given up on this one.
+          serveCount: 12,
+          attempts: 3,
+        },
+      ],
+    },
+    timeline: [{ at: '+0h', kind: 'tick' }],
+    expect: {
+      arc: { closedBy: '+0h' },
+      mustNotClaim: ['we asked', 'no reply', 'has not responded', 'did not respond', 'ignored'],
+    },
+  },
+  {
+    id: 'B6-CITE-A-LOOKUP',
+    family: 'build6',
+    why:
+      'Build 6 Phase 4 (user ruling 2026-09-01): a close may quote what a spine_read returned, ' +
+      'not only the gap\'s own evidence lines. The answer here landed BEFORE the ask, so the ' +
+      'block prints "NO notes have landed since the question went out" — the planner has to ' +
+      'go and look. Before this build it could read those words and still not use them, and ' +
+      'the gap stayed open with the answer visible and uncitable. Graded on both halves: the ' +
+      'read must actually happen, and the close must land.',
+    world: {
+      customer: { name: 'Hal Bridger' },
+      job: { title: 'Condenser fan motor', status: 'in_progress' },
+      technician: { ref: 'b6-cite-tech', name: 'Rosa Kine' },
+      visit: { startsAt: '-30h', endsAt: '-28h' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'job_cost_gap',
+          status: 'asked',
+          createdAt: '-26h',
+          askedAt: '-25h',
+          escalateAfter: '+2h',
+          question: 'What did the condenser fan motor come to in parts?',
+        },
+      ],
+      evidence: [
+        // BEFORE the ask, so buildGapView's since-bound excludes it from the
+        // block. It is reachable only by looking.
+        { at: '-27h', fromTechnician: true,
+          text: 'Fan motor was four hundred twelve dollars from the supply house.' },
+      ],
+    },
+    timeline: [{ at: '+0h', kind: 'tick' }],
+    expect: { action: 'close', mustRead: { tool: 'spine_read' } },
+  },
+];
+
+
 export const FAMILY_COUNTS = {
   smoke: 3,
   'false-claims': 10,
@@ -1079,6 +1225,7 @@ export const FAMILY_COUNTS = {
   // Renamed from 'window-edges' when the ask window was deleted (2026-08-29).
   // Same six scenarios; the edges they probe are the DAY's, not a gate's.
   'day-edges': 6,
+  build6: 4,
 } as const;
 
 export const ALL_SCENARIOS: PlannerScenario[] = [
@@ -1090,4 +1237,5 @@ export const ALL_SCENARIOS: PlannerScenario[] = [
   ...PEOPLE,
   ...MULTI_GAP,
   ...WINDOW,
+  ...BUILD6,
 ];

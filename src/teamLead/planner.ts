@@ -40,6 +40,7 @@ import {
   type NudgeDecisionInput,
 } from '../db/index.js';
 import { runToolLoop, ToolLoopLimitError, type ToolLoopLimit } from '../model/toolLoop.js';
+import { MAX_DELIVERY_ATTEMPTS, MAX_SERVE_COUNT } from '../control/nudgeQueue.js';
 import type { ForcedToolSpec } from '../model/forcedTool.js';
 import { renderMemoryIndex } from './memory.js';
 import { noteLine } from './jobNotes.js';
@@ -854,6 +855,20 @@ export function buildGapView(
   // or null. Code-computed by the caller from the batched status reads;
   // defaulted for the eval renderers and tests, where "no fact" is honest.
   mootFact: string | null = null,
+  // WHERE THIS GAP'S DELIVERY LEDGERS LIVE (build 6 Phase 5). Three cases, and
+  // the third is a fact the caller knows and this function cannot see:
+  //   a Nudge      — the group LEAD's row, for a non-lead member. Only the
+  //                  lead's counters are ever incremented (`serveCount(lead.id,
+  //                  …)`, nudgeQueue.ts), so a member's own are permanently
+  //                  0/0; rendering those would say "served 0 times" about a
+  //                  message frozen after ten attempts.
+  //   'leaderless' — this gap is in a group whose LEAD IS NO LONGER OPEN. The
+  //                  serve loop refuses to promote a sibling (the box dedupes
+  //                  on the lead's id, so a new lead would re-send the whole
+  //                  message), so the group is frozen forever. Its counters
+  //                  will read 0/0 and mean nothing.
+  //   null         — an ordinary ungrouped gap; its own row is the ledger.
+  groupLead: Nudge | 'leaderless' | null = null,
 ): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
@@ -989,6 +1004,58 @@ export function buildGapView(
     lines.push(`  THE RECORD: ${mootFact}. ${closeOnTheRecord}`);
   }
   if (n.not_before) lines.push(`  currently held until: ${n.not_before}`);
+  // WHAT DELIVERY HAS DONE WITH IT (build 6 Phase 5). Until now the planner was
+  // asked to judge a stuck question with no way to tell stuck from slow: a row
+  // frozen after ten serve attempts and one queued forty seconds ago rendered
+  // identically, and the doctrine's advice for both was "escalate it" — a verb
+  // that no longer exists.
+  //
+  // QUEUED ONLY, and each other stage is excluded for its own reason: an
+  // observation has no delivery at all (observationAsGapRow hardcodes zeros); a
+  // relic `pending` row's `attempts` still holds the RETIRED compose ledger
+  // (watchers.ts says so where it excludes them from the cap triggers); and an
+  // `asked` row's counters are spent history — delivery already succeeded, so
+  // they answer a question nobody is asking.
+  if (n.status === 'queued') {
+    const frozenLine =
+      '— FROZEN, it will not be delivered again. Nothing will move it but you.';
+    if (groupLead === 'leaderless') {
+      lines.push(
+        '  DELIVERY: this message covered several gaps and the one it was anchored to has ' +
+          `ended, so nothing will send it ${frozenLine}`,
+      );
+    } else {
+      const ledger = groupLead ?? n;
+      const cap =
+        ledger.serve_count >= MAX_SERVE_COUNT || ledger.attempts >= MAX_DELIVERY_ATTEMPTS;
+      // FACTS ONLY — no inference about whether anything is still trying.
+      //
+      // The first draft of this line ended "; still being attempted", and that
+      // was false in three reachable states the counters cannot distinguish: a
+      // group whose lead has ended (handled above), a technician who is
+      // inactive or has lost their seat, and — the commonest — a box that is
+      // not pulling at all, where `serve_count` simply stays 0 forever. Saying
+      // "still being attempted" about those, and then telling the planner in
+      // the doctrine that such a gap is one to leave alone, would have made the
+      // most ordinary stuck row LESS visible than it was before this phase.
+      //
+      // So: the age and the two counters, which are all true, and the doctrine
+      // teaches the reading. `served 0 times` after twenty hours is the loudest
+      // signal available and needs no adjective.
+      const age = elapsedLabel(n.queued_at ?? n.created_at, nowMs);
+      const counts =
+        `served ${ledger.serve_count} time${ledger.serve_count === 1 ? '' : 's'}, ` +
+        `failed ${ledger.attempts} time${ledger.attempts === 1 ? '' : 's'}`;
+      lines.push(
+        `  DELIVERY: queued ${age ?? 'recently'}, ${counts}` + (cap ? ` ${frozenLine}` : '.'),
+      );
+    }
+    // ONE FREEZE THIS LINE STILL CANNOT SEE: a technician who is inactive, or
+    // who has lost their sandbox or Telegram binding, is skipped at serve time
+    // from a roster row this function never reads — so such a gap sits at
+    // `served 0 times` looking merely young. The age is what gives it away, and
+    // the deliveryStuck alarm is the operator surface for it.
+  }
   if (dateLabels.length > 0) {
     lines.push(
       // "in a handover note" until build 6 Phase 1, when the note it named was
@@ -2782,6 +2849,23 @@ export async function runPlanner(
         const j = ctxStr(n, 'jobId');
         if (j) gapsPerJob.set(j, (gapsPerJob.get(j) ?? 0) + 1);
       }
+      // The ask-group LEADS, by id — for the delivery ledger a non-lead member
+      // has to borrow (build 6 Phase 5; the serve loop freezes a whole group off
+      // the lead's counters). Null when the lead is not in this tick's open set,
+      // which is itself meaningful: a group whose lead has ended is the
+      // leaderless freeze, and the member's own zeros are then the honest render
+      // — nothing on the row knows about it either way.
+      const byId = new Map(open.map((n) => [n.id, n]));
+      // THREE OUTCOMES, not two. Collapsing the last into `null` was the defect
+      // review caught: a member whose lead is no longer open is LEADERLESS —
+      // the serve loop will never promote a sibling, so the group is frozen
+      // forever — and rendering its own untouched 0/0 counters as an ordinary
+      // young gap hid exactly the condition this phase exists to surface. The
+      // caller knows the lead is gone; buildGapView cannot.
+      const leadFor = (n: Nudge): Nudge | 'leaderless' | null => {
+        if (!n.ask_group_id || n.ask_group_id === n.id) return null; // not a member
+        return byId.get(n.ask_group_id) ?? 'leaderless';
+      };
       for (const n of open) {
         const j = ctxStr(n, 'jobId');
         views.set(
@@ -2797,6 +2881,7 @@ export async function runPlanner(
             tz,
             (j && noteMeta.get(j)) || null,
             mootFactFor(n),
+            leadFor(n),
           ),
         );
       }

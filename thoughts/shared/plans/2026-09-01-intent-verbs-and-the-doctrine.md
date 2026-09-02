@@ -160,6 +160,37 @@ review found an earlier draft's *apply-half* citations stale by ~160 lines.
     validates against it) and only `[submit_plan, spine_read]` fails. The doctrine now states the
     true rule — your tools run in the order you list them, and `submit_plan` ends the turn.
 - **Frozen becomes a printed fact, not a status** — USER 2026-09-01. No schema change.
+  - *Found in review, fixed — a regression this phase introduced.* The line first read
+    `served N times, failed M times; still being attempted`, and the doctrine then told the model
+    that "still being attempted" is a gap to leave alone. That is FALSE in three reachable states
+    the counters cannot tell apart — a leaderless group, an inactive technician, and (commonest) a
+    box that is not pulling at all, where `serve_count` simply stays 0 forever. So the phase whose
+    purpose is *stuck becomes visible* had deleted the only guidance covering the ordinary stuck
+    row (the old bullet said "sat queued for HOURS means delivery is broken") and replaced it with
+    an instruction to ignore it. The line now prints AGE plus the two counters and asserts nothing;
+    the doctrine teaches all three readings.
+  - *Found in review, fixed:* the leaderless freeze IS derivable, and `leadFor` was throwing the
+    fact away — for a grouped member, a lead absent from the open read means the lead has ended,
+    which is the leaderless freeze with certainty. It collapsed that into the same `null` as
+    "not a group member". Now a third case, rendered as its own FROZEN reason.
+  - *Found in review, fixed:* the schema and the doctrine headline promised the planner could quote
+    "anything you read this tick". `CITABLE_TOOLS` is `spine_read` in practice, so the surfaces
+    invited a close the rails refuse. Both now name `spine_read` and say plainly that the planner's
+    own notes are not quotable — it may not be the witness to its own conclusion.
+  - *Found in review, fixed:* the verb list said a close "MUST quote the words that answered it",
+    contradicting basis `record` and all four state bullets. Pre-existing; the one-document pass is
+    where it should have been caught.
+  - *Found in review, fixed:* the frozen advice omitted `ask_agent`, which is the one verb that
+    still reaches the person when their queued message never will.
+  - *Found in review, narrowed:* "a frozen question was never asked" is only strictly proved by the
+    attempt cap. The serve cap means "served ten times with no ack", and the box writes its
+    sent-marker BEFORE reporting — so a delivered message whose acks all failed can reach the cap.
+    The doctrine now says "almost certainly nobody ever read it".
+- **Corpus honesty (found in review):** the first three build-6 scenarios all passed if the planner
+  did NOTHING — the claim graders build their haystack from the last tick's decisions, so silence
+  makes every `mustNotClaim` vacuous, and `actionNot` is satisfied by silence too. Rewritten to
+  grade `action:` (an APPLIED verb) or `arc.closedBy` (the gap must have ENDED), both of which fail
+  on silence. A fourth was added for Phase 4's capability, which had none.
 - **`open_gap` moves whole to build 7** — USER 2026-09-01.
 - **`review_items` needs no action here** — USER 2026-09-01. Its 2 gap kinds stop being written when
   escalate dies; dead ends and reminders leave in build 7. Cleanup (rename it and
@@ -569,21 +600,28 @@ describe what phases 1–4 built. Last, because every earlier phase changes it.
   a looked-up record.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] A queued row at/over either cap renders FROZEN; below renders counters, no FROZEN; a non-lead
-      member renders the LEAD's ledgers; an observation renders no ledger line.
-- [ ] All doctrine pins pass; no surviving prompt text offers `escalate` or `leave`.
-      `src/eval/doctrine.ts` `EXPECTED_SECTIONS` (the box agents' AGENTS.md) — expected untouched.
-- [ ] `plannerCorpus.test.ts` green with the new cases.
+- [x] `npm run typecheck` · `npm run lint` · `npm test` (2575 passed) · `npm run build`
+- [x] A queued row at/over either cap renders FROZEN; below renders **age + counters and asserts
+      nothing else**; a non-lead member renders the LEAD's ledgers — pinned BOTH at `buildGapView`
+      (explicit lead) and through `runPlanner` (`leadFor`, which review found untested); an
+      observation renders no ledger line; a LEADERLESS member renders FROZEN despite its own zeros.
+- [x] All doctrine pins pass; no surviving prompt text offers `escalate` or `leave` — checked
+      against the RENDERED prompt, not the source. `src/eval/doctrine.ts` untouched.
+- [x] `plannerCorpus.test.ts` green with four new cases.
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack.
-- [ ] One `runPlanner` tick against a seeded firm with a frozen queued row; the rendered
-      `userPrompt` shows the FROZEN line with real counters.
+- [x] 16/16 through the real `runPlanner`. Two beyond the ask: a NEGATIVE CONTROL on the group
+      borrow (lead small / member past the caps → the member renders the LEAD's small numbers and
+      no FROZEN, proving direction rather than "whichever is higher"), and a cross-check against
+      the real serve loop — `buildNudgeDelivery` skipped the frozen row (`serve_count` 10 → 10)
+      while a below-caps control was served (2 → 3), so "it will not be delivered again" is true
+      of the machinery and not just of the copy.
 
 ### Manual verification
-- [ ] **Judgment call:** read the rewritten `PLANNER_SYSTEM` end to end — one document, not five
-      phases of patches, and nothing describing a rail or verb that no longer exists.
+- [ ] **Judgment call (OPEN — for the user):** read the rewritten `PLANNER_SYSTEM` end to end —
+      one document, not five phases of patches, and nothing describing a rail or verb that no
+      longer exists.
 
 ---
 

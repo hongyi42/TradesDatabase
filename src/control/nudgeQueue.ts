@@ -25,14 +25,14 @@ import { FOOTER_DELIMITER } from '../teamLead/composeCopy.js';
 // deliveryStuck, and the PLANNER still owns the gap and ends it however its
 // judgment dictates. (That sentence used to say "it can escalate it
 // deliberately, with an honest note"; the verb was deleted in build 6 Phase 1.
-// A frozen row is QUEUED, so today its only ENDING is `close`: `send` is
-// refused on a queued row (there is nothing to send twice) and `hold` — legal
-// on every stage since build 6 Phase 2 — writes a date without changing
-// anything here, since nothing about a frozen row is waiting on a clock. Note
-// what the planner still CAN do: `ask_agent` works on any stage, so the
-// person's assistant is reachable even when their queued question is not.
-// Build 6 Phase 5 is what tells the planner the row is frozen at all — until
-// then it cannot see the difference between frozen and merely slow.)
+// A frozen row is QUEUED, and the planner ends it with `close` when the record
+// settles the matter or `dismiss` when it will not (both legal on every stage
+// since build 6 Phase 3). `send` is refused here — there is nothing to send
+// twice — and `hold` writes a date that changes nothing, since a frozen row is
+// not waiting on a clock. Note what the planner still CAN do: `ask_agent` does
+// not ride this pipe, so the person's assistant is reachable even when their
+// queued question is not. Build 6 Phase 5 is what tells the planner the row is
+// frozen at all — before it, frozen and merely slow rendered identically.)
 
 // A nudge served more than this many times without an ack is POISON — some
 // box-side fault re-serves it forever, and it must stop re-alarming (the

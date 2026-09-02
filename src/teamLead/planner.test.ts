@@ -30,6 +30,7 @@ import { PLANNER_SYSTEM, SUBMIT_PLAN_TOOL } from './plannerPrompt.js';
 import { ORPHAN_FOOTER_PREFIX } from './memory.js';
 
 import { ToolLoopLimitError, type ToolLoopResult } from '../model/toolLoop.js';
+import { MAX_DELIVERY_ATTEMPTS, MAX_SERVE_COUNT } from '../control/nudgeQueue.js';
 
 // NOW is 12:00 — on the planner's cadence grid (720 minutes since midnight,
 // a multiple of both rates), so every test below actually reaches the model.
@@ -2782,11 +2783,34 @@ describe('PLANNER_SYSTEM — the read surface', () => {
     // sentence IS the mechanism: without it the model does not know the
     // capability exists, and an answer living only in a record the briefing
     // does not print stays uncitable in practice.
-    expect(PLANNER_SYSTEM).toContain('YOU MAY QUOTE ANYTHING YOU READ THIS TICK');
+    // NAMED, not "anything you read": the citable set is spine_read alone in
+    // practice, and the schema promising more than the rails allow is how a
+    // capability gets invited and then refused. The planner's own notes and
+    // past decisions come back through tools too — quoting those would make it
+    // the witness to its own conclusion.
+    expect(PLANNER_SYSTEM).toContain('WHAT YOU READ WITH spine_read IS QUOTABLE');
+    expect(PLANNER_SYSTEM).toContain('anything you wrote YOURSELF');
     // And the ORDERING rule, which is the capability's one sharp edge: a read
     // issued in the same assistant turn as submit_plan has not run when the
     // plan is checked, so its words are not yet quotable.
-    expect(PLANNER_SYSTEM).toContain('LOOK THINGS UP BEFORE THE TURN YOU DECIDE ON');
+    // PINNED IN BOTH DIRECTIONS, because the first version of this sentence was
+    // BACKWARDS and shipped that way: the terminal-tool early return sits INSIDE
+    // the per-call loop, so `[spine_read, submit_plan]` works and only
+    // `[submit_plan, spine_read]` fails. A rule that told the model reads and
+    // decisions cannot share a turn would deny a capability it has.
+    expect(PLANNER_SYSTEM).toContain('LOOK THINGS UP FIRST');
+    expect(PLANNER_SYSTEM).toContain('ORDER YOU LIST THEM');
+    expect(PLANNER_SYSTEM).not.toContain('in the same breath does not work');
+    // And the TOOL SCHEMA has to agree with the system prompt — it is shipped on
+    // every turn and sits closer to the decision. It denied the whole capability
+    // until this pin existed.
+    const citationDesc = (
+      SUBMIT_PLAN_TOOL.inputSchema.properties as {
+        decisions: { items: { properties: { citation: { description: string } } } };
+      }
+    ).decisions.items.properties.citation.description;
+    expect(citationDesc).toContain('EARLIER IN THIS TURN');
+    expect(citationDesc).not.toContain('cannot find in the evidence');
     expect(PLANNER_SYSTEM).not.toContain('READING IS NOT CITING');
   });
 
@@ -4689,5 +4713,161 @@ describe('citing a lookup (build 6 Phase 4)', () => {
     }));
     expect(seen.t1).toMatchObject({ accepted: 1, refused: 0 });
     expect(seen.t2).toMatchObject({ accepted: 0, refused: 1 });
+  });
+});
+
+// ── build 6 Phase 5: stuck becomes visible ───────────────────────────────────
+//
+// The planner was asked to judge a stuck question with no way to tell stuck
+// from slow — a row frozen after ten serve attempts and one queued forty
+// seconds ago rendered identically, and the doctrine's advice for both was
+// "escalate it", a verb that no longer exists.
+describe('the DELIVERY line (build 6 Phase 5)', () => {
+  const NOW_MS = Date.parse(NOW);
+  const view = (over: Partial<Nudge>, lead: Nudge | 'leaderless' | null = null) =>
+    buildGapView(nudge(over), NOW_MS, [], false, new Set(), [], [], 'UTC', null, null, lead);
+
+  test('a queued row below the caps prints AGE and counters, and asserts nothing else', () => {
+    const block = view({ status: 'queued', asked_at: null, serve_count: 2, attempts: 1 }).block;
+    expect(block).toMatch(/DELIVERY: queued .+, served 2 times, failed 1 time\./);
+    expect(block).not.toContain('FROZEN');
+    // The first draft ended this line "; still being attempted", which is FALSE
+    // in three reachable states the counters cannot tell apart — a leaderless
+    // group, an inactive technician, and a box that is not pulling at all. The
+    // line states facts; the doctrine teaches the reading.
+    expect(block).not.toContain('still being attempted');
+  });
+
+  test('a row queued for HOURS and never served says so — the commonest stuck shape', () => {
+    // `served 0 times` after twenty hours is the loudest signal available and
+    // needs no adjective. This is the case the old doctrine covered ("sat queued
+    // for HOURS means delivery is broken") and the first draft of this phase
+    // accidentally told the planner to leave alone.
+    const block = view({
+      status: 'queued', asked_at: null, serve_count: 0, attempts: 0,
+      queued_at: '2026-08-15T16:00:00.000Z', // 20h before NOW
+    }).block;
+    expect(block).toContain('DELIVERY: queued 20 hours ago, served 0 times, failed 0 times.');
+  });
+
+  test('a LEADERLESS group member is FROZEN, though its own counters read zero', () => {
+    // The serve loop refuses to promote a sibling when the lead has ended (the
+    // box dedupes on the lead's id, so a new lead would re-send the whole
+    // message), and only the LEAD's counters are ever incremented — so this
+    // gap's own row reads 0/0 forever while nothing will ever deliver it.
+    // `runPlanner` knows the lead is gone; buildGapView cannot see it.
+    const block = view(
+      { status: 'queued', asked_at: null, ask_group_id: 'n-dead-lead', serve_count: 0, attempts: 0 },
+      'leaderless',
+    ).block;
+    expect(block).toContain('the one it was anchored to has ended');
+    expect(block).toContain('FROZEN, it will not be delivered again');
+    expect(block).not.toContain('served 0 times');
+  });
+
+  test.each([
+    ['the serve cap', { serve_count: MAX_SERVE_COUNT, attempts: 0 }],
+    ['the attempt cap', { serve_count: 1, attempts: MAX_DELIVERY_ATTEMPTS }],
+  ])('a queued row at %s renders FROZEN, and says nobody will move it', (_label, caps) => {
+    const block = view({ status: 'queued', asked_at: null, ...caps }).block;
+    expect(block).toContain('FROZEN, it will not be delivered again');
+    expect(block).toContain('Nothing will move it but you.');
+  });
+
+  test('a NON-LEAD group member renders the LEAD\'s ledgers, not its own zeros', () => {
+    // The confusion this whole line exists to remove. The serve loop reads
+    // `lead.serve_count` and freezes the WHOLE group off it (nudgeQueue.ts), so
+    // a member's own counters sit at whatever they were when it was queued —
+    // rendering those would say "served 0 times" about a frozen message.
+    const lead = nudge({ id: 'n-lead', status: 'queued', serve_count: MAX_SERVE_COUNT, attempts: 2 });
+    const member = view(
+      { id: 'n-member', status: 'queued', asked_at: null, ask_group_id: 'n-lead',
+        serve_count: 0, attempts: 0 },
+      lead,
+    ).block;
+    expect(member).toContain('FROZEN');
+    expect(member).toContain(`served ${MAX_SERVE_COUNT} times`);
+    expect(member).not.toContain('served 0 times');
+  });
+
+  test('runPlanner WIRES the borrow — leadFor picks the lead, not the row itself', async () => {
+    // The gap the review found: the buildGapView tests pass an explicit lead,
+    // so they prove the RENDER and nothing about the lookup that feeds it. An
+    // inverted `!== n.id`, a lookup keyed on the wrong column, or a regression
+    // in the lead-has-ended branch would all ship green without this.
+    const lead = nudge({ id: 'n-lead', subject_ref: 'a-lead', status: 'queued', asked_at: null,
+      ask_group_id: 'n-lead', serve_count: MAX_SERVE_COUNT, attempts: 1 });
+    const member = nudge({ id: 'n-member', subject_ref: 'a-member', status: 'queued',
+      asked_at: null, ask_group_id: 'n-lead', serve_count: 0, attempts: 0 });
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [lead, member],
+      runLoop: loopReturning([], seen),
+    }));
+    const blocks = (seen.user ?? '').split('\n\n').filter((b) => b.startsWith('gap '));
+    const memberBlock = blocks.find((b) => b.includes('gap n-member')) ?? '';
+    const leadBlock = blocks.find((b) => b.includes('gap n-lead')) ?? '';
+    // The member borrowed…
+    expect(memberBlock).toContain(`served ${MAX_SERVE_COUNT} times`);
+    expect(memberBlock).toContain('FROZEN');
+    // …and the LEAD reads its own row, not a borrow of itself.
+    expect(leadBlock).toContain(`served ${MAX_SERVE_COUNT} times`);
+    expect(leadBlock).toContain('FROZEN');
+  });
+
+  test('runPlanner marks a member LEADERLESS when the lead is no longer open', async () => {
+    // The lead ended (answered, dismissed, whatever) so it is absent from the
+    // open read. The serve loop will never promote a sibling, so this member is
+    // frozen forever — and its own counters say nothing about that.
+    const member = nudge({ id: 'n-orphan', status: 'queued', asked_at: null,
+      ask_group_id: 'n-gone-lead', serve_count: 0, attempts: 0 });
+    const seen: { user?: string } = {};
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [member],
+      runLoop: loopReturning([], seen),
+    }));
+    expect(seen.user).toContain('the one it was anchored to has ended');
+    expect(seen.user).toContain('FROZEN');
+  });
+
+  test.each(['noticed', 'pending', 'asked'] as const)(
+    'a %s gap gets NO delivery line — each for its own reason',
+    (status) => {
+      // noticed: observationAsGapRow hardcodes zeros, there IS no delivery.
+      // pending: `attempts` there still holds the RETIRED compose ledger.
+      // asked:   delivery already succeeded; the counters answer nothing.
+      const block = view({ status, asked_at: status === 'asked' ? undefined : null,
+                           serve_count: 7, attempts: 2 }).block;
+      expect(block).not.toContain('DELIVERY:');
+    },
+  );
+
+  test('an OBSERVATION never renders a delivery line, even at the cap', () => {
+    const o = buildGapView(
+      observationAsGapRow({ id: 'o1', tenant_id: 't1', kind: 'overdue_visit_gap',
+        subject_ref: 'a1', technician_id: 'tech-1', status: 'open', context: { jobId: 'j1' },
+        not_before: null, noticed_at: '2026-08-15T09:00:00.000Z',
+        updated_at: '2026-08-15T09:00:00.000Z' } as never),
+      NOW_MS, [], false, new Set(),
+    );
+    expect(o.block).not.toContain('DELIVERY:');
+  });
+
+  test('the doctrine covers BOTH stuck shapes, and never says a frozen gap was asked', () => {
+    expect(PLANNER_SYSTEM).toContain('FROZEN means the system has given up');
+    // The lie this must prevent: a frozen question was almost certainly never
+    // read, so writing "we asked and heard nothing" about it is a false claim
+    // about a person — the class the old escalation rules existed to stop.
+    expect(PLANNER_SYSTEM).toContain('do not write as though somebody was asked');
+    // AND the slower shape, which is the commonest one and which the first
+    // draft of this phase deleted: a row queued for hours with no serves is
+    // just as broken, and the counters alone do not say so.
+    expect(PLANNER_SYSTEM).toContain('QUEUED FOR HOURS');
+    // CONTIGUOUS phrase: PLANNER_SYSTEM is a joined array, so a pin spanning a
+    // line break can never match — the trap the plan flagged for Phase 4's pin.
+    expect(PLANNER_SYSTEM).toContain('has not been picked up in a working day');
+    // `ask_agent` does not ride this pipe, so it still works when the message
+    // does not — the one thing the planner can still DO here.
+    expect(PLANNER_SYSTEM).toContain('reach the person through `ask_agent`');
   });
 });

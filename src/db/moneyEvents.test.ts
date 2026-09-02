@@ -178,7 +178,7 @@ let otherTenantId: string;
 
 beforeAll(async () => {
   await pg.connect();
-  const { data, error } = await getClient().from('tenants').select('id').limit(1).single();
+  const { data, error } = await getClient().from('tenants').select('id').order('created_at', { ascending: true }).limit(1).single();
   if (error || !data) throw new Error(`could not load seed tenant: ${error?.message ?? 'none'}`);
   tenantId = data.id;
   const other = await pg.query<{ id: string }>(

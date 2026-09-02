@@ -9,6 +9,7 @@ import {
   buildGapView,
   buildRoster,
   buildReachableBlock,
+  buildOutboundBlock,
   limitationOf,
   buildOfficeMessagesBlock,
   cleanQuestionDraft,
@@ -137,6 +138,9 @@ function baseDeps(over: Partial<PlannerDeps> = {}): PlannerDeps {
     // byte-identical; the roster's own wiring test supplies a real one.
     listTeam: async () => [],
     listRosterEvents: async () => [],
+    // Build 6.5 Phase 5's two readers, stubbed for the same 't1' reason.
+    listOutbound: async () => [],
+    listAnswered: async () => [],
     // PRE-EXISTING, found by the Phase 1 review while checking the two above:
     // unstubbed, this read throws 22P02 on 't1' and ~40 tests here silently
     // exercise the "no dismissed gaps" degraded path. Behaviourally identical
@@ -5516,6 +5520,120 @@ describe('the roster the planner is given', () => {
       new Map([[view.nudge.id, view]]), Date.parse(NOW),
     );
     expect(out.decisions).toHaveLength(0);
+  });
+
+  test('WHAT YOU SENT reports what went out, and never calls a chat message unanswered', () => {
+    // THE RESTRAINT IS THE DESIGN. `in_reply_to` is written only by
+    // inform_team_lead — a seat's assistant answering. A person who gets a CHAT
+    // message answers their own assistant, which files a record_field_note and
+    // writes no office row EVER. So "no reply here" means "nobody used this
+    // channel", and rendering that as unanswered would leave every chat message
+    // in the list forever while the answer sat in the evidence lines.
+    const row = (over: Record<string, unknown> = {}) =>
+      ({
+        id: 'm1', tenant_id: 't1', direction: 'to_agent', kind: 'inform',
+        via: 'assistant', from_ref: 'spine:team-lead', to_ref: 'sam-ortiz',
+        body: 'anything on the Henderson job?', nudge_id: null, in_reply_to: null,
+        status: 'delivered', created_at: NOW, ...over,
+      }) as unknown as OfficeMessage;
+
+    expect(buildOutboundBlock([], new Set(), Date.parse(NOW))).toBe('');
+
+    const block = buildOutboundBlock(
+      [
+        row({ id: 'm1', via: 'assistant' }),
+        row({ id: 'm2', via: 'assistant', to_ref: 'judy-ramirez' }),
+        row({ id: 'm3', via: 'chat', to_ref: 'ben-shelton', nudge_id: 'n1' }),
+      ],
+      new Set(['m1']),
+      Date.parse(NOW),
+      4,
+    );
+    expect(block).toContain('to sam-ortiz');
+    expect(block).toContain('— answered');
+    expect(block).toContain('to judy-ramirez');
+    expect(block).toContain('— no reply yet');
+    // The chat row says NEITHER thing.
+    const chatLine = block.split('\n').find((l) => l.includes('ben-shelton'))!;
+    expect(chatLine).toContain('by text');
+    expect(chatLine).toContain('about gap n1');
+    expect(chatLine).not.toContain('no reply');
+    expect(chatLine).not.toContain('answered');
+    // Truncation is stated, never silent.
+    expect(block).toContain('4 older are not shown');
+  });
+
+  test('the truncation count is the REAL number of hidden messages', async () => {
+    // THE ARITHMETIC LIVES IN runPlanner, not in the builder — which is how the
+    // first version shipped a lie the unit test could not see. It read
+    // `SHOWN + 1` rows and subtracted, so `moreCount` was 0 or 1 BY
+    // CONSTRUCTION: a firm with 200 messages in the window read the same
+    // "1 older are not shown" as a firm with 13. The builder's own test passed,
+    // because it hand-passed a moreCount production could never emit.
+    const seen: { user?: string } = {};
+    const sent = Array.from({ length: 18 }, (_, i) => ({
+      id: `msg-${i}`, tenant_id: 't1', direction: 'to_agent', kind: 'inform', via: 'assistant',
+      from_ref: 'spine:team-lead', to_ref: 'tech-jane', body: `probe ${i}`, nudge_id: null,
+      in_reply_to: null, status: 'delivered',
+      created_at: new Date(Date.parse(NOW) - i * 3_600_000).toISOString(),
+    })) as unknown as OfficeMessage[];
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [nudge()],
+      listOutbound: async () => sent,
+      runLoop: loopReturning([], seen),
+    }));
+    expect(seen.user).toContain('(6 older are not shown.)');
+    // Twelve shown, each with the id a reader needs to find the row.
+    expect(seen.user).toContain('[msg-0]');
+    expect(seen.user).toContain('[msg-11]');
+    expect(seen.user).not.toContain('[msg-12]');
+  });
+
+  test('the ASKED line says whether anything was LINKED, and carries no delivery counter', () => {
+    // The age alone made "should I ask again" a guess: 31 hours reads the same
+    // whether they answered an hour ago or have said nothing at all.
+    const asked = buildGapView(
+      nudge({ status: 'asked', asked_at: NOW }), Date.parse(NOW) + 3_600_000, [], false, new Set());
+    expect(asked.block).toContain('no answer linked yet');
+
+    const answered = buildGapView(
+      nudge({ status: 'asked', asked_at: NOW, answered_by_capture_id: 'c1' } as never),
+      Date.parse(NOW) + 3_600_000, [], false, new Set());
+    expect(answered.block).toContain('answered');
+    expect(answered.block).not.toContain('no answer linked yet');
+
+    // NO delivery counter on the asked line. serve_count is the delivery
+    // ledger — it climbs when the box never acked — and it belongs to a group
+    // LEAD, permanently 0 on its siblings. Rendering it beside an ask would
+    // teach the planner to read a broken pipe as somebody ignoring three
+    // questions, and to see one message as several on the lead's row only.
+    const served = buildGapView(
+      nudge({ status: 'asked', asked_at: NOW, serve_count: 3 } as never),
+      Date.parse(NOW) + 3_600_000, [], false, new Set());
+    expect(served.block).not.toContain('served 3x');
+
+    // A gap never asked says none of it.
+    const fresh = buildGapView(nudge({ status: 'pending', asked_at: null }), Date.parse(NOW), [], false, new Set());
+    expect(fresh.block).not.toContain('no answer linked yet');
+  });
+
+  test('the rendered doctrine names no deleted verb, and no dead field', () => {
+    // A prompt that names a verb the rails will refuse is a lie the model reads
+    // every tick — and this build deleted two verbs and renamed the field the
+    // send is written into. Rendered, not grepped from source: PLANNER_SYSTEM
+    // is a joined array, and the schema is a separate object the model also
+    // sees (the read-the-rendered-artifact lesson from build 6 Phase 4).
+    const rendered = PLANNER_SYSTEM + '\n' + JSON.stringify(SUBMIT_PLAN_TOOL);
+    for (const dead of ['ask_agent', 'inform_agent', 'agentMessage', 'questionDraft']) {
+      expect(rendered, `the doctrine still names ${dead}`).not.toContain(dead);
+    }
+    // And the verbs it DOES offer are exactly the five that exist.
+    const props = (SUBMIT_PLAN_TOOL.inputSchema as never as Record<string, never>);
+    expect(JSON.stringify(props)).toContain('"enum":["send","hold","close","dismiss","recover"]');
+    // The three fields one `send` needs are all offered.
+    for (const live of ['`to`', '`as`', '`countsAsTheAsk`', '`message`']) {
+      expect(rendered).toContain(live.replaceAll('`', ''));
+    }
   });
 
   test('a send needs to say HOW it arrives', () => {

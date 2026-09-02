@@ -16,6 +16,8 @@ import {
   listDeskTranscriptsSince,
   listOfficeMessagesByIds,
   listOfficeMessagesByStatus,
+  listRecentOutboundMessages,
+  listAnsweredOutboundIds,
   markOfficeMessagesRead,
   OFFICE_MESSAGE_BODY_MAX,
   listTenantIdsWithTelegramBindings,
@@ -162,6 +164,15 @@ export const UNMENTIONED = 'unmentioned';
 // designed steady state — without this cap the filler alone would grow
 // without bound on any gap the planner chooses to watch for weeks.
 export const UNMENTIONED_CAP = 200;
+
+// HOW FAR BACK the outbound block looks, and how much of it is shown. Two
+// weeks because that is the horizon on which "did I already ask about this"
+// is a live question; twelve because the block sits beside the gaps and must
+// not crowd them out. Both are conventions, not measurements — the shape that
+// matters is that BOTH bounds exist (a delivered message stays delivered
+// forever, so an unbounded read grows for the life of a firm).
+const OUTBOUND_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+const OUTBOUND_SHOWN = 12;
 
 export interface PlannerDecision {
   // NULL means the decision is about NOBODY'S GAP (build 6.5 Phase 3): a
@@ -587,6 +598,10 @@ export interface PlannerDeps {
   // unit test into a `tenantError`.
   listTeam?: typeof listTeam;
   listRosterEvents?: typeof listRosterEvents;
+  // The planner's own recent outbound and which of it was replied to (build
+  // 6.5 Phase 5). Injected for the standing 't1'-is-not-a-uuid reason.
+  listOutbound?: typeof listRecentOutboundMessages;
+  listAnswered?: typeof listAnsweredOutboundIds;
   // (`flagNudge`, `findOpenItem`, `notify` and `hasPushToken` were escalate's
   // four collaborators — the review-item writer, its once-ever-null
   // disambiguator, and the count-only manager heads-up its applied items
@@ -1262,7 +1277,33 @@ export function buildGapView(
     `  state: ${n.status}`,
     `  noticed: ${hoursBetween(n.created_at, nowMs)}h ago`,
   ];
-  if (n.asked_at) lines.push(`  asked: ${hoursBetween(n.asked_at, nowMs)}h ago`);
+  if (n.asked_at) {
+    // WHETHER ANYTHING CAME BACK (build 6.5 Phase 5). The age alone made
+    // "should I ask again" a guess: 31 hours reads the same whether they
+    // answered an hour ago or have said nothing at all. `answered_by_capture_id`
+    // is the code-computed link between a person's note and this question —
+    // the same fact `mv_gap_outcomes.closed_by_technician` is defined as — so
+    // it is a fact here, not an inference.
+    //
+    // WHAT IT SAYS, exactly. `answered_by_capture_id` records that a person's
+    // note was LINKED to this question — attributeAnswerToGap stamps it only
+    // when exactly one asked gap exists for that person on that job, and not
+    // at all without a job. So its absence means "nothing was attributed",
+    // which is not the same as "nobody answered": two open questions to one
+    // person on one job leave BOTH unstamped even after they reply. The line
+    // says the narrower, true thing and leaves the judgment where it belongs.
+    //
+    // NO DELIVERY COUNTER HERE, deliberately, though a draft had one.
+    // `serve_count` is the delivery ledger — it climbs when the box never
+    // acked — so rendering it beside an ask would teach the planner to read a
+    // broken pipe as somebody ignoring three questions. It is also a GROUP
+    // LEAD's counter, permanently 0 on its siblings, and the comment forty
+    // lines below already argues those counters are spent history on any row
+    // past `queued`. A real second ask is a MESSAGE now, and appears under
+    // WHAT YOU SENT.
+    const linked = n.answered_by_capture_id ? 'answered' : 'no answer linked yet';
+    lines.push(`  asked: ${hoursBetween(n.asked_at, nowMs)}h ago, ${linked}`);
+  }
   // 'noticed' gets NO asked line at all (plan 2026-08-31): "not yet" frames
   // absence-of-ask as the gap's defining property, which is the exact framing
   // this build removes. Relic pending/queued rows keep it — they ARE questions.
@@ -2565,6 +2606,55 @@ export function buildOfficeMessagesBlock(
 }
 
 /**
+ * WHAT YOU SENT (build 6.5 Phase 5): the planner's own recent outbound
+ * messages, so a tick can see what it has already said before saying it again.
+ *
+ * THE POINT IS RE-ASKING. Build 6.5 made "ask again" an ordinary message
+ * rather than a state change, which means nothing in the gap's own row records
+ * that a second message went out — `asked_at` still names the FIRST ask, by
+ * design. Without this block the planner would chase silence blind, unable to
+ * tell one unanswered question from four.
+ *
+ * IT DOES NOT CLAIM SILENCE, and that restraint is the whole design of it. A
+ * reply reaches `in_reply_to` only from `inform_team_lead` — a seat's
+ * assistant answering. A person who receives a CHAT message answers their own
+ * assistant, which files a record_field_note and writes no office row ever. So
+ * "no reply here" means "nobody used this channel", and rendering that as
+ * "unanswered" would leave every chat message in the list forever, growing,
+ * while the answer sat in the evidence lines a few paragraphs up. The block
+ * reports what was sent and when; judging silence stays the planner's, from
+ * the record.
+ */
+export function buildOutboundBlock(
+  rows: OfficeMessage[],
+  answered: Set<string>,
+  nowMs: number,
+  moreCount = 0,
+): string {
+  if (rows.length === 0) return '';
+  const lines = [
+    'WHAT YOU SENT — your own messages, newest first. Nothing here is a gap; it is what you ' +
+      'have already said, so you can tell asking again from asking twice.' +
+      (moreCount > 0
+        ? ` (${moreCount} older ${moreCount === 1 ? 'is' : 'are'} not shown.)`
+        : ''),
+  ];
+  for (const m of rows) {
+    const ago = elapsedLabel(m.created_at, nowMs) ?? 'just now';
+    const leg = m.via === 'chat' ? 'by text' : 'through their assistant';
+    const about = m.nudge_id ? `, about gap ${m.nudge_id}` : '';
+    // ANSWERED is only ever said about the assistant leg, because it is the
+    // only leg that can be. A chat row simply says nothing either way.
+    const back = m.via === 'chat' ? '' : answered.has(m.id) ? ' — answered' : ' — no reply yet';
+    // The id leads the line, as the OFFICE MESSAGES block does: it is what a
+    // human reading a tick's prompt uses to find the row, and what a live
+    // check has to match on.
+    lines.push(`  [${m.id}] to ${m.to_ref}, ${ago}, ${leg}${about}${back}: ${flat(m.body, 200)}`);
+  }
+  return lines.join('\n');
+}
+
+/**
  * The per-tick user message, byte for byte.
  *
  * Extracted from runPlanner so the eval can render EXACTLY what production
@@ -2593,6 +2683,9 @@ export function buildPlannerUserMessage(
   // it meets their problems. It is also the most stable content here, which is
   // where the cache-order note above says stable content belongs.
   reachableBlock = '',
+  // WHAT YOU SENT (build 6.5 Phase 5), or ''. In the tail with the office
+  // messages: both are traffic rather than gaps, and the gaps are the job.
+  outboundBlock = '',
 ): string {
   return [
     // THE INDEX GOES FIRST, and the reason is the cache, not the reading order.
@@ -2625,6 +2718,7 @@ export function buildPlannerUserMessage(
     '',
     views.map((v) => v.block).join('\n\n'),
     ...(officeBlock ? ['', officeBlock] : []),
+    ...(outboundBlock ? ['', outboundBlock] : []),
   ].join('\n');
 }
 
@@ -3066,6 +3160,8 @@ export async function runPlanner(
   const listJobs = deps.listJobs ?? listJobsWithCustomerByIds;
   const readTeam = deps.listTeam ?? listTeam;
   const readRosterEvents = deps.listRosterEvents ?? listRosterEvents;
+  const readOutbound = deps.listOutbound ?? listRecentOutboundMessages;
+  const readAnswered = deps.listAnswered ?? listAnsweredOutboundIds;
   const getSettings = deps.getSettings ?? readSettingsTolerantly;
   const tools = deps.tools ?? [];
   const execute = deps.execute;
@@ -3582,6 +3678,40 @@ export async function runPlanner(
       // shown and — on success — marked read, so a flood drains batch by
       // batch instead of failing every tick before mark-read can run.
       const unreadShown = unreadMessages.slice(0, OFFICE_MESSAGES_SHOWN);
+      // WHAT YOU SENT (build 6.5 Phase 5). Same doctrine as the roster read: a
+      // failure costs the tick nothing — the block simply does not render, and
+      // the planner is back to judging silence from the record alone, which is
+      // where it was before this build.
+      let outboundBlock = '';
+      try {
+        const since = new Date(nowMs - OUTBOUND_WINDOW_MS).toISOString();
+        // THE PLANNER'S OWN, by ref: `inform_teammate` writes to_agent rows
+        // too, and a read filtered on direction alone would show a technician's
+        // private note to a teammate as something the planner had said.
+        //
+        // The WHOLE window is read, then sliced — so "N older are not shown" is
+        // a real count. Reading `SHOWN + 1` (the first draft) capped that
+        // number at 1 no matter how much had been sent.
+        const sent = await readOutbound(tenantId, TEAM_LEAD_REF, since);
+        if (sent.length > 0) {
+          const shown = sent.slice(0, OUTBOUND_SHOWN);
+          const answered = new Set(
+            await readAnswered(
+              tenantId,
+              shown.filter((m) => m.via !== 'chat').map((m) => m.id),
+            ),
+          );
+          outboundBlock = buildOutboundBlock(
+            shown,
+            answered,
+            nowMs,
+            sent.length - shown.length,
+          );
+        }
+      } catch (err) {
+        console.error(`[planner] tenant ${tenantId}: outbound read failed — running without`, err);
+      }
+
       const user = buildPlannerUserMessage(
         nowIso,
         tz,
@@ -3596,6 +3726,7 @@ export async function runPlanner(
         ),
         // Departed people are listed ONLY when a gap in this tick names one —
         // deduped by id, because two gaps can name the same person.
+        // (the outbound block is read just above, and passed last)
         buildReachableBlock(
           [...new Set(roster.values())],
           [
@@ -3607,6 +3738,7 @@ export async function runPlanner(
           ],
           tz,
         ),
+        outboundBlock,
       );
 
       const started = Date.now();

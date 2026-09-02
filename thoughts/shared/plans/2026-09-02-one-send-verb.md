@@ -2,7 +2,7 @@
 date: 2026-09-02
 task: "Build 6.5 — one generalized `send`: the planner chooses who to talk to, and a message need not be about a gap"
 research: thoughts/shared/research/2026-09-01-one-send-verb.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -559,22 +559,22 @@ deliberately left (the board leg, several addressees, the quiet-firm skip, no `v
 Amend the `re-ask-belongs-to-6-5` memory with the corrected mechanics.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `npm run decisions:index` regenerated and committed
-- [ ] new: `buildOutboundBlock` renders nothing with no outbound traffic, truncates honestly, and
+- [x] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
+- [x] `npm run decisions:index` regenerated and committed
+- [x] new: `buildOutboundBlock` renders nothing with no outbound traffic, truncates honestly, and
       does NOT mark a chat row as unanswered
-- [ ] new: the ASKED line renders age on an asked gap and nothing on a never-asked one
-- [ ] new: the rendered doctrine names no deleted verb (a grep-style assertion)
-- [ ] new: every `BUILD65` scenario fails when the planner does nothing
+- [x] new: the ASKED line renders age on an asked gap and nothing on a never-asked one
+- [x] new: the rendered doctrine names no deleted verb (a grep-style assertion)
+- [x] new: every `BUILD65` scenario fails when the planner does nothing
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack; a real model key for one shadow tick (`.env`), else skip
       with the reason recorded
-- [ ] Drive one real tick against a seeded firm with an unanswered outbound message and confirm
+- [x] Drive one real tick against a seeded firm with an unanswered outbound message and confirm
       the rendered user message carries the outbound block with the right id — read it from the
       tick's own recorded prompt, never a reconstruction
 
 ### Manual verification
-- [ ] Read the rendered doctrine as if you were the planner: is it obvious who you can reach,
+- [x] Read the rendered doctrine as if you were the planner: is it obvious who you can reach,
       which leg to use, when a message becomes the question of record, and that asking again is
       allowed?

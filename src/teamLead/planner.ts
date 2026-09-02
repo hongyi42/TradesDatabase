@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   createNudgeFromObservation,
   dismissNudge,
@@ -9,6 +10,7 @@ import {
   listJobsWithCustomerByIds,
   listLiveMoneyEventsForJobsSince,
   listDismissedNudgeIds,
+  createObservation,
   listDismissedObservationIds,
   listNudgesByStatus,
   listObservationsByStatus,
@@ -141,7 +143,19 @@ export type PlannerMode = 'off' | 'shadow' | 'live';
 // either verb; what it lost is reaching one the gap does NOT name — accepted,
 // deliberately: nothing is deployed and evaluation is an end phase, and build
 // 6.5's generalized send is what restores it.
-export const PLANNER_ACTIONS = ['send', 'hold', 'close', 'dismiss', 'recover'] as const;
+export const PLANNER_ACTIONS = [
+  'send',
+  'hold',
+  'close',
+  'dismiss',
+  'recover',
+  // BUILD 7: the only verb that CREATES a gap rather than acting on one, and
+  // therefore the only one besides a gap-less `send` that names no nudgeId.
+  // The observation it writes appears on the NEXT tick's list — deliberately:
+  // the planner then decides about it deliberately, rather than
+  // opening-and-sending in one breath.
+  'observe',
+] as const;
 export type PlannerAction = (typeof PLANNER_ACTIONS)[number];
 
 // CODE'S OWN verb, and deliberately NOT in PLANNER_ACTIONS: the model must never
@@ -238,6 +252,23 @@ export interface PlannerDecision {
   // an office row pointed at nobody.
   toRef?: string | null;
   toTechnicianId?: string | null;
+
+  // ── `observe` ONLY (build 7) ───────────────────────────────────────────────
+  // What the planner noticed, in its own words. Becomes the observation's
+  // `context.note`, and — when no job is named — the `about:` line the next
+  // tick reads back.
+  note?: string;
+  // The job it concerns, OPTIONAL (user choice 2026-09-02). With one, the new
+  // observation inherits that job's evidence lines, its money ledger, its moot
+  // fact and the `job id:` line free, because every one of those keys off
+  // `context.jobId` exactly as a detector row does. Without one it still
+  // records the thing — a pattern across jobs, a firm-level worry — with no
+  // evidence attached.
+  //
+  // VALIDATE-CHECKED FOR UUID SHAPE, and that rail is load-bearing rather than
+  // hygiene: this is the FIRST model-supplied value ever to reach `jobIds`, and
+  // that array feeds `in()` filters over uuid columns. See the read site.
+  jobId?: string;
 }
 
 // A decision the code rails refused, kept so a shadow run reports what the model
@@ -523,6 +554,9 @@ export interface PlannerDeps {
   // The two pre-ask writers: dismiss/recover/hold live on the observation, and
   // an applied `send` CREATES the ask (same id) then stamps the observation.
   setObservation?: typeof setObservationStatus;
+  // Build 7: the writer behind `observe`. Injected like every other one so a
+  // unit test never touches the database.
+  createObservation?: typeof createObservation;
   createFromObservation?: typeof createNudgeFromObservation;
   // The planner's inbox, inbound half (plan 2026-08-31, build 5.5 Phase 1):
   // unread seat informs join the tick's view, and a SUCCESSFUL tick marks the
@@ -1263,7 +1297,20 @@ export function buildGapView(
   const lines = [
     `gap ${n.id}`,
     `  kind: ${n.kind}`,
-    `  about: ${ctxStr(n, 'jobTitle') ?? 'a job'} for ${ctxStr(n, 'customerName') ?? 'unknown customer'}`,
+    // CONDITIONAL SINCE BUILD 7, and safe by construction: both detectors always
+    // write customerName AND jobTitle as non-empty strings (watchers.ts, with
+    // literal 'a job' / 'unknown customer' fallbacks), and seedScenario seeds
+    // both — so no detector row's rendering can change. What it makes room for
+    // is a planner-opened observation with no job, whose `about:` is the
+    // sentence the planner wrote. Rendering "a job for unknown customer" there
+    // would assert a job that does not exist.
+    ...(ctxStr(n, 'jobTitle') || ctxStr(n, 'customerName')
+      ? [
+          `  about: ${ctxStr(n, 'jobTitle') ?? 'a job'} for ${ctxStr(n, 'customerName') ?? 'unknown customer'}`,
+        ]
+      : ctxStr(n, 'note')
+        ? [`  about: ${flat(ctxStr(n, 'note') ?? '', QUESTION_SHOWN_CHARS)}`]
+        : []),
     // The ID, not just the name. Without it the planner searched with
     // `customer_name LIKE '%Okafor%'` and burned turns on queries that returned
     // nothing — it had the words but not the key.
@@ -1449,7 +1496,14 @@ export function buildGapView(
     if (relevant.length === 0) {
       // "notes", not "nothing has landed": money may be printed directly below,
       // and a blanket nothing-landed claim would contradict it on the next line.
-      lines.push(`  notes: NO notes have landed on this job since ${since}`);
+      //
+      // AND "this job" ONLY WHEN THERE IS ONE (build 7 review). A planner
+      // observation may name no job, and this line asserted one — the exact
+      // failure the `about:` line was made conditional to avoid, one line
+      // apart and newly reachable for the same rows.
+      lines.push(
+        `  notes: NO notes have landed on ${jobId ? 'this job' : 'the record'} since ${since}`,
+      );
     } else {
       lines.push(`  evidence since ${since}:`);
       if (attributedHere) {
@@ -1638,7 +1692,21 @@ const TEMPORAL_RE = new RegExp(
 export function cleanPlannerText(
   raw: unknown,
   dateLabels: string[],
-  opts: { label: string; maxLen: number },
+  // `skipDateRail` is BUILD 7's, and it has exactly one caller: `observe`.
+  // Every other text this function guards is DELIVERED — queued verbatim to a
+  // person's phone or injected into an agent's session — and the date rail
+  // exists so a model cannot put a day in front of a human that it invented.
+  //
+  // An observation note goes nowhere. It is written to `context`, which
+  // `v_observations` does not select, and read back only by the next tick's
+  // planner. It is not a citation source either: a close's quote is checked
+  // against the gap's evidence lines and `readText`, never the gap block.
+  //
+  // So the rail still holds exactly where it matters: a date the planner wrote
+  // into a note CANNOT reach a person, because a message carrying it must pass
+  // that gap's own `dateLabels`, which a note never joins. Pinned both ways in
+  // planner.test.ts.
+  opts: { label: string; maxLen: number; skipDateRail?: boolean },
 ): { note: string | null; why?: string } {
   if (raw === undefined || raw === null) return { note: null };
   if (typeof raw !== 'string') return { note: null, why: `${opts.label} was not a string` };
@@ -1655,6 +1723,7 @@ export function cleanPlannerText(
     return { note: null, why: `${opts.label} over ${opts.maxLen} characters` };
   }
   if (/https?:\/\//i.test(note)) return { note: null, why: `${opts.label} contained a link` };
+  if (opts.skipDateRail) return { note };
   const haystack = dateLabels.join(' | ').toLowerCase();
   for (const m of note.match(TEMPORAL_RE) ?? []) {
     if (!haystack.includes(m.toLowerCase())) {
@@ -1913,10 +1982,56 @@ export function validateDecisions(
     // reachable, too: this phase removed `nudgeId` from the schema's
     // `required`.
     if (!nudgeId) {
+      // `observe` BELONGS HERE, and is the only non-send that does: it does not
+      // act on a gap, it CREATES one, so naming an existing id is a category
+      // error (refused in the gap-bound path, which is the only place that rail
+      // can run).
+      if (action === 'observe') {
+        // The note is the whole payload. `skipDateRail` — see cleanPlannerText's
+        // header for why that is safe, and why it is safe ONLY here.
+        const noted = cleanPlannerText(d.note, [], {
+          label: 'note',
+          maxLen: 500,
+          skipDateRail: true,
+        });
+        if (noted.why) noteDrops.push(`(observe): ${noted.why}`);
+        if (!noted.note) {
+          push(
+            'observe needs `note` — say what you noticed, in one or two sentences. It was ' +
+              'missing, empty, over length, or carried a link.',
+          );
+          continue;
+        }
+        // THE UUID RAIL, and it is not hygiene. `jobId` is the first
+        // model-supplied value ever to reach the tick's `jobIds` array, which
+        // feeds `in()` filters over uuid columns — one malformed element
+        // rejects the WHOLE PostgREST filter. Two of those reads (evidence,
+        // money) would 400 the tenant's entire tick; the third (job notes) is
+        // caught and would silently cost every gap in the firm its note line.
+        // Refused here so the planner is TOLD, and filtered at the reads too.
+        if (d.jobId !== undefined && (typeof d.jobId !== 'string' || !UUID_ISH_RE.test(d.jobId))) {
+          push(
+            'observe names a `jobId` that is not an id — copy it exactly from the `job id:` ' +
+              'line of a gap, or leave it out and the observation simply carries no job.',
+          );
+          continue;
+        }
+        // NOT ADDED TO `seen`: that set holds one decision per GAP, and this
+        // one names none. Several observes in a tick is ordinary.
+        decisions.push({
+          nudgeId: null,
+          action: 'observe',
+          note: noted.note,
+          ...(d.jobId ? { jobId: d.jobId } : {}),
+          confidence,
+          reason,
+        });
+        continue;
+      }
       if (action !== 'send') {
         push(
           `${action} with no gap — copy the id of the gap it acts on from the list you were ` +
-            'given. Only a message may be about nothing.',
+            'given. Only a message or an `observe` may be about nothing.',
         );
         continue;
       }
@@ -2039,6 +2154,24 @@ export function validateDecisions(
     }
     if (!(PLANNER_ACTIONS as readonly string[]).includes(action)) {
       push(`unknown action '${action}'`);
+      continue;
+    }
+
+    // AN `observe` MAY NOT NAME A GAP (build 7). It is the one verb that
+    // creates rather than acts, so a gap id on it means the model has confused
+    // it with something else.
+    //
+    // THIS IS THE ONLY PLACE THE RAIL CAN LIVE, and the plan's first draft put
+    // it in the gap-less branch above — where `nudgeId` is empty by definition
+    // and it could never have run. Without it here an observe carrying a real
+    // id falls through every branch below to the catch-all tail, which would
+    // push it as ACCEPTED carrying neither `note` nor `jobId`, and apply would
+    // then write an observation whose note is undefined.
+    if (action === 'observe') {
+      push(
+        'observe names a gap — it CREATES one rather than acting on one. Leave the id out, ' +
+          'or use a verb that acts on the gap you named.',
+      );
       continue;
     }
 
@@ -2757,7 +2890,17 @@ async function applyDecision(
   // never touches the database.
   dismissGap: typeof dismissNudge = dismissNudge,
   recoverGap: typeof recoverNudge = recoverNudge,
-): Promise<{ outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[] }> {
+  // Build 7's writer, injected like every other one. TRAILING and defaulted, so
+  // both existing call sites are unchanged by construction.
+  createObs: typeof createObservation = createObservation,
+): Promise<{
+  outcome: 'applied' | 'refused';
+  detail?: string;
+  movedIds?: string[];
+  // The observation `observe` just created (build 7). The caller keys the
+  // decision row to it — see the record path.
+  createdId?: string;
+}> {
   const moved = 'the gap changed state between the plan and the write — nothing was applied';
   const done = (row: object | null): { outcome: 'applied' | 'refused'; detail?: string } =>
     row ? { outcome: 'applied' } : { outcome: 'refused', detail: moved };
@@ -2767,7 +2910,7 @@ async function applyDecision(
   // field. Narrowed HERE rather than in five separate cases so the switch stays
   // exhaustive over PLANNER_ACTIONS — that exhaustiveness is what makes adding
   // a verb without a case a typecheck failure, and it is worth keeping.
-  if (d.action !== 'send' && !d.nudgeId) {
+  if (d.action !== 'send' && d.action !== 'observe' && !d.nudgeId) {
     return { outcome: 'refused', detail: `${d.action} needs the gap it acts on` };
   }
   // Empty only on a gap-less send, which never reads it — that path uses
@@ -2958,6 +3101,59 @@ async function applyDecision(
       }
       return { outcome: 'applied', movedIds };
     }
+    case 'observe': {
+      // THE ONE VERB THAT CREATES (build 7). Everything else in this switch
+      // moves a row that already exists.
+      //
+      // `subjectRef` IS ALWAYS A FRESH UUID, and that is a correction the review
+      // earned. The obvious choice is the job id — it reads better and the
+      // once-ever index is partial on author='detector', so nothing on THIS
+      // table would constrain it.
+      //
+      // The hazard is the OTHER table. `uq_nudges_subject_ever` is NOT partial
+      // (20260817090000_nudges.sql:56), and a `send` on a noticed observation
+      // creates its nudge with the observation's own kind AND subject_ref. Two
+      // observes naming one job — which "nothing brakes duplicate opens but
+      // doctrine" makes an ORDINARY state — would give the second a 23505, and
+      // the heal path below would then stamp the observation 'asked' although
+      // nobody was ever asked. A record-lie, and the row leaves the open list
+      // for good.
+      //
+      // It is unreachable TODAY only because `technicianId: null` makes
+      // `countsAsTheAsk` always refused for a planner row, so that send path is
+      // never entered. That is an incidental consequence of a line ten below,
+      // not a guarantee — the day a later build lets `observe` name a person,
+      // the lie becomes live and nothing would catch it. A fresh uuid removes
+      // the class instead of documenting it.
+      //
+      // NOTHING IS LOST: the job rides in `context.jobId`, which is where every
+      // reader already looks — the gap view's `job id:` line, the evidence and
+      // money bounds, and `v_observations.job_id`, which reads it out of the
+      // context JSON rather than off this column.
+      //
+      // NO 23505 PATH: a planner row is outside the partial index, so
+      // createObservation returns a row or throws. A null here can only mean a
+      // future caller changed that, and `done`'s "changed state" wording would
+      // be wrong — so it is refused with its own sentence.
+      if (!d.note) {
+        return { outcome: 'refused', detail: 'observe needs `note` — nothing was written' };
+      }
+      const row = await createObs({
+        tenantId,
+        kind: 'planner_observation',
+        author: 'planner',
+        subjectRef: randomUUID(),
+        // ADVISORY and deliberately null: the planner is noticing something,
+        // not asserting whose problem it is. A `person:` line reading "unknown"
+        // is the honest rendering, and is already reachable for a detector row
+        // whose technician is unknown.
+        technicianId: null,
+        context: { note: d.note, ...(d.jobId ? { jobId: d.jobId } : {}) },
+      });
+      return row
+        ? { outcome: 'applied', createdId: row.id }
+        : { outcome: 'refused', detail: 'the observation was not written' };
+    }
     case 'hold':
       // An observation's hold lives on ITS row (advisory not_before); a nudge
       // keeps the schedule write. Same guarded-update shape, different table —
@@ -3141,6 +3337,7 @@ export async function runPlanner(
   const dismissGap = deps.dismissGap ?? dismissNudge;
   const recoverGap = deps.recoverGap ?? recoverNudge;
   const setObservation = deps.setObservation ?? setObservationStatus;
+  const createObservationRow = deps.createObservation ?? createObservation;
   const createFromObservation = deps.createFromObservation ?? createNudgeFromObservation;
   const listOffice = deps.listOfficeMessages ?? listOfficeMessagesByStatus;
   const markRead = deps.markMessagesRead ?? markOfficeMessagesRead;
@@ -3419,6 +3616,26 @@ export async function runPlanner(
       const jobIds = [
         ...new Set(open.map((n) => ctxStr(n, 'jobId')).filter((v): v is string => !!v)),
       ];
+      // WHAT MAY BE HANDED TO POSTGREST (build 7). Every read below passes ids
+      // to an `in()` over a uuid column, and PostgREST rejects the WHOLE filter
+      // when ONE element is malformed. Until now every `context.jobId` was
+      // sweep-written from a real job row and so always a uuid; `observe` makes
+      // it MODEL-SUPPLIED for the first time. `validateDecisions` refuses a bad
+      // one so the planner is told; this is the belt, and it also covers a
+      // hand-built or relic row.
+      //
+      // A SEPARATE ARRAY, not a filter on `jobIds` itself, and the difference is
+      // load-bearing: `jobIds.length` gates `sinceIso` below, and per-gap
+      // matching in buildGapView keys off each row's own `context.jobId`. Filter
+      // the source and a firm whose ids are not uuid-shaped silently loses its
+      // evidence and money reads ENTIRELY rather than just their DB call — which
+      // is exactly what happened when this was first written that way.
+      //
+      // The three consumers fail DIFFERENTLY, which is why all three are
+      // covered: the evidence and money reads would 400 the tenant's whole tick,
+      // while the job-note read sits in a try/catch and would fail QUIETLY —
+      // every gap in the firm losing its notepad line with only a log to say so.
+      const readJobIds = jobIds.filter((v) => UUID_ISH_RE.test(v));
       // ONE derivation of the floor, shared by the evidence and money reads: two
       // copies of a bound that must stay identical is a defect waiting to happen.
       //
@@ -3434,7 +3651,7 @@ export async function runPlanner(
         askedAt.length > 0 && jobIds.length > 0
           ? new Date(Math.max(Math.min(...askedAt), floorMs)).toISOString()
           : null;
-      const evidence = sinceIso ? await listEvidence(tenantId, jobIds, sinceIso) : [];
+      const evidence = sinceIso ? await listEvidence(tenantId, readJobIds, sinceIso) : [];
 
       // ONE ledger read per tenant, over the cost gaps' jobs only — the same
       // batched discipline as the evidence read. Skipped entirely when the firm
@@ -3454,7 +3671,7 @@ export async function runPlanner(
       // ONE batched money read for the whole tick, on the same floor as the
       // evidence read; buildGapView narrows it per gap. Skipped only when there
       // is no floor at all (no open gap named a job).
-      const money = sinceIso ? await listMoneySince(tenantId, jobIds, sinceIso) : [];
+      const money = sinceIso ? await listMoneySince(tenantId, readJobIds, sinceIso) : [];
 
       // THE MOOT FACTS (build 5, ruling 2). The sweep no longer closes on a
       // cancelled visit or job — the fact is read here, batched like every
@@ -3472,7 +3689,7 @@ export async function runPlanner(
       // entire tick. A filtered-out id simply contributes no fact.
       const uuidish = (v: string): boolean => UUID_ISH_RE.test(v);
       const subjectRefs = [...new Set(open.map((n) => n.subject_ref))].filter(uuidish);
-      const statusJobIds = jobIds.filter(uuidish);
+      const statusJobIds = readJobIds; // same rule, one definition (build 7)
       // Started together, settled together — independent reads, and a serial
       // await would add a round trip per firm per tick (the memory-read idiom).
       const [assignmentRows, jobRows] = await Promise.all([
@@ -3521,7 +3738,7 @@ export async function runPlanner(
       // to "no notes" exactly as the memory read degrades to no index.
       let noteMeta = new Map<string, string>();
       try {
-        noteMeta = await (deps.jobNotes ?? listJobNoteMeta)(tenantId, jobIds);
+        noteMeta = await (deps.jobNotes ?? listJobNoteMeta)(tenantId, readJobIds);
       } catch (err) {
         console.error(`[planner] tenant ${tenantId}: job-note read failed — running without`, err);
       }
@@ -3875,12 +4092,14 @@ export async function runPlanner(
             records.push({ ...base, mode: 'shadow', outcome: 'shadow' });
             continue;
           }
-          let res: { outcome: 'applied' | 'refused'; detail?: string };
+          // `createdId` is build 7's: an applied `observe` returns the
+          // observation it wrote, and the record row hangs off THAT.
+          let res: { outcome: 'applied' | 'refused'; detail?: string; createdId?: string };
           try {
             res = await applyDecision(
               tenantId, d, nowIso, setSchedule, markOutcome, markQueued, markGroupQueued,
               stampAnswer, '', (id) => views.get(id)?.nudge, setObservation,
-              createFromObservation, createOffice, dismissGap, recoverGap,
+              createFromObservation, createOffice, dismissGap, recoverGap, createObservationRow,
             );
           } catch (err) {
             res = {
@@ -3890,6 +4109,36 @@ export async function runPlanner(
           }
           if (res.outcome === 'applied') applied += 1;
           else refusedAtApply += 1;
+          // AN APPLIED `observe` IS NOT A GAP-LESS ROW (build 7), and this is
+          // the one place in this branch where that matters. `base` is built
+          // for a message about nobody's gap: nudgeId null, jobId null, no
+          // `subject` — which recordNudgeDecisions writes as BOTH ids null.
+          // That is right for a send and wrong for an observe, whose whole
+          // result is a gap that now exists: keyed to `observation_id` the
+          // decision is reachable from per-gap recall, and `jobId` may be
+          // stamped because the gap id is no longer null (the invariant `base`
+          // documents at the top of this branch).
+          //
+          // A REFUSED observe keeps `base` — nothing was created, so there is
+          // nothing to key to, and a both-null row is legal (build 6.5 Phase 3).
+          if (res.createdId) {
+            // WHAT ROUTES THIS ROW IS THE `subject` LITERAL BELOW, not
+            // `stageById` — recordNudgeDecisions keys on that field alone
+            // (nudgeDecisions.ts). A `stageById.set` stood here and was DEAD:
+            // every reader of that map is keyed by ids drawn from `views`,
+            // `open` or `recoverable`, and an id minted THIS tick is in none of
+            // them. Said plainly so nobody later deletes the literal believing
+            // the map covers it.
+            records.push({
+              ...base,
+              nudgeId: res.createdId,
+              subject: 'observation',
+              jobId: d.jobId ?? null,
+              outcome: res.outcome,
+              outcomeDetail: res.detail ?? null,
+            });
+            continue;
+          }
           records.push({ ...base, outcome: res.outcome, outcomeDetail: res.detail ?? null });
           continue;
         }
@@ -3962,6 +4211,11 @@ export async function runPlanner(
             createOffice,
             dismissGap,
             recoverGap,
+            // Unreachable for `observe` (a gap-bound one is refused at
+            // validate), and passed anyway: every other writer is injected at
+            // BOTH sites, and an asymmetric one is how a later change reaches
+            // the real database from a test that thought it was stubbed.
+            createObservationRow,
           );
         } catch (err) {
           // One failed write must not abandon the rest of the firm's plan, and

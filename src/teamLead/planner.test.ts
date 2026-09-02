@@ -2581,9 +2581,24 @@ describe('the job-note line', () => {
     // batched for the same reason, and a per-gap regression here would be
     // invisible in the rendered prompt. Two DISTINCT jobs, so a slice(0,1)
     // regression fails here too.
+    //
+    // UUID-SHAPED FIXTURES SINCE BUILD 7, and the reason is the point of the
+    // next test: this read is an `in()` over a uuid column, so the tick now
+    // hands it only uuid-shaped ids. The short 'j1'/'j2' the neighbouring
+    // rendering tests use would be filtered out and prove nothing about
+    // batching.
+    const J1 = '11111111-1111-4111-8111-111111111111';
+    const J2 = '22222222-2222-4222-8222-222222222222';
+    const withJob = (id: string, jobId: string) =>
+      nudge({
+        id,
+        subject_ref: id,
+        asked_at: '2026-08-16T10:00:00.000Z',
+        context: { ...(nudge().context as Record<string, unknown>), jobId },
+      });
     const calls: Array<{ tenantId: string; jobIds: string[] }> = [];
     await runPlanner(NOW, 'shadow', baseDeps({
-      listNudges: async () => twoJobs(),
+      listNudges: async () => [withJob('n1', J1), withJob('n2', J2)],
       runLoop: loopReturning([]),
       jobNotes: async (tenantId: string, jobIds: string[]) => {
         calls.push({ tenantId, jobIds });
@@ -2592,7 +2607,37 @@ describe('the job-note line', () => {
     }));
     expect(calls).toHaveLength(1);
     expect(calls[0].tenantId).toBe('t1');
-    expect([...calls[0].jobIds].sort()).toEqual(['j1', 'j2']);
+    expect([...calls[0].jobIds].sort()).toEqual([J1, J2]);
+  });
+
+  test('a job id that is not a uuid never reaches a read — it would 400 the tick', async () => {
+    // Build 7. `observe` made `context.jobId` model-supplied for the first
+    // time, and every one of these reads passes it to an `in()` over a uuid
+    // column where ONE malformed element rejects the WHOLE filter.
+    //
+    // The three fail DIFFERENTLY, which is why all three are asserted: evidence
+    // and money would 400 the tenant's entire tick, while the job-note read
+    // sits in a try/catch and would fail QUIETLY — every gap in the firm losing
+    // its notepad line with nothing but a log line to say so.
+    const good = '33333333-3333-4333-8333-333333333333';
+    const seen: Record<string, string[]> = {};
+    const withJob = (id: string, jobId: string) =>
+      nudge({
+        id,
+        subject_ref: id,
+        asked_at: '2026-08-16T10:00:00.000Z',
+        context: { ...(nudge().context as Record<string, unknown>), jobId },
+      });
+    await runPlanner(NOW, 'shadow', baseDeps({
+      listNudges: async () => [withJob('n1', good), withJob('n2', 'not-a-uuid')],
+      runLoop: loopReturning([]),
+      listEvidence: async (_t: string, ids: string[]) => ((seen.evidence = ids), []),
+      listMoneySince: async (_t: string, ids: string[]) => ((seen.money = ids), []),
+      jobNotes: async (_t: string, ids: string[]) => ((seen.notes = ids), new Map()),
+    }));
+    expect(seen.evidence).toEqual([good]);
+    expect(seen.money).toEqual([good]);
+    expect(seen.notes).toEqual([good]);
   });
 
   test('a failing note read costs the tick nothing', async () => {
@@ -5627,9 +5672,13 @@ describe('the roster the planner is given', () => {
     for (const dead of ['ask_agent', 'inform_agent', 'agentMessage', 'questionDraft']) {
       expect(rendered, `the doctrine still names ${dead}`).not.toContain(dead);
     }
-    // And the verbs it DOES offer are exactly the five that exist.
+    // And the verbs it DOES offer are exactly the six that exist (`observe`
+    // joined in build 7 — the only one that CREATES a gap rather than acting on
+    // one).
     const props = (SUBMIT_PLAN_TOOL.inputSchema as never as Record<string, never>);
-    expect(JSON.stringify(props)).toContain('"enum":["send","hold","close","dismiss","recover"]');
+    expect(JSON.stringify(props)).toContain(
+      '"enum":["send","hold","close","dismiss","recover","observe"]',
+    );
     // The three fields one `send` needs are all offered.
     for (const live of ['`to`', '`as`', '`countsAsTheAsk`', '`message`']) {
       expect(rendered).toContain(live.replaceAll('`', ''));
@@ -5707,5 +5756,208 @@ describe('the roster the planner is given', () => {
     const roster = buildRoster([person()], []);
     // A gap holds the FK; a decision the model writes holds the ref it copied.
     expect(roster.get('tech-1')).toBe(roster.get('ben-shelton'));
+  });
+});
+
+describe('observe — the planner opens its own observation (build 7)', () => {
+  const observe = (over: Record<string, unknown> = {}) => ({
+    decisions: [
+      { action: 'observe', note: 'the part never arrived', confidence: 'high', reason: 'worth keeping', ...over },
+    ],
+  });
+
+  test('the rails: a note is required, a gap id is refused, a bad job id is refused', () => {
+    // NO NOTE — the note is the whole payload; without it the row would carry
+    // `context: { note: undefined }`.
+    let out = validateDecisions(observe({ note: undefined }), new Map(), Date.parse(NOW));
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('observe needs `note`');
+
+    // NAMING A GAP. `observe` CREATES a gap; naming one is a category error.
+    // The rail lives in the GAP-BOUND path, and it has to: the plan's first
+    // draft put it in the gap-less branch, where `nudgeId` is empty by
+    // definition and it could never have run. Without it here the decision
+    // falls through every branch to the catch-all tail, which would ACCEPT it
+    // carrying neither note nor jobId.
+    const view = buildGapView(nudge(), Date.parse(NOW), [], false, new Set());
+    out = validateDecisions(
+      observe({ nudgeId: view.nudge.id }),
+      new Map([[view.nudge.id, view]]),
+      Date.parse(NOW),
+    );
+    expect(out.decisions).toHaveLength(0);
+    expect(out.dropped[0].why).toContain('CREATES one');
+
+    // A JOB ID THAT IS NOT AN ID. Load-bearing, not hygiene: this is the first
+    // model-supplied value ever to reach the tick's `in()` filters over uuid
+    // columns, where one bad element rejects the whole read.
+    for (const bad of ['not-a-uuid', '', 42, ['j1'], null]) {
+      out = validateDecisions(observe({ jobId: bad }), new Map(), Date.parse(NOW));
+      expect(out.decisions, `jobId ${JSON.stringify(bad)} should be refused`).toHaveLength(0);
+      expect(out.dropped[0].why).toContain('`jobId`');
+    }
+
+    // A GOOD ONE SURVIVES, and rides through to the decision.
+    const good = '44444444-4444-4444-8444-444444444444';
+    out = validateDecisions(observe({ jobId: good }), new Map(), Date.parse(NOW));
+    expect(out.decisions).toHaveLength(1);
+    expect(out.decisions[0]).toMatchObject({ nudgeId: null, action: 'observe', jobId: good });
+    expect(out.decisions[0].note).toBe('the part never arrived');
+  });
+
+  test('SEVERAL observes in one tick all survive — `seen` holds one per GAP, and these name none', () => {
+    // HONEST LABEL, after the review called this out: no CURRENT implementation
+    // fails this that the rails test above does not already fail, so it is not
+    // coverage of today's code. It is kept as a guard on one specific future
+    // mistake — adding `seen.add(...)` to the observe branch, which would make
+    // the second observe of a tick collide on the empty-string key and be
+    // refused as "a second decision for the same gap". Do not count it twice.
+
+    const out = validateDecisions(
+      {
+        decisions: [
+          { action: 'observe', note: 'first thing', confidence: 'high', reason: 'r' },
+          { action: 'observe', note: 'second thing', confidence: 'low', reason: 'r' },
+        ],
+      },
+      new Map(),
+      Date.parse(NOW),
+    );
+    expect(out.decisions).toHaveLength(2);
+    expect(out.decisions.map((d) => d.note)).toEqual(['first thing', 'second thing']);
+  });
+
+  test('a note MAY name a date, and that date still cannot reach a person', () => {
+    // BOTH DIRECTIONS, because the whole safety argument for `skipDateRail` is
+    // that the rail still holds where it matters. An observation note is never
+    // delivered, is not selected by v_observations, and is not a citation
+    // source — so a date in one is harmless.
+    const out = validateDecisions(observe({ note: 'he said Thursday and the note disagrees' }), new Map(), Date.parse(NOW));
+    expect(out.decisions).toHaveLength(1);
+    expect(out.decisions[0].note).toContain('Thursday');
+
+    // …and the SAME word in a message is still refused, because a send must
+    // pass its gap's own allowed dates.
+    const view = buildGapView(nudge(), Date.parse(NOW), [], false, new Set());
+    const sent = validateDecisions(
+      { decisions: [{ nudgeId: view.nudge.id, action: 'send', as: 'chat', countsAsTheAsk: false, message: 'can you confirm Thursday?', confidence: 'high', reason: 'r' }] },
+      new Map([[view.nudge.id, view]]),
+      Date.parse(NOW),
+    );
+    expect(sent.decisions).toHaveLength(0);
+    expect(sent.noteDrops.join(' ')).toContain('Thursday');
+  });
+
+  test('an APPLIED observe writes the row and keys its decision to observation_id', async () => {
+    // NOTE THE SEEDED GAP, and it is not incidental: runPlanner returns before
+    // planning at all when a firm has no open gaps AND no unread messages, so
+    // the planner cannot observe on a quiet tick. Pre-existing (the recover-only
+    // tick has the same shape) and recorded in the plan's carried-forward list.
+    const created: Array<Record<string, unknown>> = [];
+    const recorded: NudgeDecisionInput[] = [];
+    const jobId = '55555555-5555-4555-8555-555555555555';
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [nudge()],
+      createObservation: (async (input: Record<string, unknown>) => {
+        created.push(input);
+        return { id: 'obs-new', ...input } as never;
+      }) as unknown as NonNullable<PlannerDeps['createObservation']>,
+      recordDecisions: (async (rows: NudgeDecisionInput[]) => {
+        recorded.push(...rows);
+        return rows.length;
+      }) as unknown as NonNullable<PlannerDeps['recordDecisions']>,
+      runLoop: loopReturning([
+        { action: 'observe', note: 'the boiler part story does not add up', jobId, confidence: 'high', reason: 'worth watching' },
+      ]),
+    }));
+    expect(summary.applied).toBe(1);
+    // The row: planner-authored, the reserved kind, the note in context, and
+    // the job as its subject LABEL (planner rows are outside the once-ever index).
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      kind: 'planner_observation',
+      author: 'planner',
+      technicianId: null,
+    });
+    // SUBJECT_REF IS A FRESH UUID, NEVER THE JOB ID, and the review earned this
+    // assertion. `uq_nudges_subject_ever` is NOT partial, so if a planner row's
+    // subject were the job id, two observes on one job would collide the moment
+    // anything tried to turn one into an ask — and the heal path would stamp the
+    // observation 'asked' though nobody was asked. Unreachable today only
+    // because technicianId is null; a fresh uuid removes the class.
+    expect(created[0].subjectRef).not.toBe(jobId);
+    expect(created[0].subjectRef).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+    // The job is not lost — it rides in context, which is where every reader
+    // already looks (the `job id:` line, the evidence bound, v_observations).
+    expect((created[0].context as Record<string, unknown>).jobId).toBe(jobId);
+    expect(created[0].context).toEqual({ note: 'the boiler part story does not add up', jobId });
+    // The log row hangs off the OBSERVATION it created — not both-null, which
+    // is what the gap-less branch's `base` would have written.
+    const row = recorded.find((r) => r.action === 'observe');
+    expect(row).toMatchObject({ nudgeId: 'obs-new', subject: 'observation', jobId, outcome: 'applied' });
+  });
+
+  test('a REFUSED observe records a both-null row — there is nothing to key to', async () => {
+    const recorded: NudgeDecisionInput[] = [];
+    const summary = await runPlanner(NOW, 'live', baseDeps({
+      listNudges: async () => [nudge()],
+      createObservation: (async () => null) as unknown as NonNullable<PlannerDeps['createObservation']>,
+      recordDecisions: (async (rows: NudgeDecisionInput[]) => {
+        recorded.push(...rows);
+        return rows.length;
+      }) as unknown as NonNullable<PlannerDeps['recordDecisions']>,
+      runLoop: loopReturning([
+        { action: 'observe', note: 'something', confidence: 'high', reason: 'r' },
+      ]),
+    }));
+    expect(summary.applied).toBe(0);
+    const row = recorded.find((r) => r.action === 'observe');
+    expect(row?.outcome).toBe('refused');
+    expect(row?.nudgeId ?? null).toBeNull();
+    expect(row?.subject ?? null).toBeNull();
+  });
+
+  test('a planner observation with NO job renders its own words as `about:`', () => {
+    // The `about:` line is conditional since build 7. A detector row always
+    // carries customerName AND jobTitle (watchers.ts writes literal fallbacks),
+    // so this can only be reached by a planner row — and rendering
+    // "a job for unknown customer" there would assert a job that does not exist.
+    const own = observationAsGapRow({
+      id: 'o9',
+      tenant_id: 't1',
+      kind: 'planner_observation',
+      subject_ref: 'o9',
+      technician_id: null,
+      context: { note: 'three no-shows from this customer this month' },
+      status: 'open',
+      dismiss_reason: null,
+      dismissed_at: null,
+      not_before: null,
+      noticed_at: '2026-08-16T10:00:00.000Z',
+      updated_at: '2026-08-16T10:00:00.000Z',
+    } as unknown as Observation);
+    const block = buildGapView(own, Date.parse(NOW), [], false, new Set()).block;
+    expect(block).toContain('  about: three no-shows from this customer this month');
+    expect(block).not.toContain('unknown customer');
+    expect(block).toContain('  kind: planner_observation');
+    expect(block).toContain('  state: noticed');
+    // AND NO OTHER LINE MAY ASSERT A JOB EITHER — the review found the
+    // `notes:` line doing exactly what the `about:` line was made conditional
+    // to stop, one line apart in the same block and newly reachable for the
+    // same rows. Asserted as the whole-block invariant, not one phrasing, so
+    // the next line that reaches for "this job" fails here too.
+    expect(block).not.toContain('this job');
+    expect(block).toContain('notes: NO notes have landed on the record since');
+    // …and a row that DOES name a job still says "this job".
+    const withJob = buildGapView(nudge(), Date.parse(NOW), [], false, new Set()).block;
+    expect(withJob).toContain('NO notes have landed on this job since');
+  });
+
+  test('a DETECTOR row\'s `about:` line is unchanged by that conditional', () => {
+    // The safety claim behind making the line conditional, pinned literally.
+    const block = buildGapView(nudge(), Date.parse(NOW), [], false, new Set()).block;
+    expect(block).toContain('  about: Furnace tune-up for Henderson');
   });
 });

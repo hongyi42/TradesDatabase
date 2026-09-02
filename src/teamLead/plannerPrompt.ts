@@ -362,16 +362,19 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
               type: 'string',
               description:
                 'The gap id, copied exactly from the list you were given. Required for hold, ' +
-                'close, dismiss, recover and send. Leave it out ONLY for a message that is not ' +
+                'close, dismiss, recover and send. Leave it out for a message that is not ' +
                 'about any gap — then `to` says who it is for, and the message may name no ' +
-                'dates, because there is no gap to have given you any.',
+                'dates, because there is no gap to have given you any — and for `observe`, ' +
+                'which creates a gap and so cannot name one.',
             },
             action: {
               type: 'string',
-              enum: ['send', 'hold', 'close', 'dismiss', 'recover'],
+              enum: ['send', 'hold', 'close', 'dismiss', 'recover', 'observe'],
               description:
                 'What to do. send: write to somebody — see `to`, `as` and `message`; it is ' +
-                'the only one that may be about no gap at all. dismiss: stop showing this gap, ' +
+                'one of the two that may be about no gap at all. observe: write down something ' +
+                'you noticed that is not on the list yet — see `note` and `jobId`; it CREATES a ' +
+                'gap rather than acting on one, so it never names a gap id. dismiss: stop showing this gap, ' +
                 'at any stage — say why in `reason`; the record keeps it and recover brings it ' +
                 'back. recover: bring back a DISMISSED gap by id, found via spine_read over ' +
                 'v_observations or v_nudges; it returns to the stage it was dismissed from.',
@@ -436,6 +439,23 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
                 'all of them. Use only the date strings the gap listed under "dates you may ' +
                 'use"; a message about NO gap may name no dates at all, because none were given ' +
                 'to you. Required for send; ignored for every other action.',
+            },
+            note: {
+              type: 'string',
+              description:
+                "For 'observe': what you noticed, in a sentence or two, in your own words. This " +
+                'is what you will read back on the list next time, so write it so it still makes ' +
+                'sense to you then — what the thing is, and why it is worth keeping. Required ' +
+                'for observe; ignored for every other action.',
+            },
+            jobId: {
+              type: 'string',
+              description:
+                "For 'observe': the job this is about, copied exactly from a gap's `job id:` " +
+                'line. Optional, and worth giving whenever there is one — with it, the ' +
+                "observation carries that job's notes and money on the list, the same way a " +
+                'gap does. Leave it out for something that is not about one job. An id that is ' +
+                'not copied from a `job id:` line is refused.',
             },
             basis: {
               type: 'string',

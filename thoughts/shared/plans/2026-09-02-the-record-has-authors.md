@@ -254,29 +254,31 @@ literal the equality tests do not cover; without this `npm test` fails at the ph
 recover and send" — it must now also exclude `observe`.
 
 ### Automated verification
-- [ ] `npx tsc --noEmit`, `npm run lint`, `npm test` pass
-- [ ] the three pinned equalities hold, and `applyDecision`'s switch stays exhaustive (a missing case
-      is a `tsc` error — the property `:2766-2769` exists to preserve)
-- [ ] new `validateDecisions` tests: no `note` → refused; naming a gap → refused **via the gap-bound
-      path, not the tail**; `jobId:'not-a-uuid'` → refused with a sentence naming the field; two
-      observes in one tick both survive
-- [ ] new `runPlanner` test (not a direct `applyDecision` test — it is module-private): an applied
-      `observe` writes an `author:'planner'` row AND a `nudge_decisions` row whose **`observation_id`**
-      is the created id and whose `nudge_id` is null; a refused one writes a both-null row
-- [ ] **the date-rail pin, both directions:** a note containing "Thursday" is ACCEPTED, and a `send`
-      whose `message` contains "Thursday" is still REFUSED when that gap's `dateLabels` lack it
-- [ ] new `buildGapView` tests: a planner row with no job renders `about: <the note>`; a detector
-      row's `about:` line is **byte-identical** to today's
-- [ ] a malformed `jobId` reaching `jobIds` (hand-built row) does not throw the tenant's tick
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm test` pass — **2628**
+- [x] the three pinned equalities hold; deleting `case 'observe'` is a `tsc` TS2366 (reviewer-checked)
+- [x] new `validateDecisions` tests: no `note`; naming a gap (gap-bound path — mutation-confirmed
+      that deleting the rail lets the tail ACCEPT it with no note); five malformed `jobId` shapes;
+      two observes in one tick
+- [x] new `runPlanner` tests, applied and refused. NOTE: these assert the INPUT to a mocked
+      recorder; the `subject → observation_id` routing itself is proven by the live check below, not
+      by a unit test (no test in the repo covers that routing)
+- [x] **the date-rail pin, both directions** — and the reviewer independently traced every escape
+      route: `v_observations` selects no `context`, the citation haystack is evidence + CITABLE_TOOLS
+      only, and a planner row's `dateLabels` cannot supply the word to a later send
+- [x] new `buildGapView` tests, plus the review's finding: the `notes:` line asserted a job in the
+      same block. Now pinned as a WHOLE-BLOCK invariant (`not.toContain('this job')`), mutation-
+      verified — reverting the fix fails the test
+- [x] a malformed `jobId` never reaches any of the three reads (`readJobIds`), asserted per read
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack. No MCP or model key — `runPlanner` takes an injected
   `runLoop`, so a scripted plan drives the whole path.
-- [ ] Drive one tick with an injected loop returning a single `observe`, then **read back through a
-      different channel than the one that wrote it**: query `observations` for `author='planner'` and
-      `nudge_decisions` for the row keyed by `observation_id`. Then run a SECOND tick with no
-      decisions and confirm the observation appears in the rendered prompt as a `noticed` block. The
-      round trip is the claim, not the write. Capture both rows and both prompts.
+- [x] Three real ticks against the local stack, only `runLoop` injected, read back via `psql`:
+      row = `author=planner / kind=planner_observation / status=open`, context carrying note+jobId;
+      decision row = `observation_id=<new id>, nudge_id=NULL, job_id SET, outcome=applied` (FK
+      join-verified); tick 2 rendered the block with `kind: planner_observation`, `state: noticed`
+      and the planner's own words as `about:`; tick 3's identical observe made a SECOND row (no
+      dedup). Every table restored to its prior count.
 
 ### Manual verification
 None.

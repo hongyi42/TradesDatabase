@@ -178,40 +178,40 @@ the runbooks ([doorman-runbook.md](doorman-runbook.md), [control-plane.md](contr
 - L3980 · seat-to-seat informs
 - L4040 · Durability.
 - L4042 · Observability.
-- L4076 · A technician's seat agent has NO scheduling verb at any tier.
-- L4079 · Live specimen in the pilot _(2026-09-01)_
-- L4089 · Counting.
-- L4091 · Detection.
-- L4095 · Booking.
-- L4108 · Build 6 (vocabulary): _(2026-09-01)_
-- L4113 · Build 7 (detectors report):
-- L4119 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
+- L4119 · A technician's seat agent has NO scheduling verb at any tier.
+- L4122 · Live specimen in the pilot _(2026-09-01)_
+- L4132 · Counting.
+- L4134 · Detection.
+- L4138 · Booking.
+- L4151 · Build 6 (vocabulary): _(2026-09-01)_
+- L4156 · Build 7 (detectors report):
+- L4162 · SETTLED 2026-09-01 (user): a crew has NO LEAD. _(2026-09-01)_
 
 **6. The build log — the intelligent-spine ladder (2026-08-22 → 2026-08-24)**
 
-- L4456 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
-- L4479 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
-- L4526 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
-- L4563 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
-- L4595 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
-- L4600 · Every member row stores the FULL grouped message in question.
-- L4604 · The attribution stamp is an audit link, not a gate.
-- L4608 · The derived stamp requires a capture a badge-holder SPOKE
-- L4612 · openQuestions is deliberately UNFILTERED and can include what the person just said.
-- L4618 · The follow-up loop has two halves and both had to be written down.
-- L4624 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
-- L4698 · Batching works.
-- L4700 · The follow-up leg works, including the half that fails silently.
-- L4704 · Both attribution paths fired, each in its designed case.
-- L4708 · Escalation fired correctly
-- L4709 · The planner's group-aware pacing is the result worth keeping.
+- L4499 · The agentic planner eval EXISTS and has its first baseline (2026-08-24). _(2026-08-24)_
+- L4522 · THE ONE-CALL COLLAPSE LANDED (2026-08-24, plan thoughts/shared/plans/2026-08-24-one-call-collapse.md). _(2026-08-24)_
+- L4569 · TRAP — a note-only judge fails verified claims (the agentic-eval re-judge, 2026-08-24). _(2026-08-24)_
+- L4606 · What had drifted, in order of how much it would have misled someone (2026-08-24). _(2026-08-24)_
+- L4638 · ask_group_id holds the LEAD gap's own id, not a fresh uuid.
+- L4643 · Every member row stores the FULL grouped message in question.
+- L4647 · The attribution stamp is an audit link, not a gate.
+- L4651 · The derived stamp requires a capture a badge-holder SPOKE
+- L4655 · openQuestions is deliberately UNFILTERED and can include what the person just said.
+- L4661 · The follow-up loop has two halves and both had to be written down.
+- L4667 · ④b's zero-inference rule governs the ASK LEG ONLY _(2026-08-25)_
+- L4741 · Batching works.
+- L4743 · The follow-up leg works, including the half that fails silently.
+- L4747 · Both attribution paths fired, each in its designed case.
+- L4751 · Escalation fired correctly
+- L4752 · The planner's group-aware pacing is the result worth keeping.
 
 **7. Where the deep detail lives**
 
-- L4890 · Evals:
-- L4897 · Runbooks:
-- L4902 · Decision history with citations:
-- L4906 · This file
+- L4933 · Evals:
+- L4940 · Runbooks:
+- L4945 · Decision history with citations:
+- L4949 · This file
 
 <!-- INDEX:END -->
 
@@ -3537,7 +3537,7 @@ lead has ended is LEADERLESS and frozen forever while its own counters read 0/0.
 
 **Eval damage, counted honestly.** 24 orphaned ACTION expectations (10 `action:'escalate'`, 14
 `actionNot:'escalate'` — there is NO `leave` expectation; the one `action:'leave'` is a `history:`
-SEED, the same seed-vs-expectation trap the corpus header warns about for `extend`). Plus 23 claim
+SEED, the same seed-vs-expectation trap the corpus header warns about for `extend`). Plus 24 claim
 clauses WEAKENED rather than orphaned: `plannerEvalGraders2.ts` grades `mustNotClaim`/`mustName`
 over `[handoff_note, reason]`, and `handoff_note` is now never written, so they fire against
 diagnostic copy instead of the manager-facing copy they were authored against. Four new `build6`
@@ -4053,6 +4053,49 @@ actions remain, `resolve_review` can no longer resolve anything (the `STAGED_ACT
 refuses it — staged actions confirm through their own tool), so it and `list_pending_reviews`
 become "show me what is staged" / "cancel it" and should be renamed with the table. Cleanup after
 build 7, not before.
+
+**TWO RULINGS ADDED 2026-09-02 while planning 6.5 (user).**
+
+*(a) The planner must actively know the firm's roster.* — *"If the planner is the central
+intelligence of the firm, then it should know the roster of the team actively."* What exists today
+is a per-gap `person: <display name>` line (`buildGapView`, `planner.ts`), so the planner knows the
+people who currently have problems and nobody else, and knows them by a name it cannot address.
+`v_team` has always been in its `spine_read` catalog (`server.ts:772`) — never a gate, only an
+absence, because until 6.5 every verb's destination was decided by the record and a name was
+unusable. 6.5 pushes a WHO YOU CAN REACH block and prints the REF beside the name on every gap,
+for the reason the same function already prints a job id beside the customer name (`planner.ts:
+125-128`: *"it had the words but not the key"*).
+
+*(b) A gap whose person has LEFT must say so, and the planner adjusts.* — *"Especially if it was
+working on a gap which belonged to someone who used to belong to the roster but not anymore. Then
+the planner should actively adjust."* **Probed 2026-09-02, do not re-derive:** offboarding a seat
+does NOTHING to that person's open gaps (no cancel, no reassign, no flag anywhere), and
+`technicianName` is a SNAPSHOT stamped into `context` at detection time (`watchers.ts:609`,
+`:675`), never refreshed. Consequences today: a departed person's gap shows their name with no
+hint; a `queued` one freezes silently at the `isInactiveState` skip (`nudgeQueue.ts:131-133`); an
+`asked` one waits forever and ages into `asksUnattended`. The planner cannot fix any of it because
+the only person it can reach is the one on the gap. 6.5 makes it fixable (ask somebody else about
+the same gap), so the departure becomes visible in the same build — the gap's person line reports
+CURRENT standing resolved live against the roster by `technician_id`, never the snapshot.
+**NOT by auto-cancelling on offboard:** build 5 removed the sweep's authority to end gaps, and a
+trigger here would re-make that mistake. Tell the planner; let it judge.
+
+*(c) A FULL ROSTER TRAIL, not just a departure date.* — *"The planner should probably have a
+record of the firm's roster (with history) … so it doesn't have to go looking for record that
+proves a person was offboarded."* User chose the trail over a single `state_changed_at` column.
+New `roster_events` table: joined / left / came back, when, and who did it. **Probed 2026-09-02:**
+every state change already funnels through ONE function (`setTechnicianState`,
+`technicians.ts:321` — the only other write of `state` is the insert at `:169`), which is what
+makes an app-side write safe (a DB trigger cannot see WHO made the change, and the actor is the
+half a bare timestamp cannot give). `technicians.updated_at` is bumped by ANY edit and can never
+answer "when did they leave" — so **the trail cannot be backfilled**: it starts empty, and a
+departure predating it renders `date unknown`, never a guess. The roster block shows departures
+only for people the tick's own gaps name; `v_roster_events` serves the rest.
+
+Also confirmed by the user in the same exchange: NOT auto-cancelling a departed person's gaps is
+correct — *"the planner should be flexible enough to handle this type of situation."*
+
+Plan: `thoughts/shared/plans/2026-09-02-one-send-verb.md` (5 phases, draft).
 
 ### 8. A visit is not a person — the multi-technician visit (USER RULING 2026-09-01, NOT BUILT)
 

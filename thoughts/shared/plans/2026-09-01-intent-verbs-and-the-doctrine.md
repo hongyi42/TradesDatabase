@@ -176,19 +176,25 @@ views that read them are untouched.
   runner. Document the re-grade; do not attempt it.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `escalate` is refused as unknown; the pinned equalities agree at eight.
-- [ ] A stored historic `escalate` decision still counts as attention.
-- [ ] `mv_escalation_fates` still returns pre-existing escalations; no caller of `flagNudgeGap`
-      remains.
+- [x] `npm run typecheck` · `npm run lint` · `npm test` (2490 passed) · `npm run build`
+- [x] `escalate` is refused as unknown; the pinned equalities agree at eight (the COUNT is
+      pinned too, `watchers.test.ts` — two sets that drift together are still equal).
+- [x] A stored historic `escalate` decision still counts as attention (with a not-a-verb
+      control, `watchers.test.ts`).
+- [x] `mv_escalation_fates` still returns pre-existing escalations (probed on the local stack:
+      `fate: resolved, by_planner: true, handoff_kind: escalated`; `mv_gap_outcomes` buckets it
+      `outcome_bucket: manager`); no caller of `flagNudgeGap` remains.
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack (`npx supabase start`, `.env.test`).
-- [ ] `runPlanner` tick on a seeded firm with an escalate in its history: applies, history line
-      renders the old verb, no alarm fires for it.
+- [x] `runPlanner` tick on a seeded firm with an escalate in its history: applied (`applied: 1`),
+      history line rendered `last: escalate 10h ago`, no alarm fired for it — while a
+      same-age CONTROL gap with no decisions DID alarm. A fresh `escalate` came back
+      `unknown action 'escalate'`; read-back showed `review_items` empty and both `nudges`
+      rows' `updated_at` untouched.
 
 ### Manual verification
-- [ ] None.
+- [x] None.
 
 ---
 
@@ -233,7 +239,11 @@ phase, because `hold` is its replacement and the alarm's mechanism shifts from "
 - `planner.test.ts:1223-1229` — "hold on an already-asked gap is refused too".
 - The `watchers.test.ts` alarm family (`:973+`) asserting leave-counts-on-asks — rewrite as
   historic-only, plus held-asked-is-exempt.
-- One corpus `action:'leave'` expectation.
+- **No corpus expectation.** The single `action:'leave'` in `plannerCorpus.ts` is inside a
+  `history:` SEED block, not an `expect` — a seeded row naming a retired verb keeps working
+  exactly as the `extend` seeds beside it do. (Corrected during Phase 1: this line and the
+  closing checklist both repeated the seed-vs-expectation miscount the Phase 1 notes warn
+  about for `extend`.)
 
 ### Automated verification
 - [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
@@ -462,6 +472,13 @@ describe what phases 1–4 built. Last, because every earlier phase changes it.
 - [ ] `npm run decisions:index`; commit the regenerated `thoughts/INDEX.md` and the
       `docs/engineering-memory.md` map alongside the code.
 - [ ] Add the §6a build-6 entry: the two deletions, dismiss/recover on every stage with
-      `prior_status`, the KEEP/DELETE table, the 25 orphaned corpus expectations (24 escalate + 1
-      leave), and the `mv_gap_outcomes` blind spot for `'dismissed'`.
+      `prior_status`, the KEEP/DELETE table, and the `mv_gap_outcomes` blind spot for
+      `'dismissed'`. **The corpus damage, counted honestly:** 24 orphaned ACTION expectations
+      (10 `action:'escalate'` + 14 `actionNot:'escalate'`; there is no `leave` expectation),
+      PLUS 23 claim clauses (22 `mustNotClaim`, 1 `mustName`) weakened rather than orphaned —
+      `plannerEvalGraders2.ts` grades them over `[handoff_note, reason]` and `handoff_note` is
+      now never written, so they still fire but against diagnostic copy instead of the
+      manager-facing copy they were authored against. Also record that an `escalate` the model
+      TRIES leaves NO trace: it fails the unknown-action check, and the dropped-recorder skips
+      unknown verbs, so the gap takes an `unmentioned` tick mark instead of a refusal row.
 - [ ] Flip this plan's `status:` to `complete`.

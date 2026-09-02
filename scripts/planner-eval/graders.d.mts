@@ -5,7 +5,7 @@ export function deterministicChecks(
     dateLabels: string[];
     mustName?: string[];
     mustNotClaim?: string[];
-    cleanHandoffNote: (raw: unknown, labels: string[]) => { note: string | null; why?: string };
+    cleanNote: (raw: unknown, labels: string[]) => { note: string | null; why?: string };
   },
 ): GraderCheck[];
 export function summarise(checks: GraderCheck[]): {

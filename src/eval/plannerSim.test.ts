@@ -456,8 +456,6 @@ describe('the planner ends a moot gap on the record (build 5)', () => {
     const summary = await runPlanner(t0, 'live', {
       listTenants: async () => [t.id],
       tools: [...TEAM_LEAD_TOOL_SCHEMAS],
-      notify: async () => {},
-      hasPushToken: () => false,
       execute: (tid, name, args) =>
         dispatchForIdentity(name, args, { tenantId: tid, technicianRef: TEAM_LEAD_REF }),
       runLoop: stubLoop,
@@ -477,7 +475,13 @@ describe('the planner ends a moot gap on the record (build 5)', () => {
 });
 
 describe('runArc — a scripted gap life (Phase 2)', () => {
-  test('leave → mid-arc capture → escalate performs its own handoff → manager resolve', async () => {
+  // BUILD 6 PHASE 1 rewrote this arc's ending. It used to run
+  // leave → capture → ESCALATE (its own handoff) → manager_resolve, and every
+  // one of those last three hops died with the verb. The arc's real subject was
+  // never escalation: it is that a capture landing BETWEEN two ticks reaches the
+  // second tick's prompt and can end the gap. So the ending is now the honest
+  // one — the planner reads the note it was waiting for and CLOSES on it.
+  test('leave → mid-arc capture → close on the words that landed', async () => {
     const t = await createTenant(`Eval PlannerSimArc ${Date.now()}`);
     await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
     const t0 = simStartIso(10);
@@ -499,12 +503,12 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
         },
       ],
     };
+    const CAPTURE = 'Pilot is lit, swapped the thermocouple while I was there.';
     const timeline: TimelineStep[] = [
       { at: '+0h', kind: 'tick' }, // stub leaves (watching)
-      { at: '+4h', kind: 'capture', text: 'Pilot is lit, swapped the thermocouple while I was there.' },
-      { at: '+5h', kind: 'tick' }, // stub escalates — the handoff happens HERE (build 5)
+      { at: '+4h', kind: 'capture', text: CAPTURE },
+      { at: '+5h', kind: 'tick' }, // stub closes on the capture — the gap ends HERE
       { at: '+5.5h', kind: 'tick' }, // nothing left open — recorded as skipped
-      { at: '+6h', kind: 'manager_resolve', nudgeKey: 'gap', outcome: 'resolved', note: 'thanked Dee' },
     ];
 
     let tickNo = 0;
@@ -518,7 +522,7 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
         tickNo === 1
           ? { decisions: [{ nudgeId: reqGapId(req.user), action: 'leave', confidence: 'high', reason: 'stub wait' }] }
           : tickNo === 2
-            ? { decisions: [{ nudgeId: reqGapId(req.user), action: 'escalate', confidence: 'high', reason: 'stub escalate', handoffNote: 'Water heater relight (Rosa Alvarez) — needs a decision on the thermocouple note.' }] }
+            ? { decisions: [{ nudgeId: reqGapId(req.user), action: 'close', basis: 'evidence', citation: CAPTURE, confidence: 'high', reason: 'stub: the note answers it' }] }
             : { decisions: [] };
       await execute('submit_plan', plan);
       return { text: '', turns: 1, calls: [{ turn: 1, name: 'submit_plan', args: {}, ok: true, result: 'ok' }] };
@@ -529,44 +533,33 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
     const arc = await runArc(t.id, { world, timeline }, t0Ms, { runLoop: stubLoop });
 
     // Tick 1: leave applied; the clock strictly advanced between ticks.
-    // TWO ticks run, not three: the escalate at tick 2 performs its own handoff
-    // (build 5), so the +5.5h tick finds nothing open and is recorded skipped.
+    // TWO ticks run, not three: the close at tick 2 ends the gap, so the +5.5h
+    // tick finds nothing open and is recorded skipped.
     expect(arc.ticks).toHaveLength(2);
     expect(arc.ticksSkipped).toBe(1);
     expect(arc.ticks[0].decisions.map((d) => `${d.action}/${d.outcome}`)).toContain('leave/applied');
     expect(Date.parse(arc.ticks[1].nowIso)).toBeGreaterThan(Date.parse(arc.ticks[0].nowIso));
 
-    // Tick 2: escalate applied — and applied MEANS handed off now: the row is
-    // 'escalated' in the same tick, through the real flagNudgeGap + markOutcome.
-    expect(arc.ticks[1].decisions.map((d) => `${d.action}/${d.outcome}`)).toContain('escalate/applied');
+    // Tick 2: the close applied, and the row really ended — 'answered', with
+    // the technician's own words as the durable audit line.
+    expect(arc.ticks[1].decisions.map((d) => `${d.action}/${d.outcome}`)).toContain('close/applied');
     const afterTick2 = arc.ticks[1].nudgesAfter[0];
-    expect(afterTick2.status).toBe('escalated');
+    expect(afterTick2.status).toBe('answered');
+    expect(afterTick2.resolution).toBe(`answered — "${CAPTURE}"`);
     expect(new Date(afterTick2.resolved_at!).toISOString()).toBe(arc.ticks[1].nowIso); // sim-stamped
-    const { rows: items } = await pg.query(
-      `select status, resolved_at, detail->>'escalatedFromNudge' as from_nudge from review_items where tenant_id = $1`,
-      [t.id],
-    );
-    expect(items).toHaveLength(1);
-    expect(items[0].from_nudge).toBe(arc.seeded.nudgeIds.gap);
-    // The item's suggestion is the planner's OWN note — no template exists.
-    const { rows: sugg } = await pg.query(
-      `select suggestion from review_items where tenant_id = $1`, [t.id],
-    );
-    expect(sugg[0].suggestion).toContain('needs a decision on the thermocouple note');
-    // The manager_resolve step settled it at sim +6h.
-    expect(items[0].status).toBe('resolved');
-    expect(new Date(items[0].resolved_at).toISOString()).toBe(atOffset(t0Ms, '+6h'));
 
-    // The ⑤ epilogue assertions stood here — they read gap_summaries rows for
-    // the arc's escalated gap, and retired with that store (plan 2026-08-30).
-    // Everything the arc proves is now ABOVE: the extend applied, the capture
-    // landed mid-arc, the planner handed off itself, and the manager resolved at +6h —
-    // read here from nudges, nudge_decisions and review_items directly.
+    // NOTHING reached the manager's queue. That is the build-6 fact, and it is
+    // worth asserting rather than assuming: the planner has no verb that files
+    // an item any more, so an item appearing here would mean one came back.
+    const { rows: items } = await pg.query(
+      `select id from review_items where tenant_id = $1`, [t.id],
+    );
+    expect(items).toHaveLength(0);
     //
-    // Note what this test can prove that the EVAL cannot: the deterministic
-    // graders are pure over the results row and never see review_items, so the
-    // manager's verdict is asserted here and observable nowhere in a real eval
-    // run. See the note in plannerSim.ts where the epilogue stood.
+    // (The manager_resolve step and its assertions stood here — the arc's
+    // fourth timeline hop settled the escalated item at +6h. The step KIND
+    // survives in plannerSim.ts for historic scripts; nothing the planner can
+    // do produces an item for it to settle.)
   });
 
   test('a backwards timeline throws before touching the world', async () => {

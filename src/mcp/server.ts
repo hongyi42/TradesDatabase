@@ -1843,8 +1843,8 @@ const TEAM_LEAD_TOOLS = [
     description:
       'YOUR OWN DECISION HISTORY: what you have already decided about a gap, and what the system ' +
       'actually did with it. You do not remember previous runs, so consult it before repeating ' +
-      'yourself, and always before escalating (escalating hands the gap to a person and cannot be ' +
-      'taken back). It returns DECISIONS ONLY — a gap you have merely looked at and never acted ' +
+      'yourself, and always before anything that reaches a person — a message cannot be taken ' +
+      'back. It returns DECISIONS ONLY — a gap you have merely looked at and never acted ' +
       'on comes back empty, and its own block already tells you how many times you considered it, ' +
       'so there is nothing here to fetch for one of those. ' +
       'Call it with gapId — the id printed after "gap" in your list — or with jobId, the id ' +

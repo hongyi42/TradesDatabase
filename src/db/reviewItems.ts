@@ -135,64 +135,20 @@ export async function flagUnknownRefCapture(input: {
   });
 }
 
-// Flag an overdue-visit gap, at most ONCE PER ASSIGNMENT — EVER: any-status
-// dedup (the flagUnknownRefCapture idiom minus the detail key — an
-// assignment's end never recurs, so a resolved/dismissed item must never
-// re-open; the open-only partial unique index alone would re-flag forever).
-// Returns null when this assignment was ever flagged before. The watcher's
-// auto-resolve sweep reads detail.endsAtLocal to decide whether the gap has
-// since been filled.
-export async function flagNudgeGap(input: {
-  tenantId: string;
-  kind: ReviewKind; // which gap archetype — the registry's spec.kind
-  subjectRef: string; // assignment id for a visit gap; job id for a job-scoped one
-  jobId: string;
-  technicianRef: string | null; // routing data: whom the manager would ask
-  // Null for kinds whose subject is not a visit — a job-scoped gap has no
-  // visit window. The visit-gap auto-resolve reads startsAtLocal as its
-  // compare bound, so a kind that omits it must not rely on that path.
-  startsAtLocal?: string | null;
-  endsAtLocal?: string | null;
-  suggestion: string;
-  // Set when this item is the ladder's RUNG 2 (Stage 1): the silent nudge it
-  // grew out of — the audit thread from question to manager item.
-  escalatedFromNudge?: string;
-  // The planner's briefing for the manager's AGENT (④b fourth rail). Stored in
-  // detail, surfaced by list_pending_reviews, never rendered into suggestion.
-  agentContext?: string | null;
-}): Promise<ReviewItem | null> {
-  const { data, error } = await getClient()
-    .from('review_items')
-    .select('id')
-    .eq('tenant_id', input.tenantId)
-    .eq('kind', input.kind)
-    .eq('subject_ref', input.subjectRef)
-    .limit(1);
-  if (error) throw new Error(`flagNudgeGap failed: ${error.message}`);
-  if (data && data.length > 0) return null; // this subject was already flagged once
-  return upsertOpenReviewItem({
-    tenantId: input.tenantId,
-    kind: input.kind,
-    subjectRef: input.subjectRef,
-    suggestion: input.suggestion,
-    detail: {
-      jobId: input.jobId,
-      technicianRef: input.technicianRef,
-      // Omitted entirely when absent, so a job-scoped item carries no null
-      // visit bounds for the open-gap reader to trip over.
-      ...(input.startsAtLocal ? { startsAtLocal: input.startsAtLocal } : {}),
-      ...(input.endsAtLocal ? { endsAtLocal: input.endsAtLocal } : {}),
-      ...(input.escalatedFromNudge ? { escalatedFromNudge: input.escalatedFromNudge } : {}),
-      ...(input.agentContext ? { agentContext: input.agentContext } : {}),
-    },
-  });
-}
-
+// (`flagNudgeGap` stood here until build 6 Phase 1. It opened a gap's manager
+// item at most ONCE PER SUBJECT — EVER (any-status dedup: a gap's subject never
+// recurs, so a resolved item must not re-open), and carried the planner's
+// handoff sentence plus `detail.escalatedFromNudge` and `detail.agentContext`.
+// Its only caller was `escalate`, which is deleted, so nothing files a gap item
+// any more. EVERY ITEM EVER FILED STAYS — the rows, the two any-status unique
+// indexes, `escalated_from_nudge`, list_pending_reviews and the board all read
+// unchanged; only the writer is gone. `upsertOpenReviewItem` remains the way
+// every other kind is opened.)
 
 // The watcher's batched cap pre-filter (final-review finding): which of these
 // subjects were EVER flagged, any status? Without it, stale flagged-but-
 // unfilled gaps re-enter the 72h candidate window every tick and permanently
-// occupy detection — flagNudgeGap's per-item dedup would return
+// occupy detection — the per-item dedup would return
 // null, but only AFTER the cap already spent its slots on them, starving
 // genuinely new gaps for up to three days. Bounded: `in()` over the caller's
 // candidate ids, never a tenant-wide scan.

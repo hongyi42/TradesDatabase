@@ -19,6 +19,39 @@
 //     old asks therefore carry an explicit escalateAfter, reading as "a prior
 //     tick extended this";
 //   - subject_ref pinning and window math live in seedScenario, not here.
+//
+// TWENTY-FOUR ORPHANED EXPECTATIONS, and they are left standing on purpose
+// (build 6 Phase 1, 2026-09-01). `escalate` is deleted, so 10
+// `action: 'escalate'` and 14 `actionNot: 'escalate'` now name a verb the
+// planner cannot speak. COUNTED CAREFULLY, because this file mixes two things
+// that look alike: the `action: 'leave'` at the `history:` seed below is NOT an
+// expectation — it seeds a decision row the world starts with, and a seeded row
+// naming a retired verb keeps working exactly as the `extend` seeds beside it
+// do. Only entries inside `expect` blocks are orphaned. `npm test` stays
+// green — plannerCorpus.test.ts checks the authoring rails, not the verb
+// vocabulary — because these are graded ONLY by the key-gated live runner.
+// What they will score there is knowable without running it: an `action:`
+// expectation can never be met (the model has no such verb), and an
+// `actionNot:` one can never be missed. Re-deciding what each of those
+// scenarios SHOULD expect is judgment about the new vocabulary, not
+// bookkeeping, so it belongs to the build order's evaluation phase — which is
+// an END phase (user ruling 2026-08-29), after build 7. Rewriting them now
+// would be guessing at the answer the evaluation exists to produce.
+//
+// AND A SECOND, QUIETER CASUALTY the action count does not capture. The claim
+// graders — 22 `mustNotClaim` clauses and 1 `mustName`, most of them on
+// scenarios that never mentioned escalate at all — read the planner's
+// MANAGER-FACING copy. plannerEvalGraders2.ts builds their haystack from
+// `[handoff_note, reason]`, and `handoff_note` is now never written. They still
+// grade, against `reason` alone, so they are WEAKENED rather than orphaned —
+// but `reason` is diagnostic copy written for the log (and written for refusals
+// too), not product copy read by a person. A blame-phrase check over `reason`
+// is measuring a different thing than the one these clauses were authored
+// against. The evaluation phase should read this note as its inventory: 24
+// action expectations that cannot be met or missed, plus 23 claim clauses whose
+// subject no longer exists. (The separate scripts/planner-eval/ harness gates
+// wholly on the note and so grades nothing at all now — but its scenarios live
+// in scripts/planner-eval/scenarios.mjs, not here.)
 
 import type { Offset, ScenarioWorld, SimMoneyKind } from './plannerSim.js';
 

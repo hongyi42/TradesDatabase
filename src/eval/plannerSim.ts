@@ -580,11 +580,10 @@ export async function runTick(
   const planner = await runPlanner(nowIso, 'live', {
     listTenants,
     tools: [...TEAM_LEAD_TOOL_SCHEMAS],
-    // Load-bearing no-ops: .env carries a real BOARD_BOT_TOKEN, and an
-    // applied escalate would otherwise push a real Telegram line (build 5
-    // moved the heads-up into the planner).
-    notify: async () => {},
-    hasPushToken: () => false,
+    // (Two load-bearing no-ops stood here — `notify` and `hasPushToken` —
+    // because .env carries a real BOARD_BOT_TOKEN and an applied escalate
+    // would have pushed a real Telegram line. The planner pushes nobody since
+    // build 6 Phase 1, so there is nothing left to stub off.)
     execute: (t, name, args) =>
       dispatchForIdentity(name, args, { tenantId: t, technicianRef: TEAM_LEAD_REF }),
     runLoop: wrapLoop,
@@ -947,6 +946,14 @@ export async function runArc(
         });
         break;
       }
+      // DEAD SINCE BUILD 6 PHASE 1, and kept only because a timeline is data
+      // somebody may still replay. It settles the review item a gap was
+      // ESCALATED into — and `escalate` is deleted, so nothing the planner can
+      // do produces one. Every fresh run therefore takes the `MISSED — no open
+      // item` branch below, which is the honest outcome rather than a failure.
+      // No scenario in plannerCorpus.ts uses this step kind and no test drives
+      // it. Do not build on it: build 6.5 decides how the planner reaches a
+      // human at all, and whatever that turns out to be will need its own step.
       case 'manager_resolve': {
         const nudgeId = seeded.nudgeIds[step.nudgeKey];
         if (!nudgeId) throw new Error(`manager_resolve names unknown nudge key '${step.nudgeKey}'`);

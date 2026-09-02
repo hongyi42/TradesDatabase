@@ -1,8 +1,14 @@
 // Deterministic checks on a handoff note (plan 2026-08-22).
 //
 // Free and exact, so they run first and the judge only sees what survives.
-// The date check imports cleanHandoffNote from dist/ ON PURPOSE: the eval and
+// The date check imports the rail from dist/ ON PURPOSE: the eval and
 // production must share ONE rail, or the eval measures a rail we do not ship.
+//
+// ORPHANED SUBJECT since build 6 Phase 1: `escalate` is deleted, so no NEW run
+// produces a handoff note and every fresh row reaches analyze.mjs with
+// `note === null` — only the action checks fire. Kept working (against the
+// shared rail, now `cleanPlannerText`) so historic run.jsonl files still
+// replay; build 6.5 decides what manager-facing copy it grades instead.
 
 const BLAME = [
   'ignored', 'ignoring', 'unresponsive', 'failed to', 'has not bothered',
@@ -14,14 +20,14 @@ const BLAME = [
 // for the datum (user, 2026-08-21).
 const DISMISSAL = /\bdismiss\b/i;
 
-export function deterministicChecks(note, { dateLabels, mustName = [], mustNotClaim = [], cleanHandoffNote }) {
+export function deterministicChecks(note, { dateLabels, mustName = [], mustNotClaim = [], cleanNote }) {
   const checks = [];
   const add = (name, pass, detail) => checks.push({ name, pass, ...(detail ? { detail } : {}) });
 
   add('present', typeof note === 'string' && note.trim().length > 0);
   if (!note) return checks;
 
-  const { note: railed, why } = cleanHandoffNote(note, dateLabels);
+  const { note: railed, why } = cleanNote(note, dateLabels);
   add('dates-supplied-only', railed !== null, why);
 
   add('length', note.length <= 400, `${note.length} chars`);

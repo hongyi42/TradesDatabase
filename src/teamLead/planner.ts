@@ -1,7 +1,5 @@
 import {
   createNudgeFromObservation,
-  findOpenReviewItem,
-  flagNudgeGap,
   getTenant,
   listAssignmentsByIds,
   listDecisionsForNudges,
@@ -37,9 +35,7 @@ import {
   type Observation,
   type OfficeMessage,
   type NudgeDecisionInput,
-  type ReviewKind,
 } from '../db/index.js';
-import { notifyManagers } from '../calls/notify.js';
 import { runToolLoop, ToolLoopLimitError, type ToolLoopLimit } from '../model/toolLoop.js';
 import type { ForcedToolSpec } from '../model/forcedTool.js';
 import { renderMemoryIndex } from './memory.js';
@@ -97,12 +93,24 @@ export type PlannerMode = 'off' | 'shadow' | 'live';
 // outbound half of the planner's inbox — a message to the PERSON'S ASSISTANT
 // about a gap, queued in office_messages and injected as an agent turn by the
 // office runner. Gap-tied in 5.5 like every other action; general messages
-// wait for build 6's schema rework.
+// wait for build 6.5's schema rework.
+//
+// `escalate` DELETED 2026-09-01 (build 6 Phase 1, user ruling). It was the most
+// lifecycle-shaped verb in the vocabulary — "the person has had their chance"
+// is a STAGE IN A STORY, not a change to the record — and build 6.5 replaces
+// reaching a human with ONE generalized `send` that is not pinned to a gap.
+// Reworking it now would be discarded then. NO MIGRATION: nudge_decisions_
+// action_check stays a superset, so every historic escalate row still reads,
+// mv_escalation_fates / mv_gap_outcomes degrade to historic-only (the honest
+// reading), and `escalate` counts as ATTENTION in the sweep's alarm pass
+// (watchers.ts) so gaps the planner handed over last week do not now read as
+// neglected. The manager's review queue keeps every item ever filed; nothing
+// files a new one. The planner temporarily cannot reach a manager at all —
+// accepted, deliberately: nothing is deployed and evaluation is an end phase.
 export const PLANNER_ACTIONS = [
   'send',
   'hold',
   'close',
-  'escalate',
   'leave',
   'dismiss',
   'recover',
@@ -146,19 +154,11 @@ export interface PlannerDecision {
   // Diagnostic, for the log and for continual learning. NEVER shown to a
   // manager — it is written for refusals too, where it reads as machinery.
   reason: string;
-  // Manager-facing copy, escalate only. Survives the rails or is dropped
-  // whole; a bad note never blocks the handover.
-  handoffNote?: string | null;
   // Technician-facing question, send only — the ENTIRE delivered message since
   // the collapse (plan 2026-08-24): an applied send queues it verbatim. A
   // missing or rail-dropped question refuses the send; no fallback author
   // exists any more.
   questionDraft?: string | null;
-  // Machine-facing briefing for the manager's ASSISTANT, escalate only (the
-  // fourth audience, fourth rail — plan 2026-08-23). Rides the review item's
-  // detail and is pulled via list_pending_reviews; NEVER rendered to a human.
-  // Dropped whole by its rail; a bad briefing never blocks the handover.
-  agentContext?: string | null;
   // Every gap this ONE message covers, send only, INCLUDING nudgeId itself
   // (plan 2026-08-25, Phase 3). Absent or length<=1 = an ordinary single ask.
   // `nudgeId` stays the LEAD: its context prints the (re: …) anchor, and its id
@@ -270,11 +270,14 @@ export interface PlannerSummary {
   applied: number; // decisions the code actually performed — always 0 in shadow
   refusedAtApply: number; // accepted by the rails, then refused by the write
   recorded: number; // rows written to nudge_decisions
-  // Applied escalations opened items but BOARD_BOT_TOKEN was absent, so the
-  // count-only heads-up could not go out (final review: this instrument is
-  // what diagnosed the manager-push-is-dead live defect — it must survive the
-  // push's move here). Present only when true.
-  pushSkipped?: boolean;
+  // (`pushSkipped` lived here until build 6 Phase 1. The count-only manager
+  // heads-up fired on this tick's APPLIED ESCALATIONS and had no other
+  // trigger, so deleting the verb left it structurally unreachable — a
+  // summary key that can never be set is a claim about behaviour that no
+  // longer exists. The live defect it diagnosed (BOARD_BOT_TOKEN unset on
+  // lifecycle-heart, 2026-08-25) is recorded in docs/engineering-memory.md and
+  // stays true of every OTHER manager push; build 6.5 decides whether a
+  // generalized `send` reaching a manager needs an instrument of its own.)
   tenantErrors: number;
   // Tenants whose call died on the LOOP's own limits rather than on the model
   // or the provider. Counted apart because the two need opposite responses: a
@@ -515,20 +518,12 @@ export interface PlannerDeps {
   // standing 't1'-is-not-a-uuid reason.
   listAssignments?: typeof listAssignmentsByIds;
   listJobs?: typeof listJobsWithCustomerByIds;
-  // The escalate handoff's writer (build 5: escalate performs its own handoff
-  // at apply time — the send-collapse pattern; the old sweepLive coupling died
-  // with the sweep's escalation loop). Injected like every other writer.
-  flagNudge?: typeof flagNudgeGap;
-  // The null-flag disambiguator (final review): flagNudge's once-ever dedup
-  // returns null for a subject flagged in ANY status — the manager may hold
-  // the item, or may have settled it long ago. Only an OPEN item justifies
-  // marking the gap handed over.
-  findOpenItem?: typeof findOpenReviewItem;
-  // The count-only manager heads-up, moved here from the sweep (build 5): one
-  // line per tenant per tick when this tick's applied escalations opened
-  // items. Same token gate the sweep used; notifyManagers never throws.
-  notify?: typeof notifyManagers;
-  hasPushToken?: () => boolean;
+  // (`flagNudge`, `findOpenItem`, `notify` and `hasPushToken` were escalate's
+  // four collaborators — the review-item writer, its once-ever-null
+  // disambiguator, and the count-only manager heads-up its applied items
+  // triggered. All four left with the verb in build 6 Phase 1; the planner
+  // writes no review item and pushes no manager. `notifyManagers` itself is
+  // untouched — the call worker is its remaining caller.)
 }
 
 const ctxStr = (n: Nudge, k: string): string | null => {
@@ -720,12 +715,14 @@ export interface GapView {
   // reaches the prompt (a count and the last action); the detail is pulled with
   // recall_decisions. Kept on the view so tests can assert both halves.
   history: NudgeDecision[];
-  // The ONLY temporal strings a handoff note may contain, pre-rendered in the
-  // firm's own clock. Dates are the one class of fact a language model is
-  // measurably bad at (docs/engineering-memory.md, the date-eval arc), so they
-  // stay code-owned even though the rest of the note is written by the model —
-  // and because they are supplied as literals, "did it invent a date" is a
-  // string check rather than a judgment.
+  // The ONLY temporal strings anything the model writes may contain,
+  // pre-rendered in the firm's own clock. Dates are the one class of fact a
+  // language model is measurably bad at (docs/engineering-memory.md, the
+  // date-eval arc), so they stay code-owned even though the rest of the copy is
+  // written by the model — and because they are supplied as literals, "did it
+  // invent a date" is a string check rather than a judgment. (Named for the
+  // handoff note until build 6 Phase 1; the note is deleted, the send question
+  // and the office verbs' agent message ride the same rail.)
   dateLabels: string[];
   block: string;
 }
@@ -736,15 +733,15 @@ export interface GapView {
 // history into every prompt does not scale and raw trajectories are the wrong
 // memory unit anyway. But "you have decided about this before, and here is the
 // last thing you did" has to be present whether or not the model thinks to ask —
-// the failure it prevents (re-deciding from zero every 30 minutes, escalating
-// something already escalated) IS the failure of not knowing there was anything
-// to look up. Push the keys and the existence; pull the content.
+// the failure it prevents (re-deciding from zero every 30 minutes, asking again
+// about something already asked) IS the failure of not knowing there was
+// anything to look up. Push the keys and the existence; pull the content.
 function historyLine(history: NudgeDecision[], nowMs: number, tz: string): string | null {
   if (history.length === 0) return null;
   // The last REAL action, scanning backwards — NOT history[length-1]. Since
   // Phase 3 an `unmentioned` tick mark is appended on nearly every tick, so the
   // final row is almost always filler and rendering it would tell the planner
-  // "last: unmentioned" about a gap it escalated an hour ago. The filler is what
+  // "last: unmentioned" about a gap it sent a question on an hour ago. The filler is what
   // makes the COUNT meaningful; it is not what the model should be reminded of.
   let last: NudgeDecision | undefined;
   for (let i = history.length - 1; i >= 0; i--) {
@@ -876,7 +873,7 @@ export function buildGapView(
   const answeredBy = n.answered_by_capture_id;
   const attributedHere = !!answeredBy && relevant.some((e) => e.capture.id === answeredBy);
 
-  // The temporal vocabulary a handoff note is allowed. asked_at is a REAL UTC
+  // The temporal vocabulary the model is allowed. asked_at is a REAL UTC
   // instant → the firm's zone; endsAtLocal was written naive-local by the
   // watcher → 'UTC' formats it as-is (see clockLabel's header).
   const askedLabel = clockLabel(n.asked_at, tz);
@@ -974,7 +971,11 @@ export function buildGapView(
   if (n.not_before) lines.push(`  currently held until: ${n.not_before}`);
   if (dateLabels.length > 0) {
     lines.push(
-      '  dates you may use in a handover note, VERBATIM and only these:' +
+      // "in a handover note" until build 6 Phase 1, when the note it named was
+      // deleted. The labels are not handover-specific and never were: they are
+      // the ONLY temporal vocabulary any model-written surface may use — the
+      // send question and the office verbs' agent message ride the same rail.
+      '  dates you may use in anything you write, VERBATIM and only these:' +
         (askedLabel ? `\n    the ask went out: ${askedLabel}` : '') +
         (dueLabel ? `\n    the visit was due: ${dueLabel}` : '') +
         (agoLabel
@@ -1156,49 +1157,21 @@ const TEMPORAL_RE = new RegExp(
 );
 
 /**
- * A handoff note the manager may safely read, or null.
- *
- * The note is written by the model and replaces a code-owned template wholesale
- * (user, 2026-08-22), so the only guarantee left is this one — and it is a
- * guarantee precisely because the labels were SUPPLIED as literals: "did it
- * invent a date" reduces to a substring check.
- *
- * Fail-soft on purpose. A rejected note is dropped and the template takes over;
- * it never blocks the escalation, because handing the gap to a person is the
- * point and the sentence is decoration.
- */
-export function cleanHandoffNote(
-  raw: unknown,
-  dateLabels: string[],
-): { note: string | null; why?: string } {
-  const base = cleanPlannerText(raw, dateLabels, { label: 'handoff note', maxLen: 400 });
-  return base;
-}
-
-/**
- * The briefing for the manager's ASSISTANT, or null. Same rail as the handoff
- * note — model-written, date-checked against the supplied labels — sized for a
- * briefing (ids and next steps; uuid hex never matches TEMPORAL_RE, so ids
- * pass the date rail untouched). Never shown to a human: the receiving agent
- * uses it, it does not quote it.
- */
-export function cleanAgentContext(
-  raw: unknown,
-  dateLabels: string[],
-): { note: string | null; why?: string } {
-  return cleanPlannerText(raw, dateLabels, { label: 'agent context', maxLen: 700 });
-}
-
-/**
- * The shared shape of every string the planner writes for a HUMAN.
+ * The shared shape of every string the planner writes for someone else to read.
  *
  * One function because the date rule is the one guarantee that survived making
  * this copy model-written, and a second copy of it would drift from the first.
  * The label is threaded through so a refusal names which surface it came from —
- * "handoff note used a date it was not given" and "question used a date it was
+ * "agent message used a date it was not given" and "question used a date it was
  * not given" are different findings.
+ *
+ * EXPORTED since build 6 Phase 1 for its own tests. Escalate's two wrappers
+ * (`cleanHandoffNote`, the manager's sentence; `cleanAgentContext`, the
+ * briefing for the manager's assistant) were the tested handles on this rail
+ * and died with the verb — so the rail is now pinned where it actually lives
+ * rather than through a surface that no longer exists.
  */
-function cleanPlannerText(
+export function cleanPlannerText(
   raw: unknown,
   dateLabels: string[],
   opts: { label: string; maxLen: number },
@@ -1236,8 +1209,10 @@ function cleanPlannerText(
  * — tells that agent to file the reply with record_field_note "for the job the
  * (re: …) line names", and to ASK rather than guess when it cannot tell. Ship a
  * bare question and a "yeah, all done" reply resolves to no job, the answer is
- * never filed, and the gap escalates telling a manager nobody responded — the
- * false-claim class the escalation rules exist to prevent.
+ * never filed, and the gap sits open with the planner reading it as unanswered
+ * — a record that contradicts what the person actually said. (Until build 6
+ * Phase 1 the consequence was sharper still: the gap ESCALATED, telling a
+ * manager nobody had responded. The verb is gone; the misfiled answer is not.)
  *
  * Code-printed from the row's own context, never model-written, for the same
  * reason the old frame was: it must be exact, and it must not cost the model a
@@ -1261,11 +1236,11 @@ export function anchorLine(n: Nudge): string {
 /**
  * The technician-facing question, or null.
  *
- * Same date rail as the handoff note, and higher stakes: this reaches a person
- * OUTSIDE the office, in their own assistant's voice. Two guards of its own —
- * the length cap below and the footer-impersonation check — since build 5 this
- * file is the message's only author (compose, whose guards these once
- * mirrored, is deleted).
+ * Same date rail every model-written surface rides, and the highest stakes of
+ * them: this reaches a person OUTSIDE the office, in their own assistant's
+ * voice. Two guards of its own — the length cap below and the
+ * footer-impersonation check — since build 5 this file is the message's only
+ * author (compose, whose guards these once mirrored, is deleted).
  */
 // GROUPED SENDS GET MORE ROOM. 500 chars was sized for one question; a message
 // covering three would be refused for length alone, and a refused question
@@ -1395,7 +1370,7 @@ export function validateDecisions(
     if (action === 'dismiss' && view.nudge.status !== 'noticed') {
       push(
         'dismiss on a question that already exists — dismiss is for observations nobody has ' +
-          'been asked about. An asked gap ends with close or escalate.',
+          'been asked about. An asked gap ends with close.',
       );
       continue;
     }
@@ -1433,33 +1408,11 @@ export function validateDecisions(
     // alone simply waits for the planner's next judgment. Inventing a mapping
     // from `hold` to some other write would be code doing the model's
     // judgment for it, which is the one thing this design does not do.
-    // `escalate` PERFORMS ITS OWN HANDOFF since build 5 (plan 2026-08-31 "the
-    // sweep stops deciding", user ruling 3): an applied escalate creates the
-    // manager's review item at apply time, the send-collapse pattern. So it is
-    // legal on ANY stage of an ask — asked (silence), and pending/queued relics
-    // (a stuck row the planner chooses to hand over deliberately; the 18h
-    // automatic handoff is gone and nothing else moves an undeliverable row).
-    if (action === 'escalate' && view.nudge.status === 'noticed') {
-      // An observation has no manager surface: no nudges row exists to mark
-      // 'escalated', and inventing an observation state for "the manager owns
-      // it" is build-6 vocabulary work. Its own copy, honest about that —
-      // nothing hands an observation to anyone by itself.
-      push(
-        'escalate on an observation — nobody was asked and it has no handover path yet. ' +
-          'If it needs someone, send; if it does not, dismiss or leave it.',
-      );
-      continue;
-    }
-    if (action === 'escalate' && !view.jobId) {
-      // flagNudgeGap requires a job id — a review item that cannot name its job
-      // is useless to the manager. Unreachable from the shipped detectors (both
-      // always write jobId); this is the layer that survives one that does not.
-      push(
-        'escalate on a gap whose record does not name its job — a manager item cannot be ' +
-          'filed without one. Leave it.',
-      );
-      continue;
-    }
+    //
+    // (Escalate's two rails stood here — one refusing it on an observation
+    // that has no manager surface, one refusing it on a gap whose record
+    // cannot name the job a review item would have to file against. Both went
+    // with the verb in build 6 Phase 1.)
 
     // THE OFFICE VERBS (build 5.5 Phase 3): a message to the person's
     // ASSISTANT about this gap. Legal on ANY stage the view shows — asking
@@ -1507,8 +1460,8 @@ export function validateDecisions(
     // queues and rides the 18h clock; NO person is a different thing.
     if (action === 'send' && !view.nudge.technician_id) {
       push(
-        'send on a gap with nobody to ask — the record names no person for it. If someone ' +
-          'should be asked, that is a judgment for a handover; otherwise dismiss or leave it.',
+        'send on a gap with nobody to ask — the record names no person for it, so there is ' +
+          'nobody for a question to reach. Dismiss it, or leave it.',
       );
       continue;
     }
@@ -1518,11 +1471,11 @@ export function validateDecisions(
         push(
           st === 'asked'
             ? `${action} on a gap that has ALREADY been asked — the question is with the person ` +
-                'now, so only close, escalate or leave mean anything. To give them more time, ' +
+                'now, so only close or leave mean anything. To give them more time, ' +
                 'simply wait: nothing moves a gap but you.'
             : `${action} on a gap that is already composed and waiting to be delivered — there ` +
-                'is nothing to release. If it has been stuck for hours, escalate it; otherwise ' +
-                'leave it out of your plan.',
+                'is nothing to release. If it has been stuck for hours, close it when the record ' +
+                'settles it; otherwise leave it out of your plan.',
         );
         continue;
       }
@@ -1757,39 +1710,16 @@ export function validateDecisions(
     // `unmentioned` tick mark and none can take a second decision later in the
     // same plan.
     for (const memberId of groupIds ?? []) seen.add(memberId);
-    // Escalate only. A note on any other action would never be read: nothing
-    // else in the ladder puts a sentence in front of a manager.
     // Send only. A question on any other action would be written, stored and
     // never read — compose only ever looks at an applied `send`.
+    //
+    // (The handoff note and the manager's-assistant briefing were railed here
+    // beside it, escalate-only. Both left with the verb in build 6 Phase 1.)
     let questionDraft: string | null = null;
     if (action === 'send') {
       const q = cleanQuestionDraft(d.question, view.dateLabels, groupIds?.length ?? 1);
       questionDraft = q.note;
       if (q.why) noteDrops.push(`${nudgeId}: ${q.why}`);
-    }
-    let handoffNote: string | null = null;
-    let agentContext: string | null = null;
-    if (action === 'escalate') {
-      const cleaned = cleanHandoffNote(d.handoffNote, view.dateLabels);
-      handoffNote = cleaned.note;
-      if (cleaned.why) noteDrops.push(`${nudgeId}: ${cleaned.why}`);
-      // REFUSED HERE, at validate (final review — the plan's original seam):
-      // no fallback author exists, and an apply-only refusal would let shadow
-      // record as valid a decision live refuses, and would deny the live
-      // model the within-tick every-decision-refused signal to rewrite. The
-      // apply-time check stays as the belt.
-      if (!handoffNote) {
-        push(
-          'escalate needs `handoffNote` — it was missing or the date rail dropped it; ' +
-            'rewrite it using only the dates you were given',
-        );
-        continue;
-      }
-      // The briefing rides the same boundary: railed alone, dropped alone —
-      // its loss never blocks the escalate or the manager's sentence.
-      const briefing = cleanAgentContext(d.agentContext, view.dateLabels);
-      agentContext = briefing.note;
-      if (briefing.why) noteDrops.push(`${nudgeId}: ${briefing.why}`);
     }
     decisions.push({
       nudgeId,
@@ -1797,8 +1727,6 @@ export function validateDecisions(
       ...(notBefore ? { notBefore } : {}),
       ...(basis ? { basis } : {}),
       ...(citation ? { citation } : {}),
-      ...(handoffNote ? { handoffNote } : {}),
-      ...(agentContext ? { agentContext } : {}),
       ...(questionDraft ? { questionDraft } : {}),
       ...(groupIds ? { nudgeIds: groupIds } : {}),
       ...(answeredByCaptureId ? { answeredByCaptureId } : {}),
@@ -1948,10 +1876,9 @@ export function buildPlannerUserMessage(
  * a delivery ack, an auto-resolve, another sweep — which is a real event, not a
  * failure, and must not be recorded as success.
  *
- * `escalate` performs its own handoff HERE since build 5 (plan 2026-08-31 "the
- * sweep stops deciding"): flag first, mark second — the F1 order the sweep's
- * loop used, so a flag that throws leaves the row open and next tick's retry
- * converges on flagNudgeGap's once-ever dedup.
+ * (`escalate` performed its own handoff here — flag the manager's item first,
+ * mark the row second — until build 6 Phase 1 deleted the verb. Nothing in this
+ * switch writes a review item any more.)
  */
 async function applyDecision(
   tenantId: string,
@@ -1959,8 +1886,6 @@ async function applyDecision(
   nowIso: string,
   setSchedule: typeof setNudgeSchedule,
   markOutcome: typeof markNudgeOutcome,
-  flagNudge: typeof flagNudgeGap,
-  findOpenItem: typeof findOpenReviewItem,
   markQueued: typeof markNudgeQueued,
   markGroupQueued: typeof markNudgeGroupQueued,
   stampAnswer: typeof setNudgeAnsweredBy,
@@ -1973,7 +1898,7 @@ async function applyDecision(
   setObservation: typeof setObservationStatus = setObservationStatus,
   createFromObservation: typeof createNudgeFromObservation = createNudgeFromObservation,
   createOffice: typeof createOfficeMessage = createOfficeMessage,
-): Promise<{ outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[]; itemOpened?: boolean }> {
+): Promise<{ outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[] }> {
   const moved = 'the gap changed state between the plan and the write — nothing was applied';
   const done = (row: object | null): { outcome: 'applied' | 'refused'; detail?: string } =>
     row ? { outcome: 'applied' } : { outcome: 'refused', detail: moved };
@@ -2147,64 +2072,10 @@ async function applyDecision(
           ['dismissed'],
         ),
       );
-    case 'escalate': {
-      // The whole handoff, at apply time (build 5, user ruling 3). No fallback
-      // author exists any more — the sweep's template died with its loop — so a
-      // missing or date-rail-dropped note refuses the escalate loudly, the
-      // send-needs-question pattern exactly.
-      if (!d.handoffNote) {
-        return {
-          outcome: 'refused',
-          detail:
-            'escalate needs `handoffNote` — it was missing or the date rail dropped it; ' +
-            'rewrite it using only the dates you were given',
-        };
-      }
-      const n = getGap(d.nudgeId);
-      if (!n) return { outcome: 'refused', detail: moved }; // rail-checked; unreachable
-      // Flag FIRST: a throw here (caught by the apply loop) leaves the row
-      // open, and the retry converges on the once-ever dedup.
-      const item = await flagNudge({
-        tenantId,
-        kind: n.kind as ReviewKind,
-        subjectRef: n.subject_ref,
-        jobId: ctxStr(n, 'jobId')!,
-        technicianRef: ctxStr(n, 'technicianRef'),
-        startsAtLocal: ctxStr(n, 'startsAtLocal'),
-        endsAtLocal: ctxStr(n, 'endsAtLocal'),
-        escalatedFromNudge: n.id,
-        suggestion: d.handoffNote,
-        ...(d.agentContext ? { agentContext: d.agentContext } : {}),
-      });
-      // A null flag is the once-ever dedup, which holds across EVERY status —
-      // so it means one of two OPPOSITE things (final review): the manager
-      // still HAS an open item (safe to mark the gap handed over), or they
-      // settled one long ago (nothing exists, none can be created, and the
-      // planner's note was discarded). Only the first may claim a handover;
-      // the second refuses honestly and the gap stays the planner's.
-      if (!item) {
-        const openItem = await findOpenItem(tenantId, n.kind as ReviewKind, n.subject_ref);
-        if (!openItem) {
-          return {
-            outcome: 'refused',
-            detail:
-              'this subject was handed to the manager once before and that item is settled — ' +
-              'a second handover cannot be filed. The gap stays yours: close it, or leave it.',
-          };
-        }
-      }
-      // Any open stage may be handed over (a stuck queued relic included); the
-      // guard still loses to a racing terminal write, which is the honest
-      // outcome — the gap already ended some other way.
-      const marked = await markOutcome(
-        d.nudgeId,
-        tenantId,
-        'escalated',
-        'handed to the manager by the team lead',
-        ['pending', 'queued', 'asked'],
-      );
-      return { ...done(marked), ...(marked && item ? { itemOpened: true } : {}) };
-    }
+    // (`case 'escalate'` stood here: it filed the manager's review item with the
+    // planner's own sentence, disambiguated flagNudgeGap's once-ever null, then
+    // marked the row 'escalated'. Deleted whole in build 6 Phase 1 — see
+    // PLANNER_ACTIONS. Historic 'escalated' rows are untouched and still read.)
     case 'ask_agent':
     case 'inform_agent': {
       // The outbound office verbs (build 5.5 Phase 3): the message row in the
@@ -2313,10 +2184,6 @@ export async function runPlanner(
   const listAssignments = deps.listAssignments ?? listAssignmentsByIds;
   const listJobs = deps.listJobs ?? listJobsWithCustomerByIds;
   const getSettings = deps.getSettings ?? readSettingsTolerantly;
-  const flagNudge = deps.flagNudge ?? flagNudgeGap;
-  const findOpenItem = deps.findOpenItem ?? findOpenReviewItem;
-  const notify = deps.notify ?? notifyManagers;
-  const hasPushToken = deps.hasPushToken ?? (() => !!process.env.BOARD_BOT_TOKEN);
   const tools = deps.tools ?? [];
   const execute = deps.execute;
 
@@ -2853,9 +2720,6 @@ export async function runPlanner(
       let cappedWarned = false; // one line per tenant per tick, not one per gap
       let applied = 0;
       let refusedAtApply = 0;
-      // Applied escalations = review items this tick opened; drives the one
-      // count-only manager heads-up below (moved here from the sweep, build 5).
-      let escalatedApplied = 0;
       for (const d of decisions) {
         // ONE ROW PER GAP, even when one decision covered several (plan
         // 2026-08-25, Phase 3). Each gap's own history has to show its own send,
@@ -2884,8 +2748,12 @@ export async function runPlanner(
           citation: d.citation ?? null,
           confidence: d.confidence,
           reason: d.reason,
-          handoffNote: d.handoffNote ?? null,
-          agentContext: d.agentContext ?? null,
+          // handoff_note / agent_context stay COLUMNS — historic escalate rows
+          // carry them — but NOTHING WRITES THEM any more (build 6 Phase 1).
+          // Their readers are all offline: scripts/agentic-eval/analyze.mjs and
+          // the claim graders in plannerEvalGraders2.ts. `recall_decisions` does
+          // NOT project either one and never did (mcp/server.ts), so the model
+          // has never seen them.
           questionDraft: d.questionDraft ?? null,
         });
         // SHADOW FANS OUT TOO. Missing this would give every sibling an
@@ -2898,7 +2766,7 @@ export async function runPlanner(
           }
           continue;
         }
-        let res: { outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[]; itemOpened?: boolean };
+        let res: { outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[] };
         try {
           const gapRow = views.get(d.nudgeId)?.nudge;
           res = await applyDecision(
@@ -2907,8 +2775,6 @@ export async function runPlanner(
             nowIso,
             setSchedule,
             markOutcome,
-            flagNudge,
-            findOpenItem,
             markQueued,
             markGroupQueued,
             stampAnswer,
@@ -2931,9 +2797,6 @@ export async function runPlanner(
         // comparable with the eval baseline taken before groups existed.
         if (res.outcome === 'applied') applied += 1;
         else refusedAtApply += 1;
-        if (d.action === 'escalate' && res.outcome === 'applied' && res.itemOpened) {
-          escalatedApplied += 1; // only a genuinely OPENED item pings — never an ever-flagged null
-        }
         // The RECORDS count gaps, with each member's own truth: a partial move
         // really did queue the movers, and telling a moved gap's history it was
         // refused is the same class of lie as the reverse.
@@ -3053,31 +2916,12 @@ export async function runPlanner(
       summary.refusedAtApply += refusedAtApply;
       summary.recorded += recorded;
 
-      // ONE count-only manager heads-up per tenant per tick, only when this
-      // tick's applied escalations opened items (moved from the sweep, build 5
-      // — same wording family, same token gate, still once-only by design: a
-      // quiet queue never re-pings). No names/PII; the queue holds the detail.
-      // notifyManagers never throws (its own contract), so no wrap is needed.
-      if (mode === 'live' && escalatedApplied > 0) {
-        if (hasPushToken()) {
-          await notify(
-            tenantId,
-            escalatedApplied === 1
-              ? 'Heads-up: a recent job has an open question on it — it’s waiting in your ' +
-                  'pending reviews whenever you have a minute.'
-              : `Heads-up: ${escalatedApplied} recent jobs have open questions on them — they’re ` +
-                  'waiting in your pending reviews whenever you have a minute.',
-          );
-        } else {
-          // LOUD and recorded, never silent (final review): the unset token is
-          // a standing live defect, and this is the instrument that found it.
-          summary.pushSkipped = true;
-          console.error(
-            `[planner] tenant ${tenantId}: ${escalatedApplied} item(s) opened but BOARD_BOT_TOKEN ` +
-              'is unset — the manager was NOT pinged and the push is once-only by design',
-          );
-        }
-      }
+      // (The count-only manager heads-up stood here — one line per tenant per
+      // tick when this tick's applied escalations opened review items. Its ONLY
+      // trigger was `escalate`, so it left with the verb in build 6 Phase 1
+      // rather than sitting behind a condition that can no longer be true.
+      // Build 6.5 decides how a generalized `send` reaches a manager, and
+      // whether that needs a push of its own.)
 
       name({
         tenantId,

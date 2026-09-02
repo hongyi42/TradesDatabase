@@ -133,12 +133,13 @@ export const OBSERVATION_STALE_HOURS = 72;
 //
 // Adding a new planner action means adding it HERE too. Exported so a test pins
 // exactly that, rather than trusting a future reader to remember. `extend`
-// left the set when the verb retired with the escalation clock (build 5).
+// left the set when the verb retired with the escalation clock (build 5), and
+// `escalate` when the verb was deleted (build 6 Phase 1) — both live on in
+// `attentionActions` below, which is where HISTORIC rows are read.
 export const PLANNER_JUDGMENT_ACTIONS: ReadonlySet<string> = new Set([
   'send',
   'hold',
   'close',
-  'escalate',
   'leave',
   'dismiss',
   'recover',
@@ -753,7 +754,10 @@ export async function runWatchers(
         // the live vocabulary with the clock, but an applied extend recorded
         // BEFORE build 5 was a real judgment, and reclassifying old rows as
         // neglect would shout about gaps the planner deliberately paced.
-        const attentionActions = new Set([...PLANNER_JUDGMENT_ACTIONS, 'extend']);
+        // `escalate` joined it in build 6 Phase 1 for exactly that reason —
+        // an applied escalate handed the gap to a person, and a deleted verb
+        // must not turn last week's handovers into this week's neglect.
+        const attentionActions = new Set([...PLANNER_JUDGMENT_ACTIONS, 'extend', 'escalate']);
         const attendedWithin = (id: string, windowHours: number, leaveCounts: boolean): boolean => {
           if (!decisionsReadable) return false;
           const floor = nowMs - windowHours * 3_600_000;

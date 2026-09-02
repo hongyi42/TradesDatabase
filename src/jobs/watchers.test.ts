@@ -1021,6 +1021,29 @@ describe('the alarm pass', () => {
     expect(ancient.alarms!.asksUnattended).toBe(1); // untouched WITHIN the window
   });
 
+  // ── build 6 Phase 1: a DELETED verb must not become retrospective neglect ──
+  test('a historic escalate still counts as attention, though the verb is gone', async () => {
+    // `escalate` left PLANNER_JUDGMENT_ACTIONS when it was deleted, and joined
+    // `attentionActions` in the same change — exactly as `extend` did when the
+    // escalation clock died. An applied escalate recorded last week WAS a real
+    // judgment (it handed the gap to a person), so reclassifying those rows as
+    // neglect would have the alarm shout about every gap the planner handed
+    // over before this build landed.
+    const escalated = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [askRow()],
+      listDecisions: async () => new Map([['n-old', [applied('escalate', 2)]]]),
+    }));
+    expect(escalated.alarms!.asksUnattended).toBe(0);
+
+    // The control: a word that was never a verb still alarms, which is what
+    // proves the line above is the carve-out and not a broken read.
+    const nonsense = await runWatchers(NOW, 'live', baseDeps({
+      listNudges: async () => [askRow()],
+      listDecisions: async () => new Map([['n-old', [applied('not-a-verb', 2)]]]),
+    }));
+    expect(nonsense.alarms!.asksUnattended).toBe(1);
+  });
+
   test('for observations, leave is looking, not acting (build 4 semantics, moved)', async () => {
     const left = await runWatchers(NOW, 'live', baseDeps({
       listOpenObservations: async () => [obsOld()],
@@ -1143,6 +1166,11 @@ describe('build 5 — the judgment vocabulary', () => {
     expect([...PLANNER_JUDGMENT_ACTIONS].sort()).toEqual([...PLANNER_ACTIONS].sort());
     expect(PLANNER_JUDGMENT_ACTIONS.has('unmentioned')).toBe(false);
     expect(PLANNER_JUDGMENT_ACTIONS.has('extend')).toBe(false); // retired with the clock
+    // Build 6 Phase 1. The COUNT is pinned as well as the equality: two sets
+    // that drift together are still equal, and eight is the number this build
+    // arrives at with escalate deleted.
+    expect(PLANNER_JUDGMENT_ACTIONS.has('escalate')).toBe(false); // deleted, build 6
+    expect(PLANNER_ACTIONS).toHaveLength(8);
   });
 });
 

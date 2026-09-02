@@ -141,7 +141,13 @@ Full watcher semantics + rollout state: engineering-memory §3.
      "Deploy latest commit", then verify the next SCHEDULED run's log.**
      Optional: `GRACE_DAYS` (default 7). `WATCHERS_MODE` (`shadow` | `live`; unset = watcher
      step skipped — the shadow rollout REQUIRES setting this, see engineering-memory §3) and
-     `BOARD_BOT_TOKEN` (live-mode manager pushes; absent = `pushSkipped`, never red).
+     `BOARD_BOT_TOKEN` — **nothing on this cron uses it any more** (build 6 Phase 1,
+     2026-09-01). The planner's count-only manager heads-up fired on applied escalations; the
+     verb was deleted, so the push and its `pushSkipped` summary key went with it. The token is
+     still live on OTHER services — the Calls worker and the web service's board/ops
+     surfaces — and is set per-service, so do not clear it here on the strength of this line.
+     Whether a generalized `send` reaching a manager needs a push of its own is build 6.5's
+     decision.
      `NUDGES_MODE` (`shadow` | `live`; unset = the Stage-1 ladder is off and the watcher
      behaves exactly as Stage 0 — flip only per the Stage-1 rollout in the feature-B plan).
      **THE ASK WINDOW IS GONE** (2026-08-29). Until then, live-mode questions were composed

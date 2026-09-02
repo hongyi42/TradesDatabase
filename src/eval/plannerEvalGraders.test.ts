@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { cleanHandoffNote } from '../teamLead/planner.js';
+import { cleanPlannerText } from '../teamLead/planner.js';
 import { deterministicChecks } from '../../scripts/planner-eval/graders.mjs';
 
 const LABELS = ['Tuesday, Aug 18 at 12:00 PM', '30 hours ago'];
-const opts = (over = {}) => ({ dateLabels: LABELS, cleanHandoffNote, ...over });
+// `cleanHandoffNote` died with `escalate` (build 6 Phase 1). The rail it
+// wrapped did not — this is the same function with the same cap and label, so
+// the checks below still measure exactly what production runs.
+const cleanNote = (note: unknown, labels: string[]) =>
+  cleanPlannerText(note, labels, { label: 'handoff note', maxLen: 400 });
+const opts = (over = {}) => ({ dateLabels: LABELS, cleanNote, ...over });
 const failed = (note: string, o = {}) =>
   deterministicChecks(note, opts(o)).filter((c) => !c.pass).map((c) => c.name);
 

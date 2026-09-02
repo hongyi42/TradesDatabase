@@ -2,9 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { Client } from 'pg';
 import { getClient } from './client.js';
 import {
-  flagNudgeGap,
   openCallActionReview,
   resolveReviewItem,
+  upsertOpenReviewItem,
 } from './reviewItems.js';
 import { createTenant } from './tenants.js';
 
@@ -77,129 +77,55 @@ describe('openCallActionReview', () => {
   });
 });
 
-// Stage-0 watcher flag (plan 2026-08-15 feature A): once per assignment, EVER —
-// the dedup must hold across status changes, not just while the item is open.
-describe('flagNudgeGap — the visit-kind dedup (once per assignment, EVER)', () => {
-  const GAP = {
-    jobId: 'job-watch-1',
-    technicianRef: 'ben-shelton',
-    startsAtLocal: '2026-08-10T15:00:00.000Z',
-    endsAtLocal: '2026-08-10T16:00:00.000Z',
-    suggestion: "Visit for 'Furnace' (Casa) scheduled to end … has no field report",
-  };
-
-  test('first flag opens; detail carries jobId/technicianRef/endsAtLocal', async () => {
-    const item = await flagNudgeGap({ tenantId, kind: 'overdue_visit_gap', subjectRef: 'asg-watch-1', ...GAP });
-    expect(item).not.toBeNull();
-    expect(item?.kind).toBe('overdue_visit_gap');
-    expect(item?.subject_ref).toBe('asg-watch-1');
-    expect(item?.status).toBe('open');
-    expect(item?.suggestion).toBe(GAP.suggestion);
-
-    const row = await pg.query<{ detail: Record<string, unknown> }>(
-      'select detail from review_items where id = $1',
-      [item!.id],
-    );
-    expect(row.rows[0].detail).toEqual({
-      jobId: GAP.jobId,
-      technicianRef: GAP.technicianRef,
-      startsAtLocal: GAP.startsAtLocal,
-      endsAtLocal: GAP.endsAtLocal,
-    });
-  });
-
-  test('second flag on the same assignment returns null (not a second row)', async () => {
-    expect(await flagNudgeGap({ tenantId, kind: 'overdue_visit_gap', subjectRef: 'asg-watch-1', ...GAP })).toBeNull();
-    const count = await pg.query<{ n: number }>(
-      "select count(*)::int as n from review_items where tenant_id = $1 and kind = 'overdue_visit_gap' and subject_ref = 'asg-watch-1'",
-      [tenantId],
-    );
-    expect(count.rows[0].n).toBe(1);
-  });
-
-  test('dedup holds ACROSS status: resolve, then re-flag → null (never re-opens)', async () => {
-    const item = await flagNudgeGap({ tenantId, kind: 'overdue_visit_gap', subjectRef: 'asg-watch-2', ...GAP });
-    expect(item).not.toBeNull();
-    await resolveReviewItem(item!.id, tenantId, 'resolved', 'field report arrived');
-    expect(await flagNudgeGap({ tenantId, kind: 'overdue_visit_gap', subjectRef: 'asg-watch-2', ...GAP })).toBeNull();
-    const open = await pg.query<{ n: number }>(
-      "select count(*)::int as n from review_items where tenant_id = $1 and kind = 'overdue_visit_gap' and subject_ref = 'asg-watch-2' and status = 'open'",
-      [tenantId],
-    );
-    expect(open.rows[0].n).toBe(0); // the resolved item stayed closed
-  });
-
-  test('the dedup is tenant-scoped: tenant B flags the SAME assignment id independently', async () => {
-    tenantB = (await createTenant(`ri-tenant-b-${Date.now()}`)).id;
-    // Tenant A flagged 'asg-watch-1' above — that must never suppress B's flag.
-    const item = await flagNudgeGap({ tenantId: tenantB, kind: 'overdue_visit_gap', subjectRef: 'asg-watch-1', ...GAP });
-    expect(item).not.toBeNull();
-    expect(item?.tenant_id).toBe(tenantB);
-  });
-});
-
-describe('flagNudgeGap — the kind-generic flagger (plan 2026-08-19 Phase 4)', () => {
-  test('a JOB-scoped gap flags with no visit window, and detail omits the keys entirely', async () => {
-    // A cost gap has no startsAtLocal/endsAtLocal. They must be ABSENT from
-    // detail, not stored as nulls — the open-gap reader fail-closes on
-    // malformed detail, and a null there would read as malformed.
-    const item = await flagNudgeGap({
+// (Two describes stood here — 'flagNudgeGap — the visit-kind dedup' and
+// 'flagNudgeGap — the kind-generic flagger', seven tests over the app-level
+// once-per-subject-EVER guard. `flagNudgeGap` was `escalate`'s writer and both
+// died together in build 6 Phase 1. What it guarded did NOT die: the two
+// any-status unique indexes are still on the table, they still make a gap item
+// once-ever, and they are now the ONLY thing that does — so they are pinned
+// here directly, against raw inserts, with no application code in the path.)
+describe('the gap kinds stay once-per-subject-EVER at the DB level', () => {
+  test.each([
+    ['overdue_visit_gap', 'uq_review_items_overdue_gap_ever'],
+    ['job_cost_gap', 'uq_review_items_job_cost_gap_ever'],
+  ])('%s: a second row for the same subject is refused by %s', async (kind, index) => {
+    const subject = `subj-${kind}-${Date.now()}`;
+    const first = await upsertOpenReviewItem({
       tenantId,
-      kind: 'job_cost_gap',
-      subjectRef: 'job-cost-1',
-      jobId: 'job-cost-1',
-      technicianRef: 'ben-shelton',
-      suggestion: 'What did this job cost in parts?',
+      kind: kind as 'overdue_visit_gap' | 'job_cost_gap',
+      subjectRef: subject,
+      suggestion: 'the first and only item this subject ever gets',
+      detail: { jobId: 'job-1', technicianRef: 'ben-shelton' },
     });
-    expect(item).not.toBeNull();
-    const row = await pg.query<{ detail: Record<string, unknown>; kind: string }>(
-      'select kind, detail from review_items where id = $1',
-      [item!.id],
-    );
-    expect(row.rows[0].kind).toBe('job_cost_gap');
-    expect(row.rows[0].detail).toEqual({ jobId: 'job-cost-1', technicianRef: 'ben-shelton' });
-    expect('startsAtLocal' in row.rows[0].detail).toBe(false);
-    expect('endsAtLocal' in row.rows[0].detail).toBe(false);
-  });
-
-  test('once-ever holds per KIND, and the DB index is the backstop', async () => {
-    // App-level dedup: a second flag on the same job returns null.
-    expect(
-      await flagNudgeGap({
-        tenantId,
-        kind: 'job_cost_gap',
-        subjectRef: 'job-cost-1',
-        jobId: 'job-cost-1',
-        technicianRef: null,
-        suggestion: 'again',
-      }),
-    ).toBeNull();
-    // And the DB refuses it even if the app guard is bypassed — the race loses
-    // loudly instead of double-flagging.
+    expect(first.status).toBe('open');
+    // ACROSS STATUS, which is the whole point: settling the item must not let
+    // the subject be flagged again. The open-only partial index would.
+    await resolveReviewItem(first.id, tenantId, 'resolved', 'field report arrived');
     await expect(
       pg.query(
         `insert into review_items (tenant_id, kind, subject_ref, suggestion)
-         values ($1, 'job_cost_gap', 'job-cost-1', 'bypass')`,
-        [tenantId],
+         values ($1, $2, $3, 'a second item for a subject already flagged once')`,
+        [tenantId, kind, subject],
       ),
-    ).rejects.toThrow(/uq_review_items_job_cost_gap_ever|duplicate key/);
+    ).rejects.toThrow(new RegExp(`${index}|duplicate key`));
   });
 
-  test('the two kinds do not collide on the same subject id', async () => {
-    // Subject namespaces differ per kind (assignment vs job), so the same
-    // string under a different kind is a different gap.
-    const visit = await flagNudgeGap({
-      tenantId,
-      kind: 'overdue_visit_gap',
-      subjectRef: 'job-cost-1',
-      jobId: 'job-watch-1',
-      technicianRef: 'ben-shelton',
-      startsAtLocal: '2026-08-10T15:00:00.000Z',
-      endsAtLocal: '2026-08-10T16:00:00.000Z',
-      suggestion: 'visit copy',
+  test('the dedup is tenant-scoped and kind-scoped', async () => {
+    tenantB = (await createTenant(`ri-tenant-b-${Date.now()}`)).id;
+    const subject = `subj-shared-${Date.now()}`;
+    const a = await upsertOpenReviewItem({
+      tenantId, kind: 'overdue_visit_gap', subjectRef: subject, suggestion: 'A',
     });
-    expect(visit).not.toBeNull();
-    expect(visit?.kind).toBe('overdue_visit_gap');
+    // Another firm's identical subject id is a different gap…
+    const b = await upsertOpenReviewItem({
+      tenantId: tenantB, kind: 'overdue_visit_gap', subjectRef: subject, suggestion: 'B',
+    });
+    // …and so is the same id under another kind (assignment ids and job ids
+    // live in different namespaces).
+    const other = await upsertOpenReviewItem({
+      tenantId, kind: 'job_cost_gap', subjectRef: subject, suggestion: 'C',
+    });
+    expect(new Set([a.id, b.id, other.id]).size).toBe(3);
+    expect(b.tenant_id).toBe(tenantB);
   });
-
 });

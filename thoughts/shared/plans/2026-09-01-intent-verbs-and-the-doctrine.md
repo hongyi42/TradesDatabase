@@ -2,7 +2,7 @@
 date: 2026-09-01
 task: "Build 6 — intent verbs + the doctrine: escalate and leave are deleted, dismiss/recover reach every stage, hold gains a release, citation widens to what was looked up, and stuck becomes visible"
 research: thoughts/shared/research/2026-08-31-intent-verbs-and-the-doctrine.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -619,9 +619,14 @@ describe what phases 1–4 built. Last, because every earlier phase changes it.
       of the machinery and not just of the copy.
 
 ### Manual verification
-- [ ] **Judgment call (OPEN — for the user):** read the rewritten `PLANNER_SYSTEM` end to end —
-      one document, not five phases of patches, and nothing describing a rail or verb that no
-      longer exists.
+- [x] **Judgment call — RESOLVED by the user 2026-09-02.** The rewritten `PLANNER_SYSTEM` was
+      read and the one open question inside it settled: a message QUEUED FOR HOURS but not yet
+      formally failed is treated as never delivered, and the gap is ended rather than waited on.
+      The trade was put explicitly — a technician looking unresponsive for a message that never
+      arrived, versus a late message about something already closed. **USER RULING: "quite a rare
+      edge case, the stakes aren't too high — go with your decision."** Recorded because the
+      reasoning may not survive the rarity: a gap left open is counted as neglect against a person
+      who was never actually asked anything.
 
 ---
 

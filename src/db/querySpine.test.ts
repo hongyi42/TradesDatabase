@@ -314,7 +314,7 @@ describe('query_spine — bounds', () => {
 });
 
 describe('query_spine — the view surface is closed', () => {
-  test('spine_reader holds SELECT on exactly the fourteen views and nothing else', async () => {
+  test('spine_reader holds SELECT on exactly the fifteen views and nothing else', async () => {
     // A new table must not become readable by default. This is the test that
     // fails when someone adds a grant without thinking.
     // v_money_events added 2026-08-15 (money-ledger plan, manager-only money
@@ -329,6 +329,13 @@ describe('query_spine — the view surface is closed', () => {
     // the ONLY honest source for when somebody left, since technicians
     // .updated_at is bumped by any edit. Same recorded acceptance: a firm's own
     // roster history is data its managers already own).
+    // v_office_messages added 2026-09-02 (build 7, user ruling): the planner
+    // could look back at its decisions, its notes, its observations and its
+    // questions — its own INBOX was the one thing it could not. And because
+    // spine_read is a CITABLE tool, this is also what lets a seat agent's words
+    // close a gap, superseding the 5.5 rule that office answers never fill the
+    // record. Manager visibility through the shared catalog is the same
+    // recorded acceptance as v_observations and v_roster_events.
     const { rows } = await pg.query(
       `select table_name from information_schema.table_privileges
         where grantee = 'spine_reader' order by table_name`,
@@ -342,6 +349,7 @@ describe('query_spine — the view surface is closed', () => {
       'v_money_events',
       'v_nudges',
       'v_observations',
+      'v_office_messages',
       'v_review_items',
       'v_roster_events',
       'v_schedule',

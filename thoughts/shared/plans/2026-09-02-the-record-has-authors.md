@@ -3,10 +3,16 @@ date: 2026-09-02
 task: "Build 7 — the record has authors: the planner opens its own observations, and a seat's inform can become one"
 research: thoughts/shared/research/2026-09-02-the-detectors-report.md
 status: draft
-supersedes: nothing
+supersedes: thoughts/shared/plans/2026-08-31-the-planners-inbox.md (the build-5.5 rule that office-channel answers NEVER fill the record — overturned by user ruling 2026-09-02, see Decisions)
 ---
 
-**`supersedes:` — nothing.** This plan overturns no earlier document. It implements §6a entry 7 as
+**`supersedes:` — build 5.5's inbox plan, in ONE respect.** That build established that an answer
+arriving on the office channel *informs* the planner's judgment and never *fills* the record; the
+doctrine said so in as many words and §6a entry 6.5 recorded it. The user overturned it on
+2026-09-02, mid-Phase-3 (reasoning in Decisions below). Nothing else in that plan is affected —
+the bucket, the drain, the desk and the three seat tools all stand. Named here because the
+sentence it replaces was deliberate, and a future reader finding the old text in that plan needs
+to know which way the decision went. It implements §6a entry 7 as
 reshaped by the user on 2026-09-02; the reshape is recorded in the research doc's ADDENDUM and in
 §6a, and the entries it corrects (the "15 staged tokens" count, the dead-end kinds, the
 `query_spine` residue) were corrected in place there rather than superseded.
@@ -60,6 +66,34 @@ the planner can turn into a standing item instead of a message read once and los
   `v_observations` (which selects no `context`), and is not a citation source. A date in a note
   still cannot reach a person: a message carrying it must pass that gap's own `dateLabels`. Phase 2
   pins exactly that, both directions.
+- **The planner can read its own inbox — `v_office_messages`** — USER RULING 2026-09-02, raised
+  as a question against Phase 3's doctrine ("Shouldn't the planner be able to read anything?").
+  There was no principled reason for the gap: no sensitivity column, no manager-only concept, and
+  bodies less sensitive than `v_captures`, which is already exposed. It was simply the one thing
+  the planner could not look back at, next to its own decisions, notes, observations and questions.
+- **A seat's words may CLOSE a gap — the 5.5 rule is superseded** — USER RULING 2026-09-02, in the
+  user's own words: *"The planner already gets to consider whether or not a gap should exist. Then
+  they should naturally get to just close the gap with any information, even the messages from the
+  seats, because they already get to kill a gap with no information. Also, when a planner needs
+  information from the seat agents, chances are the information is not obtainable from the record,
+  or else the planner would've just gotten it from the record."* One asymmetry recorded so the
+  reasoning survives scrutiny: `dismiss` (kill with no information) and `close` (the hole is
+  filled) are different claims, so this is not parity — it is that a planner trusted to end a gap
+  outright is trusted to weigh a technician's relayed report. **What does NOT widen:** a citation
+  from a message stamps no capture id, so `mv_gap_outcomes.closed_by_technician` is unmoved —
+  build 6 Phase 4's rule that widening what may be CITED must never widen what may be COUNTED.
+- **The shown messages are citable directly; the block is not a lookup** — USER CHOICE 2026-09-02.
+  The rail's own logic is "you may quote what you were actually shown", and a gap's evidence lines
+  are already citable with no lookup, so this matches the precedent rather than inventing one.
+  BODIES only: not the block's framing (our words, not anybody's) and **not the desk pairs**, which
+  are answers given in the planner's own name — quoting those is the self-citation the rail exists
+  to prevent. Older messages stay reachable the ordinary way, through `spine_read`.
+- **The doctrine states capabilities, it does not push them** — USER CORRECTION 2026-09-02, and it
+  caught a violation of a ruling already on the record. §6a entry 4 says a planner-opened
+  observation is *"a CAPABILITY, not a doctrine push: nothing encourages it (the job-notepad
+  posture — 'nothing tells you to write one')"*. Phase 3's first draft pushed in three places
+  (*"if one is worth keeping, observe it"*, *"say so while you can see it"*, *"you should when"*).
+  All three now end the way the notepad does: **Nothing tells you to make one.**
 - **`fromMessageId` is validated against THIS tick's unread ids** — implementation decision, from
   the review. It renders as provenance ("from a message from `<ref>`"), so an unchecked
   model-supplied id would let the planner attribute its own noticing to a person — the exact trust

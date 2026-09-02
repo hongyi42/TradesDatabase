@@ -1344,6 +1344,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "office_messages_in_reply_to_fkey"
+            columns: ["in_reply_to"]
+            isOneToOne: false
+            referencedRelation: "v_office_messages"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "office_messages_technician_id_fkey"
             columns: ["technician_id"]
             isOneToOne: false
@@ -2957,6 +2964,72 @@ export type Database = {
           technician_ref: string | null
         }
         Relationships: []
+      }
+      v_office_messages: {
+        Row: {
+          body: string | null
+          created_at: string | null
+          delivered_at: string | null
+          direction: string | null
+          from_ref: string | null
+          id: string | null
+          in_reply_to: string | null
+          kind: string | null
+          nudge_id: string | null
+          read_at: string | null
+          status: string | null
+          tier: string | null
+          to_ref: string | null
+          via: string | null
+        }
+        Insert: {
+          body?: string | null
+          created_at?: string | null
+          delivered_at?: string | null
+          direction?: string | null
+          from_ref?: string | null
+          id?: string | null
+          in_reply_to?: string | null
+          kind?: string | null
+          nudge_id?: string | null
+          read_at?: string | null
+          status?: string | null
+          tier?: string | null
+          to_ref?: string | null
+          via?: string | null
+        }
+        Update: {
+          body?: string | null
+          created_at?: string | null
+          delivered_at?: string | null
+          direction?: string | null
+          from_ref?: string | null
+          id?: string | null
+          in_reply_to?: string | null
+          kind?: string | null
+          nudge_id?: string | null
+          read_at?: string | null
+          status?: string | null
+          tier?: string | null
+          to_ref?: string | null
+          via?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "office_messages_in_reply_to_fkey"
+            columns: ["in_reply_to"]
+            isOneToOne: false
+            referencedRelation: "office_messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "office_messages_in_reply_to_fkey"
+            columns: ["in_reply_to"]
+            isOneToOne: false
+            referencedRelation: "v_office_messages"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       v_review_items: {
         Row: {

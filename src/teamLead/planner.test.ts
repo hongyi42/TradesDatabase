@@ -1774,6 +1774,57 @@ describe('live mode — the decision becomes a write, and the write becomes the 
     expect(resolution).not.toContain('answered —');
   });
 
+  // BUILD 7 FINAL REVIEW. `planner_observation` is the first kind whose hole no
+  // code-computed fact can speak to — it is whatever sentence the planner wrote.
+  // Money left in the record-basis chain meant a deposit landing on the attached
+  // job authorised closing "the customer sounded ready to walk" ON THE RECORD,
+  // citing the ledger. The other two facts stay: a cost gap's ledger row IS its
+  // hole, and a cancelled job really does end anything asked about it.
+  test('money does NOT authorise a record-basis close on a planner observation', () => {
+    const observation = {
+      ...nudge(),
+      kind: 'planner_observation',
+      status: 'noticed',
+      context: { note: 'the customer sounded ready to walk', jobId: 'j1' },
+    } as never;
+    const view = buildGapView(
+      observation,
+      Date.parse(NOW),
+      [],
+      false,
+      new Set(),
+      [],
+      [moneyRow('2026-08-15T13:00:00.000Z')] as never,
+    );
+    // The money line IS rendered — the planner still sees the fact and may weigh
+    // it. What it may not do is call it the answer.
+    expect(view.moneyOnRecord).toBeTruthy();
+    const { decisions, dropped } = validateDecisions(
+      { decisions: [{ nudgeId: 'o1', action: 'close', basis: 'record', confidence: 'high', reason: 'they paid' }] },
+      new Map([['o1', view]]),
+      Date.parse(NOW),
+    );
+    expect(decisions).toHaveLength(0);
+    expect(dropped[0].why).toContain('close on the record when the record is not filled');
+    // …and the SAME money on a detector kind still closes, so this narrowed the
+    // rail rather than breaking it.
+    const detector = buildGapView(
+      nudge(),
+      Date.parse(NOW),
+      [],
+      false,
+      new Set(),
+      [],
+      [moneyRow('2026-08-15T13:00:00.000Z')] as never,
+    );
+    const ok = validateDecisions(
+      { decisions: [{ nudgeId: 'n1', action: 'close', basis: 'record', confidence: 'high', reason: 'they paid' }] },
+      new Map([['n1', detector]]),
+      Date.parse(NOW),
+    );
+    expect(ok.decisions).toHaveLength(1);
+  });
+
   test('money is NOT quotable as evidence — the citation rail refuses it', async () => {
     // evidenceText stays capture text only. A model that tries to quote the
     // money line as somebody's words gets refused, which is what keeps the
@@ -5957,7 +6008,11 @@ describe('observe — the planner opens its own observation (build 7)', () => {
     // same rows. Asserted as the whole-block invariant, not one phrasing, so
     // the next line that reaches for "this job" fails here too.
     expect(block).not.toContain('this job');
-    expect(block).toContain('notes: NO notes have landed on the record since');
+    // NO notes line AT ALL for a jobless row (final review). The evidence read
+    // is job-scoped, so nothing was ever looked at — printing "no notes have
+    // landed on the record" would assert a firm-wide negative from a query that
+    // never ran. Gating the WORDING (the first fix) still made the claim.
+    expect(block).not.toContain('notes: NO notes have landed');
     // …and a row that DOES name a job still says "this job".
     const withJob = buildGapView(nudge(), Date.parse(NOW), [], false, new Set()).block;
     expect(withJob).toContain('NO notes have landed on this job since');

@@ -476,11 +476,13 @@ export const SUBMIT_PLAN_TOOL: ForcedToolSpec = {
             jobId: {
               type: 'string',
               description:
-                "For 'observe': the job this is about, copied exactly from a gap's `job id:` " +
-                'line. Optional, and worth giving whenever there is one — with it, the ' +
-                "observation carries that job's notes and money on the list, the same way a " +
-                'gap does. Leave it out for something that is not about one job. An id that is ' +
-                'not copied from a `job id:` line is refused.',
+                "For 'observe': the job this is about — a real job id, copied exactly from a " +
+                "gap's `job id:` line or from something you looked up. Optional, and worth " +
+                "giving whenever there is one: with it the observation carries that job's " +
+                'notes and money on the list, the same way a gap does. Leave it out for ' +
+                'something that is not about one job. Only the SHAPE is checked, so an id ' +
+                'that is not a real job is not refused — it simply attaches nothing, and the ' +
+                'observation reads as though it names a job it does not.',
             },
             fromMessageId: {
               type: 'string',

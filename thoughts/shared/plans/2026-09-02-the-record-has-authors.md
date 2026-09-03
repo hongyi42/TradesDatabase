@@ -2,7 +2,7 @@
 date: 2026-09-02
 task: "Build 7 — the record has authors: the planner opens its own observations, and a seat's inform can become one"
 research: thoughts/shared/research/2026-09-02-the-detectors-report.md
-status: draft
+status: complete
 supersedes: thoughts/shared/plans/2026-08-31-the-planners-inbox.md (the build-5.5 rule that office-channel answers NEVER fill the record — overturned by user ruling 2026-09-02, see Decisions)
 ---
 
@@ -392,6 +392,36 @@ that, like every action expectation here, it grades only under the key-gated liv
 
 ---
 *Manual verification is non-empty: PAUSE after this phase and wait for the user.*
+
+## Final gate — RUN 2026-09-02, five findings, all resolved
+
+`/code-review high` over the combined 4-commit diff. Per-phase reviews could not
+see these; three were defects, one was a false promise, one is recorded.
+
+1. **`v_office_messages` exposed `to_agent` bodies** — the planner's own send text and desk
+   answers, readable via `spine_read`, which is CITABLE. That is the self-citation laundering
+   build 6 Phase 4 found by live probe and shut, reopened by a view added in the same commit that
+   excluded desk pairs from `readText` for exactly that reason. FIXED: the view is
+   `direction = 'to_planner'` only — the INBOX, which is what the ruling asked for. Outbound stays
+   in the build-6.5 block. Mutation-verified: removing the filter fails the new test.
+2. **Money authorised a record-basis close on a planner observation.** `planner_observation` is the
+   first kind whose hole no code-computed fact can speak to, so a deposit landing on the attached
+   job would have closed "the customer sounded ready to walk" ON THE RECORD, citing the ledger.
+   FIXED: money is excluded for that kind only; `recordFilled` and the moot fact stay, because
+   both are genuinely about the thing the gap names.
+3. **A jobless observation asserted a firm-wide negative** — "NO notes have landed on the record",
+   from a job-scoped query that never ran. The first fix gated the WORDING and still made the
+   claim. FIXED: the line is omitted entirely when there is no job.
+4. **The `jobId` schema promised a rail that does not exist** ("an id not copied from a `job id:`
+   line is refused"); validate checks shape only. FIXED by making the text true and naming the
+   consequence, rather than adding a rail that would refuse a job legitimately looked up.
+5. **RECORDED, not fixed: `v_observations` cannot identify a planner row usefully.** `author` is
+   there, but the note lives in unselected `context` and `subject_ref` is now random — so the
+   doctrine's "find dismissed ones in v_observations and name the id" is weakest for exactly the
+   rows this build creates. Adding `note` to the view would make the planner's own prose citable,
+   which is finding 1 again by another door. Note that `dismiss_reason` (v_observations) and
+   `resolution` (v_nudges) are ALREADY planner-written and already exposed — so the self-citation
+   surface is wider than this build, and closing it properly is evaluation-phase work.
 
 ## Final gate
 

@@ -1521,9 +1521,15 @@ export function buildGapView(
       // observation may name no job, and this line asserted one — the exact
       // failure the `about:` line was made conditional to avoid, one line
       // apart and newly reachable for the same rows.
-      lines.push(
-        `  notes: NO notes have landed on ${jobId ? 'this job' : 'the record'} since ${since}`,
-      );
+      // ONLY WHEN THERE IS A JOB TO SAY IT ABOUT. The evidence read is
+      // job-scoped, so for a jobless observation nothing was ever looked at —
+      // "no notes have landed on the record" would be a FIRM-WIDE negative
+      // asserted from a query that never ran. Saying nothing is the honest
+      // rendering, and it is what the first fix here should have done: gating
+      // the WORDING still made the claim.
+      if (jobId) {
+        lines.push(`  notes: NO notes have landed on this job since ${since}`);
+      }
     } else {
       lines.push(`  evidence since ${since}:`);
       if (attributedHere) {
@@ -2556,7 +2562,20 @@ export function validateDecisions(
         // gap, and it does not ANSWER anything — a gone subject ends the gap
         // 'cancelled' whatever incidental money landed beside it.
         // moneyOnRecord MUST stay in this chain (plan review finding 1).
-        const fact = view.recordFilled ?? view.mootFact ?? view.moneyOnRecord;
+        // MONEY CANNOT SPEAK TO A PLANNER'S OWN NOTE (build 7 final review).
+        // The other two facts are ABOUT the thing the gap names — a cost gap's
+        // ledger row IS its hole, and a cancelled job really does end anything
+        // asked about it. Money is different: it says a payment landed on the
+        // attached job, which answers whatever the planner wrote only by
+        // coincidence. Left in the chain, a deposit on job X would authorise
+        // closing "the customer sounded ready to walk" on the record, citing
+        // the ledger. `planner_observation` is the first kind whose hole no
+        // code-computed fact can speak to, so this is new ground rather than a
+        // regression.
+        const fact =
+          view.recordFilled ??
+          view.mootFact ??
+          (view.nudge.kind === 'planner_observation' ? null : view.moneyOnRecord);
         if (!fact) {
           push('close on the record when the record is not filled');
           continue;

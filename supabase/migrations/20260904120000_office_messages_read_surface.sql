@@ -55,7 +55,23 @@ create or replace view v_office_messages as
          m.read_at,
          m.delivered_at
     from office_messages m
-   where m.tenant_id = current_setting('spine.tenant_id')::uuid;
+   where m.tenant_id = current_setting('spine.tenant_id')::uuid
+     -- THE INBOX ONLY, and this filter is a RAIL, not a scoping preference.
+     --
+     -- `to_agent` bodies are the PLANNER'S OWN WORDS — its `send` text and the
+     -- desk answers written in its name. `spine_read` is in CITABLE_TOOLS, so
+     -- without this line the planner could read its own prose back and quote it
+     -- into an evidence-basis close: the exact laundering build 6 Phase 4 found
+     -- by live probe (write_job_note -> read_job_note -> close) and shut with
+     -- CITABLE_TOOLS. This same build excludes desk pairs from `readText` and
+     -- keeps `read_memory` out of CITABLE_TOOLS for that one reason; a view
+     -- that reopened the door would have made those two guards decorative.
+     --
+     -- Nothing is lost: what the planner SENT is already summarised for it in
+     -- the outbound block (build 6.5 Phase 5), bounded to 14 days and 12 rows.
+     -- Widening this view to `to_agent` is possible, but only after the
+     -- self-citation question is answered — not as a convenience.
+     and m.direction = 'to_planner';
 
 grant select on v_office_messages to spine_reader;
 -- auto_expose_new_tables grants the publishable keys SELECT on every new entity,

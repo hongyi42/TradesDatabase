@@ -45,22 +45,19 @@ import { hasModelCredentials, assertSpineModelAllowed } from '../model/forcedToo
 //     as-is rather than renumbered: the cron's JSON FIELD NAMES are the stable reference,
 //     and renumbering would silently invalidate every runbook that cites a step number;
 // (7) recompute the current month's per-tenant cost rollup (idempotent);
-// (8) the watcher (plan 2026-08-15 features A+B): deterministic overdue-visit
-//     gap detection + the Stage-1 ladder — runs EVERY tick, gated on
+// (8) the watcher: detection recording observations, the manager-queue
+//     self-clean, and the alarm pass — runs EVERY tick, gated on
 //     WATCHERS_MODE (unset = skipped; 'shadow' = count only; 'live' = act;
 //     anything else = LOUD stepError — a config typo must never be silently
-//     off). NUDGES_MODE gates the ladder within live: unset = 'off' silently
-//     (rung 1 is optional — the Stage-0 behavior needs no new env), 'shadow'
-//     counts would-be nudges, 'live' asks technicians first; any other value
-//     is the same LOUD stepError.
+//     off). NUDGES_MODE is RETIRED (build 5) — it gated rung-1 creation,
+//     which died with build 4; delete the env var at deploy time.
 // (9) the team-lead PLANNER (plan 2026-08-19): one agentic call per firm per
 //     half-hour that decides pacing, closure and escalation — and, since the
 //     collapse (plan 2026-08-24), WRITES the technician's question and queues it
-//     itself. It is the ladder's only model call. Gated on PLANNER_MODE alone —
-//     NOT on NUDGES_MODE;
-// (10) the MUTE check (the collapse): the compose turn that used to sit here is
-//     gone, so a live ladder with a non-live planner mints gaps nobody can ask
-//     about. That state is reported, never made red — a rollback is a choice.
+//     itself. It is the ladder's only model call. Gated on PLANNER_MODE alone;
+// (10) the MUTE check: a live watcher with a non-live planner records
+//     observations nobody can ever ask about, close or escalate (build 5).
+//     That state is reported, never made red — a rollback is a choice.
 // Steps 5 and 7 report `skipped` — not an error — when the cost tables are absent,
 // so a deploy that lands before the migration does not turn the cron red.
 // (The schedule-sheet mirror step retired with the Telegram-schedule series
@@ -109,10 +106,10 @@ export interface LifecycleSummary {
     | { stepError: string };
   watchers: WatchersSummary | { skipped: string } | { stepError: string };
   teamLeadPlanner: PlannerSummary | { skipped: string } | { stepError: string };
-  // The ladder cannot speak (the collapse, plan 2026-08-24): NUDGES_MODE is
-  // live so gaps are being minted, but the PLANNER — the only author of a
-  // question since compose retired — is not. Present only when true, so a
-  // healthy tick's report is unchanged.
+  // The ladder cannot speak: the watcher is live so observations are being
+  // recorded, but the PLANNER — the only author of a question, the only
+  // closer, the only escalator (build 5) — is not running. Present only when
+  // true, so a healthy tick's report is unchanged.
   ladderMute?: string;
   ok: boolean;
 }
@@ -409,27 +406,14 @@ export async function runLifecycle(
   // never read as "watchers quietly off".
   let watchers: LifecycleSummary['watchers'];
   const watchersMode = process.env.WATCHERS_MODE;
-  // NUDGES_MODE: unset is a VALID state ('off' — rung 1 simply not enabled,
-  // unlike WATCHERS_MODE where unset means the whole step is dark), but a
-  // typo is the same loud failure. Checked only when the step actually runs.
-  const nudgesModeRaw = process.env.NUDGES_MODE;
-  const nudgeMode =
-    !nudgesModeRaw ? ('off' as const)
-    : nudgesModeRaw === 'shadow' || nudgesModeRaw === 'live' ? nudgesModeRaw
-    : null;
   if (!watchersMode) {
     watchers = { skipped: 'WATCHERS_MODE unset (shadow|live)' };
   } else if (watchersMode !== 'shadow' && watchersMode !== 'live') {
     watchers = { stepError: `WATCHERS_MODE must be 'shadow' or 'live', got '${watchersMode}'` };
     ok = false;
-  } else if (nudgeMode === null) {
-    watchers = {
-      stepError: `NUDGES_MODE must be 'shadow' or 'live' when set, got '${nudgesModeRaw}'`,
-    };
-    ok = false;
   } else {
     try {
-      const summary = await (deps.runWatchers ?? runWatchers)(nowIso, watchersMode, {}, nudgeMode);
+      const summary = await (deps.runWatchers ?? runWatchers)(nowIso, watchersMode, {});
       watchers = summary;
       // EVERY tenant failing is systemic (DB down, bad schema), not row blips —
       // the pairing-sweep detector shape.
@@ -456,17 +440,14 @@ export async function runLifecycle(
   // multiple of PLANNER_TICK_MINUTES precisely so this can never filter out a
   // tick some firm was due for.
   //
-  // PLANNER_MODE follows the NUDGES_MODE contract exactly: unset is a VALID
-  // 'off' (a cron deployed before the var is chosen must not go red), and any
-  // other value is a LOUD stepError, because a config typo must never read as
-  // "the planner is quietly off".
+  // PLANNER_MODE: unset is a VALID 'off' (a cron deployed before the var is
+  // chosen must not go red), and any other value is a LOUD stepError, because
+  // a config typo must never read as "the planner is quietly off".
   //
-  // NOT gated on NUDGES_MODE — deliberate. The planner
-  // follows the SWEEP's rollback-rescue doctrine (watchers.ts: in-flight rows
-  // keep their lifecycle regardless of NUDGES_MODE, because silence must always
-  // escalate), not compose's creation gate. Consequence to hold: with the ladder
-  // rolled back and PLANNER_MODE on, the planner still makes a billed call for
-  // any tenant that still has open rows. It skips tenants with none.
+  // NOT gated on WATCHERS_MODE — deliberate, and load-bearing since build 5:
+  // the planner is the ONLY thing that ends a gap now, so with the watcher
+  // rolled back it still makes a billed call for any tenant with open rows.
+  // It skips tenants with none.
   const plannerTick = plannerCadenceDue(nowIso, PLANNER_TICK_MINUTES);
   const plannerModeRaw = process.env.PLANNER_MODE;
   const plannerMode: PlannerMode | null =
@@ -504,13 +485,6 @@ export async function runLifecycle(
     try {
       const summary = await (deps.runPlanner ?? runPlanner)(nowIso, plannerMode, {
         tools: [...TEAM_LEAD_TOOL_SCHEMAS],
-        // The planner's `escalate` only moves a deadline — the SWEEP inside
-        // step 8 performs the handoff, and it reads nothing unless the watcher
-        // is live. Deliberately decoupling the planner's gate from the ladder
-        // (see above) means this combination is reachable: watcher rolled back
-        // to shadow, planner still on. Without this the escalation would write
-        // its row, log `applied`, and reach nobody.
-        sweepLive: watchersMode === 'live',
         // The identity is minted PER TENANT, from the tenant the planner is
         // currently walking — never bound once for the process.
         execute: (tenantId, name, args) =>
@@ -547,22 +521,20 @@ export async function runLifecycle(
     }
   }
 
-  // 10. THE MUTE CHECK (the collapse, plan 2026-08-24). The compose turn used to
-  // live here and was the ladder's voice whenever the planner was off. It is
-  // gone: the planner writes every question now and queues it itself, so this
-  // combination — gaps being minted with no author for them — is a real
-  // operational state that must be visible rather than silently quiet.
+  // 10. THE MUTE CHECK. Since build 5 the planner is the only author of a
+  // question, the only closer and the only escalator — so a live watcher with
+  // a non-live planner records observations that nobody can EVER act on, and
+  // there is no backstop sweep behind it any more. A real operational state
+  // that must be visible rather than silently quiet.
   //
   // Deliberately NOT an `ok = false`: a rollback to PLANNER_MODE=off is a
   // legitimate operator choice, and turning the cron red would train people to
-  // ignore it. The floor is the sweep's 18h never-asked handoff — but only when
-  // the SWEEP is live too (watchers.ts gates its open-nudge read on
-  // WATCHERS_MODE === 'live'), so the wording says which case this is.
+  // ignore it. The alarm pass's unattended counters are what climb while this
+  // state persists.
   let ladderMute: string | undefined;
-  if (nudgeMode === 'live') {
-    // Two ways to be voiceless, and the credential one is easy to miss: it used
-    // to surface as compose's own `skipped: no inference credentials`, and with
-    // compose gone it would otherwise read as a mere planner skip.
+  if (watchersMode === 'live') {
+    // Two ways to be voiceless, and the credential one is easy to miss —
+    // without this it would read as a mere planner skip.
     const why =
       plannerMode !== 'live'
         ? 'PLANNER_MODE is not live'
@@ -571,11 +543,8 @@ export async function runLifecycle(
           : null;
     if (why) {
       ladderMute =
-        watchersMode === 'live'
-          ? `NUDGES_MODE=live but ${why} — gaps are detected and nobody writes the questions; ` +
-            'the 18h never-asked sweep hands them to managers'
-          : `NUDGES_MODE=live but ${why} and WATCHERS_MODE is not live — gaps are detected, ` +
-            'nobody writes the questions, and NO backstop sweep is running';
+        `WATCHERS_MODE=live but ${why} — observations are being recorded and no planner is ` +
+        'running: nobody asks, closes or escalates anything, and nothing else will';
       console.error(`[lifecycle] LADDER IS MUTE: ${ladderMute}`);
     }
   }

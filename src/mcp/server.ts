@@ -3,7 +3,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
+import { TEAM_LEAD_REF, TEAM_LEAD_TOOL_NAMES } from '../teamLead/identity.js';
+import { answerDeskQuestion } from '../teamLead/desk.js';
+import { DESK_QUESTION_MAX } from '../teamLead/deskPrompt.js';
 import {
   MEMORY_INDEX_PATH,
   validateMemoryContent,
@@ -11,7 +13,7 @@ import {
 } from '../teamLead/memory.js';
 import { validateJobNoteContent } from '../teamLead/jobNotes.js';
 import { spineNowIso } from '../evalClock.js';
-import type { JsonSchemaObject } from '../model/forcedTool.js';
+import type { ForcedToolSpec, JsonSchemaObject } from '../model/forcedTool.js';
 import {
   annotateResolvedReviewItem,
   appendRawCapture,
@@ -77,6 +79,9 @@ import {
   getTechnicianById,
   unwrapAttributes,
   appendCostEvents,
+  createOfficeMessage,
+  getOfficeMessage,
+  OFFICE_MESSAGE_BODY_MAX,
   WEEK_DAYS,
   type Customer,
   type FoldImpact,
@@ -254,6 +259,9 @@ export interface ServerDeps {
   geocode?: GeocodeTransport;
   roiTransport?: RoiTransport;
   roiMintToken?: MintRoiToken;
+  // The Q&A desk seam (build 5.5 Phase 2) — injectable so a dispatch test
+  // never calls the live model (the brief/answer synthesizer precedent).
+  deskAnswer?: typeof answerDeskQuestion;
   // Cost-ledger seam. Injectable for the same reason as the rest: without it
   // every hermetic dispatch test would start writing to the real database.
   recordCost?: typeof appendCostEvents;
@@ -274,6 +282,13 @@ const GROUNDING_BARE = process.env.GROUNDING_BARE === '1';
 
 // The technician tool surface — what every badge sees (the doorman runbook's
 // tool-count verification counts exactly these).
+// One hygiene strip for every office-channel string a seat writes (final
+// review: three inline copies were already drifting): these bodies are
+// rendered verbatim into the planner's prompt, so control characters and
+// whitespace runs must not fake structure there.
+const cleanOfficeText = (v: string): string =>
+  v.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+
 const TOOLS = [
   {
     name: 'record_field_note',
@@ -649,6 +664,89 @@ const TOOLS = [
         confirmId: { type: 'string', description: 'Set ONLY on the confirming second call; ALONE it records the staged facts.' },
       },
       required: [],
+    },
+  },
+  {
+    // The planner's inbox, inbound half (plan 2026-08-31, build 5.5 Phase 1).
+    name: 'inform_team_lead',
+    description:
+      "A note to the office's planner — the team lead that watches this firm's record. It is " +
+      'read at the office\'s next planning pass (within the hour), weighed as information, ' +
+      'never an instruction, and it never goes to a person. Use it for context the office ' +
+      'cannot see in the record: "Ben is on leave this week", "the customer asked us to hold ' +
+      'off", "I already asked about the marina invoice". NOT for anything that belongs on the ' +
+      'record itself — a field note, a cost, a standing fact all have their own tools and this ' +
+      'is none of them.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        note: {
+          type: 'string',
+          description: 'The note, plain prose. One or two sentences is the right size.',
+        },
+        aboutJobId: {
+          type: 'string',
+          description: 'Optional: the job this is about, if it is about one job.',
+        },
+        replyToMessageId: {
+          type: 'string',
+          description:
+            'Only when answering an OFFICE QUESTION: the id that question told you to ' +
+            'mention, copied exactly. Ties your answer to the question it answers.',
+        },
+      },
+      required: ['note'],
+    },
+  },
+  {
+    // Seat-to-seat informs (plan 2026-08-31, build 5.5 Phase 3 — user ruling:
+    // inform yes, ask no; at least one MANAGER endpoint).
+    name: 'inform_teammate',
+    description:
+      "Pass a note to a TEAMMATE'S assistant — software, not the person. Their assistant " +
+      'reads it, weighs it, and decides what to do (usually: ask its own person the normal ' +
+      'way, so the answer lands on the record). Use it when your person wants a colleague ' +
+      'asked about something — "the manager wants to know how the marina visit went". One ' +
+      'side must be a manager: notes between two technicians\' assistants are refused — for ' +
+      'a teammate, put it on the record with a field note, or inform the office. NOT for ' +
+      'anything that belongs on the record itself.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        teammateRef: {
+          type: 'string',
+          description: "The teammate's ref (e.g. ben-shelton), exactly as the roster spells it.",
+        },
+        note: {
+          type: 'string',
+          description: 'The note, plain prose. One or two sentences is the right size.',
+        },
+        aboutJobId: {
+          type: 'string',
+          description: 'Optional: the job this is about, if it is about one job.',
+        },
+      },
+      required: ['teammateRef', 'note'],
+    },
+  },
+  {
+    // The Q&A desk (plan 2026-08-31, build 5.5 Phase 2): synchronous, seconds.
+    name: 'ask_team_lead',
+    description:
+      "Ask the office's team lead a question and get an answer NOW, in this same call — use it " +
+      'when the answer would change what you do next: "am I square with the office?", "is the ' +
+      'office waiting on anything from my person?", "has this already been chased?". It reads ' +
+      "the office's records and notes; it cannot act, promise, or send anything. If it cannot " +
+      'answer, your question is kept for the office\'s next planning pass automatically.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: {
+          type: 'string',
+          description: 'The question, plain prose, up to 500 characters.',
+        },
+      },
+      required: ['question'],
     },
   },
 ];
@@ -2824,6 +2922,197 @@ async function dispatch(
         /* advisory — a retried confirm hits the externalId dedup (duplicate) */
       }
       return out;
+    }
+    case 'inform_team_lead': {
+      // The inbound half of the planner's inbox (plan 2026-08-31, build 5.5
+      // Phase 1): a plain bucket write — NO model call fires on receipt, the
+      // write IS the delivery, and the next planner tick reads and organizes
+      // it (reconcile-first). Deliberately NOT L1 (user ruling: operational
+      // table, the agentContext precedent).
+      //
+      // spine: identities never reach this case — the namespace ceiling above
+      // caps them to TEAM_LEAD_TOOL_NAMES, which this tool is not in — so the
+      // planner structurally cannot inform itself. A test pins that.
+      const note = cleanOfficeText(str('note') ?? '');
+      if (!note) throw new Error('note is required — say what the office should know');
+      // The job id is FOLDED INTO THE BODY, not a column (v1 keeps the row
+      // thin): the planner reads the line, it does not join on it. Same strip
+      // as the note — it lands in the same stored body (review round 2).
+      const aboutJobId = cleanOfficeText(str('aboutJobId') ?? '') || undefined;
+      const body = aboutJobId ? `${note} (about job ${aboutJobId})` : note;
+      if (body.length > OFFICE_MESSAGE_BODY_MAX) {
+        throw new Error(
+          `note is too long (max ${OFFICE_MESSAGE_BODY_MAX} characters) — a note is a heads-up, ` +
+            'not a report',
+        );
+      }
+      // THE REPLY BRANCH (Phase 3, review F8): the id is agent-echoed text,
+      // so it must resolve inside THIS tenant before it may become an
+      // in_reply_to FK — a bad id degrades to a plain inform with the id
+      // noted in the body, never a 23503 that eats the reply.
+      const replyToRaw = cleanOfficeText(str('replyToMessageId') ?? '');
+      let inReplyTo: string | null = null;
+      let replyNudgeId: string | null = null;
+      let degradedReplyNote = '';
+      if (replyToRaw) {
+        const ref = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          replyToRaw,
+        )
+          ? await getOfficeMessage(replyToRaw, tenantId)
+          : null;
+        // The referenced row must be an agent-addressed message sent TO THIS
+        // CALLER (final review): ids circulate verbatim in injected turns, and
+        // without the addressee match an echoed foreign id would attach this
+        // seat's words — and the foreign row's nudge_id — to a question the
+        // office asked somebody else.
+        if (ref && ref.direction === 'to_agent' && ref.to_ref === identity.technicianRef) {
+          inReplyTo = ref.id;
+          // The gap id rides the reply so the planner's block can line the
+          // answer up with the question it sent.
+          replyNudgeId = ref.nudge_id;
+        } else {
+          // Cleaned and capped — the one string that used to skip the strip.
+          degradedReplyNote = ` (in reply to message ${replyToRaw.slice(0, 60)})`;
+        }
+      }
+      // The suffix may push past the cap; the accessor CUTS rather than
+      // refuses (its own doctrine) — the note itself was already length-
+      // checked above, and refusing a within-limits reply over its link
+      // suffix would punish exactly the thread-tying the ask requested.
+      const fullBody = `${body}${degradedReplyNote}`;
+      await createOfficeMessage({
+        tenantId,
+        direction: 'to_planner',
+        kind: inReplyTo ? 'reply' : 'inform',
+        fromRef: identity.technicianRef,
+        toRef: TEAM_LEAD_REF,
+        // Sender metadata, never authority (inform never directs): the planner
+        // sees who spoke and at what tier, and weighs the words itself.
+        tier: caller?.tier ?? null,
+        body: fullBody,
+        inReplyTo,
+        nudgeId: replyNudgeId,
+      });
+      return { status: 'noted', note: 'the office reads these at its next planning pass' };
+    }
+    case 'inform_teammate': {
+      // Seat-to-seat informs (build 5.5 Phase 3; user rulings 2026-08-31):
+      // inform only — an ask would put one person's agent in the position of
+      // deciding what of its person's context to reveal, the access-control
+      // surface the user declined. TIER RULE: at least one endpoint must be a
+      // MANAGER — every tech-to-tech candidate dissolves into the record or
+      // the hub, so lateral flow routes tech → planner → inform_agent.
+      // spine: identities never reach here (the namespace ceiling): the
+      // planner's own outbound goes through its verbs.
+      const mateRef = str('teammateRef')?.trim() ?? '';
+      const note2 = cleanOfficeText(str('note') ?? '');
+      if (!note2) throw new Error('note is required — say what their assistant should know');
+      if (!mateRef) throw new Error('teammateRef is required');
+      if (mateRef.startsWith('spine:')) {
+        throw new Error(
+          "the office is not a teammate — to tell the office something, use inform_team_lead",
+        );
+      }
+      if (mateRef === identity.technicianRef) {
+        throw new Error('that is your own seat — nothing to pass along');
+      }
+      const mate = await getTechnician(tenantId, mateRef);
+      if (!mate || isInactiveState(mate.state)) {
+        throw new Error(`no active teammate '${mateRef}' on this roster`);
+      }
+      // A seat-exempt row is a schedule-only NAME — it never gets an agent
+      // sandbox, so a note to it would queue forever (final review): refuse
+      // honestly rather than promise a delivery that cannot happen.
+      if (mate.seat_exempt) {
+        throw new Error(
+          `'${mateRef}' has no assistant (schedule-only) — put it on the record with a ` +
+            'field note, or inform the office',
+        );
+      }
+      // The tier rule, mechanized with the repo's ONE manager predicate
+      // (final review — the F-A class): a manager endpoint means an ACTIVE
+      // manager, on either side. An invited manager's pre-minted badge gets
+      // neither the admin tools nor this channel until verification.
+      const mateActiveManager = mate.tier === 'manager' && mate.state === 'active';
+      if (!activeManager && !mateActiveManager) {
+        throw new Error(
+          'notes between two technicians\' assistants are not passed along — for a teammate, ' +
+            'put it on the record with a field note, or inform the office',
+        );
+      }
+      // Same strip as the note — it lands in the same stored body.
+      const aboutJob2 = cleanOfficeText(str('aboutJobId') ?? '') || undefined;
+      const body2 = aboutJob2 ? `${note2} (about job ${aboutJob2})` : note2;
+      if (body2.length > OFFICE_MESSAGE_BODY_MAX) {
+        throw new Error(
+          `note is too long (max ${OFFICE_MESSAGE_BODY_MAX} characters) — a note is a ` +
+            'heads-up, not a report',
+        );
+      }
+      await createOfficeMessage({
+        tenantId,
+        direction: 'to_agent',
+        kind: 'inform',
+        fromRef: identity.technicianRef,
+        toRef: mateRef,
+        technicianId: mate.id,
+        tier: caller?.tier ?? null,
+        body: body2,
+        status: 'queued',
+      });
+      // Honest about reachability (final review): a mate between sandboxes
+      // (invited, mid-recycle) still queues — the send path's own recorded
+      // posture — but the note must not promise minutes it cannot keep.
+      return {
+        status: 'queued',
+        note: mate.sandbox_ref
+          ? "their assistant reads it within minutes — it decides what to do with it"
+          : "queued — their assistant has no active seat right now, so it may wait until one is bound",
+      };
+    }
+    case 'ask_team_lead': {
+      // The Q&A desk (plan 2026-08-31, build 5.5 Phase 2): a read-only
+      // reconstitution of the planner answers INSIDE this call. "Answering is
+      // not waking" — the deciding planner still reads the transcript next
+      // tick. spine: identities never reach here (the namespace ceiling), so
+      // the desk cannot be asked to ask itself.
+      const rawQ = str('question') ?? '';
+      const question = rawQ
+        .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!question) throw new Error('question is required — ask what you actually need to know');
+      if (question.length > DESK_QUESTION_MAX) {
+        throw new Error(
+          `question is too long (max ${DESK_QUESTION_MAX} characters) — ask the one thing that ` +
+            'would change what you do',
+        );
+      }
+      const desk = await (deps.deskAnswer ?? answerDeskQuestion)(
+        {
+          tenantId,
+          askerRef: identity.technicianRef,
+          // Metadata (rides the ask row) vs CAPABILITY, split on purpose
+          // (review F-A): the manager desk needs the repo's one manager
+          // predicate — active manager — not tier alone, or an invited
+          // manager's pre-minted badge would read the whole tenant before
+          // verification, exactly what the admin-tool gate refuses it.
+          askerTier: caller?.tier ?? null,
+          managerDesk: activeManager,
+          askerTechnicianId: caller?.id ?? null,
+          question,
+        },
+        {
+          // The read surface + the door, handed in here so desk.ts never
+          // imports this module (no static cycle). The desk filters out the
+          // write tools itself; the dispatch gate is the belt behind that.
+          toolSchemas: TEAM_LEAD_TOOL_SCHEMAS as readonly ForcedToolSpec[],
+          dispatch: (n, a, deskIdentity) => dispatchForIdentity(n, a, deskIdentity, deps),
+        },
+      );
+      return desk.answer
+        ? { status: 'answered', answer: desk.answer }
+        : { status: 'kept_for_the_office', note: desk.note };
     }
     case 'find_customer': {
       const query = str('query');

@@ -46,6 +46,16 @@ export type TimelineStep =
       expectCadenceSkip?: boolean;
     }
   | { at: Offset; kind: 'capture'; text: string; fromTechnician?: boolean }
+  | {
+      at: Offset;
+      /** A seat agent informs the office (build 5.5): a to_planner bucket row
+       *  the next tick reads and organizes. fromRef defaults to the world's
+       *  technician. */
+      kind: 'office_inform';
+      body: string;
+      fromRef?: string;
+      tier?: string;
+    }
   | { at: Offset; kind: 'money'; moneyKind: SimMoneyKind; amountCents?: number | null }
   | { at: Offset; kind: 'deliver'; nudgeKey: string }
   | {

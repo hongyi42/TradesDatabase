@@ -1,17 +1,13 @@
 import type { QueuedNudgeForHost } from '../db/index.js';
 import {
-  flagNudgeGap,
-  reviewItemExistsFor,
   getQueuedNudgeForHost,
   isInactiveState,
   listQueuedNudgesForHost,
   listQueuedNudgesInGroupForHost,
   markNudgeAskedGroup,
-  markNudgeOutcome,
   setNudgeDeliveryAttempts,
   setNudgeServeCount,
 } from '../db/index.js';
-import { handToManager } from '../teamLead/compose.js';
 import { FOOTER_DELIMITER } from '../teamLead/composeCopy.js';
 
 // The voice's transport, spine side (plan 2026-08-15 feature B, Phase 4).
@@ -21,14 +17,19 @@ import { FOOTER_DELIMITER } from '../teamLead/composeCopy.js';
 // (the retirements precedent). The box-side half is
 // Box_Setup_Stuff/nudge-runner.sh.
 //
-// Terminal-failure doctrine (Phase-3 review F1, extended here): ANY path that
-// fails a nudge without the ask ever landing hands the gap to the manager
-// first — an undeliverable question must not orphan the gap it was written
-// for.
+// BROKEN-PIPE DOCTRINE (build 5, user ruling 4 — replaces the old
+// terminal-failure handoff): an undeliverable question is an OPERATOR
+// condition, not a firm decision. No path here hands anything to a manager or
+// fails a row any more — a row past its serve or attempt caps is FROZEN
+// (never re-served, never terminal), the sweep's alarm pass counts it as
+// deliveryStuck, and the PLANNER still owns the gap: it can escalate it
+// deliberately, with an honest note, or end it any other way its judgment
+// dictates.
 
 // A nudge served more than this many times without an ack is POISON — some
 // box-side fault re-serves it forever, and it must stop re-alarming (the
-// PARKED analog). It hands to the manager and fails instead of serving.
+// PARKED analog). It FREEZES instead of serving (build 5) and the alarm pass
+// counts it as deliveryStuck.
 export const MAX_SERVE_COUNT = 10;
 // Explicit delivery-failure reports before giving up. attempts was reset to 0
 // at queue time, so the delivery ledger is its own (see markNudgeQueued).
@@ -58,27 +59,20 @@ export interface NudgeQueueDeps {
   serveCount?: typeof setNudgeServeCount;
   asked?: typeof markNudgeAskedGroup;
   groupMembers?: typeof listQueuedNudgesInGroupForHost;
-  outcome?: typeof markNudgeOutcome;
   attempts?: typeof setNudgeDeliveryAttempts;
-  flagNudge?: typeof flagNudgeGap;
-  reviewItemExists?: typeof reviewItemExistsFor;
 }
 
 // Build one pull's worth of deliveries for a host. Liveness is RE-FILTERED at
 // serve time (constraints 19-20): a technician who went inactive or lost
 // their sandbox between queue and serve is SKIPPED, not failed — a rebind may
-// heal them, and the escalation sweep (24h from asked) never starts because
-// the row never reaches 'asked'; the 10-serve cap is what finally moves a
-// never-deliverable row to the manager.
+// heal them; a row that can never deliver ages into the deliveryStuck alarm
+// and stays the planner's to end (build 5).
 export async function buildNudgeDelivery(
   hostId: string,
   deps: NudgeQueueDeps = {},
 ): Promise<{ nudges: NudgeDeliveryItem[] }> {
   const listQueued = deps.listQueued ?? listQueuedNudgesForHost;
   const serveCount = deps.serveCount ?? setNudgeServeCount;
-  const outcome = deps.outcome ?? markNudgeOutcome;
-  const flagNudge = deps.flagNudge ?? flagNudgeGap;
-  const reviewItemExists = deps.reviewItemExists ?? reviewItemExistsFor;
 
   const rows = await listQueued(hostId);
   const items: NudgeDeliveryItem[] = [];
@@ -127,15 +121,13 @@ export async function buildNudgeDelivery(
     // the group 2x MAX_SERVE_COUNT and 2x MAX_DELIVERY_ATTEMPTS.
     //
     // So this takes the tamper-freeze's treatment: never served, never failed
-    // here, and the 18h delivery deadline is the terminal exit — which now
-    // expires the whole group at once (watchers.ts, Phase 2).
+    // here — the deliveryStuck alarm carries it once the members age past the
+    // watch threshold, and the planner may escalate them deliberately.
     if (!lead) {
-      // Re-logged on every 5-minute pull until the sweep takes it, the same
-      // shape the serve-cap branch calls out. Bounded: the group's earliest
-      // member crosses the 18h deadline and the expiry expands to the rest.
+      // Re-logged on every 5-minute pull — an operator condition, on purpose.
       console.error(
         `[nudgeQueue] ask-group ${members[0].ask_group_id} has no lead row (${members.length} ` +
-          'members still queued) — frozen rather than re-delivered; the 18h expiry will take it',
+          'members still queued) — frozen rather than re-delivered; see the alarm counters',
       );
       continue;
     }
@@ -146,24 +138,25 @@ export async function buildNudgeDelivery(
       }
       if (!lead.question) continue; // queued implies composed; tampered row stays frozen
       if (lead.serve_count >= MAX_SERVE_COUNT) {
-        // NOT gated on the handoff landing — see the note in compose.ts's
-        // decline path. `false` here means the row's evidence cannot build a
-        // handoff at all, and freezing removes the only terminal exit a queued
-        // row has: never re-served (this branch never reaches `items`) but
-        // 'queued' forever, so every 5-minute pull re-reads and re-logs it.
-        //
-        // EVERY member, not just the lead: one message carried all of their
-        // questions, so one undeliverable message orphans all of their gaps.
-        for (const m of members) {
-          await handToManager(m, flagNudge, reviewItemExists);
-          await outcome(
-            m.id,
-            m.tenant_id,
-            'failed',
-            `undeliverable: served ${lead.serve_count}x with no delivery ack` +
-              (m.id === lead.id ? '' : ` (counted on the group's lead ${lead.id})`),
-          );
-        }
+        // FROZEN, not failed (build 5): re-served this many times with no ack
+        // means the pipe is broken, which is an operator problem — the alarm
+        // counts the LEAD now (the ledgers live on it) and each member as its
+        // own created_at ages past the threshold; the planner still owns the
+        // gaps. Never reaches `items`, so it is never re-sent.
+        console.error(
+          `[nudgeQueue] nudge ${lead.id} served ${lead.serve_count}x with no delivery ack — ` +
+            `frozen (${members.length} member(s)); delivery is broken, see the alarm counters`,
+        );
+        continue;
+      }
+      // Attempt-cap freeze (build 5): the box reported delivery FAILED
+      // MAX_DELIVERY_ATTEMPTS times — stop re-serving a message that cannot
+      // land, without failing the row. Same operator condition as above.
+      if (lead.attempts >= MAX_DELIVERY_ATTEMPTS) {
+        console.error(
+          `[nudgeQueue] nudge ${lead.id} failed delivery ${lead.attempts}x — frozen ` +
+            `(${members.length} member(s)); see the alarm counters`,
+        );
         continue;
       }
       // Count the serve BEFORE shipping it (at-most-N-serves, even if this
@@ -205,10 +198,7 @@ export async function completeNudgeDelivery(
   const getQueued = deps.getQueued ?? getQueuedNudgeForHost;
   const asked = deps.asked ?? markNudgeAskedGroup;
   const groupMembers = deps.groupMembers ?? listQueuedNudgesInGroupForHost;
-  const outcome = deps.outcome ?? markNudgeOutcome;
   const attempts = deps.attempts ?? setNudgeDeliveryAttempts;
-  const flagNudge = deps.flagNudge ?? flagNudgeGap;
-  const reviewItemExists = deps.reviewItemExists ?? reviewItemExistsFor;
 
   const row = await getQueued(id, hostId);
   if (!row) {
@@ -216,10 +206,9 @@ export async function completeNudgeDelivery(
     // on its own: the sweep's `moot`, or the planner's own `close`, each close one
     // queued row and leave its siblings alone (watchers.ts). A delivered report arriving after
     // that would otherwise be 'ignored' — and the survivors, which really were
-    // delivered inside the shared message, could then only exit through the 18h
-    // sweep, which tells the manager "never delivered" and re-asks a question
-    // the technician has already been asked. That is the false-claim class the
-    // escalation rules exist to prevent.
+    // delivered inside the shared message, would sit queued-forever as
+    // deliveryStuck alarms about a message that actually landed, with their
+    // asked-clock never starting. The record must say what really happened.
     //
     // The group id IS the lead's id, so the reported id addresses the group even
     // once the lead is gone. Host-scoped, and no promotion happens.
@@ -253,50 +242,14 @@ export async function completeNudgeDelivery(
   const bumped = await attempts(row.id, row.tenant_id, next);
   if (!bumped) return 'ignored';
   if (next < MAX_DELIVERY_ATTEMPTS) return 'retry'; // still served next pull
-  // Delivery gave up: the manager takes the gap, then the row goes terminal
-  // (flag-first, the F1 order). Ungated for the same reason as the serve cap
-  // above — and now the handoff is KIND-AWARE, so a job-scoped gap actually
-  // reaches the manager here instead of silently closing with no surface.
-  //
-  // EVERY member of the group, for the same reason as the serve cap: the failed
-  // message carried all of their questions. An UNGROUPED row skips the read
-  // entirely and falls back to the single row this path always handled.
-  //
-  // The read is WRAPPED: before Phase 2 this path needed no query at all, and an
-  // unwrapped throw here would skip the handoff entirely while `attempts` had
-  // already been bumped — the row would sit queued past its cap, re-entering
-  // this same branch on every later report. Falling back to the single row
-  // restores exactly the pre-Phase-2 guarantee.
-  let members: QueuedNudgeForHost[] = [];
-  if (row.ask_group_id) {
-    try {
-      members = await groupMembers(row.ask_group_id, hostId);
-    } catch (err) {
-      console.error(
-        `[nudgeQueue] group read for ${row.ask_group_id} failed — handing over the lead alone`,
-        err,
-      );
-    }
-  }
-  // The lead must be in the list even if the group read omitted it (its
-  // technician's host_id can change between the point-read and this read).
-  // Otherwise it is never handed over and never failed, and sits queued past its
-  // cap re-entering this branch on every later report.
-  const toFail =
-    members.length === 0
-      ? [row]
-      : members.some((m) => m.id === row.id)
-        ? members
-        : [row, ...members];
-  for (const m of toFail) {
-    await handToManager(m, flagNudge, reviewItemExists);
-    await outcome(
-      m.id,
-      m.tenant_id,
-      'failed',
-      `delivery failed ${next}x${detail ? `: ${detail.slice(0, 300)}` : ''}` +
-        (m.id === row.id ? '' : ` (counted on the group's lead ${row.id})`),
-    );
-  }
+  // Delivery gave up (build 5): NO manager handoff and NO terminal status —
+  // the row FREEZES (the serve loop skips attempts >= cap), the alarm pass
+  // counts it as deliveryStuck, and the planner still owns the gap. 'failed'
+  // here tells the BOX to stop retrying, nothing more.
+  console.error(
+    `[nudgeQueue] nudge ${row.id} failed delivery ${next}x` +
+      `${detail ? `: ${detail.slice(0, 300)}` : ''} — frozen; delivery is broken, ` +
+      'see the alarm counters',
+  );
   return 'failed';
 }

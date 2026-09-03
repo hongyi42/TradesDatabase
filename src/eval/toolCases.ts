@@ -956,6 +956,85 @@ export function buildToolCases(): ToolCase[] {
     ),
   });
 
+  one({
+    id: 'W14',
+    family: 'writes',
+    title: 'inform_team_lead lands an unread note in the office bucket',
+    tool: 'inform_team_lead',
+    tenant: 'main',
+    badge: 'tech-jane',
+    args: () => ({ note: 'heads-up from the eval: Jane is offsite Thursday morning (eval W14)' }),
+    check: all(
+      ok,
+      mentions('noted'),
+      dbCheck(
+        'the bucket row must land unread, addressed to the planner, sender stamped',
+        (ctx) => ({
+          text:
+            `select direction, kind, status, from_ref, to_ref, tier from office_messages ` +
+            `where tenant_id = $1 and body like '%(eval W14)%'`,
+          params: [ctx.tenant.id],
+        }),
+        // `every`, not `rows[0]` alone: a re-run world accumulates one row per
+        // run, and each of them must look the same.
+        (rows) =>
+          rows.length > 0 &&
+          rows.every(
+            (r) =>
+              r.direction === 'to_planner' &&
+              r.kind === 'inform' &&
+              r.status === 'unread' &&
+              r.from_ref === 'tech-jane' &&
+              r.to_ref === 'spine:team-lead',
+          ),
+      ),
+    ),
+  });
+
+  add({
+    id: 'W15',
+    family: 'writes',
+    title: 'inform_teammate queues an agent-addressed note; tech-to-tech is refused',
+    tool: 'inform_teammate',
+    tenant: 'main',
+    badge: 'manager-sam',
+    steps: [
+      {
+        label: 'manager informs a technician\'s assistant',
+        args: () => ({ teammateRef: 'tech-jane', note: 'please have Jane asked how the marina visit went (eval W15)' }),
+        check: all(
+          ok,
+          dbCheck(
+            'the queued to_agent row must land with the addressee FK set',
+            (ctx) => ({
+              text:
+                `select direction, kind, status, from_ref, to_ref, technician_id from office_messages ` +
+                `where tenant_id = $1 and body like '%(eval W15)%'`,
+              params: [ctx.tenant.id],
+            }),
+            (rows) =>
+              rows.length > 0 &&
+              rows.every(
+                (r) =>
+                  r.direction === 'to_agent' &&
+                  r.kind === 'inform' &&
+                  r.status === 'queued' &&
+                  r.from_ref === 'manager-sam' &&
+                  r.to_ref === 'tech-jane' &&
+                  r.technician_id !== null,
+              ),
+          ),
+        ),
+      },
+      {
+        label: 'tech→tech is refused with the pointer copy',
+        badge: 'tech-jane',
+        args: () => ({ teammateRef: 'cfg-tech-01', note: 'a lateral note' }),
+        check: refused(/put it on the record|inform the office|no active teammate/),
+      },
+    ],
+  });
+
   // ── roster and configuration (each owns its own technician) ─────────────────
   one({
     id: 'C01',
@@ -1381,6 +1460,24 @@ export function buildToolCases(): ToolCase[] {
     requires: 'maps',
     args: (ctx) => ({ throughDate: addDays(ctx.anchor, 7) }),
     check: staged,
+  });
+
+  one({
+    id: 'X09',
+    family: 'external',
+    title: 'ask_team_lead answers in the same call, or honestly keeps the question',
+    tool: 'ask_team_lead',
+    tenant: 'main',
+    badge: 'tech-jane',
+    requires: 'model', // the desk is a live model call wearing the planner's notes
+    args: () => ({ question: 'Is the office waiting on anything from me right now?' }),
+    // Either branch is a pass — 'answered' with text, or the degrade that
+    // keeps the ask in the bucket. A transport error is the only failure.
+    check: all(ok, (out) =>
+      /"status":"answered"|"status":"kept_for_the_office"/.test(out.text)
+        ? null
+        : `expected answered or kept_for_the_office, got: ${out.text.slice(0, 200)}`,
+    ),
   });
 
   return cases;

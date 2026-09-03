@@ -35,6 +35,11 @@ export const LOOKBACK_HOURS = 72;
 // exactly ONE well-tested detector, not from the design, so detector #2 must land
 // with its own brake. See
 // thoughts/shared/research/2026-08-19-nudge-pacing-replacement-design.md (§5).
+// DORMANT SINCE BUILD 5 (kept as data, not deleted): `max_new_per_tick` is a
+// firm-writable build-2 settings column, so rows may already carry values —
+// but NOTHING reads the resolved number any more. Detection records
+// observations uncapped (build 4) and the caps' readers were deleted
+// (build 5). The fallback survives only so resolveSettings keeps its shape.
 export const MAX_NEW_ITEMS_PER_TENANT_TICK = 5;
 
 /**

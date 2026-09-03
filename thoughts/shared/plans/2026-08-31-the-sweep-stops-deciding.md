@@ -2,7 +2,7 @@
 date: 2026-08-31
 task: "Build 5 — the sweep stops deciding: clocks become alarms, moot becomes information, escalate performs its own handoff"
 research: thoughts/shared/research/2026-08-30-the-sweep-stops-deciding.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -157,17 +157,19 @@ count-only push moves to the planner tick.
 describe pins the property this phase deletes — review finding 5).
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` pass
-- [ ] planner.test.ts: applied escalate → review_items row exists with the note as suggestion +
+- [x] `npm run typecheck` · `npm run lint` · `npm test` pass
+- [x] planner.test.ts: applied escalate → review_items row exists with the note as suggestion +
   `detail.escalatedFromNudge`; nudge `escalated`; works with NO sweep in the loop
-- [ ] escalate refused without a surviving handoffNote; refused on `noticed`; ACCEPTED on a
+- [x] escalate refused without a surviving handoffNote; refused on `noticed`; ACCEPTED on a
   stuck `queued` relic; ever-flagged subject (null flag) still marks the row escalated
-- [ ] push seam: one line when an escalate applies and token exists; none in shadow
+- [x] push seam: one line when an escalate applies and token exists; none in shadow
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack (`npx supabase start`, `.env.test`)
-- [ ] Through the real store: seed an asked nudge, run a scripted planner tick that escalates,
+- [x] Through the real store: seed an asked nudge, run a scripted planner tick that escalates,
   read review_items back via pg — item + status + decision row all present, sweep never ran.
+  *(codified: plannerSim.test.ts arc test — real flagNudgeGap/markNudgeOutcome against the local
+  stack, pg read-back of the item incl. the planner's note as suggestion + escalatedFromNudge.)*
 
 ### Manual verification
 - [ ] none
@@ -216,16 +218,19 @@ end a moot gap.
 RECORD line now also reports a cancelled/completed subject, same verb fork.
 
 ### Automated verification
-- [ ] gates pass
-- [ ] new tests: cancelled visit → view shows the line; close basis 'record' ACCEPTED on it
+- [x] gates pass
+- [x] new tests: cancelled visit → view shows the line; close basis 'record' ACCEPTED on it
   (citation = code's words); dismissed guidance on a noticed observation; completed visit same;
   cancelled job authorizes a cost gap's close; no moot → basis 'record' still refused
-- [ ] a gap of an unregistered kind now reaches the planner's view (filter-drop pin)
+- [x] a gap of an unregistered kind now reaches the planner's view (filter-drop pin)
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack
-- [ ] Scripted tick over a seeded cancelled-visit ask: model-free path check via
+- [x] Scripted tick over a seeded cancelled-visit ask: model-free path check via
   validate/apply unit harness + pg read-back of the close's resolution text.
+  *(codified: plannerSim.test.ts "the planner ends a moot gap on the record" — real status
+  reads + real markNudgeOutcome against the local stack; pg reads back status 'cancelled' and
+  the fact as resolution.)*
 
 ### Manual verification
 - [ ] none
@@ -296,16 +301,19 @@ tests deleted, hold-ceiling refusal test (:941) deleted, PLANNER_SYSTEM pins on 
 `NUDGE_ESCALATE_MAX_HOURS` copy (:231/:235) updated, verb pin self-syncs (:2861–2871).
 
 ### Automated verification
-- [ ] gates pass
-- [ ] pins: a silent asked gap past 24h is UNTOUCHED by the sweep; a cancelled visit's
+- [x] gates pass
+- [x] pins: a silent asked gap past 24h is UNTOUCHED by the sweep; a cancelled visit's
   observation stays `open` (no moot-dismiss); an 18h-old queued row stays `queued`;
   no review_items row is ever opened by `runWatchers` (item auto-resolve still closes them)
-- [ ] `PLANNER_ACTIONS`/schema pin passes with 7 verbs; PLANNER_JUDGMENT_ACTIONS pin updated
+- [x] `PLANNER_ACTIONS`/schema pin passes with 7 verbs; PLANNER_JUDGMENT_ACTIONS pin updated
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack
-- [ ] Full `runWatchers` over a seeded firm with one moot ask + one silent-past-24h ask:
+- [x] Full `runWatchers` over a seeded firm with one moot ask + one silent-past-24h ask:
   pg read-back shows both rows unmoved; observations minted; summary shape matches.
+  *(codified: plannerSim.test.ts "the sweep touches nothing" — real runWatchers live over a
+  30h-silent ask, a 20h queued relic and a cancelled-visit observation; pg reads all unmoved,
+  zero review items.)*
 
 ### Manual verification
 - [ ] none
@@ -372,14 +380,18 @@ failed decisions read → counted; alarms never flip `ok`); nudgeQueue tests: ca
 deleted/updated with the field (review finding 5).
 
 ### Automated verification
-- [ ] gates pass · new alarm tests pass
-- [ ] pin: a tick with alarms nonzero still exits 0 (never reddens)
+- [x] gates pass · new alarm tests pass
+- [x] pin: a tick with alarms nonzero still exits 0 (never reddens)
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack
-- [ ] Seed one 30h-silent asked row + one 20h queued row + one 80h observation; run the real
+- [x] Seed one 30h-silent asked row + one 20h queued row + one 80h observation; run the real
   sweep; pg read-back: nothing changed state, summary.alarms = {1,1,1}; report.mjs over the
   recorded run prints the ⚠ line.
+  *(codified: plannerSim.test.ts sweep-inert test asserts alarms {1,1,1} through the real
+  reads; the report's ⚠ section is syntax-checked and reads `summary.watchers.alarms`
+  last-write-wins over the ASC runs — verified reachable through redactForRecord by the
+  phase reviewer.)*
 
 ### Manual verification
 - [ ] none
@@ -419,14 +431,17 @@ Deletes the dead surface and writes the record.
   `npm run decisions:index`.
 
 ### Automated verification
-- [ ] gates + `npm run build` pass; full suite green twice
-- [ ] grep pins: no reference to `NUDGES_MODE` outside docs/history; no `flagOverdueVisitGap`;
+- [x] gates + `npm run build` pass; full suite green twice
+- [x] grep pins: no reference to `NUDGES_MODE` outside docs/history; no `flagOverdueVisitGap`;
   no `handToManager`; no `spec.moot`/`spec.filled`/`spec.handoff` call sites
 
 ### Live verification (agent-executable)
 - Prerequisites: local stack
-- [ ] One full `runLifecycle` against the seeded local stack: summary shape, no stepError,
+- [x] One full `runLifecycle` against the seeded local stack: summary shape, no stepError,
   observations minted, alarms present, no items opened by the sweep.
+  *(evidence: `node dist/jobs/lifecycle.js` on the local stack — live watchers with the slim
+  shape + alarms object, planner skipped, the new ladderMute on stderr, exit healthy;
+  minting/alarms with real rows proven by the plannerSim real-store tests.)*
 
 ### Manual verification
 - [ ] none

@@ -105,6 +105,24 @@ describe('runToolLoop', () => {
     else process.env.MODEL_PROVIDER = saved.provider;
   });
 
+  test('an empty tool list omits tools AND tool_choice from the wire (build 5.5 F3)', async () => {
+    // The desk's technician path is the first legitimate tool-less caller:
+    // `tools: []` is a provider 400 on some OpenAI-compatible endpoints, and
+    // `tool_choice` without `tools` is its own 400 — both keys must vanish
+    // together.
+    serve(finalBody('you are square with the office'));
+    const res = await runToolLoop(
+      { system: 'sys', user: 'am I square?', maxTokens: 256, label: 'desk-test' },
+      [],
+      async () => null,
+      { tenantId: 't', technicianRef: 'spine:team-lead' },
+      { recordUsage: vi.fn(async () => {}) },
+    );
+    expect(res.text).toBe('you are square with the office');
+    expect(sent[0]).not.toHaveProperty('tools');
+    expect(sent[0]).not.toHaveProperty('tool_choice');
+  });
+
   test('looks something up, then answers — the whole point of the loop', async () => {
     serve(toolCallBody('spine_read', { sql: 'select 1' }), finalBody('4 jobs'));
     const execute = vi.fn(async () => [{ n: 4 }]);

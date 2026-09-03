@@ -1315,6 +1315,91 @@ export type Database = {
           },
         ]
       }
+      office_messages: {
+        Row: {
+          attempts: number
+          body: string
+          created_at: string
+          delivered_at: string | null
+          direction: string
+          from_ref: string
+          id: string
+          in_reply_to: string | null
+          kind: string
+          nudge_id: string | null
+          read_at: string | null
+          serve_count: number
+          status: string
+          technician_id: string | null
+          tenant_id: string
+          tier: string | null
+          to_ref: string
+          updated_at: string
+        }
+        Insert: {
+          attempts?: number
+          body: string
+          created_at?: string
+          delivered_at?: string | null
+          direction: string
+          from_ref: string
+          id?: string
+          in_reply_to?: string | null
+          kind: string
+          nudge_id?: string | null
+          read_at?: string | null
+          serve_count?: number
+          status?: string
+          technician_id?: string | null
+          tenant_id: string
+          tier?: string | null
+          to_ref: string
+          updated_at?: string
+        }
+        Update: {
+          attempts?: number
+          body?: string
+          created_at?: string
+          delivered_at?: string | null
+          direction?: string
+          from_ref?: string
+          id?: string
+          in_reply_to?: string | null
+          kind?: string
+          nudge_id?: string | null
+          read_at?: string | null
+          serve_count?: number
+          status?: string
+          technician_id?: string | null
+          tenant_id?: string
+          tier?: string | null
+          to_ref?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "office_messages_in_reply_to_fkey"
+            columns: ["in_reply_to"]
+            isOneToOne: false
+            referencedRelation: "office_messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "office_messages_technician_id_fkey"
+            columns: ["technician_id"]
+            isOneToOne: false
+            referencedRelation: "technicians"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "office_messages_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       ops_events: {
         Row: {
           closed_at: string | null
@@ -2490,34 +2575,6 @@ export type Database = {
           tenant_id: string | null
         }
         Relationships: [
-          {
-            foreignKeyName: "nudge_decisions_nudge_id_fkey"
-            columns: ["nudge_id"]
-            isOneToOne: false
-            referencedRelation: "mv_escalation_fates"
-            referencedColumns: ["nudge_id"]
-          },
-          {
-            foreignKeyName: "nudge_decisions_nudge_id_fkey"
-            columns: ["nudge_id"]
-            isOneToOne: false
-            referencedRelation: "mv_gap_outcomes"
-            referencedColumns: ["nudge_id"]
-          },
-          {
-            foreignKeyName: "nudge_decisions_nudge_id_fkey"
-            columns: ["nudge_id"]
-            isOneToOne: false
-            referencedRelation: "nudges"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "nudge_decisions_nudge_id_fkey"
-            columns: ["nudge_id"]
-            isOneToOne: false
-            referencedRelation: "v_nudges"
-            referencedColumns: ["id"]
-          },
           {
             foreignKeyName: "nudge_decisions_tenant_id_fkey"
             columns: ["tenant_id"]

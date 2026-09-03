@@ -12,6 +12,7 @@ import {
 import { sha256hex } from '../control/badges.js';
 import { buildBadgeResponse } from '../control/badgeFile.js';
 import { buildNudgeDelivery, completeNudgeDelivery } from '../control/nudgeQueue.js';
+import { buildOfficeDelivery, completeOfficeDelivery } from '../control/officeQueue.js';
 import {
   clearSandboxAssignmentIfRef,
   completeSandboxRecycle,
@@ -341,6 +342,81 @@ async function handleNudgeReport(
   }
 }
 
+// The office queue's pull (build 5.5 Phase 3): queued agent-addressed
+// messages for this host's sandboxes, served until acked. Same host-token
+// auth + bare-401 posture as the nudge pull it sits beside.
+async function handleOfficePull(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  try {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
+    const host = m ? await getHostByTokenHash(sha256hex(m[1].trim())) : null;
+    if (!host) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    const body = await buildOfficeDelivery(host.id);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
+// The box's per-item office delivery report — the /control/nudges POST shape:
+// hostId from the TOKEN (the ops-report rule), body capped, uuid-checked.
+async function handleOfficeReport(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const json = (code: number, body: unknown) => {
+    res.writeHead(code, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '');
+    const host = m ? await getHostByTokenHash(sha256hex(m[1].trim())) : null;
+    if (!host) {
+      res.writeHead(401);
+      res.end();
+      return;
+    }
+    let body: unknown;
+    try {
+      const raw = await readRawBody(req, 16 * 1024);
+      body = raw.length ? JSON.parse(raw) : undefined;
+    } catch (err) {
+      if ((err as { code?: string }).code === 'BODY_TOO_LARGE') {
+        json(413, { error: 'body too large' });
+        return;
+      }
+      json(400, { error: 'malformed JSON body' });
+      return;
+    }
+    const b = (body ?? {}) as Record<string, unknown>;
+    const id = typeof b.id === 'string' ? b.id.trim() : '';
+    const report = b.outcome;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      json(400, { error: 'id must be an office message id (uuid)' });
+      return;
+    }
+    if (report !== 'delivered' && report !== 'failed') {
+      json(400, { error: "outcome must be 'delivered' or 'failed'" });
+      return;
+    }
+    const detail = typeof b.detail === 'string' ? b.detail : null;
+    const result = await completeOfficeDelivery(host.id, id, report, detail);
+    json(200, { result });
+  } catch {
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end();
+    }
+  }
+}
+
 // The box's recycle-completion report: "retired sandbox X is destroyed, blank Y
 // is racked with bot Z". Same host-token auth + bare-401 posture as the pull.
 // The response's rosterCleared:false tells the box to RETRY the whole (idempotent)
@@ -659,6 +735,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     if (req.url === '/control/nudges' && req.method === 'POST') {
       await handleNudgeReport(req, res);
+      return;
+    }
+    // The office queue: agent-addressed messages (build 5.5 Phase 3) — same
+    // host-token gate + pre-allowlist placement as the nudge pull beside it.
+    if (req.url === '/control/office' && req.method === 'GET') {
+      await handleOfficePull(req, res);
+      return;
+    }
+    if (req.url === '/control/office' && req.method === 'POST') {
+      await handleOfficeReport(req, res);
       return;
     }
     // Host health report (ops alerting) — same host-token gate + placement.

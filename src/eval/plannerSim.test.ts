@@ -20,6 +20,10 @@ import {
 import type { TimelineStep } from './plannerCorpus.js';
 import type { runToolLoop } from '../model/toolLoop.js';
 import { localTimeHHMM, localDateISO } from '../schedule/availability.js';
+import { runPlanner } from '../teamLead/planner.js';
+import { runWatchers } from '../jobs/watchers.js';
+import { TEAM_LEAD_REF } from '../teamLead/identity.js';
+import { dispatchForIdentity, TEAM_LEAD_TOOL_SCHEMAS } from '../mcp/server.js';
 
 // Integration test against the LOCAL stack (testEnvGuard enforces local-only).
 // The simulator is what the agentic eval trusts about time: offsets resolve,
@@ -157,8 +161,7 @@ describe('runTick — production wiring, stubbed model', () => {
         decisions: [
           {
             nudgeId: gapId,
-            action: 'extend',
-            escalateAfter: atOffset(t0Ms, '+6h'),
+            action: 'leave',
             confidence: 'high',
             reason: 'stub: morning is young, give it the afternoon',
           },
@@ -189,31 +192,56 @@ describe('runTick — production wiring, stubbed model', () => {
     expect(loopReq!.maxTurns).toBeNull();
 
     expect(tick.watchers.tenants).toBe(1);
-    // The seeded gap is not fresh (subject_ref dedup) and not yet due — the
-    // sweep must neither escalate nor open items on tick 1.
-    expect(tick.watchers.nudgesEscalated).toBe(0);
-    expect(tick.watchers.itemsOpened).toBe(0);
     expect(tick.planner.planned).toBe(1);
     expect(tick.planner.applied).toBe(1);
     expect(tick.userPrompt).toContain('open gap');
     expect(tick.toolCalls.map((c) => c.name)).toContain('submit_plan');
 
-    const extend = tick.decisions.find((d) => d.action === 'extend');
-    expect(extend).toBeDefined();
-    expect(extend!.outcome).toBe('applied');
+    const leave = tick.decisions.find((d) => d.action === 'leave');
+    expect(leave).toBeDefined();
+    expect(leave!.outcome).toBe('applied');
     // THE FIX-UP: the DB stamped the real wall clock; the record must read
-    // sim-now, or watchers' plannerAlive misreads any >24h arc.
-    expect(new Date(extend!.decided_at).toISOString()).toBe(t0);
+    // sim-now, or any >24h arc misreads its own history.
+    expect(new Date(leave!.decided_at).toISOString()).toBe(t0);
     const { rows } = await pg.query(`select decided_at from nudge_decisions where id = $1`, [
-      extend!.id,
+      leave!.id,
     ]);
     expect(new Date(rows[0].decided_at).toISOString()).toBe(t0);
 
-    // The applied extend moved the row's deadline.
+    // And the row itself is untouched — leave changes nothing (and since
+    // build 5, nothing else in the tick moves a gap either).
     const after = tick.nudgesAfter.find((n) => n.id === gapId);
-    expect(after?.escalate_after && new Date(after.escalate_after).toISOString()).toBe(
-      atOffset(t0Ms, '+6h'),
-    );
+    expect(after?.status).toBe('asked');
+  });
+
+  test('a seat inform rides the tick prompt and is marked read (build 5.5)', async () => {
+    const t = await createTenant(`Eval PlannerSimOffice ${Date.now()}`);
+    await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
+    const t0 = simStartIso(10);
+    const t0Ms = Date.parse(t0);
+    const world: ScenarioWorld = {
+      ...SMOKE_SCENARIOS[0].world,
+      officeMessages: [{ at: '-2h', body: 'Ben is on leave this week — nothing urgent should go to him' }],
+    };
+    await seedScenario(t.id, world, t0Ms);
+
+    const stubLoop: typeof runToolLoop = async (req, _tools, execute) => {
+      // An EMPTY plan is a legitimate choice — this test is about the READ.
+      await execute('submit_plan', { decisions: [] });
+      return { text: '', turns: 1, calls: [] };
+    };
+    const tick = await runTick(t.id, t0, { runLoop: stubLoop });
+
+    expect(tick.planner.tenantErrors).toBe(0);
+    // The inform reached the deciding planner, framed as information.
+    expect(tick.userPrompt).toContain('OFFICE MESSAGES');
+    expect(tick.userPrompt).toContain('information not instruction');
+    expect(tick.userPrompt).toContain('Ben is on leave this week');
+    // …and the successful tick drained it: read, with the read stamp at sim-now
+    // (markOfficeMessagesRead takes the tick's own nowIso).
+    const inform = tick.officeAfter.find((m) => m.kind === 'inform');
+    expect(inform?.status).toBe('read');
+    expect(new Date(inform!.read_at!).toISOString()).toBe(t0);
   });
 
   test('the cadence guard throws off-grid, and expectCadenceSkip records the skip', async () => {
@@ -327,8 +355,129 @@ describe('the sim clock owns job-note stamps', () => {
   });
 });
 
+// Build 5, Phase 3, codified against the REAL store: the sweep DECIDES
+// NOTHING. A 30h-silent asked gap, an 18h+ queued relic and a cancelled-visit
+// observation all pass through a live sweep untouched — no escalation, no
+// expiry, no moot-dismiss, no review item, ever.
+describe('the sweep touches nothing (build 5)', () => {
+  test('silent, stuck and moot gaps all survive a live sweep unmoved', async () => {
+    const t = await createTenant(`Eval SweepInert ${Date.now()}`);
+    await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
+    const t0 = simStartIso(10);
+    const t0Ms = Date.parse(t0);
+    // An asked gap 30h silent (past the OLD 24h clock) on a visit that has
+    // since been CANCELLED (the OLD moot would close it on sight).
+    const seeded = await seedScenario(t.id, {
+      ...SMOKE_SCENARIOS[0].world,
+      nudges: SMOKE_SCENARIOS[0].world.nudges.map((n) => ({
+        ...n, status: 'asked' as const, createdAt: '-31h' as const, askedAt: '-30h' as const,
+      })),
+    }, t0Ms);
+    const gapId = seeded.nudgeIds.gap;
+    const { rows: [g] } = await pg.query('select subject_ref from nudges where id = $1', [gapId]);
+    await pg.query("update assignments set status = 'cancelled' where id = $1", [g.subject_ref]);
+    // A queued relic past the OLD 18h delivery deadline.
+    const { rows: [q] } = await pg.query(
+      `insert into nudges (tenant_id, kind, subject_ref, status, question, queued_at, created_at)
+       values ($1, 'overdue_visit_gap', $2, 'queued', 'stub question', $3, $3) returning id`,
+      [t.id, `inert-${Date.now()}`, atOffset(t0Ms, '-20h')],
+    );
+    // An open observation whose visit is cancelled (the OLD moot-dismiss
+    // case). The asked world already seeded the subject's once-ever twin
+    // (status 'asked'), so reopen THAT row rather than inserting a second.
+    const { rows: [o] } = await pg.query(
+      `update observations set status = 'open' where id = $1 returning id`,
+      [gapId],
+    );
+
+    // Make the reopened observation genuinely STALE (>72h) so the alarm's
+    // third counter is exercised through the real reads too — and clear the
+    // smoke world's seeded history (its -22h `leave` counts as attention,
+    // correctly, and this test wants a genuinely NEGLECTED ask).
+    await pg.query('update observations set noticed_at = $2 where id = $1', [
+      gapId, atOffset(t0Ms, '-80h'),
+    ]);
+    await pg.query('delete from nudge_decisions where tenant_id = $1', [t.id]);
+
+    const watchers = await runWatchers(t0, 'live', { listTenants: async () => [t.id] });
+    expect(watchers.tenantErrors).toBe(0);
+    // THE ALARMS see all three conditions — and still, nothing moved (below).
+    expect(watchers.alarms).toEqual({ asksUnattended: 1, deliveryStuck: 1, observationsStale: 1 });
+
+    const { rows: after } = await pg.query(
+      'select id, status from nudges where id = any($1::uuid[])', [[gapId, q.id]],
+    );
+    expect(Object.fromEntries(after.map((r) => [r.id, r.status]))).toEqual({
+      [gapId]: 'asked', // 30h silent, visit cancelled — UNTOUCHED
+      [q.id]: 'queued', // 20h undelivered — UNTOUCHED
+    });
+    const { rows: [obsAfter] } = await pg.query(
+      'select status, dismiss_reason from observations where id = $1', [o.id],
+    );
+    expect(obsAfter).toEqual({ status: 'open', dismiss_reason: null }); // no moot-dismiss
+    const { rows: [items] } = await pg.query(
+      'select count(*)::int as n from review_items where tenant_id = $1', [t.id],
+    );
+    expect(items.n).toBe(0); // the sweep opens NO review items, ever
+  });
+});
+
+// Build 5, ruling 2 (moot becomes information), codified against the REAL
+// store: the planner — not the sweep — ends a cancelled-visit ask, on the
+// record, through the real status reads and the real markNudgeOutcome.
+// runPlanner directly (not runTick): the sweep still moots until build 5's
+// Phase 3 lands, and this test is about the PLANNER's path.
+describe('the planner ends a moot gap on the record (build 5)', () => {
+  test('cancelled visit → close basis record → row reads CANCELLED with the fact', async () => {
+    const t = await createTenant(`Eval PlannerMootClose ${Date.now()}`);
+    await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
+    const t0 = simStartIso(10);
+    const t0Ms = Date.parse(t0);
+    const seeded = await seedScenario(t.id, SMOKE_SCENARIOS[0].world, t0Ms);
+    const gapId = seeded.nudgeIds.gap;
+    const { rows: [gapRow] } = await pg.query(
+      'select subject_ref from nudges where id = $1', [gapId],
+    );
+    await pg.query("update assignments set status = 'cancelled' where id = $1", [
+      gapRow.subject_ref,
+    ]);
+
+    const stubLoop: typeof runToolLoop = async (req, _tools, execute) => {
+      // The fact reached the prompt — the whole point of ruling 2.
+      expect(req.user).toContain('THE RECORD: the visit was cancelled');
+      const reply = (await execute('submit_plan', {
+        decisions: [
+          { nudgeId: gapId, action: 'close', basis: 'record', confidence: 'high', reason: 'moot' },
+        ],
+      })) as { accepted: number };
+      expect(reply.accepted).toBe(1);
+      return { text: '', turns: 1, calls: [{ turn: 1, name: 'submit_plan', args: {}, ok: true, result: 'ok' }] };
+    };
+    const summary = await runPlanner(t0, 'live', {
+      listTenants: async () => [t.id],
+      tools: [...TEAM_LEAD_TOOL_SCHEMAS],
+      notify: async () => {},
+      hasPushToken: () => false,
+      execute: (tid, name, args) =>
+        dispatchForIdentity(name, args, { tenantId: tid, technicianRef: TEAM_LEAD_REF }),
+      runLoop: stubLoop,
+    });
+    expect(summary.applied).toBe(1);
+
+    // Cross-channel read-back: the durable row says CANCELLED (the status the
+    // sweep's moot wrote), with code's own words as the resolution.
+    const { rows: [after] } = await pg.query(
+      'select status, resolution from nudges where id = $1', [gapId],
+    );
+    expect(after.status).toBe('cancelled');
+    expect(after.resolution).toBe(
+      'closed on the record — the visit was cancelled — nothing left to ask',
+    );
+  });
+});
+
 describe('runArc — a scripted gap life (Phase 2)', () => {
-  test('extend → mid-arc capture → escalate → sweep handoff → manager resolve', async () => {
+  test('leave → mid-arc capture → escalate performs its own handoff → manager resolve', async () => {
     const t = await createTenant(`Eval PlannerSimArc ${Date.now()}`);
     await pg.query(`update tenants set timezone = $2 where id = $1`, [t.id, SIM_TZ]);
     const t0 = simStartIso(10);
@@ -351,10 +500,10 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
       ],
     };
     const timeline: TimelineStep[] = [
-      { at: '+0h', kind: 'tick' }, // stub extends to +26h
+      { at: '+0h', kind: 'tick' }, // stub leaves (watching)
       { at: '+4h', kind: 'capture', text: 'Pilot is lit, swapped the thermocouple while I was there.' },
-      { at: '+5h', kind: 'tick' }, // stub escalates (brings deadline to now)
-      { at: '+5.5h', kind: 'tick' }, // sweep performs the handoff; stub sees zero gaps
+      { at: '+5h', kind: 'tick' }, // stub escalates — the handoff happens HERE (build 5)
+      { at: '+5.5h', kind: 'tick' }, // nothing left open — recorded as skipped
       { at: '+6h', kind: 'manager_resolve', nudgeKey: 'gap', outcome: 'resolved', note: 'thanked Dee' },
     ];
 
@@ -367,7 +516,7 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
       }
       const plan =
         tickNo === 1
-          ? { decisions: [{ nudgeId: reqGapId(req.user), action: 'extend', escalateAfter: atOffset(t0Ms, '+26h'), confidence: 'high', reason: 'stub extend' }] }
+          ? { decisions: [{ nudgeId: reqGapId(req.user), action: 'leave', confidence: 'high', reason: 'stub wait' }] }
           : tickNo === 2
             ? { decisions: [{ nudgeId: reqGapId(req.user), action: 'escalate', confidence: 'high', reason: 'stub escalate', handoffNote: 'Water heater relight (Rosa Alvarez) — needs a decision on the thermocouple note.' }] }
             : { decisions: [] };
@@ -379,28 +528,31 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
 
     const arc = await runArc(t.id, { world, timeline }, t0Ms, { runLoop: stubLoop });
 
-    // Tick 1: extend applied; the clock strictly advanced between ticks.
-    expect(arc.ticks).toHaveLength(3);
-    expect(arc.ticks[0].decisions.map((d) => `${d.action}/${d.outcome}`)).toContain('extend/applied');
+    // Tick 1: leave applied; the clock strictly advanced between ticks.
+    // TWO ticks run, not three: the escalate at tick 2 performs its own handoff
+    // (build 5), so the +5.5h tick finds nothing open and is recorded skipped.
+    expect(arc.ticks).toHaveLength(2);
+    expect(arc.ticksSkipped).toBe(1);
+    expect(arc.ticks[0].decisions.map((d) => `${d.action}/${d.outcome}`)).toContain('leave/applied');
     expect(Date.parse(arc.ticks[1].nowIso)).toBeGreaterThan(Date.parse(arc.ticks[0].nowIso));
 
-    // Tick 2: escalate applied (deadline pulled to now) — the handoff itself
-    // happens on the NEXT sweep, which is the production shape.
+    // Tick 2: escalate applied — and applied MEANS handed off now: the row is
+    // 'escalated' in the same tick, through the real flagNudgeGap + markOutcome.
     expect(arc.ticks[1].decisions.map((d) => `${d.action}/${d.outcome}`)).toContain('escalate/applied');
     const afterTick2 = arc.ticks[1].nudgesAfter[0];
-    expect(afterTick2.status).toBe('asked');
-
-    // Tick 3: the sweep performed the handoff — status escalated, item open.
-    expect(arc.ticks[2].watchers.nudgesEscalated).toBe(1);
-    const afterTick3 = arc.ticks[2].nudgesAfter[0];
-    expect(afterTick3.status).toBe('escalated');
-    expect(new Date(afterTick3.resolved_at!).toISOString()).toBe(arc.ticks[2].nowIso); // sim-stamped
+    expect(afterTick2.status).toBe('escalated');
+    expect(new Date(afterTick2.resolved_at!).toISOString()).toBe(arc.ticks[1].nowIso); // sim-stamped
     const { rows: items } = await pg.query(
       `select status, resolved_at, detail->>'escalatedFromNudge' as from_nudge from review_items where tenant_id = $1`,
       [t.id],
     );
     expect(items).toHaveLength(1);
     expect(items[0].from_nudge).toBe(arc.seeded.nudgeIds.gap);
+    // The item's suggestion is the planner's OWN note — no template exists.
+    const { rows: sugg } = await pg.query(
+      `select suggestion from review_items where tenant_id = $1`, [t.id],
+    );
+    expect(sugg[0].suggestion).toContain('needs a decision on the thermocouple note');
     // The manager_resolve step settled it at sim +6h.
     expect(items[0].status).toBe('resolved');
     expect(new Date(items[0].resolved_at).toISOString()).toBe(atOffset(t0Ms, '+6h'));
@@ -408,7 +560,7 @@ describe('runArc — a scripted gap life (Phase 2)', () => {
     // The ⑤ epilogue assertions stood here — they read gap_summaries rows for
     // the arc's escalated gap, and retired with that store (plan 2026-08-30).
     // Everything the arc proves is now ABOVE: the extend applied, the capture
-    // landed mid-arc, the sweep handed off, and the manager resolved at +6h —
+    // landed mid-arc, the planner handed off itself, and the manager resolved at +6h —
     // read here from nudges, nudge_decisions and review_items directly.
     //
     // Note what this test can prove that the EVAL cannot: the deterministic

@@ -76,7 +76,14 @@ MEM_AVAIL_MIN_MB="${MEM_AVAIL_MIN_MB:-400}"
 # too would open a second incident for one outage. Its TIMER is present, because
 # nothing else notices a stopped timer — a medic that never runs never reports,
 # and silence from it is indistinguishable from health.
-BOX_UNITS="${BOX_UNITS:-doorman.service badge-pull.timer badge-pull.service nudge-runner.timer nudge-runner.service sandbox-token-medic.service sandbox-recycler.service nemoclaw-inference-medic.timer}"
+#
+# sysstat-collect.timer is here because capacity work now RELIES on it: it is the
+# only thing keeping whole-host CPU/memory history on the box, and a stopped
+# timer loses that silently — the failure looks exactly like a quiet month.
+# Unlike openshell-gateway (which has no unit at all and would therefore be
+# skipped here without a word), this one is `loaded` wherever it is installed,
+# so the line does what it looks like it does.
+BOX_UNITS="${BOX_UNITS:-doorman.service badge-pull.timer badge-pull.service nudge-runner.timer nudge-runner.service sandbox-token-medic.service sandbox-recycler.service nemoclaw-inference-medic.timer sysstat-collect.timer}"
 
 FAILED=0   # count of checks reporting down, for the closing log line only
 
@@ -247,12 +254,220 @@ check_agents() {
   done
 }
 
+# ── capacity metrics ─────────────────────────────────────────────────────────
+# The checks above answer "is anything broken right now" and their healthy
+# readings are DISCARDED by design: recordOpsEvent folds observations into
+# incidents, so `ok` with nothing open writes no row. Capacity is made entirely
+# of those healthy readings — how much memory a box holds while nothing is
+# wrong, and how much CPU its seats actually consume — so it goes to a separate
+# collector that stores rather than folds.
+#
+# CUMULATIVE COUNTERS, SENT RAW. oom_kill, cpu.stat usage_usec and the PSI
+# totals are odometers. They are never differenced here: a delta computed on the
+# box is lost forever if the POST fails, whereas an odometer that misses a tick
+# self-heals into a wider window at read time. A turn also lasts 16-45 s, so an
+# instantaneous sample every 5 minutes would miss most of them entirely — a
+# counter cannot miss what happened between two reads.
+#
+# NOT read: the agents' own session files, which record every turn exactly. A
+# script that parses those is a script that can read customer conversations,
+# running on every box forever. Cgroup counters are content-blind — microseconds,
+# never words.
+#
+# The collection runs in python3 because it is almost entirely /proc and /sys
+# reads, where shell would need a dozen more subprocesses and a dozen more ways
+# to half-fail. Every read is individually guarded: an unreadable file omits ONE
+# field rather than losing the tick. The docker calls stay out here, under hard
+# timeouts, because they are the only part that can hang.
+report_metrics() {
+  local containers payload code collect stamp
+  # One inspect for every container, not one per container: six sandboxes would
+  # otherwise be twelve docker round trips on a daemon that may already be sick.
+  containers="$(timeout 12 docker ps --quiet 2>/dev/null \
+    | timeout 12 xargs -r docker inspect --format '{{.Name}} {{.State.Pid}}' 2>/dev/null)"
+
+  # The program is captured into a variable and passed with `python3 -c`, NOT run
+  # as `python3 - <<'PY'`. A heredoc IS stdin: with `python3 -` the interpreter
+  # consumes it as the program text, so the piped container list never arrives
+  # and sys.stdin.read() returns nothing. That silently produced an empty
+  # `sandboxes` object and made the stamping step below fail outright. `-c`
+  # leaves stdin free for the pipe.
+  #
+  # The sibling report() above uses the heredoc form safely ONLY because it
+  # passes its data through argv and never reads stdin. Do not copy its shape
+  # into anything that needs piped input.
+  collect="$(cat <<'PY'
+import json, os, re, sys
+
+def read(path):
+    try:
+        with open(path) as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+def kv(text, key):
+    """A `key value` line, as /proc/meminfo, /proc/vmstat and cpu.stat all use."""
+    if not text:
+        return None
+    m = re.search(r'^%s:?\s+(\d+)' % re.escape(key), text, re.M)
+    return int(m.group(1)) if m else None
+
+def psi(path, kind):
+    """`some avg10=.. total=N` -> N. Microseconds stalled, cumulative."""
+    text = read(path)
+    if not text:
+        return None
+    m = re.search(r'^%s\b.*\btotal=(\d+)' % kind, text, re.M)
+    return int(m.group(1)) if m else None
+
+out = {'observedAt': None}
+
+meminfo = read('/proc/meminfo')
+for field, key in (('memAvailMb', 'MemAvailable'), ('memTotalMb', 'MemTotal')):
+    v = kv(meminfo, key)
+    if v is not None:
+        out[field] = v // 1024          # /proc/meminfo is kB
+
+load = read('/proc/loadavg')
+if load:
+    parts = load.split()
+    # Field 2 is the 5-minute average. load1 is deliberately not sent: sampled
+    # every 5 minutes it describes a 1-minute window, so four minutes in five
+    # are never observed.
+    if len(parts) > 1:
+        try:
+            out['load5'] = float(parts[1])
+        except ValueError:
+            pass
+
+try:
+    out['cpuCores'] = os.cpu_count()
+except Exception:
+    pass
+
+# HOST oom counter, not the per-container one. memory.events oom_kill only
+# counts kills against a container's OWN limit, and unlimited containers can
+# never increment it — an alarm on that alone would watch nothing.
+v = kv(read('/proc/vmstat'), 'oom_kill')
+if v is not None:
+    out['oomKills'] = v
+
+v = kv(read('/sys/fs/cgroup/cpu.stat'), 'usage_usec')
+if v is not None:
+    out['cpuUsageUsec'] = v
+
+for field, path, kind in (
+    ('psiMemSomeUs', '/proc/pressure/memory', 'some'),
+    ('psiMemFullUs', '/proc/pressure/memory', 'full'),
+    ('psiCpuSomeUs', '/proc/pressure/cpu',    'some'),
+):
+    v = psi(path, kind)
+    if v is not None:
+        out[field] = v
+
+# Per-sandbox. Name and PID come from stdin (docker, out in the shell); the
+# numbers come from that PID's cgroup. Per-seat attribution lives here and
+# nowhere else — the host totals above cannot say which seat cost what.
+sandboxes = {}
+for line in sys.stdin.read().splitlines():
+    parts = line.split()
+    if len(parts) != 2:
+        continue
+    name, pid = parts[0].lstrip('/'), parts[1]
+    cg = read('/proc/%s/cgroup' % pid)
+    if not cg:
+        continue
+    # cgroup v2 unified: a single `0::/path` line.
+    m = re.search(r'^0::(.+)$', cg, re.M)
+    if not m:
+        continue
+    base = '/sys/fs/cgroup' + m.group(1).strip()
+    entry = {}
+    cur = read(base + '/memory.current')
+    if cur and cur.strip().isdigit():
+        entry['mem_mb'] = int(cur.strip()) // (1024 * 1024)
+    v = kv(read(base + '/cpu.stat'), 'usage_usec')
+    if v is not None:
+        entry['cpu_usec'] = v          # THE turn counter, per seat
+    events = read(base + '/memory.events')
+    if events:
+        # `max` counts times this seat hit its limit and had to reclaim — the
+        # WARNING. oom_kill is the tombstone, and arrives too late to act on.
+        for key in ('max', 'oom_kill'):
+            v = kv(events, key)
+            if v is not None:
+                entry[key] = v
+    v = psi(base + '/memory.pressure', 'some')
+    if v is not None:
+        entry['psi_mem_some_us'] = v
+    if entry:
+        sandboxes[name] = entry
+if sandboxes:
+    out['sandboxes'] = sandboxes
+
+print(json.dumps(out))
+PY
+)"
+  payload="$(printf '%s\n' "$containers" | python3 -c "$collect" 2>/dev/null)"
+
+  if [ -z "$payload" ]; then log "could not build a metrics payload — skipping"; return 0; fi
+
+  # Seats and disk come from the shell because both are already established here
+  # and both have a trap in them.
+  #
+  # SEATS FROM SYSTEMD, NEVER sandbox_pool. That ledger is partial in BOTH
+  # directions — it holds rows for sandboxes that are not running and misses
+  # ones that are — so a seat count read from it would silently mis-scale every
+  # per-seat figure derived downstream.
+  local seats pct now
+  seats="$(timeout 10 systemctl list-units --type=service --all --no-legend --plain --no-pager \
+            'nemoclaw-agent-*.service' 2>/dev/null | awk 'NF {n++} END {print n+0}')"
+  pct="$(timeout 5 df -P / 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}')"
+  now="$(date -u +%FT%TZ)"
+
+  # `-c` again, for the same reason: this one reads the payload from stdin.
+  stamp="$(cat <<'PY'
+import json, sys
+doc = json.load(sys.stdin)
+doc['observedAt'] = sys.argv[1]
+for key, raw in (('seats', sys.argv[2]), ('diskUsedPct', sys.argv[3])):
+    if raw.isdigit():
+        doc[key] = int(raw)
+print(json.dumps(doc))
+PY
+)"
+  payload="$(printf '%s' "$payload" \
+    | python3 -c "$stamp" "$now" "${seats:-}" "${pct:-}" 2>/dev/null)"
+  if [ -z "$payload" ]; then log "could not stamp the metrics payload — skipping"; return 0; fi
+
+  code="$(curl -sS -m 8 --connect-timeout 4 -o /dev/null -w '%{http_code}' \
+    -X POST "$BASE/control/metrics" \
+    -H "Authorization: Bearer $HOST_PULL_TOKEN" \
+    -H 'Content-Type: application/json' \
+    --data-binary "$payload" 2>/dev/null)" || code=000
+  case "$code" in
+    200) log "metrics recorded (seats=${seats:-?})" ;;
+    401) log "metrics -> 401 UNAUTHORIZED: the host token in $ENV_FILE is not registered" ;;
+    400) log "metrics -> 400 REJECTED: not recorded (observedAt missing or unparseable)" ;;
+    404) log "metrics -> 404: /control/metrics not deployed on this collector yet" ;;
+    000) log "metrics -> collector unreachable" ;;
+    *)   log "metrics -> HTTP $code" ;;
+  esac
+  return 0
+}
+
 # ── run ──────────────────────────────────────────────────────────────────────
 check_disk
 check_memory
 check_docker
 check_units
 check_agents
+# AFTER the health checks and BEFORE the liveness ping. Capacity is the least
+# urgent thing here, so it must not delay an incident report; and it sits inside
+# the ping's scope so that a metrics collector which starts failing every tick
+# shows up as a reporter that never completes, rather than passing silently.
+report_metrics
 
 # Liveness ping LAST, so it means "a full sweep completed", not "the script
 # started". Healthchecks alarms when these stop — the only way a reporter that

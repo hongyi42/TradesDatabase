@@ -32,7 +32,7 @@ section and treat it as binding; treat every file path, line number and code des
 it as history, and check the code instead.** Do not discard a drifted document — the decision
 in it is very likely still the one in force. Do not quote its code prose as fact.
 
-Regenerate with `npm run decisions:index`. 203 documents · 197 live · 6 superseded.
+Regenerate with `npm run decisions:index`. 204 documents · 198 live · 6 superseded.
 
 ## Superseded — do not build on these
 
@@ -47,6 +47,7 @@ Regenerate with `npm run decisions:index`. 203 documents · 197 live · 6 supers
 
 - `2026-09-02` `plan` [2026-09-02-one-send-verb](shared/plans/2026-09-02-one-send-verb.md) — "Build 6.5 — one generalized `send`: the planner chooses who to talk to, and a message need not be about a ga…
 - `2026-09-02` `plan` [2026-09-02-the-record-has-authors](shared/plans/2026-09-02-the-record-has-authors.md) — "Build 7 — the record has authors: the planner opens its own observations, and a seat's inform can become one"
+- `2026-09-02` `research` [2026-09-02-a-visit-is-not-a-person](shared/research/2026-09-02-a-visit-is-not-a-person.md) `not landed` — "Build 8 — a visit is not a person: where the one-person-per-visit assumption lives"
 - `2026-09-02` `research` [2026-09-02-the-detectors-report](shared/research/2026-09-02-the-detectors-report.md) `not landed` — "Build 7 — the detectors report: they stop minting; the record is planner-kept. What is left after builds 4,…
 - `2026-09-01` `plan` [2026-09-01-intent-verbs-and-the-doctrine](shared/plans/2026-09-01-intent-verbs-and-the-doctrine.md) — "Build 6 — intent verbs + the doctrine: escalate and leave are deleted, dismiss/recover reach every stage, ho…
 - `2026-09-01` `research` [2026-09-01-one-send-verb](shared/research/2026-09-01-one-send-verb.md) `landed` — "Build 6.5 ground — one send verb: the gap-keyed decision shape, the three delivery paths, the attribution ma…

@@ -247,13 +247,12 @@ tenant, per the `verifying-behavior` skill.
 | 2 | Manager asks for a briefing on that customer | The briefing cites the capture — and the citation resolves |
 | 3 | Manager books a visit in chat | It appears on the board; the board and chat agree |
 | 4 | Manager moves a promised visit | The agent asks for confirmation *because* a promise is at stake |
-| 5 | Manager runs the freeze | A proposal is staged and **nothing books** until an explicit yes |
-| 6 | Technician opens the board | Read-only day view; their own stops only |
-| 7 | An inbound work email arrives | It lands in L1; a personal email does **not** |
-| 8 | A test call to the phone line | Consent plays, call forwards, transcript lands as `channel:'phone_call'` |
-| 9 | Retract a wrong note | It disappears from briefings; the fold-impact preview listed what else went |
+| 5 | Technician opens the board | Read-only day view; their own stops only |
+| 6 | An inbound work email arrives | It lands in L1; a personal email does **not** |
+| 7 | A test call to the phone line | Consent plays, call forwards, transcript lands as `channel:'phone_call'` |
+| 8 | Retract a wrong note | It disappears from briefings; the fold-impact preview listed what else went |
 
-Check 4 and 5 are the ones that matter most: they prove the confirmation doctrine is intact. Check 9
+Check 4 is the one that matters most: it proves the confirmation doctrine is intact. Check 8
 proves the firm has a real correction path, which is what makes append-only tolerable.
 
 ## 10. Phase 8 — Day-2 ops handoff

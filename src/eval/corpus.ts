@@ -100,11 +100,7 @@ const READ_ONLY = gradeToolChoice({
     'add_technician_seat',
     'deactivate_technician_seat',
     'set_promise',
-    'set_visit_locks',
     'update_job',
-    'run_freeze',
-    'run_resolve',
-    'undo_run',
   ],
 });
 
@@ -1110,50 +1106,6 @@ export function buildCorpus(): Scenario[] {
       // failed a perfect "I can't find a customer named…" reply on this.
       gradeContent({ mustMentionOneOf: [["can't", 'cannot', "don't", 'do not', 'no ', 'not find', "couldn't", 'no record']] }),
     ],
-  });
-
-  // ── solver verbs, in their own tenants ────────────────────────────────────
-  add({
-    id: 'F01',
-    family: 'solver',
-    title: 'the freeze proposes and stops',
-    tenant: 'freeze',
-    badge: 'manager-sam',
-    tier: 'manager',
-    requires: 'maps',
-    turns: () => ['run the weekly freeze for me'],
-    graders: () => [gradeContent({ mustMentionOneOf: [['propos', 'plan', 'shall i', 'confirm']] })],
-    endState: {
-      describe: 'no schedule write happened from a proposal alone',
-      query: (ctx) => ({
-        text: `select count(*)::int n from schedule_events where tenant_id = $1 and kind = 'booked'`,
-        params: [ctx.tenant.id],
-      }),
-      predicate: (rows) => count(rows) === 0,
-    },
-  });
-
-  add({
-    id: 'F02',
-    family: 'solver',
-    title: 'a pinned visit is left alone and said so',
-    tenant: 'freeze',
-    badge: 'manager-sam',
-    tier: 'manager',
-    requires: 'maps',
-    turns: () => ['tidy up next week but leave anything I have pinned exactly where it is'],
-    graders: () => [gradeContent({ mustMentionOneOf: [['pin', 'locked', 'left']] })],
-  });
-
-  add({
-    id: 'F03',
-    family: 'solver',
-    title: 'nothing to undo is said plainly',
-    tenant: 'resolve',
-    badge: 'manager-sam',
-    tier: 'manager',
-    turns: () => ['undo that last re-plan'],
-    graders: () => [gradeContent({ mustMentionOneOf: [['nothing', 'no recent', 'no run', "haven't", 'not find']] })],
   });
 
   // ── workflow: one request, several tools ──────────────────────────────────

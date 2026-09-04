@@ -138,6 +138,10 @@ const RESET_TABLES = [
   // advisory — dropped, leftover 'Eval %' rows would crash the tenant delete
   // below on the non-cascading tenants FK (phase-5 review F1).
   'observations',
+  // Build 7: the corpus now seeds to_planner informs, and an unread one is
+  // prompt-visible to whatever firm runs next. Named for the same reason
+  // `observations` is — the cascade that reaches it today is incidental.
+  'office_messages',
   // The planner's memory (build 3): tenants-only FKs, and the versions table
   // hangs off nothing, so no cascade reaches any of them.
   'planner_memory',
@@ -232,6 +236,18 @@ for (const s of scenarios) {
   // scenario N+1's prompt and their pre-ask decision rows never cascade away
   // (plan review F5).
   await sql.query(`delete from observations where tenant_id = $1`, [tenant.id]);
+  // OFFICE MESSAGES, and this one is newly load-bearing (build 7). An unread
+  // to_planner row rides straight into the NEXT scenario's prompt as an
+  // OFFICE MESSAGES block, and B7-SEAT-REPORT-KEPT — the first corpus scenario
+  // ever to seed one — sits SECOND in ALL_SCENARIOS. Its inform is marked read
+  // only after a fully successful tick, so one loop failure or clock timeout
+  // leaves the row unread and every later scenario renders a technician
+  // reporting a building manager who does not exist in that firm.
+  //
+  // Registered BY NAME, the trap this file records twice already: the
+  // technicians TRUNCATE…CASCADE happens to reach this table today, and that
+  // is an accident of one advisory FK, not a guarantee.
+  await sql.query(`delete from office_messages where tenant_id = $1`, [tenant.id]);
   // money_events is APPEND-ONLY (ledger trigger; caught by the corpus test) —
   // rows persist across scenarios, harmlessly: money reads are JOB-scoped and
   // every scenario seeds fresh jobs. Run-start TRUNCATE still clears them.

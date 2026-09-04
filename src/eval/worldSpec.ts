@@ -85,7 +85,6 @@ export interface VisitSpec {
   latestDate?: string;
   status: 'proposed' | 'confirmed' | 'completed' | 'cancelled';
   promiseLevel: 'none' | 'day' | 'time';
-  locked: boolean;
 }
 
 export interface TechnicianSpec {
@@ -412,11 +411,9 @@ export function buildWorldSpec({ anchor, seed = 7 }: BuildOptions): WorldSpec {
   const edges = {} as Record<EdgeKey, string>;
 
   const main = buildMainTenant(anchor, seed, edges);
-  const freeze = buildSolverTenant('freeze', 'Eval Freeze', 'run_freeze — drains queues tenant-wide', anchor, seed + 1);
-  const resolve = buildSolverTenant('resolve', 'Eval Resolve', 'run_resolve / undo_run — tenant-wide', anchor, seed + 2);
   const seats = buildSeatsTenant(anchor);
   const other = buildOtherFirmTenant(anchor, edges);
-  const tenants = [main, freeze, resolve, seats, other];
+  const tenants = [main, seats, other];
 
   // Measured from the rows actually generated, not from SPAN_BACK/FORWARD: the
   // horizon-boundary edges deliberately sit past the base span, and a span that
@@ -624,7 +621,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
         durationMinutes: w.minutes,
         status: 'completed',
         promiseLevel: 'none',
-        locked: false,
       });
     }
   });
@@ -716,11 +712,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
           durationMinutes: w.minutes,
           status: past ? 'completed' : 'confirmed',
           promiseLevel,
-          // A scattering of manager pins across the span (roughly every 17th
-          // future visit) for set_visit_locks to read. The solver tenants carry
-          // exactly one pin each instead, because there the pin is the subject of
-          // the test rather than background.
-          locked: !past && seq % 17 === 0,
         });
       }
     }
@@ -758,7 +749,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
       durationMinutes: 60,
       status: 'confirmed',
       promiseLevel: 'none',
-      locked: false,
     });
     edges[label] = day;
   }
@@ -797,7 +787,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
       latestDate: addDays(from, 2),
       status: 'confirmed',
       promiseLevel: 'none',
-      locked: false,
     });
   }
 
@@ -857,7 +846,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
           durationMinutes: 60,
           status: 'confirmed',
           promiseLevel: plant.promise,
-          locked: false,
         });
       }
       // Reschedule fixtures need something already on the calendar to move.
@@ -879,7 +867,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
           status: 'confirmed',
           // Half promised, half not: the move gate should fire on some and not others.
           promiseLevel: i % 2 === 0 ? 'day' : 'none',
-          locked: false,
         });
       }
       }
@@ -910,113 +897,6 @@ function buildMainTenant(anchor: string, seed: number, edges: Record<EdgeKey, st
   };
 }
 
-/**
- * A tenant for the solver verbs. run_freeze / run_resolve / undo_run drain the
- * queues TENANT-WIDE, so they cannot share a world with anything else — the same
- * pre-check the pilot E2E had to do by hand.
- */
-function buildSolverTenant(
-  key: string,
-  name: string,
-  purpose: string,
-  anchor: string,
-  seed: number,
-): TenantSpec {
-  const rand = rng(seed);
-  const captures: CaptureSpec[] = [];
-  const customers: CustomerSpec[] = [];
-  const jobs: JobSpec[] = [];
-  const visits: VisitSpec[] = [];
-
-  const technicians: TechnicianSpec[] = [
-    { ref: 'manager-sam', displayName: 'Sam Rivera', tier: 'manager' },
-    {
-      ref: 'tech-riley',
-      displayName: 'Riley Okafor',
-      tier: 'technician',
-      availability: MON_FRI('08:00', '17:00'),
-      serviceCities: ['Seattle'],
-      skills: ['hvac'],
-      slots: ['08:00', '10:30', '13:00'],
-    },
-  ];
-
-  // Four placed visits over the next three working days, two of them pinned:
-  // a freeze must re-plan around the pins and say so.
-  const slots = ['08:00', '10:30', '13:00'];
-  for (let i = 0; i < 6; i++) {
-    const addr = pick(rand, ADDRESSES.seattle);
-    const cKey = `solver-c-${i + 1}`;
-    const intake: CaptureSpec = {
-      key: `cap-solver-${i + 1}`,
-      channel: 'phone_call',
-      technicianRef: 'manager-sam',
-      phase: 'pre',
-      rawText: `Intake call: booking for ${addr.line1}.`,
-    };
-    captures.push(intake);
-    customers.push({
-      key: cKey,
-      name: `${FIRST[(i * 4) % FIRST.length]} ${LAST[(i * 5) % LAST.length]}`,
-      phone: `206-555-${String(3000 + i).slice(-4)}`,
-      email: null,
-      addressLine1: addr.line1,
-      city: addr.city,
-      state: 'WA',
-      postalCode: addr.postal,
-      cluster: 'seattle',
-      facts: [],
-      sourceCapture: intake.key,
-    });
-    const jobKey = `solver-j-${i + 1}`;
-    const w = WORK[i % WORK.length];
-    jobs.push({
-      key: jobKey,
-      customerKey: cKey,
-      title: w.title,
-      jobType: w.jobType,
-      status: 'open',
-      durationMinutes: 60,
-      facts: [],
-    });
-    if (i < 4) {
-      visits.push({
-        key: `solver-v-${i + 1}`,
-        jobKey,
-        technicianRef: 'tech-riley',
-        // Step WORKING days, never calendar days that get snapped forward:
-        // addDays(anchor, 1) and addDays(anchor, 2) both snap to Monday when the
-        // anchor is a Saturday, silently stacking two visits in one slot. Same
-        // bug class as the rs fixtures above — calendar arithmetic collapsing
-        // over a weekend is the trap this generator has to avoid everywhere.
-        date: nextWorkday(addDays(anchor, 1), Math.floor(i / 3)),
-        startTime: slots[i % 3],
-        durationMinutes: 60,
-        status: 'confirmed',
-        promiseLevel: i === 0 ? 'day' : 'none',
-        locked: i === 1, // exactly one pin the solver must not touch
-      });
-    }
-    // The last two jobs stay in the queue for the solve to place.
-  }
-
-  return {
-    key,
-    name,
-    purpose,
-    managerSeats: 1,
-    technicianSeats: 4,
-    horizonDays: HORIZON_DAYS,
-    technicians,
-    captures,
-    customers,
-    jobs,
-    visits,
-    timeOff: [],
-    durations: [{ jobType: 'hvac', minutes: 60 }],
-    coldSandboxes: 0,
-  };
-}
 
 /** Seats deliberately exhausted: add_technician_seat must refuse, and say why. */
 function buildSeatsTenant(anchor: string): TenantSpec {
@@ -1125,7 +1005,6 @@ function buildOtherFirmTenant(anchor: string, edges: Record<EdgeKey, string>): T
         durationMinutes: 120,
         status: 'confirmed',
         promiseLevel: 'none',
-        locked: false,
       },
     ],
     timeOff: [],

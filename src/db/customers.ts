@@ -87,11 +87,18 @@ export async function setCustomerAttribute(id: string, key: string, bundle: Json
 }
 
 // Persist lazily-geocoded solver coordinates (plan 4b-3 Phase 2).
-// ⚠ Future address editors: NO address-column updater exists in the app today
-// (audited 2026-07-26 — createCustomer only inserts; trySetCustomerAttribute
-// touches attributes only). Whichever change first UPDATES address_line1/2,
-// city, state, or postal_code MUST also null lat/lng/geocoded_at in the same
-// update, or the solver keeps routing to the old location.
+// DORMANT SINCE RUNG 8 (2026-09-03): the freeze's geocoder was the only writer
+// of lat/lng/geocoded_at and the solver the only reader, and both are deleted.
+// The columns and this writer are KEPT for rung 10's advisory route optimizer —
+// re-deriving coordinates for every customer is the expensive part, and the data
+// is still correct.
+//
+// ⚠ Still true, and the reason this note survives: NO address-column updater
+// exists in the app (audited 2026-07-26 — createCustomer only inserts;
+// trySetCustomerAttribute touches attributes only). Whichever change first
+// UPDATES address_line1/2, city, state, or postal_code MUST also null
+// lat/lng/geocoded_at in the same update, or a future router reads a stale
+// location for a customer who moved.
 export async function updateCustomerCoords(
   id: string,
   lat: number,

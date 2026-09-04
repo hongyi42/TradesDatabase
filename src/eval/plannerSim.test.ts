@@ -618,7 +618,12 @@ describe('runTick over an observation-seeded world (plan 2026-08-31)', () => {
           {
             nudgeId: gapId,
             action: 'send',
-            question: 'How did the water heater flush go?',
+            // Build 6.5 Phase 4: one verb, so a send says HOW it arrives and
+            // whether it is the question of record. `question` became
+            // `message` when the office verbs folded in.
+            as: 'chat',
+            countsAsTheAsk: true,
+            message: 'How did the water heater flush go?',
             confidence: 'high',
             reason: 'stub: worth asking now',
           },

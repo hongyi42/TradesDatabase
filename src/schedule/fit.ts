@@ -34,13 +34,16 @@ import type { RouteStop } from '../routes/deepLink.js';
 // ---------------------------------------------------------------------------
 // Pure minute math
 
-// Exported since 4b-3: freezeSolve shares THE minute math (a second copy could
-// drift from the one find_slots trusts).
-export const toMin = (hhmm: string): number => {
+// Module-local minute math. It was EXPORTED for 4b-3, when the freeze solver
+// shared it rather than keeping a second copy that could drift from the one
+// find_slots trusts; the solver is gone (rung 8) and nothing outside this file
+// reads it, so the export goes with it. `addDaysISO` and `dayWindows` DO have
+// other consumers and stay exported.
+const toMin = (hhmm: string): number => {
   const [h, m] = hhmm.split(':').map(Number);
   return h * 60 + m;
 };
-export const toHHMM = (min: number): string =>
+const toHHMM = (min: number): string =>
   `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
 // Emission clamp: a slot may END at minute 1440 ('24:00' window edge) but
@@ -434,10 +437,9 @@ export async function assembleFitContext(input: AssembleFitContextInput): Promis
 }
 
 // Displacement candidates for the no-fit block: what COULD move to make room.
-// Promise-free visits first (nothing was told to a customer), then UNPINNED
-// before pinned (4b-3: locked now means a manager said hands-off — a pin only
-// binds AUTOMATIC scheduling, so a pinned row may still be suggested, but
-// never ahead of an equally-free unpinned one), then by day.
+// Promise-free visits first (nothing was told to a customer), then by day.
+// (A pinned-last tiebreak sat in the middle until rung 8 — pinning bound only
+// AUTOMATIC scheduling, and there is none.)
 export interface DisplacementCandidate {
   assignmentId: string;
   customer: string | null;
@@ -446,7 +448,6 @@ export interface DisplacementCandidate {
   weekday: string; // server-computed — same no-agent-calendar-math rule
   span: string;
   promiseLevel: Assignment['promise_level'];
-  locked: boolean;
 }
 
 export async function findDisplacementCandidates(
@@ -473,9 +474,7 @@ export async function findDisplacementCandidates(
   const ordered = [...rows].sort((a, b) => {
     const ap = a.promise_level === 'none' ? 0 : 1;
     const bp = b.promise_level === 'none' ? 0 : 1;
-    const al = a.locked ? 1 : 0;
-    const bl = b.locked ? 1 : 0;
-    return ap - bp || al - bl || (a.starts_at < b.starts_at ? -1 : 1);
+    return ap - bp || (a.starts_at < b.starts_at ? -1 : 1);
   });
   for (const row of ordered.slice(0, limit)) {
     let ref: string | null = null;
@@ -494,7 +493,6 @@ export async function findDisplacementCandidates(
       weekday: weekdayLabel(row.starts_at.slice(0, 10)),
       span: `${row.starts_at.slice(11, 16)}–${row.ends_at.slice(11, 16)}`,
       promiseLevel: row.promise_level,
-      locked: row.locked,
     });
   }
   return out;

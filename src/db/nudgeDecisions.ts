@@ -14,8 +14,24 @@ export interface NudgeDecisionInput {
   // gap across both stages. `subject` says which table's row this decision was
   // about, and the writer keys nudge_id OR observation_id from it; the readers
   // coalesce, so callers never care which stage a row landed in.
-  nudgeId: string;
+  //
+  // NULL SINCE BUILD 6.5 PHASE 3, and it does not mean "the subject was lost":
+  // it means the decision was a MESSAGE TO A PERSON that was not about any
+  // gap. `to_ref` carries who it went to. Every per-gap read (listDecisionsFor
+  // Nudge(s), the alarm's attention read, historyLine) is keyed by id and so
+  // cannot return one; the corpus reads see them all.
+  nudgeId?: string | null;
   subject?: 'nudge' | 'observation';
+  // WHO a message was addressed to, as a roster ref. Null unless the planner
+  // NAMED somebody: a send that falls back to the gap's own person leaves this
+  // empty, because the gap already says who that is. Set on gap-less messages
+  // (which have nothing else to say it) and on gap-bound ones with an explicit
+  // `to` — asking a manager about a technician's gap is exactly the case where
+  // the subject and the addressee are different people.
+  toRef?: string | null;
+  // How it was sent. Null until Phase 4 gives `send` its two legs; the field
+  // lands with the column so the log's shape stops moving.
+  via?: string | null;
   jobId?: string | null;
   mode: 'shadow' | 'live';
   action: string;
@@ -60,12 +76,12 @@ const PAGE = 1000;
 // this table, so a bad id costs its own job-keyed recall and nothing else, and
 // says so loudly rather than taking the batch down with it.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function safeJobId(jobId: string | null | undefined, nudgeId: string): string | null {
+function safeJobId(jobId: string | null | undefined, nudgeId: string | null): string | null {
   if (!jobId) return null;
   if (UUID_RE.test(jobId)) return jobId;
   console.error(
-    `[nudgeDecisions] nudge ${nudgeId} carries a non-uuid jobId (${jobId}) — recording the ` +
-      'decision without it. Its context is malformed upstream.',
+    `[nudgeDecisions] nudge ${nudgeId ?? '(no gap)'} carries a non-uuid jobId (${jobId}) — ` +
+      'recording the decision without it. Its context is malformed upstream.',
   );
   return null;
 }
@@ -84,11 +100,16 @@ export async function recordNudgeDecisions(inputs: NudgeDecisionInput[]): Promis
   for (let i = 0; i < inputs.length; i += CHUNK) {
     const rows = inputs.slice(i, i + CHUNK).map((d) => ({
       tenant_id: d.tenantId,
-      // Exactly one of the pair, keyed by stage (default: the ask). Both point
-      // at the same uuid for a sent gap; the FK decides which table must hold it.
-      nudge_id: d.subject === 'observation' ? null : d.nudgeId,
-      observation_id: d.subject === 'observation' ? d.nudgeId : null,
-      job_id: safeJobId(d.jobId, d.nudgeId),
+      // At most one of the pair, keyed by stage (default: the ask). Both point
+      // at the same uuid for a sent gap; the FK decides which table must hold
+      // it. BOTH NULL is legal since build 6.5 Phase 3 and means the decision
+      // was a message about nobody's gap — the CHECK that forbade it is gone
+      // (20260903120000), and the writer's own rule (at most one) is unchanged.
+      nudge_id: d.subject === 'observation' ? null : (d.nudgeId ?? null),
+      observation_id: d.subject === 'observation' ? (d.nudgeId ?? null) : null,
+      job_id: safeJobId(d.jobId, d.nudgeId ?? null),
+      to_ref: d.toRef ?? null,
+      via: d.via ?? null,
       mode: d.mode,
       action: d.action,
       not_before: d.notBefore ?? null,
@@ -180,7 +201,13 @@ export async function listDecisionsForNudges(
       // pre-ask decision under null, where historyLine and the sweep's
       // plannerAlive would never find it (review F9).
       const key = row.nudge_id ?? row.observation_id;
-      if (!key) continue; // unreachable: nudge_decisions_subject_check
+      // REACHABLE SINCE BUILD 6.5 PHASE 3 (the comment here used to say
+      // "unreachable: nudge_decisions_subject_check", and that CHECK is gone).
+      // A both-null row is a message about nobody's gap; it belongs to no gap's
+      // history and is skipped here on purpose, not defensively. The `.in()`
+      // filter above cannot return one anyway — this is the belt for a caller
+      // that widens the read.
+      if (!key) continue;
       const list = out.get(key);
       if (list) list.push(row);
       else out.set(key, [row]);

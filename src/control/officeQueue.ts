@@ -13,7 +13,7 @@ import { MAX_DELIVERY_ATTEMPTS, MAX_SERVE_COUNT } from './nudgeQueue.js';
 
 // The office queue's transport, spine side (plan 2026-08-31 "the planner's
 // inbox", build 5.5 Phase 3): agent-addressed messages — the planner's
-// ask_agent/inform_agent and seat-to-seat informs — served on the same
+// `send` (as:'assistant') and seat-to-seat informs — served on the same
 // host-token pull posture as the nudge queue. The box-side half is
 // Box_Setup_Stuff/office-runner.sh: `openclaw agent --session-key main`, NO
 // --deliver — the turn lands in the agent's main session and NOTHING pings
@@ -54,10 +54,24 @@ export function wrapOfficeMessage(
 ): string {
   if (row.from_ref === TEAM_LEAD_REF) {
     const head = row.kind === 'ask' ? 'OFFICE QUESTION' : 'OFFICE NOTE';
+    // THE REPLY ID RIDES ON BOTH KINDS since build 6.5 Phase 4, and this is a
+    // fix rather than a widening. One `send` absorbed ask_agent/inform_agent,
+    // and the collapse writes every planner message as kind 'inform' — because
+    // there is no longer an ask/inform distinction for the planner to make.
+    // Left alone, that silently removed the reply channel: only the 'ask'
+    // framing carried "mention this id", `inform_team_lead`'s replyToMessageId
+    // is documented as "the id that question told you to mention", so
+    // `in_reply_to` would never be set for a planner message again and the
+    // doctrine's promise that "a reply arrives on a later look" would be false.
+    //
+    // Mislabelling every note an OFFICE QUESTION would have restored the id at
+    // the cost of a lie in the framing. Carrying the id on a note instead says
+    // the true thing: you may answer this, and nothing is asking you to.
     const tail =
       row.kind === 'ask'
         ? ` — reply via inform_team_lead and mention this id: ${row.id}`
-        : ' — verify against the record with your tools if it matters, then carry on.';
+        : ' — verify against the record with your tools if it matters. If there is ' +
+          `something to say back, reply via inform_team_lead mentioning this id: ${row.id}`;
     return `${head} (from the office record system, not a person): ${row.body}${tail}`;
   }
   const who = senderDisplayName ?? row.from_ref;
@@ -79,7 +93,10 @@ export async function buildOfficeDelivery(
   const serveCount = deps.serveCount ?? setOfficeMessageServeCount;
   const getTech = deps.getTech ?? getTechnician;
 
-  const rows = await listQueued(hostId);
+  // 'assistant' ONLY (build 6.5 Phase 4). A chat row rides the NUDGE pull, and
+  // serving it here as well would inject it as a silent agent turn AND text it
+  // — the same words arriving twice by two routes.
+  const rows = await listQueued(hostId, 'assistant');
   const items: OfficeDeliveryItem[] = [];
   for (const row of rows) {
     try {

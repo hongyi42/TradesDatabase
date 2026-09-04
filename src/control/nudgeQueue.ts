@@ -1,7 +1,12 @@
 import type { QueuedNudgeForHost } from '../db/index.js';
 import {
   getQueuedNudgeForHost,
+  getQueuedOfficeMessageForHost,
   isInactiveState,
+  listQueuedOfficeMessagesForHost,
+  setOfficeMessageAttempts,
+  setOfficeMessageDelivery,
+  setOfficeMessageServeCount,
   listQueuedNudgesForHost,
   listQueuedNudgesInGroupForHost,
   markNudgeAskedGroup,
@@ -27,12 +32,17 @@ import { FOOTER_DELIMITER } from '../teamLead/composeCopy.js';
 // deliberately, with an honest note"; the verb was deleted in build 6 Phase 1.
 // A frozen row is QUEUED, and the planner ends it with `close` when the record
 // settles the matter or `dismiss` when it will not (both legal on every stage
-// since build 6 Phase 3). `send` is refused here — there is nothing to send
-// twice — and `hold` writes a date that changes nothing, since a frozen row is
-// not waiting on a clock. Note what the planner still CAN do: `ask_agent` does
-// not ride this pipe, so the person's assistant is reachable even when their
-// queued question is not. Build 6 Phase 5 is what tells the planner the row is
-// frozen at all — before it, frozen and merely slow rendered identically.)
+// since build 6 Phase 3). `countsAsTheAsk` is refused on a queued row — there
+// is nothing to ask twice — and `hold` writes a date that changes nothing,
+// since a frozen row is not waiting on a clock. Note what the planner still
+// CAN do: a `send` WITHOUT the flag reaches the same person by either leg, so
+// somebody with a frozen question is not out of reach. Build 6 Phase 5 is what
+// tells the planner the row is frozen at all — before it, frozen and merely
+// slow rendered identically.
+//
+// (`via='chat'` office rows DO ride this pipe as of build 6.5 Phase 4 — see
+// the chat leg at the end of buildNudgeDelivery. They carry their own
+// counters and freeze by the same two caps.))
 
 // A nudge served more than this many times without an ack is POISON — some
 // box-side fault re-serves it forever, and it must stop re-alarming (the
@@ -63,6 +73,14 @@ export interface NudgeDeliveryItem {
 
 export interface NudgeQueueDeps {
   listQueued?: typeof listQueuedNudgesForHost;
+  // THE CHAT LEG (build 6.5 Phase 4): office rows with via='chat' ride THIS
+  // pull, because the box-side runner that texts a person verbatim is this
+  // one. Injected like every other reader so a unit test never touches a DB.
+  listQueuedChat?: typeof listQueuedOfficeMessagesForHost;
+  getQueuedChat?: typeof getQueuedOfficeMessageForHost;
+  chatServeCount?: typeof setOfficeMessageServeCount;
+  chatAttempts?: typeof setOfficeMessageAttempts;
+  chatDelivery?: typeof setOfficeMessageDelivery;
   getQueued?: typeof getQueuedNudgeForHost;
   serveCount?: typeof setNudgeServeCount;
   asked?: typeof markNudgeAskedGroup;
@@ -188,10 +206,65 @@ export async function buildNudgeDelivery(
       console.error(`[nudgeQueue] serve of ${lead.id} failed`, err);
     }
   }
+  // ── THE CHAT LEG (build 6.5 Phase 4) ──────────────────────────────────────
+  // Office rows the planner marked `via='chat'` are served HERE, appended to
+  // the same array, because the box-side half that texts a person verbatim is
+  // this runner — and it never asks what table an id came from. So the whole
+  // leg is spine-side: no Box_Setup_Stuff change, no fleet rollout.
+  //
+  // No groups. A chat message is one row to one person; `ask_group_id` is the
+  // nudges table's way of saying "several gaps, one message", and a message
+  // that is not about a gap has nothing to group.
+  const listChat = deps.listQueuedChat ?? listQueuedOfficeMessagesForHost;
+  const chatServe = deps.chatServeCount ?? setOfficeMessageServeCount;
+  for (const row of await listChat(hostId, 'chat')) {
+    try {
+      const tech = row.technicians;
+      // The SAME freeze doctrine, and the same liveness re-check at serve
+      // time: someone who went inactive or lost their binding between queue
+      // and serve is SKIPPED, not failed — a rebind may heal them.
+      // Telegram is required here and NOT on the assistant leg, because this
+      // is the leg that actually texts a phone.
+      if (!tech || isInactiveState(tech.state) || !tech.sandbox_ref || !tech.telegram_user_id) {
+        continue;
+      }
+      if (row.serve_count >= MAX_SERVE_COUNT) {
+        console.error(
+          `[nudgeQueue] chat message ${row.id} served ${row.serve_count}x with no delivery ` +
+            'ack — frozen; see the alarm counters',
+        );
+        continue;
+      }
+      if (row.attempts >= MAX_DELIVERY_ATTEMPTS) {
+        console.error(
+          `[nudgeQueue] chat message ${row.id} failed delivery ${row.attempts}x — frozen`,
+        );
+        continue;
+      }
+      const served = await chatServe(row.id, row.tenant_id, row.serve_count + 1);
+      if (!served) continue; // moved under us
+      items.push({
+        id: row.id,
+        sandboxRef: tech.sandbox_ref,
+        replyTo: tech.telegram_user_id,
+        // Distinct from a nudge's `nudge-<id>`, though v2 of the runner reads
+        // neither — the ids are uuids from different tables and cannot collide.
+        sessionId: `chat-${row.id}`,
+        // No FOOTER_DELIMITER split: that strip exists for LEGACY nudge rows
+        // queued before the footer's retirement, and no office row ever had one.
+        directMessageB64: Buffer.from(row.body, 'utf8').toString('base64'),
+      });
+    } catch (err) {
+      console.error(`[nudgeQueue] serve of chat message ${row.id} failed`, err);
+    }
+  }
   return { nudges: items };
 }
 
-export type DeliveryReportResult = 'asked' | 'retry' | 'failed' | 'ignored';
+// 'delivered' joined in build 6.5 Phase 4: a CHAT office row has no `asked`
+// state to move to — it is a message, not a question of record — so its settle
+// needs a word of its own rather than borrowing the nudge path's.
+export type DeliveryReportResult = 'asked' | 'delivered' | 'retry' | 'failed' | 'ignored';
 
 // The box's report for ONE item. hostId comes from the TOKEN (the ops-report
 // rule): a host can only move rows whose technician lives on it, and only
@@ -211,6 +284,37 @@ export async function completeNudgeDelivery(
 
   const row = await getQueued(id, hostId);
   if (!row) {
+    // ── A CHAT MESSAGE'S REPORT (build 6.5 Phase 4), tried FIRST ────────────
+    // The box posts {id, outcome} and never says which table the id came from,
+    // so the spine routes it. This must sit ahead of the closed-lead group
+    // path below, which returns 'ignored' for any non-delivered report and
+    // then swallows the rest — an office id could otherwise never reach a
+    // fallback at all, and a `failed` report for a chat row could never bump
+    // its attempts, freezing it at MAX_SERVE_COUNT (10) instead of
+    // MAX_DELIVERY_ATTEMPTS (3).
+    const getChat = deps.getQueuedChat ?? getQueuedOfficeMessageForHost;
+    const chat = await getChat(id, hostId);
+    if (chat) {
+      if (report === 'delivered') {
+        const settle = deps.chatDelivery ?? setOfficeMessageDelivery;
+        const moved = await settle(
+          chat.id,
+          chat.tenant_id,
+          { status: 'delivered', deliveredAt: new Date().toISOString() },
+          ['queued'],
+        );
+        return moved ? 'delivered' : 'ignored';
+      }
+      // FAILED: bump attempts and let the next pull decide. Never a terminal
+      // 'failed' status — the broken-pipe doctrine is that a row past its caps
+      // FREEZES, staying visible to the operators, rather than disappearing
+      // into a status nobody sweeps.
+      const bump = deps.chatAttempts ?? setOfficeMessageAttempts;
+      const moved = await bump(chat.id, chat.tenant_id, chat.attempts + 1);
+      if (!moved) return 'ignored';
+      return chat.attempts + 1 >= MAX_DELIVERY_ATTEMPTS ? 'failed' : 'retry';
+    }
+
     // The point-read wants a QUEUED row, and a group's lead can leave that state
     // on its own: the sweep's `moot`, or the planner's own `close`, each close one
     // queued row and leave its siblings alone (watchers.ts). A delivered report arriving after

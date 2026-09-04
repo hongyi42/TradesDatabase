@@ -34,15 +34,6 @@
     // pill between loads. Only the number is kept: the tray re-fetches on
     // open, and a cached payload would invite rendering stale rows from it.
     bucketCount: null,
-    // Whether an OPEN proposal exists (managers only) — the proposal pill's
-    // render condition. Only the boolean is kept: the sheet re-fetches on
-    // open (same never-stale rule as the tray), and the server computes the
-    // open/expired/stale states — the client does no expiry math.
-    freezeOpen: null,
-    // Which KIND the open proposal is ('freeze' | 'resolve', plan
-    // 2026-07-30) — server-declared; picks the pill's and sheet's wording.
-    // null whenever nothing is open.
-    proposalKind: null,
     // Session-cached roster for the assign picker (plan 4a.5) — fetched on
     // first picker open, never on the load path. Names change rarely; a
     // reopen of the webview clears it naturally.
@@ -143,13 +134,6 @@
             : 'promised day';
       badges += '<span class="badge promise">' + lbl + '</span>';
     }
-    // Pinned (plan 4b-3): `locked` now means a MANAGER pinned this visit —
-    // automatic scheduling never places, moves, or considers it. The badge
-    // returns with its real meaning (it was removed in 4a.5 while every row
-    // was auto-locked and the flag meant nothing).
-    if (stop.locked) {
-      badges += '<span class="badge pinned">📌 Pinned</span>';
-    }
     return badges;
   }
 
@@ -209,7 +193,7 @@
       '<div class="tbd-card" data-id="' + esc(u.assignmentId) + '">' +
       '<div class="tbd-main">' + esc(u.customer || 'Unknown customer') +
       (u.jobTitle ? ' — ' + esc(u.jobTitle) : '') +
-      (u.locked ? ' <span class="badge pinned">📌 Pinned</span>' : '') + '</div>' +
+      '</div>' +
       '<div class="tbd-sub">' +
       esc(
         (u.technicianName || 'Unassigned') +
@@ -373,11 +357,6 @@
     }
     app.innerHTML = html;
     state.rendered = true;
-    // The freeze pill has ONE renderer — syncFreezePill (final-review
-    // finding: a template copy + an imperative copy drift). Synchronous:
-    // it only reads state.freezeOpen (last known; the async probe
-    // re-reconciles when it lands).
-    syncFreezePill();
   }
 
   // ---- API ----
@@ -465,7 +444,6 @@
         // roster warm-up rides the same rule (4a.6).
         if (data.tier === 'manager') {
           fetchBucket();
-          fetchFreezeProposal();
           prefetchRoster();
         }
         return data;
@@ -526,212 +504,11 @@
       });
   }
 
-  // Async proposal probe (proposal-view feature, 2026-07-27; kind-agnostic
-  // since plan 2026-07-30 — the endpoint serves the ONE open proposal,
-  // freeze or re-solve): fires AFTER a successful render, manager-only,
-  // never awaited — the tray-pill idiom. Two jobs: keep state.freezeOpen +
-  // state.proposalKind current (the pill's render inputs) and hand
-  // openProposal its fresh payload. The endpoint serves computed states
-  // (open / expired / stale / none) — no client date math.
-  function fetchFreezeProposal() {
-    return fetch('/board/api/freeze-proposal', { headers: authHeaders() })
-      .then(function (resp) {
-        if (!resp.ok) return null;
-        return resp.json();
-      })
-      .then(function (v) {
-        if (!v) return null;
-        state.freezeOpen = v.state === 'open';
-        state.proposalKind = v.state === 'open' ? v.kind : null;
-        syncFreezePill();
-        return v;
-      })
-      .catch(function () {
-        return null;
-      });
-  }
 
-  // The pill's and sheet's shared wording — 're-plan' for a re-solve, the
-  // shipped 'freeze' copy otherwise (the server's kind decides; an unknown/
-  // absent kind falls back to freeze wording, never a blank).
-  function proposalTitle(kind) {
-    return kind === 'resolve' ? 'Re-plan proposal' : 'Freeze proposal';
-  }
 
-  // The proposal pill's ONLY renderer: called synchronously after every paint
-  // AND when the async probe lands — one markup source, reconciled in place.
-  // Renders only while a proposal is OPEN (no placeholder state: outside the
-  // ~12h proposal window there is nothing to advertise — plan decision:
-  // pill, not a tab). The label re-syncs on every call: a freeze token
-  // superseded by a re-solve one must not keep saying "Freeze proposal".
-  function syncFreezePill() {
-    var existing = document.getElementById('freeze-pill');
-    if (state.freezeOpen && state.isManager) {
-      var label = '📋 ' + proposalTitle(state.proposalKind);
-      if (existing) {
-        existing.textContent = label;
-        return;
-      }
-      var head = document.querySelector('.head-row');
-      if (!head) return;
-      var b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'freeze-pill';
-      b.id = 'freeze-pill';
-      b.textContent = label;
-      head.appendChild(b);
-    } else if (!state.freezeOpen && existing) {
-      existing.remove();
-    }
-  }
 
-  // One row skeleton for all three proposal sections (final-review
-  // simplification: three hand-kept copies of the same markup drift).
-  function proposalRow(main, sub) {
-    return (
-      '<div class="bucket-row"><div class="bucket-row-txt">' +
-      '<div class="bucket-row-main">' + esc(main) + '</div>' +
-      '<div class="bucket-row-sub">' + esc(sub) + '</div>' +
-      '</div></div>'
-    );
-  }
 
-  function renderProposalSheet(v) {
-    var inner;
-    if (v.state !== 'open') {
-      // expired / stale / none: the server's message says what happened and
-      // what to do (run the freeze again in chat) — nothing else renders.
-      inner = '<div class="bucket-empty">' + esc(v.message) + '</div>';
-    } else {
-      // Names come from the PAYLOAD's capacity rows, deliberately not
-      // rosterName(): the sheet must show the plan as SOLVED (solve-time
-      // names, present even when the roster cache is cold), and the data is
-      // already in hand — no extra fetch, no cache dependency.
-      var nameByRef = {};
-      v.capacity.forEach(function (c) {
-        nameByRef[c.technicianRef] = c.technicianName;
-      });
-      // Group placements by day. Lexicographic sort IS chronological for
-      // YYYY-MM-DD and HH:MM — string ordering, not client date math; the
-      // weekday arrives server-computed (house rule).
-      var byDate = {};
-      v.placements.forEach(function (p) {
-        (byDate[p.date] = byDate[p.date] || []).push(p);
-      });
-      var placed = Object.keys(byDate)
-        .sort()
-        .map(function (date) {
-          var rows = byDate[date].sort(function (a, b) {
-            return a.startTime < b.startTime ? -1 : a.startTime > b.startTime ? 1 : 0;
-          });
-          return (
-            '<h4 class="freeze-day">' + esc((rows[0].weekday ? rows[0].weekday + ' ' : '') + date) + '</h4>' +
-            rows
-              .map(function (p) {
-                return proposalRow(
-                  p.startTime + '–' + p.endTime + ' · ' +
-                    (p.customer || 'Unknown customer') +
-                    (p.jobTitle ? ' — ' + p.jobTitle : ''),
-                  nameByRef[p.technicianRef] || p.technicianRef,
-                );
-              })
-              .join('')
-          );
-        })
-        .join('');
-      // Moves — re-solve proposals only, rendered BEFORE Placements (plan
-      // 2026-07-30): what changes outranks what's new. Per-day groups keyed
-      // on the DESTINATION day (server pre-sorted by toDate+toStartTime);
-      // every string is server-composed — labels carry weekday+date+times,
-      // techChange exists only when the person actually changes.
-      var movesSection = '';
-      if (v.kind === 'resolve') {
-        var movesByDate = {};
-        v.moves.forEach(function (m) {
-          (movesByDate[m.toDate] = movesByDate[m.toDate] || []).push(m);
-        });
-        var moved = Object.keys(movesByDate)
-          .sort()
-          .map(function (date) {
-            var rows = movesByDate[date];
-            return (
-              '<h4 class="freeze-day">' +
-              esc((rows[0].toWeekday ? rows[0].toWeekday + ' ' : '') + date) + '</h4>' +
-              rows
-                .map(function (m) {
-                  return proposalRow(
-                    m.fromLabel + ' → ' + m.toLabel,
-                    (m.customer || 'Unknown customer') +
-                      (m.jobTitle ? ' — ' + m.jobTitle : '') +
-                      (m.techChange ? ' · ' + m.techChange : ''),
-                  );
-                })
-                .join('')
-            );
-          })
-          .join('');
-        movesSection =
-          '<div class="bucket-section"><h3>Moves (' + v.moves.length + ')</h3>' +
-          (v.moves.length ? moved : '<div class="bucket-empty">Nothing moves.</div>') +
-          '<div class="range">' +
-          esc(v.keptCount + ' visit(s) kept exactly as booked.') +
-          '</div></div>';
-      }
-      inner =
-        '<div class="range">' + esc('Covers ' + v.horizonFrom + ' – ' + v.horizonTo) + '</div>' +
-        movesSection +
-        '<div class="bucket-section"><h3>Placements (' + v.placements.length + ')</h3>' +
-        (v.placements.length ? placed : '<div class="bucket-empty">Nothing to place.</div>') +
-        '</div>' +
-        '<div class="bucket-section"><h3>Skipped (' + v.skipped.length + ')</h3>' +
-        (v.skipped.length
-          ? v.skipped
-              .map(function (s) {
-                // Label + the server-composed reason VERBATIM — the reasons
-                // are the product here (why work did not land).
-                return proposalRow(s.label, s.reason);
-              })
-              .join('')
-          : '<div class="bucket-empty">Nothing was skipped.</div>') +
-        '</div>' +
-        '<div class="bucket-section"><h3>Capacity</h3>' +
-        v.capacity
-          .map(function (c) {
-            return proposalRow(
-              c.technicianName,
-              fmtDur(c.committedMin) + ' committed · ' + fmtDur(c.availableMin) + ' available',
-            );
-          })
-          .join('') +
-        '</div>' +
-        '<div class="range">' +
-        esc('📌 ' + v.pinnedCount + ' pinned visit(s) left untouched — pinned work is never rearranged.') +
-        '</div>' +
-        // Copy only, never a button: confirmation lives in CHAT (ritual
-        // doctrine) — the page has no write path and serves no confirm id.
-        // Kind-aware wording; the freeze sentence stays byte-identical.
-        '<div class="freeze-hint">To confirm' +
-        (v.kind === 'resolve' ? ' this re-plan' : '') +
-        ': reply <b>yes</b> to the assistant in chat — this page can’t book anything.</div>';
-    }
-    return inner;
-  }
 
-  function openProposal() {
-    // Re-fetch on open — never stale (the tray idiom). The fetch also
-    // reconciles the pill, so an expired proposal both says so in the sheet
-    // AND drops its pill on the same tap. Read-only: the shared sheet
-    // helpers with a no-op body click (phase review: reuse, don't re-roll).
-    fetchFreezeProposal().then(function (v) {
-      if (!v) {
-        toast('Could not load the proposal — try again.', true);
-        return;
-      }
-      // Every non-none state carries the kind; `none` has no kind and falls
-      // back to the freeze title (nothing to advertise either way).
-      openSheet(sheetShell(proposalTitle(v.kind), renderProposalSheet(v)), function () {});
-    });
-  }
 
   function bucketVisitRow(v) {
     // Server-composed strings verbatim (weekday/date/times) — no client date
@@ -749,10 +526,6 @@
       '<div class="bucket-row bucket-visit" data-id="' + esc(v.assignmentId) + '">' +
       '<div class="bucket-row-txt"><div class="bucket-row-main">' +
       esc(whenTxt) +
-      // Pinned (plan 4b-3): a pinned parked visit is "I'll place this
-      // myself" — the tray must show it or the freeze's skip contradicts
-      // what the manager saw here.
-      (v.locked ? ' <span class="badge pinned">📌 Pinned</span>' : '') +
       '</div><div class="bucket-row-sub">' +
       esc(
         (v.overdue ? 'OVERDUE — the day passed with nobody assigned · ' : '') +
@@ -1036,16 +809,6 @@
     // this row is the day/time commitment that gates moves/cancels; anything
     // else promised to the customer (a discount…) lives in the notes below.
     rows += detailRow('Scheduling promise', promiseText(d) + pencil('promise'));
-    // Pinned (plan 4b-3): the human-privilege lock. The toggle is a one-shot
-    // (reversible + internal — the doctrine), labelled by the action it takes.
-    rows += detailRow(
-      'Pinned',
-      esc(d.locked ? "Yes — auto-scheduling won't touch this visit" : 'No') +
-        (canEdit
-          ? ' <button type="button" class="edit-btn" data-edit="lock">' +
-            (d.locked ? 'Unpin' : 'Pin') + '</button>'
-          : ''),
-    );
     var flags = [];
     if (d.status !== 'confirmed') flags.push(d.status);
     if (flags.length) rows += detailRow('Flags', esc(flags.join(', ')));
@@ -1445,23 +1208,6 @@
     // Unplaced visits (plan 4b-2): the editors prefill from the range day and
     // EMPTY times — placing means typing real ones.
     var vDate = d.start ? d.start.slice(0, 10) : d.earliestDate;
-    if (kind === 'lock') {
-      // One-shot toggle — no sheet: the button already says what will happen.
-      apiPost('/board/api/lock', { assignmentId: d.assignmentId, locked: !d.locked })
-        .then(function (r) {
-          if (!r.ok) {
-            toast(r.body.error || 'Pin update failed (' + r.status + ')', true);
-            return;
-          }
-          toast(r.body.locked ? "Pinned — auto-scheduling won't touch it" : 'Unpinned');
-          openDetail(d.assignmentId); // same id — a pin flip never remints
-          refresh();
-        })
-        .catch(function () {
-          toast('Network error — nothing was changed.', true);
-        });
-      return;
-    }
     if (kind === 'tech') {
       openPicker({
         title: 'Assign technician',
@@ -2132,11 +1878,6 @@
         openBucket();
         return;
       }
-      var freezePillBtn = e.target.closest && e.target.closest('.freeze-pill');
-      if (freezePillBtn) {
-        openProposal();
-        return;
-      }
       // A "no time yet" strip card opens the normal detail sheet (plan 4b-2).
       var tbd = e.target.closest && e.target.closest('.tbd-card');
       if (tbd) {
@@ -2253,22 +1994,8 @@
       });
     }
   });
-  refresh().then(function () {
-    // Deep link: t.me/<bot>?startapp=freeze arrives as start_param — open the
-    // proposal sheet after the first paint. This is ROUTING, not trust: the
-    // endpoint independently authenticates and tier-gates every fetch, so a
-    // technician tapping a forwarded manager link is simply not routed (their
-    // fetch would only 403). Fallback: Telegram also passes the value as
-    // tgWebAppStartParam — in the query string OR the hash fragment
-    // (Telegram Web clients use the fragment; final-review finding), read
-    // via window.location (bare `location` fails the lint web-globals list).
-    var sp = (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
-    if (!sp) {
-      var m = /[?&#]tgWebAppStartParam=([^&#]+)/.exec(
-        window.location.search + window.location.hash,
-      );
-      if (m) sp = m[1];
-    }
-    if (sp === 'freeze' && state.isManager) openProposal();
-  });
+  // The board took a `?startapp=freeze` deep link straight to the proposal
+  // sheet; that sheet died with the solver (rung 8), and no other start_param
+  // is routed, so the first paint is the whole load path now.
+  refresh();
 })();

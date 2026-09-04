@@ -21,21 +21,17 @@ import {
   previewBookVisit,
   previewUnscheduleVisit,
   previewMoveVisit,
-  setVisitLocks,
   setVisitPromise,
   updateJobIdentity,
 } from '../schedule/booking.js';
 import {
   durationError,
-  findOpenReviewItemsByKind,
   getTenant,
   isValidDuration,
   JOB_PRIORITIES,
-  latestScheduleVersion,
   type JobPriority,
 } from '../db/index.js';
 import { localDateISO } from '../schedule/availability.js';
-import { projectOpenProposal } from '../schedule/freezeProposal.js';
 
 // The dispatch board's HTTP surface, mounted by httpServer.ts BEFORE the IP
 // allowlist: board traffic comes from users' public browsers (the Telegram
@@ -305,40 +301,6 @@ export async function handleBoardRequest(
       return;
     }
 
-    // The staged proposal (read-only; the CONFIRM lives in chat — ritual
-    // doctrine, so this surface has no write path and serves no confirmId).
-    // Kind-agnostic since plan 2026-07-30: serves the ONE open proposal,
-    // freeze OR re-solve — the path keeps its shipped name (the deep link and
-    // the page are already wired to it). Manager-only like every proposal
-    // surface. The projection mirrors BOTH confirm-time staleness guards
-    // (12h clock + schedule-version pin), so the page can never show a plan
-    // the confirm would refuse.
-    if (pathname === '/board/api/freeze-proposal' && req.method === 'GET') {
-      const auth = await authBoard(req);
-      if (!auth.ok) {
-        deny(res, auth);
-        return;
-      }
-      if (auth.technician.tier !== 'manager') {
-        json(res, 403, { error: 'managers only' });
-        return;
-      }
-      // Items first, version only when something is open: this endpoint runs
-      // on every manager board paint, and outside the ~12h proposal window
-      // the version read would be pure waste (final-review efficiency
-      // finding). Sequencing costs one round-trip only in the rare open case.
-      const [freezeItems, resolveItems] = await Promise.all([
-        findOpenReviewItemsByKind(auth.tenantId, 'pending_freeze'),
-        findOpenReviewItemsByKind(auth.tenantId, 'pending_resolve'),
-      ]);
-      const version =
-        freezeItems.length || resolveItems.length
-          ? await latestScheduleVersion(auth.tenantId)
-          : 0;
-      json(res, 200, projectOpenProposal(freezeItems, resolveItems, version, Date.now()));
-      return;
-    }
-
     // Manager-only write path (Phase 3). Both verbs are the SAME shared
     // booking.ts verbs the chat agent drives — every guard (tenant, overlap,
     // promise ladder) fires identically. The confirm model is Feature A's
@@ -349,7 +311,6 @@ export async function handleBoardRequest(
         pathname === '/board/api/cancel' ||
         pathname === '/board/api/book' ||
         pathname === '/board/api/promise' ||
-        pathname === '/board/api/lock' ||
         pathname === '/board/api/job') &&
       req.method === 'POST'
     ) {
@@ -587,26 +548,6 @@ export async function handleBoardRequest(
               promisedDay: { from: previous.promised_day, to: updated.promised_day },
             },
           });
-          return;
-        }
-        // One-shot pin toggle (plan 4b-3): pinning is reversible + internal —
-        // the doctrine's one-shot arm; the sheet re-render is the disclosure.
-        if (pathname === '/board/api/lock') {
-          if (preview) {
-            json(res, 400, { error: 'pin edits are one-shot — this verb has no preview' });
-            return;
-          }
-          if (typeof body.locked !== 'boolean') {
-            json(res, 400, { error: 'locked must be a boolean' });
-            return;
-          }
-          const result = await setVisitLocks(
-            auth.tenantId,
-            { assignmentIds: [assignmentId] },
-            body.locked,
-            auth.technician.ref,
-          );
-          json(res, 200, { status: 'ok', locked: result.updated[0].locked });
           return;
         }
         if (pathname === '/board/api/cancel') {

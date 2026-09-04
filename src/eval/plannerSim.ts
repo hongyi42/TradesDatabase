@@ -953,6 +953,30 @@ export async function runArc(
         steps.push({ atIso, kind: 'office_inform', detail: step.body.slice(0, 80) });
         break;
       }
+      case 'office_sent': {
+        // A message the PLANNER already sent (build 6.5 Phase 5). Seeded
+        // straight into the bucket rather than driven through a tick, because
+        // the point is the STATE a later tick finds: something said, no reply.
+        // `technician_id` is required for a to_agent row by the table's own
+        // CHECK, and it is what the host pull joins on.
+        const { error } = await sb.from('office_messages').insert({
+          tenant_id: tenantId,
+          direction: 'to_agent',
+          kind: 'inform',
+          via: step.via ?? 'assistant',
+          from_ref: 'spine:team-lead',
+          to_ref: step.toRef ?? seeded.technicianRef,
+          technician_id: seeded.technicianId,
+          nudge_id: step.aboutNudgeKey ? (seeded.nudgeIds[step.aboutNudgeKey] ?? null) : null,
+          body: step.body,
+          status: 'delivered',
+          delivered_at: atIso,
+          created_at: atIso,
+        });
+        if (error) throw new Error(`timeline office sent failed: ${error.message}`);
+        steps.push({ atIso, kind: 'office_sent', detail: step.body.slice(0, 80) });
+        break;
+      }
       case 'money': {
         const { error } = await sb.from('money_events').insert({
           tenant_id: tenantId,

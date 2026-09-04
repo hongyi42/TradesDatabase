@@ -488,6 +488,188 @@ describe('POST /control/ops', () => {
   });
 });
 
+// Capacity metrics take the SAME wire as /control/ops and the opposite storage
+// semantics: ops folds observations into incidents and discards healthy ones,
+// this keeps every reading because capacity is made of the healthy ones. These
+// pin the wire (auth, shapes, DB effects) and the two properties that make the
+// series trustworthy: counters stored RAW, and unreadable values stored NULL.
+describe('POST /control/metrics', () => {
+  const post = (body: unknown, token = hostToken) =>
+    fetch(`${base}/control/metrics`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  const tick = (over: Record<string, unknown> = {}) => ({
+    observedAt: new Date().toISOString(),
+    memAvailMb: 12185,
+    memTotalMb: 15788,
+    diskUsedPct: 7,
+    seats: 7,
+    cpuCores: 4,
+    load5: 0.15,
+    oomKills: 0,
+    cpuUsageUsec: 1133526202349,
+    psiMemSomeUs: 2823734,
+    psiMemFullUs: 2338513,
+    psiCpuSomeUs: 68897090130,
+    sandboxes: { 'openshell-s2': { mem_mb: 746, cpu_usec: 98375328674, psi_mem_some_us: 256644 } },
+    ...over,
+  });
+
+  beforeEach(async () => {
+    await pg.query('delete from host_metrics where host_id = $1', [await getHostId()]);
+  });
+
+  test('bad or missing token → bare 401, no detail', async () => {
+    const noAuth = await fetch(`${base}/control/metrics`, { method: 'POST', body: '{}' });
+    expect(noAuth.status).toBe(401);
+    expect(await noAuth.text()).toBe('');
+    expect((await post(tick(), 'deadbeef')).status).toBe(401);
+  });
+
+  test('stores one tick, with the cumulative counters kept RAW', async () => {
+    expect(await (await post(tick())).json()).toEqual({ action: 'recorded' });
+    const { rows } = await pg.query(
+      'select * from host_metrics where host_id = $1',
+      [await getHostId()],
+    );
+    expect(rows).toHaveLength(1);
+    // Odometers, not deltas: a delta computed on the box is lost forever if the
+    // POST fails, and a counter that misses a tick self-heals into a wider
+    // window at read time.
+    expect(Number(rows[0].cpu_usage_usec)).toBe(1133526202349);
+    expect(Number(rows[0].psi_cpu_some_us)).toBe(68897090130);
+    expect(rows[0].seats).toBe(7);
+    expect(rows[0].sandboxes['openshell-s2'].cpu_usec).toBe(98375328674);
+  });
+
+  test('an unreadable counter stores NULL, never 0', async () => {
+    // THE trap this whole series rests on. A box that cannot read /proc/pressure
+    // (older kernel, cgroup v1) must record "cannot say", because 0 is a
+    // measurement — it claims the box was never stalled. Downstream, numeric
+    // comparison reads NULL as 0 and would turn missing data into a silent pass.
+    await post(tick({ psiMemSomeUs: 'unreadable', oomKills: null, memAvailMb: undefined }));
+    const { rows } = await pg.query(
+      'select psi_mem_some_us, oom_kills, mem_avail_mb, cpu_usage_usec from host_metrics where host_id = $1',
+      [await getHostId()],
+    );
+    expect(rows[0].psi_mem_some_us).toBeNull();
+    expect(rows[0].oom_kills).toBeNull();
+    expect(rows[0].mem_avail_mb).toBeNull();
+    // ...and the readable fields in the same tick still land. A partial row is
+    // worth far more than no row.
+    expect(Number(rows[0].cpu_usage_usec)).toBe(1133526202349);
+  });
+
+  test('refuses a tick with no usable observedAt rather than stamping now()', async () => {
+    // observed_at is the axis every derived rate divides by. Substituting the
+    // server clock would attribute a delayed batch of ticks to the wrong
+    // minutes and quietly corrupt every rate computed from them.
+    expect((await post(tick({ observedAt: undefined }))).status).toBe(400);
+    expect((await post(tick({ observedAt: 'yesterday-ish' }))).status).toBe(400);
+    const { rows } = await pg.query(
+      'select count(*)::int as n from host_metrics where host_id = $1',
+      [await getHostId()],
+    );
+    expect(rows[0].n).toBe(0);
+  });
+
+  test('a replayed tick is idempotent, not an error', async () => {
+    const t = tick();
+    expect(await (await post(t)).json()).toEqual({ action: 'recorded' });
+    // The reporter retries and needs no delivery guarantee; the primary key is
+    // what makes that safe. A 5xx here would make it log a failure for a
+    // reading that IS stored.
+    const again = await post(t);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ action: 'duplicate' });
+    const { rows } = await pg.query(
+      'select count(*)::int as n from host_metrics where host_id = $1',
+      [await getHostId()],
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  test('host_id comes from the TOKEN, so a body cannot file against another host', async () => {
+    const other = await createHost('test-host-metrics-other', mintBadge().hash);
+    await post(tick({ hostId: other.id, host_id: other.id }));
+    const { rows } = await pg.query(
+      'select count(*)::int as n from host_metrics where host_id = $1',
+      [other.id],
+    );
+    expect(rows[0].n).toBe(0);
+    await pg.query('delete from hosts where id = $1', [other.id]);
+  });
+
+  test('an oversized body is refused, not read into the shared process', async () => {
+    // `sandboxes` grows with seat count, so unlike a fixed payload this one has
+    // no natural ceiling — the cap is what stops one box ballooning the process
+    // that serves every tenant.
+    const oversized = fetch(`${base}/control/metrics`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${hostToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify(tick({ sandboxes: { runaway: 'x'.repeat(200_000) } })),
+    }).then(
+      (r) => ({ rejected: r.status === 413 }),
+      () => ({ rejected: true }), // connection reset
+    );
+    expect((await oversized).rejected).toBe(true);
+    expect((await post(tick())).status).toBe(200);
+  });
+
+  test('monitoring.health differences the counters, and a reboot reads as 0 not negative', async () => {
+    const host = await getHostId();
+    const now = Date.now();
+    const at = (secondsAgo: number) => new Date(now - secondsAgo * 1000).toISOString();
+    // 72 core-seconds of CPU across a 300 s window -> 0.24 cores busy.
+    await post(tick({ observedAt: at(300), cpuUsageUsec: 1_000_000_000, psiCpuSomeUs: 4_000_000 }));
+    await post(tick({ observedAt: at(0), cpuUsageUsec: 1_072_000_000, psiCpuSomeUs: 4_900_000 }));
+
+    const { rows } = await pg.query(
+      `select boxes -> (select name from hosts where id = $1) as box from monitoring.health`,
+      [host],
+    );
+    const box = rows[0].box as Record<string, number>;
+    expect(box.window_s).toBe(300);
+    expect(Number(box.cpu_busy_cores)).toBeCloseTo(0.24, 3);
+    expect(Number(box.psi_cpu_some_pct)).toBeCloseTo(0.3, 2);
+
+    // A reboot resets every counter. That is "counters restarted", not "work
+    // undone" — a negative delta must clamp to 0, or a rebooted box reports
+    // impossible numbers and any threshold built on them misfires.
+    await pg.query('delete from host_metrics where host_id = $1', [host]);
+    await post(tick({ observedAt: at(300), cpuUsageUsec: 9_000_000_000, oomKills: 9 }));
+    await post(tick({ observedAt: at(0), cpuUsageUsec: 50_000, oomKills: 0 }));
+    const after = await pg.query(
+      `select boxes -> (select name from hosts where id = $1) as box from monitoring.health`,
+      [host],
+    );
+    const rebooted = after.rows[0].box as Record<string, number>;
+    expect(Number(rebooted.cpu_busy_cores)).toBe(0);
+    expect(Number(rebooted.oom_kills_delta)).toBe(0);
+  });
+
+  test('a box with only one tick reports NULL deltas, which must not read as zero', async () => {
+    const host = await getHostId();
+    await post(tick());
+    const { rows } = await pg.query(
+      `select boxes -> (select name from hosts where id = $1) as box from monitoring.health`,
+      [host],
+    );
+    const box = rows[0].box as Record<string, unknown>;
+    // No predecessor to difference against. NULL is "cannot say" — the caller
+    // must not treat it as a healthy zero.
+    expect(box.cpu_busy_cores).toBeNull();
+    expect(box.oom_kills_delta).toBeNull();
+    expect(box.psi_mem_some_pct).toBeNull();
+    // ...while the point-in-time values, which need no predecessor, are present.
+    expect(box.mem_avail_mb).toBe(12185);
+    expect(box.seats).toBe(7);
+  });
+});
+
 // The suite's host row is created in beforeAll without keeping the id; the
 // recycle tests need it to seed pool rows.
 async function getHostId(): Promise<string> {

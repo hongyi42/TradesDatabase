@@ -126,6 +126,30 @@ export interface ScenarioNudgeSpec {
   /** A planner-moved deadline. Absent = the 24h default applies. */
   escalateAfter?: Offset;
   question?: string;
+  /**
+   * THE DELIVERY LEDGERS (build 6 Phase 5). Seedable because a FROZEN row was
+   * not reproducible in the eval before: the serve loop freezes a queued gap at
+   * MAX_SERVE_COUNT / MAX_DELIVERY_ATTEMPTS, and nothing in a scenario could put
+   * a row there — so the block the planner is now shown for a stuck message had
+   * no corpus coverage at all. Default 0, which is what every existing scenario
+   * means.
+   */
+  serveCount?: number;
+  attempts?: number;
+  /**
+   * Where a DISMISSED question came from (build 6 Phase 3). Only meaningful on a
+   * dismissed row, and required for one to be recoverable — recoverNudge refuses
+   * a null prior rather than guessing a stage.
+   *
+   * NOT REACHABLE YET, and left here deliberately rather than deleted:
+   * `SimNudgeStatus` has no 'dismissed', so no scenario can seed the one row
+   * this field describes. Adding that status means teaching `seedScenario`
+   * which stage a dismissed row came FROM and keeping the observation twin it
+   * writes below in step — real work, and no corpus case needs it yet. The
+   * column is written when supplied so the seam is proven; a scenario that
+   * wants a recoverable question is build 6.5's or the evaluation phase's.
+   */
+  priorStatus?: SimNudgeStatus;
 }
 
 export interface ScenarioWorld {
@@ -256,6 +280,18 @@ export async function seedScenario(
       // carry them is an authoring error, refused loudly (the asked-needs-
       // askedAt precedent above): dropping them silently would seed a
       // different world than the scenario describes (phase-5 review F3).
+      // The DELIVERY ledgers and prior_status live on `nudges`, and a 'pending'
+      // spec seeds an OBSERVATION — which has no such columns. Thrown, not
+      // dropped: the same authoring-error posture as askedAt/escalateAfter
+      // below, because a silently ignored `serveCount: 12` would leave the
+      // author reading a scenario that says "frozen" and grading one that is not.
+      if (spec.serveCount !== undefined || spec.attempts !== undefined ||
+          spec.priorStatus !== undefined) {
+        throw new Error(
+          `nudge '${spec.key}': a pending spec seeds an OBSERVATION, which has no delivery ` +
+            'ledgers or prior_status — use status "queued" for a row with counters',
+        );
+      }
       if (spec.askedAt || spec.escalateAfter) {
         throw new Error(
           `nudge '${spec.key}': a pending spec seeds an OBSERVATION — askedAt/escalateAfter ` +
@@ -292,6 +328,9 @@ export async function seedScenario(
         asked_at: askedAt,
         escalate_after: spec.escalateAfter ? atOffset(t0Ms, spec.escalateAfter) : null,
         question: spec.question ?? null,
+        serve_count: spec.serveCount ?? 0,
+        attempts: spec.attempts ?? 0,
+        prior_status: spec.priorStatus ?? null,
       })
       .select('id')
       .single();
@@ -580,11 +619,10 @@ export async function runTick(
   const planner = await runPlanner(nowIso, 'live', {
     listTenants,
     tools: [...TEAM_LEAD_TOOL_SCHEMAS],
-    // Load-bearing no-ops: .env carries a real BOARD_BOT_TOKEN, and an
-    // applied escalate would otherwise push a real Telegram line (build 5
-    // moved the heads-up into the planner).
-    notify: async () => {},
-    hasPushToken: () => false,
+    // (Two load-bearing no-ops stood here — `notify` and `hasPushToken` —
+    // because .env carries a real BOARD_BOT_TOKEN and an applied escalate
+    // would have pushed a real Telegram line. The planner pushes nobody since
+    // build 6 Phase 1, so there is nothing left to stub off.)
     execute: (t, name, args) =>
       dispatchForIdentity(name, args, { tenantId: t, technicianRef: TEAM_LEAD_REF }),
     runLoop: wrapLoop,
@@ -947,6 +985,14 @@ export async function runArc(
         });
         break;
       }
+      // DEAD SINCE BUILD 6 PHASE 1, and kept only because a timeline is data
+      // somebody may still replay. It settles the review item a gap was
+      // ESCALATED into — and `escalate` is deleted, so nothing the planner can
+      // do produces one. Every fresh run therefore takes the `MISSED — no open
+      // item` branch below, which is the honest outcome rather than a failure.
+      // No scenario in plannerCorpus.ts uses this step kind and no test drives
+      // it. Do not build on it: build 6.5 decides how the planner reaches a
+      // human at all, and whatever that turns out to be will need its own step.
       case 'manager_resolve': {
         const nudgeId = seeded.nudgeIds[step.nudgeKey];
         if (!nudgeId) throw new Error(`manager_resolve names unknown nudge key '${step.nudgeKey}'`);

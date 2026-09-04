@@ -56,7 +56,8 @@ import { hasModelCredentials, assertSpineModelAllowed } from '../model/forcedToo
 //     collapse (plan 2026-08-24), WRITES the technician's question and queues it
 //     itself. It is the ladder's only model call. Gated on PLANNER_MODE alone;
 // (10) the MUTE check: a live watcher with a non-live planner records
-//     observations nobody can ever ask about, close or escalate (build 5).
+//     observations nobody can ever ask about or close (build 5; `escalate` was
+//     deleted in build 6 Phase 1).
 //     That state is reported, never made red — a rollback is a choice.
 // Steps 5 and 7 report `skipped` — not an error — when the cost tables are absent,
 // so a deploy that lands before the migration does not turn the cron red.
@@ -544,7 +545,7 @@ export async function runLifecycle(
     if (why) {
       ladderMute =
         `WATCHERS_MODE=live but ${why} — observations are being recorded and no planner is ` +
-        'running: nobody asks, closes or escalates anything, and nothing else will';
+        'running: nobody asks or closes anything, and nothing else will';
       console.error(`[lifecycle] LADDER IS MUTE: ${ladderMute}`);
     }
   }

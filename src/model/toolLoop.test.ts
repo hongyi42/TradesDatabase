@@ -397,6 +397,109 @@ describe('runToolLoop', () => {
     expect(res.calls[0].result).toContain('It is INCOMPLETE');
   });
 
+  // ── build 6 Phase 4: onResult, the same string one turn earlier ───────────
+  test('onResult receives EXACTLY what the model was shown, truncation included', async () => {
+    // The whole reason this hook exists rather than the caller stringifying the
+    // executor's return value itself. The executor hands back the RAW result;
+    // the model is shown the truncated copy. A caller checking "did the model
+    // see these words" against the raw value would accept a quote from text
+    // that was cut off before it ever reached the model — which is precisely
+    // what the planner's citation rail must never do.
+    serve(toolCallBody('spine_read', { sql: 'select 1' }), finalBody('ok'));
+    const buried = 'the customer settled up in cash on the day';
+    const huge = 'x'.repeat(MAX_TOOL_RESULT_CHARS) + buried;
+    const seen: string[] = [];
+    await runToolLoop(
+      { system: 's', user: 'u', maxTokens: 128, label: 'test',
+        onResult: (call) => { seen.push(call.result); } },
+      [READ_TOOL],
+      async () => huge,
+      undefined,
+      { recordUsage: async () => {} },
+    );
+    expect(seen).toHaveLength(1);
+    // The buried words are NOT in it, because the model never saw them — this
+    // is the raw-vs-shown distinction the hook exists for.
+    expect(huge).toContain(buried);
+    expect(seen[0]).not.toContain(buried);
+    expect(seen[0]).toContain('[TRUNCATED:');
+  });
+
+  test('onResult fires for a FAILED call — the error string, not silence', async () => {
+    serve(toolCallBody('spine_read', { sql: 'select 1' }), finalBody('ok'));
+    const seen: Array<{ name: string; ok: boolean; result: string }> = [];
+    await runToolLoop(
+      { system: 's', user: 'u', maxTokens: 128, label: 'test',
+        onResult: (c) => { seen.push({ name: c.name, ok: c.ok, result: c.result }); } },
+      [READ_TOOL],
+      async () => { throw new Error('bad sql'); },
+      undefined,
+      { recordUsage: async () => {} },
+    );
+    // A failed tool is information for the model, so it is shown one — and the
+    // caller must be given the same string, so it can decide what to do with it.
+    // (The planner drops these: an error from the machinery is not evidence.)
+    expect(seen).toEqual([{ name: 'spine_read', ok: false, result: 'error: bad sql' }]);
+  });
+
+  test('onResult fires for EVERY call in a turn, in the order they ran', async () => {
+    // The previous version of this test served ONE call and asserted a
+    // one-element array — it proved the failure case and nothing about "every"
+    // or "in order", both of which the planner depends on: a read listed before
+    // submit_plan must reach the citation check before the plan is validated.
+    const asked = MAX_TOOL_CALLS_PER_TURN;
+    serve(manyCallsBody('spine_read', asked), finalBody('ok'));
+    const seen: string[] = [];
+    let n = 0;
+    const res = await runToolLoop(
+      { system: 's', user: 'u', maxTokens: 128, label: 'test',
+        onResult: (c) => { seen.push(c.result); } },
+      [READ_TOOL],
+      async () => `result ${++n}`,
+      undefined,
+      { recordUsage: async () => {} },
+    );
+    expect(seen).toHaveLength(asked);
+    expect(seen).toEqual(res.calls.slice(0, asked).map((c) => c.result));
+    expect(seen[0]).toBe('result 1'); // order, not just count
+  });
+
+  test('onResult fires for the TERMINAL tool too, before the loop returns', async () => {
+    // The planner validates its plan INSIDE the terminal tool's executor, so
+    // this fires after that validation — harmless, and asserted because
+    // planner.ts reasons about it explicitly when deciding what may be cited.
+    serve(toolCallBody('submit_plan', { decisions: [] }));
+    const seen: string[] = [];
+    const res = await runToolLoop(
+      { system: 's', user: 'u', maxTokens: 128, label: 'test', terminalTool: 'submit_plan',
+        onResult: (c) => { seen.push(c.name); } },
+      [{ name: 'submit_plan', description: 'end', inputSchema: { type: 'object', properties: {} } }],
+      async () => ({ status: 'ok' }),
+      undefined,
+      { recordUsage: async () => {} },
+    );
+    expect(seen).toEqual(['submit_plan']);
+    expect(res.turns).toBe(1);
+  });
+
+  test('a THROWING onResult never costs the plan', async () => {
+    // It is an observation channel. A caller's bookkeeping bug must not lose a
+    // plan the model has already produced.
+    serve(toolCallBody('spine_read', { sql: 'select 1' }), finalBody('done'));
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await runToolLoop(
+      { system: 's', user: 'u', maxTokens: 128, label: 'planner',
+        onResult: () => { throw new Error('caller bug'); } },
+      [READ_TOOL],
+      async () => [],
+      undefined,
+      { recordUsage: async () => {} },
+    );
+    expect(res.text).toBe('done');
+    expect(spy.mock.calls.some((c) => String(c[0]).includes('onResult threw'))).toBe(true);
+    spy.mockRestore();
+  });
+
   test('a truncated TURN throws — the same guard runForcedTool carries', async () => {
     serve({
       choices: [{ finish_reason: 'length', message: { content: 'half an ans' } }],

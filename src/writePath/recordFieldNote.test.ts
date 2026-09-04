@@ -19,7 +19,16 @@ let tenantId: string;
 
 beforeAll(async () => {
   await pg.connect();
-  const { data, error } = await getClient().from('tenants').select('id').limit(1).single();
+  // ORDER BY, and it is load-bearing rather than tidiness. These suites mean
+  // "the SEED tenant" — the one `npm run seed:local` builds, whose timezone is
+  // America/Los_Angeles, which this file hardcodes when it computes a firm-local
+  // day. An unordered limit(1) returns an ARBITRARY row, and the local stack
+  // accumulates a tenant per integration run (1000+ of them), so it reliably
+  // picked a test-created tenant instead — whose timezone is the UTC default.
+  // The matcher then looked for the visit on the UTC day while the fixture
+  // booked it on the LA day, found nothing, and returned needs_disambiguation.
+  // Time-of-day dependent, so it passed all morning and failed after 5pm Pacific.
+  const { data, error } = await getClient().from('tenants').select('id').order('created_at', { ascending: true }).limit(1).single();
   if (error || !data) throw new Error(`could not load seed tenant: ${error?.message ?? 'none'}`);
   tenantId = data.id;
 });

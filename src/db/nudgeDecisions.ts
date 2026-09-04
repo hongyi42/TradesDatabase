@@ -24,17 +24,24 @@ export interface NudgeDecisionInput {
   // verb and the clock existed. No writer passes it any more; the field stays
   // so old rows keep their meaning and the column its docs.
   escalateAfter?: string | null;
-  // The manager-facing sentence the planner wrote for an APPLIED escalate, or
-  // null when the sweep escalated on its own (it has no model). Deliberately
-  // separate from `reason`: that one is diagnostic, is written for refusals
-  // too, and is the corpus — this one is product copy and is read by a person.
+  // HISTORIC (build 6 Phase 1), same contract as `escalateAfter` above: the
+  // manager-facing sentence the planner wrote for an APPLIED escalate. The verb
+  // is deleted and NO writer passes this any more; the field stays so old rows
+  // keep their meaning and the column its docs. It was deliberately separate
+  // from `reason` — that one is diagnostic, is written for refusals too, and is
+  // the corpus; this one was product copy, read by a person.
   handoffNote?: string | null;
   // The TECHNICIAN-facing question the planner wrote for an applied `send` —
   // the delivered message itself since the collapse. Third audience, third
   // rail — see the migration header.
   questionDraft?: string | null;
-  // The briefing for the manager's ASSISTANT on an applied `escalate` — the
-  // fourth audience, fourth rail. Machine context; never shown to a human.
+  // HISTORIC (build 6 Phase 1), the same as `handoffNote` above: the briefing
+  // for the manager's ASSISTANT on an applied `escalate` — the fourth audience,
+  // fourth rail. Machine context, never shown to a human. No writer passes it
+  // any more. NEITHER field is projected by `recall_decisions` (it never was —
+  // see mcp/server.ts), so the only readers of both are OFFLINE:
+  // scripts/agentic-eval/analyze.mjs and plannerEvalGraders2.ts's claim
+  // graders. That is the dependency to check before dropping the columns.
   agentContext?: string | null;
   basis?: 'evidence' | 'record' | null;
   citation?: string | null;

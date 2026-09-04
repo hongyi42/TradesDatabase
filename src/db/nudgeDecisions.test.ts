@@ -28,7 +28,7 @@ const JOB = '55555555-5555-4555-8555-555555555555';
 
 beforeAll(async () => {
   await pg.connect();
-  const { data, error } = await getClient().from('tenants').select('id').limit(1).single();
+  const { data, error } = await getClient().from('tenants').select('id').order('created_at', { ascending: true }).limit(1).single();
   if (error || !data) throw new Error(`could not load seed tenant: ${error?.message ?? 'none'}`);
   tenantId = data.id;
   await pg.query('truncate table nudge_decisions cascade');

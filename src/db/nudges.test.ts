@@ -9,8 +9,13 @@ import {
   listQueuedNudgesInGroupForHost,
   markNudgeAskedGroup,
   markNudgeGroupQueued,
+  dismissNudge,
+  listDismissedNudgeIds,
+  listQueuedNudgesForHost,
   markNudgeOutcome,
   markNudgeQueued,
+  OPEN_NUDGE_STATUSES,
+  recoverNudge,
   listAskedNudgesForTechnicianJob,
   setNudgeAnsweredBy,
   setNudgeSchedule,
@@ -30,7 +35,7 @@ let hostId: string | undefined;
 
 beforeAll(async () => {
   await pg.connect();
-  const { data, error } = await getClient().from('tenants').select('id').limit(1).single();
+  const { data, error } = await getClient().from('tenants').select('id').order('created_at', { ascending: true }).limit(1).single();
   if (error || !data) throw new Error(`could not load seed tenant: ${error?.message ?? 'none'}`);
   tenantId = data.id;
   await pg.query('truncate table nudges cascade');
@@ -548,5 +553,167 @@ describe('ask-groups — one message, several rows', () => {
       a.id,
     );
     expect(moved).toEqual([]);
+  });
+});
+
+// ── build 6 Phase 3: a question can be DISMISSED, revisably ──────────────────
+// The ending an ask gained when `escalate` was deleted (Phase 1). Everything
+// here is about the pair of properties that make it a CURATION verb rather than
+// a terminal one: the row keeps enough to be restored EXACTLY, and while it is
+// dismissed nothing that serves or watches open work can see it.
+describe('dismissNudge / recoverNudge — the revisable ending for a question', () => {
+  const seed = async (status: string, subject: string) => {
+    const { rows } = await pg.query<{ id: string }>(
+      `insert into nudges (tenant_id, kind, subject_ref, technician_id, status, question, asked_at)
+       values ($1,'overdue_visit_gap',$2,$3,$4,'How did it go?',
+               case when $4 = 'asked' then now() - interval '2 hours' end)
+       returning id`,
+      [tenantId, subject, techId, status],
+    );
+    return rows[0].id;
+  };
+  const read = async (id: string) =>
+    (
+      await pg.query<{ status: string; prior_status: string | null; resolution: string | null; resolved_at: string | null }>(
+        'select status, prior_status, resolution, resolved_at from nudges where id = $1',
+        [id],
+      )
+    ).rows[0];
+
+  test.each(['pending', 'queued', 'asked'] as const)(
+    'a %s question dismisses, remembering the stage it came from',
+    async (status) => {
+      const id = await seed(status, `nudge-dis-${status}`);
+      const row = await dismissNudge(id, tenantId, 'never going to be answered');
+      expect(row?.status).toBe('dismissed');
+      const after = await read(id);
+      expect(after.status).toBe('dismissed');
+      // THE POINT of prior_status: 'pending' and 'asked' differ in whether a
+      // person is holding a question, so recover cannot restore to a fixed
+      // stage without sometimes being wrong.
+      expect(after.prior_status).toBe(status);
+      expect(after.resolution).toBe('never going to be answered');
+      expect(after.resolved_at).not.toBeNull();
+
+      const back = await recoverNudge(id, tenantId);
+      expect(back?.status).toBe(status);
+      const restored = await read(id);
+      expect(restored.status).toBe(status);
+      expect(restored.prior_status).toBeNull();
+      // The dismissal's audit line goes with it — an open row carrying a
+      // resolution reads as settled.
+      expect(restored.resolution).toBeNull();
+      expect(restored.resolved_at).toBeNull();
+    },
+  );
+
+  test('recover CLEARS a stale hold — a recovered gap must not go straight back to sleep', async () => {
+    // The bug this pins: the observation branch of recover cleared not_before
+    // and the question branch did not, while the fork's comment claimed both
+    // did. Since build 6 Phase 2 that is not cosmetic — `askCandidates` exempts
+    // a held row from `asksUnattended`, the only operator-visible alarm on an
+    // asked gap, so a recovered question wearing a far-future hold would come
+    // back invisible to the one thing watching it.
+    const id = await seed('asked', 'nudge-dis-held');
+    await pg.query("update nudges set not_before = '2027-01-01T00:00:00Z' where id = $1", [id]);
+    await dismissNudge(id, tenantId, 'set aside for now');
+    const back = await recoverNudge(id, tenantId);
+    expect(back?.status).toBe('asked');
+    const { rows } = await pg.query<{ not_before: string | null }>(
+      'select not_before from nudges where id = $1', [id],
+    );
+    expect(rows[0].not_before).toBeNull();
+  });
+
+  test('an already-dismissed row cannot be dismissed again, whatever fromStatuses says', async () => {
+    // Guarded in the accessor rather than trusted to callers, because the
+    // failure is silent and permanent: prior_status would become 'dismissed',
+    // and recover would then write status='dismissed', prior_status=null —
+    // a row that can never be recovered, with nothing to say so.
+    const id = await seed('asked', 'nudge-dis-twice');
+    await dismissNudge(id, tenantId, 'first');
+    expect(await dismissNudge(id, tenantId, 'again', ['dismissed'] as never)).toBeNull();
+    const after = await read(id);
+    expect(after.prior_status).toBe('asked'); // untouched
+    expect(after.resolution).toBe('first');
+  });
+
+  test('a row that is not open does not dismiss — the guard, not the read', async () => {
+    const id = await seed('asked', 'nudge-dis-closed');
+    await markNudgeOutcome(id, tenantId, 'answered', 'they replied');
+    expect(await dismissNudge(id, tenantId, 'too late')).toBeNull();
+    expect((await read(id)).status).toBe('answered'); // untouched
+  });
+
+  test('recover refuses a row whose prior_status is NULL rather than guessing', async () => {
+    // What a row dismissed BEFORE the prior_status column existed looks like.
+    // Restoring it to a guessed stage is worse than not restoring it: guess
+    // 'pending' for a row that was really 'asked' and the planner may send a
+    // second question, which uq_nudges_subject_ever refuses outright.
+    const id = await seed('asked', 'nudge-dis-noprior');
+    await pg.query(
+      "update nudges set status='dismissed', prior_status=null where id = $1", [id],
+    );
+    expect(await recoverNudge(id, tenantId)).toBeNull();
+    expect((await read(id)).status).toBe('dismissed'); // still dismissed, still safe
+  });
+
+  test('recover on a row that is not dismissed does nothing', async () => {
+    const id = await seed('asked', 'nudge-dis-open');
+    expect(await recoverNudge(id, tenantId)).toBeNull();
+    expect((await read(id)).status).toBe('asked');
+  });
+
+  test('a dismissed question is invisible to everything that serves or watches open work', async () => {
+    // The reason 'dismissed' is a STATUS and not a flag column: it drops out of
+    // every open read at once, without any of them learning about it.
+    const id = await seed('queued', 'nudge-dis-hidden');
+    if (!hostId) {
+      const h = await pg.query<{ id: string }>(
+        `insert into hosts (label) values ('nudge-dis-host') returning id`,
+      );
+      hostId = h.rows[0].id;
+    }
+    await pg.query('update technicians set host_id = $2 where id = $1', [techId, hostId]);
+
+    const servedBefore = await listQueuedNudgesForHost(hostId);
+    expect(servedBefore.map((n) => n.id)).toContain(id);
+
+    await dismissNudge(id, tenantId, 'not worth delivering');
+
+    expect((await listQueuedNudgesForHost(hostId)).map((n) => n.id)).not.toContain(id);
+    const open = await listNudgesByStatus(tenantId, [...OPEN_NUDGE_STATUSES]);
+    expect(open.map((n) => n.id)).not.toContain(id);
+    // …and it comes back the moment it is recovered, to the stage it left.
+    await recoverNudge(id, tenantId);
+    expect((await listQueuedNudgesForHost(hostId)).map((n) => n.id)).toContain(id);
+  });
+
+  test('listDismissedNudgeIds returns dismissed rows only, scoped to the firm', async () => {
+    const mine = await seed('asked', 'nudge-dis-list-1');
+    const open = await seed('asked', 'nudge-dis-list-2');
+    await dismissNudge(mine, tenantId, 'r');
+    const ids = await listDismissedNudgeIds(tenantId);
+    expect(ids).toContain(mine);
+    expect(ids).not.toContain(open);
+
+    tenantB = tenantB ?? (await createTenant(`nudge-dis-tenant-b-${Date.now()}`)).id;
+    expect(await listDismissedNudgeIds(tenantB)).not.toContain(mine);
+  });
+
+  test("the status CHECK is a SUPERSET — every historic value still writes", async () => {
+    // Build 6 deleted the escalate VERB, not the rows. A migration that had
+    // narrowed this would make historic data unwritable and break the metric
+    // views that still read it.
+    const id = await seed('asked', 'nudge-dis-superset');
+    for (const status of ['pending', 'queued', 'asked', 'answered', 'escalated',
+                          'cancelled', 'failed', 'dismissed']) {
+      await expect(
+        pg.query('update nudges set status = $2 where id = $1', [id, status]),
+      ).resolves.toBeDefined();
+    }
+    await expect(
+      pg.query("update nudges set status = 'not-a-status' where id = $1", [id]),
+    ).rejects.toThrow(/nudges_status_check/);
   });
 });

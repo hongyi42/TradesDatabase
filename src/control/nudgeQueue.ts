@@ -22,9 +22,17 @@ import { FOOTER_DELIMITER } from '../teamLead/composeCopy.js';
 // condition, not a firm decision. No path here hands anything to a manager or
 // fails a row any more — a row past its serve or attempt caps is FROZEN
 // (never re-served, never terminal), the sweep's alarm pass counts it as
-// deliveryStuck, and the PLANNER still owns the gap: it can escalate it
-// deliberately, with an honest note, or end it any other way its judgment
-// dictates.
+// deliveryStuck, and the PLANNER still owns the gap and ends it however its
+// judgment dictates. (That sentence used to say "it can escalate it
+// deliberately, with an honest note"; the verb was deleted in build 6 Phase 1.
+// A frozen row is QUEUED, and the planner ends it with `close` when the record
+// settles the matter or `dismiss` when it will not (both legal on every stage
+// since build 6 Phase 3). `send` is refused here — there is nothing to send
+// twice — and `hold` writes a date that changes nothing, since a frozen row is
+// not waiting on a clock. Note what the planner still CAN do: `ask_agent` does
+// not ride this pipe, so the person's assistant is reachable even when their
+// queued question is not. Build 6 Phase 5 is what tells the planner the row is
+// frozen at all — before it, frozen and merely slow rendered identically.)
 
 // A nudge served more than this many times without an ack is POISON — some
 // box-side fault re-serves it forever, and it must stop re-alarming (the
@@ -122,7 +130,8 @@ export async function buildNudgeDelivery(
     //
     // So this takes the tamper-freeze's treatment: never served, never failed
     // here — the deliveryStuck alarm carries it once the members age past the
-    // watch threshold, and the planner may escalate them deliberately.
+    // watch threshold, and the planner ends them by its own judgment
+    // (build 6 Phase 1: it can no longer escalate them — see the header).
     if (!lead) {
       // Re-logged on every 5-minute pull — an operator condition, on purpose.
       console.error(

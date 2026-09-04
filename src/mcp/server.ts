@@ -798,21 +798,25 @@ const SPINE_VIEW_CATALOG =
   'the DIRECT stamp and is usually NULL by design — the durable link from a note to its job is ' +
   'the visit: join v_visits on v_visits.source_capture_id = v_captures.id. Filtering v_captures ' +
   'by job_id alone reads as "nobody said anything" on exactly the jobs where somebody did. ' +
-  '(5) Reading here is not citing: closing a gap still requires quoting from that gap\'s own ' +
-  'evidence lines — text found in this view is not accepted as a citation; ' +
+  '(5) These are the words people actually said, so they may be QUOTED — copied exactly as they ' +
+  'came back, never tidied up. (For the assistant that closes gaps: a quote must be findable in ' +
+  "either these results or the gap's own evidence lines, and a lookup you list AFTER your " +
+  'decision has not run yet — read first.) ' +
   'v_visits(id, job_id, source_capture_id, technician_name, labor_hours, created_at) — the ' +
   'trips notes belong to; the note-to-job bridge; ' +
   'v_nudges(id, kind, status, subject_ref, technician_ref, technician_name, job_id, question, ' +
   'resolution, answered_by_capture_id, not_before, escalate_after, created_at, queued_at, ' +
   'asked_at, resolved_at, serve_count, attempts) — questions the assistant has asked and how ' +
-  'each ended; resolution says who or what closed it; ' +
+  "each ended; resolution says who or what closed it; status='dismissed' rows are questions " +
+  'the assistant set aside and can bring back, and they are one of the two places `recover` ' +
+  'ids come from; ' +
   'v_review_items(id, kind, status, subject_ref, suggestion, resolution, job_id, ' +
   'technician_ref, escalated_from_nudge, created_at, resolved_at) — the ' +
   "manager's queue; status='open' is what nobody has acted on; " +
   'v_observations(id, kind, status, subject_ref, technician_ref, technician_name, job_id, ' +
   'dismiss_reason, dismissed_at, not_before, noticed_at) — everything the record has noticed, ' +
-  "the DISMISSED ones included: status='dismissed' rows are where `recover` ids come from, " +
-  'and dismiss_reason is what you said when you set one aside. ';
+  "the DISMISSED ones included: status='dismissed' rows are the OTHER place `recover` ids " +
+  'come from, and dismiss_reason is what you said when you set one aside. ';
 
 const SPINE_DAY_RULES = GROUNDING_BARE
   ? // Bare keeps the SCHEMA facts (they are true of the data, not advice to a
@@ -1811,8 +1815,10 @@ const TEAM_LEAD_TOOLS = [
     description:
       "Read this firm's own records with ONE read-only SQL SELECT. This is how you get the " +
       'context behind a gap: what the job is, who the customer is, what has been billed, what ' +
-      'else that technician has open. Use it when the answer would change your decision — not ' +
-      'to browse. ' +
+      'else that technician has open. Use it when the answer would change your decision, and ' +
+      'when a gap may already be answered somewhere its own block does not print — what you ' +
+      'read here IS quotable. Filter by the job id the gap gives you rather than browsing: a ' +
+      'name search misses and costs you a turn. ' +
       'You are deciding about gaps in the record, so ABSENCE is usually what you are testing ' +
       'for: a query that returns no rows is an answer, not a failure. ' +
       SPINE_VIEW_CATALOG +
@@ -1843,8 +1849,8 @@ const TEAM_LEAD_TOOLS = [
     description:
       'YOUR OWN DECISION HISTORY: what you have already decided about a gap, and what the system ' +
       'actually did with it. You do not remember previous runs, so consult it before repeating ' +
-      'yourself, and always before escalating (escalating hands the gap to a person and cannot be ' +
-      'taken back). It returns DECISIONS ONLY — a gap you have merely looked at and never acted ' +
+      'yourself, and always before anything that reaches a person — a message cannot be taken ' +
+      'back. It returns DECISIONS ONLY — a gap you have merely looked at and never acted ' +
       'on comes back empty, and its own block already tells you how many times you considered it, ' +
       'so there is nothing here to fetch for one of those. ' +
       'Call it with gapId — the id printed after "gap" in your list — or with jobId, the id ' +

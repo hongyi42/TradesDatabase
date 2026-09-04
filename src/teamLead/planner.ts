@@ -1,7 +1,6 @@
 import {
   createNudgeFromObservation,
-  findOpenReviewItem,
-  flagNudgeGap,
+  dismissNudge,
   getTenant,
   listAssignmentsByIds,
   listDecisionsForNudges,
@@ -9,6 +8,7 @@ import {
   listJobIdsWithCostEvents,
   listJobsWithCustomerByIds,
   listLiveMoneyEventsForJobsSince,
+  listDismissedNudgeIds,
   listDismissedObservationIds,
   listNudgesByStatus,
   listObservationsByStatus,
@@ -27,6 +27,7 @@ import {
   markNudgeQueued,
   OPEN_NUDGE_STATUSES,
   recordNudgeDecisions,
+  recoverNudge,
   setNudgeAnsweredBy,
   setNudgeSchedule,
   setObservationStatus,
@@ -37,10 +38,9 @@ import {
   type Observation,
   type OfficeMessage,
   type NudgeDecisionInput,
-  type ReviewKind,
 } from '../db/index.js';
-import { notifyManagers } from '../calls/notify.js';
 import { runToolLoop, ToolLoopLimitError, type ToolLoopLimit } from '../model/toolLoop.js';
+import { MAX_DELIVERY_ATTEMPTS, MAX_SERVE_COUNT } from '../control/nudgeQueue.js';
 import type { ForcedToolSpec } from '../model/forcedTool.js';
 import { renderMemoryIndex } from './memory.js';
 import { noteLine } from './jobNotes.js';
@@ -76,10 +76,22 @@ import { TEAM_LEAD_REF } from './identity.js';
 
 export type PlannerMode = 'off' | 'shadow' | 'live';
 
-// Everything the MODEL may submit. `leave` joined 2026-08-22 (Phase 3): it means
-// "I looked at this and I am waiting", takes a reason, and changes nothing.
-// Without it the only way to say "deliberately nothing" was to omit the gap, and
-// an omission is indistinguishable from never having looked at it.
+// Everything the MODEL may submit.
+//
+// `leave` DELETED 2026-09-01 (build 6 Phase 2, user ruling). It joined on
+// 2026-08-22 meaning "I looked at this and I am waiting", took a reason, and
+// changed NOTHING — the only verb here that moved no part of the record. The
+// hole it filled was real at the time: omitting a gap was indistinguishable
+// from never having looked at it. That hole was closed from the other side by
+// the `unmentioned` tick mark, which records silence for every gap in the view
+// whether or not the model names it — so `leave` had been saying, at the cost
+// of a verb, what code already recorded for free.
+//
+// What replaces it is `hold`, which now works on ANY open stage and takes a
+// RELEASE (see the rails below). Every legitimate "do nothing" has a verb that
+// acts on the record: waiting is `hold` with a date, not pursuing is `dismiss`,
+// done is `close`, a thought worth keeping with no action attached is
+// `write_job_note`, and having nothing to say is silence — already recorded.
 //
 // Adding a verb here means adding it to PLANNER_JUDGMENT_ACTIONS in watchers.ts
 // too, or the sweep's fail-safe stops counting it as liveness and starts firing
@@ -90,20 +102,34 @@ export type PlannerMode = 'off' | 'shadow' | 'live';
 // by code after the loop, NOT dispatched tools, so the team-lead identity's
 // allowlist and the dispatch gate are untouched.
 // `extend` RETIRED with the escalation clock (build 5): with nothing firing
-// automatically, "move the deadline out" moved a number nothing read. Pacing
-// an asked gap is now `leave` (or silence) plus the planner's own judgment on
-// a later look; build 6 may reintroduce a pacing intent with the verb rework.
+// automatically, "move the deadline out" moved a number nothing read. Build 6
+// Phase 2 is the verb rework that note anticipated, and the pacing intent came
+// back as `hold` — legal on every open stage now, with a release, so "give them
+// until Thursday" is one verb rather than a deadline nothing read.
 // `ask_agent` and `inform_agent` joined 2026-08-31 (build 5.5 Phase 3): the
 // outbound half of the planner's inbox — a message to the PERSON'S ASSISTANT
 // about a gap, queued in office_messages and injected as an agent turn by the
 // office runner. Gap-tied in 5.5 like every other action; general messages
-// wait for build 6's schema rework.
+// wait for build 6.5's schema rework.
+//
+// `escalate` DELETED 2026-09-01 (build 6 Phase 1, user ruling). It was the most
+// lifecycle-shaped verb in the vocabulary — "the person has had their chance"
+// is a STAGE IN A STORY, not a change to the record — and build 6.5 replaces
+// reaching a human with ONE generalized `send` that is not pinned to a gap.
+// Reworking it now would be discarded then. NO MIGRATION: nudge_decisions_
+// action_check stays a superset, so every historic escalate row still reads,
+// mv_escalation_fates / mv_gap_outcomes degrade to historic-only (the honest
+// reading), and `escalate` counts as ATTENTION in the sweep's alarm pass
+// (watchers.ts) so gaps the planner handed over last week do not now read as
+// neglected. The manager's review queue keeps every item ever filed; nothing
+// files a new one. The planner can still reach a manager the gap NAMES, by
+// either verb; what it lost is reaching one the gap does NOT name — accepted,
+// deliberately: nothing is deployed and evaluation is an end phase, and build
+// 6.5's generalized send is what restores it.
 export const PLANNER_ACTIONS = [
   'send',
   'hold',
   'close',
-  'escalate',
-  'leave',
   'dismiss',
   'recover',
   'ask_agent',
@@ -146,19 +172,11 @@ export interface PlannerDecision {
   // Diagnostic, for the log and for continual learning. NEVER shown to a
   // manager — it is written for refusals too, where it reads as machinery.
   reason: string;
-  // Manager-facing copy, escalate only. Survives the rails or is dropped
-  // whole; a bad note never blocks the handover.
-  handoffNote?: string | null;
   // Technician-facing question, send only — the ENTIRE delivered message since
   // the collapse (plan 2026-08-24): an applied send queues it verbatim. A
   // missing or rail-dropped question refuses the send; no fallback author
   // exists any more.
   questionDraft?: string | null;
-  // Machine-facing briefing for the manager's ASSISTANT, escalate only (the
-  // fourth audience, fourth rail — plan 2026-08-23). Rides the review item's
-  // detail and is pulled via list_pending_reviews; NEVER rendered to a human.
-  // Dropped whole by its rail; a bad briefing never blocks the handover.
-  agentContext?: string | null;
   // Every gap this ONE message covers, send only, INCLUDING nudgeId itself
   // (plan 2026-08-25, Phase 3). Absent or length<=1 = an ordinary single ask.
   // `nudgeId` stays the LEAD: its context prints the (re: …) anchor, and its id
@@ -270,11 +288,14 @@ export interface PlannerSummary {
   applied: number; // decisions the code actually performed — always 0 in shadow
   refusedAtApply: number; // accepted by the rails, then refused by the write
   recorded: number; // rows written to nudge_decisions
-  // Applied escalations opened items but BOARD_BOT_TOKEN was absent, so the
-  // count-only heads-up could not go out (final review: this instrument is
-  // what diagnosed the manager-push-is-dead live defect — it must survive the
-  // push's move here). Present only when true.
-  pushSkipped?: boolean;
+  // (`pushSkipped` lived here until build 6 Phase 1. The count-only manager
+  // heads-up fired on this tick's APPLIED ESCALATIONS and had no other
+  // trigger, so deleting the verb left it structurally unreachable — a
+  // summary key that can never be set is a claim about behaviour that no
+  // longer exists. The live defect it diagnosed (BOARD_BOT_TOKEN unset on
+  // lifecycle-heart, 2026-08-25) is recorded in docs/engineering-memory.md and
+  // stays true of every OTHER manager push; build 6.5 decides whether a
+  // generalized `send` reaching a manager needs an instrument of its own.)
   tenantErrors: number;
   // Tenants whose call died on the LOOP's own limits rather than on the model
   // or the provider. Counted apart because the two need opposite responses: a
@@ -467,6 +488,12 @@ export interface PlannerDeps {
   // Phase 3: the outbound writer — an applied ask_agent/inform_agent queues
   // its message row here. Injected for the standing 't1' reason.
   createOffice?: typeof createOfficeMessage;
+  // Build 6 Phase 3: dismiss/recover on a QUESTION. `listDismissedNudges` joins
+  // `listDismissedIds` in validating recover — the two sets are merged, since
+  // the rails cannot tell an observation id from a nudge id and do not need to.
+  dismissGap?: typeof dismissNudge;
+  recoverGap?: typeof recoverNudge;
+  listDismissedNudges?: typeof listDismissedNudgeIds;
   listEvidence?: typeof listJobEvidenceSince;
   // The record-level test for cost gaps. Same reader the item sweep uses, so
   // "the ledger says this is filled" means one thing across the whole ladder.
@@ -515,20 +542,12 @@ export interface PlannerDeps {
   // standing 't1'-is-not-a-uuid reason.
   listAssignments?: typeof listAssignmentsByIds;
   listJobs?: typeof listJobsWithCustomerByIds;
-  // The escalate handoff's writer (build 5: escalate performs its own handoff
-  // at apply time — the send-collapse pattern; the old sweepLive coupling died
-  // with the sweep's escalation loop). Injected like every other writer.
-  flagNudge?: typeof flagNudgeGap;
-  // The null-flag disambiguator (final review): flagNudge's once-ever dedup
-  // returns null for a subject flagged in ANY status — the manager may hold
-  // the item, or may have settled it long ago. Only an OPEN item justifies
-  // marking the gap handed over.
-  findOpenItem?: typeof findOpenReviewItem;
-  // The count-only manager heads-up, moved here from the sweep (build 5): one
-  // line per tenant per tick when this tick's applied escalations opened
-  // items. Same token gate the sweep used; notifyManagers never throws.
-  notify?: typeof notifyManagers;
-  hasPushToken?: () => boolean;
+  // (`flagNudge`, `findOpenItem`, `notify` and `hasPushToken` were escalate's
+  // four collaborators — the review-item writer, its once-ever-null
+  // disambiguator, and the count-only manager heads-up its applied items
+  // triggered. All four left with the verb in build 6 Phase 1; the planner
+  // writes no review item and pushes no manager. `notifyManagers` itself is
+  // untouched — the call worker is its remaining caller.)
 }
 
 const ctxStr = (n: Nudge, k: string): string | null => {
@@ -720,12 +739,14 @@ export interface GapView {
   // reaches the prompt (a count and the last action); the detail is pulled with
   // recall_decisions. Kept on the view so tests can assert both halves.
   history: NudgeDecision[];
-  // The ONLY temporal strings a handoff note may contain, pre-rendered in the
-  // firm's own clock. Dates are the one class of fact a language model is
-  // measurably bad at (docs/engineering-memory.md, the date-eval arc), so they
-  // stay code-owned even though the rest of the note is written by the model —
-  // and because they are supplied as literals, "did it invent a date" is a
-  // string check rather than a judgment.
+  // The ONLY temporal strings anything the model writes may contain,
+  // pre-rendered in the firm's own clock. Dates are the one class of fact a
+  // language model is measurably bad at (docs/engineering-memory.md, the
+  // date-eval arc), so they stay code-owned even though the rest of the copy is
+  // written by the model — and because they are supplied as literals, "did it
+  // invent a date" is a string check rather than a judgment. (Named for the
+  // handoff note until build 6 Phase 1; the note is deleted, the send question
+  // and the office verbs' agent message ride the same rail.)
   dateLabels: string[];
   block: string;
 }
@@ -736,15 +757,15 @@ export interface GapView {
 // history into every prompt does not scale and raw trajectories are the wrong
 // memory unit anyway. But "you have decided about this before, and here is the
 // last thing you did" has to be present whether or not the model thinks to ask —
-// the failure it prevents (re-deciding from zero every 30 minutes, escalating
-// something already escalated) IS the failure of not knowing there was anything
-// to look up. Push the keys and the existence; pull the content.
+// the failure it prevents (re-deciding from zero every 30 minutes, asking again
+// about something already asked) IS the failure of not knowing there was
+// anything to look up. Push the keys and the existence; pull the content.
 function historyLine(history: NudgeDecision[], nowMs: number, tz: string): string | null {
   if (history.length === 0) return null;
   // The last REAL action, scanning backwards — NOT history[length-1]. Since
   // Phase 3 an `unmentioned` tick mark is appended on nearly every tick, so the
   // final row is almost always filler and rendering it would tell the planner
-  // "last: unmentioned" about a gap it escalated an hour ago. The filler is what
+  // "last: unmentioned" about a gap it sent a question on an hour ago. The filler is what
   // makes the COUNT meaningful; it is not what the model should be reminded of.
   let last: NudgeDecision | undefined;
   for (let i = history.length - 1; i >= 0; i--) {
@@ -836,6 +857,20 @@ export function buildGapView(
   // or null. Code-computed by the caller from the batched status reads;
   // defaulted for the eval renderers and tests, where "no fact" is honest.
   mootFact: string | null = null,
+  // WHERE THIS GAP'S DELIVERY LEDGERS LIVE (build 6 Phase 5). Three cases, and
+  // the third is a fact the caller knows and this function cannot see:
+  //   a Nudge      — the group LEAD's row, for a non-lead member. Only the
+  //                  lead's counters are ever incremented (`serveCount(lead.id,
+  //                  …)`, nudgeQueue.ts), so a member's own are permanently
+  //                  0/0; rendering those would say "served 0 times" about a
+  //                  message frozen after ten attempts.
+  //   'leaderless' — this gap is in a group whose LEAD IS NO LONGER OPEN. The
+  //                  serve loop refuses to promote a sibling (the box dedupes
+  //                  on the lead's id, so a new lead would re-send the whole
+  //                  message), so the group is frozen forever. Its counters
+  //                  will read 0/0 and mean nothing.
+  //   null         — an ordinary ungrouped gap; its own row is the ledger.
+  groupLead: Nudge | 'leaderless' | null = null,
 ): GapView {
   const jobId = ctxStr(n, 'jobId');
   const askedAtMs = n.asked_at ? Date.parse(n.asked_at) : NaN;
@@ -876,7 +911,7 @@ export function buildGapView(
   const answeredBy = n.answered_by_capture_id;
   const attributedHere = !!answeredBy && relevant.some((e) => e.capture.id === answeredBy);
 
-  // The temporal vocabulary a handoff note is allowed. asked_at is a REAL UTC
+  // The temporal vocabulary the model is allowed. asked_at is a REAL UTC
   // instant → the firm's zone; endsAtLocal was written naive-local by the
   // watcher → 'UTC' formats it as-is (see clockLabel's header).
   const askedLabel = clockLabel(n.asked_at, tz);
@@ -947,34 +982,89 @@ export function buildGapView(
   // last questions cut off — and it judges answers against what it thinks it
   // asked.
   if (n.question) lines.push(`  the question asked: ${flat(n.question, QUESTION_SHOWN_CHARS)}`);
+  // THE RECORD lines, no longer stage-forked (build 6 Phase 3). They used to
+  // say "dismiss this observation" on the pre-ask stage and "close this gap" on
+  // every other one, because `close` was REFUSED on an observation and teaching
+  // it there would have looped the model instructed-then-refused. Both verbs
+  // now work on both stages — a close on an observation is written as its
+  // dismissal, carrying the citation — so the fork was teaching a distinction
+  // that no longer exists. One instruction, and it is the true one: the record
+  // says the hole is filled, and `close` with basis "record" is how a gap ends
+  // on a fact rather than on somebody's words.
+  const closeOnTheRecord =
+    'Close it with basis "record" — no quote needed, and do not invent one.';
   if (n.kind === 'job_cost_gap') {
-    // A filled hole ends differently per stage: an ASKED gap closes (basis
-    // "record"); an observation nobody was asked about is simply no longer
-    // worth attention — dismiss, which is the planner's revisable verb.
     lines.push(
       recordFilled
         ? `  THE RECORD: ${recordFilled}. The hole this gap names is CLOSED — whoever filled it. ` +
-          (n.status === 'noticed'
-            ? 'Nothing needs asking: dismiss this observation.'
-            : 'Close this gap with basis "record".')
+          closeOnTheRecord
         : '  THE RECORD: no cost is recorded against this job yet. The hole is still open.',
     );
   }
   if (mootFact) {
-    // The moot fact gets a RECORD line for EVERY kind, stage-forked exactly
-    // like the cost line above: an asked gap closes on the record; an
-    // observation nobody was asked about is dismissed (revisable).
-    lines.push(
-      `  THE RECORD: ${mootFact}. ` +
-        (n.status === 'noticed'
-          ? 'Nothing needs asking: dismiss this observation.'
-          : 'Close this gap with basis "record".'),
-    );
+    // The moot fact gets a RECORD line for EVERY kind, on the same terms.
+    lines.push(`  THE RECORD: ${mootFact}. ${closeOnTheRecord}`);
   }
   if (n.not_before) lines.push(`  currently held until: ${n.not_before}`);
+  // WHAT DELIVERY HAS DONE WITH IT (build 6 Phase 5). Until now the planner was
+  // asked to judge a stuck question with no way to tell stuck from slow: a row
+  // frozen after ten serve attempts and one queued forty seconds ago rendered
+  // identically, and the doctrine's advice for both was "escalate it" — a verb
+  // that no longer exists.
+  //
+  // QUEUED ONLY, and each other stage is excluded for its own reason: an
+  // observation has no delivery at all (observationAsGapRow hardcodes zeros); a
+  // relic `pending` row's `attempts` still holds the RETIRED compose ledger
+  // (watchers.ts says so where it excludes them from the cap triggers); and an
+  // `asked` row's counters are spent history — delivery already succeeded, so
+  // they answer a question nobody is asking.
+  if (n.status === 'queued') {
+    const frozenLine =
+      '— FROZEN, it will not be delivered again. Nothing will move it but you.';
+    if (groupLead === 'leaderless') {
+      lines.push(
+        '  DELIVERY: this message covered several gaps and the one it was anchored to has ' +
+          `ended, so nothing will send it ${frozenLine}`,
+      );
+    } else {
+      const ledger = groupLead ?? n;
+      const cap =
+        ledger.serve_count >= MAX_SERVE_COUNT || ledger.attempts >= MAX_DELIVERY_ATTEMPTS;
+      // FACTS ONLY — no inference about whether anything is still trying.
+      //
+      // The first draft of this line ended "; still being attempted", and that
+      // was false in three reachable states the counters cannot distinguish: a
+      // group whose lead has ended (handled above), a technician who is
+      // inactive or has lost their seat, and — the commonest — a box that is
+      // not pulling at all, where `serve_count` simply stays 0 forever. Saying
+      // "still being attempted" about those, and then telling the planner in
+      // the doctrine that such a gap is one to leave alone, would have made the
+      // most ordinary stuck row LESS visible than it was before this phase.
+      //
+      // So: the age and the two counters, which are all true, and the doctrine
+      // teaches the reading. `served 0 times` after twenty hours is the loudest
+      // signal available and needs no adjective.
+      const age = elapsedLabel(n.queued_at ?? n.created_at, nowMs);
+      const counts =
+        `served ${ledger.serve_count} time${ledger.serve_count === 1 ? '' : 's'}, ` +
+        `failed ${ledger.attempts} time${ledger.attempts === 1 ? '' : 's'}`;
+      lines.push(
+        `  DELIVERY: queued ${age ?? 'recently'}, ${counts}` + (cap ? ` ${frozenLine}` : '.'),
+      );
+    }
+    // ONE FREEZE THIS LINE STILL CANNOT SEE: a technician who is inactive, or
+    // who has lost their sandbox or Telegram binding, is skipped at serve time
+    // from a roster row this function never reads — so such a gap sits at
+    // `served 0 times` looking merely young. The age is what gives it away, and
+    // the deliveryStuck alarm is the operator surface for it.
+  }
   if (dateLabels.length > 0) {
     lines.push(
-      '  dates you may use in a handover note, VERBATIM and only these:' +
+      // "in a handover note" until build 6 Phase 1, when the note it named was
+      // deleted. The labels are not handover-specific and never were: they are
+      // the ONLY temporal vocabulary any model-written surface may use — the
+      // send question and the office verbs' agent message ride the same rail.
+      '  dates you may use in anything you write, VERBATIM and only these:' +
         (askedLabel ? `\n    the ask went out: ${askedLabel}` : '') +
         (dueLabel ? `\n    the visit was due: ${dueLabel}` : '') +
         (agoLabel
@@ -1055,13 +1145,7 @@ export function buildGapView(
       moneyShown.forEach((m, i) => lines.push(`    [${i + 1}] ${moneyLine(m)}`));
       lines.push(
         '  That is a fact from the ledger, not a quote from a person — weigh whether it answers ' +
-          'THIS question. ' +
-          // Stage-forked like THE RECORD line (code-review): close is refused
-          // on an observation, so teaching it here would loop the model
-          // instructed-then-refused.
-          (n.status === 'noticed'
-            ? 'If it settles the matter, nothing needs asking: dismiss this observation.'
-            : 'If it does, close with basis "record".'),
+          'THIS question. If it does, close with basis "record".',
       );
     }
   }
@@ -1133,6 +1217,55 @@ export const MIN_CITATION_CHARS = 12;
 export const MIN_CITATION_WORDS = 2;
 
 /**
+ * WHOSE WORDS MAY BE QUOTED (build 6 Phase 4, closed after live verification).
+ *
+ * Phase 4 let a close cite what the planner looked up. Its first cut fed EVERY
+ * tool result into the citation haystack, and a live probe found the hole that
+ * opens: the planner's tool surface includes two WRITE verbs whose readers hand
+ * the same text straight back.
+ *
+ *   write_job_note("ben confirmed the flue liner was replaced")
+ *   read_job_note(...)            → those words come back as a tool result
+ *   close, basis 'evidence', citing them  → ACCEPTED
+ *
+ * Two turns launder a sentence the planner wrote into `nudges.resolution` — the
+ * durable audit line a manager may later read — under a basis that means "a
+ * person's own words". The metric guard held (a looked-up citation stamps no
+ * capture id, so `closed_by_technician` was untouched), but the audit line is
+ * the part a human reads, and it would have carried a quote with nobody behind
+ * it. The same shape works through write_memory → read_memory.
+ *
+ * So the haystack is an ALLOWLIST, not everything: only tools that return THE
+ * RECORD — what people and the world put there — never tools that return the
+ * planner's own prose. Deny-by-default, the TEAM_LEAD_TOOL_NAMES posture: a new
+ * read tool is uncitable until somebody decides it holds other people's words.
+ *
+ * Not citable, and each for its own reason: `read_job_note`/`write_job_note` and
+ * `read_memory`/`write_memory` are the planner's own writing; `recall_decisions`
+ * returns its own past `reason` prose (a past CITATION in there was verified
+ * once, but nothing distinguishes the two fields at quote time);
+ * `resolve_date` is arithmetic, not testimony; and `submit_plan`'s own result —
+ * including the refusal text, which echoes the model's rejected quote back at it
+ * — is a message from the machinery, not evidence.
+ *
+ * WHAT THIS DOES NOT CLOSE, stated rather than left to be discovered. `spine_read`
+ * runs model-composed SQL, and `query_spine` requires no FROM clause
+ * (20260806120000_query_spine_reader.sql) — so `select 'words I made up'`
+ * returns those words as a "lookup" and they become quotable. No allowlist can
+ * fix that, and a shape check would not either: `select 'words' from v_jobs
+ * limit 1` defeats any require-a-view rule, and a rule against string literals
+ * would ban every legitimate `where raw_text like '%…%'`. Three things bound
+ * it, and they are the honest answer rather than a guard: an evidence-basis
+ * close from a looked-up quote still stamps NO capture id, so the
+ * closed_by_technician metric is untouched; every query is written to
+ * `query_audit` with its SQL, so a manufactured citation leaves a trail that
+ * names itself; and doing this requires the model to compose SQL whose only
+ * purpose is to manufacture evidence, which is a different act from
+ * mis-reading one. Worth re-examining if the evaluation phase ever sees it.
+ */
+export const CITABLE_TOOLS: ReadonlySet<string> = new Set(['spine_read', 'get_customer_context']);
+
+/**
  * The code rails, applied to every decision before it can reach a writer. These
  * run in shadow too: a shadow run that reported an invalid plan as valid would
  * measure the wrong thing.
@@ -1156,49 +1289,21 @@ const TEMPORAL_RE = new RegExp(
 );
 
 /**
- * A handoff note the manager may safely read, or null.
- *
- * The note is written by the model and replaces a code-owned template wholesale
- * (user, 2026-08-22), so the only guarantee left is this one — and it is a
- * guarantee precisely because the labels were SUPPLIED as literals: "did it
- * invent a date" reduces to a substring check.
- *
- * Fail-soft on purpose. A rejected note is dropped and the template takes over;
- * it never blocks the escalation, because handing the gap to a person is the
- * point and the sentence is decoration.
- */
-export function cleanHandoffNote(
-  raw: unknown,
-  dateLabels: string[],
-): { note: string | null; why?: string } {
-  const base = cleanPlannerText(raw, dateLabels, { label: 'handoff note', maxLen: 400 });
-  return base;
-}
-
-/**
- * The briefing for the manager's ASSISTANT, or null. Same rail as the handoff
- * note — model-written, date-checked against the supplied labels — sized for a
- * briefing (ids and next steps; uuid hex never matches TEMPORAL_RE, so ids
- * pass the date rail untouched). Never shown to a human: the receiving agent
- * uses it, it does not quote it.
- */
-export function cleanAgentContext(
-  raw: unknown,
-  dateLabels: string[],
-): { note: string | null; why?: string } {
-  return cleanPlannerText(raw, dateLabels, { label: 'agent context', maxLen: 700 });
-}
-
-/**
- * The shared shape of every string the planner writes for a HUMAN.
+ * The shared shape of every string the planner writes for someone else to read.
  *
  * One function because the date rule is the one guarantee that survived making
  * this copy model-written, and a second copy of it would drift from the first.
  * The label is threaded through so a refusal names which surface it came from —
- * "handoff note used a date it was not given" and "question used a date it was
+ * "agent message used a date it was not given" and "question used a date it was
  * not given" are different findings.
+ *
+ * EXPORTED since build 6 Phase 1 for its own tests. Escalate's two wrappers
+ * (`cleanHandoffNote`, the manager's sentence; `cleanAgentContext`, the
+ * briefing for the manager's assistant) were the tested handles on this rail
+ * and died with the verb — so the rail is now pinned where it actually lives
+ * rather than through a surface that no longer exists.
  */
-function cleanPlannerText(
+export function cleanPlannerText(
   raw: unknown,
   dateLabels: string[],
   opts: { label: string; maxLen: number },
@@ -1236,8 +1341,10 @@ function cleanPlannerText(
  * — tells that agent to file the reply with record_field_note "for the job the
  * (re: …) line names", and to ASK rather than guess when it cannot tell. Ship a
  * bare question and a "yeah, all done" reply resolves to no job, the answer is
- * never filed, and the gap escalates telling a manager nobody responded — the
- * false-claim class the escalation rules exist to prevent.
+ * never filed, and the gap sits open with the planner reading it as unanswered
+ * — a record that contradicts what the person actually said. (Until build 6
+ * Phase 1 the consequence was sharper still: the gap ESCALATED, telling a
+ * manager nobody had responded. The verb is gone; the misfiled answer is not.)
  *
  * Code-printed from the row's own context, never model-written, for the same
  * reason the old frame was: it must be exact, and it must not cost the model a
@@ -1261,11 +1368,11 @@ export function anchorLine(n: Nudge): string {
 /**
  * The technician-facing question, or null.
  *
- * Same date rail as the handoff note, and higher stakes: this reaches a person
- * OUTSIDE the office, in their own assistant's voice. Two guards of its own —
- * the length cap below and the footer-impersonation check — since build 5 this
- * file is the message's only author (compose, whose guards these once
- * mirrored, is deleted).
+ * Same date rail every model-written surface rides, and the highest stakes of
+ * them: this reaches a person OUTSIDE the office, in their own assistant's
+ * voice. Two guards of its own — the length cap below and the
+ * footer-impersonation check — since build 5 this file is the message's only
+ * author (compose, whose guards these once mirrored, is deleted).
  */
 // GROUPED SENDS GET MORE ROOM. 500 chars was sized for one question; a message
 // covering three would be refused for length alone, and a refused question
@@ -1308,6 +1415,20 @@ export function validateDecisions(
   // decision insert (review F4). Defaulted empty for the existing test call
   // sites; runPlanner always passes the real set.
   recoverable: Set<string> = new Set(),
+  // WHAT THE MODEL LOOKED UP THIS TICK — exactly the strings the tool loop
+  // handed it, truncation notes and all (build 6 Phase 4, user ruling
+  // 2026-09-01: "the planner should be able to cite what it looked up").
+  //
+  // Until now a citation had to come from the gap's own pushed evidence lines,
+  // so an answer that existed only in a record the briefing does not print —
+  // an emailed reply extracted into the job, a note reached through the visit
+  // bridge — could be READ and then not cited, and the gap stayed open with the
+  // planner able to see the answer and unable to use it.
+  //
+  // The rail's SHAPE is unchanged and that is the point: a quote must still
+  // appear verbatim in text the model was actually shown. All that widens is
+  // what counts as shown. Defaulted empty for the existing call sites.
+  readText: string[] = [],
 ): { decisions: PlannerDecision[]; dropped: DroppedDecision[]; noteDrops: string[] } {
   const decisions: PlannerDecision[] = [];
   const dropped: DroppedDecision[] = [];
@@ -1316,6 +1437,10 @@ export function validateDecisions(
   // DECISION was refused — a rejected note refuses nothing.
   const noteDrops: string[] = [];
   const usedQuotes = new Set<string>();
+  // Normalized ONCE per call, not once per close whose quote missed the
+  // evidence: the model may submit several plans in a tick, each with several
+  // closes, and this array holds every tool result the tick has seen.
+  const readNorm = readText.map(norm);
   const list = Array.isArray((raw as { decisions?: unknown })?.decisions)
     ? ((raw as { decisions: unknown[] }).decisions as Record<string, unknown>[])
     : [];
@@ -1351,9 +1476,13 @@ export function validateDecisions(
       });
 
     // `recover` FIRST, before the view lookup: its subject is deliberately NOT
-    // in the view — a dismissed observation is hidden, and recover is the one
-    // verb that reaches into the hidden set (found via spine_read over
-    // v_observations). Validated against the dismissed ids the caller read.
+    // in the view — a dismissed gap is hidden, and recover is the one verb that
+    // reaches into the hidden set. Validated against the dismissed ids the
+    // caller read, which since build 6 Phase 3 covers BOTH stages: dismissed
+    // observations (v_observations) and dismissed questions (v_nudges — no
+    // status filter on that view, so a dismissed row really is findable there).
+    // The rails below cannot tell the two apart and do not need to; apply forks
+    // on which set the id came from.
     if (action === 'recover') {
       if (views.get(nudgeId)) {
         push('recover on a gap that is not dismissed — it is already in front of you');
@@ -1388,78 +1517,47 @@ export function validateDecisions(
       continue;
     }
 
-    // The pre-ask curation verb. Only an OPEN observation can be dismissed —
-    // a question that exists (any nudges status, relic pending included) is a
-    // different object with its own verbs, and dismissing it would strand a
-    // row the delivery machinery still owns.
-    if (action === 'dismiss' && view.nudge.status !== 'noticed') {
-      push(
-        'dismiss on a question that already exists — dismiss is for observations nobody has ' +
-          'been asked about. An asked gap ends with close or escalate.',
-      );
-      continue;
-    }
+    // DISMISS REACHES EVERY STAGE (build 6 Phase 3, user ruling 2026-09-01).
+    //
+    // It was observations-only, refused on a question with: "dismissing it
+    // would strand a row the delivery machinery still owns". That reason was
+    // wrong twice over. The write path existed all along (markNudgeOutcome
+    // moves any open row), and 'dismissed' is absent from OPEN_NUDGE_STATUSES,
+    // so a dismissed question is invisible to the delivery pull rather than
+    // stranded in it. What the rail actually protected was the STORY that an
+    // ask ends by being answered or handed over.
+    //
+    // Deleting it was not optional once `escalate` went (Phase 1). An asked gap
+    // nobody will answer, whose record will never fill, had no ending at all:
+    // `close` needs a code-computed fact or a quoted answer, and a question
+    // that went nowhere has neither. It would have sat open forever, counted as
+    // neglect, with the planner unable to act. See the migration header.
     if (action === 'dismiss') {
       seen.add(nudgeId);
       decisions.push({ nudgeId, action: 'dismiss', confidence, reason });
       continue;
     }
 
-    // close acts on the ASK's lifecycle, which an observation does not have.
-    // It needs its own rail here because its basis checks would otherwise run
-    // — and a cost observation whose RECORD line says the hole closed should
-    // be DISMISSED (revisable, planner-owned), not closed into a nudges
-    // status no row will ever hold.
-    if (action === 'close' && view.nudge.status === 'noticed') {
-      push(
-        'close on an observation — nobody was asked, so there is nothing to close. If the ' +
-          'hole is filled or not worth chasing, dismiss it.',
-      );
-      continue;
-    }
-
-    // `send` and `hold` only MEAN something on a row that has not gone out yet.
-    // `send` QUEUES the question (the collapse) and `hold` writes `not_before`,
-    // which since the collapse is the planner's own pacing note and nothing
-    // else — the delivery pull does not read it. Applying either to a queued or
-    // asked row would
-    // return the row happily and change nothing anybody could observe: the
-    // silent no-op this phase exists to make impossible. Observed live
-    // 2026-08-20, when the planner chose `send` on a row that had been asked
-    // hours earlier.
+    // (`close` on an observation was refused here — "nobody was asked, so
+    // there is nothing to close". Build 6 Phase 3 TRANSLATES it instead: the
+    // basis rails below still run in full, and apply writes the observation's
+    // own dismissal with the verified citation as its reason.
     //
-    // Refused rather than translated. "Give them more time" needs no verb at
-    // all since build 5: nothing escalates on a clock, so an asked gap left
-    // alone simply waits for the planner's next judgment. Inventing a mapping
-    // from `hold` to some other write would be code doing the model's
-    // judgment for it, which is the one thing this design does not do.
-    // `escalate` PERFORMS ITS OWN HANDOFF since build 5 (plan 2026-08-31 "the
-    // sweep stops deciding", user ruling 3): an applied escalate creates the
-    // manager's review item at apply time, the send-collapse pattern. So it is
-    // legal on ANY stage of an ask — asked (silence), and pending/queued relics
-    // (a stuck row the planner chooses to hand over deliberately; the 18h
-    // automatic handoff is gone and nothing else moves an undeliverable row).
-    if (action === 'escalate' && view.nudge.status === 'noticed') {
-      // An observation has no manager surface: no nudges row exists to mark
-      // 'escalated', and inventing an observation state for "the manager owns
-      // it" is build-6 vocabulary work. Its own copy, honest about that —
-      // nothing hands an observation to anyone by itself.
-      push(
-        'escalate on an observation — nobody was asked and it has no handover path yet. ' +
-          'If it needs someone, send; if it does not, dismiss or leave it.',
-      );
-      continue;
-    }
-    if (action === 'escalate' && !view.jobId) {
-      // flagNudgeGap requires a job id — a review item that cannot name its job
-      // is useless to the manager. Unreachable from the shipped detectors (both
-      // always write jobId); this is the layer that survives one that does not.
-      push(
-        'escalate on a gap whose record does not name its job — a manager item cannot be ' +
-          'filed without one. Leave it.',
-      );
-      continue;
-    }
+    // THE ONE TRANSLATION THIS BUILD ACCEPTS, and it is worth being uneasy
+    // about — everywhere else this design refuses rather than remaps, because
+    // inventing a mapping is code doing the model's judgment for it. What makes
+    // this one different is that there is no judgment to do: on a stage where
+    // nobody was asked, "the hole is filled" and "this no longer needs
+    // attention" are the SAME claim about the record, and the model is required
+    // to prove it either way — the close rails do not soften. All that differs
+    // is which table takes the write. Refusing it taught the model that a fact
+    // it had proved was the wrong shape of fact.)
+
+    // (Two blocks of doctrine stood here and are deliberately not preserved:
+    // escalate's two rails, deleted with the verb in build 6 Phase 1, and the
+    // paragraph explaining why `send` and `hold` SHARED a stage rail. Phase 2
+    // split them — see the send rail below for what survived of that argument
+    // and why `hold` no longer belongs to it.)
 
     // THE OFFICE VERBS (build 5.5 Phase 3): a message to the person's
     // ASSISTANT about this gap. Legal on ANY stage the view shows — asking
@@ -1507,30 +1605,54 @@ export function validateDecisions(
     // queues and rides the 18h clock; NO person is a different thing.
     if (action === 'send' && !view.nudge.technician_id) {
       push(
-        'send on a gap with nobody to ask — the record names no person for it. If someone ' +
-          'should be asked, that is a judgment for a handover; otherwise dismiss or leave it.',
+        'send on a gap with nobody to ask — the record names no person for it, so there is ' +
+          'nobody for a question to reach. Dismiss it, or say nothing and let it wait.',
       );
       continue;
     }
-    if (action === 'send' || action === 'hold') {
+    // SEND ONLY since build 6 Phase 2. This rail was shared with `hold`, and
+    // that pairing was the single most lifecycle-shaped refusal in the file:
+    // `hold` writes `not_before`, which since the collapse is the planner's own
+    // pacing note and NOTHING ELSE reads (the delivery pull does not, see
+    // listQueuedNudgesForHost) — so refusing it on a queued or asked row
+    // protected nothing in the world, only our story about how a gap goes.
+    // "Pause the question I already sent until Thursday" is a real intent with
+    // a real write behind it, and it is now legal on every open stage.
+    //
+    // `send` KEEPS the rail, and it is world-protecting: an applied send on an
+    // asked row would return the row happily and change nothing anybody could
+    // observe (observed live 2026-08-20), and `uq_nudges_subject_ever` forbids
+    // a second question for the subject outright. A silent no-op recorded as
+    // applied is the exact class these rails exist to make impossible.
+    if (action === 'send') {
       const st = view.nudge.status;
       if (st !== 'pending' && st !== 'noticed') {
         push(
           st === 'asked'
-            ? `${action} on a gap that has ALREADY been asked — the question is with the person ` +
-                'now, so only close, escalate or leave mean anything. To give them more time, ' +
-                'simply wait: nothing moves a gap but you.'
-            : `${action} on a gap that is already composed and waiting to be delivered — there ` +
-                'is nothing to release. If it has been stuck for hours, escalate it; otherwise ' +
-                'leave it out of your plan.',
+            ? 'send on a gap that has ALREADY been asked — the question is with the person ' +
+                'now, and there is no way to ask a second time. To give them more room, hold ' +
+                'it: nothing moves a gap but you.'
+            : 'send on a gap that is already composed and on its way — there is nothing to ' +
+                'send twice, and nothing you decide can recall it. Close it when the record ' +
+                'settles the matter. A hold here stops nothing and hides nothing; it writes ' +
+                'down when you meant to come back, and you will still be shown the gap every ' +
+                'time until you end it.',
         );
         continue;
       }
     }
 
-    // THE GROUP RAILS (plan 2026-08-25, Phase 3). Their own `action === 'send'`
-    // guard: the status branch above is SHARED with `hold`, and a hold naming
-    // nudgeIds means nothing.
+    // THE GROUP RAILS (plan 2026-08-25, Phase 3), behind their own
+    // `action === 'send'` guard.
+    //
+    // THAT GUARD IS LOAD-BEARING, and its original reason is not the current
+    // one: it used to say "the status branch above is SHARED with `hold`", and
+    // build 6 Phase 2 split those. It stays because `nudgeIds` means nothing on
+    // any other verb and letting one through would do real damage — the block
+    // below `seen.add`s every member (see the loop after it), which suppresses
+    // their `unmentioned` rows and blocks any decision of their own, while
+    // apply writes the LEAD only. A grouped `hold` would silently swallow its
+    // siblings' whole tick.
     //
     // Code checks only that a group is COHERENT, never whether to form one —
     // that is the planner's judgment, and the whole point of the verb. Coherence
@@ -1621,25 +1743,11 @@ export function validateDecisions(
       }
     }
 
-    // `leave` GETS A STATUS RAIL TOO. On a PENDING row "leave" records "I am
-    // waiting" with no horizon while nothing will ever send the question — and
-    // since build 5 NOTHING hands a never-sent gap anywhere, so an unowned
-    // wait sits forever with only the deliveryStuck alarm noticing. Waiting on
-    // a pending row must be `hold` with a time; releasing it must be `send`.
-    //
-    // Queued and asked are both fine: a queued row is already on its way, and an
-    // asked row has already gone out, so "I looked and I am waiting" is true of
-    // both.
-    // 'noticed' is deliberately ABSENT here: an observation has no delivery
-    // deadline to drift toward, so "I looked and I am waiting" is as true of it
-    // as of an asked row (plan 2026-08-31 — the aging counter is the watcher).
-    if (action === 'leave' && view.nudge.status === 'pending') {
-      push(
-        'leave on a gap that has NOT gone out yet — nothing goes out until YOU send it, so ' +
-          '"leave" would let it drift. Use hold (with a time) to wait, or send to release it now.',
-      );
-      continue;
-    }
+    // (`leave`'s own status rail stood here — it refused `leave` on a PENDING
+    // row, where "I am waiting" with no horizon meant a question nothing would
+    // ever send drifting forever. The verb is deleted in build 6 Phase 2; the
+    // intent it served on a pending row was always `hold` with a time, which
+    // is what the rail said.)
 
     // ASSERT-ONLY-CITED, in code. The prompt asks for a verbatim quote; this is
     // what makes it true. A close whose quote is absent from what we actually
@@ -1708,8 +1816,17 @@ export function validateDecisions(
       // is withheld and the close still stands — a missing link, never a wrong
       // one, which is the direction this whole helper errs in.
       const hit = shown.findIndex((text) => text.includes(wanted));
-      if (hit === -1) {
-        push('close whose citation does not appear in the evidence');
+      // THE EVIDENCE LINES FIRST, then what the model looked up (build 6
+      // Phase 4). Order matters: only the pushed lines carry a capture id, so
+      // checking them first keeps every close that COULD be attributed
+      // attributed, and falls back to the read text only when the words are
+      // nowhere in the gap's own block.
+      const readHit = hit === -1 && readNorm.some((text) => text.includes(wanted));
+      if (hit === -1 && !readHit) {
+        push(
+          'close whose citation appears neither in the evidence nor in anything you read this ' +
+            'tick — quote the words exactly as they were shown to you',
+        );
         continue;
       }
       // ONE quote may close ONE gap. Two gaps on the same job share one evidence
@@ -1730,14 +1847,62 @@ export function validateDecisions(
       citation = quote;
       // Null when that capture has no technician_ref — the guard lives on the
       // view, where the capture row was still in hand.
-      answeredByCaptureId = view.evidenceCaptureIds[hit] ?? null;
+      //
+      // AND NULL FOR EVERY LOOKED-UP CITATION (`hit === -1`), deliberately.
+      // `answered_by_capture_id` is the whole definition of
+      // mv_gap_outcomes.closed_by_technician, and it means one specific thing:
+      // the spine matched this capture to THIS gap at record time, because it
+      // was the only question open for that person on that job. A row the model
+      // found by running a query has no such link — it may not even be a
+      // person's words. Widening what may be CITED must not widen what may be
+      // STAMPED, or a query result would silently start counting as a
+      // technician's answer. TECHNICIAN_SPOKEN_CHANNELS is untouched.
+      answeredByCaptureId = hit === -1 ? null : (view.evidenceCaptureIds[hit] ?? null);
     }
 
+    // `hold` NOW HAS TWO FORMS (build 6 Phase 2): a date pauses the gap, and no
+    // date at all RELEASES it — clears `not_before` and puts it back in the
+    // ordinary flow. Without the release, a hold was one-way: the planner could
+    // pause a gap for a week and had no way to change its mind on Tuesday.
+    //
+    // ABSENT means release; PRESENT-BUT-UNUSABLE is still an error. Those are
+    // different mistakes and only one of them is a mistake at all. A model that
+    // omits the field, or sends an explicit `null` (the schema now advertises
+    // both, and providers vary on whether a null-valued key survives
+    // serialization), is saying "no date" — an intent. A model that sends
+    // "next Thursday" or a number TRIED to give a date and failed, which is
+    // worth refusing loudly so it can rewrite the decision this same tick.
+    // A RELEASE NEEDS A HOLD TO RELEASE. Without this, `hold` with no date on a
+    // gap whose `not_before` is already null writes null over null, the guarded
+    // update returns the row, and apply reports `applied` — a silent no-op
+    // recorded as a decision, the exact class every rail in this function
+    // exists to prevent (`recover` has the same rail one screen up: "recover on
+    // a gap that is not dismissed").
+    //
+    // It also catches the likeliest way this verb gets misused. A model that
+    // MEANT "hold until Thursday" and dropped the field now lands on the
+    // release path, and before this build that mistake was a loud refusal. This
+    // gives it back its refusal in the only case where a release could not have
+    // been meant — there was nothing held — while leaving a real release alone.
+    if (
+      action === 'hold' &&
+      (d.notBefore === undefined || d.notBefore === null) &&
+      !view.nudge.not_before
+    ) {
+      push(
+        'hold with no date on a gap that is not being held — a hold with no date RELEASES an ' +
+          'earlier hold, and there is none here. To pause it, give the date to wait until.',
+      );
+      continue;
+    }
     let notBefore: string | null = null;
-    if (action === 'hold') {
+    if (action === 'hold' && d.notBefore !== undefined && d.notBefore !== null) {
       const at = typeof d.notBefore === 'string' ? Date.parse(d.notBefore) : NaN;
       if (Number.isNaN(at)) {
-        push('hold without a usable notBefore');
+        push(
+          'hold whose notBefore is not a usable date — write it as a UTC instant like ' +
+            '2026-08-20T15:00:00Z, or leave it out entirely to RELEASE a hold you set earlier',
+        );
         continue;
       }
       if (at <= nowMs) {
@@ -1757,48 +1922,29 @@ export function validateDecisions(
     // `unmentioned` tick mark and none can take a second decision later in the
     // same plan.
     for (const memberId of groupIds ?? []) seen.add(memberId);
-    // Escalate only. A note on any other action would never be read: nothing
-    // else in the ladder puts a sentence in front of a manager.
     // Send only. A question on any other action would be written, stored and
     // never read — compose only ever looks at an applied `send`.
+    //
+    // (The handoff note and the manager's-assistant briefing were railed here
+    // beside it, escalate-only. Both left with the verb in build 6 Phase 1.)
     let questionDraft: string | null = null;
     if (action === 'send') {
       const q = cleanQuestionDraft(d.question, view.dateLabels, groupIds?.length ?? 1);
       questionDraft = q.note;
       if (q.why) noteDrops.push(`${nudgeId}: ${q.why}`);
     }
-    let handoffNote: string | null = null;
-    let agentContext: string | null = null;
-    if (action === 'escalate') {
-      const cleaned = cleanHandoffNote(d.handoffNote, view.dateLabels);
-      handoffNote = cleaned.note;
-      if (cleaned.why) noteDrops.push(`${nudgeId}: ${cleaned.why}`);
-      // REFUSED HERE, at validate (final review — the plan's original seam):
-      // no fallback author exists, and an apply-only refusal would let shadow
-      // record as valid a decision live refuses, and would deny the live
-      // model the within-tick every-decision-refused signal to rewrite. The
-      // apply-time check stays as the belt.
-      if (!handoffNote) {
-        push(
-          'escalate needs `handoffNote` — it was missing or the date rail dropped it; ' +
-            'rewrite it using only the dates you were given',
-        );
-        continue;
-      }
-      // The briefing rides the same boundary: railed alone, dropped alone —
-      // its loss never blocks the escalate or the manager's sentence.
-      const briefing = cleanAgentContext(d.agentContext, view.dateLabels);
-      agentContext = briefing.note;
-      if (briefing.why) noteDrops.push(`${nudgeId}: ${briefing.why}`);
-    }
     decisions.push({
       nudgeId,
       action: action as PlannerAction,
-      ...(notBefore ? { notBefore } : {}),
+      // A HOLD ALWAYS CARRIES THE KEY, null included — `notBefore: null` IS the
+      // release, and saying so in the data beats the alternative the first
+      // draft had, where a release was the ABSENCE of the key and only cleared
+      // the column because apply happened to write `d.notBefore ?? null`. That
+      // is a coupling across two files that no type would catch if either side
+      // moved. Every other action still omits it.
+      ...(action === 'hold' ? { notBefore } : {}),
       ...(basis ? { basis } : {}),
       ...(citation ? { citation } : {}),
-      ...(handoffNote ? { handoffNote } : {}),
-      ...(agentContext ? { agentContext } : {}),
       ...(questionDraft ? { questionDraft } : {}),
       ...(groupIds ? { nudgeIds: groupIds } : {}),
       ...(answeredByCaptureId ? { answeredByCaptureId } : {}),
@@ -1948,10 +2094,9 @@ export function buildPlannerUserMessage(
  * a delivery ack, an auto-resolve, another sweep — which is a real event, not a
  * failure, and must not be recorded as success.
  *
- * `escalate` performs its own handoff HERE since build 5 (plan 2026-08-31 "the
- * sweep stops deciding"): flag first, mark second — the F1 order the sweep's
- * loop used, so a flag that throws leaves the row open and next tick's retry
- * converges on flagNudgeGap's once-ever dedup.
+ * (`escalate` performed its own handoff here — flag the manager's item first,
+ * mark the row second — until build 6 Phase 1 deleted the verb. Nothing in this
+ * switch writes a review item any more.)
  */
 async function applyDecision(
   tenantId: string,
@@ -1959,8 +2104,6 @@ async function applyDecision(
   nowIso: string,
   setSchedule: typeof setNudgeSchedule,
   markOutcome: typeof markNudgeOutcome,
-  flagNudge: typeof flagNudgeGap,
-  findOpenItem: typeof findOpenReviewItem,
   markQueued: typeof markNudgeQueued,
   markGroupQueued: typeof markNudgeGroupQueued,
   stampAnswer: typeof setNudgeAnsweredBy,
@@ -1973,7 +2116,11 @@ async function applyDecision(
   setObservation: typeof setObservationStatus = setObservationStatus,
   createFromObservation: typeof createNudgeFromObservation = createNudgeFromObservation,
   createOffice: typeof createOfficeMessage = createOfficeMessage,
-): Promise<{ outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[]; itemOpened?: boolean }> {
+  // Build 6 Phase 3's two writers, injected like every other one so a unit test
+  // never touches the database.
+  dismissGap: typeof dismissNudge = dismissNudge,
+  recoverGap: typeof recoverNudge = recoverNudge,
+): Promise<{ outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[] }> {
   const moved = 'the gap changed state between the plan and the write — nothing was applied';
   const done = (row: object | null): { outcome: 'applied' | 'refused'; detail?: string } =>
     row ? { outcome: 'applied' } : { outcome: 'refused', detail: moved };
@@ -2111,100 +2258,107 @@ async function applyDecision(
       return { outcome: 'applied', movedIds };
     }
     case 'hold':
-      // An observation's hold lives on ITS row (advisory not_before); a relic
-      // pending nudge keeps the old schedule write. Same guarded-update shape,
-      // different table — decided by the stage the view showed.
+      // An observation's hold lives on ITS row (advisory not_before); a nudge
+      // keeps the schedule write. Same guarded-update shape, different table —
+      // decided by the stage the view showed.
+      //
+      // OPEN_NUDGE_STATUSES, not ['pending'] — and this is the line that makes
+      // Phase 2 do anything at all. Widening the RAIL while this still passed
+      // ['pending'] would have left a hold on a queued or asked row matching no
+      // row, returning null, and recording *refused — "the gap changed state"*:
+      // the planner would be told it may pause an asked question, do it, and
+      // watch nothing happen. A silent no-op dressed as a race.
       if (getGap(d.nudgeId)?.status === 'noticed') {
         return done(
           await setObservation(d.nudgeId, tenantId, { notBefore: d.notBefore ?? null }, ['open']),
         );
       }
       return done(
-        await setSchedule(d.nudgeId, tenantId, { notBefore: d.notBefore ?? null }, ['pending']),
+        await setSchedule(
+          d.nudgeId,
+          tenantId,
+          { notBefore: d.notBefore ?? null },
+          [...OPEN_NUDGE_STATUSES],
+        ),
       );
     case 'dismiss':
       // The planner's judgment, REVISABLE — which is the property the whole
-      // curation design turns on. The detector stops re-noticing the subject
-      // (uq_observations_subject_ever holds whatever the status), so this is
-      // "stop showing me this", never a delete.
-      return done(
-        await setObservation(
-          d.nudgeId,
-          tenantId,
-          { status: 'dismissed', dismissReason: d.reason || null, dismissedAt: nowIso },
-          ['open'],
-        ),
-      );
-    case 'recover':
+      // curation design turns on. Never a delete: the record keeps the row, the
+      // detector stops re-noticing the subject either way (both once-ever
+      // indexes hold whatever the status), and `recover` puts it back.
+      //
+      // STAGE-FORKED since build 6 Phase 3. Same verb, same meaning, two
+      // tables: an observation's dismissal lives on its own row, a question's
+      // is a nudges status carrying `prior_status` so recover knows where to
+      // put it. The fork is decided by the stage the VIEW showed, exactly as
+      // hold's is.
+      if (getGap(d.nudgeId)?.status === 'noticed') {
+        return done(
+          await setObservation(
+            d.nudgeId,
+            tenantId,
+            { status: 'dismissed', dismissReason: d.reason || null, dismissedAt: nowIso },
+            ['open'],
+          ),
+        );
+      }
+      return done(await dismissGap(d.nudgeId, tenantId, d.reason || null));
+    case 'recover': {
       // notBefore clears too (code-review): recover means "stakes changed",
       // and a recovered row wearing its old far-future hold would go straight
       // back to sleep — the opposite of the verb.
-      return done(
-        await setObservation(
+      //
+      // THE FORK CANNOT READ THE VIEW HERE. A dismissed gap is hidden by
+      // definition, so `getGap` returns nothing for either stage — which is why
+      // this is the one apply case that decides by TRYING the observation write
+      // and falling through. Observations first because that is the older,
+      // denser set; a nudge id simply matches no observation row and returns
+      // null, which is indistinguishable from a race and costs one round trip.
+      //
+      // The observation attempt is WRAPPED, and that is not defensive noise:
+      // setObservationStatus throws on any PostgREST error, and an unwrapped
+      // throw here escapes to the apply loop's catch BEFORE recoverGap is ever
+      // tried — so a transient fault on the observations table would make every
+      // dismissed QUESTION unrecoverable for as long as it lasted. Falling
+      // through on a throw costs nothing when the id really is an observation
+      // (the nudge write then matches no row and returns null).
+      let asObservation: Awaited<ReturnType<typeof setObservation>> = null;
+      try {
+        asObservation = await setObservation(
           d.nudgeId,
           tenantId,
           { status: 'open', dismissReason: null, dismissedAt: null, notBefore: null },
           ['dismissed'],
-        ),
-      );
-    case 'escalate': {
-      // The whole handoff, at apply time (build 5, user ruling 3). No fallback
-      // author exists any more — the sweep's template died with its loop — so a
-      // missing or date-rail-dropped note refuses the escalate loudly, the
-      // send-needs-question pattern exactly.
-      if (!d.handoffNote) {
-        return {
-          outcome: 'refused',
-          detail:
-            'escalate needs `handoffNote` — it was missing or the date rail dropped it; ' +
-            'rewrite it using only the dates you were given',
-        };
+        );
+      } catch (err) {
+        console.error(`[planner] ${d.nudgeId}: recover as an observation failed — trying it as a question`, err);
       }
-      const n = getGap(d.nudgeId);
-      if (!n) return { outcome: 'refused', detail: moved }; // rail-checked; unreachable
-      // Flag FIRST: a throw here (caught by the apply loop) leaves the row
-      // open, and the retry converges on the once-ever dedup.
-      const item = await flagNudge({
-        tenantId,
-        kind: n.kind as ReviewKind,
-        subjectRef: n.subject_ref,
-        jobId: ctxStr(n, 'jobId')!,
-        technicianRef: ctxStr(n, 'technicianRef'),
-        startsAtLocal: ctxStr(n, 'startsAtLocal'),
-        endsAtLocal: ctxStr(n, 'endsAtLocal'),
-        escalatedFromNudge: n.id,
-        suggestion: d.handoffNote,
-        ...(d.agentContext ? { agentContext: d.agentContext } : {}),
-      });
-      // A null flag is the once-ever dedup, which holds across EVERY status —
-      // so it means one of two OPPOSITE things (final review): the manager
-      // still HAS an open item (safe to mark the gap handed over), or they
-      // settled one long ago (nothing exists, none can be created, and the
-      // planner's note was discarded). Only the first may claim a handover;
-      // the second refuses honestly and the gap stays the planner's.
-      if (!item) {
-        const openItem = await findOpenItem(tenantId, n.kind as ReviewKind, n.subject_ref);
-        if (!openItem) {
-          return {
-            outcome: 'refused',
-            detail:
-              'this subject was handed to the manager once before and that item is settled — ' +
-              'a second handover cannot be filed. The gap stays yours: close it, or leave it.',
-          };
-        }
-      }
-      // Any open stage may be handed over (a stuck queued relic included); the
-      // guard still loses to a racing terminal write, which is the honest
-      // outcome — the gap already ended some other way.
-      const marked = await markOutcome(
-        d.nudgeId,
-        tenantId,
-        'escalated',
-        'handed to the manager by the team lead',
-        ['pending', 'queued', 'asked'],
-      );
-      return { ...done(marked), ...(marked && item ? { itemOpened: true } : {}) };
+      if (asObservation) return done(asObservation);
+      // …otherwise it is a dismissed QUESTION, restored to the stage it was
+      // dismissed from.
+      const asNudge = await recoverGap(d.nudgeId, tenantId);
+      if (asNudge) return { outcome: 'applied' };
+      // ITS OWN COPY, not the shared race message (the send-on-observation
+      // precedent). Both writes missing means one of two DIFFERENT things, and
+      // only one of them is a race: the gap moved since the plan, or it is a
+      // question dismissed before `prior_status` existed, which recoverNudge
+      // refuses rather than restoring to a guessed stage. This string is what
+      // `recall_decisions` shows the planner next time, so telling it "the gap
+      // changed state" about a row that is simply unrecoverable would send it
+      // back to retry something that can never work.
+      return {
+        outcome: 'refused',
+        detail:
+          'nothing was recovered — either this gap moved between the plan and the write, or ' +
+          'it is a question that was dismissed before the record kept track of which stage it ' +
+          'came from, and restoring it to a guessed stage would be worse than leaving it. Do ' +
+          'not retry this one.',
+      };
     }
+    // (`case 'escalate'` stood here: it filed the manager's review item with the
+    // planner's own sentence, disambiguated flagNudgeGap's once-ever null, then
+    // marked the row 'escalated'. Deleted whole in build 6 Phase 1 — see
+    // PLANNER_ACTIONS. Historic 'escalated' rows are untouched and still read.)
     case 'ask_agent':
     case 'inform_agent': {
       // The outbound office verbs (build 5.5 Phase 3): the message row in the
@@ -2238,16 +2392,11 @@ async function applyDecision(
       });
       return { outcome: 'applied' };
     }
-    case 'leave':
-      // Deliberately a no-op WRITE-side, and `applied` rather than some third
-      // outcome: the planner really did decide this, and the decision really was
-      // carried out — what it asked for was that nothing change. Recording it as
-      // refused would make the corpus read as if a rail rejected it.
-      //
-      // For the ALARM pass (the fail-safe's successor, build 5) a leave counts
-      // as attention on an ASKED gap and deliberately NOT on a stale
-      // observation — looking is not acting there. See watchers.ts.
-      return { outcome: 'applied' };
+    // (`case 'leave'` stood here, a deliberate no-op returning 'applied' — the
+    // planner really did decide, and what it decided was that nothing change.
+    // Deleted with the verb in build 6 Phase 2. Its alarm-pass semantics live
+    // on in watchers.ts for HISTORIC rows: a leave counted as attention on an
+    // asked gap and deliberately not on a stale observation.)
     case 'close': {
       // The resolution is the durable audit line a manager may later read, so it
       // says WHERE the answer came from. A record-basis close quotes code's own
@@ -2256,6 +2405,24 @@ async function applyDecision(
         d.basis === 'record'
           ? `closed on the record — ${d.citation}`
           : `answered — "${d.citation}"`;
+      // A CLOSE ON AN OBSERVATION IS A DISMISSAL (build 6 Phase 3). Nobody was
+      // asked, so there is no nudges row to mark — markOutcome would match
+      // nothing and record `refused` for a decision whose evidence the rails
+      // already verified. The citation rides along as the dismiss reason, so
+      // the record keeps WHY, and `stampAnswer` is skipped: `answered_by_capture
+      // _id` is a column on `nudges`, and it is the whole definition of
+      // mv_gap_outcomes.closed_by_technician — there is no row to stamp and no
+      // metric this belongs in.
+      if (getGap(d.nudgeId)?.status === 'noticed') {
+        return done(
+          await setObservation(
+            d.nudgeId,
+            tenantId,
+            { status: 'dismissed', dismissReason: resolution, dismissedAt: nowIso },
+            ['open'],
+          ),
+        );
+      }
       // A moot-authorised close ends the gap as the sweep's moot did:
       // 'cancelled', never 'answered' — nobody answered anything, the subject
       // is gone (build 5; plan review finding 3).
@@ -2294,6 +2461,9 @@ export async function runPlanner(
   const listNudges = deps.listNudges ?? listNudgesByStatus;
   const listObservations = deps.listObservations ?? listObservationsByStatus;
   const listDismissedIds = deps.listDismissedIds ?? listDismissedObservationIds;
+  const listDismissedNudges = deps.listDismissedNudges ?? listDismissedNudgeIds;
+  const dismissGap = deps.dismissGap ?? dismissNudge;
+  const recoverGap = deps.recoverGap ?? recoverNudge;
   const setObservation = deps.setObservation ?? setObservationStatus;
   const createFromObservation = deps.createFromObservation ?? createNudgeFromObservation;
   const listOffice = deps.listOfficeMessages ?? listOfficeMessagesByStatus;
@@ -2313,10 +2483,6 @@ export async function runPlanner(
   const listAssignments = deps.listAssignments ?? listAssignmentsByIds;
   const listJobs = deps.listJobs ?? listJobsWithCustomerByIds;
   const getSettings = deps.getSettings ?? readSettingsTolerantly;
-  const flagNudge = deps.flagNudge ?? flagNudgeGap;
-  const findOpenItem = deps.findOpenItem ?? findOpenReviewItem;
-  const notify = deps.notify ?? notifyManagers;
-  const hasPushToken = deps.hasPushToken ?? (() => !!process.env.BOARD_BOT_TOKEN);
   const tools = deps.tools ?? [];
   const execute = deps.execute;
 
@@ -2394,6 +2560,14 @@ export async function runPlanner(
     // per-tenant — the declaration is inside this loop body, not above it — so a
     // tenant never sees the previous one's views.
     const views = new Map<string, GapView>();
+    // WHAT THE MODEL LOOKED UP THIS TICK (build 6 Phase 4), filled by the tool
+    // loop's onResult hook and read by validateDecisions when it checks a
+    // citation. Declared HERE, per tenant, for the same reason `views` is: one
+    // firm's query results must never be citable in another firm's plan.
+    //
+    // Bounded by the loop's own MAX_TOOL_RESULT_CHARS per call and by the
+    // 15-minute clock overall; it is dropped when the tenant's iteration ends.
+    const readText: string[] = [];
     // Hoisted for the CATCH like `views`: the failed-tick trace must key each
     // row to its stage, or an observation-staged row keyed nudge_id 23503s and
     // the whole trace is silently discarded (phase-3 review F1).
@@ -2514,12 +2688,40 @@ export async function runPlanner(
       // only, since dismissed rows are permanent and monotonic (review F3). A
       // failed read degrades to "nothing recoverable" rather than a dead tick:
       // recover is the rarest verb, and refusing it beats refusing the firm.
-      let recoverable = new Set<string>();
+      // BOTH STAGES since build 6 Phase 3: dismissed observations AND dismissed
+      // questions. Read and degraded SEPARATELY, not in one try — a failure on
+      // either side must not cost the other its recovers, and the two are
+      // independent tables. `stageById` is what keeps their decision rows keyed
+      // to the right FK, so it is set per-source rather than for the union.
+      //
+      // NEVER OVERWRITE A LABEL THE OPEN READS ALREADY SET (`if (!has)` on both
+      // loops). The open reads ran above and describe the object this tick is
+      // actually SHOWING; the dismissed sets describe hidden ones. They can
+      // collide, because a sent gap wears its observation's own uuid: if
+      // stamping that observation 'asked' ever failed — a throw the send path
+      // deliberately only logs — an OPEN observation sits beside its own nudge,
+      // and dismissing the nudge would then relabel the open observation
+      // 'nudge'. No FK error follows (the dismissed nudges row exists), so
+      // every decision and every tick mark for that observation would be
+      // written against the wrong object, silently, forever.
+      const recoverable = new Set<string>();
       try {
-        recoverable = new Set(await listDismissedIds(tenantId));
-        for (const id of recoverable) stageById.set(id, 'observation');
+        for (const id of await listDismissedIds(tenantId)) {
+          recoverable.add(id);
+          if (!stageById.has(id)) stageById.set(id, 'observation');
+        }
       } catch (err) {
-        console.error(`[planner] tenant ${tenantId}: dismissed-ids read failed`, err);
+        console.error(`[planner] tenant ${tenantId}: dismissed-observation-ids read failed`, err);
+      }
+      try {
+        for (const id of await listDismissedNudges(tenantId)) {
+          recoverable.add(id);
+          // Observations first among the DISMISSED, matching the apply fork,
+          // which tries the observation write before the question's.
+          if (!stageById.has(id)) stageById.set(id, 'nudge');
+        }
+      } catch (err) {
+        console.error(`[planner] tenant ${tenantId}: dismissed-question-ids read failed`, err);
       }
 
       // ONE batched evidence read for the tenant, floored at the EARLIEST bound
@@ -2649,6 +2851,23 @@ export async function runPlanner(
         const j = ctxStr(n, 'jobId');
         if (j) gapsPerJob.set(j, (gapsPerJob.get(j) ?? 0) + 1);
       }
+      // The ask-group LEADS, by id — for the delivery ledger a non-lead member
+      // has to borrow (build 6 Phase 5; the serve loop freezes a whole group off
+      // the lead's counters). Null when the lead is not in this tick's open set,
+      // which is itself meaningful: a group whose lead has ended is the
+      // leaderless freeze, and the member's own zeros are then the honest render
+      // — nothing on the row knows about it either way.
+      const byId = new Map(open.map((n) => [n.id, n]));
+      // THREE OUTCOMES, not two. Collapsing the last into `null` was the defect
+      // review caught: a member whose lead is no longer open is LEADERLESS —
+      // the serve loop will never promote a sibling, so the group is frozen
+      // forever — and rendering its own untouched 0/0 counters as an ordinary
+      // young gap hid exactly the condition this phase exists to surface. The
+      // caller knows the lead is gone; buildGapView cannot.
+      const leadFor = (n: Nudge): Nudge | 'leaderless' | null => {
+        if (!n.ask_group_id || n.ask_group_id === n.id) return null; // not a member
+        return byId.get(n.ask_group_id) ?? 'leaderless';
+      };
       for (const n of open) {
         const j = ctxStr(n, 'jobId');
         views.set(
@@ -2664,6 +2883,7 @@ export async function runPlanner(
             tz,
             (j && noteMeta.get(j)) || null,
             mootFactFor(n),
+            leadFor(n),
           ),
         );
       }
@@ -2802,11 +3022,28 @@ export async function runPlanner(
           // that is merely slow until the clock throws. That is deliberate; the
           // instrument is the distribution, not the counter.
           maxTurns: null,
+          // Build 6 Phase 4: every tool result, as the MODEL saw it, the moment
+          // it saw it. `result.calls` carries the same objects, but arrives one
+          // turn too late — submit_plan is validated inside the executor below.
+          //
+          // submit_plan's own result is appended too and that is harmless: it
+          // is this loop's terminal tool, so nothing is validated after it.
+          onResult: (call) => {
+            // ALLOWLISTED (see CITABLE_TOOLS): the planner's own notes and
+            // memory come back through this hook too, and quoting those would
+            // let it launder its own prose into an evidence-basis close.
+            //
+            // `call.ok` as well: a FAILED call's result is an error string from
+            // the machinery — and for a refused submit_plan it echoes the
+            // model's own rejected text back at it, which must never become
+            // quotable on the retry.
+            if (call.ok && CITABLE_TOOLS.has(call.name)) readText.push(call.result);
+          },
         },
         [...tools, SUBMIT_PLAN_TOOL],
         async (name, args) => {
           if (name === SUBMIT_PLAN_TOOL.name) {
-            const checked = validateDecisions(args, views, nowMs, recoverable);
+            const checked = validateDecisions(args, views, nowMs, recoverable, readText);
             outcome = checked; // the LAST submission stands, refusals included
             // A dropped note is not a refused decision, so it would otherwise
             // leave no trace anywhere — and "how often does the date rail fire"
@@ -2853,9 +3090,6 @@ export async function runPlanner(
       let cappedWarned = false; // one line per tenant per tick, not one per gap
       let applied = 0;
       let refusedAtApply = 0;
-      // Applied escalations = review items this tick opened; drives the one
-      // count-only manager heads-up below (moved here from the sweep, build 5).
-      let escalatedApplied = 0;
       for (const d of decisions) {
         // ONE ROW PER GAP, even when one decision covered several (plan
         // 2026-08-25, Phase 3). Each gap's own history has to show its own send,
@@ -2884,8 +3118,12 @@ export async function runPlanner(
           citation: d.citation ?? null,
           confidence: d.confidence,
           reason: d.reason,
-          handoffNote: d.handoffNote ?? null,
-          agentContext: d.agentContext ?? null,
+          // handoff_note / agent_context stay COLUMNS — historic escalate rows
+          // carry them — but NOTHING WRITES THEM any more (build 6 Phase 1).
+          // Their readers are all offline: scripts/agentic-eval/analyze.mjs and
+          // the claim graders in plannerEvalGraders2.ts. `recall_decisions` does
+          // NOT project either one and never did (mcp/server.ts), so the model
+          // has never seen them.
           questionDraft: d.questionDraft ?? null,
         });
         // SHADOW FANS OUT TOO. Missing this would give every sibling an
@@ -2898,7 +3136,7 @@ export async function runPlanner(
           }
           continue;
         }
-        let res: { outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[]; itemOpened?: boolean };
+        let res: { outcome: 'applied' | 'refused'; detail?: string; movedIds?: string[] };
         try {
           const gapRow = views.get(d.nudgeId)?.nudge;
           res = await applyDecision(
@@ -2907,8 +3145,6 @@ export async function runPlanner(
             nowIso,
             setSchedule,
             markOutcome,
-            flagNudge,
-            findOpenItem,
             markQueued,
             markGroupQueued,
             stampAnswer,
@@ -2917,6 +3153,8 @@ export async function runPlanner(
             setObservation,
             createFromObservation,
             createOffice,
+            dismissGap,
+            recoverGap,
           );
         } catch (err) {
           // One failed write must not abandon the rest of the firm's plan, and
@@ -2931,9 +3169,6 @@ export async function runPlanner(
         // comparable with the eval baseline taken before groups existed.
         if (res.outcome === 'applied') applied += 1;
         else refusedAtApply += 1;
-        if (d.action === 'escalate' && res.outcome === 'applied' && res.itemOpened) {
-          escalatedApplied += 1; // only a genuinely OPENED item pings — never an ever-flagged null
-        }
         // The RECORDS count gaps, with each member's own truth: a partial move
         // really did queue the movers, and telling a moved gap's history it was
         // refused is the same class of lie as the reverse.
@@ -2995,10 +3230,13 @@ export async function runPlanner(
       // seen" were the same empty history, and the planner had no way to know it
       // had been here before. `unmentioned` is silence, RECORDED.
       //
-      // Distinguishable from `leave` by design: `leave` carries the model's own
-      // reason and is a decision it made; this carries none and is an observation
-      // code made. Both say "nothing changed"; only one says anybody thought
-      // about it.
+      // This used to be distinguishable from `leave` by design: that verb
+      // carried the model's own reason and was a decision it made, while this
+      // carries none and is an observation code made. Build 6 Phase 2 deleted
+      // `leave` — and the reason it could go is written right here. Both said
+      // "nothing changed", and this one already said "somebody thought about
+      // it", for free, for every gap in the view. The verb was paying for what
+      // the filler recorded anyway.
       // Built from the rows ACTUALLY PUSHED, not from `decisions`/`dropped`.
       // Those two lists are not the same thing as "a row was written": the
       // dropped loop deliberately skips entries whose action is not a known verb
@@ -3014,7 +3252,7 @@ export async function runPlanner(
         // and since build 5 nothing bounds a gap's lifetime — a long watch is
         // legitimate, so the filler must stop before it swamps the corpus.
         //
-        // The cap deliberately does NOT stop `leave`, `close` or any real
+        // The cap deliberately does NOT stop `close`, `hold` or any real
         // decision — only the tick marks.
         if (view.history.length >= UNMENTIONED_CAP) {
           if (!cappedWarned) {
@@ -3053,31 +3291,12 @@ export async function runPlanner(
       summary.refusedAtApply += refusedAtApply;
       summary.recorded += recorded;
 
-      // ONE count-only manager heads-up per tenant per tick, only when this
-      // tick's applied escalations opened items (moved from the sweep, build 5
-      // — same wording family, same token gate, still once-only by design: a
-      // quiet queue never re-pings). No names/PII; the queue holds the detail.
-      // notifyManagers never throws (its own contract), so no wrap is needed.
-      if (mode === 'live' && escalatedApplied > 0) {
-        if (hasPushToken()) {
-          await notify(
-            tenantId,
-            escalatedApplied === 1
-              ? 'Heads-up: a recent job has an open question on it — it’s waiting in your ' +
-                  'pending reviews whenever you have a minute.'
-              : `Heads-up: ${escalatedApplied} recent jobs have open questions on them — they’re ` +
-                  'waiting in your pending reviews whenever you have a minute.',
-          );
-        } else {
-          // LOUD and recorded, never silent (final review): the unset token is
-          // a standing live defect, and this is the instrument that found it.
-          summary.pushSkipped = true;
-          console.error(
-            `[planner] tenant ${tenantId}: ${escalatedApplied} item(s) opened but BOARD_BOT_TOKEN ` +
-              'is unset — the manager was NOT pinged and the push is once-only by design',
-          );
-        }
-      }
+      // (The count-only manager heads-up stood here — one line per tenant per
+      // tick when this tick's applied escalations opened review items. Its ONLY
+      // trigger was `escalate`, so it left with the verb in build 6 Phase 1
+      // rather than sitting behind a condition that can no longer be true.
+      // Build 6.5 decides how a generalized `send` reaches a manager, and
+      // whether that needs a push of its own.)
 
       name({
         tenantId,

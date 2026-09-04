@@ -17,6 +17,8 @@ file and link instead; a guide that restates other docs goes stale silently.
 2. [`CLAUDE.md`](../CLAUDE.md) at the repo root — the hard rules
 3. [engineering-memory.md](engineering-memory.md) — everything that isn't in the code (long; skim, then return)
 4. The runbooks: [doorman-runbook.md](doorman-runbook.md), [control-plane.md](control-plane.md), [nemoclaw-tech-agent.md](nemoclaw-tech-agent.md), and `Box_Setup_Stuff/`
+5. [observability-gaps.md](observability-gaps.md) — a running list of malfunctions the system
+   knows about and tells nobody. Short by design; add to it rather than fixing in passing.
 
 ---
 

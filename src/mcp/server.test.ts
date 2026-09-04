@@ -22,7 +22,7 @@ import { createHost } from '../db/hosts.js';
 import { completeSandboxRecycle, registerSandbox } from '../db/sandboxPool.js';
 import { createTenant, setTenantSeats } from '../db/tenants.js';
 import { PROFILE_STRING_FIELDS } from '../db/tenantProfiles.js';
-import { flagNudgeGap, upsertOpenReviewItem } from '../db/reviewItems.js';
+import { upsertOpenReviewItem } from '../db/reviewItems.js';
 import { logWebRequests } from '../db/webRequests.js';
 import {
   attributeAnswerToGap,
@@ -1011,21 +1011,29 @@ describe('MCP server', () => {
 
       // ④b fourth rail: a gap item's briefing rides detail to the manager's
       // agent verbatim — and the tool description carries the never-relay rule.
-      const gapItem = await flagNudgeGap({
+      //
+      // Written with `upsertOpenReviewItem` since build 6 Phase 1: `escalate`
+      // and its writer `flagNudgeGap` are deleted, so nothing MINTS a briefing
+      // any more — but every item ever filed still carries one, and this is the
+      // reader that has to keep surfacing it. The detail shape is the one that
+      // writer produced, verbatim.
+      const gapItem = await upsertOpenReviewItem({
         tenantId,
         kind: 'overdue_visit_gap',
         subjectRef: 'agctx-subject-1',
-        jobId: '00000000-0000-0000-0000-0000000000aa',
-        technicianRef: 'tech-mcp',
-        startsAtLocal: '2026-12-01 09:00:00+00',
-        endsAtLocal: '2026-12-01 10:00:00+00',
         suggestion: 'open question on a visit — agentContext carrier',
-        agentContext: 'Job aa: asked once on the visit day; ledger empty; a figure unblocks the invoice.',
+        detail: {
+          jobId: '00000000-0000-0000-0000-0000000000aa',
+          technicianRef: 'tech-mcp',
+          startsAtLocal: '2026-12-01 09:00:00+00',
+          endsAtLocal: '2026-12-01 10:00:00+00',
+          escalatedFromNudge: '00000000-0000-0000-0000-0000000000bb',
+          agentContext: 'Job aa: asked once on the visit day; ledger empty; a figure unblocks the invoice.',
+        },
       });
-      expect(gapItem).not.toBeNull();
       const withBriefing = await callWith('list_pending_reviews', {});
       const briefed = (withBriefing.data as Array<{ id: string; detail?: { agentContext?: string } }>).find(
-        (r) => r.id === gapItem!.id,
+        (r) => r.id === gapItem.id,
       );
       expect(briefed?.detail?.agentContext).toBe(
         'Job aa: asked once on the visit day; ledger empty; a figure unblocks the invoice.',
@@ -8278,7 +8286,12 @@ describe('team-lead identity ceiling (spine: namespace)', () => {
     // and the list must move together or the description lies to the model
     expect(desc).toContain('thirteen views');
     expect(desc).toContain('v_observations');
-    expect(desc).toContain("status='dismissed' rows are where `recover` ids come from");
+    // BOTH dismissed sets since build 6 Phase 3 — a question can be dismissed
+    // too, and the catalog is the only place the model learns where to look for
+    // a `recover` id. Naming one view and not the other would leave half the
+    // recoverable gaps unfindable.
+    expect(desc).toContain("status='dismissed' rows are questions the assistant set aside");
+    expect(desc).toContain("status='dismissed' rows are the OTHER place `recover` ids come from");
     expect(desc).toContain('v_money_events');
     expect(desc).toContain('DIRECTION COMES FROM kind');
     // ④'s four, and the rules that keep them safe to read

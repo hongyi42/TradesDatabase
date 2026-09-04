@@ -21,7 +21,12 @@ const flag = (n, d = null) => { const i = args.indexOf(`--${n}`); return i >= 0 
 const dir = flag('dir');
 if (!dir) { console.error('--dir <run-dir> required'); process.exit(2); }
 
-const { cleanHandoffNote } = await import(`${join(ROOT, 'dist')}/teamLead/planner.js`);
+const { cleanPlannerText } = await import(`${join(ROOT, 'dist')}/teamLead/planner.js`);
+// The handoff note's own wrapper died with `escalate` (build 6 Phase 1); this
+// is the same shared rail it wrapped, with the cap and label it used, so a
+// historic run still grades exactly as it did.
+const cleanNote = (note, labels) =>
+  cleanPlannerText(note, labels, { label: 'handoff note', maxLen: 400 });
 const rows = readFileSync(join(dir, 'run.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 const meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8'));
 
@@ -62,7 +67,7 @@ for (const r of rows) {
           dateLabels,
           mustName: r.expect?.mustName ?? [],
           mustNotClaim: r.expect?.mustNotClaim ?? [],
-          cleanHandoffNote,
+          cleanNote,
         }).concat(actionChecks)
       : actionChecks;
     let verdict = null;

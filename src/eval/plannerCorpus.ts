@@ -19,6 +19,39 @@
 //     old asks therefore carry an explicit escalateAfter, reading as "a prior
 //     tick extended this";
 //   - subject_ref pinning and window math live in seedScenario, not here.
+//
+// TWENTY-FOUR ORPHANED EXPECTATIONS, and they are left standing on purpose
+// (build 6 Phase 1, 2026-09-01). `escalate` is deleted, so 10
+// `action: 'escalate'` and 14 `actionNot: 'escalate'` now name a verb the
+// planner cannot speak. COUNTED CAREFULLY, because this file mixes two things
+// that look alike: the `action: 'leave'` at the `history:` seed below is NOT an
+// expectation — it seeds a decision row the world starts with, and a seeded row
+// naming a retired verb keeps working exactly as the `extend` seeds beside it
+// do. Only entries inside `expect` blocks are orphaned. `npm test` stays
+// green — plannerCorpus.test.ts checks the authoring rails, not the verb
+// vocabulary — because these are graded ONLY by the key-gated live runner.
+// What they will score there is knowable without running it: an `action:`
+// expectation can never be met (the model has no such verb), and an
+// `actionNot:` one can never be missed. Re-deciding what each of those
+// scenarios SHOULD expect is judgment about the new vocabulary, not
+// bookkeeping, so it belongs to the build order's evaluation phase — which is
+// an END phase (user ruling 2026-08-29), after build 7. Rewriting them now
+// would be guessing at the answer the evaluation exists to produce.
+//
+// AND A SECOND, QUIETER CASUALTY the action count does not capture. The claim
+// graders — 23 `mustNotClaim` clauses and 1 `mustName`, most of them on
+// scenarios that never mentioned escalate at all — read the planner's
+// MANAGER-FACING copy. plannerEvalGraders2.ts builds their haystack from
+// `[handoff_note, reason]`, and `handoff_note` is now never written. They still
+// grade, against `reason` alone, so they are WEAKENED rather than orphaned —
+// but `reason` is diagnostic copy written for the log (and written for refusals
+// too), not product copy read by a person. A blame-phrase check over `reason`
+// is measuring a different thing than the one these clauses were authored
+// against. The evaluation phase should read this note as its inventory: 24
+// action expectations that cannot be met or missed, plus 24 claim clauses whose
+// subject no longer exists. (The separate scripts/planner-eval/ harness gates
+// wholly on the note and so grades nothing at all now — but its scenarios live
+// in scripts/planner-eval/scenarios.mjs, not here.)
 
 import type { Offset, ScenarioWorld, SimMoneyKind } from './plannerSim.js';
 
@@ -1035,6 +1068,152 @@ export const SMOKE_SCENARIOS: PlannerScenario[] = [
   },
 ];
 
+// ── build 6: the verbs the rebuild added ─────────────────────────────────────
+// One scenario per capability, each stating the JUDGMENT it grades rather than
+// the mechanism — the mechanism has unit tests; what a corpus measures is
+// whether the planner reaches for the right verb when the situation calls for
+// it. These are also the first scenarios that could not have been WRITTEN
+// before their build: hold was refused on an asked gap, dismiss could not reach
+// a question, and a frozen delivery ledger was not seedable.
+const BUILD6: PlannerScenario[] = [
+  {
+    id: 'B6-HOLD-ASKED',
+    family: 'build6',
+    why:
+      'Build 6 Phase 2 (user ruling 2026-09-01): `hold` reaches an ASKED gap. Before the ' +
+      'rebuild it shared `send`\'s stage rail and was refused there, so "give them until ' +
+      'Thursday" had no verb — the planner could only wait silently, which reads to the ' +
+      'operators as neglect 24h later. Graded on the VERB because that is the capability: a ' +
+      'gap whose person has just said they are away is the clearest case for pacing it.',
+    world: {
+      customer: { name: 'Priya Raman' },
+      job: { title: 'Zone valve replacement', status: 'in_progress' },
+      technician: { ref: 'b6-hold-tech', name: 'Dana Ruiz' },
+      visit: { startsAt: '-27h', endsAt: '-25.5h' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'overdue_visit_gap',
+          status: 'asked',
+          createdAt: '-25h',
+          askedAt: '-24.5h',
+          escalateAfter: '+2h',
+          question: 'How did the zone valve swap at Priya Raman go?',
+        },
+      ],
+      evidence: [
+        { at: '-2h', fromTechnician: true,
+          text: 'Heads up, I am driving to the depot and back all day and slow to reply.' },
+      ],
+    },
+    timeline: [{ at: '+0h', kind: 'tick' }],
+    // APPLIED hold, in some tick. Silence fails this — which is the point: the
+    // old failure mode here was doing nothing and calling it patience.
+    expect: { action: 'hold', mustNotClaim: BLAME },
+  },
+  {
+    id: 'B6-DISMISS-ASKED',
+    family: 'build6',
+    why:
+      'Build 6 Phase 3 (user ruling 2026-09-01, "full control on its gaps"): an asked gap ' +
+      'whose subject is GONE has an ending again. Deleting escalate (Phase 1) left this shape ' +
+      'with none — close needs a fact or a quote, and a question that went nowhere has ' +
+      'neither. Graded on the ARC, not the verb: close (the job is cancelled, so THE RECORD ' +
+      'line authorises it) and dismiss are both honest here, and what is being measured is ' +
+      'that the gap ENDS rather than sitting open forever.',
+    world: {
+      customer: { name: 'Owen Carty' },
+      job: { title: 'Attic duct seal', status: 'cancelled' },
+      technician: { ref: 'b6-dis-tech', name: 'Sam Vale' },
+      visit: { startsAt: '-30h', endsAt: '-28h', status: 'proposed' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'overdue_visit_gap',
+          status: 'asked',
+          createdAt: '-27h',
+          askedAt: '-26h',
+          escalateAfter: '+2h',
+          question: 'How did the duct seal at Owen Carty go?',
+        },
+      ],
+    },
+    timeline: [{ at: '+0h', kind: 'tick' }],
+    expect: { actionNot: 'send', arc: { closedBy: '+0h' } },
+  },
+  {
+    id: 'B6-FROZEN-DELIVERY',
+    family: 'build6',
+    why:
+      'Build 6 Phase 5: a queued gap past MAX_SERVE_COUNT renders a FROZEN delivery line. ' +
+      'Before it, a message frozen after ten attempts and one queued forty seconds ago read ' +
+      'identically — and the doctrine told the planner to escalate both, a verb that no ' +
+      'longer exists. Two things graded: the gap must END (silence is the failure this ' +
+      'replaces), and nothing written about it may claim the person was asked, because a ' +
+      'frozen question was almost certainly never delivered.',
+    world: {
+      customer: { name: 'Lena Okafor' },
+      job: { title: 'Boiler pressure fault', status: 'in_progress' },
+      technician: { ref: 'b6-frozen-tech', name: 'Tomas Bell' },
+      visit: { startsAt: '-30h', endsAt: '-28h' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'overdue_visit_gap',
+          status: 'queued',
+          createdAt: '-26h',
+          question: 'How did the boiler pressure fault at Lena Okafor go?',
+          // Past the cap: the serve loop has given up on this one.
+          serveCount: 12,
+          attempts: 3,
+        },
+      ],
+    },
+    timeline: [{ at: '+0h', kind: 'tick' }],
+    expect: {
+      arc: { closedBy: '+0h' },
+      mustNotClaim: ['we asked', 'no reply', 'has not responded', 'did not respond', 'ignored'],
+    },
+  },
+  {
+    id: 'B6-CITE-A-LOOKUP',
+    family: 'build6',
+    why:
+      'Build 6 Phase 4 (user ruling 2026-09-01): a close may quote what a spine_read returned, ' +
+      'not only the gap\'s own evidence lines. The answer here landed BEFORE the ask, so the ' +
+      'block prints "NO notes have landed since the question went out" — the planner has to ' +
+      'go and look. Before this build it could read those words and still not use them, and ' +
+      'the gap stayed open with the answer visible and uncitable. Graded on both halves: the ' +
+      'read must actually happen, and the close must land.',
+    world: {
+      customer: { name: 'Hal Bridger' },
+      job: { title: 'Condenser fan motor', status: 'in_progress' },
+      technician: { ref: 'b6-cite-tech', name: 'Rosa Kine' },
+      visit: { startsAt: '-30h', endsAt: '-28h' },
+      nudges: [
+        {
+          key: 'gap',
+          kind: 'job_cost_gap',
+          status: 'asked',
+          createdAt: '-26h',
+          askedAt: '-25h',
+          escalateAfter: '+2h',
+          question: 'What did the condenser fan motor come to in parts?',
+        },
+      ],
+      evidence: [
+        // BEFORE the ask, so buildGapView's since-bound excludes it from the
+        // block. It is reachable only by looking.
+        { at: '-27h', fromTechnician: true,
+          text: 'Fan motor was four hundred twelve dollars from the supply house.' },
+      ],
+    },
+    timeline: [{ at: '+0h', kind: 'tick' }],
+    expect: { action: 'close', mustRead: { tool: 'spine_read' } },
+  },
+];
+
+
 export const FAMILY_COUNTS = {
   smoke: 3,
   'false-claims': 10,
@@ -1046,6 +1225,7 @@ export const FAMILY_COUNTS = {
   // Renamed from 'window-edges' when the ask window was deleted (2026-08-29).
   // Same six scenarios; the edges they probe are the DAY's, not a gate's.
   'day-edges': 6,
+  build6: 4,
 } as const;
 
 export const ALL_SCENARIOS: PlannerScenario[] = [
@@ -1057,4 +1237,5 @@ export const ALL_SCENARIOS: PlannerScenario[] = [
   ...PEOPLE,
   ...MULTI_GAP,
   ...WINDOW,
+  ...BUILD6,
 ];

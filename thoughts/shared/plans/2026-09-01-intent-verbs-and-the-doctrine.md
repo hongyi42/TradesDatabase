@@ -2,7 +2,7 @@
 date: 2026-09-01
 task: "Build 6 — intent verbs + the doctrine: escalate and leave are deleted, dismiss/recover reach every stage, hold gains a release, citation widens to what was looked up, and stuck becomes visible"
 research: thoughts/shared/research/2026-08-31-intent-verbs-and-the-doctrine.md
-status: draft
+status: complete
 supersedes: nothing
 ---
 
@@ -58,6 +58,38 @@ review found an earlier draft's *apply-half* citations stale by ~160 lines.
   `nudges.ts:371`, any open status). Without this, deleting `escalate` leaves an asked gap that
   nobody will answer and whose record never fills with **no ending at all** — `close` needs a
   code-computed fact or an evidence quote (`planner.ts:1668-1671`).
+  - *Decided at implementation:* `dismissNudge` reads the status then guards the UPDATE on that
+    exact value, rather than the plan's preferred single-statement column copy — PostgREST cannot
+    express `prior_status = status` in an update payload. The GUARD, not the read, is what makes it
+    race-free. Cost, now stated in the accessor: a benign forward transition (a delivery ack moving
+    queued→asked) also loses and reports "the gap changed state".
+  - *Found in review, fixed:* **`recoverNudge` did not clear `not_before`** while the fork's own
+    comment said it did — so a recovered question could come back wearing a stale far-future hold
+    and, since Phase 2, be exempt from `asksUnattended`, the only alarm on an asked gap.
+  - *Found in review, fixed:* the dismissed-id loops **overwrote stage labels set by the open
+    reads**. A same-id collision (an observation whose 'asked' stamp failed, beside its own nudge)
+    would have keyed every decision and tick mark for the OPEN observation to `nudge_id` — no FK
+    error, so silent and permanent. Both loops now write only when the id is unlabelled.
+  - *Found in review, fixed:* the recover fork called `setObservationStatus` unwrapped, and it
+    THROWS on any error — so a transient fault on `observations` made every dismissed QUESTION
+    unrecoverable until it cleared. It now falls through on a throw as well as on null.
+  - *Found in review, fixed:* `dismissNudge` now refuses an already-dismissed row outright. Nothing
+    at the database level constrains `prior_status` (the CHECK covers `status` only), so a caller
+    passing `['dismissed']` would have stored `prior_status='dismissed'` and made the row
+    permanently unrecoverable, silently.
+  - *Found in live verification, fixed:* the unrecoverable-row refusal reported the generic
+    "the gap changed state between the plan and the write". Nothing raced — and that string is what
+    `recall_decisions` shows the planner next tick, so it would send it back to retry a row that can
+    never work. It now has its own copy ending "Do not retry this one."
+- **The close-on-an-observation TRANSLATION** — the one remapping this build accepts, and worth
+  being uneasy about, since everywhere else it refuses rather than remaps. What makes it different:
+  on a stage where nobody was asked, "the hole is filled" and "this no longer needs attention" are
+  the SAME claim about the record; the close rails do not soften (basis, the ≥12-char/≥2-word floor,
+  evidence membership, one-quote-one-gap all still run); only the target table differs. `stampAnswer`
+  is skipped because `answered_by_capture_id` is a column on `nudges` and there is no row to stamp.
+- **Discovered, not fixed (pre-existing):** `runPlanner` skips a firm with no open gaps BEFORE it
+  reads the dismissed sets, so a recover-only tick is unreachable — every recover has to ride along
+  with a tick that had other business. True of observations before this build too.
 - **`recover` restores `prior_status`** — USER 2026-09-01. A dismissed ask was `pending`, `queued`
   or `asked`; a new nullable `prior_status` column on `nudges` records which, set on dismiss and
   cleared on recover. Observations need none — their prior is always `open`.
@@ -74,13 +106,91 @@ review found an earlier draft's *apply-half* citations stale by ~160 lines.
   `notBefore: null`. Three things an earlier draft got wrong and this one fixes: the apply call site
   passes `['pending']` explicitly, the tool schema types `notBefore` as a plain string, and
   `asksUnattended` has **no** hold exemption today.
+  - *Decided at implementation (Phase 2):* **both an omitted key and an explicit `null` release.**
+    The plan said "explicit null" in one bullet and "null/omitted" in another. Both release, because
+    providers differ on whether a null-valued key survives serialization and a release that worked
+    only one way would be a coin flip. A **present-but-unusable** value ("next Thursday", a number)
+    is still refused loudly — that is a model that TRIED to give a date and failed, and it can
+    rewrite the decision the same tick.
+  - *Decided at implementation:* a hold decision **always carries the `notBefore` key, null
+    included**. The plan had a release work by the ABSENCE of the key, clearing the column only
+    because apply wrote `d.notBefore ?? null` — a coupling across two files that no type would
+    catch if either side moved. Better removed than pinned.
+  - *Found in review, fixed:* a release on a gap that was **never held** is refused. Writing null
+    over null returns the row and reports `applied` — a silent no-op recorded as a decision, the
+    class every rail here exists to prevent (`recover` has the same rail). It also restores the loud
+    refusal for the likeliest model error: meaning "hold until Thursday" and dropping the field.
+  - *Found in review, fixed:* **a hold on a QUEUED row must not silence the delivery-stuck alarm.**
+    `listQueuedNudgesForHost` selects on status alone and never reads `not_before`, so a hold cannot
+    pace or recall a queued message — but `deliveryStuckRows` exempted any held row, so it would
+    have switched off the operator's only signal that delivery is broken. That exemption was written
+    when hold was pending-only and so was unreachable on queued rows; it is now narrowed to
+    `pending`. The refusal copy that offered the hold as pacing was corrected too.
+  - *Recorded, not fixed:* an **unbounded** hold on an asked row silences `asksUnattended` — the
+    only operator-visible watch on an asked gap — for as long as the date says, since a held row is
+    filtered out before its decisions are read. Holds have had no ceiling since build 5, deliberately.
+    Capping the verb would be code overruling the pacing judgment build 5 handed the planner, so the
+    question "does it choose sane horizons?" belongs to the evaluation phase; if the answer is no,
+    the fix is a separate held-gap counter, not a cap.
+  - *Doc drift, deliberately not fixed:* `20260821180000_nudge_decisions_extend.sql:26` says
+    "not_before is null for everything but a hold", which a release makes imprecise. Applied
+    migrations are immutable — editing one would diverge from what actually ran.
 - **The planner may cite what it looked up** — USER 2026-09-01. **The stamp gate STAYS:**
   `TECHNICIAN_SPOKEN_CHANNELS` (`planner.ts:807-811`) gates only `answered_by_capture_id` — which
   *is* `closed_by_technician` — never what is shown. A looked-up citation stamps **no** capture id.
 - **Phase 4 requires a `toolLoop.ts` change.** The executor receives `raw: unknown` (`:610`); the
   shown string is built by the module-private `stringifyResult` at `:620`. The loop must hand
-  results back.
+  results back. Done as an `onResult` hook.
+  - *Found in live verification, fixed:* **the planner could cite its own writing.** `onResult`
+    saw every tool result, and the surface includes two write verbs whose readers hand the text
+    straight back — `write_job_note` → `read_job_note` → close on basis `evidence` was ACCEPTED,
+    laundering a sentence the planner wrote into `nudges.resolution`, the durable audit line a
+    manager reads, under a basis meaning "a person's own words". The haystack is now an ALLOWLIST
+    (`CITABLE_TOOLS` = `spine_read`, `get_customer_context`) plus a `call.ok` guard, which also
+    keeps a refused `submit_plan`'s error text — it echoes the model's own rejected quote — out.
+  - *Accepted residue, recorded not guarded:* `query_spine` requires no FROM clause, so
+    `select 'words I made up'` returns quotable text. No allowlist closes that, and no shape check
+    would either (`select 'x' from v_jobs limit 1` defeats a require-a-view rule; banning string
+    literals bans every legitimate `like '%…%'`). Bounded by: no capture id is stamped, so the
+    technician metric is untouched; every query is written to `query_audit` with its SQL, so a
+    manufactured citation names itself; and it takes SQL whose only purpose is to fabricate.
+  - **THE PLAN'S ORDERING CLAIM WAS BACKWARDS, and so was the doctrine written from it.** The
+    terminal-tool early return sits INSIDE the per-call loop, so tools run in the order the model
+    lists them: `[spine_read, submit_plan]` WORKS (the read runs, `onResult` fires, the plan
+    validates against it) and only `[submit_plan, spine_read]` fails. The doctrine now states the
+    true rule — your tools run in the order you list them, and `submit_plan` ends the turn.
 - **Frozen becomes a printed fact, not a status** — USER 2026-09-01. No schema change.
+  - *Found in review, fixed — a regression this phase introduced.* The line first read
+    `served N times, failed M times; still being attempted`, and the doctrine then told the model
+    that "still being attempted" is a gap to leave alone. That is FALSE in three reachable states
+    the counters cannot tell apart — a leaderless group, an inactive technician, and (commonest) a
+    box that is not pulling at all, where `serve_count` simply stays 0 forever. So the phase whose
+    purpose is *stuck becomes visible* had deleted the only guidance covering the ordinary stuck
+    row (the old bullet said "sat queued for HOURS means delivery is broken") and replaced it with
+    an instruction to ignore it. The line now prints AGE plus the two counters and asserts nothing;
+    the doctrine teaches all three readings.
+  - *Found in review, fixed:* the leaderless freeze IS derivable, and `leadFor` was throwing the
+    fact away — for a grouped member, a lead absent from the open read means the lead has ended,
+    which is the leaderless freeze with certainty. It collapsed that into the same `null` as
+    "not a group member". Now a third case, rendered as its own FROZEN reason.
+  - *Found in review, fixed:* the schema and the doctrine headline promised the planner could quote
+    "anything you read this tick". `CITABLE_TOOLS` is `spine_read` in practice, so the surfaces
+    invited a close the rails refuse. Both now name `spine_read` and say plainly that the planner's
+    own notes are not quotable — it may not be the witness to its own conclusion.
+  - *Found in review, fixed:* the verb list said a close "MUST quote the words that answered it",
+    contradicting basis `record` and all four state bullets. Pre-existing; the one-document pass is
+    where it should have been caught.
+  - *Found in review, fixed:* the frozen advice omitted `ask_agent`, which is the one verb that
+    still reaches the person when their queued message never will.
+  - *Found in review, narrowed:* "a frozen question was never asked" is only strictly proved by the
+    attempt cap. The serve cap means "served ten times with no ack", and the box writes its
+    sent-marker BEFORE reporting — so a delivered message whose acks all failed can reach the cap.
+    The doctrine now says "almost certainly nobody ever read it".
+- **Corpus honesty (found in review):** the first three build-6 scenarios all passed if the planner
+  did NOTHING — the claim graders build their haystack from the last tick's decisions, so silence
+  makes every `mustNotClaim` vacuous, and `actionNot` is satisfied by silence too. Rewritten to
+  grade `action:` (an APPLIED verb) or `arc.closedBy` (the gap must have ENDED), both of which fail
+  on silence. A fourth was added for Phase 4's capability, which had none.
 - **`open_gap` moves whole to build 7** — USER 2026-09-01.
 - **`review_items` needs no action here** — USER 2026-09-01. Its 2 gap kinds stop being written when
   escalate dies; dead ends and reminders leave in build 7. Cleanup (rename it and
@@ -176,19 +286,25 @@ views that read them are untouched.
   runner. Document the re-grade; do not attempt it.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] `escalate` is refused as unknown; the pinned equalities agree at eight.
-- [ ] A stored historic `escalate` decision still counts as attention.
-- [ ] `mv_escalation_fates` still returns pre-existing escalations; no caller of `flagNudgeGap`
-      remains.
+- [x] `npm run typecheck` · `npm run lint` · `npm test` (2490 passed) · `npm run build`
+- [x] `escalate` is refused as unknown; the pinned equalities agree at eight (the COUNT is
+      pinned too, `watchers.test.ts` — two sets that drift together are still equal).
+- [x] A stored historic `escalate` decision still counts as attention (with a not-a-verb
+      control, `watchers.test.ts`).
+- [x] `mv_escalation_fates` still returns pre-existing escalations (probed on the local stack:
+      `fate: resolved, by_planner: true, handoff_kind: escalated`; `mv_gap_outcomes` buckets it
+      `outcome_bucket: manager`); no caller of `flagNudgeGap` remains.
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack (`npx supabase start`, `.env.test`).
-- [ ] `runPlanner` tick on a seeded firm with an escalate in its history: applies, history line
-      renders the old verb, no alarm fires for it.
+- [x] `runPlanner` tick on a seeded firm with an escalate in its history: applied (`applied: 1`),
+      history line rendered `last: escalate 10h ago`, no alarm fired for it — while a
+      same-age CONTROL gap with no decisions DID alarm. A fresh `escalate` came back
+      `unknown action 'escalate'`; read-back showed `review_items` empty and both `nudges`
+      rows' `updated_at` untouched.
 
 ### Manual verification
-- [ ] None.
+- [x] None.
 
 ---
 
@@ -233,25 +349,37 @@ phase, because `hold` is its replacement and the alarm's mechanism shifts from "
 - `planner.test.ts:1223-1229` — "hold on an already-asked gap is refused too".
 - The `watchers.test.ts` alarm family (`:973+`) asserting leave-counts-on-asks — rewrite as
   historic-only, plus held-asked-is-exempt.
-- One corpus `action:'leave'` expectation.
+- **No corpus expectation.** The single `action:'leave'` in `plannerCorpus.ts` is inside a
+  `history:` SEED block, not an `expect` — a seeded row naming a retired verb keeps working
+  exactly as the `extend` seeds beside it do. (Corrected during Phase 1: this line and the
+  closing checklist both repeated the seed-vs-expectation miscount the Phase 1 notes warn
+  about for `extend`.)
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] hold+future date on an `asked` row **writes `not_before` and records `applied`** (the
-      assertion that catches the `['pending']` bug).
-- [ ] `notBefore: null` on a held `asked` row clears it; hold on `queued` works; a passed date is
-      refused; `send` on `asked` is refused; `leave` is refused as unknown.
-- [ ] A held asked gap is exempt from `asksUnattended` and re-enters once released; a historic
+- [x] `npm run typecheck` · `npm run lint` · `npm test` (2503 passed) · `npm run build`
+- [x] hold+future date on an `asked` row **writes `not_before` and records `applied`** (asserted on
+      the write AND the recorded outcome — either alone still passes).
+- [x] `notBefore: null` on a held `asked` row clears it; hold on `queued` works; a passed date is
+      refused; `send` on `asked` is refused; `leave` is refused as unknown (all three stages).
+- [x] A held asked gap is exempt from `asksUnattended` and re-enters once released; a historic
       `leave` row still counts as attention on an ask and not on an observation.
-- [ ] The schema advertises a nullable `notBefore`; the pinned equalities agree at seven.
+- [x] The schema advertises a nullable `notBefore` **and documents the release** (a revert to
+      `type: 'string'` would otherwise pass green — the tests never go through the JSON schema);
+      the pinned equalities agree at seven, count included.
+- [x] **Added after review:** a release on a gap that is NOT held is refused; a held QUEUED row
+      still alarms as delivery-stuck while a held PENDING one does not.
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack.
-- [ ] Hold-then-release an asked gap through `runPlanner`; read `not_before` back via `psql` at
-      both steps, both decisions `applied`.
+- [x] Hold-then-release an asked gap through `runPlanner`, real accessors, raw-SQL read-back:
+      `not_before` null → `2026-09-04T16:00:00.000Z` → null, `applied:1 refusedAtApply:0` at every
+      step, both release spellings (key omitted / explicit `null`). The alarm carve-out was proved
+      with a same-age control and **zero decision rows** on either gap — holding through the
+      planner would have written an applied `hold`, which `attendedWithin` counts as attention on
+      its own, making the `not_before` carve-out unprovable.
 
 ### Manual verification
-- [ ] None.
+- [x] None.
 
 ---
 
@@ -325,23 +453,43 @@ new outcome it does not know. Leave it — a dismissed ask simply falls outside 
 it for the eval phase rather than amending a view this build otherwise leaves alone.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] One test per KEPT rail, its title naming the harm.
-- [ ] close on an observation records **`applied`** and writes `dismissed` + citation.
-- [ ] dismiss on an `asked` row writes `status='dismissed'`, `prior_status='asked'`, the reason;
+- [x] `npm run typecheck` · `npm run lint` · `npm test` (2550 passed) · `npm run build`
+- [x] One test per KEPT rail, its title naming the harm — as an executable `test.each` table
+      (`describe('the rails that REMAIN, and the harm each one prevents')`), checked exhaustive
+      against every `push(...)` in `validateDecisions`. Round 1 found four rails missing from it,
+      one of which (`groups gaps whose job or person the record does not name`) had **no test
+      anywhere in the repo**. A companion test asserts the three DELETED rails now accept.
+- [x] close on an observation records **`applied`** and writes `dismissed` + citation, with
+      neither nudges-table writer firing.
+- [x] dismiss on an `asked` row writes `status='dismissed'`, `prior_status='asked'`, the reason;
       it vanishes from the planner's next gap list, the host pull, and every alarm.
-- [ ] recover on it restores `status='asked'`, clears `prior_status`; recover on a row with null
-      `prior_status` is refused; recover on a queued row returns it to the host pull.
-- [ ] The pinned equalities hold at seven, plus the DB-CHECK superset check.
+- [x] recover on it restores `status='asked'`, clears `prior_status` **and `not_before`**; recover
+      on a row with null `prior_status` is refused, with its OWN refusal copy rather than the
+      generic race message; recover on a queued row returns it to the host pull.
+- [x] The pinned equalities hold at seven, plus the DB-CHECK superset check (every historic value
+      still writes; a bad one is refused by name).
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack.
-- [ ] Through `runPlanner`: dismiss an asked gap, read the row back, recover it next tick, read it
-      back — both statuses and `prior_status` at each step via `psql`.
+- [x] Through `runPlanner` with real accessors, raw-SQL read-back, 11/11: dismiss an asked gap
+      (`asked → dismissed, prior_status='asked'`), recover it (`→ asked`, prior/resolution/
+      resolved_at all null), same for a queued row returning to the host pull, the null-prior row
+      refused and byte-identical, and a close on an observation writing
+      `dismiss_reason = 'answered — "…"'` with **no** nudges row created. All 26 decision rows
+      keyed to the right FK. The alarm proof used a CONTROL row flipped to `dismissed` by raw SQL
+      with **zero** decision rows (`asksUnattended 2 → 1`), because an end-to-end dismiss is
+      exempt for two reasons at once — status AND the fresh applied decision counting as attention.
 
 ### Manual verification
-- [ ] **Judgment call:** read the final KEEP/DELETE table — no kept rail is lifecycle, no deleted
-      rail is world.
+- [x] **Judgment call — RESOLVED by the user 2026-09-02.** The KEEP/DELETE table was read and the
+      classification stands. The one product question inside it was raised explicitly: the
+      once-ever rail means a technician who never answers can never be asked again, and the
+      planner's only remaining moves are wait, close or dismiss. **USER RULING: re-asking and
+      multiple sends belong to build 6.5, not here.** Deleting the rail now would not buy
+      re-asking — it would let the planner believe it re-asked while the technician's phone stayed
+      silent, because `uq_nudges_subject_ever` blocks the second row at the database. The
+      companion rail (no mixed-stage grouping, so the planner occasionally sends two messages
+      where one would do) stands for the same reason: cosmetic cost, real crash if removed.
 
 ---
 
@@ -377,19 +525,32 @@ Rule (5) has no pin; `SPINE_VIEW_CATALOG` is shared by `query_spine` (`:1318`) a
 (`:1818`), so the edit cold-writes both prompt caches.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] A close citing a `spine_read` result from this tick is ACCEPTED with no capture id; text from
-      nowhere is REFUSED; a pushed evidence line still stamps its capture id; **a quote from beyond
-      the 20,000-char truncation point is REFUSED** (proves the hook hands over the truncated string).
+- [x] `npm run typecheck` · `npm run lint` · `npm run build`. `npm test`: **2561 passed, 1 failed**
+      — `recordFieldNote.test.ts` "an unmatched note proposes the scheduled address". PRE-EXISTING
+      and NOT this build's: it fails identically on `main` with this branch's work stashed, and in
+      isolation, on a freshly `npm run seed:local`-ed stack. Left for a separate fix rather than
+      absorbed into this diff. Every other file is green.
+- [x] A close citing a `spine_read` result from this tick is ACCEPTED with no capture id; text from
+      nowhere is REFUSED; a pushed evidence line still stamps its capture id (asserted in the HARD
+      case, where the quote is in BOTH places, so an implementation consulting `readText` first
+      would fail); **a quote from beyond the 20,000-char truncation point is REFUSED** — proved in
+      `toolLoop.test.ts` against the REAL loop, since a stubbed loop could only assert about itself.
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack.
-- [ ] Seed a gap whose answer exists only in a record the briefing does not print; drive
-      `runPlanner`; read back `basis='evidence'`, `answered_by_capture_id IS NULL`, and the
-      `nudge_decisions` row carrying the citation.
+- [x] 5/5, driven through the REAL `runToolLoop` against a local OpenAI-compatible server (only
+      `listTenants` stubbed): the answer seeded where the briefing does not print it (the gap block
+      shows `notes: NO notes have landed`), a real two-turn read-then-close, and raw-SQL read-back
+      showing `status='answered'`, the resolution carrying the quote, and
+      **`answered_by_capture_id IS NULL`**. Plus: the ordering limit is real, and cross-tenant
+      isolation holds.
+      - *Note for the next reader:* the plan suggested seeding the answer behind the visit bridge.
+        That does not work — `listJobEvidenceSince` already reaches through
+        `visits.source_capture_id`, so a visit-bridged note IS printed. The bound that genuinely
+        excludes a record is TIME (`captured_at > asked_at`).
 
 ### Manual verification
-- [ ] None.
+- [x] None.
 
 ---
 
@@ -439,21 +600,33 @@ describe what phases 1–4 built. Last, because every earlier phase changes it.
   a looked-up record.
 
 ### Automated verification
-- [ ] `npm run typecheck` · `npm run lint` · `npm test` · `npm run build`
-- [ ] A queued row at/over either cap renders FROZEN; below renders counters, no FROZEN; a non-lead
-      member renders the LEAD's ledgers; an observation renders no ledger line.
-- [ ] All doctrine pins pass; no surviving prompt text offers `escalate` or `leave`.
-      `src/eval/doctrine.ts` `EXPECTED_SECTIONS` (the box agents' AGENTS.md) — expected untouched.
-- [ ] `plannerCorpus.test.ts` green with the new cases.
+- [x] `npm run typecheck` · `npm run lint` · `npm test` (2575 passed) · `npm run build`
+- [x] A queued row at/over either cap renders FROZEN; below renders **age + counters and asserts
+      nothing else**; a non-lead member renders the LEAD's ledgers — pinned BOTH at `buildGapView`
+      (explicit lead) and through `runPlanner` (`leadFor`, which review found untested); an
+      observation renders no ledger line; a LEADERLESS member renders FROZEN despite its own zeros.
+- [x] All doctrine pins pass; no surviving prompt text offers `escalate` or `leave` — checked
+      against the RENDERED prompt, not the source. `src/eval/doctrine.ts` untouched.
+- [x] `plannerCorpus.test.ts` green with four new cases.
 
 ### Live verification (agent-executable)
 - Prerequisites: local Supabase stack.
-- [ ] One `runPlanner` tick against a seeded firm with a frozen queued row; the rendered
-      `userPrompt` shows the FROZEN line with real counters.
+- [x] 16/16 through the real `runPlanner`. Two beyond the ask: a NEGATIVE CONTROL on the group
+      borrow (lead small / member past the caps → the member renders the LEAD's small numbers and
+      no FROZEN, proving direction rather than "whichever is higher"), and a cross-check against
+      the real serve loop — `buildNudgeDelivery` skipped the frozen row (`serve_count` 10 → 10)
+      while a below-caps control was served (2 → 3), so "it will not be delivered again" is true
+      of the machinery and not just of the copy.
 
 ### Manual verification
-- [ ] **Judgment call:** read the rewritten `PLANNER_SYSTEM` end to end — one document, not five
-      phases of patches, and nothing describing a rail or verb that no longer exists.
+- [x] **Judgment call — RESOLVED by the user 2026-09-02.** The rewritten `PLANNER_SYSTEM` was
+      read and the one open question inside it settled: a message QUEUED FOR HOURS but not yet
+      formally failed is treated as never delivered, and the gap is ended rather than waited on.
+      The trade was put explicitly — a technician looking unresponsive for a message that never
+      arrived, versus a late message about something already closed. **USER RULING: "quite a rare
+      edge case, the stakes aren't too high — go with your decision."** Recorded because the
+      reasoning may not survive the rarity: a gap left open is counted as neglect against a person
+      who was never actually asked anything.
 
 ---
 
@@ -462,6 +635,13 @@ describe what phases 1–4 built. Last, because every earlier phase changes it.
 - [ ] `npm run decisions:index`; commit the regenerated `thoughts/INDEX.md` and the
       `docs/engineering-memory.md` map alongside the code.
 - [ ] Add the §6a build-6 entry: the two deletions, dismiss/recover on every stage with
-      `prior_status`, the KEEP/DELETE table, the 25 orphaned corpus expectations (24 escalate + 1
-      leave), and the `mv_gap_outcomes` blind spot for `'dismissed'`.
+      `prior_status`, the KEEP/DELETE table, and the `mv_gap_outcomes` blind spot for
+      `'dismissed'`. **The corpus damage, counted honestly:** 24 orphaned ACTION expectations
+      (10 `action:'escalate'` + 14 `actionNot:'escalate'`; there is no `leave` expectation),
+      PLUS 23 claim clauses (22 `mustNotClaim`, 1 `mustName`) weakened rather than orphaned —
+      `plannerEvalGraders2.ts` grades them over `[handoff_note, reason]` and `handoff_note` is
+      now never written, so they still fire but against diagnostic copy instead of the
+      manager-facing copy they were authored against. Also record that an `escalate` the model
+      TRIES leaves NO trace: it fails the unknown-action check, and the dropped-recorder skips
+      unknown verbs, so the gap takes an `unmentioned` tick mark instead of a refusal row.
 - [ ] Flip this plan's `status:` to `complete`.
